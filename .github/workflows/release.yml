@@ -1,0 +1,92 @@
+# brain_v42 - GitHub Actions, rail de release.
+#
+# Ce rail tourne RUNNER ÉTEINT, et c'est sa raison d'être. Mesuré le 2026-08-14 :
+# 19 runs du rail de livraison, 19 `cancelled`, 0 succès, parce que
+# [self-hosted, Linux, X64, red-ci] est démarré à la demande et que son état
+# `offline` est NORMAL. Une release posée là n'aurait jamais tourné : elle aurait
+# attendu le geste manuel qu'elle est censée remplacer. D'où ubuntu-24.04 hébergé.
+#
+# Il n'attache que deux fichiers : la wheel et le sdist. AUCUNE image. Le registre
+# est privé et à DNS interne (registry.hawkixs.local), donc son adresse ne veut
+# rien dire pour un consommateur de release ; et une image cuirait l'ONNX du
+# reranker, dont NOTICE déclare la licence amont indéterminée. Publier un digest
+# reste l'affaire du rail de livraison, sur son propre runner.
+#
+# Aucun secret de dépôt : `GITHUB_TOKEN` est frappé par la plateforme pour ce run
+# seul, et `permissions:` le réduit à l'écriture d'une release.
+#
+# Déclenchement : l'opérateur pose le tag, ce rail publie. Un push de branche ne
+# publie rien.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Le jeton par défaut porte bien plus que ce qu'une release exige.
+permissions:
+  contents: write
+
+# Deux tags poussés coup sur coup publient deux releases distinctes : elles ne
+# s'annulent pas l'une l'autre, elles se suivent.
+concurrency:
+  group: brain-v42-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  UV_VERSION: "0.10.7"
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install "uv==$UV_VERSION"
+
+      - name: Install dependencies
+        run: uv sync --locked --no-dev --extra dev
+
+      # Le contrat est RÉUTILISÉ, pas recopié : ce fichier construit déjà une vraie
+      # wheel et lit sur le disque l'ensemble des révisions attendues. Le réécrire
+      # ici en YAML donnerait deux vérités qui dériveraient sans le dire. Mesuré
+      # avant ce contrat : une wheel de 192 entrées dont ZÉRO alembic, donc un
+      # paquet incapable de migrer sa propre base.
+      - name: Vérifier que la wheel porte les migrations
+        run: .venv/bin/pytest tests/unit/test_wheel_ships_migrations.py -v --tb=short
+
+      - name: Construire la wheel et le sdist
+        run: uv build --out-dir dist
+
+      # Un seul shell : la garde nomme les artefacts, la publication les attache.
+      # Sans elle, un tag v9.9.9 publierait une wheel 0.2.0 et la release mentirait
+      # sur ce que /health annoncera. `bash -e` interrompt le pas avant `gh`.
+      - name: Publier la release avec ses deux artefacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          WHEEL="dist/brain_v42-${VERSION}-py3-none-any.whl"
+          SDIST="dist/brain_v42-${VERSION}.tar.gz"
+          if [ ! -f "$WHEEL" ] || [ ! -f "$SDIST" ]; then
+            echo "le tag ${GITHUB_REF_NAME} ne nomme pas la version construite" >&2
+            ls -1 dist >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" "$WHEEL" "$SDIST" \
+            --title "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --generate-notes

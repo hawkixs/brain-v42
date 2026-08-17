@@ -1,0 +1,130 @@
+# Bench stack — runs on docker context dev-pc (RTX 5070 Ti 16 GiB).
+# Three embedding services side-by-side, different ports, sharing the GPU.
+# Sharing is safe because run_bench.py serializes candidates (only one
+# service is hit at any given time).
+#
+# Models live in a named docker volume `bench_models` on dev-pc. Populated
+# once by download_models.sh (uses `docker --context dev-pc run` with
+# curlimages/curl to avoid any local staging).
+
+services:
+  # --- Baseline: Qodo on PyTorch 2.7.1+cu128 (RTX 5070 Ti Blackwell).
+  # Bench-only Dockerfile — reuses prod main.py verbatim, only the torch stack
+  # differs. Prod image (RTX 1000 Ada, sm_89) stays on torch 2.x+cu121.
+  bench-qodo:
+    build:
+      context: ./qodo-bench-server
+    container_name: bench_qodo
+    ports:
+      - "8023:8003"
+    environment:
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test:
+        - "CMD"
+        - "python3"
+        - "-c"
+        - |
+          import urllib.request,json
+          r=urllib.request.urlopen(urllib.request.Request(
+              'http://127.0.0.1:8003/embed',
+              data=json.dumps({'texts':['healthcheck']}).encode(),
+              headers={'Content-Type':'application/json'}),
+              timeout=8)
+          assert r.read(2)==b'[['
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+
+  # --- Qwen3-Embedding-4B-GGUF Q4_K_M via llama.cpp server.
+  # Last-token pooling, instruction-aware, Matryoshka 1024 dim.
+  # Reads the GGUF from the shared named volume populated by download_models.sh.
+  bench-qwen3-4b:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: bench_qwen3_4b
+    ports:
+      - "8024:8024"
+    volumes:
+      - bench_models:/models:ro
+    command:
+      - "--model"
+      - "/models/qwen3-embedding-4b-q4_k_m.gguf"
+      - "--embedding"
+      - "--pooling"
+      - "last"
+      - "--ubatch-size"
+      - "8192"
+      - "--ctx-size"
+      - "8192"
+      - "--port"
+      - "8024"
+      - "--host"
+      - "0.0.0.0"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "curl -sf http://127.0.0.1:8024/health | grep -q ok"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+
+  # --- jina-embeddings-v3 via custom FastAPI wrapper.
+  # HF cache goes into the same named volume (subdir /models/jina).
+  bench-jina-v3:
+    build:
+      context: ./jina-v3-server
+    container_name: bench_jina_v3
+    ports:
+      - "8025:8000"
+    environment:
+      - HF_HOME=/models/jina
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    volumes:
+      - bench_models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test:
+        - "CMD"
+        - "python3"
+        - "-c"
+        - |
+          import urllib.request,json
+          r=urllib.request.urlopen(urllib.request.Request(
+              'http://127.0.0.1:8000/embed',
+              data=json.dumps({'texts':['healthcheck']}).encode(),
+              headers={'Content-Type':'application/json'}),
+              timeout=15)
+          assert r.read(2)==b'[['
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 300s
+
+volumes:
+  # Use the external volume populated by download_models.sh — without
+  # `name:` compose prefixes "embedding_v1_" and creates a fresh empty one.
+  bench_models:
+    name: bench_models
+    external: true

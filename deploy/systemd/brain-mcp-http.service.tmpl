@@ -1,0 +1,68 @@
+[Unit]
+Description=brain-v42 MCP HTTP server (shared pool)
+Documentation=file://__REPO_ROOT__/deploy/systemd/MCP_HTTP_RUNBOOK.md
+# network-online.target is a SYSTEM target — it does not exist in the --user
+# manager and makes the unit fail to start (Requires= → fatal). User services
+# already run after the session network is up, and the server retries
+# DB/embedding connections + degrades gracefully, so no network ordering is
+# needed here. StartLimit* are [Unit] directives (moved out of [Service] in
+# systemd 230).
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+
+# Production lifecycle is operator-managed: the normal install path generates and validates this
+# unit without changing its enable/start state. The explicit --uninstall path disables, stops and
+# removes it. Follow deploy/systemd/MCP_HTTP_RUNBOOK.md before a first activation or host migration.
+# `Type=notify`+`WatchdogSec` remains a stretch upgrade (needs sd_notify from the lifespan).
+
+# Repo root injected by deploy/systemd/install.sh from the template.
+WorkingDirectory=__REPO_ROOT__
+
+ExecStartPre=__REPO_ROOT__/.venv/bin/python __REPO_ROOT__/scripts/check_graph_projector_env.py --shared __REPO_ROOT__/.env --private %h/.config/brain-v42/graph-projector.env --require-effective-private
+ExecStartPre=__REPO_ROOT__/.venv/bin/python __REPO_ROOT__/scripts/check_mcp_http_port.py --shared __REPO_ROOT__/.env --expected 8765 --expected-host 127.0.0.1 --token-file %h/.config/brain-v42/mcp-token.env --require-effective-runtime-settings
+# Do not start through a login shell after the credential preflight: profile
+# files could replace the attested environment. The interpreter path is absolute.
+ExecStart=__REPO_ROOT__/.venv/bin/python -m brain_v42.mcp.server --http-server
+
+EnvironmentFile=__REPO_ROOT__/.env
+EnvironmentFile=%h/.config/brain-v42/mcp-token.env
+# Optional while the shared ledger flag is dormant. The preflight requires an
+# owned regular 0600 file at cutover; only GRAPH_PROJECTOR_* belongs here.
+EnvironmentFile=-%h/.config/brain-v42/graph-projector.env
+
+UMask=0077
+NoNewPrivileges=true
+PrivateUsers=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=full
+ReadOnlyPaths=__REPO_ROOT__/.env %h/.config/brain-v42
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+KeyringMode=private
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+# Log everything to the journal — inspect with:
+#   journalctl --user -u brain-mcp-http.service -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=brain-mcp-http
+
+Restart=always
+RestartSec=2
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

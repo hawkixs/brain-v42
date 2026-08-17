@@ -1,0 +1,589 @@
+# Plan index repair runbook
+
+This runbook repairs the seven project indexes named in ticket
+`44ee7643-fb06-4186-a364-cb175610b973`. It is an operator procedure for a separately authorized
+production window. This code-delivery mission does not migrate, deploy, restart, reindex, apply,
+finalize, roll back, or restore production.
+
+Run one gate at a time, in the order below. Stop at the first failed or ambiguous check. Keep all
+writers off until a step explicitly permits the isolated MCP process. Never add `--wet`, `--force`,
+`--skip-backup`, or a combined apply/finalize command; the repair CLI exposes none of them.
+
+## Fixed scope and private evidence
+
+The repair accepts exactly these projects:
+
+- `red-games`
+- `red-gift`
+- `red-phone`
+- `red-quant`
+- `red-shrik`
+- `red-viewer`
+- `red-writer`
+
+Run commands from the deployed repository root. Create a private evidence directory on durable,
+operator-controlled storage. Do not put credentials, DSNs, environment dumps, plan contents, or
+embeddings in any evidence file.
+
+```bash
+set -euo pipefail
+REPO_ROOT=/ABSOLUTE/PATH/TO/brain_v42
+EVIDENCE_DIR=/ABSOLUTE/PRIVATE/PATH/plan-index-repair
+cd "$REPO_ROOT"
+install -d -m 0700 "$EVIDENCE_DIR"
+
+MANIFEST="$REPO_ROOT/ops/recovery/plan-index-repair-v1.json"
+SNAPSHOT="$EVIDENCE_DIR/control-snapshot.json"
+BACKUP_RECEIPT="$EVIDENCE_DIR/postgres-backup-receipt.json"
+REINDEX_EVIDENCE="$EVIDENCE_DIR/reindex-evidence-v1.json"
+VERIFICATION_REPORT="$EVIDENCE_DIR/verification-report.json"
+RUN_ID="$(uv run python -c 'from uuid import uuid4; print(uuid4())')"
+readonly REPO_ROOT EVIDENCE_DIR MANIFEST SNAPSHOT BACKUP_RECEIPT \
+  REINDEX_EVIDENCE VERIFICATION_REPORT RUN_ID
+```
+
+Every control file must be a regular file owned by the operator with mode `0600`. The CLI refuses
+changed digests, another owner, another mode, symlinks, and reused output paths. Preserve the
+snapshot, backup, receipt, evidence, report, command outputs, and their SHA-256 digests together.
+
+<!-- project-context-cas-039:start -->
+## Project-context timestamp CAS (039)
+
+Repository target: 039. Executed on 2026-08-03; production measured at `039` on 2026-08-04.
+Revision 038 adds Dream ticket-extraction state; revision 039 adds the project-context timestamp
+contract. The order below is the record of that cutover — read it as history, and re-measure the
+deployed head before relying on any statement here.
+
+Use this single operator order:
+
+1. **backup production 037** with the approved complete custom-format backup procedure.
+2. **pg_restore isolated** into a PostgreSQL 16 target with no production routing.
+3. **upgrade isolated 038 then 039** and verify `alembic current` reports `039 (head)`.
+4. Run `brain-v42-v4-pgrestore.sql` against the restored target and retain the **isolated v4
+   receipt: 25/25**.
+5. Hold **writers off** in production and verify the MCP watchdog timer and service are quiescent.
+6. **upgrade production 038 then 039** in one authorized, writers-off migration window.
+7. Run `brain-v42-v4.sql` against production and retain the **live v4 receipt: 25/25**.
+8. Run `inventory` and approve the signed seven-project snapshot.
+9. Run `apply-paths` with the unchanged backup receipt and writers-off proofs.
+10. **reindex one project at a time**, preserving the exact result of every call.
+11. Run `verify` and validate its private report and digest.
+12. Run `finalize` only after all seven reindexes and verification succeed.
+13. Run the non-publishing installer preflight and render verified MCP units into a new private
+    directory outside systemd; inspect all three artifacts:
+
+    `render_parent` is the private, pre-existing parent directory that contains `render_dir` and
+    any temporary backup. `render_dir` is the new child directory holding generated unit files,
+    so `/tmp/systemd-render.ABC123` is the parent and `/tmp/systemd-render.ABC123/units` is the
+    render directory. The installer applies the parent ancestry guard before creating the child.
+
+    ```bash
+    set -euo pipefail
+    TMPDIR="${TMPDIR:-/tmp}"
+    render_parent="$(mktemp -d "$TMPDIR/systemd-render.XXXXXX")"
+    render_dir="$render_parent/units"
+    trap 'rm -rf -- "$render_parent"' EXIT
+    chmod 0700 "$render_parent"
+    test ! -e "$render_dir" && test ! -L "$render_dir"
+
+    ./deploy/systemd/install.sh --check-only
+    ./deploy/systemd/install.sh --render-dir "$render_dir"
+    test -d "$render_dir" && test ! -L "$render_dir"
+    for unit in \
+      brain-mcp-http.service \
+      brain-mcp-http-watchdog.service \
+      brain-mcp-http-watchdog.timer; do
+      test -f "$render_dir/$unit"
+    done
+    ```
+
+14. Authorize the bounded live publication only after that inspection, then execute the
+    [canonical MCP publication preflight](../deploy/systemd/MCP_HTTP_RUNBOOK.md#preflight)
+    exactly as written. It repeats the non-publishing render, neutralizes the watchdog, backs up,
+    atomically publishes only the three MCP units, reloads systemd, and verifies the live units.
+15. Run `systemctl --user restart brain-mcp-http.service`.
+16. Pass `curl --max-time 10` against the health endpoint.
+17. Pass one **read-only MCP call**.
+18. Run `systemctl --user enable --now brain-mcp-http-watchdog.timer` last.
+
+Before inventory and throughout repair, prove these states exactly:
+
+- `brain-mcp-http-watchdog.timer is inactive and disabled`;
+- `brain-mcp-http-watchdog.service is inactive`;
+- `brain-mcp-http.service is inactive and MainPID=0` except during the bounded seven-call
+  maintenance reindex window.
+
+Stop the maintenance MCP again before `verify` and `finalize`. A partial reindex is restore-only:
+the seven MCP calls commit independently, so a failed, timed-out, malformed, or nonzero-error
+result after any call forbids both bounded rollback and finalization. Keep writers and MCP stopped
+and restore the complete tested backup.
+
+The two recovery attestations are separate operator gates, not repair receipts. Store the isolated
+result as `brain-v42-v4-pgrestore-result.json` with
+`brain-v42-v4-pgrestore-provenance.json`. Store the live result as
+`brain-v42-v4-live-result.json` with `brain-v42-v4-live-provenance.json`. Publish each result and
+its provenance together as private regular files in mode 0600. Each result must contain exactly
+25 unique checks, the IDs from `brain-v42-v4.json`, and all statuses are pass. Bind each provenance
+record to the code commit, frozen SQL and JSON hashes, result hash, backup/archive hash, and target
+fingerprint. MutationProof and the backup receipt remain unchanged.
+
+Before `finalize`, `rollback-before-finalize` accepts only `rolled_back` with the signed affected
+row count or the exact idempotent `already_rolled_back` result. Re-inventory and compare the full
+context paths, signed timestamps, indexed plans, feature links, polluted IDs, missing canonical
+files, and database identity with the original snapshot. After finalize, restore the complete
+tested backup; in-place rollback cannot reconstruct deleted plan contents or embeddings. Keep
+writers off, restore head 037, reapply 038 then 039, and obtain a new live 25/25 v4 receipt before
+starting the revision-039 runtime. Alternatively, remain at 037 with the revision-037 runtime.
+<!-- project-context-cas-039:end -->
+
+<!-- project-context-focus-updated-at-040:start -->
+## Focus timestamp (040)
+
+Repository target: 040. This section claims no live head; measure it. Applied to production on
+2026-08-04 in a writers-off window; `alembic_version` then measured `040`, all 52 rows still
+read NULL, and the 039 function digest was unchanged at `60c6154d…` / 391 octets.
+
+Revision 040 adds `project_contexts.focus_updated_at`: one nullable `TIMESTAMPTZ`, no server
+default, no backfill, no trigger change. It is additive and does not alter the catalog contract
+that revisions 036–039 pin, so it does not need the isolated-restore ceremony those revisions
+required. It is not free of consequence, though — apply it and the code together:
+
+- `_REQUIRED_ALEMBIC_HEAD` in `plan_index_repair_store.py` moves to `040`. Between merging the
+  code and stamping production, the plan-index repair tool is fail-closed and refuses to run.
+  That window is the reason 040 ships and deploys in the same operator session.
+- `ops/recovery/brain-v42-v4.*` still pins `alembic_head = 039`, so the live v4 attestation reads
+  **24/25** until the v5 assets exist. Expect it; do not read it as corruption.
+
+Operator order:
+
+1. **backup production** with the approved complete custom-format backup procedure.
+2. Verify the deployed head is exactly `039`:
+   `docker exec brain_v42_postgres psql -U brain -d brain -Atc "select version_num from alembic_version;"`
+3. **upgrade production 039 then 040** in one writers-off window.
+4. Re-measure `alembic_version` and confirm `040`, and confirm the column exists and is nullable:
+   `select is_nullable, column_default from information_schema.columns
+   where table_name='project_contexts' and column_name='focus_updated_at';`
+5. Confirm the backfill did not happen — every pre-existing row must still read NULL:
+   `select count(*) from project_contexts where focus_updated_at is not null;` must return `0`
+   before any focus is written.
+6. Restart the MCP service last, then canary `brain_session_start` and check the briefing renders
+   `Focus écrit : inconnu (jamais horodaté)` — NULL rendering as "unknown" is the proof that no
+   number was invented for prose nobody dated.
+
+Rollback is `alembic downgrade 040:039`, which drops the column. It needs no opt-in flag: 040
+installs no function and no trigger, so nothing signed by 039 is at risk. The only loss is the
+focus timestamps written since the upgrade, which are re-derivable only by writing a focus again.
+<!-- project-context-focus-updated-at-040:end -->
+
+## 1. Confirm production 037 and the repository chain through 039
+
+Confirm that production is still at `037` before the authorized cutover and that the repository
+chain contains `035 -> 036 -> 037 -> 038 -> 039`:
+
+```bash
+uv run alembic history -r 035:039
+BRAIN_ALEMBIC_ALLOW_PROD=1 uv run alembic current
+```
+
+The history must show one linear head, `039`, with 038 before 039. The production `current` check
+must report `037` before cutover. Stop on any other value. Do not migrate until the backup restore
+and isolated 038→039 upgrade have passed and all production writers are off.
+
+## 2. Stop every writer
+
+Stop and keep stopped:
+
+- MCP HTTP, its watchdog, and every MCP stdio client;
+- Dream, automation, scheduled jobs, and any legacy automation writer;
+- ad hoc index, migration, maintenance, and database scripts;
+- every external process that can write Brain PostgreSQL.
+
+Record the exact units and processes stopped on the target host. Disable or stop timers before
+their services so they cannot restart a writer. Verify quiescence from both the process manager and
+`pg_stat_activity`; an attestation flag does not perform this check. Do not proceed while an
+unidentified write transaction, prepared transaction, or restart policy remains active.
+
+Keep the MCP watchdog off for the entire window. Later, start only the isolated MCP service long
+enough to run the seven reindexes, then stop it again before verification and finalization.
+
+## 3. Take a full backup and prove its restore
+
+Take a complete PostgreSQL backup with the approved production backup procedure. Restore that
+exact backup into an isolated target with no production routing, then verify:
+
+- restore completion without ignored errors;
+- Alembic head `037`;
+- the expected schema, constraints, indexes, extensions, and table counts;
+- application invariants from the current disaster-recovery procedure.
+
+The restore test must use the same backup later designated for full recovery. A control snapshot
+is not a database backup: it omits plan contents, embeddings, and unrelated rows.
+
+Write a secret-free receipt that identifies the backup and successful restore test. The following
+shape is illustrative; use the real immutable backup and restore identifiers:
+
+```bash
+umask 077
+printf '%s\n' \
+  '{"version":1,"backup_id":"REPLACE","restore_test_id":"REPLACE","alembic_head":"037","status":"passed"}' \
+  > "$BACKUP_RECEIPT"
+chmod 0600 "$BACKUP_RECEIPT"
+BACKUP_RECEIPT_SHA256="$(sha256sum -- "$BACKUP_RECEIPT" | cut -d ' ' -f 1)"
+readonly BACKUP_RECEIPT_SHA256
+```
+
+Stop if the archive is incomplete, the restore target was not isolated, the restore was not
+tested, or the receipt cannot be tied to the tested backup.
+
+## 4. Inventory and approve the exact seven-project snapshot
+
+Inventory is read-only for PostgreSQL and writes one private local snapshot. The snapshot path
+must not exist before the command.
+
+```bash
+test ! -e "$SNAPSHOT" && test ! -L "$SNAPSHOT"
+uv run python scripts/repair_plan_index.py inventory \
+  --run-id "$RUN_ID" \
+  --manifest "$MANIFEST" \
+  --snapshot-output "$SNAPSHOT"
+test "$(stat -c '%a' -- "$SNAPSHOT")" = 600
+SNAPSHOT_SHA256="$(sha256sum -- "$SNAPSHOT" | cut -d ' ' -f 1)"
+readonly SNAPSHOT_SHA256
+```
+
+The command must return `status="snapshotted"` and `project_count=7`. Inspect counts without
+printing private paths or row identities:
+
+```bash
+jq '{
+  version,
+  alembic_revision,
+  project_count: (.contexts | length),
+  local_file_count: (.local_files | length),
+  indexed_plan_count: (.indexed_plans | length),
+  polluted_plan_count: (.polluted_plan_ids | length),
+  missing_canonical_count: (.missing_canonical_files | length),
+  collision_count: (.collisions | length)
+}' "$SNAPSHOT"
+
+jq -e '
+  .version == 1
+  and .alembic_revision == "039"
+  and (.contexts | length) == 7
+  and ([.contexts[].values.project_key] | sort) == [
+    "red-games", "red-gift", "red-phone", "red-quant",
+    "red-shrik", "red-viewer", "red-writer"
+  ]
+  and (.collisions | length) == 0
+' "$SNAPSHOT" >/dev/null
+
+EXPECTED_LOCAL_FILES="$(jq -er '.local_files | length' "$SNAPSHOT")"
+EXPECTED_POLLUTED="$(jq -er '.polluted_plan_ids | length' "$SNAPSHOT")"
+readonly EXPECTED_LOCAL_FILES EXPECTED_POLLUTED
+```
+
+Reconcile `local_file_count` with the current seven repositories. Historical ticket counts are
+not acceptance values. Stop on an unexpected file count, project, owner, hash, path, collision,
+database identity, schema revision, or context value. Have the operator approve the immutable
+snapshot digest before mutation.
+
+## 5. Apply canonical context paths
+
+Reconfirm that writers remain off, the tested backup remains available, and both private digests
+still match. Apply only the canonical `plan_scan_paths` and signed `updated_at` values:
+
+```bash
+test "$(sha256sum -- "$SNAPSHOT" | cut -d ' ' -f 1)" = "$SNAPSHOT_SHA256"
+test "$(sha256sum -- "$BACKUP_RECEIPT" | cut -d ' ' -f 1)" = "$BACKUP_RECEIPT_SHA256"
+
+uv run python scripts/repair_plan_index.py apply-paths \
+  --run-id "$RUN_ID" \
+  --snapshot "$SNAPSHOT" \
+  --snapshot-sha256 "$SNAPSHOT_SHA256" \
+  --backup-receipt "$BACKUP_RECEIPT" \
+  --backup-receipt-sha256 "$BACKUP_RECEIPT_SHA256" \
+  --postgres-restore-tested \
+  --writers-off-confirmed
+```
+
+The first successful application returns `status="applied"` and `affected_rows=7`. An exact
+idempotent replay may return `status="already_applied"` and `affected_rows=0`. Any other result or
+CAS conflict blocks deployment and reindexing.
+
+## 6. Keep the normal runtime unpublished
+
+Do not run the installer while repair mutations are incomplete. Start only the authorized,
+bounded maintenance MCP from the verified checkout for the seven calls below. Its unit override
+must disable automatic restart, set a bounded runtime, and keep Dream, graph jobs, automation,
+stdio clients, the watchdog service, and the watchdog timer stopped. Stop this MCP before
+verification. Section 11 publishes the normal runtime after finalization.
+
+## 7. Reindex one project at a time
+
+Invoke `brain_reindex_plans` in seven separate MCP calls, in this fixed order:
+
+```text
+brain_reindex_plans(project_key="red-games")
+brain_reindex_plans(project_key="red-gift")
+brain_reindex_plans(project_key="red-phone")
+brain_reindex_plans(project_key="red-quant")
+brain_reindex_plans(project_key="red-shrik")
+brain_reindex_plans(project_key="red-viewer")
+brain_reindex_plans(project_key="red-writer")
+```
+
+After each call, capture its exact `indexed`, `skipped`, `linked`, `errors`, and `chunks_created`
+counters. Stop immediately if `errors` is non-zero; do not run `finalize` after a partial or
+failed reindex.
+
+Create a private version-1 evidence file bound to the snapshot digest. It must contain exactly one
+object for each project above, with captured non-negative integer counters and `errors: 0`.
+
+```json
+{
+  "version": 1,
+  "snapshot_sha256": "REPLACE_WITH_SNAPSHOT_SHA256",
+  "projects": [
+    {"project_key":"red-games","indexed":0,"skipped":0,"linked":0,"errors":0,"chunks_created":0},
+    {"project_key":"red-gift","indexed":0,"skipped":0,"linked":0,"errors":0,"chunks_created":0},
+    {"project_key":"red-phone","indexed":0,"skipped":0,"linked":0,"errors":0,"chunks_created":0},
+    {"project_key":"red-quant","indexed":0,"skipped":0,"linked":0,"errors":0,"chunks_created":0},
+    {"project_key":"red-shrik","indexed":0,"skipped":0,"linked":0,"errors":0,"chunks_created":0},
+    {"project_key":"red-viewer","indexed":0,"skipped":0,"linked":0,"errors":0,"chunks_created":0},
+    {"project_key":"red-writer","indexed":0,"skipped":0,"linked":0,"errors":0,"chunks_created":0}
+  ]
+}
+```
+
+The zero counters above are placeholders, not expected results. Replace them with the exact seven
+tool results and replace the snapshot digest before saving. Then validate the closed schema:
+
+```bash
+chmod 0600 "$REINDEX_EVIDENCE"
+jq -e --arg snapshot "$SNAPSHOT_SHA256" '
+  .version == 1
+  and .snapshot_sha256 == $snapshot
+  and (.projects | length) == 7
+  and ([.projects[].project_key] | sort) == [
+    "red-games", "red-gift", "red-phone", "red-quant",
+    "red-shrik", "red-viewer", "red-writer"
+  ]
+  and all(.projects[];
+    .errors == 0
+    and all([.indexed, .skipped, .linked, .errors, .chunks_created][];
+      type == "number" and . >= 0 and floor == .
+    )
+  )
+' "$REINDEX_EVIDENCE" >/dev/null
+REINDEX_EVIDENCE_SHA256="$(sha256sum -- "$REINDEX_EVIDENCE" | cut -d ' ' -f 1)"
+readonly REINDEX_EVIDENCE_SHA256
+```
+
+Stop MCP again after the seventh result, then reconfirm every writer is off before continuing:
+
+```bash
+systemctl --user stop brain-mcp-http.service
+test "$(systemctl --user show -p ActiveState --value brain-mcp-http.service)" = inactive
+```
+
+## 8. Verify the canonical corpus
+
+Verification is read-only for PostgreSQL and writes one private report. It recomputes local file
+hashes and checks canonical ownership, paths, hashes, chunks, links, polluted-row stability, and
+the target database identity.
+
+```bash
+test ! -e "$VERIFICATION_REPORT" && test ! -L "$VERIFICATION_REPORT"
+uv run python scripts/repair_plan_index.py verify \
+  --run-id "$RUN_ID" \
+  --snapshot "$SNAPSHOT" \
+  --snapshot-sha256 "$SNAPSHOT_SHA256" \
+  --reindex-evidence "$REINDEX_EVIDENCE" \
+  --reindex-evidence-sha256 "$REINDEX_EVIDENCE_SHA256" \
+  --verification-output "$VERIFICATION_REPORT"
+test "$(stat -c '%a' -- "$VERIFICATION_REPORT")" = 600
+VERIFICATION_REPORT_SHA256="$(sha256sum -- "$VERIFICATION_REPORT" | cut -d ' ' -f 1)"
+readonly VERIFICATION_REPORT_SHA256
+```
+
+Require `status="verified"`, `canonical_plan_count=$EXPECTED_LOCAL_FILES`, and
+`polluted_plan_count=$EXPECTED_POLLUTED`. Confirm the report contains one canonical row per local
+file:
+
+```bash
+jq -e --argjson expected "$EXPECTED_LOCAL_FILES" '
+  .version == 1
+  and (.canonical_plans | length) == $expected
+  and (.evidence.projects | length) == 7
+  and all(.evidence.projects[]; .errors == 0)
+' "$VERIFICATION_REPORT" >/dev/null
+```
+
+Any mismatch blocks finalization.
+
+## 9. Finalize exact polluted rows
+
+Reconfirm writers-off state and every digest. Finalization deletes feature links for the exact
+snapshotted polluted plan IDs, then those exact plan rows; plan chunks delete through the existing
+foreign-key cascade. The transaction rejects any count or CAS drift.
+
+```bash
+FINALIZE_RESULT="$EVIDENCE_DIR/finalize-result.json"
+test ! -e "$FINALIZE_RESULT" && test ! -L "$FINALIZE_RESULT"
+umask 077
+uv run python scripts/repair_plan_index.py finalize \
+  --run-id "$RUN_ID" \
+  --snapshot "$SNAPSHOT" \
+  --snapshot-sha256 "$SNAPSHOT_SHA256" \
+  --backup-receipt "$BACKUP_RECEIPT" \
+  --backup-receipt-sha256 "$BACKUP_RECEIPT_SHA256" \
+  --postgres-restore-tested \
+  --writers-off-confirmed \
+  --verification-report "$VERIFICATION_REPORT" \
+  --verification-report-sha256 "$VERIFICATION_REPORT_SHA256" \
+  > "$FINALIZE_RESULT"
+chmod 0600 "$FINALIZE_RESULT"
+jq -e --argjson expected "$EXPECTED_POLLUTED" '
+  .status == "finalized" and .affected_rows == $expected
+' "$FINALIZE_RESULT" >/dev/null
+```
+
+Do not retry blindly after an operational error. Preserve every artifact and investigate the
+masked error type and database transaction state first.
+
+## 10. Validate exact post-finalize counts
+
+Run a new read-only inventory into a new file. Do not overwrite the original snapshot.
+
+```bash
+POST_RUN_ID="$(uv run python -c 'from uuid import uuid4; print(uuid4())')"
+POST_SNAPSHOT="$EVIDENCE_DIR/post-finalize-snapshot.json"
+test ! -e "$POST_SNAPSHOT" && test ! -L "$POST_SNAPSHOT"
+uv run python scripts/repair_plan_index.py inventory \
+  --run-id "$POST_RUN_ID" \
+  --manifest "$MANIFEST" \
+  --snapshot-output "$POST_SNAPSHOT"
+
+jq -e --argjson expected "$EXPECTED_LOCAL_FILES" '
+  .version == 1
+  and .alembic_revision == "039"
+  and (.contexts | length) == 7
+  and all(.contexts[]; .values.plan_scan_paths == .proposed_plan_scan_paths)
+  and (.local_files | length) == $expected
+  and (.indexed_plans | length) == $expected
+  and (.polluted_plan_ids | length) == 0
+  and (.missing_canonical_files | length) == 0
+  and (.collisions | length) == 0
+  and all(.indexed_plans[]; .declared_chunk_count == .observed_chunk_count)
+' "$POST_SNAPSHOT" >/dev/null
+```
+
+These are the exact acceptance counts: seven canonical contexts, one correctly owned indexed row
+per current local file, no polluted row, no missing canonical file, no collision, and matching
+declared/observed chunk counts. Retain the finalizer result as the exact deleted-plan count; the
+finalizer has already required exact feature-link and plan deletion row counts in one transaction.
+Do not reopen writers until an operator reviews and signs off all evidence.
+
+## 11. Publish the normal runtime last
+
+Keep all writers stopped. Validate the installer and render the MCP units into a private directory
+outside systemd. Inspect that artefact before explicitly authorizing its bounded live publication:
+
+```bash
+set -euo pipefail
+TMPDIR="${TMPDIR:-/tmp}"
+render_parent="$(mktemp -d "$TMPDIR/systemd-render.XXXXXX")"
+render_dir="$render_parent/units"
+trap 'rm -rf -- "$render_parent"' EXIT
+chmod 0700 "$render_parent"
+test ! -e "$render_dir" && test ! -L "$render_dir"
+
+./deploy/systemd/install.sh --check-only
+./deploy/systemd/install.sh --render-dir "$render_dir"
+test -d "$render_dir" && test ! -L "$render_dir"
+for unit in \
+  brain-mcp-http.service \
+  brain-mcp-http-watchdog.service \
+  brain-mcp-http-watchdog.timer; do
+  test -f "$render_dir/$unit"
+done
+```
+
+`--render-dir` only creates a private artifact; it never publishes live. After the inspection,
+run the [canonical MCP publication preflight](../deploy/systemd/MCP_HTTP_RUNBOOK.md#preflight)
+code block exactly as written, from `set -euo pipefail` through both `systemctl --user show`
+commands. That explicit live operation repeats the non-publishing render, neutralizes the watchdog,
+backs up the existing units, atomically publishes only `brain-mcp-http.service`,
+`brain-mcp-http-watchdog.service`, and `brain-mcp-http-watchdog.timer`, then reloads and verifies
+systemd. Do not run `daemon-reload` or restart the service before that block succeeds.
+
+Only after the canonical publication preflight succeeds, start the normal MCP service:
+
+```bash
+systemctl --user restart brain-mcp-http.service
+systemctl --user is-active brain-mcp-http.service
+curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8765/health >/dev/null
+```
+
+Make one read-only MCP call and confirm it targets the expected database. Run the watchdog one-shot
+check, then enable its timer as the final activation. Do not start Dream, graph, or other writers
+until the operator has accepted every repair and recovery artifact.
+
+## Rollback before finalization
+
+Before `finalize` succeeds, the bounded rollback restores the seven original `plan_scan_paths` and
+`updated_at` values, then removes only canonical rows proven to have been created by this repair.
+Stop writers and use the original snapshot and backup proof:
+
+```bash
+uv run python scripts/repair_plan_index.py rollback-before-finalize \
+  --run-id "$RUN_ID" \
+  --snapshot "$SNAPSHOT" \
+  --snapshot-sha256 "$SNAPSHOT_SHA256" \
+  --backup-receipt "$BACKUP_RECEIPT" \
+  --backup-receipt-sha256 "$BACKUP_RECEIPT_SHA256" \
+  --postgres-restore-tested \
+  --writers-off-confirmed
+```
+
+Accept only `rolled_back` or an exact idempotent `already_rolled_back`. Re-inventory into a new
+private file and compare the seven contexts and original plan set with the control snapshot before
+reopening any writer.
+
+## Recovery after finalization
+
+After `finalize`, in-place repair rollback is forbidden. The control snapshot cannot reconstruct
+deleted contents or embeddings. Restore the complete PostgreSQL database from the exact tested
+custom-format backup named by the receipt.
+
+Keep every writer, MCP process, pooler, and watchdog off. Gate every captured application login
+role with `NOLOGIN`, terminate its target backends, and prove that fresh application connections
+fail while the distinct maintenance login remains usable. Verify that `pg_restore --list` exposes
+one nonempty `dbname` header equal to the signed production database name. The maintenance service
+must target the same cluster and a different maintenance database; never accept an operator-typed
+database name as authority.
+
+Run the bounded restore through that maintenance service so the archive recreates its own database
+and database-level attributes:
+
+```bash
+set -euo pipefail
+PGSERVICE_PRODUCTION_MAINTENANCE=REPLACE_WITH_APPROVED_MAINTENANCE_SERVICE
+BACKUP_ARCHIVE=/ABSOLUTE/PATH/TO/THE/TESTED/FULL-BACKUP.dump
+readonly PGSERVICE_PRODUCTION_MAINTENANCE BACKUP_ARCHIVE
+timeout -s KILL 30m pg_restore \
+  --exit-on-error --clean --create \
+  --dbname="service=$PGSERVICE_PRODUCTION_MAINTENANCE" \
+  "$BACKUP_ARCHIVE"
+```
+
+On any restore or validation failure, leave application roles `NOLOGIN`, quarantine the target,
+and keep every writer off. After a successful restore, use the gated maintenance-to-target service
+to prove the recreated database fingerprint, catalog, and head `037`. Upgrade that same target to
+038 then 039, run `brain-v42-v4.sql`, and retain a new live 25/25 result and provenance bundle.
+Only then restore the captured login flags, reopen the database, start the normal revision-039 MCP,
+pass health and read-only canaries, and enable the watchdog timer last.
+
+This is a full-database restore, not a selective table, row, plan, link, or chunk repair. Preserve
+the failed repair evidence and the restore evidence; never replace the tested backup with a new,
+post-failure backup.

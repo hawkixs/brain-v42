@@ -1,0 +1,12 @@
+[Unit]
+Description=brain-v42 embedding-backfill recovery cadence
+Documentation=file:///home/hawixs/hawkixs_infra/git_repo/brain_v42/docs/runbooks/2026-08-01-dream-extract-recovery-canary.md
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+RandomizedDelaySec=120
+Unit=brain-v42-embedding-backfill.service
+
+[Install]
+WantedBy=timers.target

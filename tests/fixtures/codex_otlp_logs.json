@@ -1,0 +1,117 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "deployment.secret",
+            "value": {"stringValue": "SENSITIVE_RESOURCE_SENTINEL"}
+          }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": {"name": "codex", "version": "0.synthetic"},
+          "logRecords": [
+            {
+              "timeUnixNano": "1000000000000000001",
+              "body": {"stringValue": "SENSITIVE_BODY_SENTINEL"},
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {"stringValue": "codex.conversation_starts"}
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {"stringValue": "12345678-1234-4abc-8def-1234567890ab"}
+                },
+                {"key": "model", "value": {"stringValue": "gpt-5.4"}},
+                {
+                  "key": "user.email",
+                  "value": {"stringValue": "SENSITIVE_EMAIL_SENTINEL@example.test"}
+                },
+                {
+                  "key": "user.account_id",
+                  "value": {"stringValue": "SENSITIVE_ACCOUNT_SENTINEL"}
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1000000000000000002",
+              "body": {"stringValue": "ignored user prompt body"},
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {"stringValue": "codex.user_prompt"}
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {"stringValue": "12345678-1234-4abc-8def-1234567890ab"}
+                },
+                {"key": "model", "value": {"stringValue": "gpt-5.4"}},
+                {
+                  "key": "prompt",
+                  "value": {"stringValue": "SENSITIVE_PROMPT_SENTINEL"}
+                },
+                {
+                  "key": "mcp_servers",
+                  "value": {
+                    "arrayValue": {
+                      "values": [
+                        {"stringValue": "SENSITIVE_MCP_SENTINEL"}
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1000000000000000400",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {"stringValue": "codex.sse_event"}
+                },
+                {
+                  "key": "event.kind",
+                  "value": {"stringValue": "response.completed"}
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {"stringValue": "12345678-1234-4abc-8def-1234567890ab"}
+                },
+                {"key": "model", "value": {"stringValue": "gpt-5.4"}},
+                {
+                  "key": "input_token_count",
+                  "value": {"stringValue": "1234"}
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1000000000000000300",
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {"stringValue": "codex.websocket_event"}
+                },
+                {
+                  "key": "event.kind",
+                  "value": {"stringValue": "response.completed"}
+                },
+                {
+                  "key": "conversation.id",
+                  "value": {"stringValue": "12345678-1234-4abc-8def-1234567890ab"}
+                },
+                {"key": "model", "value": {"stringValue": "gpt-5.4"}},
+                {
+                  "key": "input_token_count",
+                  "value": {"intValue": 999}
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

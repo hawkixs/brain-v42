@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "brain-v42": {
+      "type": "http",
+      "url": "http://127.0.0.1:8765/mcp",
+      "headers": {
+        "X-Brain-Agent": "brain-v42",
+        "Authorization": "Bearer ${MCP_HTTP_TOKEN}"
+      }
+    }
+  }
+}

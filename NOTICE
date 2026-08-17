@@ -1,0 +1,74 @@
+brain_v42
+Copyright 2026 Hawixs
+
+This product includes software developed by Hawixs, licensed under the
+Apache License, Version 2.0. See the LICENSE file.
+
+
+================================================================================
+MODEL WEIGHTS ARE NOT COVERED BY THE LICENSE ABOVE
+================================================================================
+
+The Apache-2.0 license in LICENSE covers the SOURCE CODE of this repository.
+It does NOT cover machine-learning model weights.
+
+No model weights are stored in, or distributed by, this repository. Every model
+is downloaded from its upstream host at build time, by the operator, on the
+machine where it will run. That is deliberate: it means whoever builds accepts
+each model's terms directly from its publisher, rather than receiving a
+redistribution from us.
+
+If you ever change that — by committing weights, by attaching them to a release,
+or by pushing an image that bakes them in — you become a redistributor and the
+obligations below become yours to satisfy. Do not do it without reading them.
+
+The following was measured on 2026-08-14 and is accurate as of that date only.
+Model licenses change. Re-check before you redistribute anything.
+
+--------------------------------------------------------------------------------
+Qodo/Qodo-Embed-1-1.5B — PRODUCTION EMBEDDING MODEL
+  License: QodoAI-Open-RAIL-M (Hugging Face declares `license: other`,
+           `license_name: qodoai-open-rail-m`)
+  https://huggingface.co/Qodo/Qodo-Embed-1-1.5B
+
+  This is NOT a permissive license. It is a RAIL license: it carries USE-BASED
+  RESTRICTIONS, listed as fifteen prohibitions in its Attachment A, covering
+  among others medical advice and use in the administration of justice or law
+  enforcement.
+
+  Two obligations attach to anyone who distributes the model or a derivative:
+    - §5.a — the use restrictions must be included as an enforceable provision
+      in any legal agreement governing the work, and passed on to subsequent
+      users.
+    - §5.b — third-party recipients must be given a copy of the license.
+
+  The GGUF Q8_0 file produced by scripts/embedding_gguf_build.sh is a DERIVATIVE
+  of this model. It is built locally and never leaves the machine that built it.
+  Keep it that way, or satisfy §5.a and §5.b yourself.
+
+--------------------------------------------------------------------------------
+Xenova/ms-marco-MiniLM-L-6-v2 — RERANKER (ONNX, baked into the shim image)
+  License: NONE DECLARED as of 2026-08-14.
+  https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2
+
+  UNRESOLVED. The Hugging Face API returns no license field for this repository.
+  The ONNX export is baked into services/embedding_shim at image build time, so
+  publishing that image would redistribute weights whose terms we cannot state.
+
+  This must be resolved before any public image push: either obtain the terms
+  from the publisher, or re-export from an upstream whose license is declared.
+  It is not a blocker for running the stack yourself.
+
+--------------------------------------------------------------------------------
+bench/embedding_v1 — BENCHMARK ONLY, NOT PART OF THE RUNTIME
+  jinaai/jina-embeddings-v3 — CC-BY-NC-4.0. NON-COMMERCIAL. The benchmark
+    compose file downloads and runs this model. Do not carry any part of it into
+    a commercial deployment.
+  Qwen/Qwen3-Embedding-4B-GGUF — Apache-2.0.
+
+--------------------------------------------------------------------------------
+Python dependencies
+  The runtime dependency closure was measured on 2026-08-14 across 138 installed
+  distributions: MIT, Apache-2.0, BSD-2/3-Clause, ISC, PSF and MPL-2.0. No strong
+  copyleft (GPL/LGPL/AGPL) is present on the import path of brain_v42.
+  Each dependency remains under its own license; see its distribution metadata.

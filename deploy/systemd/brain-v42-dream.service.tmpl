@@ -1,0 +1,74 @@
+[Unit]
+Description=brain-v42 Dream Mode — nightly knowledge consolidation
+Documentation=file://__REPO_ROOT__/.specs/plans/dream-codex-agent-migration.design.md
+Documentation=file://__REPO_ROOT__/docs/superpowers/specs/2026-04-05-dream-mode-design.md
+
+[Service]
+Type=oneshot
+
+# Repo root is injected by deploy/systemd/install.sh from the template.
+WorkingDirectory=__REPO_ROOT__
+
+# Required by the isolated Codex runner. Keep the bearer in a 0600 file; never
+# inline it in the unit or Codex config.
+EnvironmentFile=%h/.config/brain-v42/mcp-token.env
+
+# JSONL MCP results can contain full Brain records. Keep all Dream logs private.
+UMask=0077
+NoNewPrivileges=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+# The HTTP server is independently operator-managed and must already be active.
+# Wait up to 30s for its auth-exempt health route, then fail before rendering a
+# prompt or starting any maintenance.
+ExecStartPre=/bin/bash -lc 'url="$${BRAIN_DREAM_MCP_URL:-http://127.0.0.1:8765/mcp}"; health="$${url%%/mcp}/health"; for attempt in {1..15}; do curl -fsS -m 1 "$$health" >/dev/null && exit 0; sleep 1; done; echo "Brain MCP readiness failed: $$health" >&2; exit 1'
+
+# Login shell (-l) so ~/.profile, Codex/uv PATH, and the same user's ChatGPT
+# authentication cache match the interactive environment.
+ExecStart=/bin/bash -lc '__REPO_ROOT__/scripts/dream.sh brain-v42'
+
+# Log everything to the journal — inspect with:
+#   journalctl --user -u brain-v42-dream.service -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=brain-v42-dream
+
+# Calé sur la borne (b) de la spec pool §4.3 — le plafond CONFIGURÉ, pas la
+# moyenne mesurée : systemd tue à la borne. Pour un pool de 10 projets :
+#
+#   10 × 53 min (les six phases agent)   = 530
+#    2 × 15 min (allocation de retries)  =  30
+#        35 min (extract 10 + roadmap 20 + sweep 5, une seule fois) = 35
+#                                          ---
+#                                          595 min = 35 700 s
+#
+# Arrondi à 36 000 s (10 h). Très au-dessus de la mesure — 80 min de moyenne et
+# 126,6 min de p90 à huit projets — et c'est assumé : un plafond sert au pire
+# cas. Corollaire à ne pas oublier : TimeoutStartSec cesse d'être un garde-fou
+# PRATIQUE. C'est le p90 qu'il faut surveiller, pas la couleur de l'unité.
+#
+# Cette valeur vit ICI et pas dans l'unité vivante. install.sh régénère l'unité
+# depuis ce template, et son garde-fou n'avertit que sur les lignes
+# `Environment=` ajoutées à la main — TimeoutStartSec n'en est pas une. Un
+# plafond relevé à la main dans ~/.config/systemd/user/ serait donc réécrit à la
+# prochaine réinstallation, sans un mot, et la nuit suivante mourrait à 180 min
+# au milieu du quatrième projet. Jumeau de l'incident du 2026-06-30.
+#
+# Dérivée et vérifiée par tests/unit/test_dream_systemd_timeout_covers_the_pool.py,
+# qui relit les vrais timeouts de dream.sh : relever une phase sans relever ce
+# plafond échoue en CI.
+TimeoutStartSec=36000
+
+# Be polite: backups / other nightly jobs share the same host.
+Nice=10
+IOSchedulingClass=idle
+
+# Concurrency: oneshot services cannot overlap themselves. If a run is
+# still in-flight when the next 06:00 fires, systemd will skip the new
+# trigger rather than queue or kill.
+
+[Install]
+WantedBy=default.target

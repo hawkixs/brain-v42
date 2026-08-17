@@ -1,0 +1,36 @@
+[project]
+name = "brain-v42-services"
+version = "0.1.0"
+description = """\
+Standalone, Docker-deployed GPU embedding services for brain_v42 \
+(embedding, embedding_qodo, embedding_shim, embedding_supervisor). \
+Each subfolder ships its own container image with its own pinned \
+dependencies and, in embedding_qodo's case, its own Python runtime -- \
+this project does not build one importable distribution out of them.\
+"""
+requires-python = ">=3.12"
+license = "Apache-2.0"
+
+# Dependencies needed to exercise these services OUTSIDE their containers
+# (local dev iteration, tests/unit/test_embedding_shim.py,
+# tests/unit/services/embedding_supervisor/). Each container installs its
+# OWN pinned versions at build time (see the respective Dockerfile /
+# requirements.lock) -- this list documents dev-time imports only, it is
+# never `pip install`ed by the container build.
+dependencies = [
+    "starlette>=1.0.1",
+    "anyio",
+    "httpx>=0.27",
+    "aiohttp>=3.9",
+    "docker>=7.1,<8",
+]
+
+# Deliberately no [build-system]/wheel target: nothing here is meant to be
+# `pip install`ed as one package. embedding_shim/main.py and
+# embedding/main.py are run directly (`python main.py`, matching each
+# Dockerfile's CMD) with flat sibling imports, not package-relative ones --
+# forcing them into an installable "services" package would change how they
+# import each other for no deployment benefit, since the actual runtime is
+# always a container built from the individual Dockerfile, never this
+# pyproject.toml. This file exists so services/ has its own declared
+# dev/test dependency set instead of borrowing the root project's.

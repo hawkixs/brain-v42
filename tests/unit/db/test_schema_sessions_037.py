@@ -1,0 +1,73 @@
+"""RED contracts for the persistent session lifecycle v4 schema."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import sqlalchemy as sa
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def test_session_v4_columns_and_artifact_ledger_are_declared() -> None:
+    from brain_v42.db import tables
+
+    assert {
+        "last_heartbeat_at",
+        "end_expected_focus_revision",
+        "focus_outcome",
+        "focus_at_end",
+        "focus_revision_at_end",
+    } <= set(tables.brain_sessions.c.keys())
+
+    ledger = tables.brain_session_artifacts
+    assert set(ledger.c.keys()) == {
+        "knowledge_id",
+        "session_id",
+        "knowledge_type",
+        "captured_at",
+    }
+    assert ledger.c.knowledge_id.primary_key is True
+    session_fk = next(iter(ledger.c.session_id.foreign_keys))
+    assert session_fk.column.table.name == "brain_sessions"
+    assert session_fk.ondelete == "CASCADE"
+
+    check_names = {
+        constraint.name
+        for constraint in ledger.constraints
+        if isinstance(constraint, sa.CheckConstraint)
+    }
+    assert "brain_session_artifacts_type_valid" in check_names
+    assert "idx_brain_session_artifacts_session_captured" in {
+        index.name for index in ledger.indexes
+    }
+
+
+def test_migration_037_extends_036_and_is_reversible() -> None:
+    migration = PROJECT_ROOT / "alembic" / "versions" / "037_session_lifecycle_v4.py"
+
+    assert migration.is_file()
+    source = migration.read_text(encoding="utf-8")
+    assert 'revision = "037"' in source
+    assert 'down_revision = "036"' in source
+    assert "CREATE TABLE brain_session_artifacts" in source
+    assert "ADD COLUMN last_heartbeat_at" in source
+    assert "ADD COLUMN focus_outcome" in source
+    assert "COUNT(DISTINCT existing_session.id) > 1" in source
+    assert "SELECT DISTINCT" in source
+    assert "focus_revision_at_end = end_expected_focus_revision + 1" in source
+    assert "focus_revision_at_end <> end_expected_focus_revision" in source
+    assert "DROP TABLE IF EXISTS brain_session_artifacts" in source
+    assert "DROP COLUMN IF EXISTS last_heartbeat_at" in source
+
+
+def test_migration_037_downgrade_refuses_lossy_v4_state() -> None:
+    migration = PROJECT_ROOT / "alembic" / "versions" / "037_session_lifecycle_v4.py"
+
+    source = migration.read_text(encoding="utf-8")
+
+    assert "cannot downgrade session lifecycle v4 with unsnapshotted artifacts" in source
+    assert "cannot downgrade session lifecycle v4 with conflicted focus outcomes" in source
+    assert source.index("cannot downgrade session lifecycle v4") < source.index(
+        "DROP TABLE IF EXISTS brain_session_artifacts"
+    )

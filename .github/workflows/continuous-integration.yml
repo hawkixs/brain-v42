@@ -1,0 +1,330 @@
+# brain_v42 - GitHub Actions, integration rail (ADR #4).
+#
+# Pull requests gate here, on GitHub-hosted runners only, so they stay verifiable
+# while the on-demand red-github-runner-brain-v42 is stopped. Nothing in this file
+# may target [self-hosted, Linux, X64, red-ci]: that runner receives the registry
+# credentials on main and must never execute pull-request code.
+#
+# This rail mirrors .gitlab-ci.yml job for job, minus build:docker which belongs to
+# continuous-delivery.yml. Both CI systems run in parallel during the migration;
+# tests/unit/test_github_workflows.py holds the parity.
+
+name: Continuous integration
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.10.7"
+  BRAIN_LOG_LEVEL: "WARNING"
+
+jobs:
+  lint-ruff:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: pip install "uv==$UV_VERSION"
+      - name: Install dependencies
+        run: uv sync --locked --no-dev --extra dev
+      - name: Check lint
+        run: .venv/bin/ruff check . --output-format=github
+      - name: Check formatting
+        run: .venv/bin/ruff format --check .
+
+  lint-mypy:
+    # Blocking: mypy is clean. allow_failure let type errors silently drift 0->20
+    # between 2026-03 and 2026-05 (brain learning b5256bc1).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: pip install "uv==$UV_VERSION"
+      - name: Install dependencies
+        run: uv sync --locked --no-dev --extra dev
+      - name: Check types
+        run: .venv/bin/mypy src/
+
+  # tests/unit/ is not database-free: eight of its files opt into a real PostgreSQL
+  # through require_test_db_url() (tests/conftest.py) and skip when
+  # BRAIN_V42_TEST_DB_URL is unset. Only test-integration carried it, so those
+  # tests had never run here either — a skip is green, so nothing reported the hole.
+  # Count measured 2026-08-10: 51 tests unlock, not the 45 first recorded here.
+  test-unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      # Same topology note as test-integration: reached over the mapped port,
+      # because without a job container the runner is not on the service network.
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
+        env:
+          POSTGRES_DB: brain_test
+          POSTGRES_USER: brain
+          POSTGRES_PASSWORD: brain
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U brain -d brain_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # POSTGRES_URL takes priority in conftest; brain_test (never 'brain') passes
+      # the prod-guard.
+      POSTGRES_URL: "postgresql+asyncpg://brain:brain@localhost:5432/brain_test"
+      BRAIN_V42_TEST_DB_URL: "postgresql+asyncpg://brain:brain@localhost:5432/brain_test"
+      GRAPH_ENABLED: "false"
+      # The GPU embedding/reranker services are absent in CI; the tests that hit
+      # localhost:8003 carry their own pytest.skip guard.
+      EMBEDDING_SERVICE_URL: "http://localhost:8003"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: pip install "uv==$UV_VERSION"
+      - name: Install dependencies
+        run: uv sync --locked --no-dev --extra dev
+      # tests/unit/ has no equivalent of the run_migrations fixture that
+      # tests/integration/conftest.py runs once per session, so the schema is
+      # applied here; a bare pgvector database makes the DB-backed tests fail on
+      # missing relations instead of skipping. The console script, not
+      # `python -m alembic`: check_container_image_pins.py is fail-closed on
+      # `python -m <module>` in CI and refuses the workflow.
+      - name: Apply the schema to the test database
+        run: .venv/bin/alembic upgrade head
+      - name: Check module layering
+        run: .venv/bin/python scripts/check_module_layering.py --package src/brain_v42
+      - name: Check container image pins
+        run: .venv/bin/python scripts/check_container_image_pins.py
+      - name: Run unit tests
+        run: .venv/bin/pytest tests/unit/ -v --tb=short
+
+  # `Settings()` exige POSTGRES_URL — la variable suffit, le test lit un réglage
+  # et ne se connecte pas. Pas de service ni de BRAIN_V42_TEST_DB_URL ici : les 51
+  # tests adossés à une base ne passent pas dans le Postgres de la CI (ticket).
+  test-coverage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      POSTGRES_URL: "postgresql+asyncpg://brain:brain@localhost:5432/brain_test"
+      GRAPH_ENABLED: "false"
+      EMBEDDING_SERVICE_URL: "http://localhost:8003"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: pip install "uv==$UV_VERSION"
+      - name: Install dependencies
+        run: uv sync --locked --no-dev --extra dev
+      - name: Measure coverage
+        run: >-
+          .venv/bin/pytest tests/unit/ --cov=brain_v42 --cov-report=term-missing
+          --cov-report=xml:coverage.xml --cov-fail-under=60
+      - name: Keep the coverage report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: coverage.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  test-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      # Reached over the mapped port: without a job container, GitHub does not put
+      # the runner on the service network, so the GitLab `alias: postgres` host has
+      # no equivalent here.
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
+        env:
+          POSTGRES_DB: brain_test
+          POSTGRES_USER: brain
+          POSTGRES_PASSWORD: brain
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U brain -d brain_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # POSTGRES_URL takes priority in conftest; brain_test (never 'brain') passes
+      # the prod-guard.
+      POSTGRES_URL: "postgresql+asyncpg://brain:brain@localhost:5432/brain_test"
+      BRAIN_V42_TEST_DB_URL: "postgresql+asyncpg://brain:brain@localhost:5432/brain_test"
+      GRAPH_ENABLED: "false"
+      # The GPU embedding/reranker services are absent in CI; the tests that hit
+      # localhost:8003 carry their own pytest.skip guard.
+      EMBEDDING_SERVICE_URL: "http://localhost:8003"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: pip install "uv==$UV_VERSION"
+      - name: Install dependencies
+        run: uv sync --locked --no-dev --extra dev
+      - name: Run integration tests
+        run: .venv/bin/pytest tests/integration/ -v --tb=short
+
+  # Dependency vulnerabilities. Audits the exported lock rather than the live venv,
+  # so the scan covers exactly the graph that ships and stays reproducible. Every
+  # run queries the live PyPI advisory service with no offline fallback; a bounded
+  # timeout and --strict make outages fail closed.
+  security-pip-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Tolerated until SECURITY_BURN_IN_UNTIL in .gitlab-ci.yml; flipping this to
+    # blocking is an operator decision, taken on both rails at once.
+    continue-on-error: true
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: pip install "uv==$UV_VERSION"
+      - name: Install dependencies
+        run: uv sync --locked --no-dev --extra dev
+      - name: Export the audited lock
+        run: >-
+          uv export --locked --no-dev --extra dev --format requirements-txt
+          --no-emit-project -o requirements-audit.txt
+      - name: Audit dependencies
+        run: >-
+          .venv/bin/pip-audit -r requirements-audit.txt --require-hashes --disable-pip
+          --vulnerability-service pypi --timeout 15 --strict --progress-spinner=off
+
+  # The embedding supervisor has its own declared dependency graph. Recompile it in
+  # CI and compare byte-for-byte so the image and scan never drift from its
+  # committed, hash-complete lock. This job is deliberately blocking.
+  security-pip-audit-embedding-supervisor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: pip install "uv==$UV_VERSION"
+      - name: Install dependencies
+        run: uv sync --locked --no-dev --extra dev
+      - name: Recompile the supervisor lock
+        run: >-
+          uv pip compile --python-version 3.12 --python-platform x86_64-manylinux_2_28
+          --resolution highest --generate-hashes --default-index https://pypi.org/simple
+          --custom-compile-command "uv pip compile --python-version 3.12 --python-platform x86_64-manylinux_2_28 --resolution highest --generate-hashes --default-index https://pypi.org/simple services/embedding_supervisor/requirements.txt -o services/embedding_supervisor/requirements.lock"
+          services/embedding_supervisor/requirements.txt
+          -o requirements-embedding-supervisor.generated.lock
+      - name: Compare with the committed lock
+        run: >-
+          cmp --silent services/embedding_supervisor/requirements.lock
+          requirements-embedding-supervisor.generated.lock
+      - name: Audit the supervisor lock
+        run: >-
+          .venv/bin/pip-audit -r services/embedding_supervisor/requirements.lock
+          --require-hashes --disable-pip --vulnerability-service pypi --timeout 15
+          --strict --progress-spinner=off
+
+  # SAST. -ll reports medium severity and above; the low band is dominated by
+  # assert_used/subprocess noise that would bury the findings worth reading.
+  security-bandit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Tolerated until SECURITY_BURN_IN_UNTIL in .gitlab-ci.yml.
+    continue-on-error: true
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: pip install "uv==$UV_VERSION"
+      - name: Install dependencies
+        run: uv sync --locked --no-dev --extra dev
+      - name: Scan sources
+        run: .venv/bin/bandit -ll -r src/
+
+  # Secret scanning. `dir` scans the checked-out tree: gitleaks 8.30 dropped the
+  # `detect` subcommand, and a filesystem scan is correct under the shallow clone
+  # CI uses, where a history scan would silently cover only the last commits.
+  security-gitleaks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Tolerated until SECURITY_BURN_IN_UNTIL in .gitlab-ci.yml.
+    continue-on-error: true
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Scan for secrets
+        run: >-
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo"
+          zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          dir /repo --no-banner --redact --exit-code 1 --report-format sarif
+          --report-path /repo/gitleaks.sarif
+      - name: Keep the gitleaks report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gitleaks-${{ github.run_id }}-${{ github.run_attempt }}
+          path: gitleaks.sarif
+          if-no-files-found: ignore
+          retention-days: 7

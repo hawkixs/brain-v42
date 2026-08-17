@@ -1,0 +1,9 @@
+[Unit]
+Description=brain-v42 MCP HTTP /health watchdog (30s)
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=30
+
+[Install]
+WantedBy=timers.target

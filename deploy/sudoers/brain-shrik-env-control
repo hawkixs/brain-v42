@@ -1,0 +1,6 @@
+# Fixed Brain credential-cutover boundary. The root-owned helper rejects every other action.
+hawixs ALL=(root) NOPASSWD: /usr/local/sbin/brain-shrik-env-control --check
+hawixs ALL=(root) NOPASSWD: /usr/local/sbin/brain-shrik-env-control --publish
+hawixs ALL=(root) NOPASSWD: /usr/local/sbin/brain-shrik-env-control --stop
+hawixs ALL=(root) NOPASSWD: /usr/local/sbin/brain-shrik-env-control --start
+hawixs ALL=(root) NOPASSWD: /usr/local/sbin/brain-shrik-env-control --is-active

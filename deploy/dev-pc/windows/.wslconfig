@@ -1,0 +1,29 @@
+# brain-v42 — dev-pc WSL2 global config (headless embedding re-platform, plan Task 5)
+#
+# WHAT THIS DOES
+#   Disables the WSL2 idle reaper so the Ubuntu-24.04 VM (running native
+#   docker-ce + the always-on systemd keepalive unit) is NEVER torn down for
+#   being idle. Without this, WSL reaps an idle distro after ~8s, killing
+#   systemd + docker + the embedding supervisor — i.e. :8003 dies on the dev-pc.
+#
+# WHAT THIS DELIBERATELY DOES NOT DO
+#   It does NOT set networkingMode. We stay on the default NAT mode on purpose
+#   (judge C5 / spec §5.4): mirrored networking is known to silently fail to
+#   bind container-published ports (WSL #10494/#10683/#13868), and flipping it
+#   here is a GLOBAL change that would also reshape the docker-desktop distro
+#   and the box's existing :8001/:9100 services. LAN exposure of :8003 is
+#   instead provided by a boot-time `netsh portproxy` refresh in boot.ps1.
+#   --> Do NOT add `networkingMode=mirrored` to this file.
+#
+# INSTALL (operator, on the Windows dev-pc 192.168.1.11)
+#   1. Copy this file to:  C:\Users\arman\.wslconfig
+#   2. Apply it:           wsl --shutdown
+#      (a full `wsl --shutdown` is required — WSL only re-reads .wslconfig when
+#       the VM next starts; note it also bounces Docker Desktop, harmless here
+#       since the next step is a no-login reboot.)
+
+[wsl2]
+# -1 = never reap the VM for idleness (keepalive holds it; this is the belt
+# to the keepalive unit's suspenders). Any positive value re-introduces the
+# idle-reap fault this migration exists to fix.
+vmIdleTimeout=-1

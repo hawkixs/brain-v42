@@ -1,0 +1,71 @@
+# Lazy embedding stack for dev-pc (192.168.1.11, RTX 5070 Ti 16 GiB).
+#
+# Supervisor is always up, proxies brain-v42's HTTP calls, and starts the
+# qodo container on demand (stopping it after 15 min idle). The user can
+# stop bench_embedding_qodo from Docker Desktop at any time — the next
+# brain request will wake it back up as long as the GPU has headroom.
+#
+# Deployment:
+#   docker --context dev-pc compose -f docker-compose.yml up -d --no-start embedding-qodo
+#   docker --context dev-pc compose -f docker-compose.yml up -d embedding-supervisor
+# (supervisor stays up always, qodo is created but not started)
+
+services:
+  embedding-supervisor:
+    build:
+      context: ../../services/embedding_supervisor
+    # Pin the image name so it never derives from the dir basename
+    # (non-deterministic). The cutover/rollback scripts resolve this via
+    # `docker compose config --images`.
+    image: brain-embedding-supervisor:local
+    pull_policy: build
+    container_name: brain_embedding_supervisor
+    restart: unless-stopped
+    ports:
+      - "8003:8003"
+    environment:
+      - TARGET_CONTAINER=brain_embedding_qodo
+      - TARGET_URL=http://brain_embedding_qodo:8003
+      - IDLE_TIMEOUT_SEC=900
+      - GPU_MIN_FREE_MIB=4000
+      - START_TIMEOUT_SEC=60
+      - LOG_LEVEL=INFO
+    volumes:
+      # Needed to start/stop brain_embedding_qodo from inside the container.
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - brain-embedding-net
+
+  embedding-qodo:
+    build:
+      context: ../../services/embedding_qodo
+    # Pinned image name (see embedding-supervisor above).
+    image: brain-embedding-qodo:local
+    pull_policy: build
+    container_name: brain_embedding_qodo
+    # `no` = supervisor-controlled. Docker won't auto-start on boot;
+    # the supervisor does it via `docker start` when a request arrives.
+    restart: "no"
+    environment:
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # Not exposed on host — only the supervisor talks to it (same network).
+    networks:
+      - brain-embedding-net
+    healthcheck:
+      # Touches the model on every probe so a CUDA-OOM is caught fast.
+      test: ["CMD", "python3", "-c", "import urllib.request,json; r=urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8003/embed',data=json.dumps({'texts':['healthcheck']}).encode(),headers={'Content-Type':'application/json'}),timeout=8); assert r.read(2)==b'[['"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+networks:
+  brain-embedding-net:
+    name: brain-embedding-net

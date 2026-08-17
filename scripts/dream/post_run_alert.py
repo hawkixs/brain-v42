@@ -1,0 +1,262 @@
+"""Post-run report for failed or incomplete Dream phases.
+
+Closes the silent-crash observability gap (2026-05-02 / 05-03 PROMOTE crashes
+went undetected for 2 days). Invoked by dream.sh at the end of a run when
+FAIL_TOTAL > 0. Session briefings read failures directly from ``dream_runs``.
+
+CLI:
+    python -m scripts.dream.post_run_alert --date 2026-05-08
+
+Exit codes:
+    0  → no failures detected, OR report successfully rendered
+    1  → DB error / unexpected exception
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import datetime as dt
+import sys
+
+import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
+
+from brain_v42.config import Settings
+from brain_v42.db.tables import dream_runs
+from brain_v42.metrics.collector_dream import (
+    expected_dream_phase_pairs,
+    expected_dream_phases,
+)
+
+MAX_REPORTED_FAILURES = 20
+# Le plafond de FETCH est en amont du groupement, donc un plafond par projet ne
+# le rattrape pas : à `MAX_REPORTED_FAILURES + 1`, un projet bruyant en fin de
+# nuit remplirait les 21 lignes remontées et les projets calmes n'atteindraient
+# jamais le groupeur. L'ordre est `created_at DESC`, donc ce sont les DERNIERS
+# projets servis qui gagnaient. 200 lignes d'une seule journée ne coûtent rien.
+MAX_FETCHED_FAILURES = 200
+# §11 — `MAX_REPORTED_FAILURES = 20` avait été dimensionné pour les 9 phases
+# d'une nuit à un projet. À dix projets la nuit en compte 63, et un plafond
+# GLOBAL laisserait le premier projet consommer les vingt lignes : « N
+# additional records omitted » masquerait alors des projets ENTIERS. Le plafond
+# devient donc par projet dès que les lignes portent une clé.
+MAX_REPORTED_FAILURES_PER_PROJECT = 8
+FAILED_STATUSES = {"fail", "partial", "timeout"}
+# Rendu de la sentinelle des phases sans projet. `*` en tête d'une ligne de
+# rapport se lit comme une puce ou un joker, pas comme « les trois globales ».
+GLOBAL_GROUP_LABEL = "global"
+UNLABELLED_GROUP_LABEL = "unlabelled"
+
+
+def _detail_line(row: dict) -> str:
+    phase = row.get("phase", "?")
+    status = row.get("status", "?")
+    err = row.get("error_message")
+    err_line = err.splitlines()[0][:240] if err else "(no error_message captured)"
+    return f"- {phase} [{status}]: {err_line}"
+
+
+def _group_label(row: dict) -> str:
+    from brain_v42.dream_run_project_key import GLOBAL_PHASE_PROJECT_KEY  # noqa: PLC0415
+
+    project = row.get("project_key")
+    if not project:
+        # Ligne écrite avant la 042, ou par un écrivain non migré. `NULL` veut
+        # dire « écrit avant la colonne », pas « projet inconnu à corriger ».
+        return UNLABELLED_GROUP_LABEL
+    if project == GLOBAL_PHASE_PROJECT_KEY:
+        return GLOBAL_GROUP_LABEL
+    return str(project)
+
+
+def build_alert_insight(
+    run_date: dt.date,
+    failed: list[dict],
+    *,
+    total_failures: int | None = None,
+) -> str:
+    if not failed:
+        raise ValueError("build_alert_insight requires a non-empty list of failed phases")
+
+    total = len(failed) if total_failures is None else total_failures
+    lines = [f"Dream run on {run_date.isoformat()} had {total} non-OK phase(s):", ""]
+
+    if not any(row.get("project_key") for row in failed):
+        # Aucune ligne ne porte de projet : nuit à un projet, ou corpus
+        # antérieur à la 042. Rendu HISTORIQUE, à l'identique — grouper une
+        # liste dont tous les éléments tomberaient dans le même seau ne
+        # rendrait rien plus lisible et changerait un format déjà lu.
+        lines.extend(_detail_line(row) for row in failed[:MAX_REPORTED_FAILURES])
+        omitted = total - min(len(failed), MAX_REPORTED_FAILURES)
+        if omitted:
+            record_label = "record" if omitted == 1 else "records"
+            lines.append(f"{omitted} additional failure {record_label} omitted")
+    else:
+        grouped: dict[str, list[dict]] = {}
+        for row in failed:
+            grouped.setdefault(_group_label(row), []).append(row)
+
+        omitted = total - len(failed)
+        for label in sorted(grouped):
+            rows = grouped[label]
+            lines.append(f"{label}:")
+            lines.extend(
+                f"  {_detail_line(row)}" for row in rows[:MAX_REPORTED_FAILURES_PER_PROJECT]
+            )
+            hidden = len(rows) - MAX_REPORTED_FAILURES_PER_PROJECT
+            if hidden > 0:
+                record_label = "record" if hidden == 1 else "records"
+                lines.append(f"  {hidden} additional failure {record_label} omitted")
+                omitted += hidden
+            lines.append("")
+        if omitted:
+            record_label = "record" if omitted == 1 else "records"
+            lines.append(f"{omitted} additional failure {record_label} omitted in total")
+
+    lines.extend(
+        [
+            "",
+            "Inspect logs at logs/dream/" + run_date.isoformat() + ".log",
+            "Auto-generated by scripts.dream.post_run_alert.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def include_missing_expected_phases(
+    rows: list[dict],
+    expected: set[str],
+    persisted_failures: list[dict] | None = None,
+    *,
+    expected_pairs: set[tuple[str, str]] | None = None,
+) -> list[dict]:
+    """Return lexical synthetic partials followed by persisted non-OK rows.
+
+    ``expected_pairs`` porte le produit cartésien ``{phase} × {projet du pool}``
+    quand le drop-in déclare un pool. Comparer sur les noms de phase seuls se
+    désarme tout seul à plusieurs projets : qu'un projet saute `promote` et les
+    autres le rendent « observé ». Quand les paires sont absentes — pool non
+    déclaré — la comparaison par nom reste en place, à l'identique.
+    """
+    failed = (
+        [row for row in rows if row.get("status") in FAILED_STATUSES]
+        if persisted_failures is None
+        else persisted_failures
+    )
+
+    if expected_pairs:
+        observed_pairs = {(str(row["phase"]), str(row.get("project_key") or "")) for row in rows}
+        missing = [
+            {
+                "phase": phase,
+                "project_key": project,
+                "status": "partial",
+                "error_message": "expected enabled phase missing from dream_runs",
+            }
+            for phase, project in sorted(expected_pairs - observed_pairs)
+        ]
+        return missing + failed
+
+    observed = {str(row["phase"]) for row in rows}
+    missing = [
+        {
+            "phase": phase,
+            "status": "partial",
+            "error_message": "expected enabled phase missing from dream_runs",
+        }
+        for phase in sorted(expected - observed)
+    ]
+    return missing + failed
+
+
+async def fetch_failed_runs(session: AsyncSession, run_date: dt.date) -> tuple[list[dict], int]:
+    observed_statement = sa.select(
+        dream_runs.c.phase,
+        dream_runs.c.status,
+        dream_runs.c.project_key,
+    ).where(dream_runs.c.run_date == run_date)
+    observed_result = await session.execute(observed_statement)
+    observed_rows = [dict(row._mapping) for row in observed_result.all()]
+
+    failures_filter = dream_runs.c.status.in_(FAILED_STATUSES)
+    failures_statement = (
+        sa.select(
+            dream_runs.c.id,
+            dream_runs.c.phase,
+            dream_runs.c.status,
+            dream_runs.c.project_key,
+            dream_runs.c.error_message,
+            dream_runs.c.created_at,
+        )
+        .where(dream_runs.c.run_date == run_date, failures_filter)
+        .order_by(dream_runs.c.created_at.desc(), dream_runs.c.id.desc())
+        .limit(MAX_FETCHED_FAILURES)
+    )
+    failures_result = await session.execute(failures_statement)
+    persisted_failures = [dict(row._mapping) for row in failures_result.all()]
+    failures_count_statement = (
+        sa.select(sa.func.count())
+        .select_from(dream_runs)
+        .where(dream_runs.c.run_date == run_date, failures_filter)
+    )
+    failures_count_result = await session.execute(failures_count_statement)
+    persisted_failure_count = int(failures_count_result.scalar_one())
+    failed = include_missing_expected_phases(
+        observed_rows,
+        expected_dream_phases(),
+        persisted_failures,
+        expected_pairs=expected_dream_phase_pairs(),
+    )
+    synthetic_count = len(failed) - len(persisted_failures)
+    return failed, synthetic_count + persisted_failure_count
+
+
+async def write_alert_if_failed(
+    session: AsyncSession,
+    run_date: dt.date,
+) -> str | None:
+    failed, total_failures = await fetch_failed_runs(session, run_date)
+    if not failed:
+        return None
+    return build_alert_insight(run_date, failed, total_failures=total_failures)
+
+
+async def _run(run_date: dt.date) -> int:
+    settings = Settings()
+    engine = create_async_engine(settings.postgres_url, poolclass=NullPool)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with factory() as session:
+            report = await write_alert_if_failed(session, run_date)
+            if report:
+                print(report)
+            else:
+                print(f"no failures for {run_date.isoformat()}")
+        return 0
+    finally:
+        await engine.dispose()
+
+
+def main(argv: list[str] | None = None) -> int:
+    # `--project-key` a été retiré. Il était DÉCORATIF depuis toujours :
+    # déclaré, passé, reçu dans la signature… et jamais lu, `fetch_failed_runs`
+    # ne le recevant même pas et ses trois requêtes ne filtrant que sur
+    # `run_date`. Il devenait en plus trompeur : avec la rotation du pool, la
+    # valeur transmise par dream.sh aurait changé chaque nuit sans que rien ne
+    # la lise. Le projet vit maintenant dans le CORPS du rapport, groupé, ce que
+    # la 042 rend possible.
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--date", required=True, help="Run date (YYYY-MM-DD)")
+    args = parser.parse_args(argv)
+    run_date = dt.date.fromisoformat(args.date)
+    try:
+        return asyncio.run(_run(run_date))
+    except Exception as exc:  # noqa: BLE001
+        print(f"post_run_alert failed: {exc!r}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

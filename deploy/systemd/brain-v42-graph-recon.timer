@@ -1,0 +1,18 @@
+[Unit]
+Description=brain-v42 Graph Ledger Inventory — weekly read-only audit
+
+[Timer]
+# Sunday 04:00 local — audits the canonical ledger while the dream timer
+# (06:00 daily) is idle and before the morning workload picks up.
+OnCalendar=Sun *-*-* 04:00:00
+
+# If the machine was off / suspended at 04:00 Sunday, run on next boot.
+Persistent=true
+
+# Jitter so we don't collide with anything else that pins :00:00.
+RandomizedDelaySec=300
+
+Unit=brain-v42-graph-recon.service
+
+[Install]
+WantedBy=timers.target

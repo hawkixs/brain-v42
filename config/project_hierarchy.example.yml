@@ -1,0 +1,18 @@
+# Example project hierarchy seed for brain_v42.scripts.init_graph's
+# create_project_hierarchy() step.
+#
+# Copy this file to project_hierarchy.yml (or point
+# BRAIN_PROJECT_HIERARCHY_PATH / PROJECT_HIERARCHY_PATH at a path of your
+# choosing) and describe your own ecosystem's project relationships. The
+# real file is untracked — this is a template, not the operational default.
+#
+# Each top-level key is a project_key. `contains` seeds CONTAINS edges to
+# child projects; `depends_on` seeds DEPENDS_ON edges. Missing a key is
+# fine (defaults to no edges of that kind); the whole file is optional —
+# init_graph.py skips this step entirely when it's absent.
+project_hierarchy:
+  umbrella-project:
+    contains: [service-a, service-b]
+    depends_on: []
+  service-a:
+    depends_on: [shared-library]

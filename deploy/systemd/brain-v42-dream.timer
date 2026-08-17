@@ -1,0 +1,18 @@
+[Unit]
+Description=brain-v42 Dream Mode — trigger at 06:00 daily
+Documentation=file:///home/hawixs/hawkixs_infra/git_repo/brain_v42/docs/superpowers/specs/2026-04-05-dream-mode-design.md
+
+[Timer]
+# 06:00 local time every day.
+OnCalendar=*-*-* 06:00:00
+
+# If the machine was off / suspended at 06:00, run once on next boot.
+Persistent=true
+
+# Small jitter to avoid exact 06:00:00 thundering-herd with other timers.
+RandomizedDelaySec=120
+
+Unit=brain-v42-dream.service
+
+[Install]
+WantedBy=timers.target

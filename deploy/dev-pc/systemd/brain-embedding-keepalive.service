@@ -1,0 +1,27 @@
+[Unit]
+# Keeps the Ubuntu-24.04 WSL2 VM alive so native dockerd + the embedding
+# supervisor survive even with no interactive logon and no traffic.
+#
+# Why this exists (judge C4): a Task-Scheduler `wsl -d Ubuntu-24.04 -e /bin/true`
+# returns instantly, and WSL then reaps the idle distro (~8 s / vmIdleTimeout),
+# tearing down systemd + docker.service + the supervisor. This unit holds the
+# VM up with a process that never exits. Pair it with `[wsl2] vmIdleTimeout=-1`
+# in C:\Users\arman\.wslconfig (belt-and-suspenders — see deploy/dev-pc/README.md).
+Description=brain-v42 embedding — keep WSL2 VM alive (headless backbone)
+Documentation=file:///etc/brain-v42/headless-replatform
+After=multi-user.target
+
+[Service]
+# A plain always-on holder process. `sleep infinity` blocks forever; if it is
+# ever killed (OOM, manual), systemd restarts it so the VM never goes idle.
+Type=exec
+ExecStart=/bin/sleep infinity
+Restart=always
+RestartSec=1
+
+# Cheap and invisible: this process must never compete with the GPU workload.
+Nice=19
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

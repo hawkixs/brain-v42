@@ -1,0 +1,339 @@
+#!/usr/bin/python3
+"""Root-owned fixed boundary for the Brain-managed red-shrik environment."""
+
+from __future__ import annotations
+
+import grp
+import json
+import os
+import pwd
+import stat
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+_HELPER_PATH = Path("/usr/local/sbin/brain-shrik-env-control")
+_STAGE_PATH = Path("/home/hawixs/.config/brain-v42/codex-gateway-rotation/.shrik-env.install")
+_TARGET_PATH = Path("/etc/shrik/env")
+_OPERATOR_NAME = "hawixs"
+_TARGET_GROUP_NAME = "hawixs"
+_TARGET_MODE = 0o640
+_STAGE_MODE = 0o600
+_MAX_BYTES = 128 * 1024
+_SYSTEMCTL = "/usr/bin/systemctl"
+_UNIT = "red-shrik.service"
+_SERVICE_ACTIONS = frozenset({"start", "stop", "is-active"})
+_CLI_ACTIONS = frozenset({"--check", "--publish", "--start", "--stop", "--is-active"})
+
+
+class ControlError(RuntimeError):
+    """Secret-free privileged-boundary failure."""
+
+
+def _mode(path_stat: os.stat_result) -> int:
+    return stat.S_IMODE(path_stat.st_mode)
+
+
+def _lstat(path: Path, message: str) -> os.stat_result:
+    try:
+        return path.lstat()
+    except OSError:
+        raise ControlError(message) from None
+
+
+def _validate_directory(path: Path, *, owner_uid: int, exact_mode: int | None = None) -> None:
+    path_stat = _lstat(path, "unsafe directory boundary")
+    mode = _mode(path_stat)
+    unsafe = (
+        not stat.S_ISDIR(path_stat.st_mode)
+        or path_stat.st_uid != owner_uid
+        or bool(mode & 0o022)
+        or (exact_mode is not None and mode != exact_mode)
+    )
+    try:
+        unsafe = unsafe or path.resolve(strict=True) != path
+    except (OSError, RuntimeError):
+        unsafe = True
+    if unsafe:
+        raise ControlError("unsafe directory boundary")
+
+
+def _open_verified_regular(
+    path: Path,
+    *,
+    owner_uid: int,
+    mode: int,
+    link_count: int = 1,
+) -> tuple[int, os.stat_result]:
+    path_stat = _lstat(path, "unsafe regular file")
+    unsafe = (
+        not stat.S_ISREG(path_stat.st_mode)
+        or path_stat.st_uid != owner_uid
+        or _mode(path_stat) != mode
+        or path_stat.st_nlink != link_count
+    )
+    if unsafe:
+        raise ControlError("unsafe regular file")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+        opened_stat = os.fstat(fd)
+    except OSError:
+        raise ControlError("unsafe regular file") from None
+    if (opened_stat.st_dev, opened_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino):
+        os.close(fd)
+        raise ControlError("unsafe regular file")
+    return fd, opened_stat
+
+
+def _read_fd(fd: int, size: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = size
+    while remaining:
+        chunk = os.read(fd, min(remaining, 64 * 1024))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    payload = b"".join(chunks)
+    if len(payload) != size:
+        raise ControlError("regular file changed while reading")
+    return payload
+
+
+def _read_stage(path: Path, *, operator_uid: int, max_bytes: int) -> bytes:
+    try:
+        fd, stage_stat = _open_verified_regular(
+            path,
+            owner_uid=operator_uid,
+            mode=_STAGE_MODE,
+        )
+    except ControlError:
+        raise ControlError("unsafe staging file") from None
+    try:
+        if stage_stat.st_size <= 0 or stage_stat.st_size > max_bytes:
+            raise ControlError("unsafe staging file")
+        payload = _read_fd(fd, stage_stat.st_size)
+    finally:
+        os.close(fd)
+    if b"\x00" in payload or not payload.endswith(b"\n"):
+        raise ControlError("unsafe staging file")
+    try:
+        payload.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ControlError("unsafe staging file") from None
+    return payload
+
+
+def _read_target(
+    path: Path,
+    *,
+    target_uid: int,
+    target_gid: int,
+    expected: bytes | None = None,
+) -> bytes:
+    try:
+        fd, target_stat = _open_verified_regular(
+            path,
+            owner_uid=target_uid,
+            mode=_TARGET_MODE,
+        )
+    except ControlError:
+        raise ControlError("unsafe Shrik target") from None
+    try:
+        if target_stat.st_gid != target_gid:
+            raise ControlError("unsafe Shrik target")
+        payload = _read_fd(fd, target_stat.st_size)
+    finally:
+        os.close(fd)
+    if expected is not None and payload != expected:
+        raise ControlError("Shrik target verification failed")
+    return payload
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        directory_fd = os.open(path, flags)
+        os.fsync(directory_fd)
+    except OSError:
+        raise ControlError("directory durability check failed") from None
+    finally:
+        if "directory_fd" in locals():
+            os.close(directory_fd)
+
+
+def _validate_helper(path: Path, *, target_uid: int) -> None:
+    try:
+        fd, _helper_stat = _open_verified_regular(path, owner_uid=target_uid, mode=0o755)
+    except ControlError:
+        raise ControlError("unsafe privileged helper") from None
+    os.close(fd)
+
+
+def _check_contract(
+    helper: Path,
+    stage: Path,
+    target: Path,
+    *,
+    operator_uid: int,
+    target_uid: int,
+    target_gid: int,
+) -> None:
+    _validate_helper(helper, target_uid=target_uid)
+    private_parent = stage.parent.parent
+    _validate_directory(private_parent, owner_uid=operator_uid, exact_mode=0o700)
+    if stage.parent.exists() or stage.parent.is_symlink():
+        _validate_directory(stage.parent, owner_uid=operator_uid, exact_mode=0o700)
+    _validate_directory(target.parent, owner_uid=target_uid)
+    _read_target(target, target_uid=target_uid, target_gid=target_gid)
+
+
+def _publish(
+    stage: Path,
+    target: Path,
+    *,
+    operator_uid: int,
+    target_uid: int,
+    target_gid: int,
+    max_bytes: int,
+) -> None:
+    _validate_directory(target.parent, owner_uid=target_uid)
+    _read_target(target, target_uid=target_uid, target_gid=target_gid)
+    payload = _read_stage(stage, operator_uid=operator_uid, max_bytes=max_bytes)
+    temporary: Path | None = None
+    temporary_fd: int | None = None
+    try:
+        raw_fd, raw_path = tempfile.mkstemp(prefix=".env.publish.", dir=target.parent)
+        temporary_fd = raw_fd
+        temporary = Path(raw_path)
+        offset = 0
+        while offset < len(payload):
+            offset += os.write(temporary_fd, payload[offset:])
+        os.fchown(temporary_fd, target_uid, target_gid)
+        os.fchmod(temporary_fd, _TARGET_MODE)
+        os.fsync(temporary_fd)
+        os.close(temporary_fd)
+        temporary_fd = None
+        os.replace(temporary, target)
+        temporary = None
+        _fsync_directory(target.parent)
+        _read_target(
+            target,
+            target_uid=target_uid,
+            target_gid=target_gid,
+            expected=payload,
+        )
+        stage.unlink()
+        _fsync_directory(stage.parent)
+    except ControlError:
+        raise
+    except (OSError, RuntimeError):
+        raise ControlError("publication failed") from None
+    finally:
+        if temporary_fd is not None:
+            try:
+                os.close(temporary_fd)
+            except OSError:
+                pass
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+                _fsync_directory(target.parent)
+            except (OSError, ControlError):
+                pass
+
+
+def _service_action(action: str, *, runner: Any = subprocess.run) -> bool:
+    if action not in _SERVICE_ACTIONS:
+        raise ControlError("unsupported service action")
+    try:
+        result = runner(
+            [_SYSTEMCTL, action, _UNIT],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={"PATH": "/usr/bin:/bin"},
+        )
+    except Exception:
+        raise ControlError("service action failed") from None
+    if action == "is-active" and result.returncode == 3:
+        return False
+    if result.returncode != 0:
+        raise ControlError("service action failed")
+    return True
+
+
+def _identities() -> tuple[int, int]:
+    try:
+        operator_uid = pwd.getpwnam(_OPERATOR_NAME).pw_uid
+        target_gid = grp.getgrnam(_TARGET_GROUP_NAME).gr_gid
+    except KeyError:
+        raise ControlError("required operating-system identity is unavailable") from None
+    return operator_uid, target_gid
+
+
+def _run(action: str) -> bool | None:
+    if os.geteuid() != 0:
+        raise ControlError("root execution is required")
+    try:
+        invoked_path = Path(__file__).resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise ControlError("privileged helper path is invalid") from None
+    if invoked_path != _HELPER_PATH:
+        raise ControlError("privileged helper path is invalid")
+    operator_uid, target_gid = _identities()
+    if action in {"--check", "--publish"}:
+        _check_contract(
+            _HELPER_PATH,
+            _STAGE_PATH,
+            _TARGET_PATH,
+            operator_uid=operator_uid,
+            target_uid=0,
+            target_gid=target_gid,
+        )
+    else:
+        _validate_helper(_HELPER_PATH, target_uid=0)
+    if action == "--publish":
+        _publish(
+            _STAGE_PATH,
+            _TARGET_PATH,
+            operator_uid=operator_uid,
+            target_uid=0,
+            target_gid=target_gid,
+            max_bytes=_MAX_BYTES,
+        )
+    elif action not in {"--check"}:
+        return _service_action(action.removeprefix("--"))
+    return None
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = sys.argv[1:] if argv is None else argv
+    if len(arguments) != 1 or arguments[0] not in _CLI_ACTIONS:
+        print(json.dumps({"error": "unsupported action", "status": "error"}, sort_keys=True))
+        return 64
+    action = arguments[0]
+    try:
+        outcome = _run(action)
+    except ControlError as error:
+        print(json.dumps({"error": str(error), "status": "error"}, sort_keys=True))
+        return 2
+    result: dict[str, bool | str] = {
+        "action": action.removeprefix("--"),
+        "status": "ok",
+    }
+    if action == "--is-active":
+        active = bool(outcome)
+        result["active"] = active
+        print(json.dumps(result, sort_keys=True))
+        return 0 if active else 3
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

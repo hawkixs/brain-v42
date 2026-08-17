@@ -1,0 +1,58 @@
+{
+  "tool_names": [
+    "brain_session_start",
+    "brain_session_capture",
+    "brain_session_heartbeat",
+    "brain_session_end",
+    "brain_session_list",
+    "brain_session_resume",
+    "brain_session_abandon"
+  ],
+  "output_schema_lengths": {
+    "brain_session_start": 2639,
+    "brain_session_capture": 2816,
+    "brain_session_heartbeat": 2493,
+    "brain_session_end": 3055,
+    "brain_session_list": 2640,
+    "brain_session_resume": 2777,
+    "brain_session_abandon": 2621
+  },
+  "output_schema_total": 19041,
+  "contracts": {
+    "brain_session_start": {
+      "version": "4.0",
+      "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false, "title": null},
+      "parameters": {"additionalProperties": false, "properties": {"project_key": {"maxLength": 50, "minLength": 1, "type": "string"}, "client_key": {"description": "Stable identity for one intended session. Reuse it for every retry of that session; use a distinct stable key for each parallel session.", "maxLength": 128, "minLength": 1, "type": "string"}}, "required": ["project_key", "client_key"], "type": "object"}
+    },
+    "brain_session_capture": {
+      "version": "4.0",
+      "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false, "title": null},
+      "parameters": {"additionalProperties": false, "properties": {"session_id": {"format": "uuid", "type": "string"}, "expected_client_key": {"description": "Client identity expected for the addressed session UUID. The pair must match before any session mutation. This is an isolation guard, not authentication.", "maxLength": 128, "minLength": 1, "type": "string"}, "knowledge_ids": {"items": {"format": "uuid", "type": "string"}, "maxItems": 100, "minItems": 1, "type": "array"}}, "required": ["session_id", "expected_client_key", "knowledge_ids"], "type": "object"}
+    },
+    "brain_session_heartbeat": {
+      "version": "4.0",
+      "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false, "title": null},
+      "parameters": {"additionalProperties": false, "properties": {"session_id": {"format": "uuid", "type": "string"}, "expected_client_key": {"description": "Client identity expected for the addressed session UUID. The pair must match before any session mutation. This is an isolation guard, not authentication.", "maxLength": 128, "minLength": 1, "type": "string"}}, "required": ["session_id", "expected_client_key"], "type": "object"}
+    },
+    "brain_session_end": {
+      "version": "4.0",
+      "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false, "title": null},
+      "parameters": {"additionalProperties": false, "properties": {"session_id": {"format": "uuid", "type": "string"}, "expected_client_key": {"description": "Client identity expected for the addressed session UUID. The pair must match before any session mutation. This is an isolation guard, not authentication.", "maxLength": 128, "minLength": 1, "type": "string"}, "summary": {"maxLength": 10000, "minLength": 1, "type": "string"}, "next_focus": {"description": "Jugement et engagements pour la session suivante — ce qui n'est pas dérivable automatiquement (ex : ne pas publier ce brouillon et pourquoi, une échéance et sa raison, une décision opérateur à respecter). N'y recopie pas l'état mesurable (révision de schéma, HEAD git, arbre propre, résultat de suite de tests) : il est déjà recalculé à chaque briefing depuis la source réelle, et une copie manuelle se périme en silence.", "maxLength": 10000, "minLength": 1, "type": "string"}, "expected_focus_revision": {"minimum": 0, "type": "integer"}, "nothing_to_capture_reason": {"anyOf": [{"maxLength": 2000, "minLength": 1, "type": "string"}, {"type": "null"}], "default": null}}, "required": ["session_id", "expected_client_key", "summary", "next_focus", "expected_focus_revision"], "type": "object"}
+    },
+    "brain_session_list": {
+      "version": "4.0",
+      "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false, "title": null},
+      "parameters": {"additionalProperties": false, "properties": {"project_key": {"anyOf": [{"maxLength": 50, "minLength": 1, "type": "string"}, {"type": "null"}], "default": null}, "status": {"default": "open", "enum": ["open", "stale", "ended", "abandoned", "all"], "type": "string"}, "limit": {"default": 20, "maximum": 100, "minimum": 1, "type": "integer"}, "offset": {"default": 0, "minimum": 0, "type": "integer"}}, "type": "object"}
+    },
+    "brain_session_resume": {
+      "version": "4.0",
+      "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false, "title": null},
+      "parameters": {"additionalProperties": false, "properties": {"session_id": {"format": "uuid", "type": "string"}, "expected_client_key": {"description": "Client identity expected for the addressed session UUID. The pair must match before any session mutation. This is an isolation guard, not authentication.", "maxLength": 128, "minLength": 1, "type": "string"}}, "required": ["session_id", "expected_client_key"], "type": "object"}
+    },
+    "brain_session_abandon": {
+      "version": "4.0",
+      "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false, "title": null},
+      "parameters": {"additionalProperties": false, "properties": {"session_id": {"format": "uuid", "type": "string"}, "expected_client_key": {"description": "Client identity expected for the addressed session UUID. The pair must match before any session mutation. This is an isolation guard, not authentication.", "maxLength": 128, "minLength": 1, "type": "string"}, "reason": {"maxLength": 2000, "minLength": 1, "type": "string"}}, "required": ["session_id", "expected_client_key", "reason"], "type": "object"}
+    }
+  }
+}

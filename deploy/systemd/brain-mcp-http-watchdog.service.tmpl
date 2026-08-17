@@ -1,0 +1,26 @@
+[Unit]
+Description=brain-v42 MCP HTTP /health watchdog (oneshot probe)
+After=brain-mcp-http.service
+
+[Service]
+Type=oneshot
+
+# Probe the /health endpoint; if it fails, restart the HTTP server.
+# __MCP_PORT__ is replaced by install.sh (production contract: 8765).
+# -m 10 : sans timeout, un serveur WEDGÉ (event loop bloquée, accept queue
+# pleine) fait pendre le curl indéfiniment → le watchdog reste "activating"
+# et ne restart jamais (incident 2026-07-03 : loop bloquée sur connexion
+# Neo4j defunct après recreate du container, watchdog aveugle).
+ExecStart=/bin/bash -lc 'curl -fsS -m 10 127.0.0.1:__MCP_PORT__/health || systemctl --user restart brain-mcp-http'
+
+UMask=0077
+NoNewPrivileges=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=brain-mcp-http-watchdog

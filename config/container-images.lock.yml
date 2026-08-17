@@ -1,0 +1,175 @@
+schema_version: 1
+
+images:
+  python-3-12-slim:
+    reference: python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
+    registry: registry-1.docker.io
+    tag: python:3.12-slim
+    digest: sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
+    media_type: application/vnd.oci.image.index.v1+json
+    platforms:
+      - linux/386
+      - linux/amd64
+      - linux/arm/v5
+      - linux/arm/v7
+      - linux/arm64/v8
+      - linux/ppc64le
+      - linux/riscv64
+      - linux/s390x
+    resolved_at: "2026-07-23"
+    resolution: docker buildx imagetools inspect --raw tag@digest
+    consumers:
+      - .gitlab-ci.yml
+      - Dockerfile
+      - scripts/embedding_gguf_build.sh
+      - services/embedding_shim/Dockerfile
+      - services/embedding_supervisor/Dockerfile
+
+  python-3-11-slim:
+    reference: python:3.11-slim@sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93
+    registry: registry-1.docker.io
+    tag: python:3.11-slim
+    digest: sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93
+    media_type: application/vnd.oci.image.index.v1+json
+    platforms:
+      - linux/386
+      - linux/amd64
+      - linux/arm/v5
+      - linux/arm/v7
+      - linux/arm64/v8
+      - linux/ppc64le
+      - linux/riscv64
+      - linux/s390x
+    resolved_at: "2026-07-23"
+    resolution: docker buildx imagetools inspect --raw tag@digest
+    consumers:
+      - services/embedding/Dockerfile
+
+  docker-27-cli:
+    reference: docker:27-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c
+    registry: registry-1.docker.io
+    tag: docker:27-cli
+    digest: sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c
+    media_type: application/vnd.oci.image.index.v1+json
+    platforms:
+      - linux/amd64
+      - linux/arm/v6
+      - linux/arm/v7
+      - linux/arm64/v8
+    resolved_at: "2026-07-23"
+    resolution: docker buildx imagetools inspect --raw tag@digest
+    consumers:
+      - .gitlab-ci.yml
+
+  pgvector-pg16:
+    reference: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
+    registry: registry-1.docker.io
+    tag: pgvector/pgvector:pg16
+    digest: sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
+    media_type: application/vnd.oci.image.index.v1+json
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    resolved_at: "2026-07-23"
+    resolution: docker buildx imagetools inspect --raw tag@digest
+    consumers:
+      - .github/workflows/continuous-integration.yml
+      - .gitlab-ci.yml
+      - docker-compose.yml
+      - tests/support/task0-compose.yml
+
+  llama-server-cuda:
+    reference: ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:c1ddeb6d30932ddd9ddff962cb62dbc5450cd99d8e82c8c20de2fd1f99fde85b
+    registry: ghcr.io
+    tag: ghcr.io/ggml-org/llama.cpp:server-cuda
+    digest: sha256:c1ddeb6d30932ddd9ddff962cb62dbc5450cd99d8e82c8c20de2fd1f99fde85b
+    media_type: application/vnd.oci.image.index.v1+json
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    resolved_at: "2026-07-23"
+    resolution: docker buildx imagetools inspect --raw tag@digest
+    consumers:
+      - docker-compose.yml
+
+  pytorch-2-7-1-cuda12-8-cudnn9-runtime:
+    reference: pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2
+    registry: registry-1.docker.io
+    tag: pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime
+    digest: sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2
+    media_type: application/vnd.docker.distribution.manifest.v2+json
+    platforms:
+      - linux/amd64
+    resolved_at: "2026-07-23"
+    resolution: docker manifest inspect --verbose tag@digest
+    consumers:
+      - services/embedding_qodo/Dockerfile
+
+  nvidia-cuda-12-4-1-base-ubuntu22-04:
+    reference: nvidia/cuda:12.4.1-base-ubuntu22.04@sha256:0f6bfcbf267e65123bcc2287e2153dedfc0f24772fb5ce84afe16ac4b2fada95
+    registry: registry-1.docker.io
+    tag: nvidia/cuda:12.4.1-base-ubuntu22.04
+    digest: sha256:0f6bfcbf267e65123bcc2287e2153dedfc0f24772fb5ce84afe16ac4b2fada95
+    media_type: application/vnd.docker.distribution.manifest.list.v2+json
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    resolved_at: "2026-07-23"
+    resolution: docker buildx imagetools inspect --raw tag@digest
+    consumers:
+      - deploy/dev-pc/setup-docker-ce.sh
+      - services/embedding_supervisor/main.py
+
+  llama-full:
+    reference: ghcr.io/ggml-org/llama.cpp:full@sha256:0d70482d19f8a4a513e64c8cd839fa114070bfb0c29c8754d68f44691a8c5d22
+    registry: ghcr.io
+    tag: ghcr.io/ggml-org/llama.cpp:full
+    digest: sha256:0d70482d19f8a4a513e64c8cd839fa114070bfb0c29c8754d68f44691a8c5d22
+    media_type: application/vnd.oci.image.index.v1+json
+    platforms:
+      - linux/amd64
+      - linux/arm64
+      - linux/s390x
+    resolved_at: "2026-07-23"
+    resolution: docker buildx imagetools inspect --raw tag@digest
+    consumers:
+      - scripts/embedding_gguf_build.sh
+
+  neo4j-5-26-21:
+    reference: neo4j:5.26.21@sha256:409728716bc239f9fa046368ac6ce6ef280f9e5f0bcb7cdd75031a4465cc192d
+    registry: registry-1.docker.io
+    tag: neo4j:5.26.21
+    digest: sha256:409728716bc239f9fa046368ac6ce6ef280f9e5f0bcb7cdd75031a4465cc192d
+    media_type: application/vnd.oci.image.index.v1+json
+    platforms:
+      - linux/amd64
+      - linux/arm64/v8
+    resolved_at: "2026-07-23"
+    resolution: docker buildx imagetools inspect --raw tag@digest
+    consumers:
+      - docker-compose.yml
+
+  gitleaks-8-30-1:
+    reference: zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+    registry: registry-1.docker.io
+    tag: zricethezav/gitleaks:v8.30.1
+    digest: sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+    media_type: application/vnd.oci.image.index.v1+json
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    resolved_at: "2026-07-25"
+    resolution: docker buildx imagetools inspect tag
+    consumers:
+      - .github/workflows/continuous-integration.yml
+      - .gitlab-ci.yml
+
+local_images:
+  brain-embedding-supervisor:local:
+    compose: deploy/dev-pc/docker-compose.yml
+    service: embedding-supervisor
+    context: services/embedding_supervisor
+  brain-embedding-qodo:local:
+    compose: deploy/dev-pc/docker-compose.yml
+    service: embedding-qodo
+    context: services/embedding_qodo

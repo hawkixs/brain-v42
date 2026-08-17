@@ -1,0 +1,24 @@
+[Unit]
+Description=brain-v42 bounded embedding-backfill recovery worker
+Documentation=file://__REPO_ROOT__/docs/runbooks/2026-08-01-dream-extract-recovery-canary.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=__REPO_ROOT__
+EnvironmentFile=%h/.config/brain-v42/mcp-token.env
+UMask=0077
+NoNewPrivileges=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+# Owner: Brain operations. This is deliberately a bounded recovery worker,
+# never a Dream child process. Installation and enablement require a canary.
+ExecStart=/bin/bash -lc 'uv run python -m brain_v42.maintenance.embedding_backfill --execute --project-key brain-v42 --entity-type learning --entity-type decision --batch-size 20 --limit 100'
+TimeoutStartSec=900
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=brain-v42-embedding-backfill

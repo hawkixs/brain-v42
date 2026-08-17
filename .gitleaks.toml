@@ -1,0 +1,224 @@
+# gitleaks configuration — CI `security:gitleaks` job (ticket 31d68c06).
+#
+# Only generated and vendored artifacts are excluded. Nothing that ships and
+# nothing under version control is allowlisted here: a real finding must stay
+# a finding. Triage of the current generic-api-key candidates happens during
+# the burn-in (see SECURITY_BURN_IN_UNTIL in .gitlab-ci.yml), and each one
+# resolves either as a fix or as its own dated entry — never as a blanket rule.
+#
+# RULES FOR EVERY ENTRY BELOW — do not relax them to make a scan go green:
+#
+#   1. Triage entries are `[[rules.allowlists]]`, NEVER a global
+#      `[[allowlists]]`. This is not style. Measured on gitleaks v8.30.1
+#      (2026-08-16): a GLOBAL allowlist carrying `paths` skips the whole file
+#      before its content is ever scanned, and `condition = "AND"` does NOT
+#      hold it back. Reproduced on a two-line fixture — the triaged line and a
+#      planted `api_key = "sk-live-..."`:
+#        global  [[allowlists]] paths+regexes, condition="AND" -> 0 findings
+#                                                    (the planted key vanished)
+#        rule    [[rules.allowlists]] same fields, condition="AND" -> 1 finding
+#                                                    (the planted key reported)
+#      A global path entry on tracked code is therefore a blanket file
+#      exclusion wearing an "AND". Moving these entries up to `[[allowlists]]`
+#      would silently stop scanning six tracked files, one of which is
+#      shipped source.
+#   2. `condition = "AND"` stays on every entry. Under `[[rules.allowlists]]`
+#      it is what forces path AND content to match, so a future real secret
+#      added to one of these files is still reported. `and`/`or` are the only
+#      accepted values — gitleaks refuses to start on anything else, so a typo
+#      fails loudly rather than quietly widening the exception.
+#   3. `regexTarget = "line"`. The rule's own extracted "secret" is often a
+#      meaningless fragment (`max_length=128`, `arc1-continued-`); anchoring
+#      on the whole source line is what keeps the exception tied to the one
+#      construct that was actually read and triaged.
+#   4. One entry per finding, each naming what the string IS and the date it
+#      was read. No entry covers a finding nobody looked at.
+#
+# The global [allowlist] below is the one place `paths` is used alone, and the
+# file-skip behaviour is exactly what is wanted there: those trees are
+# generated, cached or vendored, and none of them is tracked.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Generated, cached and vendored trees that are not source"
+paths = [
+  '''(^|/)\.venv/''',
+  '''(^|/)\.uv-cache/''',
+  '''(^|/)__pycache__/''',
+  '''(^|/)\.pytest_cache/''',
+  '''(^|/)\.mypy_cache/''',
+  '''(^|/)\.ruff_cache/''',
+  '''(^|/)node_modules/''',
+  '''\.pyc$''',
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Triaged 2026-08-16 — the ten generic-api-key findings on TRACKED files.
+#
+# Not one of them is a credential. Two families explain all ten:
+#
+#   (a) md5 digests of PUBLIC schema DDL, used as recovery-contract
+#       fingerprints. Reproduced from the live database on 2026-08-16:
+#         md5(pg_get_indexdef('brain_sessions_pkey'))
+#           = 6763cd8159ef6f0131abbfedfea044bc
+#         md5(pg_get_indexdef('brain_session_artifacts_pkey'))
+#           = fe2984a0da51999576c9e1c26810a0db
+#       A digest of a published `CREATE UNIQUE INDEX ...` statement grants
+#       nothing and is recomputable by anyone holding the schema. The tell:
+#       ops/recovery/brain-v42-v4.sql carries 41 such md5 literals and exactly
+#       ONE is flagged — the one sitting next to an identifier containing the
+#       substring "key" (`brain_sessions_pkey`). The neighbours on the very
+#       next lines (`daf2b70c...`, `28c33a3d...`) are the same kind of digest
+#       and are silent. This is keyword proximity, not entropy.
+#
+#   (b) deliberately fabricated test fixtures, several of which exist only to
+#       be asserted ABSENT from output — i.e. the canaries of the redaction
+#       tests that protect real secrets.
+#
+# Checked at the same time: no real-shaped NVIDIA key is tracked anywhere.
+# `git grep -nE 'nvapi-[A-Za-z0-9_-]{20,}'` returns only `nvapi-xxxx...`
+# placeholders and an explicit `nvapi-SENTINEL-DO-NOT-LEAK`.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# All ten are `generic-api-key`. Declaring the id with no regex EXTENDS the
+# default rule rather than replacing it: verified 2026-08-16 that a planted
+# `sk-live-...` key is still caught by generic-api-key with this block present.
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-08-16. Documentation copy of the load_env_file unit test. The \
+string is the test's own fixture input proving the parser splits on the FIRST \
+'=' only, so the VALUE is allowed to contain '=' — that is the whole point of \
+`abc=def`. `nvapi-` here is shape, not provenance: a real NVIDIA key is \
+`nvapi-` plus ~64 url-safe characters, this is seven. The key name is the \
+neutral `X_BACKFILL_TEST_*` the test deliberately uses so it cannot pollute \
+os.environ for the rest of the session.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^docs/superpowers/plans/2026-07-03-domain-backfill-v1\.md$''']
+regexes = ['''X_BACKFILL_TEST_KEY=nvapi-abc=def''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-08-16. Source of the same fixture: the load_env_file test that \
+proves KEY=VALUE splits on the first '=' only. Placeholder value, neutral \
+`X_BACKFILL_TEST_*` key name, no credential.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^tests/unit/test_domain_backfill\.py$''']
+regexes = ['''X_BACKFILL_TEST_KEY=nvapi-abc=def''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-08-16. Recovery-contract expected fingerprint: md5 of the public \
+DDL `CREATE UNIQUE INDEX brain_sessions_pkey ON public.brain_sessions USING \
+btree (id)`, verified against the live database. Flagged only because the \
+adjacent index name contains "key"; the 40 sibling md5 literals in this file \
+are not flagged.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v3\.sql$''']
+regexes = ['''\('brain_sessions_pkey', '6763cd8159ef6f0131abbfedfea044bc'\)''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-08-16. Same md5 schema fingerprint as brain-v42-v3.sql, in the \
+pg_restore variant of the v3 recovery contract. Digest of public DDL, verified \
+against the live database.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v3-pgrestore\.sql$''']
+regexes = ['''\('brain_sessions_pkey', '6763cd8159ef6f0131abbfedfea044bc'\)''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-08-16. Same md5 schema fingerprint, in the v4 recovery contract. \
+Digest of public DDL, verified against the live database.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v4\.sql$''']
+regexes = ['''\('brain_sessions_pkey', '6763cd8159ef6f0131abbfedfea044bc'\)''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-08-16. Same md5 schema fingerprint, in the pg_restore variant of \
+the v4 recovery contract. Digest of public DDL, verified against the live \
+database.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v4-pgrestore\.sql$''']
+regexes = ['''\('brain_sessions_pkey', '6763cd8159ef6f0131abbfedfea044bc'\)''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-08-16. NOT a key of any kind — this is the WORD `client_key` in a \
+validation call. The line is `_normalize_required(client_key, \
+field_name="client_key", max_length=128)` in BrainSessionService.start, and \
+the fragment gitleaks extracted as the "secret" is literally `max_length=128`, \
+an integer bound. The rule fired on the keyword `key` in the field-name string \
+literal followed by an `=`. There is no credential material on this line and \
+none anywhere in this module: `client_key` is a caller-supplied session label, \
+documented in CLAUDE.md as a targeting guard that explicitly does NOT \
+authenticate the client.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^src/brain_v42/services/brain_session_service\.py$''']
+regexes = ['''client_key, field_name="client_key", max_length=128''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-08-16. Canary of a redaction test, not a secret. \
+test_continued_environment_assignment_is_counted_without_leaking_values writes \
+this fabricated value into a throwaway systemd unit under tmp_path, then \
+asserts `secondary_secret not in output` — it exists to PROVE that \
+deploy/systemd/install.sh reports "values redacted" instead of echoing \
+Environment= values it is about to wipe. The variable name `secondary_secret` \
+is what trips generic-api-key. Removing this string would delete the \
+assertion that protects real operator secrets.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^tests/unit/deploy/test_automation_unit\.py$''']
+# Basic (not literal) TOML string: a literal string cannot end with the quote
+# this regex must end on, and padding it with a space would silently stop the
+# anchor from matching.
+regexes = ["secondary_secret = 'arc1-continued-\"quoted\"-value'"]
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-08-16. Expected-fingerprint table entry in the v3 recovery \
+contract test: md5 of the public DDL `CREATE UNIQUE INDEX \
+brain_session_artifacts_pkey ON public.brain_session_artifacts USING btree \
+(knowledge_id)`, verified against the live database. The sibling entry \
+`idx_brain_session_artifacts_session_captured` on the next line is the same \
+kind of digest and is not flagged — the difference is the "key" substring in \
+`_pkey`.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^tests/unit/test_recovery_contract_v3\.py$''']
+regexes = ['''"brain_session_artifacts_pkey": "fe2984a0da51999576c9e1c26810a0db"''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-08-16. Expected-fingerprint table entry in the v3 recovery \
+contract test: md5 of the public DDL `CREATE UNIQUE INDEX brain_sessions_pkey \
+ON public.brain_sessions USING btree (id)`, verified against the live \
+database. Same digest as the one embedded in the four ops/recovery/*.sql \
+contracts, which is exactly the point of the test.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^tests/unit/test_recovery_contract_v3\.py$''']
+regexes = ['''"brain_sessions_pkey": "6763cd8159ef6f0131abbfedfea044bc"''']

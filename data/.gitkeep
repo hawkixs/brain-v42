@@ -1,0 +1,3 @@
+# Keeps the host-owned data/ dir in the repo. The container-owned subdirs
+# (data/postgres mode 0700, data/neo4j) are gitignored so git never descends
+# into them — see .gitignore. Do not move this keep-file into those subdirs.

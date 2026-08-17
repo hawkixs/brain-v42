@@ -1,0 +1,69 @@
+# brain_v42 - GitHub Actions, delivery rail (ADR #4).
+#
+# Only pushes to main reach [self-hosted, Linux, X64, red-ci]. That runner is
+# started on demand (runnerctl start brain-v42) and stopped afterwards, so a run
+# queued while it is off simply waits: being offline is the normal state.
+#
+# This rail builds and pushes an image. It does NOT roll anything out: brain-v42
+# has no rollout stage on either CI system, and moving a pushed digest onto PC
+# Serveur or PC Dev GPU stays a manual, out-of-band operator step. The red-gift
+# machinery (VPS access, persistence preflight, smoke, promote, rollback) has no
+# object here and is deliberately absent.
+#
+# Required repository secrets, both created by the operator out of band:
+#   REGISTRY_USER, REGISTRY_PASSWORD - registry.hawkixs.local credentials.
+
+name: Continuous delivery
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: brain-v42-registry
+  cancel-in-progress: false
+
+env:
+  UV_VERSION: "0.10.7"
+  CI_REGISTRY: "registry.hawkixs.local"
+  CI_REGISTRY_IMAGE: "registry.hawkixs.local/hawkixs_project/brain_v42"
+  ENV_PREFIX: "prod"
+
+jobs:
+  build-docker:
+    runs-on: [self-hosted, Linux, X64, red-ci]
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      # One shell process on purpose: the image pin gate only accepts the CI smoke
+      # tag when its local build immediately precedes its `docker run --pull=never`,
+      # and each GitHub step is its own process.
+      - name: Build, smoke and publish the image
+        env:
+          CI_COMMIT_SHA: ${{ github.sha }}
+          # Per-run credential store, removed below: the red-ci runner is a
+          # persistent VM and must not keep a registry login between runs.
+          DOCKER_CONFIG: ${{ runner.temp }}/brain-v42-docker-${{ github.run_id }}
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          echo "$REGISTRY_PASSWORD" | docker login -u "$REGISTRY_USER" --password-stdin $CI_REGISTRY
+          export SHORT_SHA=$(echo $CI_COMMIT_SHA | cut -c1-8)
+          docker build --cache-from $CI_REGISTRY_IMAGE:${ENV_PREFIX}-latest --build-arg UV_VERSION=$UV_VERSION --build-arg BUILDKIT_INLINE_CACHE=1 -t $CI_REGISTRY_IMAGE:${ENV_PREFIX}-latest -t $CI_REGISTRY_IMAGE:${ENV_PREFIX}-${SHORT_SHA} -t brain-v42-ci-smoke:${CI_COMMIT_SHA} -f Dockerfile .
+          docker run --pull=never --rm brain-v42-ci-smoke:${CI_COMMIT_SHA} python -c 'import os, pathlib, sys; import brain_v42.mcp.server; venv = pathlib.Path("/app/.venv"); entrypoint = pathlib.Path(brain_v42.mcp.server.__file__); assert sys.executable == "/app/.venv/bin/python"; assert os.geteuid() == 1000; assert venv.stat().st_uid == 0; assert entrypoint.stat().st_uid == 0; assert not os.access(venv, os.W_OK); assert not os.access(entrypoint, os.W_OK)'
+          docker push $CI_REGISTRY_IMAGE:${ENV_PREFIX}-latest
+          docker push $CI_REGISTRY_IMAGE:${ENV_PREFIX}-${SHORT_SHA}
+
+      - name: Remove the registry credentials
+        if: always()
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/brain-v42-docker-${{ github.run_id }}
+        run: rm -rf -- "$DOCKER_CONFIG"

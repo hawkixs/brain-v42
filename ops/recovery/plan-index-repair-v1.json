@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "project_key": "red-games",
+      "project_root": "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-games",
+      "scan_paths": [
+        "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-games/docs/specs",
+        "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-games/docs/plans"
+      ]
+    },
+    {
+      "project_key": "red-gift",
+      "project_root": "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-gift",
+      "scan_paths": [
+        "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-gift/docs/specs",
+        "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-gift/docs/plans"
+      ]
+    },
+    {
+      "project_key": "red-phone",
+      "project_root": "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-phone",
+      "scan_paths": [
+        "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-phone/docs/specs",
+        "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-phone/docs/plans"
+      ]
+    },
+    {
+      "project_key": "red-quant",
+      "project_root": "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-quant",
+      "scan_paths": [
+        "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-quant/docs/specs",
+        "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-quant/docs/plans",
+        "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-quant/docs/runbooks"
+      ]
+    },
+    {
+      "project_key": "red-shrik",
+      "project_root": "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-shrik",
+      "scan_paths": [
+        "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-shrik/docs/specs",
+        "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-shrik/docs/plans"
+      ]
+    },
+    {
+      "project_key": "red-viewer",
+      "project_root": "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-viewer",
+      "scan_paths": [
+        "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-viewer/docs/specs",
+        "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-viewer/docs/plans"
+      ]
+    },
+    {
+      "project_key": "red-writer",
+      "project_root": "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-writer",
+      "scan_paths": [
+        "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-writer/docs/specs",
+        "/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-writer/docs/plans"
+      ]
+    }
+  ]
+}

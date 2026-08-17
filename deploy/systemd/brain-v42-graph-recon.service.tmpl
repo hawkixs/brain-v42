@@ -1,0 +1,49 @@
+[Unit]
+Description=brain-v42 Graph Ledger Inventory — read-only projection audit
+Documentation=file://__REPO_ROOT__/scripts/rebuild_graph_projection.py
+
+[Service]
+Type=oneshot
+
+# Repo root is injected by deploy/systemd/install.sh from the template.
+WorkingDirectory=__REPO_ROOT__
+
+# The interpreter and script paths are absolute; no login shell is needed.
+# This CLI only inventories the canonical PostgreSQL ledger and pending outbox.
+# Projection recovery remains an explicitly attested operator workflow.
+ExecStart=__REPO_ROOT__/.venv/bin/python __REPO_ROOT__/scripts/rebuild_graph_projection.py
+
+UMask=0077
+NoNewPrivileges=true
+PrivateUsers=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+KeyringMode=private
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=brain-v42-graph-recon
+
+# Bound a wedged database read without turning this timer into a recovery path.
+TimeoutStartSec=1800
+
+# Be polite — share the host with backups and the daily dream run.
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=default.target

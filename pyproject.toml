@@ -1,0 +1,167 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "brain_v42"
+# 0.x volontairement : le contrat de version vit dans README.md#versioning, et il
+# refuse de promettre un downgrade sans perte (037 et 039 refusent le leur).
+version = "0.2.0"
+description = "Second Cerveau v42 - Mémoire persistante pour Claude Code via MCP"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [
+    {name = "Hawixs", email = "armandasm@gmail.com"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+
+dependencies = [
+    # Database
+    "sqlalchemy[asyncio]>=2.0.44",
+    "asyncpg>=0.30",
+    "alembic>=1.13",
+    "pgvector>=0.3",
+    # HTTP client (GPU embedding service)
+    "httpx>=0.27",
+    # HTTP server (metrics sidecar)
+    "aiohttp>=3.9",
+    # Codex management gateway
+    "fastapi>=0.139.2,<0.140",
+    "uvicorn>=0.41,<1",
+    # MCP
+    "fastmcp>=3.4.1,<4",
+    "mcp>=1.27,<2",
+    "starlette>=1.0.1",
+    # Validation & Config
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    # Logging
+    "structlog>=24.1",
+    # Reranker — uses shared unified HTTP service on :8003 (no local model deps)
+    # Graph (optional Neo4j relationship index — disabled by default)
+    "neo4j>=5.0,<7",
+]
+
+[project.urls]
+Homepage = "https://github.com/hawkixs/brain-v42"
+Repository = "https://github.com/hawkixs/brain-v42"
+
+[project.scripts]
+# Console entry points for the maintenance CLIs that already expose a
+# synchronous `main(argv: list[str] | None = None) -> int`. The async-main
+# scripts under src/brain_v42/scripts/ (roadmap_curate, ticket_extract,
+# domain_backfill, benchmark, ...) are intentionally NOT wired here: doing so
+# would mean inventing new sync wrapper functions, which is out of scope for
+# packaging the scripts that already migrated cleanly. They stay reachable
+# via `python scripts/<name>.py` (thin cron/systemd wrappers, unchanged) or
+# `python -m brain_v42.scripts.<name>`.
+brain-v42-backfill-graph-ledger = "brain_v42.scripts.backfill_graph_ledger:main"
+brain-v42-domain-backfill-apply = "brain_v42.scripts.domain_backfill_apply:main"
+brain-v42-repair-plan-index = "brain_v42.scripts.repair_plan_index:main"
+brain-v42-rebuild-graph-projection = "brain_v42.scripts.rebuild_graph_projection:main"
+brain-v42-recover-graph-projection = "brain_v42.scripts.recover_graph_projection:main"
+brain-v42-mint-dream-capability-registry = "brain_v42.scripts.mint_dream_capability_registry:main"
+brain-v42-domain-backfill = "brain_v42.scripts.domain_backfill:main"
+
+[project.optional-dependencies]
+# Tracing OTel des appels de tool — extra SÉPARÉ, jamais dans `dependencies`.
+# L'exporter OTLP HTTP tire `protobuf` et `googleapis-common-protos` en
+# transitif (mesuré : 8 paquets pour opentelemetry-sdk 1.44.0), ce qui n'a pas
+# à peser sur une installation qui ne trace pas. `brain_v42.tracing` importe le
+# SDK À L'INTÉRIEUR de ses fonctions et rend False quand il manque : l'absence
+# de cet extra est un état NORMAL, pas une panne.
+tracing = [
+    "opentelemetry-sdk>=1.44,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.44,<2",
+]
+dev = [
+    # Toolchain CI pinnée EXACTE (learning c43ed8b8) : deps non pinnées →
+    # local ≠ CI et main rougit sur upgrade upstream (mypy 1.19.1 local vs
+    # 2.2.0 CI, 2026-07-10). Upgrade = commit explicite, vérifié vert.
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-aiohttp==1.1.1",
+    "pytest-cov==7.1.0",
+    "ruff==0.15.18",
+    "mypy==2.2.0",
+    # Security scanners for the CI `security` stage. Pinned exactly like the
+    # rest of the toolchain: a floating scanner turns a green commit red on an
+    # upstream release, which is how a non-blocking gate gets ignored for good.
+    "pip-audit==2.10.1",
+    "bandit==1.9.4",
+    "pyyaml>=6.0",
+    "types-PyYAML>=6.0",
+    "types-setuptools",
+    "tabulate>=0.9",
+    # Async SQLite engine for the dream_run/feature service unit tests. Must be
+    # here (not only in [dependency-groups]) — CI installs via `pip install
+    # -e .[dev]`, which does NOT read PEP 735 dependency-groups, so these tests
+    # errored with ModuleNotFoundError on CI (masked while lint blocked tests).
+    "aiosqlite>=0.22.1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/brain_v42"]
+
+# Les migrations voyagent AVEC le paquet. Mesuré avant ce bloc : la wheel portait
+# 192 entrées dont ZÉRO alembic — le binaire `alembic` était livré par la
+# dépendance, pas les révisions qu'il doit jouer.
+#
+# `force-include` RECOPIE l'arbre dans la distribution sans déplacer les sources :
+# `alembic/` et `alembic.ini` restent à la racine du dépôt, où
+# `tests/unit/test_alembic_env.py` les résout depuis PROJECT_ROOT. La destination
+# est sous `brain_v42/` — donc dans le paquet importable — pour rester atteignable
+# depuis `brain_v42.__file__` après installation, plutôt qu'échouée à la racine de
+# site-packages où rien ne saurait la retrouver.
+[tool.hatch.build.targets.wheel.force-include]
+"alembic" = "brain_v42/alembic"
+"alembic.ini" = "brain_v42/alembic.ini"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-v --tb=short"
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+ignore = ["E501"]  # Line length handled separately
+
+[tool.ruff.lint.isort]
+known-first-party = ["brain_v42"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["src/brain_v42"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+
+[dependency-groups]
+dev = [
+    "aiosqlite>=0.22.1",
+]

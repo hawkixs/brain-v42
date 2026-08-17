@@ -1,0 +1,157 @@
+"""Frappe du registre de capacités Dream — étape 8 de la spec dream v2.
+
+Le registre `MCP_HTTP_DREAM_TOKENS` est ce qui fait passer le principal de
+`unscoped` à `scoped`. Tant qu'il est absent, `on_call_tool` laisse tout passer
+sans périmètre : c'est l'état de production jusqu'ici, et c'est pourquoi une
+nuit lancée pour un projet peut lire et muter le corpus d'un autre.
+
+Le mode d'échec de ce lot est CONNU et il est vert. Le 2026-07-03, un bearer
+manquant a fait tourner chaque phase en 401 — zéro outil brain — et la nuit a
+rendu « 6/6 OK ». Le drop-in `token.conf` existe à cause de ça. Un registre
+incomplet ou mal formé produit exactement la même nuit.
+
+D'où la garde centrale de ce fichier : l'outil de frappe valide sa propre
+sortie en la repassant dans `parse_dream_capability_registry`, LA fonction que
+le serveur utilise. Pas une copie de ses règles — la fonction. Un registre que
+le serveur refuserait ne peut donc pas sortir de l'outil.
+"""
+
+from __future__ import annotations
+
+import json
+import stat
+from pathlib import Path
+
+import pytest
+from scripts import mint_dream_capability_registry as mint
+
+from brain_v42.mcp.dream_capabilities import (
+    DREAM_PHASE_TOOL_ALLOWLISTS,
+    DreamCapabilityConfigurationError,
+    parse_dream_capability_registry,
+)
+
+_ADMIN = "admin-token-for-tests-only-not-a-real-secret"
+
+
+def _registry_payload(path: Path) -> dict:
+    line = path.read_text(encoding="utf-8").strip()
+    assert line.startswith("MCP_HTTP_DREAM_TOKENS="), line[:40]
+    return json.loads(line.removeprefix("MCP_HTTP_DREAM_TOKENS="))
+
+
+def test_the_matrix_is_complete_for_every_project(tmp_path: Path) -> None:
+    """Le parseur exige les SIX phases par projet, sinon il refuse tout.
+
+    Ce n'est pas une politesse : un projet à cinq phases fait lever
+    `parse_dream_capability_registry` au DÉMARRAGE du serveur MCP, donc la
+    production ne repart pas. Mieux vaut que l'outil de frappe ne puisse pas
+    produire ça.
+    """
+    out = tmp_path / "dream-tokens.env"
+    mint.mint(["alpha", "beta"], out, admin_token=_ADMIN)
+
+    payload = _registry_payload(out)
+    for project in ("alpha", "beta"):
+        phases = {key.rsplit(":", 1)[1] for key in payload if key.startswith(f"{project}:")}
+        assert phases == set(DREAM_PHASE_TOOL_ALLOWLISTS)
+
+
+def test_the_output_round_trips_through_the_production_parser(tmp_path: Path) -> None:
+    """LA garde. L'outil ne peut pas frapper ce que le serveur refuserait."""
+    out = tmp_path / "dream-tokens.env"
+    mint.mint(["alpha", "beta"], out, admin_token=_ADMIN)
+
+    registry = parse_dream_capability_registry(
+        json.dumps(_registry_payload(out)), admin_token=_ADMIN
+    )
+
+    assert len(registry.profiles) == 2 * len(DREAM_PHASE_TOOL_ALLOWLISTS)
+    for phase in DREAM_PHASE_TOOL_ALLOWLISTS:
+        assert registry.active_token_for("alpha", phase).get_secret_value()
+
+
+def test_every_token_is_distinct(tmp_path: Path) -> None:
+    """Le parseur rejette un doublon, mais l'outil ne doit pas en produire.
+
+    Un doublon entre deux profils signifierait deux (projet, phase) partageant
+    une identité : le middleware lirait la mauvaise et scoperait le mauvais
+    projet.
+    """
+    out = tmp_path / "dream-tokens.env"
+    mint.mint(["alpha", "beta", "gamma"], out, admin_token=_ADMIN)
+
+    payload = _registry_payload(out)
+    tokens = [profile["active"] for profile in payload.values()]
+    tokens += [token for profile in payload.values() for token in profile["accepted"]]
+
+    assert len(tokens) == len(set(tokens))
+
+
+def test_a_collision_with_the_admin_token_is_refused(tmp_path: Path) -> None:
+    """Un profil qui porterait le bearer admin donnerait `brain:admin` à une phase."""
+    out = tmp_path / "dream-tokens.env"
+    with pytest.raises(DreamCapabilityConfigurationError):
+        mint.mint(["alpha"], out, admin_token=_ADMIN, _token_source=lambda: _ADMIN)
+
+
+def test_the_file_is_written_private(tmp_path: Path) -> None:
+    """0600. Le preflight MCP l'exige et refuse le service sinon."""
+    out = tmp_path / "dream-tokens.env"
+    mint.mint(["alpha"], out, admin_token=_ADMIN)
+
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+
+
+def test_no_token_material_reaches_stdout_or_stderr(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Le runbook l'interdit : jamais dans l'historique, un diff ou un ticket."""
+    out = tmp_path / "dream-tokens.env"
+    mint.mint(["alpha"], out, admin_token=_ADMIN)
+    captured = capsys.readouterr()
+
+    payload = _registry_payload(out)
+    for profile in payload.values():
+        assert profile["active"] not in captured.out
+        assert profile["active"] not in captured.err
+    assert _ADMIN not in captured.out
+    assert _ADMIN not in captured.err
+
+
+def test_an_existing_file_is_never_silently_overwritten(tmp_path: Path) -> None:
+    """Écraser un registre vivant invalide les bearers que les phases portent.
+
+    Le résultat serait 401 sur toute la nuit suivante, donc « 6/6 OK » sur du
+    vide. On refuse, et l'appelant décide.
+    """
+    out = tmp_path / "dream-tokens.env"
+    mint.mint(["alpha"], out, admin_token=_ADMIN)
+
+    with pytest.raises(FileExistsError):
+        mint.mint(["alpha"], out, admin_token=_ADMIN)
+
+
+def test_the_project_keys_are_canonicalised_and_rejected_when_malformed(
+    tmp_path: Path,
+) -> None:
+    """Le parseur exige la clé CANONIQUE : `brain_v42` y ferait lever."""
+    out = tmp_path / "dream-tokens.env"
+    mint.mint(["brain_v42"], out, admin_token=_ADMIN)
+
+    assert all(key.startswith("brain-v42:") for key in _registry_payload(out))
+
+    with pytest.raises(ValueError):
+        mint.mint(["Not A Key"], tmp_path / "other.env", admin_token=_ADMIN)
+
+
+def test_a_duplicate_project_is_refused(tmp_path: Path) -> None:
+    """Deux fois le même projet écraserait silencieusement ses six profils."""
+    with pytest.raises(ValueError):
+        mint.mint(["alpha", "alpha"], tmp_path / "x.env", admin_token=_ADMIN)
+
+
+def test_an_empty_pool_is_refused(tmp_path: Path) -> None:
+    """Le parseur exige au moins un projet complet ; l'outil s'arrête avant."""
+    with pytest.raises(ValueError):
+        mint.mint([], tmp_path / "x.env", admin_token=_ADMIN)

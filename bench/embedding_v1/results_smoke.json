@@ -1,0 +1,270 @@
+{
+  "bench_version": "v1",
+  "seed": "2026-04-12",
+  "gpu_total_mib": 16303,
+  "n_corpus": 305,
+  "n_queries": 30,
+  "candidates": [
+    {
+      "name": "qodo",
+      "reliability_flag": true,
+      "reliability_reason": "",
+      "vram_used_warmup_mib": 7167,
+      "vram_used_after100_mib": 0,
+      "vram_used_after1000_mib": 0,
+      "vram_peak_mib": 8214,
+      "latency_p50_ms": 21.399096498498693,
+      "latency_p95_ms": 67.18071999785025,
+      "latency_p99_ms": 70.66745399788488,
+      "recall_at_1": 0.7666666666666667,
+      "recall_at_5": 0.9333333333333333,
+      "recall_at_10": 0.9333333333333333,
+      "mrr": 0.8413194444444444,
+      "ndcg_at_10": 0.8630929753571458,
+      "per_type": {
+        "learning": {
+          "recall@1": 0.6666666666666666,
+          "recall@5": 0.8888888888888888,
+          "recall@10": 0.8888888888888888,
+          "mrr": 0.7725694444444444,
+          "ndcg@10": 0.7995994033730207,
+          "n": 18
+        },
+        "feature": {
+          "recall@1": 1.0,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 1.0,
+          "ndcg@10": 1.0,
+          "n": 3
+        },
+        "plan_chunk": {
+          "recall@1": 0.6666666666666666,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 0.7777777777777778,
+          "ndcg@10": 0.8333333333333334,
+          "n": 3
+        },
+        "runbook": {
+          "recall@1": 1.0,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 1.0,
+          "ndcg@10": 1.0,
+          "n": 3
+        },
+        "decision": {
+          "recall@1": 1.0,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 1.0,
+          "ndcg@10": 1.0,
+          "n": 3
+        }
+      },
+      "per_variant": {
+        "literal-paraphrase": {
+          "recall@1": 0.9,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 0.95,
+          "ndcg@10": 0.9630929753571458,
+          "n": 10
+        },
+        "abstract-question": {
+          "recall@1": 0.5,
+          "recall@5": 0.8,
+          "recall@10": 0.8,
+          "mrr": 0.6239583333333333,
+          "ndcg@10": 0.6630929753571457,
+          "n": 10
+        },
+        "keyword-bag": {
+          "recall@1": 0.9,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 0.95,
+          "ndcg@10": 0.9630929753571458,
+          "n": 10
+        }
+      },
+      "total_queries": 30,
+      "total_corpus": 305
+    },
+    {
+      "name": "qwen3-4b",
+      "reliability_flag": true,
+      "reliability_reason": "",
+      "vram_used_warmup_mib": 7533,
+      "vram_used_after100_mib": 0,
+      "vram_used_after1000_mib": 0,
+      "vram_peak_mib": 7563,
+      "latency_p50_ms": 26.703577997977845,
+      "latency_p95_ms": 41.56346700619906,
+      "latency_p99_ms": 49.83429099956993,
+      "recall_at_1": 0.6333333333333333,
+      "recall_at_5": 0.9,
+      "recall_at_10": 0.9333333333333333,
+      "mrr": 0.7414814814814814,
+      "ndcg_at_10": 0.7866151541472965,
+      "per_type": {
+        "learning": {
+          "recall@1": 0.4444444444444444,
+          "recall@5": 0.8333333333333334,
+          "recall@10": 0.8888888888888888,
+          "mrr": 0.6135802469135803,
+          "ndcg@10": 0.6784223231769084,
+          "n": 18
+        },
+        "feature": {
+          "recall@1": 1.0,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 1.0,
+          "ndcg@10": 1.0,
+          "n": 3
+        },
+        "plan_chunk": {
+          "recall@1": 0.6666666666666666,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 0.7333333333333334,
+          "ndcg@10": 0.7956176024115139,
+          "n": 3
+        },
+        "runbook": {
+          "recall@1": 1.0,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 1.0,
+          "ndcg@10": 1.0,
+          "n": 3
+        },
+        "decision": {
+          "recall@1": 1.0,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 1.0,
+          "ndcg@10": 1.0,
+          "n": 3
+        }
+      },
+      "per_variant": {
+        "literal-paraphrase": {
+          "recall@1": 0.7,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 0.7866666666666666,
+          "ndcg@10": 0.8386852807234542,
+          "n": 10
+        },
+        "abstract-question": {
+          "recall@1": 0.5,
+          "recall@5": 0.8,
+          "recall@10": 0.9,
+          "mrr": 0.6311111111111111,
+          "ndcg@10": 0.6949742310041438,
+          "n": 10
+        },
+        "keyword-bag": {
+          "recall@1": 0.7,
+          "recall@5": 0.9,
+          "recall@10": 0.9,
+          "mrr": 0.8066666666666666,
+          "ndcg@10": 0.8261859507142916,
+          "n": 10
+        }
+      },
+      "total_queries": 30,
+      "total_corpus": 305
+    },
+    {
+      "name": "jina-v3",
+      "reliability_flag": true,
+      "reliability_reason": "",
+      "vram_used_warmup_mib": 4381,
+      "vram_used_after100_mib": 0,
+      "vram_used_after1000_mib": 0,
+      "vram_peak_mib": 4869,
+      "latency_p50_ms": 70.68368299951544,
+      "latency_p95_ms": 178.46702299721073,
+      "latency_p99_ms": 182.69370000052731,
+      "recall_at_1": 0.7666666666666667,
+      "recall_at_5": 0.9666666666666667,
+      "recall_at_10": 0.9666666666666667,
+      "mrr": 0.8433333333333334,
+      "ndcg_at_10": 0.8730845355072103,
+      "per_type": {
+        "learning": {
+          "recall@1": 0.6666666666666666,
+          "recall@5": 0.9444444444444444,
+          "recall@10": 0.9444444444444444,
+          "mrr": 0.7759259259259259,
+          "ndcg@10": 0.8162520036231282,
+          "n": 18
+        },
+        "feature": {
+          "recall@1": 1.0,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 1.0,
+          "ndcg@10": 1.0,
+          "n": 3
+        },
+        "plan_chunk": {
+          "recall@1": 0.6666666666666666,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 0.7777777777777778,
+          "ndcg@10": 0.8333333333333334,
+          "n": 3
+        },
+        "runbook": {
+          "recall@1": 1.0,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 1.0,
+          "ndcg@10": 1.0,
+          "n": 3
+        },
+        "decision": {
+          "recall@1": 1.0,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 1.0,
+          "ndcg@10": 1.0,
+          "n": 3
+        }
+      },
+      "per_variant": {
+        "literal-paraphrase": {
+          "recall@1": 0.8,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 0.875,
+          "ndcg@10": 0.906160631164485,
+          "n": 10
+        },
+        "abstract-question": {
+          "recall@1": 0.7,
+          "recall@5": 0.9,
+          "recall@10": 0.9,
+          "mrr": 0.7716666666666667,
+          "ndcg@10": 0.8,
+          "n": 10
+        },
+        "keyword-bag": {
+          "recall@1": 0.8,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 0.8833333333333334,
+          "ndcg@10": 0.9130929753571457,
+          "n": 10
+        }
+      },
+      "total_queries": 30,
+      "total_corpus": 305
+    }
+  ]
+}

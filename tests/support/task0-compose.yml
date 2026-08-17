@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
+    pull_policy: never
+    container_name: ${TASK0_CONTAINER:?TASK0_CONTAINER is required}
+    network_mode: bridge
+    environment:
+      POSTGRES_USER: brain
+      POSTGRES_DB: ${TASK0_DATABASE:?TASK0_DATABASE is required}
+      POSTGRES_HOST_AUTH_METHOD: trust
+    tmpfs:
+      - /var/lib/postgresql/data:rw,size=1g
+    ports:
+      - 127.0.0.1::5432
+    restart: "no"

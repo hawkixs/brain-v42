@@ -1,0 +1,7 @@
+models/
+gold_v1.jsonl
+results_v1.json
+report_v1.md
+__pycache__/
+*.pyc
+cutover/

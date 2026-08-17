@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+# Les sauvegardes de .env portent les mêmes secrets. Sans cette ligne elles
+# apparaissent en untracked-mais-pas-ignoré, c'est-à-dire éligibles à un
+# `git add -A` distrait — mesuré le 2026-08-14 sur .env.bak-20260814-131444.
+.env.bak-*
+.env.*.bak
+.secrets/
+
+# Operator-private project topology (see config/project_hierarchy.example.yml).
+# Real ecosystem project names/relationships aren't repo content.
+config/project_hierarchy.yml
+
+# Testing
+.coverage
+htmlcov/
+coverage.xml
+report.xml
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# uv
+.uv-cache/
+
+# Data volumes (bind-mount from docker-compose).
+# Ignore the whole container-owned dirs. Postgres takes ownership of
+# data/postgres as mode 0700, so a tracked file *inside* it forces git to
+# descend and fail with exit 128 (permission denied) on status/diff/clean.
+# The keep-file is anchored at the host-owned data/ level instead.
+data/postgres/
+data/neo4j/
+
+# Benchmark results
+results/
+
+# Worktrees
+.worktrees/
+
+# Claude Code (machine-local settings, skills, worktrees)
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Script logs (dream, domain_backfill, etc.)
+logs/
+.gitnexus
+
+# Agent instruction files are operator-local, never published
+CLAUDE.md
+AGENTS.md
