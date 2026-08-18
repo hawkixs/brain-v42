@@ -236,7 +236,7 @@ async def test_conflict_defers_business_and_builds_metrics_only_server_after_acq
     resources.legacy_factory = legacy_factory
     resources.server_factory = MagicMock(side_effect=server_factory)
     forbidden_constructor = MagicMock(side_effect=AssertionError("business constructed"))
-    monkeypatch.setattr(runtime_module, "RerankerClient", forbidden_constructor)
+    monkeypatch.setattr(runtime_module, "build_reranker_client", forbidden_constructor)
     monkeypatch.setattr(runtime_module, "FeatureDedupJob", forbidden_constructor)
     monkeypatch.setattr(runtime_module, "GitLabIngestor", forbidden_constructor, raising=False)
     monkeypatch.setattr(runtime_module, "run_cleanup_loop", AsyncMock(), raising=False)
@@ -406,7 +406,7 @@ def test_import_error_disables_webhook_but_preserves_legacy_dedup(
     assert legacy_builder is not None, "legacy composition needs a narrow fallback seam"
     reranker = CountingCloser("reranker", [])
     dedup_job = MagicMock()
-    monkeypatch.setattr(runtime_module, "RerankerClient", MagicMock(return_value=reranker))
+    monkeypatch.setattr(runtime_module, "build_reranker_client", MagicMock(return_value=reranker))
     monkeypatch.setattr(runtime_module, "FeatureDedupJob", MagicMock(return_value=dedup_job))
     real_import = builtins.__import__
 

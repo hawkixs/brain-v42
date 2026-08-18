@@ -145,6 +145,19 @@ class Settings(BaseSettings):
     corpus requires a full ``scripts/regen_embeddings.py`` pass, otherwise
     prefixed and unprefixed vectors share one column."""
 
+    # --- Reranker backend (pluggable wire shape) ---
+    # "shim"   — the private POST /rerank contract (raw cross-encoder logits).
+    # "cohere" — POST /v1/rerank, implemented by TEI, Jina and vLLM.
+    rerank_backend: Literal["shim", "cohere"] = Field(
+        default="shim", validation_alias=_brain_alias("RERANK_BACKEND")
+    )
+    rerank_model: str = Field(default="", validation_alias=_brain_alias("RERANK_MODEL"))
+    """Model name sent by the cohere backend. Required by hosted providers."""
+
+    rerank_api_key: SecretStr = Field(
+        default=SecretStr(""), repr=False, validation_alias=_brain_alias("RERANK_API_KEY")
+    )
+
     # --- Code Mode (experimental) ---
     brain_code_mode: bool = False
 

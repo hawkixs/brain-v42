@@ -7,8 +7,9 @@ import pytest
 from pydantic import SecretStr
 
 from brain_v42.config import Settings
-from brain_v42.services.embedding_factory import build_embedding_service
+from brain_v42.services.embedding_factory import build_embedding_service, build_reranker_client
 from brain_v42.services.embedding_wire import OpenAIWire, ShimWire
+from brain_v42.services.rerank_wire import CohereRerankWire, ShimRerankWire
 
 DSN = "postgresql+asyncpg://brain:brain@localhost:5433/brain"
 
@@ -56,6 +57,25 @@ class TestApiKeyHeader:
             _settings(embedding_api_key=SecretStr("sk-test-key"), embedding_backend="openai")
         )
         assert service._get_client().headers["authorization"] == "Bearer sk-test-key"
+
+
+class TestRerankerBackendSelection:
+    def test_default_settings_build_the_shim_rerank_wire(self) -> None:
+        assert isinstance(build_reranker_client(_settings())._wire, ShimRerankWire)
+
+    def test_cohere_backend_builds_the_cohere_wire(self) -> None:
+        client = build_reranker_client(
+            _settings(rerank_backend="cohere", rerank_model="rerank-english-v3.0")
+        )
+        assert isinstance(client._wire, CohereRerankWire)
+        assert client._wire._model == "rerank-english-v3.0"
+
+    def test_reranker_url_and_timeout_are_wired_through(self) -> None:
+        client = build_reranker_client(
+            _settings(reranker_url="http://tei.test:8080", reranker_timeout=3.0)
+        )
+        assert client._base_url == "http://tei.test:8080"
+        assert client._timeout == 3.0
 
 
 class TestTheBuiltClientActuallySpeaksToAnOpenAIEndpoint:

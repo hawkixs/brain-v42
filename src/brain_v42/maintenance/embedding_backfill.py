@@ -32,7 +32,10 @@ from brain_v42.services.embedding_backfill import (
     EmbeddingBacklogRepository,
     persist_backfill_metrics,
 )
-from brain_v42.services.embedding_factory import build_embedding_service
+from brain_v42.services.embedding_factory import (
+    build_embedding_service,
+    build_reranker_client,
+)
 from brain_v42.services.embedding_text import EmbeddingEntityType
 from brain_v42.services.feature_linker import FeatureLinker
 from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
@@ -61,10 +64,7 @@ def build_linkers(
     embedding_svc: GPUEmbeddingService,
 ) -> LinkerDependencies:
     """Build the same semantic linkers used by the MCP creation services."""
-    reranker = RerankerClient(
-        base_url=settings.reranker_url,
-        timeout=settings.reranker_timeout,
-    )
+    reranker = build_reranker_client(settings)
     cluster_guard = ClusterGuard(
         session_factory=session_factory,
         embedding_svc=embedding_svc,

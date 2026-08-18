@@ -41,11 +41,13 @@ from brain_v42.services.brain_graph_projection import (
     Neo4jGraphSnapshotReader,
     PostgresGraphSnapshotReader,
 )
-from brain_v42.services.embedding_factory import build_embedding_service
+from brain_v42.services.embedding_factory import (
+    build_embedding_service,
+    build_reranker_client,
+)
 from brain_v42.services.feature_dedup_job import FeatureDedupJob
 from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
 from brain_v42.services.graph_service import GraphService
-from brain_v42.services.reranker_client import RerankerClient
 from brain_v42.services.status_engine import StatusEngine
 
 logger = structlog.get_logger(__name__)
@@ -311,7 +313,7 @@ def _build_legacy_resources(
     lease: AutomationOwnershipLease,
 ) -> LegacyAutomationResources:
     """Build mandatory dedup first, then the optional webhook boundary."""
-    reranker = RerankerClient(base_url=settings.reranker_url, timeout=settings.reranker_timeout)
+    reranker = build_reranker_client(settings)
     dedup_job = FeatureDedupJob(
         session_factory,
         reranker,

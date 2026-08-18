@@ -14,6 +14,8 @@ import structlog
 from brain_v42.config import Settings
 from brain_v42.services.embedding_wire import EmbeddingWire, OpenAIWire, ShimWire
 from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
+from brain_v42.services.rerank_wire import CohereRerankWire, RerankWire, ShimRerankWire
+from brain_v42.services.reranker_client import RerankerClient
 
 logger = structlog.get_logger(__name__)
 
@@ -47,4 +49,25 @@ def build_embedding_service(settings: Settings) -> GPUEmbeddingService:
         query_prefix=settings.embedding_query_prefix,
         document_prefix=settings.embedding_document_prefix,
         api_key=settings.embedding_api_key.get_secret_value(),
+    )
+
+
+def build_rerank_wire(settings: Settings) -> RerankWire:
+    """Select the rerank wire format named by ``settings.rerank_backend``."""
+    if settings.rerank_backend == "cohere":
+        return CohereRerankWire(model=settings.rerank_model)
+    return ShimRerankWire()
+
+
+def build_reranker_client(settings: Settings) -> RerankerClient:
+    """Build the reranker client configured for this deployment.
+
+    Reranking stays best-effort: an unavailable or misconfigured reranker
+    makes HybridReranker fall back to RRF ordering rather than fail a search.
+    """
+    return RerankerClient(
+        base_url=settings.reranker_url,
+        timeout=settings.reranker_timeout,
+        wire=build_rerank_wire(settings),
+        api_key=settings.rerank_api_key.get_secret_value(),
     )

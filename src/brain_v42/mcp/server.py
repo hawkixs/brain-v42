@@ -68,7 +68,10 @@ from brain_v42.services.auto_linker import AutoLinker
 from brain_v42.services.brain_service import BrainService
 from brain_v42.services.decision_service import DecisionService
 from brain_v42.services.durable_graph_service import build_durable_graph_stack
-from brain_v42.services.embedding_factory import build_embedding_service
+from brain_v42.services.embedding_factory import (
+    build_embedding_service,
+    build_reranker_client,
+)
 from brain_v42.services.feature_creation_service import FeatureCreationService
 from brain_v42.services.feature_linker import FeatureLinker
 from brain_v42.services.graph_projection_schema import ensure_graph_projection_schema
@@ -475,12 +478,8 @@ def build_services() -> dict[str, Any]:
     )
 
     # Reranker client (HTTP, for ClusterGuard grey-zone scoring)
-    from brain_v42.services.reranker_client import RerankerClient  # noqa: PLC0415
 
-    reranker_client = RerankerClient(
-        base_url=settings.reranker_url,
-        timeout=settings.reranker_timeout,
-    )
+    reranker_client = build_reranker_client(settings)
 
     # StatusEngine (pure logic — monotonic feature status heuristic)
     from brain_v42.services.status_engine import StatusEngine  # noqa: PLC0415

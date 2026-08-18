@@ -33,7 +33,7 @@ def test_automation_builder_wires_typed_runtime_from_injected_engine(
     server_factory = MagicMock(return_value=server)
     monkeypatch.setattr(runtime_module, "AutomationOwnershipLease", lease_factory)
     monkeypatch.setattr(runtime_module, "build_embedding_service", embedding_factory, raising=False)
-    monkeypatch.setattr(runtime_module, "RerankerClient", reranker_factory, raising=False)
+    monkeypatch.setattr(runtime_module, "build_reranker_client", reranker_factory, raising=False)
     monkeypatch.setattr(runtime_module, "ClusterGuard", cluster_guard_factory, raising=False)
     monkeypatch.setattr(runtime_module, "GitLabIngestor", ingestor_factory, raising=False)
     monkeypatch.setattr(runtime_module, "FeatureDedupJob", dedup_factory, raising=False)
