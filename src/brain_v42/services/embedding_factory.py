@@ -10,14 +10,41 @@ search-quality drift.
 from __future__ import annotations
 
 import structlog
+from pydantic import ValidationError
 
-from brain_v42.config import Settings
+from brain_v42.config import Settings, get_settings
 from brain_v42.services.embedding_wire import EmbeddingWire, OpenAIWire, ShimWire
 from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
 from brain_v42.services.rerank_wire import CohereRerankWire, RerankWire, ShimRerankWire
 from brain_v42.services.reranker_client import RerankerClient
 
 logger = structlog.get_logger(__name__)
+
+
+def settings_for_standalone_script(postgres_url: str) -> Settings:
+    """Settings for a script that already knows its own database URL.
+
+    ``get_settings()`` requires POSTGRES_URL in the environment and insists on
+    the ``postgresql+asyncpg://`` form. Standalone scripts here take
+    ``--postgres-url``, default to a plain ``postgresql://`` DSN and are
+    expected to run from any working directory with no ``.env`` in reach — so
+    calling ``get_settings()`` unguarded turns "no env var" into a crash before
+    the script does anything at all.
+
+    Everything except the database URL still comes from the environment, so the
+    embedding backend, model and prefixes are the ones actually configured.
+    """
+    try:
+        return get_settings()
+    except ValidationError:
+        return Settings(postgres_url=as_asyncpg_dsn(postgres_url))
+
+
+def as_asyncpg_dsn(url: str) -> str:
+    """Normalise a plain ``postgresql://`` DSN to the driver form Settings wants."""
+    if url.startswith("postgresql+asyncpg://"):
+        return url
+    return url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
 
 def build_embedding_wire(settings: Settings) -> EmbeddingWire:

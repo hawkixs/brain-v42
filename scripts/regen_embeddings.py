@@ -29,7 +29,10 @@ import asyncpg
 import httpx
 
 from brain_v42.config import Settings, get_settings
-from brain_v42.services.embedding_factory import build_embedding_service
+from brain_v42.services.embedding_factory import (
+    build_embedding_service,
+    settings_for_standalone_script,
+)
 from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
 
 # ─── Entity type definitions ──────────────────────────────────────────────────
@@ -46,6 +49,11 @@ TEXT_FIELDS: dict[str, list[str]] = {
     "runbooks": ["title", "description", "trigger"],
     "adrs": ["title", "context", "decision"],
 }
+
+
+#: Per-request budget for a regen batch. Batch work is slower than one embed,
+#: and the pre-façade code passed this explicitly on every POST.
+_BATCH_TIMEOUT_SECONDS = 60.0
 
 
 def _bounded_batch_size(value: str) -> int:
@@ -143,9 +151,15 @@ def build_service(
     and the ``lru_cache`` behind ``get_settings()`` all agreeing.
     """
     resolved = settings if settings is not None else get_settings()
+    overrides: dict[str, object] = {
+        # Batch work is slower than a single embed; the pre-façade code passed
+        # timeout=60.0 per request and that budget must not silently shrink to
+        # the 30 s interactive default.
+        "embedding_timeout": max(resolved.embedding_timeout, _BATCH_TIMEOUT_SECONDS),
+    }
     if service_url:
-        resolved = resolved.model_copy(update={"embedding_service_url": service_url})
-    return build_embedding_service(resolved)
+        overrides["embedding_service_url"] = service_url
+    return build_embedding_service(resolved.model_copy(update=overrides))
 
 
 async def embed_batch(
@@ -342,14 +356,15 @@ async def main() -> int:
     # what keeps this banner honest. Recomputing it from os.environ here would
     # miss the BRAIN_-prefixed alias that Settings prefers, and the script
     # would print one endpoint while embedding against another.
-    embedding_svc = build_service(args.service_url)
+    settings = settings_for_standalone_script(postgres_url)
+    embedding_svc = build_service(args.service_url, settings=settings)
 
     # Print configuration
     print("=" * 60)
     print("brain_v42 — Embedding Regeneration")
     print("=" * 60)
     print(f"  PostgreSQL:  {postgres_url}")
-    print(f"  Embedding:   {embedding_svc._base_url} ({get_settings().embedding_backend})")
+    print(f"  Embedding:   {embedding_svc._base_url} ({settings.embedding_backend})")
     print(f"  Entities:    {', '.join(entity_types)}")
     print(f"  Batch size:  {args.batch_size}")
     print(f"  Dry run:     {args.dry_run}")

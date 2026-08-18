@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
+from brain_v42.services.gpu_embedding_service import EmbeddingUnavailable, GPUEmbeddingService
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -371,7 +371,13 @@ class TestRetryOn5xx:
         mock_client.post = AsyncMock(return_value=fail_response)
         service._client = mock_client
 
-        with pytest.raises(httpx.HTTPStatusError):
+        # 4xx is still not retried — that is what this test is about. It now
+        # surfaces as EmbeddingUnavailable rather than a raw HTTPStatusError:
+        # a 4xx from an embedding endpoint (rejected key, rate limit, unknown
+        # model) still means "no embedding right now", and letting it escape
+        # raw took down brain_search instead of degrading it to FTS. See
+        # test_embedding_degradation_contract.py.
+        with pytest.raises(EmbeddingUnavailable):
             await service.embed("test")
 
         # Should NOT retry — only 1 call

@@ -151,6 +151,10 @@ def _validate_vector(embedding: Any) -> list[float]:
     """Refuse anything pgvector could not store, at the boundary."""
     if isinstance(embedding, str) or not isinstance(embedding, list):
         raise ValueError(f"embedding is not a float array (got {type(embedding).__name__})")
+    if not embedding:
+        # An empty vector is accepted by json and rejected by pgvector, and in
+        # between it would be stored as "healthy" while matching nothing.
+        raise ValueError("embedding is empty")
     out: list[float] = []
     for value in embedding:
         if isinstance(value, bool) or not isinstance(value, (int, float)):

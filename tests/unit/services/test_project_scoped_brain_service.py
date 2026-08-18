@@ -123,6 +123,13 @@ def _brain(
         embedding.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
     else:
         embedding.embed.return_value = FAKE_EMBEDDING
+        # A caller-supplied double stubs embed; the fan-out calls embed_query.
+        # Without this the search path would hit a bare MagicMock and fail to
+        # await, which is a test artefact rather than a real behaviour.
+        if not isinstance(getattr(embedding, "embed_query", None), AsyncMock):
+            embedding.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
+        else:
+            embedding.embed_query.return_value = FAKE_EMBEDDING
     return (
         BrainService(
             decision_svc=decision,

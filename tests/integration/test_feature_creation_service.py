@@ -31,6 +31,13 @@ class _BarrierEmbeddingService:
         await self._both_started.wait()
         return [0.25] * 1536
 
+    async def embed_query(self, _text: str) -> list[float]:
+        self._calls += 1
+        if self._calls == 2:
+            self._both_started.set()
+        await self._both_started.wait()
+        return [0.25] * 1536
+
 
 async def test_concurrent_exact_creates_commit_once_and_conflict_once(
     session_factory: async_sessionmaker[AsyncSession],

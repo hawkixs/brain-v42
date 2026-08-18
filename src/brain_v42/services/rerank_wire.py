@@ -31,6 +31,8 @@ _PROBABILITY_EPSILON = 1e-7
 class RerankWire(Protocol):
     """Request shaping and response parsing for one rerank wire format."""
 
+    health_path: str
+
     def request(self, query: str, candidates: list[str]) -> tuple[str, dict[str, Any]]:
         """Return the (path, json body) that scores ``candidates``."""
         ...
@@ -47,6 +49,8 @@ class ShimRerankWire:
     is exactly what HybridReranker expects, so parsing is a passthrough.
     """
 
+    health_path = "/health"
+
     def request(self, query: str, candidates: list[str]) -> tuple[str, dict[str, Any]]:
         return "/rerank", {"query": query, "candidates": candidates}
 
@@ -61,8 +65,14 @@ class CohereRerankWire:
     never by position, always by the reported ``index``.
     """
 
-    def __init__(self, model: str) -> None:
+    def __init__(self, model: str, *, health_path: str = "/health") -> None:
         self._model = model
+        # Self-hosted Cohere-style servers (TEI, Jina) expose /health, same as
+        # the reference shim. Hosted APIs expose no liveness route at all — set
+        # this to a path that answers 200, or is_available() pins the reranker
+        # to permanently-unavailable and ClusterGuard silently degrades to RRF
+        # for the life of the process.
+        self.health_path = health_path
 
     def request(self, query: str, candidates: list[str]) -> tuple[str, dict[str, Any]]:
         return "/v1/rerank", {
@@ -102,6 +112,18 @@ class CohereRerankWire:
 
 
 def _to_logit(probability: float) -> float:
-    """Invert the sigmoid HybridReranker is about to apply."""
+    """Invert the sigmoid HybridReranker is about to apply.
+
+    Only defined for a relevance score in [0, 1], which is what the Cohere
+    shape specifies. A provider answering raw logits instead would land every
+    out-of-range score on the same clamped value and flatten the ranking into
+    ties — so that case fails closed, and HybridReranker degrades to RRF
+    ordering rather than serving a silently destroyed order.
+    """
+    if not 0.0 <= probability <= 1.0:
+        raise ValueError(
+            f"relevance_score {probability} is outside [0, 1]; this endpoint does not "
+            "speak the Cohere score contract"
+        )
     clamped = min(max(probability, _PROBABILITY_EPSILON), 1.0 - _PROBABILITY_EPSILON)
     return math.log(clamped / (1.0 - clamped))

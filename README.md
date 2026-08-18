@@ -60,7 +60,7 @@ embeddings, for example a local Ollama:
 BRAIN_EMBEDDING_BACKEND=openai
 BRAIN_EMBEDDING_SERVICE_URL=http://localhost:11434
 BRAIN_EMBEDDING_MODEL=nomic-embed-text
-BRAIN_EMBEDDING_DIMENSION=768
+EMBEDDING_DIMENSION=768   # unprefixed on purpose — see Dimension below
 ```
 
 Reranking is separately pluggable via `BRAIN_RERANK_BACKEND` (`shim`, or `cohere`
@@ -89,6 +89,11 @@ ends up holding two incompatible vector populations with nothing to flag it.
 `EMBEDDING_DIMENSION` is chosen at install time and must be ≤ 2000, the ceiling
 pgvector's HNSW index accepts. Switching models later means re-embedding the corpus
 (`scripts/regen_embeddings.py`).
+
+Set it **unprefixed**. Every other setting here also answers to a `BRAIN_`-prefixed
+name, but the ORM column widths are read straight from `EMBEDDING_DIMENSION` in
+`db/tables.py`, so `BRAIN_EMBEDDING_DIMENSION=768` alone would leave the tables at
+1536 while the rest of the process believed 768.
 
 One caveat to know before a non-default install: the ORM honours this setting, but
 four migrations (`002`, `005`, `009`, `014`) hardcode `vector(1536)`, so a fresh

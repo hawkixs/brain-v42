@@ -23,6 +23,9 @@ class _FakeEmbeddingService:
     async def embed(self, text: str) -> list[float]:
         return [0.1] * 1536
 
+    async def embed_query(self, text: str) -> list[float]:
+        return [0.1] * 1536
+
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         return [[0.1] * 1536 for _ in texts]
 

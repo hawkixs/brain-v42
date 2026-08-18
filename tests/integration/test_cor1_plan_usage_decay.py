@@ -39,6 +39,9 @@ class _FixedEmbeddingService:
     async def embed(self, _query: str) -> list[float]:
         return self._embedding
 
+    async def embed_query(self, _query: str) -> list[float]:
+        return self._embedding
+
 
 def _plan_payload(*, marker: str, project_key: str, title: str) -> IndexedPlanCreate:
     return IndexedPlanCreate(

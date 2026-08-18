@@ -20,6 +20,8 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from typing import TypeVar
 
 import httpx
 import structlog
@@ -27,6 +29,8 @@ import structlog
 from brain_v42.services.embedding_wire import EmbeddingWire, ShimWire
 
 logger = structlog.get_logger(__name__)
+
+_T = TypeVar("_T")
 
 
 class EmbeddingUnavailable(Exception):
@@ -40,7 +44,8 @@ class EmbeddingUnavailable(Exception):
     differently:
         - "gpu_busy"     — supervisor returned 503 gpu_busy after retries
         - "unreachable"  — TCP layer never produced a response
-        - "other"        — non-503 5xx that exhausted retries
+        - "other"        — non-503 5xx that exhausted retries, any 4xx, or a
+                           200 whose payload the wire could not parse
     """
 
     def __init__(self, message: str, *, kind: str = "other") -> None:
@@ -62,7 +67,11 @@ class GPUEmbeddingService:
       sync construction and avoid event loop issues.
     - Retry with backoff: transient errors (ConnectionError, TimeoutException,
       HTTP 5xx) retried up to max_retries times with exponential backoff
-      (0.5s, 1s, 2s). HTTP 4xx errors propagate immediately.
+      (0.5s, 1s, 2s). 4xx is not retried but is still reported as
+      EmbeddingUnavailable, so callers degrade instead of failing.
+    - Every failure mode a caller can meet — transport, status, or an
+      unparseable 200 — arrives as EmbeddingUnavailable. That single exception
+      is what lets brain_search fall back to FTS.
     - L2 normalization done server-side: no client-side normalization needed.
     - Duck-typed interface: embed(), embed_texts(), similarity() match the
       contract expected by all domain services.
@@ -205,13 +214,48 @@ class GPUEmbeddingService:
                         kind="other",
                     ) from exc
                 else:
-                    raise  # 4xx propagates as-is
+                    # 4xx from an embedding endpoint still means "no embedding
+                    # right now" — a rejected API key, a rate limit, an unknown
+                    # model name. Surfacing it raw would take down brain_search
+                    # itself instead of degrading it to FTS, which is exactly
+                    # what the EmbeddingUnavailable contract exists to prevent.
+                    logger.warning(
+                        "gpu_embedding_service.client_error",
+                        status_code=code,
+                        error=str(exc),
+                    )
+                    raise EmbeddingUnavailable(
+                        f"HTTP {code} from the embedding endpoint",
+                        kind="other",
+                    ) from exc
 
         # Connection/timeout errors exhausted — treat as service unavailable.
         raise EmbeddingUnavailable(
             f"embedding service unreachable after {self._max_retries} retries",
             kind="unreachable",
         ) from last_error
+
+    @staticmethod
+    def _parsed(parse: Callable[[], _T]) -> _T:
+        """Run a wire parse, converting a malformed payload into unavailability.
+
+        A wire raises ValueError when the endpoint answers 200 with something
+        unusable — an error envelope while a model loads, a truncated result
+        set, base64 vectors. Left bare, that escapes ``EmbeddingUnavailable``
+        and takes down the whole brain_search call, while the transport-level
+        failures right next to it degrade politely to FTS. Same outcome for the
+        caller, so same exception.
+        """
+        try:
+            return parse()
+        except EmbeddingUnavailable:
+            raise
+        except Exception as exc:
+            logger.warning("gpu_embedding_service.malformed_response", error=str(exc))
+            raise EmbeddingUnavailable(
+                f"embedding endpoint returned an unusable payload: {exc}",
+                kind="other",
+            ) from exc
 
     @staticmethod
     def _is_gpu_busy_response(resp: httpx.Response) -> bool:
@@ -242,7 +286,7 @@ class GPUEmbeddingService:
         """
         path, body = self._wire.single_request(self._document_prefix + text)
         response = await self._request_with_retry("POST", path, json=body)
-        return self._wire.parse_single(response.json())
+        return self._parsed(lambda: self._wire.parse_single(response.json()))
 
     async def embed_query(self, text: str) -> list[float]:
         """Embed a SEARCH QUERY into a vector.
@@ -260,7 +304,7 @@ class GPUEmbeddingService:
         """
         path, body = self._wire.single_request(self._query_prefix + text)
         response = await self._request_with_retry("POST", path, json=body)
-        return self._wire.parse_single(response.json())
+        return self._parsed(lambda: self._wire.parse_single(response.json()))
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of DOCUMENTS into vectors.
@@ -278,7 +322,7 @@ class GPUEmbeddingService:
 
         path, body = self._wire.batch_request([self._document_prefix + t for t in texts])
         response = await self._request_with_retry("POST", path, json=body)
-        return self._wire.parse_batch(response.json(), expected=len(texts))
+        return self._parsed(lambda: self._wire.parse_batch(response.json(), expected=len(texts)))
 
     def similarity(self, vec_a: list[float], vec_b: list[float]) -> float:
         """Compute dot product similarity between two vectors.

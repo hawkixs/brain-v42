@@ -110,7 +110,7 @@ class RerankerClient:
         """
         try:
             client = self._get_client()
-            response = await client.get("/health")
+            response = await client.get(self._wire.health_path)
             return response.status_code == 200
         except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError):
             return False
