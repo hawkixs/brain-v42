@@ -2,9 +2,10 @@
 #
 # Only generated and vendored artifacts are excluded. Nothing that ships and
 # nothing under version control is allowlisted here: a real finding must stay
-# a finding. Triage of the current generic-api-key candidates happens during
-# the burn-in (see SECURITY_BURN_IN_UNTIL in .gitlab-ci.yml), and each one
-# resolves either as a fix or as its own dated entry — never as a blanket rule.
+# a finding. The security burn-in ended on 2026-08-18 with the scan blocking
+# (`continue-on-error` removed from security-gitleaks): every candidate below
+# was triaged as a fix or as its own dated entry — never as a blanket rule,
+# and any future finding fails the gate until it earns the same treatment.
 #
 # RULES FOR EVERY ENTRY BELOW — do not relax them to make a scan go green:
 #

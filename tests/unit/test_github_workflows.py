@@ -174,6 +174,21 @@ def test_delivery_rail_consumes_only_the_two_registry_secrets(
     assert secrets == {"REGISTRY_USER", "REGISTRY_PASSWORD"}
 
 
+def test_no_job_tolerates_failure() -> None:
+    """The security burn-in is over: every job blocks on red, on every rail.
+
+    `continue-on-error` renders a check that fails without failing the run —
+    the GitLab-era `allow_failure` in different clothes. The burn-in it served
+    ended with all nine jobs measured green on the public rail (PR #1,
+    2026-08-18); from here, a tolerated job is just an ignored one.
+    """
+    for path in sorted(WORKFLOW_DIRECTORY.iterdir()):
+        if not path.is_file() or path.suffix not in {".yml", ".yaml"}:
+            continue
+        for name, job in _load(path)["jobs"].items():
+            assert "continue-on-error" not in job, f"{path.name}:{name} tolerates failure"
+
+
 def test_github_test_unit_opts_into_the_database_backed_tests(
     ci_workflow: dict[Any, Any],
 ) -> None:
