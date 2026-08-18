@@ -38,6 +38,11 @@ class BlockingEmbedding:
         await self.resume.wait()
         return [0.9] * 1536
 
+    async def embed_query(self, _text: str) -> list[float]:
+        self.entered.set()
+        await self.resume.wait()
+        return [0.9] * 1536
+
 
 class SingleCandidateJob:
     """Use real merge logic while replacing only candidate discovery."""

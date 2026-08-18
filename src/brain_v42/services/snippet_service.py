@@ -58,7 +58,9 @@ class SnippetService:
 
         Args:
             repo: PgSnippetRepo instance for DB operations.
-            embedding_svc: Duck-typed embedding service — only `embed(text) -> list[float]` (async) is required.
+            embedding_svc: Duck-typed embedding service — `embed(text)` (documents,
+                on write) and `embed_query(text)` (searches), both async and
+                returning `list[float]`.
             feature_linker: Optional FeatureLinker for auto-linking artifacts to features.
             graph: Optional GraphService for Neo4j write-through. When provided, create/delete
                    operations are mirrored to Neo4j. Graph failures are caught and logged.
@@ -326,7 +328,7 @@ class SnippetService:
         if embedding is None:
             if self._embedding_svc is None:
                 raise ValueError("embedding_svc is required for semantic search")
-            embedding = await self._embedding_svc.embed(query)
+            embedding = await self._embedding_svc.embed_query(query)
         return await self._repo.vector_search(
             embedding,
             limit=limit,

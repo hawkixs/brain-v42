@@ -145,6 +145,7 @@ def make_mock_services(
 
     embedding_svc = MagicMock()
     embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+    embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
     embedding_svc.embed_text = MagicMock(return_value=FAKE_EMBEDDING)
 
     return decision_svc, learning_svc, snippet_svc, runbook_svc, adr_svc, embedding_svc
@@ -548,6 +549,7 @@ class TestBrainServiceEmbedCalledOnce:
         """search() calls embedding_svc.embed exactly once, not 5x."""
         embedding_svc = AsyncMock()
         embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
 
         decision_svc = MagicMock()
         decision_svc.semantic_search = AsyncMock(return_value=[])
@@ -572,7 +574,7 @@ class TestBrainServiceEmbedCalledOnce:
         await brain.search("test query")
 
         # embed() called exactly once (not 5x)
-        embedding_svc.embed.assert_awaited_once_with("test query")
+        embedding_svc.embed_query.assert_awaited_once_with("test query")
 
         # Each service receives the pre-computed embedding
         for svc in [decision_svc, learning_svc, snippet_svc, runbook_svc, adr_svc]:
@@ -583,6 +585,7 @@ class TestBrainServiceEmbedCalledOnce:
         """what_do_i_know_about() calls embedding_svc.embed exactly once."""
         embedding_svc = AsyncMock()
         embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
 
         decision_svc = MagicMock()
         decision_svc.semantic_search = AsyncMock(return_value=[])
@@ -606,7 +609,7 @@ class TestBrainServiceEmbedCalledOnce:
 
         await brain.what_do_i_know_about("test topic")
 
-        embedding_svc.embed.assert_awaited_once_with("test topic")
+        embedding_svc.embed_query.assert_awaited_once_with("test topic")
 
     async def test_search_no_embedding_when_svc_is_none(self) -> None:
         """search() with embedding_svc=None still works (no embed call)."""
@@ -642,6 +645,7 @@ class TestBrainServiceEmbedCalledOnce:
         """When hybrid_searcher is set, embedding is passed through."""
         embedding_svc = AsyncMock()
         embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
 
         mock_hybrid = MagicMock()
         mock_hybrid.search = AsyncMock(return_value=([], "rrf_only"))
@@ -671,7 +675,7 @@ class TestBrainServiceEmbedCalledOnce:
         await brain.search("test query", types=["decision"])
 
         # embed() called once
-        embedding_svc.embed.assert_awaited_once_with("test query")
+        embedding_svc.embed_query.assert_awaited_once_with("test query")
         # hybrid searcher receives embedding kwarg
         call_kwargs = mock_hybrid.search.call_args.kwargs
         assert call_kwargs.get("embedding") == FAKE_EMBEDDING
@@ -1565,6 +1569,9 @@ class TestWhatDoIKnowAboutDegradedPropagation:
         # Embedding down → fts_fallback degraded marker
         embedding_svc = MagicMock()
         embedding_svc.embed = AsyncMock(
+            side_effect=EmbeddingUnavailable("GPU down", kind="unreachable")
+        )
+        embedding_svc.embed_query = AsyncMock(
             side_effect=EmbeddingUnavailable("GPU down", kind="unreachable")
         )
 

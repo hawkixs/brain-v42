@@ -74,7 +74,7 @@ def test_build_linkers_matches_canonical_service_wiring() -> None:
     embedding_svc = MagicMock()
 
     with (
-        patch("brain_v42.maintenance.embedding_backfill.RerankerClient") as reranker_cls,
+        patch("brain_v42.maintenance.embedding_backfill.build_reranker_client") as reranker_cls,
         patch("brain_v42.maintenance.embedding_backfill.StatusEngine") as status_cls,
         patch("brain_v42.maintenance.embedding_backfill.ClusterGuard") as guard_cls,
         patch("brain_v42.maintenance.embedding_backfill.FeatureLinker") as feature_cls,
@@ -127,7 +127,7 @@ def test_build_linkers_routes_auto_linker_writes_through_durable_graph() -> None
     embedding_svc = MagicMock()
 
     with (
-        patch("brain_v42.maintenance.embedding_backfill.RerankerClient"),
+        patch("brain_v42.maintenance.embedding_backfill.build_reranker_client"),
         patch("brain_v42.maintenance.embedding_backfill.StatusEngine"),
         patch("brain_v42.maintenance.embedding_backfill.ClusterGuard"),
         patch("brain_v42.maintenance.embedding_backfill.FeatureLinker"),
@@ -179,7 +179,7 @@ async def test_execute_asserts_durable_ledger_schema_before_job_writes() -> None
         ),
         patch("brain_v42.maintenance.embedding_backfill.get_session_factory"),
         patch(
-            "brain_v42.maintenance.embedding_backfill.GPUEmbeddingService",
+            "brain_v42.maintenance.embedding_backfill.build_embedding_service",
             return_value=embedding_svc,
         ),
         patch(

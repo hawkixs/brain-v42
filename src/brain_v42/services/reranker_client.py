@@ -19,6 +19,8 @@ from __future__ import annotations
 import httpx
 import structlog
 
+from brain_v42.services.rerank_wire import RerankWire, ShimRerankWire
+
 logger = structlog.get_logger(__name__)
 
 
@@ -37,15 +39,22 @@ class RerankerClient:
         self,
         base_url: str = "http://localhost:8003",
         timeout: float = 10.0,
+        *,
+        wire: RerankWire | None = None,
+        api_key: str = "",
     ) -> None:
         """Initialize RerankerClient without creating the HTTP client.
 
         Args:
             base_url: URL of the reranker service.
             timeout: HTTP request timeout in seconds.
+            wire: Request/response shape. Defaults to the private shim contract.
+            api_key: Sent as ``Authorization: Bearer`` when non-empty.
         """
         self._base_url = base_url
         self._timeout = timeout
+        self._wire: RerankWire = wire if wire is not None else ShimRerankWire()
+        self._api_key = api_key
         self._client: httpx.AsyncClient | None = None
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -55,9 +64,11 @@ class RerankerClient:
             The shared httpx.AsyncClient instance.
         """
         if self._client is None:
+            headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             self._client = httpx.AsyncClient(
                 base_url=self._base_url,
                 timeout=self._timeout,
+                headers=headers,
                 limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
             )
             logger.info(
@@ -84,12 +95,10 @@ class RerankerClient:
             return []
 
         client = self._get_client()
-        response = await client.post(
-            "/rerank",
-            json={"query": query, "candidates": candidates},
-        )
+        path, body = self._wire.request(query, candidates)
+        response = await client.post(path, json=body)
         response.raise_for_status()
-        return response.json()["scores"]  # type: ignore[no-any-return]
+        return self._wire.parse(response.json(), expected=len(candidates))
 
     async def is_available(self) -> bool:
         """Check if the reranker service is healthy.
@@ -101,7 +110,7 @@ class RerankerClient:
         """
         try:
             client = self._get_client()
-            response = await client.get("/health")
+            response = await client.get(self._wire.health_path)
             return response.status_code == 200
         except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError):
             return False

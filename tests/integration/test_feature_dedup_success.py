@@ -26,6 +26,9 @@ class _Embedding:
     async def embed(self, _text: str) -> list[float]:
         return [0.7] * 1536
 
+    async def embed_query(self, _text: str) -> list[float]:
+        return [0.7] * 1536
+
 
 async def test_feature_dedup_success_preserves_history_and_reparents_dependents(
     session_factory: async_sessionmaker[AsyncSession],

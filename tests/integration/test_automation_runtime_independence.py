@@ -114,6 +114,11 @@ class BlockingEmbedding:
         await self.resume.wait()
         return [0.01] * 1536
 
+    async def embed_query(self, _text: str) -> list[float]:
+        self.entered.set()
+        await self.resume.wait()
+        return [0.01] * 1536
+
 
 class RejectAfterGitLabInsert:
     """Allow pre-DML checks and reject the first check after real INSERT."""
@@ -701,7 +706,9 @@ async def test_inflight_webhook_cannot_commit_after_real_lease_handover(
     successor_engine = _engine()
     admin_engine = _engine()
     embedding = BlockingEmbedding()
-    monkeypatch.setattr(runtime_module, "GPUEmbeddingService", MagicMock(return_value=embedding))
+    monkeypatch.setattr(
+        runtime_module, "build_embedding_service", MagicMock(return_value=embedding)
+    )
     monkeypatch.setattr(
         runtime_module,
         "AutomationOwnershipLease",

@@ -67,7 +67,13 @@ def test_build_production_runtime_wires_the_project_guard() -> None:
     settings = MagicMock(embedding_service_url="http://localhost:8003")
     with (
         patch("brain_v42.codex_gateway.composition.get_session_factory", return_value=MagicMock()),
-        patch("brain_v42.codex_gateway.composition.GPUEmbeddingService", return_value=MagicMock()),
+        # Patch the factory, not the class: composition builds through
+        # build_embedding_service now, so patching GPUEmbeddingService here
+        # resolves (it survives as a type annotation) but intercepts nothing.
+        patch(
+            "brain_v42.codex_gateway.composition.build_embedding_service",
+            return_value=MagicMock(),
+        ),
     ):
         runtime = build_production_runtime(settings)
 

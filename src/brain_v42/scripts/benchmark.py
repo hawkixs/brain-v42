@@ -133,7 +133,10 @@ def setup_pg_services(pg_url: str) -> dict[str, Any]:
     from brain_v42.services.adr_service import ADRService
     from brain_v42.services.brain_service import BrainService
     from brain_v42.services.decision_service import DecisionService
-    from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
+    from brain_v42.services.embedding_factory import (
+        build_embedding_service,
+        settings_for_standalone_script,
+    )
     from brain_v42.services.learning_service import LearningService
     from brain_v42.services.project_context_service import ProjectContextService
     from brain_v42.services.runbook_service import RunbookService
@@ -160,8 +163,10 @@ def setup_pg_services(pg_url: str) -> dict[str, Any]:
     db_engine._engine = engine
     db_engine._session_factory = session_factory
 
-    # Embedding service (GPU, async httpx)
-    embedding_svc = GPUEmbeddingService()
+    # Embedding service — settings derived from the pg_url this function was
+    # handed, so a benchmark run does not additionally require POSTGRES_URL in
+    # the environment just to construct Settings.
+    embedding_svc = build_embedding_service(settings_for_standalone_script(pg_url))
 
     # Repositories — all six receive session_factory explicitly (consistent DI)
     decision_repo = PgDecisionRepo(session_factory)

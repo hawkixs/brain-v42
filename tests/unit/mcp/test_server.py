@@ -64,7 +64,7 @@ def test_build_services_returns_all_services() -> None:
     with (
         patch("brain_v42.mcp.server.get_session_factory", return_value=session_factory),
         patch("brain_v42.mcp.server.get_settings", return_value=mock_settings),
-        patch("brain_v42.mcp.server.GPUEmbeddingService", return_value=embedding_svc),
+        patch("brain_v42.mcp.server.build_embedding_service", return_value=embedding_svc),
         patch("brain_v42.mcp.server.FeatureCreationService") as feature_creation_cls,
         patch("brain_v42.db.engine.get_engine", return_value=MagicMock()),
         patch("brain_v42.metrics.collector.get_settings", return_value=mock_settings),
@@ -241,7 +241,7 @@ def test_build_services_includes_graph_service_when_enabled() -> None:
     with (
         patch("brain_v42.mcp.server.get_session_factory", return_value=MagicMock()),
         patch("brain_v42.mcp.server.get_settings", return_value=mock_settings),
-        patch("brain_v42.mcp.server.GPUEmbeddingService", return_value=MagicMock()),
+        patch("brain_v42.mcp.server.build_embedding_service", return_value=MagicMock()),
         patch("brain_v42.db.engine.get_engine", return_value=MagicMock()),
         patch("brain_v42.metrics.collector.get_settings", return_value=mock_settings),
         patch("brain_v42.mcp.server.create_neo4j_driver", return_value=mock_driver),
@@ -316,7 +316,7 @@ def test_build_services_uses_private_projector_credentials_from_real_settings() 
     with (
         patch("brain_v42.mcp.server.get_session_factory", return_value=MagicMock()),
         patch("brain_v42.mcp.server.get_settings", return_value=settings),
-        patch("brain_v42.mcp.server.GPUEmbeddingService", return_value=MagicMock()),
+        patch("brain_v42.mcp.server.build_embedding_service", return_value=MagicMock()),
         patch("brain_v42.db.engine.get_engine", return_value=MagicMock()),
         patch("brain_v42.metrics.collector.get_settings", return_value=settings),
         patch(
@@ -353,7 +353,7 @@ def test_build_services_fails_closed_when_ledger_lacks_private_projector_role() 
     with (
         patch("brain_v42.mcp.server.get_session_factory", return_value=MagicMock()),
         patch("brain_v42.mcp.server.get_settings", return_value=settings),
-        patch("brain_v42.mcp.server.GPUEmbeddingService", return_value=MagicMock()),
+        patch("brain_v42.mcp.server.build_embedding_service", return_value=MagicMock()),
         patch("brain_v42.db.engine.get_engine", return_value=MagicMock()),
         patch("brain_v42.metrics.collector.get_settings", return_value=settings),
         patch("brain_v42.mcp.server.create_neo4j_driver", return_value=MagicMock()),
@@ -381,7 +381,7 @@ def test_build_services_graph_service_none_when_disabled() -> None:
     with (
         patch("brain_v42.mcp.server.get_session_factory", return_value=MagicMock()),
         patch("brain_v42.mcp.server.get_settings", return_value=mock_settings),
-        patch("brain_v42.mcp.server.GPUEmbeddingService", return_value=MagicMock()),
+        patch("brain_v42.mcp.server.build_embedding_service", return_value=MagicMock()),
         patch("brain_v42.db.engine.get_engine", return_value=MagicMock()),
         patch("brain_v42.metrics.collector.get_settings", return_value=mock_settings),
         patch("brain_v42.mcp.server.create_neo4j_driver", return_value=None),
@@ -412,7 +412,7 @@ def test_build_services_still_returns_all_existing_services_with_graph() -> None
     with (
         patch("brain_v42.mcp.server.get_session_factory", return_value=MagicMock()),
         patch("brain_v42.mcp.server.get_settings", return_value=mock_settings),
-        patch("brain_v42.mcp.server.GPUEmbeddingService", return_value=MagicMock()),
+        patch("brain_v42.mcp.server.build_embedding_service", return_value=MagicMock()),
         patch("brain_v42.db.engine.get_engine", return_value=MagicMock()),
         patch("brain_v42.metrics.collector.get_settings", return_value=mock_settings),
         patch("brain_v42.mcp.server.create_neo4j_driver", return_value=None),
@@ -521,7 +521,7 @@ def test_build_services_wires_the_project_guard_into_every_knowledge_service() -
     with (
         patch("brain_v42.mcp.server.get_session_factory", return_value=session_factory),
         patch("brain_v42.mcp.server.get_settings", return_value=mock_settings),
-        patch("brain_v42.mcp.server.GPUEmbeddingService", return_value=embedding_svc),
+        patch("brain_v42.mcp.server.build_embedding_service", return_value=embedding_svc),
         patch("brain_v42.mcp.server.FeatureCreationService"),
         patch("brain_v42.db.engine.get_engine", return_value=MagicMock()),
         patch("brain_v42.metrics.collector.get_settings", return_value=mock_settings),

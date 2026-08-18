@@ -301,7 +301,7 @@ class ADRService:
             if self._embedding_svc is None:
                 logger.warning("adr_service.semantic_search.no_embedding_svc")
                 return []
-            embedding = await self._embedding_svc.embed(query)
+            embedding = await self._embedding_svc.embed_query(query)
         return await self._repo.vector_search(
             query_embedding=embedding,
             limit=limit,

@@ -107,6 +107,23 @@ class InstrumentedEmbeddingService:
             latency_ms = (time.monotonic() - start) * 1000
             self._collector.record_embedding_request(latency_ms, error=error, error_kind=error_kind)
 
+    async def embed_query(self, text: str) -> list[float]:
+        start = time.monotonic()
+        error = False
+        error_kind: str | None = None
+        try:
+            return await self._inner.embed_query(text)  # type: ignore[no-any-return]
+        except EmbeddingUnavailable as exc:
+            error = True
+            error_kind = exc.kind
+            raise
+        except Exception:
+            error = True
+            raise
+        finally:
+            latency_ms = (time.monotonic() - start) * 1000
+            self._collector.record_embedding_request(latency_ms, error=error, error_kind=error_kind)
+
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         start = time.monotonic()
         error = False

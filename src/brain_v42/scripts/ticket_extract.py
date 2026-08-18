@@ -667,11 +667,11 @@ async def _build_apply_services() -> tuple[Any, Any]:
     from brain_v42.repositories.pg_learning import PgLearningRepo  # noqa: PLC0415
     from brain_v42.repositories.pg_project_context import PgProjectContextRepo  # noqa: PLC0415
     from brain_v42.services.decision_service import DecisionService  # noqa: PLC0415
-    from brain_v42.services.gpu_embedding_service import GPUEmbeddingService  # noqa: PLC0415
+    from brain_v42.services.embedding_factory import build_embedding_service
     from brain_v42.services.learning_service import LearningService  # noqa: PLC0415
 
     sf = get_session_factory()
-    embedding_svc: Any = GPUEmbeddingService(base_url=get_settings().embedding_service_url)
+    embedding_svc: Any = build_embedding_service(get_settings())
     try:
         await embedding_svc.embed("ping")
     except Exception:
@@ -1136,11 +1136,11 @@ async def _run(
 
             dedup_result = DedupResult(kept=outcome.drafts)
             if outcome.drafts:
-                from brain_v42.services.gpu_embedding_service import (  # noqa: PLC0415
-                    GPUEmbeddingService,
+                from brain_v42.services.embedding_factory import (  # noqa: PLC0415
+                    build_embedding_service,
                 )
 
-                embedding_svc = GPUEmbeddingService(base_url=settings.embedding_service_url)
+                embedding_svc = build_embedding_service(settings)
                 try:
                     dedup_result = await _within_deadline(
                         deduplicate_drafts(sf, embedding_svc, outcome.drafts), ticket_deadline

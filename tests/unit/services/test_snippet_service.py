@@ -58,6 +58,7 @@ def mock_embedding_svc() -> MagicMock:
     """Mock embedding service with async embed method."""
     svc = MagicMock()
     svc.embed = AsyncMock(return_value=[0.1] * 1536)
+    svc.embed_query = AsyncMock(return_value=[0.1] * 1536)
     return svc
 
 
@@ -464,7 +465,7 @@ class TestSemanticSearch:
         results = [(snippet, 0.95)]
         mock_repo.vector_search.return_value = results
         query_embedding = [0.3] * 1536
-        mock_embedding_svc.embed.return_value = query_embedding
+        mock_embedding_svc.embed_query.return_value = query_embedding
 
         result = await snippet_service.semantic_search(
             query="parse JSON",
@@ -473,7 +474,7 @@ class TestSemanticSearch:
             language="python",
         )
 
-        mock_embedding_svc.embed.assert_awaited_once_with("parse JSON")
+        mock_embedding_svc.embed_query.assert_awaited_once_with("parse JSON")
         mock_repo.vector_search.assert_called_once_with(
             query_embedding,
             limit=5,

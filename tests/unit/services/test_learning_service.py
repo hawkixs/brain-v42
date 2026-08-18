@@ -76,6 +76,7 @@ def _make_service(
     if with_embedding_svc:
         mock_embedding_svc = MagicMock()
         mock_embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        mock_embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
         return (
             LearningService(pg_repo=mock_repo, embedding_svc=mock_embedding_svc),
             mock_repo,
@@ -189,6 +190,9 @@ class TestLearningServiceCreate:
         mock_embedding_svc.embed = AsyncMock(
             side_effect=EmbeddingUnavailable("offline", kind="unreachable")
         )
+        mock_embedding_svc.embed_query = AsyncMock(
+            side_effect=EmbeddingUnavailable("offline", kind="unreachable")
+        )
         data = LearningCreate(topic="Durable", insight="Commit first")
 
         result = await svc.create(data)
@@ -212,6 +216,7 @@ class TestLearningServiceCreate:
 
         mock_repo.create = AsyncMock(side_effect=create_pending)
         mock_embedding_svc.embed = AsyncMock(side_effect=fail_embedding)
+        mock_embedding_svc.embed_query = AsyncMock(side_effect=fail_embedding)
 
         result = await svc.create(LearningCreate(topic="Order", insight="PG first"))
 
@@ -410,7 +415,7 @@ class TestLearningServiceSemanticSearch:
         results = await svc.semantic_search("best async patterns", project_key="brain-v42", limit=5)
 
         assert mock_embedding_svc is not None
-        mock_embedding_svc.embed.assert_awaited_once_with("best async patterns")
+        mock_embedding_svc.embed_query.assert_awaited_once_with("best async patterns")
         mock_repo.search_vector.assert_awaited_once_with(
             FAKE_EMBEDDING,
             project_key="brain-v42",
@@ -633,6 +638,7 @@ class TestLearningServiceGraphWriteThrough:
         )
         mock_embedding_svc = MagicMock()
         mock_embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        mock_embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
         mock_graph = MagicMock()
         mock_graph.upsert_node = AsyncMock()
         mock_graph.link_to_project = AsyncMock()
@@ -663,6 +669,7 @@ class TestLearningServiceGraphWriteThrough:
         )
         mock_embedding_svc = MagicMock()
         mock_embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        mock_embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
         mock_graph = MagicMock()
         mock_graph.upsert_node = AsyncMock(side_effect=RuntimeError("neo4j down"))
 

@@ -314,7 +314,7 @@ class LearningService:
                     note="Returning empty results — embedding_svc not configured",
                 )
                 return []
-            embedding = await self._embedding_svc.embed(query)
+            embedding = await self._embedding_svc.embed_query(query)
 
         return await self._repo.search_vector(
             embedding,

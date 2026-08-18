@@ -68,9 +68,12 @@ from brain_v42.services.auto_linker import AutoLinker
 from brain_v42.services.brain_service import BrainService
 from brain_v42.services.decision_service import DecisionService
 from brain_v42.services.durable_graph_service import build_durable_graph_stack
+from brain_v42.services.embedding_factory import (
+    build_embedding_service,
+    build_reranker_client,
+)
 from brain_v42.services.feature_creation_service import FeatureCreationService
 from brain_v42.services.feature_linker import FeatureLinker
-from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
 from brain_v42.services.graph_projection_schema import ensure_graph_projection_schema
 from brain_v42.services.graph_service import GraphService
 from brain_v42.services.learning_service import LearningService
@@ -401,9 +404,7 @@ def build_services() -> dict[str, Any]:
     projector_enabled = getattr(settings, "graph_projector_enabled", False) is True
     if ledger_enabled and not projector_enabled:
         raise RuntimeError("MCP graph ledger requires the private projector role")
-    embedding_svc = GPUEmbeddingService(
-        base_url=settings.embedding_service_url,
-    )
+    embedding_svc = build_embedding_service(settings)
 
     # Neo4j graph (optional — disabled by default)
     neo4j_url, neo4j_user, neo4j_password = _neo4j_connection_settings(settings)
@@ -477,12 +478,8 @@ def build_services() -> dict[str, Any]:
     )
 
     # Reranker client (HTTP, for ClusterGuard grey-zone scoring)
-    from brain_v42.services.reranker_client import RerankerClient  # noqa: PLC0415
 
-    reranker_client = RerankerClient(
-        base_url=settings.reranker_url,
-        timeout=settings.reranker_timeout,
-    )
+    reranker_client = build_reranker_client(settings)
 
     # StatusEngine (pure logic — monotonic feature status heuristic)
     from brain_v42.services.status_engine import StatusEngine  # noqa: PLC0415

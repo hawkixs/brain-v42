@@ -29,10 +29,12 @@ from brain_v42.automation.webhook import GitLabWebhookEndpoint
 from brain_v42.config import Settings, get_settings
 from brain_v42.db.tables import project_contexts
 from brain_v42.services.cluster_guard import ClusterGuard
+from brain_v42.services.embedding_factory import (
+    build_embedding_service,
+    build_reranker_client,
+)
 from brain_v42.services.feature_dedup_job import FeatureDedupJob
 from brain_v42.services.gitlab_ingestor import GitLabIngestor
-from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
-from brain_v42.services.reranker_client import RerankerClient
 from brain_v42.services.status_engine import StatusEngine
 
 logger = structlog.get_logger(__name__)
@@ -209,11 +211,8 @@ def build_automation_runtime(
         expire_on_commit=False,
     )
     lease = AutomationOwnershipLease(runtime_engine)
-    embedding_svc = GPUEmbeddingService(base_url=effective_settings.embedding_service_url)
-    reranker = RerankerClient(
-        base_url=effective_settings.reranker_url,
-        timeout=effective_settings.reranker_timeout,
-    )
+    embedding_svc = build_embedding_service(effective_settings)
+    reranker = build_reranker_client(effective_settings)
     cluster_guard = ClusterGuard(
         session_factory,
         embedding_svc,

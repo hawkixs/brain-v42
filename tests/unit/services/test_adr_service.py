@@ -67,6 +67,7 @@ def mock_embedding_svc() -> MagicMock:
     """Mock EmbeddingService with async embed method."""
     svc = MagicMock()
     svc.embed = AsyncMock(return_value=[0.1] * 1536)
+    svc.embed_query = AsyncMock(return_value=[0.1] * 1536)
     return svc
 
 
@@ -403,7 +404,7 @@ class TestSemanticSearch:
         scored_results = [(adr, 0.95)]
         mock_repo.vector_search.return_value = scored_results
         query_embedding = [0.3] * 1536
-        mock_embedding_svc.embed.return_value = query_embedding
+        mock_embedding_svc.embed_query.return_value = query_embedding
 
         result = await service_with_embedding.semantic_search(
             "postgres architecture",
@@ -411,7 +412,7 @@ class TestSemanticSearch:
             limit=5,
         )
 
-        mock_embedding_svc.embed.assert_called_once_with("postgres architecture")
+        mock_embedding_svc.embed_query.assert_called_once_with("postgres architecture")
         mock_repo.vector_search.assert_called_once_with(
             query_embedding=query_embedding,
             limit=5,

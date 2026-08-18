@@ -41,14 +41,66 @@ way around. The canonical path is active in production since 22 July 2026; desig
 evidence live in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and the
 [graph ledger runbook](docs/GRAPH_LEDGER_RUNBOOK.md).
 
-Embeddings are optional and pluggable. The server itself is model-agnostic: it only
-speaks a three-route HTTP contract (`POST /embed`, `POST /embed/query`,
-`POST /rerank`) and degrades gracefully when the endpoint is away — `brain_search`
-falls back to full-text search, writes persist with a `NULL` embedding and are
-backfilled later. Any server implementing that contract works. The bundled reference
-stack (`services/`) serves Qodo-Embed-1-1.5B as GGUF via llama.cpp on a local GPU.
-`EMBEDDING_DIMENSION` is chosen at install time; switching models later means
-re-embedding the corpus (`scripts/regen_embeddings.py`).
+Embeddings are optional and pluggable, and they degrade gracefully when the endpoint
+is away — `brain_search` falls back to full-text search, writes persist with a `NULL`
+embedding and are backfilled later. An install with no embedding endpoint at all
+works.
+
+Two wire formats ship, selected by `BRAIN_EMBEDDING_BACKEND`:
+
+| Backend | Wire | Use it for |
+|---------|------|------------|
+| `shim` (default) | `POST /embed`, `POST /embed/query`, `GET /healthz` | The bundled reference stack (`services/`), serving Qodo-Embed-1-1.5B as GGUF via llama.cpp on a local GPU |
+| `openai` | `POST /v1/embeddings` | Any OpenAI-compatible endpoint — Ollama, vLLM, llama.cpp server, LM Studio, TEI, Jina, Mistral, Voyage, OpenAI |
+
+So a machine without a GPU needs no bundled stack. Point it at whatever serves
+embeddings, for example a local Ollama:
+
+```bash
+BRAIN_EMBEDDING_BACKEND=openai
+BRAIN_EMBEDDING_SERVICE_URL=http://localhost:11434
+BRAIN_EMBEDDING_MODEL=nomic-embed-text
+EMBEDDING_DIMENSION=768   # unprefixed on purpose — see Dimension below
+```
+
+Reranking is separately pluggable via `BRAIN_RERANK_BACKEND` (`shim`, or `cohere`
+for the `POST /v1/rerank` shape implemented by TEI, Jina and vLLM), and stays
+best-effort: an unavailable reranker falls back to RRF ordering rather than
+failing a search.
+
+### Instruction prefixes
+
+Asymmetric models (Qodo, E5, BGE) expect queries and documents to be marked
+differently. Both prefixes default to empty, which is correct for symmetric
+models and reproduces the unprefixed behaviour exactly:
+
+```bash
+BRAIN_EMBEDDING_QUERY_PREFIX="query: "        # applied to searches only
+BRAIN_EMBEDDING_DOCUMENT_PREFIX="passage: "   # applied to everything written
+```
+
+Keep the trailing space if the model's card shows one — it is part of the prefix.
+Changing the **query** prefix is free. Changing the **document** prefix on a
+populated corpus requires a full `scripts/regen_embeddings.py` pass, or the column
+ends up holding two incompatible vector populations with nothing to flag it.
+
+### Dimension
+
+`EMBEDDING_DIMENSION` is chosen at install time and must be ≤ 2000, the ceiling
+pgvector's HNSW index accepts. Switching models later means re-embedding the corpus
+(`scripts/regen_embeddings.py`).
+
+Set it **unprefixed**. Every other setting here also answers to a `BRAIN_`-prefixed
+name, but the ORM column widths are read straight from `EMBEDDING_DIMENSION` in
+`db/tables.py`, so `BRAIN_EMBEDDING_DIMENSION=768` alone would leave the tables at
+1536 while the rest of the process believed 768.
+
+One caveat to know before a non-default install: the ORM honours this setting, but
+four migrations (`002`, `005`, `009`, `014`) hardcode `vector(1536)`, so a fresh
+`alembic upgrade head` creates 1536-wide columns whatever the setting says. Until
+that is fixed, a non-1536 install needs the columns retyped and their HNSW indexes
+rebuilt by hand after migrating. If you are running the reference stack at 1536,
+this does not affect you.
 
 ## Quick start
 
@@ -132,8 +184,15 @@ POSTGRES_URL=postgresql+asyncpg://brain:REPLACE_WITH_PASSWORD@localhost:5433/bra
 
 # Optional — semantic search and reranking
 EMBEDDING_SERVICE_URL=http://localhost:8003
-EMBEDDING_DIMENSION=1536
+EMBEDDING_DIMENSION=1536              # <= 2000 (pgvector HNSW ceiling)
 RERANKER_URL=http://localhost:8003
+
+# Optional — point at any OpenAI-compatible endpoint instead of the bundled stack
+BRAIN_EMBEDDING_BACKEND=shim          # shim (default) or openai
+BRAIN_EMBEDDING_MODEL=qodo            # model name sent by the openai backend
+BRAIN_EMBEDDING_QUERY_PREFIX=         # e.g. "query: " for asymmetric models
+BRAIN_EMBEDDING_DOCUMENT_PREFIX=      # changing this needs a full re-embed
+BRAIN_RERANK_BACKEND=shim             # shim (default) or cohere
 
 # Optional — relationship graph (safe defaults for a fresh environment)
 GRAPH_ENABLED=false
@@ -148,6 +207,9 @@ LOG_LEVEL=INFO
 Never place `MCP_HTTP_TOKEN` or `MCP_HTTP_DREAM_TOKENS` in the shared `.env`: bearer
 tokens live in a private `0600` file (`~/.config/brain-v42/mcp-token.env`), and the
 graph projector credential in its own (`~/.config/brain-v42/graph-projector.env`).
+`BRAIN_EMBEDDING_API_KEY` and `BRAIN_RERANK_API_KEY` follow the same rule. Note that
+pointing either endpoint at a hosted provider sends the text being embedded off this
+machine — the rest of this deployment is loopback-bound, that step is not.
 Full reference — every variable, the private secret files, preflights and rollout
 gates: [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 

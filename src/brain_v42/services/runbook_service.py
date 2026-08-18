@@ -329,7 +329,7 @@ class RunbookService:
         if embedding is None:
             if self._embedding_svc is None:
                 return []
-            embedding = await self._embedding_svc.embed(query)
+            embedding = await self._embedding_svc.embed_query(query)
         return await self._repo.vector_search(
             embedding, project_key=project_key, project_keys=project_keys, limit=limit
         )
