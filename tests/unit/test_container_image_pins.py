@@ -38,7 +38,6 @@ BASELINE_FLOATING_TAGS = (
 EXPECTED_LOCKED_REFERENCES = {
     "python:3.12-slim": "sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de",
     "python:3.11-slim": "sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93",
-    "docker:27-cli": "sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c",
     "pgvector/pgvector:pg16": "sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb",
     "ghcr.io/ggml-org/llama.cpp:server-cuda": "sha256:c1ddeb6d30932ddd9ddff962cb62dbc5450cd99d8e82c8c20de2fd1f99fde85b",
     "pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime": "sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
@@ -284,7 +283,7 @@ def test_gate_boundary_python_keeps_forward_wrapper_and_late_binding_proofs(
     assert _errors(checker, tmp_path)
 
 
-def test_repository_catalog_contains_the_ten_registry_verified_references(
+def test_repository_catalog_contains_the_nine_registry_verified_references(
     checker: ModuleType | _MissingChecker,
 ) -> None:
     catalog = checker.load_catalog(LOCK_PATH)

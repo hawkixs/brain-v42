@@ -45,13 +45,13 @@ avant son adoption. Un rejet conservateur signale une forme non prise en charge;
 ## Inventaire opérationnel
 
 Le fichier lock reste la source de vérité pour les digests, media types, plateformes et dates de
-résolution. Cet inventaire nomme les neuf références suivies sans recopier ces métadonnées.
+résolution. Cet inventaire nomme les huit références suivies sans recopier ces métadonnées.
+(`docker-27-cli` a quitté le lock avec le rail GitLab, son seul consommateur.)
 
 | Entrée du lock | Tag lisible | Consommateurs |
 |---|---|---|
-| `python-3-12-slim` | `python:3.12-slim` | CI, Dockerfile racine, build GGUF, shim et supervisor |
+| `python-3-12-slim` | `python:3.12-slim` | Dockerfile racine, build GGUF, shim et supervisor |
 | `python-3-11-slim` | `python:3.11-slim` | service embedding legacy |
-| `docker-27-cli` | `docker:27-cli` | job de build GitLab |
 | `pgvector-pg16` | `pgvector/pgvector:pg16` | service CI et Compose principal |
 | `llama-server-cuda` | `ghcr.io/ggml-org/llama.cpp:server-cuda` | Compose principal |
 | `pytorch-2-7-1-cuda12-8-cudnn9-runtime` | `pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime` | service Qodo |
@@ -142,7 +142,7 @@ ensemble le catalogue et tous ses consommateurs.
    ```bash
    uv sync --locked --no-dev --extra dev
    uv run python scripts/check_container_image_pins.py
-   uv run pytest tests/unit/test_container_image_pins.py tests/unit/test_gitlab_ci.py \
+   uv run pytest tests/unit/test_container_image_pins.py tests/unit/test_github_workflows.py \
      tests/unit/test_docker_compose.py \
      tests/unit/test_rotate_neo4j_credential.py \
      tests/unit/services/embedding_supervisor/test_state_machine.py \
@@ -155,17 +155,7 @@ ensemble le catalogue et tous ses consommateurs.
    docker compose -f deploy/dev-pc/docker-compose.yml config --images
    ```
 
-6. Soumettre `.gitlab-ci.yml` au CI Lint officiel GitLab avec l'authentification `glab` stockée
-   hors des arguments :
-
-   ```bash
-   glab auth status
-   glab ci lint .gitlab-ci.yml
-   ```
-
-   Ne passer aucun token dans la ligne de commande et ne journaliser aucun en-tête
-   d'authentification. Conserver le statut valide ainsi que les listes d'erreurs et de warnings.
-7. Relire les neuf références exactes auprès des registres, puis exécuter les gates de branche :
+6. Relire les huit références exactes auprès des registres, puis exécuter les gates de branche :
 
    ```bash
    uv run ruff check .
@@ -177,7 +167,7 @@ ensemble le catalogue et tous ses consommateurs.
    git diff --check main...HEAD
    ```
 
-8. Faire revoir le diff complet. Le reviewer doit confirmer l'inventaire, les consommateurs, la
+7. Faire revoir le diff complet. Le reviewer doit confirmer l'inventaire, les consommateurs, la
    preuve `linux/amd64`, les frontières du lot et l'absence de constat P0 à P3.
 
 ## Retour arrière

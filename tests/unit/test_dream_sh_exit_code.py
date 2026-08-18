@@ -443,8 +443,8 @@ def test_extract_success_is_not_an_anomaly() -> None:
 # Ces phases (scan, clean, connect, synth, promote, reorg) partagent la porte
 # de sortie avec extract mais n'avaient aucun témoin Python. Le seul témoin,
 # tests/integration/test_dream_sh_fail_propagation.sh, n'est collecté par aucun
-# rail : `testpaths=["tests"]` ne ramasse pas les .sh et ni .gitlab-ci.yml ni
-# .github/workflows/ ne l'appellent.
+# rail : `testpaths=["tests"]` ne ramasse pas les .sh et .github/workflows/ ne
+# l'appelle pas.
 
 
 def test_agent_phase_timeout_is_never_a_controlled_deadline() -> None:

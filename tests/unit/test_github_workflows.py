@@ -1,9 +1,11 @@
-"""Contract tests for the GitHub Actions dual rail (ADR #4).
+"""Contract tests for the GitHub Actions rails — the repository's only CI/CD authority.
 
-The rails are autonomous: pull requests gate on GitHub-hosted runners so they stay
-verifiable while the on-demand ``red-ci`` runner is stopped, and only pushes to main
-reach that runner. These tests hold that boundary and the job-for-job parity with
-``.gitlab-ci.yml``, which keeps running in parallel during the migration.
+The dual-rail era of ADR #4 ended when the GitLab rail was retired (decision
+218028c7, 2026-08-18): `.gitlab-ci.yml` left the tree and these tests stopped
+asserting parity against it. What they hold instead is the boundary that made the
+split worthwhile in the first place: pull requests gate on GitHub-hosted runners so
+they stay verifiable while the on-demand ``red-ci`` runner is stopped, and only
+pushes to main reach that runner.
 """
 
 from __future__ import annotations
@@ -19,7 +21,6 @@ WORKFLOW_DIRECTORY = REPO_ROOT / ".github/workflows"
 CI_WORKFLOW_PATH = WORKFLOW_DIRECTORY / "continuous-integration.yml"
 CD_WORKFLOW_PATH = WORKFLOW_DIRECTORY / "continuous-delivery.yml"
 RELEASE_WORKFLOW_PATH = WORKFLOW_DIRECTORY / "release.yml"
-GITLAB_CI_PATH = REPO_ROOT / ".gitlab-ci.yml"
 
 # Ce fichier ne chargeait que les deux rails qu'il nomme, si bien qu'un troisième
 # fichier de workflow était invisible de toutes ses assertions — y compris de la
@@ -34,21 +35,21 @@ HOSTED_RUNNER = "ubuntu-24.04"
 DELIVERY_RUNNER = ["self-hosted", "Linux", "X64", "red-ci"]
 ON_DEMAND_RUNNER_LABEL = "red-ci"
 
-# Every GitLab job and the GitHub job that carries it. build:docker is the only one
-# that belongs to the delivery rail; the other nine gate pull requests.
-GITLAB_TO_GITHUB = {
-    "lint:ruff": "lint-ruff",
-    "lint:mypy": "lint-mypy",
-    "test:unit": "test-unit",
-    "test:coverage": "test-coverage",
-    "test:integration": "test-integration",
-    "security:pip-audit": "security-pip-audit",
-    "security:pip-audit:embedding-supervisor": "security-pip-audit-embedding-supervisor",
-    "security:bandit": "security-bandit",
-    "security:gitleaks": "security-gitleaks",
-    "build:docker": "build-docker",
+# The full pull-request gate, pinned as a literal. This roster used to be derived
+# from the GitLab job list; with that rail gone, deriving it from anything would
+# let a silently dropped job read as "still covered". A job added or removed must
+# pass through here by name.
+EXPECTED_CI_JOBS = {
+    "lint-ruff",
+    "lint-mypy",
+    "test-unit",
+    "test-coverage",
+    "test-integration",
+    "security-pip-audit",
+    "security-pip-audit-embedding-supervisor",
+    "security-bandit",
+    "security-gitleaks",
 }
-GITLAB_NON_JOB_KEYS = {"stages", "variables", "cache", "workflow", "default", "include"}
 
 
 def _load(path: Path) -> dict[Any, Any]:
@@ -68,18 +69,14 @@ def cd_workflow() -> dict[Any, Any]:
     return _load(CD_WORKFLOW_PATH)
 
 
-@pytest.fixture(scope="module")
-def gitlab_jobs() -> dict[str, Any]:
-    config = _load(GITLAB_CI_PATH)
-    return {
-        str(name): value
-        for name, value in config.items()
-        if isinstance(name, str) and not name.startswith(".") and name not in GITLAB_NON_JOB_KEYS
-    }
+def test_the_gitlab_rail_stays_retired() -> None:
+    """The tree must not grow a second CI authority back.
 
-
-def test_gitlab_jobs_are_all_mapped_to_a_github_job(gitlab_jobs: dict[str, Any]) -> None:
-    assert set(gitlab_jobs) == set(GITLAB_TO_GITHUB)
+    The GitLab rail was retired with its project's pipelines disabled; a
+    reappearing `.gitlab-ci.yml` would be a config file no test parses and no
+    gate audits — exactly the unowned-rail failure mode the retirement removed.
+    """
+    assert not (REPO_ROOT / ".gitlab-ci.yml").exists()
 
 
 def test_the_workflow_directory_holds_exactly_the_known_rails() -> None:
@@ -114,16 +111,14 @@ def test_only_the_delivery_rail_reaches_the_on_demand_runner() -> None:
             )
 
 
-def test_the_release_rail_is_github_only_and_hosted() -> None:
-    """La release n'a pas de jumeau GitLab, et c'est délibéré.
+def test_the_release_rail_is_hosted_and_tag_driven() -> None:
+    """La release tourne runner ÉTEINT, et c'est sa raison d'être.
 
-    ``GITLAB_TO_GITHUB`` décrit la parité job pour job des rails de lint, test et
-    build. Les releases de ce dépôt vivent sur GitHub seul : le registre GitLab
-    est privé et à DNS interne, il ne publie rien qu'un consommateur de release
-    puisse atteindre. L'asymétrie est donc nommée ici plutôt que subie.
+    Le registre interne est privé et à DNS interne : il ne publie rien qu'un
+    consommateur de release puisse atteindre, donc le rail n'attache que la wheel
+    et le sdist, depuis un runner hébergé qu'aucun opérateur n'a à démarrer.
     """
     release = _load(RELEASE_WORKFLOW_PATH)
-    assert "release" not in set(GITLAB_TO_GITHUB.values())
     assert release[True] == {"push": {"tags": ["v*"]}}
     for name, job in release["jobs"].items():
         assert job["runs-on"] == HOSTED_RUNNER, name
@@ -143,9 +138,8 @@ def test_pull_request_jobs_never_reach_the_on_demand_runner(ci_workflow: dict[An
     assert runners == dict.fromkeys(runners, HOSTED_RUNNER)
 
 
-def test_pull_request_rail_carries_every_non_build_gitlab_job(ci_workflow: dict[Any, Any]) -> None:
-    expected = {job for name, job in GITLAB_TO_GITHUB.items() if name != "build:docker"}
-    assert set(ci_workflow["jobs"]) == expected
+def test_pull_request_rail_carries_the_full_pinned_gate(ci_workflow: dict[Any, Any]) -> None:
+    assert set(ci_workflow["jobs"]) == EXPECTED_CI_JOBS
 
 
 def test_delivery_rail_only_builds_and_pushes_on_the_red_ci_runner(
@@ -180,27 +174,28 @@ def test_delivery_rail_consumes_only_the_two_registry_secrets(
     assert secrets == {"REGISTRY_USER", "REGISTRY_PASSWORD"}
 
 
-def test_security_burn_in_tolerance_matches_gitlab(
-    ci_workflow: dict[Any, Any], gitlab_jobs: dict[str, Any]
-) -> None:
-    # Migrating and hardening at once would turn the whole rail red and unreadable:
-    # a job that GitLab still tolerates must stay tolerated here, and no other may be.
-    for gitlab_name, github_name in GITLAB_TO_GITHUB.items():
-        if gitlab_name == "build:docker":
+def test_no_job_tolerates_failure() -> None:
+    """The security burn-in is over: every job blocks on red, on every rail.
+
+    `continue-on-error` renders a check that fails without failing the run —
+    the GitLab-era `allow_failure` in different clothes. The burn-in it served
+    ended with all nine jobs measured green on the public rail (PR #1,
+    2026-08-18); from here, a tolerated job is just an ignored one.
+    """
+    for path in sorted(WORKFLOW_DIRECTORY.iterdir()):
+        if not path.is_file() or path.suffix not in {".yml", ".yaml"}:
             continue
-        allowed = bool(gitlab_jobs[gitlab_name].get("allow_failure", False))
-        job = ci_workflow["jobs"][github_name]
-        assert bool(job.get("continue-on-error", False)) is allowed, github_name
+        for name, job in _load(path)["jobs"].items():
+            assert "continue-on-error" not in job, f"{path.name}:{name} tolerates failure"
 
 
 def test_github_test_unit_opts_into_the_database_backed_tests(
     ci_workflow: dict[Any, Any],
 ) -> None:
-    """The GitHub rail must carry the same opt-in as GitLab, on its own.
+    """The unit gate must opt into the DB-backed tests explicitly.
 
-    The two rails are autonomous by ADR #4 — neither consults the other's status —
-    so GITLAB_TO_GITHUB mapping a job name proves nothing about its contents. 51
-    unit tests skip without this variable, and a skip is green.
+    51 unit tests skip without this variable, and a skip is green: a job that
+    dropped it would pass without having run them.
     """
     job = ci_workflow["jobs"]["test-unit"]
     url = job.get("env", {}).get("BRAIN_V42_TEST_DB_URL")
@@ -219,7 +214,7 @@ def test_github_test_unit_opts_into_the_database_backed_tests(
 def test_github_test_unit_applies_the_schema_before_pytest(
     ci_workflow: dict[Any, Any],
 ) -> None:
-    """Same contract as GitLab: tests/unit has no run_migrations fixture."""
+    """tests/unit has no run_migrations fixture; the job must apply the schema."""
     steps = ci_workflow["jobs"]["test-unit"].get("steps", [])
     assert any("alembic upgrade head" in str(step.get("run", "")) for step in steps), (
         "test-unit must apply the schema before pytest; against a bare pgvector "
@@ -230,7 +225,7 @@ def test_github_test_unit_applies_the_schema_before_pytest(
 def test_github_coverage_can_build_settings_without_a_database(
     ci_workflow: dict[Any, Any],
 ) -> None:
-    """Jumeau GitHub : POSTGRES_URL posé, BRAIN_V42_TEST_DB_URL absent."""
+    """POSTGRES_URL posé, BRAIN_V42_TEST_DB_URL absent."""
     coverage = ci_workflow["jobs"]["test-coverage"].get("env", {})
 
     assert coverage.get("POSTGRES_URL"), (
