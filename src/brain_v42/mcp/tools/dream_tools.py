@@ -202,8 +202,18 @@ def register_dream_tools(
                     # graph_helpers) ; seule la pathologie de données est absorbée,
                     # et elle reste COMPTÉE : un connect sur données sales doit
                     # continuer à sortir partial, pas vert.
-                    aggregate.errors.append({"entity_type": etype, "reason": "unknown_endpoint"})
-                    logger.warning("dream_backfill.unknown_graph_endpoint", entity_type=etype)
+                    aggregate.errors.append(
+                        {
+                            "id": entity_uuid,
+                            "entity_type": etype,
+                            "reason": "unknown_endpoint",
+                        }
+                    )
+                    logger.warning(
+                        "dream_backfill.unknown_graph_endpoint",
+                        entity_type=etype,
+                        entity_id=str(entity_uuid),
+                    )
                     continue
                 processed += 1
                 aggregate.extend(links)

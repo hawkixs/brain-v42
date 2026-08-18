@@ -1066,3 +1066,42 @@ class TestUnknownEndpointIsBucketedNotRaised:
                 )
 
         assert raised.value is denial
+
+
+class TestUnknownEndpointWarnIdentifiesTheCulprit:
+    """Le WARN scopé doit nommer l'entité fautive, sinon il est incomptable.
+
+    Mesuré sur la nuit du 2026-08-18 : la pathologie produit des dizaines de
+    lignes par nuit. Sans identifiant, elles sont strictement interchangeables et
+    l'opérateur doit rejouer du SQL à la main pour retrouver les entités. Les ids
+    d'un chemin scopé appartiennent au projet du scope — les journaliser n'expose
+    rien que le scope ne possède déjà, contrairement à un refus d'autorisation.
+    """
+
+    @pytest.mark.asyncio
+    async def test_scoped_warn_carries_both_anchor_ids(
+        self, linker, mock_graph, fake_embedding
+    ) -> None:
+        from brain_v42.repositories.pg_graph_ledger import UnknownGraphEndpoint
+
+        source_id, target_id = uuid.uuid4(), uuid.uuid4()
+        authorization = MagicMock(project_key="owned-project")
+        authorization.revalidate_ids = AsyncMock()
+        mock_graph.create_relation = AsyncMock(side_effect=UnknownGraphEndpoint("nope"))
+        candidate = {"id": target_id, "entity_type": "Learning", "similarity": 0.9}
+
+        with patch.object(
+            linker, "_find_similar", new_callable=AsyncMock, return_value=[candidate]
+        ):
+            with structlog.testing.capture_logs() as logs:
+                await linker.auto_link(
+                    entity_type="Learning",
+                    entity_id=source_id,
+                    embedding=fake_embedding,
+                    authorization=authorization,
+                )
+
+        warns = [entry for entry in logs if entry["event"] == "auto_linker.unknown_graph_endpoint"]
+        assert len(warns) == 1
+        assert warns[0]["entity_id"] == str(source_id)
+        assert warns[0]["target_id"] == str(target_id)

@@ -122,13 +122,18 @@ class AutoLinker:
                 # mais DreamProjectAuthorizationError dérive de AuthorizationError et
                 # doit continuer à propager (cf. graph_helpers, contrat scopé).
                 result.errors.append({**entry_base, "reason": "unknown_endpoint"})
-                log_fields: dict[str, Any] = {"entity_type": entity_type}
-                if authorization is None:
-                    log_fields |= {
-                        "entity_id": str(entity_id),
-                        "target_id": str(row["id"]),
-                    }
-                logger.warning("auto_linker.unknown_graph_endpoint", **log_fields)
+                # Les deux ancres sont nommées MÊME en mode scopé, à la différence
+                # des branches sœurs. La pathologie est chronique et se répète nuit
+                # après nuit : un WARN sans identifiant est incomptable, et force
+                # l'opérateur à rejouer du SQL pour retrouver les entités fautives.
+                # Ce n'est pas une fuite — un id scopé appartient au projet du scope,
+                # contrairement au contexte d'un refus d'autorisation.
+                logger.warning(
+                    "auto_linker.unknown_graph_endpoint",
+                    entity_type=entity_type,
+                    entity_id=str(entity_id),
+                    target_id=str(row["id"]),
+                )
                 continue
             if outcome == "created":
                 result.created.append(entry_base)
