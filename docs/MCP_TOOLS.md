@@ -573,6 +573,8 @@ brain_backfill_links_batch(entity_type=None, limit=50,
 ```
 Find entities in Neo4j with zero `RELATED_TO` edges, fetch their PG embeddings, and call `AutoLinker` to create missing semantic links. Used by the CONNECT phase of the nightly dream orchestrator.
 
+**Contrat `max_links`** (décision opérateur 2026-08-18, ticket fb62624f) : le plafond borne les liens **réussis** (`created` + `matched`). Les erreurs ne le consomment pas ; les tentatives sont bornées de fait par les `2×max_links` candidats sélectionnés, donc une entité dont toutes les écritures échouent peut rapporter jusqu'à `2×max_links` erreurs. Pour estimer un nombre d'entités fautives depuis `errors`, diviser par `2×max_links`, jamais par `max_links`.
+
 ### brain_get_clusters
 ```
 brain_get_clusters(min_size=2, limit=20,

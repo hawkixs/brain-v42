@@ -90,7 +90,10 @@ def register_dream_tools(
                          None processes all types.
             limit: Maximum number of entities to process per call.
             threshold: Minimum cosine similarity for creating a link (default 0.6).
-            max_links: Maximum links to create per entity (default 3).
+            max_links: Cap on SUCCESSFUL links (created + matched) per entity
+                       (default 3). Errors never consume the cap; attempts are
+                       bounded by the 2*max_links candidate fetch, so a fully
+                       failing entity can report up to 2*max_links errors.
 
         Returns:
             Summary string with entities processed, links created, and error count.
