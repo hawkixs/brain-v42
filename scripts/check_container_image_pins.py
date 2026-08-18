@@ -91,7 +91,7 @@ BUILD_BOOLEAN_FLAGS = {
     "--rm",
     "--squash",
 }
-RUN_FLAGS_WITH_VALUE = {"-v", "--volume", "--gpus", "--platform", "--pull"}
+RUN_FLAGS_WITH_VALUE = {"-v", "--volume", "--gpus", "--platform", "--pull", "-w", "--workdir"}
 RUN_BOOLEAN_FLAGS = {"--rm"}
 CREATE_FLAGS_WITH_VALUE = RUN_FLAGS_WITH_VALUE | {"--name"}
 DOCKER_GLOBAL_FLAGS_WITH_VALUE = {

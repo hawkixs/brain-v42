@@ -147,7 +147,7 @@ some log noise
 """
     report = parse_report(raw)
     candidates = [{"id": str(source_id), "topic": "mature insight"}]
-    await validate(report, candidates, session_factory, dream_run_id=None)
+    await validate(report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk)
 
     # Final assertions on the DB state.
     async with session_factory() as session:
@@ -190,7 +190,7 @@ async def test_e2e_dedup_skip_inserts_audit_row(
 """
     report = parse_report(raw)
     candidates = [{"id": str(source_id), "topic": "mature insight"}]
-    await validate(report, candidates, session_factory, dream_run_id=None)
+    await validate(report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk)
 
     async with session_factory() as session:
         row = (
@@ -239,10 +239,10 @@ async def test_e2e_validate_skip_is_idempotent_on_replay(
     report = parse_report(raw)
     candidates = [{"id": str(source_id), "topic": "mature insight"}]
 
-    await validate(report, candidates, session_factory, dream_run_id=None)
+    await validate(report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk)
     # Second call — simulates dream.sh being re-triggered within the same
     # day on the same candidate.
-    await validate(report, candidates, session_factory, dream_run_id=None)
+    await validate(report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk)
 
     async with session_factory() as session:
         count = (
@@ -283,7 +283,9 @@ async def test_e2e_hallucinated_candidate_id_fails_validation(
     candidates = [{"id": str(real_candidate), "topic": "the one..."}]
 
     with pytest.raises(ValidationFailure, match="does not match"):
-        await validate(report, candidates, session_factory, dream_run_id=None)
+        await validate(
+            report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk
+        )
 
     # No audit row written — validation aborted before the INSERT.
     async with session_factory() as session:
