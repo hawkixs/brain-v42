@@ -515,12 +515,21 @@ async def test_inventory_is_read_only(
     seeded = await _seed_polluted_rows(session_factory, manifest)
     repair_cleanup.append(seeded)
     before = await _database_state(session_factory, seeded)
+    # The property under test is "read-only", not "revision equals a fixed
+    # string" — a hardcoded head recasts every future migration as a test
+    # failure here (observed: "041" broke silently at head 045, four
+    # migrations later, with nothing in this file pointing at why). Read the
+    # actual head straight from the same database inventory() reads from.
+    async with session_factory() as session:
+        expected_revision = (
+            await session.execute(sa.text("SELECT version_num FROM alembic_version"))
+        ).scalar_one()
 
     snapshot = await repair_store.RepairStore(session_factory).inventory(manifest, local_files)
 
     assert before.counts == (8, 8, 8, 8)
     assert await _database_state(session_factory, seeded) == before
-    assert snapshot.alembic_revision == "041"
+    assert snapshot.alembic_revision == expected_revision
     assert len(snapshot.polluted_plan_ids) == _PROJECT_COUNT
 
 
