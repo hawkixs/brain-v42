@@ -71,6 +71,9 @@ class GPUEmbeddingService:
         base_url: str = "http://localhost:8003",
         timeout: float = 30.0,
         max_retries: int = 3,
+        *,
+        query_prefix: str = "",
+        document_prefix: str = "",
     ) -> None:
         """Initialize GPUEmbeddingService without creating the HTTP client.
 
@@ -78,10 +81,18 @@ class GPUEmbeddingService:
             base_url: URL of the GPU embedding server.
             timeout: HTTP request timeout in seconds.
             max_retries: Number of retries on connection errors.
+            query_prefix: Instruction prefix prepended by ``embed_query()``.
+            document_prefix: Instruction prefix prepended by ``embed()`` and
+                ``embed_texts()``.
+
+        Both prefixes default to empty, which makes prefixing a no-op and keeps
+        the outgoing request bodies byte-identical to the unprefixed contract.
         """
         self._base_url = base_url
         self._timeout = timeout
         self._max_retries = max_retries
+        self._query_prefix = query_prefix
+        self._document_prefix = document_prefix
         self._client: httpx.AsyncClient | None = None
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -202,34 +213,58 @@ class GPUEmbeddingService:
             return False
 
     async def embed(self, text: str) -> list[float]:
-        """Embed a single text string into a vector.
+        """Embed a single DOCUMENT into a vector.
 
-        Calls POST /embed/query with JSON body {"text": ...} on the GPU
-        service. Body form is used instead of the legacy ?text= query
-        param so long inputs (10KB+ brain_learn insights, SYNTH outputs)
-        don't hit the ~8KB URL-length ceiling at the supervisor's
-        aiohttp inbound.
+        This is the document path. ``/embed/query`` names the single-text
+        route, not the query intent — most callers here are writes (learnings,
+        decisions, ADRs, snippets, runbooks, features, dedup comparisons).
+        Queries call :meth:`embed_query` instead.
+
+        Body form is used instead of the legacy ?text= query param so long
+        inputs (10KB+ brain_learn insights, SYNTH outputs) don't hit the ~8KB
+        URL-length ceiling at the supervisor's aiohttp inbound.
 
         Args:
-            text: Input text to embed.
+            text: Document text to embed.
 
         Returns:
-            list[float] of length 1536 (Qodo-Embed-1-1.5B dimension).
+            list[float], one vector of the configured embedding dimension.
         """
         response = await self._request_with_retry(
             "POST",
             "/embed/query",
-            json={"text": text},
+            json={"text": self._document_prefix + text},
+        )
+        return response.json()  # type: ignore[no-any-return]
+
+    async def embed_query(self, text: str) -> list[float]:
+        """Embed a SEARCH QUERY into a vector.
+
+        Same route as :meth:`embed`; the difference is which instruction prefix
+        is applied. Asymmetric models (Qodo, E5, BGE) need the query side
+        marked differently from the document side, and only the call site knows
+        which it is.
+
+        Args:
+            text: Query text to embed.
+
+        Returns:
+            list[float], one vector of the configured embedding dimension.
+        """
+        response = await self._request_with_retry(
+            "POST",
+            "/embed/query",
+            json={"text": self._query_prefix + text},
         )
         return response.json()  # type: ignore[no-any-return]
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        """Embed a batch of texts into vectors.
+        """Embed a batch of DOCUMENTS into vectors.
 
         Calls POST /embed with JSON body {"texts": [...]}.
 
         Args:
-            texts: Input texts to embed. Empty list returns [] without HTTP call.
+            texts: Document texts to embed. Empty list returns [] without HTTP call.
 
         Returns:
             list[list[float]], one vector per input text.
@@ -240,7 +275,7 @@ class GPUEmbeddingService:
         response = await self._request_with_retry(
             "POST",
             "/embed",
-            json={"texts": texts},
+            json={"texts": [self._document_prefix + t for t in texts]},
         )
         return response.json()  # type: ignore[no-any-return]
 

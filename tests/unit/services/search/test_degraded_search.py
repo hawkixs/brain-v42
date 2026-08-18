@@ -226,6 +226,7 @@ class TestBrainServiceRerankerBlackout:
         # Embedding service works fine
         embedding_svc = MagicMock()
         embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
 
         # Reranker client that ALWAYS raises (GPU down)
         reranker_client = AsyncMock()
@@ -277,6 +278,7 @@ class TestBrainServiceRerankerBlackout:
 
         embedding_svc = MagicMock()
         embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
 
         # Healthy reranker: returns -11 (filtered) and 5.0 (passes)
         reranker_client = AsyncMock()
@@ -333,6 +335,9 @@ class TestEmbeddingDownFTSFallback:
         embedding_svc.embed = AsyncMock(
             side_effect=EmbeddingUnavailable("GPU unreachable", kind="unreachable")
         )
+        embedding_svc.embed_query = AsyncMock(
+            side_effect=EmbeddingUnavailable("GPU unreachable", kind="unreachable")
+        )
 
         brain = BrainService(
             decision_svc=decision_svc,
@@ -365,6 +370,9 @@ class TestEmbeddingDownFTSFallback:
 
         embedding_svc = MagicMock()
         embedding_svc.embed = AsyncMock(
+            side_effect=EmbeddingUnavailable("503 gpu_busy", kind="gpu_busy")
+        )
+        embedding_svc.embed_query = AsyncMock(
             side_effect=EmbeddingUnavailable("503 gpu_busy", kind="gpu_busy")
         )
 
@@ -400,6 +408,7 @@ class TestEmbeddingDownFTSFallback:
 
         embedding_svc = MagicMock()
         embedding_svc.embed = AsyncMock(side_effect=EmbeddingUnavailable("GPU down"))
+        embedding_svc.embed_query = AsyncMock(side_effect=EmbeddingUnavailable("GPU down"))
 
         brain = BrainService(
             decision_svc=decision_svc,
@@ -433,6 +442,7 @@ class TestEmbeddingDownFTSFallback:
 
         embedding_svc = MagicMock()
         embedding_svc.embed = AsyncMock(side_effect=EmbeddingUnavailable("down"))
+        embedding_svc.embed_query = AsyncMock(side_effect=EmbeddingUnavailable("down"))
 
         brain = BrainService(
             decision_svc=decision_svc,
@@ -473,6 +483,7 @@ class TestDeadFetchRemoved:
 
         embedding_svc = MagicMock()
         embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
 
         graph = MagicMock()
         graph.get_related_ids = AsyncMock(return_value={})
@@ -510,6 +521,7 @@ class TestDeadFetchRemoved:
 
         embedding_svc = MagicMock()
         embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
 
         graph = MagicMock()
         graph.get_related_ids = AsyncMock(return_value={str(decision.id): related_data})

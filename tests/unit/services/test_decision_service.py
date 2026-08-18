@@ -74,6 +74,7 @@ def _make_service() -> tuple[DecisionService, MagicMock, MagicMock]:
     repo.get_by_id = AsyncMock(return_value=_make_decision())
     embedding_svc = MagicMock()
     embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+    embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
     svc = DecisionService(repo=repo, embedding_svc=embedding_svc)
     return svc, repo, embedding_svc
 
@@ -143,6 +144,9 @@ class TestCreate:
         embedding_svc.embed = AsyncMock(
             side_effect=EmbeddingUnavailable("offline", kind="unreachable")
         )
+        embedding_svc.embed_query = AsyncMock(
+            side_effect=EmbeddingUnavailable("offline", kind="unreachable")
+        )
 
         data = DecisionCreate(
             title="Use PostgreSQL",
@@ -171,6 +175,7 @@ class TestCreate:
 
         repo.create = AsyncMock(side_effect=create_pending)
         embedding_svc.embed = AsyncMock(side_effect=fail_embedding)
+        embedding_svc.embed_query = AsyncMock(side_effect=fail_embedding)
         data = DecisionCreate(
             title="Use PostgreSQL",
             description="We chose PG for persistence",
@@ -198,6 +203,7 @@ def _make_service_with_ctx_repo(
     repo.create = AsyncMock(return_value=decision)
     embedding_svc = MagicMock()
     embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+    embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
     mock_ctx_repo = MagicMock(spec=PgProjectContextRepo)
     mock_ctx_repo.get_by_key = AsyncMock(return_value=ctx_get_by_key_return)
     svc = DecisionService(
@@ -352,7 +358,7 @@ class TestSemanticSearch:
             "best database choice", project_key="brain-v42", limit=10
         )
 
-        embedding_svc.embed.assert_awaited_once_with("best database choice")
+        embedding_svc.embed_query.assert_awaited_once_with("best database choice")
         repo.search_vector.assert_awaited_once_with(
             FAKE_EMBEDDING, project_key="brain-v42", project_keys=None, limit=10
         )
@@ -475,6 +481,7 @@ class TestGetSupersessionChain:
         repo = MagicMock()
         embedding_svc = MagicMock()
         embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
         graph = MagicMock()
 
         # Graph returns chain_ids as strings
@@ -516,6 +523,7 @@ class TestGetSupersessionChain:
         repo = MagicMock()
         embedding_svc = MagicMock()
         embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
         graph = MagicMock()
         graph.get_supersession_chain = AsyncMock(return_value=[])
 
@@ -544,6 +552,7 @@ def _make_service_with_graph() -> tuple[DecisionService, MagicMock, MagicMock, M
     repo.get_by_id = AsyncMock(return_value=_make_decision())
     embedding_svc = MagicMock()
     embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+    embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
     graph = MagicMock()
     graph.upsert_node = AsyncMock()
     graph.link_to_project = AsyncMock()
@@ -687,6 +696,7 @@ class TestChainMissingDecisionWarning:
         repo = MagicMock()
         embedding_svc = MagicMock()
         embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
         graph = MagicMock()
 
         # Graph returns two IDs, but repo only has the first

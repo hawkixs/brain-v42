@@ -120,6 +120,7 @@ def _brain(
     embedding = embedding_svc or MagicMock()
     if not hasattr(embedding, "embed") or not isinstance(embedding.embed, AsyncMock):
         embedding.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        embedding.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
     else:
         embedding.embed.return_value = FAKE_EMBEDDING
     return (
@@ -208,6 +209,7 @@ async def test_scoped_hybrid_fan_out_overrides_forged_project_arguments() -> Non
 async def test_scoped_fts_fallback_overrides_forged_project_arguments() -> None:
     embedding = MagicMock()
     embedding.embed = AsyncMock(side_effect=EmbeddingUnavailable("offline"))
+    embedding.embed_query = AsyncMock(side_effect=EmbeddingUnavailable("offline"))
     brain, decision = _brain(embedding_svc=embedding)
 
     with bind_dream_project_scope(_scope()):

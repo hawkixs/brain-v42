@@ -161,7 +161,7 @@ class BrainService:
         fts_only_fallback = False
         if self._embedding_svc is not None:
             try:
-                shared_embedding = await self._embedding_svc.embed(query)
+                shared_embedding = await self._embedding_svc.embed_query(query)
             except EmbeddingUnavailable:
                 logger.warning(
                     "brain_service.fan_out.embedding_unavailable",
