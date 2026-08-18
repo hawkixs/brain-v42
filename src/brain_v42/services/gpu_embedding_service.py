@@ -24,6 +24,8 @@ import asyncio
 import httpx
 import structlog
 
+from brain_v42.services.embedding_wire import EmbeddingWire, ShimWire
+
 logger = structlog.get_logger(__name__)
 
 
@@ -72,27 +74,33 @@ class GPUEmbeddingService:
         timeout: float = 30.0,
         max_retries: int = 3,
         *,
+        wire: EmbeddingWire | None = None,
         query_prefix: str = "",
         document_prefix: str = "",
+        api_key: str = "",
     ) -> None:
         """Initialize GPUEmbeddingService without creating the HTTP client.
 
         Args:
-            base_url: URL of the GPU embedding server.
+            base_url: URL of the embedding server.
             timeout: HTTP request timeout in seconds.
             max_retries: Number of retries on connection errors.
+            wire: Request/response shape. Defaults to the private shim contract.
             query_prefix: Instruction prefix prepended by ``embed_query()``.
             document_prefix: Instruction prefix prepended by ``embed()`` and
                 ``embed_texts()``.
+            api_key: Sent as ``Authorization: Bearer`` when non-empty.
 
-        Both prefixes default to empty, which makes prefixing a no-op and keeps
-        the outgoing request bodies byte-identical to the unprefixed contract.
+        Both prefixes default to empty and the wire defaults to the shim, which
+        makes every outgoing request byte-identical to the unprefixed contract.
         """
         self._base_url = base_url
         self._timeout = timeout
         self._max_retries = max_retries
+        self._wire: EmbeddingWire = wire if wire is not None else ShimWire()
         self._query_prefix = query_prefix
         self._document_prefix = document_prefix
+        self._api_key = api_key
         self._client: httpx.AsyncClient | None = None
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -102,9 +110,11 @@ class GPUEmbeddingService:
             The shared httpx.AsyncClient instance.
         """
         if self._client is None:
+            headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
             self._client = httpx.AsyncClient(
                 base_url=self._base_url,
                 timeout=self._timeout,
+                headers=headers,
                 limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
             )
             logger.info(
@@ -230,12 +240,9 @@ class GPUEmbeddingService:
         Returns:
             list[float], one vector of the configured embedding dimension.
         """
-        response = await self._request_with_retry(
-            "POST",
-            "/embed/query",
-            json={"text": self._document_prefix + text},
-        )
-        return response.json()  # type: ignore[no-any-return]
+        path, body = self._wire.single_request(self._document_prefix + text)
+        response = await self._request_with_retry("POST", path, json=body)
+        return self._wire.parse_single(response.json())
 
     async def embed_query(self, text: str) -> list[float]:
         """Embed a SEARCH QUERY into a vector.
@@ -251,12 +258,9 @@ class GPUEmbeddingService:
         Returns:
             list[float], one vector of the configured embedding dimension.
         """
-        response = await self._request_with_retry(
-            "POST",
-            "/embed/query",
-            json={"text": self._query_prefix + text},
-        )
-        return response.json()  # type: ignore[no-any-return]
+        path, body = self._wire.single_request(self._query_prefix + text)
+        response = await self._request_with_retry("POST", path, json=body)
+        return self._wire.parse_single(response.json())
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of DOCUMENTS into vectors.
@@ -272,12 +276,9 @@ class GPUEmbeddingService:
         if not texts:
             return []
 
-        response = await self._request_with_retry(
-            "POST",
-            "/embed",
-            json={"texts": [self._document_prefix + t for t in texts]},
-        )
-        return response.json()  # type: ignore[no-any-return]
+        path, body = self._wire.batch_request([self._document_prefix + t for t in texts])
+        response = await self._request_with_retry("POST", path, json=body)
+        return self._wire.parse_batch(response.json(), expected=len(texts))
 
     def similarity(self, vec_a: list[float], vec_b: list[float]) -> float:
         """Compute dot product similarity between two vectors.
@@ -304,7 +305,7 @@ class GPUEmbeddingService:
         """
         try:
             client = self._get_client()
-            response = await client.get("/healthz")
+            response = await client.get(self._wire.health_path)
             return response.status_code == 200
         except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError):
             return False

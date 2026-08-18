@@ -16,6 +16,7 @@ from brain_v42.repositories.pg_learning import PgLearningRepo
 from brain_v42.repositories.pg_project_context import PgProjectContextRepo
 from brain_v42.repositories.pg_ticket import PgTicketRepo
 from brain_v42.services.decision_service import DecisionService
+from brain_v42.services.embedding_factory import build_embedding_service
 from brain_v42.services.entity_maintenance_service import EntityMaintenanceService
 from brain_v42.services.feature_service import FeatureService
 from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
@@ -104,7 +105,7 @@ class GatewayRuntime:
 def build_production_runtime(settings: Settings) -> GatewayRuntime:
     """Instantiate only the repositories and services required by §3.2."""
     session_factory = get_session_factory()
-    embedding_service = GPUEmbeddingService(base_url=settings.embedding_service_url)
+    embedding_service = build_embedding_service(settings)
     project_context_repo = PgProjectContextRepo(session_factory)
     # project_context_repo wires the fail-closed project-existence guard on
     # create() — see brain_v42.services.project_guard. The proposal-service

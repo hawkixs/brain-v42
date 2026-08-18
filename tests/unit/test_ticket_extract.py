@@ -798,7 +798,7 @@ class TestRunDedupWiring:
             patch("brain_v42.config.Settings") as settings_cls,
             patch("brain_v42.db.engine.get_session_factory", return_value=session_factory),
             patch(
-                "brain_v42.services.gpu_embedding_service.GPUEmbeddingService",
+                "brain_v42.services.embedding_factory.build_embedding_service",
                 return_value=embedding,
             ),
             patch(
@@ -855,7 +855,7 @@ class TestRunDedupWiring:
                 return_value=session_factory,
             ),
             patch(
-                "brain_v42.services.gpu_embedding_service.GPUEmbeddingService",
+                "brain_v42.services.embedding_factory.build_embedding_service",
                 return_value=embedding,
             ),
             patch(
@@ -929,7 +929,7 @@ class TestRunDedupWiring:
                 return_value=session_factory,
             ),
             patch(
-                "brain_v42.services.gpu_embedding_service.GPUEmbeddingService",
+                "brain_v42.services.embedding_factory.build_embedding_service",
                 return_value=embedding,
             ),
             patch(
@@ -1194,7 +1194,7 @@ class TestHardFailureOutranksTimeout:
             patch("brain_v42.config.Settings") as settings_cls,
             patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
             patch(
-                "brain_v42.services.gpu_embedding_service.GPUEmbeddingService",
+                "brain_v42.services.embedding_factory.build_embedding_service",
                 return_value=MagicMock(close=AsyncMock()),
             ),
             patch(
@@ -1331,7 +1331,7 @@ class TestExtractTimingInstrumentation:
             patch("brain_v42.config.Settings") as settings_cls,
             patch("brain_v42.db.engine.get_session_factory", return_value=session_factory),
             patch(
-                "brain_v42.services.gpu_embedding_service.GPUEmbeddingService",
+                "brain_v42.services.embedding_factory.build_embedding_service",
                 return_value=embedding,
             ),
             patch(
@@ -1371,7 +1371,7 @@ class TestExtractTimingInstrumentation:
             patch("brain_v42.config.Settings") as settings_cls,
             patch("brain_v42.db.engine.get_session_factory", return_value=session_factory),
             patch(
-                "brain_v42.services.gpu_embedding_service.GPUEmbeddingService",
+                "brain_v42.services.embedding_factory.build_embedding_service",
                 return_value=embedding,
             ),
             patch(
@@ -1452,7 +1452,7 @@ class TestExtractTimingInstrumentation:
             patch("brain_v42.config.Settings") as settings_cls,
             patch("brain_v42.db.engine.get_session_factory", return_value=session_factory),
             patch(
-                "brain_v42.services.gpu_embedding_service.GPUEmbeddingService",
+                "brain_v42.services.embedding_factory.build_embedding_service",
                 return_value=embedding,
             ),
             patch(
@@ -1493,7 +1493,7 @@ class TestExtractTimingInstrumentation:
             patch("brain_v42.config.Settings") as settings_cls,
             patch("brain_v42.db.engine.get_session_factory", return_value=session_factory),
             patch(
-                "brain_v42.services.gpu_embedding_service.GPUEmbeddingService",
+                "brain_v42.services.embedding_factory.build_embedding_service",
                 return_value=embedding,
             ),
             patch(
@@ -1634,7 +1634,7 @@ async def _run_budget_scenario(
         patch("brain_v42.config.Settings") as settings_cls,
         patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
         patch(
-            "brain_v42.services.gpu_embedding_service.GPUEmbeddingService",
+            "brain_v42.services.embedding_factory.build_embedding_service",
             return_value=MagicMock(close=AsyncMock()),
         ),
         patch(

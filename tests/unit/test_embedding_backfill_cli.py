@@ -179,7 +179,7 @@ async def test_execute_asserts_durable_ledger_schema_before_job_writes() -> None
         ),
         patch("brain_v42.maintenance.embedding_backfill.get_session_factory"),
         patch(
-            "brain_v42.maintenance.embedding_backfill.GPUEmbeddingService",
+            "brain_v42.maintenance.embedding_backfill.build_embedding_service",
             return_value=embedding_svc,
         ),
         patch(

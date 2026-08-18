@@ -124,6 +124,7 @@ def setup_pg_services(pg_url: str) -> dict[str, Any]:
         project_context_svc, brain_svc
     """
     # Import here to avoid top-level dependency on brain_v42 internals
+    from brain_v42.config import get_settings
     from brain_v42.repositories.pg_adr import PgADRRepo
     from brain_v42.repositories.pg_decision import PgDecisionRepo
     from brain_v42.repositories.pg_learning import PgLearningRepo
@@ -133,7 +134,7 @@ def setup_pg_services(pg_url: str) -> dict[str, Any]:
     from brain_v42.services.adr_service import ADRService
     from brain_v42.services.brain_service import BrainService
     from brain_v42.services.decision_service import DecisionService
-    from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
+    from brain_v42.services.embedding_factory import build_embedding_service
     from brain_v42.services.learning_service import LearningService
     from brain_v42.services.project_context_service import ProjectContextService
     from brain_v42.services.runbook_service import RunbookService
@@ -161,7 +162,7 @@ def setup_pg_services(pg_url: str) -> dict[str, Any]:
     db_engine._session_factory = session_factory
 
     # Embedding service (GPU, async httpx)
-    embedding_svc = GPUEmbeddingService()
+    embedding_svc = build_embedding_service(get_settings())
 
     # Repositories — all six receive session_factory explicitly (consistent DI)
     decision_repo = PgDecisionRepo(session_factory)
