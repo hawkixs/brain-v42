@@ -28,6 +28,10 @@ from typing import Any
 import asyncpg
 import httpx
 
+from brain_v42.config import Settings, get_settings
+from brain_v42.services.embedding_factory import build_embedding_service
+from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
+
 # ─── Entity type definitions ──────────────────────────────────────────────────
 
 # Tables with embedding columns (project_contexts has no embedding)
@@ -124,19 +128,38 @@ async def update_embeddings(
 # ─── GPU embedding service ─────────────────────────────────────────────────────
 
 
+def build_service(
+    service_url: str | None,
+    settings: Settings | None = None,
+) -> GPUEmbeddingService:
+    """Build the same embedding client the live write path uses.
+
+    ``--service-url`` overrides the configured endpoint; everything else
+    (backend, model, prefixes, API key, timeout) comes from Settings so a
+    regen pass cannot disagree with the running server.
+
+    ``settings`` is injectable so callers — tests especially — can pin the
+    configuration instead of depending on process env, a repository ``.env``
+    and the ``lru_cache`` behind ``get_settings()`` all agreeing.
+    """
+    resolved = settings if settings is not None else get_settings()
+    if service_url:
+        resolved = resolved.model_copy(update={"embedding_service_url": service_url})
+    return build_embedding_service(resolved)
+
+
 async def embed_batch(
-    client: httpx.AsyncClient,
-    service_url: str,
+    embedding_svc: GPUEmbeddingService,
     texts: list[str],
 ) -> list[list[float]]:
-    """Send a batch of texts to the GPU embedding service and return vectors."""
-    response = await client.post(
-        f"{service_url}/embed",
-        json={"texts": texts},
-        timeout=60.0,
-    )
-    response.raise_for_status()
-    return response.json()
+    """Embed a batch of DOCUMENTS through the shared client.
+
+    Goes through the façade rather than posting raw httpx so the configured
+    document prefix and wire format apply here exactly as they do on the live
+    write path. A regen that disagreed would leave two incompatible vector
+    populations in one column.
+    """
+    return await embedding_svc.embed_texts(texts)
 
 
 # ─── Main logic ───────────────────────────────────────────────────────────────
@@ -144,8 +167,7 @@ async def embed_batch(
 
 async def process_entity_type(
     pool: asyncpg.Pool,
-    client: httpx.AsyncClient,
-    service_url: str,
+    embedding_svc: GPUEmbeddingService,
     entity_type: str,
     batch_size: int,
     dry_run: bool,
@@ -200,7 +222,7 @@ async def process_entity_type(
             continue
 
         try:
-            embeddings = await embed_batch(client, service_url, texts)
+            embeddings = await embed_batch(embedding_svc, texts)
             ids = [row["id"] for row in valid_rows]
             updated = await update_embeddings(pool, entity_type, ids, embeddings)
             success += updated
@@ -316,16 +338,18 @@ async def main() -> int:
     )
     postgres_url = clean_postgres_url(postgres_url)
 
-    service_url = args.service_url or os.environ.get(
-        "EMBEDDING_SERVICE_URL", "http://localhost:8003"
-    )
+    # Built once, then reported — reading the endpoint back off the client is
+    # what keeps this banner honest. Recomputing it from os.environ here would
+    # miss the BRAIN_-prefixed alias that Settings prefers, and the script
+    # would print one endpoint while embedding against another.
+    embedding_svc = build_service(args.service_url)
 
     # Print configuration
     print("=" * 60)
     print("brain_v42 — Embedding Regeneration")
     print("=" * 60)
     print(f"  PostgreSQL:  {postgres_url}")
-    print(f"  GPU Service: {service_url}")
+    print(f"  Embedding:   {embedding_svc._base_url} ({get_settings().embedding_backend})")
     print(f"  Entities:    {', '.join(entity_types)}")
     print(f"  Batch size:  {args.batch_size}")
     print(f"  Dry run:     {args.dry_run}")
@@ -347,22 +371,19 @@ async def main() -> int:
         # Process each entity type
         summaries: dict[str, dict[str, int]] = {}
 
-        async with httpx.AsyncClient() as client:
-            # Quick health check on GPU service (skip in dry-run)
+        try:
+            # Quick health check on the endpoint (skip in dry-run)
             if not args.dry_run:
-                try:
-                    resp = await client.get(f"{service_url}/healthz", timeout=5.0)
-                    resp.raise_for_status()
-                    print("GPU service health: OK")
-                except Exception as exc:
-                    print(f"WARNING: GPU service health check failed: {exc}")
+                if await embedding_svc.healthcheck():
+                    print("Embedding service health: OK")
+                else:
+                    print("WARNING: embedding service health check failed")
                     print("Continuing anyway — batches will fail individually if service is down.")
 
             for entity_type in entity_types:
                 summary = await process_entity_type(
                     pool=pool,
-                    client=client,
-                    service_url=service_url,
+                    embedding_svc=embedding_svc,
                     entity_type=entity_type,
                     batch_size=args.batch_size,
                     dry_run=args.dry_run,
@@ -371,6 +392,8 @@ async def main() -> int:
                     since=since_date,
                 )
                 summaries[entity_type] = summary
+        finally:
+            await embedding_svc.close()
 
         elapsed = time.perf_counter() - start_time
 
