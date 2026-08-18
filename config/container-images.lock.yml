@@ -19,7 +19,6 @@ images:
     resolved_at: "2026-07-23"
     resolution: docker buildx imagetools inspect --raw tag@digest
     consumers:
-      - .gitlab-ci.yml
       - Dockerfile
       - scripts/embedding_gguf_build.sh
       - services/embedding_shim/Dockerfile
@@ -45,22 +44,6 @@ images:
     consumers:
       - services/embedding/Dockerfile
 
-  docker-27-cli:
-    reference: docker:27-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c
-    registry: registry-1.docker.io
-    tag: docker:27-cli
-    digest: sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c
-    media_type: application/vnd.oci.image.index.v1+json
-    platforms:
-      - linux/amd64
-      - linux/arm/v6
-      - linux/arm/v7
-      - linux/arm64/v8
-    resolved_at: "2026-07-23"
-    resolution: docker buildx imagetools inspect --raw tag@digest
-    consumers:
-      - .gitlab-ci.yml
-
   pgvector-pg16:
     reference: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
     registry: registry-1.docker.io
@@ -74,7 +57,6 @@ images:
     resolution: docker buildx imagetools inspect --raw tag@digest
     consumers:
       - .github/workflows/continuous-integration.yml
-      - .gitlab-ci.yml
       - docker-compose.yml
       - tests/support/task0-compose.yml
 
@@ -162,7 +144,6 @@ images:
     resolution: docker buildx imagetools inspect tag
     consumers:
       - .github/workflows/continuous-integration.yml
-      - .gitlab-ci.yml
 
 local_images:
   brain-embedding-supervisor:local:

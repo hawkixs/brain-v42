@@ -2270,11 +2270,12 @@ def test_production_mcp_secrets_are_documented_as_private_and_required() -> None
 
 @requires_claude
 def test_documented_ci_rails_match_the_workflow_files() -> None:
-    """The CI/CD section must name both rails, and name them the way they are wired.
+    """The CI/CD section must name the GitHub rails the way they are wired.
 
-    The section described GitLab alone while GitHub Actions was being wired in.
-    A reader who trusts it would look for a deploy job that exists on neither rail,
-    or expect a pull request to wake the on-demand runner.
+    GitHub Actions is the sole CI/CD authority since the GitLab rail was retired
+    (decision 218028c7): a section still describing `.gitlab-ci.yml` would send a
+    reader to a rail whose project has pipelines disabled. The reverse also holds —
+    the retired file must not be presented as live wiring.
     """
     ci_workflow = yaml.safe_load(
         (REPO_ROOT / ".github/workflows/continuous-integration.yml").read_text()
@@ -2289,7 +2290,7 @@ def test_documented_ci_rails_match_the_workflow_files() -> None:
     assert ".github/workflows/continuous-integration.yml" in normalized
     assert ".github/workflows/continuous-delivery.yml" in normalized
     assert ".github/workflows/release.yml" in normalized
-    assert ".gitlab-ci.yml" in normalized
+    assert not (REPO_ROOT / ".gitlab-ci.yml").exists()
     # Le rail de release existe pour tourner runner ÉTEINT : une section qui le
     # décrirait sur le runner à la demande enverrait un opérateur poser un tag
     # qui n'aboutirait jamais. Le déclencheur et le runner sont donc cités depuis
