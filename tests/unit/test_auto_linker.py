@@ -811,6 +811,12 @@ class TestFindSimilarSqlAssembly:
     la chaîne SQL, ce qui doit rouvrir le finding au lieu de le laisser muet.
     """
 
+    def test_entity_tables_is_immutable_at_runtime(self) -> None:
+        """Ticket c623fa75 (résidu) — le test AST prouve la DÉCLARATION littérale,
+        pas l'immuabilité : une `list` module-level resterait mutable au runtime
+        sans que rien ne rougisse. Un tuple ferme ce trou."""
+        assert isinstance(_ENTITY_TABLES, tuple)
+
     def test_entity_tables_is_a_literal_constant_of_sql_identifiers(self) -> None:
         source = Path(auto_linker_module.__file__).read_text(encoding="utf-8")
         module = ast.parse(source)

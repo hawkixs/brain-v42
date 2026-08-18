@@ -32,14 +32,16 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-# Tables to search across, with their type label and text column
-_ENTITY_TABLES = [
+# Tables to search across, with their type label and text column.
+# Tuple, pas list : la littéralité déclarée est déjà épinglée par AST, mais une
+# list resterait mutable au runtime sans que rien ne rougisse (ticket c623fa75).
+_ENTITY_TABLES = (
     ("decisions", "Decision", "title"),
     ("learnings", "Learning", "topic"),
     ("snippets", "Snippet", "title"),
     ("runbooks", "Runbook", "title"),
     ("adrs", "ADR", "title"),
-]
+)
 
 
 class AutoLinker:
