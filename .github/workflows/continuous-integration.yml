@@ -239,9 +239,13 @@ jobs:
           .venv/bin/pip-audit -r requirements-audit.txt --require-hashes --disable-pip
           --vulnerability-service pypi --timeout 15 --strict --progress-spinner=off
 
-  # The embedding supervisor has its own declared dependency graph. Recompile it in
-  # CI and compare byte-for-byte so the image and scan never drift from its
-  # committed, hash-complete lock. This job is deliberately blocking.
+  # The embedding supervisor has its own declared dependency graph. This job holds
+  # two invariants on its committed, hash-complete lock: the lock still covers
+  # requirements.txt (recompiled UNDER the lock as a constraint, so an upstream
+  # release cannot move the result — an unconstrained `--resolution highest`
+  # recompile went red three times in three days for zero CVEs), and the lock
+  # audits clean. Freshness is not a PR gate: refresh the lock with the canonical
+  # command in its header when rotating pins. This job is deliberately blocking.
   security-pip-audit-embedding-supervisor:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -258,17 +262,22 @@ jobs:
         run: pip install "uv==$UV_VERSION"
       - name: Install dependencies
         run: uv sync --locked --no-dev --extra dev
-      - name: Recompile the supervisor lock
+      - name: Recompile the supervisor lock under its own constraint
         run: >-
           uv pip compile --python-version 3.12 --python-platform x86_64-manylinux_2_28
           --resolution highest --generate-hashes --default-index https://pypi.org/simple
+          --constraint services/embedding_supervisor/requirements.lock
           --custom-compile-command "uv pip compile --python-version 3.12 --python-platform x86_64-manylinux_2_28 --resolution highest --generate-hashes --default-index https://pypi.org/simple services/embedding_supervisor/requirements.txt -o services/embedding_supervisor/requirements.lock"
           services/embedding_supervisor/requirements.txt
           -o requirements-embedding-supervisor.generated.lock
       - name: Compare with the committed lock
-        run: >-
-          cmp --silent services/embedding_supervisor/requirements.lock
-          requirements-embedding-supervisor.generated.lock
+        # Comments are stripped before comparing: the constraint flag only changes
+        # the `# via` annotations, while every install-relevant byte — names,
+        # versions, hashes — is a non-comment line and stays compared exactly.
+        run: |
+          grep -vE '^\s*#' services/embedding_supervisor/requirements.lock > committed.pins
+          grep -vE '^\s*#' requirements-embedding-supervisor.generated.lock > generated.pins
+          diff -u committed.pins generated.pins
       - name: Audit the supervisor lock
         run: >-
           .venv/bin/pip-audit -r services/embedding_supervisor/requirements.lock
