@@ -17,7 +17,7 @@ from uuid import UUID
 import sqlalchemy as sa
 import structlog
 
-from brain_v42.db.tables import adrs, decisions, learnings, runbooks, snippets
+from brain_v42.db.tables import adrs, brain_entities, decisions, learnings, runbooks, snippets
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
 from brain_v42.mcp.tools.formatters import clamp_list_limit, format_error
 from brain_v42.mcp.tools.tool_annotations import (
@@ -26,6 +26,7 @@ from brain_v42.mcp.tools.tool_annotations import (
     _WRITE_ANNOTATIONS,
 )
 from brain_v42.models.project_key import canonicalize_project_key
+from brain_v42.repositories.pg_graph_ledger import UnknownGraphEndpoint
 from brain_v42.services.link_result import LinkJobResult
 
 if TYPE_CHECKING:
@@ -154,6 +155,21 @@ def register_dream_tools(
                     sa.and_(
                         table.c.id.in_(list(unlinked_uuid_set)),
                         table.c.embedding.is_not(None),
+                        # Ticket 6d2cf2a9 — le résolveur exige `active` sur les DEUX
+                        # ancres. Le filtre de _find_similar ne couvre que la CIBLE ;
+                        # find_unlinked_nodes rend aussi des SOURCES archived (mesuré
+                        # le 2026-08-18 : brain-v42, 82 non liées actives ET 21
+                        # archived). Une source archived fait lever le résolveur pour
+                        # CHACUN de ses candidats, ne peut jamais gagner d'arête, donc
+                        # revient à chaque nuit : connect reste partial à perpétuité.
+                        # Même prédicat que list_active_classification_orphans, la
+                        # liste de sources de STEP_B, qui filtre déjà au ledger.
+                        sa.exists().where(
+                            sa.and_(
+                                brain_entities.c.source_uuid == table.c.id,
+                                brain_entities.c.lifecycle == "active",
+                            )
+                        ),
                         *((table.c.project_key == scope.project_key,) if scope is not None else ()),
                     )
                 )
@@ -170,14 +186,35 @@ def register_dream_tools(
                 continue
             etype, embedding = id_to_info[entity_uuid]
             if scope is not None:
-                links = await auto_linker.auto_link(
-                    entity_type=etype,
-                    entity_id=entity_uuid,
-                    embedding=embedding,
-                    threshold=threshold,
-                    max_links=max_links,
-                    authorization=scope,
-                )
+                try:
+                    links = await auto_linker.auto_link(
+                        entity_type=etype,
+                        entity_id=entity_uuid,
+                        embedding=embedding,
+                        threshold=threshold,
+                        max_links=max_links,
+                        authorization=scope,
+                    )
+                except UnknownGraphEndpoint:
+                    # Ticket 6d2cf2a9 — symétrie avec la branche non-scopée, mais
+                    # NARROW à dessein. La branche scopée reste hors du wrapper de
+                    # dégradation pour qu'un refus d'autorisation propage (contrat
+                    # graph_helpers) ; seule la pathologie de données est absorbée,
+                    # et elle reste COMPTÉE : un connect sur données sales doit
+                    # continuer à sortir partial, pas vert.
+                    aggregate.errors.append(
+                        {
+                            "id": entity_uuid,
+                            "entity_type": etype,
+                            "reason": "unknown_endpoint",
+                        }
+                    )
+                    logger.warning(
+                        "dream_backfill.unknown_graph_endpoint",
+                        entity_type=etype,
+                        entity_id=str(entity_uuid),
+                    )
+                    continue
                 processed += 1
                 aggregate.extend(links)
                 continue

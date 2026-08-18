@@ -21,6 +21,7 @@ from brain_v42.services.graph_helpers import (
     graph_upsert_entity,
     link_artifact_if_enabled,
 )
+from brain_v42.services.link_result import LinkJobResult
 
 FIXED_UUID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 REL_UUID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -509,3 +510,54 @@ class TestLinkArtifactIfEnabled:
         )
 
         linker.link_artifact.assert_awaited_once()
+
+
+class TestAutoLinkIfEnabledReturnsItsResult:
+    """Ticket 6d2cf2a9 (d) — le résultat de liaison ne doit plus être jeté en silence.
+
+    `brain_propose_adr` passe par ce helper. Quand un lien graphe échoue, le
+    LinkJobResult porte le décompte dans `errors` — mais le helper retournait
+    None, donc l'échec n'existait nulle part au-dessus du journal. Le rendre
+    permet à un appelant de le remonter ; ceux qui n'en veulent pas l'ignorent
+    EXPLICITEMENT, ce qui est une décision lisible plutôt qu'une perte muette.
+    """
+
+    async def test_returns_the_link_job_result_in_admin_mode(self) -> None:
+        expected = LinkJobResult(errors=[{"reason": "unknown_endpoint"}])
+        linker = MagicMock()
+        linker.auto_link = AsyncMock(return_value=expected)
+
+        outcome = await auto_link_if_enabled(linker, "ADR", FIXED_UUID, FAKE_EMBEDDING)
+
+        assert outcome is expected
+
+    async def test_returns_the_link_job_result_in_scoped_mode(self) -> None:
+        expected = LinkJobResult(created=[{"id": "x"}])
+        linker = MagicMock()
+        linker.auto_link = AsyncMock(return_value=expected)
+        authorization = MagicMock(project_key="owned-project")
+        authorization.revalidate_ids = AsyncMock()
+
+        outcome = await auto_link_if_enabled(
+            linker,
+            "ADR",
+            FIXED_UUID,
+            FAKE_EMBEDDING,
+            authorization=authorization,
+        )
+
+        assert outcome is expected
+
+    async def test_returns_none_when_there_is_no_linker(self) -> None:
+        assert await auto_link_if_enabled(None, "ADR", FIXED_UUID, FAKE_EMBEDDING) is None
+
+    async def test_returns_none_when_the_admin_path_swallowed_an_exception(self) -> None:
+        """Le contrat de dégradation admin est inchangé : on avale, donc pas de résultat."""
+        linker = MagicMock()
+        linker.auto_link = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        with structlog.testing.capture_logs() as logs:
+            outcome = await auto_link_if_enabled(linker, "ADR", FIXED_UUID, FAKE_EMBEDDING)
+
+        assert outcome is None
+        assert [entry["event"] for entry in logs] == ["auto_link_failed"]

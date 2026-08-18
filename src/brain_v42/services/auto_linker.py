@@ -20,6 +20,7 @@ from uuid import UUID
 import sqlalchemy as sa
 import structlog
 
+from brain_v42.repositories.pg_graph_ledger import UnknownGraphEndpoint
 from brain_v42.services.graph_helpers import (
     RelationAuthorization,
     graph_create_relation_logged,
@@ -101,16 +102,39 @@ class AutoLinker:
             if len(result.created) + len(result.matched) >= max_links:
                 result.skipped.append({**entry_base, "reason": "max_links_cap"})
                 continue
-            outcome = await graph_create_relation_logged(
-                self._graph,
-                entity_id,
-                row["id"],
-                "RELATED_TO",
-                authorization=authorization,
-                properties={"similarity": row["similarity"]},
-                origin="auto_linker",
-                confidence=row["similarity"],
-            )
+            try:
+                outcome = await graph_create_relation_logged(
+                    self._graph,
+                    entity_id,
+                    row["id"],
+                    "RELATED_TO",
+                    authorization=authorization,
+                    properties={"similarity": row["similarity"]},
+                    origin="auto_linker",
+                    confidence=row["similarity"],
+                )
+            except UnknownGraphEndpoint:
+                # Ticket 6d2cf2a9 — la cible n'est plus un endpoint graphe valide.
+                # C'est une pathologie de DONNÉES, pas un refus d'autorisation : elle
+                # tombe dans `errors` pour rester comptée en errors=N, sans annuler
+                # les candidats suivants de la même entité. Le catch reste
+                # volontairement étroit — UnknownGraphEndpoint dérive de ValueError,
+                # mais DreamProjectAuthorizationError dérive de AuthorizationError et
+                # doit continuer à propager (cf. graph_helpers, contrat scopé).
+                result.errors.append({**entry_base, "reason": "unknown_endpoint"})
+                # Les deux ancres sont nommées MÊME en mode scopé, à la différence
+                # des branches sœurs. La pathologie est chronique et se répète nuit
+                # après nuit : un WARN sans identifiant est incomptable, et force
+                # l'opérateur à rejouer du SQL pour retrouver les entités fautives.
+                # Ce n'est pas une fuite — un id scopé appartient au projet du scope,
+                # contrairement au contexte d'un refus d'autorisation.
+                logger.warning(
+                    "auto_linker.unknown_graph_endpoint",
+                    entity_type=entity_type,
+                    entity_id=str(entity_id),
+                    target_id=str(row["id"]),
+                )
+                continue
             if outcome == "created":
                 result.created.append(entry_base)
             elif outcome == "matched":
@@ -172,7 +196,17 @@ class AutoLinker:
                 f"SELECT id, '{type_label}' AS entity_type, "
                 f"1.0 - (embedding <=> {vec_literal}) AS similarity "
                 f"FROM {table} "
-                f"WHERE embedding IS NOT NULL AND id != :entity_id{project_filter}"  # nosec B608 - table et type_label itèrent _ENTITY_TABLES, constante littérale de ce module (aucun appelant ne l'alimente) ; project_filter est l'une des deux chaînes littérales construites juste au-dessus, la valeur project_key partant en bind :project_key ; vec_literal ne porte que les nombres d'un vecteur déjà accepté par une colonne pgvector Vector(1536) — exception revue le 2026-08-16, à réexaminer avant le 2026-09-30
+                f"WHERE embedding IS NOT NULL AND id != :entity_id{project_filter} "
+                # Ticket 6d2cf2a9 — même prédicat que pg_graph_ledger._resolve_endpoints,
+                # qui exige lifecycle='active' sur les deux ancres et lève sinon
+                # UnknownGraphEndpoint. Sans ce filtre le sélecteur proposait des cibles
+                # que le résolveur refuse (408 lignes archived porteuses d'un embedding,
+                # 14 projets, mesuré le 2026-08-18) → connect partial quotidien.
+                # `{table}.id` est qualifié à dessein : brain_entities porte SA PROPRE
+                # colonne `id`, donc un `id` nu résoudrait vers la table interne et le
+                # EXISTS serait vrai pour n'importe quelle ligne du ledger.
+                f"AND EXISTS (SELECT 1 FROM brain_entities be "
+                f"WHERE be.source_uuid = {table}.id AND be.lifecycle = 'active')"  # nosec B608 - table et type_label itèrent _ENTITY_TABLES, constante littérale de ce module (aucun appelant ne l'alimente) ; project_filter est l'une des deux chaînes littérales construites juste au-dessus, la valeur project_key partant en bind :project_key ; brain_entities et be.lifecycle sont des littéraux figés de cette expression ; vec_literal ne porte que les nombres d'un vecteur déjà accepté par une colonne pgvector Vector(1536) — exception revue le 2026-08-18, à réexaminer avant le 2026-09-30
             )
 
         query = (

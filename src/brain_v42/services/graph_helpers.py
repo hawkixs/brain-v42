@@ -254,20 +254,30 @@ async def auto_link_if_enabled(
     embedding: list[float] | None,
     *,
     authorization: RelationAuthorization | None = None,
-) -> None:
-    """Create RELATED_TO edges, propagating scoped authorization refusals."""
+) -> Any | None:
+    """Create RELATED_TO edges, propagating scoped authorization refusals.
+
+    Returns the ``LinkJobResult`` produced by the linker so a caller can surface
+    a degraded link job, or ``None`` when there is no linker or when the admin
+    degradation path swallowed an exception.
+
+    Ticket 6d2cf2a9 (d): this used to return ``None`` unconditionally, so a
+    failed graph link on the ``brain_propose_adr`` path existed nowhere above the
+    journal — the entity was stored, the edge was not, and nothing said so.
+    Callers that do not want the result must ignore it EXPLICITLY, which is a
+    readable decision rather than a silent loss.
+    """
     if auto_linker is None:
-        return
+        return None
     if authorization is not None:
-        await auto_linker.auto_link(
+        return await auto_linker.auto_link(
             entity_type=entity_type,
             entity_id=entity_id,
             embedding=embedding,
             authorization=authorization,
         )
-        return
     try:
-        await auto_linker.auto_link(
+        return await auto_linker.auto_link(
             entity_type=entity_type,
             entity_id=entity_id,
             embedding=embedding,
@@ -279,6 +289,7 @@ async def auto_link_if_enabled(
             entity_id=str(entity_id),
             exc_info=True,
         )
+        return None
 
 
 async def link_artifact_if_enabled(

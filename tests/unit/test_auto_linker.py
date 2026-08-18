@@ -887,3 +887,221 @@ class TestFindSimilarSqlAssembly:
 
         assert "project_key" not in query
         assert "project_key" not in params
+
+
+class TestFindSimilarLifecycleFilter:
+    """Ticket 6d2cf2a9 (a) — ne jamais proposer une cible que le résolveur refusera.
+
+    `pg_graph_ledger._resolve_endpoints` exige `lifecycle='active'` sur LES DEUX
+    ancres et lève `UnknownGraphEndpoint` sinon. `_find_similar` sélectionnait sur
+    `embedding IS NOT NULL` seul : il proposait donc des cibles archived, mesurées
+    à 408 lignes sur 14 projets le 2026-08-18. Le sélecteur doit porter le même
+    prédicat que le résolveur, sinon le désaccord se paie en connect partial.
+    """
+
+    @pytest.mark.asyncio
+    async def test_every_union_arm_requires_an_active_graph_endpoint(self) -> None:
+        session = _RecordingSession()
+        linker = AutoLinker(session_factory=lambda: session, graph=None)
+
+        await linker._find_similar(entity_id=uuid.uuid4(), embedding=[0.1], limit=5)
+
+        (query, _params) = session.statements[0]
+        assert query.count("brain_entities") == len(_ENTITY_TABLES)
+        assert query.count("lifecycle = 'active'") == len(_ENTITY_TABLES)
+
+    @pytest.mark.asyncio
+    async def test_guard_sits_inside_each_arm_never_after_the_global_limit(self) -> None:
+        """Un filtre posé après le ORDER BY global rendrait moins de lignes que `limit`."""
+        session = _RecordingSession()
+        linker = AutoLinker(session_factory=lambda: session, graph=None)
+
+        await linker._find_similar(entity_id=uuid.uuid4(), embedding=[0.1], limit=5)
+
+        (query, _params) = session.statements[0]
+        assert query.rindex("lifecycle = 'active'") < query.index("ORDER BY similarity")
+
+    @pytest.mark.asyncio
+    async def test_correlation_is_qualified_because_brain_entities_owns_an_id_column(
+        self,
+    ) -> None:
+        """`be.source_uuid = id` lierait `id` à `brain_entities.id` — jamais à la candidate.
+
+        `brain_entities` porte sa propre colonne `id` (clé primaire du ledger), donc
+        un `id` nu dans la sous-requête résout vers la table INTERNE et le EXISTS
+        devient vrai pour toute ligne du ledger : le filtre ne filtrerait rien.
+        """
+        session = _RecordingSession()
+        linker = AutoLinker(session_factory=lambda: session, graph=None)
+
+        await linker._find_similar(entity_id=uuid.uuid4(), embedding=[0.1], limit=5)
+
+        (query, _params) = session.statements[0]
+        for table, _type_label, _text_col in _ENTITY_TABLES:
+            assert f"source_uuid = {table}.id" in query
+
+    @pytest.mark.asyncio
+    async def test_scoped_arm_keeps_both_the_project_and_the_lifecycle_predicate(self) -> None:
+        session = _RecordingSession()
+        linker = AutoLinker(session_factory=lambda: session, graph=None)
+
+        await linker._find_similar(
+            entity_id=uuid.uuid4(),
+            embedding=[0.1],
+            limit=5,
+            project_key="owned-project",
+        )
+
+        (query, params) = session.statements[0]
+        assert query.count("project_key = :project_key") == len(_ENTITY_TABLES)
+        assert query.count("lifecycle = 'active'") == len(_ENTITY_TABLES)
+        assert params["project_key"] == "owned-project"
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_guard_adds_no_bind_and_no_project_leak_when_unscoped(self) -> None:
+        """Le garde-fou est un littéral figé : il ne doit ni créer de bind ni citer le projet."""
+        session = _RecordingSession()
+        linker = AutoLinker(session_factory=lambda: session, graph=None)
+
+        await linker._find_similar(entity_id=uuid.uuid4(), embedding=[0.1], limit=5)
+
+        (query, params) = session.statements[0]
+        assert "project_key" not in query
+        assert set(params) == {"entity_id", "limit"}
+
+
+class TestUnknownEndpointIsBucketedNotRaised:
+    """Ticket 6d2cf2a9 (c) — une pathologie de données ne doit pas tuer le lot.
+
+    Le chemin scopé propage DÉLIBÉRÉMENT (graph_helpers l.59-62) pour qu'un refus
+    d'autorisation ne soit jamais avalé. `UnknownGraphEndpoint` n'est pas un refus
+    d'autorisation : c'est la donnée qui est sale. Il doit tomber dans `errors`
+    — donc rester visible en `errors=N` — sans interrompre les autres candidats.
+    """
+
+    @pytest.mark.asyncio
+    async def test_scoped_unknown_endpoint_goes_to_errors_without_raising(
+        self, linker, mock_graph, fake_embedding
+    ) -> None:
+        from brain_v42.repositories.pg_graph_ledger import UnknownGraphEndpoint
+
+        target_id = uuid.uuid4()
+        authorization = MagicMock(project_key="owned-project")
+        authorization.revalidate_ids = AsyncMock()
+        mock_graph.create_relation = AsyncMock(
+            side_effect=UnknownGraphEndpoint("one or more UUID endpoints are not registered")
+        )
+        candidate = {"id": target_id, "entity_type": "Learning", "similarity": 0.9}
+
+        with patch.object(
+            linker, "_find_similar", new_callable=AsyncMock, return_value=[candidate]
+        ):
+            result = await linker.auto_link(
+                entity_type="Learning",
+                entity_id=uuid.uuid4(),
+                embedding=fake_embedding,
+                authorization=authorization,
+            )
+
+        assert len(result.errors) == 1
+        assert result.errors[0]["reason"] == "unknown_endpoint"
+        assert result.errors[0]["id"] == target_id
+        assert result.created == []
+
+    @pytest.mark.asyncio
+    async def test_one_dirty_target_does_not_cancel_the_clean_ones(
+        self, linker, mock_graph, fake_embedding
+    ) -> None:
+        from brain_v42.repositories.pg_graph_ledger import UnknownGraphEndpoint
+
+        dirty_id, clean_id = uuid.uuid4(), uuid.uuid4()
+        authorization = MagicMock(project_key="owned-project")
+        authorization.revalidate_ids = AsyncMock()
+
+        async def create_relation(src, tgt, *_args, **_kwargs):  # noqa: ANN001,ANN002,ANN003
+            if tgt == dirty_id:
+                raise UnknownGraphEndpoint("one or more UUID endpoints are not registered")
+            return "created"
+
+        mock_graph.create_relation = AsyncMock(side_effect=create_relation)
+        candidates = [
+            {"id": dirty_id, "entity_type": "Learning", "similarity": 0.95},
+            {"id": clean_id, "entity_type": "Decision", "similarity": 0.90},
+        ]
+
+        with patch.object(linker, "_find_similar", new_callable=AsyncMock, return_value=candidates):
+            result = await linker.auto_link(
+                entity_type="Learning",
+                entity_id=uuid.uuid4(),
+                embedding=fake_embedding,
+                authorization=authorization,
+            )
+
+        assert [entry["id"] for entry in result.created] == [clean_id]
+        assert [entry["id"] for entry in result.errors] == [dirty_id]
+
+    @pytest.mark.asyncio
+    async def test_scoped_authorization_refusal_still_propagates(
+        self, linker, mock_graph, fake_embedding
+    ) -> None:
+        """Le garde anti-régression du fix (c) : ne JAMAIS élargir le catch.
+
+        Si ce test devient vert avec un `except Exception`, la garde scopée est morte.
+        """
+        denial = DreamProjectAuthorizationError("object_not_authorized")
+        authorization = MagicMock(project_key="owned-project")
+        authorization.revalidate_ids = AsyncMock(side_effect=denial)
+        mock_graph.create_relation = AsyncMock(return_value="created")
+        candidate = {"id": uuid.uuid4(), "entity_type": "Learning", "similarity": 0.9}
+
+        with patch.object(
+            linker, "_find_similar", new_callable=AsyncMock, return_value=[candidate]
+        ):
+            with pytest.raises(DreamProjectAuthorizationError) as raised:
+                await linker.auto_link(
+                    entity_type="Learning",
+                    entity_id=uuid.uuid4(),
+                    embedding=fake_embedding,
+                    authorization=authorization,
+                )
+
+        assert raised.value is denial
+
+
+class TestUnknownEndpointWarnIdentifiesTheCulprit:
+    """Le WARN scopé doit nommer l'entité fautive, sinon il est incomptable.
+
+    Mesuré sur la nuit du 2026-08-18 : la pathologie produit des dizaines de
+    lignes par nuit. Sans identifiant, elles sont strictement interchangeables et
+    l'opérateur doit rejouer du SQL à la main pour retrouver les entités. Les ids
+    d'un chemin scopé appartiennent au projet du scope — les journaliser n'expose
+    rien que le scope ne possède déjà, contrairement à un refus d'autorisation.
+    """
+
+    @pytest.mark.asyncio
+    async def test_scoped_warn_carries_both_anchor_ids(
+        self, linker, mock_graph, fake_embedding
+    ) -> None:
+        from brain_v42.repositories.pg_graph_ledger import UnknownGraphEndpoint
+
+        source_id, target_id = uuid.uuid4(), uuid.uuid4()
+        authorization = MagicMock(project_key="owned-project")
+        authorization.revalidate_ids = AsyncMock()
+        mock_graph.create_relation = AsyncMock(side_effect=UnknownGraphEndpoint("nope"))
+        candidate = {"id": target_id, "entity_type": "Learning", "similarity": 0.9}
+
+        with patch.object(
+            linker, "_find_similar", new_callable=AsyncMock, return_value=[candidate]
+        ):
+            with structlog.testing.capture_logs() as logs:
+                await linker.auto_link(
+                    entity_type="Learning",
+                    entity_id=source_id,
+                    embedding=fake_embedding,
+                    authorization=authorization,
+                )
+
+        warns = [entry for entry in logs if entry["event"] == "auto_linker.unknown_graph_endpoint"]
+        assert len(warns) == 1
+        assert warns[0]["entity_id"] == str(source_id)
+        assert warns[0]["target_id"] == str(target_id)

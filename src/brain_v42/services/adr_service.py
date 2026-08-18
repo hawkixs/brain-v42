@@ -214,7 +214,7 @@ class ADRService:
             data.project_key,
             data.title,
         )
-        await auto_link_if_enabled(
+        _link_job = await auto_link_if_enabled(  # résultat ignoré à dessein (6d2cf2a9 d)
             self._auto_linker,
             "ADR",
             adr.id,

@@ -396,4 +396,6 @@ class EmbeddingBackfillJob:
             title,
         )
         graph_type = "ADR" if entity_type == "adr" else entity_type.title()
-        await auto_link_if_enabled(self._auto_linker, graph_type, row["id"], embedding)
+        # Résultat ignoré à dessein (6d2cf2a9 d) : ce backfill rapporte déjà son
+        # propre décompte, il n'a pas d'appelant à qui remonter le détail par entité.
+        _link_job = await auto_link_if_enabled(self._auto_linker, graph_type, row["id"], embedding)
