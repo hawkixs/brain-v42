@@ -19,11 +19,29 @@ from __future__ import annotations
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
 
-from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    Field,
+    SecretStr,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# pgvector 0.8.2 refuses an HNSW index on a column wider than this
+# ("column cannot have more than 2000 dimensions for hnsw index"), and every
+# embedding column in this schema carries one. Bounding the setting turns a
+# detonation inside a migration's CREATE INDEX into a config-load error.
+PGVECTOR_HNSW_MAX_DIMENSIONS = 2000
+
+# Settings sets `str_strip_whitespace=True` model-wide. Every asymmetric-model
+# instruction prefix worth having ends in a space ("query: ", "passage: "), and
+# that space is what separates the prefix from the text. These fields opt out.
+_UnstrippedStr = Annotated[str, StringConstraints(strip_whitespace=False)]
 
 
 def _brain_alias(legacy_env: str) -> AliasChoices:
@@ -86,8 +104,46 @@ class Settings(BaseSettings):
         default="http://localhost:8003", validation_alias=_brain_alias("EMBEDDING_SERVICE_URL")
     )
     embedding_dimension: int = Field(
-        default=1536, validation_alias=_brain_alias("EMBEDDING_DIMENSION")
+        default=1536,
+        ge=1,
+        le=PGVECTOR_HNSW_MAX_DIMENSIONS,
+        validation_alias=_brain_alias("EMBEDDING_DIMENSION"),
     )
+
+    # --- Embedding backend (pluggable wire shape) ---
+    # "shim"   — the private three-route contract (POST /embed, /embed/query),
+    #            served by the bundled reference stack. Default: production
+    #            keeps posting exactly the bodies it posts today.
+    # "openai" — POST /v1/embeddings, spoken by Ollama, vLLM, llama.cpp server,
+    #            LM Studio, TEI, Jina, Mistral, Voyage and OpenAI itself.
+    embedding_backend: Literal["shim", "openai"] = Field(
+        default="shim", validation_alias=_brain_alias("EMBEDDING_BACKEND")
+    )
+    embedding_model: str = Field(default="qodo", validation_alias=_brain_alias("EMBEDDING_MODEL"))
+    """Model name sent as ``"model"`` by the openai backend. Hosted providers
+    reject an unknown name; most local servers ignore the field entirely."""
+
+    embedding_api_key: SecretStr = Field(
+        default=SecretStr(""), repr=False, validation_alias=_brain_alias("EMBEDDING_API_KEY")
+    )
+    """Sent as ``Authorization: Bearer`` only when non-empty. Belongs in a
+    private 0600 file, never in the shared .env — same doctrine as MCP_HTTP_TOKEN."""
+
+    embedding_timeout: float = Field(
+        default=30.0, gt=0, validation_alias=_brain_alias("EMBEDDING_TIMEOUT")
+    )
+
+    embedding_query_prefix: _UnstrippedStr = Field(
+        default="", validation_alias=_brain_alias("EMBEDDING_QUERY_PREFIX")
+    )
+    """Prepended by ``embed_query()`` only. Changing it is free — no re-embed."""
+
+    embedding_document_prefix: _UnstrippedStr = Field(
+        default="", validation_alias=_brain_alias("EMBEDDING_DOCUMENT_PREFIX")
+    )
+    """Prepended by ``embed()`` and ``embed_texts()``. Changing it on a populated
+    corpus requires a full ``scripts/regen_embeddings.py`` pass, otherwise
+    prefixed and unprefixed vectors share one column."""
 
     # --- Code Mode (experimental) ---
     brain_code_mode: bool = False
