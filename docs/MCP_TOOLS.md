@@ -616,7 +616,7 @@ proposal's free-form JSONB `payload` is truncated at 200 characters.
 ```
 brain_assign_domain(entity_id, domain_name)
 ```
-Write a `BELONGS_TO_DOMAIN` edge from an entity to a Domain node. Called by the Dream CONNECT phase after local classification. Upserts the Domain node first, then creates the edge. Returns `"created"`, `"matched"`, or `"missing_node"`.
+Write a `BELONGS_TO_DOMAIN` edge from an entity to a Domain node. Called by the Dream CONNECT phase after local classification. Upserts the Domain node first, then creates the edge. Returns `"created"`, `"matched"`, `"missing_node"`, `"invalid_domain"`, `"invalid_entity_id"` or `"error"` — `"error"` covers both a failed write and an entity that is no longer an active graph endpoint (archived between the orphan listing and the call; logged as `mcp.brain_assign_domain.unknown_graph_endpoint` instead of escaping as an opaque exception).
 
 ---
 
