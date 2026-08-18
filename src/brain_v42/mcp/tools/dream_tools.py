@@ -17,7 +17,7 @@ from uuid import UUID
 import sqlalchemy as sa
 import structlog
 
-from brain_v42.db.tables import adrs, decisions, learnings, runbooks, snippets
+from brain_v42.db.tables import adrs, brain_entities, decisions, learnings, runbooks, snippets
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
 from brain_v42.mcp.tools.formatters import clamp_list_limit, format_error
 from brain_v42.mcp.tools.tool_annotations import (
@@ -155,6 +155,21 @@ def register_dream_tools(
                     sa.and_(
                         table.c.id.in_(list(unlinked_uuid_set)),
                         table.c.embedding.is_not(None),
+                        # Ticket 6d2cf2a9 — le résolveur exige `active` sur les DEUX
+                        # ancres. Le filtre de _find_similar ne couvre que la CIBLE ;
+                        # find_unlinked_nodes rend aussi des SOURCES archived (mesuré
+                        # le 2026-08-18 : brain-v42, 82 non liées actives ET 21
+                        # archived). Une source archived fait lever le résolveur pour
+                        # CHACUN de ses candidats, ne peut jamais gagner d'arête, donc
+                        # revient à chaque nuit : connect reste partial à perpétuité.
+                        # Même prédicat que list_active_classification_orphans, la
+                        # liste de sources de STEP_B, qui filtre déjà au ledger.
+                        sa.exists().where(
+                            sa.and_(
+                                brain_entities.c.source_uuid == table.c.id,
+                                brain_entities.c.lifecycle == "active",
+                            )
+                        ),
                         *((table.c.project_key == scope.project_key,) if scope is not None else ()),
                     )
                 )

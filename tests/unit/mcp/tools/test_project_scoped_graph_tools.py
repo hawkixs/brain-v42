@@ -415,3 +415,60 @@ async def test_scoped_backfill_still_propagates_an_authorization_refusal(
         await tools["brain_backfill_links_batch"]()
 
     assert raised.value is denial
+
+
+@pytest.mark.asyncio
+async def test_backfill_never_feeds_an_archived_source_to_the_linker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ticket 6d2cf2a9 — le résolveur exige `active` sur les DEUX ancres.
+
+    Le filtre posé dans `_find_similar` ne couvre que la CIBLE. `find_unlinked_nodes`
+    rend aussi des SOURCES archived (mesuré le 2026-08-18 : brain-v42 a 82 entités
+    non liées actives ET 21 archived), et une source archived fait lever le résolveur
+    tout autant qu'une cible. Sans ce filtre, ces 21 sources reviennent chaque nuit,
+    ne peuvent jamais gagner d'arête, et rendent connect partial à perpétuité.
+
+    Précédent du projet : `list_active_classification_orphans`, la liste de sources
+    de STEP_B, filtre déjà `candidate.lifecycle='active'` côté ledger.
+    """
+    entity_id = uuid4()
+    graph = MagicMock()
+    graph.find_unlinked_nodes = AsyncMock(return_value=[str(entity_id)])
+    scope = RecordingScope()
+    monkeypatch.setattr(dream_tools, "get_dream_project_scope", lambda: scope, raising=False)
+
+    session = AsyncMock()
+    result = MagicMock()
+    result.fetchall = MagicMock(return_value=[])
+    session.execute = AsyncMock(return_value=result)
+    tools, _session, _linker = _dream_graph_tools(graph, session=session)
+
+    await tools["brain_backfill_links_batch"](entity_type="Decision")
+
+    statement = str(session.execute.await_args.args[0])
+    assert "brain_entities" in statement
+    assert "lifecycle" in statement
+
+
+@pytest.mark.asyncio
+async def test_admin_backfill_also_refuses_an_archived_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Le trou de la source ne dépend pas du scope : la branche admin le porte aussi."""
+    entity_id = uuid4()
+    graph = MagicMock()
+    graph.find_unlinked_nodes = AsyncMock(return_value=[str(entity_id)])
+    monkeypatch.setattr(dream_tools, "get_dream_project_scope", lambda: None, raising=False)
+
+    session = AsyncMock()
+    result = MagicMock()
+    result.fetchall = MagicMock(return_value=[])
+    session.execute = AsyncMock(return_value=result)
+    tools, _session, _linker = _dream_graph_tools(graph, session=session)
+
+    await tools["brain_backfill_links_batch"](entity_type="Decision")
+
+    statement = str(session.execute.await_args.args[0])
+    assert "brain_entities" in statement
+    assert "lifecycle" in statement
