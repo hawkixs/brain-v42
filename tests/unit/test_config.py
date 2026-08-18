@@ -14,6 +14,14 @@ def test_settings_default_values(monkeypatch):
     monkeypatch.delenv("RERANKER_URL", raising=False)
     monkeypatch.delenv("EMBEDDING_DIMENSION", raising=False)
     monkeypatch.delenv("LOG_LEVEL", raising=False)
+    # BRAIN_-prefixed aliases win over the bare legacy name (see _brain_alias
+    # in brain_v42.config); the CI workflows set BRAIN_LOG_LEVEL globally, so
+    # this test must clear it too or it silently reads the CI value instead
+    # of the field default.
+    monkeypatch.delenv("BRAIN_EMBEDDING_SERVICE_URL", raising=False)
+    monkeypatch.delenv("BRAIN_RERANKER_URL", raising=False)
+    monkeypatch.delenv("BRAIN_EMBEDDING_DIMENSION", raising=False)
+    monkeypatch.delenv("BRAIN_LOG_LEVEL", raising=False)
     from brain_v42.config import Settings
 
     s = Settings(postgres_url="postgresql+asyncpg://brain:brain@localhost:5433/brain")
@@ -116,6 +124,10 @@ def test_settings_log_level_validation():
 
 def test_settings_loaded_from_env(monkeypatch):
     """Settings are loaded from environment variables."""
+    # BRAIN_LOG_LEVEL (set globally by CI) takes alias priority over the bare
+    # LOG_LEVEL this test exercises; clear it so the assertion below tests
+    # the legacy bare-name path this test is actually about.
+    monkeypatch.delenv("BRAIN_LOG_LEVEL", raising=False)
     monkeypatch.setenv("POSTGRES_URL", "postgresql+asyncpg://user:pass@host:5433/db")
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
     monkeypatch.setenv("EMBEDDING_SERVICE_URL", "http://gpu-server:8003")
