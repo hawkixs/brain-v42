@@ -1579,8 +1579,10 @@ def test_shell_rejects_malformed_docker_option_boundaries(
     [
         f"docker --context=default run --rm {REFERENCE} true",
         f"docker pull --platform=linux/amd64 {REFERENCE}",
+        f"docker run --rm -w /repo -v /tmp/checkout:/repo {REFERENCE} dir .",
+        f"docker run --rm --workdir=/repo {REFERENCE} true",
     ],
-    ids=["global", "pull"],
+    ids=["global", "pull", "workdir-short", "workdir-attached"],
 )
 def test_shell_accepts_supported_attached_docker_options(
     checker: ModuleType | _MissingChecker, tmp_path: Path, command: str
