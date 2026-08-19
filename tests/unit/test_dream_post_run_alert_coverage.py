@@ -154,6 +154,46 @@ async def test_a_night_with_no_row_at_all_names_the_connection_first() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_night_that_only_wrote_its_global_phases_names_the_connection_too() -> None:
+    """Les 08-15 et 08-16 telles que la BASE les porte : 2 lignes sur 63.
+
+    Mesuré en lecture seule sur la production — les deux nuits ont écrit
+    `(extract, *)` et `(roadmap, *)`, les phases qui tournent EN PROCESSUS
+    depuis dream.sh, et pas une ligne des 60 phases de projet. `written` vaut
+    donc 2, pas 0 : la garde `not written` ne se déclenchait pas et l'opérateur
+    de ces nuits-là recevait 61 lignes le renvoyant vers les rapports de phase —
+    le premier geste que ce message existe pour corriger.
+    """
+    manifest = _manifest(expected=_full_night())
+    observed = (("extract", "*"), ("roadmap", "*"))
+    session = _session(_rows(observed))
+
+    night = await post_run_alert.review_night(session, RUN_DATE, manifest=manifest)
+
+    assert len(night.coverage.verdict.written) == 2, "la nuit réelle, pas une nuit à zéro ligne"
+    rendered = post_run_alert.render_stdout(night.report, RUN_DATE, night.coverage)
+    assert post_run_alert.NO_ROW_AT_ALL_MESSAGE in rendered
+
+
+@pytest.mark.asyncio
+async def test_one_project_that_wrote_its_rows_is_not_a_connection_problem() -> None:
+    """Le sens de marche inverse : la garde ne doit pas devenir un cri permanent.
+
+    Une nuit où un projet a écrit ses six lignes et les autres rien est une
+    panne de nuit, pas de connexion : le rail d'écriture a fonctionné.
+    """
+    manifest = _manifest(expected=_full_night())
+    observed = tuple((phase, "p0") for phase in LOOP_PHASES)
+    session = _session(_rows(observed))
+
+    night = await post_run_alert.review_night(session, RUN_DATE, manifest=manifest)
+
+    rendered = post_run_alert.render_stdout(night.report, RUN_DATE, night.coverage)
+    assert post_run_alert.NO_ROW_AT_ALL_MESSAGE not in rendered
+    assert night.coverage.escalates is True, "le trou reste rapporté, seul le wording change"
+
+
+@pytest.mark.asyncio
 async def test_a_complete_night_reports_nothing_and_still_prints_coverage() -> None:
     manifest = _manifest(expected=_full_night())
     session = _session(_rows(_full_night()))

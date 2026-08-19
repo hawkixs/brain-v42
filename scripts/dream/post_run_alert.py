@@ -51,6 +51,7 @@ from sqlalchemy.pool import NullPool
 
 from brain_v42.config import Settings
 from brain_v42.db.tables import dream_runs
+from brain_v42.dream_run_project_key import GLOBAL_PHASE_PROJECT_KEY
 from brain_v42.metrics.collector_dream import (
     expected_dream_phase_pairs,
     expected_dream_phases,
@@ -95,8 +96,9 @@ COVERAGE_WRITEFAIL_MESSAGE = (
     "(see the WARN line in the dated log)"
 )
 NO_ROW_AT_ALL_MESSAGE = (
-    "not one expected phase wrote a dream_runs row — check the DB connection "
-    "(DSN, credentials, schema) BEFORE opening any phase report"
+    "no dream_runs row from any project phase — check the DB connection "
+    "(DSN, credentials, schema) BEFORE opening any phase report; the global "
+    "phases write in-process from dream.sh and can land alone"
 )
 INTERRUPTED_MESSAGE = (
     "the night never reached its closing block — this manifest is PARTIAL, "
@@ -117,8 +119,6 @@ def _detail_line(row: dict) -> str:
 
 
 def _group_label(row: dict) -> str:
-    from brain_v42.dream_run_project_key import GLOBAL_PHASE_PROJECT_KEY  # noqa: PLC0415
-
     project = row.get("project_key")
     if not project:
         # Ligne écrite avant la 042, ou par un écrivain non migré. `NULL` veut
@@ -279,6 +279,33 @@ def missing_rows_from_verdict(verdict: CoverageVerdict) -> list[dict]:
     return rows
 
 
+def _project_scoped(pairs: frozenset[Pair]) -> frozenset[Pair]:
+    """Les paires d'un VRAI projet — la sentinelle des globales retirée."""
+    return frozenset(pair for pair in pairs if pair[1] != GLOBAL_PHASE_PROJECT_KEY)
+
+
+def lost_the_whole_write_rail(verdict: CoverageVerdict) -> bool:
+    """Le premier geste est-il « aller voir la connexion » plutôt qu'un rapport ?
+
+    Le critère n'est PAS `written == 0`, et c'est mesuré : les nuits des
+    2026-08-15 et 08-16, celles-là mêmes que ce message cite, portent chacune
+    deux lignes en base — `(extract, *)` et `(roadmap, *)`. Ces deux phases
+    tournent EN PROCESSUS depuis dream.sh, avec le DSN du dépôt ; les soixante
+    autres passent par le rail des sous-agents. Une garde à zéro ligne ratait
+    donc exactement son cas de reproduction, et l'opérateur recevait 61 lignes
+    le renvoyant vers des rapports de phase qui n'existaient pas.
+
+    La partition est reprise telle quelle : aucune ligne d'aucune phase DE
+    PROJET quand la nuit en attendait. Le repli sur `written` couvre la nuit
+    dégénérée qui n'attendait que des globales.
+    """
+    if not verdict.expected:
+        return False
+    if _project_scoped(verdict.expected):
+        return not _project_scoped(verdict.written)
+    return not verdict.written
+
+
 def coverage_from_manifest(
     observed_pairs: set[Pair],
     manifest: RunManifest,
@@ -293,7 +320,7 @@ def coverage_from_manifest(
         f"· write-failed {len(verdict.writefail)} · silent {len(verdict.silent)} "
         f"· extra {len(verdict.extra)}",
     ]
-    if verdict.expected and not verdict.written:
+    if lost_the_whole_write_rail(verdict):
         block.append(NO_ROW_AT_ALL_MESSAGE)
     if not verdict.complete:
         block.append(INTERRUPTED_MESSAGE)
