@@ -10,7 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+import structlog
 
+from brain_v42.repositories.pg_graph_ledger import UnknownGraphEndpoint
 from tests.unit.mcp._tool_error_adapter import capture_tool_errors
 
 
@@ -219,3 +221,72 @@ class TestBrainAssignDomain:
 
         assert isinstance(result, str)
         assert "not configured" in result
+
+
+class TestBrainAssignDomainUnknownEndpoint:
+    """Ticket fb62624f (résidu 1) — même pathologie lifecycle que STEP_A.
+
+    `pg_graph_ledger._resolve_named_target` exige `lifecycle='active'` sur les
+    deux ancres et lève sinon la même `UnknownGraphEndpoint` que le chantier
+    6d2cf2a9 a traitée côté backfill. Sans catch dans le tool, l'exception
+    s'échappe et `mask_error_details` la réduit à un message opaque : l'agent
+    CONNECT compte une erreur qu'il ne peut ni nommer ni éviter, et STEP_B
+    rougit sans trace actionnable. Miroir du traitement STEP_A : catch ÉTROIT
+    sur `UnknownGraphEndpoint` seule, comptage visible, jamais un
+    `except Exception`.
+    """
+
+    @pytest.mark.asyncio
+    async def test_unknown_graph_endpoint_maps_to_error_outcome(
+        self,
+        session_factory: MagicMock,
+    ) -> None:
+        """L'entité archivée entre le listing et l'assignation rend 'error', ne lève pas."""
+        graph = MockGraph(upsert_result="ok")
+        graph.link_entity_to_domain = AsyncMock(
+            side_effect=UnknownGraphEndpoint("the named graph endpoint is not registered")
+        )
+        tools = make_tools(session_factory, graph)
+
+        result = await tools["brain_assign_domain"](entity_id=str(uuid4()), domain_name="infra")
+
+        assert result == "error"
+
+    @pytest.mark.asyncio
+    async def test_unknown_graph_endpoint_logs_identifiable_warning(
+        self,
+        session_factory: MagicMock,
+    ) -> None:
+        """Un WARN sans identifiant est incomptable : l'entité et le domaine sont nommés."""
+        graph = MockGraph(upsert_result="ok")
+        graph.link_entity_to_domain = AsyncMock(
+            side_effect=UnknownGraphEndpoint("the named graph endpoint is not registered")
+        )
+        tools = make_tools(session_factory, graph)
+        entity_id = str(uuid4())
+
+        with structlog.testing.capture_logs() as logs:
+            await tools["brain_assign_domain"](entity_id=entity_id, domain_name="memory")
+
+        events = [
+            log for log in logs if log["event"] == "mcp.brain_assign_domain.unknown_graph_endpoint"
+        ]
+        assert len(events) == 1
+        assert events[0]["entity_id"] == entity_id
+        assert events[0]["domain"] == "memory"
+        assert events[0]["log_level"] == "warning"
+
+    @pytest.mark.asyncio
+    async def test_unrelated_exceptions_still_propagate(
+        self,
+        session_factory: MagicMock,
+    ) -> None:
+        """Le catch doit rester étroit : un `except Exception` avalerait un refus
+        d'autorisation scopé (`DreamProjectAuthorizationError` dérive de
+        `AuthorizationError`, pas de `ValueError`)."""
+        graph = MockGraph(upsert_result="ok")
+        graph.link_entity_to_domain = AsyncMock(side_effect=RuntimeError("infra down"))
+        tools = make_tools(session_factory, graph)
+
+        with pytest.raises(RuntimeError):
+            await tools["brain_assign_domain"](entity_id=str(uuid4()), domain_name="infra")

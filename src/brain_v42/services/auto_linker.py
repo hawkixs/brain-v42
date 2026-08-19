@@ -7,7 +7,8 @@ then creates RELATED_TO edges in Neo4j.
 Design:
 - Uses the already-computed embedding (no extra GPU call)
 - Single SQL UNION across decisions/learnings/snippets/runbooks/adrs
-- Configurable threshold (default 0.6) and max_links (default 3)
+- Configurable threshold (default 0.6) and max_links (default 3); max_links
+  caps SUCCESSFUL links only — see the auto_link docstring for the contract
 - Admin graph failures degrade without breaking entity creation
 - Scoped authorization failures propagate so a stale owner cannot create an edge
 """
@@ -32,14 +33,16 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-# Tables to search across, with their type label and text column
-_ENTITY_TABLES = [
+# Tables to search across, with their type label and text column.
+# Tuple, pas list : la littéralité déclarée est déjà épinglée par AST, mais une
+# list resterait mutable au runtime sans que rien ne rougisse (ticket c623fa75).
+_ENTITY_TABLES = (
     ("decisions", "Decision", "title"),
     ("learnings", "Learning", "topic"),
     ("snippets", "Snippet", "title"),
     ("runbooks", "Runbook", "title"),
     ("adrs", "ADR", "title"),
-]
+)
 
 
 class AutoLinker:
@@ -67,6 +70,16 @@ class AutoLinker:
 
         When authorization is present, candidate selection is project-filtered
         and both anchors are revalidated immediately before every edge write.
+
+        Contrat max_links (décision opérateur 2026-08-18, ticket fb62624f) :
+        le plafond borne les liens RÉUSSIS (created + matched). Les erreurs ne
+        consomment pas le plafond — comportement historique de missing_node et
+        write_failed, conservé sciemment — et le nombre de TENTATIVES reste
+        borné de fait par les ``limit = max_links * 2`` candidats sélectionnés.
+        Une entité dont toutes les écritures échouent peut donc rapporter
+        jusqu'à 2×max_links erreurs : pour estimer un nombre d'entités
+        fautives depuis un compte d'erreurs, diviser par 2×max_links, jamais
+        par max_links.
         """
         result = LinkJobResult()
         if self._graph is None or embedding is None:

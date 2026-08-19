@@ -573,6 +573,8 @@ brain_backfill_links_batch(entity_type=None, limit=50,
 ```
 Find entities in Neo4j with zero `RELATED_TO` edges, fetch their PG embeddings, and call `AutoLinker` to create missing semantic links. Used by the CONNECT phase of the nightly dream orchestrator.
 
+**Contrat `max_links`** (décision opérateur 2026-08-18, ticket fb62624f) : le plafond borne les liens **réussis** (`created` + `matched`). Les erreurs ne le consomment pas ; les tentatives sont bornées de fait par les `2×max_links` candidats sélectionnés, donc une entité dont toutes les écritures échouent peut rapporter jusqu'à `2×max_links` erreurs. Pour estimer un nombre d'entités fautives depuis `errors`, diviser par `2×max_links`, jamais par `max_links`.
+
 ### brain_get_clusters
 ```
 brain_get_clusters(min_size=2, limit=20,
@@ -616,7 +618,7 @@ proposal's free-form JSONB `payload` is truncated at 200 characters.
 ```
 brain_assign_domain(entity_id, domain_name)
 ```
-Write a `BELONGS_TO_DOMAIN` edge from an entity to a Domain node. Called by the Dream CONNECT phase after local classification. Upserts the Domain node first, then creates the edge. Returns `"created"`, `"matched"`, or `"missing_node"`.
+Write a `BELONGS_TO_DOMAIN` edge from an entity to a Domain node. Called by the Dream CONNECT phase after local classification. Upserts the Domain node first, then creates the edge. Returns `"created"`, `"matched"`, `"missing_node"`, `"invalid_domain"`, `"invalid_entity_id"` or `"error"` — `"error"` covers both a failed write and an entity that is no longer an active graph endpoint (archived between the orphan listing and the call; logged as `mcp.brain_assign_domain.unknown_graph_endpoint` instead of escaping as an opaque exception).
 
 ---
 

@@ -90,7 +90,10 @@ def register_dream_tools(
                          None processes all types.
             limit: Maximum number of entities to process per call.
             threshold: Minimum cosine similarity for creating a link (default 0.6).
-            max_links: Maximum links to create per entity (default 3).
+            max_links: Cap on SUCCESSFUL links (created + matched) per entity
+                       (default 3). Errors never consume the cap; attempts are
+                       bounded by the 2*max_links candidate fetch, so a fully
+                       failing entity can report up to 2*max_links errors.
 
         Returns:
             Summary string with entities processed, links created, and error count.
@@ -503,7 +506,10 @@ def register_dream_tools(
               "missing_node"      — anchor node absent in graph
               "invalid_domain"    — domain_name not in ALLOWED_DOMAINS (no write)
               "invalid_entity_id" — entity_id not a valid UUID
-              "error"             — Neo4j write failed
+              "error"             — Neo4j write failed, or the entity is no
+                longer an active graph endpoint (e.g. archived between the
+                orphan listing and this call; logged as
+                mcp.brain_assign_domain.unknown_graph_endpoint)
         """
         if graph_service is None:
             return format_error("Neo4j graph not configured — enable graph_enabled=true")
@@ -521,15 +527,32 @@ def register_dream_tools(
         # or the LLM agent will wrongly conclude the name is bad and stop retrying.
         if domain_outcome != "ok":
             return domain_outcome
-        if scope is None:
-            outcome: str = await graph_service.link_entity_to_domain(eid, domain_name)
-        else:
-            await scope.revalidate_id(eid)
-            outcome = await graph_service.link_entity_to_domain(
-                eid,
-                domain_name,
-                project_key=scope.project_key,
+        try:
+            if scope is None:
+                outcome: str = await graph_service.link_entity_to_domain(eid, domain_name)
+            else:
+                await scope.revalidate_id(eid)
+                outcome = await graph_service.link_entity_to_domain(
+                    eid,
+                    domain_name,
+                    project_key=scope.project_key,
+                )
+        except UnknownGraphEndpoint:
+            # Ticket fb62624f — miroir du traitement STEP_A (auto_linker) :
+            # `_resolve_named_target` exige `lifecycle='active'` sur les deux
+            # ancres. Une entité archivée ENTRE le listing des orphelins et
+            # l'assignation lèverait ici, s'échapperait du tool et serait
+            # réduite par `mask_error_details` à un message opaque. Le catch
+            # reste volontairement étroit : `DreamProjectAuthorizationError`
+            # dérive d'`AuthorizationError` et doit continuer à propager.
+            # Le WARN nomme l'entité et le domaine — un refus incomptable
+            # forcerait l'opérateur à rejouer du SQL pour retrouver la ligne.
+            logger.warning(
+                "mcp.brain_assign_domain.unknown_graph_endpoint",
+                entity_id=entity_id,
+                domain=domain_name,
             )
+            outcome = "error"
         logger.info(
             "mcp.brain_assign_domain",
             entity_id=entity_id,
