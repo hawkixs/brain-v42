@@ -49,6 +49,7 @@ def _run_verdict(
     alert_out: str = _ALERT_BODY,
     strict: str | None = None,
     failed: tuple[str, ...] = (),
+    record_rc: int = 0,
 ) -> tuple[subprocess.CompletedProcess[str], str, str]:
     log_dir = tmp_path / "logs"
     log_dir.mkdir(exist_ok=True)
@@ -72,10 +73,19 @@ def _run_verdict(
             'log() { printf "%s\\n" "$*" | tee -a "$LOG_DIR/$TIMESTAMP.log"; }',
             f"ALERT_CALLS={shlex.quote(str(alert_calls))}",
             f"ALERT_RC={alert_rc}",
+            f"RECORD_RC={record_rc}",
             f"ALERT_OUT={shlex.quote(alert_out)}",
             *([] if strict is None else [f"BRAIN_DREAM_COVERAGE_STRICT={shlex.quote(strict)}"]),
-            'uv() { printf "%s\\n" "$*" >> "$ALERT_CALLS"; printf "%s\\n" "$ALERT_OUT"; '
-            'return "$ALERT_RC"; }',
+            # Un seul stub pour les deux CLI : le writer de la ligne `coverage`
+            # n'imprime rien et rend son propre code, comme le vrai.
+            "uv() {",
+            '  printf "%s\\n" "$*" >> "$ALERT_CALLS"',
+            '  case "$*" in',
+            '    *record_coverage_gap*) return "$RECORD_RC" ;;',
+            "  esac",
+            '  printf "%s\\n" "$ALERT_OUT"',
+            '  return "$ALERT_RC"',
+            "}",
             "",
             _verdict_block(),
         ]
@@ -158,3 +168,60 @@ def test_an_alert_without_a_coverage_line_is_not_an_error(tmp_path: Path) -> Non
 
 def test_dream_shell_remains_valid_bash() -> None:
     subprocess.run(["bash", "-n", str(DREAM_SH)], check=True)
+
+
+# --- T2 : le verdict porté jusqu'au briefing --------------------------------
+
+
+def test_a_silent_gap_writes_the_coverage_row(tmp_path: Path) -> None:
+    _, alert_calls, _ = _run_verdict(tmp_path, alert_rc=2)
+
+    assert "scripts.dream.record_coverage_gap" in alert_calls
+    record_call = next(line for line in alert_calls.splitlines() if "record_coverage_gap" in line)
+    assert "--date 2026-08-18" in record_call
+    assert "COVERAGE mode=manifest" in record_call
+    assert "COVERAGE_SILENT silent=red/scan" in record_call
+
+
+def test_a_green_night_writes_no_coverage_row(tmp_path: Path) -> None:
+    _, alert_calls, _ = _run_verdict(tmp_path, alert_rc=0)
+
+    assert "record_coverage_gap" not in alert_calls
+
+
+def test_a_failing_writer_never_short_circuits_the_exit_guard(tmp_path: Path) -> None:
+    """FINDING 4 exécuté : sans `set +e`, bash sortirait AVANT la garde.
+
+    `set -e` est restauré juste après l'appel à l'alerte et la garde de sortie
+    vit une trentaine de lignes plus bas. Un writer rendant 1 — argparse rc=2,
+    `Settings()` invalide, `ValidationError` hors du `try` — ferait sortir
+    dream.sh sur-le-champ. Le WARN ne serait jamais imprimé, et surtout le
+    désarmement ci-dessous ne serait jamais consulté.
+    """
+    proc, _, _ = _run_verdict(tmp_path, alert_rc=2, record_rc=1)
+
+    assert proc.returncode == 1
+    assert "WARN  coverage — ligne dream_runs 'coverage' NON enregistrée (rc=1)" in proc.stdout
+
+
+def test_a_failing_writer_still_lets_the_disarm_switch_be_read(tmp_path: Path) -> None:
+    """La preuve que l'exécution CONTINUE après un writer en échec.
+
+    Sans `set +e`, bash serait mort à l'appel : ni le WARN, ni la ligne de
+    désarmement, et un code de sortie 1 au lieu de 0. Les trois assertions
+    tombent ensemble.
+    """
+    proc, _, _ = _run_verdict(tmp_path, alert_rc=2, record_rc=1, strict="false")
+
+    assert proc.returncode == 0
+    assert "WARN  coverage — ligne dream_runs 'coverage' NON enregistrée" in proc.stdout
+    assert "BRAIN_DREAM_COVERAGE_STRICT=false" in proc.stdout
+
+
+def test_the_coverage_row_is_written_even_when_the_escalation_is_disarmed(
+    tmp_path: Path,
+) -> None:
+    """Désarmer ne veut pas dire éteindre : le verdict continue d'atteindre le briefing."""
+    _, alert_calls, _ = _run_verdict(tmp_path, alert_rc=2, strict="false")
+
+    assert "scripts.dream.record_coverage_gap" in alert_calls

@@ -1295,6 +1295,25 @@ if [[ -n "$coverage_line" ]]; then
 fi
 if (( alert_rc == 2 )); then
   log "FAIL  dream_runs coverage — des lignes attendues manquent sans explication"
+  coverage_silent="$(printf '%s\n' "$alert_out" | grep -m1 '^COVERAGE_SILENT ' || true)"
+  # T2 — le verdict porté jusqu'à un lecteur qui existe. Cette ligne atteint
+  # « ### Last failure » du briefing de session et /metrics nightly.last_failure
+  # SANS une ligne de code chez eux. T1 seul n'atteint que journald, et la leçon
+  # du ticket est qu'un signal sans lecteur est indiscernable d'un signal absent.
+  #
+  # `set +e` est INDISPENSABLE : errexit est actif ici, la garde de sortie vit
+  # une trentaine de lignes plus bas, et ce writer rend 1 sur échec — comme
+  # `record-empty-pool`, dont il est le calque. Sans cet encadrement, dream.sh
+  # sortirait AVANT sa garde structurelle, sans même imprimer le WARN.
+  set +e
+  uv run python -m scripts.dream.record_coverage_gap \
+    --date "$TIMESTAMP" --summary "$coverage_line" --detail "$coverage_silent" \
+    >> "$LOG_DIR/$TIMESTAMP.log" 2>&1
+  record_gap_rc=$?
+  set -e
+  if (( record_gap_rc != 0 )); then
+    log "WARN  coverage — ligne dream_runs 'coverage' NON enregistrée (rc=$record_gap_rc)"
+  fi
   # Interrupteur de secours, lu par dream.sh SEUL : ce n'est pas une phase, donc
   # il n'entre pas dans la table des killswitches. Désarmé, il continue
   # d'imprimer le verdict ET de dire qu'il est désarmé — le détecteur ne peut pas
