@@ -498,7 +498,14 @@ def test_the_two_empty_pool_reasons_are_the_ones_the_parser_knows() -> None:
 
 # --- La garde : aucun site de classement sans sa déclaration -----------------
 
-_PUSH = re.compile(r'^\s*(SKIPPED|FAILED|TIMED_OUT)_PHASES\+=\(\s*"([^"]+)"\s*\)')
+# Le préfixe optionnel est un bras de `case` (`2)`, `*)`) : sans lui l'ancre de
+# début de ligne laissait dehors les DEUX sites qui classent toutes les phases de
+# boucle, soit 60 des 63 emplacements d'une nuit à dix projets.
+_PUSH = re.compile(r'^\s*(?:[^\s)]+\)\s*)?(SKIPPED|FAILED|TIMED_OUT)_PHASES\+=\(\s*"([^"]+)"\s*\)')
+# Le recensement INDÉPENDANT, sans ancre de début de ligne : c'est lui qui
+# mesure ce que la garde ne voit pas. `\b` suffit à écarter
+# `CONTROLLED_TIMEOUT_PHASES` et `FALLBACK_PHASES`, qui ne sont pas des classes.
+_ANY_PUSH = re.compile(r"\b(SKIPPED|FAILED|TIMED_OUT)_PHASES\+=\(")
 _PUT = re.compile(r"^\s*manifest_put\s+(\S+)\s+(\S+)\s+(\S+)")
 _KIND_OF_ARRAY = {"SKIPPED": "skipped", "FAILED": "failed", "TIMED_OUT": "timeout"}
 # Le voisinage est de HUIT lignes, pas de trois, et c'est mesuré : le site du
@@ -523,16 +530,8 @@ def _declared_pairs_near(lines: list[str], index: int) -> set[tuple[str, str, st
     return found
 
 
-def test_every_classification_site_declares_the_same_pair_to_the_manifest() -> None:
-    """La garde qui empêche le détecteur de rétrécir en silence.
-
-    Un site de classement ajouté demain sans sa déclaration casse ce test. Sans
-    elle, l'attendu et le classement dériveraient exactement comme
-    `LOOP_PHASES` a dérivé de la réalité de la nuit : sans un bruit.
-    """
-    lines = _source().splitlines()
+def _orphan_sites(lines: list[str]) -> list[str]:
     orphans: list[str] = []
-
     for index, line in enumerate(lines):
         match = _PUSH.match(line)
         if not match:
@@ -542,6 +541,17 @@ def test_every_classification_site_declares_the_same_pair_to_the_manifest() -> N
         wanted = (_KIND_OF_ARRAY[array], _unquote(phase), _unquote(project))
         if wanted not in _declared_pairs_near(lines, index):
             orphans.append(f"line {index + 1}: {line.strip()} (attendu {wanted})")
+    return orphans
+
+
+def test_every_classification_site_declares_the_same_pair_to_the_manifest() -> None:
+    """La garde qui empêche le détecteur de rétrécir en silence.
+
+    Un site de classement ajouté demain sans sa déclaration casse ce test. Sans
+    elle, l'attendu et le classement dériveraient exactement comme
+    `LOOP_PHASES` a dérivé de la réalité de la nuit : sans un bruit.
+    """
+    orphans = _orphan_sites(_source().splitlines())
 
     assert not orphans, "sites de classement sans déclaration voisine:\n" + "\n".join(orphans)
 
@@ -550,7 +560,46 @@ def test_the_guard_actually_sees_the_classification_sites() -> None:
     """Garde du harnais : un test vert sur zéro site ne prouverait rien."""
     sites = [line for line in _source().splitlines() if _PUSH.match(line)]
 
-    assert len(sites) >= 10, f"seulement {len(sites)} sites de classement trouvés"
+    assert len(sites) >= 15, f"seulement {len(sites)} sites de classement trouvés"
+
+
+def test_the_guard_sees_the_case_arms_too_not_just_the_flush_left_sites() -> None:
+    """Le plancher chiffré ne dit RIEN de ceux qui manquent : ceci les nomme.
+
+    Les deux bras de `case` du corps de boucle classent TOUTES les phases de
+    tous les projets du pool — 60 des 63 emplacements d'une nuit à dix. Une
+    ancre de début de ligne les laissait dehors : leurs `manifest_put` pouvaient
+    disparaître sans qu'un seul test bouge, et une phase classée `failed` sans
+    déclaration retombe en `silent`, donc rc 2 et unité rouge sur une nuit dont
+    l'échec était déjà rapporté.
+    """
+    lines = _source().splitlines()
+    seen = {index for index, line in enumerate(lines) if _PUSH.match(line)}
+    every = {index for index, line in enumerate(lines) if _ANY_PUSH.search(line)}
+
+    unseen = sorted(every - seen)
+
+    assert not unseen, "sites de classement invisibles pour la garde:\n" + "\n".join(
+        f"line {index + 1}: {lines[index].strip()}" for index in unseen
+    )
+
+
+def test_the_guard_would_catch_a_case_arm_stripped_of_its_declaration() -> None:
+    """Garde de la garde : elle doit MORDRE sur la mutation qu'elle prétend voir."""
+    fabricated = [
+        '    case "$phase_rc" in',
+        "      0) ;;",
+        '      2) TIMED_OUT_PHASES+=("$PROJECT_KEY/$name")',
+        '         manifest_put timeout "$name" "$PROJECT_KEY" ;;',
+        '      *) FAILED_PHASES+=("$PROJECT_KEY/$name") ;;',
+        "    esac",
+    ]
+
+    orphans = _orphan_sites(fabricated)
+
+    assert len(orphans) == 1
+    assert "FAILED_PHASES" in orphans[0]
+    assert not _orphan_sites(fabricated[:4]), "le bras déclaré, lui, reste accepté"
 
 
 def test_the_closing_block_stamps_the_three_counters_and_the_end() -> None:
