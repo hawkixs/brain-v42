@@ -1275,11 +1275,35 @@ set +e
 # UNE alerte, après la boucle, groupée par projet (§11). Pas une par projet :
 # le rapport ne filtre pas sur la clé, donc N invocations produiraient N blocs
 # IDENTIQUES listant les échecs de tous les projets.
-uv run python -m scripts.dream.post_run_alert --date "$TIMESTAMP" \
-  >> "$LOG_DIR/$TIMESTAMP.log" 2>&1
+#
+# La sortie est CAPTURÉE, plus redirigée à l'aveugle. `log()` fait un `tee` vers
+# stdout — donc vers journald — quand cette redirection-ci n'écrivait que dans le
+# fichier daté : le corps de l'alerte n'a jamais atteint `journalctl`, ce qui est
+# la moitié physique du « personne ne la lit » (ticket 0a9c067e). Le rapport est
+# borné en amont (MAX_FETCHED_FAILURES), donc la capture en variable l'est aussi.
+alert_out="$(uv run python -m scripts.dream.post_run_alert \
+  --date "$TIMESTAMP" --manifest "$MANIFEST_FILE" 2>&1)"
 alert_rc=$?
 set -e
-if (( alert_rc != 0 )); then
+printf '%s\n' "$alert_out" >> "$LOG_DIR/$TIMESTAMP.log"
+coverage_line="$(printf '%s\n' "$alert_out" | grep -m1 '^COVERAGE ' || true)"
+if [[ -n "$coverage_line" ]]; then
+  # Les deux nombres que le ticket dit que personne ne rapproche, côte à côte
+  # dans journald, TOUTES les nuits — y compris les vertes, sans quoi la ligne
+  # ne serait lue que les jours où il est déjà trop tard.
+  log "=== dream_runs $coverage_line ==="
+fi
+if (( alert_rc == 2 )); then
+  log "FAIL  dream_runs coverage — des lignes attendues manquent sans explication"
+  # Interrupteur de secours, lu par dream.sh SEUL : ce n'est pas une phase, donc
+  # il n'entre pas dans la table des killswitches. Désarmé, il continue
+  # d'imprimer le verdict ET de dire qu'il est désarmé — le détecteur ne peut pas
+  # être éteint en silence.
+  if [[ "${BRAIN_DREAM_COVERAGE_STRICT:-true}" != "true" ]]; then
+    log "WARN  escalade désarmée (BRAIN_DREAM_COVERAGE_STRICT=false) — unité laissée verte"
+    alert_rc=0
+  fi
+elif (( alert_rc != 0 )); then
   log "WARN  post_run_alert failed (rc=$alert_rc)"
 fi
 

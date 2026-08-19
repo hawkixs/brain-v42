@@ -102,6 +102,11 @@ def _run_verdict(
             "set -euo pipefail",
             f"LOG_DIR={shlex.quote(str(log_dir))}",
             "TIMESTAMP=2026-08-07",
+            # Le bloc de verdict passe désormais le manifeste de la nuit à
+            # l'alerte (ticket 0a9c067e). Stub de HARNAIS : ce qu'il contient
+            # est vérifié par test_dream_sh_run_manifest.py, et ce qu'on en
+            # fait par test_dream_sh_coverage_verdict.py.
+            'MANIFEST_FILE="$LOG_DIR/${TIMESTAMP}_manifest.tsv"',
             "PROJECT_KEY=brain-v42",
             f"TOTAL_PHASES={total}",
             f"declare -a FAILED_PHASES=({_bash_array(failed)})",
