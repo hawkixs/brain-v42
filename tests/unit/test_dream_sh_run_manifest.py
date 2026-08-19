@@ -24,9 +24,12 @@ défaut exact que le ticket `0a9c067e` décrit.
 
 from __future__ import annotations
 
+import fcntl
 import re
 import shlex
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -37,8 +40,11 @@ DREAM_SH = REPO_ROOT / "scripts" / "dream.sh"
 
 # Ancres de découpe : du code réel, jamais des commentaires. Un remaniement qui
 # les fait disparaître casse ces tests par ValueError, pas en les laissant verts.
-_HEADER_ANCHOR = "DREAM_GLOBAL_PHASES=("
+_HEADER_ANCHOR = 'MANIFEST_FILE="$LOG_DIR/'
 _HEADER_END_ANCHOR = "manifest_put meta started"
+_TRUNCATE_ANCHOR = ': > "$MANIFEST_FILE"'
+_LOCK_ANCHOR = 'LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/brain-v42-dream.lock"'
+_GLOBAL_PHASES_ANCHOR = "DREAM_GLOBAL_PHASES=(extract roadmap sweep)"
 _LOOP_ANCHOR = 'for phase_spec in "${PHASES[@]}"; do'
 _LOOP_END_ANCHOR = 'manifest_put expected "$name" "$PROJECT_KEY"'
 _EMPTY_POOL_ANCHOR = "if (( record_rc == 0 )); then"
@@ -120,6 +126,7 @@ def _run_header(
         "promote:deep:10:50",
         "reorg:deep:10:50",
     ),
+    global_phases: tuple[str, ...] = ("extract", "roadmap", "sweep"),
     log_dir: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     directory = log_dir if log_dir is not None else tmp_path / "logs"
@@ -132,6 +139,7 @@ def _run_header(
             "POOL_SOURCE=BRAIN_DREAM_PROJECT_POOL",
             f"declare -a PROJECT_POOL=({_bash_array(pool)})",
             f"declare -a PHASES=({_bash_array(phases)})",
+            f"declare -a DREAM_GLOBAL_PHASES=({_bash_array(global_phases)})",
             "",
             _header_block(),
             "",
@@ -200,6 +208,111 @@ def test_an_unwritable_log_dir_never_kills_the_night(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stderr
     assert "HEADER-SURVIVED" in proc.stdout
     assert not manifest_path.exists()
+
+
+# --- Le verrou : la troncature ne précède JAMAIS l'acquisition ---------------
+
+
+def _lock_then_header_block() -> str:
+    """Du verrou consultatif jusqu'à la fin de l'en-tête, dans l'ORDRE du script.
+
+    L'assertion est le test : `dream.sh` existe en deux versions possibles, et
+    une seule est sûre. Si la troncature vit AVANT le `flock`, la découpe est
+    impossible et cette phrase dit pourquoi — la deuxième invocation d'une nuit
+    (recouvrement cron, re-déclenchement manuel) traverserait `: > $MANIFEST_FILE`
+    et les cinq lignes de méta AVANT de découvrir qu'elle n'a pas le droit de
+    tourner, effaçant les déclarations de la nuit VIVANTE.
+    """
+    content = _source()
+    lock = content.index(_LOCK_ANCHOR)
+    truncation = content.index(_TRUNCATE_ANCHOR)
+    assert truncation > lock, (
+        "le manifeste est tronqué AVANT le verrou : une invocation concurrente "
+        "— le cas même que le verrou existe pour absorber — viderait le "
+        "manifeste de la nuit en cours puis sortirait en 0, rendant rouge une "
+        "nuit saine et aveugle le détecteur sur toutes ses paires antérieures"
+    )
+    return _slice(_LOCK_ANCHOR, _HEADER_END_ANCHOR, from_index=lock)
+
+
+@contextmanager
+def _lock_taken(lock_path: Path) -> Iterator[None]:
+    """Un AUTRE processus tient déjà le verrou — flock(2) est par ouverture."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("w")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    finally:
+        handle.close()
+
+
+def _run_lock_then_header(
+    tmp_path: Path, *, lock_held: bool
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(exist_ok=True)
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(exist_ok=True)
+    manifest_path = log_dir / "2026-08-18_manifest.tsv"
+    # Ce que la nuit VIVANTE a déjà déclaré quand la seconde invocation arrive.
+    manifest_path.write_text("expected\tscan\tred\t\n", encoding="utf-8")
+
+    harness = "\n".join(
+        [
+            "set -euo pipefail",
+            f"export XDG_RUNTIME_DIR={shlex.quote(str(runtime_dir))}",
+            f"LOG_DIR={shlex.quote(str(log_dir))}",
+            "TIMESTAMP=2026-08-18",
+            "POOL_SOURCE=BRAIN_DREAM_PROJECT_POOL",
+            "declare -a PROJECT_POOL=(red)",
+            'declare -a PHASES=("scan:fast:5:30")',
+            "declare -a DREAM_GLOBAL_PHASES=(extract roadmap sweep)",
+            'log() { printf "%s\\n" "$*"; }',
+            "",
+            _lock_then_header_block(),
+            "",
+            'echo "HEADER-REACHED"',
+        ]
+    )
+    if not lock_held:
+        return _run(harness), manifest_path
+    with _lock_taken(runtime_dir / "brain-v42-dream.lock"):
+        return _run(harness), manifest_path
+
+
+def test_a_locked_out_invocation_never_erases_the_running_nights_manifest(
+    tmp_path: Path,
+) -> None:
+    """Le cas que le verrou existe pour absorber, joué jusqu'au fichier.
+
+    Une nuit systemd tourne et a déjà déclaré ses premières paires ; l'opérateur
+    relance `dream.sh` à la main. La seconde invocation doit sortir en 0 sans
+    avoir touché une seule ligne — sinon la nuit vivante perd ses déclarations,
+    finit `consistent=False`, escalade en rc 2 et pose une ligne `coverage`
+    mensongère sur une nuit sans le moindre défaut.
+    """
+    proc, manifest_path = _run_lock_then_header(tmp_path, lock_held=True)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "already running" in proc.stdout
+    assert "HEADER-REACHED" not in proc.stdout
+    assert manifest_path.read_text(encoding="utf-8") == "expected\tscan\tred\t\n"
+
+
+def test_the_holder_of_the_lock_still_truncates_and_stamps_its_header(
+    tmp_path: Path,
+) -> None:
+    """L'autre sens de marche : derrière le verrou, la troncature a bien lieu."""
+    proc, manifest_path = _run_lock_then_header(tmp_path, lock_held=False)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "HEADER-REACHED" in proc.stdout
+    text = manifest_path.read_text(encoding="utf-8")
+    assert "expected\tscan\tred" not in text, "la nuit précédente a bien été effacée"
+    manifest = rm.parse_run_manifest(text)
+    assert manifest.meta["run_date"] == "2026-08-18"
+    assert manifest.meta["planned_phases"] == "4"
 
 
 # --- La boucle : l'attendu est émis à l'ITÉRATION ----------------------------

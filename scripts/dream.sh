@@ -290,41 +290,6 @@ declare -A PHASE_DEPS=(
 # pilote pas, il les compte.
 DREAM_GLOBAL_PHASES=(extract roadmap sweep)
 
-# --- Manifeste de la nuit ---------------------------------------------------
-# Ce que la nuit DÉCLARE — ses attendus, ses skips et leur raison — écrit AU
-# SITE DE CHAQUE DÉCISION et relu au matin par scripts.dream.post_run_alert.
-#
-# Ticket 0a9c067e : le comparateur de couverture existe et il a tiré trois nuits
-# de suite, mais son attendu vient du drop-in systemd, qui n'a de clé que pour
-# promote et reorg. La nuit du 2026-08-16 a donc annoncé 20 phases manquantes
-# quand il en manquait 60. L'élargir depuis le drop-in serait un no-op ; la nuit
-# est le seul témoin qui sache ce qu'elle a réellement tenté.
-#
-# INCRÉMENTAL, jamais vidé en fin de nuit : une nuit tuée par TimeoutStartSec,
-# un OOM ou un `set -e` non gardé n'atteindrait aucun vidage final, et le rejeu
-# du matin retomberait sur l'attendu du drop-in — c'est-à-dire sur le trou même
-# que ce fichier ferme. L'absence du bloc de clôture devient donc le marqueur
-# d'interruption, et interdit tout verdict vert.
-#
-# BEST-EFFORT INTÉGRAL : `set -euo pipefail` est actif depuis la ligne 2, et un
-# `logs/` en lecture seule ne doit jamais tuer une nuit. Une télémétrie qui
-# échoue ne fait pas tomber la phase qu'elle observe.
-#
-# Aucun échappement n'est nécessaire : une clé de projet portant un blanc ou un
-# slash est déjà refusée plus haut, et les noms de phase comme les raisons de
-# skip sont des littéraux d'un ensemble fermé.
-MANIFEST_FILE="$LOG_DIR/${TIMESTAMP}_manifest.tsv"
-manifest_put() {
-  printf '%s\t%s\t%s\t%s\n' "$1" "${2-}" "${3-}" "${4-}" >> "$MANIFEST_FILE" 2>/dev/null || true
-}
-: > "$MANIFEST_FILE" 2>/dev/null || true
-manifest_put meta run_date "$TIMESTAMP"
-manifest_put meta pool_source "$POOL_SOURCE"
-manifest_put meta pool "$(IFS=,; echo "${PROJECT_POOL[*]}")"
-manifest_put meta planned_phases \
-  "$(( ${#PHASES[@]} * ${#PROJECT_POOL[@]} + ${#DREAM_GLOBAL_PHASES[@]} ))"
-manifest_put meta started "$(date -Iseconds)"
-
 # OTEL env vars for Claude Code telemetry
 export CLAUDE_CODE_ENABLE_TELEMETRY=1
 export OTEL_LOGS_EXPORTER=console
@@ -665,6 +630,51 @@ if ! flock -n 9; then
   log "dream cycle already running (lock=$LOCK_FILE), skipping"
   exit 0
 fi
+
+# --- Manifeste de la nuit ---------------------------------------------------
+#
+# ATTENTION À L'ORDRE : ce bloc TRONQUE, il vit donc DERRIÈRE le verrou, jamais
+# devant. Placé plus haut, la deuxième invocation d'une nuit — recouvrement
+# cron, re-déclenchement manuel : le cas même que le verrou existe pour absorber
+# — viderait le manifeste de la nuit VIVANTE puis sortirait en 0. La nuit saine
+# finirait `consistent=false`, escaladerait en rc 2 et poserait une ligne
+# `coverage` mensongère, et ses paires antérieures à la troncature seraient
+# reclassées en `extra`, qui n'escalade jamais : un vrai trou parmi elles
+# deviendrait invisible. Épinglé par test_dream_sh_run_manifest.py.
+#
+# Ce que la nuit DÉCLARE — ses attendus, ses skips et leur raison — écrit AU
+# SITE DE CHAQUE DÉCISION et relu au matin par scripts.dream.post_run_alert.
+#
+# Ticket 0a9c067e : le comparateur de couverture existe et il a tiré trois nuits
+# de suite, mais son attendu vient du drop-in systemd, qui n'a de clé que pour
+# promote et reorg. La nuit du 2026-08-16 a donc annoncé 20 phases manquantes
+# quand il en manquait 60. L'élargir depuis le drop-in serait un no-op ; la nuit
+# est le seul témoin qui sache ce qu'elle a réellement tenté.
+#
+# INCRÉMENTAL, jamais vidé en fin de nuit : une nuit tuée par TimeoutStartSec,
+# un OOM ou un `set -e` non gardé n'atteindrait aucun vidage final, et le rejeu
+# du matin retomberait sur l'attendu du drop-in — c'est-à-dire sur le trou même
+# que ce fichier ferme. L'absence du bloc de clôture devient donc le marqueur
+# d'interruption, et interdit tout verdict vert.
+#
+# BEST-EFFORT INTÉGRAL : `set -euo pipefail` est actif depuis la ligne 2, et un
+# `logs/` en lecture seule ne doit jamais tuer une nuit. Une télémétrie qui
+# échoue ne fait pas tomber la phase qu'elle observe.
+#
+# Aucun échappement n'est nécessaire : une clé de projet portant un blanc ou un
+# slash est déjà refusée plus haut, et les noms de phase comme les raisons de
+# skip sont des littéraux d'un ensemble fermé.
+MANIFEST_FILE="$LOG_DIR/${TIMESTAMP}_manifest.tsv"
+manifest_put() {
+  printf '%s\t%s\t%s\t%s\n' "$1" "${2-}" "${3-}" "${4-}" >> "$MANIFEST_FILE" 2>/dev/null || true
+}
+: > "$MANIFEST_FILE" 2>/dev/null || true
+manifest_put meta run_date "$TIMESTAMP"
+manifest_put meta pool_source "$POOL_SOURCE"
+manifest_put meta pool "$(IFS=,; echo "${PROJECT_POOL[*]}")"
+manifest_put meta planned_phases \
+  "$(( ${#PHASES[@]} * ${#PROJECT_POOL[@]} + ${#DREAM_GLOBAL_PHASES[@]} ))"
+manifest_put meta started "$(date -Iseconds)"
 
 log "=== Dream started (project=$PROJECT_KEY, provider=$BRAIN_DREAM_AGENT_PROVIDER, dry_run=$DRY_RUN, promote_enabled=$BRAIN_DREAM_PROMOTE_ENABLED, reorg_enabled=$BRAIN_DREAM_REORG_ENABLED, reorg_dry_run=$BRAIN_DREAM_REORG_DRY_RUN) ==="
 # Le pool sur sa propre ligne, et la SOURCE avec lui. Sans la source, une nuit
