@@ -169,13 +169,49 @@ def test_the_header_states_what_the_night_planned_before_running_it(tmp_path: Pa
     assert manifest.warnings == ()
 
 
-def test_the_header_names_the_three_global_phases_it_counts(tmp_path: Path) -> None:
-    """Le +3 n'est pas une constante magique : il vient d'un tableau nommé."""
-    proc, manifest_path = _run_header(tmp_path, pool=("red",), phases=("scan:fast:5:30",))
+@pytest.mark.parametrize(
+    ("global_phases", "planned"),
+    [
+        (("extract", "roadmap", "sweep"), "4"),
+        (("extract", "roadmap", "sweep", "quatrieme"), "5"),
+        ((), "1"),
+    ],
+)
+def test_the_header_counts_the_global_phases_it_is_GIVEN(
+    tmp_path: Path, global_phases: tuple[str, ...], planned: str
+) -> None:
+    """Le +3 n'est pas une constante magique : il vient d'un tableau nommé.
+
+    La seule observable qui distingue le tableau d'un littéral `3` est sa
+    VARIATION. Le tableau vit donc hors du bloc découpé, et le harnais le fait
+    bouger : avec `+ 3` en dur, les deux dernières lignes du tableau de
+    paramètres tombent. Le contenu réel du tableau est épinglé par le test
+    suivant, pour que cette liberté du harnais ne devienne pas une fiction.
+    """
+    proc, manifest_path = _run_header(
+        tmp_path, pool=("red",), phases=("scan:fast:5:30",), global_phases=global_phases
+    )
 
     assert proc.returncode == 0, proc.stderr
     manifest = rm.parse_run_manifest(manifest_path.read_text(encoding="utf-8"))
-    assert manifest.meta["planned_phases"] == "4"
+    assert manifest.meta["planned_phases"] == planned
+
+
+def test_the_script_really_declares_the_three_global_phases_the_blocks_implement() -> None:
+    """Le harnais fait varier le tableau ; ici on épingle ce que le script pose.
+
+    Sans ce test, un tableau vidé dans `dream.sh` laisserait la paramétrisation
+    ci-dessus verte : elle ne lit jamais la vraie valeur.
+    """
+    content = _source()
+
+    assert _GLOBAL_PHASES_ANCHOR in content
+    assert content.index(_GLOBAL_PHASES_ANCHOR) < content.index(_HEADER_ANCHOR), (
+        "le tableau doit rester défini AVANT l'en-tête qui le compte"
+    )
+    assert sorted(_GLOBAL_BLOCKS) == sorted(
+        _GLOBAL_PHASES_ANCHOR.partition("(")[2].rstrip(")").split()
+    ), "les phases comptées et les blocs réellement écrits ne peuvent pas dériver"
 
 
 def test_the_header_truncates_so_a_same_day_rerun_never_doubles(tmp_path: Path) -> None:
