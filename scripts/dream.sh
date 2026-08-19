@@ -284,6 +284,47 @@ declare -A PHASE_DEPS=(
   [reorg]="scan synth"
 )
 
+# Les trois phases GLOBALES, nommées pour le seul calcul de `planned_phases`.
+# Les trois blocs restent écrits à la main HORS de la boucle (épinglé par
+# tests/unit/test_dream_sh_global_phases_outside_loop.py) : ce tableau ne les
+# pilote pas, il les compte.
+DREAM_GLOBAL_PHASES=(extract roadmap sweep)
+
+# --- Manifeste de la nuit ---------------------------------------------------
+# Ce que la nuit DÉCLARE — ses attendus, ses skips et leur raison — écrit AU
+# SITE DE CHAQUE DÉCISION et relu au matin par scripts.dream.post_run_alert.
+#
+# Ticket 0a9c067e : le comparateur de couverture existe et il a tiré trois nuits
+# de suite, mais son attendu vient du drop-in systemd, qui n'a de clé que pour
+# promote et reorg. La nuit du 2026-08-16 a donc annoncé 20 phases manquantes
+# quand il en manquait 60. L'élargir depuis le drop-in serait un no-op ; la nuit
+# est le seul témoin qui sache ce qu'elle a réellement tenté.
+#
+# INCRÉMENTAL, jamais vidé en fin de nuit : une nuit tuée par TimeoutStartSec,
+# un OOM ou un `set -e` non gardé n'atteindrait aucun vidage final, et le rejeu
+# du matin retomberait sur l'attendu du drop-in — c'est-à-dire sur le trou même
+# que ce fichier ferme. L'absence du bloc de clôture devient donc le marqueur
+# d'interruption, et interdit tout verdict vert.
+#
+# BEST-EFFORT INTÉGRAL : `set -euo pipefail` est actif depuis la ligne 2, et un
+# `logs/` en lecture seule ne doit jamais tuer une nuit. Une télémétrie qui
+# échoue ne fait pas tomber la phase qu'elle observe.
+#
+# Aucun échappement n'est nécessaire : une clé de projet portant un blanc ou un
+# slash est déjà refusée plus haut, et les noms de phase comme les raisons de
+# skip sont des littéraux d'un ensemble fermé.
+MANIFEST_FILE="$LOG_DIR/${TIMESTAMP}_manifest.tsv"
+manifest_put() {
+  printf '%s\t%s\t%s\t%s\n' "$1" "${2-}" "${3-}" "${4-}" >> "$MANIFEST_FILE" 2>/dev/null || true
+}
+: > "$MANIFEST_FILE" 2>/dev/null || true
+manifest_put meta run_date "$TIMESTAMP"
+manifest_put meta pool_source "$POOL_SOURCE"
+manifest_put meta pool "$(IFS=,; echo "${PROJECT_POOL[*]}")"
+manifest_put meta planned_phases \
+  "$(( ${#PHASES[@]} * ${#PROJECT_POOL[@]} + ${#DREAM_GLOBAL_PHASES[@]} ))"
+manifest_put meta started "$(date -Iseconds)"
+
 # OTEL env vars for Claude Code telemetry
 export CLAUDE_CODE_ENABLE_TELEMETRY=1
 export OTEL_LOGS_EXPORTER=console
@@ -819,12 +860,16 @@ run_project_phases() {
   for phase_spec in "${PHASES[@]}"; do
     IFS=':' read -r name model_tier timeout max_turns <<< "$phase_spec"
     TOTAL_PHASES=$(( TOTAL_PHASES + 1 ))
+    # Même site, même instant que le compteur : une SEPTIÈME phase ajoutée à
+    # PHASES étend l'attendu toute seule, sans garde à maintenir ailleurs.
+    manifest_put expected "$name" "$PROJECT_KEY"
 
     # --- Pre-flight: skip the costly Opus phases on a provably-static corpus ---
     if [[ "$OPUS_SKIP" == true ]] \
        && { [[ "$name" == "synth" ]] || [[ "$name" == "promote" ]] || [[ "$name" == "reorg" ]]; }; then
       log "SKIP $name (pre-flight: corpus unchanged since last run)"
       SKIPPED_PHASES+=("$PROJECT_KEY/$name")
+      manifest_put skipped "$name" "$PROJECT_KEY" preflight
       continue
     fi
 
@@ -833,6 +878,7 @@ run_project_phases() {
       if [[ "$BRAIN_DREAM_PROMOTE_ENABLED" != "true" ]]; then
         log "SKIP promote (killswitch BRAIN_DREAM_PROMOTE_ENABLED=$BRAIN_DREAM_PROMOTE_ENABLED)"
         SKIPPED_PHASES+=("$PROJECT_KEY/promote")
+        manifest_put skipped promote "$PROJECT_KEY" killswitch
         continue
       fi
 
@@ -847,6 +893,7 @@ run_project_phases() {
       if (( prep_rc != 0 )); then
         log "FAIL promote — candidate pool fetch failed (rc=$prep_rc)"
         FAILED_PHASES+=("$PROJECT_KEY/promote")
+        manifest_put failed promote "$PROJECT_KEY"
         continue
       fi
 
@@ -874,10 +921,17 @@ run_project_phases() {
           >> "$LOG_DIR/$TIMESTAMP.log" 2>&1
         record_rc=$?
         set -e
+        # La déclaration vit DANS chacune des deux branches, jamais après le
+        # `if` : le push `SKIPPED_PHASES+=` ci-dessous est commun aux deux, donc
+        # « sautée » et « sa ligne est écrite » sont deux faits INDÉPENDANTS.
+        # Une raison unique déclarerait « aucune ligne due » alors que dream.sh
+        # vient d'imprimer que l'écriture a ÉCHOUÉ, et le trou serait muet.
         if (( record_rc == 0 )); then
           log "promote — empty-pool dream_runs row recorded (phase observed, not failed)"
+          manifest_put skipped promote "$PROJECT_KEY" empty-pool-recorded
         else
           log "WARN  promote — empty-pool dream_runs row NOT recorded (rc=$record_rc)"
+          manifest_put skipped promote "$PROJECT_KEY" empty-pool-unrecorded
         fi
         SKIPPED_PHASES+=("$PROJECT_KEY/promote")
         continue
@@ -901,6 +955,7 @@ run_project_phases() {
       if [[ "$BRAIN_DREAM_REORG_ENABLED" != "true" ]]; then
         log "SKIP reorg (killswitch BRAIN_DREAM_REORG_ENABLED=$BRAIN_DREAM_REORG_ENABLED)"
         SKIPPED_PHASES+=("$PROJECT_KEY/reorg")
+        manifest_put skipped reorg "$PROJECT_KEY" killswitch
         continue
       fi
     fi
@@ -1043,8 +1098,10 @@ asyncio.run(_get())
 
     case "$phase_rc" in
       0) ;;
-      2) TIMED_OUT_PHASES+=("$PROJECT_KEY/$name") ;;
-      *) FAILED_PHASES+=("$PROJECT_KEY/$name") ;;
+      2) TIMED_OUT_PHASES+=("$PROJECT_KEY/$name")
+         manifest_put timeout "$name" "$PROJECT_KEY" ;;
+      *) FAILED_PHASES+=("$PROJECT_KEY/$name")
+         manifest_put failed "$name" "$PROJECT_KEY" ;;
     esac
   done
 }
@@ -1059,9 +1116,11 @@ done  # fin de la boucle de projets
 # NVIDIA API JSON strict sans tools). Insère sa propre row dream_runs
 # (phase='extract') pour la visibilité briefing (killswitches + last failure).
 TOTAL_PHASES=$(( TOTAL_PHASES + 1 ))
+manifest_put expected extract '*'
 if [[ "$BRAIN_DREAM_EXTRACT_ENABLED" != "true" ]]; then
   log "SKIP extract (killswitch BRAIN_DREAM_EXTRACT_ENABLED=$BRAIN_DREAM_EXTRACT_ENABLED)"
   SKIPPED_PHASES+=("*/extract")
+  manifest_put skipped extract '*' killswitch
 else
   # The CLI owns a 9m deadline and checkpoints each ticket before returning
   # rc=3. The outer 10m timeout remains only as a last-resort process guard.
@@ -1081,6 +1140,7 @@ else
     log "TIMEOUT extract (controlled deadline; terminal dream_run recorded)"
     TIMED_OUT_PHASES+=("*/extract")
     CONTROLLED_TIMEOUT_PHASES+=("*/extract")
+    manifest_put timeout extract '*'
   elif (( extract_rc == 4 )); then
     # Deferral, not failure: the run declined to START tickets it could not
     # finish inside the budget, so nothing was cut short. Deferred tickets keep
@@ -1091,9 +1151,11 @@ else
   elif (( extract_rc == 124 )); then
     log "TIMEOUT extract (outer guard; inspect ${TIMESTAMP}_extract.log)"
     TIMED_OUT_PHASES+=("*/extract")
+    manifest_put timeout extract '*'
   else
     log "FAIL extract (rc=$extract_rc) — see ${TIMESTAMP}_extract.log"
     FAILED_PHASES+=("*/extract")
+    manifest_put failed extract '*'
   fi
 fi
 
@@ -1101,9 +1163,11 @@ fi
 # Pas une phase claude -p : CLI Python direct (pattern extract). Insère sa
 # propre row dream_runs (phase='roadmap') pour la visibilité briefing.
 TOTAL_PHASES=$(( TOTAL_PHASES + 1 ))
+manifest_put expected roadmap '*'
 if [[ "$BRAIN_DREAM_ROADMAP_ENABLED" != "true" ]]; then
   log "SKIP roadmap (killswitch BRAIN_DREAM_ROADMAP_ENABLED=$BRAIN_DREAM_ROADMAP_ENABLED)"
   SKIPPED_PHASES+=("*/roadmap")
+  manifest_put skipped roadmap '*' killswitch
 else
   roadmap_args=(--limit 10)
   if [[ "$BRAIN_DREAM_ROADMAP_DRY_RUN" != "true" ]]; then
@@ -1122,6 +1186,7 @@ else
   else
     log "FAIL roadmap (rc=$roadmap_rc) — see ${TIMESTAMP}_roadmap.log"
     FAILED_PHASES+=("*/roadmap")
+    manifest_put failed roadmap '*'
   fi
 fi
 
@@ -1130,9 +1195,11 @@ fi
 # sa propre row dream_runs (phase='sweep', model NULL) pour la visibilité
 # briefing. Le seuil n'est PAS passé en argument : une seule constante.
 TOTAL_PHASES=$(( TOTAL_PHASES + 1 ))
+manifest_put expected sweep '*'
 if [[ "$BRAIN_DREAM_SWEEP_ENABLED" != "true" ]]; then
   log "SKIP sweep (killswitch BRAIN_DREAM_SWEEP_ENABLED=$BRAIN_DREAM_SWEEP_ENABLED)"
   SKIPPED_PHASES+=("*/sweep")
+  manifest_put skipped sweep '*' killswitch
 else
   sweep_args=()
   if [[ "$BRAIN_DREAM_SWEEP_DRY_RUN" != "true" ]]; then
@@ -1151,6 +1218,7 @@ else
   else
     log "FAIL sweep (rc=$sweep_rc) — see ${TIMESTAMP}_sweep.log"
     FAILED_PHASES+=("*/sweep")
+    manifest_put failed sweep '*'
   fi
 fi
 
@@ -1189,6 +1257,16 @@ if (( ${#FALLBACK_PHASES[@]} > 0 )); then
   summary+=", ${#FALLBACK_PHASES[@]} repliées sur un secours (${FALLBACK_PHASES[*]})"
 fi
 log "=== Dream finished: $summary ==="
+
+# Le bloc de CLÔTURE, seule partie non incrémentale du manifeste. Son absence
+# est le marqueur d'une nuit interrompue : le lecteur refuse alors tout verdict
+# vert. `total_phases` est le compteur propre de dream.sh, à confronter au
+# `planned_phases` d'en-tête et au nombre d'attendus réellement atteints —
+# trois nombres, trois instants, trois chemins de code.
+manifest_put meta total_phases "$TOTAL_PHASES"
+manifest_put meta ok_total "$OK_TOTAL"
+manifest_put meta fail_total "$FAIL_TOTAL"
+manifest_put meta finished "$(date -Iseconds)"
 
 # Keep a bounded operational report in the dated Dream log. Session briefings
 # read the same failures directly from dream_runs. The helper's failure must

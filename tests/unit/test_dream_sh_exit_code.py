@@ -111,6 +111,13 @@ def _run_verdict(
             f"declare -a FALLBACK_PHASES=({_bash_array(fallbacks)})",
             f"ALERT_CALLS={shlex.quote(str(alert_calls))}",
             'log() { printf "%s\\n" "$*"; }',
+            # Stub de HARNAIS, pas de comportement : les blocs découpés
+            # déclarent désormais chaque décision au manifeste de la nuit
+            # (ticket 0a9c067e). Sans lui, `manifest_put` serait introuvable
+            # et `set -e` ferait sortir bash en 127 — un faux témoin vert pour
+            # les tests qui attendent 1. Ce que la déclaration écrit est
+            # vérifié par tests/unit/test_dream_sh_run_manifest.py.
+            "manifest_put() { :; }",
             f"ALERT_RC={alert_rc}",
             'uv() { printf "%s\\n" "$*" >> "$ALERT_CALLS"; return "$ALERT_RC"; }',
             "",
@@ -136,6 +143,13 @@ def _run_extract_classification(extract_rc: int) -> dict[str, list[str]]:
             "declare -a TIMED_OUT_PHASES=()",
             "declare -a CONTROLLED_TIMEOUT_PHASES=()",
             "log() { :; }",
+            # Stub de HARNAIS, pas de comportement : les blocs découpés
+            # déclarent désormais chaque décision au manifeste de la nuit
+            # (ticket 0a9c067e). Sans lui, `manifest_put` serait introuvable
+            # et `set -e` ferait sortir bash en 127 — un faux témoin vert pour
+            # les tests qui attendent 1. Ce que la déclaration écrit est
+            # vérifié par tests/unit/test_dream_sh_run_manifest.py.
+            "manifest_put() { :; }",
             # `if true; then` équilibre le `fi` final du bloc découpé, qui
             # fermait le killswitch EXTRACT resté hors périmètre.
             "if true; then",
@@ -165,6 +179,13 @@ def _run_phase_classification(phase_rc: int) -> dict[str, list[str]]:
         [
             "set -euo pipefail",
             "name=synth",
+            # Stub de HARNAIS, pas de comportement : les blocs découpés
+            # déclarent désormais chaque décision au manifeste de la nuit
+            # (ticket 0a9c067e). Sans lui, `manifest_put` serait introuvable
+            # et `set -e` ferait sortir bash en 127 — un faux témoin vert pour
+            # les tests qui attendent 1. Ce que la déclaration écrit est
+            # vérifié par tests/unit/test_dream_sh_run_manifest.py.
+            "manifest_put() { :; }",
             "PROJECT_KEY=brain-v42",
             f"phase_rc={phase_rc}",
             "declare -a FAILED_PHASES=()",
