@@ -230,18 +230,26 @@ def test_dream_script_keeps_post_run_report_in_dated_log_and_original_failure_ex
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("report", "expected_output"),
+    ("report", "expected_first_line"),
     [
-        ("bounded operational report", "bounded operational report\n"),
-        (None, "no failures for 2026-07-27\n"),
+        ("bounded operational report", "bounded operational report"),
+        (None, "no failures for 2026-07-27"),
     ],
 )
 async def test_run_keeps_operational_report_on_stdout(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     report: str | None,
-    expected_output: str,
+    expected_first_line: str,
 ) -> None:
+    """Le rapport reste sur stdout — et la ligne machine le SUIT, toujours.
+
+    Contrat élargi par le ticket `0a9c067e` : la ligne `COVERAGE …` est la
+    dernière ligne de stdout Y COMPRIS les nuits sans anomalie. C'est tout
+    l'objet du ticket — mettre côte à côte, chaque matin, ce que la nuit dit
+    avoir fait et ce qu'elle a écrit. Un contrat « stdout vaut exactement le
+    rapport » interdirait précisément la ligne qui manquait.
+    """
     engine = MagicMock()
     engine.dispose = AsyncMock()
     session = AsyncMock(spec=AsyncSession)
@@ -249,7 +257,8 @@ async def test_run_keeps_operational_report_on_stdout(
     session_context.__aenter__ = AsyncMock(return_value=session)
     session_context.__aexit__ = AsyncMock(return_value=False)
     factory = MagicMock(return_value=session_context)
-    reporter = AsyncMock(return_value=report)
+    coverage = post_run_alert.coverage_fallback(expected=0, observed=0, missing=0)
+    reporter = AsyncMock(return_value=post_run_alert.NightReport(report=report, coverage=coverage))
     monkeypatch.setattr(
         post_run_alert,
         "Settings",
@@ -257,13 +266,15 @@ async def test_run_keeps_operational_report_on_stdout(
     )
     monkeypatch.setattr(post_run_alert, "create_async_engine", MagicMock(return_value=engine))
     monkeypatch.setattr(post_run_alert, "async_sessionmaker", MagicMock(return_value=factory))
-    monkeypatch.setattr(post_run_alert, "write_alert_if_failed", reporter)
+    monkeypatch.setattr(post_run_alert, "review_night", reporter)
 
     return_code = await post_run_alert._run(dt.date(2026, 7, 27))
 
     assert return_code == 0
-    assert capsys.readouterr().out == expected_output
-    reporter.assert_awaited_once_with(session, dt.date(2026, 7, 27))
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == expected_first_line
+    assert lines[-1].startswith("COVERAGE mode=fallback")
+    reporter.assert_awaited_once_with(session, dt.date(2026, 7, 27), manifest=None)
     engine.dispose.assert_awaited_once()
 
 
