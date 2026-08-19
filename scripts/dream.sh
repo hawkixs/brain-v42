@@ -1303,7 +1303,18 @@ if [[ -n "$coverage_line" ]]; then
   # ne serait lue que les jours où il est déjà trop tard.
   log "=== dream_runs $coverage_line ==="
 fi
-if (( alert_rc == 2 )); then
+# Le 2 n'est CRU que sur preuve positive : la ligne machine du verdict. Ce code
+# est aussi celui de l'erreur d'usage d'argparse, que `main()` ne peut pas
+# intercepter (`SystemExit` n'est pas une `Exception`), et celui de `uv` comme de
+# l'interpréteur sur une ligne de commande invalide. Le déclencheur n'est pas
+# théorique : au rollback dur du lecteur, dream.sh continue de passer
+# `--manifest` à un post_run_alert qui ne le connaît plus. Sans cette garde,
+# chaque matin imprimerait un FAIL de couverture et poserait une ligne dream_runs
+# `coverage` mensongère — sur un drapeau inconnu, sans le moindre trou. Le
+# renumérotage de l'escalade ne fermerait pas la classe, la preuve positive si.
+# Un rapporteur muet reste ROUGE : `alert_rc` n'est pas remis à zéro et la garde
+# structurelle plus bas sort en 1 (règle 3, « le rapporteur n'est pas parti »).
+if (( alert_rc == 2 )) && [[ -n "$coverage_line" ]]; then
   log "FAIL  dream_runs coverage — des lignes attendues manquent sans explication"
   coverage_silent="$(printf '%s\n' "$alert_out" | grep -m1 '^COVERAGE_SILENT ' || true)"
   # T2 — le verdict porté jusqu'à un lecteur qui existe. Cette ligne atteint

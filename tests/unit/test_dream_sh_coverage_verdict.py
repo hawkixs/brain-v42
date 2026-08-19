@@ -166,6 +166,42 @@ def test_an_alert_without_a_coverage_line_is_not_an_error(tmp_path: Path) -> Non
     assert "=== dream_runs COVERAGE" not in proc.stdout
 
 
+_ARGPARSE_USAGE_ERROR = "\n".join(
+    [
+        "usage: post_run_alert.py [-h] --date DATE [--manifest MANIFEST]",
+        "python -m scripts.dream.post_run_alert: error: unrecognized arguments: --manifest",
+    ]
+)
+
+
+def test_a_rc2_without_a_coverage_line_is_never_read_as_a_gap(tmp_path: Path) -> None:
+    """Le 2 d'argparse n'est PAS le 2 du verdict — mesuré, pas supposé.
+
+    `parser.error()` sort en 2 par un `SystemExit` que le `except Exception` de
+    `main()` ne peut pas intercepter. Le déclencheur est nommé par la spec §8 :
+    au rollback dur du lecteur, `dream.sh` continue de passer `--manifest` à un
+    `post_run_alert` qui ne le connaît plus. Sans preuve positive, chaque matin
+    imprimerait « des lignes attendues manquent sans explication » et poserait
+    une ligne `dream_runs` `coverage` mensongère — pour un drapeau inconnu.
+    `uv` et l'interpréteur ont le même 2 d'usage, donc renuméroter l'escalade ne
+    fermerait pas la classe ; exiger la ligne machine, si.
+    """
+    proc, alert_calls, _ = _run_verdict(tmp_path, alert_rc=2, alert_out=_ARGPARSE_USAGE_ERROR)
+
+    assert "FAIL  dream_runs coverage" not in proc.stdout
+    assert "record_coverage_gap" not in alert_calls
+    assert "WARN  post_run_alert failed (rc=2)" in proc.stdout
+    assert proc.returncode == 1, "le rapporteur muet rougit quand même — règle 3"
+
+
+def test_a_rc2_without_a_coverage_line_stays_red_even_disarmed(tmp_path: Path) -> None:
+    """L'interrupteur désarme la COUVERTURE, jamais un rapporteur cassé."""
+    proc, _, _ = _run_verdict(tmp_path, alert_rc=2, alert_out=_ARGPARSE_USAGE_ERROR, strict="false")
+
+    assert proc.returncode == 1
+    assert "BRAIN_DREAM_COVERAGE_STRICT=false" not in proc.stdout
+
+
 def test_dream_shell_remains_valid_bash() -> None:
     subprocess.run(["bash", "-n", str(DREAM_SH)], check=True)
 

@@ -13,6 +13,12 @@ Exit codes:
     1  → outil ou base cassé
     2  → trou de couverture SILENCIEUX, écriture `dream_runs` déclarée en échec,
          ou manifeste incohérent/interrompu. Jamais rendu en mode repli.
+         Ce 2 est PARTAGÉ avec l'erreur d'usage d'argparse — un `SystemExit` que
+         le `except Exception` de `main()` ne peut pas intercepter — et avec
+         celle de `uv` comme de l'interpréteur. `dream.sh` ne le croit donc que
+         si la ligne machine `COVERAGE …` a été imprimée ; elle l'est pour TOUS
+         les codes de sortie (`test_exit_codes_follow_the_verdict`), y compris
+         celui-ci, ce qui rend la preuve positive toujours disponible.
 
 Couverture (ticket 0a9c067e). Ce module compare depuis longtemps l'observé au
 produit cartésien `{phase activée} × {projet du pool}` lu dans le drop-in
