@@ -41,6 +41,7 @@ DETAIL = "COVERAGE_SILENT silent=p0/clean, p0/connect and 58 more"
 
 _INSERT = re.compile(r"INSERT\s+INTO\s+dream_runs", re.IGNORECASE)
 _UPDATE = re.compile(r"UPDATE\s+dream_runs", re.IGNORECASE)
+_SELECT = re.compile(r"SELECT\s+dream_runs", re.IGNORECASE)
 
 
 class _RecordingSession:
@@ -137,6 +138,44 @@ def test_an_empty_verdict_still_says_something() -> None:
     message = record_coverage_gap.build_error_message("", "")
 
     assert message.strip() != ""
+
+
+def _lookup(calls: list[Any]) -> Any:
+    selects = [call for call in calls if _SELECT.search(str(call))]
+    assert len(selects) == 1, f"attendu 1 recherche, vue {len(selects)}"
+    return selects[0]
+
+
+@pytest.mark.asyncio
+async def test_the_idempotence_key_is_the_NIGHT_not_the_phase_alone() -> None:
+    """La clause WHERE, lue dans le SQL rendu — pas dans la réponse d'un stub.
+
+    `_RecordingSession` répond la même chose à N'IMPORTE QUELLE requête : le
+    test de rejeu passe donc avec ou sans le filtre `run_date`, mutation
+    exécutée. Or sans ce filtre, `order_by(id desc) limit 1` trouverait la ligne
+    `coverage` de n'importe quelle nuit passée : le writer mettrait à jour le
+    verdict d'HIER et n'écrirait jamais celui d'aujourd'hui — le briefing et
+    /metrics, seuls lecteurs de cette ligne, ne verraient rien bouger.
+    """
+    factory, calls, _ = _factory(existing_id=None)
+
+    await record_coverage_gap.record_coverage_gap(factory, RUN_DATE, summary=SUMMARY)
+
+    rendered = str(_lookup(calls).compile(compile_kwargs={"literal_binds": True}))
+    assert f"dream_runs.run_date = '{RUN_DATE.isoformat()}'" in rendered
+    assert f"dream_runs.phase = '{record_coverage_gap.COVERAGE_PHASE}'" in rendered
+
+
+@pytest.mark.asyncio
+async def test_the_lookup_stays_bounded_and_deterministic() -> None:
+    """Une nuit qui porterait deux lignes `coverage` doit converger, pas osciller."""
+    factory, calls, _ = _factory(existing_id=None)
+
+    await record_coverage_gap.record_coverage_gap(factory, RUN_DATE, summary=SUMMARY)
+
+    rendered = str(_lookup(calls).compile(compile_kwargs={"literal_binds": True}))
+    assert "ORDER BY dream_runs.id DESC" in rendered
+    assert "LIMIT 1" in rendered
 
 
 @pytest.mark.asyncio
