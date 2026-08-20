@@ -127,6 +127,10 @@ def test_the_validator_runs_whatever_the_phase_returned(tmp_path: Path, phase_rc
     assert "--run-date" not in uv_calls, (
         "le drapeau du contrôle creux `updated_at >= run_date` est encore passé"
     )
+    assert "reorg.events.jsonl" in uv_calls, (
+        "le validateur a tourné sans le flux d'événements : le contrôle de symétrie "
+        "rapport ↔ appels observés n'aurait rien à confronter"
+    )
 
 
 def test_a_rejected_report_fails_a_phase_that_was_green(tmp_path: Path) -> None:

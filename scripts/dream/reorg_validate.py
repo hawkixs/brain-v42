@@ -59,6 +59,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import pathlib
 import re
 import sys
 from uuid import UUID
@@ -72,6 +73,7 @@ from sqlalchemy.ext.asyncio import (
 
 from brain_v42.config import Settings
 from brain_v42.db.tables import decisions, dream_runs, learnings
+from scripts.dream.reorg_events import EventScan, scan_events
 
 # Machine-readable trailer inserted by the agent after the prose report.
 # Mirrors the PROMOTE REPORT block so tooling parses both the same way.
@@ -189,6 +191,60 @@ def _reject_foreign_project(
             f"cross-project mutation; the server-side capability scope should have "
             f"made this impossible, so treat it as an enforcement regression"
         )
+
+
+def symmetry_warnings(report: dict, scan: EventScan) -> list[str]:
+    """Compare what the report DECLARED to what the event stream OBSERVED.
+
+    Both directions, because they fail differently:
+
+    - *declared, never called* is the ``bccc9115`` ghost. The report names an id
+      no ``brain_update`` was ever emitted for.
+    - *called, never declared* is invisible today, and it is the worse of the two:
+      a mutation neither the validator, nor the alert, nor the briefing mentions.
+      It exists only in a stream nobody re-reads.
+
+    Archived ids count as declared. ``phase_reorg.md`` §Part 2 d archives through
+    the same ``brain_update``, so comparing against ``updated`` alone would
+    denounce every archive as an undeclared mutation and make the check shout at
+    its own nominal behaviour every night.
+
+    An unreadable stream gets ONE warning naming that inability, never a per-id
+    verdict. Its ``updated_ids`` is empty, so a naive comparison would denounce
+    every declared id at once — a massive false alarm one quickly learns to
+    ignore — while silence would make "nothing wrong" indistinguishable from
+    "nothing was read".
+
+    WARNINGS ONLY, by design and for now: escalating to a failure waits for a
+    clean week of observation. A guard that starts by failing nights it has never
+    been measured against teaches operators to disable it.
+    """
+    declared = set(report.get("updated_ids", [])) | set(report.get("archived_ids", []))
+
+    if not scan.recognised:
+        return [
+            "event stream carried no recognisable codex or agy tool call — symmetry "
+            "UNVERIFIED (this is NOT the same fact as zero mutations: a new agent "
+            f"format or an empty stream reads identically); {len(declared)} id(s) declared"
+        ]
+
+    warnings: list[str] = []
+
+    ghosts = sorted(declared - scan.updated_ids)
+    if ghosts:
+        warnings.append(
+            f"{len(ghosts)} id(s) declared in the report but never passed to "
+            f"brain_update in the event stream: {', '.join(ghosts)}"
+        )
+
+    undeclared = sorted(scan.updated_ids - declared)
+    if undeclared:
+        warnings.append(
+            f"{len(undeclared)} id(s) mutated through brain_update but absent from the "
+            f"report: {', '.join(undeclared)}"
+        )
+
+    return warnings
 
 
 async def validate(
@@ -341,6 +397,26 @@ def _build_factory(postgres_url: str) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
+def _emit_symmetry(report: dict, events_path: str) -> None:
+    """Print the report↔stream symmetry verdict, and never raise.
+
+    Read here rather than in ``main`` so a single fact produces a single line:
+    an unreadable stream would otherwise also trip ``scan.recognised``, and two
+    warnings for one cause is how an alert stops being read.
+    """
+    try:
+        events_raw = pathlib.Path(events_path).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        print(
+            f"REORG SYMMETRY WARN: event stream {events_path!r} unreadable ({exc}) — "
+            f"symmetry UNVERIFIED",
+            file=sys.stderr,
+        )
+        return
+    for warning in symmetry_warnings(report, scan_events(events_raw)):
+        print(f"REORG SYMMETRY WARN: {warning}", file=sys.stderr)
+
+
 async def _amain(
     raw: str,
     tags_before: dict[str, list[str]],
@@ -360,6 +436,10 @@ async def _amain(
         # CLI --dry-run flag is authoritative over JSON trailer (belt+suspenders)
         if args.dry_run:
             report = {**report, "dry_run": True}
+        # Avant `validate`, pour que le verdict de symétrie s'imprime même quand
+        # la validation échoue juste après — c'est la nuit qui échoue qui a le
+        # plus besoin d'être lue.
+        _emit_symmetry(report, args.events_jsonl)
         await validate(
             report,
             session_factory,
@@ -395,6 +475,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         default=False,
         help="Force dry-run mode (skips DB checks); also detected from JSON trailer",
+    )
+    parser.add_argument(
+        "--events-jsonl",
+        required=True,
+        help=(
+            "Path to the phase event stream (codex or agy JSONL). Used for the "
+            "report-vs-observed symmetry check, which WARNS and never fails — "
+            "escalation waits for a clean week of observation"
+        ),
     )
     parser.add_argument(
         "--tags-before-json",

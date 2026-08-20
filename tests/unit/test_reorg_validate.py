@@ -85,6 +85,8 @@ def test_main_logs_positive_wet_validation_evidence(
     report_log.write_text(_make_trailer())
     tags_before = tmp_path / "tags_before.json"
     tags_before.write_text("{}")
+    events = tmp_path / "reorg.events.jsonl"
+    events.write_text("")
     monkeypatch.setattr(
         reorg_validate,
         "Settings",
@@ -101,6 +103,8 @@ def test_main_logs_positive_wet_validation_evidence(
                 "rv-cli-unused",
                 "--tags-before-json",
                 str(tags_before),
+                "--events-jsonl",
+                str(events),
             ]
         )
         == 0
@@ -811,7 +815,14 @@ def test_the_cli_refuses_to_run_without_a_perimeter(
 
     with pytest.raises(SystemExit) as excinfo:
         reorg_validate.main(
-            ["--report-log", str(report_log), "--tags-before-json", str(tags_before)]
+            [
+                "--report-log",
+                str(report_log),
+                "--tags-before-json",
+                str(tags_before),
+                "--events-jsonl",
+                str(tmp_path / "absent.events.jsonl"),
+            ]
         )
 
     assert excinfo.value.code == 2, (
@@ -847,7 +858,10 @@ def test_the_perimeter_is_a_required_parameter_like_its_sibling() -> None:
 @pytest.mark.parametrize(
     ("module_name", "argv_without_perimeter"),
     [
-        ("reorg_validate", ["--report-log", "unused.log", "--tags-before-json", "u.json"]),
+        (
+            "reorg_validate",
+            ["--report-log", "u.log", "--tags-before-json", "u.json", "--events-jsonl", "u.jsonl"],
+        ),
         ("promote_validate", ["--report-log", "unused.log", "--candidates-json", "u.json"]),
         ("connect_validate", ["--report-log", "unused.log", "--run-date", "2026-08-20"]),
     ],

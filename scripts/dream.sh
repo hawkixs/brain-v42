@@ -1117,6 +1117,10 @@ asyncio.run(_get())
       reorg_validator_flags=()
       reorg_validator_flags+=(--report-log "$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.log")
       reorg_validator_flags+=(--tags-before-json "$REORG_TAGS_BEFORE")
+      # Le flux d'événements de la phase — ce que l'agent a RÉELLEMENT appelé,
+      # face à ce que son rapport DÉCLARE. Même construction de nom que
+      # run_phase (ligne ~328). Contrôle en avertissement seul pour l'instant.
+      reorg_validator_flags+=(--events-jsonl "$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.events.jsonl")
       # Périmètre du run, comme pour promote et connect. Le serveur borne déjà
       # REORG à son projet, mais brain_list est le seul outil CRUD sans contrôle
       # de scope PROPRE — sa borne vit dans le middleware seul, et l'enforcement

@@ -131,6 +131,8 @@ def _argv(name: str, tmp_path: pathlib.Path) -> list[str]:
         log.write_text(_WET_REORG_TRAILER)
         tags_before = tmp_path / "tags_before.json"
         tags_before.write_text("{}")
+        events = tmp_path / "reorg.events.jsonl"
+        events.write_text("")
         return [
             "--report-log",
             str(log),
@@ -140,6 +142,8 @@ def _argv(name: str, tmp_path: pathlib.Path) -> list[str]:
             "brain-v42",
             "--tags-before-json",
             str(tags_before),
+            "--events-jsonl",
+            str(events),
         ]
     log = tmp_path / "promote.log"
     log.write_text(_WET_PROMOTE_TRAILER)
