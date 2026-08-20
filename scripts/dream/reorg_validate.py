@@ -26,10 +26,14 @@ Design decisions:
 - WET archived_ids: each entity must have ``freshness_status='archived'`` in PG.
   Not-archived → ValidationFailure (masked failure).  Not-found → ValidationFailure.
 
-- WET updated_ids: each entity must exist in PG AND have
-  ``updated_at >= run_date`` (i.e., the entity was actually touched during
-  this run).  Existence + recency together catch both hallucinated UUIDs and
-  Part 1 masked failures (agent claims 20 metadata updates, performs none).
+- WET updated_ids: each entity must exist in PG AND carry tags that DIFFER from
+  the pre-phase snapshot (``--tags-before-json``, written by
+  ``scripts.dream.reorg_snapshot``).  Existence + movement together catch both
+  hallucinated UUIDs and Part 1 masked failures (agent claims 20 metadata
+  updates, performs none).  The snapshot is the only measured ``before``:
+  ``updated_at`` is bumped every 300 s by DecayFlusher through an unconditional
+  trigger — partly by REORG's own reads — and migration 041's
+  ``content_updated_at`` triggers do not watch ``tags`` at all.
 
 - CAP ENFORCEMENT: more than 20 updated_ids or archived_ids violates the
   phase_reorg.md contract and is flagged as ValidationFailure.
@@ -45,8 +49,8 @@ CLI:
     python -m scripts.dream.reorg_validate \\
         --report-log logs/dream/2026-07-02_reorg.log \\
         --project-key brain-v42 \\
+        --tags-before-json logs/dream/2026-07-02_brain-v42_reorg_tags_before.json \\
         --dream-run-id 42 \\
-        --run-date 2026-07-02 \\
         [--dry-run]
 """
 
@@ -54,7 +58,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import datetime as dt
 import json
 import re
 import sys
@@ -138,7 +141,7 @@ async def _entity_row(
     session: AsyncSession,
     entity_id: UUID,
 ) -> dict | None:
-    """Return id, freshness_status, updated_at, project_key from learnings or decisions.
+    """Return id, freshness_status, tags, project_key from learnings or decisions.
 
     Returns None if not found in either table.
     """
@@ -149,7 +152,7 @@ async def _entity_row(
                     sa.select(
                         tbl.c.id,
                         tbl.c.freshness_status,
-                        tbl.c.updated_at,
+                        tbl.c.tags,
                         tbl.c.project_key,
                     ).where(tbl.c.id == entity_id)
                 )
@@ -193,7 +196,7 @@ async def validate(
     session_factory: async_sessionmaker[AsyncSession],
     dream_run_id: int | None,
     project_key: str,
-    run_date: dt.date | None = None,
+    tags_before: dict[str, list[str]],
 ) -> None:
     """Verify that the entities the agent claimed to mutate actually changed.
 
@@ -211,7 +214,8 @@ async def validate(
     DRY-RUN: skips all DB checks (nothing should have mutated).
     MISSING MARKER (wet): raises ValidationFailure (fail-closed).
     WET archived_ids: each entity must have freshness_status='archived' in PG.
-    WET updated_ids: each entity must exist AND have updated_at >= run_date.
+    WET updated_ids: each entity must exist AND carry tags that differ from
+    ``tags_before``, the snapshot taken just before the phase started.
     CAP: > 20 updated or archived raises ValidationFailure.
 
     Raises ValidationFailure on any integrity violation.
@@ -285,19 +289,34 @@ async def validate(
 
             _reject_foreign_project(raw_id, row, project_key, claim="updated")
 
-            # updated_at freshness check: the agent must have touched the entity
-            # during (or after) run_date.  Without this, an existence check alone
-            # can never detect a Part 1 masked failure — every claimed ID always
-            # exists because the agent sourced it from brain_list scans.
-            if run_date is not None:
-                entity_updated_at: dt.datetime = row["updated_at"]
-                # updated_at is tz-aware (PostgreSQL timestamptz); compare as date.
-                if entity_updated_at.date() < run_date:
-                    raise ValidationFailure(
-                        f"entity {raw_id} (claimed updated) has updated_at="
-                        f"{entity_updated_at.date().isoformat()} which is before "
-                        f"run_date={run_date.isoformat()} — masked failure (no write performed)"
-                    )
+            # TAG-MOVEMENT check: the entity's tags must differ from the
+            # pre-phase snapshot.  Without it, an existence check alone can never
+            # detect a Part 1 masked failure — every claimed ID always exists,
+            # because the agent sourced it from its own brain_list scans.
+            #
+            # This replaces an `updated_at >= run_date` check that was hollow:
+            # DecayFlusher bulk-UPDATEs both tables every 300 s and the migration
+            # 001 trigger has no WHEN clause, so the timestamp moved on its own.
+            # The circuit was worse than the drift — the access rows that drive
+            # the flusher come from REORG's own brain_get reads, so the phase
+            # manufactured the evidence it was being judged on.
+            if raw_id not in tags_before:
+                raise ValidationFailure(
+                    f"entity {raw_id} (claimed updated) is absent from the pre-phase "
+                    f"tags snapshot — it did not exist in project {project_key!r} when "
+                    f"the phase started. REORG normalises existing metadata and never "
+                    f"creates; treat this as a snapshot taken on the wrong corpus or a "
+                    f"phase that stepped outside its contract"
+                )
+            # Sorted comparison: a pure permutation of identical tags is not a
+            # normalisation, so it must not count as movement. Duplicates survive
+            # sorting, which is right — de-duplicating IS a real normalisation.
+            if sorted(row["tags"] or []) == sorted(tags_before[raw_id]):
+                raise ValidationFailure(
+                    f"entity {raw_id} (claimed updated) still carries the same tags as "
+                    f"before the phase ({sorted(tags_before[raw_id])!r}) — masked "
+                    f"failure (no write performed)"
+                )
 
 
 async def _mark_dream_run_partial(
@@ -324,6 +343,7 @@ def _build_factory(postgres_url: str) -> async_sessionmaker[AsyncSession]:
 
 async def _amain(
     raw: str,
+    tags_before: dict[str, list[str]],
     session_factory: async_sessionmaker[AsyncSession],
     args: argparse.Namespace,
 ) -> int:
@@ -345,7 +365,7 @@ async def _amain(
             session_factory,
             args.dream_run_id,
             args.project_key,
-            run_date=args.run_date,
+            tags_before,
         )
     except ValidationFailure as exc:
         await _mark_dream_run_partial(session_factory, args.dream_run_id, str(exc))
@@ -377,10 +397,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Force dry-run mode (skips DB checks); also detected from JSON trailer",
     )
     parser.add_argument(
-        "--run-date",
-        type=dt.date.fromisoformat,
-        default=None,
-        help="Date of the dream run (YYYY-MM-DD); used to check updated_at >= run_date",
+        "--tags-before-json",
+        required=True,
+        help=(
+            "Path to the pre-phase tags snapshot written by scripts.dream.reorg_snapshot "
+            "— required, deliberately without a default. It is the only measured `before`: "
+            "updated_at moves on its own (DecayFlusher + an unconditional trigger) and "
+            "content_updated_at ignores `tags` entirely"
+        ),
     )
     parser.add_argument(
         "--project-key",
@@ -396,11 +420,13 @@ def main(argv: list[str] | None = None) -> int:
 
     with open(args.report_log) as fh:
         raw = fh.read()
+    with open(args.tags_before_json) as fh:
+        tags_before = json.load(fh)
 
     settings = Settings()
     session_factory = _build_factory(settings.postgres_url)
 
-    return asyncio.run(_amain(raw, session_factory, args))
+    return asyncio.run(_amain(raw, tags_before, session_factory, args))
 
 
 if __name__ == "__main__":

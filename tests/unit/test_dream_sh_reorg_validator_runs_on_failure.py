@@ -71,6 +71,9 @@ def _run_block(
             f"phase_rc={phase_rc}",
             "DRY_RUN=false",
             "BRAIN_DREAM_REORG_DRY_RUN=false",
+            # Posé par le bloc d'instantané, qui s'exécute plus haut dans la
+            # même itération (test_dream_sh_reorg_tags_snapshot.py le couvre).
+            f"REORG_TAGS_BEFORE={shlex.quote(str(log_dir / 'tags_before.json'))}",
             f"UV_CALLS={shlex.quote(str(uv_calls))}",
             f"VALIDATOR_RC={validator_rc}",
             'log() { printf "%s\\n" "$*"; }',
@@ -116,6 +119,13 @@ def test_the_validator_runs_whatever_the_phase_returned(tmp_path: Path, phase_rc
     )
     assert "--project-key brain-v42" in uv_calls, (
         "le validateur a tourné sans périmètre — la garde de projet serait morte"
+    )
+    assert "--tags-before-json" in uv_calls, (
+        "le validateur a tourné sans instantané : il n'aurait aucun « avant » à "
+        "comparer, et la panne masquée de la Partie 1 redeviendrait invisible"
+    )
+    assert "--run-date" not in uv_calls, (
+        "le drapeau du contrôle creux `updated_at >= run_date` est encore passé"
     )
 
 

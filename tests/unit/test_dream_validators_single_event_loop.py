@@ -129,6 +129,8 @@ def _argv(name: str, tmp_path: pathlib.Path) -> list[str]:
     if name == "reorg":
         log = tmp_path / "reorg.log"
         log.write_text(_WET_REORG_TRAILER)
+        tags_before = tmp_path / "tags_before.json"
+        tags_before.write_text("{}")
         return [
             "--report-log",
             str(log),
@@ -136,6 +138,8 @@ def _argv(name: str, tmp_path: pathlib.Path) -> list[str]:
             "4242",
             "--project-key",
             "brain-v42",
+            "--tags-before-json",
+            str(tags_before),
         ]
     log = tmp_path / "promote.log"
     log.write_text(_WET_PROMOTE_TRAILER)

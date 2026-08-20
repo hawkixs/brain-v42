@@ -864,6 +864,7 @@ run_project_phases() {
   CANDIDATES_JSON=""
   DREAM_RUN_ID=""
   REORG_RUN_ID=""
+  REORG_TAGS_BEFORE=""
 
   log "--- Projet $PROJECT_KEY ---"
 
@@ -967,6 +968,32 @@ run_project_phases() {
         SKIPPED_PHASES+=("$PROJECT_KEY/reorg")
         manifest_put skipped reorg "$PROJECT_KEY" killswitch
         continue
+      fi
+    fi
+
+    # --- REORG: pre-phase tags snapshot ------------------------------------
+    # Le validateur d'après-phase compare les tags des entités déclarées mutées
+    # à ceux d'AVANT. C'est le seul « avant » observé : le contrôle qu'il
+    # remplace, `updated_at >= run_date`, était creux — DecayFlusher rafraîchit
+    # l'horodatage toutes les 300 s à travers un trigger sans clause WHEN, et
+    # ce sont les lectures de REORG lui-même qui l'alimentent.
+    #
+    # Pris APRÈS le killswitch (une phase coupée ne paie pas la requête) et
+    # AVANT run_phase_chain, donc une seule fois pour les deux tentatives que le
+    # budget de retry autorise : le « avant » est celui d'avant la PREMIÈRE
+    # écriture, pas d'avant la dernière.
+    if [[ "$name" == "reorg" ]]; then
+      REORG_TAGS_BEFORE="$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_reorg_tags_before.json"
+      set +e
+      uv run python -m scripts.dream.reorg_snapshot --project-key "$PROJECT_KEY" \
+        > "$REORG_TAGS_BEFORE" 2>> "$LOG_DIR/$TIMESTAMP.log"
+      snapshot_rc=$?
+      set -e
+      if (( snapshot_rc != 0 )); then
+        # Le validateur refusera le rapport faute d'instantané lisible — voulu et
+        # fail-closed. Cette ligne est ce qui permet de remonter du refus à sa
+        # cause, au lieu de soupçonner le rapport de l'agent.
+        log "WARN  reorg — pre-phase tags snapshot failed (rc=$snapshot_rc); the validator will refuse the report"
       fi
     fi
 
@@ -1089,7 +1116,7 @@ asyncio.run(_get())
       )
       reorg_validator_flags=()
       reorg_validator_flags+=(--report-log "$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.log")
-      reorg_validator_flags+=(--run-date "$TIMESTAMP")
+      reorg_validator_flags+=(--tags-before-json "$REORG_TAGS_BEFORE")
       # Périmètre du run, comme pour promote et connect. Le serveur borne déjà
       # REORG à son projet, mais brain_list est le seul outil CRUD sans contrôle
       # de scope PROPRE — sa borne vit dans le middleware seul, et l'enforcement

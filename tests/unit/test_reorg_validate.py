@@ -83,6 +83,8 @@ def test_main_logs_positive_wet_validation_evidence(
 
     report_log = tmp_path / "reorg.log"
     report_log.write_text(_make_trailer())
+    tags_before = tmp_path / "tags_before.json"
+    tags_before.write_text("{}")
     monkeypatch.setattr(
         reorg_validate,
         "Settings",
@@ -91,7 +93,16 @@ def test_main_logs_positive_wet_validation_evidence(
     monkeypatch.setattr(reorg_validate, "_build_factory", lambda _url: MagicMock())
 
     assert (
-        reorg_validate.main(["--report-log", str(report_log), "--project-key", "rv-cli-unused"])
+        reorg_validate.main(
+            [
+                "--report-log",
+                str(report_log),
+                "--project-key",
+                "rv-cli-unused",
+                "--tags-before-json",
+                str(tags_before),
+            ]
+        )
         == 0
     )
     assert "REORG VALIDATE: OK" in capsys.readouterr().err
@@ -191,7 +202,9 @@ async def test_validate_dry_run_skips_db_check(capsys: pytest.CaptureFixture) ->
         "found_marker": True,
     }
     # Must not raise
-    await validate(report, session_factory, dream_run_id=None, project_key="rv-cli-unused")
+    await validate(
+        report, session_factory, dream_run_id=None, project_key="rv-cli-unused", tags_before={}
+    )
     # session_factory must not have been invoked
     session_factory.assert_not_called()
 
@@ -202,7 +215,9 @@ async def test_validate_empty_report_is_noop() -> None:
     hitting DB."""
     session_factory = MagicMock()
     report = {"dry_run": False, "updated_ids": [], "archived_ids": [], "found_marker": True}
-    await validate(report, session_factory, dream_run_id=None, project_key="rv-cli-unused")
+    await validate(
+        report, session_factory, dream_run_id=None, project_key="rv-cli-unused", tags_before={}
+    )
     session_factory.assert_not_called()
 
 
@@ -216,7 +231,9 @@ async def test_validate_missing_marker_wet_raises() -> None:
     report = parse_report("Some prose, no trailer.")
     assert report["found_marker"] is False
     with pytest.raises(ValidationFailure, match="missing REORG REPORT"):
-        await validate(report, session_factory, dream_run_id=None, project_key="rv-cli-unused")
+        await validate(
+            report, session_factory, dream_run_id=None, project_key="rv-cli-unused", tags_before={}
+        )
     session_factory.assert_not_called()
 
 
@@ -233,7 +250,9 @@ async def test_validate_missing_marker_dry_run_skips(capsys: pytest.CaptureFixtu
     # Simulate what main() does when --dry-run is passed.
     report = {**report, "dry_run": True}
     # Must not raise
-    await validate(report, session_factory, dream_run_id=None, project_key="rv-cli-unused")
+    await validate(
+        report, session_factory, dream_run_id=None, project_key="rv-cli-unused", tags_before={}
+    )
     session_factory.assert_not_called()
 
 
@@ -251,7 +270,9 @@ async def test_validate_cap_exceeded_updated_raises() -> None:
         "archived_ids": [],
     }
     with pytest.raises(ValidationFailure, match="exceeds cap"):
-        await validate(report, session_factory, dream_run_id=None, project_key="rv-cli-unused")
+        await validate(
+            report, session_factory, dream_run_id=None, project_key="rv-cli-unused", tags_before={}
+        )
 
 
 @pytest.mark.asyncio
@@ -265,7 +286,9 @@ async def test_validate_cap_exceeded_archived_raises() -> None:
         "archived_ids": [str(uuid.uuid4()) for _ in range(21)],
     }
     with pytest.raises(ValidationFailure, match="exceeds cap"):
-        await validate(report, session_factory, dream_run_id=None, project_key="rv-cli-unused")
+        await validate(
+            report, session_factory, dream_run_id=None, project_key="rv-cli-unused", tags_before={}
+        )
 
 
 # ────────── Real-log fixture tests ───────────────────────────────────────────
@@ -325,7 +348,9 @@ async def test_historical_log_fails_closed_in_wet(log_filename: str) -> None:
     report = parse_report(raw)
     # Wet: found_marker=False → fail-closed
     with pytest.raises(ValidationFailure, match="missing REORG REPORT"):
-        await validate(report, MagicMock(), dream_run_id=None, project_key="rv-cli-unused")
+        await validate(
+            report, MagicMock(), dream_run_id=None, project_key="rv-cli-unused", tags_before={}
+        )
 
 
 @pytest.mark.asyncio
@@ -350,7 +375,9 @@ async def test_historical_log_skips_in_dry_run(log_filename: str) -> None:
     report = {**parse_report(raw), "dry_run": True}
     session_factory = MagicMock()
     # Must not raise
-    await validate(report, session_factory, dream_run_id=None, project_key="rv-cli-unused")
+    await validate(
+        report, session_factory, dream_run_id=None, project_key="rv-cli-unused", tags_before={}
+    )
     session_factory.assert_not_called()
 
 
@@ -384,6 +411,7 @@ async def _seed_learning(
     project_key: str,
     *,
     freshness_status: str = "fresh",
+    tags: list[str] | None = None,
 ) -> uuid.UUID:
     from brain_v42.db.tables import learnings
 
@@ -398,7 +426,7 @@ async def _seed_learning(
                         project_key=project_key,
                         source_type="experience",
                         confidence="high",
-                        tags=[],
+                        tags=tags or [],
                         freshness_status=freshness_status,
                     )
                     .returning(learnings.c.id)
@@ -448,51 +476,149 @@ async def test_validate_wet_archived_entity_passes(
         "archived_ids": [str(lid)],
     }
     # Must not raise
-    await validate(report, session_factory, dream_run_id=None, project_key=isolated_pk)
+    await validate(
+        report, session_factory, dream_run_id=None, project_key=isolated_pk, tags_before={}
+    )
 
 
 @pytest.mark.asyncio
-async def test_validate_wet_updated_entity_passes(
+async def test_a_claimed_update_whose_tags_moved_passes(
     session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
 ) -> None:
-    """Entity with fresh status (updated but not archived) → passes as an
-    updated entity."""
-    lid = await _seed_learning(session_factory, isolated_pk, freshness_status="fresh")
+    """Cas nominal : l'instantané dit `alpha`, la base dit `alpha, beta`."""
+    lid = await _seed_learning(
+        session_factory, isolated_pk, freshness_status="fresh", tags=["alpha", "beta"]
+    )
     report = {
         "dry_run": False,
         "found_marker": True,
         "updated_ids": [str(lid)],
         "archived_ids": [],
     }
-    await validate(report, session_factory, dream_run_id=None, project_key=isolated_pk)
+    await validate(
+        report,
+        session_factory,
+        dream_run_id=None,
+        project_key=isolated_pk,
+        tags_before={str(lid): ["alpha"]},
+    )
 
 
 @pytest.mark.asyncio
-async def test_validate_wet_updated_entity_stale_date_raises(
+async def test_a_claimed_update_whose_tags_did_not_move_is_a_masked_failure(
     session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
 ) -> None:
-    """Entity that exists but was last updated BEFORE run_date → masked failure.
+    """Panne masquée de la Partie 1 : l'agent déclare 20 normalisations, n'en fait aucune.
 
-    This is the MAJOR 1 fix: existence-only check cannot detect Part 1 masked
-    failures where the agent claims updates but performed none. The updated_at
-    recency check closes this gap.
+    C'est le défaut que le contrôle `updated_at` prétendait couvrir. Une
+    vérification d'existence seule ne peut pas le voir : chaque id déclaré existe
+    toujours, l'agent l'ayant lu dans ses propres pages `brain_list`.
     """
-    lid = await _seed_learning(session_factory, isolated_pk, freshness_status="fresh")
+    lid = await _seed_learning(
+        session_factory, isolated_pk, freshness_status="fresh", tags=["alpha"]
+    )
     report = {
         "dry_run": False,
         "found_marker": True,
         "updated_ids": [str(lid)],
         "archived_ids": [],
     }
-    # Run date in the far future → entity's updated_at will be before it.
-    future_run_date = dt.date(2099, 1, 1)
-    with pytest.raises(ValidationFailure, match="before run_date"):
+    with pytest.raises(ValidationFailure, match="tags"):
         await validate(
             report,
             session_factory,
             dream_run_id=None,
             project_key=isolated_pk,
-            run_date=future_run_date,
+            tags_before={str(lid): ["alpha"]},
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_updated_at_can_no_longer_forge_the_proof(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """LE témoin de régression : `updated_at` tout neuf, tags immobiles → échec.
+
+    L'ancien contrôle exigeait `updated_at >= run_date` et acceptait donc cette
+    entité. Le `DecayFlusher` émet un `UPDATE` en masse sur `learnings` et
+    `decisions` toutes les 300 s, et le trigger `update_updated_at()` de la
+    migration 001 n'a pas de clause `WHEN` : l'horodatage bougeait tout seul.
+
+    Le pire est le circuit : les lignes d'access_log qui déclenchent le flusher
+    sont produites par les `brain_get` de REORG lui-même, juste avant chaque
+    normalisation. La phase fabriquait la preuve sur laquelle on la jugeait. Ce
+    test la lui retire — il écrit `updated_at = maintenant` SANS toucher aux
+    tags, exactement ce que fait le flusher, et exige quand même l'échec.
+    """
+    from brain_v42.db.tables import learnings
+
+    lid = await _seed_learning(
+        session_factory, isolated_pk, freshness_status="fresh", tags=["alpha"]
+    )
+    async with session_factory() as session:
+        async with session.begin():
+            await session.execute(
+                sa.update(learnings)
+                .where(learnings.c.id == lid)
+                .values(access_count=learnings.c.access_count + 1)
+            )
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                sa.select(learnings.c.updated_at, learnings.c.tags).where(learnings.c.id == lid)
+            )
+        ).one()
+    assert row.updated_at.date() >= dt.datetime.now(dt.UTC).date(), (
+        "le harnais n'a pas reproduit le flusher : sans updated_at rafraîchi, ce "
+        "test ne prouverait rien de l'ancien contrôle"
+    )
+    assert list(row.tags) == ["alpha"], "le harnais a bougé les tags — il mesurerait autre chose"
+
+    report = {
+        "dry_run": False,
+        "found_marker": True,
+        "updated_ids": [str(lid)],
+        "archived_ids": [],
+    }
+    with pytest.raises(ValidationFailure, match="tags"):
+        await validate(
+            report,
+            session_factory,
+            dream_run_id=None,
+            project_key=isolated_pk,
+            tags_before={str(lid): ["alpha"]},
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_entity_absent_from_the_snapshot_is_refused(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """Absente de l'instantané = apparue PENDANT la phase, ce que REORG ne fait pas.
+
+    L'instantané est pris juste avant la phase, donc tout ce qu'une phase
+    antérieure de la nuit a créé (`synth`, notamment) y figure déjà. Une entité
+    du bon projet, existante, mais absente du « avant » n'a que deux causes : un
+    instantané pris sur le mauvais corpus, ou une création par REORG — que son
+    prompt interdit et que son périmètre de capacité refuse. Les deux méritent un
+    échec, et aucune ne mérite le silence.
+    """
+    lid = await _seed_learning(
+        session_factory, isolated_pk, freshness_status="fresh", tags=["alpha"]
+    )
+    report = {
+        "dry_run": False,
+        "found_marker": True,
+        "updated_ids": [str(lid)],
+        "archived_ids": [],
+    }
+    with pytest.raises(ValidationFailure, match="snapshot"):
+        await validate(
+            report,
+            session_factory,
+            dream_run_id=None,
+            project_key=isolated_pk,
+            tags_before={},
         )
 
 
@@ -510,7 +636,9 @@ async def test_validate_wet_archived_entity_still_fresh_raises(
         "archived_ids": [str(lid)],
     }
     with pytest.raises(ValidationFailure, match="claimed archived but freshness_status"):
-        await validate(report, session_factory, dream_run_id=None, project_key=isolated_pk)
+        await validate(
+            report, session_factory, dream_run_id=None, project_key=isolated_pk, tags_before={}
+        )
 
 
 @pytest.mark.asyncio
@@ -527,7 +655,9 @@ async def test_validate_wet_hallucinated_entity_raises(
         "archived_ids": [],
     }
     with pytest.raises(ValidationFailure, match="not found"):
-        await validate(report, session_factory, dream_run_id=None, project_key=isolated_pk)
+        await validate(
+            report, session_factory, dream_run_id=None, project_key=isolated_pk, tags_before={}
+        )
 
 
 @pytest.mark.asyncio
@@ -542,7 +672,9 @@ async def test_validate_wet_decision_archived_passes(
         "updated_ids": [],
         "archived_ids": [str(did)],
     }
-    await validate(report, session_factory, dream_run_id=None, project_key=isolated_pk)
+    await validate(
+        report, session_factory, dream_run_id=None, project_key=isolated_pk, tags_before={}
+    )
 
 
 @pytest.mark.asyncio
@@ -621,7 +753,9 @@ async def test_validate_rejects_an_entity_belonging_to_another_project(
     }
 
     with pytest.raises(ValidationFailure, match="project"):
-        await validate(report, session_factory, dream_run_id=None, project_key=isolated_pk)
+        await validate(
+            report, session_factory, dream_run_id=None, project_key=isolated_pk, tags_before={}
+        )
 
 
 @pytest.mark.asyncio
@@ -637,7 +771,9 @@ async def test_validate_accepts_an_entity_of_the_run_project(
         "archived_ids": [str(lid)],
     }
 
-    await validate(report, session_factory, dream_run_id=None, project_key=isolated_pk)
+    await validate(
+        report, session_factory, dream_run_id=None, project_key=isolated_pk, tags_before={}
+    )
 
 
 def test_the_cli_refuses_to_run_without_a_perimeter(
@@ -670,8 +806,13 @@ def test_the_cli_refuses_to_run_without_a_perimeter(
     )
     monkeypatch.setattr(reorg_validate, "_build_factory", lambda _url: MagicMock())
 
+    tags_before = tmp_path / "tags_before.json"
+    tags_before.write_text("{}")
+
     with pytest.raises(SystemExit) as excinfo:
-        reorg_validate.main(["--report-log", str(report_log)])
+        reorg_validate.main(
+            ["--report-log", str(report_log), "--tags-before-json", str(tags_before)]
+        )
 
     assert excinfo.value.code == 2, (
         "argparse doit sortir en 2 sur un argument requis manquant; tout autre "
@@ -706,7 +847,7 @@ def test_the_perimeter_is_a_required_parameter_like_its_sibling() -> None:
 @pytest.mark.parametrize(
     ("module_name", "argv_without_perimeter"),
     [
-        ("reorg_validate", ["--report-log", "unused.log"]),
+        ("reorg_validate", ["--report-log", "unused.log", "--tags-before-json", "u.json"]),
         ("promote_validate", ["--report-log", "unused.log", "--candidates-json", "u.json"]),
         ("connect_validate", ["--report-log", "unused.log", "--run-date", "2026-08-20"]),
     ],
