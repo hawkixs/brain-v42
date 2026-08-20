@@ -133,6 +133,81 @@ class TestParseAndValidate:
         assert len(drafts[0].payload["topic"]) == 200
 
 
+class TestTargetProjectCanonicalization:
+    """Le poison pill de la nuit du 19→20 : `brain_v42` refusé, rejoué chaque nuit.
+
+    Le modèle rend la forme underscore du dépôt (`brain_v42`) là où la clé
+    canonique est `brain-v42`. Le test d'appartenance portait sur la chaîne BRUTE,
+    donc `ResponseParseError` — et comme le ticket reste `pending`, la MÊME erreur
+    se rejoue à chaque nuit. C'est un poison pill, pas un échec ponctuel.
+
+    `_ALIASES` mappe `brain` et `brain_v42` AVANT le test de forme et sans jamais
+    lever : canonicaliser en `strict=False` suffit donc, et c'est le seul mode
+    admissible ici — `strict=True` lèverait un `ValueError` qui échapperait au
+    `except ResponseParseError` de l'appelant et tuerait le re-prompt correctif.
+    """
+
+    def test_underscore_alias_is_canonicalized_before_the_membership_test(self):
+        content = (
+            '[{"target_type": "learning", "target_project": "brain_v42", '
+            '"payload": {"topic": "t", "insight": "i", "tags": []}, '
+            '"rationale": "r"}]'
+        )
+        drafts = parse_and_validate(content, _thread(from_project="brain-v42"))
+        assert len(drafts) == 1
+        assert drafts[0].target_project == "brain-v42", (
+            "la valeur canonicalisée doit être RÉASSIGNÉE dans le draft : elle se "
+            "propage jusqu'à la dédup SQL et à la colonne persistée. Laisser passer "
+            "`brain_v42` au-delà du test d'appartenance recréerait le projet fantôme."
+        )
+
+    def test_surrounding_whitespace_does_not_reject_a_valid_key(self):
+        content = (
+            '[{"target_type": "learning", "target_project": "  red-shrik  ", '
+            '"payload": {"topic": "t", "insight": "i", "tags": []}, '
+            '"rationale": "r"}]'
+        )
+        drafts = parse_and_validate(content, _thread())
+        assert drafts[0].target_project == "red-shrik"
+
+    def test_a_non_participant_is_still_rejected_after_canonicalization(self):
+        """La canonicalisation ne doit pas ÉLARGIR ce qui est accepté."""
+        content = (
+            '[{"target_type": "learning", "target_project": "red-lab", '
+            '"payload": {"topic": "t", "insight": "i", "tags": []}, '
+            '"rationale": "x"}]'
+        )
+        with pytest.raises(ResponseParseError, match="target_project"):
+            parse_and_validate(content, _thread())
+
+    def test_a_malformed_key_raises_the_parse_error_never_a_value_error(self):
+        """`strict=False` : le contrat d'erreur de la fonction ne change pas.
+
+        Si la canonicalisation était faite en `strict=True`, `ValueError` sortirait
+        de `parse_and_validate` sans être un `ResponseParseError` — l'appelant ne
+        l'attraperait pas et le re-prompt correctif ne serait jamais joué.
+        """
+        content = (
+            '[{"target_type": "learning", "target_project": "Red Lab!", '
+            '"payload": {"topic": "t", "insight": "i", "tags": []}, '
+            '"rationale": "x"}]'
+        )
+        with pytest.raises(ResponseParseError, match="target_project"):
+            parse_and_validate(content, _thread())
+
+    @pytest.mark.parametrize("bad", ["null", "42", "{}", "[]"])
+    def test_a_non_string_target_project_is_rejected_without_crashing(self, bad: str):
+        """`canonicalize_project_key` appelle `.strip()` : un non-str y lèverait un
+        `AttributeError`, qui n'est pas un `ResponseParseError` et tuerait la nuit."""
+        content = (
+            '[{"target_type": "learning", "target_project": ' + bad + ", "
+            '"payload": {"topic": "t", "insight": "i", "tags": []}, '
+            '"rationale": "x"}]'
+        )
+        with pytest.raises(ResponseParseError, match="target_project"):
+            parse_and_validate(content, _thread())
+
+
 # ── Helpers for TestApplyProposals ─────────────────────────────────────────────
 
 

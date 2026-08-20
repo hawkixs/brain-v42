@@ -31,6 +31,7 @@ import structlog
 
 from brain_v42.db.tables import MIN_COMPARABLE_EMBEDDING_NORM
 from brain_v42.dream_run_project_key import GLOBAL_PHASE_PROJECT_KEY
+from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.scripts.domain_backfill import (
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
@@ -453,10 +454,24 @@ def parse_and_validate(content: str, thread: TicketThread) -> list[ProposalDraft
             raise ResponseParseError(
                 f"item {i}: invalid target_type {ttype!r} (valid: {_VALID_TARGET_TYPES})"
             )
-        tproject = item.get("target_project")
-        if tproject not in participants:
+        # Canonicaliser AVANT le test d'appartenance : le modèle rend volontiers la
+        # forme underscore du dépôt (`brain_v42`) là où la clé est `brain-v42`, et un
+        # ticket refusé reste `pending` — la même erreur se rejoue donc CHAQUE nuit.
+        # `strict=False` est le seul mode admissible : `strict=True` lèverait un
+        # `ValueError` qui échapperait au `except ResponseParseError` de l'appelant et
+        # tuerait le re-prompt correctif. Les alias sont appliqués avant le test de
+        # forme et sans jamais lever, donc `strict=False` suffit à réparer le cas réel.
+        raw_tproject = item.get("target_project")
+        tproject = (
+            canonicalize_project_key(raw_tproject, strict=False)
+            if isinstance(raw_tproject, str)
+            else raw_tproject
+        )
+        # `not in` sur un dict/list lèverait `TypeError: unhashable type` — hors du
+        # contrat d'erreur de cette fonction, donc fatal pour la phase.
+        if not isinstance(tproject, str) or tproject not in participants:
             raise ResponseParseError(
-                f"item {i}: target_project {tproject!r} not in {sorted(participants)}"
+                f"item {i}: target_project {raw_tproject!r} not in {sorted(participants)}"
             )
         payload = item.get("payload")
         required = _PAYLOAD_KEYS[ttype]
