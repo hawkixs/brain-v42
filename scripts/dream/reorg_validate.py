@@ -44,6 +44,7 @@ Design decisions:
 CLI:
     python -m scripts.dream.reorg_validate \\
         --report-log logs/dream/2026-07-02_reorg.log \\
+        --project-key brain-v42 \\
         --dream-run-id 42 \\
         --run-date 2026-07-02 \\
         [--dry-run]
@@ -164,17 +165,20 @@ async def _entity_row(
 def _reject_foreign_project(
     raw_id: str,
     row: dict,
-    project_key: str | None,
+    project_key: str,
     *,
     claim: str,
 ) -> None:
     """Fail when a mutated entity does not belong to the run's project.
 
-    A ``None`` perimeter disables the check rather than guessing one: inventing a
-    scope here would turn a missing wire-up into confident nonsense.
+    The perimeter is REQUIRED, and deliberately has no ``None`` branch. It used
+    to have one — « a ``None`` perimeter disables the check rather than guessing
+    one » — which read as prudence and behaved as silence: the validator still
+    printed ``REORG VALIDATE: OK`` while checking no perimeter at all, so a
+    drapeau dropped from dream.sh's argument array would have looked like a
+    clean night. Parity with promote_validate and connect_validate, which have
+    both required it all along.
     """
-    if project_key is None:
-        return
     if row["project_key"] != project_key:
         raise ValidationFailure(
             f"entity {raw_id} (claimed {claim}) belongs to project "
@@ -188,12 +192,12 @@ async def validate(
     report: dict,
     session_factory: async_sessionmaker[AsyncSession],
     dream_run_id: int | None,
+    project_key: str,
     run_date: dt.date | None = None,
-    project_key: str | None = None,
 ) -> None:
     """Verify that the entities the agent claimed to mutate actually changed.
 
-    PROJECT: when ``project_key`` is given, every mutated entity must belong to it.
+    PROJECT: every mutated entity must belong to ``project_key``, which is REQUIRED.
     Defense in depth — the server already bounds REORG to its project twice (the
     middleware injects ``project_key`` into ``brain_list`` arguments and denies a
     divergent one; all five repositories carry ``AND project_key = :scope`` in the
@@ -340,8 +344,8 @@ async def _amain(
             report,
             session_factory,
             args.dream_run_id,
-            args.run_date,
-            project_key=args.project_key,
+            args.project_key,
+            run_date=args.run_date,
         )
     except ValidationFailure as exc:
         await _mark_dream_run_partial(session_factory, args.dream_run_id, str(exc))
@@ -380,11 +384,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--project-key",
-        default=None,
+        required=True,
         help=(
             "Perimeter the run was launched with; every mutated entity must belong "
-            "to it. Optional so an operator can validate a log out of band, but "
-            "dream.sh always passes it (pinned by tests/unit/test_reorg_validate.py)"
+            "to it — required, deliberately without a default. An out-of-band "
+            "replay names the project it is replaying (pinned by "
+            "tests/unit/test_reorg_validate.py)"
         ),
     )
     args = parser.parse_args(argv)

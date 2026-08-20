@@ -24,6 +24,7 @@ as test_promote_validate.py).
 from __future__ import annotations
 
 import datetime as dt
+import inspect
 import pathlib
 import uuid
 from unittest.mock import MagicMock
@@ -89,7 +90,10 @@ def test_main_logs_positive_wet_validation_evidence(
     )
     monkeypatch.setattr(reorg_validate, "_build_factory", lambda _url: MagicMock())
 
-    assert reorg_validate.main(["--report-log", str(report_log)]) == 0
+    assert (
+        reorg_validate.main(["--report-log", str(report_log), "--project-key", "rv-cli-unused"])
+        == 0
+    )
     assert "REORG VALIDATE: OK" in capsys.readouterr().err
 
 
@@ -187,7 +191,7 @@ async def test_validate_dry_run_skips_db_check(capsys: pytest.CaptureFixture) ->
         "found_marker": True,
     }
     # Must not raise
-    await validate(report, session_factory, dream_run_id=None)
+    await validate(report, session_factory, dream_run_id=None, project_key="rv-cli-unused")
     # session_factory must not have been invoked
     session_factory.assert_not_called()
 
@@ -198,7 +202,7 @@ async def test_validate_empty_report_is_noop() -> None:
     hitting DB."""
     session_factory = MagicMock()
     report = {"dry_run": False, "updated_ids": [], "archived_ids": [], "found_marker": True}
-    await validate(report, session_factory, dream_run_id=None)
+    await validate(report, session_factory, dream_run_id=None, project_key="rv-cli-unused")
     session_factory.assert_not_called()
 
 
@@ -212,7 +216,7 @@ async def test_validate_missing_marker_wet_raises() -> None:
     report = parse_report("Some prose, no trailer.")
     assert report["found_marker"] is False
     with pytest.raises(ValidationFailure, match="missing REORG REPORT"):
-        await validate(report, session_factory, dream_run_id=None)
+        await validate(report, session_factory, dream_run_id=None, project_key="rv-cli-unused")
     session_factory.assert_not_called()
 
 
@@ -229,7 +233,7 @@ async def test_validate_missing_marker_dry_run_skips(capsys: pytest.CaptureFixtu
     # Simulate what main() does when --dry-run is passed.
     report = {**report, "dry_run": True}
     # Must not raise
-    await validate(report, session_factory, dream_run_id=None)
+    await validate(report, session_factory, dream_run_id=None, project_key="rv-cli-unused")
     session_factory.assert_not_called()
 
 
@@ -247,7 +251,7 @@ async def test_validate_cap_exceeded_updated_raises() -> None:
         "archived_ids": [],
     }
     with pytest.raises(ValidationFailure, match="exceeds cap"):
-        await validate(report, session_factory, dream_run_id=None)
+        await validate(report, session_factory, dream_run_id=None, project_key="rv-cli-unused")
 
 
 @pytest.mark.asyncio
@@ -261,7 +265,7 @@ async def test_validate_cap_exceeded_archived_raises() -> None:
         "archived_ids": [str(uuid.uuid4()) for _ in range(21)],
     }
     with pytest.raises(ValidationFailure, match="exceeds cap"):
-        await validate(report, session_factory, dream_run_id=None)
+        await validate(report, session_factory, dream_run_id=None, project_key="rv-cli-unused")
 
 
 # ────────── Real-log fixture tests ───────────────────────────────────────────
@@ -321,7 +325,7 @@ async def test_historical_log_fails_closed_in_wet(log_filename: str) -> None:
     report = parse_report(raw)
     # Wet: found_marker=False → fail-closed
     with pytest.raises(ValidationFailure, match="missing REORG REPORT"):
-        await validate(report, MagicMock(), dream_run_id=None)
+        await validate(report, MagicMock(), dream_run_id=None, project_key="rv-cli-unused")
 
 
 @pytest.mark.asyncio
@@ -346,7 +350,7 @@ async def test_historical_log_skips_in_dry_run(log_filename: str) -> None:
     report = {**parse_report(raw), "dry_run": True}
     session_factory = MagicMock()
     # Must not raise
-    await validate(report, session_factory, dream_run_id=None)
+    await validate(report, session_factory, dream_run_id=None, project_key="rv-cli-unused")
     session_factory.assert_not_called()
 
 
@@ -444,7 +448,7 @@ async def test_validate_wet_archived_entity_passes(
         "archived_ids": [str(lid)],
     }
     # Must not raise
-    await validate(report, session_factory, dream_run_id=None)
+    await validate(report, session_factory, dream_run_id=None, project_key=isolated_pk)
 
 
 @pytest.mark.asyncio
@@ -460,7 +464,7 @@ async def test_validate_wet_updated_entity_passes(
         "updated_ids": [str(lid)],
         "archived_ids": [],
     }
-    await validate(report, session_factory, dream_run_id=None)
+    await validate(report, session_factory, dream_run_id=None, project_key=isolated_pk)
 
 
 @pytest.mark.asyncio
@@ -483,7 +487,13 @@ async def test_validate_wet_updated_entity_stale_date_raises(
     # Run date in the far future → entity's updated_at will be before it.
     future_run_date = dt.date(2099, 1, 1)
     with pytest.raises(ValidationFailure, match="before run_date"):
-        await validate(report, session_factory, dream_run_id=None, run_date=future_run_date)
+        await validate(
+            report,
+            session_factory,
+            dream_run_id=None,
+            project_key=isolated_pk,
+            run_date=future_run_date,
+        )
 
 
 @pytest.mark.asyncio
@@ -500,7 +510,7 @@ async def test_validate_wet_archived_entity_still_fresh_raises(
         "archived_ids": [str(lid)],
     }
     with pytest.raises(ValidationFailure, match="claimed archived but freshness_status"):
-        await validate(report, session_factory, dream_run_id=None)
+        await validate(report, session_factory, dream_run_id=None, project_key=isolated_pk)
 
 
 @pytest.mark.asyncio
@@ -517,7 +527,7 @@ async def test_validate_wet_hallucinated_entity_raises(
         "archived_ids": [],
     }
     with pytest.raises(ValidationFailure, match="not found"):
-        await validate(report, session_factory, dream_run_id=None)
+        await validate(report, session_factory, dream_run_id=None, project_key=isolated_pk)
 
 
 @pytest.mark.asyncio
@@ -532,7 +542,7 @@ async def test_validate_wet_decision_archived_passes(
         "updated_ids": [],
         "archived_ids": [str(did)],
     }
-    await validate(report, session_factory, dream_run_id=None)
+    await validate(report, session_factory, dream_run_id=None, project_key=isolated_pk)
 
 
 @pytest.mark.asyncio
@@ -630,20 +640,100 @@ async def test_validate_accepts_an_entity_of_the_run_project(
     await validate(report, session_factory, dream_run_id=None, project_key=isolated_pk)
 
 
-@pytest.mark.asyncio
-async def test_validate_without_a_project_key_keeps_the_legacy_behaviour(
-    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+def test_the_cli_refuses_to_run_without_a_perimeter(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Sans périmètre fourni, aucune vérification de projet — pas de faux échec."""
-    lid = await _seed_learning(session_factory, isolated_pk, freshness_status="archived")
-    report = {
-        "dry_run": False,
-        "found_marker": True,
-        "updated_ids": [],
-        "archived_ids": [str(lid)],
-    }
+    """Sans `--project-key`, le CLI doit REFUSER, pas valider sans contrôle.
 
-    await validate(report, session_factory, dream_run_id=None)
+    Ce test remplace `test_validate_without_a_project_key_keeps_the_legacy_behaviour`,
+    qui épinglait précisément le trou : `default=None` sur le drapeau, et un
+    `_reject_foreign_project` qui revient aussitôt sur `None`. Le validateur
+    imprimait alors « REORG VALIDATE: OK » en n'ayant vérifié AUCUN périmètre —
+    la forme de panne la plus coûteuse, parce qu'elle est verte.
+
+    Le silence était le vrai défaut : ni le journal, ni le code de retour, ni la
+    ligne `dream_runs` ne distinguaient « périmètre vérifié » de « périmètre
+    absent ». Un câblage régressé dans dream.sh (le drapeau retiré d'un tableau
+    d'arguments) se serait donc lu comme une nuit propre.
+
+    promote_validate (`required=True`) et connect_validate (« deliberately
+    without a default ») refusent cet argv depuis toujours. C'est la parité.
+    """
+    from scripts.dream import reorg_validate
+
+    report_log = tmp_path / "reorg.log"
+    report_log.write_text(_make_trailer())
+    monkeypatch.setattr(
+        reorg_validate,
+        "Settings",
+        lambda: MagicMock(postgres_url="postgresql+asyncpg://unused"),
+    )
+    monkeypatch.setattr(reorg_validate, "_build_factory", lambda _url: MagicMock())
+
+    with pytest.raises(SystemExit) as excinfo:
+        reorg_validate.main(["--report-log", str(report_log)])
+
+    assert excinfo.value.code == 2, (
+        "argparse doit sortir en 2 sur un argument requis manquant; tout autre "
+        "code veut dire que le CLI a commencé à travailler sans périmètre"
+    )
+
+
+def test_the_perimeter_is_a_required_parameter_like_its_sibling() -> None:
+    """Le défaut `None` disparaît aussi de la SIGNATURE, pas seulement du CLI.
+
+    Fermer le seul argparse laisserait `validate(..., project_key=None)`
+    atteignable par tout appelant programmatique — et cet appel-là redeviendrait
+    silencieux. `promote_validate.validate` déclare `project_key: str` sans
+    défaut; ce test lit les DEUX signatures et exige la même forme, pour que la
+    parité soit constatée et non affirmée.
+
+    `connect_validate` n'entre pas ici : il n'expose aucune fonction `validate`,
+    tout son contrôle vivant dans `main`. Sa parité à lui est vérifiée par le
+    test d'argv ci-dessous, qui est le seul endroit où les trois se comparent.
+    """
+    from scripts.dream import promote_validate, reorg_validate
+
+    for module in (reorg_validate, promote_validate):
+        parameter = inspect.signature(module.validate).parameters["project_key"]
+        assert parameter.default is inspect.Parameter.empty, (
+            f"{module.__name__}.validate accepte un périmètre par défaut "
+            f"({parameter.default!r}) — le contrôle de projet peut donc être "
+            f"désactivé sans qu'un appelant l'ait demandé"
+        )
+
+
+@pytest.mark.parametrize(
+    ("module_name", "argv_without_perimeter"),
+    [
+        ("reorg_validate", ["--report-log", "unused.log"]),
+        ("promote_validate", ["--report-log", "unused.log", "--candidates-json", "u.json"]),
+        ("connect_validate", ["--report-log", "unused.log", "--run-date", "2026-08-20"]),
+    ],
+)
+def test_the_three_validator_clis_all_require_a_perimeter(
+    module_name: str, argv_without_perimeter: list[str]
+) -> None:
+    """Les trois validateurs de la nuit refusent le même argv incomplet.
+
+    Chaque argv ci-dessus porte TOUS les autres arguments requis du validateur
+    visé : argparse sort en 2 sur le premier manquant, donc ne laisser tomber
+    que `--project-key` prouve que c'est bien LUI qui est exigé, et pas un autre
+    drapeau qui se trouverait manquer. Les chemins de fichiers sont fictifs à
+    dessein — l'analyse d'arguments précède toute ouverture, et un test qui
+    aurait besoin de vrais fichiers pour prouver ça mesurerait autre chose.
+    """
+    import importlib
+
+    module = importlib.import_module(f"scripts.dream.{module_name}")
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.main(argv_without_perimeter)
+
+    assert excinfo.value.code == 2, (
+        f"{module_name} a accepté un argv sans périmètre (code {excinfo.value.code!r}) — "
+        f"le contrôle de projet y est désactivable en silence"
+    )
 
 
 def test_dream_sh_passes_the_project_key_to_the_reorg_validator() -> None:
