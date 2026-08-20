@@ -133,6 +133,81 @@ class TestParseAndValidate:
         assert len(drafts[0].payload["topic"]) == 200
 
 
+class TestTargetProjectCanonicalization:
+    """Le poison pill de la nuit du 19→20 : `brain_v42` refusé, rejoué chaque nuit.
+
+    Le modèle rend la forme underscore du dépôt (`brain_v42`) là où la clé
+    canonique est `brain-v42`. Le test d'appartenance portait sur la chaîne BRUTE,
+    donc `ResponseParseError` — et comme le ticket reste `pending`, la MÊME erreur
+    se rejoue à chaque nuit. C'est un poison pill, pas un échec ponctuel.
+
+    `_ALIASES` mappe `brain` et `brain_v42` AVANT le test de forme et sans jamais
+    lever : canonicaliser en `strict=False` suffit donc, et c'est le seul mode
+    admissible ici — `strict=True` lèverait un `ValueError` qui échapperait au
+    `except ResponseParseError` de l'appelant et tuerait le re-prompt correctif.
+    """
+
+    def test_underscore_alias_is_canonicalized_before_the_membership_test(self):
+        content = (
+            '[{"target_type": "learning", "target_project": "brain_v42", '
+            '"payload": {"topic": "t", "insight": "i", "tags": []}, '
+            '"rationale": "r"}]'
+        )
+        drafts = parse_and_validate(content, _thread(from_project="brain-v42"))
+        assert len(drafts) == 1
+        assert drafts[0].target_project == "brain-v42", (
+            "la valeur canonicalisée doit être RÉASSIGNÉE dans le draft : elle se "
+            "propage jusqu'à la dédup SQL et à la colonne persistée. Laisser passer "
+            "`brain_v42` au-delà du test d'appartenance recréerait le projet fantôme."
+        )
+
+    def test_surrounding_whitespace_does_not_reject_a_valid_key(self):
+        content = (
+            '[{"target_type": "learning", "target_project": "  red-shrik  ", '
+            '"payload": {"topic": "t", "insight": "i", "tags": []}, '
+            '"rationale": "r"}]'
+        )
+        drafts = parse_and_validate(content, _thread())
+        assert drafts[0].target_project == "red-shrik"
+
+    def test_a_non_participant_is_still_rejected_after_canonicalization(self):
+        """La canonicalisation ne doit pas ÉLARGIR ce qui est accepté."""
+        content = (
+            '[{"target_type": "learning", "target_project": "red-lab", '
+            '"payload": {"topic": "t", "insight": "i", "tags": []}, '
+            '"rationale": "x"}]'
+        )
+        with pytest.raises(ResponseParseError, match="target_project"):
+            parse_and_validate(content, _thread())
+
+    def test_a_malformed_key_raises_the_parse_error_never_a_value_error(self):
+        """`strict=False` : le contrat d'erreur de la fonction ne change pas.
+
+        Si la canonicalisation était faite en `strict=True`, `ValueError` sortirait
+        de `parse_and_validate` sans être un `ResponseParseError` — l'appelant ne
+        l'attraperait pas et le re-prompt correctif ne serait jamais joué.
+        """
+        content = (
+            '[{"target_type": "learning", "target_project": "Red Lab!", '
+            '"payload": {"topic": "t", "insight": "i", "tags": []}, '
+            '"rationale": "x"}]'
+        )
+        with pytest.raises(ResponseParseError, match="target_project"):
+            parse_and_validate(content, _thread())
+
+    @pytest.mark.parametrize("bad", ["null", "42", "{}", "[]"])
+    def test_a_non_string_target_project_is_rejected_without_crashing(self, bad: str):
+        """`canonicalize_project_key` appelle `.strip()` : un non-str y lèverait un
+        `AttributeError`, qui n'est pas un `ResponseParseError` et tuerait la nuit."""
+        content = (
+            '[{"target_type": "learning", "target_project": ' + bad + ", "
+            '"payload": {"topic": "t", "insight": "i", "tags": []}, '
+            '"rationale": "x"}]'
+        )
+        with pytest.raises(ResponseParseError, match="target_project"):
+            parse_and_validate(content, _thread())
+
+
 # ── Helpers for TestApplyProposals ─────────────────────────────────────────────
 
 
@@ -2098,3 +2173,180 @@ class TestADeadPrimaryModelFallsBack:
             "l'erreur doit NOMMER le dernier modèle essayé, sinon la nuit "
             "suivante rejoue la même impasse à l'aveugle"
         )
+
+
+class TestTheTerminalRowNamesItsModel:
+    """`dream_runs.model` d'extract : 53 lignes sur 53 à NULL, mesuré le 19→20.
+
+    Extract est la SEULE phase qui peut changer de modèle EN COURS DE RUN — la
+    bascule vers le secours est une décision de run, pas de ticket. C'est donc
+    la phase pour laquelle la colonne porte le plus d'information, et la seule
+    où le modèle configuré ne suffit pas à reconstituer ce qui a tourné.
+
+    C'est aussi ce que la migration 045 a élargi la colonne pour accueillir : le
+    secours WET configuré fait 33 caractères, contre les 30 d'avant.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_terminal_row_names_the_model_that_actually_ran(self) -> None:
+        async def extract(client, model, thread, **kw):
+            return SimpleNamespace(
+                drafts=[], failed=False, error=None, timed_out=False, duration_s=0.1
+            )
+
+        args = SimpleNamespace(
+            apply_ids=None,
+            limit=20,
+            wet=False,
+            run_budget_seconds=600.0,
+            ticket_budget_seconds=180.0,
+        )
+        record = AsyncMock()
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[_thread()]),
+            ),
+            patch("scripts.ticket_extract._extract_thread_with_budget", extract),
+            patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
+            patch("scripts.ticket_extract.record_dream_run", record),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            await _run(args, "secret", "primaire-vivant", "https://llm.test")
+
+        assert record.await_args.kwargs["model"] == "primaire-vivant"
+
+    @pytest.mark.asyncio
+    async def test_a_fallback_switch_is_recorded_as_the_model_that_finished(self) -> None:
+        """Le modèle ÉCRIT est celui qui a fini le run, pas celui qui l'a ouvert.
+
+        Écrire le primaire ici rendrait une nuit entièrement servie par le
+        secours indiscernable d'une nuit nominale — le mode de panne exact qui a
+        laissé qwen 80B mort pendant dix nuits vertes.
+        """
+        from scripts.domain_backfill import ModelGoneError
+
+        seen: list[str] = []
+
+        async def extract(client, model, thread, **kw):
+            seen.append(model)
+            if model == "primaire-mort":
+                raise ModelGoneError(model, 410)
+            return SimpleNamespace(
+                drafts=[], failed=False, error=None, timed_out=False, duration_s=0.1
+            )
+
+        args = SimpleNamespace(
+            apply_ids=None,
+            limit=20,
+            wet=False,
+            run_budget_seconds=600.0,
+            ticket_budget_seconds=180.0,
+        )
+        record = AsyncMock()
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[_thread()]),
+            ),
+            patch("scripts.ticket_extract._extract_thread_with_budget", extract),
+            patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
+            patch("scripts.ticket_extract.record_dream_run", record),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            await _run(
+                args,
+                "secret",
+                "primaire-mort",
+                "https://llm.test",
+                fallback_model="secours-vivant",
+            )
+
+        assert seen[0] == "primaire-mort"
+        assert record.await_args.kwargs["model"] == "secours-vivant"
+
+    @pytest.mark.asyncio
+    async def test_a_run_that_never_called_a_model_records_no_model(self) -> None:
+        """Aucun ticket en attente : AUCUN appel modèle, donc la colonne reste NULL.
+
+        Y écrire le modèle CONFIGURÉ serait un mensonge — la ligne dirait qu'un
+        modèle a tourné quand rien ne l'a appelé. `NULL` veut dire « aucun », et
+        c'est une information, pas un oubli.
+        """
+        args = SimpleNamespace(apply_ids=None, limit=20, wet=False)
+        record = AsyncMock()
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch("scripts.ticket_extract.record_dream_run", record),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            await _run(args, "secret", "primaire-vivant", "https://llm.test")
+
+        assert record.await_args.kwargs.get("model") is None
+
+
+class TestTheCorrectiveRepromptCarriesTheError:
+    """Le re-prompt d'extract était AVEUGLE — il redemandait sans dire quoi.
+
+    `roadmap_curate` transmet l'erreur précise depuis toujours
+    (`_curate_llm_attempt`) ; extract se contentait de l'instruction générique
+    « ta réponse n'était pas un tableau JSON valide ». Un modèle qui a rendu la
+    mauvaise CLÉ DE PROJET relit donc « renvoie du JSON valide » et rend le même
+    JSON, valide, avec la même mauvaise clé. C'est ce qui rend l'échec du 19→20
+    reproductible à l'identique plutôt que rattrapable au second essai.
+
+    Aucun test n'épinglait le contenu de ce re-prompt, dans aucun des deux
+    modules. Celui-ci le fait pour extract.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_reprompt_names_the_precise_error_and_the_valid_keys(self) -> None:
+        from scripts import ticket_extract as mod
+
+        sent: list[list[dict[str, str]]] = []
+        bad = (
+            '[{"target_type": "learning", "target_project": "red-lab", '
+            '"payload": {"topic": "t", "insight": "i", "tags": []}, "rationale": "r"}]'
+        )
+
+        async def fake_post_chat(client, model, messages, sleep, **kw):
+            sent.append(messages)
+            return (bad, {}) if len(sent) == 1 else ("[]", {})
+
+        with patch("scripts.ticket_extract._post_chat", fake_post_chat):
+            outcome = await extract_thread(MagicMock(), "m", _thread(), sleep=_no_sleep)
+
+        assert outcome.failed is False, "le second essai est valide"
+        assert len(sent) == 2, "un re-prompt correctif, exactement"
+
+        reprompt = sent[1][-1]["content"]
+        assert mod._REPROMPT_INSTRUCTION in reprompt, "l'instruction générique reste"
+        assert "target_project" in reprompt, "l'erreur précise doit voyager"
+        assert "red-lab" in reprompt, "le modèle doit lire CE QU'IL a proposé"
+        # Les clés valides voyagent GRATUITEMENT : le message de
+        # `parse_and_validate` les énumère déjà. Sans l'erreur, elles n'ont
+        # jamais atteint le modèle.
+        assert "red-shrik" in reprompt and "red-data" in reprompt
+
+    @pytest.mark.asyncio
+    async def test_a_second_failure_still_reports_the_second_error(self) -> None:
+        """Le contrat d'échec ne change pas : c'est la DEUXIÈME erreur qui sort."""
+
+        async def fake_post_chat(client, model, messages, sleep, **kw):
+            return ("pas du json", {})
+
+        with patch("scripts.ticket_extract._post_chat", fake_post_chat):
+            outcome = await extract_thread(MagicMock(), "m", _thread(), sleep=_no_sleep)
+
+        assert outcome.failed is True
+        assert outcome.error is not None
+        assert outcome.error.startswith("unparseable after corrective re-prompt: ")

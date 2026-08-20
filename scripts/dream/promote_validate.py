@@ -236,6 +236,34 @@ def _build_factory(postgres_url: str) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
+async def _amain(
+    raw: str,
+    candidates: list,
+    session_factory: async_sessionmaker[AsyncSession],
+    args: argparse.Namespace,
+) -> int:
+    """Validation ET marquage dans UNE SEULE boucle — même défaut que reorg.
+
+    Non trouvé par une nuit mais par lecture, après la panne de `reorg` du
+    19→20 : la forme était identique ici, au caractère près. Une seule des deux
+    a tiré, parce que seule `reorg` a échoué cette nuit-là.
+    """
+    try:
+        report = parse_report(raw)
+        await validate(
+            report,
+            candidates,
+            session_factory,
+            args.dream_run_id,
+            project_key=args.project_key,
+        )
+    except ValidationFailure as exc:
+        await _mark_dream_run_partial(session_factory, args.dream_run_id, str(exc))
+        print(f"PROMOTE VALIDATION FAILED: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report-log", required=True)
@@ -255,22 +283,7 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings()
     session_factory = _build_factory(settings.postgres_url)
 
-    try:
-        report = parse_report(raw)
-        asyncio.run(
-            validate(
-                report,
-                candidates,
-                session_factory,
-                args.dream_run_id,
-                project_key=args.project_key,
-            )
-        )
-    except ValidationFailure as exc:
-        asyncio.run(_mark_dream_run_partial(session_factory, args.dream_run_id, str(exc)))
-        print(f"PROMOTE VALIDATION FAILED: {exc}", file=sys.stderr)
-        return 1
-    return 0
+    return asyncio.run(_amain(raw, candidates, session_factory, args))
 
 
 if __name__ == "__main__":

@@ -31,6 +31,7 @@ import structlog
 
 from brain_v42.db.tables import MIN_COMPARABLE_EMBEDDING_NORM
 from brain_v42.dream_run_project_key import GLOBAL_PHASE_PROJECT_KEY
+from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.scripts.domain_backfill import (
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
@@ -453,10 +454,24 @@ def parse_and_validate(content: str, thread: TicketThread) -> list[ProposalDraft
             raise ResponseParseError(
                 f"item {i}: invalid target_type {ttype!r} (valid: {_VALID_TARGET_TYPES})"
             )
-        tproject = item.get("target_project")
-        if tproject not in participants:
+        # Canonicaliser AVANT le test d'appartenance : le modèle rend volontiers la
+        # forme underscore du dépôt (`brain_v42`) là où la clé est `brain-v42`, et un
+        # ticket refusé reste `pending` — la même erreur se rejoue donc CHAQUE nuit.
+        # `strict=False` est le seul mode admissible : `strict=True` lèverait un
+        # `ValueError` qui échapperait au `except ResponseParseError` de l'appelant et
+        # tuerait le re-prompt correctif. Les alias sont appliqués avant le test de
+        # forme et sans jamais lever, donc `strict=False` suffit à réparer le cas réel.
+        raw_tproject = item.get("target_project")
+        tproject = (
+            canonicalize_project_key(raw_tproject, strict=False)
+            if isinstance(raw_tproject, str)
+            else raw_tproject
+        )
+        # `not in` sur un dict/list lèverait `TypeError: unhashable type` — hors du
+        # contrat d'erreur de cette fonction, donc fatal pour la phase.
+        if not isinstance(tproject, str) or tproject not in participants:
             raise ResponseParseError(
-                f"item {i}: target_project {tproject!r} not in {sorted(participants)}"
+                f"item {i}: target_project {raw_tproject!r} not in {sorted(participants)}"
             )
         payload = item.get("payload")
         required = _PAYLOAD_KEYS[ttype]
@@ -550,12 +565,20 @@ async def extract_thread(
         content, _usage = await _post_chat(client, model, messages, sleep)
         try:
             drafts = parse_and_validate(content, thread)
-        except ResponseParseError:
-            # One corrective re-prompt.
+        except ResponseParseError as first_error:
+            # One corrective re-prompt — qui NOMME l'erreur, comme le fait
+            # `roadmap_curate._curate_llm_attempt` depuis toujours. Sans elle, un
+            # modèle qui a rendu la mauvaise clé de projet relit « renvoie du JSON
+            # valide » et rend le même JSON, valide, avec la même mauvaise clé.
+            # Les clés valides voyagent gratuitement : le message de
+            # `parse_and_validate` les énumère déjà.
             corrective = [
                 *messages,
                 {"role": "assistant", "content": content},
-                {"role": "user", "content": _REPROMPT_INSTRUCTION},
+                {
+                    "role": "user",
+                    "content": f"{_REPROMPT_INSTRUCTION}\nErreur précise : {first_error}",
+                },
             ]
             content2, _usage2 = await _post_chat(client, model, corrective, sleep)
             try:
@@ -761,6 +784,7 @@ async def record_dream_run(
     dry: bool,
     duration_s: float,
     error: str | None,
+    model: str | None = None,
 ) -> None:
     """INSERT dream_runs row for phase='extract'. Best-effort — never raises.
 
@@ -768,6 +792,12 @@ async def record_dream_run(
     night, for nobody in particular. It therefore writes the sentinel, not a
     real key — and the sentinel enters as a bound parameter held by one shared
     constant, never through `canonicalize_project_key`, which rejects it.
+
+    ``model`` is the model that ACTUALLY finished the run, not the one it was
+    configured with: extract is the only phase that can switch model mid-run,
+    so the configured value cannot reconstitute what ran. ``None`` means no
+    model was called at all (empty queue, or ``--apply-ids`` mode) — that is a
+    fact worth recording, not an omission.
     """
     try:
         async with session_factory() as session:
@@ -776,9 +806,9 @@ async def record_dream_run(
                     sa.text(
                         "INSERT INTO dream_runs "
                         "(run_date, phase, status, duration_s, error_message, "
-                        "project_key, phase_dry_run) "
+                        "project_key, phase_dry_run, model) "
                         "VALUES (:run_date, 'extract', :status, :duration_s, "
-                        ":error_message, :project_key, :phase_dry_run)"
+                        ":error_message, :project_key, :phase_dry_run, :model)"
                     ),
                     {
                         "run_date": date.today(),
@@ -787,6 +817,7 @@ async def record_dream_run(
                         "error_message": _safe_error(error),
                         "project_key": GLOBAL_PHASE_PROJECT_KEY,
                         "phase_dry_run": dry,
+                        "model": model,
                     },
                 )
     except Exception as exc:
@@ -995,6 +1026,7 @@ async def _run(
         applied, entities = await apply_proposals(sf, ids)
         duration = time.monotonic() - t0
         print(f"apply: {applied} appliqués, {entities} entités créées")
+        # `model` reste NULL : ce mode n'appelle aucun modèle.
         await record_dream_run(sf, "done", dry=False, duration_s=duration, error=None)
         return 0
 
@@ -1002,6 +1034,7 @@ async def _run(
     threads = await fetch_pending_threads(sf, args.limit)
     if not threads:
         print("Aucun ticket pending — rien à faire.")
+        # `model` reste NULL : la file était vide, aucun modèle n'a été appelé.
         await record_dream_run(
             sf, "done", dry=not args.wet, duration_s=time.monotonic() - t0, error=None
         )
@@ -1346,6 +1379,10 @@ async def _run(
             error_msg
             or (f"{timed_out} ticket(s) timed out before run deadline" if timed_out else None)
         ),
+        # `active_model`, pas `model` : la bascule vers le secours est une
+        # décision de RUN, et une nuit entièrement servie par le secours doit
+        # être discernable d'une nuit nominale.
+        model=active_model,
     )
     return _exit_code(
         timed_out=timed_out,

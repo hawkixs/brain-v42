@@ -318,6 +318,45 @@ def _build_factory(postgres_url: str) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
+async def _amain(
+    raw: str,
+    session_factory: async_sessionmaker[AsyncSession],
+    args: argparse.Namespace,
+) -> int:
+    """Validation ET marquage dans UNE SEULE boucle — voir `main`.
+
+    Le marquage ne peut aboutir que dans la boucle qui a servi la validation :
+    `asyncio.run` ferme la sienne en sortant, et `pool_pre_ping=True` retouche
+    depuis la boucle suivante des connexions attachées à la boucle morte. Le
+    chemin d'échec est le SEUL à enchaîner deux usages du pool, donc le seul à
+    l'avoir rencontré — et c'est exactement le chemin qui doit marcher.
+    """
+    try:
+        report = parse_report(raw)
+        # CLI --dry-run flag is authoritative over JSON trailer (belt+suspenders)
+        if args.dry_run:
+            report = {**report, "dry_run": True}
+        await validate(
+            report,
+            session_factory,
+            args.dream_run_id,
+            args.run_date,
+            project_key=args.project_key,
+        )
+    except ValidationFailure as exc:
+        await _mark_dream_run_partial(session_factory, args.dream_run_id, str(exc))
+        print(f"REORG VALIDATION FAILED: {exc}", file=sys.stderr)
+        return 1
+    mode = "dry-run" if report.get("dry_run") else "wet"
+    print(
+        "REORG VALIDATE: OK — "
+        f"mode={mode} updated={len(report.get('updated_ids', []))} "
+        f"archived={len(report.get('archived_ids', []))}",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report-log", required=True, help="Path to the reorg phase log file")
@@ -356,32 +395,7 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings()
     session_factory = _build_factory(settings.postgres_url)
 
-    try:
-        report = parse_report(raw)
-        # CLI --dry-run flag is authoritative over JSON trailer (belt+suspenders)
-        if args.dry_run:
-            report = {**report, "dry_run": True}
-        asyncio.run(
-            validate(
-                report,
-                session_factory,
-                args.dream_run_id,
-                args.run_date,
-                project_key=args.project_key,
-            )
-        )
-        mode = "dry-run" if report.get("dry_run") else "wet"
-        print(
-            "REORG VALIDATE: OK — "
-            f"mode={mode} updated={len(report.get('updated_ids', []))} "
-            f"archived={len(report.get('archived_ids', []))}",
-            file=sys.stderr,
-        )
-    except ValidationFailure as exc:
-        asyncio.run(_mark_dream_run_partial(session_factory, args.dream_run_id, str(exc)))
-        print(f"REORG VALIDATION FAILED: {exc}", file=sys.stderr)
-        return 1
-    return 0
+    return asyncio.run(_amain(raw, session_factory, args))
 
 
 if __name__ == "__main__":

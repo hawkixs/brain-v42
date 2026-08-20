@@ -65,6 +65,7 @@ from scripts.dream.run_manifest import (
     format_machine_line,
     format_silent_line,
     load_run_manifest,
+    render_pairs,
 )
 
 MAX_REPORTED_FAILURES = 20
@@ -94,6 +95,11 @@ COVERAGE_SILENT_MESSAGE = "counted OK by dream.sh but wrote no dream_runs row"
 COVERAGE_WRITEFAIL_MESSAGE = (
     "dream.sh reported the dream_runs write FAILED for this phase "
     "(see the WARN line in the dated log)"
+)
+COVERAGE_MISMATCH_MESSAGE = (
+    "the night DECLARED this phase failed/timed out but its dream_runs row was "
+    "written anyway — the row's status does not reflect the declaration, so a "
+    "green coverage verdict here is a FALSE green (check the phase's marker)"
 )
 NO_ROW_AT_ALL_MESSAGE = (
     "no dream_runs row from any project phase — check the DB connection "
@@ -318,8 +324,14 @@ def coverage_from_manifest(
         f"expected {len(verdict.expected)} · written {len(verdict.written)} "
         f"· skipped {len(verdict.skipped)} · declared {len(verdict.declared)} "
         f"· write-failed {len(verdict.writefail)} · silent {len(verdict.silent)} "
-        f"· extra {len(verdict.extra)}",
+        f"· extra {len(verdict.extra)} · mismatch {len(verdict.mismatch)}",
     ]
+    # Le bloc de couverture est imprimé TOUTES les nuits, y compris vertes, là où
+    # `report` est `None` dès qu'aucune ligne n'est en échec. Un mismatch logé
+    # dans le corps du rapport n'atteindrait donc personne exactement les nuits
+    # où il se produit — celles qui se croient vertes.
+    if verdict.mismatch:
+        block.append(f"{COVERAGE_MISMATCH_MESSAGE}: {render_pairs(verdict.mismatch)}")
     if lost_the_whole_write_rail(verdict):
         block.append(NO_ROW_AT_ALL_MESSAGE)
     if not verdict.complete:

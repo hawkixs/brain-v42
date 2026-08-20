@@ -221,6 +221,107 @@ def test_a_phase_declared_timed_out_is_declared_too() -> None:
     assert verdict.silent == frozenset()
 
 
+# --- Le faux-vert de la nuit du 19→20 : déclarée failed, ligne pourtant écrite --
+#
+# `declared` ne regarde `manifest.failed` que sur les paires MANQUANTES. Une paire
+# qui a bien SA ligne `dream_runs` — mais que la nuit a déclarée `failed` — tombait
+# donc dans `written` et nulle part ailleurs : sa déclaration était jetée en
+# silence. La nuit du 19→20 l'a payé, reorg déclaré `failed` et sa ligne restée
+# `done` parce que `_mark_dream_run_partial` avait crashé. Le verdict a annoncé
+# 63/63 en lisant un fichier d'entrée qui disait le contraire.
+#
+# `mismatch` est un RECOUVREMENT de `written`, pas une sixième classe : la
+# partition close des cinq classes reste l'invariant, et `escalates` ne bouge pas.
+# Faire virer la nuit au rouge sur ce signal touche au moteur ; ce n'est pas ici.
+
+
+def test_a_pair_written_but_declared_failed_is_reported_as_a_mismatch() -> None:
+    manifest = _parse(
+        expected=(("reorg", "brain-v42"),),
+        failed=(("reorg", "brain-v42"),),
+    )
+    verdict = rm.classify_coverage({("reorg", "brain-v42")}, manifest)
+
+    assert verdict.mismatch == frozenset({("reorg", "brain-v42")})
+    assert verdict.written == frozenset({("reorg", "brain-v42")})
+    assert verdict.declared == frozenset(), "la paire n'est pas manquante"
+    assert verdict.silent == frozenset()
+
+
+def test_a_pair_written_but_declared_timed_out_is_a_mismatch_too() -> None:
+    manifest = _parse(expected=(("clean", "red"),), timed_out=(("clean", "red"),))
+    verdict = rm.classify_coverage({("clean", "red")}, manifest)
+
+    assert verdict.mismatch == frozenset({("clean", "red")})
+
+
+def test_a_declaration_without_a_row_is_declared_not_mismatch() -> None:
+    """Les deux signaux ne doivent jamais compter la même paire."""
+    manifest = _parse(
+        expected=(("connect", "brain-v42"),),
+        failed=(("connect", "brain-v42"),),
+    )
+    verdict = rm.classify_coverage(set(), manifest)
+
+    assert verdict.declared == frozenset({("connect", "brain-v42")})
+    assert verdict.mismatch == frozenset()
+
+
+def test_a_mismatch_reports_but_never_escalates() -> None:
+    """RAPPORT SEULEMENT. Escalader ici ferait virer la nuit au rouge — moteur."""
+    manifest = _parse(
+        expected=(("reorg", "brain-v42"),),
+        failed=(("reorg", "brain-v42"),),
+        meta={"planned_phases": "1", "total_phases": "1"},
+    )
+    verdict = rm.classify_coverage({("reorg", "brain-v42")}, manifest)
+
+    assert verdict.mismatch
+    assert verdict.escalates is False
+
+
+def test_the_mismatch_overlay_never_breaks_the_closed_partition() -> None:
+    """`mismatch` recouvre `written` ; les cinq classes restent disjointes."""
+    rng = random.Random(20260820)
+    phases = ("scan", "clean", "connect", "synth", "promote", "reorg")
+    projects = ("red", "brain-v42", "red-lab")
+
+    for _ in range(100):
+        expected = tuple(
+            (phase, project) for phase in phases for project in projects if rng.random() < 0.8
+        )
+        failed = tuple(pair for pair in expected if rng.random() < 0.3)
+        timed_out = tuple(pair for pair in expected if rng.random() < 0.15)
+        observed = {pair for pair in expected if rng.random() < 0.6}
+
+        manifest = _parse(expected=expected, failed=failed, timed_out=timed_out)
+        verdict = rm.classify_coverage(observed, manifest)
+
+        assert verdict.mismatch <= verdict.written
+        assert not (verdict.mismatch & verdict.declared)
+        classes = (
+            verdict.written,
+            verdict.skipped,
+            verdict.writefail,
+            verdict.declared,
+            verdict.silent,
+        )
+        assert sum(len(part) for part in classes) == len(verdict.expected)
+
+
+def test_the_machine_line_carries_the_mismatch_counter() -> None:
+    """Sans compteur dans la ligne machine, le signal n'atteint pas journald."""
+    manifest = _parse(
+        expected=(("reorg", "brain-v42"), ("scan", "red")),
+        failed=(("reorg", "brain-v42"),),
+    )
+    verdict = rm.classify_coverage({("reorg", "brain-v42"), ("scan", "red")}, manifest)
+
+    line = rm.format_machine_line(verdict)
+    assert "mismatch=1" in line
+    assert line.startswith("COVERAGE mode=manifest ")
+
+
 # --- Finding 2 : la partition ferme, toujours -------------------------------
 
 

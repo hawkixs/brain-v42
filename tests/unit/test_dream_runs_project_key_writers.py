@@ -278,3 +278,48 @@ def test_empty_pool_cli_forwards_the_project_key(monkeypatch: pytest.MonkeyPatch
 
     assert return_code == 0
     recorder.assert_awaited_once_with("factory", dt.date(2026, 8, 9), 3.5, project_key="red-shrik")
+
+
+# --- `model` : la colonne, pas seulement l'argument -------------------------
+
+
+@pytest.mark.asyncio
+async def test_ticket_extract_binds_the_model_into_the_insert() -> None:
+    """L'argument doit atteindre la COLONNE, pas mourir dans la signature.
+
+    Mesuré le 19→20 : 53 lignes `extract` sur 53 à `model IS NULL`. Extract est
+    la seule phase qui bascule de modèle en cours de run, donc la seule où le
+    modèle configuré ne permet pas de reconstituer ce qui a tourné.
+    """
+    from scripts.ticket_extract import record_dream_run
+
+    factory, calls = _recording_factory()
+
+    await record_dream_run(
+        factory,
+        "done",
+        dry=True,
+        duration_s=1.0,
+        error=None,
+        model="nvidia/nemotron-3-super-120b-a12b",
+    )
+
+    inserts = [call for call in calls if _INSERT.search(str(call[0]))]
+    assert len(inserts) == 1
+    statement, params = inserts[0]
+    match = _INSERT.search(str(statement))
+    assert match is not None
+    columns = [part.strip() for part in match.group("cols").split(",")]
+    values = [part.strip() for part in match.group("vals").split(",")]
+    written = dict(zip(columns, values, strict=True))
+
+    assert "model" in written, f"colonne absente de l'INSERT : {sorted(written)}"
+    assert written["model"] == ":model", (
+        f"le modèle doit être un paramètre lié nommé, jamais interpolé : {written['model']}"
+    )
+    bound = params if params is not None else statement.compile().params
+    assert bound["model"] == "nvidia/nemotron-3-super-120b-a12b"
+    assert len(bound["model"]) > 30, (
+        "le secours WET dépasse les 30 caractères d'avant la migration 045 — "
+        "c'est ce que cette migration a élargi la colonne pour accueillir"
+    )
