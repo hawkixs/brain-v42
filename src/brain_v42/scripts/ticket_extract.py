@@ -776,6 +776,7 @@ async def record_dream_run(
     dry: bool,
     duration_s: float,
     error: str | None,
+    model: str | None = None,
 ) -> None:
     """INSERT dream_runs row for phase='extract'. Best-effort — never raises.
 
@@ -783,6 +784,12 @@ async def record_dream_run(
     night, for nobody in particular. It therefore writes the sentinel, not a
     real key — and the sentinel enters as a bound parameter held by one shared
     constant, never through `canonicalize_project_key`, which rejects it.
+
+    ``model`` is the model that ACTUALLY finished the run, not the one it was
+    configured with: extract is the only phase that can switch model mid-run,
+    so the configured value cannot reconstitute what ran. ``None`` means no
+    model was called at all (empty queue, or ``--apply-ids`` mode) — that is a
+    fact worth recording, not an omission.
     """
     try:
         async with session_factory() as session:
@@ -791,9 +798,9 @@ async def record_dream_run(
                     sa.text(
                         "INSERT INTO dream_runs "
                         "(run_date, phase, status, duration_s, error_message, "
-                        "project_key, phase_dry_run) "
+                        "project_key, phase_dry_run, model) "
                         "VALUES (:run_date, 'extract', :status, :duration_s, "
-                        ":error_message, :project_key, :phase_dry_run)"
+                        ":error_message, :project_key, :phase_dry_run, :model)"
                     ),
                     {
                         "run_date": date.today(),
@@ -802,6 +809,7 @@ async def record_dream_run(
                         "error_message": _safe_error(error),
                         "project_key": GLOBAL_PHASE_PROJECT_KEY,
                         "phase_dry_run": dry,
+                        "model": model,
                     },
                 )
     except Exception as exc:
@@ -1010,6 +1018,7 @@ async def _run(
         applied, entities = await apply_proposals(sf, ids)
         duration = time.monotonic() - t0
         print(f"apply: {applied} appliqués, {entities} entités créées")
+        # `model` reste NULL : ce mode n'appelle aucun modèle.
         await record_dream_run(sf, "done", dry=False, duration_s=duration, error=None)
         return 0
 
@@ -1017,6 +1026,7 @@ async def _run(
     threads = await fetch_pending_threads(sf, args.limit)
     if not threads:
         print("Aucun ticket pending — rien à faire.")
+        # `model` reste NULL : la file était vide, aucun modèle n'a été appelé.
         await record_dream_run(
             sf, "done", dry=not args.wet, duration_s=time.monotonic() - t0, error=None
         )
@@ -1361,6 +1371,10 @@ async def _run(
             error_msg
             or (f"{timed_out} ticket(s) timed out before run deadline" if timed_out else None)
         ),
+        # `active_model`, pas `model` : la bascule vers le secours est une
+        # décision de RUN, et une nuit entièrement servie par le secours doit
+        # être discernable d'une nuit nominale.
+        model=active_model,
     )
     return _exit_code(
         timed_out=timed_out,

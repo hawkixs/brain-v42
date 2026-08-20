@@ -2173,3 +2173,122 @@ class TestADeadPrimaryModelFallsBack:
             "l'erreur doit NOMMER le dernier modèle essayé, sinon la nuit "
             "suivante rejoue la même impasse à l'aveugle"
         )
+
+
+class TestTheTerminalRowNamesItsModel:
+    """`dream_runs.model` d'extract : 53 lignes sur 53 à NULL, mesuré le 19→20.
+
+    Extract est la SEULE phase qui peut changer de modèle EN COURS DE RUN — la
+    bascule vers le secours est une décision de run, pas de ticket. C'est donc
+    la phase pour laquelle la colonne porte le plus d'information, et la seule
+    où le modèle configuré ne suffit pas à reconstituer ce qui a tourné.
+
+    C'est aussi ce que la migration 045 a élargi la colonne pour accueillir : le
+    secours WET configuré fait 33 caractères, contre les 30 d'avant.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_terminal_row_names_the_model_that_actually_ran(self) -> None:
+        async def extract(client, model, thread, **kw):
+            return SimpleNamespace(
+                drafts=[], failed=False, error=None, timed_out=False, duration_s=0.1
+            )
+
+        args = SimpleNamespace(
+            apply_ids=None,
+            limit=20,
+            wet=False,
+            run_budget_seconds=600.0,
+            ticket_budget_seconds=180.0,
+        )
+        record = AsyncMock()
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[_thread()]),
+            ),
+            patch("scripts.ticket_extract._extract_thread_with_budget", extract),
+            patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
+            patch("scripts.ticket_extract.record_dream_run", record),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            await _run(args, "secret", "primaire-vivant", "https://llm.test")
+
+        assert record.await_args.kwargs["model"] == "primaire-vivant"
+
+    @pytest.mark.asyncio
+    async def test_a_fallback_switch_is_recorded_as_the_model_that_finished(self) -> None:
+        """Le modèle ÉCRIT est celui qui a fini le run, pas celui qui l'a ouvert.
+
+        Écrire le primaire ici rendrait une nuit entièrement servie par le
+        secours indiscernable d'une nuit nominale — le mode de panne exact qui a
+        laissé qwen 80B mort pendant dix nuits vertes.
+        """
+        from scripts.domain_backfill import ModelGoneError
+
+        seen: list[str] = []
+
+        async def extract(client, model, thread, **kw):
+            seen.append(model)
+            if model == "primaire-mort":
+                raise ModelGoneError(model, 410)
+            return SimpleNamespace(
+                drafts=[], failed=False, error=None, timed_out=False, duration_s=0.1
+            )
+
+        args = SimpleNamespace(
+            apply_ids=None,
+            limit=20,
+            wet=False,
+            run_budget_seconds=600.0,
+            ticket_budget_seconds=180.0,
+        )
+        record = AsyncMock()
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[_thread()]),
+            ),
+            patch("scripts.ticket_extract._extract_thread_with_budget", extract),
+            patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
+            patch("scripts.ticket_extract.record_dream_run", record),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            await _run(
+                args,
+                "secret",
+                "primaire-mort",
+                "https://llm.test",
+                fallback_model="secours-vivant",
+            )
+
+        assert seen[0] == "primaire-mort"
+        assert record.await_args.kwargs["model"] == "secours-vivant"
+
+    @pytest.mark.asyncio
+    async def test_a_run_that_never_called_a_model_records_no_model(self) -> None:
+        """Aucun ticket en attente : AUCUN appel modèle, donc la colonne reste NULL.
+
+        Y écrire le modèle CONFIGURÉ serait un mensonge — la ligne dirait qu'un
+        modèle a tourné quand rien ne l'a appelé. `NULL` veut dire « aucun », et
+        c'est une information, pas un oubli.
+        """
+        args = SimpleNamespace(apply_ids=None, limit=20, wet=False)
+        record = AsyncMock()
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch("scripts.ticket_extract.record_dream_run", record),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            await _run(args, "secret", "primaire-vivant", "https://llm.test")
+
+        assert record.await_args.kwargs.get("model") is None
