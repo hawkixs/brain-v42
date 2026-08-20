@@ -239,6 +239,96 @@ async def test_a_declared_failure_keeps_the_historic_wording_and_does_not_escala
 
 
 @pytest.mark.asyncio
+async def test_a_row_written_while_the_night_declared_failure_is_reported() -> None:
+    """La nuit du 19→20, rejouée telle qu'elle s'est produite.
+
+    `reorg`/`brain-v42` a été déclaré `failed` par dream.sh, mais son marquage
+    `dream_runs` a crashé et la ligne est restée `done`. Le verdict lisait donc
+    une couverture PLEINE en ayant sous les yeux un fichier d'entrée qui disait
+    l'échec. Un rapport qui jette la déclaration de son propre fichier d'entrée
+    est un faux-vert, pas une couverture.
+
+    L'assertion porte sur `render_stdout`, pas sur le seul verdict : une nuit
+    sans ligne en échec a `report is None`, donc un signal logé dans le corps du
+    rapport n'atteindrait PERSONNE. Le bloc de couverture, lui, est imprimé
+    toutes les nuits — c'est le seul endroit où ce signal existe vraiment.
+    """
+    pair = ("reorg", "brain-v42")
+    manifest = _manifest(expected=(pair,), failed=(pair,))
+    session = _session(_rows((pair,), status="done"))
+
+    night = await post_run_alert.review_night(session, RUN_DATE, manifest=manifest)
+    stdout = post_run_alert.render_stdout(night.report, RUN_DATE, night.coverage)
+
+    assert night.coverage.verdict is not None
+    assert night.coverage.verdict.mismatch == frozenset({pair})
+    assert post_run_alert.COVERAGE_MISMATCH_MESSAGE in stdout
+    assert "brain-v42/reorg" in stdout, "l'alerte doit NOMMER la paire"
+    assert "mismatch 1" in stdout, "le compteur doit être dans le bloc couverture"
+    assert "mismatch=1" in night.coverage.machine_line
+
+
+@pytest.mark.asyncio
+async def test_a_mismatch_reports_without_turning_the_night_red() -> None:
+    """RAPPORT SEULEMENT — faire escalader ce signal touche au moteur."""
+    pair = ("reorg", "brain-v42")
+    manifest = _manifest(
+        expected=(pair,),
+        failed=(pair,),
+        meta={"planned_phases": "1", "total_phases": "1"},
+    )
+    session = _session(_rows((pair,), status="done"))
+
+    night = await post_run_alert.review_night(session, RUN_DATE, manifest=manifest)
+
+    assert night.coverage.verdict is not None
+    assert night.coverage.verdict.mismatch
+    assert night.coverage.escalates is False
+
+
+@pytest.mark.asyncio
+async def test_a_clean_night_carries_a_zero_mismatch_counter() -> None:
+    """Le compteur est TOUJOURS imprimé : une absence de ligne serait ambiguë."""
+    manifest = _manifest(expected=(("scan", "red"),))
+    session = _session(_rows((("scan", "red"),)))
+
+    night = await post_run_alert.review_night(session, RUN_DATE, manifest=manifest)
+    stdout = post_run_alert.render_stdout(night.report, RUN_DATE, night.coverage)
+
+    assert "mismatch 0" in stdout
+    assert post_run_alert.COVERAGE_MISMATCH_MESSAGE not in stdout
+    assert "mismatch=0" in night.coverage.machine_line
+
+
+@pytest.mark.asyncio
+async def test_a_missing_declared_pair_is_not_counted_as_a_mismatch() -> None:
+    """`declared` et `mismatch` ne doivent jamais compter la même paire."""
+    pair = ("connect", "brain-v42")
+    manifest = _manifest(expected=(pair,), failed=(pair,))
+    session = _session([])
+
+    night = await post_run_alert.review_night(session, RUN_DATE, manifest=manifest)
+    stdout = post_run_alert.render_stdout(night.report, RUN_DATE, night.coverage)
+
+    assert night.coverage.verdict is not None
+    assert night.coverage.verdict.declared == frozenset({pair})
+    assert night.coverage.verdict.mismatch == frozenset()
+    assert post_run_alert.COVERAGE_MISMATCH_MESSAGE not in stdout
+
+
+@pytest.mark.asyncio
+async def test_a_mismatch_never_fabricates_a_synthetic_row() -> None:
+    """La ligne EXISTE — en synthétiser une seconde ferait un doublon."""
+    pair = ("reorg", "brain-v42")
+    manifest = _manifest(expected=(pair,), failed=(pair,))
+    session = _session(_rows((pair,), status="done"))
+
+    night = await post_run_alert.review_night(session, RUN_DATE, manifest=manifest)
+
+    assert night.coverage.synthetic == ()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("reason", ["preflight", "killswitch"])
 async def test_a_declared_skip_is_never_an_alarm(reason: str) -> None:
     manifest = _manifest(expected=(("synth", "red"),), skipped=(("synth", "red", reason),))

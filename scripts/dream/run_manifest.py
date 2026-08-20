@@ -106,6 +106,20 @@ class CoverageVerdict:
     declared: frozenset[Pair]
     silent: frozenset[Pair]
     extra: frozenset[Pair]
+    mismatch: frozenset[Pair]
+    """RECOUVREMENT de `written`, jamais une sixième classe.
+
+    Les paires qui ont bien leur ligne `dream_runs` ET que la nuit a déclarées
+    `failed`/`timeout`. `declared` ne regarde les déclarations que sur les paires
+    MANQUANTES, si bien qu'une paire écrite mais déclarée en échec tombait dans
+    `written` et nulle part ailleurs : sa déclaration était jetée en silence.
+    Mesuré la nuit du 19→20 — reorg déclaré `failed`, sa ligne restée `done`
+    parce que son marquage avait crashé, et le verdict a annoncé une couverture
+    pleine en lisant un fichier d'entrée qui disait le contraire.
+
+    La partition close des cinq classes reste donc l'invariant, et `escalates`
+    n'en tient délibérément pas compte : ce signal RAPPORTE.
+    """
     consistent: bool
     complete: bool
     planned: int | None
@@ -246,6 +260,9 @@ def classify_coverage(
     declared = unexplained & (manifest.failed | manifest.timed_out)
     silent = unexplained - declared
     extra = observed - expected
+    # Recouvrement, pas partition : une paire ÉCRITE que la nuit a pourtant
+    # déclarée en échec. Sans cette ligne, sa déclaration est jetée en silence.
+    mismatch = written & (manifest.failed | manifest.timed_out)
 
     assert len(written) + len(skipped) + len(writefail) + len(declared) + len(silent) == len(
         expected
@@ -274,6 +291,7 @@ def classify_coverage(
         declared=declared,
         silent=silent,
         extra=extra,
+        mismatch=mismatch,
         consistent=consistent,
         complete=complete,
         planned=planned,
@@ -289,7 +307,8 @@ def format_machine_line(verdict: CoverageVerdict) -> str:
     tail = (
         f"written={len(verdict.written)} skipped={len(verdict.skipped)} "
         f"declared={len(verdict.declared)} writefail={len(verdict.writefail)} "
-        f"silent={len(verdict.silent)} extra={len(verdict.extra)}"
+        f"silent={len(verdict.silent)} extra={len(verdict.extra)} "
+        f"mismatch={len(verdict.mismatch)}"
     )
     if verdict.complete:
         return f"COVERAGE mode=manifest expected={len(verdict.expected)} {tail}"
@@ -313,7 +332,7 @@ def format_fallback_line(*, expected: int, observed: int, missing: int) -> str:
     )
 
 
-def _render_pairs(pairs: Iterable[Pair]) -> str:
+def render_pairs(pairs: Iterable[Pair]) -> str:
     ordered = sorted(pairs, key=lambda pair: (pair[1], pair[0]))
     shown = ordered[:MAX_LISTED_PAIRS]
     rendered = ", ".join(f"{project}/{phase}" for phase, project in shown)
@@ -329,9 +348,9 @@ def format_silent_line(verdict: CoverageVerdict) -> str | None:
     """
     parts = []
     if verdict.silent:
-        parts.append(f"silent={_render_pairs(verdict.silent)}")
+        parts.append(f"silent={render_pairs(verdict.silent)}")
     if verdict.writefail:
-        parts.append(f"writefail={_render_pairs(verdict.writefail)}")
+        parts.append(f"writefail={render_pairs(verdict.writefail)}")
     if not parts:
         return None
     return "COVERAGE_SILENT " + " | ".join(parts)
