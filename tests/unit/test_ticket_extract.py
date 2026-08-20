@@ -2292,3 +2292,61 @@ class TestTheTerminalRowNamesItsModel:
             await _run(args, "secret", "primaire-vivant", "https://llm.test")
 
         assert record.await_args.kwargs.get("model") is None
+
+
+class TestTheCorrectiveRepromptCarriesTheError:
+    """Le re-prompt d'extract était AVEUGLE — il redemandait sans dire quoi.
+
+    `roadmap_curate` transmet l'erreur précise depuis toujours
+    (`_curate_llm_attempt`) ; extract se contentait de l'instruction générique
+    « ta réponse n'était pas un tableau JSON valide ». Un modèle qui a rendu la
+    mauvaise CLÉ DE PROJET relit donc « renvoie du JSON valide » et rend le même
+    JSON, valide, avec la même mauvaise clé. C'est ce qui rend l'échec du 19→20
+    reproductible à l'identique plutôt que rattrapable au second essai.
+
+    Aucun test n'épinglait le contenu de ce re-prompt, dans aucun des deux
+    modules. Celui-ci le fait pour extract.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_reprompt_names_the_precise_error_and_the_valid_keys(self) -> None:
+        from scripts import ticket_extract as mod
+
+        sent: list[list[dict[str, str]]] = []
+        bad = (
+            '[{"target_type": "learning", "target_project": "red-lab", '
+            '"payload": {"topic": "t", "insight": "i", "tags": []}, "rationale": "r"}]'
+        )
+
+        async def fake_post_chat(client, model, messages, sleep, **kw):
+            sent.append(messages)
+            return (bad, {}) if len(sent) == 1 else ("[]", {})
+
+        with patch("scripts.ticket_extract._post_chat", fake_post_chat):
+            outcome = await extract_thread(MagicMock(), "m", _thread(), sleep=_no_sleep)
+
+        assert outcome.failed is False, "le second essai est valide"
+        assert len(sent) == 2, "un re-prompt correctif, exactement"
+
+        reprompt = sent[1][-1]["content"]
+        assert mod._REPROMPT_INSTRUCTION in reprompt, "l'instruction générique reste"
+        assert "target_project" in reprompt, "l'erreur précise doit voyager"
+        assert "red-lab" in reprompt, "le modèle doit lire CE QU'IL a proposé"
+        # Les clés valides voyagent GRATUITEMENT : le message de
+        # `parse_and_validate` les énumère déjà. Sans l'erreur, elles n'ont
+        # jamais atteint le modèle.
+        assert "red-shrik" in reprompt and "red-data" in reprompt
+
+    @pytest.mark.asyncio
+    async def test_a_second_failure_still_reports_the_second_error(self) -> None:
+        """Le contrat d'échec ne change pas : c'est la DEUXIÈME erreur qui sort."""
+
+        async def fake_post_chat(client, model, messages, sleep, **kw):
+            return ("pas du json", {})
+
+        with patch("scripts.ticket_extract._post_chat", fake_post_chat):
+            outcome = await extract_thread(MagicMock(), "m", _thread(), sleep=_no_sleep)
+
+        assert outcome.failed is True
+        assert outcome.error is not None
+        assert outcome.error.startswith("unparseable after corrective re-prompt: ")
