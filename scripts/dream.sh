@@ -1038,7 +1038,7 @@ run_project_phases() {
       validator_rc=$?
       set -e
       if (( validator_rc != 0 )); then
-        log "FAIL promote — validator flagged integrity issues (dream_runs marked partial)"
+        log "FAIL promote — validator rejected PROMOTE report; see validation detail"
         phase_rc=1
       fi
     fi
@@ -1101,7 +1101,7 @@ asyncio.run(_get())
       validator_rc=$?
       set -e
       if (( validator_rc != 0 )); then
-        log "FAIL reorg — validator flagged integrity issues (dream_runs marked partial)"
+        log "FAIL reorg — validator rejected REORG report; see validation detail"
         phase_rc=1
       fi
     fi
