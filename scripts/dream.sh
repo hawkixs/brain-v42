@@ -1044,17 +1044,21 @@ run_project_phases() {
     fi
 
     # --- REORG: post-phase validator --------------------------------------
-    # Symmetric to PROMOTE's validator. Runs only when the phase succeeded
-    # (phase_rc==0). The validator never fails the pipeline — it marks the
-    # dream_runs row partial and exits 1, which we translate to phase_rc=1
-    # so the FAIL_TOTAL counter captures it, but the pipeline continues.
+    # Symmetric to PROMOTE's validator. Runs on EVERY reorg outcome, green or
+    # not. It used to be gated on `phase_rc == 0`, which removed the check from
+    # exactly the case it serves: a phase that dies or times out has already had
+    # its tool calls land, and those partial writes are the ones nobody re-reads.
+    # A green phase at least emitted its report and followed its prompt to the end.
+    # The validator never fails the pipeline — it marks the dream_runs row partial
+    # and exits 1, which we translate to phase_rc=1 so the FAIL_TOTAL counter
+    # captures it, but the pipeline continues.
     # In dry-run mode the validator detects this from the JSON trailer and
     # skips all DB checks (nothing should have mutated).
     #
     # NOTE: effective_dry_run is local to run_phase() and is out of scope
     # here.  Recompute the same logic from the global inputs — this is the
     # exact same derivation run_phase uses for the REORG phase.
-    if [[ "$name" == "reorg" && "$phase_rc" == "0" ]]; then
+    if [[ "$name" == "reorg" ]]; then
       reorg_effective_dry_run="$DRY_RUN"
       [[ "$BRAIN_DREAM_REORG_DRY_RUN" == "true" ]] && reorg_effective_dry_run="true"
 
@@ -1101,8 +1105,17 @@ asyncio.run(_get())
       validator_rc=$?
       set -e
       if (( validator_rc != 0 )); then
-        log "FAIL reorg — validator rejected REORG report; see validation detail"
-        phase_rc=1
+        if (( phase_rc == 0 )); then
+          log "FAIL reorg — validator rejected REORG report; see validation detail"
+          phase_rc=1
+        else
+          # La phase est DÉJÀ tombée : le `case` ci-dessous range un 2 dans
+          # TIMED_OUT_PHASES et un 1 dans FAILED_PHASES. Écraser le 2 par un 1
+          # ferait rapporter un échec dur à la place du dépassement de budget
+          # qui a réellement eu lieu, et l'opérateur chercherait la mauvaise
+          # panne. Le verdict s'ajoute donc au journal, pas à la classification.
+          log "FAIL reorg — validator rejected REORG report; see validation detail (phase already rc=$phase_rc; classification unchanged)"
+        fi
       fi
     fi
 
