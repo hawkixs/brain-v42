@@ -35,6 +35,7 @@ from fastmcp.server.dependencies import get_http_headers, get_http_request
 from fastmcp.server.middleware import Middleware
 
 from brain_v42.mcp.activity_reporter import get_activity_reporter
+from brain_v42.mcp.session_autoopen import get_session_autoopener
 from brain_v42.provenance import (
     UNKNOWN_ACTOR,
     enter_call,
@@ -88,12 +89,38 @@ class ProvenanceMiddleware(Middleware):
         token = enter_call()
         try:
             if is_outermost_call():
+                await self._auto_open_session()
                 self._report(actor, session, transport)
                 if actor == UNKNOWN_ACTOR:
                     self._name_unidentified_client(context)
             return await call_next(context)
         finally:
             exit_call(token)
+
+    async def _auto_open_session(self) -> None:
+        """Ouvrir la session traçante de cette connexion, AVANT l'outil.
+
+        Trois choses tiennent dans ces cinq lignes, et aucune n'est
+        interchangeable :
+
+        - **Avant ``call_next``**, pas après, et pas en tâche détachée. La
+          capture borne les artefacts par ``created_at >= started_at`` : une
+          session ouverte après l'outil n'attribuerait rien de ce que l'outil
+          vient de créer. C'est ce qui distingue ce chemin de ``_report``, qui
+          n'observe rien qu'il doive précéder.
+        - **Sous ``is_outermost_call()``**, donc une fois par appel client et
+          non deux en profil ``compact`` (mesuré, commit 58329a84). La mémo de
+          l'ouvreur ne suffirait pas : elle masquerait le second tir au lieu de
+          l'empêcher, et le compteur ``memoized`` mentirait d'un facteur deux.
+        - **``ensure_open`` ne lève jamais**, par contrat. Aucun ``try`` ici
+          serait donc redondant — mais l'absence de garde locale est un choix
+          qui repose entièrement sur ce contrat, tenu par un test de panne
+          injectée avec témoin négatif.
+        """
+        autoopener = get_session_autoopener()
+        if autoopener is None:
+            return
+        await autoopener.ensure_open()
 
     def _name_unidentified_client(self, context: Any) -> None:
         """Dénoncer une fois un appelant qui ne se déclare pas.

@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from secrets import compare_digest
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -124,6 +124,70 @@ class PgBrainSessionRepo(BasePgRepository):
                 replayed=replayed,
                 open_session_count=open_count,
             )
+
+    async def auto_open(self, identity: Any) -> UUID | None:
+        """Ouvrir — ou retrouver — LA session `agent` ouverte d'une connexion.
+
+        Un seul aller-retour en nominal. L'idempotence est portée par l'index
+        UNIQUE **PARTIEL** ``uq_brain_sessions_connection`` de la 046
+        (``WHERE status = 'open'``), pas par le code appelant : deux appels
+        concurrents sur la même connexion produisent un conflit, pas deux
+        sessions, et une session déjà fermée ne bloque pas la suivante. Un
+        index plein aurait brûlé la connexion à vie dès la première
+        auto-fermeture (piège hérité, `SPEC-M-G` §5).
+
+        ``client_key`` reçoit un UUID neuf, et ce n'est pas un détail : la
+        contrainte ``uq_brain_sessions_project_client`` est **pleine**, donc
+        réutiliser une clé stable par connexion ferait échouer la réouverture
+        après une fermeture — le piège de l'index partiel, déplacé d'une
+        colonne. Sur ce chemin la clé cliente ne garde plus rien de toute
+        façon : ``expected_client_key`` en a été retirée (§0ter.3), l'identité
+        étant la connexion.
+
+        Rend ``None`` quand le projet n'a pas de contexte : le serveur n'en
+        fabrique pas un. Ne lève pas sur ce cas — ``start()`` le fait, parce
+        que là c'est un utilisateur qui a nommé un projet inexistant et qu'il
+        doit l'apprendre ; ici personne n'a rien nommé.
+        """
+        async with self.transaction() as session:
+            focus = await self._load_focus(session, identity.project_key)
+            if focus is None:
+                return None
+
+            insert_stmt = (
+                pg_insert(brain_sessions)
+                .values(
+                    project_key=identity.project_key,
+                    client_key=f"auto:{uuid4().hex}",
+                    started_focus=focus["current_focus"],
+                    started_focus_revision=focus["focus_revision"],
+                    nature=identity.nature,
+                    connection_id=identity.connection_id,
+                    started_by_actor=identity.started_by_actor,
+                    intent=identity.intent,
+                )
+                .on_conflict_do_nothing(
+                    index_elements=[
+                        brain_sessions.c.project_key,
+                        brain_sessions.c.connection_id,
+                    ],
+                    index_where=sa.text("status = 'open'"),
+                )
+                .returning(brain_sessions.c.id)
+            )
+            inserted = (await session.execute(insert_stmt)).scalar_one_or_none()
+            if inserted is not None:
+                return UUID(str(inserted))
+
+            existing = await session.execute(
+                sa.select(brain_sessions.c.id).where(
+                    brain_sessions.c.project_key == identity.project_key,
+                    brain_sessions.c.connection_id == identity.connection_id,
+                    brain_sessions.c.status == "open",
+                )
+            )
+            found = existing.scalar_one_or_none()
+            return UUID(str(found)) if found is not None else None
 
     async def get_by_id(  # type: ignore[override]
         self, session_id: UUID | str

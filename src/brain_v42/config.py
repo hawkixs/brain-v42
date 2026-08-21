@@ -252,6 +252,18 @@ class Settings(BaseSettings):
         validation_alias=_brain_alias("CLIENT_ACTIVITY_URL"),
     )
 
+    # Auto-ouverture d'une session traçante `agent` par connexion HTTP, forme
+    # signée `ae0d0475` / ADR §0ter. Livré FERMÉ, comme toute capacité neuve —
+    # et ici la raison est plus dure qu'ailleurs : armé, ce drapeau fait ÉCRIRE
+    # le serveur sur une frontière de cycle de vie que le covenant réserve aux
+    # commandes explicites de l'utilisateur. Son armement est un geste
+    # d'opérateur, avec sa fenêtre d'observation, jamais un défaut.
+    #
+    # Le nom suit la famille `BRAIN_SESSION_*` du PLAN §8bis, mais ne s'y
+    # trouve PAS : ce récapitulatif ne nomme aucun drapeau d'auto-ouverture.
+    # À faire signer avant armement.
+    brain_session_auto_open_enabled: bool = Field(default=False)
+
     @field_validator("client_activity_url")
     @classmethod
     def _client_activity_loopback_only(cls, v: str) -> str:
