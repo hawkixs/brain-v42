@@ -107,7 +107,7 @@ Activated by `BRAIN_MCP_TRANSPORT=stdio` (default) or omitting the env var. Used
 
 **Embedding topology**: production/default = local unified endpoint `http://localhost:8003`; `deploy/dev-pc` is a superseded rollback/reference path.
 
-**Embedding shim limits (versioned, not yet rolled out)**: 8 MiB body, 5 s body-read timeout, 8 concurrent ingress reads, 100 embed texts, 128 rerank candidates, maximum JSON depth 64, one embedding calculation and one rerank calculation per worker. Saturation returns short `503` JSON with `Retry-After: 1`.
+**Embedding shim limits (ROLLED OUT 2026-08-21, temps 1)**: 8 MiB body, 5 s body-read timeout, 8 concurrent ingress reads, 100 embed texts, 128 rerank candidates, maximum JSON depth 64, one embedding calculation and one rerank calculation per worker. Saturation returns short `503` JSON with `Retry-After: 1`.
 
 **SEC2 residuals**: bearer authentication and a dedicated Docker client network require the coordinated `auto-discord` cutover; the versioned legacy PyTorch profile remains unbounded and does not preserve the `auto-discord` DNS alias.
 

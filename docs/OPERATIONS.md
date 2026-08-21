@@ -78,7 +78,7 @@ because v3 cannot represent either without loss.
 
 **Tracked network boundary**: MCP, PostgreSQL and Neo4j bind to loopback; metrics and automation default to loopback. The versioned Compose target now binds the embedding host publish to loopback, but the live runtime remains LAN-wide until an authorized rollout. Application bearer authentication, a dedicated Docker client network and repository-managed WAN isolation are not yet proven.
 
-**Embedding shim limits (versioned, not yet rolled out)**: 8 MiB body, 5 s body-read timeout, 8 concurrent ingress reads, 100 embed texts, 128 rerank candidates, maximum JSON depth 64, one embedding calculation and one rerank calculation per worker. Saturation returns short `503` JSON with `Retry-After: 1`.
+**Embedding shim limits (ROLLED OUT 2026-08-21, temps 1)**: 8 MiB body, 5 s body-read timeout, 8 concurrent ingress reads, 100 embed texts, 128 rerank candidates, maximum JSON depth 64, one embedding calculation and one rerank calculation per worker. Saturation returns short `503` JSON with `Retry-After: 1`.
 
 **SEC2 residuals**: bearer authentication and a dedicated Docker client network require the coordinated `auto-discord` cutover; the versioned legacy PyTorch profile remains unbounded and does not preserve the `auto-discord` DNS alias.
 

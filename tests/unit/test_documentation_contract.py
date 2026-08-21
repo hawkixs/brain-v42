@@ -1951,7 +1951,7 @@ def test_documented_network_boundary_matches_tracked_bindings() -> None:
         "repository-managed WAN isolation are not yet proven."
     )
     limits_contract = (
-        "**Embedding shim limits (versioned, not yet rolled out)**: 8 MiB body, 5 s body-read "
+        "**Embedding shim limits (ROLLED OUT 2026-08-21, temps 1)**: 8 MiB body, 5 s body-read "
         "timeout, 8 concurrent ingress reads, 100 embed texts, 128 rerank candidates, maximum "
         "JSON depth 64, one embedding calculation and one rerank calculation per worker. "
         "Saturation returns short `503` JSON with `Retry-After: 1`."
