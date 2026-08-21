@@ -38,7 +38,15 @@ from brain_v42.db.tables import adrs, decisions, learnings, runbooks, snippets
 from brain_v42.services.graph_service import ALLOWED_DOMAINS
 
 DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
-DEFAULT_MODEL = "deepseek-ai/deepseek-v4-pro"
+#: Primaire d'extract ET de backfill. `deepseek-ai/deepseek-v4-pro` a occupé
+#: cette place jusqu'au 2026-08-21 en étant mort depuis le 12/08 : chaque run
+#: payait un aller-retour vers un 410 avant de basculer sur son secours. Mesuré
+#: le 2026-08-21 avec `scripts/probe_model_liveness.py` — deepseek-v4-pro GONE
+#: 410, celui-ci ALIVE 200 — et canaryé par la nuit du 2026-08-21 elle-même,
+#: qui a fini `extract` en `done` sur le vrai prompt (dream_runs.model, première
+#: nuit de l'instrumentation 6148a9c). Un 410 n'est pas transitoire : aucun
+#: retry ne le répare, seule la constante le fait.
+DEFAULT_MODEL = "meta/llama-3.3-70b-instruct"
 DEFAULT_ENV_FILE = Path.home() / ".config" / "brain-v42" / "nvidia.env"
 VALID_DOMAINS: frozenset[str] = ALLOWED_DOMAINS | {"unknown"}
 VALID_CONFIDENCES: frozenset[str] = frozenset({"high", "medium", "low"})

@@ -2350,3 +2350,115 @@ class TestTheCorrectiveRepromptCarriesTheError:
         assert outcome.failed is True
         assert outcome.error is not None
         assert outcome.error.startswith("unparseable after corrective re-prompt: ")
+
+
+class TestThePrimaryModelIsAliveRatherThanRetired:
+    """`deepseek-ai/deepseek-v4-pro` est mort le 2026-08-12 et l'est resté.
+
+    MESURÉ le 2026-08-21 avec `scripts/probe_model_liveness.py`, la sonde écrite
+    pour exactement cette question : `deepseek-ai/deepseek-v4-pro` rend **410
+    GONE**, `meta/llama-3.3-70b-instruct` rend **200 ALIVE**. Un 410 n'est pas
+    transitoire — aucun retry ne le réparera jamais.
+
+    Neuf jours durant, chaque run d'extract a donc payé un aller-retour vers un
+    modèle retiré avant de basculer sur son secours. Le run ABOUTISSAIT — la
+    chaîne de secours livrée après la panne du 12/08 fait son travail — mais il
+    commençait par un appel dont l'issue était connue d'avance.
+
+    Le commentaire de `DEFAULT_EXTRACT_FALLBACK_MODEL` posait une condition
+    explicite à cette promotion : « PROUVÉ VIVANT, PAS PROUVÉ BON POUR CE PROMPT
+    […] à canaryer avant de le promouvoir primaire ». La condition est REMPLIE, et
+    par la meilleure preuve possible — un run de production sur le vrai prompt.
+    Mesuré en base le 2026-08-21 :
+
+        run_date=2026-08-21 phase=extract status=done
+        model=meta/llama-3.3-70b-instruct
+
+    C'est la première nuit de l'instrumentation du modèle (commit 6148a9c), et
+    elle nomme le modèle qui a RÉELLEMENT fini le run. Le canary demandé n'est
+    pas une sonde de 16 tokens — c'est la nuit entière.
+    """
+
+    def test_the_primary_is_not_the_model_measured_gone(self) -> None:
+        from scripts.domain_backfill import DEFAULT_MODEL
+
+        assert DEFAULT_MODEL != "deepseek-ai/deepseek-v4-pro", (
+            "le primaire est un modèle retiré chez le fournisseur : chaque run "
+            "paie un 410 certain avant de basculer"
+        )
+
+    def test_the_primary_is_the_model_that_was_canaryed_on_the_real_prompt(self) -> None:
+        """Épingler LEQUEL, pas seulement « pas le mort ».
+
+        Un test qui n'exclurait que deepseek laisserait promouvoir n'importe quel
+        modèle vivant — y compris un qui n'a jamais vu le prompt d'extraction, ce
+        qui est exactement l'erreur du canary du 2026-08-05 : vivant sur 16
+        tokens, en timeout sur le prompt réel.
+        """
+        from scripts.domain_backfill import DEFAULT_MODEL
+
+        assert DEFAULT_MODEL == "meta/llama-3.3-70b-instruct"
+
+
+class TestAFallbackIdenticalToThePrimaryIsNotAFallback:
+    """La garde de collision existait, n'était pas testée, et se met à TIRER.
+
+    Promouvoir le secours en primaire rend les deux constantes égales. Le code
+    prévoyait déjà le cas — « un secours identique au primaire n'est pas un
+    secours : il ferait croire à une chaîne là où il n'y a qu'un seul point de
+    panne » — mais rien ne le vérifiait, et jusqu'ici la branche ne s'exécutait
+    jamais. Elle devient le chemin NOMINAL.
+
+    Ce n'est pas une perte de résilience, et le mesurer importe : avec un primaire
+    mort, le secours était DÉJÀ consommé dès le premier ticket du run, et la suite
+    tournait sur un seul modèle sans filet. Le seul changement est qu'on cesse de
+    payer l'aller-retour 410 pour arriver au même endroit.
+    """
+
+    @staticmethod
+    def _resolved_fallback(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> str | None:
+        import asyncio as _asyncio
+
+        from scripts import ticket_extract as te
+
+        captured: dict[str, str | None] = {}
+
+        async def _fake_run(*_args: object, **kwargs: object) -> int:
+            captured["fallback_model"] = kwargs.get("fallback_model")  # type: ignore[assignment]
+            return 0
+
+        monkeypatch.setattr(te, "_run", _fake_run)
+        monkeypatch.setattr(te, "load_env_file", lambda *_a, **_k: None)
+        monkeypatch.setattr(te.sys, "argv", ["ticket_extract"])
+        for key in ("BRAIN_NVIDIA_MODEL", "BRAIN_NVIDIA_FALLBACK_MODEL", "BRAIN_NVIDIA_BASE_URL"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("BRAIN_NVIDIA_API_KEY", "unused-in-this-path")
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+
+        assert te.main() == 0
+        assert _asyncio is not None
+        return captured["fallback_model"]
+
+    def test_the_promoted_primary_leaves_no_phantom_fallback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert self._resolved_fallback(monkeypatch, {}) is None, (
+            "un secours égal au primaire ferait croire à une chaîne à deux "
+            "maillons là où il n'y a qu'un seul point de panne"
+        )
+
+    def test_a_genuinely_distinct_fallback_still_survives(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Témoin négatif : la garde doit annuler par ÉGALITÉ, pas toujours.
+
+        Sans lui, une garde cassée qui rendrait `None` en toutes circonstances
+        passerait le test ci-dessus, et la chaîne de secours serait morte en
+        silence le jour où on lui redonnerait un second modèle.
+        """
+        resolved = self._resolved_fallback(
+            monkeypatch, {"BRAIN_NVIDIA_FALLBACK_MODEL": "mistralai/mistral-nemotron"}
+        )
+
+        assert resolved == "mistralai/mistral-nemotron"

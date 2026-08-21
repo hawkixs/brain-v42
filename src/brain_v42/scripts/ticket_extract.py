@@ -48,13 +48,19 @@ _API_KEY_VAR = "BRAIN_NVIDIA_API_KEY"
 _FALLBACK_MODEL_VAR = "BRAIN_NVIDIA_FALLBACK_MODEL"
 #: Secours quand le primaire est retiré chez le fournisseur.
 #:
-#: PROUVÉ VIVANT, PAS PROUVÉ BON POUR CE PROMPT — la distinction a déjà coûté
-#: une nuit ici : un modèle choisi sur une sonde de 16 tokens s'est révélé en
-#: TIMEOUT sur le prompt réel (canary 2026-08-05). Celui-ci sert déjà de
-#: primaire WET à `roadmap_curate`, donc il tient un prompt de production, mais
-#: il n'a JAMAIS été canaryé sur le prompt d'extraction. À canaryer avant de le
-#: promouvoir primaire ; en secours il reste strictement meilleur que rien,
-#: puisque l'alternative mesurée est 20 tickets perdus en 0,9 s.
+#: ÉGAL AU PRIMAIRE DEPUIS LE 2026-08-21, et c'est délibéré. La condition posée
+#: ici — « à canaryer sur le prompt d'extraction avant de le promouvoir
+#: primaire » — a été REMPLIE par un run de production : la nuit du 2026-08-21 a
+#: fini `extract` en `done` avec ce modèle (dream_runs.model). Le primaire d'alors
+#: étant mort en 410, ce secours était de toute façon le modèle qui finissait
+#: chaque run ; la promotion ne fait que cesser de payer l'aller-retour.
+#:
+#: Conséquence à NE PAS lire comme une perte : `main` annule un secours égal au
+#: primaire, donc extract tourne sans second maillon. Il tournait déjà sans, le
+#: secours étant consommé dès le premier ticket. Lui redonner un vrai second
+#: modèle demande de CANARYER un candidat sur le prompt d'extraction — pas de le
+#: choisir sur la fiche du fournisseur, ni sur une sonde de 16 tokens, erreur
+#: mesurée le 2026-08-05 (vivant sur 16 tokens, en TIMEOUT sur le prompt réel).
 DEFAULT_EXTRACT_FALLBACK_MODEL = "meta/llama-3.3-70b-instruct"
 
 _VALID_TARGET_TYPES = ("learning", "decision")
