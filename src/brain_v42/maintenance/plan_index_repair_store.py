@@ -60,7 +60,18 @@ if TYPE_CHECKING:
 # `dream_runs.model`, élargi de 30 à 120 caractères, plus le DROP/CREATE de la
 # vue `codex_dream_run_v1` qui bloquait l'ALTER. Aucun trigger, aucune
 # contrainte, aucune colonne NOT NULL sans défaut, aucune ligne réécrite.
-_REQUIRED_ALEMBIC_HEAD = "045"
+#
+# Bumpé à 046 après la même revue. La 046 ne touche AUCUNE des trois tables que
+# la réparation écrit — son périmètre est `brain_sessions` seul. Vérifié point
+# par point contre ce que la revue doit interdire : cinq colonnes ajoutées, TOUTES
+# nullables et sans défaut ; aucun trigger posé ; deux CHECK élargis (ils
+# acceptent strictement PLUS qu'avant, jamais moins, donc aucune ligne existante
+# ne peut devenir invalide) ; un index UNIQUE PARTIEL, mais sur `brain_sessions`,
+# hors périmètre. Aucune ligne réécrite, aucun backfill. La 046 est inerte ici.
+#
+# La revue est écrite même quand elle est courte : c'est la règle, et une revue
+# absente se lit comme une revue faite.
+_REQUIRED_ALEMBIC_HEAD = "046"
 
 
 class RepairStore:

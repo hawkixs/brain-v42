@@ -35,6 +35,7 @@ from sqlalchemy import String, Table
 
 from brain_v42.db import tables as db_tables
 from brain_v42.models.adr import ADRCreate, ADRUpdate
+from brain_v42.models.brain_session import BrainSession
 from brain_v42.models.decision import DecisionCreate, DecisionUpdate
 from brain_v42.models.dream_promotion import DreamPromotionCreate
 from brain_v42.models.feature import FeatureCreate
@@ -52,6 +53,13 @@ from brain_v42.models.ticket import TicketCreate
 #: table n'est PAS audité, et rouvrirait silencieusement la classe de défaut.
 WRITE_MODELS_BY_TABLE: dict[str, tuple[type[BaseModel], ...]] = {
     "adrs": (ADRCreate, ADRUpdate),
+    # Inscrit par la 046, et il ne l'était PAS avant : `brain_sessions` portait
+    # déjà des colonnes bornées (`project_key` 50, `client_key` 128) sans être
+    # audité. La 046 y ajoute `intent` VARCHAR(500), `started_by_actor` et
+    # `connection_id` VARCHAR(64), toutes avec un rail Pydantic — oublier cette
+    # ligne ne rougirait RIEN, ce qui est exactement la classe de défaut que ce
+    # fichier existe pour fermer.
+    "brain_sessions": (BrainSession,),
     "decisions": (DecisionCreate, DecisionUpdate),
     "dream_promotions": (DreamPromotionCreate,),
     "features": (FeatureCreate,),

@@ -48,6 +48,13 @@ def test_brain_sessions_table_contract() -> None:
         "last_heartbeat_at",
         "ended_at",
         "updated_at",
+        # Migration 046 — identité de session et nature. Ensemble FERMÉ : c'est
+        # ce qui rend tout ajout de colonne délibéré plutôt que silencieux.
+        "started_by_actor",
+        "last_observed_at",
+        "intent",
+        "nature",
+        "connection_id",
     } == set(session_table.c.keys())
 
     project_fks = list(session_table.c.project_key.foreign_keys)
