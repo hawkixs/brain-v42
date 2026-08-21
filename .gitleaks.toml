@@ -162,6 +162,29 @@ regexes = ['''\('brain_sessions_pkey', '6763cd8159ef6f0131abbfedfea044bc'\)''']
 
 [[rules.allowlists]]
 description = """
+Triaged 2026-08-21. Same md5 schema fingerprint, in the v5 recovery contract. \
+Digest of public DDL, verified against the live database. The v5 assets are \
+DERIVED from v4 by asserted substitution, so they inherit this literal \
+unchanged — the triage is the same one, not a new judgement.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v5\.sql$''']
+regexes = ['''\('brain_sessions_pkey', '6763cd8159ef6f0131abbfedfea044bc'\)''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-08-21. Same md5 schema fingerprint, in the pg_restore variant of \
+the v5 recovery contract. Digest of public DDL, verified against the live \
+database.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v5-pgrestore\.sql$''']
+regexes = ['''\('brain_sessions_pkey', '6763cd8159ef6f0131abbfedfea044bc'\)''']
+
+[[rules.allowlists]]
+description = """
 Triaged 2026-08-16. NOT a key of any kind — this is the WORD `client_key` in a \
 validation call. The line is `_normalize_required(client_key, \
 field_name="client_key", max_length=128)` in BrainSessionService.start, and \

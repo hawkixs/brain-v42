@@ -68,6 +68,14 @@ Use this single operator order:
 9. Run `apply-paths` with the unchanged backup receipt and writers-off proofs.
 10. **reindex one project at a time**, preserving the exact result of every call.
 11. Run `verify` and validate its private report and digest.
+
+> **Which contract to run, as of 2026-08-21.** The eleven steps above are the sequence of the
+> **038→039** rollout and are kept verbatim — they describe a migration that happened, and
+> rewriting their steps would falsify the record. For any run **today**, substitute the current
+> contract: **`brain-v42-v5.sql`** and **`brain-v42-v5-pgrestore.sql`**. The `v4` assets pin
+> `alembic_head = 039` and therefore cannot return 25/25 past that head — not because the
+> database degraded, but because the contract was minted against an older one. The v5 assets
+> derive the head (signature **S1**): the invariant is *exactly one applied head*.
 12. Run `finalize` only after all seven reindexes and verification succeed.
 13. Run the non-publishing installer preflight and render verified MCP units into a new private
     directory outside systemd; inspect all three artifacts:
@@ -151,8 +159,25 @@ required. It is not free of consequence, though — apply it and the code togeth
 - `_REQUIRED_ALEMBIC_HEAD` in `plan_index_repair_store.py` moves to `040`. Between merging the
   code and stamping production, the plan-index repair tool is fail-closed and refuses to run.
   That window is the reason 040 ships and deploys in the same operator session.
-- `ops/recovery/brain-v42-v4.*` still pins `alembic_head = 039`, so the live v4 attestation reads
-  **24/25** until the v5 assets exist. Expect it; do not read it as corruption.
+- ~~`ops/recovery/brain-v42-v4.*` still pins `alembic_head = 039`, so the live v4 attestation reads
+  **24/25** until the v5 assets exist. Expect it; do not read it as corruption.~~
+
+  > **AMENDED 2026-08-21 — the v5 assets now exist, and the number above was wrong.**
+  > The live **v4** receipt was measured at **22/25**, not 24/25, on 2026-08-20 against head
+  > `045`. Its three failures were all consequences of migrations applied *after* v4 was
+  > minted at `039` — `alembic_head` 039≠045, `catalog_counts.indexes` 128≠129
+  > (`idx_dream_runs_date_project`, migration 042), and the `codex_dream_run_v1` column
+  > fingerprint (migration 045 widened `dream_runs.model`). **None of them was corruption**,
+  > which is precisely why a contract that pins a revision stops teaching anyone anything.
+  >
+  > **`ops/recovery/brain-v42-v5.*` is now the current contract**, and it derives the head
+  > (signature **S1**, decision `9d22bc6a`): the invariant is *exactly one applied head*, not
+  > *the head equals N*. The exact revision stays proven, fail-closed, by
+  > `_REQUIRED_ALEMBIC_HEAD` on the code side. **Measured 2026-08-21 against production at
+  > head `046`: 25/25**, both variants — `brain-v42-v5.sql` and `brain-v42-v5-pgrestore.sql`.
+  >
+  > **Replay it, do not quote it.** Every receipt in this document is dated, and a receipt
+  > without its date is a trap: this very line carried `24/25` for long enough to be believed.
 
 Operator order:
 

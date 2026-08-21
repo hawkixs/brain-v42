@@ -64,6 +64,12 @@ _RECOVERY_ASSETS_WITH_PREDICATE = frozenset(
         "brain-v42-v3-pgrestore.sql",
         "brain-v42-v4.sql",
         "brain-v42-v4-pgrestore.sql",
+        # Ajoutés le 2026-08-21 par le mint v5. La friction a fonctionné comme
+        # écrite : ces deux assets sont nés en dérivant v4, ils ont donc hérité
+        # du prédicat — et ce test a rougi pour l'exiger, au lieu de les laisser
+        # entrer sans que personne ne vérifie qu'ils le portaient.
+        "brain-v42-v5.sql",
+        "brain-v42-v5-pgrestore.sql",
     }
 )
 
@@ -151,7 +157,8 @@ def test_every_recovery_attestation_asset_checks_the_python_source_of_truth(
 def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     """Garde de non-vacuité : compter les surfaces, pour qu'aucune n'échappe en silence.
 
-    Huit gardiens hors `_KEBAB` (1 métadonnées + 2 migrations + 5 assets). Ce compte
+    DIX gardiens hors `_KEBAB` (1 métadonnées + 2 migrations + 7 assets) depuis le
+    mint v5 du 2026-08-21 — c'était huit à l'écriture de cet ancrage. Ce compte
     n'inclut délibérément AUCUN document : `docs/design/` n'est pas tracké, et un test
     qui compterait la prose échouerait selon l'arbre de travail.
     """
@@ -170,7 +177,7 @@ def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     )
     recovery_sites = sum(len(patterns) for patterns in _recovery_assets().values())
 
-    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 5), (
+    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 7), (
         "la ventilation des surfaces d'application a changé "
         f"(métadonnées={metadata_sites}, migrations={migration_sites}, "
         f"attestation={recovery_sites} ; attendu 1/2/5). Recenser avant de corriger le "
