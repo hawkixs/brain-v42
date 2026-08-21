@@ -864,6 +864,7 @@ run_project_phases() {
   CANDIDATES_JSON=""
   DREAM_RUN_ID=""
   REORG_RUN_ID=""
+  REORG_TAGS_BEFORE=""
 
   log "--- Projet $PROJECT_KEY ---"
 
@@ -970,6 +971,32 @@ run_project_phases() {
       fi
     fi
 
+    # --- REORG: pre-phase tags snapshot ------------------------------------
+    # Le validateur d'après-phase compare les tags des entités déclarées mutées
+    # à ceux d'AVANT. C'est le seul « avant » observé : le contrôle qu'il
+    # remplace, `updated_at >= run_date`, était creux — DecayFlusher rafraîchit
+    # l'horodatage toutes les 300 s à travers un trigger sans clause WHEN, et
+    # ce sont les lectures de REORG lui-même qui l'alimentent.
+    #
+    # Pris APRÈS le killswitch (une phase coupée ne paie pas la requête) et
+    # AVANT run_phase_chain, donc une seule fois pour les deux tentatives que le
+    # budget de retry autorise : le « avant » est celui d'avant la PREMIÈRE
+    # écriture, pas d'avant la dernière.
+    if [[ "$name" == "reorg" ]]; then
+      REORG_TAGS_BEFORE="$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_reorg_tags_before.json"
+      set +e
+      uv run python -m scripts.dream.reorg_snapshot --project-key "$PROJECT_KEY" \
+        > "$REORG_TAGS_BEFORE" 2>> "$LOG_DIR/$TIMESTAMP.log"
+      snapshot_rc=$?
+      set -e
+      if (( snapshot_rc != 0 )); then
+        # Le validateur refusera le rapport faute d'instantané lisible — voulu et
+        # fail-closed. Cette ligne est ce qui permet de remonter du refus à sa
+        # cause, au lieu de soupçonner le rapport de l'agent.
+        log "WARN  reorg — pre-phase tags snapshot failed (rc=$snapshot_rc); the validator will refuse the report"
+      fi
+    fi
+
     # `set -e` is active, so we must guard the call (run_phase's non-zero
     # return is expected on phase failure and MUST NOT abort the script — we
     # want every phase to run for diagnostic completeness).
@@ -1044,17 +1071,21 @@ run_project_phases() {
     fi
 
     # --- REORG: post-phase validator --------------------------------------
-    # Symmetric to PROMOTE's validator. Runs only when the phase succeeded
-    # (phase_rc==0). The validator never fails the pipeline — it marks the
-    # dream_runs row partial and exits 1, which we translate to phase_rc=1
-    # so the FAIL_TOTAL counter captures it, but the pipeline continues.
+    # Symmetric to PROMOTE's validator. Runs on EVERY reorg outcome, green or
+    # not. It used to be gated on `phase_rc == 0`, which removed the check from
+    # exactly the case it serves: a phase that dies or times out has already had
+    # its tool calls land, and those partial writes are the ones nobody re-reads.
+    # A green phase at least emitted its report and followed its prompt to the end.
+    # The validator never fails the pipeline — it marks the dream_runs row partial
+    # and exits 1, which we translate to phase_rc=1 so the FAIL_TOTAL counter
+    # captures it, but the pipeline continues.
     # In dry-run mode the validator detects this from the JSON trailer and
     # skips all DB checks (nothing should have mutated).
     #
     # NOTE: effective_dry_run is local to run_phase() and is out of scope
     # here.  Recompute the same logic from the global inputs — this is the
     # exact same derivation run_phase uses for the REORG phase.
-    if [[ "$name" == "reorg" && "$phase_rc" == "0" ]]; then
+    if [[ "$name" == "reorg" ]]; then
       reorg_effective_dry_run="$DRY_RUN"
       [[ "$BRAIN_DREAM_REORG_DRY_RUN" == "true" ]] && reorg_effective_dry_run="true"
 
@@ -1085,7 +1116,11 @@ asyncio.run(_get())
       )
       reorg_validator_flags=()
       reorg_validator_flags+=(--report-log "$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.log")
-      reorg_validator_flags+=(--run-date "$TIMESTAMP")
+      reorg_validator_flags+=(--tags-before-json "$REORG_TAGS_BEFORE")
+      # Le flux d'événements de la phase — ce que l'agent a RÉELLEMENT appelé,
+      # face à ce que son rapport DÉCLARE. Même construction de nom que
+      # run_phase (ligne ~328). Contrôle en avertissement seul pour l'instant.
+      reorg_validator_flags+=(--events-jsonl "$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.events.jsonl")
       # Périmètre du run, comme pour promote et connect. Le serveur borne déjà
       # REORG à son projet, mais brain_list est le seul outil CRUD sans contrôle
       # de scope PROPRE — sa borne vit dans le middleware seul, et l'enforcement
@@ -1101,8 +1136,17 @@ asyncio.run(_get())
       validator_rc=$?
       set -e
       if (( validator_rc != 0 )); then
-        log "FAIL reorg — validator rejected REORG report; see validation detail"
-        phase_rc=1
+        if (( phase_rc == 0 )); then
+          log "FAIL reorg — validator rejected REORG report; see validation detail"
+          phase_rc=1
+        else
+          # La phase est DÉJÀ tombée : le `case` ci-dessous range un 2 dans
+          # TIMED_OUT_PHASES et un 1 dans FAILED_PHASES. Écraser le 2 par un 1
+          # ferait rapporter un échec dur à la place du dépassement de budget
+          # qui a réellement eu lieu, et l'opérateur chercherait la mauvaise
+          # panne. Le verdict s'ajoute donc au journal, pas à la classification.
+          log "FAIL reorg — validator rejected REORG report; see validation detail (phase already rc=$phase_rc; classification unchanged)"
+        fi
       fi
     fi
 

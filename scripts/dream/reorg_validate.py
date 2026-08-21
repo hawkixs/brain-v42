@@ -26,10 +26,14 @@ Design decisions:
 - WET archived_ids: each entity must have ``freshness_status='archived'`` in PG.
   Not-archived → ValidationFailure (masked failure).  Not-found → ValidationFailure.
 
-- WET updated_ids: each entity must exist in PG AND have
-  ``updated_at >= run_date`` (i.e., the entity was actually touched during
-  this run).  Existence + recency together catch both hallucinated UUIDs and
-  Part 1 masked failures (agent claims 20 metadata updates, performs none).
+- WET updated_ids: each entity must exist in PG AND carry tags that DIFFER from
+  the pre-phase snapshot (``--tags-before-json``, written by
+  ``scripts.dream.reorg_snapshot``).  Existence + movement together catch both
+  hallucinated UUIDs and Part 1 masked failures (agent claims 20 metadata
+  updates, performs none).  The snapshot is the only measured ``before``:
+  ``updated_at`` is bumped every 300 s by DecayFlusher through an unconditional
+  trigger — partly by REORG's own reads — and migration 041's
+  ``content_updated_at`` triggers do not watch ``tags`` at all.
 
 - CAP ENFORCEMENT: more than 20 updated_ids or archived_ids violates the
   phase_reorg.md contract and is flagged as ValidationFailure.
@@ -44,8 +48,9 @@ Design decisions:
 CLI:
     python -m scripts.dream.reorg_validate \\
         --report-log logs/dream/2026-07-02_reorg.log \\
+        --project-key brain-v42 \\
+        --tags-before-json logs/dream/2026-07-02_brain-v42_reorg_tags_before.json \\
         --dream-run-id 42 \\
-        --run-date 2026-07-02 \\
         [--dry-run]
 """
 
@@ -53,8 +58,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import datetime as dt
 import json
+import pathlib
 import re
 import sys
 from uuid import UUID
@@ -68,6 +73,7 @@ from sqlalchemy.ext.asyncio import (
 
 from brain_v42.config import Settings
 from brain_v42.db.tables import decisions, dream_runs, learnings
+from scripts.dream.reorg_events import EventScan, scan_events
 
 # Machine-readable trailer inserted by the agent after the prose report.
 # Mirrors the PROMOTE REPORT block so tooling parses both the same way.
@@ -137,7 +143,7 @@ async def _entity_row(
     session: AsyncSession,
     entity_id: UUID,
 ) -> dict | None:
-    """Return id, freshness_status, updated_at, project_key from learnings or decisions.
+    """Return id, freshness_status, tags, project_key from learnings or decisions.
 
     Returns None if not found in either table.
     """
@@ -148,7 +154,7 @@ async def _entity_row(
                     sa.select(
                         tbl.c.id,
                         tbl.c.freshness_status,
-                        tbl.c.updated_at,
+                        tbl.c.tags,
                         tbl.c.project_key,
                     ).where(tbl.c.id == entity_id)
                 )
@@ -164,17 +170,20 @@ async def _entity_row(
 def _reject_foreign_project(
     raw_id: str,
     row: dict,
-    project_key: str | None,
+    project_key: str,
     *,
     claim: str,
 ) -> None:
     """Fail when a mutated entity does not belong to the run's project.
 
-    A ``None`` perimeter disables the check rather than guessing one: inventing a
-    scope here would turn a missing wire-up into confident nonsense.
+    The perimeter is REQUIRED, and deliberately has no ``None`` branch. It used
+    to have one — « a ``None`` perimeter disables the check rather than guessing
+    one » — which read as prudence and behaved as silence: the validator still
+    printed ``REORG VALIDATE: OK`` while checking no perimeter at all, so a
+    drapeau dropped from dream.sh's argument array would have looked like a
+    clean night. Parity with promote_validate and connect_validate, which have
+    both required it all along.
     """
-    if project_key is None:
-        return
     if row["project_key"] != project_key:
         raise ValidationFailure(
             f"entity {raw_id} (claimed {claim}) belongs to project "
@@ -184,16 +193,70 @@ def _reject_foreign_project(
         )
 
 
+def symmetry_warnings(report: dict, scan: EventScan) -> list[str]:
+    """Compare what the report DECLARED to what the event stream OBSERVED.
+
+    Both directions, because they fail differently:
+
+    - *declared, never called* is the ``bccc9115`` ghost. The report names an id
+      no ``brain_update`` was ever emitted for.
+    - *called, never declared* is invisible today, and it is the worse of the two:
+      a mutation neither the validator, nor the alert, nor the briefing mentions.
+      It exists only in a stream nobody re-reads.
+
+    Archived ids count as declared. ``phase_reorg.md`` §Part 2 d archives through
+    the same ``brain_update``, so comparing against ``updated`` alone would
+    denounce every archive as an undeclared mutation and make the check shout at
+    its own nominal behaviour every night.
+
+    An unreadable stream gets ONE warning naming that inability, never a per-id
+    verdict. Its ``updated_ids`` is empty, so a naive comparison would denounce
+    every declared id at once — a massive false alarm one quickly learns to
+    ignore — while silence would make "nothing wrong" indistinguishable from
+    "nothing was read".
+
+    WARNINGS ONLY, by design and for now: escalating to a failure waits for a
+    clean week of observation. A guard that starts by failing nights it has never
+    been measured against teaches operators to disable it.
+    """
+    declared = set(report.get("updated_ids", [])) | set(report.get("archived_ids", []))
+
+    if not scan.recognised:
+        return [
+            "event stream carried no recognisable codex or agy tool call — symmetry "
+            "UNVERIFIED (this is NOT the same fact as zero mutations: a new agent "
+            f"format or an empty stream reads identically); {len(declared)} id(s) declared"
+        ]
+
+    warnings: list[str] = []
+
+    ghosts = sorted(declared - scan.updated_ids)
+    if ghosts:
+        warnings.append(
+            f"{len(ghosts)} id(s) declared in the report but never passed to "
+            f"brain_update in the event stream: {', '.join(ghosts)}"
+        )
+
+    undeclared = sorted(scan.updated_ids - declared)
+    if undeclared:
+        warnings.append(
+            f"{len(undeclared)} id(s) mutated through brain_update but absent from the "
+            f"report: {', '.join(undeclared)}"
+        )
+
+    return warnings
+
+
 async def validate(
     report: dict,
     session_factory: async_sessionmaker[AsyncSession],
     dream_run_id: int | None,
-    run_date: dt.date | None = None,
-    project_key: str | None = None,
+    project_key: str,
+    tags_before: dict[str, list[str]],
 ) -> None:
     """Verify that the entities the agent claimed to mutate actually changed.
 
-    PROJECT: when ``project_key`` is given, every mutated entity must belong to it.
+    PROJECT: every mutated entity must belong to ``project_key``, which is REQUIRED.
     Defense in depth — the server already bounds REORG to its project twice (the
     middleware injects ``project_key`` into ``brain_list`` arguments and denies a
     divergent one; all five repositories carry ``AND project_key = :scope`` in the
@@ -207,7 +270,8 @@ async def validate(
     DRY-RUN: skips all DB checks (nothing should have mutated).
     MISSING MARKER (wet): raises ValidationFailure (fail-closed).
     WET archived_ids: each entity must have freshness_status='archived' in PG.
-    WET updated_ids: each entity must exist AND have updated_at >= run_date.
+    WET updated_ids: each entity must exist AND carry tags that differ from
+    ``tags_before``, the snapshot taken just before the phase started.
     CAP: > 20 updated or archived raises ValidationFailure.
 
     Raises ValidationFailure on any integrity violation.
@@ -281,19 +345,34 @@ async def validate(
 
             _reject_foreign_project(raw_id, row, project_key, claim="updated")
 
-            # updated_at freshness check: the agent must have touched the entity
-            # during (or after) run_date.  Without this, an existence check alone
-            # can never detect a Part 1 masked failure — every claimed ID always
-            # exists because the agent sourced it from brain_list scans.
-            if run_date is not None:
-                entity_updated_at: dt.datetime = row["updated_at"]
-                # updated_at is tz-aware (PostgreSQL timestamptz); compare as date.
-                if entity_updated_at.date() < run_date:
-                    raise ValidationFailure(
-                        f"entity {raw_id} (claimed updated) has updated_at="
-                        f"{entity_updated_at.date().isoformat()} which is before "
-                        f"run_date={run_date.isoformat()} — masked failure (no write performed)"
-                    )
+            # TAG-MOVEMENT check: the entity's tags must differ from the
+            # pre-phase snapshot.  Without it, an existence check alone can never
+            # detect a Part 1 masked failure — every claimed ID always exists,
+            # because the agent sourced it from its own brain_list scans.
+            #
+            # This replaces an `updated_at >= run_date` check that was hollow:
+            # DecayFlusher bulk-UPDATEs both tables every 300 s and the migration
+            # 001 trigger has no WHEN clause, so the timestamp moved on its own.
+            # The circuit was worse than the drift — the access rows that drive
+            # the flusher come from REORG's own brain_get reads, so the phase
+            # manufactured the evidence it was being judged on.
+            if raw_id not in tags_before:
+                raise ValidationFailure(
+                    f"entity {raw_id} (claimed updated) is absent from the pre-phase "
+                    f"tags snapshot — it did not exist in project {project_key!r} when "
+                    f"the phase started. REORG normalises existing metadata and never "
+                    f"creates; treat this as a snapshot taken on the wrong corpus or a "
+                    f"phase that stepped outside its contract"
+                )
+            # Sorted comparison: a pure permutation of identical tags is not a
+            # normalisation, so it must not count as movement. Duplicates survive
+            # sorting, which is right — de-duplicating IS a real normalisation.
+            if sorted(row["tags"] or []) == sorted(tags_before[raw_id]):
+                raise ValidationFailure(
+                    f"entity {raw_id} (claimed updated) still carries the same tags as "
+                    f"before the phase ({sorted(tags_before[raw_id])!r}) — masked "
+                    f"failure (no write performed)"
+                )
 
 
 async def _mark_dream_run_partial(
@@ -318,8 +397,29 @@ def _build_factory(postgres_url: str) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
+def _emit_symmetry(report: dict, events_path: str) -> None:
+    """Print the report↔stream symmetry verdict, and never raise.
+
+    Read here rather than in ``main`` so a single fact produces a single line:
+    an unreadable stream would otherwise also trip ``scan.recognised``, and two
+    warnings for one cause is how an alert stops being read.
+    """
+    try:
+        events_raw = pathlib.Path(events_path).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        print(
+            f"REORG SYMMETRY WARN: event stream {events_path!r} unreadable ({exc}) — "
+            f"symmetry UNVERIFIED",
+            file=sys.stderr,
+        )
+        return
+    for warning in symmetry_warnings(report, scan_events(events_raw)):
+        print(f"REORG SYMMETRY WARN: {warning}", file=sys.stderr)
+
+
 async def _amain(
     raw: str,
+    tags_before: dict[str, list[str]],
     session_factory: async_sessionmaker[AsyncSession],
     args: argparse.Namespace,
 ) -> int:
@@ -336,12 +436,16 @@ async def _amain(
         # CLI --dry-run flag is authoritative over JSON trailer (belt+suspenders)
         if args.dry_run:
             report = {**report, "dry_run": True}
+        # Avant `validate`, pour que le verdict de symétrie s'imprime même quand
+        # la validation échoue juste après — c'est la nuit qui échoue qui a le
+        # plus besoin d'être lue.
+        _emit_symmetry(report, args.events_jsonl)
         await validate(
             report,
             session_factory,
             args.dream_run_id,
-            args.run_date,
-            project_key=args.project_key,
+            args.project_key,
+            tags_before,
         )
     except ValidationFailure as exc:
         await _mark_dream_run_partial(session_factory, args.dream_run_id, str(exc))
@@ -373,29 +477,45 @@ def main(argv: list[str] | None = None) -> int:
         help="Force dry-run mode (skips DB checks); also detected from JSON trailer",
     )
     parser.add_argument(
-        "--run-date",
-        type=dt.date.fromisoformat,
-        default=None,
-        help="Date of the dream run (YYYY-MM-DD); used to check updated_at >= run_date",
+        "--events-jsonl",
+        required=True,
+        help=(
+            "Path to the phase event stream (codex or agy JSONL). Used for the "
+            "report-vs-observed symmetry check, which WARNS and never fails — "
+            "escalation waits for a clean week of observation"
+        ),
+    )
+    parser.add_argument(
+        "--tags-before-json",
+        required=True,
+        help=(
+            "Path to the pre-phase tags snapshot written by scripts.dream.reorg_snapshot "
+            "— required, deliberately without a default. It is the only measured `before`: "
+            "updated_at moves on its own (DecayFlusher + an unconditional trigger) and "
+            "content_updated_at ignores `tags` entirely"
+        ),
     )
     parser.add_argument(
         "--project-key",
-        default=None,
+        required=True,
         help=(
             "Perimeter the run was launched with; every mutated entity must belong "
-            "to it. Optional so an operator can validate a log out of band, but "
-            "dream.sh always passes it (pinned by tests/unit/test_reorg_validate.py)"
+            "to it — required, deliberately without a default. An out-of-band "
+            "replay names the project it is replaying (pinned by "
+            "tests/unit/test_reorg_validate.py)"
         ),
     )
     args = parser.parse_args(argv)
 
     with open(args.report_log) as fh:
         raw = fh.read()
+    with open(args.tags_before_json) as fh:
+        tags_before = json.load(fh)
 
     settings = Settings()
     session_factory = _build_factory(settings.postgres_url)
 
-    return asyncio.run(_amain(raw, session_factory, args))
+    return asyncio.run(_amain(raw, tags_before, session_factory, args))
 
 
 if __name__ == "__main__":

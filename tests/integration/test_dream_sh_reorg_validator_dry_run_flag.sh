@@ -13,6 +13,12 @@
 #   2. When BRAIN_DREAM_REORG_DRY_RUN=true, the validator is invoked with
 #      --dry-run (the flag must appear in the recorded uv call).
 #
+# NOTE: this file is NOT collected by CI (`pytest tests/integration/` ignores
+# .sh). The CI-enforced witnesses for the same wiring are
+# tests/unit/test_dream_sh_reorg_tags_snapshot.py and
+# tests/unit/test_dream_sh_reorg_validator_runs_on_failure.py, which slice the
+# real blocks and execute them under bash.
+#
 # bash -n cannot catch this class of bug (runtime unbound-variable), so this
 # test actually executes the code path with mocked `uv` and `claude` stubs.
 
@@ -144,14 +150,14 @@ if [[ -f "$UV_CALLS_DIR/reorg_validate.argv" ]]; then
   fi
 fi
 
-# ── Assertion 4: --run-date was passed to the validator ──────────────────────
-# Verifies the MAJOR 1 wiring: dream.sh must pass --run-date $TIMESTAMP so the
-# updated_at >= run_date check in validate() can do its job.
+# ── Assertion 4: --tags-before-json was passed to the validator ──────────────
+# Verifies the MAJOR 1 wiring: dream.sh must pass the pre-phase tags snapshot so the
+# tag-movement check in validate() has a measured `before` to compare against.
 if [[ -f "$UV_CALLS_DIR/reorg_validate.argv" ]]; then
-  if grep -q -- "--run-date" "$UV_CALLS_DIR/reorg_validate.argv"; then
-    pass "reorg_validate received --run-date (updated_at recency check wired)"
+  if grep -q -- "--tags-before-json" "$UV_CALLS_DIR/reorg_validate.argv"; then
+    pass "reorg_validate received --tags-before-json (tag-movement check wired)"
   else
-    fail "reorg_validate was NOT called with --run-date — MAJOR 1 wiring missing"
+    fail "reorg_validate was NOT called with --tags-before-json — MAJOR 1 wiring missing"
     echo "    Actual argv:" >&2
     cat "$UV_CALLS_DIR/reorg_validate.argv" | sed 's/^/      /' >&2
   fi
