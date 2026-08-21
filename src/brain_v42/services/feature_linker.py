@@ -6,8 +6,31 @@ inserts links into feature_artifacts.
 
 When a ClusterGuard is provided **and** the caller passes a title, the linker
 delegates to ClusterGuard.resolve() (which may link, merge, or create a
-feature) and then inserts the feature_artifact link.  Otherwise the original
-raw-SQL cosine-similarity path is used for backward compatibility.
+feature) and then inserts the feature_artifact link.  Otherwise it falls back to
+a raw-SQL cosine-similarity path.
+
+DIVERGENCE — the two paths do NOT share a contract, and reading the fallback as
+"the same thing, older" is the mistake this note exists to prevent:
+
+    |                     | ClusterGuard path      | raw-SQL fallback     |
+    |---------------------|------------------------|----------------------|
+    | links per artifact  | at most 1, structural  | up to ``max_links``  |
+    | reranker            | yes (0.75 / 0.50)      | none                 |
+    | grey zone 0.50–0.70 | arbitrated             | ignored              |
+    | link-only mode      | honoured               | unknown              |
+    | feature creation    | possible               | never                |
+
+The fallback is not an edge case: ``embedding_backfill`` and the backlog
+recovery path both build a linker with no guard at all. Which path ran is
+therefore the first question to ask about an unexpected link, which is why
+taking the fallback is logged at WARNING and names its reason — a missing guard
+and a missing title are two different bugs, in two different files.
+
+The fallback used to have no cap and no ``ORDER BY``: one artifact could attach
+itself to every feature above 0.70, in whatever order PostgreSQL felt like.
+``max_links`` bounds it, ``ORDER BY sim DESC`` makes the survivors the closest
+ones rather than arbitrary ones, and reaching the cap is announced — a silent
+truncation reads exactly like "there were only three candidates".
 
 Fire-and-forget: failures are logged but never block the artifact insert.
 """
@@ -32,6 +55,11 @@ logger = structlog.get_logger(__name__)
 
 _DEFAULT_THRESHOLD = 0.70
 
+#: Cap on links created by the raw-SQL fallback for a single artifact. Matches
+#: ``auto_linker``'s default so the two bounded paths of the codebase agree; the
+#: ClusterGuard path needs no such constant, being structurally limited to one.
+_DEFAULT_MAX_LINKS = 3
+
 
 class FeatureLinker:
     """Auto-links artifacts to features by cosine similarity."""
@@ -41,10 +69,12 @@ class FeatureLinker:
         session_factory: async_sessionmaker,
         threshold: float = _DEFAULT_THRESHOLD,
         cluster_guard: ClusterGuard | None = None,
+        max_links: int = _DEFAULT_MAX_LINKS,
     ) -> None:
         self._sf = session_factory
         self._threshold = threshold
         self._cluster_guard = cluster_guard
+        self._max_links = max_links
 
     async def link_artifact(
         self,
@@ -66,6 +96,18 @@ class FeatureLinker:
                 return await self._do_link_via_guard(
                     embedding, artifact_type, artifact_id, project_key, title
                 )
+            # WARNING, not debug: the fallback has a different contract (see the
+            # module docstring), and a debug line is absent in production. The two
+            # reasons are kept apart because they are two different bugs — a
+            # missing guard is a wiring problem here, a missing title is the
+            # CALLER not passing one.
+            logger.warning(
+                "feature_linker.fallback_path",
+                reason="no_cluster_guard" if not self._cluster_guard else "no_title",
+                artifact_type=artifact_type,
+                artifact_id=str(artifact_id),
+                project_key=project_key,
+            )
             return await self._do_link(embedding, artifact_type, artifact_id, project_key)
         except Exception:
             logger.warning(
@@ -142,6 +184,9 @@ class FeatureLinker:
             features.c.merged_into.is_(None),
             similarity_expr >= self._threshold,
         )
+        # ORDER BY before LIMIT, always together: a cap without a sort trades
+        # "too many links" for "the wrong links", which is strictly worse.
+        stmt = stmt.order_by(similarity_expr.desc()).limit(self._max_links)
 
         async with self._sf() as session:
             rows = (await session.execute(stmt)).fetchall()
@@ -162,6 +207,18 @@ class FeatureLinker:
             )
             await session.commit()
 
+            if len(rows) == self._max_links:
+                # Le plafond est ATTEINT, donc des candidats ont pu être écartés
+                # — on ne sait pas combien, et on ne le prétend pas. Le taire
+                # rendrait cette page indiscernable d'un projet qui n'avait que
+                # `max_links` features au-dessus du seuil.
+                logger.warning(
+                    "feature_linker.cap_reached",
+                    artifact_type=artifact_type,
+                    artifact_id=str(artifact_id),
+                    max_links=self._max_links,
+                    project_key=project_key,
+                )
             logger.debug(
                 "feature_linker.linked",
                 artifact_type=artifact_type,
