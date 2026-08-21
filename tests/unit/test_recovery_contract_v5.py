@@ -197,16 +197,25 @@ def test_the_two_v5_variants_keep_their_exact_cte_parity() -> None:
     assert not (live - pgrestore)
 
 
-def test_the_v5_assets_are_private_regular_files() -> None:
-    """Le runbook impose `0600` sur tout fichier de contrôle (l. 45).
+def test_the_v5_assets_are_regular_non_executable_files() -> None:
+    """Ce que git PEUT porter — et le `0600` du runbook n'en fait pas partie.
 
-    `brain-v42-v4.sql` avait dérivé à `0644` quand ses onze frères étaient à
-    `0600` — corrigé le 2026-08-20. Les actifs v5 naissent conformes plutôt que
-    de dériver puis d'être rattrapés.
+    Première rédaction de ce test : `st_mode & 0o777 == 0o600`. Vert en local,
+    ROUGE en CI, et le test avait tort. **Git ne suit que le bit exécutable** :
+    tous les actifs `ops/recovery/` sont stockés `100644` dans l'index, y compris
+    les v1 à v4 qui sont pourtant à `0600` sur disque. Un checkout neuf les rend
+    donc à `0644` — l'assertion échouait sur une propriété que le dépôt ne peut
+    pas transporter.
+
+    Le `0600` que le runbook impose (l. 45) est une propriété OPÉRATIONNELLE du
+    fichier déployé, posée à la création et sur l'hôte, pas un invariant de
+    dépôt. Ce test garde donc ce qui est gardable : un fichier régulier, non
+    exécutable. Le reste appartient au runbook, et le prétendre testé ici serait
+    pire que de ne pas le tester — ça donnerait une assurance fausse.
     """
     for asset in (V5_JSON, V5_SQL, V5_PGRESTORE):
         assert asset.is_file(), asset.name
-        assert asset.stat().st_mode & 0o777 == 0o600, f"{asset.name}: {oct(asset.stat().st_mode)}"
+        assert not asset.stat().st_mode & 0o111, f"{asset.name} est exécutable"
 
 
 def test_the_v5_contract_reads_and_never_writes() -> None:
