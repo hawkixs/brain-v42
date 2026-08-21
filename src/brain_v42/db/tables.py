@@ -763,14 +763,34 @@ brain_sessions = Table(
         nullable=False,
         server_default=sa.text("NOW()"),
     ),
+    # Migration 046 — five nullable columns, none backfilled. NULL means
+    # "opened before 046"; see the migration docstring for why no default.
+    Column("started_by_actor", String(64), nullable=True),
+    Column("last_observed_at", DateTime(timezone=True), nullable=True),
+    Column("intent", String(500), nullable=True),
+    Column("nature", String(16), nullable=True),
+    Column("connection_id", String(64), nullable=True),
     UniqueConstraint(
         "project_key",
         "client_key",
         name="uq_brain_sessions_project_client",
     ),
+    # PARTIAL, and it must stay partial: a full unique index would burn a
+    # connection for its whole life on the first auto-close (migration 046).
+    sa.Index(
+        "uq_brain_sessions_connection",
+        "project_key",
+        "connection_id",
+        unique=True,
+        postgresql_where=sa.text("status = 'open'"),
+    ),
     sa.CheckConstraint(
-        "status IN ('open', 'ended', 'abandoned')",
+        "status IN ('open', 'ended', 'abandoned', 'closed_inactive')",
         name="brain_sessions_status_valid",
+    ),
+    sa.CheckConstraint(
+        "nature IS NULL OR nature IN ('agent', 'operator')",
+        name="brain_sessions_nature_valid",
     ),
     sa.CheckConstraint(
         "btrim(client_key) <> ''",

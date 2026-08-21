@@ -7,7 +7,9 @@
 
 Most tools return formatted markdown strings. The seven v4 session lifecycle tools return structured Pydantic results. Their repository contract is documented below. Lifecycle v4 has run in production since 24 July 2026, after revision 036, explicit schema proof and a restart-last MCP cutover with authenticated E2E canaries.
 
-Migration 045 is the repository target: it widens `dream_runs.model` from `varchar(30)` to
+Migration 046 is the repository target: it gives sessions their identity (`connection_id`,
+`started_by_actor`, `intent`, `nature`) and the `closed_inactive` terminal state. Migration 045
+widened `dream_runs.model` from `varchar(30)` to
 `varchar(120)`, because two of the five configured phase models did not fit — and an overflow
 loses the whole `dream_runs` row, not the column, the INSERT being best-effort. It follows
 migration 044, itself after Dream revision 038, the timestamp-trigger isolation

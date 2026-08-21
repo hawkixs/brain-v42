@@ -115,7 +115,7 @@ credential, nor writer quiescence, nor the absence of Neo4j sessions.
 
 ## Migration history
 
-The repository migration target is 045. No page in this repository proves a live
+The repository migration target is 046. No page in this repository proves a live
 schema head — measure it, never read it here.
 
 Migration 038 adds the terminal audit trail for Dream EXTRACT attempts. Migration 039
@@ -135,7 +135,12 @@ going through the generic `brain_update`. Migration 044 adds
 `last_accessed_at_human`: migration 041 had given the six decay-tracked tables a human
 access counter, fixing a 0.2-weight term, but left the 0.3-weight recency term reading
 a counter contaminated by machine reads. Both signals now switch together, behind
-`decay_human_signal_enabled`, which ships closed. Migration 045 widens
+`decay_human_signal_enabled`, which ships closed. Migration 046 gives sessions their
+identity — `connection_id` with a PARTIAL unique index (`WHERE status = 'open'`),
+`started_by_actor`, `intent`, `nature` — and declares a fourth terminal state,
+`closed_inactive`, in the two CHECK constraints. **Migration 046 changes no behaviour:**
+it adds the schema those columns need and nothing writes them yet. All five columns are
+nullable and none is backfilled: `NULL` means "before 046". Migration 045 widens
 `dream_runs.model` to `varchar(120)`: two of the five configured phase models did not
 fit in 30 characters, and an overflow loses the whole row rather than the column
 (the INSERT being best-effort).

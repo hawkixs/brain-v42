@@ -441,7 +441,7 @@ def test_full_runbook_has_one_039_operator_order_and_no_live_claim() -> None:
     # entière soit déjà repassée verte. Il n'est toujours pas retiré ici parce
     # que retirer une garde en la traversant est exactement la manœuvre que ce
     # dépôt refuse ; le retrait mérite son propre commit.
-    assert "La cible du dépôt est 045." in schema
+    assert "La cible du dépôt est 046." in schema
     assert "La production reste à 037 avant une bascule autorisée." not in schema
 
 

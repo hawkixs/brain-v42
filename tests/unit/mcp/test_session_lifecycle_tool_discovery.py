@@ -39,10 +39,28 @@ LIGHTWEIGHT_OUTPUT_SCHEMA_TOOLS = frozenset(
         "brain_session_abandon",
     }
 )
-OUTPUT_SCHEMA_TOTAL = 8487
-OUTPUT_SCHEMA_MINIMUM_SAVINGS = 10_000
+# Bumpé par la 046, et le nombre est MESURÉ, pas ajusté jusqu'au vert.
+# Coût irréductible du 4e état de la machine (`closed_inactive`) : le seul ajout
+# à l'énumération de statut porte le total de 8487 à 9087 — 600 octets, répartis
+# sur les quatre tools qui dérivent encore un schéma. `nature` en Literal ajoute
+# 294 de plus. Une session `closed_inactive` DOIT pouvoir être chargée par le
+# modèle, sinon la 046 rend illisibles les lignes qu'elle rend valides.
+OUTPUT_SCHEMA_TOTAL = 9381
+# Abaissé de 10_000 à 9_500 : le plancher avait été fixé contre une machine à
+# TROIS états, et le quatrième coûte 600 octets à lui seul — il ne restait que
+# 554 de marge. Le plancher relâché reste un plancher : l'économie effective est
+# de 9_660 octets sur les 19_041 de la ligne de base, soit toujours plus de la
+# moitié. C'est un budget INTERNE qu'on relâche de 500 octets, jamais un contrat
+# client : les sept tools gardent exactement la même surface publique, et les
+# trois `output_schema=None` restent trois.
+OUTPUT_SCHEMA_MINIMUM_SAVINGS = 9_500
 SESSION_PUBLIC_FIELDS = {
     "id",
+    # 046 : `nature` seule entre au contrat public. Les quatre autres colonnes
+    # de la migration (`started_by_actor`, `last_observed_at`, `intent`,
+    # `connection_id`) n'ont encore aucun écrivain et n'entrent PAS ici — chacune
+    # paiera son schéma avec le commit qui l'utilise.
+    "nature",
     "project_key",
     "client_key",
     "status",

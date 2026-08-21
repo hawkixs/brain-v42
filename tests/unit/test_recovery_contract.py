@@ -276,7 +276,7 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
     # et repose son GRANT ; la FORME décrite par le contrat est donc intacte.
     # Il reste épinglé à 031 parce que c'est la révision dont il décrit la
     # forme, pas la tête courante.
-    assert script.get_heads() == ["045"]
+    assert script.get_heads() == ["046"]
     post_contract_tables = {
         "brain_session_artifacts",
         "brain_sessions",
