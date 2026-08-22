@@ -199,10 +199,23 @@ required. It is not free of consequence, though — apply it and the code togeth
   > Its observed value names its three counters, so a failure says which one moved.
   > **Measured 2026-08-22 against production at head `046`: 27/27**, both variants.
   >
+  > **EXTENDED a third time, same day — the denominator is 28. `27/28` is a FAILURE.**
+  > Ticket `f36846a1`: the **nine sequences** were attested by nothing at all — `grep -ci
+  > sequence` on the previous asset returned `0`. `sequence_shape` now pins their shape
+  > (owning table and column, type, increment, bounds, `CYCLE`) in both directions, and —
+  > the control that actually matters — `last_value >= max(id)` on each owning column.
+  > That second one is the silent restore failure: a restore that skips the `setval`s
+  > leaves every sequence at 1, the catalogue is complete, every `SELECT` passes, and the
+  > FIRST `INSERT` dies on a primary-key collision. Its observed value names its two
+  > counters. Everything above stays true.
+  > **Measured 2026-08-22 against production at head `046`: 28/28**, both variants.
+  >
   > **What no receipt here proves.** Every number above was replayed against the **live**
   > production database, never against a `pg_restore`d dump. None of them says anything about
   > an actual restoration. The P1 gate of `8eaefe36` stands entirely open — do not read
-  > `27/27` as "DR is proven".
+  > `28/28` as "DR is proven". The sequence check makes that sharper, not softer: on a live
+  > database `last_value >= max(id)` is true by construction, so the one control written
+  > FOR a restore is the one control no receipt here can ever exercise.
 
 Operator order:
 
