@@ -42,6 +42,12 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from tests.integration.schema_fingerprint import (
+    SchemaProbe,
+    describe_schema_divergence,
+    describe_underivable_premise,
+    migrations_emitting_non_origin_trigger_state,
+)
 from tests.integration.schema_residue import (
     RESIDUE_TABLES,
     ResidueProbe,
@@ -245,6 +251,63 @@ def _assert_no_migration_test_residue(db_url: str, project_root: Path) -> None:
         raise RuntimeError(message)
 
 
+def _probe_live_schema(db_url: str) -> SchemaProbe:
+    """Read the trigger states and the replication role from the live database.
+
+    Never returns a partial reading dressed up as a clean one: anything that
+    goes wrong is reported in ``failure``, and the guard turns that into an
+    error rather than a verdict.
+    """
+
+    async def probe() -> SchemaProbe:
+        engine = create_async_engine(db_url, poolclass=NullPool)
+        try:
+            async with engine.connect() as conn:
+                rows = (
+                    await conn.execute(
+                        sa.text(
+                            "SELECT tgname, tgenabled::text AS state "
+                            "FROM pg_trigger WHERE NOT tgisinternal"
+                        )
+                    )
+                ).mappings()
+                states = {str(row["tgname"]): str(row["state"]) for row in rows}
+                role = await conn.scalar(
+                    sa.text("SELECT current_setting('session_replication_role')")
+                )
+                return SchemaProbe(
+                    trigger_states=states,
+                    session_replication_role=str(role) if role is not None else None,
+                )
+        except Exception as exc:  # noqa: BLE001 - surfaced, never swallowed
+            return SchemaProbe(failure=f"{type(exc).__name__}: {exc}")
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(probe())
+
+
+def _assert_schema_matches_the_migration_chain(db_url: str, project_root: Path) -> None:
+    """Refuse setup when the SCHEMA diverges, even though the revision is right.
+
+    Runs AFTER ``alembic upgrade head``, not before: a virgin database carries
+    no triggers at all, and refusing it would break every fresh CI service
+    container. Once the chain has run, whatever is off origin state was left by
+    something that is not a migration.
+
+    Connectivity needs no special case here: this runs after a SUCCESSFUL
+    ``alembic upgrade head``, so the database is reachable by construction. A
+    probe that fails at this point is a broken instrument, and the guard says so
+    instead of concluding anything about the schema.
+    """
+    offenders = migrations_emitting_non_origin_trigger_state(project_root / "alembic" / "versions")
+    if offenders:
+        raise RuntimeError(describe_underivable_premise(offenders))
+    message = describe_schema_divergence(_probe_live_schema(db_url))
+    if message is not None:
+        raise RuntimeError(message)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def run_migrations() -> None:
     """Run Alembic migrations once per session before any integration test.
@@ -255,6 +318,7 @@ def run_migrations() -> None:
     db_url = _get_integration_db_url_or_skip()
     _assert_no_migration_test_residue(db_url, _PROJECT_ROOT)
     _run_alembic_upgrade(db_url, _PROJECT_ROOT)
+    _assert_schema_matches_the_migration_chain(db_url, _PROJECT_ROOT)
 
 
 _CALL_FAILED = pytest.StashKey[bool]()
