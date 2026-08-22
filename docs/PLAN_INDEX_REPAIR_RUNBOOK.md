@@ -188,6 +188,21 @@ required. It is not free of consequence, though — apply it and the code togeth
   > (missing-or-divergent, and present-but-unlisted). Everything above stays true — the head
   > is still derived, `_REQUIRED_ALEMBIC_HEAD` still carries the exact revision.
   > **Measured 2026-08-22 against production at head `046`: 26/26**, both variants.
+  >
+  > **EXTENDED again, same day — the denominator is 27. `26/27` is a FAILURE.**
+  > Ticket `2bb1988f`, the fifth split, closed the pan its predecessor left open:
+  > `81c4f366` was bounded to *constraints*, so the **17 indexes, 58 columns and 5 relation
+  > shapes** of those same five historical tables were attested by nothing — not even their
+  > existence as ordinary, non-partitioned heap tables. `historical_relation_shape` now pins
+  > index definitions (`md5(pg_get_indexdef(...))`, bidirectional), per-table column
+  > fingerprints, and the nine-property relation template already applied to `brain_sessions`.
+  > Its observed value names its three counters, so a failure says which one moved.
+  > **Measured 2026-08-22 against production at head `046`: 27/27**, both variants.
+  >
+  > **What no receipt here proves.** Every number above was replayed against the **live**
+  > production database, never against a `pg_restore`d dump. None of them says anything about
+  > an actual restoration. The P1 gate of `8eaefe36` stands entirely open — do not read
+  > `27/27` as "DR is proven".
 
 Operator order:
 
