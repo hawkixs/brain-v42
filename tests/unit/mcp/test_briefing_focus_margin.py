@@ -159,3 +159,32 @@ def test_the_line_reaches_the_REAL_briefing_not_just_its_helper() -> None:
     assert briefing.index("- Focus :") < briefing.index("### Focus"), (
         "la mesure doit précéder la prose qu'elle borne"
     )
+
+
+def test_the_LOUD_form_survives_the_composer_too() -> None:
+    """Le golden de bout en bout n'exerce QUE le cas calme — 17 caractères.
+
+    Signalé par l'orchestrateur en relisant le log CI, et c'est juste : le seul
+    rendu bout-en-bout du briefing porte une marge de 9 983, donc la forme qui
+    compte — celle qu'on lit en urgence — n'y passe jamais. Un golden ne se
+    tord pas pour exercer des limites ; c'est ce test-ci qui les porte, mais sur
+    le chemin COMPOSÉ, pas sur le helper seul.
+    """
+    from types import SimpleNamespace
+
+    from brain_v42.mcp.tools.session_tools import _format_session_briefing
+
+    ctx = SimpleNamespace(
+        project_key="brain-v42",
+        current_focus="d" * (NEXT_FOCUS_MAX_LENGTH + 240),
+        focus_updated_at=None,
+        blockers=[],
+    )
+
+    briefing = _format_session_briefing(
+        ctx, [], [], _no_activity_ks(), None, [], [], schema_revision="046"
+    )
+
+    assert "DÉPASSÉ de 240" in briefing
+    assert "compress" in briefing.lower()
+    assert "refus" in briefing.lower()

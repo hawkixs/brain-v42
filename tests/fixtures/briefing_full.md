@@ -17,6 +17,7 @@
 
 ### État technique (mesuré)
 - Focus écrit : inconnu (jamais horodaté)
+- Focus : 17 / 10000 caractères (marge 9983)
 
 ### Focus
 ship the briefing
