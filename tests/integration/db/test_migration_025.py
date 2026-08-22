@@ -111,7 +111,7 @@ def _get_alembic_version() -> str:
 
 
 @pytest.mark.integration
-def test_migration_025_round_trip(record_migration_downgrade: Callable[..., None]) -> None:
+def test_migration_025_round_trip(migration_downgrade_fence: Callable[..., None]) -> None:
     """Single deterministic round-trip: upgrade→025, downgrade→024, re-upgrade→025.
 
     The test is scoped to revision 025 specifically (not head) so that later
@@ -125,7 +125,7 @@ def test_migration_025_round_trip(record_migration_downgrade: Callable[..., None
     # ── Step 0: ensure we start at a deterministic baseline ──────────────────
     # Downgrade all the way to just before 025 so the test is self-contained
     # regardless of what state a previous run left the DB in.
-    record_migration_downgrade("024")
+    migration_downgrade_fence("024")
     try:
         _run_alembic(["-x", "allow_project_context_trigger_downgrade=yes", "downgrade", "024"])
     except RuntimeError:

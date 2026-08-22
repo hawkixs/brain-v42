@@ -81,14 +81,14 @@ async def _contract_state(engine: AsyncEngine) -> tuple[str, str | None, str | N
 
 @pytest.mark.asyncio
 async def test_migration_039_downgrade_and_reupgrade(
-    engine: AsyncEngine, record_migration_downgrade: Callable[..., None]
+    engine: AsyncEngine, migration_downgrade_fence: Callable[..., None]
 ) -> None:
     assert await _contract_state(engine) == (
         _repo_head(),
         "set_project_context_updated_at()",
         "set_project_context_updated_at",
     )
-    record_migration_downgrade("038")
+    migration_downgrade_fence("038")
     try:
         _run_alembic(
             "-x",
@@ -108,10 +108,10 @@ async def test_migration_039_downgrade_and_reupgrade(
 
 @pytest.mark.asyncio
 async def test_migration_039_downgrade_without_opt_in_is_atomic(
-    engine: AsyncEngine, record_migration_downgrade: Callable[..., None]
+    engine: AsyncEngine, migration_downgrade_fence: Callable[..., None]
 ) -> None:
     expected = await _contract_state(engine)
-    record_migration_downgrade("038")
+    migration_downgrade_fence("038")
     result = _run_alembic_result("downgrade", "038")
     try:
         assert result.returncode != 0
@@ -123,9 +123,9 @@ async def test_migration_039_downgrade_without_opt_in_is_atomic(
 
 @pytest.mark.asyncio
 async def test_migration_039_upgrade_rejects_trigger_drift_atomically(
-    engine: AsyncEngine, record_migration_downgrade: Callable[..., None]
+    engine: AsyncEngine, migration_downgrade_fence: Callable[..., None]
 ) -> None:
-    record_migration_downgrade("038")
+    migration_downgrade_fence("038")
     _run_alembic(
         "-x",
         "allow_project_context_trigger_downgrade=yes",

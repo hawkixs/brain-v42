@@ -135,7 +135,7 @@ def _assert_failed_migration_is_atomic(expected_revision: str) -> None:
 
 
 def test_migration_037_round_trip_backfill_and_fail_closed_guards(
-    record_migration_downgrade: Callable[..., None],
+    migration_downgrade_fence: Callable[..., None],
 ) -> None:
     """Exercise upgrade atomicity, backfill, safe rollback, and lossy rollback fences."""
     ambiguous_project = f"integ-migration-037-ambiguous-{uuid4().hex[:8]}"
@@ -143,7 +143,7 @@ def test_migration_037_round_trip_backfill_and_fail_closed_guards(
     artifact_project = f"integ-migration-037-artifact-{uuid4().hex[:8]}"
     conflict_project = f"integ-migration-037-conflict-{uuid4().hex[:8]}"
 
-    record_migration_downgrade("036")
+    migration_downgrade_fence("036")
     try:
         _run_alembic(["upgrade", "head"])
         _run_alembic(["-x", "allow_project_context_trigger_downgrade=yes", "downgrade", "036"])

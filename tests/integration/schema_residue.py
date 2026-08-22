@@ -280,3 +280,51 @@ def describe_schema_residue(
         "\n"
         "    Delete any leftover rows listed above before re-running."
     )
+
+
+def describe_head_drift(
+    *,
+    test_nodeid: str,
+    deployed_revision: str | None,
+    expected_head: str,
+    test_failed: bool,
+) -> str | None:
+    """Report a test that left the shared database behind, or ``None`` if it did not.
+
+    The net that uses this message restores the head. That is NOT the same act
+    the setup guard refuses to perform: the setup guard would be repairing
+    somebody else's crash, erasing the only evidence of it, whereas this cleans
+    up after the very run that caused the drift — what a `finally` already does
+    in 037 and 039, only without depending on each author remembering to write
+    one.
+    """
+    if deployed_revision == expected_head:
+        return None
+
+    if test_failed:
+        blame = (
+            "The test itself failed, so this drift is collateral damage of that failure.\n"
+            "    Fix the failure; the net simply stopped it from reaching the next test."
+        )
+    else:
+        blame = (
+            "THE TEST PASSED AND STILL LEFT THE DATABASE BEHIND. Its own restore step is\n"
+            "    wrong or unreachable. The net is not a substitute for it — fix the test."
+        )
+
+    return (
+        f"{test_nodeid} left the shared test database at {deployed_revision}, "
+        f"not at the expected head {expected_head}.\n"
+        "\n"
+        "    The head has been restored so the following tests are not poisoned. This net\n"
+        "    exists because a migration test that fails an ASSERTION never reaches its own\n"
+        "    restore step: no crash is required, a red test is enough. test_migration_025\n"
+        "    and test_migration_026 restored the head on their nominal path only, and a\n"
+        "    single false assertion left the database 22 revisions behind.\n"
+        "\n"
+        f"    {blame}\n"
+        "\n"
+        "    What this net does NOT cover: a killed process. Nothing in-process runs after\n"
+        "    kill -9, so that path still leaves the database behind — the setup guard names\n"
+        "    it on the next run instead of letting it masquerade as data corruption."
+    )

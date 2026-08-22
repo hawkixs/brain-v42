@@ -20,6 +20,7 @@ from tests.integration.schema_residue import (
     DOWNGRADING_TEST_FILES,
     Breadcrumb,
     ResidueProbe,
+    describe_head_drift,
     describe_schema_residue,
     migration_breadcrumb,
     read_breadcrumbs,
@@ -136,9 +137,85 @@ def test_declared_downgrading_files_still_match_the_tree() -> None:
     assert measured == sorted(DOWNGRADING_TEST_FILES), (
         "tests/integration/schema_residue.py::DOWNGRADING_TEST_FILES no longer matches the "
         f"files that downgrade the shared database.\n  declared: {sorted(DOWNGRADING_TEST_FILES)}"
-        f"\n  measured: {measured}\nAlso give the new test the record_migration_downgrade "
+        f"\n  measured: {measured}\nAlso give the new test the migration_downgrade_fence "
         "fixture, or its interruption will stay unattributable."
     )
+
+
+def test_every_downgrading_file_requests_the_fence() -> None:
+    """Declaring the file is not enough — the fence only works if the test asks for it.
+
+    This is the drift that produced the ticket: 025 and 026 are the two oldest
+    migration tests and simply never got a restore step off the nominal path.
+    A convention each future author must remember is not a guard.
+    """
+    missing = [
+        path
+        for path in DOWNGRADING_TEST_FILES
+        if "migration_downgrade_fence" not in (_REPO_ROOT / path).read_text()
+    ]
+
+    assert missing == [], (
+        f"these files downgrade the shared database without the fence: {missing}. "
+        "Add the migration_downgrade_fence fixture to every test that downgrades — "
+        "an assertion failure there leaves the database behind for every later run."
+    )
+
+
+# ---------------------------------------------------------------------------
+# The fence: restore what the test left behind, and never do it silently
+# ---------------------------------------------------------------------------
+
+
+def _drift(**overrides: object) -> str:
+    fields: dict[str, object] = {
+        "test_nodeid": "tests/integration/db/test_migration_025.py::test_round_trip",
+        "deployed_revision": "024",
+        "expected_head": "046",
+        "test_failed": True,
+    }
+    fields.update(overrides)
+    message = describe_head_drift(**fields)  # type: ignore[arg-type]
+    assert message is not None, "expected a drift report"
+    return message
+
+
+def test_a_test_that_left_the_head_alone_is_not_reported() -> None:
+    """Nominal witness: the fence must cost nothing when the test cleaned up."""
+    assert (
+        describe_head_drift(
+            test_nodeid="tests/integration/db/test_migration_037.py::t",
+            deployed_revision="046",
+            expected_head="046",
+            test_failed=False,
+        )
+        is None
+    )
+
+
+def test_drift_after_a_failed_test_is_reported_as_collateral() -> None:
+    message = _drift(test_failed=True)
+
+    assert "left the shared test database at 024" in message
+    assert "collateral damage" in message
+    assert "THE TEST PASSED" not in message
+
+
+def test_drift_after_a_passing_test_accuses_the_test_itself() -> None:
+    """Green plus drift means the test lied about its own cleanup — a different bug."""
+    message = _drift(test_failed=False)
+
+    assert "THE TEST PASSED AND STILL LEFT THE DATABASE BEHIND" in message
+    assert "collateral damage" not in message
+
+
+def test_fence_message_admits_it_does_not_cover_a_kill() -> None:
+    """Claiming to close the crash path would be the exact overreach the ticket warns about."""
+    message = _drift()
+
+    assert "does NOT cover" in message
+    assert "kill -9" in message
+    assert "setup guard names" in message
 
 
 # ---------------------------------------------------------------------------
