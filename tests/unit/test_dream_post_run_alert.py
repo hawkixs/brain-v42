@@ -125,7 +125,34 @@ async def test_failed_run_report_never_accesses_learnings(
     session.commit.assert_not_awaited()
     for call in session.execute.await_args_list:
         assert "learnings" not in str(call.args[0]).lower()
-    assert "learnings" not in inspect.getsource(post_run_alert).lower()
+    # ── Garde ÉLARGIE, et il faut le dire ────────────────────────────────
+    # Cette ligne interdisait au module de NOMMER `learnings`. La marche 0 de
+    # `55a21fb8` l'oblige à le faire : elle COMPTE les transitions de fraîcheur
+    # sans provenance sur les six tables du decay — 3 sur 44 mesurées le
+    # 2026-08-22, invisibles jusque-là faute de lecteur.
+    #
+    # L'interdiction de nommer était un garde-fou GROSSIER pour une intention
+    # plus étroite : l'alerte ne doit pas toucher au corpus. Elle est remplacée
+    # par cette intention, qui interdit strictement PLUS que la version
+    # littérale — un `INSERT` dans `dream_runs` passait l'ancienne, il échoue
+    # ici. Le chemin de RAPPORT reste sans corpus : l'assertion ci-dessus, qui
+    # inspecte les requêtes réellement exécutées, n'a pas bougé.
+    source = inspect.getsource(post_run_alert)
+    for mutation in ("sa.insert", "sa.update", "sa.delete", "session.commit", "session.add"):
+        assert mutation not in source, f"l'alerte post-run n'écrit RIEN : {mutation} interdit"
+    touching_corpus = sorted(
+        name
+        for name, obj in vars(post_run_alert).items()
+        if inspect.isfunction(obj) and "_FRESHNESS_TABLES" in inspect.getsource(obj)
+    )
+    assert touching_corpus == ["fetch_mute_transitions"], (
+        f"une seule fonction accède au corpus, et par un COMPTE : {touching_corpus}"
+    )
+    counter = inspect.getsource(post_run_alert.fetch_mute_transitions)
+    assert "sa.func.count()" in counter
+    assert "learnings" not in counter.lower(), (
+        "le compteur passe par la liste énumérée, jamais par une table en dur"
+    )
     failures_statement = session.execute.await_args_list[1].args[0]
     rendered_failures_statement = str(
         failures_statement.compile(compile_kwargs={"literal_binds": True})
@@ -267,6 +294,15 @@ async def test_run_keeps_operational_report_on_stdout(
     monkeypatch.setattr(post_run_alert, "create_async_engine", MagicMock(return_value=engine))
     monkeypatch.setattr(post_run_alert, "async_sessionmaker", MagicMock(return_value=factory))
     monkeypatch.setattr(post_run_alert, "review_night", reporter)
+    # `review_and_render` lit aussi la provenance (marche 0 de `55a21fb8`).
+    # Ce test épingle le PLOMBAGE de `_run`, pas le compte : on le neutralise.
+    monkeypatch.setattr(
+        post_run_alert,
+        "fetch_mute_transitions",
+        AsyncMock(
+            return_value=post_run_alert.ProvenanceReport(run_date=dt.date(2026, 7, 27), counts=())
+        ),
+    )
 
     return_code = await post_run_alert._run(dt.date(2026, 7, 27))
 

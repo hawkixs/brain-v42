@@ -165,6 +165,22 @@ class PgBrainSessionRepo(BasePgRepository):
         façon : ``expected_client_key`` en a été retirée (§0ter.3), l'identité
         étant la connexion.
 
+        ``started_at`` est posée EXPLICITEMENT, et seulement sur la branche
+        INSERT. Sans elle la colonne tombait sur le ``DEFAULT now()`` de la
+        base — l'estampille de DÉBUT DE TRANSACTION, donc postérieure au
+        ``reference`` que l'application lit AVANT d'ouvrir la transaction. La
+        ligne naissait avec ``last_heartbeat_at`` daté 1,5 ms avant son propre
+        démarrage, et le contrat DR le comptait : reçu 28/29 mesuré en
+        production le 2026-08-22, sur les deux variantes de l'actif. ``start()``
+        n'a jamais eu le défaut parce qu'il ne pose AUCUNE des deux colonnes :
+        ses horloges viennent du même défaut. C'est l'asymétrie qui coûtait,
+        pas le défaut lui-même.
+
+        Elle reste hors de ``_observation_columns()``, et c'est le fond du
+        correctif : réobserver n'est pas rouvrir. La glisser dans l'ensemble
+        partagé ferait rajeunir la traçante à chaque appel d'outil, et le
+        balayage des 7 j ne prendrait plus jamais rien.
+
         Rend ``None`` quand le projet n'a pas de contexte : le serveur n'en
         fabrique pas un. Ne lève pas sur ce cas — ``start()`` le fait, parce
         que là c'est un utilisateur qui a nommé un projet inexistant et qu'il
@@ -187,6 +203,7 @@ class PgBrainSessionRepo(BasePgRepository):
                     connection_id=identity.connection_id,
                     started_by_actor=identity.started_by_actor,
                     intent=identity.intent,
+                    started_at=reference,
                     last_observed_at=reference,
                     last_heartbeat_at=reference,
                 )

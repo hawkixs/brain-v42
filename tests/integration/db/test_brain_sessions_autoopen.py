@@ -233,3 +233,81 @@ async def test_observe_never_touches_an_operator_session(
 
     assert await repo.observe(operator, now=datetime(2026, 8, 22, 10, 0, tzinfo=UTC)) is False
     assert (await _row(session_factory, operator))["last_observed_at"] == stamped
+
+
+async def test_a_fresh_tracer_never_dates_its_heartbeat_before_its_start(
+    session_factory: async_sessionmaker[AsyncSession],
+    autoopen_project: str,
+) -> None:
+    """`last_heartbeat_at >= started_at` — l'invariant que le contrat DR compte.
+
+    Mesuré en production le 2026-08-22 : la traçante ouvrait avec un heartbeat
+    daté **1,5 ms AVANT** son propre démarrage, et
+    `brain_runtime_032_036_037.focus_revision_violations` comptait chaque ligne.
+    Le reçu passait de 29/29 à 28/29 sur les DEUX variantes de l'actif.
+
+    La cause est un désaccord d'horloges, pas une erreur de signe : `reference`
+    est lu par l'application AVANT l'ouverture de la transaction, tandis que
+    `started_at` tombe sur le `DEFAULT now()` de la base — l'estampille de
+    DÉBUT DE TRANSACTION, donc postérieure. `start()` échappe au piège en ne
+    posant aucune des deux colonnes : ses deux horloges viennent du même
+    défaut. `auto_open` en posait une seule, et c'est l'asymétrie qui coûte.
+
+    Ce test tourne SANS `now=` injecté — c'est la forme de production, et la
+    seule où l'écart des deux horloges est celui que la prod a réellement
+    porté. Un `now=` injecté rendrait l'écart si grand qu'il masquerait le fait
+    que le défaut se mesure en millisecondes.
+
+    Le défaut est TRANSITOIRE et c'est ce qui le rend coûteux : la première
+    `observe()` venue repousse `last_heartbeat_at` et efface la violation. Le
+    contrôle DR clignote donc rouge/vert selon qu'une traçante fraîche a déjà
+    rappelé, et un reçu vert ne prouve rien.
+    """
+    identity = _Identity(autoopen_project, uuid4().hex)
+
+    opened = await PgBrainSessionRepo(session_factory).auto_open(identity)
+
+    assert opened is not None
+    row = await _row(session_factory, opened)
+    assert row["last_heartbeat_at"] >= row["started_at"], (
+        "une traçante fraîche date sa présence avant son propre démarrage : "
+        f"heartbeat={row['last_heartbeat_at']} < started={row['started_at']}"
+    )
+    # UNE seule lecture d'horloge, pas trois qui se suivent. C'est le témoin
+    # qui distingue le correctif de son contrefaçon : borner l'écart à « moins
+    # d'une seconde » laisserait passer deux lectures distinctes, donc le bug.
+    assert row["started_at"] == row["last_heartbeat_at"] == row["last_observed_at"]
+
+
+async def test_reobserving_a_tracer_moves_both_clocks_but_never_its_start(
+    session_factory: async_sessionmaker[AsyncSession],
+    autoopen_project: str,
+) -> None:
+    """Le TÉMOIN NÉGATIF du correctif : `started_at` est une date d'OUVERTURE.
+
+    Le correctif le plus court — glisser `started_at` dans
+    `_observation_columns()` — verdit le test précédent et ment : chaque
+    réobservation réécrirait la date d'ouverture, la traçante aurait
+    éternellement zéro seconde d'âge, et le balayage des 7 j ne prendrait plus
+    jamais rien. Une session qui rajeunit à chaque appel d'outil est un pire
+    défaut que celui qu'on répare.
+
+    Ce test échoue donc sur ce faux correctif, là où le précédent passerait.
+    Les deux ensemble bornent la seule forme correcte : la branche INSERT pose
+    les trois horloges d'une même lecture, la branche `DO UPDATE` n'en déplace
+    que deux.
+    """
+    repo = PgBrainSessionRepo(session_factory)
+    identity = _Identity(autoopen_project, uuid4().hex)
+    opened_at = datetime(2026, 8, 22, 9, 0, tzinfo=UTC)
+    again_at = opened_at + timedelta(hours=3)
+
+    first = await repo.auto_open(identity, now=opened_at)
+    assert first is not None
+    assert (await _row(session_factory, first))["started_at"] == opened_at
+
+    assert await repo.auto_open(identity, now=again_at) == first
+    row = await _row(session_factory, first)
+    assert row["last_observed_at"] == again_at
+    assert row["last_heartbeat_at"] == again_at
+    assert row["started_at"] == opened_at, "réobserver n'est pas rouvrir"

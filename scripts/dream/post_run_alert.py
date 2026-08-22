@@ -50,7 +50,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from brain_v42.config import Settings
-from brain_v42.db.tables import dream_runs
+from brain_v42.db.tables import (
+    adrs,
+    decisions,
+    dream_runs,
+    indexed_plans,
+    learnings,
+    runbooks,
+    snippets,
+)
 from brain_v42.dream_run_project_key import GLOBAL_PHASE_PROJECT_KEY
 from brain_v42.metrics.collector_dream import (
     expected_dream_phase_pairs,
@@ -114,6 +122,118 @@ FALLBACK_WARNING = (
     "manifest absent — expectations derived from the drop-in, coverage limited to promote/reorg"
 )
 COVERAGE_HEADING = "### Couverture dream_runs"
+
+PROVENANCE_HEADING = "### Provenance des transitions de fraîcheur"
+
+#: Les six tables suivies par le decay, celles que la 043 a dotées d'une horloge
+#: de statut et d'une provenance. Énumérées, pas découvertes : une table qui
+#: gagnerait ces colonnes sans entrer ici sortirait du compte en SILENCE.
+_FRESHNESS_TABLES = (decisions, learnings, snippets, runbooks, adrs, indexed_plans)
+
+#: La phrase qui accompagne le nombre. Le trigger de la 043 documente son propre
+#: angle mort : deux transitions consécutives de MÊME source ne sont pas
+#: distinguables d'une source non redéclarée, donc la seconde retombe à NULL.
+#: Publier le compte sans ça le ferait lire comme un nombre d'écrivains fautifs.
+PROVENANCE_CAVEAT = (
+    "borne HAUTE, pas un compte : le trigger de la 043 remet la source à NULL "
+    "quand elle n'est pas redéclarée, y compris pour deux transitions de même source"
+)
+
+
+@dataclass(frozen=True)
+class ProvenanceCount:
+    """Transitions de fraîcheur sans provenance, pour une table."""
+
+    table: str
+    night: int
+    standing: int
+
+
+@dataclass(frozen=True)
+class ProvenanceReport:
+    """Le compte des transitions muettes — observation SEULE, aucun verdict.
+
+    Volontairement sans `escalates`, contrairement à `CoverageReport` : cette
+    marche rend observable, elle ne décide rien. C'est ce qui permet de la
+    livrer AVANT le correctif qu'elle doit ensuite mesurer.
+    """
+
+    run_date: dt.date
+    counts: tuple[ProvenanceCount, ...]
+
+    @property
+    def night_total(self) -> int:
+        return sum(count.night for count in self.counts)
+
+    @property
+    def standing_total(self) -> int:
+        return sum(count.standing for count in self.counts)
+
+    @property
+    def block(self) -> list[str]:
+        """Imprimé même à zéro : « mesuré à zéro » et « pas regardé » diffèrent."""
+        guilty = ", ".join(f"{count.table} {count.night}" for count in self.counts if count.night)
+        detail = f" ({guilty})" if guilty else ""
+        return [
+            PROVENANCE_HEADING,
+            f"transitions sans provenance — {self.run_date.isoformat()} : "
+            f"{self.night_total}{detail} · cumul depuis la 043 : {self.standing_total}",
+            f"  {PROVENANCE_CAVEAT}",
+            "",
+        ]
+
+    @property
+    def machine_line(self) -> str:
+        return (
+            f"dream_provenance run_date={self.run_date.isoformat()} "
+            f"mute_night={self.night_total} mute_standing={self.standing_total}"
+        )
+
+
+async def fetch_mute_transitions(
+    session: AsyncSession,
+    run_date: dt.date,
+) -> ProvenanceReport:
+    """Compte les transitions de fraîcheur dont la provenance a été effacée.
+
+    Le signal est une CONJONCTION : une transition a EU LIEU
+    (`freshness_status_updated_at IS NOT NULL`) et sa provenance est absente
+    (`freshness_source IS NULL`). La seconde moitié seule compterait presque
+    tout le corpus — les lignes jamais passées par une transition depuis la 043.
+
+    Deux fenêtres, jamais confondues : la nuit, imputable au run qui vient de
+    finir, et le cumul, qui dit l'arriéré. Une seule requête pour les six tables.
+    """
+    selects = []
+    for table in _FRESHNESS_TABLES:
+        mute = sa.and_(
+            table.c.freshness_status_updated_at.isnot(None),
+            table.c.freshness_source.is_(None),
+        )
+        selects.append(
+            sa.select(
+                sa.literal(table.name).label("table_name"),
+                sa.func.count()
+                .filter(
+                    mute,
+                    sa.cast(table.c.freshness_status_updated_at, sa.Date) == run_date,
+                )
+                .label("night"),
+                sa.func.count().filter(mute).label("standing"),
+            ).select_from(table)
+        )
+    result = await session.execute(sa.union_all(*selects))
+    return ProvenanceReport(
+        run_date=run_date,
+        counts=tuple(
+            ProvenanceCount(
+                table=str(row._mapping["table_name"]),
+                night=int(row._mapping["night"]),
+                standing=int(row._mapping["standing"]),
+            )
+            for row in result.all()
+        ),
+    )
 
 
 def _detail_line(row: dict) -> str:
@@ -468,6 +588,7 @@ def render_stdout(
     report: str | None,
     run_date: dt.date,
     coverage: CoverageReport,
+    provenance: ProvenanceReport | None = None,
 ) -> str:
     """Le bloc de couverture sous la première ligne, la ligne machine en DERNIER.
 
@@ -476,11 +597,40 @@ def render_stdout(
     journald, sous le résumé « N/M phases OK » que dream.sh vient d'imprimer.
     """
     body = report.splitlines() if report else [f"no failures for {run_date.isoformat()}"]
-    lines = [body[0], "", *coverage.block, *body[1:]]
+    provenance_block = provenance.block if provenance is not None else []
+    lines = [body[0], "", *coverage.block, *provenance_block, *body[1:]]
     if coverage.silent_line:
         lines.append(coverage.silent_line)
+    # `COVERAGE …` reste la DERNIÈRE ligne de stdout : c'est le contrat du
+    # ticket `0a9c067e`, épinglé par `test_exit_codes_follow_the_verdict`. La
+    # ligne de provenance se range juste avant, elle ne prend pas sa place.
+    if provenance is not None:
+        lines.append(provenance.machine_line)
     lines.append(coverage.machine_line)
     return "\n".join(lines) + "\n"
+
+
+async def review_and_render(
+    session: AsyncSession,
+    run_date: dt.date,
+    *,
+    manifest: RunManifest | None = None,
+) -> tuple[str, bool]:
+    """Le chemin VIVANT : la nuit, son compte de provenance, et le rendu.
+
+    La lecture de provenance vit ICI et non dans `review_night`, pour deux
+    raisons qui tiennent ensemble : `review_night` a un contrat de TROIS
+    lectures épinglé par ses tests — dont un qui s'appelle « never accesses
+    learnings » — et la marche 0 doit rester une observation ajoutée, incapable
+    de casser le chemin d'alerte qu'elle accompagne.
+
+    Rend le texte ET le verdict d'escalade. Le verdict vient de la COUVERTURE
+    seule : le compte de provenance n'escalade jamais.
+    """
+    night = await review_night(session, run_date, manifest=manifest)
+    provenance = await fetch_mute_transitions(session, run_date)
+    rendered = render_stdout(night.report, run_date, night.coverage, provenance)
+    return rendered, night.coverage.escalates
 
 
 def default_manifest_path(run_date: dt.date) -> Path:
@@ -498,9 +648,9 @@ async def _run(run_date: dt.date, manifest_path: Path | None = None) -> int:
     )
     try:
         async with factory() as session:
-            night = await review_night(session, run_date, manifest=manifest)
-            print(render_stdout(night.report, run_date, night.coverage), end="")
-        return 2 if night.coverage.escalates else 0
+            rendered, escalates = await review_and_render(session, run_date, manifest=manifest)
+            print(rendered, end="")
+        return 2 if escalates else 0
     finally:
         await engine.dispose()
 
