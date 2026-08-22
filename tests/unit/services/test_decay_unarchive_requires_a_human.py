@@ -6,8 +6,13 @@ d'où qu'elle vienne — passe par ``AccessLogger.log_access``, qui pose une lig
 minutes plus tard ``DecayFlusher._flush`` agrège ces lignes, et
 ``_update_entities_batch`` recalcule un multiplicateur puis ÉCRIT
 ``freshness_status`` (avec ``freshness_source='score'``, 043). Le terme qui
-bascule est ``access_factor`` : poids **0,3**, le plus lourd après l'âge, et une
-lecture d'il y a une minute le met à 1,0. Une seule relecture machine suffit
+bascule est ``access_factor`` : poids **0,3** sur cinq des six types (**0,2**
+pour ``adr``), et une lecture d'il y a une minute le met à 1,0. Il n'est JAMAIS
+dominé par l'âge — ``w_access >= w_age`` pour les six types, mesuré — donc la
+formule courante « le plus lourd APRÈS l'âge » sous-estime sa place : il est en
+fait le terme le plus lourd, à égalité avec l'âge pour ``decision``/``learning``
+et avec la fréquence pour ``snippet``/``runbook``/``plan``; seul ``adr`` le voit
+dominé, par la validation (0,5). Une seule relecture machine suffit
 donc à franchir ``archive_threshold`` (0,2) — et, mesuré, à franchir aussi
 ``stale_threshold`` (0,5) d'un coup.
 

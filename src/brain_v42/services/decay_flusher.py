@@ -244,9 +244,12 @@ class DecayFlusher:
 
             # Q1 — un ROBOT n'a pas le droit de désarchiver.
             #
-            # `access_factor` pèse 0,3, le plus lourd après l'âge, et une
-            # relecture d'il y a une minute le met à 1,0 : une seule passe du
-            # dream suffit à franchir `archive_threshold`. Mesuré le 2026-08-22
+            # `access_factor` pèse 0,3 sur cinq des six types (0,2 pour `adr`)
+            # et une relecture d'il y a une minute le met à 1,0 : une seule
+            # passe du dream suffit à franchir `archive_threshold`. Il n'est
+            # JAMAIS dominé par l'âge — mesuré, `w_access >= w_age` pour les six
+            # types — donc « le plus lourd APRÈS l'âge » sous-estime sa place.
+            # Mesuré le 2026-08-22
             # sur 7 jours : 27 désarchivages, TOUS à 04h UTC, et les 27 entités
             # avaient `last_accessed_at_human IS NULL` — jamais lues par un
             # humain, pas une fois.
