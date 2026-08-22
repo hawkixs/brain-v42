@@ -25,6 +25,7 @@ from brain_v42.mcp.dream_project_authorization import (
     bind_dream_project_scope,
 )
 from brain_v42.models.project_key import canonicalize_project_key
+from brain_v42.provenance import get_current_actor
 
 logger = structlog.get_logger(__name__)
 
@@ -245,6 +246,8 @@ class DreamCapabilityMiddleware(Middleware):
                 reason="tool_not_allowed_for_phase",
             )
 
+        self._observe_identity_divergence(principal, tool_name)
+
         authorized = await authorize_dream_project_request(
             tool_name=tool_name,
             arguments=context.message.arguments,
@@ -259,6 +262,53 @@ class DreamCapabilityMiddleware(Middleware):
         authorized_context = context.copy(message=authorized_message)
         with bind_dream_project_scope(authorized.scope):
             return await call_next(authorized_context)
+
+    @staticmethod
+    def _observe_identity_divergence(
+        principal: DreamCapabilityPrincipal,
+        tool_name: str,
+    ) -> None:
+        """Compter les appels dont les DEUX identités ne concordent pas.
+
+        Chaque appel dream en porte deux, dans des espaces de noms séparés :
+        celle du JETON — `client_id`, vérifiée strictement, la borne de capacité
+        repose dessus — et celle de l'ACTEUR, l'en-tête `X-Brain-Agent` déclaré
+        par le client et confronté à rien.
+
+        Ce n'est pas un contournement de périmètre : la borne porte sur le
+        jeton et elle tient. C'est un défaut d'ATTRIBUTION, et il est
+        STRUCTUREL — le registre ne frappe que des profils `dream-codex-*`,
+        tandis que la chaîne de repli fait tourner des runners qui annoncent
+        `dream-agy-*` et `dream-claude-*`. Deux rails sur trois divergent à
+        chaque appel, par construction.
+
+        ON NE REFUSE RIEN. Refuser casserait le rail de repli, c'est-à-dire la
+        nuit où le rail principal est déjà tombé. Dériver l'acteur du jeton
+        effacerait « quel rail a réellement tourné », la seule chose qui a permis
+        de mesurer le ratio. Journaliser produit le dénominateur dont les deux
+        autres formes ont besoin, et il n'existe AUCUNE autre source :
+        `access_log.actor` est drainé toutes les 300 s, rien dans journald ne
+        porte l'acteur par appel, et `dream_runs` n'a pas de colonne d'acteur.
+
+        L'`except` est TOTAL et étroitement scopé, pour la même raison que
+        `ProvenanceMiddleware._report` : un canal d'observation ne peut pas être
+        un point de défaillance de l'opération observée. Au pire, une ligne
+        manque.
+        """
+        try:
+            actor = get_current_actor()
+            if actor == principal.client_id:
+                return
+            logger.info(
+                "dream_identity_divergence",
+                actor=actor,
+                token_client_id=principal.client_id,
+                phase=principal.phase,
+                project_key=principal.project_key,
+                tool=_audit_tool_name(tool_name),
+            )
+        except Exception:  # noqa: BLE001 - observation only, never the call
+            return
 
 
 class DreamCapabilityConfigurationError(ValueError):
