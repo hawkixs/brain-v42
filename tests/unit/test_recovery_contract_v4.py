@@ -438,15 +438,15 @@ def test_full_runbook_has_one_039_operator_order_and_no_live_claim() -> None:
     assert "Repository target: 040." not in architecture
     assert "Production remains at 037 before an authorized cutover." not in architecture
     schema = re.sub(r"\s+", " ", SCHEMA.read_text(encoding="utf-8"))
-    # Épingle de tête, portée par un test qui parle d'autre chose — c'est un
-    # doublon de test_documentation_contract.py, et sa position la rend facile à
-    # manquer quand on inventorie les gardes. Bumpée à 042 le 2026-08-08, puis à
-    # 043 puis 044 le 2026-08-10, puis à 045 le 2026-08-16 — troisième bascule
-    # consécutive où ce doublon coûte une passe de plus, après que la suite
-    # entière soit déjà repassée verte. Il n'est toujours pas retiré ici parce
-    # que retirer une garde en la traversant est exactement la manœuvre que ce
-    # dépôt refuse ; le retrait mérite son propre commit.
-    assert "La cible du dépôt est 046." in schema
+    # L'épingle littérale « La cible du dépôt est 046. » vivait ici, doublon de
+    # `test_documentation_contract.py`, bumpée à 042, 043, 044 puis 045 sur quatre
+    # bascules. Retirée par `f7d013eb` : la VALEUR est désormais vérifiée par un
+    # contrôle DÉRIVÉ de `alembic/versions/` — `test_documents_agree_with_the_
+    # repository_head.py::test_every_repository_scoped_claim_equals_the_measured_head`,
+    # qui couvre `SCHEMA.md` — et la PRÉSENCE de la phrase reste tenue par
+    # `test_documentation_contract.py`. Rien n'est perdu, une passe de bump l'est.
+    # La garde négative ci-dessous reste : elle ne vieillit pas, elle interdit une
+    # chaîne morte.
     assert "La production reste à 037 avant une bascule autorisée." not in schema
 
 
