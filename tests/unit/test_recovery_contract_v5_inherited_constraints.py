@@ -422,7 +422,10 @@ def test_the_json_manifest_declares_the_inherited_check() -> None:
 
     assert CHECK_ID in ids
     assert ids == sorted(ids)
-    assert len(document["checks"]) == 26
+    # Le COMPTE exact vit dans `test_v5_json_is_the_exact_v4_delta`, et nulle
+    # part ailleurs : trois splits DR passent encore dans ce contrat, et un
+    # chiffre dupliqué ici les forcerait à éditer le test d'un autre split pour
+    # une vérité qui n'est pas la sienne.
     assert next(check for check in document["checks"] if check["id"] == CHECK_ID) == {
         "id": CHECK_ID,
         "kind": "brain_schema_invariant",

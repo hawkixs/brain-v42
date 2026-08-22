@@ -107,6 +107,18 @@ def _expected_v5() -> dict[str, Any]:
         }
     )
 
+    # `2bb1988f`, le pan oublié du précédent : index, colonnes et propriétés de
+    # relation des tables historiques n'étaient attestés par RIEN — `81c4f366`
+    # était borné aux CONTRAINTES. Même raison d'être une check row propre : un
+    # durcissement invisible au reçu est un durcissement invérifiable.
+    checks.append(
+        {
+            "id": "historical_relation_shape",
+            "kind": "brain_schema_invariant",
+            "name": "historical_relation_shape",
+        }
+    )
+
     document["checks"] = sorted(checks, key=lambda check: check["id"])
     document["contract_id"] = "brain-v42/postgresql-recovery/v5"
     document["schema_version"] = 5
@@ -130,7 +142,7 @@ def test_v5_json_is_the_exact_v4_delta() -> None:
             json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
         ).encode()
     )
-    assert len(document["checks"]) == 26
+    assert len(document["checks"]) == 27
 
 
 def test_the_head_check_is_derived_and_carries_no_revision() -> None:

@@ -1477,6 +1477,308 @@ inherited_constraint_mismatches AS (
      WHERE expected_constraint.constraint_name IS NULL
  ) AS value
 ),
+expected_historical_indexes(
+ table_name,
+ index_name,
+ is_unique,
+ is_primary,
+ columns,
+ definition_md5
+) AS (
+ VALUES
+     (
+         'brain_entities',
+         'brain_entities_pkey',
+         TRUE,
+         TRUE,
+         jsonb_build_array('id'),
+         'e7f8e9706d0ca15ab1df60fb221f1064'
+     ),
+     (
+         'brain_entities',
+         'idx_brain_entities_project_lifecycle',
+         FALSE,
+         FALSE,
+         jsonb_build_array('project_key', 'lifecycle'),
+         '59159e2e0ed1243096e9b04b1005ec58'
+     ),
+     (
+         'brain_entities',
+         'idx_brain_entities_type_lifecycle',
+         FALSE,
+         FALSE,
+         jsonb_build_array('entity_type', 'lifecycle'),
+         'bf933545ea4759505dd2a3f28170ce7e'
+     ),
+     (
+         'brain_entities',
+         'uq_brain_entities_source_uuid',
+         TRUE,
+         FALSE,
+         jsonb_build_array('source_uuid'),
+         '6215745c9bbabfc4f6536224f51d9ff0'
+     ),
+     (
+         'brain_entities',
+         'uq_brain_entities_type_key',
+         TRUE,
+         FALSE,
+         jsonb_build_array('entity_type', 'entity_key'),
+         'cb21fcf6bca9db57aa5b610f27fc9b47'
+     ),
+     (
+         'entity_relations',
+         'entity_relations_pkey',
+         TRUE,
+         TRUE,
+         jsonb_build_array('id'),
+         '217e4ca0931ea037192712f456ff7577'
+     ),
+     (
+         'entity_relations',
+         'idx_entity_relations_source_active',
+         FALSE,
+         FALSE,
+         jsonb_build_array('source_entity_id', 'lifecycle'),
+         '0af525f7cbb3ddfc3763838f93bc6acd'
+     ),
+     (
+         'entity_relations',
+         'idx_entity_relations_target_active',
+         FALSE,
+         FALSE,
+         jsonb_build_array('target_entity_id', 'lifecycle'),
+         '5fe4e2413a47315d52716e4999c08991'
+     ),
+     (
+         'entity_relations',
+         'idx_entity_relations_type_active',
+         FALSE,
+         FALSE,
+         jsonb_build_array('relation_type', 'lifecycle'),
+         'd900d75c260e8b647bf8fc0a8942ed2a'
+     ),
+     (
+         'entity_relations',
+         'uq_entity_relations_endpoints_type',
+         TRUE,
+         FALSE,
+         jsonb_build_array('source_entity_id', 'target_entity_id', 'relation_type'),
+         '1fd361469b76df214973bb3f938b498a'
+     ),
+     (
+         'graph_outbox',
+         'graph_outbox_event_id_key',
+         TRUE,
+         FALSE,
+         jsonb_build_array('event_id'),
+         'a56287d3b45a1f279ec5b4cd33ceafd5'
+     ),
+     (
+         'graph_outbox',
+         'graph_outbox_pkey',
+         TRUE,
+         TRUE,
+         jsonb_build_array('id'),
+         '474a1b1b4ac19d21b74731ac8d9a9999'
+     ),
+     (
+         'graph_outbox',
+         'idx_graph_outbox_pending',
+         FALSE,
+         FALSE,
+         jsonb_build_array('available_at', 'id'),
+         'ca916f57c7b789b027252a40cd189aa1'
+     ),
+     (
+         'graph_outbox',
+         'uq_graph_outbox_entity_revision',
+         TRUE,
+         FALSE,
+         jsonb_build_array('entity_id', 'aggregate_revision'),
+         'ad9028401163d52968e71007bd54bbd7'
+     ),
+     (
+         'graph_outbox',
+         'uq_graph_outbox_relation_revision',
+         TRUE,
+         FALSE,
+         jsonb_build_array('relation_id', 'aggregate_revision'),
+         '38e7cf6ec07210a1bf3fbe6fb369b048'
+     ),
+     (
+         'graph_projection_leases',
+         'graph_projection_leases_pkey',
+         TRUE,
+         TRUE,
+         jsonb_build_array('slot'),
+         '093ed839687394ee6da85086e39e6da7'
+     ),
+     (
+         'projects',
+         'projects_pkey',
+         TRUE,
+         TRUE,
+         jsonb_build_array('project_key'),
+         '671e28752233598f9e71ed5a655952ec'
+     )
+),
+observed_historical_indexes AS (
+ SELECT
+     source_table.relname AS table_name,
+     index_table.relname AS index_name,
+     index_record.indisunique AS is_unique,
+     index_record.indisprimary AS is_primary,
+     index_record.indisvalid,
+     index_record.indisready,
+     jsonb_agg(attribute_record.attname ORDER BY index_column.ordinality) AS columns,
+     md5(pg_catalog.pg_get_indexdef(index_record.indexrelid)) AS definition_md5
+ FROM pg_catalog.pg_index AS index_record
+ JOIN pg_catalog.pg_class AS source_table
+   ON source_table.oid = index_record.indrelid
+ JOIN pg_catalog.pg_namespace AS namespace_record
+   ON namespace_record.oid = source_table.relnamespace
+ JOIN pg_catalog.pg_class AS index_table
+   ON index_table.oid = index_record.indexrelid
+ CROSS JOIN LATERAL unnest(index_record.indkey)
+   WITH ORDINALITY AS index_column(attribute_number, ordinality)
+ LEFT JOIN pg_catalog.pg_attribute AS attribute_record
+   ON attribute_record.attrelid = source_table.oid
+  AND attribute_record.attnum = index_column.attribute_number
+ WHERE namespace_record.nspname = 'public'
+   AND source_table.relname IN (
+       'brain_entities',
+       'entity_relations',
+       'graph_outbox',
+       'graph_projection_leases',
+       'projects'
+   )
+ GROUP BY
+     source_table.relname,
+     index_table.relname,
+     index_record.indexrelid,
+     index_record.indisunique,
+     index_record.indisprimary,
+     index_record.indisvalid,
+     index_record.indisready
+),
+historical_index_mismatches AS (
+ SELECT count(*) AS value
+ FROM (
+     SELECT expected_index.index_name
+     FROM expected_historical_indexes AS expected_index
+     LEFT JOIN observed_historical_indexes AS observed_index
+       ON observed_index.table_name = expected_index.table_name
+      AND observed_index.index_name = expected_index.index_name
+      AND observed_index.is_unique = expected_index.is_unique
+      AND observed_index.is_primary = expected_index.is_primary
+      AND observed_index.indisvalid
+      AND observed_index.indisready
+      AND observed_index.columns = expected_index.columns
+      AND observed_index.definition_md5
+          IS NOT DISTINCT FROM expected_index.definition_md5
+     WHERE observed_index.index_name IS NULL
+     UNION ALL
+     SELECT observed_index.index_name
+     FROM observed_historical_indexes AS observed_index
+     WHERE NOT EXISTS (
+         SELECT 1
+         FROM expected_historical_indexes AS expected_index
+         WHERE expected_index.table_name = observed_index.table_name
+           AND expected_index.index_name = observed_index.index_name
+     )
+ ) AS mismatched_historical_index
+),
+expected_historical_column_fingerprints(table_name, definition_md5) AS (
+ VALUES
+     ('brain_entities', '29129c0e227139630018e4da8f8274ef'),
+     ('entity_relations', '6f646a72602beef83e1918181f283e73'),
+     ('graph_outbox', 'b4b8228e2ce20ca8f975e385b3712b86'),
+     ('graph_projection_leases', 'b2970aedef9c874f2b7d440425ed7430'),
+     ('projects', '09f1991c6d569501b3da449bf8a2b4b7')
+),
+observed_historical_column_fingerprints(table_name, definition_md5) AS (
+ SELECT
+     observed_column.table_name,
+     md5(
+         COALESCE(
+             jsonb_agg(
+                 jsonb_build_array(
+                     observed_column.ordinal_position,
+                     observed_column.column_name,
+                     observed_column.data_type,
+                     observed_column.udt_schema,
+                     observed_column.udt_name,
+                     observed_column.is_nullable,
+                     observed_column.character_maximum_length,
+                     observed_column.numeric_precision,
+                     observed_column.numeric_scale,
+                     observed_column.datetime_precision,
+                     observed_column.column_default,
+                     observed_column.is_identity,
+                     observed_column.identity_generation,
+                     observed_column.is_generated,
+                     observed_column.generation_expression,
+                     observed_column.collation_schema,
+                     observed_column.collation_name
+                 )
+                 ORDER BY observed_column.ordinal_position
+             )::text,
+             '[]'
+         )
+     )
+ FROM information_schema.columns AS observed_column
+ WHERE observed_column.table_schema = 'public'
+   AND observed_column.table_name IN (
+       SELECT table_name FROM expected_historical_column_fingerprints
+   )
+ GROUP BY observed_column.table_name
+),
+historical_column_mismatches AS (
+ SELECT count(*) AS value
+ FROM expected_historical_column_fingerprints AS expected_fingerprint
+ LEFT JOIN observed_historical_column_fingerprints AS observed_fingerprint
+   ON observed_fingerprint.table_name = expected_fingerprint.table_name
+  AND observed_fingerprint.definition_md5 = expected_fingerprint.definition_md5
+ WHERE observed_fingerprint.table_name IS NULL
+),
+expected_historical_relations(table_name) AS (
+ VALUES
+     ('brain_entities'),
+     ('entity_relations'),
+     ('graph_outbox'),
+     ('graph_projection_leases'),
+     ('projects')
+),
+historical_relation_property_mismatches AS (
+ SELECT count(*) AS value
+ FROM expected_historical_relations AS expected_relation
+ LEFT JOIN pg_catalog.pg_namespace AS namespace_record
+   ON namespace_record.nspname = 'public'
+ LEFT JOIN pg_catalog.pg_class AS relation_record
+   ON relation_record.relnamespace = namespace_record.oid
+  AND relation_record.relname = expected_relation.table_name
+  AND relation_record.relkind = 'r'
+  AND relation_record.relpersistence = 'p'
+  AND NOT relation_record.relispartition
+  AND NOT relation_record.relhasrules
+  AND NOT relation_record.relrowsecurity
+  AND NOT relation_record.relforcerowsecurity
+  AND cardinality(COALESCE(relation_record.reloptions, ARRAY[]::text[])) = 0
+ LEFT JOIN pg_catalog.pg_am AS access_method
+   ON access_method.oid = relation_record.relam
+  AND access_method.amname = 'heap'
+ WHERE relation_record.oid IS NULL
+    OR access_method.oid IS NULL
+    OR EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_inherits AS inheritance_link
+        WHERE relation_record.oid IN (
+            inheritance_link.inhrelid,
+            inheritance_link.inhparent
+        )
+    )
+),
 historical_function AS (
  SELECT
      jsonb_build_object(
@@ -2043,6 +2345,25 @@ check_rows(id, expected, observed, passed) AS (
      to_jsonb(inherited_constraint_mismatches.value),
      inherited_constraint_mismatches.value = 0
  FROM inherited_constraint_mismatches
+ UNION ALL
+ SELECT
+     'historical_relation_shape',
+     jsonb_build_object(
+         'historical_column_mismatches', 0,
+         'historical_index_mismatches', 0,
+         'historical_relation_property_mismatches', 0
+     ),
+     jsonb_build_object(
+         'historical_column_mismatches', historical_column_mismatches.value,
+         'historical_index_mismatches', historical_index_mismatches.value,
+         'historical_relation_property_mismatches', historical_relation_property_mismatches.value
+     ),
+     historical_column_mismatches.value = 0
+     AND historical_index_mismatches.value = 0
+     AND historical_relation_property_mismatches.value = 0
+ FROM historical_column_mismatches
+ CROSS JOIN historical_index_mismatches
+ CROSS JOIN historical_relation_property_mismatches
  UNION ALL
  SELECT
      'orphan_feature_artifacts_features',
