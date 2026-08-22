@@ -22,9 +22,18 @@ UNEXPANDED_ACTOR = "_unexpanded"
 # perdre tout le batch, pas juste l'événement fautif.
 MAX_ACTOR_LENGTH = 64
 
-# Préfixes des acteurs système qui se déclarent. Un acteur absent de cette
-# liste et non sentinelle est traité comme humain.
-_SYSTEM_ACTOR_PREFIXES = ("dream-codex-",)
+# Préfixes des acteurs système qui se déclarent. On reconnaît la FAMILLE
+# `dream-`, jamais un rail nommé : les trois runners câblés émettent
+# `dream-codex-{phase}`, `dream-claude-{phase}` et `dream-agy-{phase}`, et tout
+# rail futur suivra le même gabarit. Énumérer un seul rail — ce que faisait
+# `("dream-codex-",)` — laissait les deux autres compter leurs relectures
+# nocturnes comme des lectures HUMAINES.
+#
+# La garantie ne vient pas de ce tuple mais de
+# `test_every_dream_rail_header_is_machine`, qui relit les runners et exige que
+# chaque en-tête émis soit classé machine : un quatrième rail qui s'écarterait du
+# gabarit fait rougir la suite au lieu de passer au travers.
+_SYSTEM_ACTOR_PREFIXES = ("dream-",)
 _NON_HUMAN = frozenset({UNKNOWN_ACTOR, UNEXPANDED_ACTOR, ""})
 
 _current_actor: ContextVar[str] = ContextVar(
@@ -148,8 +157,17 @@ def get_current_actor() -> str:
 def is_human_actor(actor: str | None) -> bool:
     """Vrai si l'acteur est une session humaine.
 
-    Fail-closed : un acteur inconnu ou non expansé n'est PAS humain, donc ne
-    peut pas faire franchir à une entité le seuil de maturité de PROMOTE.
+    Fail-closed sur les sentinelles ET sur la famille système : un acteur
+    inconnu, non expansé ou préfixé `dream-` n'est PAS humain, donc ne peut pas
+    faire franchir à une entité le seuil de maturité de PROMOTE.
+
+    PORTÉE EXACTE, à ne pas surestimer — c'est ce que `test_promote_prepare`
+    rappelle déjà au juge PROMOTE : ceci n'est pas une liste blanche d'humains.
+    Un acteur humain est le basename du projet appelant, arbitraire par
+    construction, donc inénumérable ; exiger qu'un humain se déclare casserait
+    le cas légitime. Le bot d'un AUTRE projet qui pose son propre
+    `X-Brain-Agent` reste donc compté comme humain. La garde couvre la famille
+    `dream-`, pas toute machine concevable.
     """
     value = (actor or "").strip()
     if value in _NON_HUMAN:

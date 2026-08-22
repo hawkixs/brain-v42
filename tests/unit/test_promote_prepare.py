@@ -976,10 +976,15 @@ class TestPromotePromptDescribesTheRanking:
         """The legend must not claim more than ``is_human_actor`` delivers.
 
         That predicate returns True for ANY actor that is not ``unknown``,
-        ``_unexpanded`` or ``dream-codex-`` prefixed — so another project's
-        bot declaring ``X-Brain-Agent`` is counted. Telling the judge the
-        counter proves a person read the entry would hand it a false premise
-        on exactly the evidence it is asked to weigh.
+        ``_unexpanded`` or ``dream-`` prefixed — so another project's bot
+        declaring ``X-Brain-Agent`` is counted. Telling the judge the counter
+        proves a person read the entry would hand it a false premise on
+        exactly the evidence it is asked to weigh.
+
+        Le préfixe est passé de ``dream-codex-`` à la famille ``dream-`` : deux
+        rails sur trois (``claude``, ``agy``) étaient comptés HUMAINS. Le
+        caveat reste néanmoins nécessaire — la garde couvre la famille dream,
+        pas toute machine concevable, et ce test le protège.
         """
         prompt = _PROMOTE_PROMPT.read_text(encoding="utf-8")
         assert "as proof that a person read it" in prompt
