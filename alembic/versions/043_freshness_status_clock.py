@@ -18,12 +18,37 @@ toujours ». La distinction décide qui serait supprimé : dater rétroactivemen
 `updated_at` recopierait précisément l'horloge fausse qu'on remplace.
 
 MÉCANISME 041, PAS 040. La 040 écrit `focus_updated_at` en code applicatif
-parce que le focus n'a QU'UN écrivain. `freshness_status` en a quatre, dont le
-jugement REORG qui passe par le tool générique `brain_update` — lequel ne sait
-rien du decay. Stamper en applicatif obligerait à le faire dans `brain_update`
-lui-même, pour une colonne que 99 % de ses appels ne touchent pas. C'est donc un
-trigger conditionnel, et aucun des quatre écrivains n'a à s'en souvenir. C'est
-le point : l'un des quatre est un prompt.
+parce que le focus n'a QU'UN écrivain. `freshness_status` en a plusieurs, dont
+le jugement REORG qui passe par le tool générique `brain_update` — lequel ne
+sait rien du decay. Stamper en applicatif obligerait à le faire dans
+`brain_update` lui-même, pour une colonne que 99 % de ses appels ne touchent
+pas. C'est donc un trigger conditionnel. C'est le point : l'un des écrivains est
+un prompt.
+
+LES DEUX COLONNES NE SE COMPORTENT PAS PAREIL, ET C'EST LE PIÈGE DE CE FICHIER.
+Une version antérieure de cette docstring concluait ici « aucun des quatre
+écrivains n'a à s'en souvenir ». C'est vrai de `freshness_status_updated_at`, et
+FAUX de `freshness_source` :
+
+- `freshness_status_updated_at` est AUTOMATIQUE. Le trigger la pose à chaque
+  transition ; aucun écrivain n'a rien à faire.
+- `freshness_source` doit être REDÉCLARÉE À CHAQUE ÉCRITURE. Le trigger l'EFFACE
+  quand elle ne l'est pas (voir le corps de la fonction, plus bas) — c'est
+  délibéré, mais ça veut dire qu'un écrivain qui ne la pose pas produit un
+  `NULL`, pas une valeur héritée.
+
+La phrase corrigée n'est pas cosmétique : au recensement du 2026-08-22, CINQ
+écrivains sur six ne redéclaraient rien, et l'ancienne formulation est la cause
+racine la plus probable — un écrivain qui la lisait concluait légitimement qu'il
+n'avait rien à déclarer. Trois ont été réparés dans la foulée ; deux restent
+muets à dessein, en attente d'une signature d'opérateur. **Ne pas recopier ces
+nombres : les recompter.**
+
+Le compte de « quatre » était faux lui aussi, et son mode de panne est instructif :
+il faut un recensement à PLUSIEURS MOTIFS (kwarg, clé de dict, SQL brut, et le
+champ sur les modèles `*Update`) pour en trouver six dans `src/`. Le sixième — le
+tool générique `brain_update`, celui qui JUGE — n'est visible d'AUCUN grep sur le
+nom de la colonne, puisqu'il ne la nomme jamais.
 """
 
 from __future__ import annotations
