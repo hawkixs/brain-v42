@@ -178,6 +178,16 @@ required. It is not free of consequence, though — apply it and the code togeth
   >
   > **Replay it, do not quote it.** Every receipt in this document is dated, and a receipt
   > without its date is a trap: this very line carried `24/25` for long enough to be believed.
+  >
+  > **EXTENDED 2026-08-22 — the denominator is now 26, and 25/26 is a FAILURE, not a stale gate.**
+  > Ticket `81c4f366` added `inherited_constraint_definitions`: the constraints inherited from
+  > migrations 033/034/035 and from `projects` were attested by **name** only, so a constraint
+  > whose definition drifted while keeping its name passed. Twenty-nine constraints across
+  > `brain_entities`, `entity_relations`, `graph_outbox`, `graph_projection_leases` and
+  > `projects` are now pinned by `md5(pg_get_constraintdef(...))`, in both directions
+  > (missing-or-divergent, and present-but-unlisted). Everything above stays true — the head
+  > is still derived, `_REQUIRED_ALEMBIC_HEAD` still carries the exact revision.
+  > **Measured 2026-08-22 against production at head `046`: 26/26**, both variants.
 
 Operator order:
 
