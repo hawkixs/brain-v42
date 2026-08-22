@@ -153,6 +153,8 @@ class IndexedPlanSearchService:
                    c.created_at,
                    p.access_count AS parent_access_count,
                    p.last_accessed_at AS parent_last_accessed_at,
+                   p.access_count_human AS parent_access_count_human,
+                   p.last_accessed_at_human AS parent_last_accessed_at_human,
                    p.freshness_status AS parent_freshness_status,
                    p.created_at AS parent_created_at,
                    ts_rank(c.search_vector, plainto_tsquery('english', :q)) AS score
@@ -194,6 +196,8 @@ class IndexedPlanSearchService:
                    c.created_at,
                    p.access_count AS parent_access_count,
                    p.last_accessed_at AS parent_last_accessed_at,
+                   p.access_count_human AS parent_access_count_human,
+                   p.last_accessed_at_human AS parent_last_accessed_at_human,
                    p.freshness_status AS parent_freshness_status,
                    p.created_at AS parent_created_at,
                    1 - (c.embedding <=> CAST(:emb AS VECTOR)) AS score

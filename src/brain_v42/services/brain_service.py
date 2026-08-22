@@ -348,9 +348,25 @@ class BrainService:
                     # compteur ne répare que `freq_factor` (poids 0,2) et laisse
                     # `access_factor` (0,3, le plus lourd après l'âge) piloté par
                     # les lectures machine — 1 779 learnings mesurés dans ce cas.
+                    #
+                    # ET LE SIGNAL HUMAIN SUIT LA MÊME BASCULE PARENT QUE LE
+                    # SIGNAL MACHINE. Un plan est noté sur les compteurs de son
+                    # PARENT — les chunks n'ont pas de colonnes `_human` du
+                    # tout. Lire l'attribut sur le chunk rendait donc 0 et None
+                    # pour TOUT plan, toujours : pas une divergence de valeur,
+                    # une impossibilité structurelle.
                     if self._decay_human_signal_enabled:
                         signal_access_count = getattr(entity, "access_count_human", 0) or 0
                         signal_last_accessed = getattr(entity, "last_accessed_at_human", None)
+                        if t == "plan":
+                            parent_count_human = getattr(entity, "parent_access_count_human", None)
+                            parent_recency_human = getattr(
+                                entity, "parent_last_accessed_at_human", None
+                            )
+                            if parent_count_human is not None:
+                                signal_access_count = parent_count_human
+                            if parent_created_at is not None or parent_recency_human is not None:
+                                signal_last_accessed = parent_recency_human
                     else:
                         signal_access_count = access_count
                         signal_last_accessed = last_accessed_at

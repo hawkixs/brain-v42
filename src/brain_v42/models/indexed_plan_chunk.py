@@ -51,5 +51,12 @@ class IndexedPlanChunk(BaseModel):
     # fields drive decay filtering/scoring but never expand public MCP payloads.
     parent_access_count: int | None = Field(default=None, exclude=True)
     parent_last_accessed_at: datetime | None = Field(default=None, exclude=True)
+    # Le signal humain d'un plan ne peut venir QUE du parent : les colonnes
+    # `_human` des migrations 041/044 vivent sur `indexed_plans` et n'existent
+    # pas sur les chunks (vérifié dans `tables.py`). Sans ces deux champs, la
+    # branche humaine de `brain_service` lisait l'attribut sur le CHUNK, ne le
+    # trouvait pas, et notait TOUT plan à 0 accès humain et récence nulle.
+    parent_access_count_human: int | None = Field(default=None, exclude=True)
+    parent_last_accessed_at_human: datetime | None = Field(default=None, exclude=True)
     parent_freshness_status: str | None = Field(default=None, exclude=True)
     parent_created_at: datetime | None = Field(default=None, exclude=True)
