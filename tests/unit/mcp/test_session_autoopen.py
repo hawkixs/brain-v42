@@ -1,9 +1,16 @@
-"""Auto-ouverture de session — synchrone, fail-open, mémoïsée par connexion.
+"""Auto-ouverture de session — synchrone, fail-open, mémoïsée, ET OBSERVANTE.
 
 Forme signée `ae0d0475` / ADR §0ter. Quatre propriétés, chacune avec son test :
 écriture AVANT l'outil ; échec JAMAIS propagé ; une seule ouverture par appel
 client malgré le double tir de `on_call_tool` en profil `compact` ; et rien du
 tout en stdio, où il n'existe aucun identifiant de connexion (§0ter.2).
+
+**Cinquième propriété, celle sans laquelle M-G est inerte** : un chemin mémoïsé
+n'est pas un chemin muet. La garantie 2 du `§0bis.3` est littérale —
+`last_observed_at` bouge à CHAQUE appel d'outil — et c'est la seule colonne que
+la règle des 4 h du balayage sait lire. Une mémo qui rendrait l'UUID sans dater
+laisserait la colonne à NULL sur toute la table, donc la règle sans aucune ligne
+à prendre : verte, silencieuse, et fausse.
 """
 
 from __future__ import annotations
@@ -69,6 +76,29 @@ class _RecordingOpener:
         return uuid4()
 
 
+class _RecordingObserver:
+    """Observateur de test : enregistre les UUID datés, rend « encore ouverte »."""
+
+    def __init__(self, *, still_open: bool = True, raises: BaseException | None = None) -> None:
+        self.seen: list[UUID] = []
+        self.still_open = still_open
+        self._raises = raises
+
+    async def __call__(self, session_id: UUID) -> bool:
+        self.seen.append(session_id)
+        if self._raises is not None:
+            raise self._raises
+        return self.still_open
+
+
+def _opener(
+    opener: _RecordingOpener | None = None,
+    observer: _RecordingObserver | None = None,
+) -> SessionAutoOpener:
+    """Monter un ouvreur avec ses deux écrivains, pour ne pas les oublier."""
+    return SessionAutoOpener(opener or _RecordingOpener(), observer or _RecordingObserver())
+
+
 @pytest.fixture(autouse=True)
 def _isolate_autoopener() -> Iterator[None]:
     reset_session_autoopener()
@@ -114,7 +144,7 @@ class TestClosedByDefault:
 class TestIdentityResolution:
     async def test_writes_agent_nature_and_connection_identity(self) -> None:
         opener = _RecordingOpener()
-        assert await SessionAutoOpener(opener).ensure_open() is not None
+        assert await _opener(opener).ensure_open() is not None
         assert len(opener.seen) == 1
         identity = opener.seen[0]
         # `nature` est la SEULE colonne de la 046 au contrat public MCP ; les
@@ -131,7 +161,7 @@ class TestIdentityResolution:
         """§0ter.2 : PAS DE SESSION AUTOMATIQUE du tout en stdio."""
         set_current_transport(None)
         opener = _RecordingOpener()
-        auto = SessionAutoOpener(opener)
+        auto = _opener(opener)
         assert await auto.ensure_open() is None
         assert opener.seen == []
         assert auto.skipped["no_connection"] == 1
@@ -140,7 +170,7 @@ class TestIdentityResolution:
         """Sans acteur normalisable, aucun projet honnête : on n'invente pas."""
         set_current_actor(UNEXPANDED_ACTOR)
         opener = _RecordingOpener()
-        auto = SessionAutoOpener(opener)
+        auto = _opener(opener)
         assert await auto.ensure_open() is None
         assert opener.seen == []
         assert auto.skipped["no_actor"] == 1
@@ -149,7 +179,7 @@ class TestIdentityResolution:
         """Un acteur qui n'est pas une clé de projet valide ne devient pas un projet."""
         set_current_actor("Not A Project Key")
         opener = _RecordingOpener()
-        auto = SessionAutoOpener(opener)
+        auto = _opener(opener)
         assert await auto.ensure_open() is None
         assert opener.seen == []
         assert auto.skipped["no_project"] == 1
@@ -158,7 +188,7 @@ class TestIdentityResolution:
 class TestIdempotence:
     async def test_memoized_per_connection(self) -> None:
         opener = _RecordingOpener()
-        auto = SessionAutoOpener(opener)
+        auto = _opener(opener)
         first = await auto.ensure_open()
         second = await auto.ensure_open()
         assert first is not None
@@ -168,7 +198,7 @@ class TestIdempotence:
 
     async def test_distinct_connections_open_distinct_sessions(self) -> None:
         opener = _RecordingOpener()
-        auto = SessionAutoOpener(opener)
+        auto = _opener(opener)
         first = await auto.ensure_open()
         set_current_transport(_OTHER_CONNECTION)
         second = await auto.ensure_open()
@@ -197,7 +227,7 @@ class TestIdempotence:
                 calls.append("ensure_open")
                 return None
 
-        auto = _Counting(_RecordingOpener())
+        auto = _Counting(_RecordingOpener(), _RecordingObserver())
         monkeypatch.setattr(
             "brain_v42.mcp.provenance_middleware.get_session_autoopener",
             lambda: auto,
@@ -236,7 +266,7 @@ class TestSynchronousBeforeTheTool:
 
         monkeypatch.setattr(
             "brain_v42.mcp.provenance_middleware.get_session_autoopener",
-            lambda: SessionAutoOpener(opener),
+            lambda: SessionAutoOpener(opener, _RecordingObserver()),
         )
 
         async def call_next(_ctx: object) -> str:
@@ -263,7 +293,7 @@ class TestFailOpen:
             lambda **_kw: _headers(),
         )
         boom = _RecordingOpener(raises=RuntimeError("database is down"))
-        auto = SessionAutoOpener(boom)
+        auto = _opener(boom)
         monkeypatch.setattr(
             "brain_v42.mcp.provenance_middleware.get_session_autoopener",
             lambda: auto,
@@ -281,8 +311,76 @@ class TestFailOpen:
     async def test_failure_is_not_memoized(self) -> None:
         """Un échec ne pose pas de mémo : sinon la connexion perdrait sa session à vie."""
         boom = _RecordingOpener(raises=RuntimeError("transient"))
-        auto = SessionAutoOpener(boom)
+        auto = _opener(boom)
         await auto.ensure_open()
         await auto.ensure_open()
         assert len(boom.seen) == 2
         assert auto.memoized == 0
+
+
+class TestObservation:
+    """`last_observed_at` bouge à CHAQUE appel — sinon la règle des 4 h est morte."""
+
+    async def test_a_fresh_open_does_not_also_observe(self) -> None:
+        """L'INSERT date déjà la ligne : une seconde écriture serait gratuite."""
+        opener, observer = _RecordingOpener(), _RecordingObserver()
+        auto = _opener(opener, observer)
+        assert await auto.ensure_open() is not None
+        assert len(opener.seen) == 1
+        assert observer.seen == []
+
+    async def test_the_memoized_path_dates_the_same_session(self) -> None:
+        """Le chemin rapide n'est pas un chemin muet.
+
+        TÉMOIN NÉGATIF dans le test : on vérifie AUSSI que l'ouvreur n'a pas
+        rejoué. Sans lui, un observateur appelé par une réouverture silencieuse
+        rendrait ce test vert en prouvant le contraire de son nom.
+        """
+        opener, observer = _RecordingOpener(), _RecordingObserver()
+        auto = _opener(opener, observer)
+        first = await auto.ensure_open()
+        second = await auto.ensure_open()
+        third = await auto.ensure_open()
+        assert first is not None
+        assert (second, third) == (first, first)
+        assert observer.seen == [first, first]
+        assert len(opener.seen) == 1
+        assert auto.memoized == 2
+
+    async def test_a_session_closed_under_us_is_reopened(self) -> None:
+        """Le cas nommé par la forme signée : le balayage ferme, la connexion vit.
+
+        La mémo doit y survivre. L'autorité est l'index UNIQUE **PARTIEL**
+        `WHERE status = 'open'` : la ligne fermée ne bloque pas, donc rouvrir
+        est le chemin normal. Un cache qui trancherait « déjà fait » sans la
+        base rendrait cette connexion muette à vie.
+        """
+        opener = _RecordingOpener()
+        observer = _RecordingObserver(still_open=False)
+        auto = _opener(opener, observer)
+        first = await auto.ensure_open()
+        second = await auto.ensure_open()
+        assert first is not None
+        assert second is not None
+        assert second != first
+        assert len(opener.seen) == 2
+        assert auto.reopened == 1
+        assert auto.memoized == 0
+
+    async def test_an_observation_failure_keeps_the_memo_and_never_raises(self) -> None:
+        """`None` n'est pas `False` : un hoquet ne doit pas fabriquer un doublon.
+
+        Confondre les deux ferait rouvrir une session parfaitement vivante à
+        chaque erreur transitoire — un doublon par hoquet, là où la perte réelle
+        est une seule datation.
+        """
+        opener = _RecordingOpener()
+        observer = _RecordingObserver(raises=RuntimeError("database is down"))
+        auto = _opener(opener, observer)
+        first = await auto.ensure_open()
+        second = await auto.ensure_open()
+        assert second == first
+        assert len(opener.seen) == 1  # TÉMOIN : aucune réouverture
+        assert observer.seen == [first]  # et l'observation a bien été TENTÉE
+        assert auto.observe_failed == 1
+        assert auto.reopened == 0

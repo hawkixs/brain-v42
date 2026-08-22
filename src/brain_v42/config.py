@@ -264,6 +264,22 @@ class Settings(BaseSettings):
     # À faire signer avant armement.
     brain_session_auto_open_enabled: bool = Field(default=False)
 
+    # Fermeture nocturne des traçantes `agent` inobservées (M-G, migration 046).
+    # Livré FERMÉ, et ici « fermé » n'est pas de la prudence de forme : le
+    # balayage tourne WET toutes les nuits depuis `dream.sh`, en `uv run` DEPUIS
+    # LE DÉPÔT. Sans ce drapeau, merger la règle l'ARMERAIT dès la nuit suivante,
+    # sans redémarrage, sans fenêtre d'observation et sans geste d'opérateur.
+    #
+    # Fermé, le prédicat du balayage est IDENTIQUE à celui d'avant la 046 —
+    # épinglé par un test, pas seulement par cette phrase.
+    #
+    # Un drapeau et non un argument de `dream.sh` : `test_dream_sh_sweep.py`
+    # épingle `sweep_args` à `["--wet"]` et refuse tout argument de plus.
+    #
+    # Nom NON SIGNÉ, comme celui de l'auto-ouverture. À faire trancher avant
+    # armement — c'est un détail réversible, pas la capacité.
+    brain_session_inactive_sweep_enabled: bool = Field(default=False)
+
     @field_validator("client_activity_url")
     @classmethod
     def _client_activity_loopback_only(cls, v: str) -> str:
