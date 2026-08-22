@@ -125,12 +125,27 @@ async def test_lifecycle_tools_publish_exact_safety_annotations() -> None:
 
 
 async def test_lifecycle_docstrings_keep_boundaries_under_user_control() -> None:
+    """Le covenant tel que le CLIENT le reçoit, pas tel que le source l'écrit.
+
+    Second point d'ancrage, et il n'est pas redondant avec
+    `test_session_covenant_docstrings_anchor` : celui-là lit l'AST du module,
+    celui-ci lit la `description` que FastMCP publie réellement. Les deux ont
+    rougi ensemble à la réécriture par nature (046) — le premier était nommé
+    dans le mandat, le second ne l'était pas. C'est la classe d'instantané
+    périmé « document SATELLITE » : seule une suite complète le sort.
+
+    Réécrit par nature (ADR §0ter (d)) : depuis la 046 le serveur ouvre et ferme
+    ses propres traçantes `agent`. Le covenant NOMME cette exception au lieu de
+    la nier ; la phrase d'avant est retenue ci-dessous comme témoin négatif.
+    """
     server, _, _ = _registered_server()
 
     for name in TOOL_NAMES:
-        description = (await _tool(server, name)).description.lower()
+        description = " ".join((await _tool(server, name)).description.lower().split())
         assert "explicit user command" in description, name
-        assert "no hook or auto-close" in description, name
+        assert "no hook and no auto-close may invoke this lifecycle boundary" in description, name
+        assert "an agent tracer is the only session the server opens or closes" in description, name
+        assert "no hook or auto-close" not in description, name
 
 
 async def test_lifecycle_input_schemas_are_bounded_and_discoverable() -> None:

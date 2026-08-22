@@ -12,11 +12,20 @@ MESURÉ dans la spec : sur `learnings`, 19 049 accès au total contre 79 humains
 — **0,41 %**. 508 entités dépassent leur `freq_baseline` sur le total, **zéro**
 sur le compteur humain.
 
-ET LE CORRECTIF NE PEUT PAS ÊTRE LE SEUL COMPTEUR. `access_count` pèse 0,2 dans
-la formule ; `last_accessed_at` pèse **0,3**, le plus lourd après l'âge, et la
-041 ne lui avait donné aucune variante humaine. 1 779 learnings ont leur terme
-de récence piloté par des lectures machine seules. Substituer un seul des deux
-répare 0,2 des 0,5 de poids pilotés par la lecture. Les deux basculent ensemble.
+ET LE CORRECTIF NE PEUT PAS ÊTRE LE SEUL COMPTEUR — ET LES DEUX POIDS SONT PAR
+TYPE. `access_count` pèse 0,2 pour ``decision``/``learning``/``adr`` et 0,3 pour
+les trois autres ; `last_accessed_at` pèse 0,3 partout sauf ``adr`` (0,2). Ce
+dernier n'est JAMAIS dominé par l'âge — ``w_access >= w_age`` sur les six types —
+donc « le plus lourd après l'âge » le SOUS-ESTIMAIT : il est le terme le plus
+lourd, à égalité avec l'âge pour ``decision``/``learning`` et avec la fréquence
+pour ``snippet``/``runbook``/``plan``; seul ``adr`` le voit dominé, par la
+validation (0,5). La 041 ne lui avait donné aucune variante humaine : 1 522
+learnings ont leur terme de récence piloté par des lectures machine seules
+(mesuré le 2026-08-22 ; 2 060 sur les six tables). Substituer un seul des deux ne
+répare donc qu'une part du poids piloté par la lecture, et cette part dépend du
+type — 0,2 sur 0,5 pour ``decision``/``learning``, 0,3 sur 0,6 pour
+``snippet``/``runbook``/``plan``, 0,2 sur 0,4 pour ``adr``. Les deux basculent
+ensemble.
 
 LE RÉGLAGE EST FERMÉ PAR DÉFAUT (§5.5) : c'est le seul élément de ce chantier
 sans irréversibilité mais à effet immédiat sur un humain — l'ordre des résultats

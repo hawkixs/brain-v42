@@ -35,6 +35,7 @@ def _make_feature_row(
     description: str = "desc",
     embedding: list[float] | None = None,
     created_at: float = 1000.0,
+    pinned: bool = False,
 ) -> MagicMock:
     row = MagicMock()
     row.id = feature_id or uuid.uuid4()
@@ -44,6 +45,14 @@ def _make_feature_row(
     row.created_at = created_at
     row.status = "research"
     row.merged_into = None
+    # `pinned` DOIT être posé, jamais laissé à l'attribut par défaut du
+    # MagicMock : celui-ci est truthy, donc une ligne construite sans lui
+    # simulerait une feature ÉPINGLÉE sans le dire, et la garde de
+    # `merge_features` refuserait toutes les fusions de ce fichier. Les tests
+    # ci-dessous portent sur d'autres invariants et supposent le cas nominal.
+    # `False` est la valeur réelle : la colonne est `Boolean` avec
+    # `server_default false` (0 ligne NULL mesurée en prod le 2026-08-22).
+    row.pinned = pinned
     return row
 
 

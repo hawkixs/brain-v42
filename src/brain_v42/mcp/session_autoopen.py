@@ -98,6 +98,11 @@ class AutoOpenIdentity:
 #: ouvrir — par exemple quand le projet n'a pas de contexte.
 SessionOpener = Callable[[AutoOpenIdentity], Awaitable[UUID | None]]
 
+#: Un observateur date une session mémoïsée et rend « elle était encore ouverte ».
+#: Le booléen est ce qui rend la mémo survivante au balayage : ``False`` veut dire
+#: « fermée sous nos pieds », donc mémo à jeter, pas session à perdre.
+SessionObserver = Callable[[UUID], Awaitable[bool]]
+
 
 def resolve_auto_open_identity() -> tuple[AutoOpenIdentity | None, str]:
     """Résoudre l'identité de la connexion courante, ou dire pourquoi non.
@@ -138,19 +143,23 @@ class SessionAutoOpener:
     def __init__(
         self,
         opener: SessionOpener,
+        observer: SessionObserver,
         *,
         max_connections: int = DEFAULT_MAX_MEMOIZED_CONNECTIONS,
     ) -> None:
         self._opener = opener
+        self._observer = observer
         self._max_connections = max_connections
         self._memo: OrderedDict[str, UUID] = OrderedDict()
         self.opened = 0
         self.memoized = 0
+        self.reopened = 0
         self.failed = 0
+        self.observe_failed = 0
         self.skipped: defaultdict[str, int] = defaultdict(int)
 
     async def ensure_open(self) -> UUID | None:
-        """Ouvrir si besoin. **Ne lève jamais** — c'est tout le contrat."""
+        """Ouvrir ou réobserver. **Ne lève jamais** — c'est tout le contrat."""
         identity, reason = resolve_auto_open_identity()
         if identity is None:
             self.skipped[reason] += 1
@@ -158,9 +167,20 @@ class SessionAutoOpener:
 
         memoized = self._memo.get(identity.connection_id)
         if memoized is not None:
-            self._memo.move_to_end(identity.connection_id)
-            self.memoized += 1
-            return memoized
+            observed = await self._observe(memoized, identity)
+            if observed is not False:
+                # ``None`` = l'observation a échoué. On garde la mémo : perdre
+                # une datation coûte une ligne d'horloge, perdre la mémo
+                # coûterait la session de cette connexion.
+                self._memo.move_to_end(identity.connection_id)
+                self.memoized += 1
+                return memoized
+            # La session a été fermée sous nos pieds — c'est le cas nommé par la
+            # forme signée. Rien à réparer : la clé UNIQUE est PARTIELLE
+            # (``WHERE status = 'open'``), donc la ligne fermée ne bloque pas, et
+            # la réouverture est le chemin normal, pas un rattrapage.
+            del self._memo[identity.connection_id]
+            self.reopened += 1
 
         try:
             session_id = await self._opener(identity)
@@ -193,6 +213,27 @@ class SessionAutoOpener:
         self.opened += 1
         return session_id
 
+    async def _observe(self, session_id: UUID, identity: AutoOpenIdentity) -> bool | None:
+        """Dater la session mémoïsée. Rend ``None`` si l'observation a échoué.
+
+        Trois issues, et les confondre coûterait cher : ``True`` (encore
+        ouverte), ``False`` (fermée entre-temps, mémo à jeter) et ``None``
+        (l'écriture a raté). Traiter ``None`` comme ``False`` ferait rouvrir une
+        session parfaitement vivante à chaque hoquet de base, et un doublon par
+        hoquet est pire qu'une datation perdue.
+        """
+        try:
+            return await self._observer(session_id)
+        except Exception:
+            self.observe_failed += 1
+            logger.warning(
+                "session_autoopen.observe_failed",
+                project_key=identity.project_key,
+                connection_id=identity.connection_id,
+                exc_info=True,
+            )
+            return None
+
     def _remember(self, connection_id: str, session_id: UUID) -> None:
         self._memo[connection_id] = session_id
         self._memo.move_to_end(connection_id)
@@ -216,7 +257,7 @@ def get_session_autoopener() -> SessionAutoOpener | None:
             settings = get_settings()
             if not settings.brain_session_auto_open_enabled:
                 return None
-            _autoopener = SessionAutoOpener(_build_default_opener())
+            _autoopener = SessionAutoOpener(*_build_default_writers())
         except Exception as exc:
             # Type seul : les cadres traversés portent la configuration, DSN
             # compris.
@@ -231,8 +272,12 @@ def reset_session_autoopener() -> None:
     _autoopener = None
 
 
-def _build_default_opener() -> SessionOpener:
-    """Câbler l'ouvreur de production sur le dépôt de sessions."""
+def _build_default_writers() -> tuple[SessionOpener, SessionObserver]:
+    """Câbler l'ouvreur ET l'observateur de production sur le dépôt de sessions.
+
+    Les deux sortent du MÊME dépôt, donc du même moteur : un ouvreur qui écrit
+    ailleurs que l'observateur produirait une session que personne ne date.
+    """
     from brain_v42.db.engine import get_session_factory  # noqa: PLC0415
     from brain_v42.repositories.pg_brain_session import PgBrainSessionRepo  # noqa: PLC0415
 
@@ -241,4 +286,7 @@ def _build_default_opener() -> SessionOpener:
     async def _open(identity: AutoOpenIdentity) -> UUID | None:
         return await repo.auto_open(identity)
 
-    return _open
+    async def _observe(session_id: UUID) -> bool:
+        return await repo.observe(session_id)
+
+    return _open, _observe

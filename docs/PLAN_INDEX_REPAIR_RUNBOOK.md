@@ -178,6 +178,57 @@ required. It is not free of consequence, though — apply it and the code togeth
   >
   > **Replay it, do not quote it.** Every receipt in this document is dated, and a receipt
   > without its date is a trap: this very line carried `24/25` for long enough to be believed.
+  >
+  > **EXTENDED 2026-08-22 — the denominator is now 26, and 25/26 is a FAILURE, not a stale gate.**
+  > Ticket `81c4f366` added `inherited_constraint_definitions`: the constraints inherited from
+  > migrations 033/034/035 and from `projects` were attested by **name** only, so a constraint
+  > whose definition drifted while keeping its name passed. Twenty-nine constraints across
+  > `brain_entities`, `entity_relations`, `graph_outbox`, `graph_projection_leases` and
+  > `projects` are now pinned by `md5(pg_get_constraintdef(...))`, in both directions
+  > (missing-or-divergent, and present-but-unlisted). Everything above stays true — the head
+  > is still derived, `_REQUIRED_ALEMBIC_HEAD` still carries the exact revision.
+  > **Measured 2026-08-22 against production at head `046`: 26/26**, both variants.
+  >
+  > **EXTENDED again, same day — the denominator is 27. `26/27` is a FAILURE.**
+  > Ticket `2bb1988f`, the fifth split, closed the pan its predecessor left open:
+  > `81c4f366` was bounded to *constraints*, so the **17 indexes, 58 columns and 5 relation
+  > shapes** of those same five historical tables were attested by nothing — not even their
+  > existence as ordinary, non-partitioned heap tables. `historical_relation_shape` now pins
+  > index definitions (`md5(pg_get_indexdef(...))`, bidirectional), per-table column
+  > fingerprints, and the nine-property relation template already applied to `brain_sessions`.
+  > Its observed value names its three counters, so a failure says which one moved.
+  > **Measured 2026-08-22 against production at head `046`: 27/27**, both variants.
+  >
+  > **EXTENDED a third time, same day — the denominator is 28. `27/28` is a FAILURE.**
+  > Ticket `f36846a1`: the **nine sequences** were attested by nothing at all — `grep -ci
+  > sequence` on the previous asset returned `0`. `sequence_shape` now pins their shape
+  > (owning table and column, type, increment, bounds, `CYCLE`) in both directions, and —
+  > the control that actually matters — `last_value >= max(id)` on each owning column.
+  > That second one is the silent restore failure: a restore that skips the `setval`s
+  > leaves every sequence at 1, the catalogue is complete, every `SELECT` passes, and the
+  > FIRST `INSERT` dies on a primary-key collision. Its observed value names its two
+  > counters. Everything above stays true.
+  > **Measured 2026-08-22 against production at head `046`: 28/28**, both variants.
+  >
+  > **A SECOND, SEPARATE receipt — `ops/recovery/brain-v42-v5-acl.sql`, and it is NOT part
+  > of the 28.** Ticket `60708007`. The sandbox restore runs `--no-owner --no-acl`, so a
+  > restoration receipt erases the very thing this proof looks at. Owners and grants
+  > therefore live in their own asset, played against **live production only**, and they
+  > have **no `-pgrestore` twin** — that absence is the decision, not an oversight. It pins
+  > that every one of the 51 public relations is owned by `brain`, that `codex_ro` holds
+  > `SELECT` on exactly the ten codex views the migration 036 grants (and `USAGE` on the
+  > schema, without which those ten grants are inert), and that `codex_ro` never gains a
+  > role attribute or a role membership. **Measured 2026-08-22 against production at head
+  > `046`: 1/1.** Run it with the same command, substituting the file:
+  > `docker exec -i brain_v42_postgres psql -U brain -d brain -Atq -v ON_ERROR_STOP=1 -f -
+  > < ops/recovery/brain-v42-v5-acl.sql`
+  >
+  > **What no receipt here proves.** Every number above was replayed against the **live**
+  > production database, never against a `pg_restore`d dump. None of them says anything about
+  > an actual restoration. The P1 gate of `8eaefe36` stands entirely open — do not read
+  > `28/28` as "DR is proven". The sequence check makes that sharper, not softer: on a live
+  > database `last_value >= max(id)` is true by construction, so the one control written
+  > FOR a restore is the one control no receipt here can ever exercise.
 
 Operator order:
 

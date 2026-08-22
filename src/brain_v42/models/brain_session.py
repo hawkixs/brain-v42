@@ -21,6 +21,17 @@ SESSION_STALE_AFTER = timedelta(hours=24)
 AUTO_STALE_AFTER = timedelta(days=7)
 AUTO_STALE_ABANDONMENT_REASON = "auto_stale_7d"
 
+# TROISIÈME seuil, et le seul qui ne parle pas de la même horloge que les deux
+# autres : SESSION_STALE_AFTER et AUTO_STALE_AFTER lisent `last_heartbeat_at`,
+# la PRÉSENCE déclarée ; celui-ci lit `last_observed_at`, l'OBSERVATION faite par
+# le serveur. Il ne s'applique qu'aux traçantes `agent` (ADR §0ter.5, signé).
+#
+# CE N'EST PAS UN DÉLAI DE FERMETURE, et l'annoncer comme tel serait faux : logé
+# dans le balayage nocturne, 4 h est un seuil d'ÉLIGIBILITÉ évalué une fois par
+# nuit. Une traçante devenue inactive juste après un passage vit jusqu'au
+# suivant — latence réelle pire cas ≈ 28 h.
+AGENT_INACTIVE_AFTER = timedelta(hours=4)
+
 
 class BrainSessionStatus(StrEnum):
     """Persistent lifecycle states.
@@ -149,8 +160,10 @@ class BrainSession(BaseModel):
     # C7 exige que la MACHINE D'ÉTATS bouge avec le CHECK. `nature` en fait
     # partie : la branche `closed_inactive` de la 046 la contraint à `agent`.
     # Les quatre autres colonnes de la 046 — `started_by_actor`,
-    # `last_observed_at`, `intent`, `connection_id` — ne sont dans AUCUN CHECK
-    # et n'ont encore aucun écrivain. Elles n'entrent donc pas ici : FastMCP
+    # `last_observed_at`, `intent`, `connection_id` — ne sont dans AUCUN CHECK.
+    # Trois ont désormais un écrivain (l'auto-ouverture, et l'observation pour
+    # `last_observed_at`) ; `intent` n'en a toujours aucun. Avoir un écrivain
+    # n'est PAS un titre d'entrée ici : elles n'entrent toujours pas — FastMCP
     # dérive le schéma de sortie des tools de ce modèle, et les cinq colonnes
     # portaient le total de 8487 à 11292 octets — au-dessus du plancher
     # d'économie de 9041 que `test_discovery_contract_keeps_tool_identity_inputs_
@@ -380,6 +393,20 @@ class BrainSessionSweepCandidate(BaseModel):
     project_key: str
     client_key: str
     last_heartbeat_at: datetime
+    #: NULL veut dire « jamais observée » — donc hors d'atteinte de la règle des
+    #: 4 h, qui ne prend que ce qu'elle a vu vivre (S3, tranché).
+    last_observed_at: datetime | None = None
+    #: L'état terminal que CETTE ligne a reçu, ou recevrait. Obligatoire et sans
+    #: défaut : deux règles écrivent dans le même statement, et un rapport qui
+    #: les confondrait rendrait la préséance invérifiable.
+    outcome: BrainSessionStatus
+
+    @field_validator("outcome")
+    @classmethod
+    def _outcome_is_a_sweep_outcome(cls, value: BrainSessionStatus) -> BrainSessionStatus:
+        if value not in (BrainSessionStatus.ABANDONED, BrainSessionStatus.CLOSED_INACTIVE):
+            raise ValueError(f"{value} is not an outcome the sweep can produce")
+        return value
 
 
 class BrainSessionSweepResult(BaseModel):
@@ -387,8 +414,18 @@ class BrainSessionSweepResult(BaseModel):
 
     candidates: list[BrainSessionSweepCandidate]
     dry_run: bool
+    #: Seuil de PRÉSENCE (7 j), lu sur `last_heartbeat_at`. Toujours actif.
     cutoff: datetime
+    #: Seuil d'OBSERVATION (4 h), lu sur `last_observed_at`. ``None`` veut dire
+    #: que la règle est fermée — pas qu'aucune session ne l'a atteint.
+    inactive_cutoff: datetime | None = None
     # Toujours 0 en DRY. Redondant avec len(candidates) — délibérément : un
     # journal doit rendre « 17 auraient été abandonnées » illisible comme
     # « 17 ont été abandonnées ».
     abandoned_count: int = Field(..., ge=0)
+    #: Compteur DISTINCT, jamais mêlé à `abandoned_count`. Les deux règles
+    #: produisent deux états terminaux différents — `abandoned` porte une raison
+    #: et jamais de ledger, `closed_inactive` porte son ledger et aucune raison.
+    #: Les additionner effacerait la seule distinction que la 046 a coûté une
+    #: migration à créer.
+    closed_inactive_count: int = Field(default=0, ge=0)

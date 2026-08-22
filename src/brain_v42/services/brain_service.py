@@ -345,9 +345,12 @@ class BrainService:
                     # distribution humaine n'est pas la distribution totale.
                     #
                     # Les DEUX signaux basculent ensemble : substituer le seul
-                    # compteur ne répare que `freq_factor` (poids 0,2) et laisse
-                    # `access_factor` (0,3, le plus lourd après l'âge) piloté par
-                    # les lectures machine — 1 779 learnings mesurés dans ce cas.
+                    # compteur ne répare que `freq_factor` et laisse
+                    # `access_factor` piloté par les lectures machine — 1 522
+                    # learnings dans ce cas au 2026-08-22. Les deux poids sont
+                    # PAR TYPE : `freq` vaut 0,2 pour decision/learning/adr et
+                    # 0,3 pour snippet/runbook/plan ; `access` vaut 0,3 partout
+                    # sauf `adr` (0,2), et n'est jamais dominé par l'âge.
                     #
                     # ET LE SIGNAL HUMAIN SUIT LA MÊME BASCULE PARENT QUE LE
                     # SIGNAL MACHINE. Un plan est noté sur les compteurs de son

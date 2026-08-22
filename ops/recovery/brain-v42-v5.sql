@@ -1400,6 +1400,496 @@ graph_projection_034_035_observation AS (
      )
  ) AS passed
 ),
+expected_inherited_constraints(
+ table_name,
+ constraint_name,
+ constraint_type,
+ delete_action,
+ definition_md5
+) AS (
+ VALUES
+     ('brain_entities', 'brain_entities_lifecycle_valid', 'c', NULL::text, '994ec2f2e5fb99bf449a8f52645a8632'),
+     ('brain_entities', 'brain_entities_pkey', 'p', NULL::text, 'cc3552dbb61b18accca876af5296eb1f'),
+     ('brain_entities', 'brain_entities_project_key_fkey', 'f', 'r', 'f263e7d4d142bbc04ada44537963b892'),
+     ('brain_entities', 'brain_entities_scope_valid', 'c', NULL::text, '7a2522cefd4d98d52bc658343f54daa9'),
+     ('brain_entities', 'uq_brain_entities_type_key', 'u', NULL::text, 'e8fd9124dae08d47c87177bf033b8e00'),
+     ('entity_relations', 'entity_relations_confidence_valid', 'c', NULL::text, '8418df632947fd26246036ee546af632'),
+     ('entity_relations', 'entity_relations_lifecycle_valid', 'c', NULL::text, '994ec2f2e5fb99bf449a8f52645a8632'),
+     ('entity_relations', 'entity_relations_no_self_loop', 'c', NULL::text, '5a41e6500e5c57c7f2fd2b366d996831'),
+     ('entity_relations', 'entity_relations_pkey', 'p', NULL::text, 'cc3552dbb61b18accca876af5296eb1f'),
+     ('entity_relations', 'entity_relations_source_entity_id_fkey', 'f', 'r', '10d758915d3544cd60fbd31505ee24d6'),
+     ('entity_relations', 'entity_relations_target_entity_id_fkey', 'f', 'r', '8188bcc6f479fce005c8af00803e91e8'),
+     ('entity_relations', 'entity_relations_type_valid', 'c', NULL::text, '5445bcaba9b1962b9223adf4312e7928'),
+     ('entity_relations', 'uq_entity_relations_endpoints_type', 'u', NULL::text, 'aafe3b4835484bc8352bb3e383f3b3de'),
+     ('graph_outbox', 'graph_outbox_entity_id_fkey', 'f', 'c', '41669d749feab45b3b21507cbe1e72f8'),
+     ('graph_outbox', 'graph_outbox_event_id_key', 'u', NULL::text, '759bdd8d95917e86a4535f61383231f2'),
+     ('graph_outbox', 'graph_outbox_exactly_one_aggregate', 'c', NULL::text, '43e61c6f8f1d8edd4c7ad839435f3b94'),
+     ('graph_outbox', 'graph_outbox_operation_valid', 'c', NULL::text, 'c06d4e91f1efdc7a54e37e57f12e237b'),
+     ('graph_outbox', 'graph_outbox_pkey', 'p', NULL::text, 'cc3552dbb61b18accca876af5296eb1f'),
+     ('graph_outbox', 'graph_outbox_relation_id_fkey', 'f', 'c', '22cd3849e65c946557e6c4a9ea483648'),
+     ('graph_outbox', 'uq_graph_outbox_entity_revision', 'u', NULL::text, '7b1e742994175d24227a5f0a6cff40a6'),
+     ('graph_outbox', 'uq_graph_outbox_relation_revision', 'u', NULL::text, 'd5fb45f4a7893c5d45460da33fc32d3b'),
+     ('graph_projection_leases', 'graph_projection_leases_armed_generation_valid', 'c', NULL::text, 'e8cee37772e9bc681ba229a778eace5d'),
+     ('graph_projection_leases', 'graph_projection_leases_pkey', 'p', NULL::text, '3608ac6e0b09678c35217c69cc4de206'),
+     ('graph_projection_leases', 'graph_projection_leases_protocol_valid', 'c', NULL::text, '3c5970bbe99c7f44f1a0127458293dea'),
+     ('graph_projection_leases', 'graph_projection_leases_recovery_state_valid', 'c', NULL::text, 'da1a1dfd81cb4d6f562aa15f101ec34d'),
+     ('projects', 'projects_key_format_valid', 'c', NULL::text, 'd2f0e69b15612f6476efceb2a228c6fb'),
+     ('projects', 'projects_pkey', 'p', NULL::text, 'b449ae3aa5c5dbcebd0e93fd552a7787'),
+     ('projects', 'projects_registry_status_valid', 'c', NULL::text, '49f2a9f97e70e1f147b1fa22e52d86cb'),
+     ('projects', 'projects_source_valid', 'c', NULL::text, 'e0aa1763fa7473f08755ff620c23a600')
+),
+observed_inherited_constraints AS (
+ SELECT
+     table_record.relname AS table_name,
+     constraint_record.oid AS constraint_oid,
+     constraint_record.conname AS constraint_name,
+     constraint_record.contype::text AS constraint_type,
+     constraint_record.confdeltype::text AS delete_action,
+     constraint_record.convalidated AS validated,
+    md5(
+         regexp_replace(
+             lower(pg_catalog.pg_get_constraintdef(constraint_record.oid, TRUE)),
+             '[[:space:]]+',
+             ' ',
+             'g'
+         )
+     ) AS definition_md5
+ FROM pg_catalog.pg_constraint AS constraint_record
+ JOIN pg_catalog.pg_class AS table_record
+   ON table_record.oid = constraint_record.conrelid
+ JOIN pg_catalog.pg_namespace AS namespace_record
+   ON namespace_record.oid = table_record.relnamespace
+ WHERE namespace_record.nspname = 'public'
+   AND table_record.relname IN (
+       'brain_entities',
+       'entity_relations',
+       'graph_outbox',
+       'graph_projection_leases',
+       'projects'
+   )
+),
+inherited_constraint_mismatches AS (
+ SELECT (
+     SELECT count(*)
+     FROM expected_inherited_constraints AS expected_constraint
+     LEFT JOIN observed_inherited_constraints AS constraint_record
+       ON constraint_record.table_name = expected_constraint.table_name
+      AND constraint_record.constraint_name = expected_constraint.constraint_name
+      AND constraint_record.constraint_type = expected_constraint.constraint_type
+      AND (
+          expected_constraint.delete_action IS NULL
+          OR constraint_record.delete_action = expected_constraint.delete_action
+      )
+      AND constraint_record.definition_md5 = expected_constraint.definition_md5
+      AND constraint_record.validated
+     WHERE constraint_record.constraint_oid IS NULL
+ ) + (
+     SELECT count(*)
+     FROM observed_inherited_constraints AS constraint_record
+     LEFT JOIN expected_inherited_constraints AS expected_constraint
+       ON expected_constraint.table_name = constraint_record.table_name
+      AND expected_constraint.constraint_name = constraint_record.constraint_name
+     WHERE expected_constraint.constraint_name IS NULL
+ ) AS value
+),
+expected_historical_indexes(
+ table_name,
+ index_name,
+ is_unique,
+ is_primary,
+ columns,
+ definition_md5
+) AS (
+ VALUES
+     (
+         'brain_entities',
+         'brain_entities_pkey',
+         TRUE,
+         TRUE,
+         jsonb_build_array('id'),
+         'e7f8e9706d0ca15ab1df60fb221f1064'
+     ),
+     (
+         'brain_entities',
+         'idx_brain_entities_project_lifecycle',
+         FALSE,
+         FALSE,
+         jsonb_build_array('project_key', 'lifecycle'),
+         '59159e2e0ed1243096e9b04b1005ec58'
+     ),
+     (
+         'brain_entities',
+         'idx_brain_entities_type_lifecycle',
+         FALSE,
+         FALSE,
+         jsonb_build_array('entity_type', 'lifecycle'),
+         'bf933545ea4759505dd2a3f28170ce7e'
+     ),
+     (
+         'brain_entities',
+         'uq_brain_entities_source_uuid',
+         TRUE,
+         FALSE,
+         jsonb_build_array('source_uuid'),
+         '6215745c9bbabfc4f6536224f51d9ff0'
+     ),
+     (
+         'brain_entities',
+         'uq_brain_entities_type_key',
+         TRUE,
+         FALSE,
+         jsonb_build_array('entity_type', 'entity_key'),
+         'cb21fcf6bca9db57aa5b610f27fc9b47'
+     ),
+     (
+         'entity_relations',
+         'entity_relations_pkey',
+         TRUE,
+         TRUE,
+         jsonb_build_array('id'),
+         '217e4ca0931ea037192712f456ff7577'
+     ),
+     (
+         'entity_relations',
+         'idx_entity_relations_source_active',
+         FALSE,
+         FALSE,
+         jsonb_build_array('source_entity_id', 'lifecycle'),
+         '0af525f7cbb3ddfc3763838f93bc6acd'
+     ),
+     (
+         'entity_relations',
+         'idx_entity_relations_target_active',
+         FALSE,
+         FALSE,
+         jsonb_build_array('target_entity_id', 'lifecycle'),
+         '5fe4e2413a47315d52716e4999c08991'
+     ),
+     (
+         'entity_relations',
+         'idx_entity_relations_type_active',
+         FALSE,
+         FALSE,
+         jsonb_build_array('relation_type', 'lifecycle'),
+         'd900d75c260e8b647bf8fc0a8942ed2a'
+     ),
+     (
+         'entity_relations',
+         'uq_entity_relations_endpoints_type',
+         TRUE,
+         FALSE,
+         jsonb_build_array('source_entity_id', 'target_entity_id', 'relation_type'),
+         '1fd361469b76df214973bb3f938b498a'
+     ),
+     (
+         'graph_outbox',
+         'graph_outbox_event_id_key',
+         TRUE,
+         FALSE,
+         jsonb_build_array('event_id'),
+         'a56287d3b45a1f279ec5b4cd33ceafd5'
+     ),
+     (
+         'graph_outbox',
+         'graph_outbox_pkey',
+         TRUE,
+         TRUE,
+         jsonb_build_array('id'),
+         '474a1b1b4ac19d21b74731ac8d9a9999'
+     ),
+     (
+         'graph_outbox',
+         'idx_graph_outbox_pending',
+         FALSE,
+         FALSE,
+         jsonb_build_array('available_at', 'id'),
+         'ca916f57c7b789b027252a40cd189aa1'
+     ),
+     (
+         'graph_outbox',
+         'uq_graph_outbox_entity_revision',
+         TRUE,
+         FALSE,
+         jsonb_build_array('entity_id', 'aggregate_revision'),
+         'ad9028401163d52968e71007bd54bbd7'
+     ),
+     (
+         'graph_outbox',
+         'uq_graph_outbox_relation_revision',
+         TRUE,
+         FALSE,
+         jsonb_build_array('relation_id', 'aggregate_revision'),
+         '38e7cf6ec07210a1bf3fbe6fb369b048'
+     ),
+     (
+         'graph_projection_leases',
+         'graph_projection_leases_pkey',
+         TRUE,
+         TRUE,
+         jsonb_build_array('slot'),
+         '093ed839687394ee6da85086e39e6da7'
+     ),
+     (
+         'projects',
+         'projects_pkey',
+         TRUE,
+         TRUE,
+         jsonb_build_array('project_key'),
+         '671e28752233598f9e71ed5a655952ec'
+     )
+),
+observed_historical_indexes AS (
+ SELECT
+     source_table.relname AS table_name,
+     index_table.relname AS index_name,
+     index_record.indisunique AS is_unique,
+     index_record.indisprimary AS is_primary,
+     index_record.indisvalid,
+     index_record.indisready,
+     jsonb_agg(attribute_record.attname ORDER BY index_column.ordinality) AS columns,
+     md5(pg_catalog.pg_get_indexdef(index_record.indexrelid)) AS definition_md5
+ FROM pg_catalog.pg_index AS index_record
+ JOIN pg_catalog.pg_class AS source_table
+   ON source_table.oid = index_record.indrelid
+ JOIN pg_catalog.pg_namespace AS namespace_record
+   ON namespace_record.oid = source_table.relnamespace
+ JOIN pg_catalog.pg_class AS index_table
+   ON index_table.oid = index_record.indexrelid
+ CROSS JOIN LATERAL unnest(index_record.indkey)
+   WITH ORDINALITY AS index_column(attribute_number, ordinality)
+ LEFT JOIN pg_catalog.pg_attribute AS attribute_record
+   ON attribute_record.attrelid = source_table.oid
+  AND attribute_record.attnum = index_column.attribute_number
+ WHERE namespace_record.nspname = 'public'
+   AND source_table.relname IN (
+       'brain_entities',
+       'entity_relations',
+       'graph_outbox',
+       'graph_projection_leases',
+       'projects'
+   )
+ GROUP BY
+     source_table.relname,
+     index_table.relname,
+     index_record.indexrelid,
+     index_record.indisunique,
+     index_record.indisprimary,
+     index_record.indisvalid,
+     index_record.indisready
+),
+historical_index_mismatches AS (
+ SELECT count(*) AS value
+ FROM (
+     SELECT expected_index.index_name
+     FROM expected_historical_indexes AS expected_index
+     LEFT JOIN observed_historical_indexes AS observed_index
+       ON observed_index.table_name = expected_index.table_name
+      AND observed_index.index_name = expected_index.index_name
+      AND observed_index.is_unique = expected_index.is_unique
+      AND observed_index.is_primary = expected_index.is_primary
+      AND observed_index.indisvalid
+      AND observed_index.indisready
+      AND observed_index.columns = expected_index.columns
+      AND observed_index.definition_md5
+          IS NOT DISTINCT FROM expected_index.definition_md5
+     WHERE observed_index.index_name IS NULL
+     UNION ALL
+     SELECT observed_index.index_name
+     FROM observed_historical_indexes AS observed_index
+     WHERE NOT EXISTS (
+         SELECT 1
+         FROM expected_historical_indexes AS expected_index
+         WHERE expected_index.table_name = observed_index.table_name
+           AND expected_index.index_name = observed_index.index_name
+     )
+ ) AS mismatched_historical_index
+),
+expected_historical_column_fingerprints(table_name, definition_md5) AS (
+ VALUES
+     ('brain_entities', '29129c0e227139630018e4da8f8274ef'),
+     ('entity_relations', '6f646a72602beef83e1918181f283e73'),
+     ('graph_outbox', 'b4b8228e2ce20ca8f975e385b3712b86'),
+     ('graph_projection_leases', 'b2970aedef9c874f2b7d440425ed7430'),
+     ('projects', '09f1991c6d569501b3da449bf8a2b4b7')
+),
+observed_historical_column_fingerprints(table_name, definition_md5) AS (
+ SELECT
+     observed_column.table_name,
+     md5(
+         COALESCE(
+             jsonb_agg(
+                 jsonb_build_array(
+                     observed_column.ordinal_position,
+                     observed_column.column_name,
+                     observed_column.data_type,
+                     observed_column.udt_schema,
+                     observed_column.udt_name,
+                     observed_column.is_nullable,
+                     observed_column.character_maximum_length,
+                     observed_column.numeric_precision,
+                     observed_column.numeric_scale,
+                     observed_column.datetime_precision,
+                     observed_column.column_default,
+                     observed_column.is_identity,
+                     observed_column.identity_generation,
+                     observed_column.is_generated,
+                     observed_column.generation_expression,
+                     observed_column.collation_schema,
+                     observed_column.collation_name
+                 )
+                 ORDER BY observed_column.ordinal_position
+             )::text,
+             '[]'
+         )
+     )
+ FROM information_schema.columns AS observed_column
+ WHERE observed_column.table_schema = 'public'
+   AND observed_column.table_name IN (
+       SELECT table_name FROM expected_historical_column_fingerprints
+   )
+ GROUP BY observed_column.table_name
+),
+historical_column_mismatches AS (
+ SELECT count(*) AS value
+ FROM expected_historical_column_fingerprints AS expected_fingerprint
+ LEFT JOIN observed_historical_column_fingerprints AS observed_fingerprint
+   ON observed_fingerprint.table_name = expected_fingerprint.table_name
+  AND observed_fingerprint.definition_md5 = expected_fingerprint.definition_md5
+ WHERE observed_fingerprint.table_name IS NULL
+),
+expected_historical_relations(table_name) AS (
+ VALUES
+     ('brain_entities'),
+     ('entity_relations'),
+     ('graph_outbox'),
+     ('graph_projection_leases'),
+     ('projects')
+),
+historical_relation_property_mismatches AS (
+ SELECT count(*) AS value
+ FROM expected_historical_relations AS expected_relation
+ LEFT JOIN pg_catalog.pg_namespace AS namespace_record
+   ON namespace_record.nspname = 'public'
+ LEFT JOIN pg_catalog.pg_class AS relation_record
+   ON relation_record.relnamespace = namespace_record.oid
+  AND relation_record.relname = expected_relation.table_name
+  AND relation_record.relkind = 'r'
+  AND relation_record.relpersistence = 'p'
+  AND NOT relation_record.relispartition
+  AND NOT relation_record.relhasrules
+  AND NOT relation_record.relrowsecurity
+  AND NOT relation_record.relforcerowsecurity
+  AND cardinality(COALESCE(relation_record.reloptions, ARRAY[]::text[])) = 0
+ LEFT JOIN pg_catalog.pg_am AS access_method
+   ON access_method.oid = relation_record.relam
+  AND access_method.amname = 'heap'
+ WHERE relation_record.oid IS NULL
+    OR access_method.oid IS NULL
+    OR EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_inherits AS inheritance_link
+        WHERE relation_record.oid IN (
+            inheritance_link.inhrelid,
+            inheritance_link.inhparent
+        )
+    )
+),
+expected_sequences(
+ sequence_name,
+ owning_table,
+ owning_column,
+ data_type,
+ increment_by,
+ min_value,
+ max_value,
+ start_value,
+ cycles
+) AS (
+ VALUES
+     ('access_log_id_seq', 'access_log', 'id', 'bigint', 1, 1, 9223372036854775807, 1, FALSE),
+     ('consolidation_log_id_seq', 'consolidation_log', 'id', 'bigint', 1, 1, 9223372036854775807, 1, FALSE),
+     ('dream_promotions_id_seq', 'dream_promotions', 'id', 'bigint', 1, 1, 9223372036854775807, 1, FALSE),
+     ('dream_runs_id_seq', 'dream_runs', 'id', 'integer', 1, 1, 2147483647, 1, FALSE),
+     ('graph_outbox_id_seq', 'graph_outbox', 'id', 'bigint', 1, 1, 9223372036854775807, 1, FALSE),
+     ('roadmap_curation_proposals_id_seq', 'roadmap_curation_proposals', 'id', 'bigint', 1, 1, 9223372036854775807, 1, FALSE),
+     ('search_log_id_seq', 'search_log', 'id', 'bigint', 1, 1, 9223372036854775807, 1, FALSE),
+     ('ticket_extraction_attempts_id_seq', 'ticket_extraction_attempts', 'id', 'bigint', 1, 1, 9223372036854775807, 1, FALSE),
+     ('ticket_extraction_proposals_id_seq', 'ticket_extraction_proposals', 'id', 'bigint', 1, 1, 9223372036854775807, 1, FALSE)
+),
+observed_sequences AS (
+ SELECT
+     sequence_record.relname AS sequence_name,
+     owning_table.relname AS owning_table,
+     owning_column.attname AS owning_column,
+     sequence_definition.seqtypid::pg_catalog.regtype::text AS data_type,
+     sequence_definition.seqincrement AS increment_by,
+     sequence_definition.seqmin AS min_value,
+     sequence_definition.seqmax AS max_value,
+     sequence_definition.seqstart AS start_value,
+     sequence_definition.seqcycle AS cycles,
+     sequence_record.oid AS sequence_oid
+ FROM pg_catalog.pg_class AS sequence_record
+ JOIN pg_catalog.pg_namespace AS namespace_record
+   ON namespace_record.oid = sequence_record.relnamespace
+  AND namespace_record.nspname = 'public'
+ JOIN pg_catalog.pg_sequence AS sequence_definition
+   ON sequence_definition.seqrelid = sequence_record.oid
+ LEFT JOIN pg_catalog.pg_depend AS ownership_link
+   ON ownership_link.objid = sequence_record.oid
+  AND ownership_link.classid = 'pg_catalog.pg_class'::pg_catalog.regclass
+  AND ownership_link.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass
+  AND ownership_link.deptype IN ('a', 'i')
+ LEFT JOIN pg_catalog.pg_class AS owning_table
+   ON owning_table.oid = ownership_link.refobjid
+ LEFT JOIN pg_catalog.pg_attribute AS owning_column
+   ON owning_column.attrelid = ownership_link.refobjid
+  AND owning_column.attnum = ownership_link.refobjsubid
+ WHERE sequence_record.relkind = 'S'
+),
+sequence_property_mismatches AS (
+ SELECT (
+     SELECT count(*)
+     FROM expected_sequences AS expected_sequence
+     LEFT JOIN observed_sequences AS sequence_record
+       ON sequence_record.sequence_name = expected_sequence.sequence_name
+      AND sequence_record.owning_table = expected_sequence.owning_table
+      AND sequence_record.owning_column = expected_sequence.owning_column
+      AND sequence_record.data_type = expected_sequence.data_type
+      AND sequence_record.increment_by = expected_sequence.increment_by
+      AND sequence_record.min_value = expected_sequence.min_value
+      AND sequence_record.max_value = expected_sequence.max_value
+      AND sequence_record.start_value = expected_sequence.start_value
+      AND sequence_record.cycles = expected_sequence.cycles
+     WHERE sequence_record.sequence_oid IS NULL
+ ) + (
+     SELECT count(*)
+     FROM observed_sequences AS sequence_record
+     LEFT JOIN expected_sequences AS expected_sequence
+       ON expected_sequence.sequence_name = sequence_record.sequence_name
+     WHERE expected_sequence.sequence_name IS NULL
+ ) AS value
+),
+sequence_high_water(sequence_name, highest_assigned) AS (
+ VALUES
+     ('access_log_id_seq', (SELECT max(id) FROM access_log)),
+     ('consolidation_log_id_seq', (SELECT max(id) FROM consolidation_log)),
+     ('dream_promotions_id_seq', (SELECT max(id) FROM dream_promotions)),
+     ('dream_runs_id_seq', (SELECT max(id) FROM dream_runs)),
+     ('graph_outbox_id_seq', (SELECT max(id) FROM graph_outbox)),
+     ('roadmap_curation_proposals_id_seq', (SELECT max(id) FROM roadmap_curation_proposals)),
+     ('search_log_id_seq', (SELECT max(id) FROM search_log)),
+     ('ticket_extraction_attempts_id_seq', (SELECT max(id) FROM ticket_extraction_attempts)),
+     ('ticket_extraction_proposals_id_seq', (SELECT max(id) FROM ticket_extraction_proposals))
+),
+sequence_backfill_mismatches AS (
+ SELECT count(*) AS value
+ FROM sequence_high_water AS high_water
+ LEFT JOIN pg_catalog.pg_sequences AS sequence_state
+   ON sequence_state.schemaname = 'public'
+  AND sequence_state.sequencename = high_water.sequence_name
+ WHERE sequence_state.sequencename IS NULL
+    OR COALESCE(sequence_state.last_value, 0) < COALESCE(high_water.highest_assigned, 0)
+),
 historical_function AS (
  SELECT
      jsonb_build_object(
@@ -1961,6 +2451,32 @@ check_rows(id, expected, observed, passed) AS (
  FROM row_counts
  UNION ALL
  SELECT
+     'inherited_constraint_definitions',
+     to_jsonb(0),
+     to_jsonb(inherited_constraint_mismatches.value),
+     inherited_constraint_mismatches.value = 0
+ FROM inherited_constraint_mismatches
+ UNION ALL
+ SELECT
+     'historical_relation_shape',
+     jsonb_build_object(
+         'historical_column_mismatches', 0,
+         'historical_index_mismatches', 0,
+         'historical_relation_property_mismatches', 0
+     ),
+     jsonb_build_object(
+         'historical_column_mismatches', historical_column_mismatches.value,
+         'historical_index_mismatches', historical_index_mismatches.value,
+         'historical_relation_property_mismatches', historical_relation_property_mismatches.value
+     ),
+     historical_column_mismatches.value = 0
+     AND historical_index_mismatches.value = 0
+     AND historical_relation_property_mismatches.value = 0
+ FROM historical_column_mismatches
+ CROSS JOIN historical_index_mismatches
+ CROSS JOIN historical_relation_property_mismatches
+ UNION ALL
+ SELECT
      'orphan_feature_artifacts_features',
      to_jsonb(0),
      to_jsonb(orphan_counts.feature_artifacts),
@@ -1987,6 +2503,21 @@ check_rows(id, expected, observed, passed) AS (
      jsonb_build_object('count', row_counts.project_contexts),
      row_counts.project_contexts >= 1
  FROM row_counts
+ UNION ALL
+ SELECT
+     'sequence_shape',
+     jsonb_build_object(
+         'sequence_backfill_mismatches', 0,
+         'sequence_property_mismatches', 0
+     ),
+     jsonb_build_object(
+         'sequence_backfill_mismatches', sequence_backfill_mismatches.value,
+         'sequence_property_mismatches', sequence_property_mismatches.value
+     ),
+     sequence_backfill_mismatches.value = 0
+     AND sequence_property_mismatches.value = 0
+ FROM sequence_backfill_mismatches
+ CROSS JOIN sequence_property_mismatches
  UNION ALL
  SELECT
      'table_set',

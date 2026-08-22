@@ -129,14 +129,37 @@ jobs:
       - name: Run unit tests
         run: .venv/bin/pytest tests/unit/ -v --tb=short
 
-  # `Settings()` exige POSTGRES_URL — la variable suffit, le test lit un réglage
-  # et ne se connecte pas. Pas de service ni de BRAIN_V42_TEST_DB_URL ici : les 51
-  # tests adossés à une base ne passent pas dans le Postgres de la CI (ticket).
+  # Même topologie que test-unit, et c'est le POINT : sans le service Postgres,
+  # sans BRAIN_V42_TEST_DB_URL et sans le schéma appliqué, `require_test_db_url()`
+  # (tests/conftest.py) fait SAUTER les tests adossés à une base. La couverture
+  # décrivait alors un sous-ensemble du code réellement testé, et rien ne le
+  # disait au lecteur du pourcentage. Mesuré le 2026-08-22 : 60 tests sautés,
+  # 19 instructions et 1 branche jamais comptées.
+  #
+  # Les deux commentaires que cette recette remplace annonçaient « 51 tests » —
+  # le ticket f779092b en annonçait 55, la mesure en trouve 60. Trois nombres,
+  # trois dates : c'est pourquoi le garde-fou plus bas ne compte RIEN et se
+  # contente d'exiger zéro saut de cette cause.
   test-coverage:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
+        env:
+          POSTGRES_DB: brain_test
+          POSTGRES_USER: brain
+          POSTGRES_PASSWORD: brain
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U brain -d brain_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
       POSTGRES_URL: "postgresql+asyncpg://brain:brain@localhost:5432/brain_test"
+      BRAIN_V42_TEST_DB_URL: "postgresql+asyncpg://brain:brain@localhost:5432/brain_test"
       GRAPH_ENABLED: "false"
       EMBEDDING_SERVICE_URL: "http://localhost:8003"
     steps:
@@ -152,18 +175,26 @@ jobs:
         run: pip install "uv==$UV_VERSION"
       - name: Install dependencies
         run: uv sync --locked --no-dev --extra dev
+      # Même raison qu'en test-unit : tests/unit/ n'a pas d'équivalent du fixture
+      # run_migrations, et une base pgvector nue ferait ÉCHOUER les tests adossés
+      # à une base sur des relations manquantes au lieu de les faire passer.
+      - name: Apply the schema to the test database
+        run: .venv/bin/alembic upgrade head
       - name: Measure coverage
         run: >-
           .venv/bin/pytest tests/unit/ --cov=brain_v42 --cov-report=term-missing
           --cov-report=xml:coverage.xml --cov-fail-under=60
-      - name: Keep the coverage report
+          --junitxml=coverage-junit.xml
+      # LE TÉMOIN INVERSÉ, et c'est lui le livrable — pas le pourcentage.
+      # Réparer le chiffre seul le laisserait redériver au prochain écart de
+      # recette : un test qui SAUTE ne fait pas rougir un job, donc la CI serait
+      # restée verte sur une couverture partielle, exactement comme avant.
+      #
+      # `if: always()` : il doit parler même quand la mesure échoue par ailleurs,
+      # sinon un `--cov-fail-under` rouge masquerait la raison réelle.
+      - name: Refuse a coverage measured on a subset
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: coverage-${{ github.run_id }}-${{ github.run_attempt }}
-          path: coverage.xml
-          if-no-files-found: ignore
-          retention-days: 7
+        run: .venv/bin/python scripts/check_coverage_saw_the_db_tests.py coverage-junit.xml
 
   test-integration:
     runs-on: ubuntu-24.04

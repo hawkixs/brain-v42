@@ -222,16 +222,62 @@ def test_github_test_unit_applies_the_schema_before_pytest(
     )
 
 
-def test_github_coverage_can_build_settings_without_a_database(
+def test_github_coverage_sees_the_same_world_as_test_unit(
     ci_workflow: dict[Any, Any],
 ) -> None:
-    """POSTGRES_URL posé, BRAIN_V42_TEST_DB_URL absent."""
-    coverage = ci_workflow["jobs"]["test-coverage"].get("env", {})
+    """La couverture doit mesurer le code que la suite teste RÉELLEMENT.
 
-    assert coverage.get("POSTGRES_URL"), (
-        "test-coverage doit poser POSTGRES_URL, sinon Settings() lève"
+    Ce test en remplace un qui exigeait l'INVERSE — « test-coverage ne doit pas
+    réveiller les tests adossés à une base **tant que le Postgres de la CI ne
+    les supporte pas** ». Sa prémisse était conditionnelle, et la condition est
+    fausse : `test-unit` et `test-integration` font tourner ces mêmes tests
+    contre ce même service Postgres, et sont verts. Le job coverage s'en privait
+    donc sans raison, et publiait un pourcentage mesuré sur un sous-ensemble
+    (ticket `f779092b`) — mesuré le 2026-08-22 : 60 tests sautés, 85,36 % au lieu
+    de 85,44 %.
+
+    On garde l'assertion utile de l'ancien test — `POSTGRES_URL` doit être posé,
+    sinon `Settings()` lève — et on inverse la seconde.
+    """
+    job = ci_workflow["jobs"]["test-coverage"]
+    env = job.get("env", {})
+
+    assert env.get("POSTGRES_URL"), "test-coverage doit poser POSTGRES_URL, sinon Settings() lève"
+    url = env.get("BRAIN_V42_TEST_DB_URL")
+    assert url, (
+        "test-coverage doit poser BRAIN_V42_TEST_DB_URL, sinon les tests adossés à "
+        "une base SAUTENT et la couverture publiée décrit un sous-ensemble du code testé"
     )
-    assert "BRAIN_V42_TEST_DB_URL" not in coverage, (
-        "test-coverage ne doit pas réveiller les tests adossés à une base tant que "
-        "le Postgres de la CI ne les supporte pas"
+    assert url.endswith("/brain_test"), (
+        f"la mesure de couverture doit viser brain_test, jamais une base de production : {url}"
+    )
+    assert "postgres" in job.get("services", {}), (
+        "test-coverage déclare une URL de base sans service postgres pour la servir"
+    )
+    steps = job.get("steps", [])
+    assert any("alembic upgrade head" in str(step.get("run", "")) for step in steps), (
+        "test-coverage doit appliquer le schéma : contre une base pgvector nue, les "
+        "tests adossés à une base ÉCHOUENT sur des relations manquantes au lieu de sauter"
+    )
+
+
+def test_github_coverage_refuses_a_measurement_made_on_a_subset(
+    ci_workflow: dict[Any, Any],
+) -> None:
+    """Le témoin inversé — c'est LUI le livrable, pas le pourcentage.
+
+    Un test qui SAUTE ne fait pas rougir un job : sans ce garde-fou, la recette
+    du job pourrait redériver de celle de `test-unit` et la CI resterait verte
+    sur une couverture partielle, exactement comme avant. Le test ci-dessus
+    épingle la recette ; celui-ci épingle ce qui la surveille.
+    """
+    steps = ci_workflow["jobs"]["test-coverage"].get("steps", [])
+    runs = [str(step.get("run", "")) for step in steps]
+
+    assert any("--junitxml=coverage-junit.xml" in run for run in runs), (
+        "la mesure doit produire un rapport JUnit, seule source machine-lisible des sauts"
+    )
+    assert any("check_coverage_saw_the_db_tests.py" in run for run in runs), (
+        "le job doit refuser une couverture mesurée sur un sous-ensemble ; sans ce "
+        "garde-fou le chiffre redérive au prochain écart de recette"
     )

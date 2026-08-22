@@ -95,9 +95,13 @@ class PgAccessLogRepo:
             entry["count"] += row["cnt"]
             if is_human_actor(row["actor"]):
                 entry["count_human"] += row["cnt"]
-                # §5.2 — le pendant humain du `max_accessed`. Sans lui, le terme
-                # de récence (poids 0,3, le plus lourd après l'âge) reste piloté
-                # par les lectures MACHINE : 1 779 learnings mesurés dans ce cas.
+                # §5.2 — le pendant humain du `max_accessed`. Sans lui, le
+                # terme de récence reste piloté par les lectures MACHINE :
+                # 1 522 learnings dans ce cas au 2026-08-22, 2 060 sur les six
+                # tables. Son poids est PAR TYPE — 0,3 sur cinq types, 0,2 pour
+                # `adr` — et il n'est JAMAIS dominé par l'âge (`w_access >=
+                # w_age` sur les six) : « le plus lourd après l'âge » le
+                # sous-estimait.
                 # `None` veut dire « aucune lecture humaine dans ce lot », pas
                 # « jamais lu » — le flusher ne doit alors rien écraser.
                 if (

@@ -117,7 +117,9 @@ def register_session_lifecycle_tools(
     ) -> BrainSessionStartResult:
         """Start or replay a concurrent session from an explicit user command.
 
-        No hook or auto-close may invoke this lifecycle boundary.
+        An agent tracer is the only session the server opens or closes on
+        its own; no hook and no auto-close may invoke this lifecycle
+        boundary.
         """
         result = await brain_session_svc.start(
             project_key=project_key,
@@ -138,7 +140,9 @@ def register_session_lifecycle_tools(
     ) -> BrainSessionCaptureResult:
         """Attach durable artifacts from an explicit user command.
 
-        No hook or auto-close may invoke this lifecycle boundary.
+        An agent tracer is the only session the server opens or closes on
+        its own; no hook and no auto-close may invoke this lifecycle
+        boundary.
         """
         return await brain_session_svc.capture(
             session_id=session_id,
@@ -153,7 +157,9 @@ def register_session_lifecycle_tools(
     ) -> BrainSessionHeartbeatResult:
         """Refresh an open session from an explicit user command.
 
-        No hook or auto-close may invoke this lifecycle boundary.
+        An agent tracer is the only session the server opens or closes on
+        its own; no hook and no auto-close may invoke this lifecycle
+        boundary.
         """
         return await brain_session_svc.heartbeat(
             session_id=session_id,
@@ -171,7 +177,9 @@ def register_session_lifecycle_tools(
     ) -> BrainSessionEndResult:
         """End a session fail-closed from an explicit user command.
 
-        No hook or auto-close may invoke this lifecycle boundary.
+        An agent tracer is the only session the server opens or closes on
+        its own; no hook and no auto-close may invoke this lifecycle
+        boundary.
         """
         return await brain_session_svc.end(
             session_id=session_id,
@@ -191,7 +199,9 @@ def register_session_lifecycle_tools(
     ) -> BrainSessionListResult:
         """List sessions only in response to an explicit user command.
 
-        No hook or auto-close may invoke this lifecycle boundary.
+        An agent tracer is the only session the server opens or closes on
+        its own; no hook and no auto-close may invoke this lifecycle
+        boundary.
         """
         return await brain_session_svc.list(
             project_key=project_key,
@@ -207,7 +217,9 @@ def register_session_lifecycle_tools(
     ) -> BrainSessionResumeResult:
         """Resume an open session from an explicit user command.
 
-        No hook or auto-close may invoke this lifecycle boundary.
+        An agent tracer is the only session the server opens or closes on
+        its own; no hook and no auto-close may invoke this lifecycle
+        boundary.
         """
         result = await brain_session_svc.resume(
             session_id=session_id,
@@ -228,7 +240,9 @@ def register_session_lifecycle_tools(
     ) -> BrainSessionAbandonResult:
         """Abandon a session only from an explicit user command.
 
-        No hook or auto-close may invoke this lifecycle boundary.
+        An agent tracer is the only session the server opens or closes on
+        its own; no hook and no auto-close may invoke this lifecycle
+        boundary.
         """
         return await brain_session_svc.abandon(
             session_id=session_id,

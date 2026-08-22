@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -67,7 +68,15 @@ class PgTicketRepo(BasePgRepository):
         author_project: str,
         body: str,
         status_to: TicketStatus | None = None,
+        new_ticket_body: str | None = None,
     ) -> TicketMessage:
+        """Insert a thread message; optionally rewrite the ticket body with it.
+
+        ``new_ticket_body`` is applied in the SAME transaction as the message.
+        The two must never diverge: a body rewritten without its thread entry
+        is a silent rewrite of history, and a thread entry claiming a rewrite
+        that did not land is worse — it makes the record lie.
+        """
         async with self.get_session() as session:
             async with session.begin():
                 stmt = (
@@ -82,10 +91,13 @@ class PgTicketRepo(BasePgRepository):
                 )
                 row = (await session.execute(stmt)).mappings().one()
                 # Une réponse est de l'activité : bump updated_at du ticket.
+                # Une correction y ajoute le corps, dans le même UPDATE — donc
+                # dans la même transaction que le message qui la relate.
+                ticket_values: dict[str, Any] = {"updated_at": sa.func.now()}
+                if new_ticket_body is not None:
+                    ticket_values["body"] = new_ticket_body
                 await session.execute(
-                    tickets.update()
-                    .where(tickets.c.id == ticket_id)
-                    .values(updated_at=sa.func.now())
+                    tickets.update().where(tickets.c.id == ticket_id).values(**ticket_values)
                 )
                 return TicketMessage.model_validate(dict(row))
 

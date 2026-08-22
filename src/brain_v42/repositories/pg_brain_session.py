@@ -45,6 +45,7 @@ from brain_v42.models.brain_session import (
     BrainSessionResumeResult,
     BrainSessionStartResult,
     BrainSessionStateError,
+    BrainSessionStatus,
     BrainSessionSweepCandidate,
     BrainSessionSweepResult,
     BrainSessionTerminalConflictError,
@@ -52,6 +53,20 @@ from brain_v42.models.brain_session import (
 from brain_v42.repositories.pg_base import BasePgRepository
 
 Row = dict[str, Any]
+
+
+def _observation_columns(reference: datetime) -> dict[str, datetime]:
+    """Les DEUX horloges qu'une observation de traçante déplace, et pas une de plus.
+
+    Écrit une seule fois parce que les deux écrivains — l'``ON CONFLICT DO
+    UPDATE`` de ``auto_open`` et ``observe`` — doivent bouger EXACTEMENT le même
+    ensemble. Les laisser diverger donnerait à une connexion réidentifiée une
+    horloge de présence différente de celle d'une connexion réobservée, et le
+    balayage lirait deux régimes pour un seul geste.
+    """
+    return {"last_observed_at": reference, "last_heartbeat_at": reference}
+
+
 CAPTURE_TABLES = (
     (decisions, "decision"),
     (learnings, "learning"),
@@ -125,16 +140,22 @@ class PgBrainSessionRepo(BasePgRepository):
                 open_session_count=open_count,
             )
 
-    async def auto_open(self, identity: Any) -> UUID | None:
-        """Ouvrir — ou retrouver — LA session `agent` ouverte d'une connexion.
+    async def auto_open(self, identity: Any, *, now: datetime | None = None) -> UUID | None:
+        """Ouvrir — ou retrouver ET RÉOBSERVER — LA session `agent` d'une connexion.
 
-        Un seul aller-retour en nominal. L'idempotence est portée par l'index
-        UNIQUE **PARTIEL** ``uq_brain_sessions_connection`` de la 046
+        Un seul aller-retour, conflit compris. L'idempotence est portée par
+        l'index UNIQUE **PARTIEL** ``uq_brain_sessions_connection`` de la 046
         (``WHERE status = 'open'``), pas par le code appelant : deux appels
         concurrents sur la même connexion produisent un conflit, pas deux
         sessions, et une session déjà fermée ne bloque pas la suivante. Un
         index plein aurait brûlé la connexion à vie dès la première
         auto-fermeture (piège hérité, `SPEC-M-G` §5).
+
+        ``ON CONFLICT DO UPDATE`` et non ``DO NOTHING`` : le conflit est le cas
+        « cette connexion a déjà sa session », et c'est **une observation**.
+        L'ancienne forme le suivait d'un ``SELECT`` pour retrouver l'id — deux
+        allers-retours qui ne dataient rien. Ici la même ligne est retrouvée
+        ET réobservée, et le ``RETURNING`` rend l'id des deux branches.
 
         ``client_key`` reçoit un UUID neuf, et ce n'est pas un détail : la
         contrainte ``uq_brain_sessions_project_client`` est **pleine**, donc
@@ -149,6 +170,7 @@ class PgBrainSessionRepo(BasePgRepository):
         que là c'est un utilisateur qui a nommé un projet inexistant et qu'il
         doit l'apprendre ; ici personne n'a rien nommé.
         """
+        reference = now or datetime.now(UTC)
         async with self.transaction() as session:
             focus = await self._load_focus(session, identity.project_key)
             if focus is None:
@@ -165,29 +187,62 @@ class PgBrainSessionRepo(BasePgRepository):
                     connection_id=identity.connection_id,
                     started_by_actor=identity.started_by_actor,
                     intent=identity.intent,
+                    last_observed_at=reference,
+                    last_heartbeat_at=reference,
                 )
-                .on_conflict_do_nothing(
+                .on_conflict_do_update(
                     index_elements=[
                         brain_sessions.c.project_key,
                         brain_sessions.c.connection_id,
                     ],
                     index_where=sa.text("status = 'open'"),
+                    set_=_observation_columns(reference),
                 )
                 .returning(brain_sessions.c.id)
             )
             inserted = (await session.execute(insert_stmt)).scalar_one_or_none()
-            if inserted is not None:
-                return UUID(str(inserted))
+            return UUID(str(inserted)) if inserted is not None else None
 
-            existing = await session.execute(
-                sa.select(brain_sessions.c.id).where(
-                    brain_sessions.c.project_key == identity.project_key,
-                    brain_sessions.c.connection_id == identity.connection_id,
-                    brain_sessions.c.status == "open",
-                )
+    async def observe(self, session_id: UUID | str, *, now: datetime | None = None) -> bool:
+        """Dater l'observation d'une traçante `agent` ouverte. Rend « encore ouverte ».
+
+        C'est l'écrivain que la 046 attendait : sans lui, ``last_observed_at``
+        reste NULL sur toute la table, et la règle des 4 h du balayage ne matche
+        RIEN — M-G serait livrée inerte. La garantie 2 du `§0bis.3` est
+        littérale : la colonne bouge à **chaque** appel d'outil.
+
+        **Le faux-mort, et pourquoi ``last_heartbeat_at`` bouge aussi.** Le
+        balayage 7 j lit ``last_heartbeat_at``. Une traçante dont la connexion
+        vit huit jours n'a jamais rappelé de heartbeat — il n'y a pas
+        d'utilisateur pour le faire — et serait abandonnée en pleine activité.
+        C'est exactement le faux-mort du 2026-08-06. Les deux horloges bougent
+        donc ensemble sur ce chemin, et restent deux colonnes : le 4 h lit
+        l'observation, le 7 j lit la présence, et une traçante inactive depuis
+        plus de sept jours matche encore les DEUX (préséance : `sweep_open_sessions`).
+
+        **``updated_at`` ne bouge PAS**, et c'est délibéré : observer n'est pas
+        muter l'état déclaré de la session. Le rafraîchir ferait de la colonne
+        de dernière écriture un signal d'activité, exactement le contrôle creux
+        que `77348350` a coûté ailleurs.
+
+        Le ``nature = 'agent'`` du prédicat est une garde DURE, pas une
+        redondance : ce chemin ne doit jamais pouvoir dater une session
+        `operator`, même si une mémo empoisonnée lui en présentait l'UUID.
+        """
+        reference = now or datetime.now(UTC)
+        statement = (
+            brain_sessions.update()
+            .where(
+                brain_sessions.c.id == session_id,
+                brain_sessions.c.status == "open",
+                brain_sessions.c.nature == "agent",
             )
-            found = existing.scalar_one_or_none()
-            return UUID(str(found)) if found is not None else None
+            .values(**_observation_columns(reference))
+            .returning(brain_sessions.c.id)
+        )
+        async with self.transaction() as session:
+            observed = (await session.execute(statement)).scalar_one_or_none()
+        return observed is not None
 
     async def get_by_id(  # type: ignore[override]
         self, session_id: UUID | str
@@ -554,15 +609,45 @@ class PgBrainSessionRepo(BasePgRepository):
                 remaining_open_session_count=remaining,
             )
 
-    async def abandon_stale(
+    async def sweep_open_sessions(
         self,
         *,
         older_than: timedelta = AUTO_STALE_AFTER,
         reason: str = AUTO_STALE_ABANDONMENT_REASON,
+        close_inactive_after: timedelta | None = None,
         dry_run: bool = True,
         now: datetime | None = None,
     ) -> BrainSessionSweepResult:
-        """Abandonner toute session ouverte sans heartbeat depuis ``older_than``.
+        """Tarir les sessions ouvertes — DEUX règles, UN statement, une préséance.
+
+        Règle 7 j (toujours active) : toute session ouverte sans heartbeat
+        depuis ``older_than`` part en ``abandoned``, avec sa raison.
+
+        Règle 4 h (``close_inactive_after``, ``None`` = fermée) : une traçante
+        ``nature = 'agent'`` dont l'OBSERVATION date de plus de ce seuil part en
+        ``closed_inactive``, sans raison et **avec son ledger intact** — c'est
+        toute la raison d'être de la 046. Une session ``operator``, et une
+        session ``nature IS NULL`` d'avant la 046, restent hors d'atteinte : la
+        résolution (d) refuse de juger rétroactivement.
+
+        **PRÉSÉANCE : 7 j PRIME sur 4 h**, et ce n'est pas cosmétique. Une
+        traçante inactive depuis plus de sept jours matche les DEUX prédicats.
+        Le ``CASE`` teste la présence en PREMIER, donc elle part en ``abandoned``
+        avec sa raison, jamais en ``closed_inactive`` muet. La règle est épinglée
+        par un test, pas par ce paragraphe.
+
+        **``last_observed_at IS NULL`` n'est JAMAIS pris par la règle des 4 h**
+        (S3, tranché). ``NULL`` veut dire « jamais observée », pas « observée il
+        y a longtemps » : c'est le régime des sessions d'avant l'auto-ouverture,
+        et une comparaison SQL les laisserait déjà sortir — le prédicat explicite
+        est là pour que l'intention se lise, et pour que le test la garde.
+
+        **JAMAIS pendant un appel en vol** (garantie 1 du §0bis.3), et la
+        machinerie n'est pas ici : ``observe()`` date la traçante AVANT que
+        l'outil ne tourne, donc un appel en vol porte une observation vieille de
+        quelques millisecondes. La garantie est structurelle et se lit à
+        l'endroit qui la produit ; elle ne tient plus si un seul appel d'outil
+        dépasse ``close_inactive_after``, ce qui n'existe pas au catalogue.
 
         Chemin SERVEUR uniquement : pas de garde ``expected_client_key``, parce
         qu'aucun client ne demande — c'est le serveur. L'amendement doctrinal du
@@ -570,46 +655,86 @@ class PgBrainSessionRepo(BasePgRepository):
         ni pour le client, dont les sept commandes restent explicites.
 
         Ne touche ni ``project_contexts`` ni ``brain_session_artifacts`` : le
-        focus et le ledger de capture d'une session abandonnée survivent, comme
-        pour un abandon manuel.
+        focus et le ledger de capture survivent aux deux issues, comme pour un
+        abandon manuel. Aucun CAS de focus n'est tenté — N fermetures groupées
+        produiraient N−1 ``conflict`` fabriqués (`SPEC-M-G` §3.2).
         """
         normalized_reason = reason.strip()
         if not normalized_reason:
             raise BrainSessionInputError("abandonment reason must not be blank")
         if older_than <= timedelta(0):
             raise BrainSessionInputError("older_than must be a positive interval")
+        if close_inactive_after is not None and close_inactive_after <= timedelta(0):
+            raise BrainSessionInputError("close_inactive_after must be a positive interval")
 
         reference = now or datetime.now(UTC)
         cutoff = reference - older_than
-        stale = sa.and_(
-            brain_sessions.c.status == "open",
-            brain_sessions.c.last_heartbeat_at < cutoff,
-        )
+        inactive_cutoff = None if close_inactive_after is None else reference - close_inactive_after
+
+        # Le prédicat de PRÉSENCE, isolé : il sert deux fois — à l'éligibilité et
+        # à la préséance du CASE. Le dupliquer les ferait diverger en silence.
+        is_stale = brain_sessions.c.last_heartbeat_at < cutoff
+        open_stale = sa.and_(brain_sessions.c.status == "open", is_stale)
+
+        if inactive_cutoff is None:
+            eligible: Any = open_stale
+            outcome: Any = sa.literal(BrainSessionStatus.ABANDONED.value)
+            status_value: Any = BrainSessionStatus.ABANDONED.value
+            reason_value: Any = normalized_reason
+        else:
+            eligible = sa.and_(
+                brain_sessions.c.status == "open",
+                sa.or_(
+                    is_stale,
+                    sa.and_(
+                        brain_sessions.c.nature == "agent",
+                        brain_sessions.c.last_observed_at.is_not(None),
+                        brain_sessions.c.last_observed_at < inactive_cutoff,
+                    ),
+                ),
+            )
+            # Le `CASE` teste `is_stale` en PREMIER : c'est ICI que vit la
+            # préséance 7 j > 4 h, dans du SQL exécuté, pas dans un commentaire.
+            outcome = sa.case(
+                (is_stale, sa.literal(BrainSessionStatus.ABANDONED.value)),
+                else_=sa.literal(BrainSessionStatus.CLOSED_INACTIVE.value),
+            )
+            status_value = outcome
+            # `closed_inactive` INTERDIT `abandonment_reason` (CHECK de la 046) :
+            # le `CASE` n'est donc pas une commodité, c'est ce qui rend la ligne
+            # acceptable par la base.
+            reason_value = sa.case((is_stale, sa.literal(normalized_reason)), else_=sa.null())
+
         selection = (
             brain_sessions.c.id,
             brain_sessions.c.project_key,
             brain_sessions.c.client_key,
             brain_sessions.c.last_heartbeat_at,
+            brain_sessions.c.last_observed_at,
         )
 
         if dry_run:
-            statement: Any = sa.select(*selection).where(stale)
+            statement: Any = sa.select(*selection, outcome.label("outcome")).where(eligible)
         else:
             # UN SEUL statement. Pas de SELECT puis UPDATE : sous READ
-            # COMMITTED, PostgreSQL réévalue `stale` sous le verrou de ligne,
+            # COMMITTED, PostgreSQL réévalue `eligible` sous le verrou de ligne,
             # donc un heartbeat qui commit pendant le balayage retire sa ligne
             # de l'update au lieu de perdre la course. C'est la réponse au
-            # faux-mort du 2026-08-06 (session vivante abandonnée à tort).
+            # faux-mort du 2026-08-06 (session vivante abandonnée à tort), et
+            # elle couvre la règle neuve sans une ligne de plus.
             statement = (
                 brain_sessions.update()
-                .where(stale)
+                .where(eligible)
                 .values(
-                    status="abandoned",
-                    abandonment_reason=normalized_reason,
+                    status=status_value,
+                    abandonment_reason=reason_value,
                     ended_at=reference,
                     updated_at=reference,
                 )
-                .returning(*selection)
+                # `status` APRÈS l'écriture : RETURNING voit la ligne neuve, donc
+                # le rapport lit l'issue réellement persistée, pas une issue
+                # recalculée côté Python qui pourrait diverger du CASE.
+                .returning(*selection, brain_sessions.c.status.label("outcome"))
             )
 
         async with self.transaction() as session:
@@ -619,11 +744,16 @@ class PgBrainSessionRepo(BasePgRepository):
             (BrainSessionSweepCandidate(**dict(row)) for row in rows),
             key=lambda candidate: candidate.last_heartbeat_at,
         )
+        counted = [] if dry_run else candidates
         return BrainSessionSweepResult(
             candidates=candidates,
             dry_run=dry_run,
             cutoff=cutoff,
-            abandoned_count=0 if dry_run else len(candidates),
+            inactive_cutoff=inactive_cutoff,
+            abandoned_count=sum(1 for c in counted if c.outcome is BrainSessionStatus.ABANDONED),
+            closed_inactive_count=sum(
+                1 for c in counted if c.outcome is BrainSessionStatus.CLOSED_INACTIVE
+            ),
         )
 
     async def _get_row(

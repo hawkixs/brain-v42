@@ -32,6 +32,20 @@ _ENTITY_TABLES: dict[str, sa.Table] = {
 }
 
 
+ARCHIVED = "archived"
+
+
+def unarchive_is_robot_only(*, old_status: str, new_status: str, human_reads: int) -> bool:
+    """Vrai quand la transition ferait SORTIR de l'archive sans lecture humaine.
+
+    Q1. C'est l'ACTEUR qui discrimine, jamais l'opération : l'humain garde le
+    droit de désarchiver, et une seule lecture humaine dans le lot suffit à
+    rouvrir la porte. La garde est volontairement étroite — elle ne dit rien de
+    l'entrée en archive, ni de ``stale -> fresh``.
+    """
+    return old_status == ARCHIVED and new_status != ARCHIVED and human_reads <= 0
+
+
 class DecayFlusher:
     """Periodically aggregates access_log and updates entity freshness status."""
 
@@ -227,6 +241,38 @@ class DecayFlusher:
 
             new_status = self._decay_calculator.freshness_status(multiplier)
             old_status = row["freshness_status"]
+
+            # Q1 — un ROBOT n'a pas le droit de désarchiver.
+            #
+            # `access_factor` pèse 0,3 sur cinq des six types (0,2 pour `adr`)
+            # et une relecture d'il y a une minute le met à 1,0 : une seule
+            # passe du dream suffit à franchir `archive_threshold`. Il n'est
+            # JAMAIS dominé par l'âge — mesuré, `w_access >= w_age` pour les six
+            # types — donc « le plus lourd APRÈS l'âge » sous-estime sa place.
+            # Mesuré le 2026-08-22
+            # sur 7 jours : 27 désarchivages, TOUS à 04h UTC, et les 27 entités
+            # avaient `last_accessed_at_human IS NULL` — jamais lues par un
+            # humain, pas une fois.
+            #
+            # On bloque la DÉCISION, pas l'OBSERVATION : les compteurs ci-dessous
+            # continuent d'être écrits, donc une lecture humaine ultérieure
+            # rouvrira la porte par son propre lot. Et comme on n'écrit alors
+            # PAS `freshness_status`, il n'y a aucune provenance à redéclarer
+            # (043) — la ligne garde la sienne.
+            if unarchive_is_robot_only(
+                old_status=old_status,
+                new_status=new_status,
+                human_reads=stats.get("count_human", 0),
+            ):
+                logger.info(
+                    "freshness_unarchive_blocked",
+                    entity_type=entity_type,
+                    entity_id=str(entity_id),
+                    would_have_become=new_status,
+                    multiplier=round(multiplier, 3),
+                    machine_reads=stats.get("count", 0),
+                )
+                new_status = old_status
 
             params: dict[str, Any] = {
                 "_entity_id": entity_id,

@@ -94,6 +94,45 @@ def _expected_v5() -> dict[str, Any]:
 
     by_id["catalog_counts"]["indexes"] = 130
 
+    # `81c4f366` : les contraintes HÉRITÉES (033/034/035 et `projects`) n'étaient
+    # attestées que par NOM. La check row propre — plutôt qu'une fusion dans
+    # `brain_runtime_032_036_037` — est ce qui rend le durcissement VISIBLE au
+    # reçu : le dénominateur passe à 26. Fondu, il aurait vérifié plus en
+    # rendant toujours 25/25, c'est-à-dire sans que personne puisse le constater.
+    checks.append(
+        {
+            "id": "inherited_constraint_definitions",
+            "kind": "brain_schema_invariant",
+            "name": "inherited_constraint_definitions",
+        }
+    )
+
+    # `2bb1988f`, le pan oublié du précédent : index, colonnes et propriétés de
+    # relation des tables historiques n'étaient attestés par RIEN — `81c4f366`
+    # était borné aux CONTRAINTES. Même raison d'être une check row propre : un
+    # durcissement invisible au reçu est un durcissement invérifiable.
+    checks.append(
+        {
+            "id": "historical_relation_shape",
+            "kind": "brain_schema_invariant",
+            "name": "historical_relation_shape",
+        }
+    )
+
+    # `f36846a1` : les NEUF séquences n'étaient attestées par rien — `grep -ci
+    # sequence` sur `v4.sql` rendait 0. Le contrôle qui compte n'est pas leur
+    # forme mais `last_value >= max(id)` : c'est la panne SILENCIEUSE du restore,
+    # où les séquences repartent à 1 et où les INSERT suivants tombent en
+    # collision de PK — une base qui paraît restaurée et refuse la première
+    # écriture. Check row propre, pour la même raison que ses deux sœurs.
+    checks.append(
+        {
+            "id": "sequence_shape",
+            "kind": "brain_schema_invariant",
+            "name": "sequence_shape",
+        }
+    )
+
     document["checks"] = sorted(checks, key=lambda check: check["id"])
     document["contract_id"] = "brain-v42/postgresql-recovery/v5"
     document["schema_version"] = 5
@@ -117,7 +156,7 @@ def test_v5_json_is_the_exact_v4_delta() -> None:
             json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
         ).encode()
     )
-    assert len(document["checks"]) == 25
+    assert len(document["checks"]) == 28
 
 
 def test_the_head_check_is_derived_and_carries_no_revision() -> None:
