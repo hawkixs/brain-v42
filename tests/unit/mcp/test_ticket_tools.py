@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-from fastmcp import FastMCP
+from fastmcp import Client, FastMCP
 
 from brain_v42.mcp.tools.ticket_tools import register_ticket_tools
 from brain_v42.models.ticket import (
@@ -440,3 +440,68 @@ class TestIdPrefixResolution:
         assert "Invalid UUID" in result
         svc.resolve_id_prefix.assert_not_awaited()
         svc.transition.assert_not_awaited()
+
+
+class TestReplyCanCorrectTheTicketBody:
+    """`cabb7503` — corriger un corps périmé SANS ajouter de tool au catalogue.
+
+    Le contrat MCP public n'a plus de marge gratuite : son plancher a déjà dû
+    être renégocié par mesure (10 000 → 9 500). Le sixième tool aurait été la
+    solution évidente ; c'est pour ça qu'on ne l'a pas prise.
+    """
+
+    async def test_the_ticket_catalog_still_has_exactly_five_tools(self):
+        """Garde d'architecture : aucun tool ajouté, la correction passe par `reply`.
+
+        Ce test ne mesure pas des octets — il épingle la DÉCISION. Un sixième
+        tool ici serait une décision d'opérateur, pas un lot de worker, et ce
+        rouge est ce qui force à la poser plutôt qu'à la prendre au passage.
+        """
+        mcp = _mcp_with(MagicMock())
+
+        async with Client(mcp) as client:
+            names = [tool.name for tool in await client.list_tools()]
+        ticket_tools = sorted(n for n in names if n.startswith("brain_ticket_"))
+
+        assert ticket_tools == [
+            "brain_ticket_create",
+            "brain_ticket_get",
+            "brain_ticket_list",
+            "brain_ticket_reply",
+            "brain_ticket_transition",
+        ], f"le catalogue ticket a changé de taille : {ticket_tools}"
+
+    async def test_corrects_body_reaches_the_service(self):
+        svc = MagicMock()
+        svc.reply = AsyncMock()
+        tool = await _tool(_mcp_with(svc), "brain_ticket_reply")
+
+        result = await tool.fn(
+            ticket_id=str(uuid4()),
+            author_project=TO,
+            body="la prémisse est morte : décision 218028c7",
+            corrects_body="GitHub est l'unique rail",
+        )
+
+        assert svc.reply.await_args.kwargs["corrects_body"] == "GitHub est l'unique rail"
+        assert "body corrected" in result, (
+            "la confirmation doit dire que le corps a changé — sinon l'appelant "
+            f"ne distingue pas une correction d'une simple réponse : {result!r}"
+        )
+
+    async def test_a_plain_reply_forwards_none_and_says_nothing_about_the_body(self):
+        """Témoin négatif au niveau du tool : rien ne change pour une réponse ordinaire."""
+        svc = MagicMock()
+        svc.reply = AsyncMock()
+        tool = await _tool(_mcp_with(svc), "brain_ticket_reply")
+
+        result = await tool.fn(
+            ticket_id=str(uuid4()),
+            author_project=TO,
+            body="juste une remarque",
+        )
+
+        assert svc.reply.await_args.kwargs["corrects_body"] is None
+        assert "body corrected" not in result, (
+            f"une réponse ordinaire annonce une correction de corps : {result!r}"
+        )

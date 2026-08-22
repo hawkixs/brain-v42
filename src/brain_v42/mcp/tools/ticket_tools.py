@@ -229,22 +229,37 @@ def register_ticket_tools(
             to=ticket.to_project,
         )
 
-    @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)
+    @mcp.tool(version="1.1", annotations=_HEARTBEAT_ANNOTATIONS)
     async def brain_ticket_reply(
         ticket_id: str,
         author_project: str,
         body: str,
+        corrects_body: str | None = None,
     ) -> str:
-        """Post a message in a ticket thread (any status, participants only)."""
+        """Post a message in a ticket thread (any status, participants only).
+
+        corrects_body: replace the ticket's own body with this text. Use it when
+        the body states a dead premise — a false body sits at the top of the
+        view and keeps steering judgement, and no reply posted underneath
+        undoes that. The replaced text is archived in this same thread message,
+        so a reader can always tell a corrected body from an original one.
+        `body` then carries the reason and is mandatory; an identical body is
+        refused.
+        """
         tid = parse_uuid(ticket_id)
         if tid is None:
             return format_error(f"Invalid UUID: {ticket_id}")
         try:
-            await ticket_svc.reply(tid, author_project, body)
+            await ticket_svc.reply(tid, author_project, body, corrects_body=corrects_body)
         except TicketError as exc:
             return format_error(str(exc))
         except ValueError as exc:  # canonicalize_project_key strict
             return format_error(str(exc))
+        if corrects_body is not None:
+            logger.info("mcp.brain_ticket_reply.body_corrected", ticket_id=ticket_id)
+            return format_confirmation(
+                "Reply posted and ticket body corrected", body, id=format_id(ticket_id)
+            )
         return format_confirmation("Reply posted", body, id=format_id(ticket_id))
 
     @mcp.tool(version="1.0", annotations=_DESTRUCTIVE_ANNOTATIONS)

@@ -35,6 +35,12 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+# Séparateur du pied de page qui archive un corps remplacé. Il est CONSTANT et
+# nommé pour deux raisons : un lecteur humain doit le reconnaître d'un coup
+# d'œil dans `brain_ticket_get`, et un test doit pouvoir l'épingler sans
+# recopier une chaîne littérale qui dériverait en silence.
+_BODY_CORRECTION_MARKER = "--- corps précédent, remplacé par cette réponse ---"
+
 
 class TicketError(Exception):
     """Base for user-facing ticket errors (tools render str(exc))."""
@@ -89,7 +95,38 @@ class TicketService:
         )
         return ticket
 
-    async def reply(self, ticket_id: UUID, author_project: str, body: str) -> TicketMessage:
+    async def reply(
+        self,
+        ticket_id: UUID,
+        author_project: str,
+        body: str,
+        corrects_body: str | None = None,
+    ) -> TicketMessage:
+        """Post a thread message; with ``corrects_body``, also fix the ticket body.
+
+        Un corps faux ne coûte pas qu'une lecture perdue : il est en tête de la
+        vue, il oriente le jugement, et il survit à toutes les corrections
+        postées en dessous. Le rendre corrigeable est le point ; le rendre
+        corrigeable SANS TRACE serait échanger une dette contre une pire.
+
+        D'où trois refus, et un seul chemin d'écriture :
+
+        - Pas de justification, pas de correction. Corriger une prémisse morte
+          est légitime ; réécrire une demande pour la rendre rétrospectivement
+          juste ne l'est pas, et c'est le fil qui fait la différence entre les
+          deux. Un corps qui change sans un mot est indistinguable du second cas.
+        - Pas de correction identique. Elle poserait au fil la trace d'une
+          correction qui n'a rien corrigé — un faux positif dans la mémoire
+          même qui sert à juger.
+        - Le contrôle de participation vaut pour une correction comme pour une
+          réponse : il est fait AVANT, l'autorisation ne se déduit pas du
+          contenu.
+
+        Le message conserve la justification telle quelle, puis un pied de page
+        qui archive le texte remplacé. C'est ce qui distingue « le corps a été
+        corrigé » de « le corps a toujours dit ça », sans colonne neuve : le fil
+        est déjà la mémoire de ce qui a été dit, on n'en invente pas une seconde.
+        """
         author = canonicalize_project_key(author_project)
         ticket = await self._get_or_raise(ticket_id)
         if author not in (ticket.from_project, ticket.to_project):
@@ -97,7 +134,30 @@ class TicketService:
                 f"'{author}' is not a participant of this ticket "
                 f"({ticket.from_project} → {ticket.to_project})"
             )
-        return await self._repo.add_message(ticket_id, author, body)
+
+        if corrects_body is None:
+            return await self._repo.add_message(ticket_id, author, body)
+
+        if not body.strip():
+            raise TicketError(
+                "a body correction requires a justification in the same reply — "
+                "an unexplained rewrite is indistinguishable from rewriting history"
+            )
+        if not corrects_body.strip():
+            raise TicketError("corrects_body must not be empty")
+        if corrects_body == ticket.body:
+            raise TicketError(
+                "corrects_body is identical to the current body — refusing to "
+                "record a correction that corrects nothing"
+            )
+
+        recorded = f"{body}\n\n{_BODY_CORRECTION_MARKER}\n{ticket.body}"
+        return await self._repo.add_message(
+            ticket_id,
+            author,
+            recorded,
+            new_ticket_body=corrects_body,
+        )
 
     async def transition(
         self,
