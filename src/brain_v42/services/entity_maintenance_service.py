@@ -77,6 +77,11 @@ class EntityMaintenanceService:
             .values(
                 freshness_status="fresh",
                 last_accessed_at=accessed_at,
+                # Même geste que `brain_refresh_entity`, donc même terme du
+                # vocabulaire fermé de la 043 : deux portes d'entrée sur une
+                # seule transition, qui doivent se déclarer pareil — les voir
+                # divergentes dans la colonne serait pire que muettes.
+                freshness_source="revive",
             )
             .returning(table.c.id, table.c.last_accessed_at)
         )
