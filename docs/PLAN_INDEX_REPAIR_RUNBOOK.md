@@ -210,6 +210,23 @@ required. It is not free of consequence, though — apply it and the code togeth
   > counters. Everything above stays true.
   > **Measured 2026-08-22 against production at head `046`: 28/28**, both variants.
   >
+  > **EXTENDED a fourth time, same day — the denominator is 29. `28/29` is a FAILURE.**
+  > Ticket `75112bc6`, the last of the five splits. Production runs **14 distinct trigger
+  > functions**; exactly **one** was fingerprinted (`update_updated_at`, by the 039
+  > invariant). The other thirteen — including the two that stamp `content_updated_at`
+  > (041) and `freshness_status` (043) — could be rewritten without a single byte of the
+  > contract moving. `trigger_function_fingerprints` now pins all fourteen by
+  > `sha256(prosrc)` and octet length, bidirectionally, and bounds the observed set by the
+  > attributes a trigger function must keep — so one that gains `SECURITY DEFINER` drops
+  > OUT of the observation and reads as missing, which is the truth. It also names the
+  > **11 stamping triggers** the asset did not name, **with their `WHEN` clause**: all
+  > eleven are conditional, and one recreated without its clause would stamp on every
+  > write while keeping its name, its table and its function.
+  > **Before fingerprinting, the drift was audited** as the parent ticket demanded — a
+  > database built fresh by `alembic upgrade head`, compared to production: **zero
+  > divergence**. Without that, the fingerprint would have engraved a drift as reference.
+  > **Measured 2026-08-22 against production at head `046`: 29/29**, both variants.
+  >
   > **A SECOND, SEPARATE receipt — `ops/recovery/brain-v42-v5-acl.sql`, and it is NOT part
   > of the 28.** Ticket `60708007`. The sandbox restore runs `--no-owner --no-acl`, so a
   > restoration receipt erases the very thing this proof looks at. Owners and grants
@@ -226,7 +243,7 @@ required. It is not free of consequence, though — apply it and the code togeth
   > **What no receipt here proves.** Every number above was replayed against the **live**
   > production database, never against a `pg_restore`d dump. None of them says anything about
   > an actual restoration. The P1 gate of `8eaefe36` stands entirely open — do not read
-  > `28/28` as "DR is proven". The sequence check makes that sharper, not softer: on a live
+  > `29/29` as "DR is proven". The sequence check makes that sharper, not softer: on a live
   > database `last_value >= max(id)` is true by construction, so the one control written
   > FOR a restore is the one control no receipt here can ever exercise.
 

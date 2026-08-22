@@ -1890,6 +1890,143 @@ sequence_backfill_mismatches AS (
  WHERE sequence_state.sequencename IS NULL
     OR COALESCE(sequence_state.last_value, 0) < COALESCE(high_water.highest_assigned, 0)
 ),
+expected_trigger_functions(function_name, source_sha256, source_octets) AS (
+ VALUES
+     ('enforce_immutable_ticket_participants', 'cdb295b8a5c811467706ac9c10622fe1140d957e51f94b0fb50911ac9629bb30', 256),
+     ('enforce_live_feature_artifact_target', '11f79d4116738608988f29c53bb1db708537cc3fdeac18c5bdede106bf6bccd7', 496),
+     ('increment_project_focus_revision', '424dfc1a9154dbc48e08ffc70712920cbfdc42e659a1500da681a2e50526df76', 215),
+     ('normalize_project_key_alias', '13b945bb4a5c307f430b0b6ba1387a3a38cc0abe8ac8ed58aa391f9a99e63518', 921),
+     ('normalize_related_project_aliases', 'f9b325aed559eef8c28c46d5168cd88027e51a851678381146fc94317e012e6a', 572),
+     ('reject_project_context_key_change', 'e800aecbe1054d8333babd1c43f1f52893db81b6b8f4e7fc6d167c6cd6f9de82', 226),
+     ('set_project_context_updated_at', '60c6154d6230d1d0e9244d8f20bc6d6b30e887e71263692e54363c96e22c0419', 391),
+     ('stamp_content_updated_at', '070b4db370dbe20a280a4f75e58edc72f337e9abcce9cadf673af1f1d30b2342', 77),
+     ('stamp_freshness_status', '179caf250bf9fe5aae1d1e1fdb040b4b08008a9c5d76cc1f65ebaf3272db86dd', 890),
+     ('sync_brain_entity_registry', 'dab84538fedcd42d28038a3055c1b7e6d4e1f7f02f21891e1195cafdb3f0489c', 10485),
+     ('sync_project_registry', 'ff39be21e857296038f463ff71eb932a65d7e3be7c7120a2414a3f5832ce4565', 3699),
+     ('sync_referenced_project_registry', '6844d14802019487796602f9cef95327f67a2c56798c1cb561541b4537f6a093', 306),
+     ('sync_related_project_registry', 'f1dd4dd21283d6a98a9f14e801685b13415f4de23dbdc59336201baafb3d60be', 349),
+     ('update_updated_at', '83ca0f7a3230405dae8b4f4e692b4983869b58e4225b6e60bbf96db3f6ae9a59', 96)
+),
+observed_trigger_functions AS (
+ SELECT
+     function_record.proname AS function_name,
+     pg_catalog.encode(
+         pg_catalog.sha256(pg_catalog.convert_to(function_record.prosrc, 'UTF8')),
+         'hex'
+     ) AS source_sha256,
+     pg_catalog.octet_length(
+         pg_catalog.convert_to(function_record.prosrc, 'UTF8')
+     ) AS source_octets,
+     function_record.oid AS function_oid
+ FROM pg_catalog.pg_proc AS function_record
+ JOIN pg_catalog.pg_namespace AS namespace_record
+   ON namespace_record.oid = function_record.pronamespace
+  AND namespace_record.nspname = 'public'
+ JOIN pg_catalog.pg_language AS language_record
+   ON language_record.oid = function_record.prolang
+  AND language_record.lanname = 'plpgsql'
+ WHERE function_record.prorettype = 'pg_catalog.trigger'::pg_catalog.regtype
+   AND function_record.prokind = 'f'
+   AND function_record.provolatile = 'v'
+   AND function_record.pronargs = 0
+   AND function_record.pronargdefaults = 0
+   AND NOT function_record.prosecdef
+   AND NOT function_record.proleakproof
+   AND NOT function_record.proretset
+   AND function_record.proconfig IS NULL
+),
+trigger_function_mismatches AS (
+ SELECT (
+     SELECT count(*)
+     FROM expected_trigger_functions AS expected_function
+     LEFT JOIN observed_trigger_functions AS function_record
+       ON function_record.function_name = expected_function.function_name
+      AND function_record.source_sha256 = expected_function.source_sha256
+      AND function_record.source_octets = expected_function.source_octets
+     WHERE function_record.function_oid IS NULL
+ ) + (
+     SELECT count(*)
+     FROM observed_trigger_functions AS function_record
+     LEFT JOIN expected_trigger_functions AS expected_function
+       ON expected_function.function_name = function_record.function_name
+     WHERE expected_function.function_name IS NULL
+ ) AS value
+),
+expected_stamping_triggers(
+ table_name,
+ trigger_name,
+ function_name,
+ trigger_type,
+ condition_md5
+) AS (
+ VALUES
+     ('adrs', 'trg_adrs_content_updated', 'stamp_content_updated_at', 19, 'f2a3f9f632c27f4d75dfe895299c774a'),
+     ('adrs', 'trg_adrs_freshness_stamped', 'stamp_freshness_status', 19, '056d459e210e03d2db1c626ffeea2669'),
+     ('decisions', 'trg_decisions_content_updated', 'stamp_content_updated_at', 19, 'f6a4a83483289e05e38957a169a14c49'),
+     ('decisions', 'trg_decisions_freshness_stamped', 'stamp_freshness_status', 19, '056d459e210e03d2db1c626ffeea2669'),
+     ('indexed_plans', 'trg_indexed_plans_freshness_stamped', 'stamp_freshness_status', 19, '056d459e210e03d2db1c626ffeea2669'),
+     ('learnings', 'trg_learnings_content_updated', 'stamp_content_updated_at', 19, '9c6809ae143cdcf7de23325b0234583f'),
+     ('learnings', 'trg_learnings_freshness_stamped', 'stamp_freshness_status', 19, '056d459e210e03d2db1c626ffeea2669'),
+     ('runbooks', 'trg_runbooks_content_updated', 'stamp_content_updated_at', 19, 'efbd8534db123d6a9ed8400c8ead10ac'),
+     ('runbooks', 'trg_runbooks_freshness_stamped', 'stamp_freshness_status', 19, '056d459e210e03d2db1c626ffeea2669'),
+     ('snippets', 'trg_snippets_content_updated', 'stamp_content_updated_at', 19, 'bf02278bc7cc81fbea4c93557699abad'),
+     ('snippets', 'trg_snippets_freshness_stamped', 'stamp_freshness_status', 19, '056d459e210e03d2db1c626ffeea2669')
+),
+observed_stamping_triggers AS (
+ SELECT
+     table_record.relname AS table_name,
+     trigger_record.tgname AS trigger_name,
+     function_record.proname AS function_name,
+     trigger_record.tgtype::integer AS trigger_type,
+     md5(
+         regexp_replace(
+             lower(
+                 COALESCE(
+                     substring(
+                         pg_catalog.pg_get_triggerdef(trigger_record.oid)
+                         FROM ' WHEN \((.*)\) EXECUTE '
+                     ),
+                     ''
+                 )
+             ),
+             '[[:space:]]+',
+             ' ',
+             'g'
+         )
+     ) AS condition_md5,
+     trigger_record.oid AS trigger_oid
+ FROM pg_catalog.pg_trigger AS trigger_record
+ JOIN pg_catalog.pg_class AS table_record
+   ON table_record.oid = trigger_record.tgrelid
+ JOIN pg_catalog.pg_namespace AS namespace_record
+   ON namespace_record.oid = table_record.relnamespace
+  AND namespace_record.nspname = 'public'
+ JOIN pg_catalog.pg_proc AS function_record
+   ON function_record.oid = trigger_record.tgfoid
+ WHERE NOT trigger_record.tgisinternal
+   AND trigger_record.tgenabled = 'O'
+   AND function_record.proname IN ('stamp_content_updated_at', 'stamp_freshness_status')
+),
+stamping_trigger_mismatches AS (
+ SELECT (
+     SELECT count(*)
+     FROM expected_stamping_triggers AS expected_trigger
+     LEFT JOIN observed_stamping_triggers AS trigger_record
+       ON trigger_record.table_name = expected_trigger.table_name
+      AND trigger_record.trigger_name = expected_trigger.trigger_name
+      AND trigger_record.function_name = expected_trigger.function_name
+      AND trigger_record.trigger_type = expected_trigger.trigger_type
+      AND trigger_record.condition_md5 = expected_trigger.condition_md5
+     WHERE trigger_record.trigger_oid IS NULL
+ ) + (
+     SELECT count(*)
+     FROM observed_stamping_triggers AS trigger_record
+     LEFT JOIN expected_stamping_triggers AS expected_trigger
+       ON expected_trigger.table_name = trigger_record.table_name
+      AND expected_trigger.trigger_name = trigger_record.trigger_name
+     WHERE expected_trigger.trigger_name IS NULL
+ ) AS value
+),
 historical_function AS (
  SELECT
      jsonb_build_object(
@@ -2518,6 +2655,21 @@ check_rows(id, expected, observed, passed) AS (
      AND sequence_property_mismatches.value = 0
  FROM sequence_backfill_mismatches
  CROSS JOIN sequence_property_mismatches
+ UNION ALL
+ SELECT
+     'trigger_function_fingerprints',
+     jsonb_build_object(
+         'stamping_trigger_mismatches', 0,
+         'trigger_function_mismatches', 0
+     ),
+     jsonb_build_object(
+         'stamping_trigger_mismatches', stamping_trigger_mismatches.value,
+         'trigger_function_mismatches', trigger_function_mismatches.value
+     ),
+     stamping_trigger_mismatches.value = 0
+     AND trigger_function_mismatches.value = 0
+ FROM stamping_trigger_mismatches
+ CROSS JOIN trigger_function_mismatches
  UNION ALL
  SELECT
      'table_set',
