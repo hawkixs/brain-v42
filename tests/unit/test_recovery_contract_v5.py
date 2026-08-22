@@ -133,6 +133,21 @@ def _expected_v5() -> dict[str, Any]:
         }
     )
 
+    # `75112bc6` : QUATORZE fonctions de trigger en production, UNE SEULE
+    # empreintée (`update_updated_at`, par l'invariant 039). Les treize autres —
+    # dont les deux tamponneuses de la 041 et de la 043 — pouvaient changer de
+    # corps sans qu'un octet du contrat ne bouge. Le préalable dur du ticket
+    # (normaliser la dérive AVANT de fingerprinter) a été LEVÉ par mesure : zéro
+    # écart entre la production et une base construite à neuf par `alembic
+    # upgrade head`. Sans cette mesure, l'empreinte aurait gravé la dérive.
+    checks.append(
+        {
+            "id": "trigger_function_fingerprints",
+            "kind": "brain_schema_invariant",
+            "name": "trigger_function_fingerprints",
+        }
+    )
+
     document["checks"] = sorted(checks, key=lambda check: check["id"])
     document["contract_id"] = "brain-v42/postgresql-recovery/v5"
     document["schema_version"] = 5
@@ -156,7 +171,7 @@ def test_v5_json_is_the_exact_v4_delta() -> None:
             json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
         ).encode()
     )
-    assert len(document["checks"]) == 28
+    assert len(document["checks"]) == 29
 
 
 def test_the_head_check_is_derived_and_carries_no_revision() -> None:
