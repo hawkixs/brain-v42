@@ -161,6 +161,19 @@ def _format_plan_list(plans: list[IndexedPlan]) -> str:
     return "\n".join(lines)
 
 
+#: La provenance qu'un écrivain DREAM pose sur une transition de fraîcheur.
+#: `judgment` appartient au vocabulaire fermé du `CHECK` de la 043 — quatre
+#: valeurs — et n'avait AUCUN écrivain : réservée, inutilisée, et elle décrit
+#: exactement ce que fait REORG, seule phase à qui le serveur accorde une
+#: écriture. Aucune migration n'est donc nécessaire. Exercée pour la première
+#: fois le 2026-08-22 contre `brain_test` : acceptée, date posée, transaction
+#: annulée ; une valeur hors vocabulaire refusée par la même contrainte.
+DREAM_FRESHNESS_SOURCE = "judgment"
+
+#: Le champ que le SERVEUR pose et que l'appelant ne peut pas forger.
+_SERVER_ONLY_UPDATE_FIELDS = frozenset({"freshness_source"})
+
+
 def register_crud_tools(
     mcp: Any,
     *,
@@ -356,17 +369,42 @@ def register_crud_tools(
             return format_error(f"Invalid UUID: {entity_id}")
 
         update_cls = _update_models[entity_type]
+        forged = _SERVER_ONLY_UPDATE_FIELDS.intersection(fields)
+        if forged:
+            # Fail-closed AVANT toute écriture : une provenance forgée signerait
+            # une transition du nom d'un autre. La 043 le dit dans son propre
+            # corps — « une provenance fausse, qui se croit, au lieu d'une
+            # provenance absente, qui se voit ».
+            return format_error(f"server-controlled field(s) refused: {', '.join(sorted(forged))}")
         try:
             update_data = update_cls(**fields)
         except ValidationError as e:
             # List the valid fields so the caller can self-correct — the
             # body of a decision lives in `description` (Context + Decision
             # merged), not `decision_made` (learning 0cd1109a footgun).
-            valid = ", ".join(update_cls.model_fields)
+            valid = ", ".join(
+                name for name in update_cls.model_fields if name not in _SERVER_ONLY_UPDATE_FIELDS
+            )
             return format_error(f"Invalid fields: {e}. Valid fields: {valid}")
 
         svc = _services[entity_type]
         scope = get_dream_project_scope()
+        # Le MÊME prédicat que le dépôt : `model_dump(exclude_none=True)` est
+        # exactement ce que `repo.update` transforme en colonnes. Tester le
+        # modèle typé `BaseModel` demanderait un `getattr` non vérifié ; tester
+        # le `fields` brut estamperait aussi un `freshness_status: None`, qui
+        # n'écrit rien. Ici, estampiller et écrire sont vrais ensemble.
+        if scope is not None and "freshness_status" in update_data.model_dump(exclude_none=True):
+            # Une écriture DREAM de `freshness_status` déclare sa provenance.
+            # Bornée à CE champ : estampiller une écriture qui ne touche pas au
+            # statut décrirait une transition qui n'a pas eu lieu. Et bornée au
+            # scope : hors dream la transition reste muette, DONC comptée par
+            # `post_run_alert.fetch_mute_transitions` — c'est ce qui permet de
+            # voir la prochaine source non recensée au lieu de la confondre
+            # avec REORG.
+            update_data = update_data.model_copy(
+                update={"freshness_source": DREAM_FRESHNESS_SOURCE}
+            )
         graph = getattr(svc, "_graph", None)
         validated_relations: list[dict[str, Any]] = []
         if scope is not None and related_to and graph is not None:
