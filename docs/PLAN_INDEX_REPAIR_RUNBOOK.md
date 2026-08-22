@@ -210,6 +210,19 @@ required. It is not free of consequence, though — apply it and the code togeth
   > counters. Everything above stays true.
   > **Measured 2026-08-22 against production at head `046`: 28/28**, both variants.
   >
+  > **A SECOND, SEPARATE receipt — `ops/recovery/brain-v42-v5-acl.sql`, and it is NOT part
+  > of the 28.** Ticket `60708007`. The sandbox restore runs `--no-owner --no-acl`, so a
+  > restoration receipt erases the very thing this proof looks at. Owners and grants
+  > therefore live in their own asset, played against **live production only**, and they
+  > have **no `-pgrestore` twin** — that absence is the decision, not an oversight. It pins
+  > that every one of the 51 public relations is owned by `brain`, that `codex_ro` holds
+  > `SELECT` on exactly the ten codex views the migration 036 grants (and `USAGE` on the
+  > schema, without which those ten grants are inert), and that `codex_ro` never gains a
+  > role attribute or a role membership. **Measured 2026-08-22 against production at head
+  > `046`: 1/1.** Run it with the same command, substituting the file:
+  > `docker exec -i brain_v42_postgres psql -U brain -d brain -Atq -v ON_ERROR_STOP=1 -f -
+  > < ops/recovery/brain-v42-v5-acl.sql`
+  >
   > **What no receipt here proves.** Every number above was replayed against the **live**
   > production database, never against a `pg_restore`d dump. None of them says anything about
   > an actual restoration. The P1 gate of `8eaefe36` stands entirely open — do not read
