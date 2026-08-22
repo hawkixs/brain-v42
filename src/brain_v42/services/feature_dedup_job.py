@@ -238,6 +238,45 @@ class FeatureDedupJob:
                 else None,
             )
             return False
+        # `find_candidates` filtre déjà les sources épinglées, mais ce filtre vit
+        # dans le chemin de DÉCOUVERTE. Ici est le chemin de MUTATION, et c'est le
+        # seul endroit où l'invariant peut vraiment tenir :
+        #
+        # - `run_dedup_loop` collecte TOUS les candidats d'un projet, puis les
+        #   fusionne un par un, chacun dans sa propre session et après un
+        #   aller-retour reranker. Un humain qui épingle pendant cette fenêtre
+        #   verrait son geste ignoré, la décision ayant été prise sur un
+        #   instantané d'avant.
+        # - `merge_features` est publique et le docstring du module la documente
+        #   comme appelable directement. Un tel appelant n'hérite d'aucune garde.
+        #
+        # D'où la lecture sur `source_row`, la ligne relue FOR UPDATE, et JAMAIS
+        # sur l'argument `source` : l'instantané est précisément ce qui peut être
+        # périmé.
+        #
+        # ON BLOQUE, ON N'INVERSE PAS. Échanger les rôles ferait décider du
+        # survivant par l'épinglage plutôt que par l'âge, et fusionnerait quand
+        # même deux périmètres que rien ne prouve identiques — le score vient du
+        # reranker sur les NOMS seuls. Même choix que `find_candidates`, pour que
+        # les deux chemins ne racontent pas deux histoires. Et un primitif de
+        # mutation qui ferait silencieusement autre chose que ce qu'on lui demande
+        # serait pire ici que dans un filtre.
+        #
+        # Les DEUX épinglées est un sous-cas de celui-ci, donc bloqué aussi. Il est
+        # journalisé à part : rien ne dit laquelle des deux intentions doit céder,
+        # c'est un arbitrage humain, pas une règle à écrire dans le code.
+        #
+        # `bool()` et non `is True` : la colonne est nullable (`server_default
+        # false`), et NULL veut dire « pas épinglée », pas « inconnu ».
+        if bool(source_row.pinned):
+            logger.warning(
+                "feature_dedup.merge_skipped_pinned_source",
+                target_id=str(target_id),
+                source_id=str(source_id),
+                both_pinned=bool(target_row.pinned),
+            )
+            return False
+
         target_desc: Any = target_row.description
         source_desc: Any = source_row.description
         existing_embedding: Any = target_row.embedding

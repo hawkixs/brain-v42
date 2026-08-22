@@ -62,6 +62,10 @@ def _feature_row(feature: SimpleNamespace, description: str) -> SimpleNamespace:
         embedding=[0.1] * 1536,
         status="research",
         merged_into=None,
+        # Sans ce champ, la ligne feinte n'a pas l'attribut que la vraie a, et
+        # la garde `pinned` de `merge_features` lèverait AttributeError avant
+        # d'atteindre la clôture de mutation que ce fichier teste.
+        pinned=False,
     )
 
 
