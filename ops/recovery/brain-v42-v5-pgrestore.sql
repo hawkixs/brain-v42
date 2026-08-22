@@ -1392,6 +1392,91 @@ graph_projection_034_035_observation AS (
      )
  ) AS passed
 ),
+expected_inherited_constraints(
+ table_name,
+ constraint_name,
+ constraint_type,
+ delete_action,
+ definition_md5
+) AS (
+ VALUES
+     ('brain_entities', 'brain_entities_lifecycle_valid', 'c', NULL::text, 'cd2da96da432b61cd47e7266f197cd3b'),
+     ('brain_entities', 'brain_entities_pkey', 'p', NULL::text, 'cc3552dbb61b18accca876af5296eb1f'),
+     ('brain_entities', 'brain_entities_project_key_fkey', 'f', 'r', 'f263e7d4d142bbc04ada44537963b892'),
+     ('brain_entities', 'brain_entities_scope_valid', 'c', NULL::text, '7a2522cefd4d98d52bc658343f54daa9'),
+     ('brain_entities', 'uq_brain_entities_type_key', 'u', NULL::text, 'e8fd9124dae08d47c87177bf033b8e00'),
+     ('entity_relations', 'entity_relations_confidence_valid', 'c', NULL::text, '8418df632947fd26246036ee546af632'),
+     ('entity_relations', 'entity_relations_lifecycle_valid', 'c', NULL::text, 'cd2da96da432b61cd47e7266f197cd3b'),
+     ('entity_relations', 'entity_relations_no_self_loop', 'c', NULL::text, '5a41e6500e5c57c7f2fd2b366d996831'),
+     ('entity_relations', 'entity_relations_pkey', 'p', NULL::text, 'cc3552dbb61b18accca876af5296eb1f'),
+     ('entity_relations', 'entity_relations_source_entity_id_fkey', 'f', 'r', '10d758915d3544cd60fbd31505ee24d6'),
+     ('entity_relations', 'entity_relations_target_entity_id_fkey', 'f', 'r', '8188bcc6f479fce005c8af00803e91e8'),
+     ('entity_relations', 'entity_relations_type_valid', 'c', NULL::text, 'de56c40c7349fe61da69b553ee8ad88a'),
+     ('entity_relations', 'uq_entity_relations_endpoints_type', 'u', NULL::text, 'aafe3b4835484bc8352bb3e383f3b3de'),
+     ('graph_outbox', 'graph_outbox_entity_id_fkey', 'f', 'c', '41669d749feab45b3b21507cbe1e72f8'),
+     ('graph_outbox', 'graph_outbox_event_id_key', 'u', NULL::text, '759bdd8d95917e86a4535f61383231f2'),
+     ('graph_outbox', 'graph_outbox_exactly_one_aggregate', 'c', NULL::text, '43e61c6f8f1d8edd4c7ad839435f3b94'),
+     ('graph_outbox', 'graph_outbox_operation_valid', 'c', NULL::text, '02563be4b2f7d105be2c25775fd09852'),
+     ('graph_outbox', 'graph_outbox_pkey', 'p', NULL::text, 'cc3552dbb61b18accca876af5296eb1f'),
+     ('graph_outbox', 'graph_outbox_relation_id_fkey', 'f', 'c', '22cd3849e65c946557e6c4a9ea483648'),
+     ('graph_outbox', 'uq_graph_outbox_entity_revision', 'u', NULL::text, '7b1e742994175d24227a5f0a6cff40a6'),
+     ('graph_outbox', 'uq_graph_outbox_relation_revision', 'u', NULL::text, 'd5fb45f4a7893c5d45460da33fc32d3b'),
+     ('graph_projection_leases', 'graph_projection_leases_armed_generation_valid', 'c', NULL::text, 'e8cee37772e9bc681ba229a778eace5d'),
+     ('graph_projection_leases', 'graph_projection_leases_pkey', 'p', NULL::text, '3608ac6e0b09678c35217c69cc4de206'),
+     ('graph_projection_leases', 'graph_projection_leases_protocol_valid', 'c', NULL::text, '3c5970bbe99c7f44f1a0127458293dea'),
+     ('graph_projection_leases', 'graph_projection_leases_recovery_state_valid', 'c', NULL::text, 'da1a1dfd81cb4d6f562aa15f101ec34d'),
+     ('projects', 'projects_key_format_valid', 'c', NULL::text, 'd2f0e69b15612f6476efceb2a228c6fb'),
+     ('projects', 'projects_pkey', 'p', NULL::text, 'b449ae3aa5c5dbcebd0e93fd552a7787'),
+     ('projects', 'projects_registry_status_valid', 'c', NULL::text, '7da8b1fc307de0337b6647b895313e2e'),
+     ('projects', 'projects_source_valid', 'c', NULL::text, 'dea4cf93bb2488104f419ca18ed1bcd2')
+),
+observed_inherited_constraints AS (
+ SELECT
+     table_record.relname AS table_name,
+     constraint_record.oid AS constraint_oid,
+     constraint_record.conname AS constraint_name,
+     constraint_record.contype::text AS constraint_type,
+     constraint_record.confdeltype::text AS delete_action,
+     constraint_record.convalidated AS validated,
+    md5(replace(replace(regexp_replace(lower(pg_catalog.pg_get_constraintdef(constraint_record.oid, TRUE)), '[[:space:]]+', ' ', 'g'), '::character varying::text', '::character varying'), ']::text[]', ']')) AS definition_md5
+ FROM pg_catalog.pg_constraint AS constraint_record
+ JOIN pg_catalog.pg_class AS table_record
+   ON table_record.oid = constraint_record.conrelid
+ JOIN pg_catalog.pg_namespace AS namespace_record
+   ON namespace_record.oid = table_record.relnamespace
+ WHERE namespace_record.nspname = 'public'
+   AND table_record.relname IN (
+       'brain_entities',
+       'entity_relations',
+       'graph_outbox',
+       'graph_projection_leases',
+       'projects'
+   )
+),
+inherited_constraint_mismatches AS (
+ SELECT (
+     SELECT count(*)
+     FROM expected_inherited_constraints AS expected_constraint
+     LEFT JOIN observed_inherited_constraints AS constraint_record
+       ON constraint_record.table_name = expected_constraint.table_name
+      AND constraint_record.constraint_name = expected_constraint.constraint_name
+      AND constraint_record.constraint_type = expected_constraint.constraint_type
+      AND (
+          expected_constraint.delete_action IS NULL
+          OR constraint_record.delete_action = expected_constraint.delete_action
+      )
+      AND constraint_record.definition_md5 = expected_constraint.definition_md5
+      AND constraint_record.validated
+     WHERE constraint_record.constraint_oid IS NULL
+ ) + (
+     SELECT count(*)
+     FROM observed_inherited_constraints AS constraint_record
+     LEFT JOIN expected_inherited_constraints AS expected_constraint
+       ON expected_constraint.table_name = constraint_record.table_name
+      AND expected_constraint.constraint_name = constraint_record.constraint_name
+     WHERE expected_constraint.constraint_name IS NULL
+ ) AS value
+),
 historical_function AS (
  SELECT
      jsonb_build_object(
@@ -1951,6 +2036,13 @@ check_rows(id, expected, observed, passed) AS (
      jsonb_build_object('count', row_counts.indexed_plans),
      row_counts.indexed_plans >= 1
  FROM row_counts
+ UNION ALL
+ SELECT
+     'inherited_constraint_definitions',
+     to_jsonb(0),
+     to_jsonb(inherited_constraint_mismatches.value),
+     inherited_constraint_mismatches.value = 0
+ FROM inherited_constraint_mismatches
  UNION ALL
  SELECT
      'orphan_feature_artifacts_features',

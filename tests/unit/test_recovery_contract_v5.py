@@ -94,6 +94,19 @@ def _expected_v5() -> dict[str, Any]:
 
     by_id["catalog_counts"]["indexes"] = 130
 
+    # `81c4f366` : les contraintes HÉRITÉES (033/034/035 et `projects`) n'étaient
+    # attestées que par NOM. La check row propre — plutôt qu'une fusion dans
+    # `brain_runtime_032_036_037` — est ce qui rend le durcissement VISIBLE au
+    # reçu : le dénominateur passe à 26. Fondu, il aurait vérifié plus en
+    # rendant toujours 25/25, c'est-à-dire sans que personne puisse le constater.
+    checks.append(
+        {
+            "id": "inherited_constraint_definitions",
+            "kind": "brain_schema_invariant",
+            "name": "inherited_constraint_definitions",
+        }
+    )
+
     document["checks"] = sorted(checks, key=lambda check: check["id"])
     document["contract_id"] = "brain-v42/postgresql-recovery/v5"
     document["schema_version"] = 5
@@ -117,7 +130,7 @@ def test_v5_json_is_the_exact_v4_delta() -> None:
             json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
         ).encode()
     )
-    assert len(document["checks"]) == 25
+    assert len(document["checks"]) == 26
 
 
 def test_the_head_check_is_derived_and_carries_no_revision() -> None:
