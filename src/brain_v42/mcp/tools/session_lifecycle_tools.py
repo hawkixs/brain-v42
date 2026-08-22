@@ -59,11 +59,26 @@ ExpectedClientKeyArg = Annotated[
     ),
 ]
 SummaryArg = Annotated[str, Field(min_length=1, max_length=10_000)]
+
+#: Le plafond de `next_focus`, extrait pour que le briefing puisse ANNONCER la
+#: marge restante au lieu de la faire découvrir par un refus, au moment de
+#: fermer, après le travail. Deux littéraux dériveraient au premier changement
+#: et le briefing promettrait une marge que la validation ne reconnaîtrait pas.
+#:
+#: Il compte des CARACTÈRES, pas des octets — c'est ce que `maxLength` de
+#: Pydantic mesure. Le focus de `brain-v42` faisait 9 977 caractères pour 10 285
+#: OCTETS le 2026-08-22 : une borne en octets serait déjà franchie.
+#:
+#: Il n'est PAS partagé avec `SummaryArg`, qui vaut la même chose aujourd'hui :
+#: ce sont deux contrats distincts, et les coupler ferait bouger l'un en
+#: changeant l'autre.
+NEXT_FOCUS_MAX_LENGTH = 10_000
+
 FocusArg = Annotated[
     str,
     Field(
         min_length=1,
-        max_length=10_000,
+        max_length=NEXT_FOCUS_MAX_LENGTH,
         description=(
             "Jugement et engagements pour la session suivante — ce qui n'est pas "
             "dérivable automatiquement (ex : ne pas publier ce brouillon et pourquoi, "

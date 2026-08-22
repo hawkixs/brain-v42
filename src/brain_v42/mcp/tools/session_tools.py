@@ -11,6 +11,7 @@ import structlog
 from brain_v42.config import get_settings
 from brain_v42.mcp.tools.formatters import format_id
 from brain_v42.mcp.tools.session_lifecycle_tools import (
+    NEXT_FOCUS_MAX_LENGTH,
     register_session_lifecycle_tools,
 )
 from brain_v42.mcp.tools.workflow_guide_tools import format_workflow_guidance_briefing
@@ -231,12 +232,44 @@ def _format_focus_age(written_at: datetime, now: datetime) -> str:
     return f"il y a {hours // 24}j"
 
 
+def _focus_margin_line(focus_length: int) -> str:
+    """Ce qu'il reste avant que `brain_session_end` refuse de fermer.
+
+    `next_focus` est OBLIGATOIRE et plafonné ; il REMPLACE `current_focus` quand
+    le compare-and-swap réussit. L'autre écrivain de la même colonne,
+    `brain_update_project_focus`, n'a aucune borne : le projet peut donc arriver
+    dans un état que la fermeture ne sait pas réécrire. Le 2026-08-22, la
+    révision 217 a porté 12 157 caractères pendant seize heures, et sa fermeture
+    en a retiré 3 635 — 30 % du focus — en une écriture.
+
+    Sous le plafond, la ligne est un nombre. À marge nulle ou négative, elle
+    cesse d'en être un : c'est le seul moment où quelqu'un en a besoin, et une
+    marge négative écrite nue se lirait comme un détail de comptage. Les deux
+    issues sont donc nommées — compresser, donc perdre du texte choisi par
+    l'auteur sans diff ni trace, ou être refusé.
+    """
+    margin = NEXT_FOCUS_MAX_LENGTH - focus_length
+    head = f"- Focus : {focus_length} / {NEXT_FOCUS_MAX_LENGTH} caractères"
+    if margin > 0:
+        return f"{head} (marge {margin})"
+    if margin == 0:
+        return (
+            f"{head} — MARGE NULLE : un caractère de plus et toute fermeture "
+            "sera refusée tant que le focus n'aura pas été compressé"
+        )
+    return (
+        f"{head} — DÉPASSÉ de {-margin} : une fermeture devra compresser le focus, "
+        "et ce qui tombe ne laisse ni diff ni trace — sinon elle sera refusée"
+    )
+
+
 def _section_technical_state(
     revision: str | None,
     *,
     unavailable: bool = False,
     focus_updated_at: datetime | None = None,
     focus_tracked: bool = False,
+    focus_length: int | None = None,
     now: datetime | None = None,
 ) -> str:
     """### État technique — derived at briefing time, never stored.
@@ -276,6 +309,8 @@ def _section_technical_state(
             else "inconnu (jamais horodaté)"
         )
         lines.append(f"- Focus écrit : {age}")
+    if focus_length is not None:
+        lines.append(_focus_margin_line(focus_length))
     if not lines:
         return ""
     return "\n".join(["### État technique (mesuré)", *lines])
@@ -318,6 +353,7 @@ def _format_session_briefing(
             unavailable=schema_unavailable,
             focus_updated_at=getattr(ctx, "focus_updated_at", None),
             focus_tracked=ctx is not None,
+            focus_length=(len(ctx.current_focus) if ctx and ctx.current_focus else None),
         ),
         _section_focus(ctx),
         _section_blockers(blockers),
