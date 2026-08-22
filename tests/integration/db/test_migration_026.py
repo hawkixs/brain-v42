@@ -23,6 +23,7 @@ import asyncio
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -209,7 +210,7 @@ def _cleanup_dedup_rows():  # type: ignore[no-untyped-def]
 
 
 @pytest.mark.integration
-def test_migration_026_round_trip() -> None:
+def test_migration_026_round_trip(record_migration_downgrade: Callable[..., None]) -> None:
     """Single deterministic round-trip: upgrade→026, downgrade→025, re-upgrade→026.
 
     Assertions after upgrade to 026:
@@ -231,6 +232,7 @@ def test_migration_026_round_trip() -> None:
     # (026, bare agent_name PK). Downgrade to 025 so we can seed two rows with
     # the SAME agent_name (different pid) — only the composite PK permits that.
     # (`upgrade 025` would be a no-op here since 026 is already ahead.)
+    record_migration_downgrade("025")
     _run_alembic(["-x", "allow_project_context_trigger_downgrade=yes", "downgrade", "025"])
 
     # ── Pre-seed two rows for the same agent_name (dedup test) ───────────────

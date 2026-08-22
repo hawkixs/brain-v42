@@ -20,9 +20,12 @@ when they are absent. These are used by test_graph_integration.py.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, unquote, urlparse
@@ -37,6 +40,14 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.pool import NullPool
+
+from tests.integration.schema_residue import (
+    RESIDUE_TABLES,
+    ResidueProbe,
+    describe_schema_residue,
+    migration_breadcrumb,
+    read_breadcrumbs,
+)
 
 # ---------------------------------------------------------------------------
 # DB URL guard
@@ -144,6 +155,94 @@ def _run_alembic_upgrade(db_url: str, project_root: Path) -> None:
         raise RuntimeError(f"Alembic migration failed:\n{result.stderr}\n{result.stdout}")
 
 
+def _expected_alembic_head(project_root: Path) -> str:
+    """Return the single head declared under ``alembic/versions``.
+
+    Derived, never hardcoded: a pinned constant is one more thing that drifts
+    the day a migration lands.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    config = Config(str(project_root / "alembic.ini"))
+    config.set_main_option("script_location", str(project_root / "alembic"))
+    heads = ScriptDirectory.from_config(config).get_heads()
+    if len(heads) != 1:
+        raise RuntimeError(f"expected exactly one Alembic head, got {heads}")
+    return str(heads[0])
+
+
+def _probe_schema_state(db_url: str) -> tuple[bool, str | None, ResidueProbe]:
+    """Read the deployed revision and any leftover ``integ-`` rows.
+
+    Returns ``(connected, deployed_revision, residue)``. When the database is
+    unreachable, ``connected`` is False and the caller must NOT block: an
+    unreachable database is the pre-existing skip/failure path, not a residue.
+    ``deployed_revision`` is None when no ``alembic_version`` row exists at all,
+    which is a virgin database the session fixture is meant to bootstrap.
+    """
+
+    async def probe() -> tuple[bool, str | None, ResidueProbe]:
+        engine = create_async_engine(db_url, poolclass=NullPool)
+        try:
+            async with engine.connect() as conn:
+                present = await conn.scalar(sa.text("SELECT to_regclass('public.alembic_version')"))
+                revision = (
+                    await conn.scalar(sa.text("SELECT version_num FROM alembic_version"))
+                    if present is not None
+                    else None
+                )
+                try:
+                    counts: dict[str, int] = {}
+                    for table in RESIDUE_TABLES:
+                        exists = await conn.scalar(
+                            sa.text("SELECT to_regclass(:qualified)"),
+                            {"qualified": f"public.{table}"},
+                        )
+                        if exists is None:
+                            continue
+                        counts[table] = int(
+                            await conn.scalar(
+                                sa.text(  # noqa: S608 - fixed internal table names only
+                                    f"SELECT count(*) FROM {table} "
+                                    f"WHERE {_INTEGRATION_PROJECT_PREDICATE}"
+                                )
+                            )
+                            or 0
+                        )
+                    residue = ResidueProbe(counts=counts)
+                except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+                    residue = ResidueProbe(failure=f"{type(exc).__name__}: {exc}")
+                return True, (str(revision) if revision is not None else None), residue
+        except Exception:  # noqa: BLE001 - unreachable DB is not this guard's business
+            return False, None, ResidueProbe(failure="database unreachable")
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(probe())
+
+
+def _assert_no_migration_test_residue(db_url: str, project_root: Path) -> None:
+    """Refuse setup when the database carries an interrupted migration test.
+
+    Fixes the third and only costly defect of the shared-database design: the
+    breakage is silent, deferred, and wears a message about data corruption.
+    This guard SAYS what happened and gives the repair gesture; it never repairs
+    on its own, because an automatic repair would hide the problem again.
+    """
+    connected, deployed_revision, residue = _probe_schema_state(db_url)
+    if not connected:
+        return
+    message = describe_schema_residue(
+        deployed_revision=deployed_revision,
+        expected_head=_expected_alembic_head(project_root),
+        residue=residue,
+        breadcrumbs=read_breadcrumbs(project_root),
+    )
+    if message is not None:
+        raise RuntimeError(message)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def run_migrations() -> None:
     """Run Alembic migrations once per session before any integration test.
@@ -152,7 +251,34 @@ def run_migrations() -> None:
     It runs before the async engine fixtures so the schema is ready.
     """
     db_url = _get_integration_db_url_or_skip()
+    _assert_no_migration_test_residue(db_url, _PROJECT_ROOT)
     _run_alembic_upgrade(db_url, _PROJECT_ROOT)
+
+
+@pytest.fixture
+def record_migration_downgrade(
+    request: pytest.FixtureRequest,
+) -> Iterator[Callable[..., None]]:
+    """Let a test declare that it is about to downgrade the shared database.
+
+    Teardown runs after the test function has returned — so after its own
+    ``finally`` restored the schema — which is exactly when the trace stops
+    being true. Anything that kills the process in between leaves the file, and
+    the next setup names this test instead of guessing.
+    """
+    with ExitStack() as stack:
+
+        def record(downgraded_to: str, restores_to: str = "head") -> None:
+            stack.enter_context(
+                migration_breadcrumb(
+                    project_root=_PROJECT_ROOT,
+                    test_nodeid=request.node.nodeid,
+                    downgraded_to=downgraded_to,
+                    restores_to=restores_to,
+                )
+            )
+
+        yield record
 
 
 # ---------------------------------------------------------------------------

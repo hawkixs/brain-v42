@@ -9,49 +9,6 @@ Run one gate at a time, in the order below. Stop at the first failed or ambiguou
 writers off until a step explicitly permits the isolated MCP process. Never add `--wet`, `--force`,
 `--skip-backup`, or a combined apply/finalize command; the repair CLI exposes none of them.
 
-## Current targets
-
-Everything normative in this runbook points at this block. It is the **only** place in the file
-where an Alembic head, a recovery-contract asset, or a receipt denominator is written as a
-literal; the dated sections below are records of past cutovers and keep the numbers of their own
-day. `tests/unit/test_runbook_normative_values_have_one_source.py` enforces both halves of that
-rule, and it fails on the version of this file that shipped before 2026-08-22 — the day the gates
-here and the restore procedure below were found to be describing two different databases.
-
-<!-- dr-current:start -->
-| Target | Value | Replayed against live production |
-| --- | --- | --- |
-| Alembic head | `046` | 2026-08-22 |
-| Recovery contract, live target | `ops/recovery/brain-v42-v5.sql` | 2026-08-22 |
-| Recovery contract, restored target | `ops/recovery/brain-v42-v5-pgrestore.sql` | 2026-08-22 |
-| Contract receipt, both variants | `29/29` | 2026-08-22 |
-| ACL contract, live only, no `-pgrestore` twin | `ops/recovery/brain-v42-v5-acl.sql` | 2026-08-22 |
-| ACL receipt | `1/1` | 2026-08-22 |
-
-```bash
-docker exec brain_v42_postgres psql -U brain -d brain -Atc \
-  "select version_num from alembic_version;"
-for asset in brain-v42-v5.sql brain-v42-v5-pgrestore.sql brain-v42-v5-acl.sql; do
-  docker exec -i brain_v42_postgres psql -U brain -d brain -Atq -v ON_ERROR_STOP=1 -f - \
-    < "ops/recovery/$asset"
-done
-```
-<!-- dr-current:end -->
-
-**Replay it, do not quote it.** The receipt denominator moved four times on 2026-08-22 alone, and
-the head has advanced nine times since the procedure below was first written. Every value above is
-dated for that reason: a number without its date is a trap, and this document has already sprung
-it once.
-
-**What no number above proves.** All of them were replayed against the **live** production
-database, never against a `pg_restore`d archive. None of them says anything about an actual
-restoration, and the P1 gate of `8eaefe36` stands entirely open — do not read a full receipt here
-as "DR is proven". The sequence check makes that sharper, not softer: on a live database
-`last_value >= max(id)` is true by construction, so the one control written FOR a restore is the
-one control no receipt here can ever exercise. The ACL contract has no `-pgrestore` twin at all,
-so owners and grants stay unattested on any restored target; that absence is a recorded decision,
-not an oversight.
-
 ## Fixed scope and private evidence
 
 The repair accepts exactly these projects:
@@ -311,30 +268,19 @@ installs no function and no trigger, so nothing signed by 039 is at risk. The on
 focus timestamps written since the upgrade, which are re-derivable only by writing a focus again.
 <!-- project-context-focus-updated-at-040:end -->
 
-## 1. Confirm the deployed head matches the repair tool
+## 1. Confirm production 037 and the repository chain through 039
 
-There is no migration left to gate here. The repair CLI is fail-closed on
-`_REQUIRED_ALEMBIC_HEAD` in `src/brain_v42/maintenance/plan_index_repair_store.py`: `inventory`
-records the head it read from `alembic_version`, and `apply-paths` and `finalize` each refuse
-unless that recorded head equals the constant **and** equals the head they re-read inside their
-own transaction. So this step proves one equality, and both sides of it are measured, never
-quoted — a hard-coded gate goes stale at the next migration and, worse, tells an operator that
-today's head is an anomaly.
+Confirm that production is still at `037` before the authorized cutover and that the repository
+chain contains `035 -> 036 -> 037 -> 038 -> 039`:
 
 ```bash
-uv run alembic history
+uv run alembic history -r 035:039
 BRAIN_ALEMBIC_ALLOW_PROD=1 uv run alembic current
-ALEMBIC_HEAD="$(docker exec brain_v42_postgres psql -U brain -d brain -Atc \
-  'select version_num from alembic_version;')"
-readonly ALEMBIC_HEAD
-grep -n '^_REQUIRED_ALEMBIC_HEAD' src/brain_v42/maintenance/plan_index_repair_store.py
 ```
 
-The history must show one linear head. `$ALEMBIC_HEAD` must equal both that head and
-`_REQUIRED_ALEMBIC_HEAD`. Stop on any other value: the repair refuses to run anyway, and learning
-that here costs less than learning it after the backup. Compare `$ALEMBIC_HEAD` with
-[Current targets](#current-targets) and re-date that block if they differ — a divergence there is
-a stale document, not a stale database. Keep every production writer off before continuing.
+The history must show one linear head, `039`, with 038 before 039. The production `current` check
+must report `037` before cutover. Stop on any other value. Do not migrate until the backup restore
+and isolated 038→039 upgrade have passed and all production writers are off.
 
 ## 2. Stop every writer
 
@@ -359,11 +305,9 @@ Take a complete PostgreSQL backup with the approved production backup procedure.
 exact backup into an isolated target with no production routing, then verify:
 
 - restore completion without ignored errors;
-- the Alembic head measured in step 1 as `$ALEMBIC_HEAD`;
+- Alembic head `037`;
 - the expected schema, constraints, indexes, extensions, and table counts;
-- the recovery contract named in [Current targets](#current-targets), `-pgrestore` variant, run
-  against the restored target and returning its full receipt. A short receipt is a failed restore,
-  not a stale gate.
+- application invariants from the current disaster-recovery procedure.
 
 The restore test must use the same backup later designated for full recovery. A control snapshot
 is not a database backup: it omits plan contents, embeddings, and unrelated rows.
@@ -373,8 +317,9 @@ shape is illustrative; use the real immutable backup and restore identifiers:
 
 ```bash
 umask 077
-printf '{"version":1,"backup_id":"REPLACE","restore_test_id":"REPLACE","alembic_head":"%s","status":"passed"}\n' \
-  "$ALEMBIC_HEAD" > "$BACKUP_RECEIPT"
+printf '%s\n' \
+  '{"version":1,"backup_id":"REPLACE","restore_test_id":"REPLACE","alembic_head":"037","status":"passed"}' \
+  > "$BACKUP_RECEIPT"
 chmod 0600 "$BACKUP_RECEIPT"
 BACKUP_RECEIPT_SHA256="$(sha256sum -- "$BACKUP_RECEIPT" | cut -d ' ' -f 1)"
 readonly BACKUP_RECEIPT_SHA256
@@ -414,9 +359,9 @@ jq '{
   collision_count: (.collisions | length)
 }' "$SNAPSHOT"
 
-jq -e --arg head "$ALEMBIC_HEAD" '
+jq -e '
   .version == 1
-  and .alembic_revision == $head
+  and .alembic_revision == "039"
   and (.contexts | length) == 7
   and ([.contexts[].values.project_key] | sort) == [
     "red-games", "red-gift", "red-phone", "red-quant",
@@ -612,9 +557,9 @@ uv run python scripts/repair_plan_index.py inventory \
   --manifest "$MANIFEST" \
   --snapshot-output "$POST_SNAPSHOT"
 
-jq -e --argjson expected "$EXPECTED_LOCAL_FILES" --arg head "$ALEMBIC_HEAD" '
+jq -e --argjson expected "$EXPECTED_LOCAL_FILES" '
   .version == 1
-  and .alembic_revision == $head
+  and .alembic_revision == "039"
   and (.contexts | length) == 7
   and all(.contexts[]; .values.plan_scan_paths == .proposed_plan_scan_paths)
   and (.local_files | length) == $expected
@@ -727,21 +672,10 @@ timeout -s KILL 30m pg_restore \
 
 On any restore or validation failure, leave application roles `NOLOGIN`, quarantine the target,
 and keep every writer off. After a successful restore, use the gated maintenance-to-target service
-to prove the recreated database fingerprint, catalog, and Alembic head. **Measure that head; do not
-expect the one you left.** An archive taken from current production comes up at the head in
-[Current targets](#current-targets) and needs no upgrade. An older archive comes up behind it and
-must be brought to that head with `alembic upgrade head` before anything else, because the repair
-CLI and the MCP are both fail-closed on it. Never stop at whatever head the archive happened to
-carry: a receipt collected there attests a database the deployed code cannot serve, and it will
-read as a pass.
-
-Then run the recovery contract named in [Current targets](#current-targets) against the restored
-target — the `-pgrestore` variant — and retain its full receipt and a provenance bundle. A short
-receipt is a failed restore, not a stale gate. The ACL contract has no `-pgrestore` twin and cannot
-be replayed here, so owners and grants stay unattested on the restored target; that gap is a
-recorded decision and part of what the P1 gate of `8eaefe36` still holds open. Only then restore
-the captured login flags, reopen the database, start the MCP built for that head, pass health and
-read-only canaries, and enable the watchdog timer last.
+to prove the recreated database fingerprint, catalog, and head `037`. Upgrade that same target to
+038 then 039, run `brain-v42-v4.sql`, and retain a new live 25/25 result and provenance bundle.
+Only then restore the captured login flags, reopen the database, start the normal revision-039 MCP,
+pass health and read-only canaries, and enable the watchdog timer last.
 
 This is a full-database restore, not a selective table, row, plan, link, or chunk repair. Preserve
 the failed repair evidence and the restore evidence; never replace the tested backup with a new,
