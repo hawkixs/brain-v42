@@ -24,6 +24,7 @@ import asyncio
 import os
 import subprocess
 import sys
+import warnings
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from pathlib import Path
@@ -44,6 +45,7 @@ from sqlalchemy.pool import NullPool
 from tests.integration.schema_residue import (
     RESIDUE_TABLES,
     ResidueProbe,
+    describe_head_drift,
     describe_schema_residue,
     migration_breadcrumb,
     read_breadcrumbs,
@@ -255,16 +257,42 @@ def run_migrations() -> None:
     _run_alembic_upgrade(db_url, _PROJECT_ROOT)
 
 
+_CALL_FAILED = pytest.StashKey[bool]()
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) -> Any:
+    """Remember whether the test body itself failed, for the fence below.
+
+    A drift left behind by a RED test is collateral; the same drift left by a
+    GREEN test means the test lied about its own cleanup. The two deserve
+    different verdicts, and only the report knows which happened.
+    """
+    report = yield
+    if report.when == "call":
+        item.stash[_CALL_FAILED] = bool(report.failed)
+    return report
+
+
 @pytest.fixture
-def record_migration_downgrade(
+def migration_downgrade_fence(
     request: pytest.FixtureRequest,
 ) -> Iterator[Callable[..., None]]:
-    """Let a test declare that it is about to downgrade the shared database.
+    """Declare that a test is about to downgrade the shared database.
 
-    Teardown runs after the test function has returned — so after its own
-    ``finally`` restored the schema — which is exactly when the trace stops
-    being true. Anything that kills the process in between leaves the file, and
-    the next setup names this test instead of guessing.
+    Does two things, both in teardown — that is, after the test function has
+    returned, including after its own ``finally``:
+
+    1. clears the breadcrumb, which stops being true exactly then. Anything that
+       kills the process in between leaves the file, and the next setup names
+       this test instead of guessing;
+    2. restores the Alembic head if the test left it behind, and SAYS SO.
+
+    (2) exists because a per-test ``finally`` drifts: 025 and 026 are the two
+    oldest migration tests here and simply never got one, so a single false
+    assertion left the database 22 revisions behind. A convention every future
+    author must remember is the same class of defect as a hardcoded Alembic
+    head — this repository already learned that once.
     """
     with ExitStack() as stack:
 
@@ -279,6 +307,32 @@ def record_migration_downgrade(
             )
 
         yield record
+
+        # Restore BEFORE the breadcrumb is cleared: the trace must outlive the
+        # window it describes, not the other way round.
+        _fence_restores_head(request)
+
+
+def _fence_restores_head(request: pytest.FixtureRequest) -> None:
+    """Put the head back when the test left it behind, and never do it silently."""
+    db_url = _resolve_integration_db_url()
+    connected, deployed_revision, _residue = _probe_schema_state(db_url)
+    if not connected:
+        return
+    expected_head = _expected_alembic_head(_PROJECT_ROOT)
+    message = describe_head_drift(
+        test_nodeid=request.node.nodeid,
+        deployed_revision=deployed_revision,
+        expected_head=expected_head,
+        test_failed=request.node.stash.get(_CALL_FAILED, False),
+    )
+    if message is None:
+        return
+    _run_alembic_upgrade(db_url, _PROJECT_ROOT)
+    if request.node.stash.get(_CALL_FAILED, False):
+        warnings.warn(message, stacklevel=1)
+    else:
+        raise RuntimeError(message)
 
 
 # ---------------------------------------------------------------------------
