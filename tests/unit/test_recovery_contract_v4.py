@@ -430,7 +430,12 @@ def test_full_runbook_has_one_039_operator_order_and_no_live_claim() -> None:
     assert "Production is already running schema 039" not in runbook
     assert "Production runs schema 039" not in runbook
     architecture = re.sub(r"\s+", " ", ARCHITECTURE.read_text(encoding="utf-8"))
-    assert "Repository target: 040." in architecture
+    # L'épingle littérale « Repository target: 040. » a vécu ici jusqu'au 2026-08-22
+    # et n'a JAMAIS été bumpée pendant que le dépôt passait à 046 : elle portait donc
+    # exactement la maladie qu'elle était censée surveiller. Le recensement `f7d013eb`
+    # la remplace par un contrôle DÉRIVÉ de `alembic/versions/`, dans
+    # `test_documents_agree_with_the_repository_head.py` — plus rien à bumper ici.
+    assert "Repository target: 040." not in architecture
     assert "Production remains at 037 before an authorized cutover." not in architecture
     schema = re.sub(r"\s+", " ", SCHEMA.read_text(encoding="utf-8"))
     # Épingle de tête, portée par un test qui parle d'autre chose — c'est un

@@ -3,11 +3,14 @@
 **Updated:** 2026-07-24
 **Repository and production state:** migrations 001–046 defined, 31 PG tables modeled; MCP catalog: 49 always-on + 2 graph-gated = 51. Production runs lifecycle v4 since 24 July 2026: revision 036 was applied and validated first, then 037 was proved before the restart-last MCP cutover and authenticated lifecycle-v4 E2E. The deployed Alembic head has since advanced and is not asserted here — measure it with `select version_num from alembic_version`. Last measurement: `045` on 16 August 2026, right after the 044→045 cutover.
 
-**Pending schema delivery:** Repository target: 040. Revision 038 adds Dream ticket-extraction
-attempts and revision 039 isolates the project-context timestamp trigger so repair transactions
-can preserve signed timestamps; both were applied to production during the 2026-08-03 cutover.
-Revision 040 adds `project_contexts.focus_updated_at`, an additive nullable column with no
-backfill, written by application code and never by a trigger. This delivery claims no live head.
+**Repository target: 046.** Revision 046 gives sessions their identity (`connection_id`,
+`started_by_actor`, `intent`, `nature`) and the `closed_inactive` terminal state, behind flags
+that ship closed. It follows 045, which widened `dream_runs.model`, itself after the focus stamp,
+provenance, freshness and decay work of 040 through 044. Revisions 038 and 039 — Dream
+ticket-extraction attempts, and the project-context timestamp-trigger isolation that lets repair
+transactions preserve signed timestamps — went to production during the 2026-08-03 cutover.
+This line states what the REPOSITORY carries, never what runs live: it claims no deployed head,
+and a test derives the number above from `alembic/versions/` instead of trusting this sentence.
 
 **Production graph state:** cutover validated at head 035 on 22 July 2026. The production
 instance uses the private projector credential and `GRAPH_LEDGER_WRITE_ENABLED=true`; the safe
@@ -234,9 +237,10 @@ phase without another generation bump or requeue; a different recovery UUID is r
 
 The narrower Neo4j delete is still destructive. Under Option A, "PostgreSQL canonical +
 rebuild-on-doubt", recovery requires a dedicated disposable Brain database, stopped writers,
-zero active Neo4j sessions, revoked legacy credentials, and a tested PostgreSQL restore at
-the exact deployed head (`037` on current production), including the graph invariants introduced
-through 035. The CLI checks those five explicit confirmations; their presence records operator
+zero active Neo4j sessions, revoked legacy credentials, and a tested PostgreSQL restore at the
+exact deployed head — measured at restore time, never quoted; this file does not assert it, see
+the state line at the top of this document. That restore must also carry the graph invariants
+introduced through 035. The CLI checks those five explicit confirmations; their presence records operator
 assertions rather than discovering external state. A Neo4j backup or correlated restore is not a
 gate because Neo4j never supplies canonical recovery state.
 
@@ -662,7 +666,7 @@ brain_v42/
 │       ├── server.py             # entry point (stdio+http), build_services(), app_lifecycle()
 │       ├── http_security.py      # HostOriginGuard + BearerTokenGuard ASGI middleware
 │       └── tools/                # 49 always-on + 2 graph-gated = 51
-├── alembic/versions/             # migrations 001 .. 039 defined in the repository
+├── alembic/versions/             # migrations 001 .. 046 defined in the repository
 ├── scripts/                      # legacy import + projection inventory/recovery CLIs
 ├── tests/                        # unit/ + integration/
 ├── docs/
