@@ -90,7 +90,14 @@ def _session(observed: list[dict[str, object]]) -> AsyncMock:
     persisted = [row for row in observed if row.get("status") in post_run_alert.FAILED_STATUSES]
     count_result = MagicMock()
     count_result.scalar_one.return_value = len(persisted)
-    session.execute = AsyncMock(side_effect=[_result(observed), _result(persisted), count_result])
+    # La QUATRIÈME lecture est celle de `fetch_mute_transitions` (marche 0 de
+    # `55a21fb8`). Elle n'est consommée que par `review_and_render` ; les tests
+    # qui appellent `review_night` directement en laissent une de côté, ce qui
+    # est sans effet. Aucune assertion existante n'est touchée : c'est le
+    # HARNAIS qui suit le chemin vivant, pas le contrat qui plie.
+    session.execute = AsyncMock(
+        side_effect=[_result(observed), _result(persisted), count_result, _result([])]
+    )
     session.commit = AsyncMock()
     return session
 
