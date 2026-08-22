@@ -1779,6 +1779,102 @@ historical_relation_property_mismatches AS (
         )
     )
 ),
+expected_sequences(
+ sequence_name,
+ owning_table,
+ owning_column,
+ data_type,
+ increment_by,
+ min_value,
+ max_value,
+ start_value,
+ cycles
+) AS (
+ VALUES
+     ('access_log_id_seq', 'access_log', 'id', 'bigint', 1, 1, 9223372036854775807, 1, FALSE),
+     ('consolidation_log_id_seq', 'consolidation_log', 'id', 'bigint', 1, 1, 9223372036854775807, 1, FALSE),
+     ('dream_promotions_id_seq', 'dream_promotions', 'id', 'bigint', 1, 1, 9223372036854775807, 1, FALSE),
+     ('dream_runs_id_seq', 'dream_runs', 'id', 'integer', 1, 1, 2147483647, 1, FALSE),
+     ('graph_outbox_id_seq', 'graph_outbox', 'id', 'bigint', 1, 1, 9223372036854775807, 1, FALSE),
+     ('roadmap_curation_proposals_id_seq', 'roadmap_curation_proposals', 'id', 'bigint', 1, 1, 9223372036854775807, 1, FALSE),
+     ('search_log_id_seq', 'search_log', 'id', 'bigint', 1, 1, 9223372036854775807, 1, FALSE),
+     ('ticket_extraction_attempts_id_seq', 'ticket_extraction_attempts', 'id', 'bigint', 1, 1, 9223372036854775807, 1, FALSE),
+     ('ticket_extraction_proposals_id_seq', 'ticket_extraction_proposals', 'id', 'bigint', 1, 1, 9223372036854775807, 1, FALSE)
+),
+observed_sequences AS (
+ SELECT
+     sequence_record.relname AS sequence_name,
+     owning_table.relname AS owning_table,
+     owning_column.attname AS owning_column,
+     sequence_definition.seqtypid::pg_catalog.regtype::text AS data_type,
+     sequence_definition.seqincrement AS increment_by,
+     sequence_definition.seqmin AS min_value,
+     sequence_definition.seqmax AS max_value,
+     sequence_definition.seqstart AS start_value,
+     sequence_definition.seqcycle AS cycles,
+     sequence_record.oid AS sequence_oid
+ FROM pg_catalog.pg_class AS sequence_record
+ JOIN pg_catalog.pg_namespace AS namespace_record
+   ON namespace_record.oid = sequence_record.relnamespace
+  AND namespace_record.nspname = 'public'
+ JOIN pg_catalog.pg_sequence AS sequence_definition
+   ON sequence_definition.seqrelid = sequence_record.oid
+ LEFT JOIN pg_catalog.pg_depend AS ownership_link
+   ON ownership_link.objid = sequence_record.oid
+  AND ownership_link.classid = 'pg_catalog.pg_class'::pg_catalog.regclass
+  AND ownership_link.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass
+  AND ownership_link.deptype IN ('a', 'i')
+ LEFT JOIN pg_catalog.pg_class AS owning_table
+   ON owning_table.oid = ownership_link.refobjid
+ LEFT JOIN pg_catalog.pg_attribute AS owning_column
+   ON owning_column.attrelid = ownership_link.refobjid
+  AND owning_column.attnum = ownership_link.refobjsubid
+ WHERE sequence_record.relkind = 'S'
+),
+sequence_property_mismatches AS (
+ SELECT (
+     SELECT count(*)
+     FROM expected_sequences AS expected_sequence
+     LEFT JOIN observed_sequences AS sequence_record
+       ON sequence_record.sequence_name = expected_sequence.sequence_name
+      AND sequence_record.owning_table = expected_sequence.owning_table
+      AND sequence_record.owning_column = expected_sequence.owning_column
+      AND sequence_record.data_type = expected_sequence.data_type
+      AND sequence_record.increment_by = expected_sequence.increment_by
+      AND sequence_record.min_value = expected_sequence.min_value
+      AND sequence_record.max_value = expected_sequence.max_value
+      AND sequence_record.start_value = expected_sequence.start_value
+      AND sequence_record.cycles = expected_sequence.cycles
+     WHERE sequence_record.sequence_oid IS NULL
+ ) + (
+     SELECT count(*)
+     FROM observed_sequences AS sequence_record
+     LEFT JOIN expected_sequences AS expected_sequence
+       ON expected_sequence.sequence_name = sequence_record.sequence_name
+     WHERE expected_sequence.sequence_name IS NULL
+ ) AS value
+),
+sequence_high_water(sequence_name, highest_assigned) AS (
+ VALUES
+     ('access_log_id_seq', (SELECT max(id) FROM access_log)),
+     ('consolidation_log_id_seq', (SELECT max(id) FROM consolidation_log)),
+     ('dream_promotions_id_seq', (SELECT max(id) FROM dream_promotions)),
+     ('dream_runs_id_seq', (SELECT max(id) FROM dream_runs)),
+     ('graph_outbox_id_seq', (SELECT max(id) FROM graph_outbox)),
+     ('roadmap_curation_proposals_id_seq', (SELECT max(id) FROM roadmap_curation_proposals)),
+     ('search_log_id_seq', (SELECT max(id) FROM search_log)),
+     ('ticket_extraction_attempts_id_seq', (SELECT max(id) FROM ticket_extraction_attempts)),
+     ('ticket_extraction_proposals_id_seq', (SELECT max(id) FROM ticket_extraction_proposals))
+),
+sequence_backfill_mismatches AS (
+ SELECT count(*) AS value
+ FROM sequence_high_water AS high_water
+ LEFT JOIN pg_catalog.pg_sequences AS sequence_state
+   ON sequence_state.schemaname = 'public'
+  AND sequence_state.sequencename = high_water.sequence_name
+ WHERE sequence_state.sequencename IS NULL
+    OR COALESCE(sequence_state.last_value, 0) < COALESCE(high_water.highest_assigned, 0)
+),
 historical_function AS (
  SELECT
      jsonb_build_object(
@@ -2392,6 +2488,21 @@ check_rows(id, expected, observed, passed) AS (
      jsonb_build_object('count', row_counts.project_contexts),
      row_counts.project_contexts >= 1
  FROM row_counts
+ UNION ALL
+ SELECT
+     'sequence_shape',
+     jsonb_build_object(
+         'sequence_backfill_mismatches', 0,
+         'sequence_property_mismatches', 0
+     ),
+     jsonb_build_object(
+         'sequence_backfill_mismatches', sequence_backfill_mismatches.value,
+         'sequence_property_mismatches', sequence_property_mismatches.value
+     ),
+     sequence_backfill_mismatches.value = 0
+     AND sequence_property_mismatches.value = 0
+ FROM sequence_backfill_mismatches
+ CROSS JOIN sequence_property_mismatches
  UNION ALL
  SELECT
      'table_set',

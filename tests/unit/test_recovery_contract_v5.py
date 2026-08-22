@@ -119,6 +119,20 @@ def _expected_v5() -> dict[str, Any]:
         }
     )
 
+    # `f36846a1` : les NEUF séquences n'étaient attestées par rien — `grep -ci
+    # sequence` sur `v4.sql` rendait 0. Le contrôle qui compte n'est pas leur
+    # forme mais `last_value >= max(id)` : c'est la panne SILENCIEUSE du restore,
+    # où les séquences repartent à 1 et où les INSERT suivants tombent en
+    # collision de PK — une base qui paraît restaurée et refuse la première
+    # écriture. Check row propre, pour la même raison que ses deux sœurs.
+    checks.append(
+        {
+            "id": "sequence_shape",
+            "kind": "brain_schema_invariant",
+            "name": "sequence_shape",
+        }
+    )
+
     document["checks"] = sorted(checks, key=lambda check: check["id"])
     document["contract_id"] = "brain-v42/postgresql-recovery/v5"
     document["schema_version"] = 5
@@ -142,7 +156,7 @@ def test_v5_json_is_the_exact_v4_delta() -> None:
             json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
         ).encode()
     )
-    assert len(document["checks"]) == 27
+    assert len(document["checks"]) == 28
 
 
 def test_the_head_check_is_derived_and_carries_no_revision() -> None:
