@@ -16,6 +16,7 @@ from brain_v42.mcp.tools.formatters import (
     format_error,
     format_projects_list,
 )
+from brain_v42.mcp.tools.session_lifecycle_tools import NEXT_FOCUS_MAX_LENGTH
 from brain_v42.mcp.tools.tool_annotations import (
     _DESTRUCTIVE_ANNOTATIONS,
     _READ_ANNOTATIONS,
@@ -33,6 +34,22 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 FocusRevisionArg = Annotated[int, Field(ge=0, strict=True)]
+
+#: La borne de `project_contexts.current_focus`, PARTAGÉE avec `next_focus` de
+#: `brain_session_end` — la même constante, pas un second littéral.
+#:
+#: Elle est partagée parce que c'est la même COLONNE : `next_focus` DEVIENT
+#: `current_focus` quand le compare-and-swap de la fermeture réussit. Deux
+#: bornes distinctes laissaient l'écrivain non borné mettre le projet dans un
+#: état que l'écrivain borné ne savait plus représenter — une session honnête
+#: devenait alors incapable de fermer (`bfb4cf93`). C'est l'inverse exact du
+#: raisonnement qui garde `SummaryArg` séparé : `summary` n'écrit rien dans
+#: `project_contexts`, donc son plafond n'a aucune raison de suivre celui-ci.
+#:
+#: Elle compte des CARACTÈRES, comme `maxLength` de Pydantic, jamais des octets :
+#: le focus réel de `brain-v42` faisait 9 977 caractères pour 10 285 OCTETS, donc
+#: une borne en octets serait déjà franchie sur un focus parfaitement légal.
+ProjectFocusArg = Annotated[str, Field(max_length=NEXT_FOCUS_MAX_LENGTH)]
 
 
 def register_project_context_tools(
@@ -54,7 +71,7 @@ def register_project_context_tools(
         git_workflow: str | None = None,
         test_strategy: str | None = None,
         current_phase: str | None = None,
-        current_focus: str | None = None,
+        current_focus: ProjectFocusArg | None = None,
         blockers: list[str] | None = None,
         related_projects: list[str] | None = None,
         plan_scan_paths: list[str] | None = None,
@@ -106,7 +123,7 @@ def register_project_context_tools(
     @mcp.tool(version="2.0", annotations=_DESTRUCTIVE_ANNOTATIONS)
     async def brain_update_project_focus(
         project_key: str,
-        current_focus: str,
+        current_focus: ProjectFocusArg,
         expected_focus_revision: FocusRevisionArg,
         blockers: list[str] | None = None,
         feature_status: dict[str, str] | None = None,
