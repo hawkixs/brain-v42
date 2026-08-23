@@ -20,12 +20,18 @@ rendu OBSERVABLE, pas rattrapé.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 
 import httpx
 import structlog
 
 from brain_v42.config import get_settings
+from brain_v42.metrics.client_observation import (
+    MAX_CALLS_PER_OBSERVATION,
+    MAX_OBSERVATION_BYTES,
+    MAX_OBSERVATIONS,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -52,6 +58,31 @@ def _is_a_decade(count: int) -> bool:
     while count % 10 == 0:
         count //= 10
     return count == 1
+
+
+_ObservationKey = tuple[str, str | None, str | None]
+
+# Marge sous la borne du RÉCEPTEUR, pas une valeur choisie : l'enveloppe
+# ``{"observations":[…]}``, les virgules, et l'observation immédiate qui
+# s'ajoute au tampon au moment de l'émission doivent tenir dedans.
+_BATCH_BYTE_BUDGET = MAX_OBSERVATION_BYTES - 1_024
+
+# Le tampon garde une place libre : l'observation qui déclenche l'émission
+# s'ajoute au lot, et le total doit rester sous la borne du décodeur.
+_MAX_BUFFERED = MAX_OBSERVATIONS - 1
+
+
+def _observation(key: _ObservationKey, calls: int) -> dict[str, object]:
+    actor, session_id, transport = key
+    observation: dict[str, object] = {"actor": actor, "calls": calls}
+    # Clé ABSENTE plutôt que ``null`` : le décodeur distingue « non déclaré »
+    # de « déclaré vide », et un ``null`` sur le fil ferait croire à une mesure
+    # là où il n'y en a pas.
+    if session_id is not None:
+        observation["session"] = session_id
+    if transport is not None:
+        observation["transport"] = transport
+    return observation
 
 
 class ActivityReporter:
@@ -90,6 +121,18 @@ class ActivityReporter:
         # perte. Bornée en log10 — quinze lignes pour mille milliards — et
         # l'ordre de grandeur reste toujours lisible.
         self._warned_refusals: set[int] = set()
+        # Tampon de coalescence. La borne en vol n'est pas relevée : elle
+        # protège le sidecar. Ce qui change, c'est ce qu'on fait DERRIÈRE elle
+        # — agréger au lieu de jeter. Le format de fil portait déjà les deux
+        # leviers nécessaires et aucun n'était utilisé : un lot
+        # (``MAX_OBSERVATIONS``) et un compteur (``MAX_CALLS_PER_OBSERVATION``),
+        # alors que ``calls`` était en dur à 1.
+        self._buffer: dict[_ObservationKey, int] = {}
+        self._buffer_bytes = 0
+        # Troisième compteur, distinct des deux autres : ``coalesced`` mesure ce
+        # qui aurait été PERDU avant ce correctif. Le confondre avec ``dropped``
+        # rendrait le correctif invisible dans ses propres métriques.
+        self.coalesced = 0
 
     def report(
         self,
@@ -103,29 +146,85 @@ class ActivityReporter:
         arguments restent valides : le mode sans état ne frappe aucun
         identifiant de connexion, et cette absence doit rester dicible.
         """
-        if len(self._pending) >= self._max_in_flight:
-            self.dropped += 1
-            if _is_a_decade(self.dropped):
-                logger.warning(
-                    "activity_reporter.dropped",
-                    dropped=self.dropped,
-                    max_in_flight=self._max_in_flight,
-                )
-            return
-        observation: dict[str, object] = {"actor": actor, "calls": 1}
-        if session_id is not None:
-            observation["session"] = session_id
-        # Clé ABSENTE plutôt que ``null`` : le décodeur distingue « non
-        # déclaré » de « déclaré vide », et un ``null`` sur le fil ferait
-        # croire à une mesure là où il n'y en a pas.
-        if transport is not None:
-            observation["transport"] = transport
-        body = json.dumps({"observations": [observation]})
+        key: _ObservationKey = (actor, session_id, transport)
+        # ``try`` TOTAL : tout ce qui est ajouté ici hérite de la promesse de
+        # l'émetteur — ne jamais casser l'appel observé. Une panne du tampon
+        # dégrade en perte COMPTÉE, jamais en exception remontée à l'appelant.
+        try:
+            if len(self._pending) < self._max_in_flight:
+                self._emit(self._take_buffer() + [_observation(key, 1)])
+                return
+            if self._coalesce(key):
+                self.coalesced += 1
+                return
+        except Exception:  # noqa: BLE001 - dégradation en perte comptée, jamais en panne
+            logger.debug("activity_reporter.coalesce_failed")
+        self._count_drop()
+
+    def _count_drop(self) -> None:
+        self.dropped += 1
+        if _is_a_decade(self.dropped):
+            logger.warning(
+                "activity_reporter.dropped",
+                dropped=self.dropped,
+                max_in_flight=self._max_in_flight,
+            )
+
+    def _coalesce(self, key: _ObservationKey) -> bool:
+        """Replier une observation dans le tampon. Faux si une borne est atteinte.
+
+        Les deux bornes sont celles du DÉCODEUR, importées et non recopiées :
+        franchir la borne d'octets ferait refuser le lot ENTIER en ``413``, donc
+        échangerait la perte d'UNE observation contre celle de soixante-trois.
+        """
+        buffered = self._buffer.get(key)
+        if buffered is not None:
+            if buffered >= MAX_CALLS_PER_OBSERVATION:
+                return False
+            self._buffer[key] = buffered + 1
+            return True
+        cost = len(json.dumps(_observation(key, 1)).encode()) + 1
+        if len(self._buffer) >= _MAX_BUFFERED:
+            return False
+        if self._buffer_bytes + cost > _BATCH_BYTE_BUDGET:
+            return False
+        self._buffer[key] = 1
+        self._buffer_bytes += cost
+        return True
+
+    def _take_buffer(self) -> list[dict[str, object]]:
+        if not self._buffer:
+            return []
+        batch = [_observation(key, calls) for key, calls in self._buffer.items()]
+        self._buffer.clear()
+        self._buffer_bytes = 0
+        return batch
+
+    def _emit(self, observations: list[dict[str, object]]) -> None:
+        body = json.dumps({"observations": observations})
         # Référence retenue dans _pending : sans elle, le GC peut ramasser la
         # tâche avant son exécution (le loop ne détient qu'une weakref).
         task = asyncio.create_task(self._post(body))
         self._pending.add(task)
-        task.add_done_callback(self._pending.discard)
+        task.add_done_callback(self._on_post_done)
+
+    def _on_post_done(self, task: asyncio.Task[None]) -> None:
+        """Rendre le créneau, puis vider le tampon s'il reste quelque chose.
+
+        C'est ce qui rend la coalescence sûre sans minuterie : le tampon est
+        drainé par l'événement qui libère une place, pas par une horloge. Sans
+        ce rappel, une rafale suivie d'un silence laisserait ses observations
+        dans le tampon jusqu'au prochain appel de tool — reportées, pas perdues,
+        mais invisibles pendant un temps non borné.
+
+        ``suppress`` : ce rappel tourne dans la boucle, hors de tout appelant.
+        Une exception qui en sortirait irait au gestionnaire d'exceptions de la
+        boucle, où personne ne la lit.
+        """
+        self._pending.discard(task)
+        with contextlib.suppress(Exception):
+            if self._buffer and len(self._pending) < self._max_in_flight:
+                self._emit(self._take_buffer())
 
     async def _post(self, body: str) -> None:
         try:
@@ -182,7 +281,11 @@ class ActivityReporter:
         La boucle continue tant que `_pending` n'est pas vide pour couvrir
         les émissions lancées pendant l'attente elle-même.
         """
-        while self._pending:
+        while self._pending or self._buffer:
+            if self._buffer and len(self._pending) < self._max_in_flight:
+                self._emit(self._take_buffer())
+            if not self._pending:
+                break
             batch = tuple(self._pending)
             await asyncio.gather(*batch, return_exceptions=True)
             self._pending.difference_update(batch)

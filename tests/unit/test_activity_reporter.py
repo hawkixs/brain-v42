@@ -17,7 +17,7 @@ import pytest
 import structlog
 from structlog.testing import capture_logs
 
-from brain_v42.mcp.activity_reporter import ActivityReporter, _is_a_decade
+from brain_v42.mcp.activity_reporter import _MAX_BUFFERED, ActivityReporter, _is_a_decade
 
 FAKE_UUID = "12345678-1234-4abc-8def-1234567890ab"
 
@@ -156,7 +156,15 @@ async def test_transport_failure_is_swallowed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_saturation_drops_instead_of_blocking() -> None:
+async def test_saturation_coalesces_instead_of_blocking_or_losing() -> None:
+    """Sous saturation, ``report()`` rend la main AUSSITÔT — et ne perd plus rien.
+
+    Ce test s'appelait ``test_saturation_drops_instead_of_blocking`` et assertait
+    ``reporter.dropped == 10``. Il ÉPINGLAIT donc la perte que le ticket
+    ``1c40c36a`` dénonçait : le corriger faisait forcément rougir la suite.
+    L'assertion de non-blocage — sa vraie raison d'être — est conservée et
+    RENFORCÉE : on vérifie en plus que les dix appels arrivent sur le fil.
+    """
     reporter = ActivityReporter(url="http://127.0.0.1:9200/v1/client-activity", max_in_flight=1)
     release = asyncio.Event()
 
@@ -169,9 +177,16 @@ async def test_saturation_drops_instead_of_blocking() -> None:
         await asyncio.sleep(0)
         for _ in range(10):
             reporter.report("brain-v42", None)  # doit rendre la main aussitôt
-        assert reporter.dropped == 10
+        assert reporter.dropped == 0, "la contre-pression jette encore"
+        assert reporter.coalesced == 10, "les dix appels n'ont pas été repliés"
         release.set()
         await reporter.drain()
+        posted = sum(
+            int(observation["calls"])
+            for call in client.post.await_args_list
+            for observation in json.loads(call.kwargs["content"])["observations"]
+        )
+    assert posted == 11, f"onze appels émis, {posted} arrivés sur le fil"
     await reporter.close()
 
 
@@ -498,6 +513,12 @@ async def test_local_backpressure_warns_once_then_stays_silent() -> None:
     UNE seule ligne, à la PREMIÈRE perte. C'est le chemin chaud de TOUT appel
     de tool : une ligne par perte transformerait une rafale en tempête de
     journal, et s'apprendrait à être sautée.
+
+    Le déclencheur a changé avec le correctif de ``1c40c36a`` : répéter le MÊME
+    acteur ne perd plus rien, c'est coalescé. La perte résiduelle vit désormais
+    au-delà de la borne du tampon, donc on la provoque avec des acteurs TOUS
+    DISTINCTS. L'assertion, elle, est inchangée — c'est l'escalade qui est
+    protégée ici, pas la façon de la déclencher.
     """
     reporter = ActivityReporter(url="http://127.0.0.1:9200/v1/client-activity", max_in_flight=1)
     release = asyncio.Event()
@@ -508,10 +529,12 @@ async def test_local_backpressure_warns_once_then_stays_silent() -> None:
     with patch.object(reporter, "_client") as client:
         client.post = AsyncMock(side_effect=slow_post)
         with capture_logs() as logs:
-            reporter.report("brain-v42", None)
+            reporter.report("filler-000", None)
             await asyncio.sleep(0)
-            for _ in range(10):
-                reporter.report("brain-v42", None)
+            for i in range(_MAX_BUFFERED):  # sature le tampon, sans perte
+                reporter.report(f"filler-{i:03d}", None)
+            for i in range(10):  # au-delà : dix pertes, acteurs tous distincts
+                reporter.report(f"overflow-{i:03d}", None)
         release.set()
         await reporter.drain()
     await reporter.close()
@@ -577,6 +600,12 @@ async def test_the_magnitude_of_the_loss_stays_visible_without_a_line_per_loss()
     `close()` n'est câblé NULLE PART en production — « le client meurt avec
     le processus » — donc un décompte à la fermeture ne serait jamais rendu.
     L'ordre de grandeur doit voyager dans les lignes elles-mêmes.
+
+    Le déclencheur a changé avec le correctif de ``1c40c36a`` : répéter le MÊME
+    acteur ne perd plus rien, c'est coalescé. La perte résiduelle vit désormais
+    au-delà de la borne du tampon, donc on la provoque avec des acteurs TOUS
+    DISTINCTS. L'assertion, elle, est inchangée — c'est l'escalade qui est
+    protégée ici, pas la façon de la déclencher.
     """
     reporter = ActivityReporter(url="http://127.0.0.1:9200/v1/client-activity", max_in_flight=1)
     release = asyncio.Event()
@@ -586,11 +615,13 @@ async def test_the_magnitude_of_the_loss_stays_visible_without_a_line_per_loss()
 
     with patch.object(reporter, "_client") as client:
         client.post = AsyncMock(side_effect=slow_post)
-        reporter.report("brain-v42", None)
+        reporter.report("filler-000", None)
         await asyncio.sleep(0)
+        for i in range(_MAX_BUFFERED):  # sature le tampon, sans perte
+            reporter.report(f"filler-{i:03d}", None)
         with capture_logs() as logs:
-            for _ in range(100):
-                reporter.report("brain-v42", None)
+            for i in range(100):  # au-delà : cent pertes, acteurs tous distincts
+                reporter.report(f"overflow-{i:03d}", None)
         release.set()
         await reporter.drain()
     await reporter.close()
