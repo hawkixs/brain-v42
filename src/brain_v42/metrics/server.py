@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 from collections.abc import Callable
 from typing import Any, cast
@@ -106,8 +107,48 @@ def _accepts_identity_encoding(request: web.Request) -> bool:
     return not encodings or (len(encodings) == 1 and encodings[0].strip().casefold() == "identity")
 
 
-def _otlp_error(status: int) -> web.Response:
+ACCESS_LOG_EVENT = "metrics_server.receiver_rejected"
+
+RECEIVER_CODEX_LOGS = "codex_logs"
+RECEIVER_CLAUDE_LOGS = "claude_logs"
+RECEIVER_CLIENT_ACTIVITY = "client_activity"
+
+
+def _log_receiver_rejection(receiver: str, status: int, reason: str) -> None:
+    """Journalise un rejet servi, sans jamais rien réintroduire ni rien casser.
+
+    TROIS CONSTANTES ET RIEN D'AUTRE. Ce composant hache les identifiants bruts à la
+    réception, avec un secret par processus : c'est sa raison d'être. Une ligne
+    d'access log qui porterait l'adresse du pair, un en-tête, un identifiant de trace
+    ou un fragment de corps reconstituerait précisément ce que le hachage retire —
+    et elle le ferait en clair, dans le journal, hors de toute rétention. Les trois
+    champs émis appartiennent donc à des ensembles clos et connus d'avance :
+    ``receiver`` est choisi par le SITE D'APPEL (jamais lu dans la requête),
+    ``status`` est une clé de ``_OTLP_ERROR_STATUSES``, et ``reason`` est le message
+    statique que la réponse renvoie déjà au client. Rien ici n'est influençable par
+    l'émetteur.
+
+    ``suppress`` et non un ``try/except`` bavard : l'observation ne doit jamais
+    devenir la panne de ce qu'elle observe — même règle que l'émetteur côté MCP
+    (ticket ``1c40c36a``). Et surtout pas ici, où le pire moment est exactement celui
+    que l'instrument sert à mesurer : la saturation. L'appel est synchrone et sans
+    point d'attente, donc il n'ajoute ni verrou ni ordonnancement au chemin de rejet.
+    ``Exception`` et non ``BaseException`` : un ``CancelledError`` doit continuer de
+    remonter, sinon on avalerait l'annulation de la requête elle-même.
+    """
+    with contextlib.suppress(Exception):
+        logger.warning(ACCESS_LOG_EVENT, receiver=receiver, status=status, reason=reason)
+
+
+def _otlp_error(status: int, *, receiver: str) -> web.Response:
+    """Seul constructeur des réponses de rejet — donc seul endroit où journaliser.
+
+    ``receiver`` est un mot-clé OBLIGATOIRE : un septième code ajouté à la table ne
+    peut pas arriver dans le journal par oubli, parce qu'il ne peut pas être construit
+    sans nommer son récepteur. La couverture tient par construction, pas par vigilance.
+    """
     rpc_code, message = _OTLP_ERROR_STATUSES[status]
+    _log_receiver_rejection(receiver, status, message)
     headers = {"Retry-After": "1"} if status == 503 else None
     return web.json_response(
         {"code": rpc_code, "message": message, "details": []},
@@ -188,6 +229,7 @@ class MetricsServer:
         self,
         request: web.Request,
         *,
+        receiver: str,
         max_bytes: int,
         apply: Callable[[bytes], None],
     ) -> web.Response:
@@ -201,16 +243,16 @@ class MetricsServer:
         smaller than an OTLP envelope and is bounded for itself.
         """
         if not _has_loopback_tcp_peer(request):
-            return _otlp_error(403)
+            return _otlp_error(403, receiver=receiver)
 
         if not _accepts_identity_encoding(request):
-            return _otlp_error(415)
+            return _otlp_error(415, receiver=receiver)
         if not _accepts_otlp_json(request):
-            return _otlp_error(415)
+            return _otlp_error(415, receiver=receiver)
         if request.content_length is not None and request.content_length > max_bytes:
-            return _otlp_error(413)
+            return _otlp_error(413, receiver=receiver)
         if self._codex_request_slots.locked():
-            return _otlp_error(503)
+            return _otlp_error(503, receiver=receiver)
 
         await self._codex_request_slots.acquire()
         try:
@@ -220,11 +262,11 @@ class MetricsServer:
             except _BodyReadTimeout:
                 # Le créneau est rendu par le `finally` ci-dessous : c'est ce qui
                 # empêche quatre corps figés de tuer les trois récepteurs à vie.
-                return _otlp_error(408)
+                return _otlp_error(408, receiver=receiver)
             except CodexTelemetryLimitError:
-                return _otlp_error(413)
+                return _otlp_error(413, receiver=receiver)
             except CodexTelemetryMalformedError:
-                return _otlp_error(400)
+                return _otlp_error(400, receiver=receiver)
         finally:
             self._codex_request_slots.release()
         return web.json_response({})
@@ -234,6 +276,7 @@ class MetricsServer:
         return await self._handle_bounded_receiver(
             request,
             max_bytes=MAX_REQUEST_BYTES,
+            receiver=RECEIVER_CODEX_LOGS,
             apply=self._codex_registry.ingest_otlp_json,
         )
 
@@ -247,6 +290,7 @@ class MetricsServer:
         return await self._handle_bounded_receiver(
             request,
             max_bytes=MAX_REQUEST_BYTES,
+            receiver=RECEIVER_CLAUDE_LOGS,
             apply=self._codex_registry.ingest_claude_otlp_json,
         )
 
@@ -255,6 +299,7 @@ class MetricsServer:
         return await self._handle_bounded_receiver(
             request,
             max_bytes=MAX_OBSERVATION_BYTES,
+            receiver=RECEIVER_CLIENT_ACTIVITY,
             apply=self._apply_observations,
         )
 
