@@ -148,6 +148,22 @@ def _expected_v5() -> dict[str, Any]:
         }
     )
 
+    # `8eaefe36` : la FORME des 32 tables — colonnes, contraintes, index — au rang
+    # DENSE. Même raison d'être une check row PROPRE que ses quatre sœurs, et une
+    # de plus, mesurée : la première rédaction greffait les trois compteurs sur
+    # `catalog_counts` pour tenir le reçu à `29/29`. Ça tenait le nombre et rien
+    # d'autre — `red-backup` modélise `catalog_counts_equals` en Pydantic
+    # `extra="forbid"` sur QUATRE champs exactement, donc un cinquième signal
+    # fondu là-dedans ne coûte pas zéro, il casse un autre dépôt. Le dénominateur
+    # passe à 30, et la déclaration `dr-current` du runbook DR suit.
+    checks.append(
+        {
+            "id": "table_shape",
+            "kind": "brain_schema_invariant",
+            "name": "table_shape",
+        }
+    )
+
     document["checks"] = sorted(checks, key=lambda check: check["id"])
     document["contract_id"] = "brain-v42/postgresql-recovery/v5"
     document["schema_version"] = 5
@@ -171,7 +187,7 @@ def test_v5_json_is_the_exact_v4_delta() -> None:
             json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
         ).encode()
     )
-    assert len(document["checks"]) == 29
+    assert len(document["checks"]) == 30
 
 
 def test_the_head_check_is_derived_and_carries_no_revision() -> None:
