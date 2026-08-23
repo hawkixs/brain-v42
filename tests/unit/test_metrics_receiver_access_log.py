@@ -216,13 +216,22 @@ async def test_the_access_log_carries_nothing_but_constants() -> None:
     échouer le test dès qu'un champ est AJOUTÉ, ce qui force la question à être reposée.
     """
     server = _server()
-    secret_marker = "SENSITIVE-TRACE-ID-a1b2c3"
+    # Un CANARI, pas un secret. La forme précédente nommait cette variable avec le
+    # mot « secret » et lui donnait une valeur à l'allure de clé : `gitleaks` la
+    # relevait en `generic-api-key`, entropie 3,913, et faisait rougir la CI. Faux
+    # positif au sens strict — mais le corriger À LA SOURCE vaut mieux qu'un
+    # `gitleaks:allow` ou une entrée d'allowlist, qui affaibliraient un contrôle
+    # pour faire taire un rouge dû à notre propre formulation. « Canari » dit
+    # d'ailleurs mieux ce que la valeur fait : elle est injectée pour qu'on vérifie
+    # qu'elle ne ressort PAS. Ne pas reciter ici l'ancienne valeur — un commentaire
+    # qui cite ce qu'il explique le réintroduit, ce qui est arrivé au premier essai.
+    canary = "canary-must-not-leak"
 
     with capture_logs() as records:
         await server._handle_codex_logs(
             _request(
                 "/v1/logs",
-                headers={"traceparent": secret_marker, "User-Agent": secret_marker},
+                headers={"traceparent": canary, "User-Agent": canary},
                 transport=_transport(_FOREIGN_PEER),
             )
         )
@@ -231,7 +240,7 @@ async def test_the_access_log_carries_nothing_but_constants() -> None:
     assert set(line) == {"event", "log_level", "receiver", "status", "reason"}
     # Ni l'adresse du pair, ni un en-tête, ni le chemin brut ne doivent transparaître.
     rendered = repr(line)
-    assert secret_marker not in rendered
+    assert canary not in rendered
     assert _FOREIGN_PEER not in rendered
     assert "/v1/logs" not in rendered
     # Les trois valeurs restantes appartiennent à des ensembles CONSTANTS et clos.
