@@ -93,7 +93,19 @@ ReasonArg = Annotated[str, Field(min_length=1, max_length=2_000)]
 FocusRevisionArg = Annotated[int, Field(ge=0, strict=True)]
 ListLimitArg = Annotated[int, Field(ge=1, le=100)]
 ListOffsetArg = Annotated[int, Field(ge=0)]
-SessionStatusFilter = Literal["open", "stale", "ended", "abandoned", "all"]
+#: Les QUATRE statuts persistés de `brain_sessions`, plus DEUX filtres dérivés.
+#:
+#: `closed_inactive` a manqué ici pendant toute la vie de la 046 : l'état
+#: existait dans les deux `CHECK`, le balayage savait le poser, le service et le
+#: dépôt savaient le filtrer — seul ce littéral publié l'ignorait. Un état
+#: atteignable en base et indemandable par un client (`24ca3b73`).
+#:
+#: `stale` et `all` ne sont PAS des statuts : `stale` est dérivé de
+#: `last_heartbeat_at` sur les sessions ouvertes, `all` est l'absence de filtre.
+#: Cette liste doit donc couvrir `BrainSessionStatus` en entier — c'est ce que
+#: `test_the_filter_covers_every_persisted_status` épingle, en dérivant ses
+#: attentes de l'énumération plutôt qu'en les recopiant ici.
+SessionStatusFilter = Literal["open", "stale", "ended", "abandoned", "closed_inactive", "all"]
 
 logger = structlog.get_logger(__name__)
 _BRIEFING_UNAVAILABLE = "## Session Briefing\n(briefing unavailable; session remains open)"

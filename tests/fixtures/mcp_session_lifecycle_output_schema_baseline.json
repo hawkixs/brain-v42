@@ -42,7 +42,7 @@
     "brain_session_list": {
       "version": "4.0",
       "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false, "title": null},
-      "parameters": {"additionalProperties": false, "properties": {"project_key": {"anyOf": [{"maxLength": 50, "minLength": 1, "type": "string"}, {"type": "null"}], "default": null}, "status": {"default": "open", "enum": ["open", "stale", "ended", "abandoned", "all"], "type": "string"}, "limit": {"default": 20, "maximum": 100, "minimum": 1, "type": "integer"}, "offset": {"default": 0, "minimum": 0, "type": "integer"}}, "type": "object"}
+      "parameters": {"additionalProperties": false, "properties": {"project_key": {"anyOf": [{"maxLength": 50, "minLength": 1, "type": "string"}, {"type": "null"}], "default": null}, "status": {"default": "open", "enum": ["open", "stale", "ended", "abandoned", "closed_inactive", "all"], "type": "string"}, "limit": {"default": 20, "maximum": 100, "minimum": 1, "type": "integer"}, "offset": {"default": 0, "minimum": 0, "type": "integer"}}, "type": "object"}
     },
     "brain_session_resume": {
       "version": "4.0",
