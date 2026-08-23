@@ -171,7 +171,19 @@ async def test_lifecycle_input_schemas_are_bounded_and_discoverable() -> None:
     )
     assert list_project_key["minLength"] == 1
     assert list_project_key["maxLength"] == 50
-    assert listing["status"]["enum"] == ["open", "stale", "ended", "abandoned", "all"]
+    # `closed_inactive` ajouté par `24ca3b73` : le 4e état de la 046 était
+    # atteignable en base et posé par le balayage, mais absent du seul filtre
+    # publié — donc indemandable par un client. Coût MESURÉ du seul ajout à
+    # cette énumération : +18 octets sur le schéma d'entrée de ce tool (377 ->
+    # 395), et zéro sur les sept schémas de sortie.
+    assert listing["status"]["enum"] == [
+        "open",
+        "stale",
+        "ended",
+        "abandoned",
+        "closed_inactive",
+        "all",
+    ]
     assert listing["limit"]["minimum"] == 1
     assert listing["limit"]["maximum"] == 100
     assert listing["offset"]["minimum"] == 0
