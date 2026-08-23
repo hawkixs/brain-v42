@@ -139,14 +139,41 @@ PROVENANCE_CAVEAT = (
     "quand elle n'est pas redéclarée, y compris pour deux transitions de même source"
 )
 
+#: La destination est EXACTE — pour une ligne muette, le statut courant est bien
+#: celui de sa dernière transition, une transition postérieure qui aurait déclaré
+#: une source la faisant sortir du compte. Mais `fresh` est un SUR-ENSEMBLE du
+#: désarchivage : `stale → fresh` y entre aussi. Le mot « désarchivage » serait
+#: plus fort que la mesure, et le rendre exact demanderait le statut PRÉCÉDENT,
+#: que personne ne stocke — c'est-à-dire une colonne, donc une migration.
+PROVENANCE_DIRECTION_CAVEAT = (
+    "un retour à `fresh` ne vient pas forcément d'une archive : `stale` → `fresh` "
+    "y entre aussi, le statut précédent n'étant stocké nulle part"
+)
+
+
+#: La destination qui distingue un retour de corpus d'une sortie de corpus.
+#: Le compteur de la marche 0 ne lisait JAMAIS `freshness_status` : un archivage
+#: et un retour à `fresh` y produisaient la même ligne. Ce sont pourtant deux
+#: incidents opposés — l'un perd de la connaissance, l'autre en ressuscite.
+RETURNED_STATUS = "fresh"
+
 
 @dataclass(frozen=True)
 class ProvenanceCount:
-    """Transitions de fraîcheur sans provenance, pour une table."""
+    """Transitions de fraîcheur sans provenance, pour une table.
+
+    `to_fresh_*` est un SOUS-ensemble de `night`/`standing`, jamais un second
+    compte : les mêmes lignes, restreintes à celles dont la destination est
+    `fresh`.
+    """
 
     table: str
     night: int
     standing: int
+    #: Défaut à zéro pour que les fixtures qui ne parlent que des totaux
+    #: restent lisibles. Les valeurs RÉELLES viennent toujours de la requête.
+    to_fresh_night: int = 0
+    to_fresh_standing: int = 0
 
 
 @dataclass(frozen=True)
@@ -170,6 +197,14 @@ class ProvenanceReport:
         return sum(count.standing for count in self.counts)
 
     @property
+    def to_fresh_night_total(self) -> int:
+        return sum(count.to_fresh_night for count in self.counts)
+
+    @property
+    def to_fresh_standing_total(self) -> int:
+        return sum(count.to_fresh_standing for count in self.counts)
+
+    @property
     def block(self) -> list[str]:
         """Imprimé même à zéro : « mesuré à zéro » et « pas regardé » diffèrent."""
         guilty = ", ".join(f"{count.table} {count.night}" for count in self.counts if count.night)
@@ -178,7 +213,10 @@ class ProvenanceReport:
             PROVENANCE_HEADING,
             f"transitions sans provenance — {self.run_date.isoformat()} : "
             f"{self.night_total}{detail} · cumul depuis la 043 : {self.standing_total}",
+            f"  dont retours à `{RETURNED_STATUS}` : {self.to_fresh_night_total} "
+            f"· cumul : {self.to_fresh_standing_total}",
             f"  {PROVENANCE_CAVEAT}",
+            f"  {PROVENANCE_DIRECTION_CAVEAT}",
             "",
         ]
 
@@ -186,7 +224,9 @@ class ProvenanceReport:
     def machine_line(self) -> str:
         return (
             f"dream_provenance run_date={self.run_date.isoformat()} "
-            f"mute_night={self.night_total} mute_standing={self.standing_total}"
+            f"mute_night={self.night_total} mute_standing={self.standing_total} "
+            f"mute_to_fresh_night={self.to_fresh_night_total} "
+            f"mute_to_fresh_standing={self.to_fresh_standing_total}"
         )
 
 
@@ -210,16 +250,18 @@ async def fetch_mute_transitions(
             table.c.freshness_status_updated_at.isnot(None),
             table.c.freshness_source.is_(None),
         )
+        tonight = sa.cast(table.c.freshness_status_updated_at, sa.Date) == run_date
+        # La DESTINATION, que la marche 0 n'interrogeait pas. Restreindre le
+        # même prédicat plutôt qu'en écrire un second : `to_fresh` doit rester
+        # un sous-ensemble de `mute` par CONSTRUCTION, pas par convention.
+        returned = sa.and_(mute, table.c.freshness_status == RETURNED_STATUS)
         selects.append(
             sa.select(
                 sa.literal(table.name).label("table_name"),
-                sa.func.count()
-                .filter(
-                    mute,
-                    sa.cast(table.c.freshness_status_updated_at, sa.Date) == run_date,
-                )
-                .label("night"),
+                sa.func.count().filter(mute, tonight).label("night"),
                 sa.func.count().filter(mute).label("standing"),
+                sa.func.count().filter(returned, tonight).label("to_fresh_night"),
+                sa.func.count().filter(returned).label("to_fresh_standing"),
             ).select_from(table)
         )
     result = await session.execute(sa.union_all(*selects))
@@ -230,6 +272,8 @@ async def fetch_mute_transitions(
                 table=str(row._mapping["table_name"]),
                 night=int(row._mapping["night"]),
                 standing=int(row._mapping["standing"]),
+                to_fresh_night=int(row._mapping["to_fresh_night"]),
+                to_fresh_standing=int(row._mapping["to_fresh_standing"]),
             )
             for row in result.all()
         ),

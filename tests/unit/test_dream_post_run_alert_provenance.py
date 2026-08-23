@@ -30,11 +30,21 @@ import pytest
 from scripts.dream import post_run_alert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+#: La requête rend cinq colonnes depuis la marche 2 : les deux dernières
+#: RESTREIGNENT les deux premières à la destination `fresh`. Les fixtures de ce
+#: module ne parlent que des totaux, donc elles les laissent à zéro — la
+#: direction a son propre module.
+_ROW_COLUMNS = ("table_name", "night", "standing", "to_fresh_night", "to_fresh_standing")
+
 
 def _result(rows: list[tuple]) -> MagicMock:
     result = MagicMock()
     result.all.return_value = [
-        MagicMock(_mapping=dict(zip(("table_name", "night", "standing"), row, strict=True)))
+        MagicMock(
+            _mapping=dict(
+                zip(_ROW_COLUMNS, (*row, *(0,) * (len(_ROW_COLUMNS) - len(row))), strict=True)
+            )
+        )
         for row in rows
     ]
     return result
