@@ -1944,11 +1944,19 @@ def test_documented_network_boundary_matches_tracked_bindings() -> None:
         assert Settings.model_fields[field_name].default in LOOPBACK_HOSTS
 
     target_contract = (
-        "**Tracked network boundary**: MCP, PostgreSQL and Neo4j bind to loopback; metrics and "
-        "automation default to loopback. The versioned Compose target now binds the embedding "
-        "host publish to loopback, but the live runtime remains LAN-wide until an authorized "
-        "rollout. Application bearer authentication, a dedicated Docker client network and "
-        "repository-managed WAN isolation are not yet proven."
+        "**Tracked network boundary** (replayed 2026-08-23): MCP, PostgreSQL and Neo4j bind to "
+        "loopback; metrics and automation default to loopback. The versioned Compose target "
+        "binds the embedding host publish to loopback and the live runtime matches it — "
+        "measured `127.0.0.1:8003`, with the host's own LAN address refusing the connection. "
+        "Application bearer authentication is armed and enforcing: `MCP_HTTP_TOKEN` is set and "
+        "non-empty in the live server process, and `POST /mcp` answers `401` both without a "
+        "bearer and with a wrong one. The dedicated Docker client network exists and carries "
+        "the clients: `brain-net` holds the embedding shim and both `auto-discord` containers. "
+        "Repository-managed WAN isolation remains unproven — the repository manages no "
+        "firewall rule at all. What would make this paragraph false again, and is watched by "
+        "no test: a host-publish override reopening `:8003`, `METRICS_HOST` set off-loopback "
+        "(no validator guards it), or `MCP_HTTP_TOKEN` cleared. Re-measure with `ss -ltnp`, "
+        "`docker port` and an unauthenticated `POST /mcp` — do not copy this line forward."
     )
     limits_contract = (
         "**Embedding shim limits (ROLLED OUT 2026-08-21, temps 1)**: 8 MiB body, 5 s body-read "
@@ -1957,9 +1965,17 @@ def test_documented_network_boundary_matches_tracked_bindings() -> None:
         "Saturation returns short `503` JSON with `Retry-After: 1`."
     )
     residual_contract = (
-        "**SEC2 residuals**: bearer authentication and a dedicated Docker client network require "
-        "the coordinated `auto-discord` cutover; the versioned legacy PyTorch profile remains "
-        "unbounded and does not preserve the `auto-discord` DNS alias."
+        "**SEC2 residuals** (replayed 2026-08-23): bearer authentication and the dedicated "
+        "Docker client network are done — the coordinated `auto-discord` cutover happened, and "
+        "both `auto-discord` containers sit on `brain-net`. One residual stands, and it is "
+        "wider than previously written: the versioned legacy PyTorch profile remains unbounded "
+        "— `services/embedding/main.py` carries no body cap, no read deadline, no concurrency "
+        "semaphore and no `413`/`503` — and it preserves neither of the two DNS names its "
+        "clients use. A `--profile legacy` rollback publishes `embedding` and "
+        "`brain_v42_embedding` on `brain-net`, while the compose sets "
+        "`EMBEDDING_URL=http://embedding-shim:8003` and the running bot, carrying no "
+        "`EMBEDDING_URL` of its own, falls back to the code default "
+        "`http://brain_v42_embedding_shim:8003`. Two names break, not one."
     )
     # The full three-contract detail moved to docs/OPERATIONS.md when README
     # was replaced by the open-source-facing draft (ticket bdc4db73):
