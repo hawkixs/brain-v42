@@ -241,13 +241,21 @@ class BrainSession(BaseModel):
             raise ValueError("ended session requires focus_outcome")
         if self.is_stale:
             raise ValueError("terminal session cannot be stale")
-        has_capture = bool(self.captured_knowledge_ids)
+        # Le XOR « ledger non vide XOR raison » a été RETIRÉ avec la 047, et pas
+        # affaibli : il mesurait « le client a-t-il DÉCLARÉ ». La capture
+        # dérivée supprime le seul mode de panne qu'il attrapait
+        # (produit-mais-non-déclaré) et alimenterait désormais son signal côté
+        # SERVEUR. Un contrôle est creux dès que l'objet contrôlé peut
+        # influencer son signal ; celui-ci serait devenu un reçu que le serveur
+        # se délivre à lui-même. Le conserver rendait surtout INFERMABLE toute
+        # session dont le serveur avait rempli le ledger.
+        #
+        # Ce qui reste est le seul contrôle que le serveur ne peut pas
+        # satisfaire à la place de l'utilisateur : une raison donnée doit dire
+        # quelque chose.
         reason = self.nothing_to_capture_reason
-        has_reason = reason is not None
         if reason is not None and not reason.strip():
             raise ValueError("nothing_to_capture_reason must not be blank")
-        if has_capture == has_reason:
-            raise ValueError("ended session requires exactly one capture outcome")
         if set(self.attributed_knowledge_ids) != set(self.captured_knowledge_ids):
             raise ValueError("ended session attribution must match its capture snapshot")
         if self.end_expected_focus_revision is None:
@@ -348,6 +356,15 @@ class BrainSessionEndResult(BaseModel):
     focus_outcome: BrainSessionFocusOutcome
     focus_at_end: str | None
     focus_revision_at_end: int | None = Field(default=None, ge=0)
+    #: Artefacts du projet créés PENDANT la session et présents dans AUCUN
+    #: ledger. Une MESURE, jamais une porte : elle ne peut pas refuser une
+    #: fermeture. C'est ce qui remplace le XOR — informer au lieu de punir.
+    #:
+    #: Non-influençable par construction : une session ne peut pas la faire
+    #: baisser en ne faisant rien. L'inaction ne produit aucun artefact, donc
+    #: aucun orphelin ; le nombre ne descend qu'en attribuant réellement. Un
+    #: compteur qu'on améliorerait en se taisant serait le reçu retiré, renommé.
+    unattributed_in_window: int = Field(..., ge=0)
 
 
 class BrainSessionCaptureResult(BaseModel):

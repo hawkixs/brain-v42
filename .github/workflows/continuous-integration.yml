@@ -238,8 +238,21 @@ jobs:
         run: pip install "uv==$UV_VERSION"
       - name: Install dependencies
         run: uv sync --locked --no-dev --extra dev
+      # `-o faulthandler_*` est répété ici alors que `pyproject.toml` le porte
+      # déjà : c'est CE job qui a pendu deux fois, et le rendre explicite le met
+      # sous les yeux de qui lit le log d'un run mort. Au bout de 120 s dans un
+      # test, toutes les piles sont dumpées et le processus sort — au lieu des
+      # trente minutes de silence terminées par `##[error]The operation was
+      # canceled.`, qui ne disent rien de ce qui bloquait.
+      #
+      # PAS de `timeout --signal=INT` autour de pytest comme filet : uvicorn
+      # CAPTE SIGINT (`Server.serve()` tourne sous `capture_signals()`) et le
+      # transforme en `should_exit`. pytest ne lèverait pas KeyboardInterrupt et
+      # le journal resterait muet — le filet renforcerait la panne.
       - name: Run integration tests
-        run: .venv/bin/pytest tests/integration/ -v --tb=short
+        run: >-
+          .venv/bin/pytest tests/integration/ -v --tb=short
+          -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true
 
   # Dependency vulnerabilities. Audits the exported lock rather than the live venv,
   # so the scan covers exactly the graph that ships and stays reproducible. Every

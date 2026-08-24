@@ -71,7 +71,7 @@ if TYPE_CHECKING:
 #
 # La revue est écrite même quand elle est courte : c'est la règle, et une revue
 # absente se lit comme une revue faite.
-_REQUIRED_ALEMBIC_HEAD = "046"
+_REQUIRED_ALEMBIC_HEAD = "047"
 
 
 class RepairStore:

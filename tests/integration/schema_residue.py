@@ -44,6 +44,10 @@ DOWNGRADING_TEST_FILES: tuple[str, ...] = (
     "tests/integration/db/test_migration_026.py",
     "tests/integration/db/test_migration_037.py",
     "tests/integration/db/test_migration_039_project_context_timestamp.py",
+    # 047 : son downgrade est fail-closed et DOIT échouer quand une
+    # fermeture dérivée existe — mais il touche quand même la tête
+    # partagée, donc il se déclare ici comme les autres.
+    "tests/integration/db/test_migration_047_end_gate.py",
 )
 
 # Tables probed for leftover rows, in the order the message lists them.

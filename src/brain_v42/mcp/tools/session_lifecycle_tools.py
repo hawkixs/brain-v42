@@ -165,7 +165,16 @@ def register_session_lifecycle_tools(
         expected_client_key: ExpectedClientKeyArg,
         knowledge_ids: CapturedKnowledgeIdsArg,
     ) -> BrainSessionCaptureResult:
-        """Attach durable artifacts from an explicit user command.
+        """Attach durable artifacts from an explicit user command — to repair or refine.
+
+        No longer a compulsory ritual. With derived capture armed, artifacts
+        created during the session are attributed without this call, and `end`
+        no longer demands a receipt. What this tool is for now: attaching
+        something the derivation could not see — created outside the window,
+        on another connection, or in another project — and saying so on the
+        record.
+
+        It never steals: an artifact already attributed stays where it is.
 
         An agent tracer is the only session the server opens or closes on
         its own; no hook and no auto-close may invoke this lifecycle
@@ -202,7 +211,21 @@ def register_session_lifecycle_tools(
         expected_focus_revision: FocusRevisionArg,
         nothing_to_capture_reason: ReasonArg | None = None,
     ) -> BrainSessionEndResult:
-        """End a session fail-closed from an explicit user command.
+        """End a session from an explicit user command, on judgement alone.
+
+        `nothing_to_capture_reason` is now OPTIONAL. The old rule — a non-empty
+        ledger XOR a written reason — measured whether the client had DECLARED
+        its work. Derived capture feeds that signal from the server, and a check
+        is hollow the moment the thing it checks can influence its own signal;
+        worse, it made a session whose ledger the server had filled impossible
+        to close. Give a reason if you have one to give; a blank one is still
+        refused, because saying nothing and saying "   " are not the same act.
+
+        What `end` still requires is what the server cannot produce for you:
+        a summary and a next focus. It REPORTS `unattributed_in_window` —
+        artifacts of this project created during the session that belong to no
+        ledger — as a measure, never a gate. It cannot refuse a close, and a
+        session cannot improve it by doing nothing.
 
         An agent tracer is the only session the server opens or closes on
         its own; no hook and no auto-close may invoke this lifecycle

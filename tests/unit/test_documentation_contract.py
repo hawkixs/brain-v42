@@ -1782,7 +1782,7 @@ def test_environment_assignment_parser_preserves_duplicates_and_indentation() ->
     assert assignments == ["GRAPH_PROJECTOR_ENABLED", "GRAPH_PROJECTOR_ENABLED"]
 
 
-def test_repository_head_046_is_documented_without_claiming_a_deployed_head() -> None:
+def test_repository_head_047_is_documented_without_claiming_a_deployed_head() -> None:
     """The repository head is a fact this repository owns. The deployed head is not.
 
     Until 2026-08-04 these docs asserted a production head of `037` while the
@@ -1800,19 +1800,20 @@ def test_repository_head_046_is_documented_without_claiming_a_deployed_head() ->
     production was still measured at 041 at that moment, and SCHEMA.md says so
     in the same breath.
     """
-    assert _repository_head() == "046"
-    assert "46 révisions (001 → 046)" in SCHEMA
+    assert _repository_head() == "047"
+    assert "47 révisions (001 → 047)" in SCHEMA
     assert "| 038 |" in SCHEMA
     assert "| 039 |" in SCHEMA
     assert "| 040 |" in SCHEMA
     assert "| 041 |" in SCHEMA
     assert "| 044 |" in SCHEMA
     assert "| 046 |" in SCHEMA
-    assert "Un schéma neuf au head 046 contient 32 tables `public`" in SCHEMA
+    assert "| 047 |" in SCHEMA
+    assert "Un schéma neuf au head 047 contient 32 tables `public`" in SCHEMA
 
     schema_normalized = " ".join(SCHEMA.split())
-    assert "La cible du dépôt est 046." in schema_normalized
-    assert "La révision 046 est la tête du dépôt." in schema_normalized
+    assert "La cible du dépôt est 047." in schema_normalized
+    assert "La révision 047 est la tête du dépôt." in schema_normalized
     assert "select version_num from alembic_version" in schema_normalized
 
     # The retired claim must not come back in any of the core documents.

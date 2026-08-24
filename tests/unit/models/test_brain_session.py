@@ -142,6 +142,7 @@ def test_end_result_reports_atomic_focus_outcome() -> None:
         focus_outcome="applied",
         focus_at_end="Implement MCP lifecycle tools",
         focus_revision_at_end=8,
+        unattributed_in_window=0,
     )
     assert result.session is session
     assert result.replayed is False
@@ -161,6 +162,7 @@ def test_end_result_allows_focus_cleared_after_an_idempotent_replay() -> None:
         focus_outcome="applied",
         focus_at_end="Implement MCP tools",
         focus_revision_at_end=8,
+        unattributed_in_window=0,
     )
 
     assert result.current_focus is None
