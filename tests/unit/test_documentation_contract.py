@@ -1186,8 +1186,21 @@ def _registered_tool_names() -> tuple[set[str], set[str]]:
     ]
     assert len(main_guards) == 1, f"expected one exact __main__ guard, got {len(main_guards)}"
     main_guard = main_guards[0]
+    # The entrypoint delegates its whole wiring to ``build_server()`` so the e2e
+    # harness can CALL it instead of reproducing it. Seed from both bodies: the
+    # union keeps this census true if a registration is ever re-added to
+    # ``__main__``, instead of silently dropping it.
+    build_server_defs = [
+        node
+        for node in server_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "build_server"
+    ]
+    assert len(build_server_defs) == 1, (
+        f"expected exactly one build_server definition, got {len(build_server_defs)}"
+    )
+    wiring_body = [*main_guard.body, *build_server_defs[0].body]
     _assert_no_tools_outside_registrations(
-        ast.Module(body=main_guard.body, type_ignores=[]),
+        ast.Module(body=wiring_body, type_ignores=[]),
         set(),
     )
     server_name_bindings, server_module_bindings = _top_level_registration_bindings(
@@ -1195,7 +1208,7 @@ def _registered_tool_names() -> tuple[set[str], set[str]]:
         registration_modules,
     )
     pending = _registration_calls(
-        main_guard.body,
+        wiring_body,
         registration_modules,
         server_name_bindings,
         server_module_bindings,
