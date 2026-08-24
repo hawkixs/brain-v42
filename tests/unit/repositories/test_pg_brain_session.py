@@ -189,12 +189,16 @@ def _terminal_router(
     current_focus_row: Row | None = None,
     artifact_rows: Iterable[Row] = (),
     remaining_open: int = 0,
+    unattributed: int = 0,
 ) -> StatementRouter:
     valid_ids = list(valid_capture_ids)
     artifacts = list(artifact_rows)
 
     def route(statement: Any) -> MagicMock:
         sql = _sql(statement)
+        if "count(" in sql and "brain_session_artifacts" in sql:
+            # Le comptage hors-ledger : il nomme le ledger, pas `brain_sessions`.
+            return _result(scalar=unattributed)
         if "count(" in sql and "brain_sessions" in sql:
             return _result(scalar=remaining_open)
         if _is_update(statement, "project_contexts"):
@@ -770,45 +774,19 @@ class TestEnd:
         )
 
         assert result.session.nothing_to_capture_reason == "no durable new knowledge"
+        # Le discriminant a été RESSERRÉ par la 047, pas relâché : `end` mesure
+        # désormais les artefacts hors ledger, et ce comptage traverse les mêmes
+        # six tables. Ce que ce témoin garde est la VALIDATION de capture — la
+        # requête verrouillante, qui ne doit pas tourner quand rien n'est
+        # capturé. Le comptage est une mesure, il n'en est pas une.
         capture_selects = [
             stmt
             for stmt in statements
             if isinstance(stmt, sa.sql.selectable.Select)
             and any(table in _sql(stmt) for table in CAPTURE_TABLES)
+            and "count(" not in _sql(stmt)
         ]
         assert capture_selects == []
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("has_capture", [False, True])
-    async def test_end_requires_exactly_one_capture_outcome(
-        self,
-        has_capture: bool,
-    ) -> None:
-        from brain_v42.models.brain_session import BrainSessionInputError
-        from brain_v42.repositories.pg_brain_session import PgBrainSessionRepo
-
-        opened = _session_row()
-        capture_id = uuid4()
-        artifact_rows = (
-            [{"knowledge_id": capture_id, "session_id": opened["id"]}] if has_capture else []
-        )
-        reason = "both were supplied" if has_capture else None
-        session, statements, _, factory = _make_session(
-            _terminal_router(
-                opened,
-                current_focus_row={"current_focus": "old focus", "focus_revision": 7},
-                artifact_rows=artifact_rows,
-            )
-        )
-
-        with pytest.raises(BrainSessionInputError):
-            await PgBrainSessionRepo(factory).end(
-                opened["id"], "client-a", "summary", "next", 7, reason
-            )
-
-        assert not any(_is_update(stmt, "project_contexts") for stmt in statements)
-        assert not any(_is_update(stmt, "brain_sessions") for stmt in statements)
-        session.commit.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_capture_rejects_knowledge_outside_project_or_session_window(self) -> None:

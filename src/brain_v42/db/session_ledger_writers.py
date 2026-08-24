@@ -2,13 +2,18 @@
 
 Why this list exists
 --------------------
-Session capture is *declared by the client*, never derived.  Nothing on the
-server observes an artifact being created and files it under the open session:
-the ledger has exactly one runtime writer — ``PgBrainSessionRepo.capture``,
-reached only from the explicit ``brain_session_capture`` tool — plus the 037
-backfill, which is a migration and not a path in flight.  Two server-side
-mechanisms that *are* armed in production, session auto-open and the inactive
-sweep, never touch this table.
+Session capture *used to be* declared by the client and derived nowhere.  That
+sentence stood at the top of this file until the 047, and it is now FALSE — kept
+here in the past tense on purpose, because a docstring that quietly stops being
+true is how a list like this one starts lying.
+
+The ledger now has three runtime writers, and they are the entries below:
+``PgBrainSessionRepo.capture`` (the explicit tool), ``derive_capture`` (the
+server, on creation, into the tracer of the current connection) and
+``absorb_tracer_ledger`` (the user's session taking that ledger over on its next
+command).  Session auto-open and the inactive sweep still never touch this
+table.  The derivation is closed by default
+(``brain_session_derived_capture_enabled``).
 
 That property was load-bearing: ``session.attributed_knowledge_ids`` is read as
 provenance.  But it was **not** a specification, and the difference has now been

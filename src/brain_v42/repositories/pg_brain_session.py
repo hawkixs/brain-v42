@@ -525,6 +525,37 @@ class PgBrainSessionRepo(BasePgRepository):
                 )
             )
 
+    async def _count_unattributed_in_window(
+        self,
+        session: AsyncSession,
+        project_key: str,
+        started_at: datetime,
+        ended_at: datetime,
+    ) -> int:
+        """Compter ce que la session a produit et que personne n'a attribué.
+
+        Les mêmes six tables et la même fenêtre qu'une capture explicite, plus
+        une ANTI-JOINTURE sur le ledger. Sans elle, le nombre monterait quand on
+        fait bien — il compterait aussi ce qui a été attribué, et un chiffre qui
+        empire quand on travaille correctement ne serait lu par personne.
+        """
+        produced = sa.union_all(
+            *[
+                sa.select(table.c.id).where(
+                    table.c.project_key == project_key,
+                    table.c.created_at >= started_at,
+                    table.c.created_at <= ended_at,
+                )
+                for table, _knowledge_type in CAPTURE_TABLES
+            ]
+        ).subquery()
+        statement = (
+            sa.select(sa.func.count())
+            .select_from(produced)
+            .where(~sa.exists().where(brain_session_artifacts.c.knowledge_id == produced.c.id))
+        )
+        return int((await session.execute(statement)).scalar_one() or 0)
+
     async def end(
         self,
         session_id: UUID | str,
@@ -566,7 +597,6 @@ class PgBrainSessionRepo(BasePgRepository):
                 raise BrainSessionNotFoundError(f"Project {model.project_key!r} was not found")
 
             capture_ids = await self._load_session_artifact_ids(session, model.id)
-            self._validate_capture_outcome(capture_ids, normalized_reason)
             if capture_ids:
                 await self._validate_captures(session, model, capture_ids)
 
@@ -590,11 +620,18 @@ class PgBrainSessionRepo(BasePgRepository):
                 focus_revision_at_end=focus["focus_revision"],
             )
             remaining = await self._count_open(session, model.project_key)
+            unattributed = await self._count_unattributed_in_window(
+                session,
+                model.project_key,
+                model.started_at,
+                ended.ended_at or model.started_at,
+            )
 
             return BrainSessionEndResult(
                 session=ended,
                 replayed=False,
                 remaining_open_session_count=remaining,
+                unattributed_in_window=unattributed,
                 current_focus=focus["current_focus"],
                 current_focus_revision=focus["focus_revision"],
                 focus_outcome=focus_outcome,
@@ -1042,10 +1079,17 @@ class PgBrainSessionRepo(BasePgRepository):
         if model.focus_outcome is None:
             raise BrainSessionStateError(f"Session {model.id} has no persisted focus outcome")
         remaining = await self._count_open(session, model.project_key)
+        unattributed = await self._count_unattributed_in_window(
+            session,
+            model.project_key,
+            model.started_at,
+            model.ended_at or model.started_at,
+        )
         return BrainSessionEndResult(
             session=model,
             replayed=True,
             remaining_open_session_count=remaining,
+            unattributed_in_window=unattributed,
             current_focus=focus["current_focus"],
             current_focus_revision=focus["focus_revision"],
             focus_outcome=model.focus_outcome,
@@ -1127,13 +1171,3 @@ class PgBrainSessionRepo(BasePgRepository):
             )
         if len(set(capture_ids)) != len(capture_ids):
             raise BrainSessionInputError("captured_knowledge_ids must be unique")
-
-    @staticmethod
-    def _validate_capture_outcome(
-        capture_ids: Sequence[UUID],
-        nothing_reason: str | None,
-    ) -> None:
-        if bool(capture_ids) == bool(nothing_reason):
-            raise BrainSessionInputError(
-                "Provide captured_knowledge_ids or nothing_to_capture_reason, exclusively"
-            )

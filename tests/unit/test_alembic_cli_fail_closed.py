@@ -140,7 +140,7 @@ def test_test_database_renders_all_migrations_without_secret(tmp_path: Path) -> 
     output = _combined_output(result)
 
     assert result.returncode == 0
-    assert result.stderr.count("Running upgrade") == 46
+    assert result.stderr.count("Running upgrade") == 47
     assert "Running upgrade 031 -> 032" in result.stderr
     assert "Running upgrade 032 -> 033" in result.stderr
     assert "Running upgrade 033 -> 034" in result.stderr

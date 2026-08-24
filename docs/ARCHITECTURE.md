@@ -1,9 +1,15 @@
 # Architecture — brain_v42
 
 **Updated:** 2026-07-24
-**Repository and production state:** migrations 001–046 defined, 31 PG tables modeled; MCP catalog: 49 always-on + 2 graph-gated = 51. Production runs lifecycle v4 since 24 July 2026: revision 036 was applied and validated first, then 037 was proved before the restart-last MCP cutover and authenticated lifecycle-v4 E2E. The deployed Alembic head has since advanced and is not asserted here — measure it with `select version_num from alembic_version`. Last measurement: `045` on 16 August 2026, right after the 044→045 cutover.
+**Repository and production state:** migrations 001–047 defined, 31 PG tables modeled; MCP catalog: 49 always-on + 2 graph-gated = 51. Production runs lifecycle v4 since 24 July 2026: revision 036 was applied and validated first, then 037 was proved before the restart-last MCP cutover and authenticated lifecycle-v4 E2E. The deployed Alembic head has since advanced and is not asserted here — measure it with `select version_num from alembic_version`. Last measurement: `045` on 16 August 2026, right after the 044→045 cutover.
 
-**Repository target: 046.** Revision 046 gives sessions their identity (`connection_id`,
+**Repository target: 047.** Revision 047 removes the closing XOR — non-empty ledger XOR
+`nothing_to_capture_reason` — from the `ended` branch of `brain_sessions_terminal_state_valid`.
+That check measured whether the CLIENT had declared; derived capture would now feed its signal
+from the server, and a check is hollow the moment the thing it checks can influence its own
+signal. It also made any session whose ledger the server had filled impossible to close. Its
+downgrade is fail-closed and names the closures it would destroy. Revision 046 gives sessions
+their identity (`connection_id`,
 `started_by_actor`, `intent`, `nature`) and the `closed_inactive` terminal state, behind flags
 that ship closed. It follows 045, which widened `dream_runs.model`, itself after the focus stamp,
 provenance, freshness and decay work of 040 through 044. Revisions 038 and 039 — Dream
@@ -666,7 +672,7 @@ brain_v42/
 │       ├── server.py             # entry point (stdio+http), build_services(), app_lifecycle()
 │       ├── http_security.py      # HostOriginGuard + BearerTokenGuard ASGI middleware
 │       └── tools/                # 49 always-on + 2 graph-gated = 51
-├── alembic/versions/             # migrations 001 .. 046 defined in the repository
+├── alembic/versions/             # migrations 001 .. 047 defined in the repository
 ├── scripts/                      # legacy import + projection inventory/recovery CLIs
 ├── tests/                        # unit/ + integration/
 ├── docs/

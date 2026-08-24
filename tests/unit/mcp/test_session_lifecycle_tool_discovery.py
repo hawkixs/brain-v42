@@ -45,7 +45,15 @@ LIGHTWEIGHT_OUTPUT_SCHEMA_TOOLS = frozenset(
 # sur les quatre tools qui dérivent encore un schéma. `nature` en Literal ajoute
 # 294 de plus. Une session `closed_inactive` DOIT pouvoir être chargée par le
 # modèle, sinon la 046 rend illisibles les lignes qu'elle rend valides.
-OUTPUT_SCHEMA_TOTAL = 9381
+# Bumpé par la 047, et le nombre est MESURÉ, pas ajusté jusqu'au vert : 9462,
+# soit +81 pour le seul champ neuf `unattributed_in_window` sur
+# `BrainSessionEndResult`. La marge disponible était `19_041 - 9_500 = 9_541` ;
+# il en reste 79. C'est étroit, et c'est la raison pour laquelle le second
+# compteur envisagé (« détenu par une traçante ») a été refusé : il n'entrait
+# pas. Si un futur champ dépasse 9_541, on s'arrête — on ne desserre PAS
+# OUTPUT_SCHEMA_MINIMUM_SAVINGS, ce serait modifier un test pour faire passer
+# du code.
+OUTPUT_SCHEMA_TOTAL = 9462
 # Abaissé de 10_000 à 9_500 : le plancher avait été fixé contre une machine à
 # TROIS états, et le quatrième coûte 600 octets à lui seul — il ne restait que
 # 554 de marge. Le plancher relâché reste un plancher : l'économie effective est
@@ -259,6 +267,7 @@ async def test_tool_run_preserves_every_public_structured_content_contract() -> 
             focus_outcome=BrainSessionFocusOutcome.APPLIED,
             focus_at_end="Follow-up focus",
             focus_revision_at_end=8,
+            unattributed_in_window=0,
         )
     )
     service.list = AsyncMock(
@@ -354,6 +363,9 @@ async def test_tool_run_preserves_every_public_structured_content_contract() -> 
         "focus_outcome",
         "focus_at_end",
         "focus_revision_at_end",
+        # 047 : la MESURE qui remplace le XOR. Publique et assumée — un chiffre
+        # que l'utilisateur ne voit pas ne remplace rien.
+        "unattributed_in_window",
     }
     assert capture is not None and set(capture) == {
         "session",
