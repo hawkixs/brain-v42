@@ -33,10 +33,11 @@ both tests below still pass.  So a red here is never "the GPU box was down".
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import socket
-from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, suppress
+from collections.abc import AsyncIterator, Iterator
+from contextlib import AsyncExitStack, contextmanager, suppress
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -59,8 +60,18 @@ _LEDGER_ROWS_FOR_SESSION = sa.text(
     "SELECT knowledge_id::text FROM brain_session_artifacts WHERE session_id = :session_id"
 )
 _LEARNING_EXISTS = sa.text("SELECT count(*) FROM learnings WHERE id = :knowledge_id")
+_TRACER_ID = sa.text(
+    "SELECT id::text FROM brain_sessions "
+    "WHERE project_key = :project_key AND connection_id = :connection_id "
+    "AND nature = 'agent' AND status = 'open'"
+)
+_ROW_IDENTITY = sa.text("SELECT connection_id, nature FROM brain_sessions WHERE id = :session_id")
 _OPEN_TRACERS = sa.text(
     "SELECT count(*) FROM brain_sessions "
+    "WHERE project_key = :project_key AND nature = 'agent' AND status = 'open'"
+)
+_OPEN_TRACER_IDS = sa.text(
+    "SELECT id::text FROM brain_sessions "
     "WHERE project_key = :project_key AND nature = 'agent' AND status = 'open'"
 )
 
@@ -423,3 +434,132 @@ async def test_the_bench_can_see_a_tracer_at_all(mcp_base_url: str, engine: Asyn
         await _learning_id(link, project_key, f"w18 bench {uuid4().hex[:8]}")
 
         assert await _open_tracer_count(engine, project_key) == 1
+
+
+@contextmanager
+def _derived_capture(enabled: bool) -> Iterator[None]:
+    """Ouvrir ou fermer la dérivation POUR DE VRAI, dans le serveur qui tourne.
+
+    Le drapeau est lu à l'appel — par ``derive_capture`` et par le service — et
+    non capturé au démarrage. Le basculer ici prouve donc les deux régimes sur
+    UN seul serveur ; en monter un second appellerait ``plan_http_transport``
+    une deuxième fois, ce que ``_configure_http_security`` refuse à raison.
+    """
+    from brain_v42.config import get_settings
+
+    key = "BRAIN_SESSION_DERIVED_CAPTURE_ENABLED"
+    previous = os.environ.get(key)
+    os.environ[key] = "true" if enabled else "false"
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
+        get_settings.cache_clear()
+
+
+async def _tracer_of(engine: AsyncEngine, project_key: str, connection_id: str) -> str | None:
+    async with engine.connect() as conn:
+        return await conn.scalar(
+            _TRACER_ID, {"project_key": project_key, "connection_id": connection_id}
+        )
+
+
+async def _sole_tracer(engine: AsyncEngine, project_key: str) -> str:
+    """L'unique traçante ouverte du projet — l'unicité est elle-même l'assertion."""
+    async with engine.connect() as conn:
+        rows = (await conn.execute(_OPEN_TRACER_IDS, {"project_key": project_key})).all()
+    assert len(rows) == 1, f"attendu une seule traçante ouverte, vu {len(rows)}"
+    return str(rows[0][0])
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_capture_is_derived_and_converges_without_a_single_explicit_capture(
+    mcp_base_url: str, engine: AsyncEngine
+) -> None:
+    """La demande de l'utilisateur, prouvée depuis la base : zéro `brain_session_capture`.
+
+    Trois temps. (a) Drapeau FERMÉ : rien n'est attribué — c'est le témoin
+    négatif, et il vaut maintenant pour le régime fermé, pas pour l'absence de
+    mécanisme. (b) Drapeau OUVERT : l'artefact atterrit dans la TRAÇANTE, jamais
+    directement dans la session de l'utilisateur. (c) La convergence : au
+    heartbeat, la session absorbe et l'artefact lui appartient.
+    """
+    project_key = f"integ-w18-{uuid4().hex[:10]}"
+    async with _Conn(mcp_base_url, project_key) as link:
+        await _bootstrap_project(link, project_key)
+        session_id = await _session_id(link, project_key, "task-a")
+
+        # (a) témoin de DRAPEAU FERMÉ
+        with _derived_capture(False):
+            quiet = await _learning_id(link, project_key, f"w18 closed {uuid4().hex[:8]}")
+        assert await _ledger_sessions_for(engine, quiet) == []
+
+        with _derived_capture(True):
+            # (b) la dérivation dépose dans la traçante, PAS dans la session
+            derived = await _learning_id(link, project_key, f"w18 derived {uuid4().hex[:8]}")
+            tracer = await _sole_tracer(engine, project_key)
+            assert await _ledger_sessions_for(engine, derived) == [tracer]
+            assert tracer != str(session_id)
+
+            # (c) la CONVERGENCE : une commande explicite, mais pas une capture
+            await link.call(
+                "brain_session_heartbeat",
+                {"session_id": str(session_id), "expected_client_key": "task-a"},
+            )
+            assert await _ledger_sessions_for(engine, derived) == [str(session_id)]
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_the_derivation_keeps_the_row_identity_the_bound_and_the_distinction(
+    mcp_base_url: str, engine: AsyncEngine
+) -> None:
+    """(d) identité de ligne, (e) borne déclarée, (f) distinction entre connexions."""
+    project_key = f"integ-w18-{uuid4().hex[:10]}"
+
+    with _derived_capture(True):
+        async with _Conn(mcp_base_url, project_key) as first:
+            await _bootstrap_project(first, project_key)
+
+            # (e) émis AVANT le `start` : hors de la fenêtre qu'une capture
+            # explicite aurait acceptée, donc il doit RESTER chez la traçante.
+            early = await _learning_id(first, project_key, f"w18 early {uuid4().hex[:8]}")
+            session_a = await _session_id(first, project_key, "task-a")
+            mine = await _learning_id(first, project_key, f"w18 mine {uuid4().hex[:8]}")
+
+            async with _Conn(mcp_base_url, project_key) as second:
+                session_b = await _session_id(second, project_key, "task-b")
+                theirs = await _learning_id(second, project_key, f"w18 theirs {uuid4().hex[:8]}")
+
+                await first.call(
+                    "brain_session_heartbeat",
+                    {"session_id": str(session_a), "expected_client_key": "task-a"},
+                )
+                await second.call(
+                    "brain_session_heartbeat",
+                    {"session_id": str(session_b), "expected_client_key": "task-b"},
+                )
+
+                # (f) deux connexions, zéro croisement DANS LES DEUX SENS
+                assert await _ledger_sessions_for(engine, mine) == [str(session_a)]
+                assert await _ledger_sessions_for(engine, theirs) == [str(session_b)]
+
+                # (e) la borne tient : l'artefact d'avant le `start` n'a pas bougé
+                landed = await _ledger_sessions_for(engine, early)
+                assert landed and landed != [str(session_a)]
+                assert landed != [str(session_b)]
+
+                # (d) la session de l'utilisateur n'est JAMAIS promue en traçante
+                async with engine.connect() as probe:
+                    for session in (session_a, session_b):
+                        identity = (
+                            await probe.execute(_ROW_IDENTITY, {"session_id": str(session)})
+                        ).one()
+                        assert identity == (None, None), (
+                            "une session d'utilisateur qui gagne connection_id/nature "
+                            "deviendrait re-datable par le serveur, donc un fantôme "
+                            "que le balayage 7 j ne peut plus atteindre"
+                        )
