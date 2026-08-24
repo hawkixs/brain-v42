@@ -70,10 +70,11 @@ def _free_port() -> int:
 async def mcp_base_url(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[str]:
     """Boot the real FastMCP HTTP app on an ephemeral loopback port.
 
-    Wiring is reproduced from ``server.py``'s ``__main__`` block rather than
-    reused: registration lives inside ``if __name__ == "__main__":`` and is not
-    importable.  That is a real gap — this harness can drift from the server
-    production builds — and it is named in the report rather than papered over.
+    The wiring is CALLED, not reproduced: ``build_server()`` is the same
+    function ``server.py``'s ``__main__`` block runs, so there is no double that
+    could drift.  ``test_server_wiring_has_one_source.py`` is what keeps it that
+    way.  What is still reproduced here is ``_run_mcp``'s transport setup — this
+    harness mounts the ASGI app itself instead of letting FastMCP serve it.
     """
     from tests.integration.conftest import INTEGRATION_DB_URL
 
@@ -99,45 +100,14 @@ async def mcp_base_url(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[str]:
     engine_module._engine = None
     engine_module._session_factory = None
 
-    from brain_v42.db.engine import get_session_factory
     from brain_v42.mcp.business_errors import surface_business_errors
-    from brain_v42.mcp.server import build_brain_session_service, build_services, mcp
-    from brain_v42.mcp.tool_catalog import apply_tool_catalog_profile
-    from brain_v42.mcp.tools.brain_tools import register_tools
-    from brain_v42.mcp.tools.session_tools import register_session_tools
-    from brain_v42.services.dream_run_service import DreamRunService
-    from brain_v42.services.feature_service import FeatureService
-    from brain_v42.services.schema_state_service import SchemaStateService
+    from brain_v42.mcp.server import build_server
 
-    services = build_services()
-    register_tools(
-        mcp,
-        decision_svc=services["decision_svc"],
-        learning_svc=services["learning_svc"],
-        snippet_svc=services["snippet_svc"],
-        runbook_svc=services["runbook_svc"],
-        adr_svc=services["adr_svc"],
-        project_context_svc=services["project_context_svc"],
-        brain_svc=services["brain_svc"],
-        roadmap_svc=services["roadmap_svc"],
-        graph_svc=services["graph_service"],
-    )
-    session_factory = get_session_factory()
-    register_session_tools(
-        mcp,
-        project_context_svc=services["project_context_svc"],
-        decision_svc=services["decision_svc"],
-        learning_svc=services["learning_svc"],
-        dream_run_svc=DreamRunService(session_factory),
-        feature_svc=FeatureService(session_factory),
-        brain_session_svc=build_brain_session_service(session_factory),
-        cross_project_svc=None,
-        ticket_svc=services["ticket_svc"],
-        schema_state_svc=SchemaStateService(session_factory),
-    )
-    await surface_business_errors(mcp)
+    built = build_server()
+    # Same order as _run_mcp: business errors are surfaced before anything serves.
+    await surface_business_errors(built.mcp)
 
-    app = apply_tool_catalog_profile(mcp, "compact").http_app(stateless_http=True)
+    app = built.mcp.http_app(stateless_http=True)
     port = _free_port()
     server = uvicorn.Server(
         uvicorn.Config(app=app, host="127.0.0.1", port=port, log_level="error", loop="asyncio")

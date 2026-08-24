@@ -28,7 +28,7 @@ import signal
 import sys
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
-from typing import Any
+from typing import Any, NamedTuple
 from weakref import WeakSet
 
 import structlog
@@ -823,11 +823,30 @@ async def _run_mcp(
                 raise task.exception()  # type: ignore[misc]
 
 
-if __name__ == "__main__":
-    _configure_stdio_logging()
-    _setup_parent_death_signal()
-    _apply_http_server_arg()  # MUST be before get_settings() -- sets env for lru_cache
+class BuiltServer(NamedTuple):
+    """What the entrypoint needs once every tool root has been registered."""
 
+    mcp: FastMCP
+    services: dict[str, Any]
+    settings: Settings
+    metrics_collector: Any
+
+
+def build_server() -> BuiltServer:
+    """Register every tool root on ``mcp`` and apply the catalog profile.
+
+    Extracted from the entrypoint for the same reason as
+    :func:`log_server_starting`, and with a sharper one: a ``__main__`` block
+    cannot be imported, so the e2e harness had to REPRODUCE this wiring instead
+    of calling it.  A double is worse than no test — a middleware or a tool root
+    added on one side and not the other leaves the harness green about a server
+    that exists nowhere.  There is now one wiring, and both callers use it.
+
+    Behaviour is unchanged and deliberately so: same order, same profile branch,
+    same services.  ``surface_business_errors`` and the metrics instrumentation
+    still belong to :func:`_run_mcp`, which is the single async choke point both
+    transports pass through.
+    """
     # Import deferred to allow tools module to be populated by features #629-#635
     from brain_v42.mcp.tools.brain_tools import register_tools  # noqa: PLC0415
 
@@ -940,15 +959,30 @@ if __name__ == "__main__":
     register_ticket_tools(mcp, ticket_svc=services["ticket_svc"])
 
     if settings.brain_code_mode:
-        mcp = maybe_apply_code_mode(mcp, settings)
+        server = maybe_apply_code_mode(mcp, settings)
     else:
         from brain_v42.mcp.tool_catalog import apply_tool_catalog_profile  # noqa: PLC0415
 
-        mcp = apply_tool_catalog_profile(mcp, settings.brain_mcp_profile)
+        server = apply_tool_catalog_profile(mcp, settings.brain_mcp_profile)
+
+    return BuiltServer(
+        mcp=server,
+        services=services,
+        settings=settings,
+        metrics_collector=metrics_collector,
+    )
+
+
+if __name__ == "__main__":
+    _configure_stdio_logging()
+    _setup_parent_death_signal()
+    _apply_http_server_arg()  # MUST be before get_settings() -- sets env for lru_cache
+
+    built = build_server()
 
     async def run_server() -> None:
-        async with app_lifecycle(settings, services, metrics_collector):
-            await _run_mcp(mcp, settings, metrics_collector=metrics_collector)
+        async with app_lifecycle(built.settings, built.services, built.metrics_collector):
+            await _run_mcp(built.mcp, built.settings, metrics_collector=built.metrics_collector)
 
-    log_server_starting(settings)
+    log_server_starting(built.settings)
     asyncio.run(run_server())
