@@ -23,6 +23,7 @@ empêche de diverger en silence.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any, Final
 from uuid import UUID
 
@@ -32,21 +33,51 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.config import get_settings
-from brain_v42.db.tables import brain_session_artifacts, brain_sessions
-from brain_v42.models.brain_session import MAX_CAPTURED_KNOWLEDGE_IDS
+from brain_v42.db.tables import (
+    adrs,
+    brain_session_artifacts,
+    brain_sessions,
+    decisions,
+    indexed_plans,
+    learnings,
+    runbooks,
+    snippets,
+)
 
 logger = structlog.get_logger(__name__)
 
-#: Les tables dont une création peut être attribuée, par NOM de table — la seule
-#: chose que ``BasePgRepository`` connaisse de la sienne. Miroir volontaire de
+
+def _capture_cap() -> int:
+    """Le plafond de la capture explicite, importé TARD et pour une raison.
+
+    ``pg_base`` appelle ce module et porte une règle écrite : « Never import
+    from brain_v42.models here — stay at the DB Core dict layer. » Un import de
+    module la contournerait par la bande, en tirant la couche modèle dans le
+    graphe d'import du cœur DB. Le différer garde la règle vraie sans dupliquer
+    la constante, ce qui la ferait dériver.
+    """
+    from brain_v42.models.brain_session import (  # noqa: PLC0415
+        MAX_CAPTURED_KNOWLEDGE_IDS,
+    )
+
+    return MAX_CAPTURED_KNOWLEDGE_IDS
+
+
+#: Les tables dont une création peut être attribuée. Miroir volontaire de
 #: ``pg_brain_session.CAPTURE_TABLES`` : voir le cycle d'import ci-dessus.
+_CAPTURE_TABLES: Final[tuple[tuple[sa.Table, str], ...]] = (
+    (decisions, "decision"),
+    (learnings, "learning"),
+    (snippets, "snippet"),
+    (runbooks, "runbook"),
+    (adrs, "adr"),
+    (indexed_plans, "indexed_plan"),
+)
+
+#: Par NOM de table — la seule chose que ``BasePgRepository`` connaisse de la
+#: sienne.
 CAPTURE_TABLES: Final[Mapping[str, str]] = {
-    "decisions": "decision",
-    "learnings": "learning",
-    "snippets": "snippet",
-    "runbooks": "runbook",
-    "adrs": "adr",
-    "indexed_plans": "indexed_plan",
+    table.name: knowledge_type for table, knowledge_type in _CAPTURE_TABLES
 }
 
 
@@ -97,21 +128,30 @@ async def derive_capture(
     attribué reste où il est, que ce soit à une session explicite ou à une autre
     traçante.
 
-    **Elle ne casse jamais la création qu'elle observe** : tout vit dans un
-    ``begin_nested()`` et toute exception est avalée. Une capture dérivée qui
-    ferait échouer un ``brain_learn`` serait pire que pas de capture du tout.
+    **Elle ne casse pas la création qu'elle observe** : tout vit dans un
+    ``begin_nested()`` et toute ``Exception`` est avalée. « Pas » et non
+    « jamais », parce que ``except Exception`` n'attrape pas ``BaseException`` :
+    une ``CancelledError`` reçue pendant le ``ROLLBACK TO SAVEPOINT`` du
+    ``__aexit__`` peut laisser la transaction appelante dans un état
+    indéterminé. La fenêtre est étroite, et l'écrire est moins cher que de
+    laisser croire à une garantie totale.
+
+    La résolution de la connexion vit DANS le ``try``, et pas au-dessus : son
+    import est différé, donc un ``ImportError`` de ``brain_v42.provenance``
+    remonterait dans l'appel observé — exactement ce que ces gardes prétendent
+    empêcher.
     """
     knowledge_type = CAPTURE_TABLES.get(table_name)
     if knowledge_type is None or not _enabled():
         return None
 
-    connection_id = _current_connection_id()
-    knowledge_id = row.get("id")
-    project_key = row.get("project_key")
-    if not connection_id or knowledge_id is None or not project_key:
-        return None
-
     try:
+        connection_id = _current_connection_id()
+        knowledge_id = row.get("id")
+        project_key = row.get("project_key")
+        if not connection_id or knowledge_id is None or not project_key:
+            return None
+
         async with session.begin_nested():
             tracer = (
                 await session.execute(_tracer_query(str(project_key), connection_id))
@@ -124,7 +164,7 @@ async def derive_capture(
                 .select_from(brain_session_artifacts)
                 .where(brain_session_artifacts.c.session_id == tracer)
             )
-            if int(occupied.scalar_one() or 0) >= MAX_CAPTURED_KNOWLEDGE_IDS:
+            if int(occupied.scalar_one() or 0) >= _capture_cap():
                 return None
 
             inserted = (
@@ -148,3 +188,92 @@ async def derive_capture(
         return None
 
     return UUID(str(inserted)) if inserted is not None else None
+
+
+def _eligible_ids(project_key: str, started_at: datetime, limit: int) -> sa.CompoundSelect[Any]:
+    """Ce qu'une capture EXPLICITE aurait accepté, et rien de plus.
+
+    ``_validate_captures`` borne une capture demandée à « même projet ET
+    ``created_at >= started_at`` », sur ces six tables. L'absorption porte les
+    MÊMES bornes, et c'est l'invariant du chantier : sans lui, la dérivation
+    attribuerait des artefacts que l'utilisateur n'aurait pas pu capturer
+    lui-même, donc deviendrait un chemin plus permissif que la commande qu'elle
+    remplace. Un passe-droit, pas une commodité.
+    """
+    branches = [
+        sa.select(table.c.id).where(
+            table.c.project_key == project_key,
+            table.c.created_at >= started_at,
+        )
+        for table, _knowledge_type in _CAPTURE_TABLES
+    ]
+    return sa.union_all(*branches).limit(limit)
+
+
+async def absorb_tracer_ledger(
+    session: AsyncSession,
+    target: Any,
+    connection_id: str,
+) -> int:
+    """Transférer le ledger de la traçante de cette connexion vers ``target``.
+
+    C'est l'ABSORPTION : la session de l'utilisateur prend ce que la traçante a
+    recueilli pour elle, sans que la traçante soit jamais promue. Rend le nombre
+    de lignes déplacées ; ``0`` couvre tous les refus, qui ne sont pas des
+    pannes.
+
+    Le donneur est `agent` UNIQUEMENT. Absorber une session `operator`
+    déplacerait le ledger d'un humain vers un autre humain — exactement ce que
+    l'exclusivité du ledger existe pour empêcher.
+
+    Le plafond de 100 de la capture explicite est respecté : on absorbe au plus
+    ce qui reste de place. Le franchir rendrait `brain_session_capture`
+    refusable pour une raison que l'utilisateur n'a pas provoquée.
+    """
+    if not _enabled() or not connection_id:
+        return 0
+
+    try:
+        async with session.begin_nested():
+            donor = (
+                await session.execute(_tracer_query(target.project_key, connection_id))
+            ).scalar_one_or_none()
+            if donor is None or donor == target.id:
+                return 0
+
+            occupied = int(
+                (
+                    await session.execute(
+                        sa.select(sa.func.count())
+                        .select_from(brain_session_artifacts)
+                        .where(brain_session_artifacts.c.session_id == target.id)
+                    )
+                ).scalar_one()
+                or 0
+            )
+            remaining = _capture_cap() - occupied
+            if remaining <= 0:
+                return 0
+
+            moved = (
+                (
+                    await session.execute(
+                        brain_session_artifacts.update()
+                        .where(
+                            brain_session_artifacts.c.session_id == donor,
+                            brain_session_artifacts.c.knowledge_id.in_(
+                                _eligible_ids(target.project_key, target.started_at, remaining)
+                            ),
+                        )
+                        .values(session_id=target.id)
+                        .returning(brain_session_artifacts.c.knowledge_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+    except Exception:
+        logger.warning("session_derived_capture.absorb_failed", exc_info=True)
+        return 0
+
+    return len(moved)

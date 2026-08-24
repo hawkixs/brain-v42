@@ -62,5 +62,12 @@ DECLARED_SESSION_LEDGER_WRITERS: Final[frozenset[str]] = frozenset(
         # ON CONFLICT DO NOTHING on the ledger's primary key. Closed by default
         # (`brain_session_derived_capture_enabled`).
         "src/brain_v42/db/session_derived_capture.py::derive_capture::insert",
+        # The other half of the same mechanism: the user's session ABSORBS the
+        # tracer's ledger on its next command. It is an UPDATE of session_id and
+        # not an insert, and it is bounded to exactly what an explicit capture
+        # would have accepted — same project, created_at >= started_at — so the
+        # derivation is never a more permissive path than the command it
+        # replaces. Donor is `agent` only; a tracer is never promoted.
+        "src/brain_v42/db/session_derived_capture.py::absorb_tracer_ledger::update",
     }
 )

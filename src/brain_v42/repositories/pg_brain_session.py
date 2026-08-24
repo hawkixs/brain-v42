@@ -6,6 +6,7 @@ import builtins
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from secrets import compare_digest
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -227,6 +228,32 @@ class PgBrainSessionRepo(BasePgRepository):
             )
             inserted = (await session.execute(insert_stmt)).scalar_one_or_none()
             return UUID(str(inserted)) if inserted is not None else None
+
+    async def absorb_derived_capture(self, session_id: UUID | str, connection_id: str) -> int:
+        """Faire absorber à cette session le ledger de la traçante de sa connexion.
+
+        Le dépôt ne décide rien ici : il ouvre la transaction, retrouve la
+        session cible et délègue les bornes à ``absorb_tracer_ledger``, qui les
+        aligne sur celles d'une capture EXPLICITE. Le service a déjà tranché le
+        drapeau et la connexion en amont, pour qu'un drapeau fermé ne coûte pas
+        cet aller-retour.
+
+        Rend le nombre de lignes déplacées ; ``0`` couvre tous les refus.
+        """
+        from brain_v42.db.session_derived_capture import (  # noqa: PLC0415
+            absorb_tracer_ledger,
+        )
+
+        async with self.transaction() as session:
+            row = await self._get_row(session, session_id)
+            if row is None:
+                return 0
+            target = SimpleNamespace(
+                id=row["id"],
+                project_key=row["project_key"],
+                started_at=row["started_at"],
+            )
+            return await absorb_tracer_ledger(session, target, connection_id)
 
     async def observe(self, session_id: UUID | str, *, now: datetime | None = None) -> bool:
         """Dater l'observation d'une traçante `agent` ouverte. Rend « encore ouverte ».
