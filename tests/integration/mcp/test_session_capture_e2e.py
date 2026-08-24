@@ -45,6 +45,7 @@ import pytest
 import pytest_asyncio
 import sqlalchemy as sa
 import uvicorn
+from _pytest.outcomes import Failed
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 pytestmark = pytest.mark.integration
@@ -83,16 +84,60 @@ def _free_port() -> int:
 
 
 _SHUTDOWN_BUDGET_SECONDS = 15.0
+#: Un appel d'outil traverse HTTP, la base, et parfois un service d'embedding
+#: injoignable qui réessaie. Large, donc — mais BORNÉ : ce qui compte n'est pas
+#: la valeur, c'est qu'aucune attente ne soit infinie.
+_CALL_BUDGET_SECONDS = 90.0
+_LINK_BUDGET_SECONDS = 30.0
+
+#: Les clés que ce banc pose dans l'environnement du PROCESSUS. Le témoin de
+#: sortie les relit une par une : une seule qui fuit arme l'auto-ouverture pour
+#: tous les modules suivants du même `pytest`, et leur ajoute une traçante et
+#: des connexions à chaque appel d'outil.
+_BENCH_ENV_KEYS = (
+    "POSTGRES_URL",
+    "BRAIN_MCP_TRANSPORT",
+    "MCP_HTTP_STATELESS",
+    "BRAIN_SESSION_AUTO_OPEN_ENABLED",
+    "BRAIN_SESSION_DERIVED_CAPTURE_ENABLED",
+    "BRAIN_MCP_PROFILE",
+    "GRAPH_ENABLED",
+    "GRAPH_LEDGER_WRITE_ENABLED",
+    "DECAY_ENABLED",
+    "METRICS_ENABLED",
+    "CLIENT_ACTIVITY_REPORTING_ENABLED",
+    "BRAIN_DREAM_CAPABILITY_ENFORCEMENT",
+    "MCP_HTTP_TOKEN",
+)
+
+
+async def _bounded(awaitable: Any, *, budget: float, what: str) -> Any:
+    """Attendre AVEC une borne, et NOMMER ce qui n'est pas revenu.
+
+    Le banc n'a plus aucune attente infinie, et c'est une exigence en soi : une
+    attente non bornée transforme une panne en SILENCE. La CI l'a payé deux
+    fois — trente minutes de rien, un job tué, et un journal qui ne dit pas ce
+    qui bloquait. Un rouge nommé au bout de N secondes vaut mieux qu'un timeout
+    de job, même quand la borne se déclenche pour une bonne raison.
+    """
+    try:
+        return await asyncio.wait_for(awaitable, timeout=budget)
+    except TimeoutError:
+        pytest.fail(f"{what} n'est pas revenu en {budget}s — attente bornée, panne NOMMÉE")
 
 
 async def _stop_or_fail(serving: asyncio.Task[None], port: int) -> None:
     """Stop uvicorn within a budget, and PROVE nothing survived the teardown.
 
-    ``await serving`` on its own is the only unbounded wait in this harness, and
-    an unbounded wait is how a suite stops reporting anything at all: on CI the
-    job hit its 30-minute ceiling and was killed with
-    ``Terminate orphan process: pytest`` — a hang, not a failure, and a hang
-    says nothing about what caused it.
+    ``await serving`` was the FIRST unbounded wait to be closed here, in W17-e.
+    It was not the only one, and saying so cost a second thirty-minute CI
+    timeout: the bench also awaited ``engine.dispose()``, every tool call, every
+    client open and close, and every read-back — all of them nue. They are all
+    bounded now, through :func:`_bounded`.
+
+    An unbounded wait is how a suite stops reporting anything at all: the job
+    hit its 30-minute ceiling and was killed with ``Terminate orphan process:
+    pytest`` — a hang, not a failure, and a hang says nothing about its cause.
 
     So the wait is bounded and the residue is asserted rather than assumed. Both
     checks belong here, after the real shutdown of the real server, because that
@@ -127,8 +172,77 @@ async def _stop_or_fail(serving: asyncio.Task[None], port: int) -> None:
     )
 
 
+_BACKENDS = sa.text("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()")
+
+
+async def _backend_count(engine: AsyncEngine) -> int:
+    rows = await _read_rows(engine, _BACKENDS, {})
+    return int(rows[0][0] or 0)
+
+
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
-async def mcp_base_url() -> AsyncIterator[str]:
+async def module_exit_witness(engine: AsyncEngine) -> AsyncIterator[None]:
+    """Prouver qu'à la sortie du module le PROCESSUS est rendu comme il a été pris.
+
+    Ce banc est le seul de la suite à toucher des états de processus : des
+    variables d'environnement, une classe de FastMCP substituée, un ouvreur
+    mémoïsé, un moteur global. Chacun de ces états, laissé derrière, arme
+    l'auto-ouverture ou casse le démarrage HTTP pour TOUS les modules suivants du
+    même `pytest` — et ça ne se voit pas comme un rouge chez nous, ça se voit
+    comme un hang chez le voisin. C'est exactement ce qui a coûté deux fois
+    trente minutes de CI.
+
+    Il tourne APRÈS ``mcp_base_url`` parce que celui-ci en dépend : pytest
+    finalise à l'envers de la mise en place.
+    """
+    import fastmcp.server.http as fastmcp_http
+
+    import brain_v42.db.engine as engine_module
+
+    before_env = {key: os.environ.get(key) for key in _BENCH_ENV_KEYS}
+    before_manager = fastmcp_http.StreamableHTTPSessionManager
+    before_engine = engine_module._engine
+    before_factory = engine_module._session_factory
+    before_backends = await _backend_count(engine)
+
+    yield
+
+    leaked = {
+        key: (was, os.environ.get(key))
+        for key, was in before_env.items()
+        if os.environ.get(key) != was
+    }
+    assert not leaked, (
+        "le banc laisse des variables d'environnement modifiées derrière lui ; "
+        f"tout module suivant du même processus les verra : {leaked}"
+    )
+    assert fastmcp_http.StreamableHTTPSessionManager is before_manager, (
+        "le gestionnaire de session de FastMCP reste substitué : le prochain "
+        "module HTTP ne démarrera plus son serveur"
+    )
+    assert engine_module._engine is before_engine, "le moteur global n'a pas été rendu"
+    assert engine_module._session_factory is before_factory, (
+        "la factory de session globale n'a pas été rendue"
+    )
+
+    # Les backends ne disparaissent pas à l'instant du `dispose()` : on ATTEND
+    # qu'ils redescendent, mais avec une borne, comme tout le reste ici.
+    deadline = _SHUTDOWN_BUDGET_SECONDS
+    while deadline > 0:
+        after = await _backend_count(engine)
+        if after <= before_backends:
+            break
+        await asyncio.sleep(0.25)
+        deadline -= 0.25
+    else:
+        pytest.fail(
+            f"connexions laissées ouvertes : {after} backends contre {before_backends} "
+            "à l'entrée du module — un pool saturé n'échoue pas, il ATTEND"
+        )
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def mcp_base_url(module_exit_witness: None) -> AsyncIterator[str]:
     """Boot the real FastMCP HTTP app on an ephemeral loopback port.
 
     Nothing here is reproduced.  ``build_server()`` is the wiring production
@@ -199,7 +313,11 @@ async def mcp_base_url() -> AsyncIterator[str]:
         original_session_manager = fastmcp_http.StreamableHTTPSessionManager
 
         built = build_server()
-        await prepare_tools_for_transport(built.mcp, built.metrics_collector)
+        await _bounded(
+            prepare_tools_for_transport(built.mcp, built.metrics_collector),
+            budget=_LINK_BUDGET_SECONDS,
+            what="la préparation des tools avant transport",
+        )
         plan = plan_http_transport(built.mcp, built.settings)
         app = built.mcp.http_app(
             middleware=plan.middleware,
@@ -218,7 +336,14 @@ async def mcp_base_url() -> AsyncIterator[str]:
                 break
         else:
             server.should_exit = True
-            await serving
+            # Bornée elle aussi : ce chemin ne s'emprunte QUE lorsque le serveur
+            # va déjà mal, et c'est exactement là qu'un `await` nu pend pour
+            # toujours au lieu de rapporter.
+            await _bounded(
+                serving,
+                budget=_SHUTDOWN_BUDGET_SECONDS,
+                what="l'arrêt d'un serveur qui n'a jamais démarré",
+            )
             pytest.fail("uvicorn did not start within 5s")
 
         try:
@@ -229,7 +354,15 @@ async def mcp_base_url() -> AsyncIterator[str]:
             reset_session_autoopener()
             await _stop_or_fail(serving, port)
             if engine_module._engine is not None:
-                await engine_module._engine.dispose()
+                # `dispose()` ATTEND que les connexions soient réellement
+                # rendues. C'est la seule attente non bornée qui restait après
+                # le correctif de W17-e, et elle tombe exactement là où la CI
+                # s'est tue : APRÈS le dernier test du module.
+                await _bounded(
+                    engine_module._engine.dispose(),
+                    budget=_SHUTDOWN_BUDGET_SECONDS,
+                    what="la libération du moteur du banc (engine.dispose)",
+                )
             engine_module._engine = original_engine
             engine_module._session_factory = original_factory
             get_settings.cache_clear()
@@ -265,14 +398,26 @@ class _Conn:
                 "x-brain-agent": self._project_key,
             },
         )
-        self._client = await self._stack.enter_async_context(Client(transport))
+        self._client = await _bounded(
+            self._stack.enter_async_context(Client(transport)),
+            budget=_LINK_BUDGET_SECONDS,
+            what="l'ouverture du lien client",
+        )
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
-        await self._stack.aclose()
+        await _bounded(
+            self._stack.aclose(),
+            budget=_LINK_BUDGET_SECONDS,
+            what="la fermeture du lien client",
+        )
 
     async def call(self, tool: str, arguments: dict[str, Any]) -> str:
-        result = await self._client.call_tool(tool, arguments)
+        result = await _bounded(
+            self._client.call_tool(tool, arguments),
+            budget=_CALL_BUDGET_SECONDS,
+            what=f"l'appel de tool {tool!r}",
+        )
         return str(result.content[0].text)  # type: ignore[union-attr]
 
 
@@ -314,16 +459,33 @@ async def _learning_id(conn: _Conn, project_key: str, topic: str) -> UUID:
     return _only_uuid(payload, what="brain_learn")
 
 
+_READ_BUDGET_SECONDS = 30.0
+
+
+async def _read_rows(engine: AsyncEngine, statement: Any, params: dict[str, Any]) -> list[Any]:
+    """Relire la base, BORNÉ — y compris l'obtention de la connexion.
+
+    C'est la famille d'attentes qui restait nue, et c'est celle qui a la forme
+    exacte d'un hang sans erreur : **un pool saturé n'échoue pas, il ATTEND.**
+    `engine.connect()` peut donc pendre indéfiniment sans qu'aucune requête ne
+    soit en cause, et sans rien écrire dans le journal.
+    """
+
+    async def _run() -> list[Any]:
+        async with engine.connect() as conn:
+            return list((await conn.execute(statement, params)).all())
+
+    return await _bounded(_run(), budget=_READ_BUDGET_SECONDS, what="une relecture de la base")
+
+
 async def _ledger_sessions_for(engine: AsyncEngine, knowledge_id: UUID) -> list[str]:
-    async with engine.connect() as conn:
-        rows = await conn.execute(_LEDGER_ROWS_FOR_ARTIFACT, {"knowledge_id": str(knowledge_id)})
-        return sorted(str(row[0]) for row in rows)
+    rows = await _read_rows(engine, _LEDGER_ROWS_FOR_ARTIFACT, {"knowledge_id": str(knowledge_id)})
+    return sorted(str(row[0]) for row in rows)
 
 
 async def _ledger_artifacts_for(engine: AsyncEngine, session_id: UUID) -> list[str]:
-    async with engine.connect() as conn:
-        rows = await conn.execute(_LEDGER_ROWS_FOR_SESSION, {"session_id": str(session_id)})
-        return sorted(str(row[0]) for row in rows)
+    rows = await _read_rows(engine, _LEDGER_ROWS_FOR_SESSION, {"session_id": str(session_id)})
+    return sorted(str(row[0]) for row in rows)
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -343,8 +505,8 @@ async def test_capture_lands_in_the_named_session_and_not_its_neighbour(
         assert session_a != session_b
 
         artifact = await _learning_id(link, project_key, f"w17 harness {uuid4().hex[:8]}")
-        async with engine.connect() as probe:
-            assert await probe.scalar(_LEARNING_EXISTS, {"knowledge_id": str(artifact)}) == 1
+        found = await _read_rows(engine, _LEARNING_EXISTS, {"knowledge_id": str(artifact)})
+        assert found[0][0] == 1
 
         # (1) negative witness: nothing is attributed before the explicit gesture.
         assert await _ledger_sessions_for(engine, artifact) == []
@@ -415,8 +577,8 @@ async def test_replaying_the_harness_keeps_the_ledger_exclusive(
 
 
 async def _open_tracer_count(engine: AsyncEngine, project_key: str) -> int:
-    async with engine.connect() as conn:
-        return int(await conn.scalar(_OPEN_TRACERS, {"project_key": project_key}) or 0)
+    rows = await _read_rows(engine, _OPEN_TRACERS, {"project_key": project_key})
+    return int(rows[0][0] or 0)
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -462,16 +624,15 @@ def _derived_capture(enabled: bool) -> Iterator[None]:
 
 
 async def _tracer_of(engine: AsyncEngine, project_key: str, connection_id: str) -> str | None:
-    async with engine.connect() as conn:
-        return await conn.scalar(
-            _TRACER_ID, {"project_key": project_key, "connection_id": connection_id}
-        )
+    rows = await _read_rows(
+        engine, _TRACER_ID, {"project_key": project_key, "connection_id": connection_id}
+    )
+    return str(rows[0][0]) if rows else None
 
 
 async def _sole_tracer(engine: AsyncEngine, project_key: str) -> str:
     """L'unique traçante ouverte du projet — l'unicité est elle-même l'assertion."""
-    async with engine.connect() as conn:
-        rows = (await conn.execute(_OPEN_TRACER_IDS, {"project_key": project_key})).all()
+    rows = await _read_rows(engine, _OPEN_TRACER_IDS, {"project_key": project_key})
     assert len(rows) == 1, f"attendu une seule traçante ouverte, vu {len(rows)}"
     return str(rows[0][0])
 
@@ -553,13 +714,34 @@ async def test_the_derivation_keeps_the_row_identity_the_bound_and_the_distincti
                 assert landed != [str(session_b)]
 
                 # (d) la session de l'utilisateur n'est JAMAIS promue en traçante
-                async with engine.connect() as probe:
-                    for session in (session_a, session_b):
-                        identity = (
-                            await probe.execute(_ROW_IDENTITY, {"session_id": str(session)})
-                        ).one()
-                        assert identity == (None, None), (
-                            "une session d'utilisateur qui gagne connection_id/nature "
-                            "deviendrait re-datable par le serveur, donc un fantôme "
-                            "que le balayage 7 j ne peut plus atteindre"
-                        )
+                for session in (session_a, session_b):
+                    identity = (
+                        await _read_rows(engine, _ROW_IDENTITY, {"session_id": str(session)})
+                    )[0]
+                    assert tuple(identity) == (None, None), (
+                        "une session d'utilisateur qui gagne connection_id/nature "
+                        "deviendrait re-datable par le serveur, donc un fantôme "
+                        "que le balayage 7 j ne peut plus atteindre"
+                    )
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_a_stalled_await_becomes_a_named_failure_not_a_hang() -> None:
+    """Le témoin de la BORNE elle-même — et il vaut plus que la cause du hang.
+
+    Une attente non bornée transforme une panne en silence : la CI a rendu deux
+    fois trente minutes de rien, tuées par le timeout du job, avec un journal qui
+    ne dit pas ce qui bloquait. Ce test prouve que `_bounded` rend un échec qui
+    se NOMME, et il rougirait si quelqu'un retirait la borne — auquel cas il
+    pendrait, ce qui est précisément le défaut qu'il garde.
+    """
+
+    async def never_returns() -> None:
+        await asyncio.sleep(3600)
+
+    with pytest.raises(Failed, match="une attente de test volontairement bloquée"):
+        await _bounded(
+            never_returns(),
+            budget=0.2,
+            what="une attente de test volontairement bloquée",
+        )
