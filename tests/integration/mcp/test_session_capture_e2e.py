@@ -36,7 +36,7 @@ import asyncio
 import re
 import socket
 from collections.abc import AsyncIterator
-from contextlib import suppress
+from contextlib import AsyncExitStack, suppress
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -59,6 +59,10 @@ _LEDGER_ROWS_FOR_SESSION = sa.text(
     "SELECT knowledge_id::text FROM brain_session_artifacts WHERE session_id = :session_id"
 )
 _LEARNING_EXISTS = sa.text("SELECT count(*) FROM learnings WHERE id = :knowledge_id")
+_OPEN_TRACERS = sa.text(
+    "SELECT count(*) FROM brain_sessions "
+    "WHERE project_key = :project_key AND nature = 'agent' AND status = 'open'"
+)
 
 
 def _free_port() -> int:
@@ -133,14 +137,20 @@ async def mcp_base_url() -> AsyncIterator[str]:
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv("POSTGRES_URL", INTEGRATION_DB_URL)
         patch.setenv("BRAIN_MCP_TRANSPORT", "http")
-        # Declared divergence from the live default, and it is MEASURED, not
-        # preferred: the stateful branch of plan_http_transport() installs
+        # STATEFUL, and it is a hard precondition rather than a taste: auto-open
+        # keys a tracer on (project, connection), and the connection id IS
+        # `Mcp-Session-Id`, which only the stateful branch issues. Stateless
+        # would leave this bench structurally unable to see a tracer at all.
+        #
+        # The price is paid, not avoided: the stateful branch installs
         # _IdleTimeoutSessionManager as a PROCESS-GLOBAL substitution that is
-        # never undone. Left in place, the next test module's uvicorn never
-        # reaches `started` — measured as
-        # `Failed: uvicorn did not start within 5s` in
-        # tests/integration/metrics/test_agent_attribution.py.
-        patch.setenv("MCP_HTTP_STATELESS", "true")
+        # never undone, and left in place the next module's uvicorn never
+        # reaches `started` — measured as `Failed: uvicorn did not start within
+        # 5s` in tests/integration/metrics/test_agent_attribution.py. So the
+        # class is saved below and restored in the finally, and _stop_or_fail
+        # still asserts the restoration actually happened.
+        patch.setenv("MCP_HTTP_STATELESS", "false")
+        patch.setenv("BRAIN_SESSION_AUTO_OPEN_ENABLED", "true")
         patch.setenv("BRAIN_MCP_PROFILE", "compact")
         patch.setenv("GRAPH_ENABLED", "false")
         patch.setenv("GRAPH_LEDGER_WRITE_ENABLED", "false")
@@ -166,6 +176,16 @@ async def mcp_base_url() -> AsyncIterator[str]:
             plan_http_transport,
             prepare_tools_for_transport,
         )
+        from brain_v42.mcp.session_autoopen import reset_session_autoopener
+
+        # The auto-opener is a memoised GLOBAL. Built before this fixture swaps
+        # the engine factory, it would capture the wrong one; left behind after,
+        # it would leak that factory into the next module. Reset on both edges.
+        reset_session_autoopener()
+
+        import fastmcp.server.http as fastmcp_http
+
+        original_session_manager = fastmcp_http.StreamableHTTPSessionManager
 
         built = build_server()
         await prepare_tools_for_transport(built.mcp, built.metrics_collector)
@@ -194,6 +214,8 @@ async def mcp_base_url() -> AsyncIterator[str]:
             yield f"http://127.0.0.1:{port}"
         finally:
             server.should_exit = True
+            fastmcp_http.StreamableHTTPSessionManager = original_session_manager
+            reset_session_autoopener()
             await _stop_or_fail(serving, port)
             if engine_module._engine is not None:
                 await engine_module._engine.dispose()
@@ -202,18 +224,45 @@ async def mcp_base_url() -> AsyncIterator[str]:
             get_settings.cache_clear()
 
 
-async def _call(base_url: str, tool: str, arguments: dict[str, Any]) -> str:
-    """Call one tool the way a client does: HTTP, streamable transport, native catalog."""
-    from fastmcp import Client
-    from fastmcp.client.transports import StreamableHttpTransport
+class _Conn:
+    """One client held open for a whole scene: one connection, one tracer.
 
-    transport = StreamableHttpTransport(
-        url=f"{base_url}/mcp/",
-        headers={"x-brain-tool-profile": "native", "x-brain-agent": "w17-e2e"},
-    )
-    async with Client(transport) as client:
-        result = await client.call_tool(tool, arguments)
-    return str(result.content[0].text)  # type: ignore[union-attr]
+    A ``Client`` per call was a connection per call — therefore a tracer per
+    call, therefore nothing that could ever be absorbed. Holding the link open
+    is what makes the scene a scene.
+
+    The agent header carries the disposable PROJECT KEY, not a fixed actor name.
+    Auto-open derives a tracer's project from the ACTOR
+    (``resolve_auto_open_identity``), never from the tool's arguments, so a
+    hardcoded ``w17-e2e`` opened tracers on a project no assertion ever reads.
+    """
+
+    def __init__(self, base_url: str, project_key: str) -> None:
+        self._base_url = base_url
+        self._project_key = project_key
+        self._stack = AsyncExitStack()
+        self._client: Any = None
+
+    async def __aenter__(self) -> _Conn:
+        from fastmcp import Client
+        from fastmcp.client.transports import StreamableHttpTransport
+
+        transport = StreamableHttpTransport(
+            url=f"{self._base_url}/mcp/",
+            headers={
+                "x-brain-tool-profile": "native",
+                "x-brain-agent": self._project_key,
+            },
+        )
+        self._client = await self._stack.enter_async_context(Client(transport))
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self._stack.aclose()
+
+    async def call(self, tool: str, arguments: dict[str, Any]) -> str:
+        result = await self._client.call_tool(tool, arguments)
+        return str(result.content[0].text)  # type: ignore[union-attr]
 
 
 def _only_uuid(payload: str, *, what: str) -> UUID:
@@ -222,10 +271,9 @@ def _only_uuid(payload: str, *, what: str) -> UUID:
     return UUID(found[0])
 
 
-async def _bootstrap_project(base_url: str, project_key: str) -> None:
+async def _bootstrap_project(conn: _Conn, project_key: str) -> None:
     """Create the project context by its own tool — a session needs one to exist."""
-    await _call(
-        base_url,
+    await conn.call(
         "brain_set_project_context",
         {
             "project_key": project_key,
@@ -235,16 +283,15 @@ async def _bootstrap_project(base_url: str, project_key: str) -> None:
     )
 
 
-async def _session_id(base_url: str, project_key: str, client_key: str) -> UUID:
-    payload = await _call(
-        base_url, "brain_session_start", {"project_key": project_key, "client_key": client_key}
+async def _session_id(conn: _Conn, project_key: str, client_key: str) -> UUID:
+    payload = await conn.call(
+        "brain_session_start", {"project_key": project_key, "client_key": client_key}
     )
     return _only_uuid(payload, what="brain_session_start")
 
 
-async def _learning_id(base_url: str, project_key: str, topic: str) -> UUID:
-    payload = await _call(
-        base_url,
+async def _learning_id(conn: _Conn, project_key: str, topic: str) -> UUID:
+    payload = await conn.call(
         "brain_learn",
         {
             "topic": topic,
@@ -274,40 +321,40 @@ async def test_capture_lands_in_the_named_session_and_not_its_neighbour(
 ) -> None:
     """The whole harness, exercised on behaviour that exists today."""
     project_key = f"integ-w17-{uuid4().hex[:10]}"
-    await _bootstrap_project(mcp_base_url, project_key)
+    async with _Conn(mcp_base_url, project_key) as link:
+        await _bootstrap_project(link, project_key)
 
-    # (2) real tool path, and (4) two concurrent sessions in one project.
-    session_a, session_b = await asyncio.gather(
-        _session_id(mcp_base_url, project_key, "task-a"),
-        _session_id(mcp_base_url, project_key, "task-b"),
-    )
-    assert session_a != session_b
+        # (2) real tool path, and (4) two concurrent sessions in one project.
+        session_a, session_b = await asyncio.gather(
+            _session_id(link, project_key, "task-a"),
+            _session_id(link, project_key, "task-b"),
+        )
+        assert session_a != session_b
 
-    artifact = await _learning_id(mcp_base_url, project_key, f"w17 harness {uuid4().hex[:8]}")
-    async with engine.connect() as conn:
-        assert await conn.scalar(_LEARNING_EXISTS, {"knowledge_id": str(artifact)}) == 1
+        artifact = await _learning_id(link, project_key, f"w17 harness {uuid4().hex[:8]}")
+        async with engine.connect() as probe:
+            assert await probe.scalar(_LEARNING_EXISTS, {"knowledge_id": str(artifact)}) == 1
 
-    # (1) negative witness: nothing is attributed before the explicit gesture.
-    assert await _ledger_sessions_for(engine, artifact) == []
-    assert await _ledger_artifacts_for(engine, session_a) == []
-    assert await _ledger_artifacts_for(engine, session_b) == []
+        # (1) negative witness: nothing is attributed before the explicit gesture.
+        assert await _ledger_sessions_for(engine, artifact) == []
+        assert await _ledger_artifacts_for(engine, session_a) == []
+        assert await _ledger_artifacts_for(engine, session_b) == []
 
-    await _call(
-        mcp_base_url,
-        "brain_session_capture",
-        {
-            "session_id": str(session_a),
-            "expected_client_key": "task-a",
-            "knowledge_ids": [str(artifact)],
-        },
-    )
+        await link.call(
+            "brain_session_capture",
+            {
+                "session_id": str(session_a),
+                "expected_client_key": "task-a",
+                "knowledge_ids": [str(artifact)],
+            },
+        )
 
-    # (3) read back from the database, through an engine the server never saw.
-    assert await _ledger_sessions_for(engine, artifact) == [str(session_a)]
-    # (4) the distinction witness: a harness that attributed everything to the
-    # first session would pass without this line.
-    assert await _ledger_artifacts_for(engine, session_a) == [str(artifact)]
-    assert await _ledger_artifacts_for(engine, session_b) == []
+        # (3) read back from the database, through an engine the server never saw.
+        assert await _ledger_sessions_for(engine, artifact) == [str(session_a)]
+        # (4) the distinction witness: a harness that attributed everything to the
+        # first session would pass without this line.
+        assert await _ledger_artifacts_for(engine, session_a) == [str(artifact)]
+        assert await _ledger_artifacts_for(engine, session_b) == []
 
 
 @pytest.mark.asyncio(loop_scope="module")
@@ -320,37 +367,59 @@ async def test_replaying_the_harness_keeps_the_ledger_exclusive(
     and never notices it cached one; this repository has already paid for that.
     """
     project_key = f"integ-w17-{uuid4().hex[:10]}"
-    await _bootstrap_project(mcp_base_url, project_key)
-    owner, rival = await asyncio.gather(
-        _session_id(mcp_base_url, project_key, "owner"),
-        _session_id(mcp_base_url, project_key, "rival"),
-    )
-
-    artifact = await _learning_id(mcp_base_url, project_key, f"w17 exclusive {uuid4().hex[:8]}")
-    assert await _ledger_sessions_for(engine, artifact) == []
-
-    captured = {
-        "session_id": str(owner),
-        "expected_client_key": "owner",
-        "knowledge_ids": [str(artifact)],
-    }
-    await _call(mcp_base_url, "brain_session_capture", captured)
-    assert await _ledger_sessions_for(engine, artifact) == [str(owner)]
-
-    # Replaying the exact capture is idempotent — it must not duplicate or move.
-    await _call(mcp_base_url, "brain_session_capture", captured)
-    assert await _ledger_sessions_for(engine, artifact) == [str(owner)]
-
-    # The rival cannot steal it, and the failure must not silently move the row.
-    with pytest.raises(Exception):  # noqa: B017 - transport error type is not the point
-        await _call(
-            mcp_base_url,
-            "brain_session_capture",
-            {
-                "session_id": str(rival),
-                "expected_client_key": "rival",
-                "knowledge_ids": [str(artifact)],
-            },
+    async with _Conn(mcp_base_url, project_key) as link:
+        await _bootstrap_project(link, project_key)
+        owner, rival = await asyncio.gather(
+            _session_id(link, project_key, "owner"),
+            _session_id(link, project_key, "rival"),
         )
-    assert await _ledger_sessions_for(engine, artifact) == [str(owner)]
-    assert await _ledger_artifacts_for(engine, rival) == []
+
+        artifact = await _learning_id(link, project_key, f"w17 exclusive {uuid4().hex[:8]}")
+        assert await _ledger_sessions_for(engine, artifact) == []
+
+        captured = {
+            "session_id": str(owner),
+            "expected_client_key": "owner",
+            "knowledge_ids": [str(artifact)],
+        }
+        await link.call("brain_session_capture", captured)
+        assert await _ledger_sessions_for(engine, artifact) == [str(owner)]
+
+        # Replaying the exact capture is idempotent — it must not duplicate or move.
+        await link.call("brain_session_capture", captured)
+        assert await _ledger_sessions_for(engine, artifact) == [str(owner)]
+
+        # The rival cannot steal it, and the failure must not silently move the row.
+        with pytest.raises(Exception):  # noqa: B017 - transport error type is not the point
+            await link.call(
+                "brain_session_capture",
+                {
+                    "session_id": str(rival),
+                    "expected_client_key": "rival",
+                    "knowledge_ids": [str(artifact)],
+                },
+            )
+        assert await _ledger_sessions_for(engine, artifact) == [str(owner)]
+        assert await _ledger_artifacts_for(engine, rival) == []
+
+
+async def _open_tracer_count(engine: AsyncEngine, project_key: str) -> int:
+    async with engine.connect() as conn:
+        return int(await conn.scalar(_OPEN_TRACERS, {"project_key": project_key}) or 0)
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_the_bench_can_see_a_tracer_at_all(mcp_base_url: str, engine: AsyncEngine) -> None:
+    """Bench control, and it claims nothing about the product.
+
+    Everything downstream assumes a tracer exists to derive INTO. If this bench
+    cannot make one appear, every later assertion is theatre — it would pass by
+    describing an empty world. So: one connection, one project, exactly one open
+    ``agent`` session.
+    """
+    project_key = f"integ-w18-{uuid4().hex[:10]}"
+    async with _Conn(mcp_base_url, project_key) as link:
+        await _bootstrap_project(link, project_key)
+        await _learning_id(link, project_key, f"w18 bench {uuid4().hex[:8]}")
+
+        assert await _open_tracer_count(engine, project_key) == 1
