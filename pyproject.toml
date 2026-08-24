@@ -130,6 +130,17 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-v --tb=short"
 pythonpath = ["src"]
+# Le filet qui vaut indépendamment de toute cause. Deux fois, la CI a rendu
+# TRENTE MINUTES de silence puis un job tué : un hang ne dit rien, et aucune
+# borne applicative ne couvre l'attente qu'on n'a pas prévue. faulthandler
+# dumpe TOUTES les piles au bout de 120 s dans un test, puis sort — la panne
+# suivante nommera son propre `await`, quelle qu'elle soit.
+#
+# 120 s est très au-dessus du réel : la suite d'intégration entière tourne en
+# ~91 s pour 348 tests, et le budget applicatif le plus large d'un seul appel
+# est de 90 s. Ce seuil n'attrape donc que ce qui ne revient pas.
+faulthandler_timeout = 120
+faulthandler_exit_on_timeout = true
 
 [tool.ruff]
 target-version = "py312"
