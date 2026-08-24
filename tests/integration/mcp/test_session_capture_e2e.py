@@ -88,6 +88,9 @@ _SHUTDOWN_BUDGET_SECONDS = 15.0
 #: injoignable qui réessaie. Large, donc — mais BORNÉ : ce qui compte n'est pas
 #: la valeur, c'est qu'aucune attente ne soit infinie.
 _CALL_BUDGET_SECONDS = 90.0
+#: Ce qu'on accorde à une annulation pour aboutir. Courte : passé ce délai le
+#: diagnostic doit sortir, même si la tâche survit.
+_CANCEL_BUDGET_SECONDS = 10.0
 _LINK_BUDGET_SECONDS = 30.0
 
 #: Les clés que ce banc pose dans l'environnement du PROCESSUS. Le témoin de
@@ -147,8 +150,13 @@ async def _stop_or_fail(serving: asyncio.Task[None], port: int) -> None:
         await asyncio.wait_for(asyncio.shield(serving), timeout=_SHUTDOWN_BUDGET_SECONDS)
     except TimeoutError:
         serving.cancel()
-        with suppress(asyncio.CancelledError):
-            await serving
+        # BORNÉE elle aussi, et c'est le défaut que W19-b avait laissé : ce
+        # `await` était NU, avec le `pytest.fail` DERRIÈRE lui. Un diagnostic
+        # nommé, mort sur exactement le chemin d'erreur pour lequel il est
+        # écrit. FastMCP ferme son lifespan sous `anyio.CancelScope(shield=True)`
+        # — l'annulation peut être absorbée, et l'attente ne revient jamais.
+        with suppress(asyncio.CancelledError, TimeoutError):
+            await asyncio.wait_for(asyncio.shield(serving), timeout=_CANCEL_BUDGET_SECONDS)
         pytest.fail(
             f"the harness server did not stop within {_SHUTDOWN_BUDGET_SECONDS}s; "
             "it was cancelled so the suite can keep reporting. A live server left "
@@ -327,7 +335,21 @@ async def mcp_base_url(module_exit_witness: None) -> AsyncIterator[str]:
 
         port = _free_port()
         server = uvicorn.Server(
-            uvicorn.Config(app=app, host="127.0.0.1", port=port, log_level="error", loop="asyncio")
+            uvicorn.Config(
+                app=app,
+                host="127.0.0.1",
+                port=port,
+                log_level="error",
+                loop="asyncio",
+                # MESURÉ : uvicorn 0.41.0 livre `timeout_graceful_shutdown=None`,
+                # et `Server.shutdown()` fait
+                # `wait_for(self._wait_tasks_to_complete(), timeout=None)` —
+                # une attente INFINIE, à l'intérieur de la tâche. Aucune borne
+                # posée à l'extérieur ne la libère : FastMCP ferme son lifespan
+                # sous `anyio.CancelScope(shield=True)`, donc un `cancel()` peut
+                # être ABSORBÉ. La seule borne qui mord est celle-ci, dedans.
+                timeout_graceful_shutdown=5,
+            )
         )
         serving = asyncio.create_task(server.serve())
         for _ in range(100):
