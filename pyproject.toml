@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "brain_v42"
 # 0.x volontairement : le contrat de version vit dans README.md#versioning, et il
 # refuse de promettre un downgrade sans perte (037 et 039 refusent le leur).
-version = "0.2.0"
+version = "0.3.0"
 description = "Second Cerveau v42 - Mémoire persistante pour Claude Code via MCP"
 readme = "README.md"
 requires-python = ">=3.12"
