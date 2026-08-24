@@ -297,7 +297,7 @@ migrations, and attaches both to the GitHub release.
 
 ## Versioning
 
-- The shipped version is **0.2.0**, and it stays `0.x` on purpose: a `1.0.0` would promise
+- The shipped version is **0.3.0**, and it stays `0.x` on purpose: a `1.0.0` would promise
   a stable interface and a way back, and this project has neither yet.
 - **No lossless downgrade is promised, at any version.** Two migrations refuse their own
   `downgrade`: **037** raises a SQL `EXCEPTION` as soon as a session capture would be lost,
