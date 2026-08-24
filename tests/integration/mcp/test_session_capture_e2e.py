@@ -208,7 +208,10 @@ async def module_exit_witness(engine: AsyncEngine) -> AsyncIterator[None]:
     import brain_v42.db.engine as engine_module
 
     before_env = {key: os.environ.get(key) for key in _BENCH_ENV_KEYS}
+    from brain_v42.mcp.server import mcp as shared_mcp
+
     before_manager = fastmcp_http.StreamableHTTPSessionManager
+    before_transforms = list(shared_mcp.transforms)
     before_engine = engine_module._engine
     before_factory = engine_module._session_factory
     before_backends = await _backend_count(engine)
@@ -227,6 +230,11 @@ async def module_exit_witness(engine: AsyncEngine) -> AsyncIterator[None]:
     assert fastmcp_http.StreamableHTTPSessionManager is before_manager, (
         "le gestionnaire de session de FastMCP reste substitué : le prochain "
         "module HTTP ne démarrera plus son serveur"
+    )
+    assert list(shared_mcp.transforms) == before_transforms, (
+        f"le banc empile des transforms sur le singleton partagé : "
+        f"{len(before_transforms)} à l'entrée, {len(shared_mcp.transforms)} à la sortie. "
+        "Le module suivant servirait son catalogue à travers des passerelles chaînées"
     )
     assert engine_module._engine is before_engine, "le moteur global n'a pas été rendu"
     assert engine_module._session_factory is before_factory, (
@@ -320,6 +328,16 @@ async def mcp_base_url(module_exit_witness: None) -> AsyncIterator[str]:
 
         original_session_manager = fastmcp_http.StreamableHTTPSessionManager
 
+        # MESURÉ : `apply_tool_catalog_profile` fait `mcp.add_transform(...)` sur
+        # le singleton de MODULE, et les transforms S'EMPILENT — 0, puis 1, puis
+        # 2 à la deuxième application. `build_server()` en pose une ; le banc de
+        # `tests/integration/metrics/` en pose une autre sur le MÊME objet. Le
+        # module suivant sert donc son catalogue à travers DEUX passerelles
+        # compactes chaînées. On rend la pile telle qu'on l'a prise.
+        from brain_v42.mcp.server import mcp as shared_mcp
+
+        original_transforms = list(shared_mcp.transforms)
+
         built = build_server()
         await _bounded(
             prepare_tools_for_transport(built.mcp, built.metrics_collector),
@@ -373,6 +391,7 @@ async def mcp_base_url(module_exit_witness: None) -> AsyncIterator[str]:
         finally:
             server.should_exit = True
             fastmcp_http.StreamableHTTPSessionManager = original_session_manager
+            shared_mcp._transforms[:] = original_transforms
             reset_session_autoopener()
             await _stop_or_fail(serving, port)
             if engine_module._engine is not None:

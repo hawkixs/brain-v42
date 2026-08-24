@@ -48,6 +48,9 @@ def _get_free_port() -> int:
 
 
 _STOP_BUDGET_SECONDS = 15.0
+#: Large, mais BORNÉ : un appel qui ne revient pas doit se nommer bien avant
+#: le `faulthandler_timeout` de 120 s, qui est le filet et non la borne.
+_CALL_BUDGET_SECONDS = 60.0
 _CANCEL_BUDGET_SECONDS = 10.0
 
 
@@ -234,12 +237,23 @@ async def test_agent_attribution_concurrent(
         headers = {"x-brain-tool-profile": profile} if profile else None
         transport = StreamableHttpTransport(url=f"{base_url}/mcp/", headers=headers)
         async with Client(transport) as client:
-            return {tool.name for tool in await client.list_tools()}
+            listed = await asyncio.wait_for(client.list_tools(), timeout=_CALL_BUDGET_SECONDS)
+            return {tool.name for tool in listed}
 
-    compact_names, native_names = await asyncio.gather(
-        visible_tools(),
-        visible_tools("native"),
-    )
+    # BORNÉ, et c'est ici que la CI a pendu : run 32779161805, `Timeout
+    # (0:02:00)!` avec le nodeid de ce test imprimé juste après le dump. Le
+    # corps du test n'avait AUCUNE borne — quatre attentes réseau nues — donc la
+    # panne coûtait le timeout du job entier au lieu de se nommer.
+    try:
+        compact_names, native_names = await asyncio.wait_for(
+            asyncio.gather(visible_tools(), visible_tools("native")),
+            timeout=_CALL_BUDGET_SECONDS,
+        )
+    except TimeoutError:
+        pytest.fail(
+            "lister le catalogue n'est jamais revenu — le serveur du banc metrics "
+            "ne répond pas, attente bornée, panne NOMMÉE"
+        )
     assert "brain_search" not in compact_names
     assert "brain_search" in native_names
     assert len(native_names) > len(compact_names)
@@ -251,13 +265,18 @@ async def test_agent_attribution_concurrent(
         )
         async with Client(transport) as client:
             # brain_list_projects: cheap, no embedding
-            await client.call_tool("brain_list_projects", {})
+            await asyncio.wait_for(
+                client.call_tool("brain_list_projects", {}), timeout=_CALL_BUDGET_SECONDS
+            )
 
     # Fire both agents concurrently — this is the H6 stress point
-    await asyncio.gather(
-        call_as_agent("red-shrik"),
-        call_as_agent("red-codex"),
-    )
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(call_as_agent("red-shrik"), call_as_agent("red-codex")),
+            timeout=_CALL_BUDGET_SECONDS,
+        )
+    except TimeoutError:
+        pytest.fail("les appels concurrents ne sont jamais revenus — attente bornée, panne NOMMÉE")
 
     # Assert RAW store isolation (NOT get_flush_data — its shape is Task 2.1)
     assert "red-shrik" in collector._tool_stats, (
