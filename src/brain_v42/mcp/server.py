@@ -757,6 +757,75 @@ def _install_session_idle_timeout(seconds: float) -> None:
     logger.info("brain_v42.server.session_idle_timeout", seconds=seconds)
 
 
+async def prepare_tools_for_transport(mcp: FastMCP, metrics_collector: Any | None) -> None:
+    """Apply the transport-agnostic prelude every served tool must carry.
+
+    Business-error surfacing is applied here, once, rather than at each
+    ``register_*`` site: a tool added tomorrow is covered without anyone having
+    to remember a decorator (ticket 40ab2ced).  Instrumentation rides along for
+    the same reason.
+
+    Importable so a harness can go through it instead of guessing which half of
+    it matters.  Guessing is how the e2e harness ended up serving uninstrumented
+    tools while production served instrumented ones.
+    """
+    surfaced = await surface_business_errors(mcp)
+    logger.info("brain_v42.server.business_errors_surfaced", tools=len(surfaced))
+
+    if metrics_collector is not None:
+        instrumented = await instrument_registered_tools(mcp, metrics_collector)
+        logger.info("brain_v42.server.tools_instrumented", tools=len(instrumented))
+
+
+class HttpTransportPlan(NamedTuple):
+    """How the HTTP app must be shaped. Decided once, applied by every mount."""
+
+    middleware: list[Middleware]
+    stateless_http: bool
+    json_response: bool
+
+
+def plan_http_transport(
+    mcp: FastMCP,
+    settings: Settings,
+    *,
+    project_resolver: DreamProjectReferenceResolver | None = None,
+) -> HttpTransportPlan:
+    """Decide the HTTP boundary, and return it instead of serving it.
+
+    Split from :func:`_run_mcp` so the shape of the served app has ONE source.
+    ``_run_mcp`` hands the plan to ``run_http_async``; a test harness that needs
+    an ephemeral port hands the same plan to ``http_app``.  What must not happen
+    again is a harness inventing its own arguments — that is how a test ends up
+    green about a server nobody runs.
+
+    Not idempotent, deliberately: ``_configure_http_security`` refuses a second
+    call on the same server, because configuring one authentication boundary
+    twice is a production bug. A caller that mounts more than once must build a
+    fresh server, not soften this.
+    """
+    resolved_project_resolver = project_resolver
+    if settings.brain_dream_capability_enforcement and resolved_project_resolver is None:
+        resolved_project_resolver = PostgresDreamProjectResolver(get_session_factory())
+    middleware = _configure_http_security(
+        mcp,
+        settings,
+        project_resolver=resolved_project_resolver,
+    )
+    auth_enabled = bool(settings.mcp_http_token) or settings.brain_dream_capability_enforcement
+    logger.info(
+        "brain_v42.server.http_auth",
+        auth="enabled" if auth_enabled else "disabled",
+    )
+    if not settings.mcp_http_stateless:
+        _install_session_idle_timeout(settings.mcp_http_session_idle_seconds)
+    return HttpTransportPlan(
+        middleware=middleware,
+        stateless_http=settings.mcp_http_stateless,
+        json_response=True,
+    )
+
+
 async def _run_mcp(
     mcp: FastMCP,
     settings: Settings,
@@ -774,37 +843,18 @@ async def _run_mcp(
     pass through, so a tool added tomorrow is covered without anyone having to
     remember a decorator (ticket 40ab2ced).
     """
-    surfaced = await surface_business_errors(mcp)
-    logger.info("brain_v42.server.business_errors_surfaced", tools=len(surfaced))
-
-    if metrics_collector is not None:
-        instrumented = await instrument_registered_tools(mcp, metrics_collector)
-        logger.info("brain_v42.server.tools_instrumented", tools=len(instrumented))
+    await prepare_tools_for_transport(mcp, metrics_collector)
 
     if settings.brain_mcp_transport == "http":
-        resolved_project_resolver = project_resolver
-        if settings.brain_dream_capability_enforcement and resolved_project_resolver is None:
-            resolved_project_resolver = PostgresDreamProjectResolver(get_session_factory())
-        middleware = _configure_http_security(
-            mcp,
-            settings,
-            project_resolver=resolved_project_resolver,
-        )
-        auth_enabled = bool(settings.mcp_http_token) or settings.brain_dream_capability_enforcement
-        logger.info(
-            "brain_v42.server.http_auth",
-            auth="enabled" if auth_enabled else "disabled",
-        )
-        if not settings.mcp_http_stateless:
-            _install_session_idle_timeout(settings.mcp_http_session_idle_seconds)
+        plan = plan_http_transport(mcp, settings, project_resolver=project_resolver)
         await mcp.run_http_async(
             transport="http",
             host=settings.mcp_http_host,
             port=settings.mcp_http_port,
-            stateless_http=settings.mcp_http_stateless,
-            json_response=True,
+            stateless_http=plan.stateless_http,
+            json_response=plan.json_response,
             uvicorn_config={"timeout_graceful_shutdown": 10},
-            middleware=middleware,
+            middleware=plan.middleware,
         )
     else:
         loop = asyncio.get_running_loop()

@@ -36,6 +36,7 @@ import asyncio
 import re
 import socket
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -66,72 +67,139 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-@pytest_asyncio.fixture
-async def mcp_base_url(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[str]:
+_SHUTDOWN_BUDGET_SECONDS = 15.0
+
+
+async def _stop_or_fail(serving: asyncio.Task[None], port: int) -> None:
+    """Stop uvicorn within a budget, and PROVE nothing survived the teardown.
+
+    ``await serving`` on its own is the only unbounded wait in this harness, and
+    an unbounded wait is how a suite stops reporting anything at all: on CI the
+    job hit its 30-minute ceiling and was killed with
+    ``Terminate orphan process: pytest`` — a hang, not a failure, and a hang
+    says nothing about what caused it.
+
+    So the wait is bounded and the residue is asserted rather than assumed. Both
+    checks belong here, after the real shutdown of the real server, because that
+    is the only place the answer is observable.
+    """
+    try:
+        await asyncio.wait_for(asyncio.shield(serving), timeout=_SHUTDOWN_BUDGET_SECONDS)
+    except TimeoutError:
+        serving.cancel()
+        with suppress(asyncio.CancelledError):
+            await serving
+        pytest.fail(
+            f"the harness server did not stop within {_SHUTDOWN_BUDGET_SECONDS}s; "
+            "it was cancelled so the suite can keep reporting. A live server left "
+            "behind is what makes the NEXT module hang instead of fail."
+        )
+
+    assert serving.done(), "uvicorn task outlived its own shutdown"
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError as exc:  # pragma: no cover - only on a real leak
+            pytest.fail(f"port {port} is still held after teardown: {exc}")
+
+    from fastmcp.server.http import StreamableHTTPSessionManager
+
+    assert StreamableHTTPSessionManager.__module__.startswith("mcp."), (
+        "the harness left FastMCP's session manager substituted process-wide; "
+        "that residue breaks every HTTP module that runs after this one"
+    )
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def mcp_base_url() -> AsyncIterator[str]:
     """Boot the real FastMCP HTTP app on an ephemeral loopback port.
 
-    The wiring is CALLED, not reproduced: ``build_server()`` is the same
-    function ``server.py``'s ``__main__`` block runs, so there is no double that
-    could drift.  ``test_server_wiring_has_one_source.py`` is what keeps it that
-    way.  What is still reproduced here is ``_run_mcp``'s transport setup — this
-    harness mounts the ASGI app itself instead of letting FastMCP serve it.
+    Nothing here is reproduced.  ``build_server()`` is the wiring production
+    runs; ``prepare_tools_for_transport()`` is the prelude every served tool
+    carries; ``plan_http_transport()`` decides the shape of the app, and this
+    harness applies that plan instead of inventing arguments.  What is left is
+    the uvicorn call itself, because ``run_http_async`` neither takes an
+    ephemeral port nor hands back a stop handle.
+
+    Module-scoped on purpose: ``plan_http_transport`` is not idempotent —
+    ``_configure_http_security`` refuses a second call on the same server, since
+    configuring one authentication boundary twice is a production bug.  Booting
+    once per module respects that instead of softening it.
     """
     from tests.integration.conftest import INTEGRATION_DB_URL
 
-    monkeypatch.setenv("POSTGRES_URL", INTEGRATION_DB_URL)
-    monkeypatch.setenv("BRAIN_MCP_TRANSPORT", "http")
-    monkeypatch.setenv("BRAIN_MCP_PROFILE", "compact")
-    monkeypatch.setenv("GRAPH_ENABLED", "false")
-    monkeypatch.setenv("GRAPH_LEDGER_WRITE_ENABLED", "false")
-    monkeypatch.setenv("DECAY_ENABLED", "false")
-    monkeypatch.setenv("METRICS_ENABLED", "false")
-    monkeypatch.setenv("CLIENT_ACTIVITY_REPORTING_ENABLED", "false")
-    monkeypatch.setenv("BRAIN_DREAM_CAPABILITY_ENFORCEMENT", "false")
-    monkeypatch.delenv("MCP_HTTP_TOKEN", raising=False)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("POSTGRES_URL", INTEGRATION_DB_URL)
+        patch.setenv("BRAIN_MCP_TRANSPORT", "http")
+        # Declared divergence from the live default, and it is MEASURED, not
+        # preferred: the stateful branch of plan_http_transport() installs
+        # _IdleTimeoutSessionManager as a PROCESS-GLOBAL substitution that is
+        # never undone. Left in place, the next test module's uvicorn never
+        # reaches `started` — measured as
+        # `Failed: uvicorn did not start within 5s` in
+        # tests/integration/metrics/test_agent_attribution.py.
+        patch.setenv("MCP_HTTP_STATELESS", "true")
+        patch.setenv("BRAIN_MCP_PROFILE", "compact")
+        patch.setenv("GRAPH_ENABLED", "false")
+        patch.setenv("GRAPH_LEDGER_WRITE_ENABLED", "false")
+        patch.setenv("DECAY_ENABLED", "false")
+        patch.setenv("METRICS_ENABLED", "false")
+        patch.setenv("CLIENT_ACTIVITY_REPORTING_ENABLED", "false")
+        patch.setenv("BRAIN_DREAM_CAPABILITY_ENFORCEMENT", "false")
+        patch.delenv("MCP_HTTP_TOKEN", raising=False)
 
-    from brain_v42.config import get_settings
+        from brain_v42.config import get_settings
 
-    get_settings.cache_clear()
-
-    import brain_v42.db.engine as engine_module
-
-    original_engine = engine_module._engine
-    original_factory = engine_module._session_factory
-    engine_module._engine = None
-    engine_module._session_factory = None
-
-    from brain_v42.mcp.business_errors import surface_business_errors
-    from brain_v42.mcp.server import build_server
-
-    built = build_server()
-    # Same order as _run_mcp: business errors are surfaced before anything serves.
-    await surface_business_errors(built.mcp)
-
-    app = built.mcp.http_app(stateless_http=True)
-    port = _free_port()
-    server = uvicorn.Server(
-        uvicorn.Config(app=app, host="127.0.0.1", port=port, log_level="error", loop="asyncio")
-    )
-    serving = asyncio.create_task(server.serve())
-    for _ in range(100):
-        await asyncio.sleep(0.05)
-        if server.started:
-            break
-    else:
-        server.should_exit = True
-        await serving
-        pytest.fail("uvicorn did not start within 5s")
-
-    try:
-        yield f"http://127.0.0.1:{port}"
-    finally:
-        server.should_exit = True
-        await serving
-        if engine_module._engine is not None:
-            await engine_module._engine.dispose()
-        engine_module._engine = original_engine
-        engine_module._session_factory = original_factory
         get_settings.cache_clear()
+
+        import brain_v42.db.engine as engine_module
+
+        original_engine = engine_module._engine
+        original_factory = engine_module._session_factory
+        engine_module._engine = None
+        engine_module._session_factory = None
+
+        from brain_v42.mcp.server import (
+            build_server,
+            plan_http_transport,
+            prepare_tools_for_transport,
+        )
+
+        built = build_server()
+        await prepare_tools_for_transport(built.mcp, built.metrics_collector)
+        plan = plan_http_transport(built.mcp, built.settings)
+        app = built.mcp.http_app(
+            middleware=plan.middleware,
+            json_response=plan.json_response,
+            stateless_http=plan.stateless_http,
+        )
+
+        port = _free_port()
+        server = uvicorn.Server(
+            uvicorn.Config(app=app, host="127.0.0.1", port=port, log_level="error", loop="asyncio")
+        )
+        serving = asyncio.create_task(server.serve())
+        for _ in range(100):
+            await asyncio.sleep(0.05)
+            if server.started:
+                break
+        else:
+            server.should_exit = True
+            await serving
+            pytest.fail("uvicorn did not start within 5s")
+
+        try:
+            yield f"http://127.0.0.1:{port}"
+        finally:
+            server.should_exit = True
+            await _stop_or_fail(serving, port)
+            if engine_module._engine is not None:
+                await engine_module._engine.dispose()
+            engine_module._engine = original_engine
+            engine_module._session_factory = original_factory
+            get_settings.cache_clear()
 
 
 async def _call(base_url: str, tool: str, arguments: dict[str, Any]) -> str:
@@ -200,6 +268,7 @@ async def _ledger_artifacts_for(engine: AsyncEngine, session_id: UUID) -> list[s
         return sorted(str(row[0]) for row in rows)
 
 
+@pytest.mark.asyncio(loop_scope="module")
 async def test_capture_lands_in_the_named_session_and_not_its_neighbour(
     mcp_base_url: str, engine: AsyncEngine
 ) -> None:
@@ -241,6 +310,7 @@ async def test_capture_lands_in_the_named_session_and_not_its_neighbour(
     assert await _ledger_artifacts_for(engine, session_b) == []
 
 
+@pytest.mark.asyncio(loop_scope="module")
 async def test_replaying_the_harness_keeps_the_ledger_exclusive(
     mcp_base_url: str, engine: AsyncEngine
 ) -> None:

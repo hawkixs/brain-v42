@@ -1,4 +1,4 @@
-"""The entrypoint and the e2e harness must mount the SAME server, not two alike.
+"""The entrypoint and the e2e harness must build and MOUNT the same server.
 
 ``server.py`` used to register every tool root inside ``if __name__ ==
 "__main__":``.  A ``__main__`` block cannot be imported, so the e2e harness
@@ -7,9 +7,12 @@ test at all: a middleware or a tool root added on one side and not the other
 leaves the harness green about a server that exists nowhere.  The wiring the
 next change touches is a middleware, so this had to be closed first.
 
-``build_server()`` is now the single source.  Proving the function *exists*
-would prove nothing; what this module asserts is that **no second wiring
-exists** — that neither caller registers anything of its own.
+``build_server()`` is now the single source of the WIRING, and
+``prepare_tools_for_transport()`` / ``plan_http_transport()`` the single source
+of the MOUNT.  Proving those functions *exist* would prove nothing; what this
+module asserts is that **no second wiring and no second mount exist** — that
+neither caller registers anything of its own, and that the harness applies the
+plan rather than inventing its own arguments.
 
 The entrypoint check is an exact-set comparison, not a blocklist of forbidden
 names.  A blocklist only catches wiring someone spells the way we guessed;
@@ -46,6 +49,25 @@ ENTRYPOINT_CALLS = frozenset(
         "log_server_starting",
         "run",  # asyncio.run
         "run_server",
+    }
+)
+
+# Everything ``_run_mcp`` is allowed to call. Same contract as the entrypoint:
+# a step added here is a step the harness does NOT get, so it has to move into a
+# shared function or be declared. A plain blocklist would miss it.
+RUN_MCP_CALLS = frozenset(
+    {
+        "prepare_tools_for_transport",
+        "plan_http_transport",
+        "run_http_async",
+        "get_running_loop",
+        "Event",
+        "_install_signal_handlers",
+        "create_task",
+        "run_async",
+        "wait",
+        "cancel",
+        "exception",
     }
 )
 
@@ -127,4 +149,70 @@ def test_e2e_harness_calls_the_wiring_instead_of_reproducing_it() -> None:
     assert not reproduced, (
         "the e2e harness performs wiring of its own — that is the double this "
         f"module exists to prevent: {sorted(reproduced)}"
+    )
+
+
+def _function_def(tree: ast.Module, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    found = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+    ]
+    assert len(found) == 1, f"expected exactly one {name} definition, got {len(found)}"
+    return found[0]
+
+
+def test_run_mcp_delegates_its_whole_mount_to_the_shared_plan() -> None:
+    """``_run_mcp`` calls exactly the declared set — a new step cannot hide."""
+    tree = ast.parse(SERVER.read_text(encoding="utf-8"), filename=str(SERVER))
+    called = _called_names(_function_def(tree, "_run_mcp"))
+
+    undeclared = called - RUN_MCP_CALLS
+    assert not undeclared, (
+        "_run_mcp gained call(s) the e2e harness will not get, because it mounts "
+        "the app itself; move them into prepare_tools_for_transport() or "
+        f"plan_http_transport(), or declare them in RUN_MCP_CALLS: {sorted(undeclared)}"
+    )
+    vanished = RUN_MCP_CALLS - called
+    assert not vanished, (
+        f"RUN_MCP_CALLS declares call(s) _run_mcp no longer makes: {sorted(vanished)}"
+    )
+
+
+def test_e2e_harness_mounts_from_the_plan_and_invents_no_argument() -> None:
+    """Every ``http_app`` keyword must come from the plan, never from a literal.
+
+    This is the falsifiable half of "same mount". Re-hardcoding
+    ``stateless_http=True`` is exactly how the harness drifted the first time,
+    and a name-based check would not have caught it — the call is spelled the
+    same either way. So the assertion is on the ARGUMENTS, not the callee.
+    """
+    tree = ast.parse(E2E_HARNESS.read_text(encoding="utf-8"), filename=str(E2E_HARNESS))
+    called = _called_names(tree)
+    for required in ("prepare_tools_for_transport", "plan_http_transport"):
+        assert required in called, f"the e2e harness no longer goes through {required}()"
+
+    mounts = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "http_app"
+    ]
+    assert len(mounts) == 1, f"expected exactly one http_app mount, got {len(mounts)}"
+    mount = mounts[0]
+    assert not mount.args, "http_app must be called with keywords only, so each is checkable"
+
+    invented = [
+        keyword.arg
+        for keyword in mount.keywords
+        if not (
+            isinstance(keyword.value, ast.Attribute)
+            and isinstance(keyword.value.value, ast.Name)
+            and keyword.value.value.id == "plan"
+        )
+    ]
+    assert not invented, (
+        "the e2e harness passes mount argument(s) of its own instead of the ones "
+        f"plan_http_transport() decided: {invented}"
     )
