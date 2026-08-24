@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import Protocol
 from uuid import UUID
 
+from brain_v42.config import get_settings
 from brain_v42.models.brain_session import (
     MAX_CAPTURED_KNOWLEDGE_IDS,
     BrainSessionAbandonResult,
@@ -88,12 +89,47 @@ class BrainSessionRepository(Protocol):
         self, session_id: UUID, expected_client_key: str, reason: str
     ) -> BrainSessionAbandonResult: ...
 
+    async def absorb_derived_capture(self, session_id: UUID, connection_id: str) -> int: ...
+
 
 class BrainSessionService:
     """Validate explicit lifecycle commands before persistence."""
 
     def __init__(self, repo: BrainSessionRepository) -> None:
         self.repo = repo
+
+    def _absorption_connection(self) -> str | None:
+        """La connexion à absorber, ou ``None`` — décidé AVANT de toucher au dépôt.
+
+        Le drapeau et la connexion sont lus ici pour qu'un drapeau fermé coûte
+        ZÉRO aller-retour, pas un aller-retour qui ne fait rien. Une capacité
+        livrée fermée qui paierait quand même son prix sur chaque commande est
+        une régression que personne ne verrait.
+
+        ``None`` sans connexion : stdio et mode sans état n'ont pas de clé
+        (projet, connexion). Ce n'est pas un cas dégradé à rattraper, c'est le
+        contrat de l'auto-ouverture.
+        """
+        try:
+            if not get_settings().brain_session_derived_capture_enabled:
+                return None
+        except Exception:
+            return None
+
+        from brain_v42.provenance import get_current_transport  # noqa: PLC0415
+
+        return (get_current_transport() or "").strip() or None
+
+    async def _absorb_derived(self, session_id: UUID) -> None:
+        """Absorber ce que la traçante de cette connexion a recueilli.
+
+        Ne lève jamais : l'absorption accompagne une commande explicite, elle ne
+        la remplace pas et ne doit pas pouvoir la faire échouer.
+        """
+        connection_id = self._absorption_connection()
+        if connection_id is None:
+            return
+        await self.repo.absorb_derived_capture(session_id, connection_id)
 
     async def start(self, project_key: str, client_key: str) -> BrainSessionStartResult:
         """Start or idempotently replay a concurrent session."""
@@ -104,12 +140,33 @@ class BrainSessionService:
         normalized_client_key = _normalize_required(
             client_key, field_name="client_key", max_length=128
         )
-        return await self.repo.start(canonical_project, normalized_client_key)
+        started = await self.repo.start(canonical_project, normalized_client_key)
+        # Les DEUX branches, neuve et rejeu. La neuve n'absorbe presque jamais
+        # rien — ``started_at`` vient d'être posé, la fenêtre est vide — et
+        # câbler la neuve seule aurait l'air fait sans rien servir.
+        #
+        # `start` est le seul site qui doive LIRE le résultat pour connaître sa
+        # cible : la garde est donc résolue avant d'y toucher, sinon un drapeau
+        # fermé imposerait une forme de résultat à des appelants qui n'ont rien
+        # demandé.
+        connection_id = self._absorption_connection()
+        if connection_id is not None:
+            await self.repo.absorb_derived_capture(started.session.id, connection_id)
+        return started
 
     async def resume(self, session_id: UUID, expected_client_key: str) -> BrainSessionResumeResult:
-        """Attach to an existing open session."""
+        """Attach to an existing open session.
+
+        Reading does not mutate the focus, nor the session's DECLARED state —
+        status, summary and next_focus are untouched. It does absorb the tracer
+        ledger of this connection, which moves artifact ownership onto this
+        session. That is provenance catching up with what already happened, not
+        a change of what the session says about itself.
+        """
         identity = _normalize_expected_client_key(expected_client_key)
-        return await self.repo.resume(session_id, identity)
+        resumed = await self.repo.resume(session_id, identity)
+        await self._absorb_derived(session_id)
+        return resumed
 
     async def capture(
         self,
@@ -121,14 +178,18 @@ class BrainSessionService:
         identity = _normalize_expected_client_key(expected_client_key)
         captured = _normalize_captured_ids(knowledge_ids, require_nonempty=True)
         assert captured is not None
-        return await self.repo.capture(session_id, identity, captured)
+        result = await self.repo.capture(session_id, identity, captured)
+        await self._absorb_derived(session_id)
+        return result
 
     async def heartbeat(
         self, session_id: UUID, expected_client_key: str
     ) -> BrainSessionHeartbeatResult:
         """Refresh presence for an open session without changing its state."""
         identity = _normalize_expected_client_key(expected_client_key)
-        return await self.repo.heartbeat(session_id, identity)
+        beaten = await self.repo.heartbeat(session_id, identity)
+        await self._absorb_derived(session_id)
+        return beaten
 
     async def end(
         self,
@@ -146,6 +207,11 @@ class BrainSessionService:
         identity = _normalize_expected_client_key(expected_client_key)
         _validate_revision(expected_focus_revision)
         reason = _normalize_capture_reason(nothing_to_capture_reason)
+        # AVANT la fermeture, et l'ordre est le point : ``end`` lit le ledger
+        # pour décider comment fermer. Absorber après le rendrait visible trop
+        # tard — la session serait close en ayant conclu qu'elle n'avait rien
+        # produit.
+        await self._absorb_derived(session_id)
         return await self.repo.end(
             session_id,
             identity,

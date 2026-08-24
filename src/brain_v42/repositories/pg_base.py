@@ -30,6 +30,7 @@ from sqlalchemy import ColumnElement, Table
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from brain_v42.db.engine import get_session_factory
+from brain_v42.db.session_derived_capture import derive_capture
 from brain_v42.db.tables import MIN_COMPARABLE_EMBEDDING_NORM
 
 logger = structlog.get_logger(__name__)
@@ -201,8 +202,18 @@ class BasePgRepository:
             stmt = self.table.insert().values(**data).returning(self.table)
             result = await sess.execute(stmt)
             row = result.mappings().one()
+            created = dict(row)
             logger.debug("repository.create", table=self.table.name, id=row.get("id"))
-            return dict(row)
+            # Capture DÉRIVÉE, livrée FERMÉE : drapeau clos, ce site coûte un
+            # `dict.get` et rend `None` sans toucher à la session. Il vit APRÈS
+            # la matérialisation de la ligne parce qu'il en a besoin — projet et
+            # identifiant sortent du RETURNING, pas de `data`.
+            #
+            # Il ne peut pas faire échouer la création : tout est enveloppé dans
+            # un savepoint et les `Exception` sont avalées côté module. Ce que
+            # cette ligne rend TOUJOURS, c'est `created`.
+            await derive_capture(sess, self.table.name, created)
+            return created
 
         if session is not None:
             return await _execute(session)

@@ -112,6 +112,32 @@ class TestAutoOpen:
         assert len(statements) == 2
         assert "from brain_sessions" not in _sql(statements[0])
 
+    async def test_a_conflict_on_an_operator_row_dates_nothing_and_returns_none(self) -> None:
+        """Le conflit ne doit JAMAIS pouvoir dater une ligne non-`agent`.
+
+        `observe()` porte déjà cette garde (`nature = 'agent'` DUR dans son
+        WHERE). Le chemin du CONFLIT ne l'avait pas : un `DO UPDATE` sans garde
+        re-daterait `last_heartbeat_at` sur une ligne `operator` à chaque appel
+        d'outil. Or l'éligibilité 7 jours du balayage lit `last_heartbeat_at`
+        **sans filtre de nature** — la seule exception ÉCRITE au covenant
+        deviendrait donc inatteignable, et la ligne un fantôme immortel.
+
+        Deux moitiés, et il faut les deux : la FORME émise doit nommer la garde,
+        et le refus de PostgreSQL (aucune ligne rendue) doit se traduire par
+        `None` sans qu'un rattrapage vienne dater quoi que ce soit derrière.
+        """
+        opened, statements = await _auto_open(
+            _open_router(session_id=None, focus={"current_focus": "f", "focus_revision": 7})
+        )
+        assert opened is None, "un conflit refusé ne rend pas d'identifiant"
+        assert len(statements) == 2, "aucun statement de rattrapage après un refus"
+
+        action = _sql(statements[-1]).split("do update")[1]
+        assert " where " in action, "le DO UPDATE ne porte aucune garde de nature"
+        guard = action.split(" where ")[1]
+        assert "nature" in guard
+        assert "agent" in _params(statements[-1]).values()
+
     async def test_a_project_without_context_opens_nothing_and_writes_nothing(self) -> None:
         """Le serveur ne fabrique pas de projet : personne n'a rien nommé ici."""
         opened, statements = await _auto_open(_open_router(session_id=uuid4(), focus=None))
