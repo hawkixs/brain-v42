@@ -264,6 +264,16 @@ class Settings(BaseSettings):
     # À faire signer avant armement.
     brain_session_auto_open_enabled: bool = Field(default=False)
 
+    # Capture DÉRIVÉE : le serveur dépose l'artefact dans la traçante de la
+    # connexion à sa création, et la session de l'utilisateur ABSORBE ce ledger
+    # à sa commande suivante. Livré FERMÉ, et ici « fermé » est une CONDITION
+    # de livraison, pas de la prudence : la fermeture (`end`) exige encore
+    # « ledger non vide XOR nothing_to_capture_reason », donc armer ce drapeau
+    # ferait échouer `end` en fail-closed sur une session dont le ledger a été
+    # rempli sans qu'aucune capture explicite ait été demandée. Le retrait de ce
+    # XOR est un arbitrage qui n'est pas rendu.
+    brain_session_derived_capture_enabled: bool = Field(default=False)
+
     # Fermeture nocturne des traçantes `agent` inobservées (M-G, migration 046).
     # Livré FERMÉ, et ici « fermé » n'est pas de la prudence de forme : le
     # balayage tourne WET toutes les nuits depuis `dream.sh`, en `uv run` DEPUIS

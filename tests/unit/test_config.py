@@ -885,3 +885,28 @@ class TestBrainPrefixEndToEnd:
             _env_file=None,  # type: ignore[call-arg]
         )
         assert settings.reranker_url == "http://localhost:9999"
+
+
+class TestDerivedCaptureFlag:
+    """La dérivation de capture est livrée FERMÉE, comme toute capacité neuve ici.
+
+    Le défaut fermé n'est pas de la prudence de forme : c'est lui qui garde vert
+    l'ensemble du contrat de capture explicite sans qu'on y touche, et c'est lui
+    qui rend ce lot livrable alors que la fermeture (`end`) n'a pas encore appris
+    à accepter un ledger dérivé.
+    """
+
+    def test_flag_exists_and_defaults_to_false(self) -> None:
+        from brain_v42.config import Settings
+
+        assert Settings.model_fields["brain_session_derived_capture_enabled"].default is False
+
+    def test_the_flag_can_be_opened_explicitly(self) -> None:
+        from brain_v42.config import Settings
+
+        settings = Settings(
+            postgres_url="postgresql+asyncpg://brain:brain@localhost:5433/brain_test",
+            brain_session_derived_capture_enabled=True,
+            _env_file=None,  # type: ignore[call-arg]
+        )
+        assert settings.brain_session_derived_capture_enabled is True
