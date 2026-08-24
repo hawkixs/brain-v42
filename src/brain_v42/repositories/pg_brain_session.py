@@ -214,6 +214,14 @@ class PgBrainSessionRepo(BasePgRepository):
                     ],
                     index_where=sa.text("status = 'open'"),
                     set_=_observation_columns(reference),
+                    # Garde DURE sur l'ACTION du conflit, symétrique de celle
+                    # d'``observe`` : sans elle, une ligne `operator` qui
+                    # porterait une connexion verrait `last_heartbeat_at`
+                    # re-datée à chaque appel d'outil. Or l'éligibilité 7 jours
+                    # du balayage lit cette colonne SANS filtre de nature — la
+                    # seule exception écrite au covenant deviendrait
+                    # inatteignable, et la ligne un fantôme immortel.
+                    where=brain_sessions.c.nature == "agent",
                 )
                 .returning(brain_sessions.c.id)
             )
