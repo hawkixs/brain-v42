@@ -10,11 +10,13 @@ backfill, which is a migration and not a path in flight.  Two server-side
 mechanisms that *are* armed in production, session auto-open and the inactive
 sweep, never touch this table.
 
-That property is load-bearing: ``session.attributed_knowledge_ids`` is read as
-provenance.  But it is **not** a specification.  The roadmap carries a
-``[building]`` line — "heartbeat and capture DERIVED server-side, or the ritual
-removed from the contract" — and a test asserting "the server never derives the
-ledger" would forbid exactly that repair.
+That property was load-bearing: ``session.attributed_knowledge_ids`` is read as
+provenance.  But it was **not** a specification, and the difference has now been
+paid out: the roadmap's ``[building]`` line — "heartbeat and capture DERIVED
+server-side, or the ritual removed from the contract" — arrived, and the
+derivation below was added by editing this list, in the same commit, exactly as
+intended.  A test asserting "the server never derives the ledger" would have
+forbidden that repair instead.
 
 So this is an allowlist, not a prohibition.  Adding a server-side derivation
 stays possible; it just has to add its site to this list in the same commit.
@@ -54,5 +56,11 @@ DECLARED_SESSION_LEDGER_WRITERS: Final[frozenset[str]] = frozenset(
         # Backfill of pre-v4 attributions (knowledge_type='legacy').  A migration,
         # not a path in flight.
         "alembic/versions/037_session_lifecycle_v4.py::upgrade::insert",
+        # The server-side derivation this list was built to make VISIBLE rather
+        # than to forbid. It deposits into the `agent` tracer of the current
+        # connection, never into a session a human opened, and it never steals:
+        # ON CONFLICT DO NOTHING on the ledger's primary key. Closed by default
+        # (`brain_session_derived_capture_enabled`).
+        "src/brain_v42/db/session_derived_capture.py::derive_capture::insert",
     }
 )
