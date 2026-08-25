@@ -96,6 +96,8 @@ class BrainSessionRepository(Protocol):
 
     async def absorb_derived_capture(self, session_id: UUID, connection_id: str) -> int: ...
 
+    async def attributed_knowledge_ids(self, session_id: UUID) -> Sequence[UUID]: ...
+
 
 class BrainSessionService:
     """Validate explicit lifecycle commands before persistence."""
@@ -168,14 +170,31 @@ class BrainSessionService:
         # rien — ``started_at`` vient d'être posé, la fenêtre est vide — et
         # câbler la neuve seule aurait l'air fait sans rien servir.
         #
-        # `start` est le seul site qui doive LIRE le résultat pour connaître sa
-        # cible : la garde est donc résolue avant d'y toucher, sinon un drapeau
-        # fermé imposerait une forme de résultat à des appelants qui n'ont rien
-        # demandé.
+        # `start` est le SEUL des cinq qui ne puisse pas absorber d'abord : sa
+        # cible n'existe pas avant qu'il ne la matérialise. Les quatre autres
+        # reçoivent un `session_id`; lui le RÉSOUT. Exiger de lui l'ordre
+        # « absorber d'abord » forcerait une conception fausse.
+        #
+        # Il tient donc la même PROMESSE par l'autre bout : absorber, puis
+        # RÉHYDRATER ce qu'il s'apprête à rendre. Sans cette relecture, la
+        # branche de rejeu rendrait le ledger d'AVANT son propre déplacement —
+        # exactement le retard d'un appel mesuré sur `heartbeat` le 2026-08-25.
+        #
+        # La garde reste résolue avant de toucher au résultat : un drapeau fermé
+        # ne doit imposer aucune forme de résultat à des appelants qui n'ont
+        # rien demandé, ni coûter le moindre aller-retour.
         connection_id = self._absorption_connection()
-        if connection_id is not None:
-            await self.repo.absorb_derived_capture(started.session.id, connection_id)
-        return started
+        if connection_id is None:
+            return started
+        await self.repo.absorb_derived_capture(started.session.id, connection_id)
+        attributed = await self.repo.attributed_knowledge_ids(started.session.id)
+        return started.model_copy(
+            update={
+                "session": started.session.model_copy(
+                    update={"attributed_knowledge_ids": list(attributed)}
+                )
+            }
+        )
 
     async def resume(self, session_id: UUID, expected_client_key: str) -> BrainSessionResumeResult:
         """Attach to an existing open session.
@@ -187,9 +206,8 @@ class BrainSessionService:
         a change of what the session says about itself.
         """
         identity = _normalize_expected_client_key(expected_client_key)
-        resumed = await self.repo.resume(session_id, identity)
         await self._absorb_derived(session_id)
-        return resumed
+        return await self.repo.resume(session_id, identity)
 
     async def capture(
         self,
@@ -201,18 +219,16 @@ class BrainSessionService:
         identity = _normalize_expected_client_key(expected_client_key)
         captured = _normalize_captured_ids(knowledge_ids, require_nonempty=True)
         assert captured is not None
-        result = await self.repo.capture(session_id, identity, captured)
         await self._absorb_derived(session_id)
-        return result
+        return await self.repo.capture(session_id, identity, captured)
 
     async def heartbeat(
         self, session_id: UUID, expected_client_key: str
     ) -> BrainSessionHeartbeatResult:
         """Refresh presence for an open session without changing its state."""
         identity = _normalize_expected_client_key(expected_client_key)
-        beaten = await self.repo.heartbeat(session_id, identity)
         await self._absorb_derived(session_id)
-        return beaten
+        return await self.repo.heartbeat(session_id, identity)
 
     async def end(
         self,
@@ -330,18 +346,6 @@ def _normalize_capture_reason(reason: str | None) -> str | None:
     if reason is None:
         return None
     return _normalize_required(reason, field_name="nothing_to_capture_reason")
-
-
-def _validate_capture_outcome(
-    captured_knowledge_ids: list[UUID] | None,
-    nothing_to_capture_reason: str | None,
-) -> None:
-    has_captures = bool(captured_knowledge_ids)
-    has_reason = nothing_to_capture_reason is not None
-    if has_captures == has_reason:
-        raise BrainSessionInputError(
-            "provide exactly one of captured_knowledge_ids or nothing_to_capture_reason"
-        )
 
 
 def _normalize_status(status: str) -> str:

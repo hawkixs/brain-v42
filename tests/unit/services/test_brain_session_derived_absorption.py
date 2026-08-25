@@ -10,6 +10,7 @@ personne ne verrait.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -57,6 +58,10 @@ def _repo(session_id: UUID) -> MagicMock:
     for method in ("start", "resume", "capture", "heartbeat", "end"):
         setattr(repo, method, AsyncMock(return_value=result))
     repo.absorb_derived_capture = AsyncMock(return_value=0)
+    # Miroir du Protocol : `start` relit le ledger après avoir absorbé. Un double
+    # qui ne porte pas cette méthode ferait échouer les tests sur la FORME du
+    # double, pas sur le comportement du service.
+    repo.attributed_knowledge_ids = AsyncMock(return_value=[])
     return repo
 
 
@@ -140,3 +145,107 @@ async def test_end_absorbs_before_it_persists(_open_flag: None) -> None:
     await BrainSessionService(repo).end(session_id, "task-a", "summary", "next", 3)
 
     assert order == ["absorb", "end"]
+
+
+# ---------------------------------------------------------------------------
+# L'ORDRE, sur les CINQ commandes — pas seulement sur celle qui l'avait déjà
+# ---------------------------------------------------------------------------
+
+#: `end` portait seul cette garantie. Les quatre autres matérialisaient leur
+#: résultat AVANT l'absorption qu'elles déclenchent : le reçu n'était pas muet,
+#: il était EN RETARD D'UN APPEL. Mesuré en production le 2026-08-25 — un
+#: premier `heartbeat` a rendu `attributed_knowledge_ids: []` sur une session
+#: portant 5 artefacts au ledger, le second a rendu les 5.
+#: `start` est ABSENT de cette liste, et ce n'est pas une exemption de confort.
+#: Sa cible n'existe pas avant qu'il ne matérialise : `absorb_derived_capture`
+#: exige un `session_id`, et `start` est justement ce qui le résout. Exiger de
+#: lui l'ordre « absorber d'abord » forcerait une conception fausse pour
+#: satisfaire un test. Ce qu'on lui demande est la PROPRIÉTÉ, pas le mécanisme —
+#: que son résultat reflète l'absorption — et c'est le test suivant qui l'épingle.
+_ORDERED_COMMANDS = ["resume", "capture", "heartbeat", "end"]
+
+
+@dataclass(frozen=True)
+class _FakeSession:
+    """Miroir minimal de `BrainSession` — le service n'en touche que ces deux champs."""
+
+    id: UUID
+    attributed_knowledge_ids: list[UUID]
+
+    def model_copy(self, *, update: dict[str, object]) -> _FakeSession:
+        return replace(self, **update)  # type: ignore[arg-type]
+
+
+@dataclass(frozen=True)
+class _FakeStartResult:
+    session: _FakeSession
+
+    def model_copy(self, *, update: dict[str, object]) -> _FakeStartResult:
+        return replace(self, **update)  # type: ignore[arg-type]
+
+
+def _ordering_repo(session_id: UUID, order: list[str]) -> MagicMock:
+    """Dépôt qui NOTE l'ordre réel des appels, absorption comprise."""
+    repo = _repo(session_id)
+
+    def _record(name: str, value: object) -> object:
+        order.append(name)
+        return value
+
+    result = MagicMock()
+    result.session = MagicMock(id=session_id)
+    for method in ("start", "resume", "capture", "heartbeat", "end"):
+        setattr(
+            repo,
+            method,
+            AsyncMock(side_effect=lambda *a, _n=method, **k: _record(_n, result)),
+        )
+    repo.absorb_derived_capture = AsyncMock(side_effect=lambda *a, **k: _record("absorb", 0))
+    return repo
+
+
+@pytest.mark.parametrize("command", _ORDERED_COMMANDS)
+async def test_every_command_absorbs_before_it_materializes(command: str, _open_flag: None) -> None:
+    """Un résultat calculé avant l'absorption qu'il déclenche MENT d'un tour.
+
+    C'est le défaut mesuré en production, et il n'était pas un angle mort de
+    conception : `end` portait déjà cette garantie, testée nommément. Elle n'a
+    simplement jamais été étendue aux quatre autres commandes.
+
+    La garantie asserée ici est la seule qui compte pour l'appelant : quand le
+    dépôt matérialise ce qu'il va rendre, l'absorption a DÉJÀ eu lieu.
+    """
+    session_id = uuid4()
+    order: list[str] = []
+    repo = _ordering_repo(session_id, order)
+
+    await _run(BrainSessionService(repo), command, session_id)
+
+    assert order.index("absorb") < order.index(command), (
+        f"`{command}` matérialise son résultat AVANT d'absorber : il rendra le "
+        "ledger d'avant, donc un reçu en retard d'un appel"
+    )
+
+
+async def test_start_result_reflects_the_absorption_it_triggered(_open_flag: None) -> None:
+    """La PROPRIÉTÉ pour `start`, puisque l'ordre lui est structurellement interdit.
+
+    Sur la branche de REJEU — une session déjà ouverte que `start` retrouve —
+    l'absorption peut déplacer des artefacts. Le résultat rendu doit les porter,
+    sinon `start` ment exactement comme `heartbeat` mentait : d'un appel.
+
+    On n'asserte donc pas « absorbe avant », qui serait impossible, mais « ce que
+    tu me rends a vu l'absorption ».
+    """
+    session_id, moved = uuid4(), sorted([uuid4(), uuid4()], key=str)
+    repo = _repo(session_id)
+    # Un `MagicMock` répondrait `[]` à `list(...)` par la grâce de `__iter__`,
+    # donc verdirait le jour où le service cesserait de réhydrater. Ce double-ci
+    # implémente `model_copy` pour de vrai : il ne peut pas mentir par omission.
+    repo.start = AsyncMock(return_value=_FakeStartResult(_FakeSession(session_id, [])))
+    repo.attributed_knowledge_ids = AsyncMock(return_value=moved)
+
+    result = await BrainSessionService(repo).start("brain-v42", "task-a")
+
+    repo.attributed_knowledge_ids.assert_awaited_once_with(session_id)
+    assert list(result.session.attributed_knowledge_ids) == moved

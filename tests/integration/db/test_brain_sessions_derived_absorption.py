@@ -584,3 +584,48 @@ async def test_the_bound_never_hides_an_eligible_artifact_behind_contested_ones(
     # permissive.
     for item in contested:
         assert await _ledger_owner(session_factory, item) == UUID(str(tracer))
+
+
+async def test_the_repository_reads_the_ledger_not_the_terminal_snapshot(
+    session_factory: async_sessionmaker[AsyncSession],
+    absorption_project: str,
+) -> None:
+    """`attributed_knowledge_ids` lit la SOURCE, pas la photo de fin.
+
+    `brain_sessions.captured_knowledge_ids` n'est écrit qu'à la fermeture, et la
+    contrainte `open` interdit qu'il soit rempli avant : mesuré le 2026-08-25,
+    aucune session ouverte n'en a jamais porté un non vide. Une implémentation
+    qui lirait le tableau rendrait donc TOUJOURS `[]` sur une session vivante —
+    et c'est précisément le retard d'un appel que ce lot répare.
+
+    Ce test existe parce que `start` en dépend : il est le seul des cinq à ne pas
+    pouvoir absorber avant de matérialiser, et il relit ici ce qu'il vient de
+    déplacer.
+    """
+    repo = PgBrainSessionRepo(session_factory)
+    learning_repo = PgLearningRepo(session_factory)
+
+    with _derived_capture(True):
+        mine = await repo.start(absorption_project, "task-w20-read")
+        with _transport(uuid4().hex) as connection:
+            await repo.auto_open(_Identity(absorption_project, connection))
+            artifact = await _derive_one_artifact(learning_repo, absorption_project)
+            moved = await _absorb_from_the_current_connection(repo, UUID(str(mine.session.id)))
+
+    assert moved == 1
+    ids = await repo.attributed_knowledge_ids(mine.session.id)
+    assert [UUID(str(item)) for item in ids] == [artifact]
+
+    # Et le tableau terminal est TOUJOURS vide : la session est ouverte.
+    async with session_factory() as session:
+        snapshot = (
+            await session.execute(
+                sa.select(brain_sessions.c.captured_knowledge_ids).where(
+                    brain_sessions.c.id == mine.session.id
+                )
+            )
+        ).scalar_one()
+    assert list(snapshot or []) == [], (
+        "si l'instantané se remplit sur une session ouverte, la contrainte `open` "
+        "a changé et ce lot doit être relu en entier"
+    )

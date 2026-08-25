@@ -229,6 +229,21 @@ class PgBrainSessionRepo(BasePgRepository):
             inserted = (await session.execute(insert_stmt)).scalar_one_or_none()
             return UUID(str(inserted)) if inserted is not None else None
 
+    async def attributed_knowledge_ids(self, session_id: UUID | str) -> builtins.list[UUID]:
+        """Le ledger de cette session, relu — la SOURCE DE VÉRITÉ, pas l'instantané.
+
+        `brain_sessions.captured_knowledge_ids` est une photo TERMINALE : un seul
+        écrivain, à la fermeture, et la contrainte `open` interdit qu'elle soit
+        remplie avant. Mesuré le 2026-08-25 : sur 44 sessions ouvertes, zéro
+        tableau non vide, et aucune n'en a jamais porté dans toute l'histoire de
+        la table. La lire sur une session vivante rendrait donc toujours `[]`.
+
+        Existe pour `start`, seul des cinq à ne pas pouvoir absorber avant de
+        matérialiser : il relit ici ce que son absorption vient de déplacer.
+        """
+        async with self.get_session() as session:
+            return await self._load_session_artifact_ids(session, UUID(str(session_id)))
+
     async def absorb_derived_capture(self, session_id: UUID | str, connection_id: str) -> int:
         """Faire absorber à cette session le ledger de la traçante de sa connexion.
 
