@@ -277,6 +277,25 @@ La perte est donc **silencieuse par construction**.
    > `brain_sessions` — vérifié par deux angles (`view_column_usage` et
    > `pg_depend`/`pg_rewrite`). Contrairement à la 045, aucune vue à faire tomber et
    > revenir autour du changement de contrainte.
+
+   > **AMENDÉ À NOUVEAU — décision `1b742dc7` (2026-08-25), qui amende S6 de `9d22bc6a`.**
+   > **La 048 est attribuée à `attribution_mode`** (réparation de la capture dérivée,
+   > `alembic/versions/048_attribution_mode.py`). **M-C, M-E, M-D, le trio `ADD COLUMN` et la
+   > suite glissent d'un cran : le couloir compte 9 rendez-vous au lieu de 8.** Le rang de M-G
+   > n'est pas déplacé — elle reste `046 = M-A + M-G`, première tête.
+   >
+   > **L'amendement DÉPLACE DES NUMÉROS, il ne relâche AUCUNE GARDE** : M-C et M-E restent des
+   > têtes **séparées** tant que S9 n'a pas **démontré l'indépendance de leurs downgrades** —
+   > pas « tant que S9 n'a pas conclu », qui serait satisfait par une conclusion négative et
+   > lèverait la séparation ; M-D reste **isolée**, la règle « jamais deux têtes en vol »
+   > tient, le critère **(c)** sur les downgrades indépendants tient. L'insertion
+   > ne coûte qu'une renumérotation documentaire parce que **S1** a fait passer le contrat DR en
+   > v5 unique à `alembic_head` **DÉRIVÉ** — une tête de plus ne réécrit plus `_expected_v4()`.
+   >
+   > Le détail rang par rang vit dans `SEQUENCEMENT-2026-08-20-couloir-du-pin.md`, bloc
+   > d'amendement en tête ; **ne pas recopier ces numéros ici** — une seconde source de vérité
+   > ne divergerait qu'à la lecture. Ce qui les rendra faux : une tête consommée par un candidat
+   > hors dossier, ou une insertion signée.
 7. **Le nom de la colonne d'inactivité** — cette spec écrit `last_observed_at` parce que
    c'est le nom employé par D5 et le `§0bis.4`. Si **M-A** la livre sous un autre nom, le
    `§4` suit ce nom sans discuter : M-A fait foi sur ses propres colonnes.

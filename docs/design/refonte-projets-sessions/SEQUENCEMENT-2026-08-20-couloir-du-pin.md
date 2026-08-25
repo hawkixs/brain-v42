@@ -2,11 +2,12 @@
 
 **Établi le 2026-08-20. Mesures de première main horodatées ; tout le reste est marqué.**
 **Statut : PARTIELLEMENT SIGNÉ le 2026-08-20 — décision `9d22bc6a-0d01-4502-b232-e2a6b9c85945`.**
+**S6 AMENDÉ — décision `1b742dc7` (2026-08-25) : la 048 est prise par `attribution_mode`, le couloir compte 9 rendez-vous. Bloc d'amendement ci-dessous.**
 
 > **CE QUI EST SIGNÉ** — **S1** : le contrat DR passe en **v5 UNIQUE avec `alembic_head` DÉRIVÉ**
 > (précédent `test_alembic_env.py:254-259`), donc **un seul mint pour tout le couloir** au lieu
 > de 7-12 ; la révision exacte reste prouvée par le pin `_REQUIRED_ALEMBIC_HEAD` côté code.
-> **S6** : **Ordre B avec 048 dégroupé**, soit **8 rendez-vous** — `046 = M-A+M-G` → `047 = M-B`
+> **S6** (**AMENDÉE** par `1b742dc7`, bloc suivant) : **Ordre B avec 048 dégroupé**, soit **8 rendez-vous** — `046 = M-A+M-G` → `047 = M-B`
 > → M-C et M-E en têtes **séparées** tant que S9 n'a pas démontré l'indépendance de leurs
 > downgrades → `049 = M-D` **isolée** (collision d'attestation pendant sa fenêtre
 > trigger-désactivé) → `050` = trio `ADD COLUMN` nullable → `051`/`052`.
@@ -17,6 +18,55 @@
 >
 > **AUCUNE LIGNE DE MIGRATION NE DOIT ÊTRE ÉCRITE** — l'exigence auto-imposée par
 > `SPEC-M-G.md` tient : S6 donne l'ORDRE, pas l'autorisation d'écrire la 046.
+
+> **AMENDEMENT — décision `1b742dc7` (2026-08-25), qui amende S6 de `9d22bc6a` (2026-08-20).**
+> **La 048 est attribuée à `attribution_mode`.** La réparation de la capture dérivée a produit
+> `alembic/versions/048_attribution_mode.py` — colonne `attribution_mode VARCHAR(24)` nullable
+> sur `brain_session_artifacts`, CHECK à quatre modes, index partiel sur le mode déduit. Le slot
+> que S6 réservait à M-C (ou M-E) est donc pris. **M-C, M-E, M-D, le trio `ADD COLUMN` et la
+> suite GLISSENT D'UN CRAN ; le couloir compte 9 rendez-vous au lieu de 8.**
+>
+> | Candidat | Rang S6, Ordre B dégroupé | Rang amendé (`1b742dc7`) |
+> |---|---|---|
+> | C1 = M-A + M-G | 046 | 046 — inchangé |
+> | C2 = M-B | 047 | 047 — inchangé |
+> | *(hors dossier)* | — | **048 = `attribution_mode`** |
+> | C3 = M-C | 048 | **049** |
+> | C4 = M-E | 049 | **050** |
+> | C5 = M-D | 050 | **051** |
+> | C8 + C9 + C12 = trio `ADD COLUMN` | 051 | **052** |
+> | C11 = journal d'accès durable | 052 | **053** |
+> | C7 = dimension embedding | 053 | **054** |
+>
+> *La colonne « Rang S6 » applique le dégroupage que S6 signe. Le texte de S6 ci-dessus écrit
+> `049 = M-D`, `050` = trio, `051`/`052` : ce sont les numéros du tableau §2 **groupé**,
+> incompatibles avec le dégroupage de la même phrase — M-C et M-E en têtes séparées prennent
+> 048 et 049. L'incohérence est dans le texte signé ; `1b742dc7` ne la tranche pas, et seule la
+> lecture dégroupée donne les 8 rendez-vous que S6 annonce.*
+>
+> **L'AMENDEMENT DÉPLACE DES NUMÉROS, IL NE RELÂCHE AUCUNE GARDE.** Tiennent mot pour mot :
+> M-C et M-E restent des têtes **séparées** tant que S9 n'a pas démontré l'indépendance de
+> leurs downgrades ; M-D reste **isolée** (collision d'attestation pendant sa fenêtre
+> trigger-désactivé) ; la règle **jamais deux têtes en vol** ; le critère **(c)** du §2 —
+> downgrades pouvant échouer ensemble sans qu'un fail-closed de l'un empêche le rollback
+> légitime de l'autre.
+>
+> **Pourquoi l'insertion coûte si peu.** S1, signée sur le même couloir, a fait passer le
+> contrat DR en **v5 unique à `alembic_head` DÉRIVÉ** précisément pour qu'une tête de plus ne
+> coûte plus une réécriture de `_expected_v4()`. Le prix d'une insertion se réduit donc à une
+> renumérotation documentaire — ce que S1 avait acheté.
+>
+> **CE QUI RENDRA CES NUMÉROS FAUX**, et qu'aucun test ne garde : une tête consommée par un
+> candidat hors dossier — c'est déjà arrivé deux fois — ou une insertion signée. Les mesurer,
+> jamais les recopier : `ls alembic/versions/` pour la tête du dépôt,
+> `select version_num from alembic_version` pour la production.
+>
+> **NON TRANCHÉ ICI** : la 047 mergée est `047_end_without_the_capture_receipt`, qui ne porte
+> pas M-B. Le compte de 9 conserve le `047 = M-B` de l'ordre signé ; si M-B doit encore prendre
+> une tête à elle, il est de 10. `1b742dc7` ne se prononce pas là-dessus.
+>
+> **Portée de ce bloc : les NUMÉROS seuls.** Les autres affirmations du bloc de signature
+> ci-dessus énoncent l'état du 2026-08-20 et ne sont pas rejouées ici.
 
 ---
 
@@ -162,8 +212,14 @@ Et l'argument de l'opérateur lui-même, ADR §0ter.1 : *« Deux têtes ne signi
 | **Versions de contrat DR** | **7** si S1 = « le contrat suit la tête » ; **1** si S1 = « le contrat décrit une forme » | §0.1 |
 | **Durée plausible** | **5 à 9 semaines** | 7 têtes, dont 3 lourdes (046, 048, 049) et 1 triviale (050) |
 
+> **Numéros amendés.** Les rangs de ce tableau, de ces métriques **et des Risques qui suivent** sont ceux **proposés le
+> 2026-08-20**, avant le dégroupage signé par S6 et avant l'insertion de la 048
+> (`attribution_mode`, décision `1b742dc7`). Le rang effectif de chaque candidat se lit dans
+> le bloc d'amendement en tête. Le CONTENU des lignes — affinité invoquée, test (c), réserve
+> sur C3+C4 — n'est PAS amendé.
+
 **Risques :**
-1. **Downgrade tout-ou-rien** sur les têtes groupées. Neutralisé sur 050 (trois DROP indépendants), **non neutralisé** sur 048 — c'est la réserve.
+1. **Downgrade tout-ou-rien** sur les têtes groupées. Neutralisé sur 050 (trois DROP indépendants), **non neutralisé** sur 048 — c'est la réserve. (Rangs du 2026-08-20 : ce « 048 » désigne le groupe M-C+M-E, **pas** la `048_attribution_mode` réellement mergée, dont le downgrade est propre.)
 2. **Une tête groupée est une tête plus grosse à écrire** : plus de surface de test au moment où la fenêtre entre merge et bascule doit rester courte.
 3. **Perte de lisibilité du journal des migrations** : « 050 » ne raconte plus une histoire mais trois.
 4. **Le regroupement 050 est une commodité, pas une nécessité** — il ne satisfait que le critère (a) au sens faible (« aucun asset » n'est pas « le même asset »). Il doit donc être **signé comme commodité assumée**, pas justifié comme contrainte.
@@ -175,7 +231,7 @@ Et l'argument de l'opérateur lui-même, ADR §0ter.1 : *« Deux têtes ne signi
 
 ## 3. RECOMMANDATION UNIQUE
 
-> **Adopter l'ORDRE B, avec 048 dégroupé par défaut (donc 8 rendez-vous, pas 7) tant que le test (c) n'est pas démontré ; et TRANCHER LA DOCTRINE DU CONTRAT DR (signature S1) AVANT d'écrire la première ligne de la 046.**
+> **Adopter l'ORDRE B, avec la tête M-C + M-E dégroupée par défaut (donc un rendez-vous de plus — 9 depuis l'amendement `1b742dc7`, voir le bloc en tête) tant que le test (c) n'est pas démontré ; et TRANCHER LA DOCTRINE DU CONTRAT DR (signature S1) AVANT d'écrire la première ligne de la 046.**
 
 **Trois raisons, par ordre de poids :**
 
@@ -268,18 +324,22 @@ Elle est **signée** ; le dossier ne la choisit pas, il en fixe le rang (premier
 
 ### 4.2 Bloquantes plus tard, pas maintenant
 
+> **Échéances renumérotées** par l'amendement `1b742dc7` : elles appliquent le dégroupage signé
+> par S6 puis l'insertion de la 048. Aucune signature de ce tableau n'est levée, retirée ni
+> assouplie — seul son rang de rendez-vous change.
+
 | # | Signature | Bloque | Échéance |
 |---|---|---|---|
-| **S7** | `SPEC-checkpoint.md` (écrite, non signée ; porte une « Contradiction interne de l'ADR, à trancher ») | C3 | avant 048 |
-| **S8** | **SPEC du pool de brouillons** — FK et `ON DELETE`, durée de vie, plafond, tool de signature hors session. **Non écrite** | C4 | avant 048 |
-| **S9** | Regroupement C3+C4 : **le test (c) est-il satisfait** (downgrades indépendants par table) ? | forme de 048 | avant 048 |
-| **S10** | Portée INSERT de M-D (`create` et la branche INSERT de `get_or_create` échappent à `AFTER UPDATE`) + **fenêtre d'attestation rouge assumée et datée** pendant que le trigger est désactivé | C5 | avant 049 |
+| **S7** | `SPEC-checkpoint.md` (écrite, non signée ; porte une « Contradiction interne de l'ADR, à trancher ») | C3 | avant 049 |
+| **S8** | **SPEC du pool de brouillons** — FK et `ON DELETE`, durée de vie, plafond, tool de signature hors session. **Non écrite** | C4 | avant 050 |
+| **S9** | Regroupement C3+C4 : **le test (c) est-il satisfait** (downgrades indépendants par table) ? | forme de 049/050 | avant 049 |
+| **S10** | Portée INSERT de M-D (`create` et la branche INSERT de `get_or_create` échappent à `AFTER UPDATE`) + **fenêtre d'attestation rouge assumée et datée** pendant que le trigger est désactivé | C5 | avant 051 |
 | **S11** | **Q8** — droit de réattribution journalisée vs orphelinage comme prix de la preuve | C6 | quand l'opérateur voudra |
-| **S12** | `thinking_tokens` : **colonne** ou **renoncement écrit** (l'issue (2) ne consomme pas de tête) | C8 | avant 050 |
-| **S13** | Le regroupement 050 (C8+C9+C12) est une **commodité assumée**, pas une contrainte | forme de 050 | avant 050 |
-| **S14** | **Réconcilier ou supersédér la décision `24495130`** (« la 046 dimension part en second lot », `active`, non supersédée) avec la levée du gate par l'ADR §5 pt 5 | C7 | avant 052 |
-| **S15** | C11 : rétention `access_log` **ou** journal d'agrégats ; dimensionner le stockage | C11 | avant 051 |
-| **S16** | C10 (G7) et C9 (compteur sweep) : **les instruire ou les écarter formellement** — deux propositions sans porteur écrit, nommées par la spec la plus récente | file | avant 050 |
+| **S12** | `thinking_tokens` : **colonne** ou **renoncement écrit** (l'issue (2) ne consomme pas de tête) | C8 | avant 052 |
+| **S13** | Le regroupement du trio `ADD COLUMN` (C8+C9+C12) est une **commodité assumée**, pas une contrainte | forme de 052 | avant 052 |
+| **S14** | **Réconcilier ou supersédér la décision `24495130`** (« la 046 dimension part en second lot », `active`, non supersédée) avec la levée du gate par l'ADR §5 pt 5 | C7 | avant 054 |
+| **S15** | C11 : rétention `access_log` **ou** journal d'agrégats ; dimensionner le stockage | C11 | avant 053 |
+| **S16** | C10 (G7) et C9 (compteur sweep) : **les instruire ou les écarter formellement** — deux propositions sans porteur écrit, nommées par la spec la plus récente | file | avant 052 |
 | **S17** | Revue datée du poison-pill A — **2026-09-03**, ticket `191b2dba` | C13 | 2026-09-03 |
 
 ### 4.3 CE QUI PEUT PARTIR SANS L'OPÉRATEUR
