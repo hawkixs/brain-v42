@@ -33,6 +33,7 @@ both tests below still pass.  So a red here is never "the GPU box was down".
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import socket
@@ -67,6 +68,12 @@ _TRACER_ID = sa.text(
     "AND nature = 'agent' AND status = 'open'"
 )
 _ROW_IDENTITY = sa.text("SELECT connection_id, nature FROM brain_sessions WHERE id = :session_id")
+_STARTED_FOCUS_REVISION = sa.text(
+    "SELECT started_focus_revision FROM brain_sessions WHERE id = :session_id"
+)
+_ATTRIBUTION_MODE = sa.text(
+    "SELECT attribution_mode FROM brain_session_artifacts WHERE knowledge_id = :knowledge_id"
+)
 _OPEN_TRACERS = sa.text(
     "SELECT count(*) FROM brain_sessions "
     "WHERE project_key = :project_key AND nature = 'agent' AND status = 'open'"
@@ -786,3 +793,195 @@ async def test_a_stalled_await_becomes_a_named_failure_not_a_hang() -> None:
             budget=0.2,
             what="une attente de test volontairement bloquée",
         )
+
+
+async def _started_focus_revision(engine: AsyncEngine, session_id: UUID) -> int:
+    """La révision que la session a vue à son ouverture, relue depuis la base.
+
+    `end` exige un compare-and-swap ; le lire ici évite de faire dépendre la
+    scène du rendu textuel de `brain_session_start`. Une révision concurrente
+    ferme quand même la session (`focus_outcome='conflict'`), donc ce test ne
+    peut pas rougir pour un motif de focus.
+    """
+    rows = await _read_rows(engine, _STARTED_FOCUS_REVISION, {"session_id": str(session_id)})
+    return int(rows[0][0])
+
+
+def _end_result(payload: str) -> dict[str, Any]:
+    """Le résultat de `brain_session_end`, décodé — et une panne de décodage le DIT.
+
+    Un test qui retomberait silencieusement sur une regex rougirait plus tard
+    pour un motif de format, en se présentant comme une preuve d'attribution.
+    """
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError as exc:  # pragma: no cover - diagnostic
+        raise AssertionError(
+            f"réponse de brain_session_end non décodable ({exc}) : {payload[:400]!r}"
+        ) from exc
+    assert isinstance(decoded, dict), f"forme inattendue : {type(decoded).__name__}"
+    return decoded
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_the_session_absorbs_across_a_transport_that_died(
+    mcp_base_url: str, engine: AsyncEngine
+) -> None:
+    """La scène de production, à DEUX connexions. ROUGE aujourd'hui.
+
+    C'est le test que l'invariant « one connection, one tracer » de ce fichier
+    (``_Conn``) rendait jusqu'ici inécrivable : chaque scène tenait un client
+    unique du début à la fin, donc l'appariement par connexion ne pouvait pas y
+    échouer. La suite était verte pendant que la production était inerte.
+
+    Aucun redémarrage d'uvicorn n'est simulé, et c'est délibéré : en production
+    la traçante `32662769` est née APRÈS le redémarrage de 23:18:22Z, puis son
+    transport a été tué par l'idle timeout de 900 s
+    (``mcp_http_session_idle_seconds``) 23 min avant le `end`. Le redémarrage
+    est INCIDENT ; changer de `Mcp-Session-Id` est tout le trou. Un test qui
+    redémarrerait le serveur testerait la mauvaise chose.
+
+    Il ne peut pas auto-réaliser son hypothèse : le `Mcp-Session-Id` est frappé
+    par le SDK à l'ouverture du lien, jamais posé par le test. Deux ``_Conn``
+    successifs, c'est deux transports, mesurés comme tels.
+    """
+    project_key = f"integ-w20-{uuid4().hex[:10]}"
+
+    with _derived_capture(True):
+        # Connexion 1 : la session s'ouvre, l'artefact se dérive dans SA traçante.
+        async with _Conn(mcp_base_url, project_key) as first:
+            await _bootstrap_project(first, project_key)
+            session_id = await _session_id(first, project_key, "task-w20")
+            derived = await _learning_id(first, project_key, f"w20 derived {uuid4().hex[:8]}")
+
+            tracer = await _sole_tracer(engine, project_key)
+            assert tracer != str(session_id)
+            assert await _ledger_sessions_for(engine, derived) == [tracer], (
+                "la dérivation elle-même est cassée — le rouge ci-dessous ne "
+                "dirait rien de l'absorption"
+            )
+
+        # Le lien est fermé : ce `Mcp-Session-Id` ne reviendra jamais. La LIGNE
+        # de la traçante, elle, reste `open` — exactement l'état mesuré en
+        # production au moment de la fermeture ratée.
+        revision = await _started_focus_revision(engine, session_id)
+
+        # Connexion 2 : transport neuf, traçante neuve et VIDE. L'utilisateur
+        # ferme sa session depuis là, comme il l'a fait le 2026-08-24 à 23:58Z.
+        async with _Conn(mcp_base_url, project_key) as second:
+            payload = await second.call(
+                "brain_session_end",
+                {
+                    "session_id": str(session_id),
+                    "expected_client_key": "task-w20",
+                    "summary": "Banc w20 : fermeture depuis un transport neuf.",
+                    "next_focus": "Vérifier l'absorption à travers un transport mort.",
+                    "expected_focus_revision": revision,
+                },
+            )
+
+    # (1) LA PREUVE, relue depuis la base et non depuis le retour du tool.
+    assert await _ledger_sessions_for(engine, derived) == [str(session_id)], (
+        "l'artefact est resté dans la traçante d'un transport mort : la "
+        "promesse faite à l'utilisateur n'est pas tenue"
+    )
+
+    # (2) Et le reçu rendu à l'utilisateur doit dire la même chose que la base.
+    result = _end_result(payload)
+    assert result["session"]["attributed_knowledge_ids"] == [str(derived)]
+    assert result["unattributed_in_window"] == 0
+
+
+async def _attribution_mode(engine: AsyncEngine, knowledge_id: UUID) -> str | None:
+    rows = await _read_rows(engine, _ATTRIBUTION_MODE, {"knowledge_id": str(knowledge_id)})
+    assert rows, "aucune ligne de ledger pour cet artefact"
+    return None if rows[0][0] is None else str(rows[0][0])
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_the_absorption_says_by_which_key_it_matched(
+    mcp_base_url: str, engine: AsyncEngine
+) -> None:
+    """PAR QUELLE CLÉ — sans quoi une rétrogradation silencieuse resterait verte.
+
+    Le test frère prouve que l'artefact ARRIVE. Celui-ci prouve par quel chemin :
+    `derived_window`, la DÉDUCTION, et non `derived_connection`, la preuve. Si un
+    jour l'étage exact se remettait à répondre ici, ce serait une bonne nouvelle
+    — mais il faut qu'elle se VOIE, et un total ne la montrerait pas.
+    """
+    project_key = f"integ-w20-{uuid4().hex[:10]}"
+
+    with _derived_capture(True):
+        async with _Conn(mcp_base_url, project_key) as first:
+            await _bootstrap_project(first, project_key)
+            session_id = await _session_id(first, project_key, "task-key")
+            derived = await _learning_id(first, project_key, f"w20 key {uuid4().hex[:8]}")
+            assert await _attribution_mode(engine, derived) == "derived_deposit"
+
+        revision = await _started_focus_revision(engine, session_id)
+        async with _Conn(mcp_base_url, project_key) as second:
+            await second.call(
+                "brain_session_end",
+                {
+                    "session_id": str(session_id),
+                    "expected_client_key": "task-key",
+                    "summary": "Banc w20 : quelle clé a apparié.",
+                    "next_focus": "Lire attribution_mode en base.",
+                    "expected_focus_revision": revision,
+                },
+            )
+
+    assert await _ledger_sessions_for(engine, derived) == [str(session_id)]
+    assert await _attribution_mode(engine, derived) == "derived_window"
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_two_concurrent_user_sessions_leave_the_artifact_where_it_is(
+    mcp_base_url: str, engine: AsyncEngine
+) -> None:
+    """Le témoin NÉGATIF, sans lequel le test ne mesure pas la règle.
+
+    Deux sessions utilisateur couvrent l'instant de création. Aucune n'a plus de
+    titre que l'autre : personne n'absorbe, et l'artefact reste chez la traçante
+    — un orphelin VISIBLE, que `unattributed_in_window` compte désormais comme
+    tel et qu'un humain peut reprendre en nommant son UUID.
+
+    C'est le prix assumé de la rivalité symétrique : la promesse n'est pas tenue
+    tant que deux sessions se chevauchent. Un lot qui attribuerait quand même
+    aurait choisi le vol plutôt que l'abstention.
+    """
+    project_key = f"integ-w20-{uuid4().hex[:10]}"
+
+    with _derived_capture(True):
+        async with _Conn(mcp_base_url, project_key) as first:
+            await _bootstrap_project(first, project_key)
+            mine = await _session_id(first, project_key, "task-mine")
+            async with _Conn(mcp_base_url, project_key) as rival_link:
+                rival = await _session_id(rival_link, project_key, "task-rival")
+                assert rival != mine
+
+                derived = await _learning_id(first, project_key, f"w20 contested {uuid4().hex[:8]}")
+                tracer = await _ledger_sessions_for(engine, derived)
+
+        revision = await _started_focus_revision(engine, mine)
+        async with _Conn(mcp_base_url, project_key) as third:
+            payload = await third.call(
+                "brain_session_end",
+                {
+                    "session_id": str(mine),
+                    "expected_client_key": "task-mine",
+                    "summary": "Banc w20 : deux prétendantes.",
+                    "next_focus": "Vérifier que personne n'a absorbé.",
+                    "expected_focus_revision": revision,
+                },
+            )
+
+    # L'artefact n'a bougé nulle part — relu depuis la base.
+    assert await _ledger_sessions_for(engine, derived) == tracer
+    assert tracer != [str(mine)] and tracer != [str(rival)]
+
+    # Et le reçu ne ment plus : un artefact garé chez le serveur COMPTE comme
+    # non attribué. C'est ce qui rend le refus visible au lieu de muet.
+    result = _end_result(payload)
+    assert result["session"]["attributed_knowledge_ids"] == []
+    assert result["unattributed_in_window"] >= 1
