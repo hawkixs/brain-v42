@@ -1782,7 +1782,7 @@ def test_environment_assignment_parser_preserves_duplicates_and_indentation() ->
     assert assignments == ["GRAPH_PROJECTOR_ENABLED", "GRAPH_PROJECTOR_ENABLED"]
 
 
-def test_repository_head_047_is_documented_without_claiming_a_deployed_head() -> None:
+def test_repository_head_048_is_documented_without_claiming_a_deployed_head() -> None:
     """The repository head is a fact this repository owns. The deployed head is not.
 
     Until 2026-08-04 these docs asserted a production head of `037` while the
@@ -1792,7 +1792,10 @@ def test_repository_head_047_is_documented_without_claiming_a_deployed_head() ->
 
     The head in this test's NAME is deliberate: bumping the repository head cannot
     be done without renaming the guard, which is what stops it from drifting
-    silently. Bumped to 045 on 2026-08-16 — production measured at 045 the same
+    silently. Bumped to 048 on 2026-08-25 — and note what is NOT claimed here:
+    048 has been applied to the TEST database only. Production was measured at
+    047 the same day and is untouched by this lot; arming it is an operator
+    gesture that has not happened. Previously bumped to 045 on 2026-08-16 — production measured at 045 the same
     day, right after applying it: column at 120, `codex_dream_run_v1` recreated
     with its `codex_ro` grant, 32 tables unchanged. Previously bumped to 043 on
     2026-08-10 — production measured at 043 the same day, right after applying
@@ -1800,8 +1803,8 @@ def test_repository_head_047_is_documented_without_claiming_a_deployed_head() ->
     production was still measured at 041 at that moment, and SCHEMA.md says so
     in the same breath.
     """
-    assert _repository_head() == "047"
-    assert "47 révisions (001 → 047)" in SCHEMA
+    assert _repository_head() == "048"
+    assert "48 révisions (001 → 048)" in SCHEMA
     assert "| 038 |" in SCHEMA
     assert "| 039 |" in SCHEMA
     assert "| 040 |" in SCHEMA
@@ -1809,11 +1812,12 @@ def test_repository_head_047_is_documented_without_claiming_a_deployed_head() ->
     assert "| 044 |" in SCHEMA
     assert "| 046 |" in SCHEMA
     assert "| 047 |" in SCHEMA
-    assert "Un schéma neuf au head 047 contient 32 tables `public`" in SCHEMA
+    assert "| 048 |" in SCHEMA
+    assert "Un schéma neuf au head 048 contient 32 tables `public`" in SCHEMA
 
     schema_normalized = " ".join(SCHEMA.split())
-    assert "La cible du dépôt est 047." in schema_normalized
-    assert "La révision 047 est la tête du dépôt." in schema_normalized
+    assert "La cible du dépôt est 048." in schema_normalized
+    assert "La révision 048 est la tête du dépôt." in schema_normalized
     assert "select version_num from alembic_version" in schema_normalized
 
     # The retired claim must not come back in any of the core documents.

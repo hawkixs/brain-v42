@@ -1,9 +1,16 @@
 # Architecture — brain_v42
 
 **Updated:** 2026-07-24
-**Repository and production state:** migrations 001–047 defined, 31 PG tables modeled; MCP catalog: 49 always-on + 2 graph-gated = 51. Production runs lifecycle v4 since 24 July 2026: revision 036 was applied and validated first, then 037 was proved before the restart-last MCP cutover and authenticated lifecycle-v4 E2E. The deployed Alembic head has since advanced and is not asserted here — measure it with `select version_num from alembic_version`. Last measurement: `045` on 16 August 2026, right after the 044→045 cutover.
+**Repository and production state:** migrations 001–048 defined, 31 PG tables modeled; MCP catalog: 49 always-on + 2 graph-gated = 51. Production runs lifecycle v4 since 24 July 2026: revision 036 was applied and validated first, then 037 was proved before the restart-last MCP cutover and authenticated lifecycle-v4 E2E. The deployed Alembic head has since advanced and is not asserted here — measure it with `select version_num from alembic_version`. Last measurement: `045` on 16 August 2026, right after the 044→045 cutover.
 
-**Repository target: 047.** Revision 047 removes the closing XOR — non-empty ledger XOR
+**Repository target: 048.** Revision 048 adds `brain_session_artifacts.attribution_mode`,
+which records BY WHICH KEY a row was attributed: `explicit` (a human named the UUID),
+`derived_deposit` (the server parked it in a tracer), `derived_connection` (the exact match)
+and `derived_window` (deduced by temporal exclusivity). Nullable, no backfill — `NULL` means
+"written before 048". Only the deduced mode carries a partial index: undoing a guess must be a
+query, not a scan, and its downgrade is fail-closed because dropping the column makes a
+deduction indistinguishable from a human's explicit capture. Revision 047 removes the closing
+XOR — non-empty ledger XOR
 `nothing_to_capture_reason` — from the `ended` branch of `brain_sessions_terminal_state_valid`.
 That check measured whether the CLIENT had declared; derived capture would now feed its signal
 from the server, and a check is hollow the moment the thing it checks can influence its own
@@ -672,7 +679,7 @@ brain_v42/
 │       ├── server.py             # entry point (stdio+http), build_services(), app_lifecycle()
 │       ├── http_security.py      # HostOriginGuard + BearerTokenGuard ASGI middleware
 │       └── tools/                # 49 always-on + 2 graph-gated = 51
-├── alembic/versions/             # migrations 001 .. 047 defined in the repository
+├── alembic/versions/             # migrations 001 .. 048 defined in the repository
 ├── scripts/                      # legacy import + projection inventory/recovery CLIs
 ├── tests/                        # unit/ + integration/
 ├── docs/

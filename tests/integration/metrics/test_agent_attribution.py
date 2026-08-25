@@ -17,9 +17,11 @@ which would catch any cross-contamination.
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
+import sys
 from contextlib import suppress
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 import pytest_asyncio
@@ -27,6 +29,7 @@ import uvicorn
 
 from brain_v42.config import get_settings
 from brain_v42.metrics.collector import MetricsCollector
+from tests.integration.metrics.task_dump import collect_probes, dump_tasks_after
 
 pytestmark = pytest.mark.integration
 
@@ -47,11 +50,68 @@ def _get_free_port() -> int:
 # ---------------------------------------------------------------------------
 
 
-_STOP_BUDGET_SECONDS = 15.0
+# LE BUDGET DE L'ITEM, REFAIT. La première rédaction annonçait « 60 s de corps
+# + 40 s de teardown = 100 s, sous le filet à 120 » et se trompait deux fois :
+# le `faulthandler_timeout` est armé sur le PROTOCOLE de l'item — setup + call +
+# teardown — et le corps porte DEUX attentes bornées CONSÉCUTIVES, pas une. Le
+# vrai pire cas était 5 (démarrage) + 60 + 60 + 15 + 10 (arrêt) + 15 (dispose),
+# soit 165 s ; même en s'arrêtant au premier dépassement il restait 5 + 60 + 40
+# = 105 s. Et le runner est mesuré 22 % plus lent le 2026-08-25 (148 s contre
+# 120,9 s sur la même suite) : 105 × 1,22 = 128 > 120. L'item franchissait donc
+# le filet sur le profil de runner qui produit la panne, et sortait par
+# `os._exit` — précisément le cas où l'on veut un verdict de test.
+#
+# Nouveau pire cas : 5 + 25 + 25 + 8 + 5 + 8 = 76 s, soit 93 s à +22 %, contre
+# un filet à 120. La marge est de 27 s, elle est écrite ici, et elle se refait
+# à la main dès qu'une de ces constantes bouge. Le normal mesuré de ces appels
+# est sous la seconde : 25 s reste deux ordres de grandeur au-dessus.
+_STARTUP_BUDGET_SECONDS = 5.0
+_STARTUP_POLL_SECONDS = 0.1
+_STOP_BUDGET_SECONDS = 8.0
+_CANCEL_BUDGET_SECONDS = 5.0
+_DISPOSE_BUDGET_SECONDS = 8.0
 #: Large, mais BORNÉ : un appel qui ne revient pas doit se nommer bien avant
 #: le `faulthandler_timeout` de 120 s, qui est le filet et non la borne.
-_CALL_BUDGET_SECONDS = 60.0
-_CANCEL_BUDGET_SECONDS = 10.0
+_CALL_BUDGET_SECONDS = 25.0
+
+
+def _dump_deadline(default: float) -> float:
+    """Deadline d'un chien de garde de DIAGNOSTIC, armée SOUS sa borne applicative.
+
+    Sous, parce qu'il doit tirer PENDANT que la tâche est encore suspendue :
+    après le `wait_for`, `Task.get_stack()` d'une tâche déjà annulée rend une
+    liste vide et le dump devient du code mort sur son propre chemin d'erreur.
+
+    Surchargeable par l'environnement pour une seule raison : PROUVER que le dump
+    tire sur le chemin réel. `BRAIN_TEST_TASK_DUMP_DEADLINE=0.001 pytest …` le
+    déclenche sur un run sain, où l'attente observée est le vrai handshake
+    `initialize`. Un diagnostic qu'on ne sait pas déclencher à la demande ne se
+    vérifie jamais.
+    """
+    override = os.environ.get("BRAIN_TEST_TASK_DUMP_DEADLINE", "").strip()
+    return float(override) if override else default
+
+
+#: Trois zones, trois deadlines — parce que le premier lot n'armait le dump
+#: qu'autour des deux attentes du CORPS et laissait nues les trois autres.
+_CALL_DUMP_DEADLINE = _dump_deadline(10.0)
+_STARTUP_DUMP_DEADLINE = _dump_deadline(3.0)
+_TEARDOWN_DUMP_DEADLINE = _dump_deadline(4.0)
+
+
+class Bench(NamedTuple):
+    """Ce que le banc rend : l'URL, le collecteur, ET les objets à SONDER.
+
+    Le serveur uvicorn et le FastMCP servant l'app remontent jusqu'au test parce
+    que le dump de diagnostic les relève : `len(server.server_state.tasks)` est la
+    mesure DIRECTE des « requêtes en vol » que le `ASGI callable returned without
+    completing response` de l'arrêt ne fait qu'inférer.
+    """
+
+    base_url: str
+    collector: MetricsCollector
+    mcp: Any
+    server: Any
 
 
 async def _stop_bounded(
@@ -75,6 +135,22 @@ async def _stop_bounded(
             await asyncio.wait_for(asyncio.shield(task), timeout=cancel_budget)
         return what
     return None
+
+
+async def _fail_to_start(server: Any, server_task: asyncio.Task[None]) -> None:
+    """Rendre la main sur un serveur qui n'a jamais démarré, puis ÉCHOUER.
+
+    `should_exit = True` NE LIBÈRE RIEN ici, et c'est structurel : `Server._serve`
+    fait `await self.startup()` PUIS `if not self.should_exit: await
+    self.main_loop()`, et `main_loop` est le SEUL endroit qui relit le drapeau. Si
+    `LifespanOn.startup()` bloque sur `startup_event.wait()` — sans timeout — on
+    n'y arrive jamais. L'ancien `await server_task` nu rendait donc le
+    `pytest.fail` INATTEIGNABLE sur exactement le chemin pour lequel il est écrit.
+    On annule, borné, et on rapporte quoi qu'il arrive.
+    """
+    server.should_exit = True
+    await _stop_bounded(server_task, what="un serveur metrics qui n'a jamais démarré")
+    pytest.fail(f"uvicorn did not start within {_STARTUP_BUDGET_SECONDS}s")
 
 
 @pytest_asyncio.fixture
@@ -111,6 +187,32 @@ async def http_server_and_collector(
     engine_module._session_factory = None
 
     from brain_v42.mcp.server import build_services, mcp
+
+    # TÉMOIN D'ENTRÉE — relevé SEUL, aucune assertion.
+    #
+    # C'est le seul point de ce banc qui voit l'état PARTAGÉ avant que le banc
+    # metrics ne le touche, donc le seul où ce qu'a laissé tests/integration/mcp/**
+    # (collecté avant : "mcp" < "metrics") est encore attribuable à son auteur.
+    #
+    # Ce qui se joue ici est UNE ligne du relevé :
+    # `sse_starlette.sse.AppStatus.should_exit`. C'est un attribut de CLASSE, donc
+    # global au processus et jamais remis à False ; `True` à l'entrée dit qu'un
+    # module antérieur a armé le latch qui fait sortir
+    # `_listen_for_exit_signal` immédiatement et sans un mot — la forme mesurée de
+    # la panne, où le serveur envoie les en-têtes SSE puis revient sans corps. Ne
+    # pas le confondre avec `uvicorn.Server.should_exit`, relevé lui aussi mais
+    # propre à l'instance de ce banc.
+    #
+    # Une assertion ici convertirait un coin-flip en rouge franc avant qu'on sache
+    # ce que cette valeur vaut en pratique : on MESURE d'abord. La contradiction
+    # reste ouverte et n'est pas lissée — les six tests e2e passent, alors qu'un
+    # latch armé tôt devrait les tuer.
+    print(
+        "-- témoin d'entrée du banc metrics (relevé, non assertif) --\n"
+        + "\n".join(f"{name} = {value}" for name, value in collect_probes(mcp=mcp).items()),
+        file=sys.stderr,
+        flush=True,
+    )
 
     services = build_services()
     collector: MetricsCollector = services["metrics_collector"]
@@ -167,27 +269,26 @@ async def http_server_and_collector(
     # Start uvicorn in a background task
     server_task = asyncio.create_task(server.serve())
 
-    # Wait until server is ready
-    for _ in range(50):
-        await asyncio.sleep(0.1)
-        if server.started:
-            break
-    else:
-        # `should_exit = True` NE LIBÈRE RIEN ici, et c'est structurel :
-        # `Server._serve` fait `await self.startup()` PUIS
-        # `if not self.should_exit: await self.main_loop()`, et `main_loop` est
-        # le SEUL endroit qui relit le drapeau. Si `LifespanOn.startup()` bloque
-        # sur `startup_event.wait()` — sans timeout — on n'y arrive jamais.
-        # L'ancien `await server_task` nu rendait donc le `pytest.fail`
-        # ci-dessous INATTEIGNABLE sur exactement le chemin pour lequel il est
-        # écrit. On annule, borné, et on rapporte quoi qu'il arrive.
-        server.should_exit = True
-        await _stop_bounded(server_task, what="un serveur metrics qui n'a jamais démarré")
-        pytest.fail("uvicorn did not start within 5s")
+    # LE DÉMARRAGE, SOUS CHIEN DE GARDE. Cette boucle attend `LifespanOn.startup()`,
+    # qui attend `startup_event.wait()` SANS timeout : une des trois zones que le
+    # premier lot laissait nues. Un démarrage qui ne vient jamais rendait
+    # « uvicorn did not start » — vrai, et muet sur QUI attendait.
+    async with dump_tasks_after(
+        _STARTUP_DUMP_DEADLINE,
+        label="metrics/uvicorn startup",
+        mcp=profiled_mcp,
+        server=server,
+    ):
+        for _ in range(int(_STARTUP_BUDGET_SECONDS / _STARTUP_POLL_SECONDS)):
+            await asyncio.sleep(_STARTUP_POLL_SECONDS)
+            if server.started:
+                break
+        else:
+            await _fail_to_start(server, server_task)
 
     base_url = f"http://127.0.0.1:{port}"
     try:
-        yield base_url, collector
+        yield Bench(base_url=base_url, collector=collector, mcp=profiled_mcp, server=server)
     finally:
         # Les globales sont rendues AVANT toute attente bornée : un
         # `pytest.fail` déclenché plus bas ne doit pas laisser le moteur du banc
@@ -197,13 +298,28 @@ async def http_server_and_collector(
         engine_module._session_factory = original_factory
         get_settings.cache_clear()
 
-        server.should_exit = True
-        stalled = await _stop_bounded(server_task, what="l'arrêt du serveur metrics")
-        if leftover_engine is not None:
-            try:
-                await asyncio.wait_for(leftover_engine.dispose(), timeout=_STOP_BUDGET_SECONDS)
-            except TimeoutError:
-                stalled = stalled or "la libération du moteur (engine.dispose)"
+        # L'ARRÊT, SOUS CHIEN DE GARDE — et c'est la zone qui portait le seul
+        # indice qu'on n'a jamais su lire : les deux `ASGI callable returned
+        # without completing response` apparaissent À LA FERMETURE, pas pendant
+        # les appels. `len(server.server_state.tasks)`, relevé par les sondes,
+        # MESURE les requêtes encore en vol que ce message ne fait qu'inférer.
+        # Le `pytest.fail` reste HORS du garde : le chien est déjà joint quand le
+        # verdict tombe.
+        async with dump_tasks_after(
+            _TEARDOWN_DUMP_DEADLINE,
+            label="metrics/teardown (arrêt uvicorn + dispose moteur)",
+            mcp=profiled_mcp,
+            server=server,
+        ):
+            server.should_exit = True
+            stalled = await _stop_bounded(server_task, what="l'arrêt du serveur metrics")
+            if leftover_engine is not None:
+                try:
+                    await asyncio.wait_for(
+                        leftover_engine.dispose(), timeout=_DISPOSE_BUDGET_SECONDS
+                    )
+                except TimeoutError:
+                    stalled = stalled or "la libération du moteur (engine.dispose)"
         if stalled is not None:
             pytest.fail(
                 f"{stalled} n'est pas revenu dans son budget — attente bornée, panne NOMMÉE. "
@@ -219,7 +335,7 @@ async def http_server_and_collector(
 
 @pytest.mark.asyncio
 async def test_agent_attribution_concurrent(
-    http_server_and_collector: tuple[str, MetricsCollector],
+    http_server_and_collector: Bench,
 ) -> None:
     """Two concurrent clients with distinct X-Brain-Agent headers record
     tool calls under isolated agent buckets in _tool_stats.
@@ -231,7 +347,14 @@ async def test_agent_attribution_concurrent(
     from fastmcp import Client
     from fastmcp.client.transports import StreamableHttpTransport
 
-    base_url, collector = http_server_and_collector
+    bench = http_server_and_collector
+    base_url, collector = bench.base_url, bench.collector
+    # Le libellé porte l'identité : si l'objet servant l'app EST le singleton
+    # partagé, les compteurs de lifespan relevés sont ceux que les modules
+    # précédents ont laissés.
+    from brain_v42.mcp.server import mcp as shared_mcp  # noqa: PLC0415
+
+    label_suffix = f"profiled is singleton: {bench.mcp is shared_mcp}"
 
     async def visible_tools(profile: str | None = None) -> set[str]:
         headers = {"x-brain-tool-profile": profile} if profile else None
@@ -244,11 +367,24 @@ async def test_agent_attribution_concurrent(
     # (0:02:00)!` avec le nodeid de ce test imprimé juste après le dump. Le
     # corps du test n'avait AUCUNE borne — quatre attentes réseau nues — donc la
     # panne coûtait le timeout du job entier au lieu de se nommer.
+    #
+    # Le dump est armé AUTOUR de l'attente, jamais dans son `except TimeoutError` :
+    # `wait_for` annule le gather, ATTEND l'annulation, PUIS lève — là-bas les deux
+    # tâches sont déjà terminées et leurs frames ont disparu. Le blocage MESURÉ
+    # n'est d'ailleurs pas dans `list_tools` mais dans `Client.__aenter__` ->
+    # `client.py:571 ready_event.wait()`, donc le handshake `initialize` : le
+    # message d'erreur ci-dessous a envoyé deux analyses sur une fausse piste.
     try:
-        compact_names, native_names = await asyncio.wait_for(
-            asyncio.gather(visible_tools(), visible_tools("native")),
-            timeout=_CALL_BUDGET_SECONDS,
-        )
+        async with dump_tasks_after(
+            _CALL_DUMP_DEADLINE,
+            label=f"metrics/list_tools ({label_suffix})",
+            mcp=bench.mcp,
+            server=bench.server,
+        ):
+            compact_names, native_names = await asyncio.wait_for(
+                asyncio.gather(visible_tools(), visible_tools("native")),
+                timeout=_CALL_BUDGET_SECONDS,
+            )
     except TimeoutError:
         pytest.fail(
             "lister le catalogue n'est jamais revenu — le serveur du banc metrics "
@@ -271,10 +407,16 @@ async def test_agent_attribution_concurrent(
 
     # Fire both agents concurrently — this is the H6 stress point
     try:
-        await asyncio.wait_for(
-            asyncio.gather(call_as_agent("red-shrik"), call_as_agent("red-codex")),
-            timeout=_CALL_BUDGET_SECONDS,
-        )
+        async with dump_tasks_after(
+            _CALL_DUMP_DEADLINE,
+            label=f"metrics/call_tool concurrent ({label_suffix})",
+            mcp=bench.mcp,
+            server=bench.server,
+        ):
+            await asyncio.wait_for(
+                asyncio.gather(call_as_agent("red-shrik"), call_as_agent("red-codex")),
+                timeout=_CALL_BUDGET_SECONDS,
+            )
     except TimeoutError:
         pytest.fail("les appels concurrents ne sont jamais revenus — attente bornée, panne NOMMÉE")
 

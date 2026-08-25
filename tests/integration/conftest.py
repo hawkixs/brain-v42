@@ -675,3 +675,105 @@ async def graph_service(neo4j_driver):  # type: ignore[misc]
     from brain_v42.services.graph_service import GraphService
 
     return GraphService(neo4j_driver)
+
+
+# ---------------------------------------------------------------------------
+# sse-starlette — neutraliser un latch de PROCESSUS entre deux tests
+# ---------------------------------------------------------------------------
+
+
+class SseExitLatchArmed(UserWarning):
+    """Le latch de sortie de ``sse-starlette`` était armé, et on l'a désarmé.
+
+    Émise pour être VUE : sans elle on referme un défaut amont sous un tapis de
+    test, et le jour où ``sse-starlette`` corrige son latch personne ne saura ni
+    que cette fixture existe ni pourquoi. Une garde muette devient du folklore.
+    """
+
+
+#: Le défaut amont, en une phrase : ``sse_starlette.sse.AppStatus.should_exit``
+#: est un attribut de CLASSE, global au processus, que rien ne remet jamais à
+#: ``False``. Une veille (``sse_starlette/sse.py:81-113``) sonde toutes les 0,5 s
+#: le serveur uvicorn qu'elle retrouve par ``signal.getsignal(SIGTERM).__self__``,
+#: et l'arme dès qu'elle le voit s'arrêter — y compris pour un arrêt PARFAITEMENT
+#: NORMAL, c'est-à-dire à chaque teardown de banc. Une fois armé, il fait revenir
+#: ``_listen_for_exit_signal`` (l. 311-313) immédiatement, ce qui annule tout le
+#: task group de ``EventSourceResponse`` juste après l'envoi des en-têtes : le
+#: serveur répond 200 puis REVIENT SANS CORPS, client encore connecté, sans lever
+#: ni journaliser. Un client MCP dont la réponse ``initialize`` transite par ce
+#: flux attend alors pour toujours.
+#:
+#: MESURÉ le 2026-08-25 : la fenêtre de teardown d'un banc dure ~0,144 s contre
+#: une sonde à 0,5 s, soit ~28 % d'armement par teardown — conforme au rapport
+#: géométrique 0,144/0,5. C'est une fonction de la DURÉE des tests, pas un tirage
+#: indépendant : d'où un échec de CI qui se lit comme un coin-flip.
+#:
+#: La réparation est AMONT. Ici on se protège et on laisse une trace.
+_SSE_LATCH_ATTR = "should_exit"
+
+
+def _read_sse_exit_latch() -> bool | None:
+    """Rendre l'état du latch, ou ``None`` si l'amont a bougé sous nos pieds.
+
+    Import tardif et total : cette fixture est autouse sur TOUTE la suite
+    d'intégration, et une garde qui fait tomber les tests qu'elle protège est
+    pire que pas de garde.
+    """
+    try:
+        from sse_starlette.sse import AppStatus
+
+        return bool(getattr(AppStatus, _SSE_LATCH_ATTR))
+    except Exception:  # noqa: BLE001 - jamais fatal, c'est une garde
+        return None
+
+
+def _disarm_sse_exit_latch() -> None:
+    try:
+        from sse_starlette.sse import AppStatus
+
+        setattr(AppStatus, _SSE_LATCH_ATTR, False)
+    except Exception:  # noqa: BLE001 - jamais fatal, c'est une garde
+        pass
+
+
+@pytest.fixture(autouse=True)
+def disarm_sse_exit_latch(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Désarmer le latch avant ET après chaque test, en DISANT quand il l'était.
+
+    Les deux moments comptent, et ils ne disent pas la même chose :
+
+    - **avant** : le latch était déjà armé en entrant, donc un test antérieur
+      l'a laissé ainsi et celui-ci allait le subir sans l'avoir causé ;
+    - **après** : le latch a été armé PENDANT ce test ou par son teardown — et
+      c'est la seule mesure qui NOMME le coupable. C'est aussi pour ça que le
+      désarmement d'après existe : sans lui, la trace d'avant accuserait la
+      victime suivante au lieu de l'auteur.
+
+    Cette fixture est déclarée dans ``conftest.py`` et non dans un module, parce
+    que les deux bancs qui montent uvicorn vivent dans des répertoires différents
+    (``mcp/`` et ``metrics/``) et que le latch, lui, ignore les répertoires.
+    """
+    if _read_sse_exit_latch():
+        _disarm_sse_exit_latch()
+        warnings.warn(
+            f"latch sse-starlette DÉJÀ ARMÉ à l'entrée de {request.node.nodeid} — "
+            "désarmé. Un test antérieur l'a laissé armé ; celui-ci en aurait été la "
+            "victime, pas la cause. Voir SseExitLatchArmed dans "
+            "tests/integration/conftest.py.",
+            SseExitLatchArmed,
+            stacklevel=2,
+        )
+    try:
+        yield
+    finally:
+        if _read_sse_exit_latch():
+            _disarm_sse_exit_latch()
+            warnings.warn(
+                f"latch sse-starlette ARMÉ PAR {request.node.nodeid} (test ou "
+                "teardown) — désarmé. C'est CE test qui l'a armé : sans cette "
+                "fixture, le prochain test servant une réponse JSON-RPC sur un flux "
+                "SSE aurait pendu. Voir SseExitLatchArmed dans "
+                "tests/integration/conftest.py.",
+                SseExitLatchArmed,
+                stacklevel=2,
+            )

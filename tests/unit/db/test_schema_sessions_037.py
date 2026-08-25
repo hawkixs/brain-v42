@@ -26,6 +26,8 @@ def test_session_v4_columns_and_artifact_ledger_are_declared() -> None:
         "session_id",
         "knowledge_type",
         "captured_at",
+        # 048 : PAR QUELLE CLÉ cette ligne a été attribuée.
+        "attribution_mode",
     }
     assert ledger.c.knowledge_id.primary_key is True
     session_fk = next(iter(ledger.c.session_id.foreign_keys))
@@ -71,3 +73,34 @@ def test_migration_037_downgrade_refuses_lossy_v4_state() -> None:
     assert source.index("cannot downgrade session lifecycle v4") < source.index(
         "DROP TABLE IF EXISTS brain_session_artifacts"
     )
+
+
+def test_migration_048_upgrade_is_replayable_by_hand() -> None:
+    """Une promesse d'idempotence tenue à moitié piège qui rejoue à la main.
+
+    Alembic annule la révision entière sur échec, donc un `upgrade` interrompu
+    ne laissait rien derrière lui — le défaut n'était pas là. Il était dans la
+    PROMESSE : `ADD COLUMN IF NOT EXISTS` à côté d'un `ADD CONSTRAINT` qui
+    n'existe pas en variante `IF NOT EXISTS`. Or l'ordre de bascule de ce lot
+    demande explicitement d'appliquer la 048 et de la VÉRIFIER avant tout
+    redémarrage : quelqu'un rejouera ces instructions à la main.
+
+    On garde donc les trois objets sur la même promesse — colonne, contrainte,
+    index — la contrainte par un DROP-IF-EXISTS préalable, gabarit de la 047.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[3] / "alembic" / "versions" / "048_attribution_mode.py"
+    )
+    spec = importlib.util.spec_from_file_location("_migration_048_probe", source)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert "IF EXISTS" in module._DROP_CHECK
+    assert "IF NOT EXISTS" not in module._ADD_CHECK, (
+        "Postgres n'a pas d'ADD CONSTRAINT IF NOT EXISTS — le DROP préalable EST le mécanisme"
+    )
+    assert module._DROP_CHECK != module._ADD_CHECK

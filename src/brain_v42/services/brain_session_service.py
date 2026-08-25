@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from typing import Protocol
 from uuid import UUID
 
+import structlog
+
 from brain_v42.config import get_settings
 from brain_v42.models.brain_session import (
     MAX_CAPTURED_KNOWLEDGE_IDS,
@@ -43,6 +45,9 @@ __all__ = [
     "BrainSessionStateError",
     "BrainSessionTerminalConflictError",
 ]
+
+
+logger = structlog.get_logger(__name__)
 
 
 class BrainSessionRepository(Protocol):
@@ -128,8 +133,26 @@ class BrainSessionService:
         """
         connection_id = self._absorption_connection()
         if connection_id is None:
+            # TROISIÈME `0` indiscernable, désormais nommé. Sans cette ligne,
+            # « la capture dérivée est fermée » et « ce transport n'a pas
+            # d'identifiant » se lisaient pareil au journal — c'est-à-dire pas
+            # du tout, puisque ni l'un ni l'autre n'écrivait quoi que ce soit.
+            logger.debug(
+                "session_derived_capture.absorption_skipped",
+                session_id=str(session_id),
+                reason=self._absorption_skip_reason(),
+            )
             return
         await self.repo.absorb_derived_capture(session_id, connection_id)
+
+    def _absorption_skip_reason(self) -> str:
+        """Pourquoi aucune absorption n'a été tentée — drapeau, ou transport."""
+        try:
+            if not get_settings().brain_session_derived_capture_enabled:
+                return "disabled"
+        except Exception:
+            return "settings_unavailable"
+        return "no_connection"
 
     async def start(self, project_key: str, client_key: str) -> BrainSessionStartResult:
         """Start or idempotently replay a concurrent session."""

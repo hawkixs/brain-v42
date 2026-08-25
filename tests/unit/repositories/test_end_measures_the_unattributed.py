@@ -103,3 +103,32 @@ async def test_the_counter_never_blocks_the_close() -> None:
     result, _statements = await _end_with(97, captured_knowledge_ids=[uuid4()])
     assert result.session.status.value == "ended"  # type: ignore[attr-defined]
     assert result.unattributed_in_window == 97  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_an_artifact_parked_in_a_tracer_counts_as_UNattributed() -> None:
+    """Le reçu MENTAIT exactement dans le cas qu'on répare.
+
+    Une ligne garée dans une traçante `agent` a bien une ligne de ledger, donc
+    l'anti-jointure la comptait comme attribuée. C'est pour ça que
+    `unattributed_in_window` valait déjà 0 le jour où la promesse n'était pas
+    tenue — mesuré sur la fermeture du 2026-08-24 : le seul artefact dérivé
+    n'apparaissait ni comme attribué à l'utilisateur, ni comme orphelin.
+
+    Un refus de la règle d'exclusivité doit se VOIR. Un lot fail-closed sans
+    visibilité se lit comme un lot cassé.
+    """
+    _result, statements = await _end_with(1)
+    counts = [
+        stmt
+        for stmt in statements
+        if "count(" in _sql(stmt) and "brain_session_artifacts" in _sql(stmt)
+    ]
+    query = _sql(counts[-1])
+    assert "brain_sessions" in query, (
+        "l'anti-jointure ignore la NATURE du propriétaire : une ligne garée "
+        "dans une traçante passe encore pour attribuée"
+    )
+    # `agent` voyage en PARAMÈTRE, jamais dans le texte compilé : le chercher
+    # dans le SQL rendrait ce test vert sans avoir rien vu.
+    assert "agent" in set(_params(counts[-1]).values())

@@ -233,3 +233,20 @@ def test_scanner_ignores_reads_and_ddl(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert scan_ledger_writers([tmp_path], tmp_path) == set()
+
+
+def test_capture_declares_its_take_over_update() -> None:
+    """La reprise par `capture` est un ÉCRIVAIN de plus, pas un détail.
+
+    `capture()` refusait une ligne détenue par une traçante ; elle la REPREND
+    désormais quand — et seulement quand — le détenteur est `nature='agent'`.
+    C'est un `UPDATE` du ledger, donc un site que l'allowlist doit nommer :
+    ce que la règle d'exclusivité refuse d'attribuer reste réparable par un
+    humain qui nomme l'UUID, et ce chemin-là doit être vu en revue.
+    """
+    from brain_v42.db.session_ledger_writers import DECLARED_SESSION_LEDGER_WRITERS
+
+    assert (
+        "src/brain_v42/repositories/pg_brain_session.py::PgBrainSessionRepo.capture::update"
+        in DECLARED_SESSION_LEDGER_WRITERS
+    )

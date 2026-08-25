@@ -129,6 +129,9 @@ async def test_the_downgrade_refuses_to_destroy_a_closure_it_cannot_restore(
 
     from tests.integration.conftest import INTEGRATION_DB_URL
 
+    async with engine.connect() as conn:
+        head_before = await conn.scalar(sa.text("SELECT version_num FROM alembic_version"))
+
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "downgrade", "046"],
         env={**os.environ, "POSTGRES_URL": INTEGRATION_DB_URL},
@@ -144,4 +147,9 @@ async def test_the_downgrade_refuses_to_destroy_a_closure_it_cannot_restore(
 
     async with engine.connect() as conn:
         head = await conn.scalar(sa.text("SELECT version_num FROM alembic_version"))
-    assert head == "047", "le refus doit laisser la tête intacte"
+    # Comparé à la tête MESURÉE avant la tentative, jamais à un littéral. La
+    # forme précédente épinglait `"047"` et devenait fausse à chaque révision
+    # suivante — la base est alors plus haut que 047, et un `downgrade 046`
+    # traverse les révisions intermédiaires. C'est la classe de défaut que ce
+    # dépôt a déjà payée avec les têtes Alembic codées en dur.
+    assert head == head_before, "le refus doit laisser la tête intacte"
