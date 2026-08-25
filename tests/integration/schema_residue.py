@@ -48,6 +48,7 @@ DOWNGRADING_TEST_FILES: tuple[str, ...] = (
     # fermeture dérivée existe — mais il touche quand même la tête
     # partagée, donc il se déclare ici comme les autres.
     "tests/integration/db/test_migration_047_end_gate.py",
+    "tests/integration/db/test_migration_048_attribution_mode.py",
 )
 
 # Tables probed for leftover rows, in the order the message lists them.

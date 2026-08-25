@@ -912,15 +912,31 @@ brain_session_artifacts = Table(
         nullable=False,
         server_default=sa.text("NOW()"),
     ),
+    # 048. PAR QUELLE CLÉ cette ligne a été attribuée. NULL = écrite avant la
+    # 048, jamais « inconnu par défaut » : aucun backfill, parce que poser
+    # 'explicit' partout mentirait sur ce que `derive_capture` avait déposé.
+    # `derived_window` est le seul mode DÉDUIT — c'est lui qu'un audit cherche,
+    # et c'est pour lui seul que la 048 pose un index partiel.
+    Column("attribution_mode", String(24), nullable=True),
     sa.CheckConstraint(
         "knowledge_type IN ('decision', 'learning', 'snippet', 'runbook', "
         "'adr', 'indexed_plan', 'legacy')",
         name="brain_session_artifacts_type_valid",
     ),
+    sa.CheckConstraint(
+        "attribution_mode IS NULL OR attribution_mode IN "
+        "('explicit', 'derived_deposit', 'derived_connection', 'derived_window')",
+        name="brain_session_artifacts_attribution_mode_valid",
+    ),
     Index(
         "idx_brain_session_artifacts_session_captured",
         "session_id",
         "captured_at",
+    ),
+    Index(
+        "idx_brain_session_artifacts_derived_window",
+        "session_id",
+        postgresql_where=sa.text("attribution_mode = 'derived_window'"),
     ),
 )
 

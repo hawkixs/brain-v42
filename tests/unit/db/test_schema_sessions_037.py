@@ -26,6 +26,8 @@ def test_session_v4_columns_and_artifact_ledger_are_declared() -> None:
         "session_id",
         "knowledge_type",
         "captured_at",
+        # 048 : PAR QUELLE CLÉ cette ligne a été attribuée.
+        "attribution_mode",
     }
     assert ledger.c.knowledge_id.primary_key is True
     session_fk = next(iter(ledger.c.session_id.foreign_keys))

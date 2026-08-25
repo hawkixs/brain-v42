@@ -7,7 +7,10 @@
 
 Most tools return formatted markdown strings. The seven v4 session lifecycle tools return structured Pydantic results. Their repository contract is documented below. Lifecycle v4 has run in production since 24 July 2026, after revision 036, explicit schema proof and a restart-last MCP cutover with authenticated E2E canaries.
 
-Migration 047 is the repository target: it removes the closing XOR, so a session whose ledger
+Migration 048 is the repository target: it adds `brain_session_artifacts.attribution_mode`,
+so a reader can tell a PROVEN attribution (`derived_connection`, same connection) from a DEDUCED
+one (`derived_window`, sole covering session at the instant of creation) — and undo the second
+kind. Migration 047 removes the closing XOR, so a session whose ledger
 the server filled can still be closed — and `brain_session_end` reports
 `unattributed_in_window` instead of demanding a receipt. Migration 046 gives sessions their
 identity (`connection_id`,
