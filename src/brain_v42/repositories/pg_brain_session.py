@@ -274,6 +274,37 @@ class PgBrainSessionRepo(BasePgRepository):
         loin avec la même exception. La faire remonter d'ici rend la garde
         infranchissable au lieu de la laisser dépendre d'un ordre.
 
+        ⚠ CE QUI PROTÈGE EST LA FRONTIÈRE TRANSACTIONNELLE, PAS LA POSITION DE
+        CETTE LIGNE. Mesuré, deux mutants joués :
+
+        - garde déplacée APRÈS ``absorb_tracer_ledger`` mais DANS ce ``async
+          with`` → **11 tests verts**. Mutant ÉQUIVALENT, pas test creux :
+          ``transaction()`` ouvre un ``sess.begin()``, donc l'exception annule le
+          déplacement avec le reste. La position au-dessus est un choix de
+          LISIBILITÉ ;
+        - garde déplacée APRÈS et HORS du ``async with`` → **rouge**. Le
+          déplacement est commité avant le refus, et le banc le voit.
+
+        Autrement dit : la sûreté tient à ce qu'aucun COMMIT ne s'intercale entre
+        le déplacement du ledger et le refus. Les deux gestes qui l'écraseraient
+        de façon VISIBLE — sortir l'absorption de la transaction, y glisser un
+        ``commit()`` — sont donc couverts par
+        ``test_a_mistargeted_absorption_moves_NOTHING_before_it_refuses``.
+
+        CE QUI N'EST SURVEILLÉ PAR AUCUN TEST, et c'est pour lui que ce
+        paragraphe existe : **donner à cette méthode un paramètre ``session``**.
+        ``transaction()`` basculerait sur sa branche ``begin_nested()`` et la
+        portée de l'annulation deviendrait celle de l'APPELANT, pas la nôtre. Le
+        banc ne passe jamais de session — il resterait donc VERT pendant qu'un
+        appelant qui en passe une, et qui avale l'exception, commiterait le
+        déplacement. Elle n'en prend pas aujourd'hui, et c'est ce qui rend la
+        garantie inconditionnelle.
+
+        Un test ne sait pas exprimer « ne me donne pas de session ». Ce
+        commentaire, lui, est là où le refactor se lira. Le coût du trou est
+        rappelé plus haut : le ledger est EXCLUSIF, donc un déplacement mal ciblé
+        est IRRÉVERSIBLE.
+
         Rend le nombre de lignes déplacées ; ``0`` couvre tous les autres refus.
         """
         from brain_v42.db.session_derived_capture import (  # noqa: PLC0415
