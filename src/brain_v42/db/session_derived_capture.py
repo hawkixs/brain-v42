@@ -267,12 +267,21 @@ def _eligible_ids(project_key: str, started_at: datetime, limit: int) -> sa.Comp
     return sa.union_all(*branches).limit(limit)
 
 
-def _eligible_rows(project_key: str, started_at: datetime, limit: int) -> sa.CompoundSelect[Any]:
+def _eligible_rows(project_key: str, started_at: datetime) -> sa.CompoundSelect[Any]:
     """Les mêmes bornes que ``_eligible_ids``, mais l'INSTANT voyage avec l'id.
 
     L'étage fenêtre ne juge pas un artefact dans l'absolu : il juge qui couvrait
     l'instant de sa création. Cet instant doit donc être corrélable ligne à
     ligne, ce qu'une liste d'identifiants nus ne permet pas.
+
+    **AUCUN ``LIMIT`` ici, et c'est le correctif A1.** La version précédente
+    bornait ce ``UNION ALL`` avant que le filtre de rivalité ne s'applique :
+    Postgres rendait alors un lot ARBITRAIRE (aucun ``ORDER BY``), qui pouvait
+    être entièrement contesté, et les lignes légitimes n'étaient jamais
+    absorbées — en silence, et différemment d'un appel à l'autre. Le plafond
+    n'est pas 100 mais ``100 - occupé``, qui rétrécit à mesure qu'une session
+    accumule : le cas se produisait en fin de session longue, exactement quand
+    l'absorption sert le plus. On borne donc APRÈS avoir filtré.
     """
     branches = [
         sa.select(table.c.id.label("id"), table.c.created_at.label("created_at")).where(
@@ -281,7 +290,7 @@ def _eligible_rows(project_key: str, started_at: datetime, limit: int) -> sa.Com
         )
         for table, _knowledge_type in _CAPTURE_TABLES
     ]
-    return sa.union_all(*branches).limit(limit)
+    return sa.union_all(*branches)
 
 
 def _window_donors(project_key: str) -> sa.Select[Any]:
@@ -398,7 +407,13 @@ async def absorb_tracer_ledger(
             )
             remaining = _capture_cap() - occupied
             if remaining <= 0:
-                return AbsorptionOutcome(reason="ledger_full")
+                # A2c : ce refus atteint le JOURNAL, pas seulement l'API. La
+                # version précédente sortait d'ici sans rien émettre, alors que
+                # le lot promettait des raisons distinguables « en API comme au
+                # journal ».
+                full = AbsorptionOutcome(reason="ledger_full")
+                _log_absorption(target, connection_id, full)
+                return full
 
             if tracer is not None and tracer != target.id:
                 donors.append(UUID(str(tracer)))
@@ -422,49 +437,65 @@ async def absorb_tracer_ledger(
                 remaining -= len(moved_connection)
 
             if remaining > 0:
-                eligible = _eligible_rows(
-                    target.project_key, target.started_at, remaining
-                ).subquery()
+                eligible = _eligible_rows(target.project_key, target.started_at).subquery()
                 contested = _covered_by_a_rival(
                     target.project_key, target.id, eligible.c.created_at
                 )
-                parked = sa.select(brain_session_artifacts.c.knowledge_id).where(
-                    brain_session_artifacts.c.session_id.in_(_window_donors(target.project_key))
+                parked = brain_session_artifacts.join(
+                    eligible, eligible.c.id == brain_session_artifacts.c.knowledge_id
                 )
-                moved_window = list(
-                    (
-                        await session.execute(
-                            brain_session_artifacts.update()
-                            .where(
-                                brain_session_artifacts.c.session_id.in_(
-                                    _window_donors(target.project_key)
-                                ),
-                                brain_session_artifacts.c.knowledge_id.in_(
-                                    sa.select(eligible.c.id).where(sa.not_(contested))
-                                ),
-                            )
-                            .values(session_id=target.id, attribution_mode=BY_WINDOW)
-                            .returning(brain_session_artifacts.c.knowledge_id)
-                        )
-                    )
-                    .scalars()
-                    .all()
+                in_a_tracer = brain_session_artifacts.c.session_id.in_(
+                    _window_donors(target.project_key)
                 )
 
-                if not moved_connection and not moved_window:
-                    # Ce compte est la différence entre « la règle a dit non » et
-                    # « ce chemin est mort ». Sans lui, un refus systématique
-                    # ressemble à du code jamais atteint.
-                    rivals = int(
+                # A1 : on FILTRE, puis on borne. Et on SÉLECTIONNE avant de
+                # mettre à jour, parce que le `RETURNING` d'un UPDATE rend la
+                # NOUVELLE valeur de `session_id` : la donneuse serait perdue
+                # au moment précis où elle compte — l'étage déduit est celui
+                # qu'on voudra défaire (A2b).
+                candidates = (
+                    await session.execute(
+                        sa.select(
+                            brain_session_artifacts.c.knowledge_id,
+                            brain_session_artifacts.c.session_id,
+                        )
+                        .select_from(parked)
+                        .where(in_a_tracer, sa.not_(contested))
+                        .limit(remaining)
+                    )
+                ).all()
+
+                if candidates:
+                    taken = [row[0] for row in candidates]
+                    donors.extend(dict.fromkeys(UUID(str(row[1])) for row in candidates))
+                    moved_window = list(
                         (
                             await session.execute(
-                                sa.select(sa.func.count())
-                                .select_from(eligible)
-                                .where(eligible.c.id.in_(parked), contested)
+                                brain_session_artifacts.update()
+                                .where(brain_session_artifacts.c.knowledge_id.in_(taken))
+                                .values(session_id=target.id, attribution_mode=BY_WINDOW)
+                                .returning(brain_session_artifacts.c.knowledge_id)
                             )
-                        ).scalar_one()
-                        or 0
+                        )
+                        .scalars()
+                        .all()
                     )
+
+                # A2a : compté À CHAQUE PASSAGE de l'étage fenêtre, et non
+                # seulement quand rien n'a bougé. Une absorption qui prend 1
+                # ligne par connexion et en refuse 5 par ambiguïté journalisait
+                # `rivals_blocked=0` — le « total qui masque » que ce lot existe
+                # pour empêcher, réintroduit d'un cran plus bas.
+                rivals = int(
+                    (
+                        await session.execute(
+                            sa.select(sa.func.count())
+                            .select_from(parked)
+                            .where(in_a_tracer, contested)
+                        )
+                    ).scalar_one()
+                    or 0
+                )
     except Exception:
         logger.warning("session_derived_capture.absorb_failed", exc_info=True)
         return AbsorptionOutcome(reason="failed")

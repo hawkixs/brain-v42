@@ -34,6 +34,7 @@ import os
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -494,3 +495,92 @@ async def test_capture_never_takes_what_another_human_already_holds(
             await repo.capture(other.session.id, "task-w20-other", [artifact])
 
     assert await _ledger_owner(session_factory, artifact) == UUID(str(holder.session.id))
+
+
+async def _derive_one_decision(decision_repo: Any, project_key: str) -> UUID:
+    """Un artefact dans la PREMIÈRE branche du `UNION ALL` (`decisions`).
+
+    La branche compte : sans `ORDER BY`, un `LIMIT` posé sur l'union sert les
+    premières branches d'abord. Mettre les artefacts contestés en tête est ce
+    qui rend le témoin déterministe au lieu de probabiliste.
+    """
+    from brain_v42.models.decision import DecisionCreate
+
+    created = await decision_repo.create(
+        DecisionCreate(
+            title=f"w20 contested {uuid4().hex[:8]}",
+            description="Artefact du banc de bornage ; aucune portée opérationnelle.",
+            reasoning="Occuper la première branche du UNION ALL.",
+            project_key=project_key,
+        )
+    )
+    return UUID(str(created.id))
+
+
+async def test_the_bound_never_hides_an_eligible_artifact_behind_contested_ones(
+    session_factory: async_sessionmaker[AsyncSession],
+    absorption_project: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A1 — filtrer, PUIS borner. Un témoin qui ne dépasse pas le plafond ne verrait rien.
+
+    Le `UNION ALL` des six tables n'a pas d'`ORDER BY`. Borner AVANT le filtre de
+    rivalité laissait Postgres rendre un lot arbitraire — ici les deux décisions
+    contestées, servies par la première branche — et l'artefact légitime, en
+    seconde branche, n'était jamais absorbé. En silence, et différemment d'un
+    appel à l'autre.
+
+    Le seuil réel n'est pas le plafond de 100 mais `100 - occupé`, qui rétrécit à
+    mesure qu'une session accumule : le cas se produit en fin de session longue,
+    exactement quand l'absorption sert le plus. On abaisse donc le plafond plutôt
+    que de fabriquer cent artefacts — le défaut porte sur le RAPPORT entre
+    `remaining` et le nombre d'éligibles, jamais sur la valeur 100.
+    """
+    import brain_v42.db.session_derived_capture as module
+    from brain_v42.repositories.pg_decision import PgDecisionRepo
+
+    repo = PgBrainSessionRepo(session_factory)
+    learning_repo = PgLearningRepo(session_factory)
+    decision_repo = PgDecisionRepo(session_factory)
+
+    with _derived_capture(True):
+        mine = await repo.start(absorption_project, "task-w20-bound")
+        rival = await repo.start(absorption_project, "task-w20-bound-rival")
+
+        with _transport(uuid4().hex) as connection_a:
+            tracer = await repo.auto_open(_Identity(absorption_project, connection_a))
+            # Deux CONTESTÉS, en première branche du UNION ALL, et autant que
+            # `remaining` : sous l'ancien ordre ils remplissaient le lot à eux
+            # seuls.
+            contested = [await _derive_one_decision(decision_repo, absorption_project)]
+            contested.append(await _derive_one_decision(decision_repo, absorption_project))
+
+            # La rivale part APRÈS eux : elle les couvre, et elle ne couvrira pas
+            # ce qui suit.
+            await repo.abandon(rival.session.id, "task-w20-bound-rival", "partie")
+
+            legitimate = await _derive_one_artifact(learning_repo, absorption_project)
+
+        for item in (*contested, legitimate):
+            assert await _ledger_owner(session_factory, item) == UUID(str(tracer))
+
+        # Le plafond n'est abaissé qu'ICI. `derive_capture` lit le MÊME
+        # plafond : le baisser plus tôt aurait refusé de déposer le troisième
+        # artefact, et le témoin aurait décrit une fenêtre qui ne déborde pas —
+        # exactement le test qui ne voit rien.
+        monkeypatch.setattr(module, "_capture_cap", lambda: 2)
+
+        with _transport(uuid4().hex) as connection_b:
+            await repo.auto_open(_Identity(absorption_project, connection_b))
+            moved = await _absorb_from_the_current_connection(repo, UUID(str(mine.session.id)))
+
+    assert moved == 1, (
+        "les artefacts contestés ont rempli le lot avant que le filtre ne "
+        "s'applique : l'artefact légitime est resté invisible"
+    )
+    assert await _ledger_owner(session_factory, legitimate) == UUID(str(mine.session.id))
+    assert await _attribution_mode(session_factory, legitimate) == "derived_window"
+    # Les contestés n'ont pas bougé : borner après filtrer ne rend pas la règle
+    # permissive.
+    for item in contested:
+        assert await _ledger_owner(session_factory, item) == UUID(str(tracer))

@@ -44,7 +44,14 @@ _DOWNGRADE_OPT_IN = "allow_attribution_mode_downgrade"
 #: (étage déduit par exclusivité temporelle).
 _MODES = ("explicit", "derived_deposit", "derived_connection", "derived_window")
 
-_CHECK = (
+#: Postgres n'a pas d'``ADD CONSTRAINT IF NOT EXISTS`` : on retire d'abord.
+#: Gabarit 047, qui fait déjà DROP puis ADD sur cette famille de contraintes.
+_DROP_CHECK = (
+    "ALTER TABLE brain_session_artifacts "
+    "DROP CONSTRAINT IF EXISTS brain_session_artifacts_attribution_mode_valid"
+)
+
+_ADD_CHECK = (
     "ALTER TABLE brain_session_artifacts "
     "ADD CONSTRAINT brain_session_artifacts_attribution_mode_valid "
     "CHECK (attribution_mode IS NULL OR attribution_mode IN ("
@@ -54,10 +61,18 @@ _CHECK = (
 
 
 def upgrade() -> None:
+    # REJOUABLE POUR DE VRAI, et c'est un choix tranché plutôt que cosmétique.
+    # La version précédente portait `ADD COLUMN IF NOT EXISTS` — donc promettait
+    # d'être rejouable — à côté d'un `ADD CONSTRAINT` qui ne l'était pas.
+    # Alembic annule la révision entière sur échec, donc rien ne cassait par ce
+    # chemin ; ce qui cassait, c'est la promesse, pour quiconque rejouerait ces
+    # instructions À LA MAIN. Vu l'ordre de bascule — appliquer la 048 et la
+    # VÉRIFIER avant tout redémarrage — quelqu'un les rejouera à la main.
     op.execute(
         "ALTER TABLE brain_session_artifacts ADD COLUMN IF NOT EXISTS attribution_mode VARCHAR(24)"
     )
-    op.execute(_CHECK)
+    op.execute(_DROP_CHECK)
+    op.execute(_ADD_CHECK)
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_brain_session_artifacts_derived_window "
         "ON brain_session_artifacts (session_id) "
@@ -105,8 +120,5 @@ def downgrade() -> None:
         """
     )
     op.execute("DROP INDEX IF EXISTS idx_brain_session_artifacts_derived_window")
-    op.execute(
-        "ALTER TABLE brain_session_artifacts "
-        "DROP CONSTRAINT IF EXISTS brain_session_artifacts_attribution_mode_valid"
-    )
+    op.execute(_DROP_CHECK)
     op.execute("ALTER TABLE brain_session_artifacts DROP COLUMN IF EXISTS attribution_mode")

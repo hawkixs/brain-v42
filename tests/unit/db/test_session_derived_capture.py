@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
+from structlog.testing import capture_logs
 
 from brain_v42.provenance import set_current_transport
 from tests.unit.repositories.test_pg_brain_session import _params, _result, _sql
@@ -269,8 +270,10 @@ class TestAbsorption:
         session, statements = _session(_absorb_router(tracer=uuid4(), candidates=moved))
 
         assert await _absorb(session, target) == 2
-        update = statements[-1]
-        assert "update brain_session_artifacts" in _sql(update)
+        # Cherché par CONTENU, plus par position : l'étage fenêtre émet un
+        # comptage de rivales après l'UPDATE, et `statements[-1]` désignait
+        # désormais ce comptage. La propriété assertée n'a pas bougé.
+        update = next(item for item in statements if "update brain_session_artifacts" in _sql(item))
         assert target.id in _params(update).values()
 
     async def test_the_donor_can_only_be_an_open_agent_tracer(self, _open_flag: None) -> None:
@@ -417,27 +420,58 @@ class TestRepositoryEntryPoint:
 _WINDOW_TRACER = uuid4()
 
 
+#: Donneuse par défaut des candidats de l'étage fenêtre. Distincte de la
+#: traçante de la connexion : c'est ce qui permet d'asserter que `donors` porte
+#: bien la donneuse DÉDUITE et pas seulement celle de l'étage exact.
+_WINDOW_DONOR = uuid4()
+
+
+def _tuple_result(rows: list[tuple[Any, ...]]) -> Any:
+    """Résultat dont `.all()` rend des TUPLES.
+
+    `_result` construit ses scalaires en appelant `.get()` sur chaque ligne : il
+    suppose des mappings. La sélection des candidats rend `(knowledge_id,
+    session_id)`, donc un double distinct — sinon le harnais casserait sur la
+    forme au lieu de prouver quoi que ce soit.
+    """
+    result = MagicMock()
+    result.all.return_value = rows
+    return result
+
+
 def _two_stage_router(
     *,
     connection_tracer: UUID | None = None,
     occupied: int = 0,
     connection_moved: list[UUID] | None = None,
     window_moved: list[UUID] | None = None,
+    window_donor: UUID | None = None,
     blocked: int = 0,
 ) -> Any:
     """Router qui sait distinguer les DEUX étages, ce que le total masquerait."""
+    donor = window_donor or _WINDOW_DONOR
 
     def route(statement: Any) -> Any:
         sql = _sql(statement)
         if "count(" in sql and "brain_session_artifacts" in sql and "update" not in sql:
             return _result(scalar=blocked if "rival" in sql else occupied)
-        if sql.startswith("select") and "from brain_sessions" in sql:
+        if sql.startswith("select brain_sessions.id"):
             return _result(scalar=connection_tracer)
         if "update brain_session_artifacts" in sql:
-            # L'étage se lit à l'alias `rival` : `attribution_mode` voyage en
-            # PARAMÈTRE, donc sa valeur n'apparaît jamais dans le SQL compilé.
-            moved = window_moved if "rival" in sql else connection_moved
+            # L'étage se lit au MODE ÉCRIT, lu dans les paramètres. C'est le
+            # discriminant sémantique : la version précédente cherchait l'alias
+            # `rival` dans le SQL, qui a disparu de l'UPDATE fenêtre le jour où
+            # celui-ci a cessé d'embarquer son filtre — le double servait alors
+            # silencieusement les lignes du mauvais étage.
+            # LISTE et non `set` : un `IN (...)` voyage comme une liste de
+            # paramètres, qui n'est pas hashable. Un `set()` lève ici, et le
+            # `except Exception` de l'absorption avalerait l'erreur du HARNAIS
+            # en la faisant passer pour un refus légitime.
+            values = list(_params(statement).values())
+            moved = window_moved if "derived_window" in values else connection_moved
             return _result(rows=[{"knowledge_id": item} for item in (moved or [])])
+        if sql.startswith("select brain_session_artifacts.knowledge_id"):
+            return _tuple_result([(item, donor) for item in (window_moved or [])])
         return _result(rows=[])
 
     return route
@@ -608,3 +642,113 @@ class TestTheThreeZerosAreDistinguishable:
 
         assert outcome.total == 0
         assert outcome.reason == "ledger_full"
+
+
+# ---------------------------------------------------------------------------
+# L'OBSERVABLE — un lot qui rend le silence lisible doit avoir un journal LU
+# ---------------------------------------------------------------------------
+
+
+def _absorption_events(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [item for item in records if item.get("event") == "session_derived_capture.absorbed"]
+
+
+class TestTheJournalIsAsserted:
+    """Trois défauts d'observabilité ont survécu à cette suite parce qu'elle
+    comptait les compteurs et ne lisait jamais le journal. Un lot dont la raison
+    d'être est de rendre le silence lisible ne peut pas livrer un journal que
+    rien ne lit — sinon on recommence."""
+
+    async def test_a_window_absorption_names_its_DONOR(self, _open_flag: None) -> None:
+        """A2b. Sans la donneuse, l'étage DÉDUIT est le seul qu'on ne peut pas défaire.
+
+        Le `RETURNING` d'un UPDATE rend la NOUVELLE valeur de `session_id` : la
+        donneuse se perdait au moment exact où elle compte.
+        """
+        donor, moved = uuid4(), [uuid4()]
+        session, _ = _session(
+            _two_stage_router(connection_tracer=None, window_moved=moved, window_donor=donor)
+        )
+
+        with capture_logs() as records:
+            outcome = await _outcome(session)
+
+        assert outcome.donors == (donor,)
+        (event,) = _absorption_events(records)
+        assert event["donors"] == [str(donor)]
+        assert event["moved_ids"] == [str(moved[0])]
+        assert event["moved_by_window"] == 1
+
+    async def test_a_partial_absorption_still_counts_its_rivals(self, _open_flag: None) -> None:
+        """A2a. Le « total qui masque », réintroduit d'un cran plus bas.
+
+        Absorber 1 ligne par la connexion et en refuser 5 par ambiguïté
+        journalisait `absorbed` / `rivals_blocked=0`. Le comptage était sous
+        `if rien n'a bougé` — donc muet dès qu'une seule ligne bougeait.
+        """
+        session, _ = _session(
+            _two_stage_router(connection_tracer=uuid4(), connection_moved=[uuid4()], blocked=5)
+        )
+
+        with capture_logs() as records:
+            outcome = await _outcome(session)
+
+        assert (outcome.moved_by_connection, outcome.rivals) == (1, 5)
+        (event,) = _absorption_events(records)
+        assert event["reason"] == "absorbed"
+        assert event["rivals_blocked"] == 5, (
+            "une absorption partielle tait les artefacts qu'elle a refusés"
+        )
+
+    async def test_a_full_ledger_reaches_the_JOURNAL_and_not_only_the_api(
+        self, _open_flag: None
+    ) -> None:
+        """A2c. Le lot promettait des raisons distinguables « en API comme au journal »."""
+        session, _ = _session(_two_stage_router(connection_tracer=uuid4(), occupied=100))
+
+        with capture_logs() as records:
+            outcome = await _outcome(session)
+
+        assert outcome.reason == "ledger_full"
+        (event,) = _absorption_events(records)
+        assert event["reason"] == "ledger_full"
+
+    async def test_the_two_silent_refusals_stay_silent(self, _open_flag: None) -> None:
+        """Drapeau fermé et absence de connexion n'écrivent RIEN, et c'est voulu.
+
+        Ce sont les deux seuls cas où l'absorption n'a même pas été tentée. Les
+        journaliser mettrait une ligne par appel d'outil sur toute installation
+        qui n'a pas armé la capture — un bruit qui enterrerait les six autres.
+        """
+        from brain_v42.db.session_derived_capture import absorb_tracer_ledger
+
+        session, _ = _session(_two_stage_router())
+        with capture_logs() as records:
+            await absorb_tracer_ledger(session, _Target(id=uuid4()), "")
+        assert _absorption_events(records) == []
+
+
+class TestTheWindowFiltersBeforeItBounds:
+    """A1, gardé structurellement en plus du banc d'intégration."""
+
+    async def test_the_bound_comes_AFTER_the_rivalry_filter(self, _open_flag: None) -> None:
+        """Borner avant de filtrer rend l'absorption fausse ET non déterministe.
+
+        Le `UNION ALL` n'a pas d'`ORDER BY` : un `LIMIT` posé avant le filtre
+        laisse Postgres rendre un lot arbitraire, qui peut être entièrement
+        contesté. Les lignes légitimes ne sont alors jamais absorbées — en
+        silence, et différemment d'un appel à l'autre.
+        """
+        session, statements = _session(_two_stage_router(window_moved=[uuid4()]))
+        await _outcome(session)
+
+        selection = next(
+            _sql(item)
+            for item in statements
+            if _sql(item).startswith("select brain_session_artifacts.knowledge_id")
+        )
+        assert "limit" in selection, "la sélection des candidats n'est plus bornée"
+        assert selection.index("not (exists") < selection.rindex("limit"), (
+            "le LIMIT précède le filtre de rivalité : il peut rendre un lot "
+            "entièrement contesté et taire les lignes légitimes"
+        )
