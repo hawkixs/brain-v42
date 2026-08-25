@@ -414,3 +414,83 @@ async def test_a_rival_open_at_the_instant_still_blocks_after_it_has_closed(
 
     assert moved == 0
     assert await _ledger_owner(session_factory, artifact) == UUID(str(tracer))
+
+
+async def test_a_human_can_reclaim_what_the_rule_refused_to_attribute(
+    session_factory: async_sessionmaker[AsyncSession],
+    absorption_project: str,
+) -> None:
+    """La contrepartie du fail-closed : refuser n'est pas perdre.
+
+    La règle d'exclusivité s'abstient dès que deux sessions se chevauchent, et
+    l'artefact reste chez le serveur. Sans ce chemin, ce serait une perte sèche :
+    `capture()` levait « session artifact ownership could not be resolved » sur
+    une ligne détenue par une traçante, donc plus personne ne pouvait l'en
+    sortir. Un humain qui NOMME l'UUID doit toujours pouvoir reprendre.
+
+    Le mode devient `explicit` : c'est le seul qui soit une preuve. La ligne
+    cesse d'être une déduction du serveur au moment où quelqu'un la revendique.
+    """
+    repo = PgBrainSessionRepo(session_factory)
+    learning_repo = PgLearningRepo(session_factory)
+
+    with _derived_capture(True):
+        mine = await repo.start(absorption_project, "task-w20-claimant")
+        await repo.start(absorption_project, "task-w20-rival")
+
+        with _transport(uuid4().hex) as connection_a:
+            tracer = await repo.auto_open(_Identity(absorption_project, connection_a))
+            artifact = await _derive_one_artifact(learning_repo, absorption_project)
+
+        # La règle s'abstient — deux prétendantes — et c'est bien le cas qu'on
+        # veut réparer à la main, pas un cas artificiel.
+        with _transport(uuid4().hex) as connection_b:
+            await repo.auto_open(_Identity(absorption_project, connection_b))
+            refused = await _absorb_from_the_current_connection(repo, UUID(str(mine.session.id)))
+        assert refused == 0
+        assert await _ledger_owner(session_factory, artifact) == UUID(str(tracer))
+
+        result = await repo.capture(mine.session.id, "task-w20-claimant", [artifact])
+
+    assert artifact in result.captured_knowledge_ids
+    assert await _ledger_owner(session_factory, artifact) == UUID(str(mine.session.id))
+    assert await _attribution_mode(session_factory, artifact) == "explicit"
+
+
+async def test_capture_never_takes_what_another_human_already_holds(
+    session_factory: async_sessionmaker[AsyncSession],
+    absorption_project: str,
+) -> None:
+    """La reprise est bornée à la NATURE du détenteur, jamais à l'UUID nommé.
+
+    C'est ce qui empêche la greffe de devenir un passe-droit : nommer un UUID
+    donne le droit de le reprendre AU SERVEUR, pas à un autre humain.
+    L'exclusivité du ledger existe précisément pour ça, et un chemin de
+    réparation qui l'enjamberait serait pire que le trou qu'il bouche.
+    """
+    from brain_v42.models.brain_session import BrainSessionCaptureConflictError
+
+    repo = PgBrainSessionRepo(session_factory)
+    learning_repo = PgLearningRepo(session_factory)
+
+    with _derived_capture(True):
+        holder = await repo.start(absorption_project, "task-w20-holder")
+        other = await repo.start(absorption_project, "task-w20-other")
+
+        with _transport(uuid4().hex) as connection:
+            tracer = await repo.auto_open(_Identity(absorption_project, connection))
+            artifact = await _derive_one_artifact(learning_repo, absorption_project)
+            # La ligne part bien de chez le SERVEUR : sans traçante, ce test
+            # n'exercerait que l'insertion normale et la frontière qu'il prétend
+            # garder — reprendre au serveur, jamais à un humain — resterait
+            # entière.
+            assert await _ledger_owner(session_factory, artifact) == UUID(str(tracer))
+
+        # Un humain la revendique en premier, par la REPRISE.
+        await repo.capture(holder.session.id, "task-w20-holder", [artifact])
+        assert await _attribution_mode(session_factory, artifact) == "explicit"
+
+        with pytest.raises(BrainSessionCaptureConflictError):
+            await repo.capture(other.session.id, "task-w20-other", [artifact])
+
+    assert await _ledger_owner(session_factory, artifact) == UUID(str(holder.session.id))
