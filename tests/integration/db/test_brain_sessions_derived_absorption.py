@@ -105,17 +105,23 @@ def _transport(connection_id: str) -> Iterator[str]:
         set_current_transport(previous)
 
 
-async def _absorb_from_the_current_connection(repo: PgBrainSessionRepo, session_id: UUID) -> int:
+async def _absorb_from_the_current_connection(
+    repo: PgBrainSessionRepo, session_id: UUID, client_key: str
+) -> int:
     """Absorber exactement comme `BrainSessionService._absorb_derived`.
 
     La connexion vient du contextvar, jamais de l'appelant : c'est tout ce que
     le serveur sait au moment où l'utilisateur ferme sa session.
+
+    `client_key` est passée parce que la GARDE D'IDENTITÉ vit dans l'absorption
+    elle-même, dans la même transaction que la mutation. Un banc qui ne la
+    passerait pas prouverait un chemin que la production n'emprunte pas.
     """
     from brain_v42.provenance import get_current_transport
 
     connection_id = (get_current_transport() or "").strip()
     assert connection_id, "le banc doit tourner sous un transport"
-    return await repo.absorb_derived_capture(session_id, connection_id)
+    return await repo.absorb_derived_capture(session_id, connection_id, client_key)
 
 
 @pytest_asyncio.fixture
@@ -228,7 +234,7 @@ async def test_the_user_session_absorbs_what_a_dead_connection_left_behind(
         with _transport(uuid4().hex) as connection_b:
             assert connection_b != connection_a
             await repo.auto_open(_Identity(absorption_project, connection_b))
-            moved = await _absorb_from_the_current_connection(repo, user_session)
+            moved = await _absorb_from_the_current_connection(repo, user_session, "task-w20")
 
     assert moved == 1, (
         "la session de l'utilisateur n'a rien absorbé : l'artefact est resté "
@@ -256,7 +262,7 @@ async def test_the_same_scene_on_a_single_connection_already_converges(
         user_session = UUID(str(started.session.id))
         await repo.auto_open(_Identity(absorption_project, connection))
         artifact = await _derive_one_artifact(learning_repo, absorption_project)
-        moved = await _absorb_from_the_current_connection(repo, user_session)
+        moved = await _absorb_from_the_current_connection(repo, user_session, "task-w20-witness")
 
     assert moved == 1
     assert await _ledger_owner(session_factory, artifact) == user_session
@@ -345,7 +351,9 @@ async def test_two_open_user_sessions_covering_the_instant_block_the_absorption(
 
         with _transport(uuid4().hex) as connection_b:
             await repo.auto_open(_Identity(absorption_project, connection_b))
-            moved = await _absorb_from_the_current_connection(repo, UUID(str(mine.session.id)))
+            moved = await _absorb_from_the_current_connection(
+                repo, UUID(str(mine.session.id)), "task-w20-mine"
+            )
 
     assert moved == 0, "deux prétendantes valent une abstention, jamais un tirage au sort"
     assert await _ledger_owner(session_factory, artifact) == UUID(str(tracer))
@@ -376,7 +384,9 @@ async def test_a_rival_that_closed_before_the_instant_is_not_a_rival(
 
         with _transport(uuid4().hex) as connection_b:
             await repo.auto_open(_Identity(absorption_project, connection_b))
-            moved = await _absorb_from_the_current_connection(repo, UUID(str(mine.session.id)))
+            moved = await _absorb_from_the_current_connection(
+                repo, UUID(str(mine.session.id)), "task-w20-mine"
+            )
 
     assert moved == 1
     assert await _ledger_owner(session_factory, artifact) == UUID(str(mine.session.id))
@@ -411,7 +421,9 @@ async def test_a_rival_open_at_the_instant_still_blocks_after_it_has_closed(
 
         with _transport(uuid4().hex) as connection_b:
             await repo.auto_open(_Identity(absorption_project, connection_b))
-            moved = await _absorb_from_the_current_connection(repo, UUID(str(mine.session.id)))
+            moved = await _absorb_from_the_current_connection(
+                repo, UUID(str(mine.session.id)), "task-w20-mine"
+            )
 
     assert moved == 0
     assert await _ledger_owner(session_factory, artifact) == UUID(str(tracer))
@@ -447,7 +459,9 @@ async def test_a_human_can_reclaim_what_the_rule_refused_to_attribute(
         # veut réparer à la main, pas un cas artificiel.
         with _transport(uuid4().hex) as connection_b:
             await repo.auto_open(_Identity(absorption_project, connection_b))
-            refused = await _absorb_from_the_current_connection(repo, UUID(str(mine.session.id)))
+            refused = await _absorb_from_the_current_connection(
+                repo, UUID(str(mine.session.id)), "task-w20-claimant"
+            )
         assert refused == 0
         assert await _ledger_owner(session_factory, artifact) == UUID(str(tracer))
 
@@ -572,7 +586,9 @@ async def test_the_bound_never_hides_an_eligible_artifact_behind_contested_ones(
 
         with _transport(uuid4().hex) as connection_b:
             await repo.auto_open(_Identity(absorption_project, connection_b))
-            moved = await _absorb_from_the_current_connection(repo, UUID(str(mine.session.id)))
+            moved = await _absorb_from_the_current_connection(
+                repo, UUID(str(mine.session.id)), "task-w20-bound"
+            )
 
     assert moved == 1, (
         "les artefacts contestés ont rempli le lot avant que le filtre ne "
@@ -584,3 +600,91 @@ async def test_the_bound_never_hides_an_eligible_artifact_behind_contested_ones(
     # permissive.
     for item in contested:
         assert await _ledger_owner(session_factory, item) == UUID(str(tracer))
+
+
+async def test_the_repository_reads_the_ledger_not_the_terminal_snapshot(
+    session_factory: async_sessionmaker[AsyncSession],
+    absorption_project: str,
+) -> None:
+    """`attributed_knowledge_ids` lit la SOURCE, pas la photo de fin.
+
+    `brain_sessions.captured_knowledge_ids` n'est écrit qu'à la fermeture, et la
+    contrainte `open` interdit qu'il soit rempli avant : mesuré le 2026-08-25,
+    aucune session ouverte n'en a jamais porté un non vide. Une implémentation
+    qui lirait le tableau rendrait donc TOUJOURS `[]` sur une session vivante —
+    et c'est précisément le retard d'un appel que ce lot répare.
+
+    Ce test existe parce que `start` en dépend : il est le seul des cinq à ne pas
+    pouvoir absorber avant de matérialiser, et il relit ici ce qu'il vient de
+    déplacer.
+    """
+    repo = PgBrainSessionRepo(session_factory)
+    learning_repo = PgLearningRepo(session_factory)
+
+    with _derived_capture(True):
+        mine = await repo.start(absorption_project, "task-w20-read")
+        with _transport(uuid4().hex) as connection:
+            await repo.auto_open(_Identity(absorption_project, connection))
+            artifact = await _derive_one_artifact(learning_repo, absorption_project)
+            moved = await _absorb_from_the_current_connection(
+                repo, UUID(str(mine.session.id)), "task-w20-read"
+            )
+
+    assert moved == 1
+    ids = await repo.attributed_knowledge_ids(mine.session.id)
+    assert [UUID(str(item)) for item in ids] == [artifact]
+
+    # Et le tableau terminal est TOUJOURS vide : la session est ouverte.
+    async with session_factory() as session:
+        snapshot = (
+            await session.execute(
+                sa.select(brain_sessions.c.captured_knowledge_ids).where(
+                    brain_sessions.c.id == mine.session.id
+                )
+            )
+        ).scalar_one()
+    assert list(snapshot or []) == [], (
+        "si l'instantané se remplit sur une session ouverte, la contrainte `open` "
+        "a changé et ce lot doit être relu en entier"
+    )
+
+
+async def test_a_mistargeted_absorption_moves_NOTHING_before_it_refuses(
+    session_factory: async_sessionmaker[AsyncSession],
+    absorption_project: str,
+) -> None:
+    """La garde d'identité doit précéder la MUTATION, pas seulement la commande.
+
+    `CLAUDE.md` est littéral : « le serveur refuse une paire incohérente AVANT
+    TOUTE MUTATION. Cette garde protège du mauvais ciblage entre sessions
+    parallèles. » L'absorption mutait sans aucun contrôle de propriété : un appel
+    mal ciblé déplaçait le ledger d'une traçante dans la session d'autrui, PUIS
+    se faisait refuser. Le ledger étant EXCLUSIF, ce déplacement est
+    IRRÉVERSIBLE — et l'appelant, qui ne voit qu'un refus, n'a aucune raison de
+    le soupçonner.
+
+    Ce test vérifie l'ABSENCE DE MUTATION, pas la présence du refus : le refus
+    existait déjà, c'est lui qui rendait le défaut invisible.
+    """
+    from brain_v42.models.brain_session import BrainSessionIdentityConflictError
+
+    repo = PgBrainSessionRepo(session_factory)
+    learning_repo = PgLearningRepo(session_factory)
+
+    with _derived_capture(True):
+        victim = await repo.start(absorption_project, "task-w20-victim")
+
+        with _transport(uuid4().hex) as connection:
+            tracer = await repo.auto_open(_Identity(absorption_project, connection))
+            artifact = await _derive_one_artifact(learning_repo, absorption_project)
+            assert await _ledger_owner(session_factory, artifact) == UUID(str(tracer))
+
+            with pytest.raises(BrainSessionIdentityConflictError):
+                await repo.absorb_derived_capture(
+                    victim.session.id, connection, "task-w20-SOMEONE-ELSE"
+                )
+
+    assert await _ledger_owner(session_factory, artifact) == UUID(str(tracer)), (
+        "le ledger a bougé avant que la paire incohérente ne soit refusée — et "
+        "l'exclusivité du ledger rend ce déplacement irréversible"
+    )

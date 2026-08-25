@@ -229,16 +229,83 @@ class PgBrainSessionRepo(BasePgRepository):
             inserted = (await session.execute(insert_stmt)).scalar_one_or_none()
             return UUID(str(inserted)) if inserted is not None else None
 
-    async def absorb_derived_capture(self, session_id: UUID | str, connection_id: str) -> int:
+    async def attributed_knowledge_ids(self, session_id: UUID | str) -> builtins.list[UUID]:
+        """Le ledger de cette session, relu — la SOURCE DE VÉRITÉ, pas l'instantané.
+
+        `brain_sessions.captured_knowledge_ids` est une photo TERMINALE : un seul
+        écrivain, à la fermeture, et la contrainte `open` interdit qu'elle soit
+        remplie avant. Mesuré le 2026-08-25 : sur 44 sessions ouvertes, zéro
+        tableau non vide, et aucune n'en a jamais porté dans toute l'histoire de
+        la table. La lire sur une session vivante rendrait donc toujours `[]`.
+
+        Existe pour `start`, seul des cinq à ne pas pouvoir absorber avant de
+        matérialiser : il relit ici ce que son absorption vient de déplacer.
+        """
+        async with self.get_session() as session:
+            return await self._load_session_artifact_ids(session, UUID(str(session_id)))
+
+    async def absorb_derived_capture(
+        self,
+        session_id: UUID | str,
+        connection_id: str,
+        expected_client_key: str,
+    ) -> int:
         """Faire absorber à cette session le ledger de la traçante de sa connexion.
 
-        Le dépôt ne décide rien ici : il ouvre la transaction, retrouve la
-        session cible et délègue les bornes à ``absorb_tracer_ledger``, qui les
-        aligne sur celles d'une capture EXPLICITE. Le service a déjà tranché le
-        drapeau et la connexion en amont, pour qu'un drapeau fermé ne coûte pas
-        cet aller-retour.
+        Le dépôt ne décide rien des BORNES : il ouvre la transaction, retrouve la
+        session cible et délègue à ``absorb_tracer_ledger``, qui les aligne sur
+        celles d'une capture EXPLICITE. Le service a déjà tranché le drapeau et
+        la connexion en amont, pour qu'un drapeau fermé ne coûte pas cet
+        aller-retour.
 
-        Rend le nombre de lignes déplacées ; ``0`` couvre tous les refus.
+        **LA GARDE D'IDENTITÉ VIT ICI, DANS LA MÊME TRANSACTION QUE LA MUTATION**,
+        et pas au site d'appel. `CLAUDE.md` est littéral — « le serveur refuse une
+        paire incohérente AVANT TOUTE MUTATION » — et un ordre d'appel ne tient
+        cette promesse que tant que personne ne réordonne : c'est exactement ce
+        qui vient d'arriver en déplaçant l'absorption devant `_assert_identity`,
+        qui vivait dans les commandes du dépôt. Un appel mal ciblé déplaçait
+        alors le ledger d'une traçante dans la session d'autrui, PUIS se faisait
+        refuser — et le ledger étant EXCLUSIF, ce déplacement est IRRÉVERSIBLE,
+        pendant que l'appelant ne voit qu'un refus.
+
+        Elle LÈVE, au lieu de rendre ``0`` en silence. Une paire incohérente
+        n'est pas un refus d'absorption parmi d'autres : c'est une commande mal
+        ciblée, que le dépôt s'apprête de toute façon à refuser deux lignes plus
+        loin avec la même exception. La faire remonter d'ici rend la garde
+        infranchissable au lieu de la laisser dépendre d'un ordre.
+
+        ⚠ CE QUI PROTÈGE EST LA FRONTIÈRE TRANSACTIONNELLE, PAS LA POSITION DE
+        CETTE LIGNE. Mesuré, deux mutants joués :
+
+        - garde déplacée APRÈS ``absorb_tracer_ledger`` mais DANS ce ``async
+          with`` → **11 tests verts**. Mutant ÉQUIVALENT, pas test creux :
+          ``transaction()`` ouvre un ``sess.begin()``, donc l'exception annule le
+          déplacement avec le reste. La position au-dessus est un choix de
+          LISIBILITÉ ;
+        - garde déplacée APRÈS et HORS du ``async with`` → **rouge**. Le
+          déplacement est commité avant le refus, et le banc le voit.
+
+        Autrement dit : la sûreté tient à ce qu'aucun COMMIT ne s'intercale entre
+        le déplacement du ledger et le refus. Les deux gestes qui l'écraseraient
+        de façon VISIBLE — sortir l'absorption de la transaction, y glisser un
+        ``commit()`` — sont donc couverts par
+        ``test_a_mistargeted_absorption_moves_NOTHING_before_it_refuses``.
+
+        CE QUI N'EST SURVEILLÉ PAR AUCUN TEST, et c'est pour lui que ce
+        paragraphe existe : **donner à cette méthode un paramètre ``session``**.
+        ``transaction()`` basculerait sur sa branche ``begin_nested()`` et la
+        portée de l'annulation deviendrait celle de l'APPELANT, pas la nôtre. Le
+        banc ne passe jamais de session — il resterait donc VERT pendant qu'un
+        appelant qui en passe une, et qui avale l'exception, commiterait le
+        déplacement. Elle n'en prend pas aujourd'hui, et c'est ce qui rend la
+        garantie inconditionnelle.
+
+        Un test ne sait pas exprimer « ne me donne pas de session ». Ce
+        commentaire, lui, est là où le refactor se lira. Le coût du trou est
+        rappelé plus haut : le ledger est EXCLUSIF, donc un déplacement mal ciblé
+        est IRRÉVERSIBLE.
+
+        Rend le nombre de lignes déplacées ; ``0`` couvre tous les autres refus.
         """
         from brain_v42.db.session_derived_capture import (  # noqa: PLC0415
             absorb_tracer_ledger,
@@ -247,7 +314,10 @@ class PgBrainSessionRepo(BasePgRepository):
         async with self.transaction() as session:
             row = await self._get_row(session, session_id)
             if row is None:
+                # Session inconnue : rien à absorber, et surtout pas une erreur
+                # d'identité — c'est la commande qui dira « introuvable ».
                 return 0
+            self._assert_identity(self._to_model(row), expected_client_key)
             target = SimpleNamespace(
                 id=row["id"],
                 project_key=row["project_key"],

@@ -219,6 +219,33 @@ async def test_the_table_map_agrees_with_the_repository_capture_tables() -> None
 # ---------------------------------------------------------------------------
 
 _STARTED_AT = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
+_CLIENT_KEY = "task-w20"
+
+
+def _session_row(session_id: UUID) -> dict[str, Any]:
+    """Ligne assez complète pour que `_to_model` la valide — la garde la lit."""
+    return {
+        "id": session_id,
+        "project_key": _PROJECT,
+        "client_key": _CLIENT_KEY,
+        "status": "open",
+        "started_focus": None,
+        "started_focus_revision": 0,
+        "summary": None,
+        "next_focus": None,
+        "captured_knowledge_ids": [],
+        "nothing_to_capture_reason": None,
+        "abandonment_reason": None,
+        "started_at": _STARTED_AT,
+        "ended_at": None,
+        "updated_at": _STARTED_AT,
+        "last_heartbeat_at": _STARTED_AT,
+        "end_expected_focus_revision": None,
+        "focus_outcome": None,
+        "focus_at_end": None,
+        "focus_revision_at_end": None,
+        "nature": None,
+    }
 
 
 @dataclass(frozen=True)
@@ -384,7 +411,9 @@ class TestRepositoryEntryPoint:
 
         monkeypatch.setattr(module, "absorb_tracer_ledger", _fake)
         _, _statements, _, factory = _make_session(lambda _stmt: _result(row=row))
-        moved = await PgBrainSessionRepo(factory).absorb_derived_capture(uuid4(), _CONNECTION)
+        moved = await PgBrainSessionRepo(factory).absorb_derived_capture(
+            uuid4(), _CONNECTION, _CLIENT_KEY
+        )
         return moved, seen
 
     async def test_it_delegates_with_the_target_identity(
@@ -393,7 +422,10 @@ class TestRepositoryEntryPoint:
         session_id = uuid4()
         moved, seen = await self._absorb_via_repo(
             monkeypatch,
-            row={"id": session_id, "project_key": _PROJECT, "started_at": _STARTED_AT},
+            # `client_key` est désormais LU par la garde d'identité, qui vit
+            # dans la même transaction que la mutation. Une ligne double sans
+            # elle ne décrirait plus le chemin réel.
+            row=_session_row(session_id),
         )
 
         assert moved == 3
