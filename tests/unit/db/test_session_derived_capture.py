@@ -248,9 +248,17 @@ def _absorb_router(
 async def _absorb(
     session: Any, target: _Target | None = None, connection: str = _CONNECTION
 ) -> int:
+    """Le TOTAL déplacé, tous étages confondus.
+
+    `absorb_tracer_ledger` rend désormais un `AbsorptionOutcome` — un total nu
+    ne pouvait pas dire par quelle clé l'appariement avait eu lieu. Ce helper
+    garde le contrat que les tests ci-dessous asserent : le nombre de lignes
+    déplacées. Les tests par étage vivent dans `TestTwoStageAbsorption`.
+    """
     from brain_v42.db.session_derived_capture import absorb_tracer_ledger
 
-    return await absorb_tracer_ledger(session, target or _Target(id=uuid4()), connection)
+    outcome = await absorb_tracer_ledger(session, target or _Target(id=uuid4()), connection)
+    return outcome.total
 
 
 class TestAbsorption:
@@ -331,9 +339,17 @@ class TestAbsorption:
         assert statements == []
 
     async def test_no_tracer_absorbs_nothing(self, _open_flag: None) -> None:
+        """Pas de traçante sur CETTE connexion ⇒ l'étage exact ne rend rien.
+
+        AMENDÉ avec le lot à deux étages. La forme précédente asseyait
+        `len(statements) == 1`, c'est-à-dire « après l'étage connexion, on
+        s'arrête » — la conception même que ce lot répare, épinglée par un
+        compteur. Ce qui reste asserté est le comportement, qui n'a pas changé :
+        rien ne bouge, et l'étage EXACT est toujours évalué en PREMIER.
+        """
         session, statements = _session(_absorb_router(tracer=None))
         assert await _absorb(session) == 0
-        assert len(statements) == 1
+        assert "connection_id" in _sql(statements[0])
 
     async def test_any_failure_is_swallowed(self, _open_flag: None) -> None:
         def explode(_statement: Any) -> Any:
@@ -355,9 +371,13 @@ class TestRepositoryEntryPoint:
 
         seen: list[Any] = []
 
-        async def _fake(session: Any, target: Any, connection_id: str) -> int:
+        async def _fake(session: Any, target: Any, connection_id: str) -> Any:
+            # Le double MIROITE la signature du vrai appelé, sinon il prouverait
+            # un contrat que plus personne n'honore.
+            from brain_v42.db.session_derived_capture import AbsorptionOutcome
+
             seen.append((target, connection_id))
-            return 3
+            return AbsorptionOutcome(reason="absorbed", moved_by_connection=3)
 
         monkeypatch.setattr(module, "absorb_tracer_ledger", _fake)
         _, _statements, _, factory = _make_session(lambda _stmt: _result(row=row))
@@ -388,3 +408,203 @@ class TestRepositoryEntryPoint:
         moved, seen = await self._absorb_via_repo(monkeypatch, row=None)
         assert moved == 0
         assert seen == []
+
+
+# ---------------------------------------------------------------------------
+# Absorption à DEUX étages — l'étage exact, puis la fenêtre d'exclusivité
+# ---------------------------------------------------------------------------
+
+_WINDOW_TRACER = uuid4()
+
+
+def _two_stage_router(
+    *,
+    connection_tracer: UUID | None = None,
+    occupied: int = 0,
+    connection_moved: list[UUID] | None = None,
+    window_moved: list[UUID] | None = None,
+    blocked: int = 0,
+) -> Any:
+    """Router qui sait distinguer les DEUX étages, ce que le total masquerait."""
+
+    def route(statement: Any) -> Any:
+        sql = _sql(statement)
+        if "count(" in sql and "brain_session_artifacts" in sql and "update" not in sql:
+            return _result(scalar=blocked if "rival" in sql else occupied)
+        if sql.startswith("select") and "from brain_sessions" in sql:
+            return _result(scalar=connection_tracer)
+        if "update brain_session_artifacts" in sql:
+            # L'étage se lit à l'alias `rival` : `attribution_mode` voyage en
+            # PARAMÈTRE, donc sa valeur n'apparaît jamais dans le SQL compilé.
+            moved = window_moved if "rival" in sql else connection_moved
+            return _result(rows=[{"knowledge_id": item} for item in (moved or [])])
+        return _result(rows=[])
+
+    return route
+
+
+def _window_sql(statements: list[Any]) -> str:
+    """Le SQL des statements de l'étage FENÊTRE, reconnus à leur alias `rival`."""
+    return " ".join(_sql(item) for item in statements if "rival" in _sql(item))
+
+
+def _window_values(statements: list[Any]) -> set[Any]:
+    """Les VALEURS liées de l'étage fenêtre.
+
+    Elles ne sont pas dans le texte compilé : SQLAlchemy les passe en
+    paramètres. Les chercher dans le SQL rendrait ces tests verts pour une
+    mauvaise raison — ils ne verraient jamais rien.
+    """
+    values: set[Any] = set()
+    for item in statements:
+        if "rival" not in _sql(item):
+            continue
+        for value in _params(item).values():
+            # Un `IN (...)` voyage comme une LISTE de paramètres, pas comme
+            # autant de scalaires : ne pas l'aplatir laisserait `closed_inactive`
+            # invisible et le test vert sans rien avoir vu.
+            values.update(value) if isinstance(value, list) else values.add(value)
+    return values
+
+
+async def _outcome(session: Any, target: _Target | None = None) -> Any:
+    from brain_v42.db.session_derived_capture import absorb_tracer_ledger
+
+    return await absorb_tracer_ledger(session, target or _Target(id=uuid4()), _CONNECTION)
+
+
+class TestTwoStageAbsorption:
+    """Un total qui masque une rétrogradation de l'étage exact vers la devinette
+    est un vert qui ment. L'absorption doit DIRE par quelle clé elle a apparié."""
+
+    async def test_it_counts_each_stage_separately(self, _open_flag: None) -> None:
+        moved = [uuid4()]
+        session, _ = _session(_two_stage_router(connection_tracer=uuid4(), connection_moved=moved))
+
+        outcome = await _outcome(session)
+
+        assert (outcome.moved_by_connection, outcome.moved_by_window) == (1, 0)
+        assert outcome.total == 1
+        assert outcome.reason == "absorbed"
+
+    async def test_the_window_stage_is_reported_as_such(self, _open_flag: None) -> None:
+        """Le même total, une clé différente — et le rapport doit le dire."""
+        moved = [uuid4()]
+        session, _ = _session(_two_stage_router(connection_tracer=None, window_moved=moved))
+
+        outcome = await _outcome(session)
+
+        assert (outcome.moved_by_connection, outcome.moved_by_window) == (0, 1)
+        assert outcome.total == 1
+
+    async def test_the_connection_stage_still_demands_an_open_tracer(
+        self, _open_flag: None
+    ) -> None:
+        """L'étage EXACT ne change pas : il reste borné à la connexion courante."""
+        session, statements = _session(
+            _two_stage_router(connection_tracer=uuid4(), connection_moved=[uuid4()])
+        )
+        await _outcome(session)
+
+        exact = _sql(statements[0])
+        assert "connection_id" in exact
+        assert "status" in exact and "nature" in exact
+
+    async def test_the_window_stage_accepts_a_closed_inactive_donor(self, _open_flag: None) -> None:
+        """Le balayage 4 h sort une traçante de `open` EN GARDANT son ledger.
+
+        Un correctif borné à `'open'` redeviendrait muet le jour où le placement
+        du drop-in `BRAIN_SESSION_INACTIVE_SWEEP_ENABLED` sera corrigé — sans un
+        bruit, parce que rien n'échouerait.
+        """
+        session, statements = _session(_two_stage_router(window_moved=[uuid4()]))
+        await _outcome(session)
+
+        values = _window_values(statements)
+        assert "closed_inactive" in values, "l'étage fenêtre ignore les traçantes balayées"
+        assert "open" in values
+
+    async def test_the_window_stage_never_absorbs_a_system_actor(self, _open_flag: None) -> None:
+        """Le dream n'est pas un créateur inconnu : il est identifié.
+
+        Le laisser dans le pot commun rendrait le mode de panne quotidien au
+        lieu de marginal — le `promote` de 03:00 tombe dans la fenêtre de toute
+        session ouverte la nuit.
+        """
+        session, statements = _session(_two_stage_router(window_moved=[uuid4()]))
+        await _outcome(session)
+
+        assert "started_by_actor" in _window_sql(statements), (
+            "aucun filtre d'acteur sur l'étage fenêtre"
+        )
+        assert any(
+            isinstance(value, str) and value.startswith("dream-")
+            for value in _window_values(statements)
+        ), "le préfixe des acteurs système n'est pas exclu"
+
+    async def test_the_window_stage_refuses_what_a_rival_session_covers(
+        self, _open_flag: None
+    ) -> None:
+        """La rivalité est SYMÉTRIQUE : aucune clause de fraîcheur.
+
+        Deux prétendantes valent une abstention. La couverture se juge à
+        l'instant de création, `started_at <= t <= coalesce(ended_at, now())`,
+        donc une session close APRÈS l'instant reste une rivale.
+        """
+        session, statements = _session(_two_stage_router(window_moved=[uuid4()]))
+        await _outcome(session)
+
+        window = _window_sql(statements)
+        assert "not (exists" in window or "not exists" in window
+        assert "ended_at" in window and "started_at" in window
+
+
+class TestTheThreeZerosAreDistinguishable:
+    """« Refus légitime » et « rien à absorber » rendaient le même `0`.
+
+    C'est le fil rouge de ce projet : une capacité armée, verte, et muette là où
+    elle échoue. Trois retours `0` indiscernables en API comme au journal sont
+    la prochaine régression invisible.
+    """
+
+    async def test_a_closed_flag_says_so(self) -> None:
+        session, statements = _session(_two_stage_router())
+        outcome = await _outcome(session)
+
+        assert outcome.total == 0
+        assert outcome.reason == "disabled"
+        assert statements == [], "drapeau fermé ⇒ zéro statement, pas un statement inutile"
+
+    async def test_no_connection_is_not_a_closed_flag(self, _open_flag: None) -> None:
+        from brain_v42.db.session_derived_capture import absorb_tracer_ledger
+
+        session, _ = _session(_two_stage_router())
+        outcome = await absorb_tracer_ledger(session, _Target(id=uuid4()), "")
+
+        assert outcome.total == 0
+        assert outcome.reason == "no_connection"
+
+    async def test_nothing_eligible_is_not_a_refusal(self, _open_flag: None) -> None:
+        """Aucune ligne à déplacer n'est pas la même chose qu'un refus de la règle."""
+        session, _ = _session(_two_stage_router(connection_tracer=None))
+        outcome = await _outcome(session)
+
+        assert outcome.total == 0
+        assert outcome.reason == "nothing_to_absorb"
+
+    async def test_an_ambiguous_window_says_ambiguous_and_counts_its_rivals(
+        self, _open_flag: None
+    ) -> None:
+        session, _ = _session(_two_stage_router(blocked=2))
+        outcome = await _outcome(session)
+
+        assert outcome.total == 0
+        assert outcome.reason == "ambiguous"
+        assert outcome.rivals == 2
+
+    async def test_a_full_ledger_is_its_own_reason(self, _open_flag: None) -> None:
+        session, _ = _session(_two_stage_router(connection_tracer=uuid4(), occupied=100))
+        outcome = await _outcome(session)
+
+        assert outcome.total == 0
+        assert outcome.reason == "ledger_full"

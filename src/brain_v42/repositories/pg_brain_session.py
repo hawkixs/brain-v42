@@ -253,7 +253,8 @@ class PgBrainSessionRepo(BasePgRepository):
                 project_key=row["project_key"],
                 started_at=row["started_at"],
             )
-            return await absorb_tracer_ledger(session, target, connection_id)
+            outcome = await absorb_tracer_ledger(session, target, connection_id)
+            return outcome.total
 
     async def observe(self, session_id: UUID | str, *, now: datetime | None = None) -> bool:
         """Dater l'observation d'une traçante `agent` ouverte. Rend « encore ouverte ».
@@ -428,7 +429,19 @@ class PgBrainSessionRepo(BasePgRepository):
             if focus is None:
                 raise BrainSessionNotFoundError(f"Project {model.project_key!r} was not found")
             existing = await self._load_artifact_rows(session, capture_ids)
-            existing_ids = self._owned_capture_ids(existing, model.id)
+            # Ce que la règle d'exclusivité a refusé d'attribuer doit rester
+            # réparable par un humain qui NOMME l'UUID. Sans ce chemin, le
+            # fail-closed devient une perte sèche : l'artefact reste chez le
+            # serveur et plus personne ne peut l'en sortir.
+            reclaimable = await self._tracer_held_ids(session, existing, model.id)
+            existing_ids = self._owned_capture_ids(existing, model.id, reclaimable)
+            if reclaimable:
+                await session.execute(
+                    brain_session_artifacts.update()
+                    .where(brain_session_artifacts.c.knowledge_id.in_(reclaimable))
+                    .values(session_id=model.id, attribution_mode="explicit")
+                )
+                existing_ids.update(reclaimable)
             resolved_types = await self._validate_captures(session, model, capture_ids)
             all_existing = await self._load_session_artifact_ids(session, model.id)
             all_after = sorted(set(all_existing) | set(capture_ids), key=str)
@@ -448,6 +461,9 @@ class PgBrainSessionRepo(BasePgRepository):
                                 "knowledge_id": knowledge_id,
                                 "session_id": model.id,
                                 "knowledge_type": resolved_types[knowledge_id],
+                                # Un humain a nommé cet UUID. C'est le seul mode
+                                # qui soit une PREUVE et non une déduction.
+                                "attribution_mode": "explicit",
                             }
                             for knowledge_id in missing
                         ]
@@ -549,11 +565,26 @@ class PgBrainSessionRepo(BasePgRepository):
                 for table, _knowledge_type in CAPTURE_TABLES
             ]
         ).subquery()
-        statement = (
-            sa.select(sa.func.count())
-            .select_from(produced)
-            .where(~sa.exists().where(brain_session_artifacts.c.knowledge_id == produced.c.id))
+        # L'anti-jointure regarde la NATURE du propriétaire, et pas seulement
+        # l'existence d'une ligne. Une ligne garée dans une traçante `agent` a
+        # bien un propriétaire, mais ce propriétaire est le SERVEUR : la compter
+        # comme attribuée rendait ce reçu muet exactement dans le cas qu'on
+        # répare — mesuré le 2026-08-24, `unattributed_in_window` valait 0 alors
+        # que le seul artefact dérivé n'appartenait à aucun humain.
+        owner = brain_sessions.alias("owner")
+        attributed_to_a_human = sa.exists(
+            sa.select(sa.literal(1))
+            .select_from(
+                brain_session_artifacts.join(
+                    owner, owner.c.id == brain_session_artifacts.c.session_id
+                )
+            )
+            .where(
+                brain_session_artifacts.c.knowledge_id == produced.c.id,
+                sa.or_(owner.c.nature.is_(None), owner.c.nature != "agent"),
+            )
         )
+        statement = sa.select(sa.func.count()).select_from(produced).where(~attributed_to_a_human)
         return int((await session.execute(statement)).scalar_one() or 0)
 
     async def end(
@@ -942,6 +973,39 @@ class PgBrainSessionRepo(BasePgRepository):
         )
         return [dict(row) for row in (await session.execute(stmt)).mappings().all()]
 
+    async def _tracer_held_ids(
+        self,
+        session: AsyncSession,
+        existing: Sequence[Row],
+        session_id: UUID,
+    ) -> frozenset[UUID]:
+        """Parmi ces lignes, celles que détient une traçante `agent` — et elles seules.
+
+        La borne est la NATURE du détenteur, jamais son âge ni son statut : une
+        traçante balayée reste le serveur. Un détenteur non-`agent` n'est jamais
+        repris ici, quel que soit l'UUID nommé.
+        """
+        foreign = {
+            artifact["session_id"] for artifact in existing if artifact["session_id"] != session_id
+        }
+        if not foreign:
+            return frozenset()
+        tracers = set(
+            (
+                await session.execute(
+                    sa.select(brain_sessions.c.id).where(
+                        brain_sessions.c.id.in_(foreign),
+                        brain_sessions.c.nature == "agent",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return frozenset(
+            artifact["knowledge_id"] for artifact in existing if artifact["session_id"] in tracers
+        )
+
     async def _load_session_artifact_ids(
         self,
         session: AsyncSession,
@@ -1130,8 +1194,22 @@ class PgBrainSessionRepo(BasePgRepository):
             raise BrainSessionIdentityConflictError("session_id does not match expected_client_key")
 
     @staticmethod
-    def _owned_capture_ids(existing: Sequence[Row], session_id: UUID) -> set[UUID]:
-        conflicts = [artifact for artifact in existing if artifact["session_id"] != session_id]
+    def _owned_capture_ids(
+        existing: Sequence[Row],
+        session_id: UUID,
+        reclaimable: frozenset[UUID] = frozenset(),
+    ) -> set[UUID]:
+        """Ce que cette session détient déjà — et ce qu'elle a le droit de reprendre.
+
+        `reclaimable` ne contient QUE des artefacts garés dans une traçante
+        `agent`, c'est-à-dire chez le serveur. Un conflit avec un autre HUMAIN
+        reste une erreur : l'exclusivité du ledger existe pour ça.
+        """
+        conflicts = [
+            artifact
+            for artifact in existing
+            if artifact["session_id"] != session_id and artifact["knowledge_id"] not in reclaimable
+        ]
         if conflicts:
             conflict_ids = sorted(str(item["knowledge_id"]) for item in conflicts)
             raise BrainSessionCaptureConflictError(
