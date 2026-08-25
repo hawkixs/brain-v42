@@ -94,7 +94,9 @@ class BrainSessionRepository(Protocol):
         self, session_id: UUID, expected_client_key: str, reason: str
     ) -> BrainSessionAbandonResult: ...
 
-    async def absorb_derived_capture(self, session_id: UUID, connection_id: str) -> int: ...
+    async def absorb_derived_capture(
+        self, session_id: UUID, connection_id: str, expected_client_key: str
+    ) -> int: ...
 
     async def attributed_knowledge_ids(self, session_id: UUID) -> Sequence[UUID]: ...
 
@@ -127,11 +129,16 @@ class BrainSessionService:
 
         return (get_current_transport() or "").strip() or None
 
-    async def _absorb_derived(self, session_id: UUID) -> None:
+    async def _absorb_derived(self, session_id: UUID, expected_client_key: str) -> None:
         """Absorber ce que la traçante de cette connexion a recueilli.
 
-        Ne lève jamais : l'absorption accompagne une commande explicite, elle ne
-        la remplace pas et ne doit pas pouvoir la faire échouer.
+        Ne lève pas pour ses propres refus : l'absorption accompagne une commande
+        explicite, elle ne la remplace pas et ne doit pas pouvoir la faire
+        échouer. **UNE seule exception traverse : la paire d'identité
+        incohérente**, et ce n'est pas un refus d'absorption — c'est une commande
+        mal ciblée, que le dépôt refusera de toute façon juste après, avec la
+        même erreur. La laisser remonter d'ici est ce qui garantit qu'aucune
+        mutation ne la précède.
         """
         connection_id = self._absorption_connection()
         if connection_id is None:
@@ -145,7 +152,7 @@ class BrainSessionService:
                 reason=self._absorption_skip_reason(),
             )
             return
-        await self.repo.absorb_derived_capture(session_id, connection_id)
+        await self.repo.absorb_derived_capture(session_id, connection_id, expected_client_key)
 
     def _absorption_skip_reason(self) -> str:
         """Pourquoi aucune absorption n'a été tentée — drapeau, ou transport."""
@@ -186,7 +193,9 @@ class BrainSessionService:
         connection_id = self._absorption_connection()
         if connection_id is None:
             return started
-        await self.repo.absorb_derived_capture(started.session.id, connection_id)
+        await self.repo.absorb_derived_capture(
+            started.session.id, connection_id, normalized_client_key
+        )
         attributed = await self.repo.attributed_knowledge_ids(started.session.id)
         return started.model_copy(
             update={
@@ -206,7 +215,7 @@ class BrainSessionService:
         a change of what the session says about itself.
         """
         identity = _normalize_expected_client_key(expected_client_key)
-        await self._absorb_derived(session_id)
+        await self._absorb_derived(session_id, identity)
         return await self.repo.resume(session_id, identity)
 
     async def capture(
@@ -219,7 +228,7 @@ class BrainSessionService:
         identity = _normalize_expected_client_key(expected_client_key)
         captured = _normalize_captured_ids(knowledge_ids, require_nonempty=True)
         assert captured is not None
-        await self._absorb_derived(session_id)
+        await self._absorb_derived(session_id, identity)
         return await self.repo.capture(session_id, identity, captured)
 
     async def heartbeat(
@@ -227,7 +236,7 @@ class BrainSessionService:
     ) -> BrainSessionHeartbeatResult:
         """Refresh presence for an open session without changing its state."""
         identity = _normalize_expected_client_key(expected_client_key)
-        await self._absorb_derived(session_id)
+        await self._absorb_derived(session_id, identity)
         return await self.repo.heartbeat(session_id, identity)
 
     async def end(
@@ -250,7 +259,7 @@ class BrainSessionService:
         # pour décider comment fermer. Absorber après le rendrait visible trop
         # tard — la session serait close en ayant conclu qu'elle n'avait rien
         # produit.
-        await self._absorb_derived(session_id)
+        await self._absorb_derived(session_id, identity)
         return await self.repo.end(
             session_id,
             identity,

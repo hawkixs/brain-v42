@@ -244,16 +244,37 @@ class PgBrainSessionRepo(BasePgRepository):
         async with self.get_session() as session:
             return await self._load_session_artifact_ids(session, UUID(str(session_id)))
 
-    async def absorb_derived_capture(self, session_id: UUID | str, connection_id: str) -> int:
+    async def absorb_derived_capture(
+        self,
+        session_id: UUID | str,
+        connection_id: str,
+        expected_client_key: str,
+    ) -> int:
         """Faire absorber à cette session le ledger de la traçante de sa connexion.
 
-        Le dépôt ne décide rien ici : il ouvre la transaction, retrouve la
-        session cible et délègue les bornes à ``absorb_tracer_ledger``, qui les
-        aligne sur celles d'une capture EXPLICITE. Le service a déjà tranché le
-        drapeau et la connexion en amont, pour qu'un drapeau fermé ne coûte pas
-        cet aller-retour.
+        Le dépôt ne décide rien des BORNES : il ouvre la transaction, retrouve la
+        session cible et délègue à ``absorb_tracer_ledger``, qui les aligne sur
+        celles d'une capture EXPLICITE. Le service a déjà tranché le drapeau et
+        la connexion en amont, pour qu'un drapeau fermé ne coûte pas cet
+        aller-retour.
 
-        Rend le nombre de lignes déplacées ; ``0`` couvre tous les refus.
+        **LA GARDE D'IDENTITÉ VIT ICI, DANS LA MÊME TRANSACTION QUE LA MUTATION**,
+        et pas au site d'appel. `CLAUDE.md` est littéral — « le serveur refuse une
+        paire incohérente AVANT TOUTE MUTATION » — et un ordre d'appel ne tient
+        cette promesse que tant que personne ne réordonne : c'est exactement ce
+        qui vient d'arriver en déplaçant l'absorption devant `_assert_identity`,
+        qui vivait dans les commandes du dépôt. Un appel mal ciblé déplaçait
+        alors le ledger d'une traçante dans la session d'autrui, PUIS se faisait
+        refuser — et le ledger étant EXCLUSIF, ce déplacement est IRRÉVERSIBLE,
+        pendant que l'appelant ne voit qu'un refus.
+
+        Elle LÈVE, au lieu de rendre ``0`` en silence. Une paire incohérente
+        n'est pas un refus d'absorption parmi d'autres : c'est une commande mal
+        ciblée, que le dépôt s'apprête de toute façon à refuser deux lignes plus
+        loin avec la même exception. La faire remonter d'ici rend la garde
+        infranchissable au lieu de la laisser dépendre d'un ordre.
+
+        Rend le nombre de lignes déplacées ; ``0`` couvre tous les autres refus.
         """
         from brain_v42.db.session_derived_capture import (  # noqa: PLC0415
             absorb_tracer_ledger,
@@ -262,7 +283,10 @@ class PgBrainSessionRepo(BasePgRepository):
         async with self.transaction() as session:
             row = await self._get_row(session, session_id)
             if row is None:
+                # Session inconnue : rien à absorber, et surtout pas une erreur
+                # d'identité — c'est la commande qui dira « introuvable ».
                 return 0
+            self._assert_identity(self._to_model(row), expected_client_key)
             target = SimpleNamespace(
                 id=row["id"],
                 project_key=row["project_key"],

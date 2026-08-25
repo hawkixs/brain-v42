@@ -88,7 +88,10 @@ async def test_every_command_absorbs_exactly_once(command: str, _open_flag: None
 
     await _run(BrainSessionService(repo), command, session_id)
 
-    repo.absorb_derived_capture.assert_awaited_once_with(session_id, _CONNECTION)
+    # L'IDENTITÉ voyage avec la mutation : la garde vit dans l'absorption,
+    # pas au site d'appel. Une absorption appelée sans elle serait un
+    # déplacement de ledger sans contrôle de propriété.
+    repo.absorb_derived_capture.assert_awaited_once_with(session_id, _CONNECTION, "task-a")
 
 
 @pytest.mark.parametrize("command", _COMMANDS)
