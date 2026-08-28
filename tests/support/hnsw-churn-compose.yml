@@ -1,0 +1,33 @@
+# Banc isolé pour `scripts/hnsw_churn_measure.sh`.
+#
+# Même digest que le service `postgres` de `docker-compose.yml` : le banc
+# mesure donc sur la CIBLE VERSIONNÉE, ce qui le rend reproductible et épinglé.
+#
+# CE QU'IL NE FAIT PAS, et qu'il ne faut pas lui prêter : reproduire le RUNTIME
+# de production. Mesuré le 2026-08-28, les deux ont divergé — le conteneur
+# `brain_v42_postgres` en cours tourne l'image `b295c2aa…`, démarrée depuis le
+# tag nu avant l'épinglage, quand le digest déclaré ici résout vers
+# `5fa1d4c7…`. Conséquence sur `vector` : 0.8.4 disponible côté runtime, 0.8.5
+# côté cible versionnée, et 0.8.2 réellement INSTALLÉ en production. Trois
+# valeurs, aucune interchangeable. Un `docker compose up -d` recréerait le
+# conteneur et ferait bouger la première sans prévenir.
+#
+# `pull_policy: never` verrouille l'image au contenu local : le banc ne peut pas
+# basculer en silence sur une version plus récente entre deux mesures.
+#
+# Aucun port publié : tout passe par `docker exec`. Le conteneur porte une COPIE
+# des embeddings de production — il vit sur tmpfs et doit être détruit après
+# usage (`docker rm -f`), pas laissé à tourner.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
+    pull_policy: never
+    container_name: ${CHURN_CONTAINER:?CHURN_CONTAINER is required}
+    network_mode: bridge
+    environment:
+      POSTGRES_USER: churn
+      POSTGRES_DB: churn
+      POSTGRES_HOST_AUTH_METHOD: trust
+    tmpfs:
+      - /var/lib/postgresql/data:rw,size=2g
+    restart: "no"

@@ -67,7 +67,11 @@ investigate, not at expected noise. An earlier figure of roughly one in seven re
 came from synthetic uniform vectors, a regime this corpus is not in; publishing it would have
 taught the operator to tolerate exactly the deviation that should alarm them. Re-run
 `scripts/hnsw_churn_measure.sh` after any notable corpus growth: the result depends on scale and
-the threshold where churn reappears is unknown and unwatched.
+the threshold where churn reappears is unknown and unwatched. The bench runs the *versioned*
+image, not the live runtime — the two have drifted, and `pgvector` reports three different
+versions across the running container, the pinned target and what production actually has
+installed. Ticket `2ed0d4e0` carries that; do not read the churn row as evidence about the
+running server's exact build.
 <!-- dr-current:end -->
 
 **Replay it, do not quote it.** The receipt denominator moved four times on 2026-08-22 alone, and

@@ -28,6 +28,9 @@
 #    unité par sonde. C'est une preuve d'exécution, pas d'intention.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_FILE="$SCRIPT_DIR/../tests/support/hnsw-churn-compose.yml"
+
 C=${CHURN_CONTAINER:-brain_v42_hnsw_churn}
 BUILDS=${BUILDS:-3}
 SRC_TABLE=${SRC_TABLE:-learnings}   # la plus grosse des 9 tables à index HNSW
@@ -36,16 +39,23 @@ q() { docker exec "$C" psql -U churn -d churn -Atc "$1"; }
 qq() { docker exec "$C" psql -U churn -d churn -q -c "$1"; }
 
 # --- provisionnement, si le banc n'existe pas déjà -------------------------
-# Conteneur éphémère sur tmpfs, publié sur loopback seulement. Il porte une
-# COPIE des embeddings de production : le détruire après usage (make_teardown
-# ci-dessous) plutôt que de le laisser tourner.
+# Le banc est décrit par `tests/support/hnsw-churn-compose.yml`, PAS par un
+# `docker run` : il hérite ainsi du digest épinglé, donc d'une mesure
+# reproductible. Le gate `scripts/check_container_image_pins.py` refuse de
+# toute façon un `docker run` non épinglé, et il a raison ici.
+#
+# Le banc reproduit la CIBLE VERSIONNÉE, pas le runtime de production : les
+# deux ont divergé (voir l'en-tête du fichier compose). La mesure ci-dessous
+# porte donc sur `vector 0.8.5`, quand la production a `0.8.2` installé.
+#
+# Le conteneur porte une COPIE des embeddings de production. Il vit sur tmpfs
+# et doit être détruit après usage :  docker rm -f "$CHURN_CONTAINER"
 if ! docker exec "$C" pg_isready -U churn -d churn >/dev/null 2>&1; then
   echo "== provisionnement du banc isolé =="
   docker rm -f "$C" >/dev/null 2>&1 || true
-  docker run -d --name "$C" \
-    -e POSTGRES_PASSWORD=churn -e POSTGRES_USER=churn -e POSTGRES_DB=churn \
-    -p 127.0.0.1:5455:5432 --tmpfs /var/lib/postgresql/data:rw,size=2g \
-    pgvector/pgvector:pg16 >/dev/null
+  CHURN_CONTAINER="$C" \
+    docker compose -f "$SCRIPT_DIR/../tests/support/hnsw-churn-compose.yml" \
+    up --detach --no-build >/dev/null
   for _ in $(seq 1 60); do
     docker exec "$C" pg_isready -U churn -d churn >/dev/null 2>&1 && break
     sleep 1
