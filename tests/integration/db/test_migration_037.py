@@ -283,3 +283,29 @@ def test_migration_037_round_trip_backfill_and_fail_closed_guards(
         ):
             _cleanup_project(project_key)
         _run_alembic(["upgrade", "head"])
+
+
+def test_downgrade_fence_holds_the_shared_database_advisory_lock(
+    migration_downgrade_fence: Callable[..., None],
+) -> None:
+    """SIX fichiers migrent la MÊME base partagée, sans aucun verrou : deux
+    exécutions concurrentes s'entrelacent destructivement (288d7121, défaut 1
+    — resté ouvert après la garde de setup). Le fence tient donc un
+    `pg_advisory_lock` de session pendant TOUTE sa fenêtre : les runs
+    concurrents se sérialisent au lieu de s'entre-casser, et un crash libère
+    le verrou avec la connexion — résistant au kill par construction, là où
+    un fichier de verrou ne l'est pas.
+
+    La clé est le ticket : 0x288D7121 = 680358177. `pg_advisory_lock(bigint)`
+    la range dans (classid=0, objid=680358177, objsubid=1).
+    """
+    held = _sql(
+        "SELECT count(*) AS held FROM pg_locks "
+        "WHERE locktype = 'advisory' AND granted "
+        "AND classid = 0 AND objid = 680358177"
+    )[0]["held"]
+
+    assert int(held) >= 1, (
+        "le fence est actif mais aucun pg_advisory_lock(0x288D7121) n'est tenu — "
+        "les six fichiers de migration retombent dans la course de 288d7121"
+    )

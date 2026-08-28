@@ -338,14 +338,61 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) ->
     return report
 
 
+#: Verrou consultatif des tests qui migrent la base partagée. La clé EST le
+#: ticket qui a mesuré la course : 0x288D7121 (« deux exécutions concurrentes
+#: s'entrelacent destructivement »). Tenu sur une connexion DÉDIÉE pendant
+#: toute la fenêtre du fence : les runs concurrents se sérialisent, et un kill
+#: libère le verrou avec la connexion — résistant au crash par construction,
+#: là où un fichier de verrou ne l'est pas.
+_MIGRATION_ADVISORY_LOCK_KEY = 0x288D7121
+
+
+class _SharedDatabaseMigrationLock:
+    """Session-level advisory lock held for the whole fence window.
+
+    The connection lives on its own event loop because the fence is a sync
+    fixture: ``asyncio.run`` would close the loop and the connection with it,
+    releasing the lock at the exact moment it must start being held.
+    """
+
+    def __init__(self, db_url: str) -> None:
+        self._loop = asyncio.new_event_loop()
+        engine = create_async_engine(db_url, poolclass=NullPool)
+        try:
+            self._engine = engine
+            self._connection = self._loop.run_until_complete(engine.connect())
+            self._loop.run_until_complete(
+                self._connection.execute(
+                    sa.text("SELECT pg_advisory_lock(:key)"),
+                    {"key": _MIGRATION_ADVISORY_LOCK_KEY},
+                )
+            )
+        except BaseException:
+            self._loop.close()
+            raise
+
+    def release(self) -> None:
+        try:
+            self._loop.run_until_complete(
+                self._connection.execute(
+                    sa.text("SELECT pg_advisory_unlock(:key)"),
+                    {"key": _MIGRATION_ADVISORY_LOCK_KEY},
+                )
+            )
+            self._loop.run_until_complete(self._connection.close())
+            self._loop.run_until_complete(self._engine.dispose())
+        finally:
+            self._loop.close()
+
+
 @pytest.fixture
 def migration_downgrade_fence(
     request: pytest.FixtureRequest,
 ) -> Iterator[Callable[..., None]]:
     """Declare that a test is about to downgrade the shared database.
 
-    Does two things, both in teardown — that is, after the test function has
-    returned, including after its own ``finally``:
+    Serializes first, then does two things in teardown — that is, after the
+    test function has returned, including after its own ``finally``:
 
     1. clears the breadcrumb, which stops being true exactly then. Anything that
        kills the process in between leaves the file, and the next setup names
@@ -357,24 +404,32 @@ def migration_downgrade_fence(
     assertion left the database 22 revisions behind. A convention every future
     author must remember is the same class of defect as a hardcoded Alembic
     head — this repository already learned that once.
+
+    The serialization is the advisory lock of ``288d7121`` defect (1): six
+    files migrate the SAME shared database and two concurrent runs interleave
+    destructively. Waiting on the lock is the intended behaviour, not a hang.
     """
-    with ExitStack() as stack:
+    lock = _SharedDatabaseMigrationLock(_resolve_integration_db_url())
+    try:
+        with ExitStack() as stack:
 
-        def record(downgraded_to: str, restores_to: str = "head") -> None:
-            stack.enter_context(
-                migration_breadcrumb(
-                    project_root=_PROJECT_ROOT,
-                    test_nodeid=request.node.nodeid,
-                    downgraded_to=downgraded_to,
-                    restores_to=restores_to,
+            def record(downgraded_to: str, restores_to: str = "head") -> None:
+                stack.enter_context(
+                    migration_breadcrumb(
+                        project_root=_PROJECT_ROOT,
+                        test_nodeid=request.node.nodeid,
+                        downgraded_to=downgraded_to,
+                        restores_to=restores_to,
+                    )
                 )
-            )
 
-        yield record
+            yield record
 
-        # Restore BEFORE the breadcrumb is cleared: the trace must outlive the
-        # window it describes, not the other way round.
-        _fence_restores_head(request)
+            # Restore BEFORE the breadcrumb is cleared: the trace must outlive
+            # the window it describes, not the other way round.
+            _fence_restores_head(request)
+    finally:
+        lock.release()
 
 
 def _fence_restores_head(request: pytest.FixtureRequest) -> None:
