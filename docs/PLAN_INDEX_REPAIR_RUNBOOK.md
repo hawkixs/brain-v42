@@ -75,8 +75,8 @@ kept the restored-target row empty for six days without anyone noticing.
 
 **On the churn row.** The row is measured on `learnings` **only** — the table the reference
 measurement already found the most stable — with n=40 probes in two distance bands: 20
-near-duplicates (1-NN distance 0.024–0.026) and 20 at the distance real user queries land
-(0.282–0.325, matching the 0.24–0.36 measured through the `:8003` endpoint). Five rebuilds,
+near-duplicates (1-NN distance 0.024–0.026) and 20 at realistic query distance (1-NN
+0.282–0.325 — the band the bench prints on every run, which is the source). Five rebuilds,
 ten build pairs, seed 0.42; the single recall miss against exact search sat at
 `Δd = 0.000000` — a pure tie shuffle, zero semantic loss. Do **not** generalize this `0` to
 every HNSW index. The reference is `docs/runbooks/2026-08-23-hnsw-restore-churn-declaration.md`
