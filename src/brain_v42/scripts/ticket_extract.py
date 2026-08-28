@@ -48,20 +48,20 @@ _API_KEY_VAR = "BRAIN_NVIDIA_API_KEY"
 _FALLBACK_MODEL_VAR = "BRAIN_NVIDIA_FALLBACK_MODEL"
 #: Secours quand le primaire est retiré chez le fournisseur.
 #:
-#: ÉGAL AU PRIMAIRE DEPUIS LE 2026-08-21, et c'est délibéré. La condition posée
-#: ici — « à canaryer sur le prompt d'extraction avant de le promouvoir
-#: primaire » — a été REMPLIE par un run de production : la nuit du 2026-08-21 a
-#: fini `extract` en `done` avec ce modèle (dream_runs.model). Le primaire d'alors
-#: étant mort en 410, ce secours était de toute façon le modèle qui finissait
-#: chaque run ; la promotion ne fait que cesser de payer l'aller-retour.
-#:
-#: Conséquence à NE PAS lire comme une perte : `main` annule un secours égal au
-#: primaire, donc extract tourne sans second maillon. Il tournait déjà sans, le
-#: secours étant consommé dès le premier ticket. Lui redonner un vrai second
-#: modèle demande de CANARYER un candidat sur le prompt d'extraction — pas de le
-#: choisir sur la fiche du fournisseur, ni sur une sonde de 16 tokens, erreur
-#: mesurée le 2026-08-05 (vivant sur 16 tokens, en TIMEOUT sur le prompt réel).
-DEFAULT_EXTRACT_FALLBACK_MODEL = "meta/llama-3.3-70b-instruct"
+#: VRAI SECOND MAILLON depuis le 2026-08-29. Il avait été annulé (égal au
+#: primaire) le 2026-08-21, avec une condition explicite pour le restaurer :
+#: « CANARYER un candidat sur le prompt d'extraction — pas de le choisir sur
+#: la fiche du fournisseur, ni sur une sonde de 16 tokens, erreur mesurée le
+#: 2026-08-05 (vivant sur 16 tokens, en TIMEOUT sur le prompt réel) ». La
+#: condition est remplie : canary sans persistance du 2026-08-29 sur trois
+#: tickets pending réels, par le chemin exact de la nuit
+#: (`fetch_pending_threads` → `extract_thread`, arrêté avant
+#: `persist_proposals`) — mistral-nemotron 3/3 valides, 15 drafts,
+#: 25,9 s/ticket, deuxième derrière le primaire nemotron-3-super-120b-a12b
+#: (16,1 s). La restauration n'était plus optionnelle : le primaire promu le
+#: 21/08, llama-3.3-70b, est mort en 410 sept nuits plus tard, et un secours
+#: égal au primaire meurt AVEC lui.
+DEFAULT_EXTRACT_FALLBACK_MODEL = "mistralai/mistral-nemotron"
 
 _VALID_TARGET_TYPES = ("learning", "decision")
 _CORPUS_DEDUP_THRESHOLD = 0.85

@@ -39,14 +39,17 @@ from brain_v42.services.graph_service import ALLOWED_DOMAINS
 
 DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
 #: Primaire d'extract ET de backfill. `deepseek-ai/deepseek-v4-pro` a occupé
-#: cette place jusqu'au 2026-08-21 en étant mort depuis le 12/08 : chaque run
-#: payait un aller-retour vers un 410 avant de basculer sur son secours. Mesuré
-#: le 2026-08-21 avec `scripts/probe_model_liveness.py` — deepseek-v4-pro GONE
-#: 410, celui-ci ALIVE 200 — et canaryé par la nuit du 2026-08-21 elle-même,
-#: qui a fini `extract` en `done` sur le vrai prompt (dream_runs.model, première
-#: nuit de l'instrumentation 6148a9c). Un 410 n'est pas transitoire : aucun
+#: cette place jusqu'au 2026-08-21 en étant mort depuis le 12/08 ; son
+#: remplaçant `meta/llama-3.3-70b-instruct` est mort à son tour entre les
+#: nuits du 27 (extract done) et du 28 août (extract fail 410, sonde GONE le
+#: 29). Remplacé le 2026-08-29 par le plus rapide des quatre vivants canaryés
+#: SANS persistance sur le vrai prompt d'extraction, contre trois tickets
+#: pending réels (`fetch_pending_threads` → `extract_thread`, arrêté avant
+#: `persist_proposals`) : 3/3 valides, 13 drafts, 16,1 s/ticket — contre
+#: 25,9 s pour mistral-nemotron (secours), 19,7 s mais 8 drafts pour
+#: nano-30b, 57,5 s pour gpt-oss-20b. Un 410 n'est pas transitoire : aucun
 #: retry ne le répare, seule la constante le fait.
-DEFAULT_MODEL = "meta/llama-3.3-70b-instruct"
+DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b"
 DEFAULT_ENV_FILE = Path.home() / ".config" / "brain-v42" / "nvidia.env"
 VALID_DOMAINS: frozenset[str] = ALLOWED_DOMAINS | {"unknown"}
 VALID_CONFIDENCES: frozenset[str] = frozenset({"high", "medium", "low"})

@@ -254,9 +254,7 @@ def test_model_liveness_runs_the_read_only_probe_and_nothing_else() -> None:
 
     assert exec_starts == ["__REPO_ROOT__/.venv/bin/python -m scripts.probe_model_liveness"]
 
-    unit_text = (SYSTEMD_DIR / "brain-v42-model-liveness.service.tmpl").read_text(
-        encoding="utf-8"
-    )
+    unit_text = (SYSTEMD_DIR / "brain-v42-model-liveness.service.tmpl").read_text(encoding="utf-8")
     assert "dream.sh" not in unit_text
 
 

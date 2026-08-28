@@ -81,9 +81,7 @@ class TestConfiguredModels:
         """
         from scripts.ticket_extract import DEFAULT_EXTRACT_FALLBACK_MODEL
 
-        sites = [
-            e for e in configured_models() if "DEFAULT_EXTRACT_FALLBACK_MODEL" in e.used_by
-        ]
+        sites = [e for e in configured_models() if "DEFAULT_EXTRACT_FALLBACK_MODEL" in e.used_by]
 
         assert sites, "le secours d'extract n'a pas d'entrée propre dans l'inventaire"
         assert [e.model for e in sites] == [DEFAULT_EXTRACT_FALLBACK_MODEL]
@@ -129,8 +127,12 @@ class TestProbe:
         results = probe_models(entries, client=self._client(statuses), api_key="k")
 
         gone = [r for r in results if r.verdict is Verdict.GONE]
-        assert [r.entry.model for r in gone] == [dead]
-        assert gone[0].entry.used_by
+        # Un nom partagé par plusieurs constantes rend UNE ligne PAR SITE : c'est
+        # le site qui dit quelle constante remplacer, pas le nom (depuis le
+        # 2026-08-29, mistral-nemotron est à la fois primaire DRY roadmap et
+        # secours extract).
+        assert [r.entry.model for r in gone] == [e.model for e in entries if e.model == dead]
+        assert all(r.entry.used_by for r in gone)
 
     def test_the_probe_never_writes_anything(self) -> None:
         """Lecture seule : le canary d'origine ne persistait rien, celui-ci non plus.

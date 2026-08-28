@@ -92,12 +92,29 @@ _ENV_FILE = Path.home() / ".config" / "brain-v42" / "nvidia.env"
 #    que « r202 est une étape de r138 ». Il reste secours et ne devient pas
 #    primaire : voir tests/unit/test_roadmap_model_chain.py.
 DEFAULT_ROADMAP_MODEL = "mistralai/mistral-nemotron"
-DEFAULT_ROADMAP_FALLBACK_MODEL = "meta/llama-3.1-8b-instruct"
-# Canary strict du 2026-07-14 : JSON ROADMAP valide sur le vrai prompt.
-# Le défaut dry reste économique/proposer-only ; --wet choisit ce modèle
-# reviewé lorsque l'opérateur n'en configure pas explicitement un autre.
-DEFAULT_WET_ROADMAP_MODEL = "meta/llama-3.3-70b-instruct"
-DEFAULT_WET_ROADMAP_FALLBACK_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+# Secours remplacé le 2026-08-29 : le 8B est mort en 410 le 2026-08-26 (nuits
+# des 27 et 28 en fail, sonde GONE). gpt-oss-20b est le seul vivant 100 % porté
+# sur le vrai prompt à travers trois canaries (08-11, 08-16, 08-29 : 3/3 à
+# chaque fois) et jugé en aveugle au-dessus du mort qu'il remplace (35/100
+# contre 10). Ses 74,5 s/batch mesurées valent pour le régime PRIMAIRE à pleins
+# caps ; en secours il tourne aux caps réduits de FALLBACK_*. deepseek-v4-flash
+# -0731 écarté : 69,3 s/batch le 08-16, famille morte deux fois en un mois,
+# contenu jamais jugé.
+DEFAULT_ROADMAP_FALLBACK_MODEL = "openai/gpt-oss-20b"
+# Paire WET remplacée le 2026-08-29 : llama-3.3-70b (canary strict du
+# 2026-07-14) est mort en 410 entre les nuits du 27 et du 28 août — maillon
+# DORMANT côté roadmap, la phase tournant en DRY ; sans extract qui partageait
+# ce modèle, personne ne l'aurait vu mourir. Le secours d'hier devient
+# primaire : nemotron-3-super-120b-a12b, 3/3 valides, 31 propositions,
+# 54,9 s/batch (549 s projetées sur dix projets, budget 720 s) au canary du
+# 08-29 — le plus fort des vivants mesurés sur ce prompt. gpt-oss-120b prend
+# le poste de secours : 3/3 valides et 39 propositions le 08-11, lent
+# (182 s/batch à pleins caps) mais VALIDE, sur un poste que
+# test_roadmap_model_chain exige distinct et que le killswitch DRY laisse
+# dormant. Le défaut dry reste économique/proposer-only ; --wet choisit ce
+# modèle reviewé lorsque l'opérateur n'en configure pas explicitement un autre.
+DEFAULT_WET_ROADMAP_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+DEFAULT_WET_ROADMAP_FALLBACK_MODEL = "openai/gpt-oss-120b"
 AUTO_APPLY_MODELS = frozenset({DEFAULT_WET_ROADMAP_MODEL, DEFAULT_WET_ROADMAP_FALLBACK_MODEL})
 PROPOSER_ONLY_MODELS = frozenset({DEFAULT_ROADMAP_MODEL, DEFAULT_ROADMAP_FALLBACK_MODEL})
 # HTTP 410 = le fournisseur a retiré le modèle (EOL). Aucun retry, aucune

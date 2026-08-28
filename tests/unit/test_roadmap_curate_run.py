@@ -493,6 +493,20 @@ class TestBudgetSecondsArg:
         le même lot, et sept runs orchestrator fondus dans le plus ancien
         d'entre eux. Le promouvoir aurait aussi effondré la chaîne à un maillon
         (voir tests/unit/test_roadmap_model_chain.py).
+
+        SECOURS REMPLACÉ le 2026-08-29 : le 8B a atteint sa fin de vie le
+        2026-08-26 (410 mesuré par la sonde ET par les nuits des 27 et 28,
+        toutes deux en fail). Remplaçant : openai/gpt-oss-20b, seul vivant
+        100 % porté sur le vrai prompt à travers TROIS canaries indépendants
+        (08-11, 08-16, 08-29 — 3/3 valides à chaque fois), et mieux jugé en
+        aveugle que le mort qu'il remplace (35/100 contre 10/100). Sa lenteur
+        mesurée — 74,5 s/batch le 08-29, soit 745 s projetées sur dix projets —
+        vaut pour le RÉGIME PRIMAIRE à pleins caps ; en secours il tourne à
+        caps réduits, et ce dépassement de 3 % est le pire cas d'une nuit
+        intégralement dégradée, borné par le timeout de phase de dream.sh.
+        L'alternative deepseek-v4-flash-0731 (3/3, 69,3 s/batch le 08-16) est
+        écartée : même ordre de lenteur, famille morte deux fois en un mois,
+        contenu jamais jugé.
         """
         monkeypatch.delenv("BRAIN_NVIDIA_ROADMAP_MODEL", raising=False)
         monkeypatch.delenv("BRAIN_NVIDIA_MODEL", raising=False)
@@ -501,7 +515,7 @@ class TestBudgetSecondsArg:
         assert rc.main() == 0
 
         assert capture_args["model"] == "mistralai/mistral-nemotron"
-        assert capture_args["fallback_model"] == "meta/llama-3.1-8b-instruct"
+        assert capture_args["fallback_model"] == "openai/gpt-oss-20b"
 
     def test_dry_primary_can_never_auto_apply(self, capture_args, monkeypatch):
         """Le primaire DRY doit rester hors allowlist : un modèle non canaryé
@@ -543,18 +557,31 @@ class TestBudgetSecondsArg:
         assert capture_args["model"] == "cli-model"
 
     def test_default_wet_model_is_reviewed_and_keeps_auto_apply(self, capture_args, monkeypatch):
+        """PAIRE WET REMPLACÉE le 2026-08-29 : llama-3.3-70b est mort en 410.
+
+        Fin de vie mesurée entre les nuits du 27 (extract done) et du 28
+        (extract fail 410) — un maillon DORMANT côté roadmap, puisque la phase
+        tourne en DRY : sans la nuit d'extract qui partageait ce modèle,
+        personne ne l'aurait vu mourir. Le secours d'hier devient primaire
+        (nemotron-3-super-120b-a12b : 3/3 valides, 31 propositions, 54,9
+        s/batch au canary du 08-29 — le plus fort des vivants mesurés) et
+        gpt-oss-120b prend le poste de secours (3/3 valides et 39 propositions
+        mesurés le 08-11 ; lent — 182 s/batch à pleins caps — mais VALIDE, sur
+        un poste que la chaîne exige distinct et que le killswitch DRY laisse
+        dormant).
+        """
         monkeypatch.delenv("BRAIN_NVIDIA_ROADMAP_MODEL", raising=False)
         monkeypatch.delenv("BRAIN_NVIDIA_MODEL", raising=False)
         monkeypatch.setattr("sys.argv", ["roadmap_curate", "--wet"])
 
         assert rc.main() == 0
 
-        assert capture_args["model"] == "meta/llama-3.3-70b-instruct"
-        assert capture_args["fallback_model"] == "nvidia/nemotron-3-super-120b-a12b"
+        assert capture_args["model"] == "nvidia/nemotron-3-super-120b-a12b"
+        assert capture_args["fallback_model"] == "openai/gpt-oss-120b"
         assert capture_args["args"].wet is True
 
     def test_explicit_fallback_model_forces_proposer_only(self, capture_args, monkeypatch, capsys):
-        monkeypatch.setenv("BRAIN_NVIDIA_ROADMAP_MODEL", "meta/llama-3.1-8b-instruct")
+        monkeypatch.setenv("BRAIN_NVIDIA_ROADMAP_MODEL", "openai/gpt-oss-20b")
         monkeypatch.setattr("sys.argv", ["roadmap_curate", "--wet"])
 
         assert rc.main() == 0
@@ -572,7 +599,7 @@ class TestBudgetSecondsArg:
         assert "review-only" in capsys.readouterr().out
 
     def test_reviewed_fallback_model_keeps_wet(self, capture_args, monkeypatch):
-        monkeypatch.setenv("BRAIN_NVIDIA_ROADMAP_MODEL", "nvidia/nemotron-3-super-120b-a12b")
+        monkeypatch.setenv("BRAIN_NVIDIA_ROADMAP_MODEL", "openai/gpt-oss-120b")
         monkeypatch.setattr("sys.argv", ["roadmap_curate", "--wet"])
 
         assert rc.main() == 0

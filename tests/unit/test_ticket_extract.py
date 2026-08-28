@@ -2382,9 +2382,14 @@ class TestThePrimaryModelIsAliveRatherThanRetired:
     def test_the_primary_is_not_the_model_measured_gone(self) -> None:
         from scripts.domain_backfill import DEFAULT_MODEL
 
-        assert DEFAULT_MODEL != "deepseek-ai/deepseek-v4-pro", (
+        assert DEFAULT_MODEL not in {
+            "deepseek-ai/deepseek-v4-pro",
+            "meta/llama-3.3-70b-instruct",
+        }, (
             "le primaire est un modèle retiré chez le fournisseur : chaque run "
-            "paie un 410 certain avant de basculer"
+            "paie un 410 certain avant de basculer. deepseek-v4-pro est mort le "
+            "2026-08-12 ; llama-3.3-70b entre les nuits du 27 et du 28 août "
+            "(extract done le 27, fail 410 le 28, sonde GONE le 29)"
         )
 
     def test_the_primary_is_the_model_that_was_canaryed_on_the_real_prompt(self) -> None:
@@ -2394,10 +2399,18 @@ class TestThePrimaryModelIsAliveRatherThanRetired:
         modèle vivant — y compris un qui n'a jamais vu le prompt d'extraction, ce
         qui est exactement l'erreur du canary du 2026-08-05 : vivant sur 16
         tokens, en timeout sur le prompt réel.
+
+        Le remplaçant du 2026-08-29 a été canaryé SUR le prompt d'extraction,
+        sans persistance, contre trois tickets pending réels — le chemin exact
+        de la nuit (`fetch_pending_threads` → `extract_thread`, arrêté avant
+        `persist_proposals`) : nemotron-3-super-120b-a12b 3/3 valides,
+        13 drafts, 16,1 s/ticket — le plus rapide des quatre vivants mesurés
+        (mistral-nemotron 25,9 s, nano-30b 19,7 s mais 8 drafts, gpt-oss-20b
+        57,5 s — hors budget d'une phase à 20 tickets pour 10 minutes).
         """
         from scripts.domain_backfill import DEFAULT_MODEL
 
-        assert DEFAULT_MODEL == "meta/llama-3.3-70b-instruct"
+        assert DEFAULT_MODEL == "nvidia/nemotron-3-super-120b-a12b"
 
 
 class TestAFallbackIdenticalToThePrimaryIsNotAFallback:
@@ -2407,12 +2420,13 @@ class TestAFallbackIdenticalToThePrimaryIsNotAFallback:
     prévoyait déjà le cas — « un secours identique au primaire n'est pas un
     secours : il ferait croire à une chaîne là où il n'y a qu'un seul point de
     panne » — mais rien ne le vérifiait, et jusqu'ici la branche ne s'exécutait
-    jamais. Elle devient le chemin NOMINAL.
+    jamais. Elle a été le chemin NOMINAL du 2026-08-21 au 2026-08-29.
 
-    Ce n'est pas une perte de résilience, et le mesurer importe : avec un primaire
-    mort, le secours était DÉJÀ consommé dès le premier ticket du run, et la suite
-    tournait sur un seul modèle sans filet. Le seul changement est qu'on cesse de
-    payer l'aller-retour 410 pour arriver au même endroit.
+    Depuis le 2026-08-29 la chaîne a retrouvé DEUX maillons distincts, tous
+    deux canaryés sur le vrai prompt d'extraction contre des tickets réels
+    (secours mistral-nemotron : 3/3 valides, 15 drafts, 25,9 s/ticket). La
+    garde d'égalité reste couverte ici par le chemin env : elle doit annuler
+    une collision explicite, jamais la chaîne nominale.
     """
 
     @staticmethod
@@ -2440,10 +2454,27 @@ class TestAFallbackIdenticalToThePrimaryIsNotAFallback:
         assert _asyncio is not None
         return captured["fallback_model"]
 
-    def test_the_promoted_primary_leaves_no_phantom_fallback(
+    def test_the_default_chain_resolves_two_distinct_links(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        assert self._resolved_fallback(monkeypatch, {}) is None, (
+        """Le défaut redevient une vraie chaîne : le secours survit au résolveur."""
+        from scripts.domain_backfill import DEFAULT_MODEL
+        from scripts.ticket_extract import DEFAULT_EXTRACT_FALLBACK_MODEL
+
+        resolved = self._resolved_fallback(monkeypatch, {})
+
+        assert resolved == DEFAULT_EXTRACT_FALLBACK_MODEL
+        assert resolved != DEFAULT_MODEL
+
+    def test_a_fallback_equal_to_the_primary_is_annulled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from scripts.domain_backfill import DEFAULT_MODEL
+
+        assert (
+            self._resolved_fallback(monkeypatch, {"BRAIN_NVIDIA_FALLBACK_MODEL": DEFAULT_MODEL})
+            is None
+        ), (
             "un secours égal au primaire ferait croire à une chaîne à deux "
             "maillons là où il n'y a qu'un seul point de panne"
         )
