@@ -31,12 +31,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 USER_UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
-# Two paired (service, timer) sets:
-#   - dream:       daily 06:00 — knowledge consolidation pipeline
-#   - graph-recon: weekly Sunday 04:00 — read-only graph ledger inventory
+# Three paired (service, timer) sets:
+#   - dream:          daily 06:00 — knowledge consolidation pipeline
+#   - graph-recon:    weekly Sunday 04:00 — read-only graph ledger inventory
+#   - model-liveness: weekly Monday 05:00 — read-only provider EOL probe
 UNITS=(
   "brain-v42-dream"
   "brain-v42-graph-recon"
+  "brain-v42-model-liveness"
 )
 
 MANAGED_UNIT_FILES=(
@@ -44,6 +46,8 @@ MANAGED_UNIT_FILES=(
   brain-v42-dream.timer
   brain-v42-graph-recon.service
   brain-v42-graph-recon.timer
+  brain-v42-model-liveness.service
+  brain-v42-model-liveness.timer
   brain-mcp-http.service
   brain-mcp-http-watchdog.service
   brain-mcp-http-watchdog.timer

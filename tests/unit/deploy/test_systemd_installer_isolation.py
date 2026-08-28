@@ -33,6 +33,8 @@ EXPECTED_UNITS = frozenset(
         "brain-v42-dream.timer",
         "brain-v42-graph-recon.service",
         "brain-v42-graph-recon.timer",
+        "brain-v42-model-liveness.service",
+        "brain-v42-model-liveness.timer",
         "brain-mcp-http.service",
         "brain-mcp-http-watchdog.service",
         "brain-mcp-http-watchdog.timer",

@@ -1,0 +1,18 @@
+[Unit]
+Description=brain-v42 Model Liveness Probe — weekly read-only EOL check
+
+[Timer]
+# Monday 05:00 local — after graph-recon's Sunday 04:00 slot, before the
+# daily dream run at 06:00, so a Monday-morning check reads a fresh verdict.
+OnCalendar=Mon *-*-* 05:00:00
+
+# If the machine was off / suspended at 05:00 Monday, run on next boot.
+Persistent=true
+
+# Jitter so we don't collide with anything else that pins :00:00.
+RandomizedDelaySec=300
+
+Unit=brain-v42-model-liveness.service
+
+[Install]
+WantedBy=timers.target

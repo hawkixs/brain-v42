@@ -25,20 +25,20 @@ précédente sort avec le code `0`.
 
 ## Modes de rendu
 
-- `install.sh --check-only` rend et vérifie les huit unités dans un répertoire privé sous
+- `install.sh --check-only` rend et vérifie toutes les unités gérées (la liste vit dans `MANAGED_UNIT_FILES`) dans un répertoire privé sous
   `/tmp`, puis le supprime. Il n'inspecte ni ne crée le répertoire systemd utilisateur et
   n'appelle pas `systemctl`.
-- `install.sh --render-dir /chemin/absolu/neuf` produit les huit mêmes fichiers vérifiés dans
+- `install.sh --render-dir /chemin/absolu/neuf` produit les mêmes fichiers vérifiés dans
   une nouvelle cible privée hors de systemd. Le parent doit appartenir à l'utilisateur, avoir
   `u+wx`, ne pas être inscriptible par groupe/autres et ne contenir aucun composant symlinké.
 - `install.sh --dry-run` est un mode historique : il n'appelle pas `systemctl`, mais **publie les
-  huit unités dans le répertoire systemd utilisateur**. Ne pas l'utiliser comme préflight sans
+  unités gérées dans le répertoire systemd utilisateur**. Ne pas l'utiliser comme préflight sans
   effet de bord ni comme rollout global. Les chemins live `install` et `--dry-run` imposent un
   umask `077`, ramènent le répertoire final à `0700`, publient les unités en `0600` et refusent
   un propriétaire ou un ancêtre permettant le remplacement par un autre UID.
 
 Les deux modes isolés exécutent les preflights avec le HOME/XDG hôte, puis un seul
-`systemd-analyze verify` sur les huit artefacts dans un HOME/XDG vide et privé. Ils échouent
+`systemd-analyze verify` sur tous les artefacts rendus dans un HOME/XDG vide et privé. Ils échouent
 fermés si le verifier manque ou refuse une unité.
 
 En cas d'échec après publication `--render-dir`, le cleanup remet d'abord la cible dans son
@@ -49,7 +49,7 @@ frontière de confiance et nécessiterait un helper `dirfd` dédié.
 
 ## Preflight
 
-Ce bloc vérifie d'abord les huit unités sans publication, produit un artefact inspectable hors
+Ce bloc vérifie d'abord toutes les unités gérées sans publication, produit un artefact inspectable hors
 de systemd, sauvegarde le fragment automation et ses drop-ins, puis publie **uniquement** le
 fragment automation par renommage atomique. Il recharge ensuite le manager avant inspection et
 installe une sonde bornée de lease. La sonde ne montre aucune variable sensible : elle affiche

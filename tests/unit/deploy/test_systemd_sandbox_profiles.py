@@ -107,6 +107,7 @@ REDUCED_PROFILE = (
 EXPECTED_PROFILES = {
     "brain-v42-automation.service.tmpl": STRONG_INTEGRITY_PROFILE,
     "brain-v42-graph-recon.service.tmpl": STRONG_INTEGRITY_PROFILE,
+    "brain-v42-model-liveness.service.tmpl": STRONG_INTEGRITY_PROFILE,
     "brain-mcp-http.service.tmpl": MCP_HTTP_PROFILE,
     "brain-v42-dream.service.tmpl": REDUCED_PROFILE,
     "brain-v42-embedding-backfill.service.tmpl": REDUCED_PROFILE,
@@ -238,11 +239,33 @@ def test_graph_recon_runs_read_only_ledger_inventory() -> None:
     assert "recover_graph_projection.py" not in exec_starts[0]
 
 
+def test_model_liveness_runs_the_read_only_probe_and_nothing_else() -> None:
+    """La sonde hebdomadaire reste HORS du chemin de la nuit (décision b002c0a4).
+
+    Elle mesure et sort — jamais `dream.sh`, jamais un remplacement de modèle,
+    jamais une écriture. `-m` est obligatoire : lancé par chemin de fichier,
+    `sys.path[0]` serait `scripts/` et l'import de l'inventaire échouerait.
+    """
+    exec_starts = [
+        value
+        for key, value in _directives("brain-v42-model-liveness.service.tmpl")
+        if key == "ExecStart"
+    ]
+
+    assert exec_starts == ["__REPO_ROOT__/.venv/bin/python -m scripts.probe_model_liveness"]
+
+    unit_text = (SYSTEMD_DIR / "brain-v42-model-liveness.service.tmpl").read_text(
+        encoding="utf-8"
+    )
+    assert "dream.sh" not in unit_text
+
+
 @pytest.mark.parametrize(
     "unit_name",
     (
         "brain-v42-dream.service.tmpl",
         "brain-v42-graph-recon.service.tmpl",
+        "brain-v42-model-liveness.service.tmpl",
     ),
 )
 def test_user_services_do_not_reference_system_network_online_target(
