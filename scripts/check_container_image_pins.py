@@ -144,7 +144,9 @@ DOCKER_NON_INGRESS_VERBS = {
 #
 # Le trou coûtait cher : ce gate s'exécute AVANT ``pytest`` dans ``test:unit``,
 # donc un seul script refusé empêchait la suite unitaire ENTIÈRE de tourner.
-DOCKER_COMPOSE_VERBS = {"build", "config", "exec", "up"}
+# ``down`` détruit un déploiement existant sans faire entrer d'image ; c'est le
+# geste de teardown des bancs jetables (churn HNSW), au même titre qu'``exec``.
+DOCKER_COMPOSE_VERBS = {"build", "config", "down", "exec", "up"}
 GITLAB_CI_SOURCE = ".gitlab-ci.yml"
 GITHUB_WORKFLOW_DIRECTORY = ".github/workflows"
 GITHUB_WORKFLOW_SUFFIXES = {".yaml", ".yml"}
@@ -2035,6 +2037,19 @@ def _docker_compose_invocation(tokens: Sequence[str], index: int) -> DockerInvoc
             continue
         if option.startswith("--file="):
             files.append(option.split("=", 1)[1])
+            index += 1
+            continue
+        # ``-p`` nomme le projet : sans lui, compose dérive le projet du
+        # dossier du fichier et deux bancs jetables aux noms différents se
+        # recréent l'un l'autre. Le nom de projet ne change aucune image.
+        if option in {"-p", "--project-name"}:
+            if index + 1 >= len(tokens):
+                return DockerInvocation(
+                    verb="compose", error=f"docker compose {option} value is missing"
+                )
+            index += 2
+            continue
+        if option.startswith("--project-name="):
             index += 1
             continue
         return DockerInvocation(

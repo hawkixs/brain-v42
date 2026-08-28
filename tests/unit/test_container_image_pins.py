@@ -2659,6 +2659,71 @@ def test_gate_boundary_shell_compose_rejects_external_files(
     assert any("Compose file" in error for error in _errors(checker, tmp_path))
 
 
+def test_gate_boundary_shell_compose_accepts_an_explicit_project_name(
+    checker: ModuleType | _MissingChecker, tmp_path: Path
+) -> None:
+    """`-p` nomme le projet compose ; il ne change rien aux images résolues.
+
+    Sans projet explicite, compose dérive le projet du DOSSIER du fichier et
+    réconcilie sur (projet, service) : deux bancs jetables aux noms de
+    conteneur différents se recréaient l'un l'autre — destruction collatérale
+    mesurée sur le banc churn HNSW le 2026-08-28. Refuser `-p` ici forçait un
+    script de banc à choisir entre le gate et l'isolation. `down` entre au
+    même titre : c'est le geste de teardown du même banc, et il ne fait
+    entrer aucune image.
+    """
+    sources = _write_valid_repo(tmp_path)
+    _write_yaml(
+        tmp_path / "ops/base.yml",
+        {"services": {"worker": {"image": REFERENCE}}},
+    )
+    _write_yaml(
+        tmp_path / "config/container-images.lock.yml",
+        _catalog([*sources, "ops/base.yml"]),
+    )
+    (tmp_path / "scripts/build-image.sh").write_text(
+        f"#!/usr/bin/env bash\n{SCRIPT_DIR_ASSIGNMENT}\n"
+        'docker compose -p bench -f "$SCRIPT_DIR/../ops/base.yml" up --detach\n'
+        'docker compose --project-name bench -f "$SCRIPT_DIR/../ops/base.yml" down\n'
+        'docker compose --project-name=bench -f "$SCRIPT_DIR/../ops/base.yml" down '
+        "--remove-orphans --timeout 5\n"
+        f"docker pull {REFERENCE}\n"
+    )
+
+    assert _errors(checker, tmp_path) == []
+
+
+def test_gate_boundary_shell_compose_project_name_does_not_bypass_the_scan(
+    checker: ModuleType | _MissingChecker, tmp_path: Path
+) -> None:
+    """Accepter `-p` n'exempte pas le fichier compose de l'épinglage."""
+    _write_valid_repo(tmp_path)
+    _write_yaml(
+        tmp_path / "ops/bad.yml",
+        {"services": {"worker": {"image": "alpine:latest"}}},
+    )
+    (tmp_path / "scripts/build-image.sh").write_text(
+        f"#!/usr/bin/env bash\n{SCRIPT_DIR_ASSIGNMENT}\n"
+        'docker compose -p bench -f "$SCRIPT_DIR/../ops/bad.yml" up\n'
+        f"docker pull {REFERENCE}\n"
+    )
+
+    assert any(
+        "ops/bad.yml" in error and "alpine:latest" in error for error in _errors(checker, tmp_path)
+    )
+
+
+def test_gate_boundary_shell_compose_rejects_a_dangling_project_flag(
+    checker: ModuleType | _MissingChecker, tmp_path: Path
+) -> None:
+    _write_valid_repo(tmp_path)
+    (tmp_path / "scripts/build-image.sh").write_text(
+        f"#!/usr/bin/env bash\ndocker compose -p\ndocker pull {REFERENCE}\n"
+    )
+
+    assert any("value is missing" in error for error in _errors(checker, tmp_path))
+
+
 @pytest.mark.parametrize(
     "body",
     [
