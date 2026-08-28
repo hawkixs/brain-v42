@@ -107,10 +107,11 @@ it once.
 **What no number above proves.** Every contract and ACL value was replayed against the **live**
 production database, never against a `pg_restore`d archive — the third column now says so per
 row, so this is checkable rather than remembered. None of them says anything about an actual
-restoration, and the P1 gate first raised as `8eaefe36` stands entirely open. Follow `58711012`,
-not that number: `8eaefe36` was closed in error on 2026-08-27 and a closed ticket is terminal, so
-the gate was carried over rather than reopened. `5dc286b6` names the mechanism — no command in
-this document produces a receipt against a restored target. Do not read a full receipt here as
+restoration, and the P1 gate — prove a real restore — stands entirely open. Follow `58711012`,
+which carries it: the ticket that first raised it, `8eaefe36`, was closed on 2026-08-28 as
+superseded by its five CATALOGUE splits, none of which carries this gate, and a closed ticket is
+terminal, so the gate was carried over rather than reopened. `5dc286b6` names the mechanism — no
+command in this document produces a receipt against a restored target. Do not read a full receipt here as
 "DR is proven". The sequence check makes that sharper, not softer: on a live
 database `last_value >= max(id)` is true by construction, so the one control written FOR a
 restore is the one control no receipt here can ever exercise. The ACL contract has no
@@ -361,7 +362,8 @@ required. It is not free of consequence, though — apply it and the code togeth
   >
   > **What no receipt here proves.** Every number above was replayed against the **live**
   > production database, never against a `pg_restore`d dump. None of them says anything about
-  > an actual restoration. The P1 gate of `8eaefe36` stands entirely open — do not read
+  > an actual restoration. The P1 gate — first raised as `8eaefe36`, carried by `58711012`
+  > since its parent closed on 2026-08-28 — stands entirely open — do not read
   > `29/29` as "DR is proven". The sequence check makes that sharper, not softer: on a live
   > database `last_value >= max(id)` is true by construction, so the one control written
   > FOR a restore is the one control no receipt here can ever exercise.
@@ -819,7 +821,8 @@ receipt is a failed restore, not a stale gate — except the `extension_vector` 
 on every healthy restore until ticket `2ed0d4e0` closes (see the known-failure note in
 [Current targets](#current-targets)). The ACL contract has no `-pgrestore` twin and cannot
 be replayed here, so owners and grants stay unattested on the restored target; that gap is a
-recorded decision and part of what the P1 gate of `8eaefe36` still holds open. Only then restore
+recorded decision and part of what the P1 gate (`58711012`, first raised as `8eaefe36`) still
+holds open. Only then restore
 the captured login flags, reopen the database, start the MCP built for that head, pass health and
 read-only canaries, and enable the watchdog timer last.
 
