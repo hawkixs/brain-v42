@@ -129,6 +129,9 @@ DOCKER_NON_INGRESS_VERBS = {
     "inspect",
     "load",
     "login",
+    # ``network`` (create/inspect/rm/…) manipule des réseaux, jamais des
+    # images : c'est le teardown et la garde d'homonymie du banc churn.
+    "network",
     "ps",
     "push",
     "rm",

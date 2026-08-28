@@ -2724,6 +2724,23 @@ def test_gate_boundary_shell_compose_rejects_a_dangling_project_flag(
     assert any("value is missing" in error for error in _errors(checker, tmp_path))
 
 
+def test_gate_boundary_shell_accepts_docker_network_management(
+    checker: ModuleType | _MissingChecker, tmp_path: Path
+) -> None:
+    """`docker network inspect|rm` ne fait entrer aucune image : c'est le
+    teardown et la garde d'homonymie du banc churn (le réseau du projet doit
+    être inspecté avant destruction et retiré par le filet)."""
+    _write_valid_repo(tmp_path)
+    (tmp_path / "scripts/build-image.sh").write_text(
+        "#!/usr/bin/env bash\n"
+        "docker network inspect bench_default\n"
+        "docker network rm bench_default\n"
+        f"docker pull {REFERENCE}\n"
+    )
+
+    assert _errors(checker, tmp_path) == []
+
+
 @pytest.mark.parametrize(
     "body",
     [
