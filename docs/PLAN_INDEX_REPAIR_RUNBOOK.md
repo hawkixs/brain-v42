@@ -28,7 +28,7 @@ here and the restore procedure below were found to be describing two different d
 | Contract receipt, `-pgrestore` asset against a real restore | *never produced by this document* | — |
 | ACL contract, live only, no `-pgrestore` twin | `ops/recovery/brain-v42-v5-acl.sql` | 2026-08-22, live production |
 | ACL receipt | `1/1` | 2026-08-22, live production |
-| Search top-10 churn across index rebuilds | `0` — overlap `10/10` on ten build pairs, strict order included | 2026-08-28, copy of the 3242 real `learnings` embeddings |
+| Search top-10 churn across HNSW rebuilds, `learnings` ONLY, n=40 probes | `0` — overlap `10/10` on ten build pairs (`BUILDS=5`, seed 0.42), strict order included, both probe bands | 2026-08-29, copy of the 3243 real `learnings` embeddings, index path forced |
 
 Replay the head and the two live-target assets against production:
 
@@ -60,18 +60,30 @@ docker exec -i brain_v42_postgres psql -U brain -d "$RESTORED_DB" -Atq -v ON_ERR
 and two assets; the word has already been read the other way once, and that misreading is what
 kept the restored-target row empty for six days without anyone noticing.
 
-**On the churn row.** A successful restoration must *not* change the order of search results.
-Rebuilding every HNSW index on the real corpus leaves the top-10 identical, strict order
-included — so an operator who sees search results move after a restore is looking at a signal to
-investigate, not at expected noise. An earlier figure of roughly one in seven results drifting
-came from synthetic uniform vectors, a regime this corpus is not in; publishing it would have
-taught the operator to tolerate exactly the deviation that should alarm them. Re-run
-`scripts/hnsw_churn_measure.sh` after any notable corpus growth: the result depends on scale and
-the threshold where churn reappears is unknown and unwatched. The bench runs the *versioned*
-image, not the live runtime — the two have drifted, and `pgvector` reports three different
-versions across the running container, the pinned target and what production actually has
-installed. Ticket `2ed0d4e0` carries that; do not read the churn row as evidence about the
-running server's exact build.
+**On the churn row.** The row is measured on `learnings` **only** — the table the reference
+measurement already found the most stable — with n=40 probes in two distance bands: 20
+near-duplicates (1-NN distance 0.024–0.026) and 20 at the distance real user queries land
+(0.282–0.325, matching the 0.24–0.36 measured through the `:8003` endpoint). Five rebuilds,
+ten build pairs, seed 0.42; the single recall miss against exact search sat at
+`Δd = 0.000000` — a pure tie shuffle, zero semantic loss. Do **not** generalize this `0` to
+every HNSW index. The reference is `docs/runbooks/2026-08-23-hnsw-restore-churn-declaration.md`
+(n=1544 queries, all 9 tables, the same real embeddings): it puts duplicate-heavy tables far
+outside this row — `gitlab_events` at 8.85/10 with 100 % of the divergence being tie
+shuffling — and it, not this row, carries the operator rule for reading a restore: **never
+compare identifier lists**; compare the number of rows returned and the mean top-10 distance
+(its §3 probe, with measured healthy and broken bands). Identifiers that move after a restore
+at unchanged distances are the documented noise of tie ordering, not a corruption signal.
+Two more things this row does not say. First, the bench forces the index path
+(`set enable_seqscan=off`) while production currently seq-scans `learnings`: the declaration's
+§0 measures the switch-over threshold at roughly 5,800 `learnings` rows and gives the
+one-query `idx_scan` control to replay before trusting any HNSW statement, this row included.
+Second, the bench runs the *versioned* image, not the live runtime — the two have drifted, and
+`pgvector` reports three different versions across the running container, the pinned target
+and what production actually has installed. Ticket `2ed0d4e0` carries that; do not read the
+churn row as evidence about the running server's exact build. Re-run
+`scripts/hnsw_churn_measure.sh` after any notable corpus growth — it prints its provenance,
+seed and probe bands, refuses an empty or foreign bench, and destroys its bench on exit — and
+replay the §0 control once `learnings` approaches the seq-scan threshold.
 <!-- dr-current:end -->
 
 **Replay it, do not quote it.** The receipt denominator moved four times on 2026-08-22 alone, and
