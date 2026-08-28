@@ -49,12 +49,25 @@ round-trip divergence can ever surface in the replay this runbook prescribes. Ru
 against a genuinely restored target, and say which one:
 
 ```bash
-# RESTORED_DB: an isolated pg_restore'd target with no production routing.
-# Refuse to run this against the live database.
-[ "${RESTORED_DB:?name the restored target}" != "brain" ] || { echo "refusing: that is production" >&2; exit 2; }
-docker exec -i brain_v42_postgres psql -U brain -d "$RESTORED_DB" -Atq -v ON_ERROR_STOP=1 -f - \
+# The restored target lives in its OWN PostgreSQL instance (its own container),
+# never inside the production cluster: a database created next to `brain` in
+# `brain_v42_postgres` shares its binaries, so the extversion drift this asset
+# exists to surface is invisible by construction. `pg_restore --clean --create`
+# recreates the database under its archived name — `brain` — and that name is
+# EXPECTED here, outside production; what must never happen is replaying this
+# against the production cluster itself.
+RESTORED_CONTAINER=${RESTORED_CONTAINER:?name the container holding the restored instance}
+[ "$RESTORED_CONTAINER" != "brain_v42_postgres" ] || { echo "refusing: that is the production cluster" >&2; exit 2; }
+docker exec -i "$RESTORED_CONTAINER" psql -U brain -d "${RESTORED_DB:-brain}" -Atq -v ON_ERROR_STOP=1 -f - \
   < "ops/recovery/brain-v42-v5-pgrestore.sql"
 ```
+
+**Known failure on a healthy restore.** The `-pgrestore` contract pins `vector 0.8.2` — the
+version production *declares*. Every image this repository can restore into reports `0.8.4` or
+`0.8.5` (measured; production's own `vector.so` is byte-identical to the `0.8.4` build), so the
+`extension_vector` check fails on a perfectly healthy restore. Until ticket `2ed0d4e0` makes
+that check tolerant of the restore build, read a receipt short by exactly that one check as the
+known `extversion` drift; a receipt short anywhere else is a failed restore.
 
 **Read "variants" as two FILES, never as two targets.** There is one database in the loop above
 and two assets; the word has already been read the other way once, and that misreading is what
@@ -426,7 +439,9 @@ exact backup into an isolated target with no production routing, then verify:
 - the expected schema, constraints, indexes, extensions, and table counts;
 - the recovery contract named in [Current targets](#current-targets), `-pgrestore` variant, run
   against the restored target and returning its full receipt. A short receipt is a failed restore,
-  not a stale gate.
+  not a stale gate — with one named exception: the `extension_vector` check fails on every
+  healthy restore until ticket `2ed0d4e0` closes (see the known-failure note in
+  [Current targets](#current-targets)).
 
 The restore test must use the same backup later designated for full recovery. A control snapshot
 is not a database backup: it omits plan contents, embeddings, and unrelated rows.
@@ -800,7 +815,9 @@ read as a pass.
 
 Then run the recovery contract named in [Current targets](#current-targets) against the restored
 target — the `-pgrestore` variant — and retain its full receipt and a provenance bundle. A short
-receipt is a failed restore, not a stale gate. The ACL contract has no `-pgrestore` twin and cannot
+receipt is a failed restore, not a stale gate — except the `extension_vector` check, which fails
+on every healthy restore until ticket `2ed0d4e0` closes (see the known-failure note in
+[Current targets](#current-targets)). The ACL contract has no `-pgrestore` twin and cannot
 be replayed here, so owners and grants stay unattested on the restored target; that gap is a
 recorded decision and part of what the P1 gate of `8eaefe36` still holds open. Only then restore
 the captured login flags, reopen the database, start the MCP built for that head, pass health and
