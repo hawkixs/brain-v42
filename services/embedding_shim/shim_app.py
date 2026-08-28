@@ -19,16 +19,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable, Coroutine
+import os
+import secrets
+import stat
+from collections.abc import Callable, Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import anyio
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 EMBED_MODEL = "Qodo/Qodo-Embed-1-1.5B"
 RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
@@ -52,6 +58,123 @@ class ShimLimits:
 
 
 _DEFAULT_LIMITS = ShimLimits()
+
+#: Patron de src/brain_v42/codex_gateway/auth.py — pas un import : l'image du
+#: shim n'embarque pas le package brain_v42.
+MIN_BEARER_TOKEN_BYTES = 32
+
+#: Les endpoints de santé restent ouverts même en mode armé : le watchdog
+#: systemd et RerankerClient.is_available ne portent pas de jeton, et un 401
+#: sur /healthz transformerait l'armement en fausse panne d'upstream.
+_AUTH_EXEMPT_PATHS = frozenset({"/healthz", "/health"})
+
+
+@dataclass(frozen=True, slots=True)
+class BearerGuard:
+    """Bearer statique du shim — ticket 530d796a, point (a).
+
+    ``required=False`` est le mode OPTIONNEL : un header absent ou faux est
+    accepté mais journalisé, pour recenser les clients sans jeton sans en
+    casser un seul (les deux ``auto-discord`` sont vivants sur ``brain-net``).
+    L'armement — ``required=True`` — est un geste opérateur séparé, à ne
+    prendre qu'après le ticket client 9ef5c69d.
+    """
+
+    token: bytes
+    required: bool
+
+
+def load_bearer_token(path: Path | str) -> bytes:
+    """Lire le secret depuis un fichier 0600, mêmes gardes que codex_gateway.
+
+    Un secret lisible au-delà du propriétaire, trop court, ou resté sur son
+    placeholder ``REPLACE_`` est refusé au démarrage : mieux vaut un service
+    qui ne démarre pas qu'une authentification décorative.
+    """
+    token_path = Path(path)
+    mode = stat.S_IMODE(token_path.stat().st_mode)
+    if mode & 0o077:
+        raise ValueError(
+            f"{token_path} must be private (0600); "
+            f"current mode {oct(mode)} is readable beyond its owner"
+        )
+    value = token_path.read_text().strip()
+    if value.upper().startswith("REPLACE_"):
+        raise ValueError(f"{token_path} still carries a REPLACE_ placeholder, not a secret")
+    encoded = value.encode()
+    if len(encoded) < MIN_BEARER_TOKEN_BYTES:
+        raise ValueError(
+            f"{token_path} must hold a generated secret of at least {MIN_BEARER_TOKEN_BYTES} bytes"
+        )
+    return encoded
+
+
+def bearer_from_env(environ: Mapping[str, str] = os.environ) -> BearerGuard | None:
+    """Câblage env du bearer — livré fermé.
+
+    Sans ``SHIM_BEARER_TOKEN_FILE`` ni ``SHIM_BEARER_MODE``, aucun garde :
+    le contrat actuel du shim ne bouge pas. Un mode posé sans fichier de
+    secret, ou un mode inconnu, tue le démarrage plutôt que d'ouvrir en
+    silence — une faute de frappe ne doit jamais valoir « optionnel ».
+    """
+    token_file = environ.get("SHIM_BEARER_TOKEN_FILE", "")
+    mode = environ.get("SHIM_BEARER_MODE", "")
+    if not token_file:
+        if mode:
+            raise ValueError("SHIM_BEARER_MODE is set but SHIM_BEARER_TOKEN_FILE is not")
+        return None
+    if mode and mode not in ("optional", "required"):
+        raise ValueError(f"SHIM_BEARER_MODE must be 'optional' or 'required', got {mode!r}")
+    return BearerGuard(token=load_bearer_token(token_file), required=mode == "required")
+
+
+class _BearerMiddleware:
+    """ASGI pur, jamais BaseHTTPMiddleware : le shim streame les corps de
+    requête, et ce contrôle ne lit que les headers du scope."""
+
+    def __init__(self, app: ASGIApp, guard: BearerGuard) -> None:
+        self._app = app
+        self._guard = guard
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["path"] in _AUTH_EXEMPT_PATHS:
+            await self._app(scope, receive, send)
+            return
+
+        outcome = self._outcome(scope)
+        if outcome is not None:
+            if self._guard.required:
+                response = JSONResponse(
+                    {"detail": "Unauthorized"},
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+                await response(scope, receive, send)
+                return
+            # Jamais la valeur présentée : un log n'est pas un canal d'exfiltration.
+            _LOGGER.warning(
+                "shim bearer %s on %s — accepted (optional mode)",
+                outcome,
+                scope["path"],
+            )
+        await self._app(scope, receive, send)
+
+    def _outcome(self, scope: Scope) -> str | None:
+        """``None`` si le jeton présenté est le bon, sinon la raison à journaliser."""
+        raw: bytes | None = None
+        for name, value in scope["headers"]:
+            if name == b"authorization":
+                raw = value
+                break
+        if raw is None:
+            return "missing"
+        prefix = b"Bearer "
+        if not raw.startswith(prefix):
+            return "invalid"
+        presented = raw[len(prefix) :]
+        if not secrets.compare_digest(presented, self._guard.token):
+            return "invalid"
+        return None
 
 
 class _RejectedRequest(Exception):
@@ -338,6 +461,7 @@ def create_app(
     rerank_backend: Any,
     *,
     limits: ShimLimits = _DEFAULT_LIMITS,
+    bearer: BearerGuard | None = None,
 ) -> Starlette:
     ingress_gate = _TryGate(limits.max_ingress_requests)
     json_parse_limiter = anyio.CapacityLimiter(1)
@@ -435,6 +559,7 @@ def create_app(
             headers=headers,
         )
 
+    middleware = [Middleware(_BearerMiddleware, guard=bearer)] if bearer is not None else []
     return Starlette(
         routes=[
             Route("/embed", embed, methods=["POST"]),
@@ -446,4 +571,5 @@ def create_app(
             Route("/health", health, methods=["GET"]),
         ],
         exception_handlers={_RejectedRequest: rejected_request},
+        middleware=middleware,
     )
