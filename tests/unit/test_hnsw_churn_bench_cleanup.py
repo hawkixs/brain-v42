@@ -126,3 +126,17 @@ def test_probes_cover_the_realistic_query_distance() -> None:
 
     assert "'proche'" in source
     assert "'realiste'" in source
+
+
+def test_bench_never_touches_the_default_bridge() -> None:
+    """`network_mode: bridge` posait le corpus de prod, en trust, sur le
+    bridge Docker par défaut — joignable sans jeton par tout conteneur
+    co-résident (reproduit pendant la review : connexion superuser depuis un
+    conteneur jetable posé sur ce bridge). Le banc vit sur le réseau interne
+    de SON projet compose : tout passe par `docker exec`, aucun trafic réseau
+    n'est nécessaire, et le `down` du trap emporte le réseau avec lui."""
+    compose = COMPOSE_FILE.read_text(encoding="utf-8")
+
+    assert "network_mode" not in compose
+    assert "ports:" not in compose
+    assert "internal: true" in compose

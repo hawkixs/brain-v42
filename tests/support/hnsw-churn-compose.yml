@@ -15,15 +15,18 @@
 # `pull_policy: never` verrouille l'image au contenu local : le banc ne peut pas
 # basculer en silence sur une version plus récente entre deux mesures.
 #
-# Aucun port publié : tout passe par `docker exec`. Le conteneur porte une COPIE
-# des embeddings de production — il vit sur tmpfs et doit être détruit après
-# usage (`docker rm -f`), pas laissé à tourner.
+# RÉSEAU : le banc porte une COPIE des embeddings de production, en `trust`,
+# sans mot de passe. Il vit donc sur le réseau INTERNE de son propre projet
+# compose (`internal: true` : pas de passerelle, pas d'egress), jamais sur le
+# bridge par défaut — où tout conteneur co-résident l'atteignait en superuser
+# sans jeton, port publié ou non (reproduit pendant la review de la PR #41).
+# Tout passe par `docker exec` ; aucun port n'est publié ; le script lance ce
+# fichier avec `-p` et son trap `down` emporte le réseau avec le conteneur.
 services:
   postgres:
     image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
     pull_policy: never
     container_name: ${CHURN_CONTAINER:?CHURN_CONTAINER is required}
-    network_mode: bridge
     environment:
       POSTGRES_USER: churn
       POSTGRES_DB: churn
@@ -31,3 +34,7 @@ services:
     tmpfs:
       - /var/lib/postgresql/data:rw,size=2g
     restart: "no"
+
+networks:
+  default:
+    internal: true
