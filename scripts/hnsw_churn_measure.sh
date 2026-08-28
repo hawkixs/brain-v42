@@ -51,14 +51,73 @@ export CHURN_CONTAINER="$C"
 q() { docker exec "$C" psql -U churn -d churn -Atc "$1"; }
 qq() { docker exec "$C" psql -U churn -d churn -q -c "$1"; }
 
+# Le banc MARQUE ce qu'il crée — label posé par le compose sur le conteneur ET
+# sur le réseau — et ne détruit RIEN qui ne porte pas ce marqueur. Sans cette
+# garde, `docker compose -p "$C" down` matche projet+service PAR LABEL : avec
+# CHURN_CONTAINER=brain_v42, le trap emportait brain_v42_postgres dès la
+# première provision, stderr jeté — reproduit deux fois en re-review.
+BENCH_LABEL="com.brain-v42.hnsw-churn-bench"
+
+bench_marked_container() {
+  docker container inspect --format "{{ index .Config.Labels \"$BENCH_LABEL\" }}" "$1" 2>/dev/null \
+    | grep -qx true
+}
+bench_marked_network() {
+  docker network inspect --format "{{ index .Labels \"$BENCH_LABEL\" }}" "$1" 2>/dev/null \
+    | grep -qx true
+}
+
 # `-p "$C"` partout : sans projet explicite, compose dérive le projet du
 # dossier du fichier (`support`) et réconcilie sur (projet, service) — deux
 # bancs aux CHURN_CONTAINER différents se recréeraient l'un l'autre.
+# Pas d'option de retrait des orphelins sur le down : aucun effet légitime
+# sur un projet dédié, et elle élargit ce que le down peut emporter.
 cleanup_bench() {
-  docker compose -p "$C" -f "$BENCH_COMPOSE" down --remove-orphans --timeout 5 >/dev/null 2>&1 || true
-  docker rm -f "$C" >/dev/null 2>&1 || true
+  if bench_marked_container "$C"; then
+    if ! docker compose -p "$C" -f "$BENCH_COMPOSE" down --timeout 5 >/dev/null 2>&1; then
+      echo "AVERTISSEMENT : le down compose a échoué sur le banc $C — filet rm -f + network rm." >&2
+    fi
+    docker rm -f "$C" >/dev/null 2>&1 || true
+  fi
+  # Un `up` interrompu avant la création du conteneur laisse le réseau seul,
+  # et le filet `docker rm -f` ne supprime jamais un réseau. Marqueur exigé
+  # ici aussi : on ne retire que le réseau que ce banc a créé.
+  if bench_marked_network "${C}_default"; then
+    docker network rm "${C}_default" >/dev/null 2>&1 || true
+  fi
 }
-trap cleanup_bench EXIT INT TERM
+
+# --- garde d'homonymie — AVANT d'armer le moindre trap -----------------------
+# Un trap armé avant cette garde détruirait au moment même du refus.
+if [ "$C" = "$PROD" ]; then
+  echo "ABANDON : CHURN_CONTAINER=$C désigne le conteneur de production ($PROD)." >&2
+  exit 2
+fi
+
+refuse_foreign_name() {
+  local holder name
+  for holder in $(docker ps -aq --filter "label=com.docker.compose.project=$C"); do
+    name=$(docker container inspect --format '{{ .Name }}' "$holder" | sed 's|^/||')
+    if ! bench_marked_container "$name"; then
+      echo "ABANDON : le projet compose '$C' appartient déjà à '$name', que ce banc n'a pas créé." >&2
+      echo "Le détruire par homonymie est exactement l'accident que cette garde ferme." >&2
+      exit 2
+    fi
+  done
+  if docker container inspect "$C" >/dev/null 2>&1 && ! bench_marked_container "$C"; then
+    echo "ABANDON : un conteneur étranger porte déjà le nom '$C'." >&2
+    exit 2
+  fi
+  if docker network inspect "${C}_default" >/dev/null 2>&1 && ! bench_marked_network "${C}_default"; then
+    echo "ABANDON : un réseau étranger porte déjà le nom '${C}_default'." >&2
+    exit 2
+  fi
+}
+refuse_foreign_name
+
+trap cleanup_bench EXIT
+trap 'trap - EXIT; cleanup_bench; exit 130' INT
+trap 'trap - EXIT; cleanup_bench; exit 143' TERM
 
 # --- provisionnement ---------------------------------------------------------
 # Le banc est décrit par `tests/support/hnsw-churn-compose.yml`, PAS par un
@@ -94,9 +153,9 @@ provision() {
   # - 'proche'   : bruit ±0,01/dim → distance cosinus ≈ 0,025 de la base. Une
   #   sonde qui EST dans le corpus a son top-1 à distance nulle, ce qui biaise
   #   vers la stabilité — piège rencontré au premier jet.
-  # - 'realiste' : bruit ±0,045/dim → ≈ 0,25-0,35, la bande où atterrissent
-  #   les vraies questions d'utilisateur (mesuré 2026-08-28 : d(q,1-NN)=0,297
-  #   en moyenne sur 12 questions passées par l'endpoint :8003).
+  # - 'realiste' : bruit ±0,045/dim — mesuré d(1-NN) 0,282–0,325 sur les
+  #   embeddings réels de learnings (2026-08-29, seed 0,42). La bande obtenue
+  #   est IMPRIMÉE à chaque run : c'est elle qui fait foi, pas ce commentaire.
   qq "select setseed($SEED);
       insert into probe (qid, grp, v)
       select qid, 'proche', (select array_agg(e + (random()-0.5)*0.02)::vector
@@ -118,13 +177,22 @@ if ! docker exec "$C" pg_isready -U churn -d churn >/dev/null 2>&1; then
 else
   # Banc survivant d'un run tué avant son trap. Ne le resservir que si sa
   # provenance correspond à la demande : sans ce contrôle, une relance
-  # `SRC_TABLE=decisions` remesurait l'ancienne table en silence — et la
-  # consigne du runbook « re-run after corpus growth » remesurait l'ancien
-  # corpus en silence.
+  # `SRC_TABLE=decisions` remesurait l'ancienne table en silence.
   META=$(q "select src_table||'|'||prod_container from meta;" 2>/dev/null || true)
   if [ "$META" != "$SRC_TABLE|$PROD" ]; then
     echo "== banc réutilisé de provenance divergente (${META:-aucune}) ≠ $SRC_TABLE|$PROD — reprovisionnement =="
     provision
+  else
+    # Même provenance ≠ même corpus : la consigne du runbook « re-run after
+    # corpus growth » resservirait l'ANCIENNE copie et « prouverait » que la
+    # croissance n'a rien changé. Le compte source est rejoué, lecture seule.
+    SRC_COUNT=$(docker exec "$PROD" psql -U brain -d brain -Atc \
+      "select count(*) from $SRC_TABLE where embedding is not null;")
+    BENCH_COUNT=$(q "select count(*) from corpus;")
+    if [ "$SRC_COUNT" -ne "$BENCH_COUNT" ]; then
+      echo "== banc réutilisé mais la source a bougé ($SRC_COUNT lignes ≠ $BENCH_COUNT copiées) — reprovisionnement =="
+      provision
+    fi
   fi
 fi
 
@@ -135,9 +203,14 @@ if [ "$CORPUS" -eq 0 ] || [ "$NPROBE" -eq 0 ]; then
   echo "Un COPY interrompu laisse exactement cet état ; la garde idx_scan (+0/0) ne le voit pas." >&2
   exit 2
 fi
+[ "$BUILDS" -ge 2 ] || {
+  echo "ABANDON : BUILDS=$BUILDS — il faut au moins 2 reconstructions pour une paire." >&2
+  echo "À 1 la section churn sortirait vide en exit 0 ; à 0 la garde idx_scan n'est jamais évaluée." >&2
+  exit 2
+}
 
 echo "provenance : $(q "select 'src='||src_table||' · prod='||prod_container||' · copié le '||copied_at||' · seed='||seed from meta;")"
-echo "corpus=$CORPUS vecteurs réels · sondes=$NPROBE (20 'proche' d≈0,025 + 20 'realiste' d≈0,25-0,35) · builds=$BUILDS"
+echo "corpus=$CORPUS vecteurs réels · sondes=$NPROBE (20 'proche' + 20 'realiste' — bandes d(1-NN) mesurées, imprimées plus bas) · builds=$BUILDS"
 echo "vector $(q "select extversion from pg_extension where extname='vector';") · chemin d'index FORCÉ (set enable_seqscan=off) — la prod, elle, seq-scanne $SRC_TABLE aujourd'hui (déclaration 2026-08-23, §0)"
 echo
 

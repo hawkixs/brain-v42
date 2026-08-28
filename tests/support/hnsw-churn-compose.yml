@@ -27,6 +27,12 @@ services:
     image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
     pull_policy: never
     container_name: ${CHURN_CONTAINER:?CHURN_CONTAINER is required}
+    # Marqueur de propriété : le teardown du script ne détruit QUE ce qui le
+    # porte. Sans lui, `docker compose -p <nom> down` matche projet+service
+    # par label et un CHURN_CONTAINER homonyme d'un projet vivant (brain_v42…)
+    # ferait emporter ce projet par le trap.
+    labels:
+      com.brain-v42.hnsw-churn-bench: "true"
     environment:
       POSTGRES_USER: churn
       POSTGRES_DB: churn
@@ -38,3 +44,5 @@ services:
 networks:
   default:
     internal: true
+    labels:
+      com.brain-v42.hnsw-churn-bench: "true"
