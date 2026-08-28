@@ -857,15 +857,8 @@ brain_sessions = Table(
                 )
             )
             AND (
-                (
-                    cardinality(captured_knowledge_ids) > 0
-                    AND nothing_to_capture_reason IS NULL
-                )
-                OR (
-                    cardinality(captured_knowledge_ids) = 0
-                    AND nothing_to_capture_reason IS NOT NULL
-                    AND btrim(nothing_to_capture_reason) <> ''
-                )
+                nothing_to_capture_reason IS NULL
+                OR btrim(nothing_to_capture_reason) <> ''
             )
         )
         OR (
@@ -877,6 +870,19 @@ brain_sessions = Table(
             AND nothing_to_capture_reason IS NULL
             AND abandonment_reason IS NOT NULL
             AND btrim(abandonment_reason) <> ''
+            AND end_expected_focus_revision IS NULL
+            AND focus_outcome IS NULL
+            AND focus_at_end IS NULL
+            AND focus_revision_at_end IS NULL
+        )
+        OR (
+            status = 'closed_inactive'
+            AND nature = 'agent'
+            AND ended_at IS NOT NULL
+            AND summary IS NULL
+            AND next_focus IS NULL
+            AND nothing_to_capture_reason IS NULL
+            AND abandonment_reason IS NULL
             AND end_expected_focus_revision IS NULL
             AND focus_outcome IS NULL
             AND focus_at_end IS NULL
