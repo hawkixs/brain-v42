@@ -101,6 +101,28 @@ def _combined_output(result: subprocess.CompletedProcess[str]) -> str:
     return result.stdout + result.stderr
 
 
+def _chain_revisions() -> list[str]:
+    """The full revision chain, base to head, read from ``alembic/versions``.
+
+    Derived, never enumerated: the previous version of this file spelled out
+    031→041 by hand and stayed silent on everything after — a fail-closed
+    test whose coverage shrinks at every migration gives an assurance that
+    evaporates without any signal (ticket ``23be2271``, 16 assertions in that
+    state). Reading the chain from the same directory Alembic executes makes
+    the assertion grow with the chain instead of rotting behind it.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    config = Config()
+    config.set_main_option("script_location", str(ALEMBIC_DIR))
+    script = ScriptDirectory.from_config(config)
+    revisions = [revision.revision for revision in script.walk_revisions("base", "heads")]
+    revisions.reverse()
+    assert len(revisions) >= 48, "the chain shrank below its 2026-08-29 length — derivation broken?"
+    return revisions
+
+
 def test_missing_process_url_ignores_dotenv(tmp_path: Path) -> None:
     """A cwd .env must never become an implicit migration target."""
     dotenv_secret = "dotenv-cli-sentinel-secret"
@@ -131,7 +153,12 @@ def test_invalid_port_does_not_leak_url_or_sentinel(tmp_path: Path) -> None:
 
 
 def test_test_database_renders_all_migrations_without_secret(tmp_path: Path) -> None:
-    """The explicit test target renders the complete 001-to-041 chain offline."""
+    """The explicit test target renders the COMPLETE chain offline.
+
+    Every consecutive upgrade pair is asserted, and the expected pairs are
+    derived from ``alembic/versions`` rather than enumerated: the hand-written
+    list stopped at 040→041 and stayed green through seven more migrations.
+    """
     encoded_password = "offline-cli-sentinel%40password%25value"
     decoded_password = "offline-cli-sentinel@password%value"
     test_url = f"postgresql+asyncpg://brain:{encoded_password}@localhost:59999/brain_test"
@@ -140,16 +167,15 @@ def test_test_database_renders_all_migrations_without_secret(tmp_path: Path) -> 
     output = _combined_output(result)
 
     assert result.returncode == 0
-    assert result.stderr.count("Running upgrade") == 48
-    assert "Running upgrade 031 -> 032" in result.stderr
-    assert "Running upgrade 032 -> 033" in result.stderr
-    assert "Running upgrade 033 -> 034" in result.stderr
-    assert "Running upgrade 034 -> 035" in result.stderr
-    assert "Running upgrade 035 -> 036" in result.stderr
-    assert "Running upgrade 037 -> 038" in result.stderr
-    assert "Running upgrade 038 -> 039" in result.stderr
-    assert "Running upgrade 039 -> 040" in result.stderr
-    assert "Running upgrade 040 -> 041" in result.stderr
+    revisions = _chain_revisions()
+    # One "Running upgrade" line per revision: "  -> 001" for the base step,
+    # then one per consecutive pair.
+    assert result.stderr.count("Running upgrade") == len(revisions)
+    assert f"Running upgrade  -> {revisions[0]}" in result.stderr
+    for previous, current in zip(revisions, revisions[1:], strict=False):
+        assert f"Running upgrade {previous} -> {current}" in result.stderr, (
+            f"the chain declares {previous} -> {current} but the offline render never ran it"
+        )
     assert encoded_password not in output
     assert decoded_password not in output
     assert test_url not in output
