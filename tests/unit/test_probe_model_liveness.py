@@ -67,6 +67,27 @@ class TestConfiguredModels:
             "l'entrée d'extract ne dit pas qu'elle sert aussi au backfill"
         )
 
+    def test_the_extract_fallback_is_probed_as_its_own_site(self) -> None:
+        """Un maillon DORMANT meurt sans signal : la nuit ne sonde que ce qu'elle
+        exerce.
+
+        Le secours d'extract n'est appelé que quand le primaire tombe. Tant qu'il
+        était ÉGAL au primaire (promotion du 2026-08-21), la sonde le couvrait par
+        coïncidence ; dès qu'il diverge, il redevient invisible — exactement le
+        mode de panne mesuré la nuit du 2026-08-28, où le 410 du secours roadmap
+        n'a été vu qu'au milieu de la nuit. L'inventaire doit donc nommer le SITE
+        `ticket_extract.DEFAULT_EXTRACT_FALLBACK_MODEL`, pas espérer que sa valeur
+        recoupe celle d'une autre entrée.
+        """
+        from scripts.ticket_extract import DEFAULT_EXTRACT_FALLBACK_MODEL
+
+        sites = [
+            e for e in configured_models() if "DEFAULT_EXTRACT_FALLBACK_MODEL" in e.used_by
+        ]
+
+        assert sites, "le secours d'extract n'a pas d'entrée propre dans l'inventaire"
+        assert [e.model for e in sites] == [DEFAULT_EXTRACT_FALLBACK_MODEL]
+
 
 class TestClassify:
     def test_410_is_gone_and_never_transient(self) -> None:

@@ -88,6 +88,7 @@ def configured_models() -> list[ModelEntry]:
         DEFAULT_WET_ROADMAP_FALLBACK_MODEL,
         DEFAULT_WET_ROADMAP_MODEL,
     )
+    from scripts.ticket_extract import DEFAULT_EXTRACT_FALLBACK_MODEL
 
     return [
         ModelEntry(DEFAULT_ROADMAP_MODEL, "roadmap_curate.DEFAULT_ROADMAP_MODEL (DRY primaire)"),
@@ -103,6 +104,13 @@ def configured_models() -> list[ModelEntry]:
             "roadmap_curate.DEFAULT_WET_ROADMAP_FALLBACK_MODEL (WET secours)",
         ),
         ModelEntry(DEFAULT_EXTRACT_MODEL, "domain_backfill.DEFAULT_MODEL (extract + backfill)"),
+        # Maillon dormant : appelé seulement quand le primaire tombe. Égal au
+        # primaire il est couvert par coïncidence ; divergent, il serait la seule
+        # constante que ni la nuit ni la sonde ne voient mourir.
+        ModelEntry(
+            DEFAULT_EXTRACT_FALLBACK_MODEL,
+            "ticket_extract.DEFAULT_EXTRACT_FALLBACK_MODEL (extract, secours)",
+        ),
     ]
 
 
