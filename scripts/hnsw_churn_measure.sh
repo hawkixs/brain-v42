@@ -80,7 +80,7 @@ provision() {
       create table corpus (id uuid primary key, embedding vector(1536));
       create table probe  (qid int primary key, grp text not null, v vector(1536));
       create table res    (build int, qid int, rank int, id uuid);
-      create table truth  (qid int, rank int, id uuid);
+      create table truth  (qid int, rank int, id uuid, d float8);
       create table meta   (src_table text not null, prod_container text not null,
                            copied_at timestamptz not null, seed float8 not null);"
   # LECTURE SEULE sur la production.
@@ -148,13 +148,21 @@ qq "truncate truth;
     declare r record;
     begin
       for r in select qid, v from probe order by qid loop
-        insert into truth (qid, rank, id)
-        select r.qid, t.rn, t.id
-        from (select id, row_number() over (order by embedding <=> r.v) rn
+        insert into truth (qid, rank, id, d)
+        select r.qid, t.rn, t.id, t.dist
+        from (select id, row_number() over (order by embedding <=> r.v) rn,
+                     embedding <=> r.v dist
               from corpus order by embedding <=> r.v limit 10) t;
       end loop;
     end \$\$;"
 echo "   $(q "select count(*) from truth;") lignes de référence"
+# La distance de sonde est un RÉGLAGE, pas un fait : imprimer la bande
+# réellement obtenue, pour que le runbook cite une mesure et non une intention.
+q "select '   '||p.grp||' : d(1-NN) min '||round(min(t.d)::numeric,3)
+      ||' · moyenne '||round(avg(t.d)::numeric,3)
+      ||' · max '||round(max(t.d)::numeric,3)
+   from truth t join probe p on p.qid=t.qid
+   where t.rank=1 group by p.grp order by p.grp;"
 echo
 
 echo "== $BUILDS reconstructions HNSW (m=16, ef_construction=64, cosine) =="
@@ -222,6 +230,18 @@ q "select p.grp||' · build '||r.build||' : rappel '||round(avg(ov)::numeric,2)|
    join probe p on p.qid=r.qid,
    lateral (select count(*) ov from unnest(r.ids) x where x = any(t.ids)) o
    group by p.grp, r.build order by p.grp, r.build;"
+
+echo
+echo "== MANQUES DE RAPPEL : le Δd dit s'ils comptent (règle de la déclaration 2026-08-23 :"
+echo "   comparer les DISTANCES, jamais les listes d'identifiants — Δd=0 est un départage d'égalité) =="
+q "select p.grp||' · build '||x.build||' · sonde '||x.qid
+      ||' : intrus à Δd='||round((cd.d - tmax.dmax)::numeric, 6)
+   from (select r.build, r.qid, r.id from res r
+         where not exists (select 1 from truth t where t.qid=r.qid and t.id=r.id)) x
+   join probe p on p.qid=x.qid
+   join lateral (select c.embedding <=> p.v d from corpus c where c.id=x.id) cd on true
+   join lateral (select max(t.d) dmax from truth t where t.qid=x.qid) tmax on true
+   order by p.grp, x.qid, x.build;"
 
 echo
 echo "== PIRE CAS PAR SONDE (la moyenne cache les sondes instables) =="
