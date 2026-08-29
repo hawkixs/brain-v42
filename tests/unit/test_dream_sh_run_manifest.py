@@ -447,6 +447,7 @@ def _run_empty_pool(tmp_path: Path, record_rc: int) -> tuple[rm.RunManifest, lis
             "PROJECT_KEY=red-lab",
             f"record_rc={record_rc}",
             "declare -a SKIPPED_PHASES=()",
+            "SKIPPED_UNWRITTEN=0",
             "log() { :; }",
             _stub_manifest_put(out),
             _empty_pool_block(),

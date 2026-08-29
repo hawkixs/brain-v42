@@ -1,7 +1,7 @@
 # MCP Tools — brain_v42
 
 **Updated:** 2026-07-24
-**Repository registry:** 49 always-on + 2 graph-gated = 51 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
+**Repository registry:** 51 always-on + 2 graph-gated = 53 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
 **Default catalog:** Admin clients use `compact` while capability enforcement is disabled: the seven session lifecycle tools plus `brain_find_tool` and `brain_call_tool`; other registered tools remain discoverable through those gateways. `native` exposes every registered tool. An authenticated Dream phase always receives its exact native allowlist, independent of presentation headers, and cannot access either gateway. Experimental `brain_code_mode` takes precedence only while Dream capability enforcement is disabled.
 **Transport:** HTTP loopback `http://127.0.0.1:8765/mcp` (production fleet). Tools are defined as closures capturing injected services — see `src/brain_v42/mcp/server.py` (`build_services()`) and the `register_*_tools()` functions in each module under `src/brain_v42/mcp/tools/`.
 
@@ -570,7 +570,7 @@ Keep `target`, archive `source` with `merged_into=target_id`, union `tags`. Writ
 
 ---
 
-## Dream mode — 5 tools (`dream_tools.py`)
+## Dream mode — 7 tools (`dream_tools.py`)
 
 `brain_backfill_links_batch`, `brain_get_clusters`, `brain_list_orphans_for_classification`, and `brain_assign_domain` all require `graph_enabled=true` — they return an error string otherwise.
 
@@ -601,6 +601,31 @@ List cross-domain orphans (entities with zero `RELATED_TO` edges AND no `BELONGS
 `limit` is clamped to [1, 50]. Returns `"[]"` when the graph is at domain-equilibrium.
 
 Allowed domain names (closed set): `infra`, `ml`, `backend`, `memory`, `tooling`, `data`, `ops`, `frontend`, `security`.
+
+### brain_reject_curation_proposals
+
+```
+brain_reject_curation_proposals(project_key, proposal_ids)
+```
+
+Reject up to 50 proposed roadmap curations in one call — the COMFORTABLE path,
+by design: the proposals read so far are title degradations, so rejecting must
+cost one call for a whole batch while applying costs one call per proposal.
+Scoping goes through the join on `features`; an id belonging to another project
+is refused by name and never mutates. Only `proposed` rows change; anything
+else is skipped with its status. Terminal: a rejected proposal is never
+resurrected by the nightly dedup.
+
+### brain_apply_curation_proposal
+
+```
+brain_apply_curation_proposal(project_key, proposal_id)
+```
+
+Apply ONE proposed roadmap curation — deliberately singular (an integer, never
+a list): the caller re-reads what it applies. All four ops are applicable here
+(human review), unlike the nightly wet run bounded to `WET_APPLYABLE_OPS`.
+Destructive: a merge archives the losing feature, a rename overwrites a title.
 
 ### brain_list_curation_proposals
 ```
@@ -712,7 +737,7 @@ Avant l'INSERT, une gate vectorielle exacte et limitée au projet cible élimine
 | `brain_tools.py` | decisions / learnings / ADRs / search / graph | 10 + 2 conditional |
 | `crud_tools.py` | generic CRUD | 4 |
 | `decay_tools.py` | decay + consolidation | 4 |
-| `dream_tools.py` | dream-phase maintenance | 5 |
+| `dream_tools.py` | dream-phase maintenance | 7 |
 | `plan_tools.py` | plan indexing | 1 |
 | `project_context_tools.py` | project + groups | 4 |
 | `roadmap_tools.py` | roadmap | 3 |
@@ -721,4 +746,4 @@ Avant l'INSERT, une gate vectorielle exacte et limitée au projet cible élimine
 | `snippet_tools.py` | snippets | 2 |
 | `ticket_tools.py` | tickets cross-projet (coordination) | 5 |
 | `workflow_guide_tools.py` | bounded workflow guidance | 1 |
-| **Total** | | **49 always-on + 2 graph-gated = 51** |
+| **Total** | | **51 always-on + 2 graph-gated = 53** |

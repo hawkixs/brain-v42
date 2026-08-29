@@ -168,3 +168,30 @@ async def test_propose_adr_translates_duplicate_source_integrity_error() -> None
         auto_accept=True,
     )
     assert "already" in reply.lower() and "materialized" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_propose_adr_rejects_a_lone_dream_run_id_instead_of_swallowing_it() -> None:
+    """Le troisième membre du trio était AVALÉ en silence (ticket af3b58dd, item 2).
+
+    Mesuré le 2026-08-29 : `dream_run_id` sans la paire tombait dans le chemin
+    standard qui ne le lit jamais — l'appelant croyait tracer une promotion que
+    rien n'enregistrait. L'invariant du trio vit désormais en UN endroit
+    (`_dream_promotion_invariant`), pas en gardes dispersées : un paramètre
+    dream-only orphelin est un refus nommé, jamais un silence.
+    """
+    mcp, mock_svc = _make_mcp_with_adr_tools()
+    fn = await _get_tool_fn(mcp, "brain_propose_adr")
+
+    reply = await fn(
+        title="T",
+        context="c",
+        decision="d",
+        consequences="q",
+        project_key="brain-v42",
+        dream_run_id=42,
+    )
+
+    assert "dream_run_id" in reply
+    assert "Dream-only" in reply
+    mock_svc.create.assert_not_called()

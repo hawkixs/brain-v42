@@ -1,7 +1,7 @@
 # Architecture — brain_v42
 
 **Updated:** 2026-07-24
-**Repository and production state:** migrations 001–049 defined, 31 PG tables modeled; MCP catalog: 49 always-on + 2 graph-gated = 51. Production runs lifecycle v4 since 24 July 2026: revision 036 was applied and validated first, then 037 was proved before the restart-last MCP cutover and authenticated lifecycle-v4 E2E. The deployed Alembic head has since advanced and is not asserted here — measure it with `select version_num from alembic_version`. Last measurement: `045` on 16 August 2026, right after the 044→045 cutover.
+**Repository and production state:** migrations 001–049 defined, 31 PG tables modeled; MCP catalog: 51 always-on + 2 graph-gated = 53. Production runs lifecycle v4 since 24 July 2026: revision 036 was applied and validated first, then 037 was proved before the restart-last MCP cutover and authenticated lifecycle-v4 E2E. The deployed Alembic head has since advanced and is not asserted here — measure it with `select version_num from alembic_version`. Last measurement: `045` on 16 August 2026, right after the 044→045 cutover.
 
 **Repository target: 049.** Revision 049 carries three objects of one family (nullable ADD COLUMN + widened CHECK), grouped under criterion (c) of decision 9d22bc6a — their downgrades fail independently, each behind its own named opt-in: `dream_runs.closed_inactive_count` (the per-night series of inactivity closures, kept distinct from abandonments), `dream_runs.thinking_tokens` (the agy rail was under-declaring ~38% of its tokens), and the `freshness_source` vocabulary widened with `manual_update` and `plan_reindex` on the six decay tables — the plan upsert now declares its provenance. Revision 048 adds `brain_session_artifacts.attribution_mode`,
 which records BY WHICH KEY a row was attributed: `explicit` (a human named the UUID),
@@ -46,7 +46,7 @@ is the dev/fallback mode.
                                  v
  +-------------------------------+--+  +----------------------+  +----------------------+
  | FastMCP server (Python 3.12+)     |  | Metrics runtime      |  | Automation runtime   |
- | 49 always-on + 2 graph-gated = 51 |  | 127.0.0.1:9200       |  | 127.0.0.1:9201       |
+ | 51 always-on + 2 graph-gated = 53 |  | 127.0.0.1:9200       |  | 127.0.0.1:9201       |
  | service layer + search fan-out    |  | /metrics / cockpit   |  | health / webhook     |
  | MCP background flushers/indexer   |  | optional legacy owner|  | dedup scheduler      |
  +----------------+------------------+  +----------+-----------+  +-----------+----------+
@@ -678,7 +678,7 @@ brain_v42/
 │   └── mcp/
 │       ├── server.py             # entry point (stdio+http), build_services(), app_lifecycle()
 │       ├── http_security.py      # HostOriginGuard + BearerTokenGuard ASGI middleware
-│       └── tools/                # 49 always-on + 2 graph-gated = 51
+│       └── tools/                # 51 always-on + 2 graph-gated = 53
 ├── alembic/versions/             # migrations 001 .. 049 defined in the repository
 ├── scripts/                      # legacy import + projection inventory/recovery CLIs
 ├── tests/                        # unit/ + integration/
@@ -702,7 +702,7 @@ brain_v42/
 | Embeddings | sentence-transformers / PyTorch in-process | Local GPU service :8003 (Qodo-Embed-1-1.5B, 1536d) |
 | Reranker | none | Cross-encoder :8003 unified endpoint, BatchingRerankerClient (20 ms window) |
 | MCP transport | stdio | HTTP loopback 127.0.0.1:8765 + HostOriginGuard + bearer obligatoire sous systemd (optionnel en HTTP dev direct) |
-| MCP tools | 21 | 49 always-on + 2 graph-gated = 51 |
+| MCP tools | 21 | 51 always-on + 2 graph-gated = 53 |
 | Tables | 6 | 31 (knowledge, audit, plans, dream, webhook, coordination, sessions, graph ledger) |
 | Maintenance | manual | Dream mode nightly + DecayFlusher + ConsolidationJob |
 | Observability | none | /metrics :9200 + /api/cockpit + process_metrics |

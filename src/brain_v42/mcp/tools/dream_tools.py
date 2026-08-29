@@ -21,8 +21,10 @@ from brain_v42.db.tables import adrs, brain_entities, decisions, learnings, runb
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
 from brain_v42.mcp.tools.formatters import clamp_list_limit, format_error
 from brain_v42.mcp.tools.tool_annotations import (
+    _DESTRUCTIVE_ANNOTATIONS,
     _HEARTBEAT_ANNOTATIONS,
     _READ_ANNOTATIONS,
+    _TERMINAL_ANNOTATIONS,
     _WRITE_ANNOTATIONS,
 )
 from brain_v42.models.project_key import canonicalize_project_key
@@ -34,6 +36,10 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 _CURATION_STATUSES = frozenset({"proposed", "applied", "rejected"})
+#: Plafond du lot de REJETS. Le rejet est le chemin confortable — les
+#: propositions lues sont des dégradations de titre — mais un lot illimité
+#: rendrait le résultat illisible et le timeout probable.
+_CURATION_REJECT_MAX = 50
 _CURATION_PAYLOAD_MAX = 200
 
 logger = structlog.get_logger(__name__)
@@ -61,6 +67,17 @@ _TYPE_META: dict[str, tuple[sa.Table, str]] = {
 # Clusters larger than this threshold get a truncation notice so the caller
 # is aware that content was bounded, not silently dropped.
 _CLUSTER_MEMBERS_PER_CLUSTER_MAX = 30
+
+
+def _proposal_service_factory(session_factory: Any) -> Any:
+    """Construire le service de propositions — indirection pour les tests.
+
+    Import différé : `proposal_service` tire la couche services entière, que
+    ce module feuille n'a pas besoin de charger à l'import du catalogue.
+    """
+    from brain_v42.services.proposal_service import ProposalService  # noqa: PLC0415
+
+    return ProposalService(session_factory, None, None)
 
 
 def register_dream_tools(
@@ -641,3 +658,152 @@ def register_dream_tools(
                 lines.append(f"  {row['rationale']}")
             lines.append(f"  payload: {payload}")
         return "\n".join(lines) + limit_notice
+
+    async def _curation_ownership(
+        proposal_ids: list[int],
+    ) -> dict[int, dict[str, Any]]:
+        """(statut, projet, feature) de chaque id — la jointure EST le scope."""
+        async with session_factory() as session:
+            rows = (
+                (
+                    await session.execute(
+                        sa.text(
+                            "SELECT p.id, p.status, p.op, f.project_key, "
+                            "f.name AS feature_name "
+                            "FROM roadmap_curation_proposals p "
+                            "JOIN features f ON f.id = p.feature_id "
+                            "WHERE p.id IN :ids"
+                        ).bindparams(sa.bindparam("ids", expanding=True)),
+                        {"ids": list(dict.fromkeys(proposal_ids))},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return {int(row["id"]): dict(row) for row in rows}
+
+    # Terminal, pas additive : un rejet ne ressuscite jamais (le dedup nocturne
+    # skippe les doublons de lignes rejected) — destructiveHint=True ; et
+    # idempotent : re-rejeter rend « déjà rejected », aucune mutation neuve.
+    @mcp.tool(version="1.0", annotations=_TERMINAL_ANNOTATIONS)
+    async def brain_reject_curation_proposals(
+        project_key: str,
+        proposal_ids: list[int],
+    ) -> str:
+        """Reject proposed roadmap curations for one project — the COMFORTABLE path.
+
+        The proposals read so far are title DEGRADATIONS (« Disaster recovery
+        vérifiable — PostgreSQL + Neo4j + off-site » → « Infrastructure
+        PostgreSQL sécurisée ») : rejecting must cost one call for a whole
+        batch, applying must cost one call PER proposal — the asymmetry is the
+        contract (ticket 2547b4a2), mirrored by brain_apply_curation_proposal.
+
+        Scoping goes through the join on ``features`` : an id belonging to
+        another project is refused BY NAME and never reaches the service. Only
+        ``proposed`` rows mutate ; anything else is skipped with its status.
+
+        Args:
+            project_key: Required — proposals are only ever reviewed per project.
+            proposal_ids: 1 à 50 ids (dédupliqués), verdict rendu par id.
+        """
+        project_key = canonicalize_project_key(project_key, strict=False)
+        if not project_key:
+            return format_error("project_key is required — proposals are reviewed per project")
+        unique_ids = list(dict.fromkeys(proposal_ids))
+        if not unique_ids:
+            return format_error("proposal_ids is empty — nothing to reject")
+        if len(unique_ids) > _CURATION_REJECT_MAX:
+            return format_error(
+                f"{len(unique_ids)} ids — le lot de rejet est plafonné à "
+                f"{_CURATION_REJECT_MAX} ; découpe en plusieurs appels"
+            )
+
+        ownership = await _curation_ownership(unique_ids)
+        service = _proposal_service_factory(session_factory)
+        from brain_v42.services.proposal_service import (  # noqa: PLC0415
+            ProposalServiceError,
+        )
+
+        lines: list[str] = []
+        rejected = 0
+        for proposal_id in unique_ids:
+            row = ownership.get(proposal_id)
+            if row is None:
+                lines.append(f"- **#{proposal_id}** — introuvable")
+                continue
+            if row["project_key"] != project_key:
+                lines.append(
+                    f"- **#{proposal_id}** — REFUSÉ : appartient à "
+                    f"`{row['project_key']}`, pas à `{project_key}`"
+                )
+                continue
+            if row["status"] != "proposed":
+                lines.append(f"- **#{proposal_id}** — sauté : déjà `{row['status']}`")
+                continue
+            try:
+                await service.reject_roadmap_curation(proposal_id)
+            except ProposalServiceError as exc:
+                lines.append(f"- **#{proposal_id}** — échec : {exc}")
+                continue
+            rejected += 1
+            lines.append(f"- **#{proposal_id}** `{row['op']}` — rejetée ({row['feature_name']})")
+
+        header = (
+            f"## Rejet de curations — {project_key} : "
+            f"{rejected} rejetée(s) / {len(unique_ids)} demandée(s)"
+        )
+        return "\n".join([header, "", *lines])
+
+    # Destructif non idempotent : un merge ARCHIVE la feature perdante, un
+    # rename écrase un titre — la famille de brain_feature_update.
+    @mcp.tool(version="1.0", annotations=_DESTRUCTIVE_ANNOTATIONS)
+    async def brain_apply_curation_proposal(
+        project_key: str,
+        proposal_id: int,
+    ) -> str:
+        """Apply ONE proposed roadmap curation — deliberately SINGULAR.
+
+        One integer, never a list : the cost lives in the signature, not in a
+        guideline. The proposals read so far are title degradations, and an
+        « apply all » surface would be a trap (ticket 2547b4a2, fil du
+        2026-08-11). L'appelant relit la proposition (via
+        brain_list_curation_proposals) puis l'applique une par une ; le rejet
+        en lot vit dans brain_reject_curation_proposals.
+
+        Toutes les ops sont applicables ici (allowed_ops=None) : c'est la
+        review HUMAINE, pas le wet nocturne qui se borne à WET_APPLYABLE_OPS.
+
+        Args:
+            project_key: Required — la jointure sur features est le scope.
+            proposal_id: L'unique proposition à appliquer.
+        """
+        project_key = canonicalize_project_key(project_key, strict=False)
+        if not project_key:
+            return format_error("project_key is required — proposals are reviewed per project")
+
+        ownership = await _curation_ownership([proposal_id])
+        row = ownership.get(proposal_id)
+        if row is None:
+            return format_error(f"proposal #{proposal_id} introuvable")
+        if row["project_key"] != project_key:
+            return format_error(
+                f"proposal #{proposal_id} appartient à `{row['project_key']}`, "
+                f"pas à `{project_key}` — refusé"
+            )
+        if row["status"] != "proposed":
+            return format_error(f"proposal #{proposal_id} est déjà `{row['status']}`")
+
+        service = _proposal_service_factory(session_factory)
+        from brain_v42.services.proposal_service import (  # noqa: PLC0415
+            ProposalServiceError,
+        )
+
+        try:
+            result = await service.apply_roadmap_curation(proposal_id, allowed_ops=None)
+        except ProposalServiceError as exc:
+            return format_error(f"apply #{proposal_id} a échoué : {exc}")
+        return (
+            f"## Curation appliquée — {project_key}\n\n"
+            f"- **#{proposal_id}** `{result.operation}` — {row['feature_name']}\n"
+            f"- apply_log : {result.apply_log}"
+        )
