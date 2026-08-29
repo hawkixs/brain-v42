@@ -113,6 +113,7 @@ def _run_verdict(
             f"declare -a TIMED_OUT_PHASES=({_bash_array(timed_out)})",
             f"declare -a CONTROLLED_TIMEOUT_PHASES=({_bash_array(controlled)})",
             f"declare -a SKIPPED_PHASES=({_bash_array(skipped)})",
+            "SKIPPED_UNWRITTEN=0",
             f"declare -a FALLBACK_PHASES=({_bash_array(fallbacks)})",
             f"ALERT_CALLS={shlex.quote(str(alert_calls))}",
             'log() { printf "%s\\n" "$*"; }',
