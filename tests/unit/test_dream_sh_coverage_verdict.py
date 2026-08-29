@@ -68,6 +68,7 @@ def _run_verdict(
             "declare -a TIMED_OUT_PHASES=()",
             "declare -a CONTROLLED_TIMEOUT_PHASES=()",
             "declare -a SKIPPED_PHASES=()",
+            "SKIPPED_UNWRITTEN=0",
             "declare -a FALLBACK_PHASES=()",
             "manifest_put() { :; }",
             'log() { printf "%s\\n" "$*" | tee -a "$LOG_DIR/$TIMESTAMP.log"; }',
