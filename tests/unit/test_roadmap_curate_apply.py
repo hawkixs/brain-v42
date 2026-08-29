@@ -370,3 +370,88 @@ class TestPersistProposals:
         res = await persist_proposals(factory, [draft])
         assert res.inserted == [7] and res.refreshed == [] and res.rejected_skipped == 0
         assert session.execute.await_count == 2  # SELECT + INSERT
+
+
+class TestArchiveEmission:
+    """L'ÉMISSION de l'op archive, du texte modèle jusqu'à l'INSERT.
+
+    Ticket 2e921e14, point 2 : « le nocturne ne sait pas dire archive » était
+    faux depuis le 2026-08-20 (une émission réelle sur le projet red), mais ce
+    fichier ne testait que l'APPLICATION — un pipeline qui aurait perdu l'op
+    entre le parse et la persistance serait resté vert. Ces tests suivent une
+    réponse modèle CONTENANT archive jusqu'aux valeurs de l'INSERT : c'est la
+    propriété adossée à un test que le ticket exigeait, sans éroder la garde
+    « une feature PINNED n'accepte QUE l'op status ».
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_model_archive_travels_from_response_to_the_insert(self):
+        import json as _json
+
+        from scripts.roadmap_curate import FeatureCard, ProjectBatch, parse_and_validate
+
+        feature_id = uuid4()
+        batch = ProjectBatch(
+            project_key="brain-v42",
+            features=[
+                FeatureCard(
+                    id=feature_id,
+                    name="update dependency X (message de commit promu)",
+                    status="research",
+                    pinned=False,
+                )
+            ],
+        )
+        content = _json.dumps(
+            [
+                {
+                    "op": "archive",
+                    "feature_id": str(feature_id),
+                    "rationale": "bruit sans valeur roadmap",
+                }
+            ]
+        )
+
+        drafts = parse_and_validate(content, batch)
+
+        assert [d.op for d in drafts] == ["archive"]
+        assert drafts[0].payload == {}
+
+        dup_none = MagicMock()
+        dup_none.first = MagicMock(return_value=None)
+        factory, session = _session_with([dup_none, _scalar_one(91)])
+        res = await persist_proposals(factory, drafts)
+
+        assert res.inserted == [91]
+        insert_call = session.execute.await_args_list[1]
+        compiled = str(insert_call.args[0].compile(compile_kwargs={"literal_binds": False}))
+        assert "roadmap_curation_proposals" in compiled
+        values = insert_call.args[0].compile().params
+        assert values["op"] == "archive"
+        assert values["feature_id"] == feature_id
+        assert values["payload"] == {}
+
+    def test_emission_on_a_pinned_feature_stays_refused(self):
+        """Le témoin inverse : prouver l'émission ne doit pas éroder la garde
+        du prompt — PINNED n'accepte que l'op status, et c'est le PARSEUR qui
+        le refuse, pas une phrase."""
+        import json as _json
+
+        from scripts.roadmap_curate import (
+            FeatureCard,
+            ProjectBatch,
+            ResponseParseError,
+            parse_and_validate,
+        )
+
+        pinned_id = uuid4()
+        batch = ProjectBatch(
+            project_key="brain-v42",
+            features=[
+                FeatureCard(id=pinned_id, name="Feature épinglée", status="building", pinned=True)
+            ],
+        )
+        content = _json.dumps([{"op": "archive", "feature_id": str(pinned_id)}])
+
+        with pytest.raises(ResponseParseError, match="pinned"):
+            parse_and_validate(content, batch)
