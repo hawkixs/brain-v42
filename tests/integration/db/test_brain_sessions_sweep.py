@@ -605,3 +605,72 @@ async def test_a_closed_inactive_row_survives_the_pydantic_rail(
 
     listed = await repo.list(project_key=sweep_project, status="all")
     assert tracer in {session.id for session in listed.sessions}
+
+
+async def test_the_persisted_series_keeps_the_two_counters_distinct_on_a_mixed_night(
+    session_factory: async_sessionmaker[AsyncSession],
+    sweep_project: str,
+) -> None:
+    """Ticket 24ca3b73, l'exigence terminale : le compteur ÉCRIT EN BASE est
+    distinct d'abandoned_count sur une nuit où les deux sont non nuls.
+
+    Sans la colonne de la 049, une nuit qui fermait 200 traçantes pour
+    inactivité ne laissait AUCUNE série temporelle — et un compteur qui
+    additionnerait les deux événements de sens opposé serait pire qu'absent.
+    La ligne dream_runs doit porter 1 (les fermetures), jamais 2 (la somme).
+    """
+    from brain_v42.maintenance.session_sweep import record_dream_run
+
+    now = datetime.now(UTC)
+    await _insert_open_session(
+        session_factory,
+        sweep_project,
+        "humaine-au-dela-du-seuil",
+        now - THRESHOLD - timedelta(days=1),
+    )
+    await _insert_open_session(
+        session_factory,
+        sweep_project,
+        "agent-inactive-mixte",
+        now - timedelta(hours=6),
+        nature="agent",
+        observed=now - timedelta(hours=6),
+    )
+
+    result = await PgBrainSessionRepo(session_factory).sweep_open_sessions(
+        older_than=THRESHOLD, close_inactive_after=INACTIVE, dry_run=False, now=now
+    )
+    assert result.abandoned_count == 1
+    assert result.closed_inactive_count == 1
+
+    await record_dream_run(
+        session_factory,
+        "done",
+        dry=False,
+        duration_s=1.0,
+        error=None,
+        closed_inactive_count=result.closed_inactive_count,
+    )
+    try:
+        async with session_factory() as session:
+            row = (
+                (
+                    await session.execute(
+                        sa.text(
+                            "SELECT closed_inactive_count FROM dream_runs "
+                            "WHERE phase='sweep' ORDER BY id DESC LIMIT 1"
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        assert row["closed_inactive_count"] == 1, (
+            "la colonne porte les fermetures pour inactivité SEULES, jamais la somme"
+        )
+        assert row["closed_inactive_count"] != result.abandoned_count + result.closed_inactive_count
+    finally:
+        async with session_factory.begin() as session:
+            await session.execute(
+                sa.text("DELETE FROM dream_runs WHERE phase='sweep' AND duration_s=1.0")
+            )

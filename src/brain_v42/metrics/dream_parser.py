@@ -54,6 +54,10 @@ class PhaseTelemetry:
     cost_usd: float | None = 0.0
     api_calls: int | None = 0
     tool_calls: int = 0
+    #: 049 — NULL = « ce rail ne distingue pas le thinking » (claude/codex
+    #: aujourd'hui). Seul agy le mesure : 962 thinking pour 1554 output sur le
+    #: run du 2026-08-11, ~38 % de tokens comptés nulle part (ticket 76e11c9f).
+    thinking_tokens: int | None = None
 
 
 # Event type is in the body field
@@ -208,9 +212,9 @@ async def _insert_dream_run(
                 (run_date, phase, model, status, duration_s,
                  input_tokens, output_tokens, cache_read_tokens,
                  cache_creation_tokens, cost_usd, api_calls, tool_calls,
-                 error_message, project_key, phase_dry_run)
+                 error_message, project_key, thinking_tokens, phase_dry_run)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                    $14, $15)
+                    $14, $15, $16)
             """,
             run_date_obj,
             phase,
@@ -226,6 +230,9 @@ async def _insert_dream_run(
             telemetry.tool_calls if telemetry else None,
             error_message,
             project_key,
+            # 049 — AVANT phase_dry_run : le drapeau de répétition à blanc
+            # reste le DERNIER lié, pin de test_dream_parser_phase_dry_run.
+            telemetry.thinking_tokens if telemetry else None,
             phase_dry_run,
         )
     finally:

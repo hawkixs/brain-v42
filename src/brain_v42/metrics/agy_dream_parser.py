@@ -101,6 +101,11 @@ def parse_agy_stream(content: str) -> PhaseTelemetry:
     telemetry.input_tokens = _counter(result_usage, "input_tokens")
     telemetry.output_tokens = _counter(result_usage, "output_tokens")
     telemetry.cache_read_tokens = _counter(result_usage, "cache_read_tokens")
+    # 049 : mesuré SÉPARÉMENT, jamais additionné à output_tokens — les rails
+    # qui ne distinguent pas le thinking laisseraient une somme incomparable.
+    # Absent du flux = NULL (« pas mesuré »), pas 0 (« mesuré nul »).
+    if "thinking_tokens" in result_usage:
+        telemetry.thinking_tokens = _counter(result_usage, "thinking_tokens")
     return telemetry
 
 

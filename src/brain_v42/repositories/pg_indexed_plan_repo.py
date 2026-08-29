@@ -60,13 +60,13 @@ class PgIndexedPlanRepo:
             INSERT INTO indexed_plans (
                 file_path, title, plan_type, project_key, content_hash,
                 embedding, content, summary, status, tags, metadata,
-                chunk_count, word_count, freshness_status, indexed_at,
-                search_vector
+                chunk_count, word_count, freshness_status, freshness_source,
+                indexed_at, search_vector
             ) VALUES (
                 :file_path, :title, :plan_type, :project_key, :content_hash,
                 :embedding, :content, :summary, :status, :tags,
                 CAST(:metadata AS JSONB),
-                :chunk_count, :word_count, 'fresh', NOW(),
+                :chunk_count, :word_count, 'fresh', 'plan_reindex', NOW(),
                 to_tsvector('english', CAST(:title_fts AS TEXT) || ' ' || CAST(:content_fts AS TEXT))
             )
             ON CONFLICT (file_path) DO UPDATE SET
@@ -83,6 +83,11 @@ class PgIndexedPlanRepo:
                 chunk_count = EXCLUDED.chunk_count,
                 word_count = EXCLUDED.word_count,
                 freshness_status = 'fresh',
+                -- Déclarée à CHAQUE écriture : le trigger de la 043 remet la
+                -- provenance à NULL sinon. Un fichier archivé réédité repasse
+                -- fresh par ICI — désarchivage légitime, désormais visible
+                -- (ticket 55a21fb8 ; vocabulaire posé par la 049).
+                freshness_source = 'plan_reindex',
                 indexed_at = NOW(),
                 search_vector = EXCLUDED.search_vector,
                 updated_at = NOW()
