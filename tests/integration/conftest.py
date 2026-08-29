@@ -51,6 +51,7 @@ from tests.integration.schema_fingerprint import (
 from tests.integration.schema_residue import (
     RESIDUE_TABLES,
     ResidueProbe,
+    describe_data_residue_notice,
     describe_head_drift,
     describe_schema_residue,
     migration_breadcrumb,
@@ -249,6 +250,12 @@ def _assert_no_migration_test_residue(db_url: str, project_root: Path) -> None:
     )
     if message is not None:
         raise RuntimeError(message)
+    # À head, les comptes PARLENT au lieu d'être jetés (review PR 44) — une
+    # notice, jamais un refus : un run concurrent sain tient légitimement des
+    # lignes integ- pendant sa propre suite.
+    notice = describe_data_residue_notice(residue=residue)
+    if notice is not None:
+        warnings.warn(notice, stacklevel=2)
 
 
 def _probe_live_schema(db_url: str) -> SchemaProbe:
@@ -314,11 +321,22 @@ def run_migrations() -> None:
 
     This is a sync fixture (session-scoped) that calls subprocess.run().
     It runs before the async engine fixtures so the schema is ready.
+
+    Sous le MÊME verrou consultatif que le fence : sans lui, deux worktrees
+    lançant leur suite sur la base partagée entrelacent leur probe+upgrade
+    HORS de toute protection — c'est le trou par lequel la course de
+    ``288d7121`` restait atteignable après la pose du verrou du fence
+    (mineur de la review PR 44). Le setup attend son tour au lieu de lire
+    une base qu'un autre run tient rétrogradée.
     """
     db_url = _get_integration_db_url_or_skip()
-    _assert_no_migration_test_residue(db_url, _PROJECT_ROOT)
-    _run_alembic_upgrade(db_url, _PROJECT_ROOT)
-    _assert_schema_matches_the_migration_chain(db_url, _PROJECT_ROOT)
+    lock = _SharedDatabaseMigrationLock(db_url)
+    try:
+        _assert_no_migration_test_residue(db_url, _PROJECT_ROOT)
+        _run_alembic_upgrade(db_url, _PROJECT_ROOT)
+        _assert_schema_matches_the_migration_chain(db_url, _PROJECT_ROOT)
+    finally:
+        lock.release()
 
 
 _CALL_FAILED = pytest.StashKey[bool]()
@@ -338,14 +356,79 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) ->
     return report
 
 
+#: Verrou consultatif des tests qui migrent la base partagée. La clé EST le
+#: ticket qui a mesuré la course : 0x288D7121 (« deux exécutions concurrentes
+#: s'entrelacent destructivement »). Tenu sur une connexion DÉDIÉE pendant
+#: toute la fenêtre du fence : les runs concurrents se sérialisent, et un kill
+#: libère le verrou avec la connexion — résistant au crash par construction,
+#: là où un fichier de verrou ne l'est pas.
+_MIGRATION_ADVISORY_LOCK_KEY = 0x288D7121
+
+
+class _SharedDatabaseMigrationLock:
+    """Session-level advisory lock held for the whole fence window.
+
+    The connection lives on its own event loop because the fence is a sync
+    fixture: ``asyncio.run`` would close the loop and the connection with it,
+    releasing the lock at the exact moment it must start being held.
+    """
+
+    def __init__(self, db_url: str) -> None:
+        # Chaque étage nettoie le sien en cas d'échec : un verrou qui ne se
+        # prend pas ne doit laisser derrière lui ni connexion ni engine — une
+        # connexion détentrice qui fuit fige tout fence ultérieur (attente
+        # infinie muette, le verrou n'ayant pas de lock_timeout).
+        self._loop = asyncio.new_event_loop()
+        try:
+            self._engine = create_async_engine(db_url, poolclass=NullPool)
+            try:
+                self._connection = self._loop.run_until_complete(self._engine.connect())
+                try:
+                    self._loop.run_until_complete(
+                        self._connection.execute(
+                            sa.text("SELECT pg_advisory_lock(:key)"),
+                            {"key": _MIGRATION_ADVISORY_LOCK_KEY},
+                        )
+                    )
+                except BaseException:
+                    self._loop.run_until_complete(self._connection.close())
+                    raise
+            except BaseException:
+                self._loop.run_until_complete(self._engine.dispose())
+                raise
+        except BaseException:
+            self._loop.close()
+            raise
+
+    def release(self) -> None:
+        # try/finally PAR ÉTAPE : un unlock qui lève ne doit pas empêcher la
+        # fermeture de la connexion — c'est elle qui libère réellement le
+        # verrou de session ; la laisser fuir fige tout fence ultérieur.
+        try:
+            try:
+                self._loop.run_until_complete(
+                    self._connection.execute(
+                        sa.text("SELECT pg_advisory_unlock(:key)"),
+                        {"key": _MIGRATION_ADVISORY_LOCK_KEY},
+                    )
+                )
+            finally:
+                try:
+                    self._loop.run_until_complete(self._connection.close())
+                finally:
+                    self._loop.run_until_complete(self._engine.dispose())
+        finally:
+            self._loop.close()
+
+
 @pytest.fixture
 def migration_downgrade_fence(
     request: pytest.FixtureRequest,
 ) -> Iterator[Callable[..., None]]:
     """Declare that a test is about to downgrade the shared database.
 
-    Does two things, both in teardown — that is, after the test function has
-    returned, including after its own ``finally``:
+    Serializes first, then does two things in teardown — that is, after the
+    test function has returned, including after its own ``finally``:
 
     1. clears the breadcrumb, which stops being true exactly then. Anything that
        kills the process in between leaves the file, and the next setup names
@@ -357,24 +440,32 @@ def migration_downgrade_fence(
     assertion left the database 22 revisions behind. A convention every future
     author must remember is the same class of defect as a hardcoded Alembic
     head — this repository already learned that once.
+
+    The serialization is the advisory lock of ``288d7121`` defect (1): six
+    files migrate the SAME shared database and two concurrent runs interleave
+    destructively. Waiting on the lock is the intended behaviour, not a hang.
     """
-    with ExitStack() as stack:
+    lock = _SharedDatabaseMigrationLock(_resolve_integration_db_url())
+    try:
+        with ExitStack() as stack:
 
-        def record(downgraded_to: str, restores_to: str = "head") -> None:
-            stack.enter_context(
-                migration_breadcrumb(
-                    project_root=_PROJECT_ROOT,
-                    test_nodeid=request.node.nodeid,
-                    downgraded_to=downgraded_to,
-                    restores_to=restores_to,
+            def record(downgraded_to: str, restores_to: str = "head") -> None:
+                stack.enter_context(
+                    migration_breadcrumb(
+                        project_root=_PROJECT_ROOT,
+                        test_nodeid=request.node.nodeid,
+                        downgraded_to=downgraded_to,
+                        restores_to=restores_to,
+                    )
                 )
-            )
 
-        yield record
+            yield record
 
-        # Restore BEFORE the breadcrumb is cleared: the trace must outlive the
-        # window it describes, not the other way round.
-        _fence_restores_head(request)
+            # Restore BEFORE the breadcrumb is cleared: the trace must outlive
+            # the window it describes, not the other way round.
+            _fence_restores_head(request)
+    finally:
+        lock.release()
 
 
 def _fence_restores_head(request: pytest.FixtureRequest) -> None:

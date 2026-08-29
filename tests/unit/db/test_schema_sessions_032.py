@@ -96,7 +96,15 @@ def test_brain_sessions_table_contract() -> None:
     terminal_sql = str(terminal_constraint.sqltext).lower()
     assert "summary is not null" in terminal_sql
     assert "next_focus is not null" in terminal_sql
-    assert "nothing_to_capture_reason is not null" in terminal_sql
+    # La 047 a retiré le XOR de fermeture : `nothing_to_capture_reason` n'est
+    # plus jamais EXIGÉE, seulement non blanche SI donnée. L'ancien pin
+    # (`is not null`) cimentait la divergence create_all()↔prod du ticket
+    # 8f59f6b7 ; la parité réelle est jouée contre la chaîne alembic par
+    # tests/integration/db/test_fresh_head_is_the_yardstick.py.
+    assert "nothing_to_capture_reason is not null" not in terminal_sql
+    assert "btrim(nothing_to_capture_reason) <> ''" in terminal_sql
+    # La branche `closed_inactive` de la 046, absente jusqu'au même ticket.
+    assert "status = 'closed_inactive'" in terminal_sql
     assert "abandonment_reason is not null" in terminal_sql
 
     index_names = {index.name for index in session_table.indexes}

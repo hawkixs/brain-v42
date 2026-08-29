@@ -101,6 +101,45 @@ def _combined_output(result: subprocess.CompletedProcess[str]) -> str:
     return result.stdout + result.stderr
 
 
+def _chain_upgrade_steps() -> list[tuple[str, str]]:
+    """(parents rendus, révision) pour chaque pas d'upgrade, lus du GRAPHE réel.
+
+    Derived, never enumerated: the previous version of this file spelled out
+    031→041 by hand and stayed silent on everything after — a fail-closed
+    test whose coverage shrinks at every migration gives an assurance that
+    evaporates without any signal (ticket ``23be2271``, 16 assertions in that
+    state).
+
+    Du graphe, pas d'un ordre linéarisé : la première dérivation faisait
+    ``walk_revisions`` + zip consécutif, ce qui suppose UN parent par révision
+    — faux le jour où une migration de merge arrive (``down_revision`` tuple),
+    et faux sans bruit : le zip apparierait deux révisions sans lien. Chaque
+    révision nomme ici son ou ses propres parents. Le rendu multi-parents
+    (``a, b -> m``) est asserté tel qu'alembic joint un tuple ; si son
+    séparateur diffère le jour venu, ce test le dira bruyamment au lieu de
+    valider une paire inventée.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    config = Config()
+    config.set_main_option("script_location", str(ALEMBIC_DIR))
+    script = ScriptDirectory.from_config(config)
+    steps: list[tuple[str, str]] = []
+    for revision in script.walk_revisions("base", "heads"):
+        down = revision.down_revision
+        if down is None:
+            parents = ""
+        elif isinstance(down, tuple):
+            parents = ", ".join(down)
+        else:
+            parents = str(down)
+        steps.append((parents, str(revision.revision)))
+    steps.reverse()
+    assert len(steps) >= 48, "the chain shrank below its 2026-08-29 length — derivation broken?"
+    return steps
+
+
 def test_missing_process_url_ignores_dotenv(tmp_path: Path) -> None:
     """A cwd .env must never become an implicit migration target."""
     dotenv_secret = "dotenv-cli-sentinel-secret"
@@ -131,7 +170,12 @@ def test_invalid_port_does_not_leak_url_or_sentinel(tmp_path: Path) -> None:
 
 
 def test_test_database_renders_all_migrations_without_secret(tmp_path: Path) -> None:
-    """The explicit test target renders the complete 001-to-041 chain offline."""
+    """The explicit test target renders the COMPLETE chain offline.
+
+    Every consecutive upgrade pair is asserted, and the expected pairs are
+    derived from ``alembic/versions`` rather than enumerated: the hand-written
+    list stopped at 040→041 and stayed green through seven more migrations.
+    """
     encoded_password = "offline-cli-sentinel%40password%25value"
     decoded_password = "offline-cli-sentinel@password%value"
     test_url = f"postgresql+asyncpg://brain:{encoded_password}@localhost:59999/brain_test"
@@ -140,16 +184,15 @@ def test_test_database_renders_all_migrations_without_secret(tmp_path: Path) -> 
     output = _combined_output(result)
 
     assert result.returncode == 0
-    assert result.stderr.count("Running upgrade") == 48
-    assert "Running upgrade 031 -> 032" in result.stderr
-    assert "Running upgrade 032 -> 033" in result.stderr
-    assert "Running upgrade 033 -> 034" in result.stderr
-    assert "Running upgrade 034 -> 035" in result.stderr
-    assert "Running upgrade 035 -> 036" in result.stderr
-    assert "Running upgrade 037 -> 038" in result.stderr
-    assert "Running upgrade 038 -> 039" in result.stderr
-    assert "Running upgrade 039 -> 040" in result.stderr
-    assert "Running upgrade 040 -> 041" in result.stderr
+    steps = _chain_upgrade_steps()
+    # One "Running upgrade" line per revision — "  -> 001" for the base step,
+    # then one per parent(s)->revision edge of the real graph.
+    assert result.stderr.count("Running upgrade") == len(steps)
+    for parents, revision in steps:
+        assert f"Running upgrade {parents} -> {revision}" in result.stderr, (
+            f"the graph declares {parents or '<base>'} -> {revision} but the "
+            "offline render never ran it"
+        )
     assert encoded_password not in output
     assert decoded_password not in output
     assert test_url not in output
