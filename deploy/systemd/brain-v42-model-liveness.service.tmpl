@@ -1,0 +1,61 @@
+[Unit]
+Description=brain-v42 Model Liveness Probe — weekly read-only EOL check
+Documentation=file://__REPO_ROOT__/scripts/probe_model_liveness.py
+
+[Service]
+Type=oneshot
+
+# Repo root is injected by deploy/systemd/install.sh from the template.
+# `-m` is required: launched by file path, sys.path[0] would be scripts/ and
+# the inventory imports (scripts.roadmap_curate, scripts.ticket_extract)
+# would fail before probing anything.
+WorkingDirectory=__REPO_ROOT__
+ExecStart=__REPO_ROOT__/.venv/bin/python -m scripts.probe_model_liveness
+
+# The probe needs the provider key and nothing else from the environment.
+# Strict on purpose: without the key the probe exits 2, and a missing file
+# fails the unit with a named error instead of a green no-op.
+EnvironmentFile=%h/.config/brain-v42/nvidia.env
+
+# Decision b002c0a4: this probe is NEVER a gate on the night's path. It is the
+# separate weekly cadence that decision left open — its whole value is the
+# DORMANT links (WET pair, fallbacks) that the nightly run never exercises and
+# therefore never sees die. Exit 1 on a 410 makes the unit fail, visibly, off
+# the night's clock. Measured twice before this unit existed: llama-3.1-8b
+# (roadmap DRY secours) and llama-3.3-70b (extract + WET primaire) both hit
+# EOL and the first signal was a degraded night.
+
+UMask=0077
+NoNewPrivileges=true
+PrivateUsers=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+KeyringMode=private
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=brain-v42-model-liveness
+
+# Six sequential probes at 30 s worst case each, plus interpreter start-up.
+TimeoutStartSec=600
+
+# Be polite — share the host with backups and the daily dream run.
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=default.target
