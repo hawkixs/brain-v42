@@ -2392,25 +2392,27 @@ class TestThePrimaryModelIsAliveRatherThanRetired:
             "(extract done le 27, fail 410 le 28, sonde GONE le 29)"
         )
 
-    def test_the_primary_is_the_model_that_was_canaryed_on_the_real_prompt(self) -> None:
-        """Épingler LEQUEL, pas seulement « pas le mort ».
-
-        Un test qui n'exclurait que deepseek laisserait promouvoir n'importe quel
-        modèle vivant — y compris un qui n'a jamais vu le prompt d'extraction, ce
-        qui est exactement l'erreur du canary du 2026-08-05 : vivant sur 16
-        tokens, en timeout sur le prompt réel.
-
-        Le remplaçant du 2026-08-29 a été canaryé SUR le prompt d'extraction,
-        sans persistance, contre trois tickets pending réels — le chemin exact
-        de la nuit (`fetch_pending_threads` → `extract_thread`, arrêté avant
-        `persist_proposals`) : nemotron-3-super-120b-a12b 3/3 valides,
-        13 drafts, 16,1 s/ticket — le plus rapide des quatre vivants mesurés
-        (mistral-nemotron 25,9 s, nano-30b 19,7 s mais 8 drafts, gpt-oss-20b
-        57,5 s — hors budget d'une phase à 20 tickets pour 10 minutes).
+    def test_the_extract_chain_has_two_distinct_living_links(self) -> None:
+        """Une PROPRIÉTÉ, pas un pin : l'égalité à un littéral recopié du diff
+        ne prouvait que « le commit a copié deux fois la même chaîne » (review
+        PR 42, 2026-08-29). Ce qui se vérifie exécutablement : la chaîne a
+        deux maillons DISTINCTS, et aucun n'est un mort connu. L'historique du
+        choix (canary sans persistance du 2026-08-29 sur le chemin exact de la
+        nuit : super-120b 3/3, 13 drafts, 16,1 s/ticket ; mistral-nemotron
+        3/3, 15 drafts, 25,9 s en secours) vit dans le commentaire des
+        constantes, pas dans une assertion qui le paraphrase.
         """
         from scripts.domain_backfill import DEFAULT_MODEL
+        from scripts.ticket_extract import DEFAULT_EXTRACT_FALLBACK_MODEL
 
-        assert DEFAULT_MODEL == "nvidia/nemotron-3-super-120b-a12b"
+        dead = {
+            "deepseek-ai/deepseek-v4-pro",
+            "meta/llama-3.3-70b-instruct",
+            "meta/llama-3.1-8b-instruct",
+        }
+
+        assert DEFAULT_MODEL != DEFAULT_EXTRACT_FALLBACK_MODEL
+        assert DEFAULT_EXTRACT_FALLBACK_MODEL not in dead
 
 
 class TestAFallbackIdenticalToThePrimaryIsNotAFallback:

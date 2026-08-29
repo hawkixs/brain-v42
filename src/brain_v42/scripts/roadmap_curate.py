@@ -93,26 +93,38 @@ _ENV_FILE = Path.home() / ".config" / "brain-v42" / "nvidia.env"
 #    primaire : voir tests/unit/test_roadmap_model_chain.py.
 DEFAULT_ROADMAP_MODEL = "mistralai/mistral-nemotron"
 # Secours remplacé le 2026-08-29 : le 8B est mort en 410 le 2026-08-26 (nuits
-# des 27 et 28 en fail, sonde GONE). gpt-oss-20b est le seul vivant 100 % porté
-# sur le vrai prompt à travers trois canaries (08-11, 08-16, 08-29 : 3/3 à
-# chaque fois) et jugé en aveugle au-dessus du mort qu'il remplace (35/100
-# contre 10). Ses 74,5 s/batch mesurées valent pour le régime PRIMAIRE à pleins
-# caps ; en secours il tourne aux caps réduits de FALLBACK_*. deepseek-v4-flash
-# -0731 écarté : 69,3 s/batch le 08-16, famille morte deux fois en un mois,
-# contenu jamais jugé.
+# des 27 et 28 en fail, sonde GONE). gpt-oss-20b est jugé en aveugle au-dessus
+# du mort qu'il remplace (35/100 contre 10) et MESURÉ DANS SON RÉGIME EXACT le
+# 2026-08-29, après correction de l'instrument (fenêtres de nuit 60 s, dix
+# batches réels, caps secours FALLBACK_*) : 10/10 portés, 12 propositions,
+# 7,8 s/batch — 78 s projetées pour une nuit intégralement dégradée, budget
+# 720 s. Le profil secours n'est PAS « à caps réduits » : mêmes 3 features,
+# tokens DOUBLÉS (1024 contre 512) — et c'est ce qui le fait tenir : à 512,
+# le raisonnement de gpt-oss est tronqué, le re-prompt correctif double la
+# facture (74,5 s/batch mesurés sous l'ancien instrument) ; à 1024 il rend en
+# un appel. Écartés au même régime : nano-30b (rapide, 9,9 s/batch, mais
+# 5/10 JSON valides — signature nemotron) ; deepseek-v4-flash-0731 (69,3
+# s/batch le 08-16, famille morte deux fois en un mois, contenu jamais jugé).
 DEFAULT_ROADMAP_FALLBACK_MODEL = "openai/gpt-oss-20b"
 # Paire WET remplacée le 2026-08-29 : llama-3.3-70b (canary strict du
 # 2026-07-14) est mort en 410 entre les nuits du 27 et du 28 août — maillon
 # DORMANT côté roadmap, la phase tournant en DRY ; sans extract qui partageait
 # ce modèle, personne ne l'aurait vu mourir. Le secours d'hier devient
-# primaire : nemotron-3-super-120b-a12b, 3/3 valides, 31 propositions,
-# 54,9 s/batch (549 s projetées sur dix projets, budget 720 s) au canary du
-# 08-29 — le plus fort des vivants mesurés sur ce prompt. gpt-oss-120b prend
-# le poste de secours : 3/3 valides et 39 propositions le 08-11, lent
-# (182 s/batch à pleins caps) mais VALIDE, sur un poste que
-# test_roadmap_model_chain exige distinct et que le killswitch DRY laisse
-# dormant. Le défaut dry reste économique/proposer-only ; --wet choisit ce
-# modèle reviewé lorsque l'opérateur n'en configure pas explicitement un autre.
+# primaire (nemotron-3-super-120b-a12b : le plus fort des vivants mesurés sur
+# ce prompt — 31 propositions) et gpt-oss-120b prend le poste de secours, sur
+# un poste que test_roadmap_model_chain exige distinct.
+#
+# PRÉCONDITION DE RÉARMEMENT, mesurée le 2026-08-29 au régime réel : en WET
+# la voie non-gérée DIVISE la fenêtre par deux dès qu'un secours existe
+# (candidate_timeout_s = llm_timeout_s / 2, soit 30 s à dix projets) — la
+# borne n'est PAS le read-timeout httpx de 180 s. Sous ces 30 s, cette paire
+# telle qu'ordonnée NE PORTE PAS : super-120b 1/10 batches, les 9 autres
+# sauvés par gpt-oss-120b (qui tient 30 s à chaud — sa queue froide de 75 s
+# ne concerne que le premier appel). Ces noms sont donc des maillons VIVANTS
+# et jugés sur le fond nulle part : repasser BRAIN_DREAM_ROADMAP_DRY_RUN à
+# false exige d'abord un canary WET (fenêtres 30 s) et probablement de
+# re-paires ou d'élargir la fenêtre — geste opérateur, pas un simple mot à
+# changer. Le killswitch DRY actuel ne consomme jamais cette paire.
 DEFAULT_WET_ROADMAP_MODEL = "nvidia/nemotron-3-super-120b-a12b"
 DEFAULT_WET_ROADMAP_FALLBACK_MODEL = "openai/gpt-oss-120b"
 AUTO_APPLY_MODELS = frozenset({DEFAULT_WET_ROADMAP_MODEL, DEFAULT_WET_ROADMAP_FALLBACK_MODEL})
@@ -1311,6 +1323,17 @@ def main() -> int:
     else:
         default_fallback_model = DEFAULT_ROADMAP_FALLBACK_MODEL
     fallback_model = os.environ.get(_ROADMAP_FALLBACK_MODEL_VAR) or default_fallback_model
+    if fallback_model == model:
+        # curate_batch traite un secours égal au primaire comme AUCUN secours
+        # (has_fallback=False), en silence. Le cas n'arrive que par override —
+        # les constantes sont gardées distinctes par test_roadmap_model_chain —
+        # et il mérite un bruit : une chaîne à un maillon qui se croit à deux
+        # est la panne du 2026-08-28 (secours mort découvert au milieu de la
+        # nuit), en pire, parce qu'ici personne ne l'a même configurée.
+        print(
+            f"WARN secours identique au primaire ({model}) : la chaîne roadmap "
+            "tourne à UN seul maillon (has_fallback=False)"
+        )
     base_url = args.base_url or os.environ.get("BRAIN_NVIDIA_BASE_URL") or DEFAULT_BASE_URL
 
     if args.wet and model not in AUTO_APPLY_MODELS:
