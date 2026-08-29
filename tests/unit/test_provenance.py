@@ -108,8 +108,47 @@ class TestNormalizeAgent:
 
 class TestIsHumanActor:
     def test_interactive_session_is_human(self) -> None:
+        """Le témoin HUMAIN exigé par 6878077f : fermer le trou sans casser le
+        cas légitime — un basename de projet arbitraire reste humain."""
         assert is_human_actor("red-lab") is True
         assert is_human_actor("brain_v42") is True
+
+    def test_measured_machine_names_are_not_human(self) -> None:
+        """Recensement PAR SITE D'APPEL du 2026-08-29 (6878077f) — des rails
+        machine VIVANTS hors famille `dream-` comptaient humains :
+
+        - `red-shrik` : bot actif (`systemctl is-active` → active), fait du
+          `brain_search` en se déclarant par `mcp_client.py:83` ;
+        - `antigravity` : le même client, déploiement agy
+          (`deploy/agy/settings.mcp.example.json`) ;
+        - `red-lab-factory` : l'acteur que red-lab DOIT poser (a3fa6696) —
+          pré-classé pour que le correctif cross-repo n'ouvre pas le trou
+          qu'il ferme ;
+        - `pc-dev-red` : client scripté du PC dev, mesuré sur
+          `brain_ticket_list` (fil a3fa6696).
+
+        Des noms EXACTS, jamais un préfixe `red-` : il avalerait les basenames
+        humains (`red-games` lancé interactivement). Coût assumé, sens
+        conservateur : une session interactive lancée DEPUIS le répertoire
+        red-shrik déclare le même basename et comptera machine — l'erreur
+        coûte en couverture humaine, jamais en fausse écriture.
+        """
+        for name in ("red-shrik", "antigravity", "red-lab-factory", "pc-dev-red"):
+            assert is_human_actor(name) is False, name
+
+    def test_the_sql_mirror_shares_the_same_constants(self) -> None:
+        """`session_derived_capture` porte un prédicat SQL « miroir de
+        provenance.is_human_actor » : deux sources de vérité qui ne divergent
+        qu'à la lecture sont le mode de panne maison — le miroir doit IMPORTER
+        les constantes, jamais les redéclarer."""
+        from brain_v42.db import session_derived_capture as mirror
+        from brain_v42.provenance import (
+            SYSTEM_ACTOR_NAMES,
+            SYSTEM_ACTOR_PREFIXES,
+        )
+
+        assert mirror._SYSTEM_ACTOR_PREFIXES is SYSTEM_ACTOR_PREFIXES
+        assert mirror._SYSTEM_ACTOR_NAMES is SYSTEM_ACTOR_NAMES
 
     def test_dream_phase_is_not_human(self) -> None:
         assert is_human_actor("dream-codex-synth") is False

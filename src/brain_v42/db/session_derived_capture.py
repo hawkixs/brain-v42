@@ -44,6 +44,7 @@ from brain_v42.db.tables import (
     runbooks,
     snippets,
 )
+from brain_v42.provenance import SYSTEM_ACTOR_NAMES, SYSTEM_ACTOR_PREFIXES
 
 logger = structlog.get_logger(__name__)
 
@@ -103,7 +104,12 @@ _DONOR_STATUSES: Final = ("open", "closed_inactive")
 #: inconnu », il est identifié, et le laisser dans le pot commun rendrait le
 #: mode de panne quotidien (le `promote` de 03:00 tombe dans la fenêtre de
 #: n'importe quelle session ouverte la nuit) au lieu de marginal.
-_SYSTEM_ACTOR_PREFIX: Final = "dream-"
+#:
+#: IMPORTÉES, jamais redéclarées : un miroir qui recopie ses constantes cesse
+#: d'en être un au premier élargissement d'un seul côté — épinglé par
+#: `test_the_sql_mirror_shares_the_same_constants`.
+_SYSTEM_ACTOR_PREFIXES: Final = SYSTEM_ACTOR_PREFIXES
+_SYSTEM_ACTOR_NAMES: Final = SYSTEM_ACTOR_NAMES
 _NON_HUMAN_ACTORS: Final = ("unknown", "_unexpanded", "")
 
 
@@ -310,7 +316,8 @@ def _window_donors(project_key: str) -> sa.Select[Any]:
         brain_sessions.c.status.in_(_DONOR_STATUSES),
         actor.is_not(None),
         actor.not_in(_NON_HUMAN_ACTORS),
-        sa.not_(actor.startswith(_SYSTEM_ACTOR_PREFIX)),
+        actor.not_in(_SYSTEM_ACTOR_NAMES),
+        *[sa.not_(actor.startswith(prefix)) for prefix in _SYSTEM_ACTOR_PREFIXES],
     )
 
 
