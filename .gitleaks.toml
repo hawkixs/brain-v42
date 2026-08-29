@@ -183,6 +183,28 @@ regexTarget = "line"
 paths = ['''^ops/recovery/brain-v42-v5-pgrestore\.sql$''']
 regexes = ['''\('brain_sessions_pkey', '6763cd8159ef6f0131abbfedfea044bc'\)''']
 
+[[rules.allowlists]]
+description = """
+Triaged 2026-08-29. Same md5 schema fingerprint, in the v6 recovery contract. \
+The v6 assets are DERIVED from v5 (mint 047/048) and inherit this literal \
+unchanged — the 2026-08-21 triage carries over, not a new judgement. Digest \
+of public DDL, verified against the live database at head 048.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v6\.sql$''']
+regexes = ['''\('brain_sessions_pkey', '6763cd8159ef6f0131abbfedfea044bc'\)''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-08-29. The same md5 schema fingerprint, in the pg_restore \
+variant of the v6 recovery contract. Same derivation, same triage.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v6-pgrestore\.sql$''']
+regexes = ['''\('brain_sessions_pkey', '6763cd8159ef6f0131abbfedfea044bc'\)''']
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Triaged 2026-08-22 — the two findings the trigger-function census introduced.
 #
@@ -248,6 +270,33 @@ entire database schema.
 condition = "AND"
 regexTarget = "line"
 paths = ['''^ops/recovery/brain-v42-v5-pgrestore\.sql$''']
+regexes = ['''\('reject_project_context_key_change', 'e800aecbe1054d8333babd1c43f1f52893db81b6b8f4e7fc6d167c6cd6f9de82', 226\)''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-08-29. The same trigger-function fingerprint — \
+`sha256(pg_proc.prosrc)` of `reject_project_context_key_change()`, next to \
+its octet count — in the v6 recovery contract, inherited unchanged from v5 by \
+the 047/048 mint (the 047/048 deltas touch other blocks; this function body \
+did not move, re-measured against the live database at head 048). Flagged for \
+the same vocabulary reason as v5: the function name carries "key" and no \
+gitleaks stopword.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v6\.sql$''']
+regexes = ['''\('reject_project_context_key_change', 'e800aecbe1054d8333babd1c43f1f52893db81b6b8f4e7fc6d167c6cd6f9de82', 226\)''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-08-29. The same trigger-function fingerprint in the pg_restore \
+variant of the v6 contract. One triage, two entries — a path regex spanning \
+both files would have to widen to the directory, and widening to \
+`ops/recovery/` would stop scanning the files that carry the schema.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v6-pgrestore\.sql$''']
 regexes = ['''\('reject_project_context_key_change', 'e800aecbe1054d8333babd1c43f1f52893db81b6b8f4e7fc6d167c6cd6f9de82', 226\)''']
 
 [[rules.allowlists]]
