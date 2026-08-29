@@ -539,7 +539,10 @@ def coverage_fallback(*, expected: int, observed: int, missing: int) -> Coverage
 
 
 def format_reconciliation_line(
-    phases_ok: int, observed_rows: Iterable[Mapping[str, object]]
+    phases_ok: int,
+    observed_rows: Iterable[Mapping[str, object]],
+    *,
+    skipped: int = 0,
 ) -> str:
     """« N phases OK / M paires écrites » — l'écart que personne ne rapprochait.
 
@@ -552,7 +555,9 @@ def format_reconciliation_line(
     `partial` — une phase marquée par le validateur a ÉCRIT, la compter perdue
     déclencherait une chasse à l'INSERT chaque fois que G4 fait son travail.
     Une paire `fail`+`done` (secours) compte UNE fois : dream.sh compte des
-    phases quand dream_runs compte des tentatives. Un gap négatif (skips
+    phases quand dream_runs compte des tentatives. Les phases SKIPPÉES —
+    comprises dans OK_TOTAL — sont soustraites : elles n'écrivent pas de ligne
+    et n'en perdent donc aucune. Un gap négatif (skips
     enregistrés, rejeux) s'imprime tel quel — un clamp serait un compteur qui
     ment.
     """
@@ -561,8 +566,14 @@ def format_reconciliation_line(
         for row in observed_rows
         if str(row["status"]) not in ("fail", "timeout")
     }
-    gap = phases_ok - len(pairs_written)
-    return f"RECONCILIATION phases_ok={phases_ok} pairs_written={len(pairs_written)} gap={gap}"
+    # Les phases SKIPPÉES sont dans OK_TOTAL (= TOTAL_PHASES - FAIL_TOTAL) et
+    # n'écrivent pas de ligne : sans les soustraire, le WARN tirerait presque
+    # chaque nuit saine — le cri au loup exact que ce lot corrige (review PR 47).
+    gap = phases_ok - skipped - len(pairs_written)
+    return (
+        f"RECONCILIATION phases_ok={phases_ok} skipped={skipped} "
+        f"pairs_written={len(pairs_written)} gap={gap}"
+    )
 
 
 async def fetch_failed_runs(
@@ -715,6 +726,7 @@ async def _run(
     run_date: dt.date,
     manifest_path: Path | None = None,
     phases_ok: int | None = None,
+    phases_skipped: int = 0,
 ) -> int:
     settings = Settings()
     engine = create_async_engine(settings.postgres_url, poolclass=NullPool)
@@ -734,7 +746,9 @@ async def _run(
                 )
                 print(
                     format_reconciliation_line(
-                        phases_ok, [dict(row._mapping) for row in observed.all()]
+                        phases_ok,
+                        [dict(row._mapping) for row in observed.all()],
+                        skipped=phases_skipped,
                     )
                 )
             rendered, escalates = await review_and_render(session, run_date, manifest=manifest)
@@ -771,11 +785,27 @@ def main(argv: list[str] | None = None) -> int:
             "pas ce nombre, et la ligne RECONCILIATION ne s'imprime pas sans lui."
         ),
     )
+    parser.add_argument(
+        "--phases-skipped",
+        type=int,
+        default=0,
+        help=(
+            "Compteur de phases skippées de dream.sh — comprises dans OK_TOTAL, "
+            "elles n'écrivent pas de ligne et sont soustraites du gap."
+        ),
+    )
     args = parser.parse_args(argv)
     run_date = dt.date.fromisoformat(args.date)
     manifest_path = Path(args.manifest) if args.manifest else default_manifest_path(run_date)
     try:
-        return asyncio.run(_run(run_date, manifest_path, phases_ok=args.phases_ok))
+        return asyncio.run(
+            _run(
+                run_date,
+                manifest_path,
+                phases_ok=args.phases_ok,
+                phases_skipped=args.phases_skipped,
+            )
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"post_run_alert failed: {exc!r}", file=sys.stderr)
         return 1

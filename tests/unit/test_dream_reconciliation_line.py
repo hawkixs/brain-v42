@@ -40,7 +40,7 @@ def test_a_night_that_loses_an_insert_produces_a_nonzero_gap() -> None:
 
     line = format_reconciliation_line(61, rows)
 
-    assert line == "RECONCILIATION phases_ok=61 pairs_written=2 gap=59"
+    assert line == "RECONCILIATION phases_ok=61 skipped=0 pairs_written=2 gap=59"
 
 
 def test_a_complete_night_reconciles_to_zero() -> None:
@@ -105,6 +105,27 @@ def test_a_negative_gap_is_printed_never_masked() -> None:
     assert line.endswith("gap=-1")
 
 
+def test_skipped_phases_do_not_read_as_lost_inserts() -> None:
+    """Review PR 47 : OK_TOTAL = TOTAL_PHASES - FAIL_TOTAL inclut les phases
+    SKIPPÉES (corpus inchangé, killswitch), qui n'écrivent pas de ligne — sans
+    les soustraire, le WARN gap≠0 tirerait presque chaque nuit saine : le cri
+    au loup exact que ce lot corrige pour REORG."""
+    rows = [_row("extract", "done", "*"), _row("clean", "done", "brain-v42")]
+
+    line = format_reconciliation_line(5, rows, skipped=3)
+
+    assert line == "RECONCILIATION phases_ok=5 skipped=3 pairs_written=2 gap=0"
+
+
+def test_a_lost_insert_still_shows_through_the_skips() -> None:
+    """Le témoin inverse : les skips soustraits, une vraie perte reste visible."""
+    rows = [_row("extract", "done", "*")]
+
+    line = format_reconciliation_line(5, rows, skipped=3)
+
+    assert line.endswith("gap=1")
+
+
 # ---------------------------------------------------------------------------
 # Le câblage moteur — dream.sh est du shell, son contrat est textuel, comme
 # pour les validateurs (test_dream_sh_reorg_validator.py).
@@ -113,6 +134,7 @@ def test_a_negative_gap_is_printed_never_masked() -> None:
 
 def test_dream_sh_passes_its_own_ok_counter() -> None:
     assert '--phases-ok "$OK_TOTAL"' in DREAM_SH
+    assert '--phases-skipped "${#SKIPPED_PHASES[@]}"' in DREAM_SH
 
 
 def test_dream_sh_logs_the_reconciliation_and_warns_on_gap() -> None:

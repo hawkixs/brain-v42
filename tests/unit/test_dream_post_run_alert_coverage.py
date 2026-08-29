@@ -583,10 +583,16 @@ def test_the_default_manifest_path_is_derived_from_the_repo() -> None:
 def test_the_cli_accepts_an_explicit_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, object] = {}
 
-    def _fake_run(run_date: dt.date, manifest_path: Path, phases_ok: int | None = None) -> int:
+    def _fake_run(
+        run_date: dt.date,
+        manifest_path: Path,
+        phases_ok: int | None = None,
+        phases_skipped: int = 0,
+    ) -> int:
         seen["date"] = run_date
         seen["manifest"] = manifest_path
         seen["phases_ok"] = phases_ok
+        seen["phases_skipped"] = phases_skipped
         return 0
 
     monkeypatch.setattr(post_run_alert.asyncio, "run", lambda coro: coro)
@@ -601,8 +607,18 @@ def test_the_cli_accepts_an_explicit_manifest(monkeypatch: pytest.MonkeyPatch) -
 
     assert (
         post_run_alert.main(
-            ["--date", "2026-08-18", "--manifest", "/tmp/x.tsv", "--phases-ok", "61"]
+            [
+                "--date",
+                "2026-08-18",
+                "--manifest",
+                "/tmp/x.tsv",
+                "--phases-ok",
+                "61",
+                "--phases-skipped",
+                "3",
+            ]
         )
         == 0
     )
     assert seen["phases_ok"] == 61
+    assert seen["phases_skipped"] == 3

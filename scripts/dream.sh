@@ -1336,7 +1336,8 @@ set +e
 # la moitié physique du « personne ne la lit » (ticket 0a9c067e). Le rapport est
 # borné en amont (MAX_FETCHED_FAILURES), donc la capture en variable l'est aussi.
 alert_out="$(uv run python -m scripts.dream.post_run_alert \
-  --date "$TIMESTAMP" --manifest "$MANIFEST_FILE" --phases-ok "$OK_TOTAL" 2>&1)"
+  --date "$TIMESTAMP" --manifest "$MANIFEST_FILE" --phases-ok "$OK_TOTAL" \
+  --phases-skipped "${#SKIPPED_PHASES[@]}" 2>&1)"
 alert_rc=$?
 set -e
 printf '%s\n' "$alert_out" >> "$LOG_DIR/$TIMESTAMP.log"
