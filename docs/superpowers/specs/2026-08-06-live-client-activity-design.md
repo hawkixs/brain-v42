@@ -241,9 +241,14 @@ Deux champs se ressemblent et ne disent pas la même chose :
   serait deviner.
 - **`actor`** est la valeur normalisée de `X-Brain-Agent`, telle que
   `provenance.normalize_agent` la produit. C'est un vocabulaire déjà en place
-  dans le code, et il est volontairement hétérogène : Claude Code y met un nom de
-  projet (`brain-v42`, basename de `${PWD}`), Codex y met un libellé de service
-  (`codex`). Le panneau l'affiche tel quel sans prétendre que c'est un projet.
+  dans le code, et il est volontairement hétérogène : Claude Code y met le
+  basename du **répertoire de LANCEMENT** (`${PWD}` expansé — ce n'est PAS un
+  nom de projet : lancé depuis `/home/hawixs` l'acteur est `hawixs`, depuis un
+  worktree c'est le nom du worktree, et le même projet produit `brain_v42`
+  (underscore, basename) ou `brain-v42` (tiret, littéral du `.mcp.json`) selon
+  le chemin emprunté — mesuré, fil du ticket `a3fa6696`) ; Codex y met un
+  libellé de service (`codex`). Le panneau l'affiche tel quel sans prétendre
+  que c'est un projet.
 
 Par type de ligne : une `unattributed` a `tokens`, `turns`, `cost`, `model` et
 `agent` à `null`, et son `id` est dérivé de l'acteur. Une ligne OTLP-only a

@@ -33,7 +33,40 @@ MAX_ACTOR_LENGTH = 64
 # `test_every_dream_rail_header_is_machine`, qui relit les runners et exige que
 # chaque en-tête émis soit classé machine : un quatrième rail qui s'écarterait du
 # gabarit fait rougir la suite au lieu de passer au travers.
-_SYSTEM_ACTOR_PREFIXES = ("dream-",)
+#
+# Public : le prédicat SQL de `db/session_derived_capture.py` est le MIROIR de
+# `is_human_actor` — il importe ces constantes au lieu de les redéclarer, sans
+# quoi les deux classifications ne divergeraient qu'à la lecture, sur certains
+# chemins seulement (le mode de panne maison).
+SYSTEM_ACTOR_PREFIXES = ("dream-",)
+_SYSTEM_ACTOR_PREFIXES = SYSTEM_ACTOR_PREFIXES
+
+# Acteurs machine HORS famille `dream-`, recensés PAR SITE D'APPEL le
+# 2026-08-29 (ticket 6878077f). Des noms EXACTS, jamais un préfixe : `red-`
+# avalerait les basenames humains (`red-games` lancé interactivement).
+#
+# - `red-shrik` : bot actif (`systemctl is-active` → active), `brain_search`
+#   en boucle, se déclare via `red-shrik/src/shrik/mcp_client.py:83` ;
+# - `antigravity` : le même client, déploiement agy
+#   (`deploy/agy/settings.mcp.example.json`) ;
+# - `red-lab-factory` : l'acteur que red-lab DOIT poser (ticket a3fa6696) —
+#   pré-classé ici pour que le correctif cross-repo, le jour où il arrive, ne
+#   fasse pas basculer ce trafic d'`unknown` (machine) vers un nom compté
+#   humain : fermer un trou n'a pas à en ouvrir un ;
+# - `pc-dev-red` : client scripté du PC dev, mesuré sur `brain_ticket_list`.
+#
+# Coût assumé, dans le sens conservateur : une session interactive lancée
+# DEPUIS le répertoire d'un de ces services déclare le même basename et compte
+# machine. L'erreur coûte en couverture humaine (un plancher), jamais en
+# fausse écriture — le sens que 6878077f bénit.
+SYSTEM_ACTOR_NAMES = frozenset(
+    {
+        "red-shrik",
+        "antigravity",
+        "red-lab-factory",
+        "pc-dev-red",
+    }
+)
 _NON_HUMAN = frozenset({UNKNOWN_ACTOR, UNEXPANDED_ACTOR, ""})
 
 _current_actor: ContextVar[str] = ContextVar(
@@ -167,12 +200,18 @@ def is_human_actor(actor: str | None) -> bool:
     construction, donc inénumérable ; exiger qu'un humain se déclare casserait
     le cas légitime. Le bot d'un AUTRE projet qui pose son propre
     `X-Brain-Agent` reste donc compté comme humain. La garde couvre la famille
-    `dream-`, pas toute machine concevable.
+    `dream-` ET les acteurs machine RECENSÉS (`SYSTEM_ACTOR_NAMES`, par site
+    d'appel, datés dans leur commentaire) — pas toute machine concevable : le
+    reste du monde est humain par défaut, c'est le prix d'un espace de noms
+    inénumérable, et il se paie en plancher de couverture, jamais en fausse
+    écriture.
     """
     value = (actor or "").strip()
     if value in _NON_HUMAN:
         return False
-    return not value.startswith(_SYSTEM_ACTOR_PREFIXES)
+    if value in SYSTEM_ACTOR_NAMES:
+        return False
+    return not value.startswith(SYSTEM_ACTOR_PREFIXES)
 
 
 _call_depth: ContextVar[int] = ContextVar("brain_v42_call_depth", default=0)
