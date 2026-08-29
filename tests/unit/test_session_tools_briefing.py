@@ -62,3 +62,90 @@ class TestTicketsSilencedCount:
         assert "deadline" not in section.lower()
         assert "priority" not in section.lower()
         assert "pinned" not in section.lower()
+
+
+class TestDatedSilencedSurfacing:
+    """La convention de titre devient opérante AU-DELÀ du cap (259cfbe5, mission re-démontrée).
+
+    Mesuré le 2026-08-29 : `191b2dba` porte « REVUE 2026-09-03 » dans son titre
+    — la seule échéance datée du carnet, à cinq jours — et il est au rang 49
+    sur 62, invisible du briefing. Le tri par récence punit précisément les
+    tickets qu'on ne touche pas pendant que leur date approche : la convention
+    de titre ne fonctionne que tant que le ticket est affiché, c'est-à-dire
+    jamais quand elle compte.
+
+    La forme à coût zéro : parmi les tickets TUS par le cap, ceux dont le titre
+    porte une date ISO sont nommés sous la ligne du compteur, triés par date,
+    plafonnés à 2. Une DATE est falsifiable et s'auto-périme — aucun rang posé
+    à la main, aucun flag à policer (le contre-exemple `pinned` est documenté
+    au ticket), aucune colonne : la migration deadline (lot C12) reste un
+    arbitrage opérateur, que cette ligne n'épuise pas.
+    """
+
+    def test_a_dated_silenced_ticket_is_named_with_its_date(self):
+        a_traiter = [_ticket(f"t{i}") for i in range(_TICKETS_CAP)]
+        a_traiter.append(_ticket("REVUE 2099-09-03 — poison pill extract"))
+        groups = TicketGroups(a_traiter=a_traiter)
+
+        section = _section_tickets(groups)
+
+        assert "1 ticket tu par le cap" in section
+        assert "daté hors cap" in section
+        assert "2099-09-03" in section
+
+    def test_an_undated_silenced_ticket_is_not_named(self):
+        a_traiter = [_ticket(f"t{i}") for i in range(_TICKETS_CAP + 2)]
+        groups = TicketGroups(a_traiter=a_traiter)
+
+        section = _section_tickets(groups)
+
+        assert "daté hors cap" not in section
+
+    def test_a_dated_but_shown_ticket_is_not_duplicated(self):
+        a_traiter = [_ticket("REVUE 2099-09-03 — visible au rang 1")]
+        groups = TicketGroups(a_traiter=a_traiter)
+
+        section = _section_tickets(groups)
+
+        assert "daté hors cap" not in section
+
+    def test_dated_silenced_tickets_come_nearest_first_and_capped_at_two(self):
+        a_traiter = [_ticket(f"t{i}") for i in range(_TICKETS_CAP)]
+        a_traiter.extend(
+            (
+                _ticket("REVUE 2099-12-01 — la plus lointaine"),
+                _ticket("REVUE 2099-09-03 — la plus proche"),
+                _ticket("REVUE 2099-10-15 — la médiane"),
+            )
+        )
+        groups = TicketGroups(a_traiter=a_traiter)
+
+        section = _section_tickets(groups)
+        dated_lines = [line for line in section.splitlines() if "daté hors cap" in line]
+
+        assert len(dated_lines) == 2
+        assert "2099-09-03" in dated_lines[0]
+        assert "2099-10-15" in dated_lines[1]
+        assert "2099-12-01" not in section
+
+    def test_a_past_date_is_said_overdue_not_hidden(self):
+        """Une échéance dépassée reste visible tant que le ticket est ouvert :
+        la toucher (la réviser) le remonte dans la récence et l'éteint ici —
+        la péremption est le geste de revue lui-même, pas un timer."""
+        a_traiter = [_ticket(f"t{i}") for i in range(_TICKETS_CAP)]
+        a_traiter.append(_ticket("REVUE 2020-01-01 — oubliée depuis longtemps"))
+        groups = TicketGroups(a_traiter=a_traiter)
+
+        section = _section_tickets(groups)
+
+        assert "2020-01-01" in section
+        assert "dépassée" in section
+
+    def test_an_invalid_date_shape_is_ignored_silently(self):
+        a_traiter = [_ticket(f"t{i}") for i in range(_TICKETS_CAP)]
+        a_traiter.append(_ticket("faux motif 2099-13-99 dans le titre"))
+        groups = TicketGroups(a_traiter=a_traiter)
+
+        section = _section_tickets(groups)
+
+        assert "daté hors cap" not in section

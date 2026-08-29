@@ -155,7 +155,9 @@ def test_the_line_reaches_the_REAL_briefing_not_just_its_helper() -> None:
         ctx, [], [], _no_activity_ks(), None, [], [], schema_revision="046"
     )
 
-    assert "- Focus : 9977 / 10000 caractères (marge 23)" in briefing
+    # 9 977 « j » ASCII : caractères et octets coïncident — le composeur
+    # dérive les DEUX du contexte, sans que l'appelant ait à les fournir.
+    assert "- Focus : 9977 / 10000 caractères (marge 23 ; 9977 octets)" in briefing
     assert briefing.index("- Focus :") < briefing.index("### Focus"), (
         "la mesure doit précéder la prose qu'elle borne"
     )
@@ -188,3 +190,44 @@ def test_the_LOUD_form_survives_the_composer_too() -> None:
     assert "DÉPASSÉ de 240" in briefing
     assert "compress" in briefing.lower()
     assert "refus" in briefing.lower()
+
+
+class TestTheByteFigureOnTheNominalLineOnly:
+    """Le sujet rouvert le 2026-08-29 — en disant lequel on compte, comme exigé.
+
+    La borne compte des CARACTÈRES (le `maxLength` Pydantic) ; le même focus
+    mesuré le 2026-08-22 faisait 9 977 caractères pour 10 285 OCTETS — toute
+    borne qui compterait des octets serait déjà franchie. La ligne nominale
+    porte désormais les deux nombres pour que personne ne confonde ; les
+    branches BRUYANTES (marge nulle, dépassement) restent pures — la décision
+    d'origine « la seule ligne à lire en urgence ne se dilue pas » tient
+    exactement là où elle a été argumentée.
+    """
+
+    def _line_with_octets(self, focus_length: int, focus_octets: int) -> str:
+        out = _section_technical_state(
+            "048",
+            focus_tracked=True,
+            focus_length=focus_length,
+            focus_octets=focus_octets,
+        )
+        lines = [line for line in out.splitlines() if line.startswith("- Focus :")]
+        assert len(lines) == 1, out
+        return lines[0]
+
+    def test_the_nominal_line_says_both_and_names_both_units(self) -> None:
+        line = self._line_with_octets(9977, 10285)
+
+        assert "9977" in line
+        assert "caractères" in line
+        assert "10285 octets" in line
+
+    def test_the_loud_lines_stay_pure(self) -> None:
+        at_cap = self._line_with_octets(NEXT_FOCUS_MAX_LENGTH, NEXT_FOCUS_MAX_LENGTH + 300)
+        exceeded = self._line_with_octets(NEXT_FOCUS_MAX_LENGTH + 40, NEXT_FOCUS_MAX_LENGTH + 400)
+
+        assert "octets" not in at_cap
+        assert "octets" not in exceeded
+
+    def test_a_legacy_caller_without_octets_renders_unchanged(self) -> None:
+        assert "octets" not in _line(4200)
