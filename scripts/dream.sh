@@ -811,6 +811,11 @@ declare -a TIMED_OUT_PHASES=()
 # inconnu.
 declare -a CONTROLLED_TIMEOUT_PHASES=()
 declare -a SKIPPED_PHASES=()
+# Skips SANS ligne dream_runs — le seul compte que la réconciliation doit
+# soustraire : un skip qui ÉCRIT (promote pool vide, record-empty-pool) est
+# déjà dans pairs_written, le soustraire aussi ferait gap=-1 sur une nuit
+# saine (2e fix review PR 47, cri-au-loup par l'autre chemin).
+SKIPPED_UNWRITTEN=0
 # Phases qu'un maillon de secours a rattrapées. Volontairement HORS de
 # FAIL_TOTAL et de la garde de sortie : elles ont réussi. Elles n'existent que
 # pour que le résumé distingue « codex a marché » de « codex est mort, agy a
@@ -880,6 +885,7 @@ run_project_phases() {
        && { [[ "$name" == "synth" ]] || [[ "$name" == "promote" ]] || [[ "$name" == "reorg" ]]; }; then
       log "SKIP $name (pre-flight: corpus unchanged since last run)"
       SKIPPED_PHASES+=("$PROJECT_KEY/$name")
+      SKIPPED_UNWRITTEN=$(( SKIPPED_UNWRITTEN + 1 ))
       manifest_put skipped "$name" "$PROJECT_KEY" preflight
       continue
     fi
@@ -889,6 +895,7 @@ run_project_phases() {
       if [[ "$BRAIN_DREAM_PROMOTE_ENABLED" != "true" ]]; then
         log "SKIP promote (killswitch BRAIN_DREAM_PROMOTE_ENABLED=$BRAIN_DREAM_PROMOTE_ENABLED)"
         SKIPPED_PHASES+=("$PROJECT_KEY/promote")
+        SKIPPED_UNWRITTEN=$(( SKIPPED_UNWRITTEN + 1 ))
         manifest_put skipped promote "$PROJECT_KEY" killswitch
         continue
       fi
@@ -943,6 +950,7 @@ run_project_phases() {
         else
           log "WARN  promote — empty-pool dream_runs row NOT recorded (rc=$record_rc)"
           manifest_put skipped promote "$PROJECT_KEY" empty-pool-unrecorded
+          SKIPPED_UNWRITTEN=$(( SKIPPED_UNWRITTEN + 1 ))
         fi
         SKIPPED_PHASES+=("$PROJECT_KEY/promote")
         continue
@@ -966,6 +974,7 @@ run_project_phases() {
       if [[ "$BRAIN_DREAM_REORG_ENABLED" != "true" ]]; then
         log "SKIP reorg (killswitch BRAIN_DREAM_REORG_ENABLED=$BRAIN_DREAM_REORG_ENABLED)"
         SKIPPED_PHASES+=("$PROJECT_KEY/reorg")
+        SKIPPED_UNWRITTEN=$(( SKIPPED_UNWRITTEN + 1 ))
         manifest_put skipped reorg "$PROJECT_KEY" killswitch
         continue
       fi
@@ -1174,6 +1183,7 @@ manifest_put expected extract '*'
 if [[ "$BRAIN_DREAM_EXTRACT_ENABLED" != "true" ]]; then
   log "SKIP extract (killswitch BRAIN_DREAM_EXTRACT_ENABLED=$BRAIN_DREAM_EXTRACT_ENABLED)"
   SKIPPED_PHASES+=("*/extract")
+  SKIPPED_UNWRITTEN=$(( SKIPPED_UNWRITTEN + 1 ))
   manifest_put skipped extract '*' killswitch
 else
   # The CLI owns a 9m deadline and checkpoints each ticket before returning
@@ -1221,6 +1231,7 @@ manifest_put expected roadmap '*'
 if [[ "$BRAIN_DREAM_ROADMAP_ENABLED" != "true" ]]; then
   log "SKIP roadmap (killswitch BRAIN_DREAM_ROADMAP_ENABLED=$BRAIN_DREAM_ROADMAP_ENABLED)"
   SKIPPED_PHASES+=("*/roadmap")
+  SKIPPED_UNWRITTEN=$(( SKIPPED_UNWRITTEN + 1 ))
   manifest_put skipped roadmap '*' killswitch
 else
   roadmap_args=(--limit 10)
@@ -1253,6 +1264,7 @@ manifest_put expected sweep '*'
 if [[ "$BRAIN_DREAM_SWEEP_ENABLED" != "true" ]]; then
   log "SKIP sweep (killswitch BRAIN_DREAM_SWEEP_ENABLED=$BRAIN_DREAM_SWEEP_ENABLED)"
   SKIPPED_PHASES+=("*/sweep")
+  SKIPPED_UNWRITTEN=$(( SKIPPED_UNWRITTEN + 1 ))
   manifest_put skipped sweep '*' killswitch
 else
   sweep_args=()
@@ -1337,7 +1349,7 @@ set +e
 # borné en amont (MAX_FETCHED_FAILURES), donc la capture en variable l'est aussi.
 alert_out="$(uv run python -m scripts.dream.post_run_alert \
   --date "$TIMESTAMP" --manifest "$MANIFEST_FILE" --phases-ok "$OK_TOTAL" \
-  --phases-skipped "${#SKIPPED_PHASES[@]}" 2>&1)"
+  --phases-skipped "$SKIPPED_UNWRITTEN" 2>&1)"
 alert_rc=$?
 set -e
 printf '%s\n' "$alert_out" >> "$LOG_DIR/$TIMESTAMP.log"

@@ -126,6 +126,34 @@ def test_a_lost_insert_still_shows_through_the_skips() -> None:
     assert line.endswith("gap=1")
 
 
+def test_a_recorded_empty_pool_skip_is_not_double_counted() -> None:
+    """2e fix review PR 47 : le skip « promote pool vide » ÉCRIT une vraie
+    ligne (record-empty-pool, status done) ET vit dans SKIPPED_PHASES. Le
+    soustraire en plus de le trouver dans pairs_written donnait gap=-1 → WARN
+    sur une nuit saine routinière (PROMOTE wet en prod). dream.sh ne passe
+    donc que les skips SANS ligne : ici, skipped=0 et la paire écrite couvre
+    sa phase — gap=0, silence."""
+    rows = [
+        _row("extract", "done", "*"),
+        _row("clean", "done", "brain-v42"),
+        _row("promote", "done", "brain-v42"),  # la ligne du record-empty-pool
+    ]
+
+    line = format_reconciliation_line(3, rows, skipped=0)
+
+    assert line.endswith("gap=0")
+
+
+def test_dream_sh_does_not_count_the_recorded_empty_pool_as_unwritten() -> None:
+    """Le pin structurel : l'incrément UNWRITTEN vit dans la branche
+    `empty-pool-unrecorded` (l'écriture a ÉCHOUÉ, aucune ligne due) et JAMAIS
+    dans la branche `empty-pool-recorded` (la ligne existe)."""
+    recorded = DREAM_SH.split("empty-pool-recorded", 1)[0].rsplit("if (( record_rc == 0 ))", 1)[1]
+    assert "SKIPPED_UNWRITTEN" not in recorded
+    unrecorded = DREAM_SH.split("empty-pool-unrecorded", 1)[1].split("fi\n", 1)[0]
+    assert "SKIPPED_UNWRITTEN=$(( SKIPPED_UNWRITTEN + 1 ))" in unrecorded
+
+
 # ---------------------------------------------------------------------------
 # Le câblage moteur — dream.sh est du shell, son contrat est textuel, comme
 # pour les validateurs (test_dream_sh_reorg_validator.py).
@@ -134,7 +162,11 @@ def test_a_lost_insert_still_shows_through_the_skips() -> None:
 
 def test_dream_sh_passes_its_own_ok_counter() -> None:
     assert '--phases-ok "$OK_TOTAL"' in DREAM_SH
-    assert '--phases-skipped "${#SKIPPED_PHASES[@]}"' in DREAM_SH
+    # Le compte passé est celui des skips SANS ligne : un skip qui écrit
+    # (promote pool vide) est déjà dans pairs_written — le passer aussi en
+    # skipped le compterait deux fois et rendrait gap=-1 sur une nuit saine.
+    assert '--phases-skipped "$SKIPPED_UNWRITTEN"' in DREAM_SH
+    assert "SKIPPED_UNWRITTEN=0" in DREAM_SH
 
 
 def test_dream_sh_logs_the_reconciliation_and_warns_on_gap() -> None:
