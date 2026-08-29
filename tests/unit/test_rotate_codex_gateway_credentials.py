@@ -1221,7 +1221,12 @@ def test_the_contract_proof_binds_every_declared_column_as_codex_ro(
         async def fetchrow(self, statement: str, *args: Any) -> dict[str, list[str]]:
             captured["statement"] = statement
             captured["args"] = args
-            return {"missing_views": [], "missing_columns": []}
+            return {
+                "missing_views": [],
+                "missing_columns": [],
+                "missing_barriers": [],
+                "missing_triggers": [],
+            }
 
         async def close(self) -> None:
             captured["closed"] = True
@@ -1238,13 +1243,141 @@ def test_the_contract_proof_binds_every_declared_column_as_codex_ro(
 
     assert database.missing_gateway_contract(OLD_CODEX) == ()
 
-    # Le rôle : la lisibilité se prouve avec le rôle qui lira, pas avec brain.
+    # Le rôle : codex_ro par cohérence avec le reste du préflight. NE PAS y lire
+    # une preuve de lisibilité — mesuré (b3331691) : has_table_privilege('codex_ro',
+    # 'pg_attribute','SELECT') est vrai et to_regclass est exécutable par public,
+    # la requête rend la MÊME réponse exécutée en brain. Seul codex_scope_is_bounded
+    # attrape un REVOKE, et c'est une garde antérieure.
     assert captured["role"] == "codex_ro"
     assert captured["password"] == OLD_CODEX
-    # Les ARGUMENTS LIÉS, et pas seulement leur existence.
-    expected = rotation._gateway_contract_arrays(rotation._CODEX_GATEWAY_CONTRACT)
-    assert captured["args"] == expected
+    # Les ARGUMENTS LIÉS, et pas seulement leur existence — les CINQ : les deux
+    # tableaux parallèles vue/colonne, puis les clauses (b), (c) et (d) du
+    # contrat (barrières et triggers, b3331691).
+    expected_views, expected_columns = rotation._gateway_contract_arrays(
+        rotation._CODEX_GATEWAY_CONTRACT
+    )
+    assert captured["args"] == (
+        expected_views,
+        expected_columns,
+        list(rotation._CODEX_SCOPED_BARRIER_VIEWS),
+        [name for name, _table in rotation._CODEX_GATEWAY_TRIGGERS],
+        [table for _name, table in rotation._CODEX_GATEWAY_TRIGGERS],
+    )
     assert len(captured["args"][0]) == sum(
         len(c) for c in rotation._CODEX_GATEWAY_CONTRACT.values()
     )
     assert captured["closed"] is True
+
+
+class TestContractProofCoversAllFourClauses:
+    """b3331691 : la preuve du préflight ne couvrait qu'UNE clause sur quatre.
+
+    Le contrat faisant autorité (`_CODEX_CONTRACT_READY`, câblé sur `/ready`)
+    en a QUATRE : existence des dix vues, `security_barrier` sur les sept vues
+    scopées, et les deux triggers actifs. Or changer une liste de colonnes
+    impose un DROP+CREATE — précisément le geste que la garde surveille — et
+    un CREATE sans `WITH (security_barrier=true)` rendait `preflight_ok` puis
+    cassait la passerelle APRÈS bascule, en fuyant hors scope au passage.
+
+    Le script n'importe RIEN de `brain_v42` (délibéré : il réécrit les .env
+    que `Settings` lit) — la copie est donc inévitable, et c'est CE test qui
+    l'empêche d'en être une : lui peut importer les deux côtés.
+    """
+
+    def test_the_script_lists_mirror_the_readiness_authority(self) -> None:
+        import re
+
+        from brain_v42.codex_gateway.composition import _CODEX_CONTRACT_READY
+
+        authority = " ".join(str(_CODEX_CONTRACT_READY).split())
+        arrays = re.findall(r"ARRAY\[(.*?)\]::text\[\]", authority)
+        assert len(arrays) >= 2, "la forme de _CODEX_CONTRACT_READY a changé — réaligner ce test"
+        authority_views = set(re.findall(r"'(codex_\w+)'", arrays[0]))
+        authority_barriers = set(re.findall(r"'(codex_\w+)'", arrays[1]))
+
+        assert set(rotation._CODEX_GATEWAY_VIEWS) == authority_views
+        assert set(rotation._CODEX_SCOPED_BARRIER_VIEWS) == authority_barriers
+        assert len(rotation._CODEX_SCOPED_BARRIER_VIEWS) == 7
+
+        for trigger_name, table_name in rotation._CODEX_GATEWAY_TRIGGERS:
+            assert f"tgname = '{trigger_name}'" in authority
+            assert f"to_regclass('public.{table_name}')" in authority
+        assert len(rotation._CODEX_GATEWAY_TRIGGERS) == 2
+
+        # Les PRÉDICATS de la preuve sont ceux de l'autorité, au blanc près :
+        # même sémantique de barrière, même définition d'« actif ».
+        proof = " ".join(rotation._GATEWAY_CONTRACT_PROOF.split())
+        assert (
+            "'security_barrier=true' = ANY( COALESCE(contract_view.reloptions, ARRAY[]::text[]) )"
+            in proof
+        )
+        assert "tgenabled IN ('O', 'A') AND NOT tgisinternal" in proof
+        assert "tgenabled IN ('O', 'A') AND NOT tgisinternal" in authority
+
+    def test_the_column_pairs_agree_with_the_canonical_contract(self) -> None:
+        """Les 92 paires cessent d'être une copie : les 9 vues de la 036 sont
+        liées à CONTRACT_COLUMNS (leur source de vérité testée en intégration) ;
+        la 10e (codex_brain_entity_v1, migration 024, jamais modifiée) est
+        épinglée ici même — une vue ajoutée d'un seul côté rougit."""
+        from tests.integration.db.test_codex_contract_views_036 import CONTRACT_COLUMNS
+
+        script_contract = {
+            view: tuple(columns) for view, columns in rotation._CODEX_GATEWAY_CONTRACT.items()
+        }
+        assert set(script_contract) == set(CONTRACT_COLUMNS) | {"codex_brain_entity_v1"}
+        for view, columns in CONTRACT_COLUMNS.items():
+            assert script_contract[view] == tuple(columns), view
+        assert script_contract["codex_brain_entity_v1"] == (
+            "id",
+            "type",
+            "title",
+            "status",
+            "freshness_status",
+            "content",
+            "project_key",
+            "updated_at",
+            "superseded_by",
+            "merged_into",
+        )
+
+    def test_missing_barriers_and_triggers_redden_the_preflight(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Le scénario du ticket : colonnes intactes, barrière absente — la
+        preuve doit nommer le manquant au lieu de rendre preflight_ok."""
+        captured: dict[str, Any] = {}
+
+        class _FakeConnection:
+            async def fetchrow(self, statement: str, *args: Any) -> dict[str, list[str]]:
+                captured["statement"] = statement
+                captured["args"] = args
+                return {
+                    "missing_views": [],
+                    "missing_columns": [],
+                    "missing_barriers": ["codex_ticket_v1"],
+                    "missing_triggers": ["trg_ticket_participants_immutable ON tickets"],
+                }
+
+            async def close(self) -> None:
+                captured["closed"] = True
+
+        async def _fake_connect(_self: Any, role: str, password: str) -> _FakeConnection:
+            return _FakeConnection()
+
+        monkeypatch.setattr(rotation.AsyncpgCredentialDatabase, "_connect", _fake_connect)
+        database = rotation.AsyncpgCredentialDatabase(
+            make_url("postgresql+asyncpg://brain:x@localhost:5433/brain")
+        )
+
+        missing = database.missing_gateway_contract(OLD_CODEX)
+
+        assert "security_barrier:codex_ticket_v1" in missing
+        assert "trigger:trg_ticket_participants_immutable ON tickets" in missing
+        # Les nouveaux paramètres sont LIÉS — pas seulement présents dans le SQL.
+        assert list(captured["args"][2]) == list(rotation._CODEX_SCOPED_BARRIER_VIEWS)
+        assert list(captured["args"][3]) == [
+            name for name, _table in rotation._CODEX_GATEWAY_TRIGGERS
+        ]
+        assert list(captured["args"][4]) == [
+            table for _name, table in rotation._CODEX_GATEWAY_TRIGGERS
+        ]
