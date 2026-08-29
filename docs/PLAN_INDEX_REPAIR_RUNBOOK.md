@@ -21,13 +21,15 @@ here and the restore procedure below were found to be describing two different d
 <!-- dr-current:start -->
 | Target | Value | Measured, and against what |
 | --- | --- | --- |
-| Alembic head | `048` | 2026-08-28, live production |
-| Recovery contract, live target | `ops/recovery/brain-v42-v5.sql` | 2026-08-22, live production |
-| Recovery contract, restored target | `ops/recovery/brain-v42-v5-pgrestore.sql` | 2026-08-22, **live production — the wrong target, see below** |
-| Contract receipt, live asset replayed live | `29/29` | 2026-08-22, live production |
-| Contract receipt, `-pgrestore` asset against a real restore | *never produced by this document* | — |
-| ACL contract, live only, no `-pgrestore` twin | `ops/recovery/brain-v42-v5-acl.sql` | 2026-08-22, live production |
-| ACL receipt | `1/1` | 2026-08-22, live production |
+| Alembic head | `048` | 2026-08-29, live production |
+| Recovery contract, live target | `ops/recovery/brain-v42-v6.sql` | 2026-08-29, live production |
+| Recovery contract, restored target | `ops/recovery/brain-v42-v6-pgrestore.sql` | 2026-08-29, disposable bench restored by `pg_restore` from a same-day production dump |
+| Contract receipt, live asset replayed live | `29/30` — the single red is the measured production bug carried by ticket `045c6302` (`focus_revision_violations: 2`), not a contract failure | 2026-08-29, live production |
+| Contract receipt, `-pgrestore` asset against a real restore | `29/30` — the same single red: the bug travels with the dump, exactly as a faithful restore must reproduce it | 2026-08-29, restored bench |
+| ACL contract, live target | `ops/recovery/brain-v42-v6-acl.sql` | 2026-08-29, live production |
+| ACL contract, restored target | `ops/recovery/brain-v42-v6-acl-pgrestore.sql` | 2026-08-29, restored bench |
+| ACL receipt, live | `1/1` | 2026-08-29, live production |
+| ACL receipt, restored | `1/1` — the receipt itself names its one tolerance, `tolerated_superuser_roles: ["postgres"]`, the maintenance superuser that performs the restore | 2026-08-29, restored bench |
 | Search top-10 churn across HNSW rebuilds, `learnings` ONLY, n=40 probes | `0` — overlap `10/10` on ten build pairs (`BUILDS=5`, seed 0.42), strict order included, both probe bands | 2026-08-29, copy of the 3243 real `learnings` embeddings, index path forced |
 
 Replay the head and the two live-target assets against production:
@@ -35,18 +37,18 @@ Replay the head and the two live-target assets against production:
 ```bash
 docker exec brain_v42_postgres psql -U brain -d brain -Atc \
   "select version_num from alembic_version;"
-for asset in brain-v42-v5.sql brain-v42-v5-acl.sql; do
+for asset in brain-v42-v6.sql brain-v42-v6-acl.sql; do
   docker exec -i brain_v42_postgres psql -U brain -d brain -Atq -v ON_ERROR_STOP=1 -f - \
     < "ops/recovery/$asset"
 done
 ```
 
-**The `-pgrestore` asset is deliberately absent from that loop.** Until 2026-08-28 this document
-looped over all three assets against `-d brain`, so the one asset written to attest a
-*restoration* was replayed against the original. It passes there — its fingerprints were minted
-on that very database — so no index residue, no `extversion` drift and no `pg_dump`/`pg_restore`
-round-trip divergence can ever surface in the replay this runbook prescribes. Run it only
-against a genuinely restored target, and say which one:
+**The two `-pgrestore` twins are deliberately absent from that loop.** Until 2026-08-28 this
+document looped over every asset against `-d brain`, so the assets written to attest a
+*restoration* were replayed against the original. They pass there — their fingerprints were
+minted on that very database — so no index residue, no `extversion` drift and no
+`pg_dump`/`pg_restore` round-trip divergence can ever surface in the replay this runbook
+prescribes. Run them only against a genuinely restored target, and say which one:
 
 ```bash
 # The restored target lives in its OWN PostgreSQL instance (its own container),
@@ -58,16 +60,23 @@ against a genuinely restored target, and say which one:
 # against the production cluster itself.
 RESTORED_CONTAINER=${RESTORED_CONTAINER:?name the container holding the restored instance}
 [ "$RESTORED_CONTAINER" != "brain_v42_postgres" ] || { echo "refusing: that is the production cluster" >&2; exit 2; }
-docker exec -i "$RESTORED_CONTAINER" psql -U brain -d "${RESTORED_DB:-brain}" -Atq -v ON_ERROR_STOP=1 -f - \
-  < "ops/recovery/brain-v42-v5-pgrestore.sql"
+for twin in brain-v42-v6-pgrestore.sql brain-v42-v6-acl-pgrestore.sql; do
+  docker exec -i "$RESTORED_CONTAINER" psql -U brain -d "${RESTORED_DB:-brain}" -Atq -v ON_ERROR_STOP=1 -f - \
+    < "ops/recovery/$twin"
+done
 ```
 
-**Known failure on a healthy restore.** The `-pgrestore` contract pins `vector 0.8.2` — the
-version production *declares*. Every image this repository can restore into reports `0.8.4` or
-`0.8.5` (measured; production's own `vector.so` is byte-identical to the `0.8.4` build), so the
-`extension_vector` check fails on a perfectly healthy restore. Until ticket `2ed0d4e0` makes
-that check tolerant of the restore build, read a receipt short by exactly that one check as the
-known `extversion` drift; a receipt short anywhere else is a failed restore.
+**The extension check on the restored target is names-only, and its receipt says so.** The v5
+twin pinned `vector 0.8.2` — the version production *declares* — while every image this
+repository can restore into reports `0.8.4` or `0.8.5`, so a perfectly healthy restore failed
+that one check (the flaw ticket `2ed0d4e0` named). The v6 twin requires the extension NAMES
+only, and its receipt states both versions instead of judging them: measured 2026-08-29, the
+`extension_versions` check **passes** while printing `origin_inventory: plpgsql 1.0, vector
+0.8.2` against `inventory: plpgsql 1.0, vector 0.8.5`. Do not read that version line as a
+failure — a healthy `0.8.2 → 0.8.5` restore is exactly what it looks like. The strict version
+pin still lives where it can bite honestly: the live asset pins the full inventory production
+declares, so a version moving under production without a re-mint reddens *there*. A twin
+receipt short on any check is a failed restore, with no named exception left.
 
 **Read "variants" as two FILES, never as two targets.** There is one database in the loop above
 and two assets; the word has already been read the other way once, and that misreading is what
@@ -104,19 +113,22 @@ the head has advanced nine times since the procedure below was first written. Ev
 dated for that reason: a number without its date is a trap, and this document has already sprung
 it once.
 
-**What no number above proves.** Every contract and ACL value was replayed against the **live**
-production database, never against a `pg_restore`d archive — the third column now says so per
-row, so this is checkable rather than remembered. None of them says anything about an actual
-restoration, and the P1 gate — prove a real restore — stands entirely open. Follow `58711012`,
-which carries it: the ticket that first raised it, `8eaefe36`, was closed on 2026-08-28 as
-superseded by its five CATALOGUE splits, none of which carries this gate, and a closed ticket is
-terminal, so the gate was carried over rather than reopened. `5dc286b6` names the mechanism — no
-command in this document produces a receipt against a restored target. Do not read a full receipt here as
-"DR is proven". The sequence check makes that sharper, not softer: on a live
-database `last_value >= max(id)` is true by construction, so the one control written FOR a
-restore is the one control no receipt here can ever exercise. The ACL contract has no
-`-pgrestore` twin at all, so owners and grants stay unattested on any restored target; that
-absence is a recorded decision, not an oversight.
+**What the restored-side rows do and do not prove.** For the first time the table above carries
+receipts measured against a `pg_restore`d target, not only against live production — the third
+column says which side each row was measured on, so this is checkable rather than remembered.
+The restored rows come from a disposable bench: a same-day production dump, restored by a
+maintenance superuser with the disaster procedure's own flags (`--exit-on-error --clean
+--create`), both twins replayed, the bench destroyed. That closes the mechanism `5dc286b6` named — this document now
+prescribes commands that produce receipts against a restored target — and it exercises the one
+control written FOR a restore that a live replay never could: on a live database
+`last_value >= max(id)` is true by construction, and only the restored side makes it bite.
+Owners and grants are no longer unattested on a restored target either — the disaster-path
+restore preserves them (measured: 0 owner, 0 grant, 0 role-privilege mismatches), and the ACL
+twin attests it. What a full bench receipt still is NOT: the operator recovery procedure —
+roles left `NOLOGIN`, canaries, watchdog re-arm — has never been rehearsed end to end. Do not
+read the rows above as "DR is proven"; the P1 gate lives in `58711012` (which inherited it when
+`8eaefe36` closed on 2026-08-28 as superseded by five CATALOGUE splits, none carrying the
+gate), and only that ticket, not this table, says when it closes.
 
 The churn row is the one line above that does **not** come from production: it is measured on a
 read-only copy of the real corpus, and it describes index rebuilds rather than a restoration.
@@ -196,6 +208,10 @@ Use this single operator order:
 > `alembic_head = 039` and therefore cannot return 25/25 past that head — not because the
 > database degraded, but because the contract was minted against an older one. The v5 assets
 > derive the head (signature **S1**): the invariant is *exactly one applied head*.
+> (Dated advice, and v5 was itself superseded on 2026-08-29: for any run **today**, substitute
+> the contract generation named in [Current targets](#current-targets) — its restored-target
+> twin is names-only on extension versions, where the v5 twin's strict pin false-reds every
+> healthy restore.)
 12. Run `finalize` only after all seven reindexes and verification succeed.
 13. Run the non-publishing installer preflight and render verified MCP units into a new private
     directory outside systemd; inspect all three artifacts:
@@ -295,6 +311,8 @@ required. It is not free of consequence, though — apply it and the code togeth
   > *the head equals N*. The exact revision stays proven, fail-closed, by
   > `_REQUIRED_ALEMBIC_HEAD` on the code side. **Measured 2026-08-21 against production at
   > head `046`: 25/25**, both variants — `brain-v42-v5.sql` and `brain-v42-v5-pgrestore.sql`.
+  > (v5 was itself superseded on 2026-08-29; the current generation and its receipts live in
+  > [Current targets](#current-targets).)
   >
   > **Replay it, do not quote it.** Every receipt in this document is dated, and a receipt
   > without its date is a trap: this very line carried `24/25` for long enough to be believed.
@@ -359,6 +377,19 @@ required. It is not free of consequence, though — apply it and the code togeth
   > `046`: 1/1.** Run it with the same command, substituting the file:
   > `docker exec -i brain_v42_postgres psql -U brain -d brain -Atq -v ON_ERROR_STOP=1 -f -
   > < ops/recovery/brain-v42-v5-acl.sql`
+  >
+  > **AMENDED 2026-08-29 — the derogation above was measured too wide, and the twin now
+  > exists.** The `--no-owner --no-acl` erasure is a property of the SANDBOX rehearsal
+  > only; it was never a property of the disaster path, which restores with
+  > `--exit-on-error --clean --create` under the maintenance superuser. A real restore
+  > measured that day preserved owners and grants intact — 0 owner, 0 grant,
+  > 0 role-privilege mismatches — so "a restoration receipt erases the very thing this
+  > proof looks at" was false for the path that matters. The current ACL contract
+  > therefore ships a `-pgrestore` twin (named in [Current targets](#current-targets)),
+  > whose receipt names its one tolerance: `tolerated_superuser_roles: ["postgres"]`, the
+  > maintenance superuser that performed the restore. The paragraphs above and below stay
+  > as the record of the v5-era belief; the caveat below was true of the v5 numbers, and
+  > the current targets table now carries restored-side receipts.
   >
   > **What no receipt here proves.** Every number above was replayed against the **live**
   > production database, never against a `pg_restore`d dump. None of them says anything about
@@ -440,9 +471,10 @@ exact backup into an isolated target with no production routing, then verify:
 - the Alembic head measured in step 1 as `$ALEMBIC_HEAD`;
 - the expected schema, constraints, indexes, extensions, and table counts;
 - the recovery contract named in [Current targets](#current-targets), `-pgrestore` variant, run
-  against the restored target and returning its full receipt. A short receipt is a failed restore,
-  not a stale gate — with one named exception: the `extension_vector` check fails on every
-  healthy restore until ticket `2ed0d4e0` closes (see the known-failure note in
+  against the restored target and returning its full receipt. A short receipt is a failed
+  restore, not a stale gate. The former named exception is gone: since the current contract
+  generation, the extension check on the restored target is names-only and a healthy
+  version drift is stated in the receipt instead of failing it (see the names-only note in
   [Current targets](#current-targets)).
 
 The restore test must use the same backup later designated for full recovery. A control snapshot
@@ -817,12 +849,15 @@ read as a pass.
 
 Then run the recovery contract named in [Current targets](#current-targets) against the restored
 target — the `-pgrestore` variant — and retain its full receipt and a provenance bundle. A short
-receipt is a failed restore, not a stale gate — except the `extension_vector` check, which fails
-on every healthy restore until ticket `2ed0d4e0` closes (see the known-failure note in
-[Current targets](#current-targets)). The ACL contract has no `-pgrestore` twin and cannot
-be replayed here, so owners and grants stay unattested on the restored target; that gap is a
-recorded decision and part of what the P1 gate (`58711012`, first raised as `8eaefe36`) still
-holds open. Only then restore
+receipt is a failed restore, not a stale gate: the extension check on the restored target is
+names-only, so a healthy version drift is stated in the receipt, never failed (see the
+names-only note in [Current targets](#current-targets)). Then replay the ACL contract's
+`-pgrestore` twin, also named in [Current targets](#current-targets), against the same restored
+target: this command preserves owners and grants (measured: 0 owner, 0 grant, 0 role-privilege
+mismatches), and the twin attests exactly that, tolerating — and naming in its receipt — the
+one maintenance superuser that performed the restore, `postgres`. The old derogation
+(`--no-owner --no-acl` erases ownership) belongs to the sandbox rehearsal only, never to this
+path. Only then restore
 the captured login flags, reopen the database, start the MCP built for that head, pass health and
 read-only canaries, and enable the watchdog timer last.
 
