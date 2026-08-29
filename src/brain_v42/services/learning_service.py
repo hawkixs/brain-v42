@@ -200,10 +200,17 @@ class LearningService:
         Regenerates embedding ONLY when topic or insight changes AND embedding_svc is available.
         If embedding_svc is None, passes embedding=None (no embedding regeneration).
         If learning_id doesn't exist, repo.update() returns None.
+
+        La condition « topic ou insight fourni » n'est pas une optimisation :
+        sans elle, un update ne portant QUE ``freshness_status`` payait un
+        appel d'embedding — désarchiver un learning ÉCHOUAIT GPU à terre quand
+        une décision réussissait, l'inverse exact de cette docstring (mesuré
+        2026-08-23, ticket 5ab70135). Même forme que ``decision_service`` :
+        les quatre autres types ne touchent jamais le GPU pour un statut.
         """
         embedding: list[float] | None = None
 
-        if self._embedding_svc is not None:
+        if self._embedding_svc is not None and (data.topic is not None or data.insight is not None):
             if project_key is None:
                 current = await self._repo.get_by_id(learning_id)
             else:
