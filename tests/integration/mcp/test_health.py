@@ -35,6 +35,10 @@ async def health_client(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[httpx.
 
     monkeypatch.setenv("POSTGRES_URL", INTEGRATION_DB_URL)
     monkeypatch.setenv("GRAPH_ENABLED", "false")
+    # Le couple, jamais la moitié — même raison que test_lifecycle : un .env
+    # de dev porte GRAPH_LEDGER_WRITE_ENABLED=true et Settings refuse un
+    # ledger armé sans graphe.
+    monkeypatch.setenv("GRAPH_LEDGER_WRITE_ENABLED", "false")
     get_settings.cache_clear()
 
     import brain_v42.db.engine as engine_module

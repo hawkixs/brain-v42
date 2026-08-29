@@ -43,6 +43,11 @@ def metrics_settings(monkeypatch: pytest.MonkeyPatch) -> Generator[Settings, Non
     monkeypatch.setenv("METRICS_ENABLED", "true")
     monkeypatch.setenv("DECAY_ENABLED", "false")
     monkeypatch.setenv("GRAPH_ENABLED", "false")
+    # Le couple, jamais la moitié : le .env d'une machine de dev porte
+    # GRAPH_LEDGER_WRITE_ENABLED=true, et Settings refuse (à raison) un
+    # ledger armé sans graphe. Forcer le seul GRAPH_ENABLED laissait le banc
+    # en ValidationError au setup — le contrat est juste, le banc le respecte.
+    monkeypatch.setenv("GRAPH_LEDGER_WRITE_ENABLED", "false")
     get_settings.cache_clear()
     settings = get_settings()
     yield settings

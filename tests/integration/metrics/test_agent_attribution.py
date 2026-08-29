@@ -175,6 +175,8 @@ async def http_server_and_collector(
     monkeypatch.setenv("BRAIN_MCP_PROFILE", "compact")
     monkeypatch.setenv("METRICS_ENABLED", "true")
     monkeypatch.setenv("GRAPH_ENABLED", "false")
+    # Le couple, jamais la moitié — même raison que test_lifecycle.
+    monkeypatch.setenv("GRAPH_LEDGER_WRITE_ENABLED", "false")
     monkeypatch.setenv("DECAY_ENABLED", "false")
     get_settings.cache_clear()
 
