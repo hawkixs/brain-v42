@@ -28,6 +28,7 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -60,14 +61,24 @@ class _FakeRerankBackend:
         return [0.0 for _ in candidates]
 
 
+#: Un client RÉSEAU par défaut : ASGITransport présente ("127.0.0.1", 123) si on
+#: ne dit rien, et l'exemption loopback ferait passer tous les tests du garde
+#: sans jamais l'exercer — un faux vert structurel.
+NETWORK_CLIENT = ("192.168.80.9", 51000)
+LOOPBACK_CLIENT = ("127.0.0.1", 40001)
+
+
 @asynccontextmanager
 async def _client(
     guard: BearerGuard | None,
     *,
     healthy: bool = True,
+    peer: tuple[str, int] = NETWORK_CLIENT,
+    app: Any | None = None,
 ) -> AsyncIterator[httpx.AsyncClient]:
-    app = create_app(_FakeEmbedBackend(healthy=healthy), _FakeRerankBackend(), bearer=guard)
-    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    if app is None:
+        app = create_app(_FakeEmbedBackend(healthy=healthy), _FakeRerankBackend(), bearer=guard)
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False, client=peer)
     async with httpx.AsyncClient(transport=transport, base_url="http://shim") as client:
         yield client
 
@@ -267,3 +278,197 @@ class TestEnvWiring:
         """Un mode posé sans secret est une configuration menteuse, pas un défaut."""
         with pytest.raises(ValueError, match="SHIM_BEARER_TOKEN_FILE"):
             bearer_from_env({"SHIM_BEARER_MODE": "required"})
+
+
+class TestLoopbackExemption:
+    """L'intérieur du netns est DANS la frontière de confiance du processus.
+
+    Hypothèse de confiance, explicite : seul un processus du namespace réseau
+    du conteneur peut sourcer 127.0.0.1 — le noyau refuse les paquets à source
+    loopback arrivant par une interface non-lo (filtrage martien,
+    route_localnet=0), et les connexions publiées par Docker arrivent avec
+    l'adresse de la passerelle bridge, jamais 127.0.0.1. Quiconque peut déjà
+    exécuter dans le conteneur possède le processus : lui demander un bearer
+    ne protège rien. Le healthcheck compose (POST /embed sans Authorization,
+    exécuté dans le conteneur) vit exactement là.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_loopback_client_passes_without_bearer_in_required_mode(self) -> None:
+        async with _client(_guard(required=True), peer=LOOPBACK_CLIENT) as client:
+            response = await client.post("/embed", json={"texts": ["a"]})
+
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_a_loopback_client_is_not_counted_by_the_census(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Le healthcheck tire toutes les 60 s : le compter noierait le recensement."""
+        async with _client(_guard(required=False), peer=LOOPBACK_CLIENT) as client:
+            with caplog.at_level(logging.WARNING, logger="shim_app"):
+                await client.post("/embed", json={"texts": ["a"]})
+
+        assert not [r for r in caplog.records if "bearer" in r.getMessage().lower()]
+
+
+class TestComposeHealthcheckContract:
+    """Le SEUL prober de prod est le healthcheck compose — épinglé depuis le YAML.
+
+    La review de PR 43 a reproduit le mode de panne : en mode armé, ce POST
+    /embed sans Authorization sortait en 401 → conteneur unhealthy à vie,
+    pendant que le canari /healthz restait vert. Le test rejoue la requête
+    RÉELLE (URL, corps et absence d'Authorization extraits du compose, jamais
+    recopiés) contre l'app en mode armé ET en mode sans-secret.
+    """
+
+    @staticmethod
+    def _healthcheck_request() -> tuple[str, dict[str, Any]]:
+        import ast
+        import re
+
+        import yaml
+
+        compose = yaml.safe_load(
+            (Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text()
+        )
+        command = compose["services"]["embedding-shim"]["healthcheck"]["test"]
+        script = command[-1]
+
+        assert "Authorization" not in script, (
+            "le healthcheck présente désormais un bearer : ce contrat d'exemption "
+            "loopback ne le couvre plus tel quel, le mettre à jour"
+        )
+        url_match = re.search(r"http://127\.0\.0\.1:8003(/[^']*)", script)
+        body_match = re.search(r"json\.dumps\((\{[^)]*\})\)", script)
+        assert url_match and body_match, "healthcheck compose illisible — contrat à réviser"
+        return url_match.group(1), ast.literal_eval(body_match.group(1))
+
+    @pytest.mark.asyncio
+    async def test_the_real_healthcheck_stays_green_in_required_mode(self) -> None:
+        path, body = self._healthcheck_request()
+
+        async with _client(_guard(required=True), peer=LOOPBACK_CLIENT) as client:
+            response = await client.post(path, json=body)
+
+        assert response.status_code == 200
+        # Le script du compose vérifie littéralement r.read(2) == b'[['.
+        assert response.content[:2] == b"[["
+
+    @pytest.mark.asyncio
+    async def test_the_real_healthcheck_stays_green_without_any_secret(self) -> None:
+        path, body = self._healthcheck_request()
+
+        async with _client(None, peer=LOOPBACK_CLIENT) as client:
+            response = await client.post(path, json=body)
+
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_the_same_call_from_the_network_stays_401_when_armed(self) -> None:
+        path, body = self._healthcheck_request()
+
+        async with _client(_guard(required=True), peer=NETWORK_CLIENT) as client:
+            response = await client.post(path, json=body)
+
+        assert response.status_code == 401
+
+
+class TestCensusIdentification:
+    """Un recensement qui ne nomme personne ne recense rien.
+
+    Reproduit par la review : deux clients distincts rendaient deux lignes
+    octet pour octet identiques — impossible de savoir QUI migrer avant
+    d'armer.
+    """
+
+    @pytest.mark.asyncio
+    async def test_two_distinct_clients_yield_two_distinct_lines(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        guard = _guard(required=False)
+        with caplog.at_level(logging.WARNING, logger="shim_app"):
+            async with _client(guard, peer=("192.168.80.4", 40001)) as client:
+                await client.post("/embed", json={"texts": ["a"]})
+            async with _client(guard, peer=("192.168.80.7", 40002)) as client:
+                await client.post("/embed", json={"texts": ["a"]})
+
+        lines = [r.getMessage() for r in caplog.records if "bearer" in r.getMessage().lower()]
+        assert len(lines) == 2
+        assert lines[0] != lines[1]
+        assert "192.168.80.4:40001" in lines[0]
+        assert "192.168.80.7:40002" in lines[1]
+
+    @pytest.mark.asyncio
+    async def test_the_user_agent_names_the_client_software(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async with _client(_guard(required=False)) as client:
+            with caplog.at_level(logging.WARNING, logger="shim_app"):
+                await client.post(
+                    "/embed",
+                    json={"texts": ["a"]},
+                    headers={"User-Agent": "auto-discord-bot/1.0"},
+                )
+
+        assert any("auto-discord-bot/1.0" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_path_is_never_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Le chemin est contrôlé par l'appelant : un chemin inconnu journalisé
+        brut est un canal d'injection (%0A percent-décodé = vraie nouvelle
+        ligne, reproduit par la review). Les chemins inconnus rendent leur 404
+        (ou 401 en mode armé) sans UNE ligne de recensement — le recensement ne
+        connaît que les routes réelles du shim, qui ne contiennent ni retour
+        chariot ni caractère de contrôle.
+        """
+        async with _client(_guard(required=False)) as client:
+            with caplog.at_level(logging.WARNING, logger="shim_app"):
+                await client.post("/embed%0AFAKE-LOG-LINE", content=b"{}")
+
+        assert not [r for r in caplog.records if "bearer" in r.getMessage().lower()]
+        assert "FAKE-LOG-LINE" not in caplog.text
+
+
+class TestBuildAppWiring:
+    """`bearer=bearer_from_env(...)` dans build_app peut disparaître suite verte :
+    ces tests importent le VRAI build_app et prouvent le câblage."""
+
+    @staticmethod
+    def _built_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
+        import main as shim_main
+
+        token_file = tmp_path / "t"
+        token_file.write_text(TOKEN)
+        token_file.chmod(0o600)
+        monkeypatch.setenv("SHIM_BEARER_TOKEN_FILE", str(token_file))
+        monkeypatch.setenv("SHIM_BEARER_MODE", "required")
+        return shim_main.build_app()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["/embed", "/embed/query", "/embed/single", "/rerank"])
+    async def test_every_compute_route_of_the_real_app_is_guarded(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, path: str
+    ) -> None:
+        app = self._built_app(monkeypatch, tmp_path)
+
+        async with _client(None, app=app) as client:
+            response = await client.post(path, json={})
+
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_the_real_app_still_passes_with_the_bearer(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Témoin négatif du câblage : 401 partout serait aussi un garde cassé.
+
+        /embed vide court-circuite avant tout appel backend — le vrai
+        LlamaEmbedBackend n'est jamais touché.
+        """
+        app = self._built_app(monkeypatch, tmp_path)
+
+        async with _client(None, app=app) as client:
+            response = await client.post("/embed", json={"texts": []}, headers=_auth(TOKEN))
+
+        assert response.status_code == 200

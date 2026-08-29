@@ -68,6 +68,23 @@ MIN_BEARER_TOKEN_BYTES = 32
 #: sur /healthz transformerait l'armement en fausse panne d'upstream.
 _AUTH_EXEMPT_PATHS = frozenset({"/healthz", "/health"})
 
+#: L'intérieur du netns est DANS la frontière de confiance du processus.
+#: Hypothèse explicite : seul un processus du namespace réseau du conteneur
+#: peut sourcer 127.0.0.1 — le noyau refuse les paquets à source loopback
+#: arrivant par une interface non-lo (filtrage martien, route_localnet=0), et
+#: les connexions publiées par Docker arrivent avec l'adresse de la passerelle
+#: bridge, jamais 127.0.0.1. Le SEUL prober de prod vit là : le healthcheck
+#: compose (POST /embed sans Authorization, exécuté dans le conteneur) —
+#: sans cette exemption, l'armement le mettrait unhealthy à vie pendant que
+#: /healthz resterait vert (review PR 43, reproduit).
+_LOOPBACK_CLIENT_HOSTS = frozenset({"127.0.0.1", "::1"})
+
+#: Le recensement ne connaît que les routes réelles du shim : un chemin
+#: inconnu est contrôlé par l'appelant (percent-décodé, %0A devient une vraie
+#: nouvelle ligne) et journalisé brut il devient un canal d'injection. Un
+#: chemin inconnu rend son 404 (ou 401 en mode armé) sans une ligne de log.
+_GUARDED_CENSUS_PATHS = frozenset({"/embed", "/embed/query", "/embed/single", "/rerank", "/"})
+
 
 @dataclass(frozen=True, slots=True)
 class BearerGuard:
@@ -90,6 +107,9 @@ def load_bearer_token(path: Path | str) -> bytes:
     Un secret lisible au-delà du propriétaire, trop court, ou resté sur son
     placeholder ``REPLACE_`` est refusé au démarrage : mieux vaut un service
     qui ne démarre pas qu'une authentification décorative.
+
+    Lu UNE FOIS, au démarrage : une rotation du secret exige un restart du
+    conteneur — le geste opérateur doit le savoir.
     """
     token_path = Path(path)
     mode = stat.S_IMODE(token_path.stat().st_mode)
@@ -141,6 +161,14 @@ class _BearerMiddleware:
             await self._app(scope, receive, send)
             return
 
+        client = scope.get("client")
+        if client and client[0] in _LOOPBACK_CLIENT_HOSTS:
+            # Netns-interne (healthcheck compose) : même frontière de confiance
+            # que le processus. Pas de recensement non plus — il tire toutes
+            # les 60 s et noierait le journal d'observation.
+            await self._app(scope, receive, send)
+            return
+
         outcome = self._outcome(scope)
         if outcome is not None:
             if self._guard.required:
@@ -151,13 +179,26 @@ class _BearerMiddleware:
                 )
                 await response(scope, receive, send)
                 return
-            # Jamais la valeur présentée : un log n'est pas un canal d'exfiltration.
-            _LOGGER.warning(
-                "shim bearer %s on %s — accepted (optional mode)",
-                outcome,
-                scope["path"],
-            )
+            if scope["path"] in _GUARDED_CENSUS_PATHS:
+                # Jamais la valeur présentée : un log n'est pas un canal
+                # d'exfiltration. Le user-agent est contrôlé par l'appelant :
+                # %r le cite, une nouvelle ligne y reste \n.
+                client_address = f"{client[0]}:{client[1]}" if client else "client-inconnu"
+                _LOGGER.warning(
+                    "shim bearer %s on %s from %s ua=%r — accepted (optional mode)",
+                    outcome,
+                    scope["path"],
+                    client_address,
+                    self._user_agent(scope),
+                )
         await self._app(scope, receive, send)
+
+    @staticmethod
+    def _user_agent(scope: Scope) -> str:
+        for name, value in scope["headers"]:
+            if name == b"user-agent":
+                return bytes(value).decode("latin-1")
+        return "-"
 
     def _outcome(self, scope: Scope) -> str | None:
         """``None`` si le jeton présenté est le bon, sinon la raison à journaliser."""

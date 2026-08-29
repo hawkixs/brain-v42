@@ -11,11 +11,20 @@ Env:
 
 from __future__ import annotations
 
+import logging
 import os
 
 from shim_app import bearer_from_env, create_app
 from shim_backends import LlamaEmbedBackend, OnnxRerankBackend
 from starlette.applications import Starlette
+
+# Sans câblage racine, le WARNING du recensement bearer tombe sur
+# logging.lastResort : stderr nu, sans timestamp ni niveau — illisible à côté
+# de l'access log uvicorn. uvicorn configure SES loggers, jamais la racine.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 
 
 def build_app() -> Starlette:
