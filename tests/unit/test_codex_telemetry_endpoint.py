@@ -374,6 +374,9 @@ def test_otlp_route_is_registered_for_loopback_bind_hosts(host: str) -> None:
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.0.2.8", "metrics.internal"])
 def test_otlp_route_is_absent_for_non_loopback_bind_hosts(host: str) -> None:
+    """Posture PAR DÉFAUT (`silent`, eac03668) — un choix nommé, pas un oubli.
+    Voir test_metrics_nonloopback_posture.py pour les deux autres formes.
+    """
     app = _server(host=host)._build_app()
 
     assert ("POST", "/v1/logs") not in _routes(app)

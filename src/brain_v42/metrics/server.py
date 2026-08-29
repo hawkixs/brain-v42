@@ -53,6 +53,15 @@ _OTLP_ERROR_STATUSES = {
 }
 
 
+class NonLoopbackReceiversError(RuntimeError):
+    """Posture ``fail_closed`` : un bind non-loopback refuse de construire l'app.
+
+    Levée à la CONSTRUCTION et jamais plus tard : un opérateur qui a choisi
+    cette posture préfère un démarrage qui échoue en nommant son réglage à un
+    sidecar qui tourne sans ses receveurs.
+    """
+
+
 class _BodyReadTimeout(Exception):
     """Le corps a cessé d'arriver avant la fin du budget de lecture.
 
@@ -227,6 +236,7 @@ class MetricsServer:
         webhook_secret: str = "",
         graph_svc: Any | None = None,
         codex_registry: ClientActivityRegistry | None = None,
+        nonloopback_posture: str = "silent",
     ) -> None:
         self._collector = collector
         self._embedding_svc = embedding_svc
@@ -243,6 +253,7 @@ class MetricsServer:
         self._runner: web.AppRunner | None = None
         self._cockpit: CockpitCollector | None = None
         self._rejection_counters = ReceiverRejectionCounters()
+        self._nonloopback_posture = nonloopback_posture
 
     def _build_app(self) -> web.Application:
         app = web.Application()
@@ -252,6 +263,31 @@ class MetricsServer:
             app.router.add_post("/v1/logs", self._handle_codex_logs)
             app.router.add_post("/v1/logs/claude", self._handle_claude_logs)
             app.router.add_post("/v1/client-activity", self._handle_client_activity)
+        elif self._nonloopback_posture == "fail_closed":
+            # Posture (1) de eac03668 : l'opérateur a préféré un démarrage qui
+            # échoue en nommant son réglage à un sidecar amputé qui se tait.
+            raise NonLoopbackReceiversError(
+                f"metrics bind {self._host!r} is not loopback: the three POST "
+                "receivers cannot be served safely there and "
+                "METRICS_NONLOOPBACK_POSTURE=fail_closed refuses to run without "
+                "them. Bind loopback, or choose the posture that says so "
+                "(warn) or the historical silence (silent)."
+            )
+        elif self._nonloopback_posture == "warn":
+            # Posture (2) : même surface que le silence historique, mais le
+            # sacrifice se DIT — une ligne, au démarrage, jamais par requête
+            # (le refus par requête vient du routeur, invisible d'ici).
+            logger.warning(
+                "metrics_server.receivers_disabled_non_loopback",
+                host=self._host,
+                absent_routes=["/v1/logs", "/v1/logs/claude", "/v1/client-activity"],
+                detail=(
+                    "non-loopback bind: OTLP/activity receivers are NOT registered; "
+                    "their clients get router 404s that no access log or counter sees"
+                ),
+            )
+        # `silent` : le comportement historique, à l'octet près — la posture
+        # par DÉFAUT tant que l'arbitrage opérateur (eac03668) n'est pas rendu.
         if self._gitlab_ingestor:
             if not self._webhook_secret:
                 logger.warning(

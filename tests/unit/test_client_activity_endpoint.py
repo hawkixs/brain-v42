@@ -162,6 +162,13 @@ def test_receiver_route_is_registered_on_a_loopback_bind(host: str, path: str) -
 @pytest.mark.parametrize("path", _RECEIVER_PATHS)
 @pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.0.2.8", "metrics.internal"])
 def test_receiver_route_is_absent_on_a_non_loopback_bind(host: str, path: str) -> None:
+    """Posture PAR DÉFAUT (`silent`, eac03668) — un choix nommé, pas un oubli.
+
+    Ce test épingle le comportement historique en ATTENDANT l'arbitrage
+    opérateur, il ne le consacre plus par omission : les deux autres postures
+    (warn, fail_closed) existent et sont testées par
+    test_metrics_nonloopback_posture.py.
+    """
     assert ("POST", path) not in _routes(_server(_registry(), host=host)._build_app())
 
 
