@@ -84,6 +84,22 @@ def register_project_context_tools(
         record with the new values. Otherwise, creates a new record.
 
         Args:
+            project_key: Canonical project key (kebab-case, e.g. 'brain-v42').
+            name: Human-readable project name.
+            description: What the project is and does.
+            languages: Programming languages in use (e.g. ['python']).
+            frameworks: Frameworks in use (e.g. ['fastmcp', 'sqlalchemy']).
+            databases: Data stores in use (e.g. ['postgresql', 'neo4j']).
+            code_style: Coding conventions summary.
+            git_workflow: Branching/commit conventions summary.
+            test_strategy: Testing approach summary.
+            current_phase: Current lifecycle phase (free text).
+            current_focus: Focus prose — capped at the same character bound as
+                every MCP focus writer; do not restate machine-measurable state.
+            blockers: Current blockers, one string each.
+            related_projects: Project keys this one relates to.
+            plan_scan_paths: Filesystem paths scanned for plan indexing.
+            gitlab_project_path: GitLab path (group/name) when mirrored.
             project_group: Optional group name to assign this project to a group.
         """
         logger.debug("mcp.brain_set_project_context", project_key=project_key)
