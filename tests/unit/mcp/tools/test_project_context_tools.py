@@ -632,3 +632,55 @@ class TestImportability:
     def test_register_function_importable_from_package(self) -> None:
         """register_project_context_tools is importable from brain_v42.mcp.tools (barrel)."""
         from brain_v42.mcp.tools import register_project_context_tools  # noqa: F401
+
+
+class TestSetProjectContextSchemaContract:
+    """Item 8 d'af3b58dd : le plus gros inputSchema du catalogue, sous contrat.
+
+    16 paramètres à plat ne se réduisent pas sans casser la compat des
+    appelants (la forme plate EST le schéma public) — ce qui se contracte :
+    (1) la signature ne peut pas dériver du modèle qu'elle alimente — un 17e
+    paramètre fantôme ou un champ du modèle non exposé rougit ici ; (2) chaque
+    paramètre est documenté dans le docstring Args — un schéma de cette taille
+    sans doc par champ est illisible pour l'agent qui le remplit.
+    """
+
+    def _tool_fn(self):
+        import inspect
+
+        from brain_v42.mcp.tools.project_context_tools import register_project_context_tools
+
+        captured = {}
+
+        class _MCP:
+            def tool(self, **_kw):
+                def deco(fn):
+                    captured[fn.__name__] = fn
+                    return fn
+
+                return deco
+
+        from unittest.mock import MagicMock
+
+        register_project_context_tools(_MCP(), MagicMock())
+        return captured["brain_set_project_context"], inspect
+
+    def test_every_parameter_feeds_the_create_model_and_nothing_drifts(self) -> None:
+        from brain_v42.models.project_context import ProjectContextCreate
+
+        fn, inspect_mod = self._tool_fn()
+        params = set(inspect_mod.signature(fn).parameters)
+
+        assert params <= set(ProjectContextCreate.model_fields), (
+            "un paramètre du tool ne correspond à aucun champ du modèle : "
+            f"{sorted(params - set(ProjectContextCreate.model_fields))}"
+        )
+
+    def test_every_parameter_is_documented_in_the_args_block(self) -> None:
+        fn, inspect_mod = self._tool_fn()
+        doc = fn.__doc__ or ""
+
+        undocumented = [
+            name for name in inspect_mod.signature(fn).parameters if f"{name}:" not in doc
+        ]
+        assert not undocumented, f"paramètres sans doc Args : {undocumented}"

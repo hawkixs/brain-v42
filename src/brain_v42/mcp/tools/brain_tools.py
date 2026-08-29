@@ -80,6 +80,29 @@ from brain_v42.mcp.tools.workflow_guide_tools import register_workflow_guide_too
 logger = structlog.get_logger(__name__)
 
 
+def _dream_promotion_invariant(
+    source_learning_id: str | None,
+    auto_accept: bool,
+    dream_run_id: int | None,
+) -> str | None:
+    """L'invariant du trio dream-only de brain_propose_adr, en UN endroit.
+
+    Deux gardes dispersées exprimaient source_learning_id ⟺ auto_accept ; le
+    troisième membre, dream_run_id, n'était gardé par RIEN — seul, il tombait
+    dans le chemin standard qui ne le lit jamais et disparaissait en silence
+    (mesuré 2026-08-29, ticket af3b58dd item 2). Un paramètre dream-only
+    orphelin est un refus nommé : l'appelant croyait tracer une promotion que
+    rien n'enregistrait.
+    """
+    if source_learning_id is not None and not auto_accept:
+        return "source_learning_id requires auto_accept=True (Dream-only path)"
+    if auto_accept and source_learning_id is None:
+        return "auto_accept=True requires source_learning_id (Dream-only path)"
+    if dream_run_id is not None and source_learning_id is None:
+        return "dream_run_id requires source_learning_id + auto_accept=True (Dream-only path)"
+    return None
+
+
 def register_tools(
     mcp: FastMCP,
     *,
@@ -435,12 +458,13 @@ def register_tools(
         Dream-agent path: set source_learning_id + auto_accept=True together to
         graduate a mature insight directly into an accepted ADR via one atomic
         transaction that also updates the source learning's metadata and writes
-        a dream_promotions audit row. Both kwargs must be set together.
+        a dream_promotions audit row. The three dream-only kwargs
+        (source_learning_id, auto_accept, dream_run_id) travel together — a
+        lone member is refused by name, never silently dropped.
         """
-        if source_learning_id is not None and not auto_accept:
-            return format_error("source_learning_id requires auto_accept=True (Dream-only path)")
-        if auto_accept and source_learning_id is None:
-            return format_error("auto_accept=True requires source_learning_id (Dream-only path)")
+        invariant_error = _dream_promotion_invariant(source_learning_id, auto_accept, dream_run_id)
+        if invariant_error is not None:
+            return format_error(invariant_error)
 
         data = ADRCreate(
             title=title,
@@ -541,6 +565,14 @@ def register_tools(
         offset: int = 0,
     ) -> str:
         """List ADRs with optional filters by project and/or status.
+
+        ALIAS DE CATALOGUE : même comportement que `list_adrs` (crud_tools) —
+        les deux entrées sont construites par `_build_adr_list_adapter`, une
+        seule source depuis 72b048f, gardée par test_brain_adr_list_alias.
+        Conservé parce que le rail dream le NOMME : allowlist de capacités
+        (dream_capabilities), policy de scope (dream_project_scope) et prompt
+        PROMOTE (scripts/dream/phase_promote.md). Le retirer du catalogue est
+        un lot coordonné avec ces trois surfaces, pas un nettoyage local.
 
         Args:
             project_key: Optional project scope filter.
