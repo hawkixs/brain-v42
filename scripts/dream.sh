@@ -1336,7 +1336,7 @@ set +e
 # la moitié physique du « personne ne la lit » (ticket 0a9c067e). Le rapport est
 # borné en amont (MAX_FETCHED_FAILURES), donc la capture en variable l'est aussi.
 alert_out="$(uv run python -m scripts.dream.post_run_alert \
-  --date "$TIMESTAMP" --manifest "$MANIFEST_FILE" 2>&1)"
+  --date "$TIMESTAMP" --manifest "$MANIFEST_FILE" --phases-ok "$OK_TOTAL" 2>&1)"
 alert_rc=$?
 set -e
 printf '%s\n' "$alert_out" >> "$LOG_DIR/$TIMESTAMP.log"
@@ -1346,6 +1346,36 @@ if [[ -n "$coverage_line" ]]; then
   # dans journald, TOUTES les nuits — y compris les vertes, sans quoi la ligne
   # ne serait lue que les jours où il est déjà trop tard.
   log "=== dream_runs $coverage_line ==="
+fi
+# La réconciliation phases↔lignes (b95c5742) : OK_TOTAL vient d'être compté par
+# CETTE boucle, pairs_written vient de la base. Un gap>0 est la perte des
+# 15-16/08 — 61 phases OK, 2 lignes, 240 InvalidPasswordError avalées — rendue
+# lisible au matin sans croiser le journal. L'INSERT reste best-effort : rien
+# ici ne rougit l'unité, la ligne EST le correctif.
+reconciliation_line="$(printf '%s\n' "$alert_out" | grep -m1 '^RECONCILIATION ' || true)"
+if [[ -n "$reconciliation_line" ]]; then
+  log "=== dream_runs $reconciliation_line ==="
+  if [[ "$reconciliation_line" != *" gap=0"* ]]; then
+    log "WARN  dream_runs réconciliation — écart phases OK ↔ paires écrites non nul (INSERT best-effort perdu ? rejeu ? voir b95c5742)"
+  fi
+fi
+# Le repli in-band du lecteur de manifeste (e30a1cec) : le rapporteur ne rend
+# JAMAIS 2 sans manifeste — des paires indécidables ne font pas un rouge — mais
+# ICI le manifeste vient d'être écrit par cette nuit même. S'il est illisible,
+# c'est l'instrument qui est en panne, et ça se grave (ligne dream_runs
+# `coverage`) et se DIT, sans toucher au code de sortie de la nuit.
+if [[ "$coverage_line" == *"mode=fallback"* ]]; then
+  log "FAIL  dream_runs coverage — mode=fallback in-band : la nuit vient d'écrire $MANIFEST_FILE et l'alerte n'a pas pu le lire"
+  set +e
+  uv run python -m scripts.dream.record_coverage_gap \
+    --date "$TIMESTAMP" --summary "$coverage_line" \
+    --detail "manifest in-band illisible ou perdu : $MANIFEST_FILE" \
+    >> "$LOG_DIR/$TIMESTAMP.log" 2>&1
+  record_fallback_rc=$?
+  set -e
+  if (( record_fallback_rc != 0 )); then
+    log "WARN  coverage — repli in-band NON enregistré (rc=$record_fallback_rc)"
+  fi
 fi
 # Le 2 n'est CRU que sur preuve positive : la ligne machine du verdict. Ce code
 # est aussi celui de l'erreur d'usage d'argparse, que `main()` ne peut pas

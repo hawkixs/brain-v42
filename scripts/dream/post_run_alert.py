@@ -42,6 +42,7 @@ import argparse
 import asyncio
 import datetime as dt
 import sys
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -537,6 +538,33 @@ def coverage_fallback(*, expected: int, observed: int, missing: int) -> Coverage
     )
 
 
+def format_reconciliation_line(
+    phases_ok: int, observed_rows: Iterable[Mapping[str, object]]
+) -> str:
+    """« N phases OK / M paires écrites » — l'écart que personne ne rapprochait.
+
+    Ticket `b95c5742` : les 15-16/08, « 61/63 phases OK » au journal, 2 lignes
+    en base, 240 `InvalidPasswordError` avalées. L'INSERT reste best-effort (la
+    042 dit pourquoi) ; cette ligne rend la perte VISIBLE au matin.
+
+    `pairs_written` compte les paires (phase, projet) portant AU MOINS une
+    ligne dont le statut n'est pas un échec pur : `done` bien sûr, mais aussi
+    `partial` — une phase marquée par le validateur a ÉCRIT, la compter perdue
+    déclencherait une chasse à l'INSERT chaque fois que G4 fait son travail.
+    Une paire `fail`+`done` (secours) compte UNE fois : dream.sh compte des
+    phases quand dream_runs compte des tentatives. Un gap négatif (skips
+    enregistrés, rejeux) s'imprime tel quel — un clamp serait un compteur qui
+    ment.
+    """
+    pairs_written = {
+        (str(row["phase"]), str(row.get("project_key") or ""))
+        for row in observed_rows
+        if str(row["status"]) not in ("fail", "timeout")
+    }
+    gap = phases_ok - len(pairs_written)
+    return f"RECONCILIATION phases_ok={phases_ok} pairs_written={len(pairs_written)} gap={gap}"
+
+
 async def fetch_failed_runs(
     session: AsyncSession,
     run_date: dt.date,
@@ -683,7 +711,11 @@ def default_manifest_path(run_date: dt.date) -> Path:
     return repository_root / "logs" / "dream" / f"{run_date.isoformat()}_manifest.tsv"
 
 
-async def _run(run_date: dt.date, manifest_path: Path | None = None) -> int:
+async def _run(
+    run_date: dt.date,
+    manifest_path: Path | None = None,
+    phases_ok: int | None = None,
+) -> int:
     settings = Settings()
     engine = create_async_engine(settings.postgres_url, poolclass=NullPool)
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -692,6 +724,19 @@ async def _run(run_date: dt.date, manifest_path: Path | None = None) -> int:
     )
     try:
         async with factory() as session:
+            if phases_ok is not None:
+                observed = await session.execute(
+                    sa.select(
+                        dream_runs.c.phase,
+                        dream_runs.c.status,
+                        dream_runs.c.project_key,
+                    ).where(dream_runs.c.run_date == run_date)
+                )
+                print(
+                    format_reconciliation_line(
+                        phases_ok, [dict(row._mapping) for row in observed.all()]
+                    )
+                )
             rendered, escalates = await review_and_render(session, run_date, manifest=manifest)
             print(rendered, end="")
         return 2 if escalates else 0
@@ -717,11 +762,20 @@ def main(argv: list[str] | None = None) -> int:
             "dans le dépôt, pour qu'un rejeu à la main soit honnête sans drapeau."
         ),
     )
+    parser.add_argument(
+        "--phases-ok",
+        type=int,
+        default=None,
+        help=(
+            "Compteur OK_TOTAL de dream.sh. Optionnel : un rejeu à la main n'a "
+            "pas ce nombre, et la ligne RECONCILIATION ne s'imprime pas sans lui."
+        ),
+    )
     args = parser.parse_args(argv)
     run_date = dt.date.fromisoformat(args.date)
     manifest_path = Path(args.manifest) if args.manifest else default_manifest_path(run_date)
     try:
-        return asyncio.run(_run(run_date, manifest_path))
+        return asyncio.run(_run(run_date, manifest_path, phases_ok=args.phases_ok))
     except Exception as exc:  # noqa: BLE001
         print(f"post_run_alert failed: {exc!r}", file=sys.stderr)
         return 1

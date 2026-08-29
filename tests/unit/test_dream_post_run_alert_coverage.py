@@ -583,9 +583,10 @@ def test_the_default_manifest_path_is_derived_from_the_repo() -> None:
 def test_the_cli_accepts_an_explicit_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, object] = {}
 
-    def _fake_run(run_date: dt.date, manifest_path: Path) -> int:
+    def _fake_run(run_date: dt.date, manifest_path: Path, phases_ok: int | None = None) -> int:
         seen["date"] = run_date
         seen["manifest"] = manifest_path
+        seen["phases_ok"] = phases_ok
         return 0
 
     monkeypatch.setattr(post_run_alert.asyncio, "run", lambda coro: coro)
@@ -594,3 +595,14 @@ def test_the_cli_accepts_an_explicit_manifest(monkeypatch: pytest.MonkeyPatch) -
     assert post_run_alert.main(["--date", "2026-08-18", "--manifest", "/tmp/x.tsv"]) == 0
     assert seen["manifest"] == Path("/tmp/x.tsv")
     assert seen["date"] == RUN_DATE
+    # Sans --phases-ok (rejeu à la main), pas de compteur : la ligne
+    # RECONCILIATION ne s'imprime pas et ne peut pas mentir.
+    assert seen["phases_ok"] is None
+
+    assert (
+        post_run_alert.main(
+            ["--date", "2026-08-18", "--manifest", "/tmp/x.tsv", "--phases-ok", "61"]
+        )
+        == 0
+    )
+    assert seen["phases_ok"] == 61
