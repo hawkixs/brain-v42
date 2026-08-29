@@ -410,7 +410,7 @@ decisions = Table(
         name="decisions_status_check",
     ),
     sa.CheckConstraint(
-        "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive')",
+        "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive', 'manual_update', 'plan_reindex')",
         name="ck_decisions_freshness_source",
     ),
 )
@@ -485,7 +485,7 @@ learnings = Table(
         name="learnings_source_type_check",
     ),
     sa.CheckConstraint(
-        "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive')",
+        "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive', 'manual_update', 'plan_reindex')",
         name="ck_learnings_freshness_source",
     ),
 )
@@ -554,7 +554,7 @@ snippets = Table(
     # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
     # tests/integration/db/test_fresh_head_is_the_yardstick.py.
     sa.CheckConstraint(
-        "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive')",
+        "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive', 'manual_update', 'plan_reindex')",
         name="ck_snippets_freshness_source",
     ),
 )
@@ -623,7 +623,7 @@ runbooks = Table(
     # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
     # tests/integration/db/test_fresh_head_is_the_yardstick.py.
     sa.CheckConstraint(
-        "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive')",
+        "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive', 'manual_update', 'plan_reindex')",
         name="ck_runbooks_freshness_source",
     ),
 )
@@ -702,7 +702,7 @@ adrs = Table(
         name="adrs_status_check",
     ),
     sa.CheckConstraint(
-        "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive')",
+        "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive', 'manual_update', 'plan_reindex')",
         name="ck_adrs_freshness_source",
     ),
 )
@@ -1282,7 +1282,7 @@ indexed_plans = Table(
         name="indexed_plans_freshness_status_check",
     ),
     sa.CheckConstraint(
-        "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive')",
+        "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive', 'manual_update', 'plan_reindex')",
         name="ck_indexed_plans_freshness_source",
     ),
 )
@@ -1430,6 +1430,10 @@ dream_runs = Table(
     # prudence : aucun des six écrivains ne fait remonter son échec (spec §15.3).
     # NULL = « écrit avant la 042 » ; '*' = phase globale, sans projet à nommer.
     Column("project_key", String(64), nullable=True),
+    # Révision 049 — nullable, sans défaut : NULL = « écrit avant la 049 »,
+    # ou rail/phase qui ne mesure pas cette dimension. Jamais de backfill.
+    Column("closed_inactive_count", Integer, nullable=True),
+    Column("thinking_tokens", Integer, nullable=True),
     Column(
         "created_at",
         DateTime(timezone=True),

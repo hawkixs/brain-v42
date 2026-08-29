@@ -82,7 +82,9 @@ class RunbookUpdate(BaseModel):
     #: Posée par le SERVEUR seul — `brain_update` refuse une valeur fournie par
     #: l'appelant. Le trigger de la 043 l'efface si elle n'est pas redéclarée à
     #: chaque écriture : une provenance absente se voit, une fausse se croit.
-    freshness_source: Literal["merge", "judgment", "score", "revive"] | None = None
+    freshness_source: (
+        Literal["merge", "judgment", "score", "revive", "manual_update", "plan_reindex"] | None
+    ) = None
 
     _number_steps = field_validator("steps", "rollback_steps", mode="before")(
         staticmethod(_number_steps)

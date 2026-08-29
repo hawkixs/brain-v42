@@ -117,14 +117,18 @@ async def test_insert_dream_run_binds_the_project_key_before_phase_dry_run() -> 
     # `_written_project_key`) ; celui-ci, qui écrit le plus de lignes, ne
     # l'avait pas : permuter la seule liste de colonnes laissait les assertions
     # vertes tout en liant `project_key` au booléen et `phase_dry_run` à la clé.
-    assert len(columns) == len(placeholders) == len(bind_args) == 15
-    assert placeholders == [f"${index + 1}" for index in range(15)], (
+    # 049 : seize colonnes — thinking_tokens s'insère avant le drapeau.
+    assert len(columns) == len(placeholders) == len(bind_args) == 16
+    assert placeholders == [f"${index + 1}" for index in range(16)], (
         "les placeholders doivent être en ordre : sinon l'index d'une colonne "
         "ne dit plus quel argument elle reçoit"
     )
     assert bind_args[columns.index("project_key")] == "red-shrik"
     assert bind_args[columns.index("phase_dry_run")] is True
-    assert columns.index("phase_dry_run") == 14, "phase_dry_run reste le dernier lié"
+    assert columns.index("phase_dry_run") == 15, "phase_dry_run reste le dernier lié"
+    assert bind_args[columns.index("thinking_tokens")] is None, (
+        "telemetry=None : NULL, jamais 0 — « pas mesuré » n'est pas « mesuré nul »"
+    )
 
 
 @pytest.mark.asyncio

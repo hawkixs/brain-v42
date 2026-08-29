@@ -275,8 +275,10 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
     # `codex_dream_run_v1` à l'identique, en relisant la définition de la 036,
     # et repose son GRANT ; la FORME décrite par le contrat est donc intacte.
     # Il reste épinglé à 031 parce que c'est la révision dont il décrit la
-    # forme, pas la tête courante.
-    assert script.get_heads() == ["048"]
+    # forme, pas la tête courante. Relu à la 049 : elle n'ajoute aucune table
+    # (32 `public` inchangées) — deux colonnes nullable sur `dream_runs` et un
+    # vocabulaire de CHECK élargi, rien que le contrat v1 décrive.
+    assert script.get_heads() == ["049"]
     post_contract_tables = {
         "brain_session_artifacts",
         "brain_sessions",

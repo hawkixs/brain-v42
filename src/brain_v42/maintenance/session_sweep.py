@@ -140,6 +140,7 @@ async def record_dream_run(
     dry: bool,
     duration_s: float,
     error: str | None,
+    closed_inactive_count: int | None = None,
 ) -> None:
     """INSERT dream_runs pour phase='sweep'. Best-effort — ne lève jamais.
 
@@ -156,9 +157,10 @@ async def record_dream_run(
                     sa.text(
                         "INSERT INTO dream_runs "
                         "(run_date, phase, status, duration_s, error_message, "
-                        "project_key, phase_dry_run, model) "
+                        "project_key, phase_dry_run, model, closed_inactive_count) "
                         "VALUES (:run_date, 'sweep', :status, :duration_s, "
-                        ":error_message, :project_key, :phase_dry_run, NULL)"
+                        ":error_message, :project_key, :phase_dry_run, NULL, "
+                        ":closed_inactive_count)"
                     ),
                     {
                         "run_date": date.today(),
@@ -167,6 +169,12 @@ async def record_dream_run(
                         "error_message": error,
                         "project_key": GLOBAL_PHASE_PROJECT_KEY,
                         "phase_dry_run": dry,
+                        # NULL — jamais 0 — quand la nuit a échoué avant de
+                        # compter, ou en DRY : « pas évalué » n'est pas « zéro
+                        # fermeture ». La série de la 049 (ticket 24ca3b73) ne
+                        # porte que des nuits où la règle 4 h a réellement
+                        # tourné en WET.
+                        "closed_inactive_count": closed_inactive_count,
                     },
                 )
     except Exception as exc:  # noqa: BLE001 — la trace ne doit jamais tuer la phase
@@ -220,7 +228,15 @@ async def _run(args: argparse.Namespace) -> int:
 
     print(render_report(result), flush=True)
     await record_dream_run(
-        session_factory, "done", dry=dry, duration_s=time.monotonic() - started, error=None
+        session_factory,
+        "done",
+        dry=dry,
+        duration_s=time.monotonic() - started,
+        error=None,
+        # La série de la 049 : NULL en DRY (rien n'a fermé, « pas évalué »
+        # n'est pas « zéro »), le compteur DISTINCT en WET — jamais additionné
+        # aux abandons, qui sont l'événement de sens opposé (ticket 24ca3b73).
+        closed_inactive_count=None if dry else result.closed_inactive_count,
     )
     return 0
 

@@ -270,3 +270,23 @@ def test_a_failed_run_still_yields_its_usage() -> None:
 
     assert telemetry.input_tokens == 10
     assert telemetry.output_tokens == 2
+
+
+def test_thinking_tokens_are_measured_separately_and_never_summed() -> None:
+    """Ticket 76e11c9f : 962 thinking pour 1554 output sur le run réel — ~38 %
+    des tokens n'étaient comptés nulle part, alors que l'ordre des rails a été
+    tranché sur un coût comparé. La colonne de la 049 les porte SÉPARÉMENT :
+    les additionner à output rendrait les rails incomparables dans l'autre sens."""
+    telemetry = parse_agy_stream(_stream(_result_event(_REAL_RESULT_USAGE)))
+
+    assert telemetry.thinking_tokens == 962
+    assert telemetry.output_tokens == 1554, "jamais gonflé par le thinking"
+
+
+def test_a_stream_without_thinking_stays_null_not_zero() -> None:
+    """Absent du flux = « ce rail ne mesure pas » (NULL), jamais « mesuré nul »."""
+    usage = {key: value for key, value in _REAL_RESULT_USAGE.items() if key != "thinking_tokens"}
+
+    telemetry = parse_agy_stream(_stream(_result_event(usage)))
+
+    assert telemetry.thinking_tokens is None
