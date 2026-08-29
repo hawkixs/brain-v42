@@ -98,6 +98,11 @@ For each candidate:
 
 If you detect entity_type mismatches (e.g., a decision stored as a learning, an operational snapshot stored as a learning that is NOT in the allowlist above), flag them in the report but do NOT fix them. Entity-type changes remain human-reviewed.
 
+An alert that repeats every night without an outcome becomes the noise that covers the next real one — the same entity was re-flagged 8 nights in a row in August because nothing remembered the flag. Deduplicate durably:
+
+- If the entity's tags ALREADY contain `reorg:flagged-entity-type`, list it under "Flagged only" as `already flagged — skipped` and do NOT emit it as a new alert.
+- When flagging an entity for the FIRST time, ALSO add the tag `reorg:flagged-entity-type` to its existing tags via `brain_update` (this is a tags mutation like Part 1: declare the full UUID in `updated`, and it counts toward the same cap of 20). The tag is the durable memory that the alert fired once; humans find the review queue by searching that tag.
+
 ## Output
 Print the full report to stdout. The orchestrator captures it. Include three sections: "Metadata normalization", "Pollution archived", "Flagged only".
 
@@ -123,7 +128,8 @@ brain_search, brain_list, brain_get, brain_update
 - Max 20 metadata updates per run (Part 1).
 - Max 20 archives per run (Part 2).
 - NEVER change content fields (title, description, insight, reasoning, context, decision).
-- ONLY change: `tags` (Part 1) and `freshness_status` (Part 2). NEVER `project_key` — the
+- ONLY change: `tags` (Parts 1 and 3 — the Part 3 flag tag is a tags mutation like any
+  other) and `freshness_status` (Part 2). NEVER `project_key` — the
   server refuses any ownership field by name, and the refusal fails the whole call.
 - `freshness_status` may only be set to `"archived"`, never to `"fresh"` or `"stale"` — this phase archives, it does not revive.
 - **NEVER touch entities with any tag starting with `dream:`.** Dream entities manage their own metadata.
