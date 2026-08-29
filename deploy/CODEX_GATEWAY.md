@@ -127,6 +127,13 @@ avez déclaré, `old_credentials_valid=true` et `codex_scope_bounded=true`. Arr�
 écart. Le CLI n'applique jamais Alembic et n'accepte plus AUCUNE révision implicitement :
 `--expected-alembic-revision` est requis et refuse une valeur vide ou malformée.
 
+La preuve de contrat du préflight couvre les QUATRE clauses de `/ready`, pas seulement
+l'existence des vues : les dix vues et leurs colonnes, `security_barrier=true` sur les sept
+vues scopées, et les deux triggers actifs (`trg_feature_artifact_live_target`,
+`trg_ticket_participants_immutable`). Un `CREATE VIEW` recréé sans
+`WITH (security_barrier=true)` — le geste exact qu'une rotation de colonnes impose — échoue
+donc AU PRÉFLIGHT (`security_barrier:<vue>` dans les manquants), plus après la bascule.
+
 Capturez l'état actif des unités et conteneurs sans afficher leur environnement. Neutralisez
 ensuite Dream, ses jobs auxiliaires et tous les consommateurs directs avant la fenêtre : MCP,
 metrics, automation, les deux services Dagster de `red-data`, `red-shrik`, l'API `red-codex` et

@@ -171,6 +171,26 @@ _CODEX_GATEWAY_CONTRACT: Mapping[str, tuple[str, ...]] = {
 # annulée (learning 8dc7e042).
 _CODEX_GATEWAY_VIEWS = tuple(_CODEX_GATEWAY_CONTRACT)
 
+# Les clauses (b), (c) et (d) du contrat faisant autorité
+# (`_CODEX_CONTRACT_READY`, composition.py, câblé sur /ready). COPIES
+# délibérées : ce script n'importe rien de brain_v42 (il réécrit les .env que
+# Settings lit) ; l'agrément est tenu par
+# TestContractProofCoversAllFourClauses, qui importe les DEUX côtés et rougit
+# si une vue, une barrière ou un trigger n'est ajouté que d'un seul.
+_CODEX_SCOPED_BARRIER_VIEWS = (
+    "codex_brain_entity_v1",
+    "codex_ticket_v1",
+    "codex_ticket_message_v1",
+    "codex_feature_v1",
+    "codex_feature_artifact_v1",
+    "codex_ticket_extraction_proposal_v1",
+    "codex_roadmap_curation_proposal_v1",
+)
+_CODEX_GATEWAY_TRIGGERS = (
+    ("trg_feature_artifact_live_target", "feature_artifacts"),
+    ("trg_ticket_participants_immutable", "tickets"),
+)
+
 # `unnest($1, $2)` PADE le tableau le plus court avec NULL. Un désalignement
 # ferait donc remonter `{NULL}` parmi les manquants et exploserait au join,
 # en « credential cutover failed ». Les deux tableaux sont construits d'un
@@ -199,7 +219,39 @@ SELECT
             )
         ),
         '{}'
-    ) AS missing_columns
+    ) AS missing_columns,
+    coalesce(
+        (
+            SELECT array_agg(scoped.name ORDER BY scoped.name)
+            FROM unnest($3::text[]) AS scoped(name)
+            JOIN pg_class AS contract_view
+              ON contract_view.oid = to_regclass('public.' || scoped.name)
+            WHERE NOT (
+                'security_barrier=true' = ANY(
+                    COALESCE(contract_view.reloptions, ARRAY[]::text[])
+                )
+            )
+        ),
+        '{}'
+    ) AS missing_barriers,
+    coalesce(
+        (
+            SELECT array_agg(
+                required_trigger.trigger_name || ' ON ' || required_trigger.table_name
+                ORDER BY required_trigger.trigger_name
+            )
+            FROM unnest($4::text[], $5::text[])
+                AS required_trigger(trigger_name, table_name)
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM pg_trigger
+                WHERE tgname = required_trigger.trigger_name
+                  AND tgrelid = to_regclass('public.' || required_trigger.table_name)
+                  AND tgenabled IN ('O', 'A') AND NOT tgisinternal
+            )
+        ),
+        '{}'
+    ) AS missing_triggers
 FROM expected
 """
 
@@ -1376,10 +1428,22 @@ class AsyncpgCredentialDatabase:
             try:
                 connection = await self._connect("codex_ro", codex_password)
                 views, columns = _gateway_contract_arrays(_CODEX_GATEWAY_CONTRACT)
-                row = await connection.fetchrow(_GATEWAY_CONTRACT_PROOF, views, columns)
+                row = await connection.fetchrow(
+                    _GATEWAY_CONTRACT_PROOF,
+                    views,
+                    columns,
+                    list(_CODEX_SCOPED_BARRIER_VIEWS),
+                    [name for name, _table in _CODEX_GATEWAY_TRIGGERS],
+                    [table for _name, table in _CODEX_GATEWAY_TRIGGERS],
+                )
                 if row is None:
                     raise RotationError("Codex gateway contract verification failed")
-                return tuple(row["missing_views"]) + tuple(row["missing_columns"])
+                return (
+                    tuple(row["missing_views"])
+                    + tuple(row["missing_columns"])
+                    + tuple(f"security_barrier:{name}" for name in row["missing_barriers"])
+                    + tuple(f"trigger:{name}" for name in row["missing_triggers"])
+                )
             # Divergence DÉLIBÉRÉE avec codex_scope_is_bounded, qui rend False
             # sur un mot de passe refusé : ici un refus d'authentification ne
             # doit JAMAIS se lire comme « les vues manquent ». L'identité est
