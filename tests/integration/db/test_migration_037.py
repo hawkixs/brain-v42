@@ -309,3 +309,44 @@ def test_downgrade_fence_holds_the_shared_database_advisory_lock(
         "le fence est actif mais aucun pg_advisory_lock(0x288D7121) n'est tenu — "
         "les six fichiers de migration retombent dans la course de 288d7121"
     )
+
+
+def test_the_advisory_lock_actually_serializes_two_holders() -> None:
+    """Le test de présence prouve qu'un verrou EXISTE ; celui-ci prouve qu'il
+    SÉRIALISE — la propriété que le message de commit affirmait sans test.
+
+    Deux connexions distinctes (= deux sessions Postgres, comme deux runs
+    pytest concurrents) : le second détenteur ne progresse PAS pendant que le
+    premier tient (0,5 s d'attente observée), et ne progresse qu'à la
+    libération. Un timeout de 5 s borne l'attente : si la libération ne
+    débloquait pas, le test échoue en nommant la panne au lieu de pendre.
+    Instrument prouvé mordant par mutation (clé divergente pour le second
+    détenteur → « a progressé pendant que le premier tenait »).
+    """
+    import asyncpg
+
+    from tests.integration.conftest import _MIGRATION_ADVISORY_LOCK_KEY
+
+    dsn = _DB_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
+
+    async def scenario() -> None:
+        first = await asyncpg.connect(dsn)
+        second = await asyncpg.connect(dsn)
+        try:
+            await first.execute("SELECT pg_advisory_lock($1)", _MIGRATION_ADVISORY_LOCK_KEY)
+            contender = asyncio.ensure_future(
+                second.execute("SELECT pg_advisory_lock($1)", _MIGRATION_ADVISORY_LOCK_KEY)
+            )
+            done, _pending = await asyncio.wait({contender}, timeout=0.5)
+            assert not done, (
+                "le second détenteur a progressé PENDANT que le premier tenait — "
+                "le verrou ne sérialise pas"
+            )
+            await first.execute("SELECT pg_advisory_unlock($1)", _MIGRATION_ADVISORY_LOCK_KEY)
+            await asyncio.wait_for(contender, timeout=5)
+            await second.execute("SELECT pg_advisory_unlock($1)", _MIGRATION_ADVISORY_LOCK_KEY)
+        finally:
+            await first.close()
+            await second.close()
+
+    asyncio.run(scenario())

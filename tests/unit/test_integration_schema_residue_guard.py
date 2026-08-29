@@ -20,6 +20,7 @@ from tests.integration.schema_residue import (
     DOWNGRADING_TEST_FILES,
     Breadcrumb,
     ResidueProbe,
+    describe_data_residue_notice,
     describe_head_drift,
     describe_schema_residue,
     migration_breadcrumb,
@@ -65,8 +66,12 @@ def test_database_at_the_expected_head_passes_in_silence() -> None:
 def test_leftover_rows_alone_never_refuse_a_database_at_the_head() -> None:
     """Residue is evidence about a revision mismatch, not an independent verdict.
 
-    Integration fixtures legitimately hold ``integ-`` rows while the suite runs;
-    refusing on them alone would make the guard fire during a healthy session.
+    Integration fixtures legitimately hold ``integ-`` rows while the suite runs
+    — a CONCURRENT healthy run is the normal regime of this tree — so refusing
+    on them alone would fire during a healthy session. But staying MUTE was the
+    other failure (review PR 44) : 3 leftover ``integ-`` sessions made
+    test_migration_026/037 fail with a message about user-data corruption. The
+    counts now SPEAK through a notice (see below), they still never refuse.
     """
     assert (
         describe_schema_residue(
@@ -76,6 +81,31 @@ def test_leftover_rows_alone_never_refuse_a_database_at_the_head() -> None:
         )
         is None
     )
+
+
+def test_leftover_rows_at_the_head_produce_a_named_notice() -> None:
+    """The counts were probed then thrown away — a data residue at head passed
+    mute, and the NEXT failure spoke of corruption instead of leftovers."""
+    notice = describe_data_residue_notice(
+        residue=ResidueProbe(counts={"brain_sessions": 3, "project_contexts": 0})
+    )
+
+    assert notice is not None
+    assert "brain_sessions: 3" in notice
+    # Une table à zéro ne pollue pas la notice : seul ce qui reste se nomme.
+    assert "project_contexts" not in notice
+    assert "integ-" in notice
+    # Les deux causes possibles sont dites — un run interrompu ET un run
+    # concurrent sain — pour que personne ne « répare » un run voisin en vol.
+    assert "concurrent" in notice
+    assert "interrupted" in notice
+
+
+def test_a_clean_database_produces_no_notice() -> None:
+    """Witness: a notice that always speaks would be noise, not a signal."""
+    assert describe_data_residue_notice(residue=_CLEAN) is None
+    assert describe_data_residue_notice(residue=ResidueProbe(counts={})) is None
+    assert describe_data_residue_notice(residue=ResidueProbe(failure="unreachable")) is None
 
 
 def test_virgin_database_is_a_bootstrap_not_a_residue() -> None:

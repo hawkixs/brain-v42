@@ -287,6 +287,35 @@ def describe_schema_residue(
     )
 
 
+def describe_data_residue_notice(*, residue: ResidueProbe) -> str | None:
+    """Name leftover ``integ-`` rows on a database whose revision is at head.
+
+    The counts used to be probed then thrown away when the revision matched —
+    and the NEXT failure spoke of user-data corruption while the real cause was
+    a leftover (review PR 44: three ``integ-`` sessions broke
+    test_migration_026/037 that way). This is a NOTICE, never a refusal: a
+    CONCURRENT healthy run legitimately holds ``integ-`` rows while its suite
+    runs, and refusing here would fire on every overlapping session. Speak,
+    name the rows, let the operator decide — and never "repair" what may be a
+    neighbouring run in flight.
+    """
+    if not residue.counts or residue.total == 0:
+        return None
+    rows = "\n".join(
+        f"      {table}: {count}" for table, count in sorted(residue.counts.items()) if count
+    )
+    return (
+        "Integration setup notice: the database is at the expected head but still "
+        "carries `integ-` rows:\n"
+        f"{rows}\n"
+        "    Either a previous run was interrupted before its cleanup (delete those "
+        "rows before trusting migration tests), or a concurrent healthy run holds "
+        "them right now (leave them alone). This notice exists because the previous "
+        "silence let migration tests fail later with a message about user-data "
+        "corruption."
+    )
+
+
 def describe_head_drift(
     *,
     test_nodeid: str,
