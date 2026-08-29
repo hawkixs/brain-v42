@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -74,7 +75,40 @@ def _section_tickets(groups: Any | None) -> str:
     if silenced > 0:
         noun = "ticket tu" if silenced == 1 else "tickets tus"
         lines.append(f"→ {silenced} {noun} par le cap (brain_ticket_list pour le reste)")
+        # La convention de titre (« REVUE 2026-09-03 — … ») devient opérante
+        # AU-DELÀ du cap (ticket 259cfbe5). Mesuré le 2026-08-29 : la seule
+        # échéance datée du carnet était au rang 49/62, invisible — le tri par
+        # récence punit précisément les tickets qu'on ne touche pas pendant que
+        # leur date approche. Une DATE est falsifiable et s'auto-périme : la
+        # revoir (toucher le ticket) le remonte dans la récence et éteint cette
+        # ligne. Aucun rang posé à la main, aucune colonne : l'arbitrage de la
+        # migration deadline (lot C12) reste entier.
+        silenced_tickets = [*a_traiter[len(shown_traiter) :], *a_confirmer[len(shown_confirmer) :]]
+        for due, hidden in _dated(silenced_tickets)[:2]:
+            gap = (due - datetime.now(UTC).date()).days
+            when = f"dépassée de {-gap}j" if gap < 0 else f"dans {gap}j"
+            lines.append(
+                f"→ daté hors cap : #{format_id(str(hidden.id))} « {hidden.title} » ({due}, {when})"
+            )
     return "\n".join(lines)
+
+
+_TITLE_DATE = re.compile(r"20\d{2}-\d{2}-\d{2}")
+
+
+def _dated(tickets: list[Any]) -> list[tuple[date, Any]]:
+    """Les tickets dont le TITRE porte une date ISO valide, la plus proche d'abord."""
+    found: list[tuple[date, Any]] = []
+    for candidate in tickets:
+        match = _TITLE_DATE.search(candidate.title)
+        if match is None:
+            continue
+        try:
+            found.append((date.fromisoformat(match.group(0)), candidate))
+        except ValueError:
+            continue
+    found.sort(key=lambda pair: pair[0])
+    return found
 
 
 def _ds_relative(d: datetime | None) -> str:
@@ -232,7 +266,7 @@ def _format_focus_age(written_at: datetime, now: datetime) -> str:
     return f"il y a {hours // 24}j"
 
 
-def _focus_margin_line(focus_length: int) -> str:
+def _focus_margin_line(focus_length: int, focus_octets: int | None = None) -> str:
     """Ce qu'il reste avant que `brain_session_end` refuse de fermer.
 
     `next_focus` est OBLIGATOIRE et plafonné ; il REMPLACE `current_focus` quand
@@ -251,6 +285,13 @@ def _focus_margin_line(focus_length: int) -> str:
     margin = NEXT_FOCUS_MAX_LENGTH - focus_length
     head = f"- Focus : {focus_length} / {NEXT_FOCUS_MAX_LENGTH} caractères"
     if margin > 0:
+        # Le sujet « lequel des deux on compte » rouvert le 2026-08-29 : la
+        # borne compte des CARACTÈRES, et le même focus a fait 9 977 caractères
+        # pour 10 285 octets — une borne en octets serait déjà franchie. Les
+        # deux nombres sur la ligne NOMINALE seulement : les branches bruyantes
+        # restent pures, exactement là où la décision d'origine l'argumentait.
+        if focus_octets is not None:
+            return f"{head} (marge {margin} ; {focus_octets} octets)"
         return f"{head} (marge {margin})"
     if margin == 0:
         return (
@@ -270,6 +311,7 @@ def _section_technical_state(
     focus_updated_at: datetime | None = None,
     focus_tracked: bool = False,
     focus_length: int | None = None,
+    focus_octets: int | None = None,
     now: datetime | None = None,
 ) -> str:
     """### État technique — derived at briefing time, never stored.
@@ -310,7 +352,7 @@ def _section_technical_state(
         )
         lines.append(f"- Focus écrit : {age}")
     if focus_length is not None:
-        lines.append(_focus_margin_line(focus_length))
+        lines.append(_focus_margin_line(focus_length, focus_octets))
     if not lines:
         return ""
     return "\n".join(["### État technique (mesuré)", *lines])
@@ -354,6 +396,9 @@ def _format_session_briefing(
             focus_updated_at=getattr(ctx, "focus_updated_at", None),
             focus_tracked=ctx is not None,
             focus_length=(len(ctx.current_focus) if ctx and ctx.current_focus else None),
+            focus_octets=(
+                len(ctx.current_focus.encode("utf-8")) if ctx and ctx.current_focus else None
+            ),
         ),
         _section_focus(ctx),
         _section_blockers(blockers),
