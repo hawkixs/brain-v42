@@ -188,44 +188,69 @@ def create_all_db_url() -> Iterator[str]:
         _drop_database(admin_url, database)
 
 
-async def _fetch_constraints(url: str) -> dict[str, str]:
+async def _fetch_constraints(url: str) -> dict[tuple[str, str], str]:
+    """Tous les CHECK du schéma public, clés (table, nom) — jamais un filtre.
+
+    La première version filtrait `conrelid = brain_sessions` : la review de la
+    PR 44 a mesuré 18 CHECK présents dans la chaîne et absents de create_all()
+    sur 12 AUTRES tables — la classe du ticket 8f59f6b7 déplacée d'une table,
+    pas fermée. La comparaison toutes-tables des CHECK tient en une requête ;
+    triggers et fonctions restent hors périmètre, eux à raison (ils n'ont pas
+    de place dans METADATA).
+    """
     engine = create_async_engine(url, poolclass=NullPool)
     try:
         async with engine.connect() as connection:
             rows = (
                 await connection.execute(
                     sa.text(
-                        "SELECT conname, pg_get_constraintdef(oid) AS definition "
+                        "SELECT conrelid::regclass::text AS tbl, conname, "
+                        "pg_get_constraintdef(oid) AS definition "
                         "FROM pg_constraint "
-                        "WHERE conrelid = 'public.brain_sessions'::regclass "
-                        "AND contype = 'c'"
+                        "WHERE contype = 'c' "
+                        "AND connamespace = 'public'::regnamespace"
                     )
                 )
             ).mappings()
-            return {str(row["conname"]): str(row["definition"]) for row in rows}
+            return {(str(row["tbl"]), str(row["conname"])): str(row["definition"]) for row in rows}
     finally:
         await engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_create_all_reproduces_every_brain_sessions_check_constraint(
+async def test_create_all_reproduces_every_check_constraint_of_the_chain(
     fresh_head_db_url: str, create_all_db_url: str
 ) -> None:
-    """Parité intégrale des CHECK de `brain_sessions` : chaîne alembic d'un
-    côté, `create_all()` de l'autre, comparés par `pg_get_constraintdef` — la
-    même lecture qui a établi la divergence en production.
+    """Parité intégrale des CHECK, TOUTES tables : chaîne alembic d'un côté,
+    `create_all()` de l'autre, comparés par `pg_get_constraintdef` — la même
+    lecture qui a établi la divergence en production.
 
-    Couvre les deux défauts nommés du ticket (XOR 047, branche 046) ET tout
-    troisième écart sur cette table, découvert ou futur : le recensement
-    demandé par le ticket est ce test, pas une lecture unique.
+    Née sur `brain_sessions` seule (XOR 047, branche 046) ; la review de la
+    PR 44 a prouvé que la classe du ticket 8f59f6b7 vivait aussi sur 12 autres
+    tables (18 CHECK absents : un banc create_all() acceptait
+    `learnings.confidence = '42'` ou un `project_key` malformé que la prod
+    refuse). Le recensement demandé par le ticket est CE test, sans filtre :
+    tout CHECK ajouté par une migration future devra exister dans METADATA —
+    ou être exempté ICI, par table, avec sa raison écrite.
     """
     from_chain = await _fetch_constraints(fresh_head_db_url)
     from_metadata = await _fetch_constraints(create_all_db_url)
 
-    assert set(from_metadata) == set(from_chain)
-    for name in sorted(from_chain):
-        assert from_metadata[name] == from_chain[name], (
-            f"constraint {name} diverges between create_all() and the alembic chain"
+    missing = sorted(set(from_chain) - set(from_metadata))
+    assert not missing, (
+        "CHECK présents dans la chaîne alembic et absents de create_all() — "
+        "le banc accepte ce que la prod refuse :\n"
+        + "\n".join(f"  {table} :: {name}" for table, name in missing)
+    )
+    extra = sorted(set(from_metadata) - set(from_chain))
+    assert not extra, (
+        "CHECK présents dans create_all() et absents de la chaîne — le banc "
+        "refuse ce que la prod accepte :\n"
+        + "\n".join(f"  {table} :: {name}" for table, name in extra)
+    )
+    for key in sorted(from_chain):
+        assert from_metadata[key] == from_chain[key], (
+            f"constraint {key} diverges between create_all() and the alembic chain"
         )
 
 

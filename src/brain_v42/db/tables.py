@@ -401,6 +401,18 @@ decisions = Table(
         postgresql_with={"m": 16, "ef_construction": 64},
         postgresql_ops={"embedding": "vector_cosine_ops"},
     ),
+    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
+    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
+    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # tests/integration/db/test_fresh_head_is_the_yardstick.py.
+    sa.CheckConstraint(
+        "status IN ('active', 'superseded', 'deprecated')",
+        name="decisions_status_check",
+    ),
+    sa.CheckConstraint(
+        "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive')",
+        name="ck_decisions_freshness_source",
+    ),
 )
 
 # ─── learnings ────────────────────────────────────────────────────────────────
@@ -457,6 +469,24 @@ learnings = Table(
         postgresql_using="hnsw",
         postgresql_with={"m": 16, "ef_construction": 64},
         postgresql_ops={"embedding": "vector_cosine_ops"},
+    ),
+    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
+    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
+    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # tests/integration/db/test_fresh_head_is_the_yardstick.py.
+    sa.CheckConstraint(
+        "confidence IN ('low', 'medium', 'high')",
+        name="learnings_confidence_check",
+    ),
+    sa.CheckConstraint(
+        "source_type IN ('experience', 'documentation', 'code_review', 'bug', "
+        "'external', 'article', 'video', 'book', 'conversation', 'research', "
+        "'automated')",
+        name="learnings_source_type_check",
+    ),
+    sa.CheckConstraint(
+        "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive')",
+        name="ck_learnings_freshness_source",
     ),
 )
 
@@ -519,6 +549,14 @@ snippets = Table(
         postgresql_with={"m": 16, "ef_construction": 64},
         postgresql_ops={"embedding": "vector_cosine_ops"},
     ),
+    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
+    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
+    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # tests/integration/db/test_fresh_head_is_the_yardstick.py.
+    sa.CheckConstraint(
+        "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive')",
+        name="ck_snippets_freshness_source",
+    ),
 )
 
 # ─── runbooks ─────────────────────────────────────────────────────────────────
@@ -579,6 +617,14 @@ runbooks = Table(
         postgresql_using="hnsw",
         postgresql_with={"m": 16, "ef_construction": 64},
         postgresql_ops={"embedding": "vector_cosine_ops"},
+    ),
+    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
+    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
+    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # tests/integration/db/test_fresh_head_is_the_yardstick.py.
+    sa.CheckConstraint(
+        "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive')",
+        name="ck_runbooks_freshness_source",
     ),
 )
 
@@ -647,6 +693,18 @@ adrs = Table(
         postgresql_with={"m": 16, "ef_construction": 64},
         postgresql_ops={"embedding": "vector_cosine_ops"},
     ),
+    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
+    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
+    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # tests/integration/db/test_fresh_head_is_the_yardstick.py.
+    sa.CheckConstraint(
+        "status IN ('proposed', 'accepted', 'deprecated', 'superseded')",
+        name="adrs_status_check",
+    ),
+    sa.CheckConstraint(
+        "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive')",
+        name="ck_adrs_freshness_source",
+    ),
 )
 
 # ─── project_contexts ─────────────────────────────────────────────────────────
@@ -707,6 +765,14 @@ project_contexts = Table(
     Index("idx_project_contexts_key", "project_key"),
     Index("idx_project_contexts_languages", "languages", postgresql_using="gin"),
     Index("idx_project_contexts_frameworks", "frameworks", postgresql_using="gin"),
+    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
+    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
+    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # tests/integration/db/test_fresh_head_is_the_yardstick.py.
+    sa.CheckConstraint(
+        "project_key ~ '^[a-z0-9]+([:-][a-z0-9]+)*$'",
+        name="chk_project_key_format",
+    ),
 )
 
 # ─── brain_sessions (explicit agent session lifecycle) ──────────────────────
@@ -1026,6 +1092,14 @@ features = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     Index("idx_features_project_key", "project_key"),
     Index("idx_features_status", "status"),
+    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
+    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
+    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # tests/integration/db/test_fresh_head_is_the_yardstick.py.
+    sa.CheckConstraint(
+        "status IN ('planned', 'research', 'design', 'building', 'deployed', 'done', 'archived')",
+        name="features_status_check",
+    ),
 )
 
 feature_artifacts = Table(
@@ -1044,6 +1118,15 @@ feature_artifacts = Table(
     UniqueConstraint("feature_id", "artifact_type", "artifact_id"),
     Index("idx_feature_artifacts_feature_id", "feature_id"),
     Index("idx_feature_artifacts_artifact", "artifact_type", "artifact_id"),
+    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
+    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
+    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # tests/integration/db/test_fresh_head_is_the_yardstick.py.
+    sa.CheckConstraint(
+        "artifact_type IN ('learning', 'decision', 'snippet', 'runbook', 'adr', "
+        "'plan', 'gitlab_event')",
+        name="feature_artifacts_artifact_type_check",
+    ),
 )
 
 # ─── access_log (memory decay) ───────────────────────────────────────────────
@@ -1182,6 +1265,26 @@ indexed_plans = Table(
     # list_plans() in pg_indexed_plan_repo sorts ORDER BY updated_at DESC;
     # this index eliminates the sort on large datasets.
     Index("idx_indexed_plans_updated_at", sa.text("updated_at DESC")),
+    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
+    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
+    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # tests/integration/db/test_fresh_head_is_the_yardstick.py.
+    sa.CheckConstraint(
+        "status IN ('draft', 'active', 'archived')",
+        name="indexed_plans_status_check",
+    ),
+    sa.CheckConstraint(
+        "plan_type IN ('spec', 'plan')",
+        name="indexed_plans_plan_type_check",
+    ),
+    sa.CheckConstraint(
+        "freshness_status IN ('fresh', 'stale', 'archived')",
+        name="indexed_plans_freshness_status_check",
+    ),
+    sa.CheckConstraint(
+        "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive')",
+        name="ck_indexed_plans_freshness_source",
+    ),
 )
 
 # ─── indexed_plan_chunks ─────────────────────────────────────────────────────
@@ -1239,6 +1342,18 @@ indexed_plan_chunks = Table(
         postgresql_using="gin",
     ),
     Index("idx_plan_chunks_pk_type", "project_key", "plan_type"),
+    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
+    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
+    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # tests/integration/db/test_fresh_head_is_the_yardstick.py.
+    sa.CheckConstraint(
+        "status IN ('draft', 'active', 'archived')",
+        name="indexed_plan_chunks_status_check",
+    ),
+    sa.CheckConstraint(
+        "plan_type IN ('spec', 'plan')",
+        name="indexed_plan_chunks_plan_type_check",
+    ),
 )
 
 # ─── gitlab_events ─────────────────────────────────────────────────────────
