@@ -141,7 +141,14 @@ class ClientActivityRegistry:
         return f"{agent}-{digest[:32]}"
 
     def _session_key(self, identifier: str) -> str:
-        """Hash a session UUID into the AGENT-NEUTRAL join key.
+        """Hash a session identifier into the AGENT-NEUTRAL join key.
+
+        « Session » au sens de la jointure, pas d'un champ unique : le site
+        Codex passe ``record.conversation_id`` et c'est VOULU — pour Codex,
+        ``conversation.id`` EST son identifiant de session (mesuré strictement
+        égal, décision ``4890a475``). Le site Claude et la moitié brain passent
+        un ``session_id`` littéral. L'ancienne formulation (« a SESSION uuid »)
+        laissait croire que le site Codex se trompait de champ (863ff2ca).
 
         The brain side never learns which CLI is calling it: ``X-Brain-Agent``
         carries a project name, not a kind of agent. Salting this key with an

@@ -230,6 +230,11 @@ class TestJoin:
         d'un agent en invente un — mesuré, celui de Claude pour tout le monde.
         Un Codex qui déclarerait sa session sortait alors en ligne fantôme
         ``claude-…`` à côté de sa vraie ligne ``codex-…``, sans jamais joindre.
+
+        Ce test épingle AUSSI l'égalité de la décision ``4890a475`` : la ligne
+        OTLP est clée par ``conversation.id``, l'observation brain déclare le
+        même UUID comme SESSION — la jointure ne tient que parce que, pour
+        Codex, les deux identifiants sont strictement égaux (863ff2ca).
         """
         registry = _registry()
         registry.ingest_otlp_json(_codex_payload())

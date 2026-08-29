@@ -218,6 +218,17 @@ class Settings(BaseSettings):
     # qui justifiait le bind LAN est off. Overridable via METRICS_HOST si
     # revival (gateway docker) — pas de validator loopback-only exprès.
     metrics_host: str = Field(default="127.0.0.1", validation_alias=_brain_alias("METRICS_HOST"))
+    # Posture du bind NON-loopback (eac03668). Sur un tel bind, les trois
+    # receveurs POST ne sont pas enregistrés et le refus vient du routeur
+    # aiohttp, invisible de l'access log comme des compteurs. Trois postures :
+    # `silent` (historique, DÉFAUT — le comportement que deux tests épinglaient
+    # sans le nommer), `warn` (routes toujours absentes, une ligne au démarrage
+    # qui nomme le sacrifice), `fail_closed` (la construction refuse). Le choix
+    # entre les trois est un ARBITRAGE OPÉRATEUR, pas un correctif : ce champ
+    # existe pour qu'il se prenne en une variable d'environnement, pas en lot.
+    metrics_nonloopback_posture: Literal["silent", "warn", "fail_closed"] = Field(
+        default="silent", validation_alias=_brain_alias("METRICS_NONLOOPBACK_POSTURE")
+    )
 
     # --- Identité de transport (Mcp-Session-Id frappé par le serveur) ---
     # Contrairement au reste du dépôt, ce réglage est livré OUVERT (donc avec

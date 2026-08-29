@@ -275,9 +275,10 @@ def test_no_declared_status_can_ship_without_an_access_log() -> None:
     Journaliser LÀ rend la couverture indéfectible par construction, au lieu de la
     laisser dépendre de la vigilance du prochain site d'appel.
     """
+    counters = server_module.ReceiverRejectionCounters()
     for status in server_module._OTLP_ERROR_STATUSES:
         with capture_logs() as records:
-            response = server_module._otlp_error(status, receiver="codex_logs")
+            response = server_module._otlp_error(status, receiver="codex_logs", counters=counters)
         assert response.status == status
         assert [r for r in records if r.get("event") == _ACCESS_LOG_EVENT], (
             f"{status} déclaré dans la table mais non journalisé"

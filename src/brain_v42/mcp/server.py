@@ -41,6 +41,7 @@ from starlette.responses import JSONResponse
 from brain_v42.config import Settings, get_settings
 from brain_v42.db.engine import dispose_engine, get_session_factory
 from brain_v42.db.neo4j import close_neo4j_driver, create_neo4j_driver
+from brain_v42.mcp.activity_reporter import close_activity_reporter
 from brain_v42.mcp.business_errors import surface_business_errors
 from brain_v42.mcp.dream_capabilities import (
     DreamCapabilityConfigurationError,
@@ -221,6 +222,10 @@ async def app_lifecycle(
     async with AsyncExitStack() as cleanup:
         cleanup.push_async_callback(dispose_engine)
         cleanup.push_async_callback(close_neo4j_driver, services["neo4j_driver"])
+        # d5e4bd73, second trou : sans cette fermeture, les POST d'activité
+        # en vol mouraient à l'arrêt sans être comptés. LIFO : elle joue
+        # avant dispose_engine, pendant que la boucle sert encore.
+        cleanup.push_async_callback(close_activity_reporter)
 
         if tracing_armed:
             # `shutdown_on_exit=False` a désarmé l'atexit du SDK pour qu'un
@@ -280,13 +285,30 @@ async def app_lifecycle(
         yield
 
 
+def create_mcp_instance() -> FastMCP:
+    """Construire une instance FastMCP avec son câblage indépendant des services.
+
+    UNE définition pour DEUX consommateurs : le singleton de module ci-dessous
+    (production — ``/health`` s'y ajoute par décorateur) et les bancs
+    d'intégration qui montent leur propre serveur. Sans elle, un banc qui
+    réutilisait le singleton héritait des tools enregistrés par un module de
+    tests collecté avant lui — 20 « Component already exists » mesurés, fermés
+    sur un engine déjà ``dispose()`` (ticket ``83d8785b``) — et l'ordre de
+    collecte pytest devenait signifiant. Le remède n'est PAS un câblage
+    reproduit à la main dans le banc : ``build_server`` a déjà tranché qu'un
+    double est pire qu'aucun test.
+    """
+    instance = FastMCP("brain", mask_error_details=True)
+    # Provenance : posé ici et non dans register_tools, pour être indépendant de
+    # l'activation des métriques et de l'ordre d'enregistrement des tools.
+    # `apply_tool_catalog_profile` et `maybe_apply_code_mode` retournent le MÊME
+    # objet, donc ce middleware survit aux deux.
+    instance.add_middleware(ProvenanceMiddleware())
+    return instance
+
+
 # Module-level FastMCP instance
-mcp = FastMCP("brain", mask_error_details=True)
-# Provenance : posé ici et non dans register_tools, pour être indépendant de
-# l'activation des métriques et de l'ordre d'enregistrement des tools.
-# `apply_tool_catalog_profile` et `maybe_apply_code_mode` retournent le MÊME
-# objet, donc ce middleware survit aux deux.
-mcp.add_middleware(ProvenanceMiddleware())
+mcp = create_mcp_instance()
 
 
 @mcp.custom_route("/health", methods=["GET"])

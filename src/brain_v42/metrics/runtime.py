@@ -413,6 +413,7 @@ def build_metrics_runtime(
             webhook_secret=effective_settings.gitlab_webhook_secret,
             graph_svc=graph_svc,
             graph_projection_svc=graph_projection_svc,
+            nonloopback_posture=effective_settings.metrics_nonloopback_posture,
         )
 
     lease = (

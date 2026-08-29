@@ -175,6 +175,8 @@ async def http_server_and_collector(
     monkeypatch.setenv("BRAIN_MCP_PROFILE", "compact")
     monkeypatch.setenv("METRICS_ENABLED", "true")
     monkeypatch.setenv("GRAPH_ENABLED", "false")
+    # Le couple, jamais la moitié — même raison que test_lifecycle.
+    monkeypatch.setenv("GRAPH_LEDGER_WRITE_ENABLED", "false")
     monkeypatch.setenv("DECAY_ENABLED", "false")
     get_settings.cache_clear()
 
@@ -186,13 +188,22 @@ async def http_server_and_collector(
     engine_module._engine = None
     engine_module._session_factory = None
 
-    from brain_v42.mcp.server import build_services, mcp
+    from brain_v42.mcp.server import build_services, create_mcp_instance
+
+    # Instance PROPRE au banc, jamais le singleton de module : le singleton
+    # porte les tools que tests/integration/mcp/** y a enregistrés, fermés
+    # sur un engine que leur teardown a déjà dispose() — 20 « Component
+    # already exists » mesurés, et l'ordre de collecte devenait signifiant
+    # (ticket 83d8785b). La factory vient de server.py : un seul câblage,
+    # provenance comprise, pas un double monté à la main.
+    mcp = create_mcp_instance()
 
     # TÉMOIN D'ENTRÉE — relevé SEUL, aucune assertion.
     #
-    # C'est le seul point de ce banc qui voit l'état PARTAGÉ avant que le banc
-    # metrics ne le touche, donc le seul où ce qu'a laissé tests/integration/mcp/**
-    # (collecté avant : "mcp" < "metrics") est encore attribuable à son auteur.
+    # Depuis l'isolement (ticket 83d8785b), `mcp` est une instance NEUVE : ce
+    # relevé ne peut plus voir de tools hérités. Il garde sa valeur pour l'état
+    # de PROCESSUS que l'isolement ne purge pas — le latch de classe
+    # `sse_starlette.sse.AppStatus.should_exit`, ci-dessous.
     #
     # Ce qui se joue ici est UNE ligne du relevé :
     # `sse_starlette.sse.AppStatus.should_exit`. C'est un attribut de CLASSE, donc
@@ -247,8 +258,12 @@ async def http_server_and_collector(
 
     profiled_mcp = apply_tool_catalog_profile(mcp, "compact")
 
-    # Build ASGI app (stateless_http so each request gets a fresh transport)
-    app = profiled_mcp.http_app(stateless_http=True)
+    # Build ASGI app (stateless_http so each request gets a fresh transport).
+    # json_response=True : le transport de PRODUCTION (plan_http_transport),
+    # jamais le SSE-sur-POST que le défaut de http_app() choisirait — voir le
+    # message du commit et le ticket 85559792 pour ce que ce banc CESSE de
+    # prouver en quittant ce transport fantôme.
+    app = profiled_mcp.http_app(stateless_http=True, json_response=True)
 
     port = _get_free_port()
     config = uvicorn.Config(
@@ -349,9 +364,9 @@ async def test_agent_attribution_concurrent(
 
     bench = http_server_and_collector
     base_url, collector = bench.base_url, bench.collector
-    # Le libellé porte l'identité : si l'objet servant l'app EST le singleton
-    # partagé, les compteurs de lifespan relevés sont ceux que les modules
-    # précédents ont laissés.
+    # Le libellé porte l'identité : depuis l'isolement (83d8785b) il doit dire
+    # False — s'il redisait True, le banc serait retombé sur le singleton et
+    # les compteurs de lifespan relevés seraient ceux d'autres modules.
     from brain_v42.mcp.server import mcp as shared_mcp  # noqa: PLC0415
 
     label_suffix = f"profiled is singleton: {bench.mcp is shared_mcp}"
