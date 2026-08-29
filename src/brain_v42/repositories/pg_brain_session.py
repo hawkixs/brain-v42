@@ -989,12 +989,26 @@ class PgBrainSessionRepo(BasePgRepository):
         return dict(row) if row is not None else None
 
     async def _count_open(self, session: AsyncSession, project_key: str) -> int:
+        """Compter les sessions que le CYCLE EXPLICITE gouverne — jamais les traçantes.
+
+        Ce nombre est rendu à chaque `start`/`resume`/`end` comme mesure de
+        concurrence de TRAVAIL. Mesuré le 2026-08-25 (ticket 92fe7f0f) : il a
+        affiché 36 quand la concurrence humaine réelle était 2, les traçantes
+        `agent` ne mourant jamais avec leur transport. Les compter ici les fait
+        passer pour ce qu'elles ne sont pas ; elles restent visibles par
+        `list` et comptées séparément par le balayage. `nature IS NULL`
+        (pré-046) reste compté : ces sessions sont humaines par construction.
+        """
         stmt = (
             sa.select(sa.func.count())
             .select_from(brain_sessions)
             .where(
                 brain_sessions.c.project_key == project_key,
                 brain_sessions.c.status == "open",
+                sa.or_(
+                    brain_sessions.c.nature.is_(None),
+                    brain_sessions.c.nature != "agent",
+                ),
             )
         )
         return int((await session.execute(stmt)).scalar_one())

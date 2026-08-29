@@ -311,3 +311,36 @@ async def test_reobserving_a_tracer_moves_both_clocks_but_never_its_start(
     assert row["last_observed_at"] == again_at
     assert row["last_heartbeat_at"] == again_at
     assert row["started_at"] == opened_at, "réobserver n'est pas rouvrir"
+
+
+async def test_open_session_count_speaks_of_humans_never_of_tracers(
+    session_factory: async_sessionmaker[AsyncSession],
+    autoopen_project: str,
+) -> None:
+    """Le compteur a affiché 36 quand la concurrence humaine réelle était 2.
+
+    Ticket 92fe7f0f : 63 traçantes ouvertes mesurées le 2026-08-29, chacune
+    pointant un transport mort — et `open_session_count`, rendu à chaque
+    `brain_session_start`, les additionne aux sessions de travail. Un lecteur
+    pressé y lit une concurrence qui n'existe pas ; ce compteur a déjà induit
+    en erreur une fois, pendant l'instruction du défaut d'absorption.
+
+    La règle : le compteur parle des sessions que le CYCLE EXPLICITE gouverne
+    — `nature IS NULL` (pré-046, humaines par construction) ou non-`agent`.
+    Les traçantes ont leurs propres compteurs (le sweep les nomme séparément) ;
+    les cacher d'ICI n'est pas les cacher, c'est cesser de les faire passer
+    pour ce qu'elles ne sont pas.
+    """
+    repo = PgBrainSessionRepo(session_factory)
+
+    opened = await repo.auto_open(
+        _Identity(autoopen_project, uuid4().hex),
+        now=datetime(2026, 8, 29, 9, 0, tzinfo=UTC),
+    )
+    assert opened is not None
+
+    started = await repo.start(autoopen_project, f"humain-{uuid4().hex[:8]}")
+
+    assert started.open_session_count == 1, (
+        "la traçante ouverte ne doit pas compter comme une session de travail"
+    )
