@@ -58,6 +58,7 @@ images:
     consumers:
       - .github/workflows/continuous-integration.yml
       - docker-compose.yml
+      - tests/support/hnsw-churn-compose.yml
       - tests/support/task0-compose.yml
 
   llama-server-cuda:

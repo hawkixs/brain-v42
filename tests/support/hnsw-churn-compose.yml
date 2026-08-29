@@ -1,0 +1,48 @@
+# Banc isolé pour `scripts/hnsw_churn_measure.sh`.
+#
+# Même digest que le service `postgres` de `docker-compose.yml` : le banc
+# mesure donc sur la CIBLE VERSIONNÉE, ce qui le rend reproductible et épinglé.
+#
+# CE QU'IL NE FAIT PAS, et qu'il ne faut pas lui prêter : reproduire le RUNTIME
+# de production. Mesuré le 2026-08-28, les deux ont divergé — le conteneur
+# `brain_v42_postgres` en cours tourne l'image `b295c2aa…`, démarrée depuis le
+# tag nu avant l'épinglage, quand le digest déclaré ici résout vers
+# `5fa1d4c7…`. Conséquence sur `vector` : 0.8.4 disponible côté runtime, 0.8.5
+# côté cible versionnée, et 0.8.2 réellement INSTALLÉ en production. Trois
+# valeurs, aucune interchangeable. Un `docker compose up -d` recréerait le
+# conteneur et ferait bouger la première sans prévenir.
+#
+# `pull_policy: never` verrouille l'image au contenu local : le banc ne peut pas
+# basculer en silence sur une version plus récente entre deux mesures.
+#
+# RÉSEAU : le banc porte une COPIE des embeddings de production, en `trust`,
+# sans mot de passe. Il vit donc sur le réseau INTERNE de son propre projet
+# compose (`internal: true` : pas de passerelle, pas d'egress), jamais sur le
+# bridge par défaut — où tout conteneur co-résident l'atteignait en superuser
+# sans jeton, port publié ou non (reproduit pendant la review de la PR #41).
+# Tout passe par `docker exec` ; aucun port n'est publié ; le script lance ce
+# fichier avec `-p` et son trap `down` emporte le réseau avec le conteneur.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
+    pull_policy: never
+    container_name: ${CHURN_CONTAINER:?CHURN_CONTAINER is required}
+    # Marqueur de propriété : le teardown du script ne détruit QUE ce qui le
+    # porte. Sans lui, `docker compose -p <nom> down` matche projet+service
+    # par label et un CHURN_CONTAINER homonyme d'un projet vivant (brain_v42…)
+    # ferait emporter ce projet par le trap.
+    labels:
+      com.brain-v42.hnsw-churn-bench: "true"
+    environment:
+      POSTGRES_USER: churn
+      POSTGRES_DB: churn
+      POSTGRES_HOST_AUTH_METHOD: trust
+    tmpfs:
+      - /var/lib/postgresql/data:rw,size=2g
+    restart: "no"
+
+networks:
+  default:
+    internal: true
+    labels:
+      com.brain-v42.hnsw-churn-bench: "true"

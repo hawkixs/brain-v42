@@ -19,23 +19,84 @@ rule, and it fails on the version of this file that shipped before 2026-08-22 �
 here and the restore procedure below were found to be describing two different databases.
 
 <!-- dr-current:start -->
-| Target | Value | Replayed against live production |
+| Target | Value | Measured, and against what |
 | --- | --- | --- |
-| Alembic head | `046` | 2026-08-22 |
-| Recovery contract, live target | `ops/recovery/brain-v42-v5.sql` | 2026-08-22 |
-| Recovery contract, restored target | `ops/recovery/brain-v42-v5-pgrestore.sql` | 2026-08-22 |
-| Contract receipt, both variants | `29/29` | 2026-08-22 |
-| ACL contract, live only, no `-pgrestore` twin | `ops/recovery/brain-v42-v5-acl.sql` | 2026-08-22 |
-| ACL receipt | `1/1` | 2026-08-22 |
+| Alembic head | `048` | 2026-08-28, live production |
+| Recovery contract, live target | `ops/recovery/brain-v42-v5.sql` | 2026-08-22, live production |
+| Recovery contract, restored target | `ops/recovery/brain-v42-v5-pgrestore.sql` | 2026-08-22, **live production — the wrong target, see below** |
+| Contract receipt, live asset replayed live | `29/29` | 2026-08-22, live production |
+| Contract receipt, `-pgrestore` asset against a real restore | *never produced by this document* | — |
+| ACL contract, live only, no `-pgrestore` twin | `ops/recovery/brain-v42-v5-acl.sql` | 2026-08-22, live production |
+| ACL receipt | `1/1` | 2026-08-22, live production |
+| Search top-10 churn across HNSW rebuilds, `learnings` ONLY, n=40 probes | `0` — overlap `10/10` on ten build pairs (`BUILDS=5`, seed 0.42), strict order included, both probe bands | 2026-08-29, copy of the 3243 real `learnings` embeddings, index path forced |
+
+Replay the head and the two live-target assets against production:
 
 ```bash
 docker exec brain_v42_postgres psql -U brain -d brain -Atc \
   "select version_num from alembic_version;"
-for asset in brain-v42-v5.sql brain-v42-v5-pgrestore.sql brain-v42-v5-acl.sql; do
+for asset in brain-v42-v5.sql brain-v42-v5-acl.sql; do
   docker exec -i brain_v42_postgres psql -U brain -d brain -Atq -v ON_ERROR_STOP=1 -f - \
     < "ops/recovery/$asset"
 done
 ```
+
+**The `-pgrestore` asset is deliberately absent from that loop.** Until 2026-08-28 this document
+looped over all three assets against `-d brain`, so the one asset written to attest a
+*restoration* was replayed against the original. It passes there — its fingerprints were minted
+on that very database — so no index residue, no `extversion` drift and no `pg_dump`/`pg_restore`
+round-trip divergence can ever surface in the replay this runbook prescribes. Run it only
+against a genuinely restored target, and say which one:
+
+```bash
+# The restored target lives in its OWN PostgreSQL instance (its own container),
+# never inside the production cluster: a database created next to `brain` in
+# `brain_v42_postgres` shares its binaries, so the extversion drift this asset
+# exists to surface is invisible by construction. `pg_restore --clean --create`
+# recreates the database under its archived name — `brain` — and that name is
+# EXPECTED here, outside production; what must never happen is replaying this
+# against the production cluster itself.
+RESTORED_CONTAINER=${RESTORED_CONTAINER:?name the container holding the restored instance}
+[ "$RESTORED_CONTAINER" != "brain_v42_postgres" ] || { echo "refusing: that is the production cluster" >&2; exit 2; }
+docker exec -i "$RESTORED_CONTAINER" psql -U brain -d "${RESTORED_DB:-brain}" -Atq -v ON_ERROR_STOP=1 -f - \
+  < "ops/recovery/brain-v42-v5-pgrestore.sql"
+```
+
+**Known failure on a healthy restore.** The `-pgrestore` contract pins `vector 0.8.2` — the
+version production *declares*. Every image this repository can restore into reports `0.8.4` or
+`0.8.5` (measured; production's own `vector.so` is byte-identical to the `0.8.4` build), so the
+`extension_vector` check fails on a perfectly healthy restore. Until ticket `2ed0d4e0` makes
+that check tolerant of the restore build, read a receipt short by exactly that one check as the
+known `extversion` drift; a receipt short anywhere else is a failed restore.
+
+**Read "variants" as two FILES, never as two targets.** There is one database in the loop above
+and two assets; the word has already been read the other way once, and that misreading is what
+kept the restored-target row empty for six days without anyone noticing.
+
+**On the churn row.** The row is measured on `learnings` **only** — the table the reference
+measurement already found the most stable — with n=40 probes in two distance bands: 20
+near-duplicates (1-NN distance 0.024–0.026) and 20 at realistic query distance (1-NN
+0.282–0.325 — the band the bench prints on every run, which is the source). Five rebuilds,
+ten build pairs, seed 0.42; the single recall miss against exact search sat at
+`Δd = 0.000000` — a pure tie shuffle, zero semantic loss. Do **not** generalize this `0` to
+every HNSW index. The reference is `docs/runbooks/2026-08-23-hnsw-restore-churn-declaration.md`
+(n=1544 queries, all 9 tables, the same real embeddings): it puts duplicate-heavy tables far
+outside this row — `gitlab_events` at 8.85/10 with 100 % of the divergence being tie
+shuffling — and it, not this row, carries the operator rule for reading a restore: **never
+compare identifier lists**; compare the number of rows returned and the mean top-10 distance
+(its §3 probe, with measured healthy and broken bands). Identifiers that move after a restore
+at unchanged distances are the documented noise of tie ordering, not a corruption signal.
+Two more things this row does not say. First, the bench forces the index path
+(`set enable_seqscan=off`) while production currently seq-scans `learnings`: the declaration's
+§0 measures the switch-over threshold at roughly 5,800 `learnings` rows and gives the
+one-query `idx_scan` control to replay before trusting any HNSW statement, this row included.
+Second, the bench runs the *versioned* image, not the live runtime — the two have drifted, and
+`pgvector` reports three different versions across the running container, the pinned target
+and what production actually has installed. Ticket `2ed0d4e0` carries that; do not read the
+churn row as evidence about the running server's exact build. Re-run
+`scripts/hnsw_churn_measure.sh` after any notable corpus growth — it prints its provenance,
+seed and probe bands, refuses an empty or foreign bench, and destroys its bench on exit — and
+replay the §0 control once `learnings` approaches the seq-scan threshold.
 <!-- dr-current:end -->
 
 **Replay it, do not quote it.** The receipt denominator moved four times on 2026-08-22 alone, and
@@ -43,14 +104,30 @@ the head has advanced nine times since the procedure below was first written. Ev
 dated for that reason: a number without its date is a trap, and this document has already sprung
 it once.
 
-**What no number above proves.** All of them were replayed against the **live** production
-database, never against a `pg_restore`d archive. None of them says anything about an actual
-restoration, and the P1 gate of `8eaefe36` stands entirely open — do not read a full receipt here
-as "DR is proven". The sequence check makes that sharper, not softer: on a live database
-`last_value >= max(id)` is true by construction, so the one control written FOR a restore is the
-one control no receipt here can ever exercise. The ACL contract has no `-pgrestore` twin at all,
-so owners and grants stay unattested on any restored target; that absence is a recorded decision,
-not an oversight.
+**What no number above proves.** Every contract and ACL value was replayed against the **live**
+production database, never against a `pg_restore`d archive — the third column now says so per
+row, so this is checkable rather than remembered. None of them says anything about an actual
+restoration, and the P1 gate — prove a real restore — stands entirely open. Follow `58711012`,
+which carries it: the ticket that first raised it, `8eaefe36`, was closed on 2026-08-28 as
+superseded by its five CATALOGUE splits, none of which carries this gate, and a closed ticket is
+terminal, so the gate was carried over rather than reopened. `5dc286b6` names the mechanism — no
+command in this document produces a receipt against a restored target. Do not read a full receipt here as
+"DR is proven". The sequence check makes that sharper, not softer: on a live
+database `last_value >= max(id)` is true by construction, so the one control written FOR a
+restore is the one control no receipt here can ever exercise. The ACL contract has no
+`-pgrestore` twin at all, so owners and grants stay unattested on any restored target; that
+absence is a recorded decision, not an oversight.
+
+The churn row is the one line above that does **not** come from production: it is measured on a
+read-only copy of the real corpus, and it describes index rebuilds rather than a restoration.
+It belongs here because an operator reads it at the same moment as the receipts — but it is not
+evidence about a restore, and it must not be counted as one.
+
+**Nothing here fails when these values go stale.** `test_runbook_normative_values_have_one_source.py`
+governs *where* a current value may be written; it never asks whether the value is still true.
+The head row above sat two revisions behind the deployed database for six days and the suite
+stayed green throughout. That gap is tracked separately — treat every date in the third column as
+the age of a claim, not as a guarantee.
 
 ## Fixed scope and private evidence
 
@@ -285,7 +362,8 @@ required. It is not free of consequence, though — apply it and the code togeth
   >
   > **What no receipt here proves.** Every number above was replayed against the **live**
   > production database, never against a `pg_restore`d dump. None of them says anything about
-  > an actual restoration. The P1 gate of `8eaefe36` stands entirely open — do not read
+  > an actual restoration. The P1 gate — first raised as `8eaefe36`, carried by `58711012`
+  > since its parent closed on 2026-08-28 — stands entirely open — do not read
   > `29/29` as "DR is proven". The sequence check makes that sharper, not softer: on a live
   > database `last_value >= max(id)` is true by construction, so the one control written
   > FOR a restore is the one control no receipt here can ever exercise.
@@ -363,7 +441,9 @@ exact backup into an isolated target with no production routing, then verify:
 - the expected schema, constraints, indexes, extensions, and table counts;
 - the recovery contract named in [Current targets](#current-targets), `-pgrestore` variant, run
   against the restored target and returning its full receipt. A short receipt is a failed restore,
-  not a stale gate.
+  not a stale gate — with one named exception: the `extension_vector` check fails on every
+  healthy restore until ticket `2ed0d4e0` closes (see the known-failure note in
+  [Current targets](#current-targets)).
 
 The restore test must use the same backup later designated for full recovery. A control snapshot
 is not a database backup: it omits plan contents, embeddings, and unrelated rows.
@@ -737,9 +817,12 @@ read as a pass.
 
 Then run the recovery contract named in [Current targets](#current-targets) against the restored
 target — the `-pgrestore` variant — and retain its full receipt and a provenance bundle. A short
-receipt is a failed restore, not a stale gate. The ACL contract has no `-pgrestore` twin and cannot
+receipt is a failed restore, not a stale gate — except the `extension_vector` check, which fails
+on every healthy restore until ticket `2ed0d4e0` closes (see the known-failure note in
+[Current targets](#current-targets)). The ACL contract has no `-pgrestore` twin and cannot
 be replayed here, so owners and grants stay unattested on the restored target; that gap is a
-recorded decision and part of what the P1 gate of `8eaefe36` still holds open. Only then restore
+recorded decision and part of what the P1 gate (`58711012`, first raised as `8eaefe36`) still
+holds open. Only then restore
 the captured login flags, reopen the database, start the MCP built for that head, pass health and
 read-only canaries, and enable the watchdog timer last.
 
