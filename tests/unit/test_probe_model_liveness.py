@@ -25,9 +25,11 @@ from __future__ import annotations
 import httpx
 import pytest
 from scripts.probe_model_liveness import (
+    ProbeResult,
     Verdict,
     classify_status,
     configured_models,
+    exit_code_for,
     probe_models,
 )
 
@@ -85,6 +87,85 @@ class TestConfiguredModels:
 
         assert sites, "le secours d'extract n'a pas d'entrée propre dans l'inventaire"
         assert [e.model for e in sites] == [DEFAULT_EXTRACT_FALLBACK_MODEL]
+
+
+class TestEnvPrecedence:
+    """La sonde doit résoudre comme les SITES résolvent : env compris.
+
+    Son unité systemd charge nvidia.env (EnvironmentFile) — exactement le
+    fichier où vivent les overrides. Une sonde qui lirait les seules
+    constantes rendrait un vert sur un modèle que plus personne n'appelle,
+    pendant que l'override réellement servi meurt sans être vu — le défaut
+    fondateur de l'inventaire, réintroduit par la porte env.
+    """
+
+    def test_a_roadmap_fallback_override_is_probed_instead_of_the_constant(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("BRAIN_NVIDIA_ROADMAP_FALLBACK_MODEL", "vendor/override-fb")
+
+        sites = [e for e in configured_models() if "DEFAULT_ROADMAP_FALLBACK_MODEL" in e.used_by]
+
+        assert [e.model for e in sites] == ["vendor/override-fb"]
+        assert "BRAIN_NVIDIA_ROADMAP_FALLBACK_MODEL" in sites[0].used_by, (
+            "le verdict doit dire que c'est l'ENV qu'on remplace, pas la constante"
+        )
+
+    def test_an_extract_override_is_probed_instead_of_the_constant(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("BRAIN_NVIDIA_MODEL", "vendor/override-extract")
+
+        sites = [e for e in configured_models() if "domain_backfill.DEFAULT_MODEL" in e.used_by]
+
+        assert [e.model for e in sites] == ["vendor/override-extract"]
+
+    def test_without_env_the_constants_hold(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for var in (
+            "BRAIN_NVIDIA_MODEL",
+            "BRAIN_NVIDIA_FALLBACK_MODEL",
+            "BRAIN_NVIDIA_ROADMAP_MODEL",
+            "BRAIN_NVIDIA_ROADMAP_FALLBACK_MODEL",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        from scripts.roadmap_curate import DEFAULT_ROADMAP_MODEL
+
+        models = {entry.model for entry in configured_models()}
+
+        assert DEFAULT_ROADMAP_MODEL in models
+
+
+class TestExitCode:
+    """OTHER n'est pas un vert : « je ne sais pas » doit se voir.
+
+    Mesuré le 2026-08-29 : gpt-oss-120b — le maillon WET dormant, celui-là
+    même que la sonde hebdomadaire existe pour surveiller — répond en 75 s
+    en queue froide, au-delà du timeout de sonde. Un OTHER qui sort en 0
+    rendrait l'unité verte chaque lundi sur le seul site qu'elle ne peut
+    structurellement pas mesurer. GONE garde son code (1) et le domine :
+    un modèle MORT est plus urgent qu'un modèle illisible.
+    """
+
+    @staticmethod
+    def _result(verdict: Verdict) -> ProbeResult:
+        entries = configured_models()
+        return ProbeResult(entries[0], None if verdict is Verdict.OTHER else 200, verdict)
+
+    def test_all_alive_is_zero(self) -> None:
+        assert exit_code_for([self._result(Verdict.ALIVE)]) == 0
+
+    def test_busy_is_transient_and_stays_zero(self) -> None:
+        assert exit_code_for([self._result(Verdict.BUSY)]) == 0
+
+    def test_gone_is_one(self) -> None:
+        assert exit_code_for([self._result(Verdict.GONE)]) == 1
+
+    def test_other_is_a_distinct_failure(self) -> None:
+        assert exit_code_for([self._result(Verdict.OTHER)]) == 3
+
+    def test_gone_dominates_other(self) -> None:
+        results = [self._result(Verdict.OTHER), self._result(Verdict.GONE)]
+        assert exit_code_for(results) == 1
 
 
 class TestClassify:
