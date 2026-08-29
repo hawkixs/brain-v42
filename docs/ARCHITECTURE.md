@@ -1,9 +1,9 @@
 # Architecture — brain_v42
 
 **Updated:** 2026-07-24
-**Repository and production state:** migrations 001–048 defined, 31 PG tables modeled; MCP catalog: 49 always-on + 2 graph-gated = 51. Production runs lifecycle v4 since 24 July 2026: revision 036 was applied and validated first, then 037 was proved before the restart-last MCP cutover and authenticated lifecycle-v4 E2E. The deployed Alembic head has since advanced and is not asserted here — measure it with `select version_num from alembic_version`. Last measurement: `045` on 16 August 2026, right after the 044→045 cutover.
+**Repository and production state:** migrations 001–049 defined, 31 PG tables modeled; MCP catalog: 49 always-on + 2 graph-gated = 51. Production runs lifecycle v4 since 24 July 2026: revision 036 was applied and validated first, then 037 was proved before the restart-last MCP cutover and authenticated lifecycle-v4 E2E. The deployed Alembic head has since advanced and is not asserted here — measure it with `select version_num from alembic_version`. Last measurement: `045` on 16 August 2026, right after the 044→045 cutover.
 
-**Repository target: 048.** Revision 048 adds `brain_session_artifacts.attribution_mode`,
+**Repository target: 049.** Revision 049 carries three objects of one family (nullable ADD COLUMN + widened CHECK), grouped under criterion (c) of decision 9d22bc6a — their downgrades fail independently, each behind its own named opt-in: `dream_runs.closed_inactive_count` (the per-night series of inactivity closures, kept distinct from abandonments), `dream_runs.thinking_tokens` (the agy rail was under-declaring ~38% of its tokens), and the `freshness_source` vocabulary widened with `manual_update` and `plan_reindex` on the six decay tables — the plan upsert now declares its provenance. Revision 048 adds `brain_session_artifacts.attribution_mode`,
 which records BY WHICH KEY a row was attributed: `explicit` (a human named the UUID),
 `derived_deposit` (the server parked it in a tracer), `derived_connection` (the exact match)
 and `derived_window` (deduced by temporal exclusivity). Nullable, no backfill — `NULL` means
@@ -679,7 +679,7 @@ brain_v42/
 │       ├── server.py             # entry point (stdio+http), build_services(), app_lifecycle()
 │       ├── http_security.py      # HostOriginGuard + BearerTokenGuard ASGI middleware
 │       └── tools/                # 49 always-on + 2 graph-gated = 51
-├── alembic/versions/             # migrations 001 .. 048 defined in the repository
+├── alembic/versions/             # migrations 001 .. 049 defined in the repository
 ├── scripts/                      # legacy import + projection inventory/recovery CLIs
 ├── tests/                        # unit/ + integration/
 ├── docs/

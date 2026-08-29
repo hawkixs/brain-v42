@@ -86,8 +86,13 @@ PINNED_ASSET_DRIFT: dict[str, dict[str, Any]] = {
         "view_option_mismatches": 0,
     },
     "table_shape": {
-        "table_column_mismatches": 1,
-        "table_constraint_mismatches": 2,
+        # 049 (re-mesuré le 2026-08-29) : +1 colonne-md5 (dream_runs gagne
+        # closed_inactive_count et thinking_tokens — un seul md5 par table),
+        # +6 contraintes (les six CHECK ck_*_freshness_source re-signés avec
+        # manual_update/plan_reindex). Le re-mint de l'actif (v7, lot DR)
+        # accompagne le rollout de la 049 et fera retomber ces épingles.
+        "table_column_mismatches": 2,
+        "table_constraint_mismatches": 8,
         "table_index_mismatches": 1,
     },
 }

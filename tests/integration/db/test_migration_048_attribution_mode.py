@@ -142,6 +142,9 @@ async def test_the_downgrade_refuses_to_erase_what_marks_a_guess_as_a_guess(
 
     from tests.integration.conftest import INTEGRATION_DB_URL
 
+    async with engine.connect() as conn:
+        head_before = await conn.scalar(sa.text("SELECT version_num FROM alembic_version"))
+
     try:
         result = subprocess.run(
             [sys.executable, "-m", "alembic", "downgrade", "047"],
@@ -161,7 +164,11 @@ async def test_the_downgrade_refuses_to_erase_what_marks_a_guess_as_a_guess(
 
         async with engine.connect() as conn:
             head = await conn.scalar(sa.text("SELECT version_num FROM alembic_version"))
-        assert head == "048", "le refus doit laisser la tête intacte"
+        # « Intacte » = LÀ OÙ ELLE ÉTAIT, pas un littéral : la descente
+        # multi-étapes roule dans une transaction — depuis la 049, le refus de
+        # la 048 annule aussi l'étape 049→048, et un littéral « 048 » aurait
+        # rougi à chaque nouvelle tête pour une raison sans rapport.
+        assert head == head_before, "le refus doit laisser la tête intacte"
     finally:
         await _cleanup(engine, project_key)
 

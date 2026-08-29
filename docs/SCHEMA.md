@@ -1,6 +1,6 @@
 # Schéma de données — brain_v42
 
-**État de livraison :** La cible du dépôt est 048. La révision 048 ajoute
+**État de livraison :** La cible du dépôt est 049. La révision 049 porte trois objets d'une même famille (colonnes nullable + CHECK élargi), regroupés sous le critère (c) de la décision 9d22bc6a — leurs downgrades échouent indépendamment, chacun derrière son opt-in nommé : `dream_runs.closed_inactive_count` (la série nuit-par-nuit des fermetures pour inactivité, distincte des abandons), `dream_runs.thinking_tokens` (le rail agy générait ~38 % de tokens comptés nulle part), et le vocabulaire `freshness_source` élargi de `manual_update` et `plan_reindex` sur les six tables du decay — l'upsert de plan déclare désormais sa provenance. Nullable, sans défaut, sans backfill (`NULL` = écrit avant la 049). La révision 048 ajoute
 `brain_session_artifacts.attribution_mode` : elle dit PAR QUELLE CLÉ une ligne a été attribuée
 — `explicit`, `derived_deposit`, `derived_connection` ou `derived_window`. Nullable et sans
 backfill (`NULL` = écrit avant la 048) ; index partiel sur le seul mode DÉDUIT, parce que
@@ -40,7 +40,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
 Le registre SQLAlchemy `METADATA` déclare 31 tables, dont les six tables de la fondation
-graph ci-dessous. Un schéma neuf au head 048 contient 32 tables `public` en comptant
+graph ci-dessous. Un schéma neuf au head 049 contient 32 tables `public` en comptant
 `alembic_version`, qui reste hors de `METADATA`. Les migrations 040 à 044 n'ajoutent que des
 colonnes et la 045 n'en ajoute aucune — elle élargit une colonne existante — le compte est donc
 inchangé depuis 038 : vérifié sur `brain`, mesuré à 32 juste après l'application de la 045. La migration 036 maintient
@@ -49,7 +49,7 @@ aussi dix vues `codex_*` au total : neuf nouvelles vues et `codex_brain_entity_v
 
 La migration 037 déclare `down_revision = "036"`. Le lifecycle v4 qu'elle porte tourne en
 production depuis le 24 juillet 2026, après application séquentielle de 036 puis 037 et preuve
-explicite avant le redémarrage MCP. La révision 048 est la tête du dépôt. La révision 038 ajoute
+explicite avant le redémarrage MCP. La révision 049 est la tête du dépôt. La révision 038 ajoute
 `ticket_extraction_attempts`, 039 isole le trigger de timestamp de `project_contexts`, 040
 ajoute `focus_updated_at`, et 041 ajoute les colonnes de provenance — aucune des quatre n'ajoute
 de table après 038. L'inventaire distingue
@@ -1005,7 +1005,7 @@ $$ LANGUAGE plpgsql;
 
 ## Migrations Alembic
 
-48 révisions (001 → 048), dans `alembic/versions/`.
+49 révisions (001 → 049), dans `alembic/versions/`.
 
 | Révision | Contenu principal |
 |----------|-------------------|
@@ -1055,6 +1055,7 @@ $$ LANGUAGE plpgsql;
 | 044 | `last_accessed_at_human` (TIMESTAMPTZ, nullable, sans défaut ni backfill) sur les six tables suivies par le decay. La 041 avait donné `access_count_human`, qui répare `freq_factor` ; elle laissait `access_factor` piloté par les lectures MACHINE — **1 522 learnings dans ce cas au 2026-08-22**, 2 060 sur les six tables. LES DEUX POIDS SONT PAR TYPE : `freq_factor` vaut 0,2 pour `decision`/`learning`/`adr` et 0,3 pour les trois autres ; `access_factor` vaut 0,3 partout sauf `adr` (0,2), et n'est **jamais dominé par l'âge** (`w_access >= w_age` sur les six) — la formule « le plus lourd après l'âge » le sous-estimait. L'agrégat de `pg_access_log` groupait déjà par acteur : il gagne un `max_accessed_human` dans la boucle qui existe. Consommée derrière `decay_human_signal_enabled`, livré FERMÉ |
 | 045 | `dream_runs.model` passe de `varchar(30)` à `varchar(120)`. Deux des cinq modèles de phase configurés n'entraient pas dans 30 car., dont le secours WET **déjà configuré** (`nvidia/nemotron-3-super-120b-a12b`, 33 car.) ; un dépassement lève `StringDataRightTruncation` dans un `INSERT` best-effort, donc c'est la LIGNE entière qui disparaît, pas la colonne. La vue `codex_dream_run_v1` doit tomber et revenir autour de l'`ALTER` — Postgres refuse de retyper une colonne qu'une vue projette — et son `GRANT SELECT` à `codex_ro` est reposé, un `DROP VIEW` emportant ses droits. Aucune table ajoutée, aucune donnée touchée. Downgrade fail-closed si des lignes dépassent 30 car. |
 | 047 | La branche `ended` de `brain_sessions_terminal_state_valid` perd le XOR « ledger non vide XOR `nothing_to_capture_reason` » : `captured_knowledge_ids` n'y porte plus aucune contrainte, comme sur `closed_inactive`. Seule survit « raison non blanche SI présente ». Aucune colonne, aucune table, aucun backfill. Le texte du CHECK est RELU dans la 046 plutôt que retapé (gabarit 045), et le remplacement est assertré à l'import. Downgrade **fail-closed** : il compte et nomme les fermetures `ended` que le XOR restauré interdirait (ledger dérivé avec raison, ou ni l'un ni l'autre). |
+| 049 | `dream_runs.closed_inactive_count` et `dream_runs.thinking_tokens`, INTEGER NULL sans défaut ni backfill (`NULL` = pré-049 / non mesuré) ; les six CHECK `ck_*_freshness_source` élargis de `manual_update` et `plan_reindex`. Downgrade **fail-closed** en TROIS refus indépendants et nommés — c'est l'indépendance des downgrades qui rend la tête multi-objets légitime (9d22bc6a, critère (c)) : `-x allow_sweep_series_downgrade=yes`, `-x allow_thinking_tokens_downgrade=yes`, `-x allow_freshness_vocabulary_downgrade=yes` (ce dernier remet à NULL les provenances que le vocabulaire de la 043 ne peut pas porter, avant de restaurer l'ancien CHECK). |
 | 048 | `brain_session_artifacts.attribution_mode` VARCHAR(24) NULL, sans défaut et sans backfill (`NULL` = écrit avant la 048). CHECK `..._attribution_mode_valid` sur quatre modes : `explicit`, `derived_deposit`, `derived_connection`, `derived_window`. Index PARTIEL `idx_brain_session_artifacts_derived_window` sur le seul mode DÉDUIT — défaire une devinette doit être une requête, pas un scan. Downgrade **fail-closed** : il compte ET NOMME les attributions `derived_window`, parce que droper la colonne les rend indistinguables d'une capture explicite d'un humain, et le défaire devient impossible ; opt-in nommé `-x allow_attribution_mode_downgrade=yes`. |
 | 046 | `brain_sessions` gagne cinq colonnes nullable — `started_by_actor` (64), `last_observed_at`, `intent` (500), `nature` (16, CHECK `agent`/`operator`), `connection_id` (64) — plus un index UNIQUE **PARTIEL** `uq_brain_sessions_connection` `WHERE status = 'open'` : un unique plein brûlerait la connexion à vie dès la première auto-fermeture. Les DEUX CHECK bougent — `status_valid` (032) et `terminal_state_valid` (037) — pour accueillir le quatrième état `closed_inactive`, réservé par le CHECK aux sessions de `nature = 'agent'`. Aucun backfill : `NULL` veut dire « avant la 046 ». |
 
