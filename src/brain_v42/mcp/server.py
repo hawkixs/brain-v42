@@ -280,13 +280,30 @@ async def app_lifecycle(
         yield
 
 
+def create_mcp_instance() -> FastMCP:
+    """Construire une instance FastMCP avec son câblage indépendant des services.
+
+    UNE définition pour DEUX consommateurs : le singleton de module ci-dessous
+    (production — ``/health`` s'y ajoute par décorateur) et les bancs
+    d'intégration qui montent leur propre serveur. Sans elle, un banc qui
+    réutilisait le singleton héritait des tools enregistrés par un module de
+    tests collecté avant lui — 20 « Component already exists » mesurés, fermés
+    sur un engine déjà ``dispose()`` (ticket ``83d8785b``) — et l'ordre de
+    collecte pytest devenait signifiant. Le remède n'est PAS un câblage
+    reproduit à la main dans le banc : ``build_server`` a déjà tranché qu'un
+    double est pire qu'aucun test.
+    """
+    instance = FastMCP("brain", mask_error_details=True)
+    # Provenance : posé ici et non dans register_tools, pour être indépendant de
+    # l'activation des métriques et de l'ordre d'enregistrement des tools.
+    # `apply_tool_catalog_profile` et `maybe_apply_code_mode` retournent le MÊME
+    # objet, donc ce middleware survit aux deux.
+    instance.add_middleware(ProvenanceMiddleware())
+    return instance
+
+
 # Module-level FastMCP instance
-mcp = FastMCP("brain", mask_error_details=True)
-# Provenance : posé ici et non dans register_tools, pour être indépendant de
-# l'activation des métriques et de l'ordre d'enregistrement des tools.
-# `apply_tool_catalog_profile` et `maybe_apply_code_mode` retournent le MÊME
-# objet, donc ce middleware survit aux deux.
-mcp.add_middleware(ProvenanceMiddleware())
+mcp = create_mcp_instance()
 
 
 @mcp.custom_route("/health", methods=["GET"])
