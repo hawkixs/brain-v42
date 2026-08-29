@@ -45,7 +45,14 @@ ADDITIVE_WRITE_TOOLS = frozenset(
         "brain_ticket_reply",
     }
 )
-IDEMPOTENT_DESTRUCTIVE_TOOLS = frozenset({"brain_delete"})
+IDEMPOTENT_DESTRUCTIVE_TOOLS = frozenset(
+    {
+        "brain_delete",
+        # Le rejet est TERMINAL (aucune résurrection en review) et idempotent
+        # (re-rejeter rend « déjà rejected »).
+        "brain_reject_curation_proposals",
+    }
+)
 DESTRUCTIVE_TOOLS = frozenset(
     {
         "brain_accept_adr",
@@ -53,6 +60,9 @@ DESTRUCTIVE_TOOLS = frozenset(
         "brain_execute_runbook",
         "brain_feature_update",
         "brain_merge_entities",
+        # Un apply de curation mute la FEATURE (merge archive la perdante,
+        # rename écrase le titre) — même famille que brain_feature_update.
+        "brain_apply_curation_proposal",
         "brain_refresh_entity",
         "brain_reindex_plans",
         "brain_set_project_context",
@@ -122,7 +132,7 @@ async def test_all_knowledge_tools_publish_exact_safety_annotations() -> None:
         DESTRUCTIVE_TOOLS,
     )
     expected_names = frozenset().union(*groups)
-    assert len(expected_names) == 44
+    assert len(expected_names) == 46
     assert sum(len(group) for group in groups) == len(expected_names)
     assert {tool.name for tool in await server.list_tools()} == expected_names
 

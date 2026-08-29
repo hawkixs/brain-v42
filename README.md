@@ -150,7 +150,7 @@ parameters; use the plain form above with host, port, username and password all 
 | Runbooks | `brain_create_runbook`, `brain_get_runbook`, `brain_execute_runbook` |
 | ADRs | `brain_propose_adr`, `brain_accept_adr`, `brain_deprecate_adr`, `brain_list_adrs` |
 | Coordination | `brain_ticket_create`, `brain_ticket_reply`, `brain_ticket_transition`, `brain_ticket_list`, `brain_ticket_get` |
-| Dream / graph | `brain_get_clusters`, `brain_backfill_links_batch`, `brain_consolidation_candidates`, `brain_merge_entities`, `brain_refresh_entity`, `brain_reindex_plans`, `brain_list_orphans_for_classification`, `brain_assign_domain`, `brain_list_curation_proposals` |
+| Dream / graph | `brain_get_clusters`, `brain_backfill_links_batch`, `brain_consolidation_candidates`, `brain_merge_entities`, `brain_refresh_entity`, `brain_reindex_plans`, `brain_list_orphans_for_classification`, `brain_assign_domain`, `brain_list_curation_proposals`, `brain_reject_curation_proposals`, `brain_apply_curation_proposal` |
 | Roadmap & decay | `brain_get_roadmap`, `brain_feature_create`, `brain_feature_update`, `brain_decay_status` |
 | Workflow guidance | `brain_workflow_guide` |
 
