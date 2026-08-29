@@ -208,6 +208,10 @@ Use this single operator order:
 > `alembic_head = 039` and therefore cannot return 25/25 past that head — not because the
 > database degraded, but because the contract was minted against an older one. The v5 assets
 > derive the head (signature **S1**): the invariant is *exactly one applied head*.
+> (Dated advice, and v5 was itself superseded on 2026-08-29: for any run **today**, substitute
+> the contract generation named in [Current targets](#current-targets) — its restored-target
+> twin is names-only on extension versions, where the v5 twin's strict pin false-reds every
+> healthy restore.)
 12. Run `finalize` only after all seven reindexes and verification succeed.
 13. Run the non-publishing installer preflight and render verified MCP units into a new private
     directory outside systemd; inspect all three artifacts:
