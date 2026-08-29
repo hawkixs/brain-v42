@@ -366,7 +366,13 @@ def test_the_caveat_lives_wherever_a_receipt_is_read(document_path: Path) -> Non
     for name, text in places.items():
         assert "`pg_restore`d" in text, f"{name} ne dit pas d'où le reçu NE vient PAS"
         assert '"DR is proven"' in text, f"{name} laisse lire le reçu comme une preuve DR"
-        assert "8eaefe36" in text, f"{name} ne nomme pas la porte P1 restée ouverte"
+        # La porte P1 vit dans `58711012` depuis le 2026-08-28 : `8eaefe36`,
+        # qui l'a portée d'abord, a été clos comme supersédé par ses splits
+        # CATALOGUE — aucun ne porte cette porte — et `closed` est terminal.
+        # Ce pin a cimenté le numéro périmé pendant un jour ; il épingle
+        # désormais la porte VIVANTE, et la corriger coûte, à dessein,
+        # d'éditer ce test et le document d'un seul geste relu.
+        assert "58711012" in text, f"{name} ne nomme pas la porte P1 restée ouverte"
         assert "is true by construction" in text, (
             f"{name} ne dit pas que le contrôle écrit POUR un restore est celui "
             "qu'aucun reçu live ne peut exercer"

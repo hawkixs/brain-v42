@@ -58,6 +58,14 @@ from brain_v42.scripts.roadmap_curate import (
 # le jour où la nuit changerait de budget, le canary continuerait de dériver
 # ses fenêtres de l'ancien sans qu'une seule ligne ne change de couleur.
 
+# Le DÉFAUT de --batches est le --limit que dream.sh passe à la nuit. À 3, le
+# même budget se partageait en fenêtres de 120 s (croissant jusqu'à 200) là où
+# dix batches les bornent à 60 s : le canary du 2026-08-29 a validé sous ce
+# régime doux un secours à 74,5 s/batch qui aurait time-outé chaque tentative
+# de production. Épinglé sur dream.sh par
+# test_canary_roadmap_matches_night_regime.test_the_cli_default_batch_count_is_the_nights.
+DEFAULT_CANARY_BATCHES = 10
+
 
 async def _sleep(seconds: float) -> None:
     await asyncio.sleep(seconds)
@@ -229,7 +237,12 @@ def _proposals_payload(model: str, outcome: BatchOutcome) -> dict[str, Any]:
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--models", required=True, help="candidats, séparés par des virgules")
-    parser.add_argument("--batches", type=int, default=3, help="nombre de batches réels")
+    parser.add_argument(
+        "--batches",
+        type=int,
+        default=DEFAULT_CANARY_BATCHES,
+        help="nombre de batches réels (défaut : le --limit de la nuit, fenêtres identiques)",
+    )
     # `--proposer-only` a été RETIRÉ. Il choisissait le parseur à la main, alors
     # que `curate_batch` — le point d'entrée de la nuit, désormais utilisé ici —
     # décide lui-même par appartenance à PROPOSER_ONLY_MODELS. Le garder aurait

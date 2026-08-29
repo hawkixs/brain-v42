@@ -36,7 +36,11 @@ import httpx
 BASE_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 API_KEY_VAR = "BRAIN_NVIDIA_API_KEY"
 PROBE_MAX_TOKENS = 8
-PROBE_TIMEOUT_SECONDS = 30.0
+# 90 s, pas 30 : gpt-oss-120b — un maillon DORMANT, exactement ce que cette
+# sonde surveille — répond en 75 s en queue froide (mesuré le 2026-08-29,
+# puis 2,6 s à chaud). À 30 s il rendait OTHER chaque lundi, et OTHER sortait
+# en 0 : l'unité restait verte sur le seul site qu'elle ne mesurait pas.
+PROBE_TIMEOUT_SECONDS = 90.0
 
 # 529 est présent délibérément : il manquait à RETRYABLE_STATUS et un seul 529
 # renvoyait une nuit entière sur le secours (commit 0eda7e18). Le confondre avec
@@ -88,21 +92,54 @@ def configured_models() -> list[ModelEntry]:
         DEFAULT_WET_ROADMAP_FALLBACK_MODEL,
         DEFAULT_WET_ROADMAP_MODEL,
     )
+    from scripts.ticket_extract import DEFAULT_EXTRACT_FALLBACK_MODEL
+
+    def resolved(env_var: str, default: str, site: str) -> ModelEntry:
+        """La précédence des SITES (env > défaut) — l'unité charge nvidia.env.
+
+        Sans elle, la sonde lirait la constante pendant que la nuit sert
+        l'override : vert sur un modèle que plus personne n'appelle. Le site
+        nomme la VARIABLE quand elle gagne — c'est elle qu'on remplace alors.
+        """
+        override = os.environ.get(env_var)
+        if override:
+            return ModelEntry(override, f"{site} — surchargé par {env_var}")
+        return ModelEntry(default, site)
 
     return [
-        ModelEntry(DEFAULT_ROADMAP_MODEL, "roadmap_curate.DEFAULT_ROADMAP_MODEL (DRY primaire)"),
-        ModelEntry(
+        resolved(
+            "BRAIN_NVIDIA_ROADMAP_MODEL",
+            DEFAULT_ROADMAP_MODEL,
+            "roadmap_curate.DEFAULT_ROADMAP_MODEL (DRY primaire)",
+        ),
+        resolved(
+            "BRAIN_NVIDIA_ROADMAP_FALLBACK_MODEL",
             DEFAULT_ROADMAP_FALLBACK_MODEL,
             "roadmap_curate.DEFAULT_ROADMAP_FALLBACK_MODEL (DRY secours)",
         ),
-        ModelEntry(
-            DEFAULT_WET_ROADMAP_MODEL, "roadmap_curate.DEFAULT_WET_ROADMAP_MODEL (WET primaire)"
+        resolved(
+            "BRAIN_NVIDIA_ROADMAP_MODEL",
+            DEFAULT_WET_ROADMAP_MODEL,
+            "roadmap_curate.DEFAULT_WET_ROADMAP_MODEL (WET primaire)",
         ),
-        ModelEntry(
+        resolved(
+            "BRAIN_NVIDIA_ROADMAP_FALLBACK_MODEL",
             DEFAULT_WET_ROADMAP_FALLBACK_MODEL,
             "roadmap_curate.DEFAULT_WET_ROADMAP_FALLBACK_MODEL (WET secours)",
         ),
-        ModelEntry(DEFAULT_EXTRACT_MODEL, "domain_backfill.DEFAULT_MODEL (extract + backfill)"),
+        resolved(
+            "BRAIN_NVIDIA_MODEL",
+            DEFAULT_EXTRACT_MODEL,
+            "domain_backfill.DEFAULT_MODEL (extract + backfill)",
+        ),
+        # Maillon dormant : appelé seulement quand le primaire tombe. Égal au
+        # primaire il est couvert par coïncidence ; divergent, il serait la seule
+        # constante que ni la nuit ni la sonde ne voient mourir.
+        resolved(
+            "BRAIN_NVIDIA_FALLBACK_MODEL",
+            DEFAULT_EXTRACT_FALLBACK_MODEL,
+            "ticket_extract.DEFAULT_EXTRACT_FALLBACK_MODEL (extract, secours)",
+        ),
     ]
 
 
@@ -155,28 +192,56 @@ def probe_models(
     return results
 
 
+def exit_code_for(results: list[ProbeResult]) -> int:
+    """GONE → 1, OTHER → 3, sinon 0. « Je ne sais pas » n'est pas un vert.
+
+    Mesuré le 2026-08-29 : le maillon WET dormant répondait au-delà du timeout
+    de sonde et sortait en 0 — l'unité restait verte, chaque lundi, sur le
+    seul site qu'elle n'avait pas mesuré. GONE domine : un modèle mort est
+    plus urgent qu'un modèle illisible. BUSY reste 0 — transitoire, et le
+    transformer en échec ferait remplacer un modèle vivant (commit 0eda7e18).
+    """
+    if any(result.verdict is Verdict.GONE for result in results):
+        return 1
+    if any(result.verdict is Verdict.OTHER for result in results):
+        return 3
+    return 0
+
+
+def _print_result(result: ProbeResult) -> None:
+    status = result.status if result.status is not None else "—"
+    line = f"{result.verdict.value.upper():<6} {status:<5} {result.entry.model}"
+    print(f"{line}\n         {result.entry.used_by}", flush=True)
+    if result.detail:
+        print(f"         {result.detail}", flush=True)
+
+
 def main() -> int:
     api_key = os.environ.get(API_KEY_VAR)
     if not api_key:
         print(f"{API_KEY_VAR} absente — source ~/.config/brain-v42/nvidia.env", file=sys.stderr)
         return 2
 
-    entries = configured_models()
+    # Entrée par entrée, verdict imprimé AU FIL DE L'EAU : une exception sur
+    # le site 5 ne doit pas emporter les quatre verdicts déjà acquis — c'est
+    # le journal du lundi matin qui dit quelle constante remplacer.
+    results: list[ProbeResult] = []
     with httpx.Client() as client:
-        results = probe_models(entries, client=client, api_key=api_key)
-
-    for result in results:
-        status = result.status if result.status is not None else "—"
-        line = f"{result.verdict.value.upper():<6} {status:<5} {result.entry.model}"
-        print(f"{line}\n         {result.entry.used_by}")
-        if result.detail:
-            print(f"         {result.detail}")
+        for entry in configured_models():
+            result = probe_models([entry], client=client, api_key=api_key)[0]
+            _print_result(result)
+            results.append(result)
 
     gone = [r for r in results if r.verdict is Verdict.GONE]
     if gone:
         print(f"\n{len(gone)} modèle(s) configuré(s) définitivement absent(s).", file=sys.stderr)
-        return 1
-    return 0
+    unknown = [r for r in results if r.verdict is Verdict.OTHER]
+    if unknown:
+        print(
+            f"{len(unknown)} verdict(s) OTHER — illisible n'est pas vivant, re-mesurer.",
+            file=sys.stderr,
+        )
+    return exit_code_for(results)
 
 
 if __name__ == "__main__":

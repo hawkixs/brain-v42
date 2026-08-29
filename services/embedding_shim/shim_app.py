@@ -19,16 +19,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable, Coroutine
+import os
+import secrets
+import stat
+from collections.abc import Callable, Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import anyio
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 EMBED_MODEL = "Qodo/Qodo-Embed-1-1.5B"
 RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
@@ -52,6 +58,164 @@ class ShimLimits:
 
 
 _DEFAULT_LIMITS = ShimLimits()
+
+#: Patron de src/brain_v42/codex_gateway/auth.py — pas un import : l'image du
+#: shim n'embarque pas le package brain_v42.
+MIN_BEARER_TOKEN_BYTES = 32
+
+#: Les endpoints de santé restent ouverts même en mode armé : le watchdog
+#: systemd et RerankerClient.is_available ne portent pas de jeton, et un 401
+#: sur /healthz transformerait l'armement en fausse panne d'upstream.
+_AUTH_EXEMPT_PATHS = frozenset({"/healthz", "/health"})
+
+#: L'intérieur du netns est DANS la frontière de confiance du processus.
+#: Hypothèse explicite : seul un processus du namespace réseau du conteneur
+#: peut sourcer 127.0.0.1 — le noyau refuse les paquets à source loopback
+#: arrivant par une interface non-lo (filtrage martien, route_localnet=0), et
+#: les connexions publiées par Docker arrivent avec l'adresse de la passerelle
+#: bridge, jamais 127.0.0.1. Le SEUL prober de prod vit là : le healthcheck
+#: compose (POST /embed sans Authorization, exécuté dans le conteneur) —
+#: sans cette exemption, l'armement le mettrait unhealthy à vie pendant que
+#: /healthz resterait vert (review PR 43, reproduit).
+_LOOPBACK_CLIENT_HOSTS = frozenset({"127.0.0.1", "::1"})
+
+#: Le recensement ne connaît que les routes réelles du shim : un chemin
+#: inconnu est contrôlé par l'appelant (percent-décodé, %0A devient une vraie
+#: nouvelle ligne) et journalisé brut il devient un canal d'injection. Un
+#: chemin inconnu rend son 404 (ou 401 en mode armé) sans une ligne de log.
+_GUARDED_CENSUS_PATHS = frozenset({"/embed", "/embed/query", "/embed/single", "/rerank", "/"})
+
+
+@dataclass(frozen=True, slots=True)
+class BearerGuard:
+    """Bearer statique du shim — ticket 530d796a, point (a).
+
+    ``required=False`` est le mode OPTIONNEL : un header absent ou faux est
+    accepté mais journalisé, pour recenser les clients sans jeton sans en
+    casser un seul (les deux ``auto-discord`` sont vivants sur ``brain-net``).
+    L'armement — ``required=True`` — est un geste opérateur séparé, à ne
+    prendre qu'après le ticket client 9ef5c69d.
+    """
+
+    token: bytes
+    required: bool
+
+
+def load_bearer_token(path: Path | str) -> bytes:
+    """Lire le secret depuis un fichier 0600, mêmes gardes que codex_gateway.
+
+    Un secret lisible au-delà du propriétaire, trop court, ou resté sur son
+    placeholder ``REPLACE_`` est refusé au démarrage : mieux vaut un service
+    qui ne démarre pas qu'une authentification décorative.
+
+    Lu UNE FOIS, au démarrage : une rotation du secret exige un restart du
+    conteneur — le geste opérateur doit le savoir.
+    """
+    token_path = Path(path)
+    mode = stat.S_IMODE(token_path.stat().st_mode)
+    if mode & 0o077:
+        raise ValueError(
+            f"{token_path} must be private (0600); "
+            f"current mode {oct(mode)} is readable beyond its owner"
+        )
+    value = token_path.read_text().strip()
+    if value.upper().startswith("REPLACE_"):
+        raise ValueError(f"{token_path} still carries a REPLACE_ placeholder, not a secret")
+    encoded = value.encode()
+    if len(encoded) < MIN_BEARER_TOKEN_BYTES:
+        raise ValueError(
+            f"{token_path} must hold a generated secret of at least {MIN_BEARER_TOKEN_BYTES} bytes"
+        )
+    return encoded
+
+
+def bearer_from_env(environ: Mapping[str, str] = os.environ) -> BearerGuard | None:
+    """Câblage env du bearer — livré fermé.
+
+    Sans ``SHIM_BEARER_TOKEN_FILE`` ni ``SHIM_BEARER_MODE``, aucun garde :
+    le contrat actuel du shim ne bouge pas. Un mode posé sans fichier de
+    secret, ou un mode inconnu, tue le démarrage plutôt que d'ouvrir en
+    silence — une faute de frappe ne doit jamais valoir « optionnel ».
+    """
+    token_file = environ.get("SHIM_BEARER_TOKEN_FILE", "")
+    mode = environ.get("SHIM_BEARER_MODE", "")
+    if not token_file:
+        if mode:
+            raise ValueError("SHIM_BEARER_MODE is set but SHIM_BEARER_TOKEN_FILE is not")
+        return None
+    if mode and mode not in ("optional", "required"):
+        raise ValueError(f"SHIM_BEARER_MODE must be 'optional' or 'required', got {mode!r}")
+    return BearerGuard(token=load_bearer_token(token_file), required=mode == "required")
+
+
+class _BearerMiddleware:
+    """ASGI pur, jamais BaseHTTPMiddleware : le shim streame les corps de
+    requête, et ce contrôle ne lit que les headers du scope."""
+
+    def __init__(self, app: ASGIApp, guard: BearerGuard) -> None:
+        self._app = app
+        self._guard = guard
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["path"] in _AUTH_EXEMPT_PATHS:
+            await self._app(scope, receive, send)
+            return
+
+        client = scope.get("client")
+        if client and client[0] in _LOOPBACK_CLIENT_HOSTS:
+            # Netns-interne (healthcheck compose) : même frontière de confiance
+            # que le processus. Pas de recensement non plus — il tire toutes
+            # les 60 s et noierait le journal d'observation.
+            await self._app(scope, receive, send)
+            return
+
+        outcome = self._outcome(scope)
+        if outcome is not None:
+            if self._guard.required:
+                response = JSONResponse(
+                    {"detail": "Unauthorized"},
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+                await response(scope, receive, send)
+                return
+            if scope["path"] in _GUARDED_CENSUS_PATHS:
+                # Jamais la valeur présentée : un log n'est pas un canal
+                # d'exfiltration. Le user-agent est contrôlé par l'appelant :
+                # %r le cite, une nouvelle ligne y reste \n.
+                client_address = f"{client[0]}:{client[1]}" if client else "client-inconnu"
+                _LOGGER.warning(
+                    "shim bearer %s on %s from %s ua=%r — accepted (optional mode)",
+                    outcome,
+                    scope["path"],
+                    client_address,
+                    self._user_agent(scope),
+                )
+        await self._app(scope, receive, send)
+
+    @staticmethod
+    def _user_agent(scope: Scope) -> str:
+        for name, value in scope["headers"]:
+            if name == b"user-agent":
+                return bytes(value).decode("latin-1")
+        return "-"
+
+    def _outcome(self, scope: Scope) -> str | None:
+        """``None`` si le jeton présenté est le bon, sinon la raison à journaliser."""
+        raw: bytes | None = None
+        for name, value in scope["headers"]:
+            if name == b"authorization":
+                raw = value
+                break
+        if raw is None:
+            return "missing"
+        prefix = b"Bearer "
+        if not raw.startswith(prefix):
+            return "invalid"
+        presented = raw[len(prefix) :]
+        if not secrets.compare_digest(presented, self._guard.token):
+            return "invalid"
+        return None
 
 
 class _RejectedRequest(Exception):
@@ -338,6 +502,7 @@ def create_app(
     rerank_backend: Any,
     *,
     limits: ShimLimits = _DEFAULT_LIMITS,
+    bearer: BearerGuard | None = None,
 ) -> Starlette:
     ingress_gate = _TryGate(limits.max_ingress_requests)
     json_parse_limiter = anyio.CapacityLimiter(1)
@@ -435,6 +600,7 @@ def create_app(
             headers=headers,
         )
 
+    middleware = [Middleware(_BearerMiddleware, guard=bearer)] if bearer is not None else []
     return Starlette(
         routes=[
             Route("/embed", embed, methods=["POST"]),
@@ -446,4 +612,5 @@ def create_app(
             Route("/health", health, methods=["GET"]),
         ],
         exception_handlers={_RejectedRequest: rejected_request},
+        middleware=middleware,
     )

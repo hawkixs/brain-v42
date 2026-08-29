@@ -25,6 +25,8 @@ morte le 2026-07-27 et découverte le 08-05 après dix nuits vertes.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -38,6 +40,30 @@ from scripts.roadmap_curate import (
     ProjectBatch,
     batch_llm_window,
 )
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_the_cli_default_batch_count_is_the_nights() -> None:
+    """Le DÉFAUT CLI doit mesurer le régime de la nuit, pas un régime 2× plus doux.
+
+    Mesuré le 2026-08-29 (review PR 42) : `--batches 3` donnait des fenêtres de
+    120 s croissant jusqu'à 200 s, là où la nuit à `--limit 10` borne chaque
+    tentative à 60 s. Le canary a validé sous ce régime un secours à
+    74,5 s/batch qui aurait time-outé toutes ses tentatives en production —
+    la répétition exacte de la panne du 2026-08-17 que cet instrument devait
+    corriger. Le défaut est épinglé sur le `--limit` que dream.sh passe
+    RÉELLEMENT, pas sur un 10 recopié : si la nuit change de largeur, ce test
+    force le canary à suivre.
+    """
+    from scripts.canary_roadmap_model import DEFAULT_CANARY_BATCHES
+
+    dream_sh = (_REPO_ROOT / "scripts" / "dream.sh").read_text(encoding="utf-8")
+    limit_match = re.search(r"roadmap_args=\(--limit (\d+)\)", dream_sh)
+
+    assert limit_match, "dream.sh ne déclare plus roadmap_args=(--limit N)"
+    assert DEFAULT_CANARY_BATCHES == int(limit_match.group(1))
+
 
 _PRIMARY = "mistralai/mistral-nemotron"
 _FALLBACK = "meta/llama-3.1-8b-instruct"

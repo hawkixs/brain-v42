@@ -493,6 +493,24 @@ class TestBudgetSecondsArg:
         le même lot, et sept runs orchestrator fondus dans le plus ancien
         d'entre eux. Le promouvoir aurait aussi effondré la chaîne à un maillon
         (voir tests/unit/test_roadmap_model_chain.py).
+
+        SECOURS REMPLACÉ le 2026-08-29 : le 8B a atteint sa fin de vie le
+        2026-08-26 (410 mesuré par la sonde ET par les nuits des 27 et 28,
+        toutes deux en fail). Remplaçant : openai/gpt-oss-20b, re-mesuré DANS
+        SON RÉGIME EXACT après correction de l'instrument (fenêtres de nuit
+        60 s, dix batches réels, caps secours FALLBACK_*) : 10/10 portés,
+        12 propositions, 7,8 s/batch — et 35/100 en jugement aveugle contre
+        10/100 pour le mort. Le profil secours n'est pas « réduit » : mêmes
+        3 features, tokens DOUBLÉS (1024), ce qui évite la troncature de
+        raisonnement qui coûtait 74,5 s/batch sous l'ancien instrument à
+        512 tokens. Écartés au même régime : nano-30b (9,9 s/batch mais 5/10
+        JSON valides) ; deepseek-v4-flash-0731 (69,3 s/batch le 08-16,
+        famille morte deux fois en un mois, contenu jamais jugé).
+
+        Les assertions comparent aux CONSTANTES : ce test prouve le ROUTAGE
+        (le défaut atteint curate), pas l'identité du modèle — la forme de la
+        chaîne vit dans test_roadmap_model_chain, l'historique du choix dans
+        le commentaire des constantes.
         """
         monkeypatch.delenv("BRAIN_NVIDIA_ROADMAP_MODEL", raising=False)
         monkeypatch.delenv("BRAIN_NVIDIA_MODEL", raising=False)
@@ -500,8 +518,8 @@ class TestBudgetSecondsArg:
 
         assert rc.main() == 0
 
-        assert capture_args["model"] == "mistralai/mistral-nemotron"
-        assert capture_args["fallback_model"] == "meta/llama-3.1-8b-instruct"
+        assert capture_args["model"] == rc.DEFAULT_ROADMAP_MODEL
+        assert capture_args["fallback_model"] == rc.DEFAULT_ROADMAP_FALLBACK_MODEL
 
     def test_dry_primary_can_never_auto_apply(self, capture_args, monkeypatch):
         """Le primaire DRY doit rester hors allowlist : un modèle non canaryé
@@ -526,6 +544,23 @@ class TestBudgetSecondsArg:
 
         assert capture_args["model"] == "roadmap-reviewed"
 
+    def test_a_fallback_equal_to_the_primary_warns_about_the_one_link_chain(
+        self, capture_args, monkeypatch, capsys
+    ):
+        """curate_batch traite secours==primaire comme AUCUN secours, en silence.
+
+        Le cas n'arrive que par override env (les constantes sont gardées
+        distinctes par test_roadmap_model_chain) — et c'est la config que
+        deploy/nvidia.env.example a portée en exemple pendant des semaines.
+        Une chaîne à un maillon qui se croit à deux doit faire du bruit.
+        """
+        monkeypatch.setenv("BRAIN_NVIDIA_ROADMAP_FALLBACK_MODEL", rc.DEFAULT_ROADMAP_MODEL)
+        monkeypatch.setattr("sys.argv", ["roadmap_curate"])
+
+        assert rc.main() == 0
+
+        assert "UN seul maillon" in capsys.readouterr().out
+
     def test_fallback_model_env_overrides_default(self, capture_args, monkeypatch):
         monkeypatch.setenv("BRAIN_NVIDIA_ROADMAP_FALLBACK_MODEL", "fallback-model")
         monkeypatch.setattr("sys.argv", ["roadmap_curate"])
@@ -543,18 +578,31 @@ class TestBudgetSecondsArg:
         assert capture_args["model"] == "cli-model"
 
     def test_default_wet_model_is_reviewed_and_keeps_auto_apply(self, capture_args, monkeypatch):
+        """PAIRE WET REMPLACÉE le 2026-08-29 : llama-3.3-70b est mort en 410.
+
+        Fin de vie mesurée entre les nuits du 27 (extract done) et du 28
+        (extract fail 410) — un maillon DORMANT côté roadmap, puisque la phase
+        tourne en DRY. Le secours d'hier devient primaire et gpt-oss-120b
+        prend le poste de secours : des maillons VIVANTS, pas une paire prête
+        à armer. Mesuré le 2026-08-29 au régime WET réel — la voie non-gérée
+        DIVISE la fenêtre par deux dès qu'un secours existe (30 s à dix
+        projets ; la borne n'est PAS le read-timeout httpx de 180 s) : la
+        paire telle qu'ordonnée ne porte pas (super-120b 1/10, 9 sauvés par
+        le secours). Réarmer WET exige un canary sous 30 s d'abord — le
+        commentaire des constantes porte la précondition complète.
+        """
         monkeypatch.delenv("BRAIN_NVIDIA_ROADMAP_MODEL", raising=False)
         monkeypatch.delenv("BRAIN_NVIDIA_MODEL", raising=False)
         monkeypatch.setattr("sys.argv", ["roadmap_curate", "--wet"])
 
         assert rc.main() == 0
 
-        assert capture_args["model"] == "meta/llama-3.3-70b-instruct"
-        assert capture_args["fallback_model"] == "nvidia/nemotron-3-super-120b-a12b"
+        assert capture_args["model"] == rc.DEFAULT_WET_ROADMAP_MODEL
+        assert capture_args["fallback_model"] == rc.DEFAULT_WET_ROADMAP_FALLBACK_MODEL
         assert capture_args["args"].wet is True
 
     def test_explicit_fallback_model_forces_proposer_only(self, capture_args, monkeypatch, capsys):
-        monkeypatch.setenv("BRAIN_NVIDIA_ROADMAP_MODEL", "meta/llama-3.1-8b-instruct")
+        monkeypatch.setenv("BRAIN_NVIDIA_ROADMAP_MODEL", rc.DEFAULT_ROADMAP_FALLBACK_MODEL)
         monkeypatch.setattr("sys.argv", ["roadmap_curate", "--wet"])
 
         assert rc.main() == 0
@@ -572,7 +620,7 @@ class TestBudgetSecondsArg:
         assert "review-only" in capsys.readouterr().out
 
     def test_reviewed_fallback_model_keeps_wet(self, capture_args, monkeypatch):
-        monkeypatch.setenv("BRAIN_NVIDIA_ROADMAP_MODEL", "nvidia/nemotron-3-super-120b-a12b")
+        monkeypatch.setenv("BRAIN_NVIDIA_ROADMAP_MODEL", rc.DEFAULT_WET_ROADMAP_FALLBACK_MODEL)
         monkeypatch.setattr("sys.argv", ["roadmap_curate", "--wet"])
 
         assert rc.main() == 0
