@@ -41,6 +41,7 @@ from starlette.responses import JSONResponse
 from brain_v42.config import Settings, get_settings
 from brain_v42.db.engine import dispose_engine, get_session_factory
 from brain_v42.db.neo4j import close_neo4j_driver, create_neo4j_driver
+from brain_v42.mcp.activity_reporter import close_activity_reporter
 from brain_v42.mcp.business_errors import surface_business_errors
 from brain_v42.mcp.dream_capabilities import (
     DreamCapabilityConfigurationError,
@@ -221,6 +222,10 @@ async def app_lifecycle(
     async with AsyncExitStack() as cleanup:
         cleanup.push_async_callback(dispose_engine)
         cleanup.push_async_callback(close_neo4j_driver, services["neo4j_driver"])
+        # d5e4bd73, second trou : sans cette fermeture, les POST d'activité
+        # en vol mouraient à l'arrêt sans être comptés. LIFO : elle joue
+        # avant dispose_engine, pendant que la boucle sert encore.
+        cleanup.push_async_callback(close_activity_reporter)
 
         if tracing_armed:
             # `shutdown_on_exit=False` a désarmé l'atexit du SDK pour qu'un

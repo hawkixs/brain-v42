@@ -112,10 +112,11 @@ class ActivityReporter:
         #
         # Mais « une seule ligne, jamais plus » laisserait l'AMPLEUR invisible
         # — un opérateur ne saurait pas distinguer trois pertes d'un million.
-        # Le décompte ne peut pas non plus attendre la fermeture : `close()`
-        # n'est câblé NULLE PART en production (voir get_activity_reporter,
-        # « le client meurt avec le processus »), un résumé à l'arrêt serait
-        # du code mort déguisé en mesure.
+        # Le décompte ne peut pas non plus n'exister qu'à la fermeture :
+        # `close_activity_reporter` est câblé dans `app_lifecycle` depuis le
+        # lot d5e4bd73, mais un arrêt brutal (kill, OOM) ne le joue pas — un
+        # résumé d'arrêt SEUL serait une mesure qui disparaît avec ses pires
+        # scénarios.
         #
         # D'où l'escalade par décade : on parle à la 1re, la 10e, la 100e…
         # perte. Bornée en log10 — quinze lignes pour mille milliards — et
@@ -301,14 +302,35 @@ def set_activity_reporter(reporter: ActivityReporter | None) -> None:
     _reporter = reporter
 
 
+async def close_activity_reporter() -> None:
+    """Fermer l'émetteur s'il a été construit — câblé dans ``app_lifecycle``.
+
+    Ticket ``d5e4bd73``, second trou : les POST en vol mouraient à l'arrêt sans
+    être comptés. ``close()`` draine le tampon et attend les émissions en vol
+    (bornées par le timeout httpx), donc chaque perte finit dans un compteur au
+    lieu de disparaître avec le processus. L'oubli global est remis à ``None``
+    AVANT la fermeture : un appel de tool tardif reconstruirait un émetteur
+    frais plutôt que de poster sur un client clos. Ne lève jamais — un sidecar
+    mort à l'arrêt ne doit pas faire échouer l'arrêt.
+    """
+    global _reporter
+    reporter = _reporter
+    _reporter = None
+    if reporter is None:
+        return
+    with contextlib.suppress(Exception):
+        await reporter.close()
+
+
 def get_activity_reporter() -> ActivityReporter | None:
     """Renvoyer l'émetteur, construit à la première utilisation.
 
     Construction paresseuse plutôt que câblage dans le cycle de vie du serveur :
     `mcp` est bâti au niveau module (voir le commentaire de `mcp/server.py:170`),
-    et la première émission a lieu dans une boucle déjà tournante. Aucune
-    fermeture n'est câblée — le client meurt avec le processus, et un
-    `aclose()` à l'arrêt n'apporterait rien à un émetteur feu-et-oubli.
+    et la première émission a lieu dans une boucle déjà tournante. La fermeture,
+    elle, est câblée : `close_activity_reporter` vit dans l'AsyncExitStack de
+    `app_lifecycle`, pour que les émissions en vol à l'arrêt finissent comptées
+    au lieu de mourir avec le processus (d5e4bd73, second trou).
 
     Ne lève jamais : l'appelant est le middleware de provenance, sur le
     chemin de TOUT appel de tool. Une résolution de settings ou une

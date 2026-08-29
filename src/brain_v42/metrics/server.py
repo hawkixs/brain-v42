@@ -114,6 +114,36 @@ RECEIVER_CLAUDE_LOGS = "claude_logs"
 RECEIVER_CLIENT_ACTIVITY = "client_activity"
 
 
+class ReceiverRejectionCounters:
+    """Compteurs par (récepteur, code) des rejets servis — piste (b) de `d5e4bd73`.
+
+    La leçon du ticket gouverne la forme : « un compteur à zéro sur une source
+    qui ne compte rien est indistinguable d'un vrai zéro ». Les trois
+    récepteurs sont donc présents dès la construction, chacun vide : la
+    PRÉSENCE de la structure dans ``GET /metrics`` prouve que l'instrument est
+    armé, son contenu dit ce qu'il a vu. Aucun identifiant, aucune adresse :
+    les clés appartiennent aux mêmes ensembles clos que l'access log.
+    """
+
+    def __init__(self) -> None:
+        self._counts: dict[str, dict[int, int]] = {
+            RECEIVER_CODEX_LOGS: {},
+            RECEIVER_CLAUDE_LOGS: {},
+            RECEIVER_CLIENT_ACTIVITY: {},
+        }
+
+    def increment(self, receiver: str, status: int) -> None:
+        by_status = self._counts.setdefault(receiver, {})
+        by_status[status] = by_status.get(status, 0) + 1
+
+    def snapshot(self) -> dict[str, dict[str, int]]:
+        """Copie sérialisable, statuts en chaînes — la forme du JSON servi."""
+        return {
+            receiver: {str(status): count for status, count in sorted(by_status.items())}
+            for receiver, by_status in self._counts.items()
+        }
+
+
 def _log_receiver_rejection(receiver: str, status: int, reason: str) -> None:
     """Journalise un rejet servi, sans jamais rien réintroduire ni rien casser.
 
@@ -140,14 +170,19 @@ def _log_receiver_rejection(receiver: str, status: int, reason: str) -> None:
         logger.warning(ACCESS_LOG_EVENT, receiver=receiver, status=status, reason=reason)
 
 
-def _otlp_error(status: int, *, receiver: str) -> web.Response:
-    """Seul constructeur des réponses de rejet — donc seul endroit où journaliser.
+def _otlp_error(status: int, *, receiver: str, counters: ReceiverRejectionCounters) -> web.Response:
+    """Seul constructeur des réponses de rejet — donc seul endroit où observer.
 
-    ``receiver`` est un mot-clé OBLIGATOIRE : un septième code ajouté à la table ne
-    peut pas arriver dans le journal par oubli, parce qu'il ne peut pas être construit
-    sans nommer son récepteur. La couverture tient par construction, pas par vigilance.
+    ``receiver`` et ``counters`` sont des mots-clés OBLIGATOIRES : un septième code
+    ajouté à la table ne peut pas arriver dans le journal ni dans les compteurs par
+    oubli, parce qu'il ne peut pas être construit sans les nommer. La couverture
+    tient par construction, pas par vigilance. Le comptage vit sous ``suppress``
+    pour la même raison que le journal : l'instrument ne devient jamais la panne
+    de ce qu'il observe — surtout pas sous saturation, qu'il sert à mesurer.
     """
     rpc_code, message = _OTLP_ERROR_STATUSES[status]
+    with contextlib.suppress(Exception):
+        counters.increment(receiver, status)
     _log_receiver_rejection(receiver, status, message)
     headers = {"Retry-After": "1"} if status == 503 else None
     return web.json_response(
@@ -207,6 +242,7 @@ class MetricsServer:
         self._codex_request_slots = asyncio.Semaphore(MAX_IN_FLIGHT_REQUESTS)
         self._runner: web.AppRunner | None = None
         self._cockpit: CockpitCollector | None = None
+        self._rejection_counters = ReceiverRejectionCounters()
 
     def _build_app(self) -> web.Application:
         app = web.Application()
@@ -243,16 +279,16 @@ class MetricsServer:
         smaller than an OTLP envelope and is bounded for itself.
         """
         if not _has_loopback_tcp_peer(request):
-            return _otlp_error(403, receiver=receiver)
+            return _otlp_error(403, receiver=receiver, counters=self._rejection_counters)
 
         if not _accepts_identity_encoding(request):
-            return _otlp_error(415, receiver=receiver)
+            return _otlp_error(415, receiver=receiver, counters=self._rejection_counters)
         if not _accepts_otlp_json(request):
-            return _otlp_error(415, receiver=receiver)
+            return _otlp_error(415, receiver=receiver, counters=self._rejection_counters)
         if request.content_length is not None and request.content_length > max_bytes:
-            return _otlp_error(413, receiver=receiver)
+            return _otlp_error(413, receiver=receiver, counters=self._rejection_counters)
         if self._codex_request_slots.locked():
-            return _otlp_error(503, receiver=receiver)
+            return _otlp_error(503, receiver=receiver, counters=self._rejection_counters)
 
         await self._codex_request_slots.acquire()
         try:
@@ -262,11 +298,11 @@ class MetricsServer:
             except _BodyReadTimeout:
                 # Le créneau est rendu par le `finally` ci-dessous : c'est ce qui
                 # empêche quatre corps figés de tuer les trois récepteurs à vie.
-                return _otlp_error(408, receiver=receiver)
+                return _otlp_error(408, receiver=receiver, counters=self._rejection_counters)
             except CodexTelemetryLimitError:
-                return _otlp_error(413, receiver=receiver)
+                return _otlp_error(413, receiver=receiver, counters=self._rejection_counters)
             except CodexTelemetryMalformedError:
-                return _otlp_error(400, receiver=receiver)
+                return _otlp_error(400, receiver=receiver, counters=self._rejection_counters)
         finally:
             self._codex_request_slots.release()
         return web.json_response({})
@@ -327,6 +363,11 @@ class MetricsServer:
         - DB row counts, coverage, pool stats from collect_db_stats()
         """
         metrics = self._collector.get_metrics()
+
+        # Refus servis par les récepteurs POST — la structure est toujours
+        # présente, trois récepteurs, pour que son zéro soit signifiant
+        # (d5e4bd73 : un zéro sur une source qui ne compte rien ne dit rien).
+        metrics["receiver_rejections"] = self._rejection_counters.snapshot()
 
         # DB stats (async)
         db_stats = await self._collector.collect_db_stats()
