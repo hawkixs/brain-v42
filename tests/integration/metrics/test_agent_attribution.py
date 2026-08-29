@@ -249,8 +249,12 @@ async def http_server_and_collector(
 
     profiled_mcp = apply_tool_catalog_profile(mcp, "compact")
 
-    # Build ASGI app (stateless_http so each request gets a fresh transport)
-    app = profiled_mcp.http_app(stateless_http=True)
+    # Build ASGI app (stateless_http so each request gets a fresh transport).
+    # json_response=True : le transport de PRODUCTION (plan_http_transport),
+    # jamais le SSE-sur-POST que le défaut de http_app() choisirait — voir le
+    # message du commit et le ticket 85559792 pour ce que ce banc CESSE de
+    # prouver en quittant ce transport fantôme.
+    app = profiled_mcp.http_app(stateless_http=True, json_response=True)
 
     port = _get_free_port()
     config = uvicorn.Config(
