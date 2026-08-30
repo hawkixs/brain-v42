@@ -1,39 +1,39 @@
-# OPS1 — Images conteneur immuables
+# OPS1 — Immutable container images
 
-Date : 2026-07-23
+Date: 2026-07-23
 
-Branche : `feat/ops1-container-image-digests`
+Branch: `feat/ops1-container-image-digests`
 
-Base : `main` à `8c271d1`
+Base: `main` at `8c271d1`
 
-## Objectif
+## Objective
 
-Fermer le sous-lot « images immuables » d'OPS1 : chaque image distante exécutée par la CI,
-les Compose opérationnels, les Dockerfiles de services, le supervisor GPU ou les scripts Docker
-hors benchmark doit conserver un tag lisible et être verrouillée sur un digest de manifeste
-vérifié. Un gate statique doit maintenir une bijection entre un inventaire canonique et les
-consommateurs découverts, afin qu'une nouvelle image ne puisse pas échapper au contrat.
+Close the "immutable images" sub-lot of OPS1: every remote image run by CI,
+the operational Compose files, the service Dockerfiles, the GPU supervisor or the Docker
+scripts outside benchmark must keep a readable tag and be locked to a verified manifest
+digest. A static gate must maintain a bijection between a canonical inventory and the
+discovered consumers, so a new image cannot escape the contract.
 
-## État initial observé
+## Initial state observed
 
-- `.gitlab-ci.yml` exécute `python:3.12-slim`, `pgvector/pgvector:pg16` et
-  `docker:27-cli` sans digest.
-- `Dockerfile` et quatre Dockerfiles de services opérationnels utilisent des bases sans
+- `.gitlab-ci.yml` runs `python:3.12-slim`, `pgvector/pgvector:pg16` and
+  `docker:27-cli` without a digest.
+- `Dockerfile` and four operational service Dockerfiles use bases without a
   digest.
-- `docker-compose.yml` verrouille le digest Neo4j sans conserver son tag et ne verrouille ni
-  PostgreSQL ni llama.cpp.
-- `services/embedding_supervisor/main.py` et `deploy/dev-pc/setup-docker-ce.sh` exécutent la
-  même image CUDA flottante.
-- `scripts/embedding_gguf_build.sh` exécute Python et llama.cpp `full` sans digest.
-- Seul le graphe Python de l'application racine et de la CI est déjà verrouillé par `uv.lock`.
-  Les dépendances des services, les paquets système et les modèles ne sont pas rendus
-  reproductibles par ce lot.
+- `docker-compose.yml` locks the Neo4j digest without keeping its tag and locks neither
+  PostgreSQL nor llama.cpp.
+- `services/embedding_supervisor/main.py` and `deploy/dev-pc/setup-docker-ce.sh` run the
+  same floating CUDA image.
+- `scripts/embedding_gguf_build.sh` runs Python and llama.cpp `full` without a digest.
+- Only the Python graph of the root application and of CI is already locked by `uv.lock`.
+  The service dependencies, the system packages and the models are not made
+  reproducible by this lot.
 
-Les neuf digests ci-dessous ont été lus le 2026-07-23 directement dans les manifests des
-registres, sans téléchargement d'image. Chaque référence exacte `tag@digest` a ensuite été
-résolue et `linux/amd64` a été observé dans son index ou son descripteur de manifeste.
+The nine digests below were read on 2026-07-23 directly from the registry manifests,
+without downloading an image. Each exact `tag@digest` reference was then
+resolved and `linux/amd64` was observed in its index or manifest descriptor.
 
-| Tag lisible | Digest de manifeste |
+| Readable tag | Manifest digest |
 |---|---|
 | `python:3.12-slim` | `sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de` |
 | `python:3.11-slim` | `sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93` |
@@ -45,104 +45,104 @@ résolue et `linux/amd64` a été observé dans son index ou son descripteur de 
 | `ghcr.io/ggml-org/llama.cpp:full` | `sha256:0d70482d19f8a4a513e64c8cd839fa114070bfb0c29c8754d68f44691a8c5d22` |
 | `neo4j:5.26.21` | `sha256:409728716bc239f9fa046368ac6ce6ef280f9e5f0bcb7cdd75031a4465cc192d` |
 
-Le tag flottant `llama.cpp:full` a changé pendant la phase de critique : seul le digest relu
-par le coordinateur ci-dessus est retenu. Cette dérive confirme que la preuve de registre doit
-porter sur la référence exacte, et non sur une valeur rapportée par un reviewer.
+The floating `llama.cpp:full` tag changed during the critique phase: only the digest reread
+by the coordinator above is kept. This drift confirms that registry proof must
+bear on the exact reference, not on a value reported by a reviewer.
 
-## Critères d'acceptation
+## Acceptance criteria
 
-1. `config/container-images.lock.yml` expose un schéma strict et les neuf références
-   canoniques sous la forme `<tag>@sha256:<64 hex>`. Pour chacune, il consigne le registre
-   canonique, le tag, le digest, le media type, les plateformes observées, la date, la méthode
-   de résolution et au moins un consommateur.
-2. Le gate `scripts/check_container_image_pins.py` découvre structurellement les images dans
-   la CI, le Compose principal, les Compose sous `deploy/`, tous les `services/**/Dockerfile`,
-   le Dockerfile racine, les commandes `docker run`/`docker pull` des scripts shell hors
-   `bench/` et le probe Docker Python du supervisor.
-3. La relation est bijective : chaque image distante découverte appartient au catalogue,
-   chaque entrée du catalogue est consommée et un même tag canonique ne peut pointer vers deux
-   digests. Les deux tags locaux construits dans `deploy/dev-pc/docker-compose.yml` sont les
-   seules exceptions nommées et doivent rester associés à `build:`.
-4. Le gate rejette les digests malformés, les références sans tag, les variables d'image
-   CI/Compose/Dockerfile, les constructions qu'il ne comprend pas et les références présentes
-   seulement dans un commentaire. Il traite les images/services CI chaîne ou mapping, les
-   ancres YAML résolues, `FROM --platform`, les stages internes et `scratch`. Il échoue fermé
-   sur `include`, `extends`, `!reference` ou un `FROM $ARG` non résolu.
-5. Les références CI sont littérales après résolution YAML et ne dépendent d'aucune variable
-   surchargeable. Une ancre YAML peut réduire la répétition si sa valeur finale reste littérale
-   et si le gate rejette tout `$` dans `image` ou `services.name`.
-6. Les images PostgreSQL, llama.cpp et Neo4j du Compose principal conservent leur version/tag
-   lisible et leur digest exact. Tous les Dockerfiles opérationnels et les consommateurs CUDA/
-   GGUF utilisent également la référence canonique complète.
-7. Les tests historiques PostgreSQL et Neo4j acceptent les nouvelles références immuables
-   sans relâcher leurs contrôles de dépôt, tag ou version.
-8. La preuve RED liste plusieurs tags flottants actuels même quand l'inventaire n'existe pas;
-   elle ne se réduit pas à une erreur « fichier absent ». Des mutations adversariales couvrent
-   digest 63/65/non-hex, tag absent, commentaire, digest divergent, image inconnue digestée,
-   lock orphelin, doublon YAML, variable, formes CI, `FROM` et nouvelle Dockerfile de service.
-9. Chaque référence exacte est revalidée auprès du registre et prouve `linux/amd64`. La preuve
-   distingue index multi-architecture et manifeste PyTorch mono-architecture.
-10. La roadmap marque uniquement « images immuables » comme livré. Elle laisse explicitement
-    ouverts modèles, dépendances des services, paquets système, audit de dépendances, SBOM et
-    SAST.
-11. Les tests ciblés, la suite complète, Ruff, format, mypy, `bash -n`, Compose et
-    `git diff --check` sont verts. Une revue indépendante du diff complet conclut `SHIP` sans
-    constat P0–P3 non résolu.
-12. Après fusion, les deux remotes `main` pointent sur le même SHA, la pipeline GitLab de ce
-    SHA est verte et la feature Brain OPS1 reçoit un artifact de preuve avec commits, compteurs,
-    limites et sous-lots restants.
+1. `config/container-images.lock.yml` exposes a strict schema and the nine canonical
+   references in the form `<tag>@sha256:<64 hex>`. For each, it records the canonical
+   registry, the tag, the digest, the media type, the observed platforms, the date, the
+   resolution method and at least one consumer.
+2. The `scripts/check_container_image_pins.py` gate structurally discovers the images in
+   CI, the main Compose file, the Compose files under `deploy/`, all `services/**/Dockerfile`,
+   the root Dockerfile, the `docker run`/`docker pull` commands of shell scripts outside
+   `bench/` and the supervisor's Docker Python probe.
+3. The relationship is bijective: every discovered remote image belongs to the catalog,
+   every catalog entry is consumed and the same canonical tag cannot point to two
+   digests. The two local tags built in `deploy/dev-pc/docker-compose.yml` are the
+   only named exceptions and must stay associated with `build:`.
+4. The gate rejects malformed digests, references without a tag, image variables in
+   CI/Compose/Dockerfile, constructions it does not understand and references present
+   only in a comment. It handles CI images/services as string or mapping, resolved
+   YAML anchors, `FROM --platform`, internal stages and `scratch`. It fails closed
+   on `include`, `extends`, `!reference` or an unresolved `FROM $ARG`.
+5. CI references are literal after YAML resolution and depend on no overridable variable.
+   A YAML anchor may reduce repetition if its final value stays literal and if the gate
+   rejects any `$` in `image` or `services.name`.
+6. The PostgreSQL, llama.cpp and Neo4j images in the main Compose file keep their readable
+   version/tag and their exact digest. All operational Dockerfiles and the CUDA/GGUF
+   consumers also use the full canonical reference.
+7. The existing PostgreSQL and Neo4j tests accept the new immutable references
+   without relaxing their repository, tag or version checks.
+8. The RED proof lists several current floating tags even when the inventory does not exist;
+   it is not reduced to a "file not found" error. Adversarial mutations cover
+   digest 63/65/non-hex, missing tag, comment, divergent digest, unknown digested image,
+   orphan lock entry, YAML duplicate, variable, CI forms, `FROM` and a new service Dockerfile.
+9. Every exact reference is revalidated against the registry and proves `linux/amd64`. The
+   proof distinguishes multi-architecture indexes from the single-architecture PyTorch manifest.
+10. The roadmap marks only "immutable images" as delivered. It explicitly leaves
+    models, service dependencies, system packages, dependency audit, SBOM and
+    SAST open.
+11. The targeted tests, the full suite, Ruff, format, mypy, `bash -n`, Compose and
+    `git diff --check` are green. An independent review of the full diff concludes `SHIP` with
+    no unresolved P0–P3 finding.
+12. After merge, both `main` remotes point to the same SHA, that SHA's GitLab pipeline
+    is green and the Brain OPS1 feature receives a proof artifact with commits, counters,
+    limits and remaining sub-lots.
 
-## Non-objectifs et frontières
+## Non-goals and boundaries
 
-- Ne pas verrouiller dans ce lot les poids GGUF ou Hugging Face, leurs révisions ou checksums.
-- Ne pas verrouiller ici les dépendances propres aux services ou les paquets système.
-- Ne pas ajouter l'audit de dépendances, la génération de SBOM ou la SAST.
-- Ne pas modifier les fichiers historiques de benchmark sous `bench/`.
-- Ne pas tirer, reconstruire, publier ou déployer les images.
-- Ne pas modifier les tags locaux produits par le dépôt ni les tags de publication de la CI.
-- Le daemon/BuildKit et le helper GitLab appartiennent à l'infrastructure du runner; pinner
-  `docker:27-cli` ne les rend pas reproductibles. Le cache `*-latest` reste une optimisation de
-  build et non une entrée exécutée du catalogue.
+- Do not lock GGUF or Hugging Face weights, their revisions or checksums in this lot.
+- Do not lock service-specific dependencies or system packages here.
+- Do not add dependency audit, SBOM generation or SAST.
+- Do not modify the historical benchmark files under `bench/`.
+- Do not pull, rebuild, publish or deploy the images.
+- Do not modify the local tags produced by the repository or the CI's publication tags.
+- The daemon/BuildKit and the GitLab helper belong to the runner infrastructure; pinning
+  `docker:27-cli` does not make them reproducible. The `*-latest` cache remains a build
+  optimization, not an executed catalog entry.
 
-## Découpage TDD
+## TDD breakdown
 
-### Tâche 1 — Gate structurel et inventaire canonique
+### Task 1 — Structural gate and canonical inventory
 
-Fichiers : créer `scripts/check_container_image_pins.py`,
-`tests/unit/test_container_image_pins.py` et `config/container-images.lock.yml`.
+Files: create `scripts/check_container_image_pins.py`,
+`tests/unit/test_container_image_pins.py` and `config/container-images.lock.yml`.
 
-RED : écrire d'abord les tests de découverte et les mutations adversariales. Exécuter le gate
-sans inventaire ou contre une fixture minimale afin que l'échec initial énumère les références
-flottantes, puis consigner ce résultat. GREEN : implémenter le parseur fail-closed, le schéma
-strict, la comparaison bijective et la CLI hors-ligne.
+RED: first write the discovery tests and the adversarial mutations. Run the gate
+without an inventory or against a minimal fixture so the initial failure enumerates the
+floating references, then record that result. GREEN: implement the fail-closed parser, the
+strict schema, the bijective comparison and the offline CLI.
 
-### Tâche 2 — Verrouillage des consommateurs opérationnels
+### Task 2 — Locking the operational consumers
 
-Fichiers : modifier `.gitlab-ci.yml`, `Dockerfile`, `docker-compose.yml`, les quatre
-Dockerfiles sous `services/embedding*`, `services/embedding_supervisor/main.py`,
+Files: modify `.gitlab-ci.yml`, `Dockerfile`, `docker-compose.yml`, the four
+Dockerfiles under `services/embedding*`, `services/embedding_supervisor/main.py`,
 `deploy/dev-pc/setup-docker-ce.sh`, `scripts/embedding_gguf_build.sh`,
-`tests/unit/test_docker_compose.py` et les tests existants du supervisor/provisioning affectés.
+`tests/unit/test_docker_compose.py` and the existing affected supervisor/provisioning tests.
 
-Avant l'édition de tout symbole existant, exécuter `gitnexus_impact` et annoncer le rayon
-d'impact; arrêter et avertir sur un risque HIGH/CRITICAL. Remplacer chaque tag distant par sa
-référence canonique. Garder les ancres CI non surchargeables et les deux images locales
-explicitement allowlistées. GREEN : gate, tests historiques, `bash -n`, YAML et
+Before editing any existing symbol, run `gitnexus_impact` and announce the blast
+radius; stop and warn on a HIGH/CRITICAL risk. Replace every remote tag with its
+canonical reference. Keep the non-overridable CI anchors and the two explicitly
+allowlisted local images. GREEN: gate, historical tests, `bash -n`, YAML and
 `docker compose config --images`.
 
-### Tâche 3 — Maintenance et preuve OPS1
+### Task 3 — Maintenance and OPS1 proof
 
-Fichiers : créer `docs/CONTAINER_IMAGE_PINS.md`; modifier
-`deploy/dev-pc/README.md`, `docs/plans/2026-07-11-sol-ultra-audit-roadmap-plan.md` et compléter
-la section de preuve du présent plan.
+Files: create `docs/CONTAINER_IMAGE_PINS.md`; modify
+`deploy/dev-pc/README.md`, `docs/plans/2026-07-11-sol-ultra-audit-roadmap-plan.md` and complete
+the proof section of this plan.
 
-Documenter la procédure manuelle de mise à jour : déclencheur périodique ou advisory, lecture
-du digest du tag auprès du registre, contrôle `linux/amd64`, mise à jour atomique inventaire +
-consommateurs, gate hors-ligne, validation registre, suite complète et revue. Mettre à jour la
-roadmap seulement après les gates de la tâche 2.
+Document the manual update procedure: periodic or advisory trigger, reading the
+tag's digest from the registry, `linux/amd64` check, atomic inventory + consumer update,
+offline gate, registry validation, full suite and review. Update the
+roadmap only after the task 2 gates.
 
-## Vérification
+## Verification
 
-Tests ciblés :
+Targeted tests:
 
 ```text
 uv run pytest tests/unit/test_container_image_pins.py tests/unit/test_gitlab_ci.py \
@@ -159,15 +159,15 @@ docker compose config --images
 docker compose -f deploy/dev-pc/docker-compose.yml config --images
 ```
 
-Preuve registre, pour chaque référence exacte :
+Registry proof, for each exact reference:
 
 ```text
 docker buildx imagetools inspect <tag@digest>
 docker buildx imagetools inspect --raw <tag@digest>
-docker manifest inspect --verbose <tag@digest>  # manifeste mono-architecture
+docker manifest inspect --verbose <tag@digest>  # single-architecture manifest
 ```
 
-Gates de branche :
+Branch gates:
 
 ```text
 uv run ruff check .
@@ -179,91 +179,91 @@ git diff --check
 git diff --check main...HEAD
 ```
 
-Exécuter `gitnexus_detect_changes` avant chaque commit. Après fusion : répéter les gates
-proportionnés, pousser sans force sur les deux remotes `main`, vérifier l'identité des refs,
-attendre la pipeline GitLab verte et mettre à jour la feature Brain OPS1.
+Run `gitnexus_detect_changes` before every commit. After merge: repeat the proportioned
+gates, push without force to both `main` remotes, check ref identity,
+wait for the green GitLab pipeline and update the Brain OPS1 feature.
 
-## Retour arrière
+## Rollback
 
-Un revert du ou des commits restaure les tags précédents. Aucun état externe, secret, volume,
-image de registre ou déploiement n'est modifié par ce lot.
+A revert of the commit(s) restores the previous tags. No external state, secret, volume,
+registry image or deployment is modified by this lot.
 
-## Preuves de livraison
+## Delivery evidence
 
-### Tâche 1 — gate et inventaire
+### Task 1 — gate and inventory
 
-- RED initial : `22 collected`, `22 failed`, `0 error`. Les erreurs énuméraient huit tags
-  flottants et la référence Neo4j séparée de son tag; l'échec ne se limitait pas à l'absence du
-  lock.
-- GREEN initial : `25 passed`. Trois boucles adversariales ont ensuite porté la matrice finale à
+- Initial RED: `22 collected`, `22 failed`, `0 error`. The errors enumerated eight
+  floating tags and the Neo4j reference separated from its tag; the failure was not limited to
+  the missing lock.
+- Initial GREEN: `25 passed`. Three adversarial loops then brought the final matrix to
   `56 passed`.
-- Commits : `48dec79` (inventaire et gate), `d0791e5` et `4b346cd` (fermeture des bypasses),
-  fusion dans la feature à `bdbf7be`.
-- Vérifications indépendantes : tester `PASS`; reviewer `SHIP`, sans constat P0 à P3.
+- Commits: `48dec79` (inventory and gate), `d0791e5` and `4b346cd` (closing the bypasses),
+  merged into the feature at `bdbf7be`.
+- Independent checks: tester `PASS`; reviewer `SHIP`, with no P0 to P3 finding.
 
-Le durcissement final du gate a ensuite fermé les provenances Python indirectes, les portées de
-compréhension, les callbacks, factories, mappings dynamiques et chemins d'exécution shell/CI. Le
-snapshot final du checker (`b2420ee…`) et de ses tests (`37d943c…`) passe **1 390/1 390**. Trois
-revues indépendantes du même snapshot concluent `SHIP`; les quatre C901 restantes sont les dettes
-historiques déjà identifiées, sans nouvelle complexité ajoutée par la dernière boucle.
+The gate's final hardening then closed the indirect Python provenances, the comprehension
+scopes, the callbacks, factories, dynamic mappings and shell/CI execution paths. The
+final snapshot of the checker (`b2420ee…`) and its tests (`37d943c…`) passes **1,390/1,390**.
+Three independent reviews of the same snapshot conclude `SHIP`; the four remaining C901s are
+the already-identified historical debt, with no new complexity added by the last loop.
 
-### Tâche 2 — consommateurs opérationnels
+### Task 2 — operational consumers
 
-- RED réel : le gate a relevé 27 violations avant le verrouillage des consommateurs.
-- GREEN : `container image pins: OK (24 consumers)`. Les passes implementer/tester ont validé
-  `148 passed`; le reviewer a validé `171 passed` avec un warning de dépendance préexistant.
-- Le CI Lint officiel GitLab a été reproduit par un connecteur GitLab authentifié : `POST`
-  `projects/hawkixs_project%2Fbrain_v42/ci/lint`, contenu de `.gitlab-ci.yml` et
-  `include_merged_yaml: true`. La réponse porte `valid: true`, `errors: []` et `warnings: []`.
-  Aucun token n'a été fourni manuellement ni inscrit dans les arguments ou les logs. Le runbook
-  documente aussi la reproduction locale avec `glab ci lint .gitlab-ci.yml`, qui réutilise
-  l'authentification `glab` stockée hors des arguments.
-- Commit : `921b0e1`, fusion dans la feature à `c1a7eb2`. Le reviewer a conclu `SHIP` sans
-  constat P0 à P3.
+- Real RED: the gate flagged 27 violations before the consumers were locked.
+- GREEN: `container image pins: OK (24 consumers)`. The implementer/tester passes validated
+  `148 passed`; the reviewer validated `171 passed` with a pre-existing dependency warning.
+- The official GitLab CI Lint was reproduced by an authenticated GitLab connector: `POST`
+  `projects/hawkixs_project%2Fbrain_v42/ci/lint`, `.gitlab-ci.yml` content and
+  `include_merged_yaml: true`. The response carries `valid: true`, `errors: []` and `warnings: []`.
+  No token was supplied manually or written into the arguments or the logs. The runbook
+  also documents local reproduction with `glab ci lint .gitlab-ci.yml`, which reuses
+  the `glab` authentication stored outside the arguments.
+- Commit: `921b0e1`, merged into the feature at `c1a7eb2`. The reviewer concluded `SHIP` with
+  no P0 to P3 finding.
 
-### Correctif de stabilité du cycle de vie local
+### Local lifecycle stability fix
 
-- `pull_policy: build` a rendu explicite un risque préexistant : l'upgrade et le rollback
-  pouvaient reconstruire une image locale au lieu d'utiliser l'image produite ou restaurée.
-- Le commit `c41b2b3` impose `--no-build` sur les chemins de rollback et recrée Qodo à l'arrêt
-  avant le supervisor pendant un upgrade. Il ajoute les contrats statiques du cycle de vie.
-- Les audits ciblés passent 99/99 puis 42/42. Le commit est fusionné dans la feature à
-  `065ffdb`; les revues concluent `SHIP` sans constat P0 à P3.
+- `pull_policy: build` made an existing risk explicit: upgrade and rollback
+  could rebuild a local image instead of using the produced or restored image.
+- Commit `c41b2b3` enforces `--no-build` on the rollback paths and recreates Qodo at stop
+  before the supervisor during an upgrade. It adds the static lifecycle contracts.
+- The targeted audits pass 99/99 then 42/42. The commit is merged into the feature at
+  `065ffdb`; the reviews conclude `SHIP` with no P0 to P3 finding.
 
-### Registres et plateformes
+### Registries and platforms
 
-Les neuf références exactes `tag@digest` ont été résolues auprès de leur registre. Toutes
-exposent `linux/amd64`. Huit sont des index ou listes multi-architecture; PyTorch est un manifeste
-mono-architecture `application/vnd.docker.distribution.manifest.v2+json` dont le descripteur
-porte `linux/amd64`. Le lock conserve les digests, media types et plateformes exacts.
+The nine exact `tag@digest` references were resolved against their registry. All
+expose `linux/amd64`. Eight are multi-architecture indexes or lists; PyTorch is a
+single-architecture `application/vnd.docker.distribution.manifest.v2+json` manifest whose
+descriptor carries `linux/amd64`. The lock keeps the exact digests, media types and platforms.
 
-Le tag `llama.cpp:full` a bougé pendant la critique; le coordinateur a relu et retenu le digest
-`0d70482d…`. Le tag `server-cuda` a avancé après son verrouillage, tandis que la référence exacte
-`c1ddeb6d…` est restée disponible pour `linux/amd64` et `linux/arm64`. Ces deux dérives illustrent
-la menace couverte par le lot.
+The `llama.cpp:full` tag moved during the critique; the coordinator reread and kept the digest
+`0d70482d…`. The `server-cuda` tag advanced after it was locked, while the exact reference
+`c1ddeb6d…` remained available for `linux/amd64` and `linux/arm64`. These two drifts illustrate
+the threat covered by the lot.
 
-### Preuves locales finales
+### Final local evidence
 
-- commit technique de fermeture : `833be90`;
-- gate réel : `container image pins: OK (24 consumers)`;
-- checker : **1 390 tests passés** en 24,11 s sur le snapshot final;
-- matrice OPS1 (CI, Compose, rotation Neo4j, supervisor) : **140 tests passés**;
-- contrats headless et cycle de vie local : **9 tests passés**;
-- stabilité unitaire, sans processus concurrent et sans changement de snapshot :
-  **5 994 passés, 48 ignorés** trois fois de suite en 78,97 s, 78,10 s et 78,50 s;
-- Ruff dépôt complet, format des 597 fichiers, mypy sur `src/` et les scripts gate/rotation,
-  `bash -n`, Compose racine/dev-pc et `git diff --check` : verts;
-- trois revues indépendantes du diff final : `SHIP`, aucun constat reproductible restant.
+- technical closing commit: `833be90`;
+- real gate: `container image pins: OK (24 consumers)`;
+- checker: **1,390 tests passed** in 24,11 s on the final snapshot;
+- OPS1 matrix (CI, Compose, Neo4j rotation, supervisor): **140 tests passed**;
+- headless and local lifecycle contracts: **9 tests passed**;
+- unit stability, without a concurrent process and without a snapshot change:
+  **5,994 passed, 48 skipped** three times in a row in 78,97 s, 78,10 s and 78,50 s;
+- full repo Ruff, format of 597 files, mypy on `src/` and the gate/rotation scripts,
+  `bash -n`, root/dev-pc Compose and `git diff --check`: green;
+- three independent reviews of the final diff: `SHIP`, no reproducible finding remaining.
 
-### Preuves d'intégration
+### Integration evidence
 
-- feature fusionnée par fast-forward; commit de livraison `90d50f4` poussé à l'identique sur
-  GitHub et GitLab;
-- validation post-fusion sous Python 3.12 : **6 003 passés, 39 ignorés** sur 6 042 collectés
-  en 81,30 s; matrice ciblée **1 598/1 598**;
-- pipeline GitLab `4248` verte sur `90d50f4` : 6/6 jobs, couverture 90 % et build Docker;
-- ticket Brain `56245929…` confirmé clos avec les preuves; focus roadmap maintenu en `building`
-  et prochain lot positionné sur le webhook `621fcc37…`.
+- feature merged by fast-forward; delivery commit `90d50f4` pushed identically to
+  GitHub and GitLab;
+- post-merge validation under Python 3.12: **6,003 passed, 39 skipped** out of 6,042 collected
+  in 81,30 s; targeted matrix **1,598/1,598**;
+- GitLab pipeline `4248` green on `90d50f4`: 6/6 jobs, 90 % coverage and Docker build;
+- Brain ticket `56245929…` confirmed closed with the proofs; roadmap focus kept at `building`
+  and next lot positioned on webhook `621fcc37…`.
 
-Les modèles, les dépendances des services, les paquets système, l'audit de dépendances, le SBOM
-et la SAST restent hors de ce sous-lot. OPS1 reste ouvert.
+The models, service dependencies, system packages, dependency audit, SBOM
+and SAST stay outside this sub-lot. OPS1 stays open.

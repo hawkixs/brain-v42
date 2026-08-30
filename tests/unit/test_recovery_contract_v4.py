@@ -187,7 +187,7 @@ def _normal_runtime_runbook_section() -> str:
 def _canonical_mcp_preflight_fence() -> str:
     runbook = (ROOT / "deploy" / "systemd" / "MCP_HTTP_RUNBOOK.md").read_text(encoding="utf-8")
     section_start = "## Preflight\n"
-    section_end = "### Préflight de fichiers hors systemd"
+    section_end = "### Preflight of files outside systemd"
     assert runbook.count(section_start) == 1
     assert runbook.count(section_end) == 1
     preflight = runbook.split(section_start, 1)[1].split(section_end, 1)[0]
@@ -448,6 +448,8 @@ def test_full_runbook_has_one_039_operator_order_and_no_live_claim() -> None:
     # La garde négative ci-dessous reste : elle ne vieillit pas, elle interdit une
     # chaîne morte.
     assert "La production reste à 037 avant une bascule autorisée." not in schema
+
+    assert "Production remains at 037 before an authorized cutover." not in schema
 
 
 def test_040_runbook_section_ships_with_the_code_and_claims_no_live_head() -> None:

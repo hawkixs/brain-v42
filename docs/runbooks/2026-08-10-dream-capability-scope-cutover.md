@@ -1,121 +1,121 @@
-# Armer le scope serveur du dream — bascule, rotation, rollback
+# Arming the dream server scope — cutover, rotation, rollback
 
-Étape 8 de `docs/superpowers/specs/2026-08-08-dream-v2-design.md`. Basculé en
-production le 2026-08-10.
+Step 8 of `docs/superpowers/specs/2026-08-08-dream-v2-design.md`. Cut over to
+production on 2026-08-10.
 
-## Ce que ça change, et pourquoi c'est le lot qui compte
+## What this changes, and why it's the batch that matters
 
-Tant que `BRAIN_DREAM_CAPABILITY_ENFORCEMENT` est absente, le principal d'une
-phase est `unscoped` et `on_call_tool` laisse passer sans périmètre. Une nuit
-lancée pour `red` lit alors le corpus des 54 projets et peut le muter. À dix
-projets, c'est dix fois le même travail global — la spec chiffre 8 × 15 min de
-travail pour la valeur de 15.
+As long as `BRAIN_DREAM_CAPABILITY_ENFORCEMENT` is absent, a phase's principal is
+`unscoped` and `on_call_tool` lets it through with no scope. A night
+launched for `red` then reads the corpus of the 54 projects and can mutate it. With ten
+projects, that's ten times the same global work — the spec puts a figure of 8 × 15 min of
+work for the value of 15.
 
-Armé, chaque phase reçoit un bearer propre à `(projet, phase)`. Les outils
-lisent le périmètre par `get_dream_project_scope()` et filtrent leurs requêtes.
-**Mesuré le 2026-08-10** : un SCAN scopé sur `red` voit 751 learnings sur 2 760,
-soit 27 % du corpus.
+Armed, each phase receives a bearer specific to `(project, phase)`. The tools
+read the scope via `get_dream_project_scope()` and filter their requests.
+**Measured on 2026-08-10**: a SCAN scoped to `red` sees 751 learnings out of 2,760,
+i.e. 27% of the corpus.
 
-Second effet, qui n'était pas l'objectif : les prompts INTERDISAIENT déjà des
-outils en prose (« Do NOT call brain_learn », `## Forbidden tools`). Ces
-interdictions sont maintenant adossées à un refus serveur.
-`tests/unit/test_dream_prompts_match_phase_allowlists.py` garde les deux
-d'accord.
+Second effect, which was not the goal: the prompts already FORBADE some
+tools in prose ("Do NOT call brain_learn", `## Forbidden tools`). These
+prohibitions are now backed by a server-side refusal.
+`tests/unit/test_dream_prompts_match_phase_allowlists.py` keeps the two
+in agreement.
 
-## Le mode d'échec, qui est vert
+## The failure mode, which is green
 
-Le 2026-07-03, un bearer manquant a fait tourner chaque phase en 401 — zéro
-outil brain — et la nuit a rendu « 6/6 OK ». Le drop-in `token.conf` existe à
-cause de ça. Un registre incomplet, mal formé, ou présent d'un seul côté produit
-exactement la même nuit. **Toute étape ci-dessous se termine par une preuve
-positive, jamais par une absence d'erreur.**
+On 2026-07-03, a missing bearer made every phase run into a 401 — zero
+brain tools — and the night reported "6/6 OK". The `token.conf` drop-in exists
+because of that. An incomplete registry, malformed, or present on only one side produces
+exactly the same night. **Every step below ends with a
+positive proof, never with the absence of an error.**
 
-## Bascule
+## Cutover
 
-Le registre exige une **matrice complète** : les six phases pour chaque projet,
-sinon `parse_dream_capability_registry` lève au démarrage du serveur MCP et la
-production ne repart pas. À dix projets, soixante profils.
+The registry requires a **complete matrix**: the six phases for each project,
+otherwise `parse_dream_capability_registry` raises at MCP server startup and
+production does not come back up. With ten projects, sixty profiles.
 
 ```bash
-# 1. Frapper. L'outil valide sa sortie avec le parseur du SERVEUR avant
-#    d'écrire, donc il ne peut pas produire un registre refusé au démarrage.
-#    Le bearer admin entre par l'environnement, jamais par un argument.
-#    --from-drop-in reprend exactement le pool de l'unité vivante.
+# 1. Mint. The tool validates its output with the SERVER's parser before
+#    writing, so it cannot produce a registry refused at startup.
+#    The admin bearer comes in via the environment, never via an argument.
+#    --from-drop-in reuses exactly the pool of the live unit.
 MCP_HTTP_TOKEN="$(sed -n 's/^MCP_HTTP_TOKEN=//p' ~/.config/brain-v42/mcp-token.env)" \
   uv run python -m scripts.mint_dream_capability_registry \
     --output ~/.config/brain-v42/dream-registry.staged --from-drop-in
 
-# 2. Sauvegarder le fichier privé AVANT de le toucher. Le rollback est ce fichier.
+# 2. Back up the private file BEFORE touching it. The rollback is this file.
 cp -p ~/.config/brain-v42/mcp-token.env \
       ~/.config/brain-v42/mcp-token.env.bak-$(date -u +%Y%m%d-%H%M%S)
 ```
 
-Composer ensuite le nouveau fichier privé avec un éditeur local — jamais par un
-`echo`, dont l'argument reste dans l'historique du shell. Il porte exactement
-trois affectations, et le preflight rejette toute autre clé :
+Then compose the new private file with a local editor — never via
+`echo`, whose argument remains in the shell history. It carries exactly
+three assignments, and the preflight rejects any other key:
 
 ```
-MCP_HTTP_TOKEN=<inchangé>
-MCP_HTTP_DREAM_TOKENS=<la ligne frappée à l'étape 1, sans son préfixe de clé>
+MCP_HTTP_TOKEN=<unchanged>
+MCP_HTTP_DREAM_TOKENS=<the line minted at step 1, without its key prefix>
 BRAIN_DREAM_CAPABILITY_ENFORCEMENT=true
 ```
 
 ```bash
-# 3. Valider AVANT de redémarrer, dans les conditions de systemd — le preflight
-#    compare le fichier à l'environnement EFFECTIF, donc il faut le charger.
+# 3. Validate BEFORE restarting, under systemd conditions — the preflight
+#    compares the file to the EFFECTIVE environment, so it must be loaded.
 env $(cat ~/.config/brain-v42/mcp-token.env | xargs -d '\n') \
   .venv/bin/python scripts/check_mcp_http_port.py \
     --shared .env --expected 8765 --expected-host 127.0.0.1 \
     --token-file ~/.config/brain-v42/mcp-token.env \
     --require-effective-runtime-settings
 
-# 4. Redémarrer le seul service MCP HTTP.
+# 4. Restart the single MCP HTTP service.
 systemctl --user restart brain-mcp-http.service
 curl -fsS -m 3 http://127.0.0.1:8765/health
 ```
 
-## Preuves à exiger, dans cet ordre
+## Proofs to require, in this order
 
-1. **Le bearer admin passe encore.** Un appel `brain_*` depuis un client
-   existant doit répondre. Une erreur de validation d'argument est une preuve
-   suffisante — elle vient d'APRÈS l'authentification. Un 401 ne l'est pas.
-2. **Un bearer scopé passe.** `POST /mcp` avec le token d'un profil doit rendre
-   200. C'est la preuve de non-cécité, et c'est celle qui manquait en 2026-07-03.
-3. **Un token inventé est refusé.** 401. Sans cette troisième sonde, les deux
-   premières ne prouvent pas qu'il existe une garde.
-4. **La matrice couvre le pool, et rien de plus.**
-   `codex_runner --preflight-capabilities --project-key X` pour chaque projet du
-   pool, puis pour un projet HORS pool — le second doit ÉCHOUER. Sans cette
-   garde inverse, la matrice ne prouve rien.
+1. **The admin bearer still passes.** A `brain_*` call from an existing
+   client must respond. An argument validation error is sufficient
+   proof — it comes from AFTER authentication. A 401 is not.
+2. **A scoped bearer passes.** `POST /mcp` with the token of a profile must return
+   200. That is the proof of non-blindness, and it's the one missing on 2026-07-03.
+3. **A made-up token is refused.** 401. Without this third probe, the first two
+   don't prove that a guard exists.
+4. **The matrix covers the pool, and nothing more.**
+   `codex_runner --preflight-capabilities --project-key X` for each project of the
+   pool, then for a project OUTSIDE the pool — the second must FAIL. Without this
+   reverse guard, the matrix proves nothing.
 
-`dream.sh` rejoue le préflight pour chaque projet du pool avant toute mutation,
-donc un trou dans la matrice arrête la nuit avant qu'elle commence.
+`dream.sh` replays the preflight for each project of the pool before any mutation,
+so a hole in the matrix stops the night before it starts.
 
-## Élargir le pool
+## Widening the pool
 
-Le registre est frappé pour un pool donné. **Ajouter un projet au drop-in sans
-refrapper le registre fait échouer le préflight de ce projet, donc la nuit
-entière.** C'est fail-closed et voulu. La séquence est : refrapper pour le
-nouveau pool, remplacer le fichier privé, redémarrer MCP HTTP, revérifier.
+The registry is minted for a given pool. **Adding a project to the drop-in without
+re-minting the registry makes that project's preflight fail, hence the entire
+night.** This is fail-closed and intentional. The sequence is: re-mint for the
+new pool, replace the private file, restart MCP HTTP, re-verify.
 
 ## Rotation
 
-`accepted` existe pour le recouvrement : y placer l'ancien token le temps que
-les clients prennent le nouveau, puis le retirer. `verify_token` honore
-`active` **et** tous les `accepted`. La frappe initiale laisse `accepted` vide.
+`accepted` exists for overlap: place the old token there while
+clients pick up the new one, then remove it. `verify_token` honors
+`active` **and** every `accepted`. The initial minting leaves `accepted` empty.
 
 ## Rollback
 
-Un seul geste, et il est complet :
+A single gesture, and it is complete:
 
 ```bash
-cp -p ~/.config/brain-v42/mcp-token.env.bak-<horodatage> \
+cp -p ~/.config/brain-v42/mcp-token.env.bak-<timestamp> \
       ~/.config/brain-v42/mcp-token.env
 systemctl --user restart brain-mcp-http.service
 ```
 
-Sans `BRAIN_DREAM_CAPABILITY_ENFORCEMENT`, `_configure_http_security` repose le
-`BearerTokenGuard` historique sur `MCP_HTTP_TOKEN` : les clients existants ne
-voient aucune différence. Le côté dream retombe sur `unscoped` par le même
-fichier — les deux unités le lisent en `EnvironmentFile`, donc la bascule et le
-rollback sont un seul fichier, pas deux à garder synchrones.
+Without `BRAIN_DREAM_CAPABILITY_ENFORCEMENT`, `_configure_http_security` puts back the
+historical `BearerTokenGuard` on `MCP_HTTP_TOKEN`: existing clients see
+no difference. The dream side falls back to `unscoped` via the same
+file — both units read it as `EnvironmentFile`, so the cutover and the
+rollback are one file, not two to keep in sync.

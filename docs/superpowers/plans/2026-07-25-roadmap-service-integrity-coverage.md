@@ -2,19 +2,19 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Refuser les lots de statuts roadmap invalides avant SQL et porter la couverture unitaire de `roadmap_service.py` au-dessus de 70 %.
+**Goal:** Reject invalid roadmap status batches before SQL and raise the unit-test coverage of `roadmap_service.py` above 70 %.
 
-**Architecture:** Conserver les transactions et interfaces existantes. Ajouter une validation précoce dans `update_feature_statuses`, puis couvrir dans un fichier dédié les préconditions et erreurs de résolution de `update_project_focus`; les tests de pivot existants restent inchangés.
+**Architecture:** Keep the existing transactions and interfaces. Add early validation in `update_feature_statuses`, then cover the preconditions and resolution errors of `update_project_focus` in a dedicated file; the existing pivot tests remain unchanged.
 
 **Tech Stack:** Python 3.12+, pytest 9.1.1, pytest-asyncio 1.4.0, SQLAlchemy 2 async, `AsyncMock`.
 
 ## Global Constraints
 
-- Suivre RED → GREEN → REFACTOR et conserver l'échec fonctionnel attendu.
-- Modifier un seul symbole de production : `RoadmapService.update_feature_statuses`.
-- N'ouvrir aucune session si un lot contient un statut invalide.
-- Ne modifier ni `test_project_group_ticket_service.py`, ni le commit concurrent `2f797d6`.
-- Ne lancer ni mutation PostgreSQL live, ni déploiement, ni merge, ni push.
+- Follow RED → GREEN → REFACTOR and keep the expected functional failure.
+- Modify a single production symbol: `RoadmapService.update_feature_statuses`.
+- Open no session if a batch contains an invalid status.
+- Modify neither `test_project_group_ticket_service.py` nor the concurrent commit `2f797d6`.
+- Run no live PostgreSQL mutation, no deployment, no merge, no push.
 
 ---
 

@@ -1,126 +1,125 @@
-# Le système PROJETS, de bout en bout
+# The PROJECTS system, end to end
 
-Ce document existe parce qu'il n'existait pas. Le système projets de brain-v42 est
-réparti sur quatre briques — un format, trois tables, une convention de nommage et un
-pipeline — dont aucune ne renvoyait aux autres. On pouvait lire chacune sans jamais
-apprendre que la clé est immuable, que la hiérarchie est une illusion typographique, ou
-que le prédicat qui l'implémente vit en douze exemplaires.
+This document exists because it didn't. brain-v42's project system is spread across four
+bricks — a format, three tables, a naming convention, and a pipeline — none of which
+referred back to the others. You could read each one without ever learning that the key
+is immutable, that the hierarchy is a typographic illusion, or that the predicate
+implementing it lives in twelve copies.
 
-**Comment lire ce document.** Il est organisé par une grille : **chaque champ du modèle
-est soit un FAIT que le serveur observe ou dérive, soit un JUGEMENT qu'un humain
-déclare — jamais les deux.** Cette grille n'est pas décorative : elle dit qui a le droit
-d'écrire quoi, et c'est elle qui rend les erreurs de conception visibles (§7).
+**How to read this document.** It is organized by a grid: **each field of the model is
+either a FACT the server observes or derives, or a JUDGMENT a human declares — never
+both.** This grid is not decorative: it says who is allowed to write what, and it is
+what makes design errors visible (§7).
 
-**Ce que ce document n'est pas.** Il ne décrit pas la cible d'une refonte. Il décrit
-l'état vérifié du dépôt et de la base. Les nombres qu'il cite sont **datés et
-périssables** ; la commande pour les rejouer est donnée plutôt que le nombre seul.
+**What this document is not.** It does not describe the target of a redesign. It
+describes the verified state of the repo and the database. The numbers it cites are
+**dated and perishable**; the command to replay them is given instead of the number
+alone.
 
 ---
 
-## 1. Brique 1 — Le format de la clé
+## 1. Brick 1 — The key format
 
-Source de vérité côté code : `src/brain_v42/models/project_key.py`.
+Source of truth on the code side: `src/brain_v42/models/project_key.py`.
 
-- **Regex canonique** : `^[a-z0-9]+([:-][a-z0-9]+)*$`. Kebab-case, avec `:` accepté
-  comme séparateur au même titre que `-`.
-- **Deux alias auto-canonicalisés**, matchés exactement, sensibles à la casse :
-  `brain` et `brain_v42` deviennent `brain-v42`.
-- **Asymétrie écriture / lecture, délibérée.** `canonicalize_project_key(value,
-  strict=True)` — le défaut, donc le chemin d'écriture — lève `ValueError` avec une
-  suggestion sur toute clé non conforme. `strict=False` — le chemin de lecture —
-  laisse passer tel quel : une lecture avec une mauvaise clé rend simplement zéro
-  résultat, au lieu de faire échouer une requête inoffensive.
-- `None` traverse inchangé : c'est de la connaissance globale, non scopée.
-- `ProjectKeyCanonicalMixin` applique la règle à tout modèle Pydantic qui déclare un
+- **Canonical regex**: `^[a-z0-9]+([:-][a-z0-9]+)*$`. Kebab-case, with `:` accepted as a
+  separator on the same footing as `-`.
+- **Two auto-canonicalized aliases**, matched exactly, case-sensitive: `brain` and
+  `brain_v42` become `brain-v42`.
+- **Write/read asymmetry, deliberate.** `canonicalize_project_key(value, strict=True)` —
+  the default, so the write path — raises `ValueError` with a suggestion on any
+  non-conforming key. `strict=False` — the read path — passes it through as-is: a read
+  with a bad key simply returns zero results, instead of failing an otherwise harmless
+  query.
+- `None` passes through unchanged: that's global knowledge, unscoped.
+- `ProjectKeyCanonicalMixin` applies the rule to any Pydantic model that declares a
   `project_key`.
 
-**La propriété qui compte, et qu'il ne faut jamais laisser régresser** : *une mauvaise
-clé est impossible à persister*. Elle a été acquise après un incident de drift où des
-artefacts ont été écrits sous `brain_v42` (underscore) au lieu de `brain-v42`.
+**The property that matters, and that must never be allowed to regress**: *a bad key
+cannot be persisted*. It was earned after a drift incident where artifacts were written
+under `brain_v42` (underscore) instead of `brain-v42`.
 
 ---
 
-## 2. Brique 2 — Trois surfaces en base, souvent confondues
+## 2. Brick 2 — Three surfaces in the database, often confused
 
-| Table | Née en | Rôle | Ce qu'on croit à tort |
+| Table | Born in | Role | What people wrongly assume |
 |---|---|---|---|
-| `projects` | 033 | **Registre.** PK `project_key`, `registry_status` ∈ {claimed, unclaimed, archived}, `source` ∈ {context, reference, manual} | Que ce soit l'objet opérationnel. Il ne l'est pas |
-| `project_aliases` | 033 | **Table d'alias.** `alias_key` → `project_key`, FK CASCADE. Des triggers appliquent la règle aux écritures | Qu'elle soit consultée par le code applicatif — la canonicalisation, elle, vit dans le code |
-| `project_contexts` | **001** | **L'objet opérationnel réel.** `current_focus`, `focus_revision`, `focus_updated_at`, `related_projects`, `project_group`, roadmap, compteurs | Qu'elle soit née avec le registre. Elle le précède de trente-deux migrations |
+| `projects` | 033 | **Registry.** PK `project_key`, `registry_status` ∈ {claimed, unclaimed, archived}, `source` ∈ {context, reference, manual} | That this is the operational object. It isn't |
+| `project_aliases` | 033 | **Alias table.** `alias_key` → `project_key`, FK CASCADE. Triggers enforce the rule on writes | That the application code consults it — canonicalization actually lives in the code |
+| `project_contexts` | **001** | **The real operational object.** `current_focus`, `focus_revision`, `focus_updated_at`, `related_projects`, `project_group`, roadmap, counters | That it was born with the registry. It precedes it by thirty-two migrations |
 
-**Le registre suit le contexte, pas l'inverse.** Créer un `project_context` inscrit une
-entrée `claimed` ; une simple référence depuis un autre projet crée `unclaimed` ;
-supprimer le contexte repasse la ligne en `unclaimed/reference`. La ligne de registre
-n'est donc jamais une décision en soi — c'est une conséquence observée.
+**The registry follows the context, not the other way around.** Creating a
+`project_context` registers a `claimed` entry; a plain reference from another project
+creates `unclaimed`; deleting the context puts the row back to `unclaimed/reference`.
+The registry row is therefore never a decision in itself — it's an observed consequence.
 
-**Depuis la 033, `project_contexts.project_key` est IMMUABLE.** Un trigger lève
-`project_contexts.project_key is immutable` sur tout UPDATE de cette colonne. Renommer
-un projet exige une migration explicite. Ce n'est pas un oubli d'ergonomie : c'est ce
-qui rend le drift de clé irréversible-par-accident.
+**Since 033, `project_contexts.project_key` is IMMUTABLE.** A trigger raises
+`project_contexts.project_key is immutable` on any UPDATE of that column. Renaming a
+project requires an explicit migration. This isn't an ergonomic oversight: it's what
+makes key drift irreversible-by-accident.
 
-**Les tables de connaissance portent la clé SANS clé étrangère.** `decisions`,
-`learnings` et `snippets` l'ont nullable ; `runbooks`, `adrs` et `indexed_plans` la
-veulent NOT NULL. La cohérence ne repose donc pas sur le moteur mais sur la frontière
-Pydantic plus les triggers de la 033. C'est un choix, et il a un prix : rien en base
-n'empêche une clé de connaissance de désigner un projet qui n'existe pas.
+**Knowledge tables carry the key WITHOUT a foreign key.** `decisions`, `learnings` and
+`snippets` have it nullable; `runbooks`, `adrs` and `indexed_plans` require it NOT NULL.
+Consistency therefore doesn't rest on the engine but on the Pydantic boundary plus the
+033 triggers. That's a choice, and it has a price: nothing in the database prevents a
+knowledge key from naming a project that doesn't exist.
 
-**Le CHECK de `projects` et la regex du code sont identiques** — vérifié le
-2026-08-19, caractère pour caractère : `^[a-z0-9]+([:-][a-z0-9]+)*$` des deux côtés
-(`projects_key_format_valid` en base, `_KEBAB` dans le code). Voir §8 pour ce qui,
-aujourd'hui, ne garantit *pas* qu'ils le restent.
-
----
-
-## 3. Brique 3 — La hiérarchie est PLATE
-
-`red-shrik:agent` n'est pas un enfant de `red-shrik`. **Aucun lien parent/enfant
-n'existe en base.** Le deux-points est une convention de nommage, rien de plus : la
-regex l'accepte comme un séparateur ordinaire, au même titre que le tiret.
-
-Partout où le code compare des projets, c'est en **égalité stricte**. Le pipeline
-nocturne filtre `project_key = :pk` ; il n'existe aucun filtre par préfixe. Conséquence
-directe et souvent surprenante : *une nuit de `red-lab` ne voit jamais
-`red-lab:architect`*, même si les deux tournent.
-
-L'exception à cette égalité stricte est le **périmètre de groupe** — et c'est là que le
-prédicat de sous-partition vit.
+**The `projects` CHECK and the code's regex are identical** — verified on 2026-08-19,
+character for character: `^[a-z0-9]+([:-][a-z0-9]+)*$` on both sides
+(`projects_key_format_valid` in the database, `_KEBAB` in the code). See §8 for what,
+today, does *not* guarantee they stay that way.
 
 ---
 
-## 4. Le recensement du prédicat colon
+## 3. Brick 3 — The hierarchy is FLAT
 
-**Ce recensement a été faux trois fois, chaque fois par un angle mort différent.** Il
-est reproduit ici avec sa méthode, pour que la prochaine personne puisse le refaire au
-lieu de le croire.
+`red-shrik:agent` is not a child of `red-shrik`. **No parent/child link exists in the
+database.** The colon is a naming convention, nothing more: the regex accepts it as an
+ordinary separator, on the same footing as the hyphen.
 
-- Une première version affirmait « une seule exception dans tout le code ».
-- Une deuxième corrigeait en « trois exemplaires `src/` et deux vues ».
-- Une troisième, en cherchant les copies Python par le motif `":" in `, a manqué celle
-  qui s'écrit `":" not in` — le grep de correction avait lui aussi son angle mort.
+Everywhere the code compares projects, it's by **strict equality**. The nightly pipeline
+filters `project_key = :pk`; there is no prefix filter anywhere. Direct and often
+surprising consequence: *a `red-lab` night never sees `red-lab:architect`*, even though
+both run.
 
-**Compte vérifié le 2026-08-19 : cinq exemplaires dans `src/`, sept vues en base,
-trois formulations distinctes du même prédicat.**
+The exception to this strict equality is the **group scope** — and that's where the
+sub-partition predicate lives.
 
-### Trois formulations
+---
 
-| # | Forme | Où |
+## 4. The census of the colon predicate
+
+**This census was wrong three times, each time from a different blind spot.** It is
+reproduced here with its method, so the next person can redo it instead of trusting it.
+
+- A first version claimed "a single exception in the entire codebase".
+- A second corrected it to "three `src/` copies and two views".
+- A third, searching for Python copies with the pattern `":" in `, missed the one
+  written `":" not in` — the correction's own grep had its own blind spot.
+
+**Count verified on 2026-08-19: five copies in `src/`, seven views in the database,
+three distinct phrasings of the same predicate.**
+
+### Three phrasings
+
+| # | Form | Where |
 |---|---|---|
 | 1 | **SQL**, `base_key NOT LIKE '%:%' AND candidate LIKE base \|\| ':%'` | `db/project_group_scope.py:24` · `services/project_group_ticket_service.py:134` · `services/proposal_service.py:380` |
 | 2 | **Python**, `":" not in base_key and project_key.startswith(f"{base_key}:")` | `services/project_group_ticket_service.py:163-166` |
 | 3 | **SQL**, `split_part(project_key, ':', 1)` | `repositories/pg_project_context.py:202-204` |
 
-Trois observations qui expliquent pourquoi le compte a résisté :
+Three observations that explain why the count resisted:
 
-- **La n° 2 vit dans la MÊME méthode que sa jumelle SQL** (`_lock_participants_scope`).
-  Le prédicat y est écrit deux fois, dans deux langages, à trente lignes d'écart.
-- **La n° 3 est invisible à un grep sur `not_like("%:%")`** : elle n'emploie ni `LIKE`
-  ni `%:%`.
-- **`proposal_service.py` recopie le SQL alors qu'il importe déjà
-  `project_group_scope`** — le helper partagé existe et n'est pas utilisé là.
+- **#2 lives in the SAME method as its SQL twin** (`_lock_participants_scope`). The
+  predicate is written twice there, in two languages, thirty lines apart.
+- **#3 is invisible to a grep on `not_like("%:%")`**: it uses neither `LIKE` nor `%:%`.
+- **`proposal_service.py` copies the SQL even though it already imports
+  `project_group_scope`** — the shared helper exists and isn't used there.
 
-### Sept vues en base
+### Seven views in the database
 
-Mesuré :
+Measured:
 
 ```sql
 SELECT table_name FROM information_schema.views
@@ -132,103 +131,104 @@ ORDER BY 1;
 `codex_roadmap_curation_proposal_v1`, `codex_ticket_extraction_proposal_v1`,
 `codex_ticket_message_v1`, `codex_ticket_v1`.
 
-Toutes issues de la migration **036**, et nées de **deux corps de CTE recopiés** :
-`_RED_KEYS_CTE` (six vues) et `_BRAIN_RED_KEYS_CTE` (une). La migration 024 n'est pas
-un second objet vivant : la 036 remplace sa vue par `CREATE OR REPLACE`.
+All from migration **036**, and born from **two copied CTE bodies**: `_RED_KEYS_CTE`
+(six views) and `_BRAIN_RED_KEYS_CTE` (one). Migration 024 is not a second living
+object: 036 replaces its view with `CREATE OR REPLACE`.
 
-**Total : douze objets encodent la même sémantique**, cinq en Python/SQLAlchemy et sept
-en SQL figé dans une migration. Aucun ne référence les autres.
+**Total: twelve objects encode the same semantics**, five in Python/SQLAlchemy and seven
+in SQL frozen in a migration. None references the others.
 
 ---
 
-## 5. Brique 4 — Les chiffres, et comment les rejouer
+## 5. Brick 4 — The numbers, and how to replay them
 
-**Ne recopiez aucun nombre de cette section.** Rejouez-la :
+**Do not copy any number from this section.** Replay it:
 
 ```bash
 python3 docs/design/refonte-projets-sessions/baseline/snapshot.py
 ```
 
-Mesure du **2026-08-19** (head Alembic `045`), donnée comme ordre de grandeur et non
-comme référence : 59 `project_contexts` ; environ 4 560 artefacts de connaissance ;
-**537 artefacts sous une clé colon**, répartis sur six clés. La plus lourde,
-`red-shrik:agent` (314), pèse **plus que son parent** `red-shrik` (246) — ce qui n'a
-aucune conséquence structurelle, puisque le lien parent/enfant n'existe pas (§3), et
-toute la conséquence pratique : ce sont deux corpus qui ne se voient pas.
+Measured on **2026-08-19** (Alembic head `045`), given as an order of magnitude and not
+as a reference: 59 `project_contexts`; roughly 4,560 knowledge artifacts; **537
+artifacts under a colon key**, spread over six keys. The heaviest, `red-shrik:agent`
+(314), weighs **more than its parent** `red-shrik` (246) — which has no structural
+consequence, since the parent/child link doesn't exist (§3), and the entire practical
+consequence: these are two corpora that don't see each other.
 
-Une mesure de 2026-08-08 citait « 479 artefacts colon » ; elle était juste à sa date et
-a été recopiée pendant dix jours après avoir cessé de l'être. C'est le mode de panne
-que cette section cherche à rendre impossible.
+A 2026-08-08 measurement cited "479 colon artifacts"; it was correct on its date and was
+copied forward for ten days after it stopped being so. That is the failure mode this
+section is meant to make impossible.
 
 ---
 
-## 6. Les trois surfaces vues par un appelant
+## 6. The three surfaces as seen by a caller
 
-| Surface | Ce qu'elle expose | Canonicalisation |
+| Surface | What it exposes | Canonicalization |
 |---|---|---|
-| Outils MCP `brain_*` | `project_key` en argument | **Stricte** en écriture, **tolérante** en lecture |
-| Vues `codex_*` | Lecture seule, périmètre de groupe | Figée dans le SQL de la 036 |
-| Pipeline nocturne | Périmètre par projet | Égalité stricte, aucun préfixe |
+| MCP tools `brain_*` | `project_key` as argument | **Strict** on write, **tolerant** on read |
+| `codex_*` views | Read-only, group scope | Frozen in 036's SQL |
+| Nightly pipeline | Per-project scope | Strict equality, no prefix |
 
 ---
 
-## 7. La grille FAIT / JUGEMENT appliquée
+## 7. The FACT / JUDGMENT grid applied
 
-C'est la grille annoncée en tête. Elle dit qui écrit quoi.
+This is the grid announced up top. It says who writes what.
 
-| Champ | Nature | Qui écrit |
+| Field | Nature | Who writes it |
 |---|---|---|
-| `projects.registry_status`, `source` | **FAIT** | Le serveur, en conséquence d'un contexte créé ou référencé |
-| `project_aliases.*` | **FAIT** | Triggers de la 033 |
-| `project_contexts.focus_revision` | **FAIT** | Trigger (032) — un compteur, jamais une opinion |
-| `project_contexts.focus_updated_at` | **FAIT** | Code applicatif (`db/focus_stamp`), sous `IS DISTINCT FROM` : réécrire le même focus ne le rajeunit pas. `NULL` = jamais mesuré |
-| `decisions_count`, `learnings_count`, … | **FAIT** | Compteurs dérivés |
-| `project_contexts.current_focus` | **JUGEMENT** | L'humain. **Seul canal de jugement libre du système** |
-| `project_contexts.blockers` | **JUGEMENT** | L'humain |
-| `description`, `code_style`, `git_workflow`, `test_strategy` | **JUGEMENT** | L'humain |
-| Roadmap (`features`) | **JUGEMENT** | L'humain, assisté de propositions |
+| `projects.registry_status`, `source` | **FACT** | The server, as a consequence of a context created or referenced |
+| `project_aliases.*` | **FACT** | 033 triggers |
+| `project_contexts.focus_revision` | **FACT** | Trigger (032) — a counter, never an opinion |
+| `project_contexts.focus_updated_at` | **FACT** | Application code (`db/focus_stamp`), under `IS DISTINCT FROM`: rewriting the same focus does not make it younger. `NULL` = never measured |
+| `decisions_count`, `learnings_count`, … | **FACT** | Derived counters |
+| `project_contexts.current_focus` | **JUDGMENT** | The human. **The system's only channel of free judgment** |
+| `project_contexts.blockers` | **JUDGMENT** | The human |
+| `description`, `code_style`, `git_workflow`, `test_strategy` | **JUDGMENT** | The human |
+| Roadmap (`features`) | **JUDGMENT** | The human, assisted by proposals |
 
-**Ce que la grille rend visible.** `current_focus` est le seul endroit du système où
-s'écrit du jugement non dérivable. Tout le reste est recalculable. La règle qui en
-découle — et qui est facile à violer sans le voir — est que **le focus ne doit contenir
-que ce qui n'est pas déjà mesurable ailleurs** : y recopier un compte d'artefacts ou un
-statut de migration, c'est transformer le seul canal de jugement en cache périmé.
+**What the grid makes visible.** `current_focus` is the only place in the system where
+non-derivable judgment is written. Everything else is recomputable. The rule that
+follows from this — and that is easy to violate without noticing — is that **the focus
+must contain only what isn't already measurable elsewhere**: copying an artifact count
+or a migration status into it turns the system's one judgment channel into a stale
+cache.
 
-**Une seule ligne du tableau est ambiguë**, et il vaut mieux le dire : `current_phase`
-est déclaré par l'humain mais décrit un état que le système pourrait souvent dériver.
-C'est un champ à surveiller — il vieillit mal.
-
----
-
-## 8. Dérives connues et non gardées
-
-- **La regex de la clé existe en dix-sept endroits de l'arbre, répartis sur seize
-  fichiers** (mesuré le 2026-08-19, hors ce document), et `project_key.py` se déclare
-  pourtant « seule source de vérité ». **Aucun test ne relie `_KEBAB` au CHECK SQL** :
-  le test de la 033 épingle la source de la migration contre un littéral réécrit dans le
-  test, sans jamais importer `_KEBAB`. Élargir la regex Python laisserait donc passer,
-  côté Pydantic, des clés que la base refuserait — et rien ne rougirait avant l'INSERT.
-  La ventilation est plus instructive que le nombre : deux migrations (012, 033), trois
-  modules `src/`, deux tests, quatre documents, et **cinq assets d'attestation de
-  récupération** (`ops/recovery/`, versions v2 à v4 et leurs variantes `pgrestore`).
-  Toucher à la regex ne casse donc pas seulement la cohérence code/base : cela casse
-  aussi la preuve de restauration.
-- **Le prédicat colon vit en douze exemplaires** (§4), dont deux dans la même méthode.
-  Un changement de sémantique de sous-partition doit être appliqué douze fois.
-- **Les tables de connaissance n'ont pas de FK vers le registre** (§2). Une clé de
-  connaissance peut désigner un projet inexistant sans que la base s'y oppose.
-- **`project_contexts.current_focus` peut être effacé par omission.** La branche
-  `ON CONFLICT` de l'upsert réécrit le focus à `NULL` quand l'argument est omis. Ce
-  canal existe dans le code ; il n'a **jamais été observé en train de mordre** — les
-  10 contextes à focus `NULL` mesurés le 2026-08-19 sont **tous** à `focus_revision = 0`
-  et jamais datés, donc « jamais écrit », pas « effacé ».
+**One row in the table is ambiguous**, and it's worth saying so: `current_phase` is
+declared by the human but describes a state the system could often derive. It's a field
+to watch — it ages poorly.
 
 ---
 
-*Vérifications de ce document, 2026-08-19, en lecture seule : `models/project_key.py` ;
-`db/project_group_scope.py` ; `services/project_group_ticket_service.py` ;
-`services/proposal_service.py` ; `repositories/pg_project_context.py` ;
+## 8. Known and unguarded drifts
+
+- **The key regex exists in seventeen places across the tree, spread over sixteen
+  files** (measured on 2026-08-19, excluding this document), and yet `project_key.py`
+  declares itself the "single source of truth". **No test links `_KEBAB` to the SQL
+  CHECK**: the 033 test pins the migration's source against a literal rewritten in the
+  test, without ever importing `_KEBAB`. Widening the Python regex would therefore let
+  through, on the Pydantic side, keys the database would refuse — and nothing would turn
+  red before the INSERT. The breakdown is more instructive than the number: two
+  migrations (012, 033), three `src/` modules, two tests, four documents, and **five
+  recovery-attestation assets** (`ops/recovery/`, versions v2 to v4 and their
+  `pgrestore` variants). Touching the regex therefore doesn't just break code/database
+  consistency: it also breaks the restore proof.
+- **The colon predicate lives in twelve copies** (§4), two of them in the same method. A
+  change to sub-partition semantics must be applied twelve times.
+- **Knowledge tables have no FK to the registry** (§2). A knowledge key can name a
+  project that doesn't exist without the database objecting.
+- **`project_contexts.current_focus` can be wiped by omission.** The `ON CONFLICT`
+  branch of the upsert rewrites the focus to `NULL` when the argument is omitted. This
+  channel exists in the code; it has **never been observed to bite** — the 10 contexts
+  with `NULL` focus measured on 2026-08-19 are **all** at `focus_revision = 0` and never
+  dated, so "never written", not "wiped".
+
+---
+
+*Verifications for this document, 2026-08-19, read-only: `models/project_key.py`;
+`db/project_group_scope.py`; `services/project_group_ticket_service.py`;
+`services/proposal_service.py`; `repositories/pg_project_context.py`;
 `alembic/versions/001_initial.py`, `033_graph_relation_ledger.py`,
-`036_codex_contract_views.py` ; `tests/unit/db/test_schema_data_foundation_033.py` ;
-et la base de production pour les vues, les contraintes et les cardinalités. Aucune
-écriture, aucun commit hors ce fichier.*
+`036_codex_contract_views.py`; `tests/unit/db/test_schema_data_foundation_033.py`; and
+the production database for views, constraints, and cardinalities. No writes, no commits
+outside this file.*

@@ -206,7 +206,7 @@ def test_runbook_separates_executable_file_preflight_from_systemd_attestation(
             environment.pop(key)
     environment["HOME"] = str(home)
 
-    file_preflight = _runbook_shell_block("Préflight de fichiers hors systemd")
+    file_preflight = _runbook_shell_block("Preflight of files outside systemd")
     result = subprocess.run(
         ["bash", "-c", file_preflight],
         cwd=repo,
@@ -271,7 +271,7 @@ def test_runbook_separates_executable_file_preflight_from_systemd_attestation(
         "SYSTEMCTL_LOG": str(command_log),
     }
     operator_attestation = subprocess.run(
-        ["bash", "-c", _runbook_shell_block("Attestation effective par systemd")],
+        ["bash", "-c", _runbook_shell_block("Effective attestation by systemd")],
         cwd=repo,
         env=operator_environment,
         text=True,
@@ -331,7 +331,7 @@ def test_runbook_rollback_compensates_a_failure_after_the_first_replacement(
         "ROLLBACK_MOVE_COUNT": str(failed_moves),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
     }
-    rollback = _runbook_shell_block("Rollback compensatoire des unités")
+    rollback = _runbook_shell_block("Compensatory rollback of units")
     result = subprocess.run(
         [
             "bash",

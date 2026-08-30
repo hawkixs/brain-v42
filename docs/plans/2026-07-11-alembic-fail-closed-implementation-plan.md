@@ -1,7 +1,7 @@
 ---
 title: "Alembic fail-closed — explicit migration target and production opt-in"
 status: completed
-summary: "Supprimer tout fallback implicite vers la base live : POSTGRES_URL devient obligatoire pour Alembic, le DSN disparaît d'alembic.ini, et la base brain exige un opt-in de production explicite."
+summary: "Remove every implicit fallback to the live database: POSTGRES_URL becomes mandatory for Alembic, the DSN disappears from alembic.ini, and the brain database requires an explicit production opt-in."
 tags:
   - alembic
   - prod-safety
@@ -12,130 +12,130 @@ tags:
 
 # Alembic fail-closed — explicit migration target and production opt-in
 
-> Source : workstream SA1 de
+> Source: SA1 workstream from
 > `docs/plans/2026-07-11-sol-ultra-audit-roadmap-plan.md`.
-> Branche : `codex/startup-fail-closed-schema-gate`.
-> Pattern : pattern-auto, plan à valider avant toute modification de code.
+> Branch: `codex/startup-fail-closed-schema-gate`.
+> Pattern: pattern-auto, plan to be validated before any code change.
 
 ## Goal
 
-Empêcher Alembic de sélectionner implicitement la base live `brain`. Une migration doit
-recevoir `POSTGRES_URL` dans l'environnement du processus. Si la variable manque, si son URL
-est invalide ou si elle cible `brain` sans confirmation explicite, Alembic doit s'arrêter
-avant toute tentative de connexion.
+Prevent Alembic from implicitly selecting the live `brain` database. A migration must
+receive `POSTGRES_URL` in the process environment. If the variable is missing, if its URL
+is invalid, or if it targets `brain` without explicit confirmation, Alembic must stop
+before any connection attempt.
 
-Le correctif du 30 juin reste acquis : l'override `POSTGRES_URL` et le guard des tests
-d'intégration fonctionnent. Ce chantier ferme uniquement le troisième niveau encore ouvert,
-le fallback settings/`.env` puis `alembic.ini`.
+The June 30 fix stays in place: the `POSTGRES_URL` override and the integration-test guard
+work. This workstream closes only the third level still open, the settings/`.env` fallback
+then `alembic.ini`.
 
 ## Architecture
 
-`alembic/env.py` devient l'unique frontière de validation du target de migration :
+`alembic/env.py` becomes the single validation boundary for the migration target:
 
-1. lire seulement `POSTGRES_URL` depuis l'environnement du processus ;
-2. parser l'URL avec `sqlalchemy.engine.make_url` ;
-3. refuser toute query string, car le dialecte asyncpg peut l'utiliser pour écraser le host,
-   le port ou la base après validation du chemin ;
-4. exiger le driver `postgresql+asyncpg`, un host, un port TCP dans `1..65535`, un username,
-   un password et un nom de base non vides ;
-5. si le nom vaut exactement `brain`, exiger
-   `BRAIN_ALEMBIC_ALLOW_PROD=1|true|yes` ;
-6. retourner le DSN sans jamais le journaliser ;
-7. injecter ce DSN dans la config Alembic avant le mode online ou offline.
+1. read only `POSTGRES_URL` from the process environment;
+2. parse the URL with `sqlalchemy.engine.make_url`;
+3. reject any query string, because the asyncpg dialect can use it to overwrite the host,
+   port or database after path validation;
+4. require the `postgresql+asyncpg` driver, a host, a TCP port in `1..65535`, a username,
+   a password and a non-empty database name;
+5. if the name is exactly `brain`, require
+   `BRAIN_ALEMBIC_ALLOW_PROD=1|true|yes`;
+6. return the DSN without ever logging it;
+7. inject that DSN into the Alembic config before online or offline mode.
 
-`alembic.ini` conserve la clé `sqlalchemy.url`, requise par le contrat Alembic, mais sa
-valeur reste vide. Il ne contient plus ni host, ni user, ni password, ni nom de base.
+`alembic.ini` keeps the `sqlalchemy.url` key, required by the Alembic contract, but its
+value stays empty. It no longer contains any host, user, password or database name.
 
 ## Non-goals
 
-- Ne pas créer ou modifier un rôle PostgreSQL live : cela exige une opération DB séparée et
-  une décision de déploiement.
-- Ne pas ajouter un schema-version gate au démarrage du serveur MCP ; c'est un chantier
-  distinct si un besoin runtime est démontré.
-- Ne pas exécuter de migration sur la base live pendant ce chantier.
-- Ne pas modifier `AGENTS.md`, `CLAUDE.md` ou `uv.lock`, déjà modifiés avant cette session.
-- Ne pas changer les migrations 001–031.
+- Do not create or modify a live PostgreSQL role: that requires a separate DB operation and
+  a deployment decision.
+- Do not add a schema-version gate at MCP server startup; that is a separate workstream if a
+  runtime need is demonstrated.
+- Do not run any migration against the live database during this workstream.
+- Do not modify `AGENTS.md`, `CLAUDE.md` or `uv.lock`, already modified before this session.
+- Do not change migrations 001–031.
 
 ## Blast radius
 
-GitNexus, avant plan : risque **LOW**, un caller direct (`alembic/env.py`), aucun process et
-aucun module applicatif affecté. Le blast radius opérationnel reste élevé par nature : tout
-appel Alembic sans env explicite cessera de fonctionner, volontairement.
+GitNexus, before the plan: risk **LOW**, one direct caller (`alembic/env.py`), no process and
+no application module affected. The operational blast radius stays high by nature: every
+Alembic call without an explicit env will stop working, on purpose.
 
 ## File structure
 
-| Fichier | Changement |
+| File | Change |
 |---|---|
-| `alembic/env.py` | Résolution fail-closed, parsing et opt-in prod |
-| `alembic.ini` | Retrait du DSN live, valeur `sqlalchemy.url` vide |
-| `tests/unit/test_alembic_url_resolution.py` | Tests TDD du resolver et de la redaction |
-| `tests/unit/test_alembic_cli_fail_closed.py` | Contrats subprocess hermétiques, wiring réel Alembic |
-| `tests/unit/test_alembic_env.py` | Contrat structurel : aucun DSN dans l'ini |
-| `README.md` | Commande opérateur avec opt-in prod explicite |
+| `alembic/env.py` | Fail-closed resolution, parsing and prod opt-in |
+| `alembic.ini` | Removal of the live DSN, empty `sqlalchemy.url` value |
+| `tests/unit/test_alembic_url_resolution.py` | TDD tests for the resolver and redaction |
+| `tests/unit/test_alembic_cli_fail_closed.py` | Hermetic subprocess contracts, real Alembic wiring |
+| `tests/unit/test_alembic_env.py` | Structural contract: no DSN in the ini |
+| `README.md` | Operator command with explicit prod opt-in |
 
 ## Worktree preservation gate
 
-Avant la phase RED, enregistrer les SHA-256 et le hash du diff de `AGENTS.md`, `CLAUDE.md`
-et `uv.lock`. Refaire les mêmes calculs avant chaque commit. Toutes les commandes Python
-utilisent `uv run --frozen` afin de ne jamais synchroniser ou réécrire le lockfile.
+Before the RED phase, record the SHA-256 and the diff hash of `AGENTS.md`, `CLAUDE.md`
+and `uv.lock`. Redo the same calculations before every commit. All Python commands
+use `uv run --frozen` so the lockfile is never synced or rewritten.
 
-Après chaque task d'implémentation, pattern-auto impose deux checkpoints avant de continuer :
-review de conformité au plan, puis review qualité/tests du diff de la task.
+After every implementation task, pattern-auto requires two checkpoints before continuing:
+a plan-compliance review, then a quality/test review of the task's diff.
 
-## Task 1 — Verrouiller le contrat du resolver en RED
+## Task 1 — Lock the resolver contract in RED
 
 **Files:**
 
 - Modify: `tests/unit/test_alembic_url_resolution.py`
 
-1. Adapter `_get_resolver()` au contrat sans argument.
-2. Conserver le test de priorité de `POSTGRES_URL`, renommé en test d'acceptation explicite.
-3. Remplacer les tests de fallback par les cas suivants :
-   - env absente → `RuntimeError` mentionnant `POSTGRES_URL`, sans import de settings ;
-   - URL malformée contenant un secret sentinelle → erreur générique levée `from None`,
-     sentinelle absente de la cause et du traceback ;
-   - query string présente, notamment `?database=brain` sur `/brain_test` → refus sans fuite ;
-   - driver autre que `postgresql+asyncpg` → refus ;
-   - base absente → refus ;
-   - host, port, username ou password absent, et port hors plage → refus avant connexion ;
-   - base `brain_test` → acceptée sans opt-in ;
-   - base `brain` → refusée sans opt-in ;
-   - base `brain` → acceptée avec `BRAIN_ALEMBIC_ALLOW_PROD=1`, `true` et `yes` ;
-   - valeur d'opt-in inconnue → refus.
-4. Exécuter le module ciblé et constater les échecs avant implémentation :
+1. Adapt `_get_resolver()` to the argument-free contract.
+2. Keep the `POSTGRES_URL` priority test, renamed as an explicit acceptance test.
+3. Replace the fallback tests with the following cases:
+   - missing env → `RuntimeError` mentioning `POSTGRES_URL`, without importing settings;
+   - malformed URL containing a sentinel secret → generic error raised `from None`,
+     sentinel absent from the cause and the traceback;
+   - query string present, notably `?database=brain` on `/brain_test` → rejected without leak;
+   - driver other than `postgresql+asyncpg` → rejected;
+   - missing database → rejected;
+   - missing host, port, username or password, and out-of-range port → rejected before connection;
+   - `brain_test` database → accepted without opt-in;
+   - `brain` database → rejected without opt-in;
+   - `brain` database → accepted with `BRAIN_ALEMBIC_ALLOW_PROD=1`, `true` and `yes`;
+   - unknown opt-in value → rejected.
+4. Run the targeted module and observe the failures before implementation:
 
 ```bash
 env -u VIRTUAL_ENV uv run --frozen pytest tests/unit/test_alembic_url_resolution.py -q
 ```
 
-Expected RED : le resolver actuel accepte encore un argument, lit settings et retourne le
-fallback ini.
+Expected RED: the current resolver still accepts an argument, reads settings and returns the
+ini fallback.
 
-## Task 2 — Implémenter la frontière fail-closed
+## Task 2 — Implement the fail-closed boundary
 
 **Files:**
 
 - Modify: `alembic/env.py`
 - Test: `tests/unit/test_alembic_url_resolution.py`
 
-1. Importer `make_url` depuis `sqlalchemy.engine`.
-2. Remplacer `_resolve_sqlalchemy_url(default: str)` par un resolver sans fallback.
-3. Ne jamais interpoler le DSN fautif dans une exception ou un log.
-   Toute conversion d'erreur utilise `raise RuntimeError(...) from None`.
-4. Refuser toute query string avant de vérifier `drivername`, `database`, host, port
-   `1..65535`, username, password et l'opt-in de la base `brain`. Le test documente que le
-   dialecte asyncpg laisse `?database=brain` écraser le chemin `/brain_test` dans ses
-   arguments de connexion effectifs. Des tests supplémentaires prouvent qu'aucun default
-   asyncpg ne peut fournir implicitement l'endpoint ou l'identité.
-5. Garder les constantes/allowlists utilisées par le resolver dans la fonction afin que le
-   test AST ne masque pas une dépendance globale ; les tests CLI valident le wiring complet.
-6. Supprimer `_ini_url`; appeler le resolver, puis injecter
-   `resolved_url.replace("%", "%%")` dans `config.set_main_option`. Le resolver continue à
-   retourner le DSN original.
-7. Nettoyer les annotations/imports d'`alembic/env.py` pour que le fichier passe mypy sans
-   `unused-ignore` ni redéfinition de `target_metadata`.
-8. Exécuter les tests ciblés jusqu'au GREEN.
-9. Exécuter aussi les tests de garde DB existants :
+1. Import `make_url` from `sqlalchemy.engine`.
+2. Replace `_resolve_sqlalchemy_url(default: str)` with a resolver that has no fallback.
+3. Never interpolate the faulty DSN into an exception or a log.
+   Every error conversion uses `raise RuntimeError(...) from None`.
+4. Reject any query string before checking `drivername`, `database`, host, port
+   `1..65535`, username, password and the `brain` database opt-in. The test documents that
+   the asyncpg dialect lets `?database=brain` overwrite the `/brain_test` path in its
+   effective connection arguments. Additional tests prove that no asyncpg default can
+   implicitly supply the endpoint or the identity.
+5. Keep the constants/allowlists used by the resolver inside the function so the
+   AST test does not mask a global dependency; the CLI tests validate the full wiring.
+6. Remove `_ini_url`; call the resolver, then inject
+   `resolved_url.replace("%", "%%")` into `config.set_main_option`. The resolver keeps
+   returning the original DSN.
+7. Clean up the annotations/imports of `alembic/env.py` so the file passes mypy without
+   `unused-ignore` or a `target_metadata` redefinition.
+8. Run the targeted tests to GREEN.
+9. Also run the existing DB guard tests:
 
 ```bash
 env -u VIRTUAL_ENV uv run --frozen pytest \
@@ -143,7 +143,7 @@ env -u VIRTUAL_ENV uv run --frozen pytest \
   tests/unit/test_integration_db_guard.py -q
 ```
 
-## Task 3 — Supprimer le secret statique et documenter l'opération prod
+## Task 3 — Remove the static secret and document the prod operation
 
 **Files:**
 
@@ -151,61 +151,61 @@ env -u VIRTUAL_ENV uv run --frozen pytest \
 - Modify: `tests/unit/test_alembic_env.py`
 - Modify: `README.md`
 
-1. Écrire d'abord un test qui refuse toute valeur non vide pour `sqlalchemy.url` dans
-   `alembic.ini` et vérifie l'absence de `brain:brain` dans l'ini et le README.
-2. Constater le RED sur l'ini actuel.
-3. Remplacer le DSN par `sqlalchemy.url =` et expliquer que `alembic/env.py` injecte la
-   valeur explicite.
-4. Mettre à jour le Quick Start :
+1. First write a test that rejects any non-empty value for `sqlalchemy.url` in
+   `alembic.ini` and checks the absence of `brain:brain` in the ini and the README.
+2. Observe the RED on the current ini.
+3. Replace the DSN with `sqlalchemy.url =` and explain that `alembic/env.py` injects the
+   explicit value.
+4. Update the Quick Start:
 
 ```bash
 export POSTGRES_URL="postgresql+asyncpg://brain:REPLACE_WITH_PASSWORD@localhost:5433/brain"
 BRAIN_ALEMBIC_ALLOW_PROD=1 alembic upgrade head
 ```
 
-La documentation ne doit pas republier le vrai password, y compris dans la section
-Configuration. Elle doit préciser que l'opt-in n'est requis que lorsque le nom de base vaut
-exactement `brain` et doit rester ponctuel, jamais exporté durablement dans le shell.
-5. Rejouer les deux modules unitaires Alembic.
+The documentation must not republish the real password, including in the Configuration
+section. It must specify that the opt-in is only required when the database name is exactly
+`brain` and must stay one-off, never exported durably in the shell.
+5. Rerun the two Alembic unit modules.
 
-## Task 4 — Prouver le wiring CLI et les 31 migrations
+## Task 4 — Prove the CLI wiring and the 31 migrations
 
 **Files:**
 
 - Create: `tests/unit/test_alembic_cli_fail_closed.py`
 
-1. Écrire des tests subprocess avec `sys.executable -m alembic`, environnement nettoyé,
-   `cwd` fixé, timeout et stdout/stderr capturés. Utiliser une config temporaire dont
-   `script_location` pointe vers le répertoire Alembic réel et un `.env` sentinelle dans le
-   cwd temporaire. Prouver que, sans `POSTGRES_URL` processus, Alembic échoue sur le guard et
-   n'utilise pas ce `.env`.
-2. Tester une URL malformée dont le port contient un secret sentinelle. Vérifier le stderr
-   subprocess complet et l'absence de la sentinelle.
-3. Tester un password encodé contenant `%40` en mode offline. L'appel doit réussir et la
-   valeur sensible doit être absente du stderr.
-4. Automatiser les deux contrats offline suivants :
+1. Write subprocess tests with `sys.executable -m alembic`, a cleaned environment,
+   a fixed `cwd`, timeout and captured stdout/stderr. Use a temporary config whose
+   `script_location` points to the real Alembic directory and a sentinel `.env` in the
+   temporary cwd. Prove that, without a process `POSTGRES_URL`, Alembic fails on the guard and
+   does not use that `.env`.
+2. Test a malformed URL whose port contains a sentinel secret. Check the full subprocess
+   stderr and the absence of the sentinel.
+3. Test an encoded password containing `%40` in offline mode. The call must succeed and the
+   sensitive value must be absent from stderr.
+4. Automate the following two offline contracts:
 
 ```bash
 POSTGRES_URL="postgresql+asyncpg://brain:encoded%40secret@localhost:5433/brain_test" \
   env -u VIRTUAL_ENV uv run --frozen alembic upgrade head --sql
 ```
 
-Expected : `brain_test` rend les 31 migrations sans connexion ; `brain` sans opt-in échoue
-avant rendu SQL.
+Expected: `brain_test` renders the 31 migrations without a connection; `brain` without opt-in
+fails before SQL rendering.
 
-5. Ne pas exécuter le cas prod avec opt-in : son acceptance est couverte par le resolver
-   unitaire et la documentation ; une vraie migration live est hors scope.
-6. Lancer un PostgreSQL/pgvector éphémère nommé `brain_test`, sur un port loopback dédié et
-   sans volume hôte. Appliquer réellement `alembic upgrade head`, vérifier `alembic current`
-   et `alembic heads`, puis détruire uniquement ce conteneur temporaire. Ne réutiliser ni le
-   conteneur `brain_v42_postgres`, ni le port 5433, ni un DSN issu de `.env`.
-7. Enregistrer une décision Brain séparée sur le rôle de migration : recommandation
-   `brain_migrator` dédié, permissions DDL nécessaires et coût du bootstrap ; application
-   différée à une opération live explicitement autorisée.
+5. Do not run the prod case with opt-in: its acceptance is covered by the unit resolver
+   and the documentation; a real live migration is out of scope.
+6. Start an ephemeral PostgreSQL/pgvector instance named `brain_test`, on a dedicated loopback
+   port and without a host volume. Actually apply `alembic upgrade head`, check `alembic current`
+   and `alembic heads`, then destroy only that temporary container. Do not reuse the
+   `brain_v42_postgres` container, port 5433, or a DSN taken from `.env`.
+7. Record a separate Brain decision about the migration role: recommend a dedicated
+   `brain_migrator` role, the required DDL permissions and the bootstrap cost; application
+   deferred to an explicitly authorized live operation.
 
-## Task 5 — Gates et review de branche
+## Task 5 — Gates and branch review
 
-1. Lancer les gates ciblés :
+1. Run the targeted gates:
 
 ```bash
 env -u VIRTUAL_ENV uv run --frozen pytest \
@@ -218,74 +218,74 @@ env -u VIRTUAL_ENV uv run --frozen ruff format --check alembic/env.py tests/unit
 env -u VIRTUAL_ENV uv run --frozen mypy alembic/env.py src/
 ```
 
-2. Lancer la suite unitaire complète.
-3. Appliquer `gitnexus_detect_changes(scope="all")`.
-4. Faire reviewer le diff complet par un juge final. Verdict attendu : `SHIP`.
-5. Indexer ce plan dans Brain, épingler sa feature en `building`, puis la passer à
-   `deployed` ou `done` uniquement après preuve et merge.
+2. Run the full unit suite.
+3. Apply `gitnexus_detect_changes(scope="all")`.
+4. Have the full diff reviewed by a final judge. Expected verdict: `SHIP`.
+5. Index this plan in Brain, pin its feature to `building`, then move it to
+   `deployed` or `done` only after proof and merge.
 
 ## Acceptance criteria
 
-- Alembic sans `POSTGRES_URL` échoue avant connexion, même si `.env` existe.
-- Un `POSTGRES_URL` invalide n'apparaît jamais dans l'erreur ou sa chaîne de causes.
-- Toute query string est refusée avant connexion ; elle ne peut pas écraser la cible validée.
-- Host, port TCP, username et password sont explicites ; aucun default asyncpg ne complète
-  la cible ou l'identité.
-- Un DSN valide contenant `%` traverse ConfigParser et le mode offline sans fuite.
-- Aucun DSN réel ou credential n'est stocké dans `alembic.ini` ou ajouté au README.
-- `brain_test` fonctionne sans opt-in ; `brain` exige un opt-in explicite.
-- Les 31 migrations s'appliquent réellement sur un PostgreSQL/pgvector éphémère et atteignent
-  le head attendu.
-- Les migrations existantes et leur ordre restent inchangés.
-- Les tests unitaires et gates statiques sont verts.
-- Les modifications préexistantes du worktree restent non stagées et inchangées.
+- Alembic without `POSTGRES_URL` fails before connecting, even if `.env` exists.
+- An invalid `POSTGRES_URL` never appears in the error or its cause chain.
+- Any query string is rejected before connecting; it cannot overwrite the validated target.
+- Host, TCP port, username and password are explicit; no asyncpg default completes
+  the target or the identity.
+- A valid DSN containing `%` crosses ConfigParser and offline mode without a leak.
+- No real DSN or credential is stored in `alembic.ini` or added to the README.
+- `brain_test` works without opt-in; `brain` requires an explicit opt-in.
+- The 31 migrations actually apply on an ephemeral PostgreSQL/pgvector instance and reach
+  the expected head.
+- The existing migrations and their order stay unchanged.
+- The unit tests and static gates are green.
+- The worktree's pre-existing modifications stay unstaged and unchanged.
 
-## Execution evidence — 11 juillet 2026
+## Execution evidence — July 11, 2026
 
-Le pattern-auto a convergé après deux passes de jugement du plan, puis chaque slice a reçu
-une review spec et une review qualité indépendantes. Le premier review du resolver a trouvé
-une fuite encore introspectable via `RuntimeError.__context__`; le correctif a déplacé la
-levée générique hors du bloc `except`, puis les deux reviewers ont rendu `SHIP`.
+The pattern-auto converged after two judging passes on the plan, then each slice received
+an independent spec review and quality review. The resolver's first review found
+a leak still introspectable via `RuntimeError.__context__`; the fix moved the
+generic raise out of the `except` block, then both reviewers returned `SHIP`.
 
-Preuves fonctionnelles et statiques :
+Functional and static evidence:
 
-- resolver et garde DB : 34 tests passés ;
-- contrats Alembic ciblés : 66 tests passés ;
-- suite unitaire complète : 2 901 tests passés, 39 ignorés, 8 warnings préexistants ;
-- Ruff check et format : passés ;
-- mypy : aucun problème dans 112 fichiers source ;
-- `AGENTS.md`, `CLAUDE.md` et `uv.lock` conservent leurs hashes initiaux et restent hors du
+- resolver and DB guard: 34 tests passed;
+- targeted Alembic contracts: 66 tests passed;
+- full unit suite: 2,901 tests passed, 39 skipped, 8 pre-existing warnings;
+- Ruff check and format: passed;
+- mypy: no issues across 112 source files;
+- `AGENTS.md`, `CLAUDE.md` and `uv.lock` keep their initial hashes and stay out of
   staging.
 
-Les quatre tests CLI prouvent le wiring final. Leur premier échec (62 occurrences au lieu de
-31) était un bug de comptage du test entre stdout et stderr, pas un nouveau défaut produit ;
-la preuve RED produit vient du resolver historique et du DSN statique d'`alembic.ini`.
+The four CLI tests prove the final wiring. Their first failure (62 occurrences instead of
+31) was a test counting bug between stdout and stderr, not a new defect produced;
+the RED proof produced comes from the historical resolver and the static DSN in `alembic.ini`.
 
-La revue finale a ensuite trouvé un second P1 : avec `/brain_test?database=brain`, SQLAlchemy
-exposait encore `brain_test` dans l'URL parsée mais le dialecte asyncpg transmettait
-effectivement `database=brain`. Quatre tests RED (`database`, `host`, `port`, `ssl`) ont
-prouvé le bypass. Alembic refuse désormais toute query string ; 60/60 contrats ciblés sont
-verts après ce patch. La même review a ensuite montré qu'un DSN sans host, port ou identité
-laissait asyncpg choisir des defaults implicites. Six tests RED ont fermé ce dernier chemin :
-endpoint et identité sont maintenant complets, et 66/66 contrats ciblés sont verts.
+The final review then found a second P1: with `/brain_test?database=brain`, SQLAlchemy
+still exposed `brain_test` in the parsed URL but the asyncpg dialect actually transmitted
+`database=brain`. Four RED tests (`database`, `host`, `port`, `ssl`) proved the bypass.
+Alembic now rejects any query string; 60/60 targeted contracts are green after this patch.
+The same review then showed that a DSN without host, port or identity let asyncpg pick
+implicit defaults. Six RED tests closed this last path:
+endpoint and identity are now complete, and 66/66 targeted contracts are green.
 
-Le rapport d'exécution de cette session — pas un transcript brut conservé — indique que le
-drill réel a utilisé l'image runtime pgvector pinée, un conteneur unique en tmpfs, aucun
-bind/volume et un port loopback aléatoire. Deux premières tentatives se sont arrêtées avant
-migration sur des erreurs du harnais, avec cleanup exact-CID vérifié. La troisième a appliqué
-`001 -> 031` sur `brain_test` avec `BRAIN_ALEMBIC_ALLOW_PROD` absent. Résultats :
+This session's execution report — not a raw transcript kept — indicates that the
+real drill used the pinned pgvector runtime image, a single tmpfs container, no
+bind/volume and a random loopback port. Two first attempts stopped before
+migration on harness errors, with exact-CID cleanup verified. The third applied
+`001 -> 031` on `brain_test` with `BRAIN_ALEMBIC_ALLOW_PROD` absent. Results:
 
-- `alembic current` et `alembic heads` : `031 (head)` ;
-- `alembic_version` : `031` ; pgvector : `0.8.4` ;
-- 23 tables publiques, vue `codex_brain_entity_v1` présente, rôle `codex_ro` présent ;
-- aucun index invalide ou non prêt ;
-- conteneur jetable détruit et ID de `brain_v42_postgres` identique avant/après.
+- `alembic current` and `alembic heads`: `031 (head)`;
+- `alembic_version`: `031`; pgvector: `0.8.4`;
+- 23 public tables, `codex_brain_entity_v1` view present, `codex_ro` role present;
+- no invalid or not-ready index;
+- disposable container destroyed and `brain_v42_postgres` ID identical before/after.
 
-Limite de preuve : le transcript et le CID final du conteneur jetable n'ont pas été
-conservés. Une vérification read-only post-session confirme le conteneur principal `running`
-sur l'image pinée et l'absence de tout conteneur portant le label du drill. Un runbook avec
-capture d'artefact durable relève du futur durcissement DR/OPS.
+Proof limit: the transcript and the final CID of the disposable container were not
+kept. A read-only post-session check confirms the main container `running` on
+the pinned image and the absence of any container carrying the drill's label. A runbook with
+durable artifact capture belongs to future DR/OPS hardening.
 
-La décision Brain `a665e495-3a92-4a46-852d-5c90177c6e06` retient un futur rôle
-`brain_migrator` sans privilèges cluster, sépare le bootstrap privilégié des migrations
-courantes et diffère toute mutation live.
+The Brain decision `a665e495-3a92-4a46-852d-5c90177c6e06` records a future
+`brain_migrator` role without cluster privileges, separates privileged bootstrap from
+routine migrations and defers any live mutation.

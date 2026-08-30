@@ -1,106 +1,106 @@
-# Activité live des clients du brain — plan d'implémentation
+# Live client activity for the brain — implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Remplacer le panneau « Codex activity » de red-monitor par un panneau « Live workload » qui montre une ligne par session cliente du brain, en fusionnant la télémétrie OTLP des agents et l'activité observée côté brain.
+**Goal:** Replace red-monitor's "Codex activity" panel with a "Live workload" panel that shows one row per brain client session, merging the agents' OTLP telemetry with activity observed on the brain side.
 
-**Architecture:** Deux processus. Le serveur MCP (`:8765`) observe ses appelants dans `ProvenanceMiddleware` et pousse des observations bornées en loopback vers le sidecar métriques (`:9200`). Le sidecar reçoit aussi l'OTLP des CLI (Codex et Claude Code, deux décodeurs), hache tous les identifiants à la réception avec son secret de processus, et fusionne le tout dans un registre unique borné exposé par `/api/cockpit`. red-monitor reproxifie sans changement Go ; seul le panneau SolidJS bouge.
+**Architecture:** Two processes. The MCP server (`:8765`) observes its callers in `ProvenanceMiddleware` and pushes bounded observations over loopback to the metrics sidecar (`:9200`). The sidecar also receives OTLP from the CLIs (Codex and Claude Code, two decoders), hashes every identifier on reception with its process secret, and merges everything into a single bounded registry exposed by `/api/cockpit`. red-monitor re-proxies with no Go change; only the SolidJS panel moves.
 
-**Tech Stack:** Python 3.12, aiohttp (sidecar), FastMCP 3.x (middleware), httpx (émetteur), pytest / pytest-asyncio, SolidJS + Vitest (red-monitor).
+**Tech Stack:** Python 3.12, aiohttp (sidecar), FastMCP 3.x (middleware), httpx (emitter), pytest / pytest-asyncio, SolidJS + Vitest (red-monitor).
 
 **Spec:** `docs/superpowers/specs/2026-08-06-live-client-activity-design.md`
 **Ticket brain:** `2dfbb83d-f6cf-4570-9b13-502acc8c776c`
 
 ## Global Constraints
 
-- **TDD obligatoire.** Aucun code d'implémentation sans un test qui échoue d'abord. Ne jamais modifier un test pour faire passer du code.
-- **Vert avant commit**, dans cet ordre exact : `pytest tests/unit`, `ruff check src/ tests/`, `ruff format --check src/ tests/`, `mypy src/`. Le CI lance `ruff format --check` — `ruff check` seul ne suffit pas.
-- **Commits atomiques, Conventional Commits**, messages en français comme le reste du dépôt. Terminer chaque message par `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
-- **Type hints partout**, `from __future__ import annotations` en tête de chaque module.
-- **Jamais `print`** : `structlog` uniquement.
-- **`null`, jamais `0`, pour tout champ sans source de données.** Doctrine déjà écrite dans `cockpit.py` : un `0.0` cosmétique est indiscernable d'un vrai zéro mesuré.
-- **Tout récepteur HTTP du sidecar est loopback-only et borné**, avec le durcissement de `/v1/logs` : rejet non-loopback en 403, corps hors borne en 413, saturation en 503, malformé en 400.
-- **Aucun identifiant brut ne sort dans le payload.** Le hachage est fait à la réception, côté sidecar, avec le secret de processus.
-- Ne pas citer le learning `b77dba43` : réfuté par `310a9953`.
-- **Ne jamais appeler un tool `brain_session_*`** au cours de ce plan. Le cycle de session appartient à l'utilisateur.
+- **TDD mandatory.** No implementation code without a test that fails first. Never modify a test to make code pass.
+- **Green before commit**, in this exact order: `pytest tests/unit`, `ruff check src/ tests/`, `ruff format --check src/ tests/`, `mypy src/`. CI runs `ruff format --check` — `ruff check` alone is not enough.
+- **Atomic commits, Conventional Commits**, messages in French like the rest of the repo. End every message with `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
+- **Type hints everywhere**, `from __future__ import annotations` at the top of every module.
+- **Never `print`**: `structlog` only.
+- **`null`, never `0`, for any field without a data source.** Doctrine already written in `cockpit.py`: a cosmetic `0.0` is indistinguishable from a real measured zero.
+- **Every sidecar HTTP receiver is loopback-only and bounded**, with the hardening of `/v1/logs`: non-loopback rejected with 403, oversize body with 413, saturation with 503, malformed with 400.
+- **No raw identifier ever leaves in the payload.** Hashing happens on reception, sidecar-side, with the process secret.
+- Do not cite learning `b77dba43`: refuted by `310a9953`.
+- **Never call a `brain_session_*` tool** during this plan. The session cycle belongs to the user.
 
 ---
 
-## Structure des fichiers
+## File structure
 
-**Créés — `brain_v42` :**
+**Created — `brain_v42`:**
 
-| Fichier | Responsabilité |
+| File | Responsibility |
 |---------|----------------|
-| `src/brain_v42/metrics/client_activity.py` | Le registre fusionné : état borné, jointure, projection `clients[]` |
-| `src/brain_v42/metrics/claude_telemetry.py` | Décodeur OTLP Claude Code (schéma distinct de Codex) |
-| `src/brain_v42/metrics/client_observation.py` | Format de fil des observations brain-side : décodage borné |
-| `src/brain_v42/mcp/activity_reporter.py` | Émetteur loopback côté processus MCP |
-| `tests/fixtures/claude_otlp_logs.json` | Capture réelle produite par la tâche 1, oracle des noms d'attributs |
+| `src/brain_v42/metrics/client_activity.py` | The merged registry: bounded state, join, `clients[]` projection |
+| `src/brain_v42/metrics/claude_telemetry.py` | Claude Code OTLP decoder (schema distinct from Codex) |
+| `src/brain_v42/metrics/client_observation.py` | Brain-side observation feed format: bounded decoding |
+| `src/brain_v42/mcp/activity_reporter.py` | Loopback emitter on the MCP process side |
+| `tests/fixtures/claude_otlp_logs.json` | Real capture produced by task 1, oracle for attribute names |
 
-**Modifiés — `brain_v42` :**
+**Modified — `brain_v42`:**
 
-| Fichier | Changement |
+| File | Change |
 |---------|-----------|
-| `src/brain_v42/provenance.py` | ContextVars de session et de profondeur d'appel |
-| `src/brain_v42/mcp/provenance_middleware.py` | Pose la session, garde de ré-entrance, déclenche l'émetteur |
-| `src/brain_v42/metrics/codex_telemetry.py` | Garde son décodeur ; le registre déménage |
-| `src/brain_v42/metrics/server.py` | Route `/v1/client-activity`, câblage du registre |
-| `src/brain_v42/metrics/cockpit.py` | Champ `clients[]` |
-| `src/brain_v42/config.py` | Réglages de l'émetteur |
+| `src/brain_v42/provenance.py` | Session and call-depth ContextVars |
+| `src/brain_v42/mcp/provenance_middleware.py` | Sets the session, re-entrance guard, triggers the emitter |
+| `src/brain_v42/metrics/codex_telemetry.py` | Keeps its decoder; the registry moves out |
+| `src/brain_v42/metrics/server.py` | `/v1/client-activity` route, registry wiring |
+| `src/brain_v42/metrics/cockpit.py` | `clients[]` field |
+| `src/brain_v42/config.py` | Emitter settings |
 
-**Modifiés — `red-monitor`** (dépôt `~/hawkixs_infra/git_repo/ReD_v1/projects/red-monitor`) :
+**Modified — `red-monitor`** (repo `~/hawkixs_infra/git_repo/ReD_v1/projects/red-monitor`):
 `frontend/src/tabs/brain/BrainActivity.jsx`, `brainPresentation.js`, `BrainStatusBar.jsx`, `Brain.test.jsx`.
 
-**Non touchés, volontairement :** `internal/web/brain.go` (proxifie les octets bruts), `metrics/flusher.py` et `process_metrics` (cadence 30 s, écartée par la spec), `db/tables.py` (le registre est en mémoire).
+**Untouched, deliberately:** `internal/web/brain.go` (re-proxies raw bytes), `metrics/flusher.py` and `process_metrics` (30 s cadence, ruled out by the spec), `db/tables.py` (the registry is in memory).
 
 ---
 
-### Task 1: Spike — prouver la jointure de session
+### Task 1: Spike — prove the session join
 
-**Porte du plan.** Ne pas enchaîner sans son résultat écrit. Aucune ligne de code d'implémentation ici : c'est une mesure.
+**Plan gate.** Do not proceed without its written result. No implementation code here: this is a measurement.
 
 **Files:**
 - Create: `tests/fixtures/claude_otlp_logs.json`
 - Create: `docs/upstream/2026-08-06-claude-otlp-session-join.md`
 
 **Interfaces:**
-- Consumes: rien.
-- Produces: le fichier de capture, oracle des noms d'attributs pour la tâche 5 ; le verdict `JOINTURE POSSIBLE` ou `JOINTURE IMPOSSIBLE` qui conditionne la tâche 8.
+- Consumes: nothing.
+- Produces: the capture file, oracle of attribute names for task 5; the `JOINTURE POSSIBLE` or `JOINTURE IMPOSSIBLE` verdict that gates task 8.
 
-- [ ] **Step 1: Ajouter l'en-tête de session à la configuration MCP locale**
+- [ ] **Step 1: Add the session header to the local MCP configuration**
 
-Dans `~/.claude.json`, à côté de `"X-Brain-Agent": "${PWD}"` (vers la ligne 3807), ajouter :
+In `~/.claude.json`, next to `"X-Brain-Agent": "${PWD}"` (around line 3807), add:
 
 ```json
 "X-Brain-Session": "${CLAUDE_CODE_SESSION_ID}"
 ```
 
-- [ ] **Step 2: Ouvrir une session Claude Code INTERACTIVE et lire l'en-tête reçu**
+- [ ] **Step 2: Open an INTERACTIVE Claude Code session and read the header received**
 
-La mesure du 2026-08-06 vient d'une session `sdk-cli` avec `CLAUDE_CODE_CHILD_SESSION=1`. Une session interactive peut exporter un environnement différent : c'est précisément ce qu'on vérifie.
+The 2026-08-06 measurement comes from an `sdk-cli` session with `CLAUDE_CODE_CHILD_SESSION=1`. An interactive session may export a different environment: that is precisely what is being checked.
 
-Dans la session interactive, noter la valeur de `CLAUDE_CODE_SESSION_ID` :
+In the interactive session, note the value of `CLAUDE_CODE_SESSION_ID`:
 
 ```bash
 echo "$CLAUDE_CODE_SESSION_ID"
 ```
 
-Puis capturer l'en-tête réellement reçu par le serveur MCP. Le plus simple sans toucher au code : un enregistrement temporaire dans le middleware.
+Then capture the header actually received by the MCP server. The simplest way without touching the code: a temporary log line in the middleware.
 
 ```bash
-# Dans le processus MCP, ajouter TEMPORAIREMENT à provenance_middleware.py,
-# ligne 33, puis redémarrer le serveur :
+# In the MCP process, TEMPORARILY add to provenance_middleware.py,
+# line 33, then restart the server:
 #   import structlog; structlog.get_logger(__name__).warning(
 #       "spike.headers", session=headers.get("x-brain-session"))
 journalctl --user -u brain-v42-mcp -f | grep spike.headers
 ```
 
-Faire un appel de tool brain quelconque depuis la session interactive, lire la valeur.
+Make any brain tool call from the interactive session, read the value.
 
-**Retirer l'enregistrement temporaire avant toute suite.** Il ne doit rien laisser dans l'arbre.
+**Remove the temporary log line before proceeding.** It must leave nothing behind in the tree.
 
-- [ ] **Step 3: Activer la télémétrie OTLP de Claude Code et capturer une charge réelle**
+- [ ] **Step 3: Enable Claude Code OTLP telemetry and capture a real payload**
 
 ```bash
 export CLAUDE_CODE_ENABLE_TELEMETRY=1
@@ -109,7 +109,7 @@ export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 ```
 
-Le port `4318` et non `9200` : on capture d'abord la charge brute avec un récepteur jetable, sans la faire traverser le récepteur de production.
+Port `4318`, not `9200`: capture the raw payload first with a throwaway receiver, without routing it through the production receiver.
 
 ```bash
 python - <<'PY'
@@ -129,22 +129,22 @@ HTTPServer(("127.0.0.1", 4318), H).serve_forever()
 PY
 ```
 
-Lancer une session Claude Code interactive avec ces variables, envoyer deux ou trois prompts, arrêter le récepteur.
+Start an interactive Claude Code session with these variables, send two or three prompts, stop the receiver.
 
-- [ ] **Step 4: Répondre aux deux questions et écrire le verdict**
+- [ ] **Step 4: Answer the two questions and write the verdict**
 
-Ouvrir `/tmp/claude_otlp_capture.json` et relever :
+Open `/tmp/claude_otlp_capture.json` and record:
 
-1. Le nom exact de l'attribut portant l'identifiant de session (attendu `session.id`).
-2. Sa **valeur** : est-elle **identique** à `$CLAUDE_CODE_SESSION_ID` et à l'en-tête `X-Brain-Session` vu au Step 2 ?
-3. Les noms exacts des événements (attendus `claude_code.user_prompt`, `claude_code.api_request`).
-4. Les noms exacts des attributs de compteur (attendus `input_tokens`, `output_tokens`, `cost_usd`, `model`).
+1. The exact name of the attribute carrying the session identifier (expected `session.id`).
+2. Its **value**: is it **identical** to `$CLAUDE_CODE_SESSION_ID` and to the `X-Brain-Session` header seen at Step 2?
+3. The exact event names (expected `claude_code.user_prompt`, `claude_code.api_request`).
+4. The exact counter attribute names (expected `input_tokens`, `output_tokens`, `cost_usd`, `model`).
 
-Écrire `docs/upstream/2026-08-06-claude-otlp-session-join.md` avec, en clair : le verdict `JOINTURE POSSIBLE` ou `JOINTURE IMPOSSIBLE`, les quatre relevés ci-dessus, et la version de Claude Code mesurée.
+Write `docs/upstream/2026-08-06-claude-otlp-session-join.md` with, explicitly: the `JOINTURE POSSIBLE` or `JOINTURE IMPOSSIBLE` verdict, the four findings above, and the Claude Code version measured.
 
-- [ ] **Step 5: Réduire la capture en fixture**
+- [ ] **Step 5: Reduce the capture to a fixture**
 
-Copier la charge dans `tests/fixtures/claude_otlp_logs.json`, **en remplaçant tout UUID réel par** `12345678-1234-4abc-8def-1234567890ab` (la même constante que `tests/unit/test_codex_telemetry_endpoint.py:33`). Aucune donnée de prompt ne doit subsister : ne garder que les enregistrements dont les attributs sont ceux du relevé.
+Copy the payload into `tests/fixtures/claude_otlp_logs.json`, **replacing every real UUID with** `12345678-1234-4abc-8def-1234567890ab` (the same constant as `tests/unit/test_codex_telemetry_endpoint.py:33`). No prompt data must remain: keep only the records whose attributes are the ones recorded.
 
 - [ ] **Step 6: Commit**
 
@@ -162,23 +162,23 @@ EOF
 )"
 ```
 
-**Si le verdict est `JOINTURE IMPOSSIBLE`** : le plan continue tel quel. Toutes les lignes Claude deviendront `unattributed` côté brain plus des lignes OTLP-only, ce que la conception prévoit. Seule la tâche 8 change : son test de jointure devient un test d'absence de jointure. Le noter dans le document de verdict.
+**If the verdict is `JOINTURE IMPOSSIBLE`**: the plan continues as is. All Claude lines will become `unattributed` on the brain side plus OTLP-only lines, which the design accounts for. Only task 8 changes: its join test becomes a no-join test. Note it in the verdict document.
 
 ---
 
-### Task 2: Identité de session dans la couche de provenance
+### Task 2: Session identity in the provenance layer
 
 **Files:**
 - Modify: `src/brain_v42/provenance.py`
 - Test: `tests/unit/test_provenance.py`
 
 **Interfaces:**
-- Consumes: rien.
-- Produces: `normalize_session(value: str | None) -> str | None`, `set_current_session(session: str | None) -> None`, `get_current_session() -> str | None`. Renvoie `None` quand aucune session valide n'est déclarée.
+- Consumes: nothing.
+- Produces: `normalize_session(value: str | None) -> str | None`, `set_current_session(session: str | None) -> None`, `get_current_session() -> str | None`. Returns `None` when no valid session is declared.
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
-Ajouter à `tests/unit/test_provenance.py` :
+Add to `tests/unit/test_provenance.py`:
 
 ```python
 class TestNormalizeSession:
@@ -194,8 +194,8 @@ class TestNormalizeSession:
         assert normalize_session("brain-v42") is None
 
     def test_uppercase_uuid_is_rejected(self) -> None:
-        # Une seule forme canonique, sinon deux clients écrivant la même
-        # session sous deux casses produiraient deux lignes distinctes.
+        # Single canonical form only, otherwise two clients writing the same
+        # session under two different cases would produce two distinct rows.
         assert normalize_session("3D7A88D7-791B-45DA-B8B9-75727E3C9EEC") is None
 
     def test_blank_and_none_are_rejected(self) -> None:
@@ -229,16 +229,16 @@ class TestCurrentSession:
         assert outside is None
 ```
 
-Ajouter `normalize_session`, `set_current_session`, `get_current_session` à l'import en tête du fichier.
+Add `normalize_session`, `set_current_session`, `get_current_session` to the import at the top of the file.
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `pytest tests/unit/test_provenance.py -v`
 Expected: FAIL — `ImportError: cannot import name 'normalize_session'`
 
-- [ ] **Step 3: Implémenter le minimum**
+- [ ] **Step 3: Implement the minimum**
 
-Dans `src/brain_v42/provenance.py`, après `normalize_agent` :
+In `src/brain_v42/provenance.py`, after `normalize_agent`:
 
 ```python
 _MAX_SESSION_CHARS = 36
@@ -277,14 +277,14 @@ def get_current_session() -> str | None:
     return _current_session.get()
 ```
 
-Ajouter `import uuid` en tête du module.
+Add `import uuid` at the top of the module.
 
-- [ ] **Step 4: Vérifier que ça passe**
+- [ ] **Step 4: Verify it passes**
 
 Run: `pytest tests/unit/test_provenance.py -v`
-Expected: PASS, tous les tests existants inclus.
+Expected: PASS, including all pre-existing tests.
 
-- [ ] **Step 5: Vérifier le vert complet**
+- [ ] **Step 5: Verify the full green**
 
 ```bash
 pytest tests/unit -q && ruff check src/ tests/ && ruff format --check src/ tests/ && mypy src/
@@ -308,9 +308,9 @@ EOF
 
 ---
 
-### Task 3: Garde de ré-entrance
+### Task 3: Re-entrance guard
 
-Sans elle, `brain_calls` compte double en profil `compact`, qui est le profil de production. Mesuré : commit `58329a84`.
+Without it, `brain_calls` counts double in the `compact` profile, which is the production profile. Measured: commit `58329a84`.
 
 **Files:**
 - Modify: `src/brain_v42/provenance.py`
@@ -318,12 +318,12 @@ Sans elle, `brain_calls` compte double en profil `compact`, qui est le profil de
 - Test: `tests/unit/test_provenance.py`, `tests/unit/test_provenance_middleware.py`
 
 **Interfaces:**
-- Consumes: tâche 2.
-- Produces: `enter_call() -> Token[int]`, `exit_call(token: Token[int]) -> None`, `is_outermost_call() -> bool`. `is_outermost_call()` vaut `True` uniquement entre `enter_call()` et son `exit_call()` au premier niveau d'imbrication.
+- Consumes: task 2.
+- Produces: `enter_call() -> Token[int]`, `exit_call(token: Token[int]) -> None`, `is_outermost_call() -> bool`. `is_outermost_call()` is `True` only between `enter_call()` and its `exit_call()` at the first nesting level.
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
-Dans `tests/unit/test_provenance.py` :
+In `tests/unit/test_provenance.py`:
 
 ```python
 class TestCallDepth:
@@ -347,7 +347,7 @@ class TestCallDepth:
         assert is_outermost_call() is False
 ```
 
-Créer `tests/unit/test_provenance_middleware.py` :
+Create `tests/unit/test_provenance_middleware.py`:
 
 ```python
 """Le middleware de provenance face à la ré-entrance du profil compact."""
@@ -382,7 +382,7 @@ async def test_compact_gateway_reports_one_outermost_call() -> None:
         return "inner"
 
     async def outer_call_next(_context: Any) -> str:
-        # Le tool passerelle ré-entre dans la chaîne de middlewares.
+        # The gateway tool re-enters the middleware chain.
         return await middleware.on_call_tool(object(), inner_call_next)
 
     with patch.object(ProvenanceMiddleware, "_report", autospec=True) as report:
@@ -437,14 +437,14 @@ async def test_absent_session_header_leaves_session_none() -> None:
     assert captured["session"] is None
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `pytest tests/unit/test_provenance.py tests/unit/test_provenance_middleware.py -v`
-Expected: FAIL — `ImportError: cannot import name 'enter_call'`, puis `AttributeError: _report`.
+Expected: FAIL — `ImportError: cannot import name 'enter_call'`, then `AttributeError: _report`.
 
-- [ ] **Step 3: Implémenter**
+- [ ] **Step 3: Implement**
 
-Dans `src/brain_v42/provenance.py` :
+In `src/brain_v42/provenance.py`:
 
 ```python
 _call_depth: ContextVar[int] = ContextVar("brain_v42_call_depth", default=0)
@@ -471,9 +471,9 @@ def is_outermost_call() -> bool:
     return _call_depth.get() == 1
 ```
 
-Ajouter `from contextvars import ContextVar, Token` en tête.
+Add `from contextvars import ContextVar, Token` at the top.
 
-Réécrire `src/brain_v42/mcp/provenance_middleware.py` :
+Rewrite `src/brain_v42/mcp/provenance_middleware.py`:
 
 ```python
 class ProvenanceMiddleware(Middleware):
@@ -498,14 +498,14 @@ class ProvenanceMiddleware(Middleware):
         """Signaler l'appel. Câblé à la tâche 7 ; sans effet jusque-là."""
 ```
 
-Mettre à jour le docstring du module : la ré-entrance n'est plus « inoffensive », elle est **gérée**.
+Update the module docstring: re-entrance is no longer "harmless", it is **handled**.
 
-- [ ] **Step 4: Vérifier que ça passe**
+- [ ] **Step 4: Verify it passes**
 
 Run: `pytest tests/unit/test_provenance.py tests/unit/test_provenance_middleware.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Vérifier le vert complet**
+- [ ] **Step 5: Verify the full green**
 
 ```bash
 pytest tests/unit -q && ruff check src/ tests/ && ruff format --check src/ tests/ && mypy src/
@@ -530,9 +530,9 @@ EOF
 
 ---
 
-### Task 4: Déménager le registre sans changer son comportement
+### Task 4: Move the registry without changing its behavior
 
-Refactor pur. Aucun test existant ne doit être modifié, et tous doivent rester verts : c'est la preuve que le déménagement ne change rien.
+Pure refactor. No existing test should be modified, and all must stay green: that is the proof that the move changes nothing.
 
 **Files:**
 - Create: `src/brain_v42/metrics/client_activity.py`
@@ -540,12 +540,12 @@ Refactor pur. Aucun test existant ne doit être modifié, et tous doivent rester
 - Test: `tests/unit/test_client_activity.py`
 
 **Interfaces:**
-- Consumes: rien.
-- Produces: `ClientActivityRegistry` dans `metrics/client_activity.py`, avec `ingest_otlp_json(payload: bytes) -> None` et `snapshot() -> dict[str, object]` au comportement identique à `CodexConversationRegistry`. `CodexConversationRegistry = ClientActivityRegistry` reste en alias dans `codex_telemetry.py`.
+- Consumes: nothing.
+- Produces: `ClientActivityRegistry` in `metrics/client_activity.py`, with `ingest_otlp_json(payload: bytes) -> None` and `snapshot() -> dict[str, object]` behaving identically to `CodexConversationRegistry`. `CodexConversationRegistry = ClientActivityRegistry` remains as an alias in `codex_telemetry.py`.
 
-- [ ] **Step 1: Écrire le test d'équivalence**
+- [ ] **Step 1: Write the equivalence test**
 
-Créer `tests/unit/test_client_activity.py` :
+Create `tests/unit/test_client_activity.py`:
 
 ```python
 """Le registre généralisé — équivalence avec l'ancien, puis fusion."""
@@ -568,43 +568,43 @@ def test_empty_snapshot_keeps_the_legacy_shape() -> None:
     assert snapshot["activeConvs"] == []
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `pytest tests/unit/test_client_activity.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'brain_v42.metrics.client_activity'`
 
-- [ ] **Step 3: Déménager**
+- [ ] **Step 3: Move it**
 
-Déplacer la classe `CodexConversationRegistry` et les dataclasses `_Conversation` de `codex_telemetry.py` vers `client_activity.py`, **sans toucher au corps des méthodes**. Y déplacer aussi les constantes qu'elle seule utilise : `MAX_ACTIVE_CONVERSATIONS`, `ACTIVITY_TTL_SECONDS`, `MAX_FINGERPRINTS`, `FINGERPRINT_TTL_SECONDS`.
+Move the `CodexConversationRegistry` class and the `_Conversation` dataclasses from `codex_telemetry.py` to `client_activity.py`, **without touching the body of the methods**. Also move the constants used only by it: `MAX_ACTIVE_CONVERSATIONS`, `ACTIVITY_TTL_SECONDS`, `MAX_FINGERPRINTS`, `FINGERPRINT_TTL_SECONDS`.
 
-`client_activity.py` importe le décodage depuis `codex_telemetry` :
+`client_activity.py` imports the decoding from `codex_telemetry`:
 
 ```python
 from brain_v42.metrics.codex_telemetry import _COMPLETION_EVENTS, _ProjectedRecord, _decode
 ```
 
-Renommer la classe en `ClientActivityRegistry` et laisser dans `codex_telemetry.py` :
+Rename the class to `ClientActivityRegistry` and leave in `codex_telemetry.py`:
 
 ```python
 from brain_v42.metrics.client_activity import ClientActivityRegistry
 
-# Nom historique. Le registre n'est plus spécifique à Codex depuis qu'il
-# fusionne les sources, mais l'ancien nom reste importé par les tests.
+# Historical name. The registry is no longer Codex-specific since it
+# merges the sources, but the old name is still imported by the tests.
 CodexConversationRegistry = ClientActivityRegistry
 ```
 
-Attention à l'import circulaire : `codex_telemetry` ne doit importer `client_activity` **qu'en fin de module**, après la définition de `_decode`. Si `ruff` s'en plaint (`E402`), inverser la dépendance en déplaçant l'alias dans `metrics/__init__.py` à la place.
+Watch out for the circular import: `codex_telemetry` must import `client_activity` **only at the end of the module**, after `_decode` is defined. If `ruff` complains (`E402`), invert the dependency instead by moving the alias into `metrics/__init__.py`.
 
-Mettre à jour les imports de `server.py` et `cockpit.py` pour pointer sur `client_activity`.
+Update the imports in `server.py` and `cockpit.py` to point to `client_activity`.
 
-- [ ] **Step 4: Vérifier que TOUT passe, y compris les anciens tests**
+- [ ] **Step 4: Verify that EVERYTHING passes, including the old tests**
 
 ```bash
 pytest tests/unit/test_client_activity.py tests/unit/test_codex_telemetry_endpoint.py tests/unit/test_metrics_cockpit_collector.py -v
 ```
-Expected: PASS partout. Un seul échec ici signifie que le déménagement a changé un comportement — le corriger avant d'avancer, ne pas ajuster le test.
+Expected: PASS everywhere. A single failure here means the move changed a behavior — fix it before moving on, do not adjust the test.
 
-- [ ] **Step 5: Vérifier le vert complet**
+- [ ] **Step 5: Verify the full green**
 
 ```bash
 pytest tests/unit -q && ruff check src/ tests/ && ruff format --check src/ tests/ && mypy src/
@@ -628,35 +628,35 @@ EOF
 
 ---
 
-### Task 5: Décodeur OTLP Claude Code
+### Task 5: Claude Code OTLP decoder
 
 **Files:**
 - Create: `src/brain_v42/metrics/claude_telemetry.py`
 - Test: `tests/unit/test_claude_telemetry.py`
 
 **Interfaces:**
-- Consumes: la fixture de la tâche 1 ; `codex_telemetry._load_json`, `_string_value`, `_token_value`, `_canonical_uuid`, `CodexTelemetryLimitError`, `CodexTelemetryMalformedError`.
-- Produces: `decode_claude_logs(payload: bytes) -> tuple[ClaudeRecord, ...]` et la dataclass gelée `ClaudeRecord(session_id: str, event_name: str, model: str, input_tokens: int | None, cache_read_tokens: int | None, cache_creation_tokens: int | None, output_tokens: int | None, cost_usd: float | None, timestamp: int | None)`.
+- Consumes: the task 1 fixture; `codex_telemetry._load_json`, `_string_value`, `_token_value`, `_canonical_uuid`, `CodexTelemetryLimitError`, `CodexTelemetryMalformedError`.
+- Produces: `decode_claude_logs(payload: bytes) -> tuple[ClaudeRecord, ...]` and the frozen dataclass `ClaudeRecord(session_id: str, event_name: str, model: str, input_tokens: int | None, cache_read_tokens: int | None, cache_creation_tokens: int | None, output_tokens: int | None, cost_usd: float | None, timestamp: int | None)`.
 
-**Oracle des noms :** `tests/fixtures/claude_otlp_logs.json`, capture réelle produite par la tâche 1. Verdict et relevés complets dans `docs/upstream/2026-08-06-claude-otlp-session-join.md`.
+**Name oracle:** `tests/fixtures/claude_otlp_logs.json`, real capture produced by task 1. Verdict and full findings in `docs/upstream/2026-08-06-claude-otlp-session-join.md`.
 
-**Trois corrections mesurées, déjà appliquées au code ci-dessous — ne pas les défaire :**
+**Three measured corrections, already applied to the code below — do not undo them:**
 
-1. **`event.name` n'est PAS préfixé.** Mesuré : l'attribut vaut `user_prompt`,
-   `api_request`, `assistant_response`. Le préfixe `claude_code.` est dans
-   `body.stringValue`, pas dans l'attribut. Un filtre sur `claude_code.*` via
-   `event.name` ne reconnaîtrait rien.
-2. **`input_tokens` ne mesure pas le contexte.** Relevé réel : `input_tokens=10`
-   quand `cache_read_tokens=11776` et `cache_creation_tokens=6804`. Il faut donc
-   projeter les trois compteurs ; la tâche 8 en fera la somme.
-3. **Chaque enregistrement porte des données personnelles en clair** — `user.email`,
-   `user.id`, `user.account_uuid`, `organization.id` — y compris sur les événements
-   de hook et de plugin. La projection par liste blanche est la seule chose qui les
-   empêche d'entrer dans un registre exposé par HTTP. Elle a son propre test.
+1. **`event.name` is NOT prefixed.** Measured: the attribute holds `user_prompt`,
+   `api_request`, `assistant_response`. The `claude_code.` prefix is in
+   `body.stringValue`, not in the attribute. A filter on `claude_code.*` via
+   `event.name` would recognize nothing.
+2. **`input_tokens` does not measure context.** Real finding: `input_tokens=10`
+   while `cache_read_tokens=11776` and `cache_creation_tokens=6804`. The three
+   counters must therefore be projected; task 8 will sum them.
+3. **Every record carries personal data in the clear** — `user.email`,
+   `user.id`, `user.account_uuid`, `organization.id` — including on hook and
+   plugin events. Whitelist projection is the only thing keeping them out of
+   a registry exposed over HTTP. It has its own test.
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
-Créer `tests/unit/test_claude_telemetry.py` :
+Create `tests/unit/test_claude_telemetry.py`:
 
 ```python
 """Décodage borné des logs OTLP de Claude Code."""
@@ -810,14 +810,14 @@ class TestRealCapture:
         assert all(record.session_id for record in records)
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `pytest tests/unit/test_claude_telemetry.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'brain_v42.metrics.claude_telemetry'`
 
-- [ ] **Step 3: Implémenter**
+- [ ] **Step 3: Implement**
 
-Créer `src/brain_v42/metrics/claude_telemetry.py` :
+Create `src/brain_v42/metrics/claude_telemetry.py`:
 
 ```python
 """Projection bornée des logs OTLP/HTTP JSON de Claude Code.
@@ -852,9 +852,9 @@ from brain_v42.metrics.codex_telemetry import (
     MAX_LOG_RECORDS,
 )
 
-# Liste blanche STRICTE. Mesuré le 2026-08-06 : les enregistrements réels
-# portent aussi user.email, user.id, user.account_uuid et organization.id en
-# clair. Tout ce qui n'est pas ici est jeté avant d'entrer dans le registre.
+# Strict whitelist. Measured on 2026-08-06: real records also carry
+# user.email, user.id, user.account_uuid and organization.id in the clear.
+# Anything not here is dropped before entering the registry.
 _PROJECTED_KEYS = frozenset(
     {
         "session.id",
@@ -867,8 +867,8 @@ _PROJECTED_KEYS = frozenset(
         "cost_usd",
     }
 )
-# Sans préfixe : `event.name` vaut `user_prompt`, le corps vaut
-# `claude_code.user_prompt`. Mesuré sur Claude Code 2.1.220.
+# No prefix: `event.name` holds `user_prompt`, the body holds
+# `claude_code.user_prompt`. Measured on Claude Code 2.1.220.
 _KNOWN_EVENTS = frozenset({"user_prompt", "api_request"})
 _MAX_COST_USD = 1_000_000.0
 
@@ -891,7 +891,7 @@ def _cost_value(value: object) -> float | None:
     if isinstance(raw, bool) or not isinstance(raw, int | float):
         return None
     cost = float(raw)
-    if cost != cost or cost < 0.0 or cost > _MAX_COST_USD:  # NaN, négatif, aberrant
+    if cost != cost or cost < 0.0 or cost > _MAX_COST_USD:  # NaN, negative, out of bounds
         return None
     return cost
 
@@ -973,14 +973,14 @@ def decode_claude_logs(payload: bytes) -> tuple[ClaudeRecord, ...]:
     return tuple(decoded)
 ```
 
-`_model_value` renvoie déjà `"unknown"` quand la valeur est absente ou non conforme — c'est ce que veut `test_absent_model_falls_back_to_unknown`.
+`_model_value` already returns `"unknown"` when the value is absent or non-conforming — which is what `test_absent_model_falls_back_to_unknown` wants.
 
-- [ ] **Step 4: Vérifier que ça passe**
+- [ ] **Step 4: Verify it passes**
 
 Run: `pytest tests/unit/test_claude_telemetry.py -v`
-Expected: PASS. Si `TestRealCapture` échoue, comparer les noms d'attributs du code à ceux de la fixture et **corriger le code**, jamais la fixture.
+Expected: PASS. If `TestRealCapture` fails, compare the code's attribute names to those in the fixture and **fix the code**, never the fixture.
 
-- [ ] **Step 5: Vérifier le vert complet**
+- [ ] **Step 5: Verify the full green**
 
 ```bash
 pytest tests/unit -q && ruff check src/ tests/ && ruff format --check src/ tests/ && mypy src/
@@ -1007,7 +1007,7 @@ EOF
 
 ---
 
-### Task 6: Format de fil des observations brain-side
+### Task 6: Brain-side observation feed format
 
 **Files:**
 - Create: `src/brain_v42/metrics/client_observation.py`
@@ -1015,17 +1015,17 @@ EOF
 
 **Interfaces:**
 - Consumes: `codex_telemetry._load_json`, `_raise_malformed`, `CodexTelemetryLimitError`, `CodexTelemetryMalformedError`.
-- Produces: `MAX_OBSERVATION_BYTES: int`, `MAX_OBSERVATIONS: int`, la dataclass gelée `ClientObservation(actor: str, session_id: str | None, calls: int)`, et `decode_observations(payload: bytes) -> tuple[ClientObservation, ...]`.
+- Produces: `MAX_OBSERVATION_BYTES: int`, `MAX_OBSERVATIONS: int`, the frozen dataclass `ClientObservation(actor: str, session_id: str | None, calls: int)`, and `decode_observations(payload: bytes) -> tuple[ClientObservation, ...]`.
 
-Format de fil, volontairement minuscule :
+Feed format, deliberately tiny:
 
 ```json
 {"observations": [{"actor": "brain-v42", "session": "12345678-…", "calls": 1}]}
 ```
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
-Créer `tests/unit/test_client_observation.py` :
+Create `tests/unit/test_client_observation.py`:
 
 ```python
 """Décodage borné des observations poussées par le processus MCP."""
@@ -1072,8 +1072,8 @@ class TestDecodeObservations:
         assert observation.actor == "red-lab"
 
     def test_non_uuid_session_is_dropped_not_fatal(self) -> None:
-        # Une session illisible dégrade la ligne en « non attribué ».
-        # Rejeter tout le lot punirait les observations valides du même envoi.
+        # An unreadable session degrades the row to "unattributed".
+        # Rejecting the whole batch would punish the valid observations from the same submission.
         observation = decode_observations(
             _payload([{"actor": "codex", "session": "nope", "calls": 1}])
         )[0]
@@ -1097,12 +1097,12 @@ class TestDecodeObservations:
             decode_observations(_payload(items))
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `pytest tests/unit/test_client_observation.py -v`
 Expected: FAIL — `ModuleNotFoundError`
 
-- [ ] **Step 3: Implémenter**
+- [ ] **Step 3: Implement**
 
 ```python
 """Format de fil des observations d'activité poussées par le processus MCP.
@@ -1171,14 +1171,14 @@ def decode_observations(payload: bytes) -> tuple[ClientObservation, ...]:
     return tuple(decoded)
 ```
 
-`_load_json` borne déjà la profondeur JSON et le nombre de conteneurs ; `MAX_OBSERVATION_BYTES` est vérifié avant lui parce qu'il est bien plus serré que `MAX_REQUEST_BYTES`.
+`_load_json` already bounds the JSON depth and container count; `MAX_OBSERVATION_BYTES` is checked before it because it is much tighter than `MAX_REQUEST_BYTES`.
 
-- [ ] **Step 4: Vérifier que ça passe**
+- [ ] **Step 4: Verify it passes**
 
 Run: `pytest tests/unit/test_client_observation.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Vérifier le vert complet**
+- [ ] **Step 5: Verify the full green**
 
 ```bash
 pytest tests/unit -q && ruff check src/ tests/ && ruff format --check src/ tests/ && mypy src/
@@ -1202,7 +1202,7 @@ EOF
 
 ---
 
-### Task 7: Émetteur côté processus MCP
+### Task 7: Emitter on the MCP process side
 
 **Files:**
 - Create: `src/brain_v42/mcp/activity_reporter.py`
@@ -1210,14 +1210,14 @@ EOF
 - Test: `tests/unit/test_activity_reporter.py`
 
 **Interfaces:**
-- Consumes: tâche 3 (`_report`), tâche 6 (format de fil).
-- Produces: `ActivityReporter(url: str, timeout: float = 1.0, max_in_flight: int = 8)` avec `report(actor: str, session_id: str | None) -> None` et `async close() -> None` ; `get_activity_reporter() -> ActivityReporter | None`.
+- Consumes: task 3 (`_report`), task 6 (feed format).
+- Produces: `ActivityReporter(url: str, timeout: float = 1.0, max_in_flight: int = 8)` with `report(actor: str, session_id: str | None) -> None` and `async close() -> None`; `get_activity_reporter() -> ActivityReporter | None`.
 
-**Contrainte : l'émission ne doit jamais ralentir ni casser un appel de tool.** Elle est en tâche de fond, plafonnée, et toute erreur est avalée après journalisation.
+**Constraint: emission must never slow down or break a tool call.** It runs as a background task, capped, and any error is swallowed after logging.
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
-Créer `tests/unit/test_activity_reporter.py` :
+Create `tests/unit/test_activity_reporter.py`:
 
 ```python
 """L'émetteur d'activité ne doit ni bloquer ni casser un appel de tool."""
@@ -1269,7 +1269,7 @@ async def test_transport_failure_is_swallowed() -> None:
     with patch.object(reporter, "_client") as client:
         client.post = AsyncMock(side_effect=OSError("sidecar down"))
         reporter.report("brain-v42", None)
-        await reporter.drain()  # ne doit pas lever
+        await reporter.drain()  # must not raise
     await reporter.close()
 
 
@@ -1288,19 +1288,19 @@ async def test_saturation_drops_instead_of_blocking() -> None:
         reporter.report("brain-v42", None)
         await asyncio.sleep(0)
         for _ in range(10):
-            reporter.report("brain-v42", None)  # doit rendre la main aussitôt
+            reporter.report("brain-v42", None)  # must return control immediately
         assert reporter.dropped == 10
         release.set()
         await reporter.drain()
     await reporter.close()
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `pytest tests/unit/test_activity_reporter.py -v`
 Expected: FAIL — `ModuleNotFoundError`
 
-- [ ] **Step 3: Implémenter**
+- [ ] **Step 3: Implement**
 
 ```python
 """Émetteur d'observations d'activité vers le sidecar métriques.
@@ -1396,9 +1396,9 @@ def get_activity_reporter() -> ActivityReporter | None:
     return _reporter
 ```
 
-`report` doit rester **synchrone** : le middleware l'appelle sans `await`, donc aucune latence n'est ajoutée à l'appel de tool.
+`report` must remain **synchronous**: the middleware calls it without `await`, so no latency is added to the tool call.
 
-Câbler `_report` dans `provenance_middleware.py` — importer `get_activity_reporter` depuis `brain_v42.mcp.activity_reporter` :
+Wire `_report` into `provenance_middleware.py` — import `get_activity_reporter` from `brain_v42.mcp.activity_reporter`:
 
 ```python
     def _report(self, actor: str, session: str | None) -> None:
@@ -1407,16 +1407,16 @@ Câbler `_report` dans `provenance_middleware.py` — importer `get_activity_rep
             reporter.report(actor, session)
 ```
 
-Ajouter les réglages dans `src/brain_v42/config.py`, juste après `metrics_host` (ligne 109) :
+Add the settings in `src/brain_v42/config.py`, right after `metrics_host` (line 109):
 
 ```python
     client_activity_reporting_enabled: bool = True
     client_activity_url: str = "http://127.0.0.1:9200/v1/client-activity"
 ```
 
-**Aucune modification de `mcp/server.py`.** L'émetteur naît à la première émission ; le middleware y est déjà enregistré à la ligne 261.
+**No modification to `mcp/server.py`.** The emitter is born on the first emission; the middleware is already registered there at line 261.
 
-Les tests doivent remettre l'état global à zéro pour ne pas fuiter d'un test à l'autre :
+The tests must reset the global state to zero so it does not leak from one test to another:
 
 ```python
 @pytest.fixture(autouse=True)
@@ -1428,12 +1428,12 @@ def _reset_reporter() -> Any:
     activity_reporter.set_activity_reporter(None)
 ```
 
-- [ ] **Step 4: Vérifier que ça passe**
+- [ ] **Step 4: Verify it passes**
 
 Run: `pytest tests/unit/test_activity_reporter.py tests/unit/test_provenance_middleware.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Vérifier le vert complet**
+- [ ] **Step 5: Verify the full green**
 
 ```bash
 pytest tests/unit -q && ruff check src/ tests/ && ruff format --check src/ tests/ && mypy src/
@@ -1457,30 +1457,30 @@ EOF
 
 ---
 
-### Task 8: Fusion dans le registre
+### Task 8: Merge into the registry
 
-Le cœur du lot. C'est ici que la jointure existe ou non.
+The heart of the batch. This is where the join exists, or does not.
 
 **Files:**
 - Modify: `src/brain_v42/metrics/client_activity.py`
 - Test: `tests/unit/test_client_activity.py`
 
 **Interfaces:**
-- Consumes: tâches 4, 5, 6.
-- Produces: sur `ClientActivityRegistry` — `ingest_claude_otlp_json(payload: bytes) -> None`, `record_observations(observations: tuple[ClientObservation, ...]) -> None`, et `snapshot()` qui gagne la clé `clients` sans perdre `active_convs`, `ctx_tokens` ni `activeConvs`.
+- Consumes: tasks 4, 5, 6.
+- Produces: on `ClientActivityRegistry` — `ingest_claude_otlp_json(payload: bytes) -> None`, `record_observations(observations: tuple[ClientObservation, ...]) -> None`, and `snapshot()` which gains the `clients` key without losing `active_convs`, `ctx_tokens` or `activeConvs`.
 
-**Modèle de ligne :**
+**Row model:**
 
-| `kind` | Clé interne | `id` | Champs remplis |
+| `kind` | Internal key | `id` | Fields filled |
 |--------|-------------|------|----------------|
-| `session` | pseudonyme HMAC de l'UUID | `<agent>-<32hex>` | tous ceux dont une source existe |
-| `unattributed` | `actor:<acteur>` | `unattributed:<acteur>` | `actor`, `brain_calls`, `last_seen_s` ; le reste `null` |
+| `session` | HMAC pseudonym of the UUID | `<agent>-<32hex>` | all those for which a source exists |
+| `unattributed` | `actor:<actor>` | `unattributed:<actor>` | `actor`, `brain_calls`, `last_seen_s`; the rest `null` |
 
-Une ligne `session` peut n'avoir que le côté OTLP (`actor` et `brain_calls` à `null`) ou que le côté brain (`tokens`, `turns`, `cost`, `model`, `agent` à `null`).
+A `session` row may have only the OTLP side (`actor` and `brain_calls` at `null`) or only the brain side (`tokens`, `turns`, `cost`, `model`, `agent` at `null`).
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
-Ajouter à `tests/unit/test_client_activity.py` :
+Add to `tests/unit/test_client_activity.py`:
 
 ```python
 import json
@@ -1646,24 +1646,24 @@ class TestBoundsAndLegacyShape:
         assert "activeConvs" in snapshot
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `pytest tests/unit/test_client_activity.py -v`
 Expected: FAIL — `AttributeError: 'ClientActivityRegistry' object has no attribute 'ingest_claude_otlp_json'`
 
-- [ ] **Step 3: Implémenter**
+- [ ] **Step 3: Implement**
 
-Dans `client_activity.py`, ajouter les imports nécessaires :
+In `client_activity.py`, add the required imports:
 
 ```python
 from brain_v42.metrics.claude_telemetry import decode_claude_logs
 from brain_v42.metrics.client_observation import ClientObservation
 ```
 
-`client_observation.py` importe `provenance`, `claude_telemetry` importe
-`codex_telemetry` : aucun cycle, `client_activity` est en bout de chaîne.
+`client_observation.py` imports `provenance`, `claude_telemetry` imports
+`codex_telemetry`: no cycle, `client_activity` sits at the end of the chain.
 
-Ajouter à côté de `_Conversation` :
+Add next to `_Conversation`:
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -1673,9 +1673,9 @@ class _BrainActivity:
     last_seen: float
 ```
 
-Ajouter au registre un second dictionnaire `self._brain: dict[str, _BrainActivity]`, dont la clé est le pseudonyme HMAC quand une session est déclarée, et `f"actor:{actor}"` sinon.
+Add a second dictionary to the registry, `self._brain: dict[str, _BrainActivity]`, whose key is the HMAC pseudonym when a session is declared, and `f"actor:{actor}"` otherwise.
 
-Ajouter les trois méthodes :
+Add the three methods:
 
 ```python
     def ingest_claude_otlp_json(self, payload: bytes) -> None:
@@ -1704,11 +1704,11 @@ Ajouter les trois méthodes :
                 turns = current.turns + (
                     1 if record.event_name == "user_prompt" else 0
                 )
-                # Le contexte réel est la somme des trois compteurs d'entrée.
-                # input_tokens seul vaut 10 là où le contexte en fait 18590
-                # (mesuré le 2026-08-06) : l'afficher seul mentirait d'un
-                # facteur 1000. On garde la valeur du DERNIER événement, pas un
-                # cumul : c'est une taille de contexte, pas un débit.
+                # The real context is the sum of the three input counters.
+                # input_tokens alone is 10 where the context is actually 18590
+                # (measured on 2026-08-06): showing it alone would lie by a
+                # factor of 1000. We keep the value of the LAST event, not a
+                # running total: it is a context size, not a throughput.
                 context = [
                     value
                     for value in (
@@ -1771,7 +1771,7 @@ Ajouter les trois méthodes :
             self._brain = brain
 ```
 
-`_pseudonym` prend désormais l'agent en paramètre pour préfixer le pseudonyme (`codex-…` / `claude-…`), ce qui conserve la forme actuelle pour Codex. Le sel HMAC reste distinct par agent afin que deux agents ne puissent pas se croiser sur un même UUID :
+`_pseudonym` now takes the agent as a parameter to prefix the pseudonym (`codex-…` / `claude-…`), which keeps the current shape for Codex. The HMAC salt remains distinct per agent so that two agents cannot collide on the same UUID:
 
 ```python
     def _pseudonym(self, identifier: str, agent: str = "codex") -> str:
@@ -1783,13 +1783,13 @@ Ajouter les trois méthodes :
         return f"{agent}-{digest[:32]}"
 ```
 
-**Attention** : ce changement de sel casserait `tests/unit/test_codex_telemetry_endpoint.py` si celui-ci épingle un pseudonyme littéral. Vérifier avant, et si c'est le cas, garder le sel Codex historique exactement — `b"codex-conversation-id\0"` — et n'introduire le nouveau sel que pour `claude`.
+**Caution**: this salt change would break `tests/unit/test_codex_telemetry_endpoint.py` if it pins a literal pseudonym. Check beforehand, and if that is the case, keep the historical Codex salt exactly — `b"codex-conversation-id\0"` — and introduce the new salt only for `claude`.
 
-Enfin, `snapshot()` construit `clients` en fusionnant les deux dictionnaires :
+Finally, `snapshot()` builds `clients` by merging the two dictionaries:
 
 ```python
             rows: list[dict[str, object]] = []
-            for item in ordered:  # conversations OTLP, déjà triées
+            for item in ordered:  # OTLP conversations, already sorted
                 brain = self._brain.get(item.pseudonym)
                 rows.append({
                     "id": item.pseudonym,
@@ -1827,18 +1827,18 @@ Enfin, `snapshot()` construit `clients` en fusionnant les deux dictionnaires :
                 })
 ```
 
-Ajouter `"clients": rows` au dictionnaire retourné, **sans retirer** `active_convs`, `ctx_tokens` ni `activeConvs`.
+Add `"clients": rows` to the returned dictionary, **without removing** `active_convs`, `ctx_tokens` or `activeConvs`.
 
-Ajouter aux `_Conversation` existantes les champs `agent: str` (défaut `"codex"`) et `cost: float | None` (défaut `None`), et faire passer `agent="codex"` dans `ingest_otlp_json`.
+Add to the existing `_Conversation` the fields `agent: str` (default `"codex"`) and `cost: float | None` (default `None`), and pass `agent="codex"` in `ingest_otlp_json`.
 
-- [ ] **Step 4: Vérifier que ça passe**
+- [ ] **Step 4: Verify it passes**
 
 ```bash
 pytest tests/unit/test_client_activity.py tests/unit/test_codex_telemetry_endpoint.py -v
 ```
-Expected: PASS des deux côtés. Les tests Codex existants restent la preuve de non-régression.
+Expected: PASS on both sides. The existing Codex tests remain the proof of no regression.
 
-- [ ] **Step 5: Vérifier le vert complet**
+- [ ] **Step 5: Verify the full green**
 
 ```bash
 pytest tests/unit -q && ruff check src/ tests/ && ruff format --check src/ tests/ && mypy src/
@@ -1863,24 +1863,24 @@ EOF
 
 ---
 
-### Task 9: Récepteurs du sidecar et exposition dans le cockpit
+### Task 9: Sidecar receivers and cockpit exposure
 
 **Files:**
 - Modify: `src/brain_v42/metrics/server.py`, `src/brain_v42/metrics/cockpit.py`
 - Test: `tests/unit/test_client_activity_endpoint.py`, `tests/unit/test_metrics_cockpit_collector.py`
 
 **Interfaces:**
-- Consumes: tâches 5, 6, 8.
-- Produits: routes `POST /v1/client-activity` et `POST /v1/logs/claude` sur le sidecar ; clé `clients` dans la charge de `/api/cockpit`.
+- Consumes: tasks 5, 6, 8.
+- Produces: routes `POST /v1/client-activity` and `POST /v1/logs/claude` on the sidecar; `clients` key in the `/api/cockpit` payload.
 
-Deux routes OTLP distinctes plutôt qu'un seul récepteur qui devine le schéma : deviner obligerait à sonder les attributs d'une charge non encore validée.
+Two distinct OTLP routes rather than a single receiver that guesses the schema: guessing would require probing the attributes of a payload not yet validated.
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
-Créer `tests/unit/test_client_activity_endpoint.py`. Le harnais suit celui de
-`tests/unit/test_codex_telemetry_endpoint.py` : la fixture `aiohttp_client` de
-`pytest-aiohttp` pour le chemin nominal, `make_mocked_request` avec un transport
-factice pour les rejets de pair.
+Create `tests/unit/test_client_activity_endpoint.py`. The harness follows that of
+`tests/unit/test_codex_telemetry_endpoint.py`: the `aiohttp_client` fixture from
+`pytest-aiohttp` for the nominal path, `make_mocked_request` with a fake transport
+for peer rejections.
 
 ```python
 """Frontière HTTP des récepteurs d'activité, loopback-only et bornés."""
@@ -2004,11 +2004,11 @@ async def test_routes_are_absent_on_a_non_loopback_bind() -> None:
     assert "/v1/logs/claude" not in paths
 ```
 
-`_loopback_transport` et `MAX_OBSERVATION_BYTES` doivent correspondre à ce que
-`server.py` vérifie réellement : relire `_has_loopback_tcp_peer`
-(`server.py:55`) avant d'écrire le mock, la forme du `peername` en dépend.
+`_loopback_transport` and `MAX_OBSERVATION_BYTES` must match what
+`server.py` actually checks: reread `_has_loopback_tcp_peer`
+(`server.py:55`) before writing the mock, the shape of `peername` depends on it.
 
-Ajouter à `tests/unit/test_metrics_cockpit_collector.py` :
+Add to `tests/unit/test_metrics_cockpit_collector.py`:
 
 ```python
 @pytest.mark.asyncio
@@ -2028,14 +2028,14 @@ async def test_cockpit_exposes_clients_without_dropping_legacy_keys() -> None:
     assert payload["metrics"]["active_convs"] == 0
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `pytest tests/unit/test_client_activity_endpoint.py tests/unit/test_metrics_cockpit_collector.py -v`
-Expected: FAIL — routes 404, puis `KeyError: 'clients'`
+Expected: FAIL — 404 routes, then `KeyError: 'clients'`
 
-- [ ] **Step 3: Implémenter**
+- [ ] **Step 3: Implement**
 
-Dans `server.py`, factoriser le durcissement existant de `_handle_codex_logs` en un helper commun, puis enregistrer les routes sous la même condition `_is_loopback_bind(self._host)` :
+In `server.py`, factor the existing hardening of `_handle_codex_logs` into a common helper, then register the routes under the same `_is_loopback_bind(self._host)` condition:
 
 ```python
         if _is_loopback_bind(self._host):
@@ -2044,11 +2044,11 @@ Dans `server.py`, factoriser le durcissement existant de `_handle_codex_logs` en
             app.router.add_post("/v1/client-activity", self._handle_client_activity)
 ```
 
-`_handle_claude_logs` reprend `_handle_codex_logs` à l'identique, en appelant `ingest_claude_otlp_json`.
+`_handle_claude_logs` mirrors `_handle_codex_logs` identically, calling `ingest_claude_otlp_json`.
 
-`_handle_client_activity` applique le même contrôle de pair loopback et de sémaphore, lit un corps borné par `MAX_OBSERVATION_BYTES`, décode avec `decode_observations` et applique via `record_observations`. Les mêmes exceptions donnent les mêmes statuts : `CodexTelemetryLimitError` → 413, `CodexTelemetryMalformedError` → 400.
+`_handle_client_activity` applies the same loopback peer check and semaphore, reads a body bounded by `MAX_OBSERVATION_BYTES`, decodes with `decode_observations` and applies via `record_observations`. The same exceptions give the same statuses: `CodexTelemetryLimitError` → 413, `CodexTelemetryMalformedError` → 400.
 
-Dans `cockpit.py`, ajouter `"clients": codex_activity["clients"]` au dictionnaire retourné, et étendre le repli sans registre :
+In `cockpit.py`, add `"clients": codex_activity["clients"]` to the returned dictionary, and extend the no-registry fallback:
 
 ```python
         codex_activity = (
@@ -2058,14 +2058,14 @@ Dans `cockpit.py`, ajouter `"clients": codex_activity["clients"]` au dictionnair
         )
 ```
 
-- [ ] **Step 4: Vérifier que ça passe**
+- [ ] **Step 4: Verify it passes**
 
 ```bash
 pytest tests/unit/test_client_activity_endpoint.py tests/unit/test_metrics_cockpit_collector.py tests/unit/test_codex_telemetry_endpoint.py tests/unit/test_cockpit_endpoint.py -v
 ```
 Expected: PASS
 
-- [ ] **Step 5: Vérifier le vert complet**
+- [ ] **Step 5: Verify the full green**
 
 ```bash
 pytest tests/unit -q && ruff check src/ tests/ && ruff format --check src/ tests/ && mypy src/
@@ -2089,23 +2089,23 @@ EOF
 
 ---
 
-### Task 10: Panneau « Live workload » dans red-monitor
+### Task 10: "Live workload" panel in red-monitor
 
-**Dépôt différent.** `cd ~/hawkixs_infra/git_repo/ReD_v1/projects/red-monitor`. Lire son `CLAUDE.md` avant de commencer : conventions et commandes de test lui appartiennent.
+**Different repo.** `cd ~/hawkixs_infra/git_repo/ReD_v1/projects/red-monitor`. Read its `CLAUDE.md` before starting: conventions and test commands belong to it.
 
 **Files:**
 - Modify: `frontend/src/tabs/brain/BrainActivity.jsx`, `frontend/src/tabs/brain/brainPresentation.js`, `frontend/src/tabs/brain/BrainStatusBar.jsx`
 - Test: `frontend/src/tabs/brain/Brain.test.jsx`
 
 **Interfaces:**
-- Consumes: la clé `clients[]` de `/api/brain/live`, produite par la tâche 9.
-- Produces: rien en aval.
+- Consumes: the `clients[]` key of `/api/brain/live`, produced by task 9.
+- Produces: nothing downstream.
 
-**Aucun travail Go.** `internal/web/brain.go` reproxifie les octets bruts : les champs neufs arrivent seuls.
+**No Go work.** `internal/web/brain.go` re-proxies the raw bytes: the new fields arrive on their own.
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
-Dans `frontend/src/tabs/brain/Brain.test.jsx` :
+In `frontend/src/tabs/brain/Brain.test.jsx`:
 
 ```jsx
 const clientsPayload = {
@@ -2170,29 +2170,29 @@ test('falls back to an empty state without clients', () => {
 });
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `cd frontend && npm test -- Brain.test.jsx`
-Expected: FAIL — le panneau lit encore `live.activeConvs`.
+Expected: FAIL — the panel still reads `live.activeConvs`.
 
-- [ ] **Step 3: Implémenter**
+- [ ] **Step 3: Implement**
 
-Dans `BrainActivity.jsx` : remplacer `props.live.activeConvs` par `props.live.clients`, le titre `Codex activity` par `Live workload`, le `data-testid` `brain-codex` par `brain-clients`, et ajouter `data-testid={`client-${client.id}`}` sur chaque `<article>`.
+In `BrainActivity.jsx`: replace `props.live.activeConvs` with `props.live.clients`, the title `Codex activity` with `Live workload`, the `data-testid` `brain-codex` with `brain-clients`, and add `data-testid={`client-${client.id}`}` on each `<article>`.
 
-Chaque colonne passe par un formateur qui rend `—` pour `null` ou `undefined` : `formatCompactNumber`, `formatCost` et `formatPercent` le font déjà (`brainPresentation.js:20-47`). Ne pas écrire `client.tokens || 0` — ce serait exactement le `0` cosmétique que la spec interdit.
+Each column goes through a formatter that renders `—` for `null` or `undefined`: `formatCompactNumber`, `formatCost` and `formatPercent` already do this (`brainPresentation.js:20-47`). Do not write `client.tokens || 0` — that would be exactly the cosmetic `0` the spec forbids.
 
-Une ligne `kind === 'unattributed'` porte une classe distincte et le libellé « non attribué — la session n'est pas déclarée ».
+A `kind === 'unattributed'` row carries a distinct class and the label "non attribué — la session n'est pas déclarée".
 
-Ajouter sous la liste une mention permanente : « acteur et session déclarés par le client, non prouvés ».
+Add a permanent note below the list: "acteur et session déclarés par le client, non prouvés".
 
-Dans `brainPresentation.js`, `shortPseudonym` retourne `'anonymous'` et non plus `'codex-anonymous'`. Dans `BrainStatusBar.jsx:55`, `label="Codex"` devient `label="Clients"` et la valeur compte `clients.length`.
+In `brainPresentation.js`, `shortPseudonym` returns `'anonymous'` and no longer `'codex-anonymous'`. In `BrainStatusBar.jsx:55`, `label="Codex"` becomes `label="Clients"` and the value counts `clients.length`.
 
-- [ ] **Step 4: Vérifier que ça passe**
+- [ ] **Step 4: Verify it passes**
 
 ```bash
 cd frontend && npm test
 ```
-Expected: PASS, y compris les tests existants de `Brain.test.jsx`.
+Expected: PASS, including the existing `Brain.test.jsx` tests.
 
 - [ ] **Step 5: Commit**
 
@@ -2208,33 +2208,33 @@ EOF
 )"
 ```
 
-Le dépôt red-monitor utilise des commits à emoji (voir `git log`) et n'a pas la convention `Co-Authored-By` de brain_v42 : suivre l'usage local.
+The red-monitor repo uses emoji commits (see `git log`) and does not have brain_v42's `Co-Authored-By` convention: follow local usage.
 
 ---
 
-### Task 11: Vérification bout en bout et déclaration de la frontière réseau
+### Task 11: End-to-end verification and network boundary statement
 
 **Files:**
 - Modify: `CLAUDE.md` (brain_v42)
 
 **Interfaces:**
-- Consumes: toutes les tâches précédentes.
-- Produces: rien.
+- Consumes: all previous tasks.
+- Produces: nothing.
 
-**Ce que cette tâche ne peut pas faire seule.** Deux des trois chemins livrés sont
-*silencieux quand ils échouent* : l'émetteur brain est livré FERMÉ (`client_activity_reporting_enabled=False`,
-commit `e8951011`) et le récepteur OTLP répond `200` même quand il jette tout le lot. Une
-vérification qui se contente de regarder le panneau conclut donc « pas de trafic » aussi bien
-devant une chaîne saine et inactive que devant une chaîne mal câblée. Les Steps 3, 4 et 5
-existent pour lever cette ambiguïté ; ne pas les sauter.
+**What this task cannot do alone.** Two of the three delivered paths are
+*silent when they fail*: the brain emitter ships CLOSED (`client_activity_reporting_enabled=False`,
+commit `e8951011`) and the OTLP receiver answers `200` even when it drops the entire batch. A
+verification that just looks at the panel concludes "no traffic" just as easily
+in front of a healthy but idle chain as in front of a badly wired one. Steps 3, 4 and 5
+exist to remove that ambiguity; do not skip them.
 
-- [ ] **Step 0: Vérifier que les unités exécuteront bien le code livré**
+- [ ] **Step 0: Verify that the units will actually run the delivered code**
 
-Les deux unités systemd tournent sur la **racine de production**, pas sur un worktree :
-`brain-metrics.service` a `WorkingDirectory=/home/hawixs/hawkixs_infra/git_repo/brain_v42` et
-l'installation éditable du venv (`_editable_impl_brain_v42.pth`) pointe sur
-`/home/hawixs/hawkixs_infra/git_repo/brain_v42/src`. Redémarrer depuis un worktree ne change
-donc rien : la branche doit d'abord être fusionnée dans la racine.
+The two systemd units run on the **production root**, not on a worktree:
+`brain-metrics.service` has `WorkingDirectory=/home/hawixs/hawkixs_infra/git_repo/brain_v42` and
+the venv's editable install (`_editable_impl_brain_v42.pth`) points to
+`/home/hawixs/hawkixs_infra/git_repo/brain_v42/src`. Restarting from a worktree therefore
+changes nothing: the branch must first be merged into the root.
 
 ```bash
 BRAIN_ROOT=/home/hawixs/hawkixs_infra/git_repo/brain_v42
@@ -2242,23 +2242,23 @@ $BRAIN_ROOT/.venv/bin/python -c "import brain_v42.metrics.server as m; print(m._
 grep -n "v1/logs/claude\|v1/client-activity" $BRAIN_ROOT/src/brain_v42/metrics/server.py
 grep -n "client_activity_reporting_enabled" $BRAIN_ROOT/src/brain_v42/config.py
 ```
-Expected: le `__file__` est sous `$BRAIN_ROOT/src/`, et les trois `grep` trouvent leur ligne. Si
-l'une manque, **arrêter** : la fusion n'est pas faite et tout ce qui suit mesurerait l'ancien code.
+Expected: `__file__` is under `$BRAIN_ROOT/src/`, and all three `grep` find their line. If
+one is missing, **stop**: the merge is not done and everything below would measure the old code.
 
-- [ ] **Step 1: Redémarrer les deux processus et sonder le récepteur brain**
+- [ ] **Step 1: Restart both processes and probe the brain receiver**
 
-Les unités s'appellent **`brain-metrics.service`** et **`brain-mcp-http.service`**. Il n'existe ni
-`brain-v42-metrics` ni `brain-v42-mcp` : ces noms-là sortent sur `Unit … could not be found`,
-**aucun processus ne redémarre**, et le `curl` suivant interroge alors l'ancien code — un `404`
-qu'on lira comme une route cassée. Vérifier les noms plutôt que les recopier :
+The units are named **`brain-metrics.service`** and **`brain-mcp-http.service`**. Neither
+`brain-v42-metrics` nor `brain-v42-mcp` exists: those names come back with `Unit … could not be found`,
+**no process restarts**, and the following `curl` then queries the old code — a `404`
+that would be read as a broken route. Check the names rather than copying them:
 
 ```bash
 systemctl --user list-units --type=service --all --no-legend | grep -E 'brain-(metrics|mcp-http)\.service'
 systemctl --user restart brain-metrics.service brain-mcp-http.service
 systemctl --user is-active brain-metrics.service brain-mcp-http.service
 ```
-Expected: `active` deux fois. (`brain-mcp-http.service` a deux `ExecStartPre` de préflight —
-projecteur graphe et port MCP ; un échec de redémarrage se lit dans
+Expected: `active` twice. (`brain-mcp-http.service` has two `ExecStartPre` preflight checks —
+graph projector and MCP port; a restart failure shows up in
 `journalctl --user -u brain-mcp-http.service -n 30`.)
 
 ```bash
@@ -2267,12 +2267,12 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST \
   -d '{"observations":[{"actor":"probe","calls":1}]}' \
   http://127.0.0.1:9200/v1/client-activity
 ```
-Expected: `200`. Grille de lecture d'un autre statut : `404` = le processus tourne sur du code
-antérieur à la tâche 9, ou son bind n'est pas loopback (les trois routes ne sont enregistrées que
-si `METRICS_HOST` est loopback) ; `403` = le pair n'est pas loopback ; `415` = l'en-tête
-`Content-Type` s'est perdu ; `413`/`400` = le corps sort des bornes ou n'est pas la forme attendue.
+Expected: `200`. Reading grid for another status: `404` = the process is running code
+prior to task 9, or its bind is not loopback (the three routes are registered only
+if `METRICS_HOST` is loopback); `403` = the peer is not loopback; `415` = the
+`Content-Type` header got lost; `413`/`400` = the body is out of bounds or not the expected shape.
 
-- [ ] **Step 2: Vérifier que la ligne de sonde apparaît**
+- [ ] **Step 2: Verify that the probe row appears**
 
 ```bash
 curl -s http://127.0.0.1:9200/api/cockpit \
@@ -2284,51 +2284,51 @@ if 'clients' not in payload:
 print(json.dumps(payload['clients'], indent=2, ensure_ascii=False))
 "
 ```
-Expected: une ligne `"id": "unattributed:probe"`, `"kind": "unattributed"`, `"brain_calls": 1`, et
-`null` — jamais `0` — dans `agent`, `started`, `model`, `turns`, `tokens`, `cost`. La rétention du
-registre est de 600 s (`ACTIVITY_TTL_SECONDS`) : lire dans les dix minutes qui suivent la sonde.
+Expected: a row `"id": "unattributed:probe"`, `"kind": "unattributed"`, `"brain_calls": 1`, and
+`null` — never `0` — in `agent`, `started`, `model`, `turns`, `tokens`, `cost`. The registry's
+retention is 600 s (`ACTIVITY_TTL_SECONDS`): read within the ten minutes following the probe.
 
-La clé `clients` **absente** est le symptôme mesuré d'un sidecar non migré (la charge d'avant la
-tâche 9 n'expose que `activeConvs`) : revenir au Step 0 plutôt que de conclure « pas de client ».
+A **missing** `clients` key is the measured symptom of an unmigrated sidecar (the payload from
+before task 9 only exposes `activeConvs`): go back to Step 0 rather than concluding "no client".
 
-À ce stade, seul le **récepteur** est prouvé. Rien n'a encore prouvé qu'un client émet.
+At this point, only the **receiver** is proven. Nothing has yet proven that a client emits.
 
-- [ ] **Step 3: Armer l'émetteur brain — et savoir le désarmer**
+- [ ] **Step 3: Arm the brain emitter — and know how to disarm it**
 
-Sans ce geste, le processus MCP n'émet **aucune** observation et la vérification du panneau
-(Step 7) est inatteignable, quel que soit le reste. Deux caches rendent l'armement inséparable du
-redémarrage :
+Without this action, the MCP process emits **no** observation and the panel verification
+(Step 7) is unreachable, whatever else happens. Two caches make arming inseparable from the
+restart:
 
-- `get_activity_reporter()` est un singleton paresseux — une fois `_reporter` construit, il n'est
-  **jamais** reconstruit et le killswitch n'est **jamais** relu ;
-- `get_settings()` est `@lru_cache(maxsize=1)` — le killswitch est donc lu au plus une fois par
-  processus, même avant toute construction.
+- `get_activity_reporter()` is a lazy singleton — once `_reporter` is built, it is
+  **never** rebuilt and the killswitch is **never** reread;
+- `get_settings()` is `@lru_cache(maxsize=1)` — the killswitch is therefore read at most once per
+  process, even before any construction.
 
-Armer sans redémarrer `brain-mcp-http.service` ne fait donc rien du tout.
+Arming without restarting `brain-mcp-http.service` therefore does nothing at all.
 
-Armement par drop-in systemd, sur le modèle déjà présent de `brain-metrics.service.d/transport.conf`.
-Un drop-in plutôt que le `.env` partagé : il est réversible d'un seul `rm`, il ne porte que sur
-l'unité MCP (le sidecar lit le même `.env` via son `WorkingDirectory`), et une variable
-d'environnement systemd l'emporte sur le dotenv dans pydantic-settings.
+Arming via a systemd drop-in, on the model already present in `brain-metrics.service.d/transport.conf`.
+A drop-in rather than the shared `.env`: it is reversible with a single `rm`, it only affects
+the MCP unit (the sidecar reads the same `.env` via its `WorkingDirectory`), and a systemd
+environment variable takes precedence over the dotenv in pydantic-settings.
 
 ```bash
 mkdir -p ~/.config/systemd/user/brain-mcp-http.service.d
 cat > ~/.config/systemd/user/brain-mcp-http.service.d/client-activity.conf <<'EOF'
 [Service]
-# Armement du rapport d'activité client — geste d'opérateur, rollout du panneau Live workload.
+# Arming client activity reporting — operator action, Live workload panel rollout.
 Environment=CLIENT_ACTIVITY_REPORTING_ENABLED=true
 EOF
 systemctl --user daemon-reload
 systemctl --user restart brain-mcp-http.service
 systemctl --user show brain-mcp-http.service -p Environment | grep CLIENT_ACTIVITY
 ```
-Expected: la variable apparaît dans `Environment=`, et l'unité est `active`.
+Expected: the variable appears in `Environment=`, and the unit is `active`.
 
-Ne **pas** poser `CLIENT_ACTIVITY_URL` : le défaut vaut `http://127.0.0.1:9200/v1/client-activity`
-et un `field_validator` refuse déjà toute cible non loopback — une valeur LAN ferait échouer le
-démarrage, pas fuir la donnée.
+Do **not** set `CLIENT_ACTIVITY_URL`: the default is `http://127.0.0.1:9200/v1/client-activity`
+and a `field_validator` already rejects any non-loopback target — a LAN value would fail the
+startup, not leak the data.
 
-**Désarmement** (à jouer tel quel si la vérification tourne mal) :
+**Disarming** (run as-is if the verification goes wrong):
 
 ```bash
 rm ~/.config/systemd/user/brain-mcp-http.service.d/client-activity.conf
@@ -2337,36 +2337,36 @@ systemctl --user daemon-reload
 systemctl --user restart brain-mcp-http.service
 systemctl --user show brain-mcp-http.service -p Environment | grep CLIENT_ACTIVITY || echo "désarmé"
 ```
-Preuve du désarmement : après un appel de tool brain, aucune ligne `unattributed:` nouvelle
-n'apparaît dans `/api/cockpit`.
+Proof of disarming: after a brain tool call, no new `unattributed:` row
+appears in `/api/cockpit`.
 
-> **Arbitrage à trancher par l'opérateur, pas par ce plan** : le drop-in survit au reboot. Décider
-> explicitement, à la fin du rollout, si l'émetteur reste armé en permanence (et migre alors vers
-> le `.env` partagé, avec mise à jour de la section Configuration de `CLAUDE.md`) ou s'il est
-> désarmé après la vérification. Ne pas laisser ce choix se faire par oubli.
+> **Arbitration for the operator to decide, not this plan**: the drop-in survives a reboot. Decide
+> explicitly, at the end of the rollout, whether the emitter stays permanently armed (and then
+> migrates to the shared `.env`, with an update to `CLAUDE.md`'s Configuration section) or is
+> disarmed after the verification. Do not let this choice happen by oversight.
 
-- [ ] **Step 4: Pointer l'exportateur Claude sur la route Claude**
+- [ ] **Step 4: Point the Claude exporter at the Claude route**
 
-C'est le piège le plus coûteux du rollout, parce qu'il est **muet**. Mesuré sur Claude Code
-2.1.223 : l'exportateur OTLP embarqué résout l'URL par
-`convertLegacyHttpOptions(config, "LOGS", "v1/logs", …)`, soit `url = <signal-specific> ?? <générique + "/v1/logs">`.
+This is the costliest trap of the rollout, because it is **silent**. Measured on Claude Code
+2.1.223: the bundled OTLP exporter resolves the URL via
+`convertLegacyHttpOptions(config, "LOGS", "v1/logs", …)`, i.e. `url = <signal-specific> ?? <generic + "/v1/logs">`.
 
-| Variable | Traitement mesuré | Route atteinte |
+| Variable | Measured handling | Route reached |
 |---|---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:9200` | `v1/logs` **suffixé** | `/v1/logs` — décodeur **Codex** |
-| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:9200/v1/logs/claude` | utilisé **tel quel** (`new URL(v).toString()`) | `/v1/logs/claude` — décodeur Claude |
+| `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:9200` | `v1/logs` **suffixed** | `/v1/logs` — **Codex** decoder |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:9200/v1/logs/claude` | used **as-is** (`new URL(v).toString()`) | `/v1/logs/claude` — Claude decoder |
 
-La variable signal-spécifique **prime** sur la générique.
+The signal-specific variable **wins** over the generic one.
 
-Envoyé sur `/v1/logs`, un lot Claude entre dans le décodeur Codex : `event.name` y est nu
-(`user_prompt`, `api_request`) alors que `_DIRECT_EVENTS` et `_COMPLETION_EVENTS` sont tous
-préfixés `codex.`. Chaque enregistrement est donc écarté, **et le récepteur répond `200 {}`**. Un
-endpoint mal configuré est rigoureusement indiscernable d'une absence de trafic.
+Sent to `/v1/logs`, a Claude batch enters the Codex decoder: `event.name` is bare there
+(`user_prompt`, `api_request`) whereas `_DIRECT_EVENTS` and `_COMPLETION_EVENTS` are all
+prefixed with `codex.`. Every record is therefore dropped, **and the receiver answers `200 {}`**. A
+misconfigured endpoint is rigorously indistinguishable from an absence of traffic.
 
-Le symétrique est vrai et se lit dans le même code : un lot **Codex** arrivant sur
-`/v1/logs/claude` est confronté à `_KNOWN_EVENTS = {"user_prompt", "api_request"}` ;
-`codex.user_prompt` n'y est pas, l'enregistrement est écarté avant même que `session.id` soit lu,
-et le récepteur répond `200 {}`. Aucune des deux erreurs ne se signale.
+The symmetric case is true and reads in the same code: a **Codex** batch arriving on
+`/v1/logs/claude` runs into `_KNOWN_EVENTS = {"user_prompt", "api_request"}`;
+`codex.user_prompt` is not among them, the record is dropped before `session.id` is even read,
+and the receiver answers `200 {}`. Neither error reports itself.
 
 ```bash
 export CLAUDE_CODE_ENABLE_TELEMETRY=1
@@ -2376,50 +2376,50 @@ export OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:9200/v1/logs/claude
 unset OTEL_EXPORTER_OTLP_ENDPOINT
 ```
 
-Sans barre oblique finale : les routes `aiohttp` sont exactes et `new URL(...).toString()` préserve
-le chemin verbatim (mesuré). Ne pas laisser la générique posée « au cas où » : elle masquerait la
-mauvaise configuration sur toute machine où la signal-spécifique se perdrait.
+Without a trailing slash: `aiohttp` routes are exact and `new URL(...).toString()` preserves
+the path verbatim (measured). Do not leave the generic one set "just in case": it would mask
+the misconfiguration on any machine where the signal-specific one got lost.
 
-Codex, lui, garde `/v1/logs` dans `~/.codex/config.toml`
+Codex, for its part, keeps `/v1/logs` in `~/.codex/config.toml`
 (`endpoint = "http://127.0.0.1:9200/v1/logs"`, cf. `docs/plans/2026-07-19-codex-otlp-cockpit-bridge-plan.md:392`).
-Les lots partent toutes les `OTEL_LOGS_EXPORT_INTERVAL` ms, **5000 par défaut** (mesuré) :
-attendre au moins dix secondes après un prompt avant de conclure quoi que ce soit.
+Batches leave every `OTEL_LOGS_EXPORT_INTERVAL` ms, **5000 by default** (measured):
+wait at least ten seconds after a prompt before concluding anything.
 
-- [ ] **Step 5: Distinguer « aucun trafic » de « trafic jeté »**
+- [ ] **Step 5: Distinguish "no traffic" from "traffic dropped"**
 
-Deux moitiés, deux instruments différents. Aucune des deux ne se lit dans le panneau.
+Two halves, two different instruments. Neither one reads in the panel.
 
-**a) Côté brain (`/v1/client-activity`).** L'émetteur compte à part les refus
-(`ActivityReporter.refused`, distinct de `dropped` qui ne compte que la contre-pression locale) et
-journalise le statut seul. Le compteur vit en mémoire du processus MCP et n'est exposé par aucune
-route : la trace observable est la ligne de journal. Les lignes `[debug]` structlog du serveur MCP
-sortent bien dans le journal sans changer `LOG_LEVEL` (mesuré : `access_log.purged`,
-`metrics_flusher.flushed` y sont visibles).
+**a) Brain side (`/v1/client-activity`).** The emitter counts refusals separately
+(`ActivityReporter.refused`, distinct from `dropped` which only counts local backpressure) and
+logs the status alone. The counter lives in the MCP process's memory and is exposed by no
+route: the observable trace is the log line. The MCP server's structlog `[debug]` lines
+do show up in the journal without changing `LOG_LEVEL` (measured: `access_log.purged`,
+`metrics_flusher.flushed` are visible there).
 
-Faire un appel de tool brain depuis une session Claude, puis :
+Make a brain tool call from a Claude session, then:
 
 ```bash
 journalctl --user -u brain-mcp-http.service --since "-5 min" --no-pager \
   | grep -E 'activity_reporter\.(refused|post_failed|unavailable)'
 ```
 
-| Observation | Diagnostic |
+| Observation | Diagnosis |
 |---|---|
-| une ligne `unattributed:<acteur>` dans `/api/cockpit` | accepté — rien à faire |
-| pas de ligne + `activity_reporter.refused status=404` | émis et **refusé** : route absente (ancien processus, ou bind non loopback) |
-| pas de ligne + `activity_reporter.refused status=403/413/415/400` | émis et **refusé** : pair, bornes ou format |
-| pas de ligne + `activity_reporter.post_failed error=ConnectError` | sidecar arrêté ou mauvais port |
-| pas de ligne + `activity_reporter.unavailable` | settings illisibles côté MCP |
-| pas de ligne **et aucune de ces lignes** | rien n'a jamais été émis : killswitch encore fermé (Step 3 non appliqué ou non redémarré), ou aucun tool brain appelé |
+| a row `unattributed:<actor>` in `/api/cockpit` | accepted — nothing to do |
+| no row + `activity_reporter.refused status=404` | emitted and **refused**: route absent (old process, or non-loopback bind) |
+| no row + `activity_reporter.refused status=403/413/415/400` | emitted and **refused**: peer, bounds or format |
+| no row + `activity_reporter.post_failed error=ConnectError` | sidecar stopped or wrong port |
+| no row + `activity_reporter.unavailable` | unreadable settings on the MCP side |
+| no row **and none of these lines** | nothing was ever emitted: killswitch still closed (Step 3 not applied or not restarted), or no brain tool called |
 
-**b) Côté OTLP Claude (`/v1/logs/claude`).** Ici il n'y a **ni compteur ni journal** : le sidecar
-répond `200 {}` qu'il ait tout gardé ou tout jeté, et l'unité métriques n'émet aucune ligne d'accès
-par requête (mesuré : `journalctl --user -u brain-metrics.service | grep -c 'POST /v1/'` vaut `0`).
-Le silence n'est donc pas une preuve. Le seul discriminant honnête est de prouver d'abord que
-l'exportateur émet, avec un récepteur jetable sur un autre port — le même qu'à la tâche 1, Step 3 :
+**b) Claude OTLP side (`/v1/logs/claude`).** Here there is **neither a counter nor a log**: the sidecar
+answers `200 {}` whether it kept everything or dropped everything, and the metrics unit emits no access
+line per request (measured: `journalctl --user -u brain-metrics.service | grep -c 'POST /v1/'` is `0`).
+Silence is therefore not proof. The only honest discriminant is to first prove that
+the exporter emits, with a throwaway receiver on another port — the same one as in task 1, Step 3:
 
 ```bash
-# terminal A — récepteur jetable
+# terminal A — throwaway receiver
 /home/hawixs/hawkixs_infra/git_repo/brain_v42/.venv/bin/python - <<'PY'
 from http.server import BaseHTTPRequestHandler, HTTPServer
 class H(BaseHTTPRequestHandler):
@@ -2430,19 +2430,19 @@ class H(BaseHTTPRequestHandler):
 HTTPServer(("127.0.0.1", 4318), H).serve_forever()
 PY
 
-# terminal B — session Claude avec la même configuration qu'au Step 4, mais :
+# terminal B — Claude session with the same configuration as in Step 4, but:
 #   export OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:4318/v1/logs/claude
 ```
 
-- rien de capturé après un prompt et dix secondes → **aucun trafic** : l'exportateur n'est pas armé
-  dans l'environnement de cette session (`CLAUDE_CODE_ENABLE_TELEMETRY` / `OTEL_LOGS_EXPORTER`) ;
-- capturé sur `4318`, puis aucune ligne `"agent": "claude"` dans `/api/cockpit` une fois repointé
-  sur `9200` → **trafic jeté** : relire le chemin (Step 4), puis les noms d'événements et
-  d'attributs contre l'oracle `tests/fixtures/claude_otlp_logs.json`.
+- nothing captured after a prompt and ten seconds → **no traffic**: the exporter is not armed
+  in this session's environment (`CLAUDE_CODE_ENABLE_TELEMETRY` / `OTEL_LOGS_EXPORTER`);
+- captured on `4318`, then no `"agent": "claude"` row in `/api/cockpit` once repointed
+  at `9200` → **traffic dropped**: reread the path (Step 4), then the event and
+  attribute names against the oracle `tests/fixtures/claude_otlp_logs.json`.
 
-Arrêter le récepteur jetable avant de continuer.
+Stop the throwaway receiver before continuing.
 
-- [ ] **Step 6: Vérifier le refus depuis un pair non-loopback, sur les trois routes**
+- [ ] **Step 6: Verify the refusal from a non-loopback peer, on all three routes**
 
 ```bash
 ssh arman@192.168.1.11 'for p in /v1/logs /v1/logs/claude /v1/client-activity; do \
@@ -2450,51 +2450,51 @@ ssh arman@192.168.1.11 'for p in /v1/logs /v1/logs/claude /v1/client-activity; d
     -H "Content-Type: application/json" -d "{}" http://192.168.1.12:9200$p; done'
 ```
 
-Expected: `000` pour les trois, avec un `curl` en échec de connexion (code de sortie 7) ou en
-timeout (28). Le sidecar est lié à `127.0.0.1` : la connexion ne doit pas s'établir.
+Expected: `000` for all three, with `curl` failing to connect (exit code 7) or
+timing out (28). The sidecar is bound to `127.0.0.1`: the connection must not be established.
 
-**Toute** réponse HTTP — y compris un `404` — signifie que la socket a répondu sur le LAN :
-**arrêter et signaler**, le bind n'est pas celui que la configuration annonce. Un `404` est
-d'ailleurs l'aveu le plus probable : sur un bind non loopback, les trois routes ne sont pas
-enregistrées du tout. Un bind LAN n'expose donc pas ces récepteurs — il les désactive
-silencieusement, ce qui casse la moitié brain du panneau sans rien dire.
+**Any** HTTP response — including a `404` — means the socket answered on the LAN:
+**stop and report it**, the bind is not what the configuration claims. A `404` is
+in fact the most likely admission: on a non-loopback bind, the three routes are not
+registered at all. A LAN bind therefore does not expose these receivers — it silently
+disables them, which breaks the brain half of the panel without saying so.
 
-- [ ] **Step 7: Vérifier le panneau**
+- [ ] **Step 7: Verify the panel**
 
-Prérequis : la tâche 10 est fusionnée et red-monitor redémarré ; les Steps 3 et 4 sont appliqués.
+Prerequisite: task 10 is merged and red-monitor restarted; Steps 3 and 4 are applied.
 
-Ouvrir red-monitor, onglet Brain. Le verdict du spike est **`JOINTURE IMPOSSIBLE`**
-(`docs/upstream/2026-08-06-claude-otlp-session-join.md`) : ne pas attendre une ligne unique par
-session. L'attendu réel est :
+Open red-monitor, Brain tab. The spike verdict is **`JOINTURE IMPOSSIBLE`**
+(`docs/upstream/2026-08-06-claude-otlp-session-join.md`): do not expect a single row per
+session. The real expectation is:
 
-- **une ligne OTLP par session Claude vivante** (`kind: session`, `agent: claude`), avec `actor` et
-  `brain_calls` à `—` : l'OTLP ne sait pas quel acteur appelle le brain ;
-- **une ligne `unattributed:<acteur>` par ACTEUR** côté brain — pas par session. `X-Brain-Agent`
-  vaut `${PWD}` réduit au basename du projet, donc plusieurs sessions Claude du même projet
-  s'agrègent dans **une seule** ligne dont `brain_calls` est leur somme ;
-- une ligne par conversation Codex vivante, plus `unattributed:codex` si Codex appelle le brain ;
-- des tirets cadratins partout où rien n'est mesuré, et **aucun `0`** dans une colonne sans source.
+- **one OTLP row per live Claude session** (`kind: session`, `agent: claude`), with `actor` and
+  `brain_calls` at `—`: OTLP does not know which actor calls the brain;
+- **one `unattributed:<actor>` row per ACTOR** on the brain side — not per session. `X-Brain-Agent`
+  holds `${PWD}` reduced to the project basename, so several Claude sessions from the same project
+  aggregate into a **single** row whose `brain_calls` is their sum;
+- one row per live Codex conversation, plus `unattributed:codex` if Codex calls the brain;
+- em dashes everywhere nothing is measured, and **no `0`** in a column without a source.
 
-Recouper au moins une valeur avec la source : la ligne lue dans le panneau doit correspondre à la
-même ligne de `curl -s http://127.0.0.1:9200/api/cockpit` (Step 2). Le panneau lit
-`/api/brain/live`, qui reproxifie ces octets : une divergence est un défaut de rendu, pas de mesure.
+Cross-check at least one value against the source: the row read in the panel must match the
+same row from `curl -s http://127.0.0.1:9200/api/cockpit` (Step 2). The panel reads
+`/api/brain/live`, which re-proxies these bytes: a divergence is a rendering defect, not a measurement one.
 
-- [ ] **Step 8: Déclarer la frontière réseau**
+- [ ] **Step 8: Declare the network boundary**
 
-Dans `CLAUDE.md`, bloc « Tracked network boundary », déclarer les **deux** faces du changement —
-pas seulement les récepteurs :
+In `CLAUDE.md`, "Tracked network boundary" block, declare **both** faces of the change —
+not just the receivers:
 
-1. **Entrées.** Le sidecar métriques enregistre trois récepteurs push, et seulement si son bind est
-   loopback : `/v1/logs` (OTLP Codex), `/v1/logs/claude` (OTLP Claude Code, **neuf**) et
-   `/v1/client-activity` (observations côté brain, **neuf**). Tous bornés (taille de corps, requêtes
-   en vol, encodage `identity`, un seul `Content-Type: application/json`), pair loopback exigé,
-   fail-closed, **sans authentification applicative**. Un bind non loopback ne les expose pas : il
-   ne les enregistre pas.
-2. **Sortie, neuve.** Le processus MCP (`brain-mcp-http.service`) devient **client HTTP local** du
-   sidecar : un POST feu-et-oubli vers `CLIENT_ACTIVITY_URL` à chaque appel de tool le plus externe.
-   C'est une sortie réseau nouvelle pour ce processus, contrainte au loopback par un
-   `field_validator` sur `client_activity_url`, livrée **fermée**
-   (`CLIENT_ACTIVITY_REPORTING_ENABLED=false`) ; son armement est un geste d'opérateur (Step 3).
+1. **Inputs.** The metrics sidecar registers three push receivers, and only if its bind is
+   loopback: `/v1/logs` (Codex OTLP), `/v1/logs/claude` (Claude Code OTLP, **new**) and
+   `/v1/client-activity` (brain-side observations, **new**). All bounded (body size, in-flight
+   requests, `identity` encoding, a single `Content-Type: application/json`), loopback peer
+   required, fail-closed, **with no application authentication**. A non-loopback bind does not
+   expose them: it does not register them.
+2. **Output, new.** The MCP process (`brain-mcp-http.service`) becomes a **local HTTP client** of
+   the sidecar: a fire-and-forget POST to `CLIENT_ACTIVITY_URL` on every outermost tool call.
+   This is a network output new to this process, constrained to loopback by a
+   `field_validator` on `client_activity_url`, shipped **closed**
+   (`CLIENT_ACTIVITY_REPORTING_ENABLED=false`); arming it is an operator action (Step 3).
 
 - [ ] **Step 9: Commit**
 
@@ -2515,7 +2515,7 @@ EOF
 
 ---
 
-## Ordre et dépendances
+## Order and dependencies
 
 ```
 1 (spike) ──┬─→ 5 (décodeur Claude) ──┐
@@ -2525,12 +2525,12 @@ EOF
             4 (déménagement) ─────────────────┘
 ```
 
-Les tâches 2, 4 et 6 ne dépendent de rien et peuvent être faites dans n'importe quel ordre. La tâche 4 doit précéder la 8. La tâche 1 est une porte pour la 5 et la 8.
+Tasks 2, 4 and 6 depend on nothing and can be done in any order. Task 4 must precede task 8. Task 1 is a gate for tasks 5 and 8.
 
-## Ce que ce plan ne fait pas
+## What this plan does not do
 
-- Aucune persistance : le registre est en mémoire et perd tout au redémarrage. Un historique agrégé est un autre chantier.
-- Aucun retrait de `activeConvs` du payload : différé à une fois le panneau basculé et observé.
-- Aucun changement à `process_metrics` ni à `flusher.py`.
-- Aucun lien avec `brain_sessions` : la table n'est pas une source de liveness.
-- Aucun changement d'authentification du sidecar.
+- No persistence: the registry is in memory and loses everything on restart. An aggregated history is a separate effort.
+- No removal of `activeConvs` from the payload: deferred until after the panel has been switched over and observed.
+- No change to `process_metrics` or `flusher.py`.
+- No link to `brain_sessions`: the table is not a source of liveness.
+- No change to the sidecar's authentication.

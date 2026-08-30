@@ -2,50 +2,50 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Un CLI manuel `python -m scripts.domain_backfill` qui classifie les orphans du graph (0 `RELATED_TO` + 0 `BELONGS_TO_DOMAIN`) contre le set fermé de 9 domaines via l'API NVIDIA (OpenAI-compat), et émet un rapport de **propositions** (`logs/domain_backfill/<date>.jsonl` + `.md`) — **zéro écriture dans le brain**.
+**Goal:** A manual CLI `python -m scripts.domain_backfill` that classifies graph orphans (0 `RELATED_TO` + 0 `BELONGS_TO_DOMAIN`) against the closed set of 9 domains via the NVIDIA API (OpenAI-compat), and emits a **proposals** report (`logs/domain_backfill/<date>.jsonl` + `.md`) — **zero writes to the brain**.
 
-**Architecture:** Script standalone asyncio dans `scripts/` (même moule que `scripts/dream/promote_prepare.py`) : fetch déterministe (Neo4j via `GraphService.find_orphans_for_classification` + PG pour les métadonnées), batches de 15 → 1 requête `chat/completions` NVIDIA par batch (httpx, JSON strict, **aucun tool-calling** — gotcha « deepseek hang avec tools » évité par construction), validation déterministe des réponses, rapport review-able conçu pour un futur `apply --min-confidence high` (étape C, hors scope).
+**Architecture:** Standalone asyncio script in `scripts/` (same mold as `scripts/dream/promote_prepare.py`): deterministic fetch (Neo4j via `GraphService.find_orphans_for_classification` + PG for metadata), batches of 15 → 1 `chat/completions` NVIDIA request per batch (httpx, strict JSON, **no tool-calling** — the "deepseek hangs with tools" gotcha avoided by construction), deterministic validation of responses, review-able report designed for a future `apply --min-confidence high` (step C, out of scope).
 
-**Tech Stack:** Python 3.12, httpx (>=0.27, déjà dep), SQLAlchemy 2 async + asyncpg, neo4j AsyncGraphDatabase, pytest + pytest-asyncio + httpx.MockTransport. Modèle défaut `deepseek-ai/deepseek-v4-pro` sur `https://integrate.api.nvidia.com/v1`.
+**Tech Stack:** Python 3.12, httpx (>=0.27, already a dep), SQLAlchemy 2 async + asyncpg, neo4j AsyncGraphDatabase, pytest + pytest-asyncio + httpx.MockTransport. Default model `deepseek-ai/deepseek-v4-pro` on `https://integrate.api.nvidia.com/v1`.
 
 ## Global Constraints
 
-- **Zéro écriture brain** : jamais d'appel à `assign_domain`/écriture Neo4j/PG. Le script est read-only sur les données.
-- **Zéro réseau dans les tests** : client NVIDIA via `httpx.MockTransport` ; Neo4j stubbé ; PG = base de test existante (`require_test_db_url`, skip si absente — convention `test_promote_prepare.py`).
-- **TDD strict** : chaque task = test RED d'abord, GREEN minimal, commit. JAMAIS modifier un test pour faire passer le code.
-- **Gate avant chaque commit** : `pytest tests/unit -q` + `ruff check src/ tests/ scripts/` + `ruff format --check src/ tests/ scripts/` + `mypy src/ scripts/domain_backfill.py` verts (mypy ciblé : le reste de `scripts/` n'est historiquement pas couvert — parité CI conservée sur `src/`).
-- **Retry HTTP** : `MAX_HTTP_ATTEMPTS = 3` = 3 tentatives TOTALES (donc 2 retries max), backoff 2 s puis 4 s. Sémantique confirmée — ne pas « corriger » vers 4 tentatives.
-- **Set de domaines** : importer `ALLOWED_DOMAINS` depuis `brain_v42.services.graph_service` (source unique). `unknown` est ajouté côté script (`VALID_DOMAINS = ALLOWED_DOMAINS | {"unknown"}`).
-- **Divergence délibérée vs phase CONNECT** : CONNECT force `backend` en cas d'ambiguïté (il écrit) ; ici on demande `unknown` (un humain review). Documentée dans le docstring du module.
-- **Clé API** : env `BRAIN_NVIDIA_API_KEY`, chargée depuis `~/.config/brain-v42/nvidia.env` (0600) — jamais en clair dans le repo, jamais loggée.
-- **Commits** : Conventional Commits, footer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
-- Type hints partout ; pas de `print` hors CLI main (le résumé stdout du CLI est légitime, comme `promote_prepare`).
+- **Zero brain writes**: never call `assign_domain`/write to Neo4j/PG. The script is read-only on data.
+- **Zero network in tests**: NVIDIA client via `httpx.MockTransport`; Neo4j stubbed; PG = existing test database (`require_test_db_url`, skip if absent — `test_promote_prepare.py` convention).
+- **Strict TDD**: each task = RED test first, minimal GREEN, commit. NEVER modify a test to make the code pass.
+- **Gate before each commit**: `pytest tests/unit -q` + `ruff check src/ tests/ scripts/` + `ruff format --check src/ tests/ scripts/` + `mypy src/ scripts/domain_backfill.py` green (targeted mypy: the rest of `scripts/` is historically not covered — CI parity preserved on `src/`).
+- **HTTP retry**: `MAX_HTTP_ATTEMPTS = 3` = 3 TOTAL attempts (so 2 retries max), backoff 2 s then 4 s. Semantics confirmed — do not "fix" it to 4 attempts.
+- **Domain set**: import `ALLOWED_DOMAINS` from `brain_v42.services.graph_service` (single source). `unknown` is added on the script side (`VALID_DOMAINS = ALLOWED_DOMAINS | {"unknown"}`).
+- **Deliberate divergence vs the CONNECT phase**: CONNECT forces `backend` on ambiguity (it writes); here we ask for `unknown` (a human reviews). Documented in the module docstring.
+- **API key**: env `BRAIN_NVIDIA_API_KEY`, loaded from `~/.config/brain-v42/nvidia.env` (0600) — never in plaintext in the repo, never logged.
+- **Commits**: Conventional Commits, footer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
+- Type hints everywhere; no `print` outside the CLI main (the CLI's stdout summary is legitimate, like `promote_prepare`).
 
 ## File Structure
 
-| Fichier | Rôle |
+| File | Role |
 |---|---|
-| `scripts/domain_backfill.py` | Module unique (dataclasses, env-file loader, fetch, prompt, parse/validate, client NVIDIA retry, rapports, CLI) — convention single-module des helpers dream |
-| `tests/unit/test_domain_backfill.py` | Tous les tests unit (pur + PG-backed skippable) |
-| `deploy/nvidia.env.example` | Template documenté de `~/.config/brain-v42/nvidia.env` |
-| `logs/domain_backfill/` | Sorties runtime (gitignoré — vérifier que `logs/` l'est déjà, sinon ajouter) |
+| `scripts/domain_backfill.py` | Single module (dataclasses, env-file loader, fetch, prompt, parse/validate, retrying NVIDIA client, reports, CLI) — single-module convention of the dream helpers |
+| `tests/unit/test_domain_backfill.py` | All unit tests (pure + PG-backed skippable) |
+| `deploy/nvidia.env.example` | Documented template of `~/.config/brain-v42/nvidia.env` |
+| `logs/domain_backfill/` | Runtime outputs (gitignored — check that `logs/` already is, otherwise add) |
 
 ## Non-goals (v1)
 
-- Pas d'apply (`brain_assign_domain`) — étape C future.
-- Pas de scheduling nightly / intégration dream.sh.
-- Pas d'autres chantiers (dedup, hygiène learnings, résonance).
-- Pas de gestion multi-clés / rotation / secrets manager.
+- No apply (`brain_assign_domain`) — future step C.
+- No nightly scheduling / dream.sh integration.
+- No other workstreams (dedup, learnings hygiene, resonance).
+- No multi-key management / rotation / secrets manager.
 
 ---
 
-### Task 1: Scaffolding — dataclasses, env-file loader, fetch orphans + cartes PG
+### Task 1: Scaffolding — dataclasses, env-file loader, fetch orphans + PG cards
 
 **Files:**
 - Create: `scripts/domain_backfill.py`
 - Test: `tests/unit/test_domain_backfill.py`
 
-**Interfaces (produit pour les tasks suivantes):**
+**Interfaces (produced for the following tasks):**
 ```python
 DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
 DEFAULT_MODEL = "deepseek-ai/deepseek-v4-pro"
@@ -57,13 +57,13 @@ SNIPPET_MAX_CHARS = 400
 @dataclass(frozen=True)
 class EntityCard:
     entity_id: str
-    entity_type: str   # decision|learning|snippet|runbook|adr (minuscule)
+    entity_type: str   # decision|learning|snippet|runbook|adr (lowercase)
     title: str
-    snippet: str       # contenu tronqué à SNIPPET_MAX_CHARS
+    snippet: str       # content truncated to SNIPPET_MAX_CHARS
     project_key: str | None
     tags: list[str]
 
-def load_env_file(path: Path) -> dict[str, str]           # parse systemd-style, setdefault os.environ
+def load_env_file(path: Path) -> dict[str, str]           # systemd-style parse, setdefault os.environ
 def entity_type_from_labels(labels: list[str]) -> str | None
 async def fetch_orphans(graph_service: GraphServiceLike, limit: int) -> list[dict]
 async def fetch_entity_cards(
@@ -74,14 +74,14 @@ class GraphServiceLike(Protocol):
     async def find_orphans_for_classification(self, limit: int = 20) -> list[dict]: ...
 ```
 
-- [ ] **Step 1: Écrire les tests RED**
+- [ ] **Step 1: Write the RED tests**
 
 ```python
 """Unit tests for scripts.domain_backfill (proposer-only NVIDIA classifier).
 
-Réseau interdit : client NVIDIA mocké (httpx.MockTransport), GraphService
-stubbé. Les tests PG suivent la convention test_promote_prepare.py
-(require_test_db_url + skip si base absente).
+Network forbidden: NVIDIA client mocked (httpx.MockTransport), GraphService
+stubbed. PG tests follow the test_promote_prepare.py convention
+(require_test_db_url + skip if the database is absent).
 """
 
 from __future__ import annotations
@@ -104,17 +104,17 @@ from sqlalchemy.pool import NullPool
 
 from tests.conftest import require_test_db_url
 
-# ── Task 1 : env file / labels / cartes ──────────────────────────────
+# ── Task 1: env file / labels / cards ────────────────────────────────
 
 
 def test_load_env_file_parses_systemd_style(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """KEY=VALUE littéral après le premier '=', commentaires ignorés.
+    """Literal KEY=VALUE after the first '=', comments ignored.
 
-    Clés NEUTRES (X_BACKFILL_TEST_*) : load_env_file fait un setdefault dans
-    os.environ — utiliser les vraies clés BRAIN_NVIDIA_* ici polluerait la
-    session pytest entière et fausserait test_main_missing_api_key_exits_2.
+    NEUTRAL keys (X_BACKFILL_TEST_*): load_env_file does a setdefault into
+    os.environ — using the real BRAIN_NVIDIA_* keys here would pollute the
+    entire pytest session and would throw off test_main_missing_api_key_exits_2.
     """
     monkeypatch.delenv("X_BACKFILL_TEST_KEY", raising=False)
     monkeypatch.delenv("X_BACKFILL_TEST_MODEL", raising=False)
@@ -140,7 +140,7 @@ def test_load_env_file_missing_returns_empty(tmp_path: Path) -> None:
 def test_load_env_file_does_not_override_existing_environ(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """os.environ gagne sur le fichier (injection CI/tests)."""
+    """os.environ wins over the file (CI/test injection)."""
     monkeypatch.setenv("X_BACKFILL_TEST_KEY", "from-environ")
     f = tmp_path / "nvidia.env"
     f.write_text("X_BACKFILL_TEST_KEY=from-file\n")
@@ -179,7 +179,7 @@ async def test_fetch_orphans_passes_limit_and_normalizes() -> None:
     ]
 
 
-# ── PG-backed : cartes ───────────────────────────────────────────────
+# ── PG-backed: cards ──────────────────────────────────────────────────
 
 
 @pytest_asyncio.fixture(scope="module")
@@ -242,33 +242,33 @@ async def test_fetch_entity_cards_learning_and_truncation(
 async def test_fetch_entity_cards_skips_ids_absent_from_pg(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Un id graph sans ligne PG (drift) est ignoré sans crash."""
+    """A graph id with no PG row (drift) is skipped without crashing."""
     cards = await db.fetch_entity_cards(
         session_factory, [{"id": str(uuid.uuid4()), "entity_type": "decision"}]
     )
     assert cards == []
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_domain_backfill.py -q`
-Expected: FAIL — `ModuleNotFoundError: No module named 'scripts.domain_backfill'` (ou ImportError équivalent).
+Expected: FAIL — `ModuleNotFoundError: No module named 'scripts.domain_backfill'` (or an equivalent ImportError).
 
-- [ ] **Step 3: Implémentation minimale**
+- [ ] **Step 3: Minimal implementation**
 
 ```python
 #!/usr/bin/env python3
 """Proposer-only domain backfill via the NVIDIA API (OpenAI-compatible).
 
-Classifie les orphans du graph (0 RELATED_TO + 0 BELONGS_TO_DOMAIN) contre
-le set fermé ALLOWED_DOMAINS et émet des PROPOSITIONS dans
-logs/domain_backfill/<date>.{jsonl,md}. AUCUNE écriture dans le brain —
-l'apply (brain_assign_domain) est une étape future distincte.
+Classifies graph orphans (0 RELATED_TO + 0 BELONGS_TO_DOMAIN) against
+the closed set ALLOWED_DOMAINS and emits PROPOSALS in
+logs/domain_backfill/<date>.{jsonl,md}. NO writes to the brain —
+the apply (brain_assign_domain) is a separate future step.
 
-Divergence délibérée vs phase CONNECT : CONNECT force `backend` en cas
-d'ambiguïté (il écrit directement) ; ici le modèle doit répondre `unknown`
-(un humain review le rapport). Pas de tool-calling par construction
-(gotcha red-shrik : deepseek hang avec tools ; JSON pur = OK).
+Deliberate divergence vs the CONNECT phase: CONNECT forces `backend` on
+ambiguity (it writes directly); here the model must answer `unknown`
+(a human reviews the report). No tool-calling by construction
+(red-shrik gotcha: deepseek hangs with tools; pure JSON = OK).
 
 Usage:
     python -m scripts.domain_backfill --limit 30
@@ -296,9 +296,9 @@ VALID_DOMAINS: frozenset[str] = ALLOWED_DOMAINS | {"unknown"}
 VALID_CONFIDENCES: frozenset[str] = frozenset({"high", "medium", "low"})
 SNIPPET_MAX_CHARS = 400
 
-# label Neo4j -> (Table core PG, colonne titre, colonne contenu).
-# Table objects (pas de SQL f-string) : bind .in_() natif, pas de piège
-# asyncpg sur les arrays uuid[].
+# Neo4j label -> (core PG table, title column, content column).
+# Table objects (no SQL f-string): native .in_() bind, no asyncpg
+# pitfall on uuid[] arrays.
 _TYPE_SOURCES: dict[str, tuple[sa.Table, str, str]] = {
     "Decision": (decisions, "title", "description"),
     "Learning": (learnings, "topic", "insight"),
@@ -324,10 +324,10 @@ class EntityCard:
 
 
 def load_env_file(path: Path) -> dict[str, str]:
-    """Parse un env-file style systemd (tout après le premier '=' est littéral).
+    """Parse a systemd-style env-file (everything after the first '=' is literal).
 
-    Les clés déjà présentes dans os.environ ne sont PAS écrasées
-    (précédence : environ > fichier). Fichier absent -> {}.
+    Keys already present in os.environ are NOT overridden
+    (precedence: environ > file). Missing file -> {}.
     """
     if not path.is_file():
         return {}
@@ -344,7 +344,7 @@ def load_env_file(path: Path) -> dict[str, str]:
 
 
 def entity_type_from_labels(labels: list[str]) -> str | None:
-    """Premier label classifiable, en minuscule. None = nœud non classifiable."""
+    """First classifiable label, lowercase. None = non-classifiable node."""
     for label in labels:
         if label in _TYPE_SOURCES:
             return label.lower()
@@ -352,7 +352,7 @@ def entity_type_from_labels(labels: list[str]) -> str | None:
 
 
 async def fetch_orphans(graph_service: GraphServiceLike, limit: int) -> list[dict]:
-    """Orphans du graph normalisés en [{id, entity_type}] (labels inconnus exclus)."""
+    """Graph orphans normalized into [{id, entity_type}] (unknown labels excluded)."""
     rows = await graph_service.find_orphans_for_classification(limit=limit)
     out: list[dict] = []
     for row in rows:
@@ -365,9 +365,9 @@ async def fetch_orphans(graph_service: GraphServiceLike, limit: int) -> list[dic
 async def fetch_entity_cards(
     session_factory: async_sessionmaker[AsyncSession], orphans: list[dict]
 ) -> list[EntityCard]:
-    """Hydrate les orphans depuis PG (titre, snippet, project_key, tags).
+    """Hydrate the orphans from PG (title, snippet, project_key, tags).
 
-    Les ids présents dans le graph mais absents de PG (drift) sont ignorés.
+    Ids present in the graph but absent from PG (drift) are skipped.
     """
     by_type: dict[str, list[uuid.UUID]] = {}
     for o in orphans:
@@ -398,11 +398,10 @@ async def fetch_entity_cards(
                 )
     return cards
 ```
-
-- [ ] **Step 4: Vérifier le vert**
+- [ ] **Step 4: Verify green**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_domain_backfill.py -q`
-Expected: PASS (les 2 tests PG skippent proprement si la base de test est absente).
+Expected: PASS (the 2 PG tests skip cleanly if the test database is absent).
 
 - [ ] **Step 5: Gate + commit**
 
@@ -418,15 +417,15 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 2: Prompt builder + parse/validate déterministe (pur)
+### Task 2: Prompt builder + deterministic parse/validate (pure)
 
 **Files:**
-- Modify: `scripts/domain_backfill.py` (ajouter après `fetch_entity_cards`)
-- Test: `tests/unit/test_domain_backfill.py` (ajouter)
+- Modify: `scripts/domain_backfill.py` (add after `fetch_entity_cards`)
+- Test: `tests/unit/test_domain_backfill.py` (add)
 
 **Interfaces:**
-- Consomme : `EntityCard`, `VALID_DOMAINS`, `VALID_CONFIDENCES` (Task 1)
-- Produit :
+- Consumes: `EntityCard`, `VALID_DOMAINS`, `VALID_CONFIDENCES` (Task 1)
+- Produces:
 ```python
 @dataclass(frozen=True)
 class Proposal:
@@ -434,7 +433,7 @@ class Proposal:
     entity_type: str
     title: str
     project_key: str | None
-    domain: str        # ∈ VALID_DOMAINS (unknown inclus)
+    domain: str        # ∈ VALID_DOMAINS (unknown included)
     confidence: str    # ∈ VALID_CONFIDENCES
     reason: str
 
@@ -450,18 +449,18 @@ def build_messages(batch: list[EntityCard]) -> list[dict[str, str]]
 def parse_and_validate(content: str, batch: list[EntityCard]) -> tuple[list[Proposal], list[Rejection]]
 ```
 
-- [ ] **Step 1: Tests RED**
+- [ ] **Step 1: RED tests**
 
 ```python
-# ── Task 2 : prompt + parse/validate ─────────────────────────────────
+# ── Task 2: prompt + parse/validate ──────────────────────────────────
 
 
 def _card(i: int, etype: str = "learning") -> db.EntityCard:
     return db.EntityCard(
         entity_id=f"00000000-0000-0000-0000-{i:012d}",
         entity_type=etype,
-        title=f"Titre {i}",
-        snippet=f"contenu {i}",
+        title=f"Title {i}",
+        snippet=f"content {i}",
         project_key="brain-v42",
         tags=["t1"],
     )
@@ -492,9 +491,9 @@ def test_parse_and_validate_happy_path_with_fences() -> None:
     assert rejections == []
     assert len(proposals) == 1
     p = proposals[0]
-    assert p.domain == "memory"          # normalisé lowercase
+    assert p.domain == "memory"          # normalized lowercase
     assert p.confidence == "high"
-    assert p.title == "Titre 1"          # enrichi depuis la carte
+    assert p.title == "Titre 1"          # enriched from the card
 
 
 def _item(entity_id: str, domain: str, confidence: str, reason: str = "r") -> dict:
@@ -526,7 +525,7 @@ def test_parse_and_validate_rejects_bad_domain_id_confidence_and_dups() -> None:
         "invalid_confidence",
         "invalid_domain",
         "invalid_item",
-        "missing_in_response",  # batch[0] n'a AUCUNE proposition acceptée
+        "missing_in_response",  # batch[0] has NO accepted proposal
         "unknown_entity_id",
     ]
 
@@ -534,7 +533,7 @@ def test_parse_and_validate_rejects_bad_domain_id_confidence_and_dups() -> None:
 def test_parse_and_validate_unknown_domain_is_accepted() -> None:
     batch = [_card(1)]
     content = json.dumps(
-        [{"entity_id": batch[0].entity_id, "domain": "unknown", "confidence": "low", "reason": "ambigu"}]
+        [{"entity_id": batch[0].entity_id, "domain": "unknown", "confidence": "low", "reason": "ambiguous"}]
     )
     proposals, rejections = db.parse_and_validate(content, batch)
     assert proposals[0].domain == "unknown"
@@ -543,7 +542,7 @@ def test_parse_and_validate_unknown_domain_is_accepted() -> None:
 
 def test_parse_and_validate_raises_on_non_json() -> None:
     with pytest.raises(db.ResponseParseError):
-        db.parse_and_validate("désolé, voici la classification :", [_card(1)])
+        db.parse_and_validate("sorry, here is the classification:", [_card(1)])
 
 
 def test_parse_and_validate_raises_on_non_array() -> None:
@@ -551,16 +550,17 @@ def test_parse_and_validate_raises_on_non_array() -> None:
         db.parse_and_validate('{"entity_id": "x"}', [_card(1)])
 ```
 
-(ajouter `import json` en tête de fichier de test si absent)
 
-- [ ] **Step 2: Vérifier l'échec**
+(add `import json` at the top of the test file if absent)
+
+- [ ] **Step 2: Verify the failure**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_domain_backfill.py -q -k "messages or parse"`
 Expected: FAIL — `AttributeError: module 'scripts.domain_backfill' has no attribute 'build_messages'`.
 
-- [ ] **Step 3: Implémentation**
+- [ ] **Step 3: Implementation**
 
-**Imports à AJOUTER en tête du module** (les imports sont distribués par task — en importer plus tôt = F401 au gate ruff) : `import json`.
+**Imports to ADD at the top of the module** (imports are distributed per task — importing them earlier = F401 at the ruff gate): `import json`.
 
 ```python
 _SYSTEM_PROMPT = (
@@ -569,8 +569,8 @@ _SYSTEM_PROMPT = (
     "fences markdown, pas d'explication hors du JSON."
 )
 
-# Définitions canoniques copiées de scripts/dream/phase_connect.md (Step B).
-# Seule divergence : `unknown` remplace le fallback `backend` (proposer-only).
+# Canonical definitions copied from scripts/dream/phase_connect.md (Step B).
+# Sole divergence: `unknown` replaces the `backend` fallback (proposer-only).
 _DOMAIN_DEFINITIONS = """\
 infra      — deployment, Docker, networking, VPS, CI/CD, systemd
 ml         — training, inference, fine-tuning, LoRA, dataset, agent models
@@ -603,11 +603,11 @@ class Rejection:
 
 
 class ResponseParseError(Exception):
-    """Le contenu du modèle n'est pas un tableau JSON exploitable."""
+    """The model's content is not an exploitable JSON array."""
 
 
 def build_messages(batch: list[EntityCard]) -> list[dict[str, str]]:
-    """Messages OpenAI-compat pour classifier un batch (sans tools)."""
+    """OpenAI-compat messages to classify a batch (no tools)."""
     lines: list[str] = [
         "Classifie chaque entité dans EXACTEMENT UN domaine du set fermé :",
         "",
@@ -650,10 +650,10 @@ def _strip_fences(content: str) -> str:
 def parse_and_validate(
     content: str, batch: list[EntityCard]
 ) -> tuple[list[Proposal], list[Rejection]]:
-    """Valide la réponse du modèle contre le batch envoyé.
+    """Validate the model's response against the batch sent.
 
-    Raises ResponseParseError si le contenu n'est pas un tableau JSON —
-    l'appelant (Task 3) fait alors UN re-prompt correctif.
+    Raises ResponseParseError if the content is not a JSON array —
+    the caller (Task 3) then does ONE corrective re-prompt.
     """
     try:
         data = json.loads(_strip_fences(content))
@@ -709,9 +709,9 @@ def parse_and_validate(
     return proposals, rejections
 ```
 
-**Sémantique `missing_in_response`** : toute carte du batch sans proposition ACCEPTÉE reçoit un rejet `missing_in_response` — y compris si elle a par ailleurs des rejets d'une autre nature (une carte `invalid_domain` produit donc 2 rejets : `invalid_domain` + `missing_in_response`). C'est voulu : le rapport montre d'un coup d'œil quelles entités restent orphelines après le run. Le test `test_parse_and_validate_rejects_bad_domain_id_confidence_and_dups` encode exactement cette sémantique (6 codes).
+**`missing_in_response` semantics**: any card in the batch without an ACCEPTED proposal receives a `missing_in_response` rejection — including if it also has rejections of another kind (an `invalid_domain` card thus produces 2 rejections: `invalid_domain` + `missing_in_response`). This is intentional: the report shows at a glance which entities remain orphaned after the run. The test `test_parse_and_validate_rejects_bad_domain_id_confidence_and_dups` encodes exactly this semantics (6 codes).
 
-- [ ] **Step 4: Vérifier le vert**
+- [ ] **Step 4: Verify green**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_domain_backfill.py -q`
 Expected: PASS.
@@ -723,24 +723,24 @@ Expected: PASS.
 .venv/bin/ruff format --check scripts/ tests/unit/test_domain_backfill.py && \
 .venv/bin/mypy src/ scripts/domain_backfill.py && .venv/bin/python -m pytest tests/unit -q
 git add scripts/domain_backfill.py tests/unit/test_domain_backfill.py
-git commit -m "feat(backfill): prompt builder + validation déterministe des réponses
+git commit -m "feat(backfill): prompt builder + deterministic response validation
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 3: Client NVIDIA — retry 429/5xx + re-prompt correctif JSON
+### Task 3: NVIDIA client — 429/5xx retry + corrective JSON re-prompt
 
 **Files:**
 - Modify: `scripts/domain_backfill.py`
 - Test: `tests/unit/test_domain_backfill.py`
 
 **Interfaces:**
-- Consomme : `build_messages`, `parse_and_validate`, `ResponseParseError`, `Proposal`, `Rejection`, `EntityCard`
-- Produit :
+- Consumes: `build_messages`, `parse_and_validate`, `ResponseParseError`, `Proposal`, `Rejection`, `EntityCard`
+- Produces:
 ```python
-class NvidiaAuthError(Exception): ...   # 401/403 → abort du run entier
+class NvidiaAuthError(Exception): ...   # 401/403 → abort the entire run
 
 @dataclass
 class BatchOutcome:
@@ -758,12 +758,12 @@ async def classify_batch(
     sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
 ) -> BatchOutcome
 ```
-- Constantes : `MAX_HTTP_ATTEMPTS = 3`, `RETRYABLE_STATUS = {429, 500, 502, 503, 504}`, backoff `2**attempt` secondes.
+- Constants: `MAX_HTTP_ATTEMPTS = 3`, `RETRYABLE_STATUS = {429, 500, 502, 503, 504}`, backoff `2**attempt` seconds.
 
-- [ ] **Step 1: Tests RED**
+- [ ] **Step 1: RED tests**
 
 ```python
-# ── Task 3 : client NVIDIA ───────────────────────────────────────────
+# ── Task 3: NVIDIA client ─────────────────────────────────────────────
 
 
 def _ok_payload(batch: list[db.EntityCard]) -> dict:
@@ -797,7 +797,7 @@ def _client(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.AsyncCl
     )
 ```
 
-(ajouter `from collections.abc import Callable` et `import httpx` en tête du fichier de test à cette task)
+(add `from collections.abc import Callable` and `import httpx` at the top of the test file for this task)
 
 ```python
 
@@ -822,7 +822,7 @@ async def test_classify_batch_happy_path() -> None:
     assert outcome.prompt_tokens == 100
     assert calls[0]["model"] == "test-model"
     assert calls[0]["temperature"] == pytest.approx(0.2)
-    assert "tools" not in calls[0]  # jamais de tool-calling
+    assert "tools" not in calls[0]  # never any tool-calling
 
 
 @pytest.mark.asyncio
@@ -879,7 +879,7 @@ async def test_classify_batch_reprompts_once_on_bad_json_then_succeeds() -> None
         outcome = await db.classify_batch(client, "m", batch, sleep=_no_sleep)
     assert not outcome.failed
     assert len(bodies) == 2
-    # le re-prompt embarque la réponse fautive + une consigne corrective
+    # the re-prompt carries the faulty response + a corrective instruction
     assert bodies[1]["messages"][-2]["role"] == "assistant"
     assert "JSON" in bodies[1]["messages"][-1]["content"]
 
@@ -911,14 +911,14 @@ async def test_classify_batch_401_raises_auth_error() -> None:
             await db.classify_batch(client, "m", batch, sleep=_no_sleep)
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_domain_backfill.py -q -k classify`
 Expected: FAIL — `AttributeError: ... no attribute 'classify_batch'`.
 
-- [ ] **Step 3: Implémentation**
+- [ ] **Step 3: Implementation**
 
-**Imports à AJOUTER en tête du module** : `import asyncio` · `import httpx` · `from collections.abc import Awaitable, Callable` · remplacer `from typing import Protocol` par `from typing import Any, Protocol`.
+**Imports to ADD at the top of the module**: `import asyncio` · `import httpx` · `from collections.abc import Awaitable, Callable` · replace `from typing import Protocol` with `from typing import Any, Protocol`.
 
 ```python
 MAX_HTTP_ATTEMPTS = 3
@@ -930,7 +930,7 @@ _REPROMPT_INSTRUCTION = (
 
 
 class NvidiaAuthError(Exception):
-    """401/403 : clé invalide — inutile de continuer le run."""
+    """401/403: invalid key — no point continuing the run."""
 
 
 @dataclass
@@ -949,7 +949,7 @@ async def _post_chat(
     messages: list[dict[str, str]],
     sleep: Callable[[float], Awaitable[Any]],
 ) -> tuple[str, dict[str, Any]]:
-    """POST /chat/completions avec retry backoff sur les statuts transitoires."""
+    """POST /chat/completions with backoff retry on transient statuses."""
     payload = {
         "model": model,
         "messages": messages,
@@ -980,7 +980,7 @@ async def classify_batch(
     batch: list[EntityCard],
     sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
 ) -> BatchOutcome:
-    """Classifie un batch. Ne lève que NvidiaAuthError (abort run)."""
+    """Classify a batch. Only raises NvidiaAuthError (abort run)."""
     messages = build_messages(batch)
     prompt_tokens = 0
     completion_tokens = 0
@@ -1025,7 +1025,7 @@ async def classify_batch(
     )
 ```
 
-- [ ] **Step 4: Vérifier le vert**
+- [ ] **Step 4: Verify green**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_domain_backfill.py -q`
 Expected: PASS.
@@ -1037,28 +1037,28 @@ Expected: PASS.
 .venv/bin/ruff format --check scripts/ tests/unit/test_domain_backfill.py && \
 .venv/bin/mypy src/ scripts/domain_backfill.py && .venv/bin/python -m pytest tests/unit -q
 git add scripts/domain_backfill.py tests/unit/test_domain_backfill.py
-git commit -m "feat(backfill): client NVIDIA — retry backoff 429/5xx + re-prompt correctif
+git commit -m "feat(backfill): NVIDIA client — 429/5xx backoff retry + corrective re-prompt
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 4: Orchestrateur run_backfill + rapports jsonl/md
+### Task 4: run_backfill orchestrator + jsonl/md reports
 
 **Files:**
 - Modify: `scripts/domain_backfill.py`
 - Test: `tests/unit/test_domain_backfill.py`
 
 **Interfaces:**
-- Consomme : `fetch_orphans`, `fetch_entity_cards`, `classify_batch` (signature exacte Task 3), `BatchOutcome`, `Proposal`, `Rejection`
-- Produit :
+- Consumes: `fetch_orphans`, `fetch_entity_cards`, `classify_batch` (exact Task 3 signature), `BatchOutcome`, `Proposal`, `Rejection`
+- Produces:
 ```python
 @dataclass
 class BackfillResult:
     proposals: list[Proposal]
     rejections: list[Rejection]
-    failed_batches: list[str]          # messages d'erreur
+    failed_batches: list[str]          # error messages
     orphans_seen: int
     cards_classified: int
     prompt_tokens: int
@@ -1079,23 +1079,23 @@ def write_reports(
     out_dir: Path, run_date: str, model: str, result: BackfillResult
 ) -> tuple[Path, Path]   # (jsonl_path, md_path)
 ```
-- jsonl : une ligne JSON par proposition — champs `run_date, model, entity_id, entity_type, title, project_key, domain, confidence, reason`. Pas de ligne méta (un futur `apply` consomme le fichier tel quel).
-- md : en-tête (date, modèle, stats), tableau par domaine, sections `unknown`, `Rejections`, `Failed batches`.
+- jsonl: one JSON line per proposal — fields `run_date, model, entity_id, entity_type, title, project_key, domain, confidence, reason`. No meta line (a future `apply` consumes the file as-is).
+- md: header (date, model, stats), table per domain, `unknown`, `Rejections`, `Failed batches` sections.
 
-- [ ] **Step 1: Tests RED**
+- [ ] **Step 1: RED tests**
 
 ```python
-# ── Task 4 : orchestrateur + rapports ────────────────────────────────
+# ── Task 4: orchestrator + reports ───────────────────────────────────
 
 
 class _StubSessionFactoryCards:
-    """fetch_entity_cards est testé en PG ailleurs ; ici on stubbe au niveau
-    run_backfill via monkeypatch de db.fetch_entity_cards."""
+    """fetch_entity_cards is tested against PG elsewhere; here we stub at the
+    run_backfill level via monkeypatching db.fetch_entity_cards."""
 
 
 @pytest.mark.asyncio
 async def test_run_backfill_batches_and_aggregates(monkeypatch: pytest.MonkeyPatch) -> None:
-    cards = [_card(i) for i in range(1, 6)]  # 5 cartes
+    cards = [_card(i) for i in range(1, 6)]  # 5 cards
     orphan_rows = [
         {"id": c.entity_id, "labels": ["Learning"]} for c in cards
     ]
@@ -1134,9 +1134,9 @@ async def test_run_backfill_batches_and_aggregates(monkeypatch: pytest.MonkeyPat
     assert seen_batches == [2, 2, 1]
     assert result.orphans_seen == 5
     assert result.cards_classified == 5
-    assert len(result.proposals) == 3           # batch 2 a échoué
+    assert len(result.proposals) == 3           # batch 2 failed
     assert result.failed_batches == ["boom"]
-    assert result.prompt_tokens == 20           # 2 batches ok × 10
+    assert result.prompt_tokens == 20           # 2 ok batches × 10
 
 
 def test_write_reports_jsonl_roundtrip_and_md_sections(tmp_path: Path) -> None:
@@ -1162,17 +1162,17 @@ def test_write_reports_jsonl_roundtrip_and_md_sections(tmp_path: Path) -> None:
     assert "memory" in md and "unknown" in md
     assert "invalid_domain" in md
     assert "HTTP 503" in md
-    assert "42" in md  # tokens visibles
+    assert "42" in md  # tokens visible
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_domain_backfill.py -q -k "run_backfill or reports"`
-Expected: FAIL — attributs manquants.
+Expected: FAIL — missing attributes.
 
-- [ ] **Step 3: Implémentation**
+- [ ] **Step 3: Implementation**
 
-**Imports à AJOUTER en tête du module** : remplacer `from collections.abc import Awaitable, Callable` par `from collections.abc import Awaitable, Callable, Iterable` · remplacer `from dataclasses import dataclass` par `from dataclasses import asdict, dataclass`.
+**Imports to ADD at the top of the module**: replace `from collections.abc import Awaitable, Callable` with `from collections.abc import Awaitable, Callable, Iterable` · replace `from dataclasses import dataclass` with `from dataclasses import asdict, dataclass`.
 
 ```python
 @dataclass
@@ -1202,7 +1202,7 @@ async def run_backfill(
     limit: int,
     batch_size: int,
 ) -> BackfillResult:
-    """Fetch → batch → classify → agrège. Un batch failed ne tue pas le run."""
+    """Fetch → batch → classify → aggregate. A failed batch does not kill the run."""
     orphans = await fetch_orphans(graph_service, limit)
     cards = await fetch_entity_cards(session_factory, orphans)
 
@@ -1236,7 +1236,7 @@ async def run_backfill(
 def write_reports(
     out_dir: Path, run_date: str, model: str, result: BackfillResult
 ) -> tuple[Path, Path]:
-    """Écrit <date>.jsonl (propositions pures) + <date>.md (résumé humain)."""
+    """Write <date>.jsonl (pure proposals) + <date>.md (human summary)."""
     out_dir.mkdir(parents=True, exist_ok=True)
     jsonl_path = out_dir / f"{run_date}.jsonl"
     md_path = out_dir / f"{run_date}.md"
@@ -1293,7 +1293,7 @@ def write_reports(
     return jsonl_path, md_path
 ```
 
-- [ ] **Step 4: Vérifier le vert**
+- [ ] **Step 4: Verify green**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_domain_backfill.py -q`
 Expected: PASS.
@@ -1305,14 +1305,14 @@ Expected: PASS.
 .venv/bin/ruff format --check scripts/ tests/unit/test_domain_backfill.py && \
 .venv/bin/mypy src/ scripts/domain_backfill.py && .venv/bin/python -m pytest tests/unit -q
 git add scripts/domain_backfill.py tests/unit/test_domain_backfill.py
-git commit -m "feat(backfill): orchestrateur run_backfill + rapports jsonl/md
+git commit -m "feat(backfill): run_backfill orchestrator + jsonl/md reports
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 5: CLI main + env example + smoke run documenté
+### Task 5: CLI main + env example + documented smoke run
 
 **Files:**
 - Modify: `scripts/domain_backfill.py`
@@ -1320,13 +1320,13 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Test: `tests/unit/test_domain_backfill.py`
 
 **Interfaces:**
-- Consomme : tout ce qui précède + `Settings` (`postgres_url`, `neo4j_url`, `neo4j_user`, `neo4j_password`, `neo4j_timeout`), `GraphService`, `AsyncGraphDatabase` (pattern `scripts/init_graph.py:29`)
-- Produit : `main(argv: list[str] | None = None) -> int` (codes : 0 ok — même avec batches failed, visibles dans le rapport ; 1 erreur infra/fetch ; 2 erreur config).
+- Consumes: everything above + `Settings` (`postgres_url`, `neo4j_url`, `neo4j_user`, `neo4j_password`, `neo4j_timeout`), `GraphService`, `AsyncGraphDatabase` (pattern `scripts/init_graph.py:29`)
+- Produces: `main(argv: list[str] | None = None) -> int` (codes: 0 ok — even with failed batches, visible in the report; 1 infra/fetch error; 2 config error).
 
-- [ ] **Step 1: Tests RED**
+- [ ] **Step 1: RED tests**
 
 ```python
-# ── Task 5 : CLI ─────────────────────────────────────────────────────
+# ── Task 5: CLI ───────────────────────────────────────────────────────
 
 
 def test_main_missing_api_key_exits_2(
@@ -1342,7 +1342,7 @@ def test_parse_args_defaults() -> None:
     args = db.parse_args([])
     assert args.limit == 30
     assert args.batch_size == 15
-    assert args.model is None            # résolu ensuite : env puis DEFAULT_MODEL
+    assert args.model is None            # resolved later: env then DEFAULT_MODEL
     assert args.base_url is None
     assert args.env_file == db.DEFAULT_ENV_FILE
     assert args.out_dir == Path("logs/domain_backfill")
@@ -1366,7 +1366,7 @@ def test_resolve_model_and_base_url_precedence(monkeypatch: pytest.MonkeyPatch) 
 def test_main_warns_on_loose_env_file_permissions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Fichier env en 0644 → warning stderr (puis exit 2 : pas de clé dedans)."""
+    """Env file at 0644 → stderr warning (then exit 2: no key inside)."""
     monkeypatch.delenv("BRAIN_NVIDIA_API_KEY", raising=False)
     f = tmp_path / "nvidia.env"
     f.write_text("# vide\n")
@@ -1377,14 +1377,14 @@ def test_main_warns_on_loose_env_file_permissions(
     assert "chmod 600" in err
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_domain_backfill.py -q -k "main or parse_args or resolve"`
-Expected: FAIL — `parse_args`/`resolve_option`/`main` absents.
+Expected: FAIL — `parse_args`/`resolve_option`/`main` absent.
 
-- [ ] **Step 3: Implémentation**
+- [ ] **Step 3: Implementation**
 
-**Imports à AJOUTER en tête du module** : `import argparse` · `import datetime as dt` · `import sys` · remplacer `from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker` par `from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine`.
+**Imports to ADD at the top of the module**: `import argparse` · `import datetime as dt` · `import sys` · replace `from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker` with `from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine`.
 
 ```python
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -1412,14 +1412,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def resolve_option(cli_value: str | None, env_key: str, default: str) -> str:
-    """Précédence : CLI > env > défaut codé."""
+    """Precedence: CLI > env > hardcoded default."""
     if cli_value:
         return cli_value
     return os.environ.get(env_key) or default
 
 
 async def _run(args: argparse.Namespace, api_key: str) -> int:
-    from neo4j import AsyncGraphDatabase  # import local : dep runtime du serveur
+    from neo4j import AsyncGraphDatabase  # local import: server runtime dep
     from pydantic import ValidationError
 
     from brain_v42.config import Settings
@@ -1506,30 +1506,30 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-`deploy/nvidia.env.example` :
+`deploy/nvidia.env.example`:
 
 ```bash
-# NVIDIA build API key pour scripts/domain_backfill.py (proposer-only).
-# Copier vers ~/.config/brain-v42/nvidia.env  (chmod 600).
-# Ne PAS quoter la valeur — parsing style systemd (tout après le premier '=').
-# Même clé que red-shrik frontier possible, fichier séparé = rotation indépendante.
+# NVIDIA build API key for scripts/domain_backfill.py (proposer-only).
+# Copy to ~/.config/brain-v42/nvidia.env  (chmod 600).
+# Do NOT quote the value — systemd-style parsing (everything after the first '=').
+# Same key as red-shrik frontier possible, separate file = independent rotation.
 BRAIN_NVIDIA_API_KEY=nvapi-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-# Optionnels (précédence : CLI > env > défaut) :
+# Optional (precedence: CLI > env > default):
 # BRAIN_NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
 # BRAIN_NVIDIA_MODEL=deepseek-ai/deepseek-v4-pro
-# Alternative agentique-safe si deepseek déraille : moonshotai/kimi-k2-instruct
+# Agentic-safe alternative if deepseek derails: moonshotai/kimi-k2-instruct
 ```
 
-- [ ] **Step 4: Vérifier le vert**
+- [ ] **Step 4: Verify green**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_domain_backfill.py -q`
 Expected: PASS.
 
-- [ ] **Step 5: Vérifier que `logs/` est gitignoré**
+- [ ] **Step 5: Verify that `logs/` is gitignored**
 
 Run: `git check-ignore logs/domain_backfill 2>/dev/null && echo IGNORED || echo NOT_IGNORED`
-Si `NOT_IGNORED` : ajouter `logs/` au `.gitignore` dans ce commit.
+If `NOT_IGNORED`: add `logs/` to `.gitignore` in this commit.
 
 - [ ] **Step 6: Gate + commit**
 
@@ -1543,23 +1543,23 @@ git commit -m "feat(backfill): CLI main — wiring Settings/GraphService/NVIDIA 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
-- [ ] **Step 7 (post-merge, manuel, PAS en CI): smoke run réel**
+- [ ] **Step 7 (post-merge, manual, NOT in CI): real smoke run**
 
-Documenté ici pour l'opérateur (le user fournit la clé) :
+Documented here for the operator (the user supplies the key):
 
 ```bash
 mkdir -p ~/.config/brain-v42 && cp deploy/nvidia.env.example ~/.config/brain-v42/nvidia.env
-chmod 600 ~/.config/brain-v42/nvidia.env && $EDITOR ~/.config/brain-v42/nvidia.env  # coller la clé
+chmod 600 ~/.config/brain-v42/nvidia.env && $EDITOR ~/.config/brain-v42/nvidia.env  # paste the key
 cd /home/hawixs/hawkixs_infra/git_repo/brain_v42
-.venv/bin/python -m scripts.domain_backfill --limit 4 --batch-size 2   # mini-run de validation
-# puis lire logs/domain_backfill/<date>.md et juger la qualité
+.venv/bin/python -m scripts.domain_backfill --limit 4 --batch-size 2   # validation mini-run
+# then read logs/domain_backfill/<date>.md and judge the quality
 ```
 
 ---
 
-## Self-review + critique 3 juges (2026-07-03)
+## Self-review + 3-judge critique (2026-07-03)
 
-- **Couverture design** : fetch direct ✓ · batches 15 ✓ · JSON strict sans tools ✓ · retry 3 tentatives (2 retries) + re-prompt ×1 ✓ · validation set fermé + unknown + id ∈ batch ✓ · rapports jsonl+md ✓ · clé env-file (+ warning perms) ✓ · CLI flags ✓ · zéro écriture ✓ · TDD mocké ✓.
-- **Placeholders** : aucun TBD/TODO ; chaque step a le code.
-- **Cohérence de types** : `classify_fn` (Task 4/5) == partial de `classify_batch` (Task 3) — signatures alignées ; `run_backfill` consomme `GraphServiceLike` (Task 1).
-- **Patches post-critique (3 juges parallèles)** : [CRITICAL] bind asyncpg `uuid[]` en `sa.text()` → réécrit en core `select()` + `.in_()` sur les Table objects de `brain_v42.db.tables` (supprime aussi la f-string SQL et son noqa) ; [HIGH] `Settings()` wrappé `ValidationError` → exit 2 ; [HIGH] pollution `os.environ` inter-tests → clés neutres `X_BACKFILL_TEST_*` ; [MED] typing `sleep` élargi `Awaitable[Any]` ; [MED] gate mypy ciblé `scripts/domain_backfill.py` ; helpers de test typés ; lignes ≤100 ; warning perms env-file. Écartés avec preuve : `loop_scope` fixture (pattern `test_promote_prepare.py` vert aujourd'hui — suite 2514 pass), markers asyncio redondants (convention repo existante), footer commit (directive harness session).
+- **Design coverage**: direct fetch ✓ · batches of 15 ✓ · strict JSON with no tools ✓ · 3-attempt retry (2 retries) + ×1 re-prompt ✓ · closed-set validation + unknown + id ∈ batch ✓ · jsonl+md reports ✓ · env-file key (+ perms warning) ✓ · CLI flags ✓ · zero writes ✓ · mocked TDD ✓.
+- **Placeholders**: no TBD/TODO; every step has the code.
+- **Type consistency**: `classify_fn` (Task 4/5) == partial of `classify_batch` (Task 3) — signatures aligned; `run_backfill` consumes `GraphServiceLike` (Task 1).
+- **Post-critique patches (3 parallel judges)**: [CRITICAL] asyncpg `uuid[]` bind in `sa.text()` → rewritten as core `select()` + `.in_()` on the Table objects from `brain_v42.db.tables` (also removes the SQL f-string and its noqa); [HIGH] `Settings()` wrapped in `ValidationError` → exit 2; [HIGH] cross-test `os.environ` pollution → neutral `X_BACKFILL_TEST_*` keys; [MED] `sleep` typing widened to `Awaitable[Any]`; [MED] targeted mypy gate on `scripts/domain_backfill.py`; typed test helpers; lines ≤100; env-file perms warning. Dismissed with evidence: `loop_scope` fixture (`test_promote_prepare.py` pattern green today — 2514-pass suite), redundant asyncio markers (existing repo convention), commit footer (harness session directive).

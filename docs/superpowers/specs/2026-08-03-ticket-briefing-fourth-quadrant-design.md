@@ -1,28 +1,28 @@
-# Quatrième quadrant du groupement de tickets — design
+# Fourth quadrant of ticket grouping — design
 
-**Date** : 2026-08-03
-**Statut** : validé, prêt pour plan d'implémentation
-**Prior art** : `3ecb4a91` (exclusion des self-tickets d'`en_attente`)
+**Date**: 2026-08-03
+**Status**: validated, ready for implementation plan
+**Prior art**: `3ecb4a91` (exclusion of self-tickets from `en_attente`)
 
-## 1. Problème
+## 1. Problem
 
-`PgTicketRepo.list_grouped` (`src/brain_v42/repositories/pg_ticket.py:143`) répartit les tickets
-d'un projet en trois groupes. Croisés avec les deux dimensions réelles — notre rôle sur le
-ticket, et l'avancement — ils ne couvrent que trois des quatre cas :
+`PgTicketRepo.list_grouped` (`src/brain_v42/repositories/pg_ticket.py:143`) splits a
+project's tickets into three groups. Crossed against the two real dimensions — our role
+on the ticket, and its progress — they cover only three of the four cases:
 
-| | `to_project` = nous (exécutant) | `from_project` = nous (demandeur) |
+| | `to_project` = us (executor) | `from_project` = us (requester) |
 |---|---|---|
 | `open`, `in_progress` | `a_traiter` | `en_attente` |
-| `resolved`, `wontfix` | **aucun groupe** | `a_confirmer` |
+| `resolved`, `wontfix` | **no group** | `a_confirmer` |
 
-Le quadrant manquant est « **nous avons livré, le demandeur n'a pas encore confirmé** ». Ces
-tickets ne sont ni terminaux ni visibles : `TERMINAL_STATUSES` ne contient que `closed` et
-`acked`, donc ils comptent comme du travail ouvert, mais aucune requête ne les remonte au
-projet qui les a livrés.
+The missing quadrant is "**we delivered, the requester has not yet confirmed**". These
+tickets are neither terminal nor visible: `TERMINAL_STATUSES` only contains `closed` and
+`acked`, so they count as open work, but no query surfaces them to the project that
+delivered them.
 
-### 1.1 Six tickets concernés, mesurés le 2026-08-03
+### 1.1 Six tickets involved, measured on 2026-08-03
 
-| Invisible pour | Attend la confirmation de | Statut | Créé |
+| Invisible to | Awaiting confirmation from | Status | Created |
 |---|---|---|---|
 | red-shrik | red-story | resolved | 2026-07-05 |
 | red-writer | red-story | resolved | 2026-07-12 |
@@ -31,24 +31,24 @@ projet qui les a livrés.
 | brain-v42 | red-writer | wontfix | 2026-07-24 |
 | red-monitor | red | resolved | 2026-07-31 |
 
-Le plus ancien dort depuis un mois. Le défaut est structurel à l'écosystème ReD, pas propre à
-brain-v42.
+The oldest has been sitting for a month. The defect is structural to the ReD ecosystem, not
+specific to brain-v42.
 
-### 1.2 Aucune action légale n'existe dans ce quadrant
+### 1.2 No legal action exists in this quadrant
 
-`confirm`, `reopen` et `cancel` sont tous réservés au `requester` par la table `TRANSITIONS`.
-L'exécutant qui a livré ne peut donc rien transitionner : le seul geste disponible est un
-`brain_ticket_reply`, qui n'est pas une transition et reste permis quel que soit l'état.
+`confirm`, `reopen` and `cancel` are all reserved for the `requester` by the `TRANSITIONS`
+table. The executor who delivered can therefore transition nothing: the only move available
+is a `brain_ticket_reply`, which is not a transition and stays permitted regardless of state.
 
-C'est ce qui justifie de ne pas lister ces tickets dans le briefing, dont le contrat est
-« ce sur quoi tu peux agir » — `en_attente` en est déjà exclu pour la même raison
-(`session_tools.py:38-56` ne rend que `a_traiter` et `a_confirmer`).
+This is what justifies not listing these tickets in the briefing, whose contract is
+"what you can act on" — `en_attente` is already excluded for the same reason
+(`session_tools.py:38-56` only renders `a_traiter` and `a_confirmer`).
 
-## 2. Conception
+## 2. Design
 
-### 2.1 La requête
+### 2.1 The query
 
-Miroir exact d'`en_attente`, avec `to_project` et `_CONFIRMABLE` :
+Exact mirror of `en_attente`, with `to_project` and `_CONFIRMABLE`:
 
 ```python
 awaiting_requester_confirmation = (
@@ -60,79 +60,79 @@ awaiting_requester_confirmation = (
 ).mappings().all()
 ```
 
-**L'exclusion des self-tickets est obligatoire, pas cosmétique.** Sans elle, un self-ticket en
-`resolved` remonterait dans `a_confirmer` (`from_project` = nous) *et* dans le nouveau groupe
-(`to_project` = nous), donc compté deux fois. C'est le raisonnement de `3ecb4a91` appliqué un
-cran plus loin.
+**Excluding self-tickets is mandatory, not cosmetic.** Without it, a self-ticket in
+`resolved` would surface in `a_confirmer` (`from_project` = us) *and* in the new group
+(`to_project` = us), so it would be counted twice. This is the reasoning of `3ecb4a91`
+applied one step further.
 
-### 2.2 Nommage
+### 2.2 Naming
 
-`TicketGroups` gagne le champ `awaiting_requester_confirmation`.
+`TicketGroups` gains the field `awaiting_requester_confirmation`.
 
-Le nom réutilise le vocabulaire de rôle déjà défini dans `models/ticket.py`
-(`Role = Literal["executor", "requester"]`) et lève l'ambiguïté avec `a_confirmer`, qui
-désigne la confirmation que **nous devons**, pas celle que **nous attendons**.
+The name reuses the role vocabulary already defined in `models/ticket.py`
+(`Role = Literal["executor", "requester"]`) and removes the ambiguity with `a_confirmer`,
+which denotes the confirmation **we owe**, not the one **we're waiting on**.
 
-Le modèle devient linguistiquement mixte (`a_traiter`, `a_confirmer`, `en_attente`,
-`awaiting_requester_confirmation`). Aligner les trois autres est un rename touchant
-`session_tools.py` et `ticket_tools.py` : **hors périmètre**, mentionné en §4.
+The model becomes linguistically mixed (`a_traiter`, `a_confirmer`, `en_attente`,
+`awaiting_requester_confirmation`). Aligning the other three is a rename touching
+`session_tools.py` and `ticket_tools.py`: **out of scope**, mentioned in §4.
 
-### 2.3 Briefing — compteur seul, pas de liste
+### 2.3 Briefing — counter only, no list
 
-`session_tools.py:41` rend aujourd'hui :
+`session_tools.py:41` currently renders:
 
 ```
 ### Tickets (N à traiter · M à confirmer)
 ```
 
-Il devient, uniquement quand le nouveau groupe est non vide :
+It becomes, only when the new group is non-empty:
 
 ```
 ### Tickets (N à traiter · M à confirmer · P livrés à valider)
 ```
 
-Aucun ticket du nouveau groupe n'est listé : le briefing garde son contrat d'actionnabilité.
-Le libellé reste en français, le briefing étant rédigé en français de bout en bout.
+No ticket from the new group is listed: the briefing keeps its actionability contract.
+The label stays in French, since the briefing is written in French end to end.
 
-**La garde d'early-return doit être élargie.** `session_tools.py:39` sort quand `a_traiter` et
-`a_confirmer` sont tous deux vides. Sans y ajouter le nouveau groupe, le cas exact que ce
-chantier corrige — rien d'actionnable mais des livraisons bloquées — resterait invisible.
-C'est la situation de `red-shrik`, dont le ticket dort depuis le 5 juillet.
+**The early-return guard must be widened.** `session_tools.py:39` returns early when
+`a_traiter` and `a_confirmer` are both empty. Without adding the new group to it, the exact
+case this project fixes — nothing actionable but deliveries stuck — would remain invisible.
+This is the situation of `red-shrik`, whose ticket has been sitting since July 5th.
 
-### 2.4 `brain_ticket_list` — section complète
+### 2.4 `brain_ticket_list` — full section
 
-`ticket_tools.py:101` inclut le nouveau groupe dans le total, et une quatrième section est
-rendue par le même helper que les trois autres.
+`ticket_tools.py:101` includes the new group in the total, and a fourth section is rendered
+by the same helper as the other three.
 
-L'intitulé doit porter les deux informations utiles : la balle est chez le demandeur, et nous
-n'avons aucune transition légale — le seul geste est un `brain_ticket_reply` de relance.
+The label must carry both useful pieces of information: the ball is with the requester, and
+we have no legal transition — the only move is a `brain_ticket_reply` nudge.
 
 ## 3. Tests
 
-1. Un ticket inter-projets `resolved` avec `to_project` = nous atterrit dans
+1. A cross-project ticket `resolved` with `to_project` = us lands in
    `awaiting_requester_confirmation`
-2. Idem pour `wontfix`
-3. **Un self-ticket `resolved` reste dans `a_confirmer` et n'apparaît PAS dans le nouveau
-   groupe** — verrouille le non-double-comptage
-4. `a_traiter`, `a_confirmer` et `en_attente` sont inchangés (non-régression)
-5. Le briefing affiche le troisième compteur quand le groupe est non vide, et l'omet sinon
-6. Le briefing rend la section Tickets même quand `a_traiter` et `a_confirmer` sont vides mais
-   que le nouveau groupe ne l'est pas
-7. Le total de `brain_ticket_list` inclut le nouveau groupe
+2. Same for `wontfix`
+3. **A self-ticket `resolved` stays in `a_confirmer` and does NOT appear in the new
+   group** — locks down the no-double-counting
+4. `a_traiter`, `a_confirmer` and `en_attente` are unchanged (non-regression)
+5. The briefing shows the third counter when the group is non-empty, and omits it otherwise
+6. The briefing renders the Tickets section even when `a_traiter` and `a_confirmer` are
+   empty but the new group is not
+7. `brain_ticket_list`'s total includes the new group
 
-## 4. Hors périmètre
+## 4. Out of scope
 
-- **`resolved_at` reste `NULL` sur un `wontfix`.** `ticket_service.py:135` ne l'horodate que
-  sur `RESOLVED`, donc l'âge d'un `wontfix` retombe sur `created_at`. Information encore
-  utile, défaut distinct dans une autre fonction ; le corriger ici mélangerait deux
-  changements.
-- **Le rename des trois champs français** en anglais (§2.2).
-- **Le sort des six tickets listés en §1.1.** Ce chantier les rend visibles ; les traiter est
-  une décision opérateur, et cinq d'entre eux appartiennent à d'autres projets.
+- **`resolved_at` stays `NULL` on a `wontfix`.** `ticket_service.py:135` only timestamps it
+  on `RESOLVED`, so a `wontfix`'s age falls back to `created_at`. Still useful
+  information, a distinct defect in another function; fixing it here would mix two
+  changes.
+- **Renaming the three French fields** to English (§2.2).
+- **Resolving the six tickets listed in §1.1.** This project makes them visible; handling
+  them is an operator decision, and five of them belong to other projects.
 
-## 5. Critère de succès
+## 5. Success criterion
 
-Après livraison, `brain_ticket_list` sur brain-v42 fait apparaître `732aa639` — le ticket
-ouvert par red-writer que brain-v42 a passé `wontfix` le 24 juillet, et que red-writer n'a
-jamais confirmé — et le briefing en porte le compte sans le lister. Les trois groupes
-existants sont identiques, et aucun self-ticket n'apparaît deux fois.
+After delivery, `brain_ticket_list` on brain-v42 shows `732aa639` — the ticket opened by
+red-writer that brain-v42 marked `wontfix` on July 24th, and that red-writer never
+confirmed — and the briefing carries its count without listing it. The three existing
+groups are identical, and no self-ticket appears twice.

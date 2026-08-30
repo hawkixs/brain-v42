@@ -1,14 +1,14 @@
-# Pagination fiable de `brain_ticket_list`
+# Reliable pagination of `brain_ticket_list`
 
-## Contexte
+## Context
 
-`brain_ticket_list(project_key="brain-v42")` annonce 19 tickets à traiter, mais `_format_groups` n'en rend que 10. La constante `_LIST_CAP` coupe aussi les catégories « À confirmer » et « En attente » sans notice. Le contrat MCP n'expose aucun paramètre pour atteindre les lignes suivantes. En amont, `PgTicketRepo.list_grouped` trie uniquement par date de création croissante, ce qui maintient les plus vieux tickets sur la première page.
+`brain_ticket_list(project_key="brain-v42")` announces 19 tickets to process, but `_format_groups` renders only 10. The `_LIST_CAP` constant also cuts the "À confirmer" and "En attente" categories without notice. The MCP contract exposes no parameter to reach the following rows. Upstream, `PgTicketRepo.list_grouped` sorts only by ascending creation date, which keeps the oldest tickets on the first page.
 
-Le ticket fe1c8c33 approuve cette correction et interdit toute mutation directe des tickets frères. L'inventaire opérationnel reste donc une preuve en lecture seule destinée à l'orchestrateur.
+Ticket fe1c8c33 approves this fix and forbids any direct mutation of sibling tickets. The operational inventory therefore remains read-only evidence intended for the orchestrator.
 
-## Contrat retenu
+## Contract adopted
 
-`brain_ticket_list` accepte deux paramètres compatibles avec l'appel existant :
+`brain_ticket_list` accepts two parameters compatible with the existing call:
 
 ```python
 async def brain_ticket_list(
@@ -18,30 +18,30 @@ async def brain_ticket_list(
 ) -> str:
 ```
 
-Le serveur borne `limit` entre 1 et 100 et ramène un `offset` négatif à 0. `limit` et `offset` s'appliquent séparément à chacune des trois catégories. Les en-têtes conservent le nombre total de tickets de la catégorie.
+The server bounds `limit` between 1 and 100 and clamps a negative `offset` to 0. `limit` and `offset` apply separately to each of the three categories. The headers keep the total count of tickets in the category.
 
-Chaque catégorie paginée indique le nombre exact de tickets omis sur la page. Quand une page suivante existe, la notice donne l'appel complet avec le prochain `offset`. Un appel répété avec ces offsets permet d'atteindre chaque ticket.
+Each paginated category states the exact number of tickets omitted from the page. When a next page exists, the notice gives the full call with the next `offset`. A repeated call with these offsets makes every ticket reachable.
 
-## Ordre
+## Order
 
-Le dépôt ordonne chaque catégorie par :
+The repository orders each category by:
 
-1. `updated_at DESC` ;
-2. `created_at DESC` ;
-3. `id ASC` pour stabiliser les égalités.
+1. `updated_at DESC`;
+2. `created_at DESC`;
+3. `id ASC` to stabilize ties.
 
-Ce tri remonte les tickets nouveaux ou récemment actifs, au lieu de réserver la première page aux plus vieux. La description MCP documente cet ordre et demande de parcourir les pages signalées pour examiner le backlog complet, notamment ses échéances.
+This ordering surfaces new or recently active tickets, instead of reserving the first page for the oldest ones. The MCP description documents this order and asks to walk the flagged pages to review the full backlog, including its deadlines.
 
-## Compatibilité et limites
+## Compatibility and limits
 
-- L'appel historique avec le seul `project_key` rend toujours au plus 10 lignes par catégorie.
-- Les catégories et leurs libellés restent « À traiter », « À confirmer » et « En attente de l'autre côté ».
-- Aucun schéma de base, statut ou ticket n'est modifié.
-- La correction n'interprète pas les dates libres présentes dans les titres ou les corps. La visibilité repose sur le tri d'activité, la notice exacte et l'accès à toutes les pages.
-- `brain_session_start` conserve son aperçu compact. Il bénéficie du nouvel ordre via le dépôt et continue de renvoyer vers `brain_ticket_list` pour la pagination complète.
+- The historical call with only `project_key` still renders at most 10 rows per category.
+- The categories and their labels remain "À traiter", "À confirmer" and "En attente de l'autre côté".
+- No database schema, status, or ticket is modified.
+- The fix does not parse free-form dates present in titles or bodies. Visibility relies on activity ordering, the exact notice, and access to all pages.
+- `brain_session_start` keeps its compact overview. It benefits from the new order via the repository and continues to point to `brain_ticket_list` for full pagination.
 
-## Preuves
+## Evidence
 
-Les tests MCP couvrent la notice par défaut, l'accès à une page ultérieure, le comptage avant/après, la conservation des catégories et la description du contrat. Un test du dépôt compile les trois requêtes et vérifie l'ordre déterministe. La suite ciblée est exécutée en RED puis en GREEN, suivie de la suite unitaire, de Ruff, du formatage et de mypy.
+The MCP tests cover the default notice, access to a later page, the before/after count, category preservation, and the contract's description. A repository test compiles the three queries and verifies the deterministic order. The targeted suite is run RED then GREEN, followed by the unit suite, Ruff, formatting, and mypy.
 
-L'inventaire des parents partiels, des tickets sortants et des tickets sans enfant utilise uniquement les outils Brain de lecture. Il consigne l'état observé et une décision proposée pour l'orchestrateur, sans réponse, transition, résolution ni fermeture.
+The inventory of partial parents, outgoing tickets, and childless tickets uses only read-only Brain tools. It records the observed state and a proposed decision for the orchestrator, without any reply, transition, resolution, or closure.

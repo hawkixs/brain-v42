@@ -1,69 +1,69 @@
-# RoadmapService — validation des statuts et couverture des erreurs
+# RoadmapService — status validation and error coverage
 
-**Date** : 2026-07-25
+**Date**: 2026-07-25
 
-**Statut** : approuvé par le ticket Brain `5619c851`
+**Status**: approved by Brain ticket `5619c851`
 
-## Contexte
+## Context
 
-Le ticket classe `roadmap_service.py` parmi les quatre modules sous 70 % et impose
-l'ordre `project_group_ticket_service → roadmap_service → pg_ticket → thresholds`.
-Le premier module est traité dans `9f41b01`. Le lot concurrent `2f797d6` touche
-uniquement les tests de `ProjectGroupTicketService` et reste hors périmètre.
+The ticket ranks `roadmap_service.py` among the four modules below 70% and mandates
+the order `project_group_ticket_service → roadmap_service → pg_ticket → thresholds`.
+The first module is handled in `9f41b01`. The concurrent lot `2f797d6` touches
+only `ProjectGroupTicketService`'s tests and stays out of scope.
 
-La mesure fraîche du test unitaire existant donne 55,97 % des instructions et
-40,74 % des branches pour `roadmap_service.py`. Les pivots et les chemins heureux
-de `update_feature_statuses` sont déjà couverts. Les préconditions et erreurs de
-`update_project_focus` ne le sont pas dans la suite unitaire.
+A fresh measurement of the existing unit test gives 55.97% of statements and
+40.74% of branches for `roadmap_service.py`. The pivots and happy paths of
+`update_feature_statuses` are already covered. The preconditions and errors of
+`update_project_focus` are not, in the unit suite.
 
-`update_feature_statuses` accepte actuellement toute chaîne comme statut. La
-base protège déjà la colonne avec la contrainte canonique
-`features_status_check`. La validation du service ajoute une défense en
-profondeur : elle rejette tout le lot avant session ou SQL et fournit une
-`ProjectFocusValidationError` déterministe, plutôt qu'une erreur PostgreSQL.
+`update_feature_statuses` currently accepts any string as a status. The
+database already protects the column with the canonical
+`features_status_check` constraint. The service's validation adds defense in
+depth: it rejects the whole batch before any session or SQL and provides a
+deterministic `ProjectFocusValidationError`, rather than a PostgreSQL error.
 
-## Décision
+## Decision
 
-Le service rejettera tout lot contenant un statut absent de
-`VALID_FEATURE_STATUSES` avant d'ouvrir une session. L'erreur utilisera
-`ProjectFocusValidationError`, déjà exposée par ce module pour les mutations de
-roadmap invalides. Un lot mixte valide/invalide échouera entièrement avant SQL.
+The service will reject any batch containing a status absent from
+`VALID_FEATURE_STATUSES` before opening a session. The error will use
+`ProjectFocusValidationError`, already exposed by this module for invalid
+roadmap mutations. A mixed valid/invalid batch will fail entirely before SQL.
 
-Le lot ajoutera des tests unitaires ciblés pour :
+The lot will add targeted unit tests for:
 
-- le rejet précoce des statuts invalides dans `update_feature_statuses` ;
-- les préconditions de focus et de révision ;
-- le conflit entre mise à jour de statut et dépinglage ;
-- les résolutions de feature manquante, ambiguë ou fusionnée ;
-- la construction de `ProjectFocusConflictError` ;
-- le chemin vide de `_lock_requested_features`.
+- the early rejection of invalid statuses in `update_feature_statuses`;
+- the focus and revision preconditions;
+- the conflict between a status update and unpinning;
+- the resolutions of a missing, ambiguous, or merged feature;
+- the construction of `ProjectFocusConflictError`;
+- the empty path of `_lock_requested_features`.
 
-Les tests de pivot existants restent la preuve de ce critère. Les tests
-PostgreSQL existants continuent de prouver l'atomicité et la concurrence ; ce lot
-ne les duplique pas et ne touche aucune base live.
+The existing pivot tests remain the proof for this criterion. The existing
+PostgreSQL tests continue to prove atomicity and concurrency; this lot
+does not duplicate them and does not touch any live database.
 
-## Limites
+## Limits
 
-- Aucun changement d'API, de schéma, de transaction ou de requête roadmap.
-- Aucun changement dans `test_project_group_ticket_service.py`.
-- Aucun merge, push, déploiement ou mutation PostgreSQL live.
-- Le seuil de sortie est au moins 70 % des instructions du module, sans baisse de
-  la couverture globale.
+- No change to the API, schema, transaction, or roadmap query.
+- No change in `test_project_group_ticket_service.py`.
+- No merge, push, deployment, or live PostgreSQL mutation.
+- The exit threshold is at least 70% of the module's statements, without a drop
+  in overall coverage.
 
-## Alternatives écartées
+## Alternatives discarded
 
-1. **Ajouter seulement des tests** : la couverture progresserait, mais le writer
-   resterait permissif et déléguerait le rejet à PostgreSQL au lieu de fournir
-   une erreur applicative déterministe.
-2. **Dupliquer les tests PostgreSQL en unitaires** : cela brouillerait la frontière
-   entre validation rapide et preuve d'intégration.
-3. **Refondre les deux writers de roadmap** : cette consolidation dépasse le
-   ticket de couverture et augmenterait le rayon de changement.
+1. **Add only tests**: coverage would progress, but the writer
+   would remain permissive and delegate rejection to PostgreSQL instead of providing
+   a deterministic application error.
+2. **Duplicate the PostgreSQL tests as unit tests**: this would blur the boundary
+   between fast validation and integration proof.
+3. **Rework both roadmap writers**: this consolidation exceeds the
+   coverage ticket and would widen the change radius.
 
-## Vérification
+## Verification
 
-- RED fonctionnel : un lot contenant `in_progress` atteint actuellement SQL au
-  lieu de lever `ProjectFocusValidationError`.
-- GREEN ciblé : tests du module et seuil de couverture ≥70 %.
-- Validation dépôt : suite unitaire, Ruff, format, mypy, `git diff --check` et
+- Functional RED: a batch containing `in_progress` currently reaches SQL
+  instead of raising `ProjectFocusValidationError`.
+- Targeted GREEN: module tests and a coverage threshold ≥70%.
+- Repository validation: unit suite, Ruff, format, mypy, `git diff --check`, and
   `gitnexus_detect_changes()`.

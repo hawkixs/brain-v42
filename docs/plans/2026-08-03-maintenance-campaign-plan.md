@@ -1,248 +1,248 @@
-# Campagne de maintenance — 2026-08-03
+# Maintenance campaign — 2026-08-03
 
-Plan de maintenance stricte ouvert après le bilan des trois semaines du 13/07 au 03/08.
-Destiné à survivre aux compactions de contexte : toute session peut le reprendre tel quel.
+Strict maintenance plan opened after the three-week review from 13/07 to 03/08.
+Designed to survive context compaction: any session can pick it up exactly as is.
 
-## Pourquoi ce plan
+## Why this plan
 
-Trois semaines de travail intense ont produit beaucoup de volume et peu de livraison
-observable. Ce plan cadre le rattrapage et pose la règle qui empêche la rechute.
+Three weeks of intense work produced a lot of volume and little observable delivery.
+This plan frames the catch-up and sets the rule that prevents a relapse.
 
-## Constat de départ (vérifié le 2026-08-03)
+## Starting assessment (verified on 2026-08-03)
 
-### Le code est sain — ce n'est pas un plan de réparation
+### The code is healthy — this is not a repair plan
 
 ```
 ruff check       : All checks passed
 ruff format      : 555 files already formatted
 mypy src/        : Success, no issues in 170 source files
-cycles modules   : 0   (preflight ratchet du 30/07 opérationnel)
-tests collectés  : 6 742
+module cycles   : 0   (preflight ratchet from 30/07 operational)
+collected tests  : 6 742
 ```
 
-Aucune dette lint, aucune dette typage, graphe de modules acyclique. **Le refactor à
-mener est un dégraissage, pas une correction.** Toute tâche formulée comme « corriger le
-code » sur cette campagne part d'une prémisse fausse.
+No lint debt, no typing debt, acyclic module graph. **The refactor to
+carry out is a trim-down, not a correction.** Any task phrased as "fix the
+code" on this campaign starts from a false premise.
 
-### Le volume est le problème
+### The volume is the problem
 
-| Zone | Lignes |
+| Zone | Lines |
 |---|---|
-| `tests/` | 136 527 |
-| `src/` | 42 332 |
-| `scripts/` | 24 362 |
-| `services/` | 1 380 |
-| `docs/` | 54 258 |
+| `tests/` | 136,527 |
+| `src/` | 42,332 |
+| `scripts/` | 24,362 |
+| `services/` | 1,380 |
+| `docs/` | 54,258 |
 
-**Ratio test/code de production : 2,01:1** (136 527 contre 68 074). Pour un projet à forte
-charge de tests de contrat et de sécurité, c'est défendable.
+**Test-to-production-code ratio: 2.01:1** (136,527 versus 68,074). For a project with a
+heavy load of contract and security tests, that is defensible.
 
-> **ERRATUM 2026-08-03.** Une version antérieure de ce plan annonçait 3,2:1. Ce chiffre
-> divisait les tests par `src/` seul, en omettant `scripts/` et `services/` — qui sont du
-> code de production, et qui sont testés. Le ratio réel est 2,01:1.
+> **ERRATUM 2026-08-03.** An earlier version of this plan announced 3.2:1. That figure
+> divided tests by `src/` alone, omitting `scripts/` and `services/` — which are
+> production code, and which are tested. The actual ratio is 2.01:1.
 >
-> Le même erratum invalide le « cas emblématique » alors cité :
-> `tests/unit/test_container_image_pins.py` (11 351 lignes) couvre
-> `scripts/check_container_image_pins.py`, qui fait **11 220 lignes, 543 fonctions et
-> 27 classes**. Le ratio y est de **1,01:1** — proportionné. Ce fichier de test n'est pas
-> de la sur-ingénierie.
+> The same erratum invalidates the "flagship case" cited at the time:
+> `tests/unit/test_container_image_pins.py` (11,351 lines) covers
+> `scripts/check_container_image_pins.py`, which comes to **11,220 lines, 543 functions and
+> 27 classes**. The ratio there is **1.01:1** — proportionate. This test file is not
+> over-engineering.
 >
-> L'observation qui survit est déplacée vers la source : un gate de pin d'images est devenu
-> un analyseur statique AST de 11 220 lignes (scan des Dockerfiles, compose, CI YAML, shell
-> et appels SDK Python) documenté par **16 lignes de docstring au total**. La question
-> n'est pas « trop de tests » mais « pourquoi cette surface, et qui peut encore la relire ».
+> The observation that survives shifts to the source: an image-pin gate became an
+> 11,220-line AST static analyzer (scanning Dockerfiles, compose, CI YAML, shell
+> and Python SDK calls) documented by **16 lines of docstring total**. The question
+> is not "too many tests" but "why this surface, and who can still review it".
 
-Sur les trois semaines : ≈320 commits, 110 579 insertions, 13 763 lignes de markdown.
+Over the three weeks: ≈320 commits, 110,579 insertions, 13,763 lines of markdown.
 
-Répartition : 122 `fix`, 69 `docs`, 55 `feat`, 51 `test`. Sur les 55 `feat`, 21 touchent
-la surface MCP et une dizaine seulement ajoutent une capacité visible à l'usage. Les 46
-autres sont de l'infrastructure interne. **C'est ce constat-là, et non le ratio de tests,
-qui porte le diagnostic de non-livraison.**
+Breakdown: 122 `fix`, 69 `docs`, 55 `feat`, 51 `test`. Of the 55 `feat`, 21 touch
+the MCP surface and only about ten add a capability visible in usage. The other 46
+are internal infrastructure. **It is this observation, not the test ratio,
+that carries the non-delivery diagnosis.**
 
-### Ce qui est cassé ou bloqué
+### What is broken or blocked
 
-- `brain-v42-dream.service` **failed** depuis le 2026-08-02 06:15 (EXTRACT timeout sur un
-  backlog d'embeddings non comparables). Ticket `d104660d`, `in_progress`.
-- Killswitch ROADMAP toujours **DRY** après 19 nuits propres → **335 propositions de
-  curation** en attente depuis le 14/07.
-- Prod à la migration **037**, repo à **039**.
-- Roadmap : ~148 entrées dont **58 pseudo-features `research`** (learnings auto-promus).
-- **24 tickets** à traiter, 11 à confirmer, 5 en attente externe. Les plus vieux à 9-11 jours.
-- 4 items `building` sans clôture, dont **Sol Ultra** (dernière activité 24/07).
-- **Zéro item passé à `done`** sur les trois semaines.
+- `brain-v42-dream.service` **failed** since 2026-08-02 06:15 (EXTRACT timeout on a
+  backlog of non-comparable embeddings). Ticket `d104660d`, `in_progress`.
+- ROADMAP killswitch still **DRY** after 19 clean nights → **335 curation
+  proposals** pending since 14/07.
+- Prod at migration **037**, repo at **039**.
+- Roadmap: ~148 entries including **58 pseudo-features `research`** (auto-promoted learnings).
+- **24 tickets** to process, 11 to confirm, 5 waiting on external input. The oldest at 9-11 days.
+- 4 `building` items with no closure, including **Sol Ultra** (last activity 24/07).
+- **Zero item moved to `done`** over the three weeks.
 
-### Outillage dégradé
+### Degraded tooling
 
-GitNexus : 21 repos indexés, **2 entrées nommées `brain-v42`** — la racine canonique
-(24 commits de retard) et le worktree `vigilant-euclid-da3597` (**893 commits de retard**).
-Le registry est pollué au-delà du Brain : `red-writer` a 9 entrées de worktrees,
-`refondrre` en a 3 dont une sous `/tmp`.
+GitNexus: 21 indexed repos, **2 entries named `brain-v42`** — the canonical root
+(24 commits behind) and the `vigilant-euclid-da3597` worktree (**893 commits behind**).
+The registry is polluted beyond the Brain: `red-writer` has 9 worktree entries,
+`refondrre` has 3, one of them under `/tmp`.
 
-Git : **11 worktrees** (994 MB dans `.claude/worktrees` seuls), **32 branches** locales
-dont 14 mergées et 17 non mergées.
+Git: **11 worktrees** (994 MB in `.claude/worktrees` alone), **32 local branches**,
+14 merged and 17 unmerged.
 
-`CLAUDE.md` annonce « 15 163 symbols, 31 473 relationships » ; l'index réel est à
-19 245 nœuds / 37 418 arêtes. La doc est périmée sur ce point.
+`CLAUDE.md` states "15,163 symbols, 31,473 relationships"; the actual index is at
+19,245 nodes / 37,418 edges. The docs are stale on this point.
 
-## Décisions actées
+## Decisions made
 
-### D1 — Migrations 038/039 : on déploie, on n'abandonne pas
+### D1 — Migrations 038/039: we deploy, we don't abandon
 
-Décision opérateur du 2026-08-03. Les 6 400 lignes en suspens entre repo et prod
-représentent du travail à conserver. Conséquence : la Phase 2.2 **garde** les 3 820 lignes
-de tests `plan_index_repair`, et le rollout suit `docs/PLAN_INDEX_REPAIR_RUNBOOK.md`
-(restauration isolée, ordre 038→039, redémarrage final).
+Operator decision from 2026-08-03. The 6,400 lines pending between repo and prod
+represent work worth keeping. Consequence: Phase 2.2 **keeps** the 3,820 lines
+of `plan_index_repair` tests, and the rollout follows `docs/PLAN_INDEX_REPAIR_RUNBOOK.md`
+(isolated restore, order 038→039, final restart).
 
-### D2 — Sécurité déprioritée, mais la bombe CI est désamorcée séparément
+### D2 — Security deprioritized, but the CI time bomb is defused separately
 
-Décision opérateur du 2026-08-03 : le volet sécurité n'est pas prioritaire.
+Operator decision from 2026-08-03: the security track is not a priority.
 
-Cette décision est **soutenue par les faits** : sur les findings du pipeline 4288
-(sha `d2e37925`), Bandit donne 16 Medium / **0 High** dont 15 B608 faux positifs et 1
-seule vraie décision (B104, bind réseau) ; Gitleaks donne 8+2 candidats, **tous faux
-positifs, 0 secret, 0 rotation nécessaire**. Les preuves sont déjà conservées hors
-artefacts expirables depuis le 01/08 (`~/.local/state/brain-v42/security-evidence/4288`,
-SHA-256 enregistrés). Le risque sécurité réel est faible.
+This decision is **backed by the facts**: on the findings of pipeline 4288
+(sha `d2e37925`), Bandit gives 16 Medium / **0 High**, of which 15 are B608 false
+positives and 1 is a genuine call (B104, network bind); Gitleaks gives 8+2 candidates,
+**all false positives, 0 secrets, 0 rotation needed**. The evidence has already been kept
+outside expirable artifacts since 01/08 (`~/.local/state/brain-v42/security-evidence/4288`,
+SHA-256 recorded). The real security risk is low.
 
-**Mais il reste une conséquence mécanique indépendante du risque sécurité.**
-`.gitlab-ci.yml:27` porte `SECURITY_BURN_IN_UNTIL: "2026-08-22"`, et
-`test_non_blocking_security_jobs_expire_at_the_burn_in_deadline` asserte
-`not (today > deadline and non_blocking)`. Les 3 jobs sécurité sont encore `allow_failure`.
+**But a mechanical consequence remains, independent of the security risk.**
+`.gitlab-ci.yml:27` carries `SECURITY_BURN_IN_UNTIL: "2026-08-22"`, and
+`test_non_blocking_security_jobs_expire_at_the_burn_in_deadline` asserts
+`not (today > deadline and non_blocking)`. The 3 security jobs are still `allow_failure`.
 
-→ **Le 2026-08-23, la suite unitaire passe au rouge dans le job bloquant `test:unit`**,
-pour tout travail, y compris sans rapport avec la sécurité.
+→ **On 2026-08-23, the unit suite goes red in the blocking `test:unit` job**,
+for any work at all, including work unrelated to security.
 
-Le commentaire du CI prévoit lui-même les deux issues : *« Flip them to blocking, or move
-this date deliberately. »* La sortie compatible avec la dépriorisation est donc de
-**déplacer la date par décision loggée** — quelques minutes, pas une campagne. C'est la
-tâche 3.1 ci-dessous. Traiter les 45 avis pip-audit reste hors scope de cette campagne.
+The CI comment itself anticipates both outcomes: *"Flip them to blocking, or move
+this date deliberately."* The path compatible with deprioritization is therefore to
+**move the date via a logged decision** — a few minutes, not a campaign. That is
+task 3.1 below. Handling the 45 pip-audit advisories stays out of scope for this campaign.
 
-## Protocole d'orchestration
+## Orchestration protocol
 
-Établi le 2026-08-03.
+Established on 2026-08-03.
 
-**Attribution vérifiée du volume.** Sur les 320 commits de la période, 5 seulement portent
-un trailer `Co-Authored-By: Claude`. Les branches restantes se répartissent en 12 `codex/`
-contre 5 `claude/`, les merges nomment des branches `codex/`, et Dream tourne sur
-`provider=codex` (`gpt-5.6-terra`, `gpt-5.6-sol`). **Le volume a été produit par Codex, pas
-par Claude Code.** Les sessions Claude de la période étaient des audits et de l'analyse.
+**Verified attribution of the volume.** Of the 320 commits in the period, only 5 carry
+a `Co-Authored-By: Claude` trailer. The remaining branches split into 12 `codex/`
+versus 5 `claude/`, the merges name `codex/` branches, and Dream runs on
+`provider=codex` (`gpt-5.6-terra`, `gpt-5.6-sol`). **The volume was produced by Codex, not
+by Claude Code.** The Claude sessions in the period were audits and analysis.
 
-Deux problèmes distincts en découlent, avec deux corrections distinctes :
+Two distinct problems follow from this, with two distinct corrections:
 
-| Symptôme | Origine | Correction |
+| Symptom | Origin | Correction |
 |---|---|---|
-| 110 k lignes, 406 tests pour un gate de pins | Workflow Codex | Gate de proportionnalité (ci-dessous) |
-| Sprawl de worktrees (7 sur 8 dans `.claude/`) | Sessions Claude non refermées | Hygiène de fin de session |
+| 110k lines, 406 tests for a pin gate | Codex workflow | Proportionality gate (below) |
+| Worktree sprawl (7 of 8 in `.claude/`) | Claude sessions left open | End-of-session hygiene |
 
-L'amplification côté Codex est lisible dans le nommage des branches — `round2`, `round3`,
-`round4`, `round5` sur un même ticket, `attempt-1` sur d'autres : des passes successives
-empilant chacune une couche, sans point de contrôle du périmètre.
+The Codex-side amplification is readable in the branch naming — `round2`, `round3`,
+`round4`, `round5` on the same ticket, `attempt-1` on others: successive passes each
+stacking a layer, with no scope checkpoint.
 
-Le protocole ci-dessous cadre le travail Claude. **Le gate de proportionnalité, lui, doit
-contraindre en premier lieu le workflow Codex**, qui est là où le volume se produit.
+The protocol below frames Claude's work. **The proportionality gate, on the other hand,
+must constrain the Codex workflow first**, since that is where the volume is produced.
 
-| Rôle | Modèle | Quoi |
+| Role | Model | What |
 |---|---|---|
-| Thread principal | Opus | Cadrage, séquencement, décisions archi, git |
-| Exécution | Sonnet (`red-implementer`, `red-ops`) | Le grind, les lots mécaniques |
-| Revue | Opus (`red-reviewer`) | **Aux frontières de lot uniquement**, jamais par fichier |
+| Main thread | Opus | Scoping, sequencing, architecture decisions, git |
+| Execution | Sonnet (`red-implementer`, `red-ops`) | The grind, mechanical batches |
+| Review | Opus (`red-reviewer`) | **At batch boundaries only**, never per file |
 
-Trois règles dures :
+Three hard rules:
 
-1. Pas de spawn de subagent sous ~4 fichiers ou sans lecture large — inline est moins cher.
-   Un spawn démarre à froid et repaie le contexte complet.
-2. **Pas de jury multi-juges, pas de débat, pas de `pattern-auto`** sur cette campagne.
-3. **GitNexus avant grep** pour tout travail de refactor — mais seulement une fois la
-   Phase 0.1 close (cf. ci-dessous).
+1. No subagent spawn under ~4 files or without a broad read — inline is cheaper.
+   A spawn starts cold and repays the full context.
+2. **No multi-judge panel, no debate, no `pattern-auto`** on this campaign.
+3. **GitNexus before grep** for any refactor work — but only once
+   Phase 0.1 is closed (see below).
 
 ## Phases
 
-### Phase 0 — Débloquer l'outillage *(bloquant pour la Phase 2)*
+### Phase 0 — Unblock tooling *(blocking for Phase 2)*
 
-`CLAUDE.md` impose `gitnexus_impact` avant toute édition de symbole. Tant que l'index
-ment, cette règle est un faux filet : on ne refactore pas sur une analyse d'impact fausse.
+`CLAUDE.md` requires `gitnexus_impact` before any symbol edit. As long as the index
+lies, this rule is a false safety net: you don't refactor on a false impact analysis.
 
-- **0.1** Purger les entrées mortes du registry GitNexus, réindexer la racine canonique,
-  fixer la règle : **on indexe la racine, jamais les worktrees**. Vérifier qu'il ne reste
-  qu'une entrée `brain-v42`.
-- **0.2** Trier les 11 worktrees. Suppression uniquement si working tree propre **et**
-  branche mergée ou commit atteignable depuis `main`. Jamais `--force`.
-- **0.3** Supprimer les 14 branches mergées (`git branch -d` uniquement, jamais `-D`).
-  Trier les 17 non mergées en *à intégrer* / *à abandonner* / *incertain* — **rapport
-  seul, décision humaine**.
+- **0.1** Purge the dead entries from the GitNexus registry, reindex the canonical root,
+  fix the rule: **index the root, never worktrees**. Verify that only one
+  `brain-v42` entry remains.
+- **0.2** Sort the 11 worktrees. Deletion only if the working tree is clean **and**
+  the branch is merged or the commit is reachable from `main`. Never `--force`.
+- **0.3** Delete the 14 merged branches (`git branch -d` only, never `-D`).
+  Sort the 17 unmerged ones into *to integrate* / *to abandon* / *uncertain* — **report
+  only, human decision**.
 
-Contrainte : la chaîne `codex/70cf97a7-round2→round5` est du travail en attente
-d'intégration (blocker actif : rebase/revue exacte-SHA requis). Ce n'est pas du déchet.
+Constraint: the `codex/70cf97a7-round2→round5` chain is work pending
+integration (active blocker: rebase/exact-SHA review required). It is not waste.
 
-### Phase 1 — Remettre la production en marche
+### Phase 1 — Get production running again
 
-Rien de neuf n'entre dans le Brain tant que Dream est à l'arrêt.
+Nothing new enters the Brain as long as Dream is stopped.
 
-- **1.1** Réparer Dream (ticket `d104660d`, backlog d'embeddings non comparables).
-- **1.2** Flipper le killswitch ROADMAP en WET, puis traiter les 335 propositions de
-  curation en attente.
-- **1.3** Déployer 038 puis 039 en production selon D1 et le runbook.
+- **1.1** Fix Dream (ticket `d104660d`, backlog of non-comparable embeddings).
+- **1.2** Flip the ROADMAP killswitch to WET, then process the 335 pending curation
+  proposals.
+- **1.3** Deploy 038 then 039 to production per D1 and the runbook.
 
-### Phase 2 — ~~Dégraissage~~ · **2.1 et 2.2 ANNULÉS le 2026-08-03**
+### Phase 2 — ~~Trim-down~~ · **2.1 and 2.2 CANCELED on 2026-08-03**
 
-La mesure a réfuté la prémisse. **Aucun fichier de test du dépôt ne dépasse 3:1** contre son
-sujet réel :
+Measurement refuted the premise. **No test file in the repo exceeds 3:1** against its
+actual subject:
 
-| Fichier de test | test | source | ratio |
+| Test file | test | source | ratio |
 |---|---|---|---|
-| `test_container_image_pins.py` | 11 351 | 11 220 | 1,01:1 |
-| `test_plan_index_repair.py` | 1 796 | 1 588 | 1,13:1 |
-| `test_roadmap_curate.py` | 1 621 | 1 389 | 1,17:1 |
-| `test_formatters.py` | 1 523 | 861 | 1,77:1 |
-| `test_plan_index_repair_store.py` | 2 024 | 1 024 | 1,98:1 |
-| `test_brain_service.py` | 1 623 | 703 | 2,31:1 |
-| `test_pg_base.py` | 1 667 | 704 | **2,37:1** (maximum) |
+| `test_container_image_pins.py` | 11,351 | 11,220 | 1.01:1 |
+| `test_plan_index_repair.py` | 1,796 | 1,588 | 1.13:1 |
+| `test_roadmap_curate.py` | 1,621 | 1,389 | 1.17:1 |
+| `test_formatters.py` | 1,523 | 861 | 1.77:1 |
+| `test_plan_index_repair_store.py` | 2,024 | 1,024 | 1.98:1 |
+| `test_brain_service.py` | 1,623 | 703 | 2.31:1 |
+| `test_pg_base.py` | 1,667 | 704 | **2.37:1** (maximum) |
 
-Il n'y a pas de graisse à retirer. La phase reposait sur un ratio calculé sans son
-dénominateur ; une campagne de suppression de tests sur du code sain a été évitée de peu.
-Seule observation résiduelle, non bloquante : `check_container_image_pins.py` porte
-**16 lignes de docstring pour 543 fonctions**, ce qui pèsera sur sa relecture — mais ne
-justifie aucune suppression.
+There is no fat to trim. The phase rested on a ratio computed without its
+denominator; a test-deletion campaign on healthy code was narrowly avoided.
+The only residual, non-blocking observation: `check_container_image_pins.py` carries
+**16 lines of docstring for 543 functions**, which will weigh on reviewing it — but does not
+justify any deletion.
 
-- **2.3** *(maintenu, mais réordonné)* Purger les pseudo-features `research` — **71**, dont
-  64 prouvées dupliquées. À faire **après** correction du mécanisme qui les crée.
+- **2.3** *(kept, but reordered)* Purge the `research` pseudo-features — **71**, of which
+  64 are proven duplicates. To be done **after** fixing the mechanism that creates them.
 
 ### Phase 3 — Backlog
 
-- **3.1** *(date-bound, avant le 2026-08-22)* Déplacer `SECURITY_BURN_IN_UNTIL` par décision
-  loggée, conformément à D2. Désamorce le rouge CI du 08-23 sans ouvrir la campagne sécurité.
-- **3.2** Trier les 24 tickets ouverts, fermer les périmés.
-- **3.3** Fermer ou abandonner les 4 items `building`, dont Sol Ultra.
+- **3.1** *(date-bound, before 2026-08-22)* Move `SECURITY_BURN_IN_UNTIL` via a logged
+  decision, per D2. Defuses the 08-23 CI red without opening the security campaign.
+- **3.2** Sort the 24 open tickets, close the stale ones.
+- **3.3** Close or abandon the 4 `building` items, including Sol Ultra.
 
-## Règle anti-rechute
+## Anti-relapse rule
 
-**Tout lot dépassant ~500 lignes de test, ou ~3× le src qu'il couvre, passe par une
-validation explicite avant développement.**
+**Any batch exceeding ~500 lines of test, or ~3× the src it covers, goes through
+explicit validation before development.**
 
-C'est le garde-fou absent jusqu'ici. Sans lui, un ticket d'audit se développe jusqu'à sa
-forme maximale — 406 tests pour un gate de pins — et personne ne pose la question de la
-proportionnalité.
+This is the guardrail that was missing until now. Without it, an audit ticket grows to its
+maximal form — 406 tests for a pin gate — and nobody asks the proportionality
+question.
 
 ## Journal
 
-| Date | Phase | Événement |
+| Date | Phase | Event |
 |---|---|---|
-| 2026-08-03 | — | Bilan des 3 semaines, plan ouvert. D1 et D2 actées. |
-| 2026-08-03 | 0 | Phase 0 déléguée (`red-ops`, Sonnet) : inventaire + suppressions prouvables. Triage des 17 branches remonté pour décision. |
-| 2026-08-03 | 0 | 5 worktrees et 13 branches supprimés (994 → 753 MB). Registry GitNexus assaini : une seule entrée `brain-v42`, sur la racine. Index réindexé à 19 358 symboles / 37 624 relations. |
-| 2026-08-03 | 0 | Patch-id : 11 des 17 branches non mergées sont déjà dans `main` sous d'autres SHA — dont toute la chaîne `70cf97a7`, contrairement au blocker Brain qui la disait en attente. Les blockers ne sont pas nettoyés quand le travail passe. |
-| 2026-08-03 | 0 | `CLAUDE.md`/`AGENTS.md` : section Cross-Repo Groups restaurée **hors** du bloc `gitnexus:*`, plus la règle d'indexation. Commit `983295c8`. |
-| 2026-08-03 | — | Agents `red-*` refondus : pipeline qualité automatique retiré de `red-implementer`, catégorie **Disproportion** + verdict `TOO_BIG` ajoutés à `red-reviewer`, plafond de 2 rounds, budget au dispatch. 3 bugs corrigés (`brain_session_start` interdit, clés en tirets, trailer Opus 5) et 3 erreurs factuelles dans `red-ops` (IP, container embedding, seuil VRAM). |
-| 2026-08-03 | 1.1 | Cause du blocage Dream trouvée : 12 lignes sur 477 sans embedding faisaient échouer EXTRACT fail-closed. Dont 4 learnings « Dream night failure » — Dream se bloquait avec ses propres constats d'échec. Backfill 12/12 OK, backlog à 0. |
-| 2026-08-03 | 1.1 | Les 18 learnings « Dream night failure » passés en `freshness_status='archived'` plutôt que supprimés : aucun outil MCP de suppression n'existe et un `DELETE` SQL aurait créé du drift PG↔Neo4j. `archived` est filtré au niveau repository ([pg_base.py:494](src/brain_v42/repositories/pg_base.py:494)), donc l'effet est réel. `updated_at` préservé en désactivant le seul trigger de timestamp. |
-| 2026-08-03 | 0.3 | 11 branches supprimées après vérification patch-id à 100 % contre un index des 459 commits de `main` depuis le 2026-07-01. Reste 8 branches et 4 worktrees (contre 32 et 11 au départ), 457 MB contre 994. |
-| 2026-08-03 | 3.1 | `SECURITY_BURN_IN_UNTIL` porté à 2026-09-30 (commit `c49a2654`), 66 tests verts, décision Brain `52eb2232` avec les trois alternatives écartées. |
-| 2026-08-03 | 1.3 | **Preuve isolée 038→039 complète.** Backup du jour vérifié (sha256 conforme au manifest, `gzip -t` OK), restauré dans `brain_restore_test` sur `pgvector/pgvector:0.8.2-pg16` — version identique à la production, après qu'un premier essai sur le tag `pg16` ait donné pgvector 0.8.5 et fait échouer l'attestation. `alembic current = 039 (head)`, attestation `brain-v42-v4-pgrestore.sql` à **25/25 pass**. Receipt et provenance en 0600 dans `~/.local/state/brain-v42/migration-039-evidence/`. Le flag `BRAIN_ALEMBIC_ALLOW_PROD` n'a jamais été armé : le gate d'[env.py:71](alembic/env.py:71) porte sur le **nom** de la base, donc renommer la copie suffit à le laisser actif. |
-| 2026-08-03 | — | **Risque DR mesuré.** Les backups (`/data/backups`) et le volume de production partagent le device `/dev/nvme0n1p3`, à 92 % d'occupation. Une perte de disque emporte les deux. Le plan DR l'exclut pourtant : « Un autre chemin du même NVMe ne compte pas. » Aggravant : la rétention est silencieusement violée — politique `max_count: 30`, réalité 83 runs et 15 GB depuis le 2026-06-12 — parce que `prune_backups` lève `ArtifactInventoryError` avant d'élaguer. Le service `red-backup` sort donc en échec chaque nuit **alors que les dumps réussissent** : l'alarme qui devrait signaler la rétention cassée est déjà devenue du bruit. L'item roadmap « Disaster recovery vérifiable » reste donc légitimement `building`. |
-| 2026-08-03 | 2.3 | Roadmap mesurée : **171 features**, dont **71 `research` actives**. Sur ces 71, **64 dupliquent exactement** le nom d'un artefact existant (48 topics de learning, 16 titres de décision, zéro chevauchement) ; les 7 autres sont des messages de commit promus en features. Les chiffres du ticket `2e921e14` (58 sur 148) sont périmés — le problème a grossi depuis le 2026-07-30. |
-| 2026-08-03 | 1.1 | **Le backfill est prouvé par le run Dream de 06:00.** L'erreur d'`extract` a changé de nature en base : run 860 du 02/08 « corpus dedup unavailable: corpus embedding backlog… », run 868 du 03/08 « 14 ticket(s) deferred or timed out before run deadline ». Le gate fail-closed sur le backlog ne se déclenche plus ; EXTRACT franchit la déduplication et traite réellement des tickets. Dream reste à 7/8 : la cause est désormais l'échéance d'`extract` face au volume, pas les embeddings. |
-| 2026-08-03 | 1.3 | **Migration 038/039 appliquée en production**, fenêtre de 06:24. Quiescence prouvée par `pg_stat_activity` (0 connexion, 0 transaction préparée) et pas seulement par systemd. Trois gardes passées avant l'upgrade : URL littérale sur `:5433`, propriétaire du port vérifié, base à head 037 avec 2 868 learnings. Attestation live **25/25 pass**. Santé après redémarrage : `/health` ok, pool 20/0, appel MCP read-only fonctionnel. Dépôt et production enfin alignés sur 039. Les étapes 8+ du runbook n'ont pas été exécutées : elles concernent sept autres projets. |
-| 2026-08-03 | 2.3 | **La pollution de la roadmap est un flux, pas un stock.** En loggant la décision `52eb2232`, une pseudo-feature `research` « Déplacer SECURITY_BURN_IN_UNTIL… » est apparue immédiatement dans la roadmap. Chaque `brain_log_decision` en crée une. Purger les 71 sans corriger ce chemin revient à vider une baignoire dont le robinet coule — et le `CLAUDE.md` encourage précisément ces captures. Corriger la promotion automatique **avant** d'archiver quoi que ce soit. |
-| 2026-08-03 | 2.3 | Chemin de promotion tracé : [decision_service.py:134](src/brain_v42/services/decision_service.py:134) appelle `link_artifact_if_enabled(..., data.title)` dès qu'un embedding est stocké, puis [cluster_guard.py:105](src/brain_v42/services/cluster_guard.py:105) crée une feature quand aucune candidate ne matche. `ClusterGuard.resolve()` **n'a aucun mode « lier sans créer »**. Ce n'est pas un bug : c'est « Feature Auto-Tracking / Roadmap », statut `deployed`, qui ne distingue pas un artefact de connaissance d'un signal de travail. Le paramètre `signal_type` déjà présent dans `resolve()` est le point d'accroche naturel du correctif. |
-| 2026-08-03 | 1.2 | **Flip ROADMAP en WET suspendu.** L'autorisation opérateur précédait la découverte du mécanisme de promotion. Flipper maintenant laisserait la curation nocturne appliquer ses propositions sur une roadmap dont on vient d'établir qu'elle est polluée en continu. À reconfirmer après correction. |
-| 2026-08-03 | 3.3 | **Les 4 items `building` sont légitimes, aucun n'est à fermer.** DR vérifiable : rebuild Neo4j, off-host et alerting restent ouverts. Sandboxing systemd : vérifié sur les unités live, `brain-mcp-http` porte `ProtectSystem=full`/`NoNewPrivileges`/`PrivateTmp` conformément au plan, `brain-metrics` et `brain-v42-dream` n'ont rien — livraison partielle documentée. **Sol Ultra n'est pas abandonné** : c'est un méta-plan dont SA1, SEC1a, COR1, COR2, COR3, OPS1 et ARC1 lot 1 sont `done` ; il est bloqué sur ses deux constituants les plus durs, DR1 et SEC2. Les « 18 jours sans mouvement » mesurent cette dépendance, pas de la négligence. |
+| 2026-08-03 | — | Three-week review, plan opened. D1 and D2 made. |
+| 2026-08-03 | 0 | Phase 0 delegated (`red-ops`, Sonnet): inventory + provable deletions. Triage of the 17 branches escalated for decision. |
+| 2026-08-03 | 0 | 5 worktrees and 13 branches deleted (994 → 753 MB). GitNexus registry cleaned up: a single `brain-v42` entry, on the root. Index reindexed to 19,358 symbols / 37,624 relations. |
+| 2026-08-03 | 0 | Patch-id: 11 of the 17 unmerged branches are already in `main` under other SHAs — including the entire `70cf97a7` chain, contrary to the Brain blocker that marked it as pending. Blockers aren't cleaned up when the work lands. |
+| 2026-08-03 | 0 | `CLAUDE.md`/`AGENTS.md`: Cross-Repo Groups section restored **outside** the `gitnexus:*` block, plus the indexing rule. Commit `983295c8`. |
+| 2026-08-03 | — | `red-*` agents overhauled: automatic quality pipeline removed from `red-implementer`, **Disproportion** category + `TOO_BIG` verdict added to `red-reviewer`, cap of 2 rounds, budget at dispatch. 3 bugs fixed (`brain_session_start` forbidden, hyphenated keys, Opus 5 trailer) and 3 factual errors fixed in `red-ops` (IP, embedding container, VRAM threshold). |
+| 2026-08-03 | 1.1 | Cause of the Dream block found: 12 lines out of 477 with no embedding were making EXTRACT fail-closed. 4 of them were "Dream night failure" learnings — Dream was blocking itself with its own failure reports. Backfill 12/12 OK, backlog at 0. |
+| 2026-08-03 | 1.1 | The 18 "Dream night failure" learnings moved to `freshness_status='archived'` rather than deleted: no MCP deletion tool exists and a raw `DELETE` would have created PG↔Neo4j drift. `archived` is filtered at the repository level ([pg_base.py:494](src/brain_v42/repositories/pg_base.py:494)), so the effect is real. `updated_at` preserved by disabling the sole timestamp trigger. |
+| 2026-08-03 | 0.3 | 11 branches deleted after 100% patch-id verification against an index of the 459 commits of `main` since 2026-07-01. 8 branches and 4 worktrees remain (versus 32 and 11 at the start), 457 MB versus 994. |
+| 2026-08-03 | 3.1 | `SECURITY_BURN_IN_UNTIL` moved to 2026-09-30 (commit `c49a2654`), 66 tests green, Brain decision `52eb2232` with the three discarded alternatives. |
+| 2026-08-03 | 1.3 | **Complete isolated 038→039 proof.** Today's backup verified (sha256 matching the manifest, `gzip -t` OK), restored into `brain_restore_test` on `pgvector/pgvector:0.8.2-pg16` — the same version as production, after a first attempt on the `pg16` tag gave pgvector 0.8.5 and made the attestation fail. `alembic current = 039 (head)`, attestation `brain-v42-v4-pgrestore.sql` at **25/25 pass**. Receipt and provenance in 0600 under `~/.local/state/brain-v42/migration-039-evidence/`. The `BRAIN_ALEMBIC_ALLOW_PROD` flag was never armed: the gate in [env.py:71](alembic/env.py:71) checks the database's **name**, so renaming the copy is enough to leave it active. |
+| 2026-08-03 | — | **DR risk measured.** The backups (`/data/backups`) and the production volume share the `/dev/nvme0n1p3` device, at 92% occupancy. A disk loss takes both out. Yet the DR plan excludes this: "A different path on the same NVMe doesn't count." Aggravating factor: retention is silently violated — policy `max_count: 30`, reality 83 runs and 15 GB since 2026-06-12 — because `prune_backups` raises `ArtifactInventoryError` before pruning. The `red-backup` service therefore exits in failure every night **while the dumps succeed**: the alarm that should flag broken retention has already turned into noise. The roadmap item "Verifiable disaster recovery" therefore legitimately stays `building`. |
+| 2026-08-03 | 2.3 | Roadmap measured: **171 features**, of which **71 active `research`**. Of these 71, **64 exactly duplicate** the name of an existing artifact (48 learning topics, 16 decision titles, zero overlap); the other 7 are commit messages promoted into features. The figures from ticket `2e921e14` (58 out of 148) are stale — the problem has grown since 2026-07-30. |
+| 2026-08-03 | 1.1 | **The backfill is proven by the 06:00 Dream run.** The nature of the `extract` error changed underneath: run 860 on 02/08 "corpus dedup unavailable: corpus embedding backlog…", run 868 on 03/08 "14 ticket(s) deferred or timed out before run deadline". The fail-closed gate on the backlog no longer triggers; EXTRACT clears deduplication and actually processes tickets. Dream stays at 7/8: the cause is now `extract`'s deadline against the volume, not the embeddings. |
+| 2026-08-03 | 1.3 | **Migration 038/039 applied to production**, 06:24 window. Quiescence proven by `pg_stat_activity` (0 connections, 0 prepared transactions) and not just by systemd. Three guards passed before the upgrade: literal URL on `:5433`, port owner verified, database at head 037 with 2,868 learnings. Live attestation **25/25 pass**. Health after restart: `/health` ok, pool 20/0, read-only MCP call working. Repo and production finally aligned on 039. Steps 8+ of the runbook were not run: they concern seven other projects. |
+| 2026-08-03 | 2.3 | **Roadmap pollution is a flow, not a stock.** Logging decision `52eb2232` made a `research` pseudo-feature "Move SECURITY_BURN_IN_UNTIL…" appear immediately in the roadmap. Every `brain_log_decision` creates one. Purging the 71 without fixing this path is like emptying a bathtub with the tap still running — and `CLAUDE.md` encourages exactly these captures. Fix the automatic promotion **before** archiving anything. |
+| 2026-08-03 | 2.3 | Promotion path traced: [decision_service.py:134](src/brain_v42/services/decision_service.py:134) calls `link_artifact_if_enabled(..., data.title)` as soon as an embedding is stored, then [cluster_guard.py:105](src/brain_v42/services/cluster_guard.py:105) creates a feature when no candidate matches. `ClusterGuard.resolve()` **has no "link without creating" mode**. This is not a bug: it is "Feature Auto-Tracking / Roadmap", status `deployed`, which does not distinguish a knowledge artifact from a work signal. The `signal_type` parameter already present in `resolve()` is the natural hook for the fix. |
+| 2026-08-03 | 1.2 | **ROADMAP flip to WET suspended.** The operator authorization predated the discovery of the promotion mechanism. Flipping now would let the nightly curation apply its proposals onto a roadmap just shown to be continuously polluted. To be reconfirmed after the fix. |
+| 2026-08-03 | 3.3 | **The 4 `building` items are legitimate, none should be closed.** Verifiable DR: Neo4j rebuild, off-host and alerting remain open. Systemd sandboxing: verified on the live units, `brain-mcp-http` carries `ProtectSystem=full`/`NoNewPrivileges`/`PrivateTmp` per the plan, `brain-metrics` and `brain-v42-dream` have nothing — partial delivery documented. **Sol Ultra is not abandoned**: it is a meta-plan whose SA1, SEC1a, COR1, COR2, COR3, OPS1 and ARC1 batch 1 are `done`; it is blocked on its two hardest constituents, DR1 and SEC2. The "18 days with no movement" measure this dependency, not negligence. |

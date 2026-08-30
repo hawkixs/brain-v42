@@ -1,33 +1,33 @@
-# Tarissement des sessions fantômes — plan d'implémentation
+# Draining ghost sessions — implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Spec** : `docs/superpowers/specs/2026-08-07-session-lifecycle-sweep-design.md` (commit `2eb98583`, validée par l'opérateur)
-**Ticket brain** : `2bd14b24-ccfe-4372-adf2-245b00304402`
+**Spec**: `docs/superpowers/specs/2026-08-07-session-lifecycle-sweep-design.md` (commit `2eb98583`, approved by the operator)
+**Brain ticket**: `2bd14b24-ccfe-4372-adf2-245b00304402`
 
-**Goal:** Donner au serveur — et à lui seul — le droit d'abandonner une session ouverte sans signe de vie depuis 7 jours, via une phase Dream `sweep` qui démarre en DRY.
+**Goal:** Give the server — and only the server — the right to abandon an open session with no sign of life for 7 days, via a Dream `sweep` phase that starts in DRY.
 
-**Architecture:** Le SQL de `brain_sessions` reste entièrement dans `PgBrainSessionRepo`, qui gagne une méthode `abandon_stale` sans garde d'identité (le serveur n'est pas un client). Un CLI `brain_v42.maintenance.session_sweep` porte la politique (seuil, DRY/WET, rapport, row `dream_runs`), sur le modèle de `reap_stale_mcp` pour la forme et de `roadmap_curate` pour l'intégration Dream. `scripts/dream.sh` l'appelle comme il appelle `extract` et `roadmap`. Aucune migration : `dream_runs.phase` est un `varchar(10)` sans contrainte d'énumération, et `sweep` n'écrit que des colonnes existantes.
+**Architecture:** The `brain_sessions` SQL stays entirely inside `PgBrainSessionRepo`, which gains an `abandon_stale` method with no identity guard (the server is not a client). A `brain_v42.maintenance.session_sweep` CLI carries the policy (threshold, DRY/WET, report, `dream_runs` row), modeled on `reap_stale_mcp` for shape and on `roadmap_curate` for the Dream integration. `scripts/dream.sh` calls it the way it calls `extract` and `roadmap`. No migration: `dream_runs.phase` is a `varchar(10)` with no enum constraint, and `sweep` only writes existing columns.
 
 **Tech Stack:** Python 3.12, SQLAlchemy 2.0 async, asyncpg, Pydantic 2, pytest / pytest-asyncio, bash.
 
 ## Global Constraints
 
-Valeurs recopiées **verbatim** de la spec. Toute tâche les respecte implicitement.
+Values copied **verbatim** from the spec. Every task honors them implicitly.
 
-- Prédicat : `status = 'open' AND last_heartbeat_at < now() - interval '7 days'`.
-- État terminal : `abandoned`, **jamais** `ended` (D2).
-- `abandonment_reason` : la constante exacte `auto_stale_7d`, distincte à jamais d'un abandon manuel.
-- Portée : **tous les projets**, sans filtre.
-- Trace : une ligne `dream_runs`, `phase='sweep'`, `model` NULL, `phase_dry_run` reflétant le mode.
-- Killswitches : `BRAIN_DREAM_SWEEP_ENABLED`, `BRAIN_DREAM_SWEEP_DRY_RUN`.
-- Défauts livrés : **fermé** (`ENABLED=false`) et **DRY** (`DRY_RUN=true`).
-- En DRY : journaliser exactement ce qui **aurait** été abandonné, n'écrire **rien** dans `brain_sessions`.
-- L'abandon automatique ne produit ni `summary` ni `next_focus`, et ne touche **jamais** le focus du projet.
-- Pas d'`unabandon` : hors périmètre tant que le DRY n'a produit aucun faux positif.
-- Le seuil de 7 jours vit dans **une seule** constante Python (`AUTO_STALE_AFTER`). Aucun autre fichier — shell inclus — ne le recopie (learning `8dc7e042` : une constante dupliquée est une bombe à retardement).
+- Predicate: `status = 'open' AND last_heartbeat_at < now() - interval '7 days'`.
+- Terminal state: `abandoned`, **never** `ended` (D2).
+- `abandonment_reason`: the exact constant `auto_stale_7d`, forever distinct from a manual abandon.
+- Scope: **all projects**, no filter.
+- Trace: one `dream_runs` row, `phase='sweep'`, `model` NULL, `phase_dry_run` reflecting the mode.
+- Killswitches: `BRAIN_DREAM_SWEEP_ENABLED`, `BRAIN_DREAM_SWEEP_DRY_RUN`.
+- Shipped defaults: **closed** (`ENABLED=false`) and **DRY** (`DRY_RUN=true`).
+- In DRY: log exactly what **would have** been abandoned, write **nothing** to `brain_sessions`.
+- The automatic abandon produces neither `summary` nor `next_focus`, and **never** touches the project focus.
+- No `unabandon`: out of scope until DRY has produced zero false positives.
+- The 7-day threshold lives in **one single** Python constant (`AUTO_STALE_AFTER`). No other file — shell included — copies it (learning `8dc7e042`: a duplicated constant is a time bomb).
 
-### État mesuré le 2026-08-07 (re-mesuré, pas recopié de la spec)
+### State measured on 2026-08-07 (re-measured, not copied from the spec)
 
 ```
 21 open · 17 stale à 7j · 4 vivantes
@@ -35,46 +35,46 @@ fantôme le plus récent : 10,6 j   ·   vivante la plus ancienne : 0,4 j   → 
 schéma production : 041
 ```
 
-Le fossé confirme D3. **Il devra être re-mesuré avant le flip WET**, pas relu ici.
+The gap confirms D3. **It must be re-measured before the WET flip**, not re-read here.
 
 ---
 
-## Structure des fichiers
+## File Structure
 
-| Fichier | Responsabilité | Tâche |
+| File | Responsibility | Task |
 |---|---|---|
-| `src/brain_v42/models/brain_session.py` | constantes `AUTO_STALE_AFTER` / `AUTO_STALE_ABANDONMENT_REASON`, modèles de résultat du balayage | 1 |
-| `src/brain_v42/repositories/pg_brain_session.py` | `abandon_stale` — le seul écrivain SQL de `brain_sessions` | 1 |
-| `src/brain_v42/maintenance/session_sweep.py` | CLI : politique, rapport, row `dream_runs` | 2 |
-| `scripts/dream.sh` | phase `sweep` + killswitches | 3 |
-| `src/brain_v42/dream_killswitches.py` | lecture du drop-in systemd | 4 |
+| `src/brain_v42/models/brain_session.py` | `AUTO_STALE_AFTER` / `AUTO_STALE_ABANDONMENT_REASON` constants, sweep result models | 1 |
+| `src/brain_v42/repositories/pg_brain_session.py` | `abandon_stale` — the sole SQL writer for `brain_sessions` | 1 |
+| `src/brain_v42/maintenance/session_sweep.py` | CLI: policy, report, `dream_runs` row | 2 |
+| `scripts/dream.sh` | `sweep` phase + killswitches | 3 |
+| `src/brain_v42/dream_killswitches.py` | reads the systemd drop-in | 4 |
 | `src/brain_v42/services/dream_run_service.py` | `KillswitchState` | 4 |
-| `src/brain_v42/mcp/tools/session_tools.py` | ligne SWEEP du briefing | 4 |
-| `src/brain_v42/metrics/collector_dream.py` | phase attendue quand le killswitch est ouvert | 4 |
-| `CLAUDE.md`, `README.md`, `docs/MCP_TOOLS.md` | amendement doctrinal | 5 |
+| `src/brain_v42/mcp/tools/session_tools.py` | briefing's SWEEP line | 4 |
+| `src/brain_v42/metrics/collector_dream.py` | expected phase when the killswitch is open | 4 |
+| `CLAUDE.md`, `README.md`, `docs/MCP_TOOLS.md` | doctrinal amendment | 5 |
 
 ---
 
-### Task 1 : le balayage côté persistance
+### Task 1: the persistence-side sweep
 
 **Files:**
-- Modify: `src/brain_v42/models/brain_session.py` (constantes après `SESSION_STALE_AFTER:14`, modèles après `BrainSessionAbandonResult:278`)
-- Modify: `src/brain_v42/repositories/pg_brain_session.py` (nouvelle méthode après `abandon`, qui finit ligne 487)
-- Test: `tests/unit/repositories/test_pg_brain_session_sweep.py` (créer)
-- Test: `tests/integration/db/test_brain_sessions_sweep.py` (créer)
+- Modify: `src/brain_v42/models/brain_session.py` (constants after `SESSION_STALE_AFTER:14`, models after `BrainSessionAbandonResult:278`)
+- Modify: `src/brain_v42/repositories/pg_brain_session.py` (new method after `abandon`, which ends on line 487)
+- Test: `tests/unit/repositories/test_pg_brain_session_sweep.py` (create)
+- Test: `tests/integration/db/test_brain_sessions_sweep.py` (create)
 
 **Interfaces:**
-- Consomme : `PgBrainSessionRepo(BasePgRepository)`, son `self.transaction()`, la table `brain_sessions`.
-- Produit : `AUTO_STALE_AFTER: timedelta`, `AUTO_STALE_ABANDONMENT_REASON: str`, `BrainSessionSweepCandidate`, `BrainSessionSweepResult`, et
+- Consumes: `PgBrainSessionRepo(BasePgRepository)`, its `self.transaction()`, the `brain_sessions` table.
+- Produces: `AUTO_STALE_AFTER: timedelta`, `AUTO_STALE_ABANDONMENT_REASON: str`, `BrainSessionSweepCandidate`, `BrainSessionSweepResult`, and
   `PgBrainSessionRepo.abandon_stale(*, older_than: timedelta = AUTO_STALE_AFTER, reason: str = AUTO_STALE_ABANDONMENT_REASON, dry_run: bool = True, now: datetime | None = None) -> BrainSessionSweepResult`.
 
-**Note de conception à ne pas perdre :** `abandon_stale` ne prend **pas** de `expected_client_key`. Ce n'est pas un oubli : la garde d'identité protège un client d'en viser un autre, et ici aucun client ne demande rien. Passer la `client_key` de la ligne à elle-même simulerait une vérification qui ne vérifie rien. L'amendement doctrinal de la Task 5 est ce qui autorise ce chemin ; les deux se relisent ensemble.
+**Design note not to lose:** `abandon_stale` does **not** take an `expected_client_key`. This is not an oversight: the identity guard protects one client from targeting another, and here no client is asking for anything. Passing the row's own `client_key` back to itself would simulate a check that checks nothing. The doctrinal amendment in Task 5 is what authorizes this path; the two should be read together.
 
-**Deuxième note :** en WET, **un seul** statement. Pas de `SELECT` puis `UPDATE` : sous READ COMMITTED, PostgreSQL réévalue le `WHERE` sous le verrou de ligne, donc un `heartbeat` qui commit pendant le balayage retire sa ligne de l'update au lieu de perdre la course. C'est la réponse directe au faux-mort du 2026-08-06 (session `9b6f7e18` abandonnée vivante).
+**Second note:** in WET, **a single** statement. No `SELECT` followed by `UPDATE`: under READ COMMITTED, PostgreSQL re-evaluates the `WHERE` under the row lock, so a `heartbeat` that commits during the sweep removes its own row from the update instead of losing the race. This is the direct answer to the false-death of 2026-08-06 (session `9b6f7e18` abandoned while alive).
 
-- [ ] **Step 1 : écrire les tests unitaires qui échouent**
+- [ ] **Step 1: write the failing unit tests**
 
-Créer `tests/unit/repositories/test_pg_brain_session_sweep.py`. Le harnais de mocks du module voisin (`tests/unit/repositories/test_pg_brain_session.py`) est réutilisé par import : il ne fait pas de I/O.
+Create `tests/unit/repositories/test_pg_brain_session_sweep.py`. The mock harness of the neighboring module (`tests/unit/repositories/test_pg_brain_session.py`) is reused via import: it performs no I/O.
 
 ```python
 """Contrat unitaire du balayage serveur des sessions sans signe de vie.
@@ -214,30 +214,30 @@ async def test_non_positive_threshold_is_refused() -> None:
         )
 ```
 
-- [ ] **Step 2 : vérifier l'échec pour la bonne raison**
+- [ ] **Step 2: verify the failure for the right reason**
 
 ```bash
 unset VIRTUAL_ENV
 uv run pytest tests/unit/repositories/test_pg_brain_session_sweep.py -v
 ```
-Attendu : `ImportError` sur `AUTO_STALE_AFTER` / `AttributeError: 'PgBrainSessionRepo' object has no attribute 'abandon_stale'`. Si l'échec vient de `_is_update` ou `_make_session`, l'import du harnais est faux — corriger l'import, pas le test.
+Expected: `ImportError` on `AUTO_STALE_AFTER` / `AttributeError: 'PgBrainSessionRepo' object has no attribute 'abandon_stale'`. If the failure comes from `_is_update` or `_make_session`, the harness import is wrong — fix the import, not the test.
 
-- [ ] **Step 3 : ajouter les constantes et les modèles**
+- [ ] **Step 3: add the constants and the models**
 
-Dans `src/brain_v42/models/brain_session.py`, juste après `SESSION_STALE_AFTER` (ligne 14) :
+In `src/brain_v42/models/brain_session.py`, right after `SESSION_STALE_AFTER` (line 14):
 
 ```python
 SESSION_STALE_AFTER = timedelta(hours=24)
-# Deux seuils distincts, volontairement côte à côte pour qu'on ne les confonde
-# jamais : SESSION_STALE_AFTER (24 h) est un flag DÉRIVÉ affiché au client, il
-# ne change aucun statut ; AUTO_STALE_AFTER (7 j) est le seuil auquel le
-# SERVEUR abandonne. Le fossé mesuré le 2026-08-07 entre le fantôme le plus
-# récent (10,6 j) et la vivante la plus ancienne (0,4 j) calibre le second.
+# Two distinct thresholds, deliberately placed side by side so they are never
+# confused: SESSION_STALE_AFTER (24h) is a DERIVED flag shown to the client,
+# it changes no status; AUTO_STALE_AFTER (7d) is the threshold at which the
+# SERVER abandons. The gap measured on 2026-08-07 between the most recent
+# ghost (10.6d) and the oldest live session (0.4d) calibrates the second one.
 AUTO_STALE_AFTER = timedelta(days=7)
 AUTO_STALE_ABANDONMENT_REASON = "auto_stale_7d"
 ```
 
-À la fin du fichier, après `BrainSessionListResult` :
+At the end of the file, after `BrainSessionListResult`:
 
 ```python
 class BrainSessionSweepCandidate(BaseModel):
@@ -255,15 +255,15 @@ class BrainSessionSweepResult(BaseModel):
     candidates: list[BrainSessionSweepCandidate]
     dry_run: bool
     cutoff: datetime
-    # Toujours 0 en DRY. Redondant avec len(candidates) — délibérément : un
-    # journal doit rendre « 17 auraient été abandonnées » illisible comme
-    # « 17 ont été abandonnées ».
+    # Always 0 in DRY. Redundant with len(candidates) — deliberately: a log
+    # must render "17 auraient été abandonnées" as unreadable as
+    # "17 ont été abandonnées".
     abandoned_count: int = Field(..., ge=0)
 ```
 
-- [ ] **Step 4 : implémenter `abandon_stale`**
+- [ ] **Step 4: implement `abandon_stale`**
 
-Dans `src/brain_v42/repositories/pg_brain_session.py`, ajouter aux imports depuis `brain_v42.models.brain_session` :
+In `src/brain_v42/repositories/pg_brain_session.py`, add to the imports from `brain_v42.models.brain_session`:
 
 ```python
     AUTO_STALE_ABANDONMENT_REASON,
@@ -272,9 +272,9 @@ Dans `src/brain_v42/repositories/pg_brain_session.py`, ajouter aux imports depui
     BrainSessionSweepResult,
 ```
 
-Ajouter aux imports standard : `from datetime import UTC, datetime, timedelta` (la ligne 7 existe déjà, ajouter `timedelta`).
+Add to the standard imports: `from datetime import UTC, datetime, timedelta` (line 7 already exists, add `timedelta`).
 
-Puis, juste après la méthode `abandon` (qui se termine ligne 487) :
+Then, right after the `abandon` method (which ends on line 487):
 
 ```python
     async def abandon_stale(
@@ -318,11 +318,11 @@ Puis, juste après la méthode `abandon` (qui se termine ligne 487) :
         if dry_run:
             statement: Any = sa.select(*selection).where(stale)
         else:
-            # UN SEUL statement. Pas de SELECT puis UPDATE : sous READ
-            # COMMITTED, PostgreSQL réévalue `stale` sous le verrou de ligne,
-            # donc un heartbeat qui commit pendant le balayage retire sa ligne
-            # de l'update au lieu de perdre la course. C'est la réponse au
-            # faux-mort du 2026-08-06 (session vivante abandonnée à tort).
+            # A SINGLE statement. No SELECT then UPDATE: under READ
+            # COMMITTED, PostgreSQL re-evaluates `stale` under the row lock,
+            # so a heartbeat that commits during the sweep removes its own row
+            # from the update instead of losing the race. This is the answer
+            # to the false-death of 2026-08-06 (a live session wrongly abandoned).
             statement = (
                 brain_sessions.update()
                 .where(stale)
@@ -350,17 +350,17 @@ Puis, juste après la méthode `abandon` (qui se termine ligne 487) :
         )
 ```
 
-- [ ] **Step 5 : vérifier que les tests unitaires passent**
+- [ ] **Step 5: verify the unit tests pass**
 
 ```bash
 unset VIRTUAL_ENV
 uv run pytest tests/unit/repositories/test_pg_brain_session_sweep.py -v
 ```
-Attendu : 7 passed.
+Expected: 7 passed.
 
-- [ ] **Step 6 : écrire les tests d'intégration qui échouent**
+- [ ] **Step 6: write the failing integration tests**
 
-Créer `tests/integration/db/test_brain_sessions_sweep.py`. **Le seuil de 365 jours n'est pas décoratif** : le balayage est global par conception, et la base d'intégration est partagée avec les autres fixtures. Antidater les lignes du test et viser 365 jours garantit qu'aucune session créée par un test voisin ne peut entrer dans le périmètre.
+Create `tests/integration/db/test_brain_sessions_sweep.py`. **The 365-day threshold is not decorative**: the sweep is global by design, and the integration database is shared with the other fixtures. Backdating the test rows and targeting 365 days guarantees that no session created by a neighboring test can fall inside the scope.
 
 ```python
 """Le balayage serveur contre une vraie base : frontière et invariants.
@@ -589,9 +589,9 @@ async def test_sweep_preserves_focus_revision_and_attributions(
     assert list(attributions) == [knowledge_id]
     swept = await _read(session_factory, ghost)
     assert swept["status"] == "abandoned"
-    # Le snapshot terminal reste vide : c'est la contrainte CHECK
-    # brain_sessions_terminal_state_valid pour 'abandoned'. Le ledger, lui,
-    # vit dans brain_session_artifacts et survit.
+    # The terminal snapshot stays empty: that's the CHECK constraint
+    # brain_sessions_terminal_state_valid for 'abandoned'. The ledger, on
+    # the other hand, lives in brain_session_artifacts and survives.
     assert list(swept["captured_knowledge_ids"]) == []
 
 
@@ -623,27 +623,27 @@ async def test_manual_abandonment_reason_is_never_overwritten(
     assert row["abandonment_reason"] == "abandon manuel de l'opérateur"
 ```
 
-- [ ] **Step 7 : vérifier l'échec des tests d'intégration**
+- [ ] **Step 7: verify the integration tests fail**
 
 ```bash
 unset VIRTUAL_ENV
 GRAPH_LEDGER_WRITE_ENABLED=false BRAIN_V42_TEST_DB_URL=postgresql+asyncpg://brain:brain@localhost:5433/brain_test uv run pytest tests/integration/db/test_brain_sessions_sweep.py -v
 ```
-Attendu : 4 tests qui échouent (`AttributeError` si l'étape 4 n'est pas encore faite, sinon des assertions). Si les tests **SKIP** malgré la variable, la base d'intégration n'est pas joignable — la fixture DB vit dans `tests/integration/conftest.py`, un test DB sous `tests/unit/` skippe en silence.
+Expected: 4 failing tests (`AttributeError` if Step 4 has not been done yet, otherwise assertion failures). If the tests **SKIP** despite the variable, the integration database is unreachable — the DB fixture lives in `tests/integration/conftest.py`, a DB test under `tests/unit/` skips silently.
 
-- [ ] **Step 8 : faire passer l'intégration**
+- [ ] **Step 8: make integration pass**
 
-Aucun code neuf attendu si l'étape 4 est correcte. Deux échecs plausibles à traiter :
-- `decisions.insert()` refusé faute de colonne obligatoire → lire `src/brain_v42/db/tables.py` et compléter les valeurs, **sans** toucher au code de production.
-- `CheckViolationError` sur `brain_sessions_terminal_state_valid` → la clause `values()` de `abandon_stale` écrit une colonne interdite pour `abandoned` ; la retirer.
+No new code is expected if Step 4 is correct. Two plausible failures to handle:
+- `decisions.insert()` refused for a missing required column → read `src/brain_v42/db/tables.py` and fill in the values, **without** touching production code.
+- `CheckViolationError` on `brain_sessions_terminal_state_valid` → the `values()` clause of `abandon_stale` writes a column forbidden for `abandoned`; remove it.
 
 ```bash
 unset VIRTUAL_ENV
 GRAPH_LEDGER_WRITE_ENABLED=false BRAIN_V42_TEST_DB_URL=postgresql+asyncpg://brain:brain@localhost:5433/brain_test uv run pytest tests/integration/db/test_brain_sessions_sweep.py -v
 ```
-Attendu : `4 passed` — un compte non nul, pas « 4 skipped ».
+Expected: `4 passed` — a nonzero count, not "4 skipped".
 
-- [ ] **Step 9 : gates puis commit**
+- [ ] **Step 9: gates then commit**
 
 ```bash
 unset VIRTUAL_ENV
@@ -657,19 +657,19 @@ git commit -m "feat(sessions): abandonner côté serveur les sessions sans signe
 
 ---
 
-### Task 2 : le CLI de la phase
+### Task 2: the phase CLI
 
 **Files:**
 - Create: `src/brain_v42/maintenance/session_sweep.py`
-- Test: `tests/unit/maintenance/test_session_sweep.py` (créer, avec `tests/unit/maintenance/__init__.py` si le paquet n'existe pas)
+- Test: `tests/unit/maintenance/test_session_sweep.py` (create, along with `tests/unit/maintenance/__init__.py` if the package doesn't exist)
 
 **Interfaces:**
-- Consomme : `PgBrainSessionRepo.abandon_stale`, `AUTO_STALE_AFTER`, `BrainSessionSweepResult` (Task 1).
-- Produit : `build_parser() -> argparse.ArgumentParser`, `render_report(result: BrainSessionSweepResult) -> str`, `record_dream_run(session_factory, status, dry, duration_s, error) -> None`, `main() -> int`. Point d'entrée : `python -m brain_v42.maintenance.session_sweep`.
+- Consumes: `PgBrainSessionRepo.abandon_stale`, `AUTO_STALE_AFTER`, `BrainSessionSweepResult` (Task 1).
+- Produces: `build_parser() -> argparse.ArgumentParser`, `render_report(result: BrainSessionSweepResult) -> str`, `record_dream_run(session_factory, status, dry, duration_s, error) -> None`, `main() -> int`. Entry point: `python -m brain_v42.maintenance.session_sweep`.
 
-- [ ] **Step 1 : écrire les tests qui échouent**
+- [ ] **Step 1: write the failing tests**
 
-Créer `tests/unit/maintenance/__init__.py` (vide) puis `tests/unit/maintenance/test_session_sweep.py` :
+Create `tests/unit/maintenance/__init__.py` (empty) then `tests/unit/maintenance/test_session_sweep.py`:
 
 ```python
 """Contrat du CLI de balayage : DRY par défaut, seuil non dupliqué, rapport lisible."""
@@ -740,7 +740,7 @@ def test_dry_report_says_would_and_never_says_abandoned() -> None:
     assert "auraient été abandonnées" in report
     assert "ont été abandonnées" not in report
     assert "projet-0" in report and "projet-1" in report
-    assert "2026-07-31" in report  # cutoff rendu, pas seulement le compte
+    assert "2026-07-31" in report  # cutoff rendered, not just the count
 
 
 def test_wet_report_states_what_was_written() -> None:
@@ -771,20 +771,20 @@ async def test_record_dream_run_never_raises_when_the_database_is_down() -> None
 
     await record_dream_run(
         broken_factory, "done", dry=True, duration_s=1.0, error=None
-    )  # ne doit pas lever
+    )  # must not raise
 ```
 
-- [ ] **Step 2 : vérifier l'échec**
+- [ ] **Step 2: verify the failure**
 
 ```bash
 unset VIRTUAL_ENV
 uv run pytest tests/unit/maintenance/test_session_sweep.py -v
 ```
-Attendu : `ModuleNotFoundError: No module named 'brain_v42.maintenance.session_sweep'`.
+Expected: `ModuleNotFoundError: No module named 'brain_v42.maintenance.session_sweep'`.
 
-- [ ] **Step 3 : écrire le CLI**
+- [ ] **Step 3: write the CLI**
 
-Créer `src/brain_v42/maintenance/session_sweep.py` :
+Create `src/brain_v42/maintenance/session_sweep.py`:
 
 ```python
 """Phase Dream `sweep` — tarir les sessions ouvertes sans signe de vie.
@@ -838,8 +838,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--older-than-days",
         type=_positive_int,
-        # Défaut LU de la constante, jamais recopié : deux exemplaires d'un
-        # même seuil, c'est le défaut de classe du learning 8dc7e042.
+        # Default READ from the constant, never copied: two copies of the
+        # same threshold is the textbook mistake from learning 8dc7e042.
         default=AUTO_STALE_AFTER.days,
         help=f"seuil en jours (défaut : {AUTO_STALE_AFTER.days}, depuis AUTO_STALE_AFTER)",
     )
@@ -894,7 +894,7 @@ async def record_dream_run(
                         "phase_dry_run": dry,
                     },
                 )
-    except Exception as exc:  # noqa: BLE001 — la trace ne doit jamais tuer la phase
+    except Exception as exc:  # noqa: BLE001 — the trace must never kill the phase
         print(f"! warning: could not record dream_run: {exc}", file=sys.stderr)
 
 
@@ -919,7 +919,7 @@ async def _run(args: argparse.Namespace) -> int:
             older_than=timedelta(days=args.older_than_days),
             dry_run=dry,
         )
-    except Exception as exc:  # noqa: BLE001 — traduit en row dream_runs + rc=1
+    except Exception as exc:  # noqa: BLE001 — translated into a dream_runs row + rc=1
         detail = f"{type(exc).__name__}: {exc}"[:_MAX_ERROR_CHARS]
         await record_dream_run(
             session_factory, "fail", dry=dry, duration_s=time.monotonic() - started, error=detail
@@ -942,31 +942,31 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-- [ ] **Step 4 : vérifier que les tests passent**
+- [ ] **Step 4: verify the tests pass**
 
 ```bash
 unset VIRTUAL_ENV
 uv run pytest tests/unit/maintenance/test_session_sweep.py -v
 ```
-Attendu : 7 passed. Si `test_dry_report_says_would...` échoue sur `"2026-07-31"`, vérifier le calcul du cutoff dans la fixture du test (`NOW - AUTO_STALE_AFTER` = 2026-07-31T06:00) — ne pas assouplir l'assertion : le cutoff DOIT être dans le rapport.
+Expected: 7 passed. If `test_dry_report_says_would...` fails on `"2026-07-31"`, check the cutoff computation in the test fixture (`NOW - AUTO_STALE_AFTER` = 2026-07-31T06:00) — do not loosen the assertion: the cutoff MUST be in the report.
 
-- [ ] **Step 5 : fumer le CLI en DRY contre la production**
+- [ ] **Step 5: smoke-test the CLI in DRY against production**
 
-Lecture seule par construction (`--wet` absent). C'est la première preuve réelle du mécanisme.
+Read-only by construction (`--wet` absent). This is the first real proof of the mechanism.
 
 ```bash
 unset VIRTUAL_ENV
 uv run python -m brain_v42.maintenance.session_sweep
 ```
-Attendu : la liste des sessions sans heartbeat depuis 7 jours, ~17 lignes au 2026-08-07, `abandoned_count` implicite à 0. **Vérifier à l'œil qu'aucune session du jour n'apparaît.** Vérifier aussi que la row de trace est écrite :
+Expected: the list of sessions with no heartbeat for 7 days, ~17 lines on 2026-08-07, `abandoned_count` implicitly 0. **Check by eye that no session from today appears.** Also check that the trace row is written:
 
 ```bash
 docker exec brain_v42_postgres psql -U brain -d brain -c \
   "select run_date, phase, status, phase_dry_run, model, duration_s from dream_runs where phase='sweep' order by id desc limit 3;"
 ```
-Attendu : une ligne `sweep | done | t | (null)`.
+Expected: one row `sweep | done | t | (null)`.
 
-- [ ] **Step 6 : gates puis commit**
+- [ ] **Step 6: gates then commit**
 
 ```bash
 unset VIRTUAL_ENV
@@ -978,19 +978,19 @@ git commit -m "feat(dream): ajouter le CLI de balayage des sessions fantômes"
 
 ---
 
-### Task 3 : la phase dans `dream.sh`
+### Task 3: the phase in `dream.sh`
 
 **Files:**
-- Modify: `scripts/dream.sh` (killswitches après la ligne 54 ; bloc de phase après le bloc ROADMAP, qui finit ligne 681)
-- Test: `tests/unit/test_dream_sh_sweep.py` (créer)
+- Modify: `scripts/dream.sh` (killswitches after line 54; phase block after the ROADMAP block, which ends on line 681)
+- Test: `tests/unit/test_dream_sh_sweep.py` (create)
 
 **Interfaces:**
-- Consomme : `python -m brain_v42.maintenance.session_sweep` et son drapeau `--wet` (Task 2).
-- Produit : les variables shell `BRAIN_DREAM_SWEEP_ENABLED` et `BRAIN_DREAM_SWEEP_DRY_RUN`, et le log daté `${TIMESTAMP}_sweep.log`.
+- Consumes: `python -m brain_v42.maintenance.session_sweep` and its `--wet` flag (Task 2).
+- Produces: the shell variables `BRAIN_DREAM_SWEEP_ENABLED` and `BRAIN_DREAM_SWEEP_DRY_RUN`, and the dated log `${TIMESTAMP}_sweep.log`.
 
-- [ ] **Step 1 : écrire les tests qui échouent**
+- [ ] **Step 1: write the failing tests**
 
-Créer `tests/unit/test_dream_sh_sweep.py`, calqué sur `tests/unit/test_dream_sh_roadmap.py` :
+Create `tests/unit/test_dream_sh_sweep.py`, modeled on `tests/unit/test_dream_sh_roadmap.py`:
 
 ```python
 """Épingle le câblage de la phase SWEEP dans dream.sh (grep, sans exécution)."""
@@ -1037,35 +1037,35 @@ def test_sweep_step_does_not_duplicate_the_threshold():
     assert "7" not in sweep_block.split("sweep_args=(")[1].split(")")[0]
 ```
 
-- [ ] **Step 2 : vérifier l'échec**
+- [ ] **Step 2: verify the failure**
 
 ```bash
 unset VIRTUAL_ENV
 uv run pytest tests/unit/test_dream_sh_sweep.py -v
 ```
-Attendu : 5 failed (`assert ... in content`). Le dernier peut lever `IndexError` — c'est le même échec, la section n'existe pas.
+Expected: 5 failed (`assert ... in content`). The last one may raise `IndexError` — it's the same failure, the section doesn't exist.
 
-- [ ] **Step 3 : déclarer les killswitches**
+- [ ] **Step 3: declare the killswitches**
 
-Dans `scripts/dream.sh`, juste après la ligne 54 (`BRAIN_DREAM_ROADMAP_DRY_RUN=...`) :
+In `scripts/dream.sh`, right after line 54 (`BRAIN_DREAM_ROADMAP_DRY_RUN=...`):
 
 ```bash
-# SWEEP killswitch — tarissement des sessions fantômes (spec 2026-08-07).
-# Livré FERMÉ et DRY. Phase déterministe, sans modèle ni réseau : le seuil
-# vit dans brain_v42.models.brain_session.AUTO_STALE_AFTER, jamais ici.
+# SWEEP killswitch — draining ghost sessions (spec 2026-08-07).
+# Shipped CLOSED and DRY. Deterministic phase, no model or network: the
+# threshold lives in brain_v42.models.brain_session.AUTO_STALE_AFTER, never here.
 BRAIN_DREAM_SWEEP_ENABLED="${BRAIN_DREAM_SWEEP_ENABLED:-false}"
 BRAIN_DREAM_SWEEP_DRY_RUN="${BRAIN_DREAM_SWEEP_DRY_RUN:-true}"
 ```
 
-- [ ] **Step 4 : ajouter le bloc de phase**
+- [ ] **Step 4: add the phase block**
 
-Dans `scripts/dream.sh`, entre la fin du bloc ROADMAP (le `fi` de la ligne 681) et la ligne `FAIL_TOTAL=$(( ... ))` :
+In `scripts/dream.sh`, between the end of the ROADMAP block (the `fi` on line 681) and the `FAIL_TOTAL=$(( ... ))` line:
 
 ```bash
-# --- SWEEP: tarissement des sessions fantômes ------------------------------
-# Pas une phase d'agent : CLI Python direct (pattern extract/roadmap). Insère
-# sa propre row dream_runs (phase='sweep', model NULL) pour la visibilité
-# briefing. Le seuil n'est PAS passé en argument : une seule constante.
+# --- SWEEP: draining ghost sessions -----------------------------------------
+# Not an agent phase: direct Python CLI (extract/roadmap pattern). Inserts
+# its own dream_runs row (phase='sweep', model NULL) for briefing
+# visibility. The threshold is NOT passed as an argument: a single constant.
 TOTAL_PHASES=$(( TOTAL_PHASES + 1 ))
 if [[ "$BRAIN_DREAM_SWEEP_ENABLED" != "true" ]]; then
   log "SKIP sweep (killswitch BRAIN_DREAM_SWEEP_ENABLED=$BRAIN_DREAM_SWEEP_ENABLED)"
@@ -1077,8 +1077,8 @@ else
   fi
   log "sweep: session_sweep starting (dry_run=$BRAIN_DREAM_SWEEP_DRY_RUN)"
   set +e
-  # 5m : une requête indexée, sans appel modèle ni réseau. Un dépassement
-  # signale une base en souffrance, pas une phase lente.
+  # 5m: an indexed query, no model call or network. A timeout
+  # signals a struggling database, not a slow phase.
   timeout 5m uv run python -m brain_v42.maintenance.session_sweep "${sweep_args[@]}" \
     >> "$LOG_DIR/${TIMESTAMP}_sweep.log" 2>&1
   sweep_rc=$?
@@ -1092,18 +1092,18 @@ else
 fi
 ```
 
-**Attention `set -u` :** `"${sweep_args[@]}"` sur un tableau vide échoue en bash < 4.4. Vérifier `bash --version` ≥ 4.4 (le cas sur cet hôte) ; sinon écrire `${sweep_args[@]+"${sweep_args[@]}"}`.
+**Careful with `set -u`:** `"${sweep_args[@]}"` on an empty array fails on bash < 4.4. Check `bash --version` ≥ 4.4 (the case on this host); otherwise write `${sweep_args[@]+"${sweep_args[@]}"}`.
 
-- [ ] **Step 5 : vérifier que les tests passent et que le script reste valide**
+- [ ] **Step 5: verify the tests pass and the script stays valid**
 
 ```bash
 unset VIRTUAL_ENV
 bash -n scripts/dream.sh
 uv run pytest tests/unit/test_dream_sh_sweep.py tests/unit/test_dream_sh_roadmap.py tests/unit/test_dream_sh_extract.py -v
 ```
-Attendu : `bash -n` silencieux, tous les tests passent.
+Expected: `bash -n` silent, all tests pass.
 
-- [ ] **Step 6 : commit**
+- [ ] **Step 6: commit**
 
 ```bash
 git add scripts/dream.sh tests/unit/test_dream_sh_sweep.py
@@ -1112,27 +1112,27 @@ git commit -m "feat(dream): câbler la phase sweep derrière son killswitch, fer
 
 ---
 
-### Task 4 : rendre la phase visible
+### Task 4: make the phase visible
 
-Sans cette tâche, un opérateur ne peut pas voir depuis le briefing si le balayage est armé, et les métriques ne s'attendent pas à la phase — un `sweep` manquant passerait pour une nuit normale.
+Without this task, an operator cannot see from the briefing whether the sweep is armed, and the metrics do not expect the phase — a missing `sweep` would pass for a normal night.
 
 **Files:**
 - Modify: `src/brain_v42/dream_killswitches.py:12-20` (`_KS_KEYS`)
-- Modify: `src/brain_v42/services/dream_run_service.py:38-52` (`KillswitchState`) et `:134-152`
+- Modify: `src/brain_v42/services/dream_run_service.py:38-52` (`KillswitchState`) and `:134-152`
 - Modify: `src/brain_v42/mcp/tools/session_tools.py:106-128` (`_section_killswitches`)
 - Modify: `src/brain_v42/metrics/collector_dream.py:45` (`expected_dream_phases`)
 - Modify: `tests/fixtures/briefing_full.md:3-8` (golden)
 - Test: `tests/unit/services/test_dream_run_service.py`, `tests/unit/mcp/test_session_tools.py`, `tests/unit/metrics/test_dream_metrics.py`
 
 **Interfaces:**
-- Consomme : les clés d'environnement `BRAIN_DREAM_SWEEP_ENABLED` / `BRAIN_DREAM_SWEEP_DRY_RUN` (Task 3) et les rows `dream_runs` de phase `sweep` (Task 2).
-- Produit : `KillswitchState.sweep_enabled: bool`, `.sweep_dry: bool`, `.sweep_clean_dry_nights: int`, et la ligne de briefing `- SWEEP  : …`.
+- Consumes: the environment keys `BRAIN_DREAM_SWEEP_ENABLED` / `BRAIN_DREAM_SWEEP_DRY_RUN` (Task 3) and the `dream_runs` rows of phase `sweep` (Task 2).
+- Produces: `KillswitchState.sweep_enabled: bool`, `.sweep_dry: bool`, `.sweep_clean_dry_nights: int`, and the briefing line `- SWEEP  : …`.
 
-- [ ] **Step 1 : écrire les tests qui échouent**
+- [ ] **Step 1: write the failing tests**
 
-Dans `tests/unit/services/test_dream_run_service.py`, ajouter une méthode à la classe
-`TestKillswitchState` existante (elle dispose de la fixture `session_factory` — SQLite en
-mémoire — et du helper `_insert_run`) :
+In `tests/unit/services/test_dream_run_service.py`, add a method to the existing
+`TestKillswitchState` class (it has the `session_factory` fixture — in-memory
+SQLite — and the `_insert_run` helper):
 
 ```python
     @pytest.mark.asyncio
@@ -1156,8 +1156,8 @@ mémoire — et du helper `_insert_run`) :
         assert state.sweep_dry is True
 ```
 
-Dans `tests/unit/mcp/test_session_tools.py`, ajouter une méthode à la classe
-`TestSectionKillswitches` existante (elle construit ses `KillswitchState` en direct) :
+In `tests/unit/mcp/test_session_tools.py`, add a method to the existing
+`TestSectionKillswitches` class (it builds its `KillswitchState` directly):
 
 ```python
     def test_sweep_row_sits_between_roadmap_and_graph(self):
@@ -1182,7 +1182,7 @@ Dans `tests/unit/mcp/test_session_tools.py`, ajouter une méthode à la classe
         )
 ```
 
-Dans `tests/unit/metrics/test_dream_metrics.py`, ajouter :
+In `tests/unit/metrics/test_dream_metrics.py`, add:
 
 ```python
 def test_expected_phases_include_sweep_when_the_killswitch_is_open(tmp_path) -> None:
@@ -1194,27 +1194,27 @@ def test_expected_phases_include_sweep_when_the_killswitch_is_open(tmp_path) -> 
     assert "sweep" in expected_dream_phases(drop_in)
 ```
 
-- [ ] **Step 2 : vérifier l'échec**
+- [ ] **Step 2: verify the failure**
 
 ```bash
 unset VIRTUAL_ENV
 uv run pytest tests/unit/services/test_dream_run_service.py tests/unit/mcp/test_session_tools.py \
               tests/unit/metrics/test_dream_metrics.py -v -k sweep
 ```
-Attendu : `AttributeError: 'KillswitchState' object has no attribute 'sweep_enabled'` et l'absence de la ligne SWEEP.
+Expected: `AttributeError: 'KillswitchState' object has no attribute 'sweep_enabled'` and the absence of the SWEEP line.
 
-- [ ] **Step 3 : ajouter les clés du drop-in**
+- [ ] **Step 3: add the drop-in keys**
 
-Dans `src/brain_v42/dream_killswitches.py`, dans `_KS_KEYS`, après les entrées ROADMAP :
+In `src/brain_v42/dream_killswitches.py`, in `_KS_KEYS`, after the ROADMAP entries:
 
 ```python
     "BRAIN_DREAM_SWEEP_ENABLED": "sweep",
     "BRAIN_DREAM_SWEEP_DRY_RUN": "sweep_dry",
 ```
 
-- [ ] **Step 4 : étendre `KillswitchState`**
+- [ ] **Step 4: extend `KillswitchState`**
 
-Dans `src/brain_v42/services/dream_run_service.py`, à la fin des champs de `KillswitchState` :
+In `src/brain_v42/services/dream_run_service.py`, at the end of `KillswitchState`'s fields:
 
 ```python
     sweep_enabled: bool = False
@@ -1222,7 +1222,7 @@ Dans `src/brain_v42/services/dream_run_service.py`, à la fin des champs de `Kil
     sweep_clean_dry_nights: int = 0
 ```
 
-Puis dans `killswitch_state`, après le bloc `roadmap_*` (ligne 136) :
+Then in `killswitch_state`, after the `roadmap_*` block (line 136):
 
 ```python
             sweep_enabled = phase_enabled("sweep")
@@ -1230,7 +1230,7 @@ Puis dans `killswitch_state`, après le bloc `roadmap_*` (ligne 136) :
             sweep_streak = await self._clean_dry_streak(session, "sweep")
 ```
 
-et dans le `return KillswitchState(...)` final :
+and in the final `return KillswitchState(...)`:
 
 ```python
             sweep_enabled=sweep_enabled,
@@ -1238,9 +1238,9 @@ et dans le `return KillswitchState(...)` final :
             sweep_clean_dry_nights=sweep_streak,
 ```
 
-- [ ] **Step 5 : ajouter la ligne de briefing**
+- [ ] **Step 5: add the briefing line**
 
-Dans `src/brain_v42/mcp/tools/session_tools.py`, entre la ligne ROADMAP et la ligne GRAPH :
+In `src/brain_v42/mcp/tools/session_tools.py`, between the ROADMAP line and the GRAPH line:
 
 ```python
     lines.append(
@@ -1248,21 +1248,21 @@ Dans `src/brain_v42/mcp/tools/session_tools.py`, entre la ligne ROADMAP et la li
     )
 ```
 
-Mettre à jour le golden `tests/fixtures/briefing_full.md` — insérer entre `ROADMAP` et `GRAPH` :
+Update the golden `tests/fixtures/briefing_full.md` — insert between `ROADMAP` and `GRAPH`:
 
 ```
 - SWEEP  : disabled
 ```
 
-- [ ] **Step 6 : ajouter la phase attendue côté métriques**
+- [ ] **Step 6: add the expected phase on the metrics side**
 
-Dans `src/brain_v42/metrics/collector_dream.py`, ligne 45 :
+In `src/brain_v42/metrics/collector_dream.py`, line 45:
 
 ```python
     return {phase for phase in ("promote", "reorg", "extract", "roadmap", "sweep") if flags.get(phase)}
 ```
 
-- [ ] **Step 7 : vérifier que tout passe**
+- [ ] **Step 7: verify everything passes**
 
 ```bash
 unset VIRTUAL_ENV
@@ -1270,9 +1270,9 @@ uv run pytest tests/unit/services/test_dream_run_service.py tests/unit/mcp/test_
               tests/unit/metrics tests/unit/codex_gateway/test_killswitch_reader.py -q
 GRAPH_LEDGER_WRITE_ENABLED=false BRAIN_V42_TEST_DB_URL=postgresql+asyncpg://brain:brain@localhost:5433/brain_test uv run pytest tests/integration/test_session_start_briefing.py -q
 ```
-Attendu : unitaires verts, puis `3 passed` sur l'intégration — un compte non nul, pas « 3 skipped ». Le test golden du briefing échoue si l'étape 5 a oublié la fixture — c'est lui qui prouve que la ligne SWEEP est réellement rendue, et il ne prouve rien s'il skippe.
+Expected: unit tests green, then `3 passed` on integration — a nonzero count, not "3 skipped". The briefing golden test fails if Step 5 forgot the fixture — it is what proves the SWEEP line is actually rendered, and it proves nothing if it skips.
 
-- [ ] **Step 8 : gates puis commit**
+- [ ] **Step 8: gates then commit**
 
 ```bash
 unset VIRTUAL_ENV
@@ -1285,23 +1285,23 @@ git commit -m "feat(briefing): exposer l'état du killswitch SWEEP au même titr
 
 ---
 
-### Task 5 : l'amendement doctrinal
+### Task 5: the doctrinal amendment
 
-La spec est explicite : sans cet amendement, le code contredit une interdiction écrite. « À écrire noir sur blanc, pas à contourner. » Trois documents portent l'interdiction, et un quatrième énoncé — celui de `docs/MCP_TOOLS.md` — devient piégeux sans précision, parce que `is_stale` (24 h) et le balayage (7 j) sont deux seuils différents.
+The spec is explicit: without this amendment, the code contradicts a written prohibition. "Written in black and white, not worked around." Three documents carry the prohibition, and a fourth statement — the one in `docs/MCP_TOOLS.md` — becomes a trap without clarification, because `is_stale` (24h) and the sweep (7d) are two different thresholds.
 
 **Files:**
-- Modify: `CLAUDE.md:86-90` (l'exception stricte) et la section `## Configuration`
+- Modify: `CLAUDE.md:86-90` (the strict exception) and the `## Configuration` section
 - Modify: `README.md:108-111`
 - Modify: `docs/MCP_TOOLS.md:355`
-- Test: `tests/unit/test_documentation_contract.py` (ajouter une fonction de test)
+- Test: `tests/unit/test_documentation_contract.py` (add a test function)
 
 **Interfaces:**
-- Consomme : la constante `auto_stale_7d` et les clés `BRAIN_DREAM_SWEEP_*` (Tasks 1 à 3).
-- Produit : rien de programmatique — un contrat de documentation qui échoue si l'amendement est supprimé ou élargi.
+- Consumes: the constant `auto_stale_7d` and the `BRAIN_DREAM_SWEEP_*` keys (Tasks 1 to 3).
+- Produces: nothing programmatic — a documentation contract that fails if the amendment is removed or broadened.
 
-- [ ] **Step 1 : écrire le test de contrat qui échoue**
+- [ ] **Step 1: write the failing contract test**
 
-Dans `tests/unit/test_documentation_contract.py`, ajouter à la fin :
+In `tests/unit/test_documentation_contract.py`, add at the end:
 
 ```python
 def test_server_side_sweep_amendment_is_narrow_and_stated() -> None:
@@ -1316,22 +1316,22 @@ def test_server_side_sweep_amendment_is_narrow_and_stated() -> None:
     readme_normalized = " ".join(README.split())
     mcp_tools_normalized = " ".join(MCP_TOOLS.split())
 
-    # L'interdiction survit, explicitement portée sur l'agent et le client.
+    # The prohibition survives, explicitly borne by the agent and the client.
     for document in (claude_normalized, readme_normalized):
         assert "ne ferme une session côté agent ou client" in document
 
-    # L'exception est nommée, avec sa portée et sa constante.
+    # The exception is named, with its scope and its constant.
     for document in (claude_normalized, readme_normalized):
         assert "sans signe de vie depuis 7 jours" in document
         assert "auto_stale_7d" in document
         assert "ne touche jamais le focus du projet" in document
 
-    # Les deux seuils ne doivent pas pouvoir être confondus.
+    # The two thresholds must never be confusable.
     assert "is_stale" in mcp_tools_normalized
     assert "24 hours old" in mcp_tools_normalized
     assert "seven-day server-side sweep" in mcp_tools_normalized
 
-    # L'exception ne s'étend pas aux commandes du client.
+    # The exception does not extend to the client's commands.
     assert "restent des commandes explicites" in claude_normalized
 
 
@@ -1346,17 +1346,17 @@ def test_sweep_killswitches_are_documented_in_the_shared_configuration() -> None
     assert len(shared_key_list) == len(set(shared_key_list))
 ```
 
-- [ ] **Step 2 : vérifier l'échec**
+- [ ] **Step 2: verify the failure**
 
 ```bash
 unset VIRTUAL_ENV
 uv run pytest tests/unit/test_documentation_contract.py -v -k sweep
 ```
-Attendu : 2 failed sur les `assert ... in document`.
+Expected: 2 failed on the `assert ... in document`.
 
-- [ ] **Step 3 : amender `CLAUDE.md`**
+- [ ] **Step 3: amend `CLAUDE.md`**
 
-Remplacer le bloc de citation des lignes 86-90 par :
+Replace the blockquote at lines 86-90 with:
 
 ```markdown
 > **Exception stricte — cycle de session :** appeler `brain_session_start`,
@@ -1374,7 +1374,7 @@ Remplacer le bloc de citation des lignes 86-90 par :
 > commandes explicites de l'utilisateur.
 ```
 
-Dans la section `## Configuration`, ajouter au premier bloc `bash`, après les clés ROADMAP :
+In the `## Configuration` section, add to the first `bash` block, after the ROADMAP keys:
 
 ```bash
 # Sessions — balayage nocturne des fantômes (dream, serveur seul)
@@ -1382,9 +1382,9 @@ BRAIN_DREAM_SWEEP_ENABLED=false
 BRAIN_DREAM_SWEEP_DRY_RUN=true
 ```
 
-- [ ] **Step 4 : amender `README.md`**
+- [ ] **Step 4: amend `README.md`**
 
-Remplacer les lignes 108-111 par :
+Replace lines 108-111 with:
 
 ```markdown
 L'utilisateur contrôle toutes les frontières de session. Les sept commandes ci-dessous
@@ -1396,23 +1396,23 @@ sans signe de vie depuis 7 jours, avec `abandonment_reason='auto_stale_7d'`. Ell
 ni summary ni `next_focus` et ne touche jamais le focus du projet.
 ```
 
-- [ ] **Step 5 : lever l'ambiguïté dans `docs/MCP_TOOLS.md`**
+- [ ] **Step 5: resolve the ambiguity in `docs/MCP_TOOLS.md`**
 
-Remplacer la ligne 355 par :
+Replace line 355 with:
 
 ```markdown
 An open session becomes `is_stale=true` when its last heartbeat is at least 24 hours old. `status="stale"` selects that subset of open sessions; this derived flag never changes the persisted `status` and never auto-closes a session. The regular `open` filter therefore includes both fresh and stale open sessions. Do not confuse this 24-hour display flag with the separate seven-day server-side sweep, which is the only mechanism that moves an open session to `abandoned` without an explicit command (`abandonment_reason = 'auto_stale_7d'`).
 ```
 
-- [ ] **Step 6 : vérifier le contrat complet de documentation**
+- [ ] **Step 6: verify the full documentation contract**
 
 ```bash
 unset VIRTUAL_ENV
 uv run pytest tests/unit/test_documentation_contract.py -q
 ```
-Attendu : tout vert. Ce fichier est susceptible d'échouer ailleurs pour des raisons sans rapport (contrat de migration) — dans ce cas, ne rien « réparer » au passage : le signaler et s'en tenir au périmètre.
+Expected: all green. This file may fail elsewhere for unrelated reasons (migration contract) — in that case, do not "fix" anything along the way: report it and stick to scope.
 
-- [ ] **Step 7 : commit**
+- [ ] **Step 7: commit**
 
 ```bash
 git add CLAUDE.md README.md docs/MCP_TOOLS.md tests/unit/test_documentation_contract.py
@@ -1421,7 +1421,7 @@ git commit -m "docs(sessions): amender l'interdiction de fermeture automatique p
 
 ---
 
-## Vérification finale, avant toute annonce de complétion
+## Final verification, before any completion announcement
 
 ```bash
 unset VIRTUAL_ENV
@@ -1434,87 +1434,87 @@ GRAPH_LEDGER_WRITE_ENABLED=false BRAIN_V42_TEST_DB_URL=postgresql+asyncpg://brai
 bash -n scripts/dream.sh
 ```
 
-Attendu sur l'intégration : un compte `passed` non nul — mesuré `256 passed, 32 skipped` le
-2026-08-07. Un total intégralement `skipped` n'est pas un vert, c'est une absence d'exécution.
+Expected on integration: a nonzero `passed` count — measured `256 passed, 32 skipped` on
+2026-08-07. A total that's entirely `skipped` is not green, it's an absence of execution.
 
-`GRAPH_LEDGER_WRITE_ENABLED=false` n'est pas optionnel sur l'intégration : sans lui le `.env`
-du tronc fuit et les tests sortent en ERROR au lieu d'échouer, ce qui masque les vraies
-régressions (learning `54fdfddc`).
+`GRAPH_LEDGER_WRITE_ENABLED=false` is not optional on integration: without it the trunk's
+`.env` leaks through and the tests come out as ERROR instead of failing, which masks real
+regressions (learning `54fdfddc`).
 
-`BRAIN_V42_TEST_DB_URL` ne l'est pas davantage. `tests/integration/conftest.py` résout sa base
-depuis cette variable seule et skippe toute la suite si elle est absente, ou si elle vise la base
-de prod `brain` (garde `_resolve_integration_db_url`). Sans `BRAIN_V42_TEST_DB_URL`,
-`pytest tests/integration` skippe la suite en totalité et sort en vert : exiger un compte
-`passed` non nul, jamais « tout vert ». Mesure du 2026-08-07 : `288 skipped in 1.38s` sans la
-variable, `256 passed, 32 skipped in 82.97s` avec. La base est `brain_test` du conteneur
-`brain_v42_postgres` (port 5433), jamais `brain`.
+`BRAIN_V42_TEST_DB_URL` is no more optional. `tests/integration/conftest.py` resolves its
+database from this variable alone and skips the entire suite if it's absent, or if it targets
+the prod database `brain` (guard `_resolve_integration_db_url`). Without `BRAIN_V42_TEST_DB_URL`,
+`pytest tests/integration` skips the suite entirely and exits green: demand a nonzero `passed`
+count, never "all green". Measurement from 2026-08-07: `288 skipped in 1.38s` without the
+variable, `256 passed, 32 skipped in 82.97s` with it. The database is `brain_test` in the
+`brain_v42_postgres` container (port 5433), never `brain`.
 
-Puis, avant commit final : `detect_changes()` pour vérifier que le rayon d'impact est celui
-qu'on croit. L'index GitNexus est périmé — le rafraîchir **depuis la racine canonique**, jamais
-depuis un worktree.
+Then, before the final commit: `detect_changes()` to verify that the blast radius is the one
+you expect. The GitNexus index is stale — refresh it **from the canonical root**, never
+from a worktree.
 
 ---
 
-## Déploiement — actions opérateur, hors périmètre du code
+## Deployment — operator actions, outside the code's scope
 
-Ces étapes ne sont pas des tâches de ce plan. Elles suivent la section « Sûreté et
-déploiement » de la spec et demandent la main de l'opérateur.
+These steps are not tasks of this plan. They follow the spec's "Safety and
+deployment" section and require the operator's hand.
 
-1. **Armer en DRY.** Ajouter au drop-in `~/.config/systemd/user/brain-v42-dream.service.d/killswitches.conf` :
+1. **Arm in DRY.** Add to the drop-in `~/.config/systemd/user/brain-v42-dream.service.d/killswitches.conf`:
    ```
-   # SWEEP: ouvert (dry) le <date> — soak avant tout flip WET (spec 2026-08-07).
+   # SWEEP: opened (dry) on <date> — soak before any WET flip (spec 2026-08-07).
    Environment=BRAIN_DREAM_SWEEP_ENABLED=true
    Environment=BRAIN_DREAM_SWEEP_DRY_RUN=true
    ```
-   Puis `systemctl --user daemon-reload`. Le drop-in survit à la régénération de l'unité par
-   `install.sh` — ne jamais mettre ces lignes dans le template (incident 2026-06-30).
-2. **Laisser tourner plusieurs nuits.** Lire `logs/dream/<date>_sweep.log` et vérifier que
-   la phase ne vise que des fantômes.
-3. **Re-mesurer le fossé avant le flip WET.** Ne pas recopier les chiffres de la spec ni de
-   ce plan :
+   Then `systemctl --user daemon-reload`. The drop-in survives unit regeneration by
+   `install.sh` — never put these lines in the template (incident 2026-06-30).
+2. **Let it run for several nights.** Read `logs/dream/<date>_sweep.log` and verify that
+   the phase only targets ghosts.
+3. **Re-measure the gap before the WET flip.** Do not copy the numbers from the spec or
+   from this plan:
    ```bash
    docker exec brain_v42_postgres psql -U brain -d brain -c \
      "select status, round(extract(epoch from now()-last_heartbeat_at)/86400.0,1) as age_days, project_key, client_key
         from brain_sessions where status='open' order by last_heartbeat_at desc;"
    ```
-   Le flip n'est légitime que si un fossé net sépare encore les deux populations.
-4. **Flip WET** : `Environment=BRAIN_DREAM_SWEEP_DRY_RUN=false`, `daemon-reload`.
-5. **Vérifier après la première nuit WET** que les abandons portent bien `auto_stale_7d` et
-   qu'aucune session vivante n'a été emportée.
+   The flip is only legitimate if a clear gap still separates the two populations.
+4. **Flip WET**: `Environment=BRAIN_DREAM_SWEEP_DRY_RUN=false`, `daemon-reload`.
+5. **Verify after the first WET night** that the abandons do carry `auto_stale_7d` and
+   that no live session was swept up.
 
-L'abandon est **irréversible** (`brain_session_resume` exige `status='open'`). Trois
-atténuations seulement : seuil généreux, DRY préalable, et conservation garantie des
-captures. Pas d'`unabandon` tant que le DRY n'a produit aucun faux positif.
+The abandon is **irreversible** (`brain_session_resume` requires `status='open'`). Only three
+mitigations: a generous threshold, prior DRY, and guaranteed preservation of
+captures. No `unabandon` until DRY has produced zero false positives.
 
-## Points explicitement laissés dehors
+## Points explicitly left out
 
-Repris de la spec, chacun pour sa raison :
+Carried over from the spec, each for its own reason:
 
-- **Auto-heartbeat (`7ffe0e8a`)** — inutile ici (D3). Le principe de D1 le débloque
-  conceptuellement : l'attribution par *(projet, acteur)* suffit.
-- **Identité de session (`2dfbb83d`)** — mesurée non fonctionnelle, rendue non bloquante par D3.
-- **Checkpoint sémantique (`d04dc588`)** — BLOCKED par son propre audit.
-- **Doctrine « les subagents n'ouvrent pas de session » (D1)** — touche neuf projets, ticket
-  écosystème séparé. Non applicable techniquement, et ce n'est pas un oubli.
-- **Nettoyage manuel des 17 fantômes** — le DRY les listera, le WET les traitera. Les purger
-  à la main d'ici là rendrait le succès invérifiable.
-- **`unabandon`** — résoudrait un problème non observé.
+- **Auto-heartbeat (`7ffe0e8a`)** — useless here (D3). D1's principle unblocks it
+  conceptually: attribution by *(project, actor)* is enough.
+- **Session identity (`2dfbb83d`)** — measured non-functional, made non-blocking by D3.
+- **Semantic checkpoint (`d04dc588`)** — BLOCKED by its own audit.
+- **Doctrine "subagents do not open sessions" (D1)** — touches nine projects, separate
+  ecosystem ticket. Not technically applicable, and this is not an oversight.
+- **Manual cleanup of the 17 ghosts** — DRY will list them, WET will handle them. Purging
+  them by hand before then would make success unverifiable.
+- **`unabandon`** — would solve a problem that has not been observed.
 
-## Limites connues de ce plan
+## Known limitations of this plan
 
-- **Écart assumé avec la spec, sur un seul point.** La spec classe la frontière du prédicat
-  (N−1 / N+1) en test *unitaire*. Le harnais unitaire du repository compile des statements
-  contre des mocks : il ne peut pas évaluer un `WHERE`, donc un tel test prouverait la forme
-  du SQL en laissant croire qu'il prouve la frontière. La frontière est donc testée en
-  *intégration* (Task 1, Step 6), et l'unitaire garde ce qu'il peut réellement prouver : le
-  cutoff calculé et la stricte inégalité. Les quatre comportements exigés par la spec sont
-  couverts, deux ont changé d'étage.
-- Le seuil de 7 jours reste calibré sur deux mesures (2026-08-06 et 2026-08-07) d'un même
-  régime de travail. Des chantiers plus longs invalideraient la marge.
-- `last_heartbeat_at` reste déclaratif : une session vivante mais silencieuse plus de 7 jours
-  sera abandonnée à tort. C'est le compromis accepté en D3, atténué par la conservation des
-  captures.
-- La Task 4 (visibilité briefing/métriques) n'est pas exigée mot pour mot par la spec. Elle
-  est incluse parce que sans elle, l'état armé/DRY de la phase n'est lisible nulle part et le
-  soak de l'étape 2 du déploiement se pilote au grep. Elle est isolée dans sa propre tâche
-  précisément pour rester coupable si l'opérateur juge qu'elle sort du périmètre.
+- **A deliberate deviation from the spec, on a single point.** The spec classifies the
+  predicate boundary (N−1 / N+1) as a *unit* test. The repository's unit harness compiles
+  statements against mocks: it cannot evaluate a `WHERE`, so such a test would prove the
+  shape of the SQL while implying it proves the boundary. The boundary is therefore tested
+  at *integration* level (Task 1, Step 6), and the unit test keeps what it can actually
+  prove: the computed cutoff and the strict inequality. The four behaviors required by the
+  spec are covered, two moved to a different tier.
+- The 7-day threshold remains calibrated on two measurements (2026-08-06 and 2026-08-07) of
+  the same work regime. Longer-running projects would invalidate the margin.
+- `last_heartbeat_at` remains declarative: a session that's alive but silent for more than
+  7 days will be wrongly abandoned. This is the tradeoff accepted in D3, mitigated by the
+  preservation of captures.
+- Task 4 (briefing/metrics visibility) is not required word for word by the spec. It is
+  included because without it, the phase's armed/DRY state is readable nowhere and the
+  soak in deployment step 2 has to be steered by grep. It is isolated in its own task
+  precisely so it stays guilty if the operator judges it out of scope.
