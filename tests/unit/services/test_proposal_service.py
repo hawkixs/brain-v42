@@ -645,13 +645,13 @@ async def test_reject_roadmap_curation_updates_only_proposed_row() -> None:
 
 
 class TestFeatureStateColumnIsALiteral:
-    """Invariant portant le `# nosec B608` de `ProposalService._feature_state`.
+    """Invariant behind `ProposalService._feature_state`'s `# nosec B608`.
 
-    La seule interpolation de cette requête est le nom de colonne `field`. Le nosec repose
-    sur trois faits vérifiables : l'annotation est un `Literal` fermé, l'unique fragment
-    interpolé est bien ce paramètre, et les trois appelants lui passent une constante en
-    clair — jamais l'opération lue dans la proposition. Ces tests échouent si quelqu'un
-    branche une valeur calculée sur ce paramètre, ce qui doit rouvrir le finding B608.
+    The only interpolation in this query is the `field` column name. The nosec rests on
+    three verifiable facts: the annotation is a closed `Literal`, the sole interpolated
+    fragment really is that parameter, and the three callers pass it a constant inline —
+    never the operation read from the proposal. These tests fail if anyone wires a
+    computed value onto that parameter, which must reopen the B608 finding.
     """
 
     ALLOWED_COLUMNS = {"name", "status"}

@@ -1,11 +1,10 @@
-"""Câblage de l'ABSORPTION sur les commandes explicites de session.
+"""Wiring of ABSORPTION onto the explicit session commands.
 
-La traçante recueille ; la session de l'utilisateur absorbe. Ce module épingle
-QUAND elle absorbe — à chaque commande, une fois, et au plus tard à `end` — et
-surtout ce qu'elle ne fait pas quand le drapeau est fermé : **zéro appel
-supplémentaire au dépôt**, pas « un appel qui ne fait rien ». Un drapeau fermé
-qui coûterait quand même un aller-retour par commande serait une régression que
-personne ne verrait.
+The tracer collects; the user's session absorbs. This module pins WHEN it
+absorbs — on every command, once, and at the latest at `end` — and above all what
+it does not do when the flag is closed: **zero extra repository call**, not "a
+call that does nothing". A closed flag that still cost one round trip per command
+would be a regression nobody would see.
 """
 
 from __future__ import annotations
@@ -58,9 +57,9 @@ def _repo(session_id: UUID) -> MagicMock:
     for method in ("start", "resume", "capture", "heartbeat", "end"):
         setattr(repo, method, AsyncMock(return_value=result))
     repo.absorb_derived_capture = AsyncMock(return_value=0)
-    # Miroir du Protocol : `start` relit le ledger après avoir absorbé. Un double
-    # qui ne porte pas cette méthode ferait échouer les tests sur la FORME du
-    # double, pas sur le comportement du service.
+    # Mirror of the Protocol: `start` re-reads the ledger after absorbing. A
+    # double without this method would make the tests fail on the double's SHAPE,
+    # not on the service's behaviour.
     repo.attributed_knowledge_ids = AsyncMock(return_value=[])
     return repo
 
@@ -88,9 +87,9 @@ async def test_every_command_absorbs_exactly_once(command: str, _open_flag: None
 
     await _run(BrainSessionService(repo), command, session_id)
 
-    # L'IDENTITÉ voyage avec la mutation : la garde vit dans l'absorption,
-    # pas au site d'appel. Une absorption appelée sans elle serait un
-    # déplacement de ledger sans contrôle de propriété.
+    # IDENTITY travels with the mutation: the guard lives inside the absorption,
+    # not at the call site. An absorption called without it would be a ledger
+    # move with no ownership check.
     repo.absorb_derived_capture.assert_awaited_once_with(session_id, _CONNECTION, "task-a")
 
 
@@ -106,7 +105,7 @@ async def test_a_closed_flag_costs_no_extra_round_trip(command: str, _closed_fla
 
 @pytest.mark.parametrize("command", _COMMANDS)
 async def test_no_connection_absorbs_nothing(command: str, _open_flag: None) -> None:
-    """stdio et mode sans état : la clé (projet, connexion) n'existe pas."""
+    """stdio and stateless mode: the (project, connection) key does not exist."""
     set_current_transport(None)
     session_id = uuid4()
     repo = _repo(session_id)
@@ -117,11 +116,11 @@ async def test_no_connection_absorbs_nothing(command: str, _open_flag: None) -> 
 
 
 async def test_start_absorbs_on_the_replay_branch_too(_open_flag: None) -> None:
-    """Rejeu = même session rendue. C'est la branche qui a quelque chose à absorber.
+    """Replay = the same session returned. This is the branch with something to absorb.
 
-    La branche NEUVE n'absorbe presque jamais rien — `started_at` vient d'être
-    posé, donc la fenêtre est vide. Si seule la branche neuve était câblée, le
-    câblage aurait l'air fait et ne servirait à rien.
+    The FRESH branch almost never absorbs anything — `started_at` was just set,
+    so the window is empty. If only the fresh branch were wired, the wiring would
+    look done and serve nothing.
     """
     session_id = uuid4()
     repo = _repo(session_id)
@@ -134,10 +133,10 @@ async def test_start_absorbs_on_the_replay_branch_too(_open_flag: None) -> None:
 
 
 async def test_end_absorbs_before_it_persists(_open_flag: None) -> None:
-    """L'ordre est le point : `end` lit le ledger pour décider de fermer.
+    """The order is the point: `end` reads the ledger to decide how to close.
 
-    Absorber APRÈS la fermeture rendrait le ledger visible trop tard — la
-    session serait close en ayant conclu qu'elle n'avait rien produit.
+    Absorbing AFTER the closure would make the ledger visible too late — the
+    session would be closed having concluded it produced nothing.
     """
     session_id = uuid4()
     repo = _repo(session_id)
@@ -151,26 +150,26 @@ async def test_end_absorbs_before_it_persists(_open_flag: None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# L'ORDRE, sur les CINQ commandes — pas seulement sur celle qui l'avait déjà
+# THE ORDER, across all FIVE commands — not only the one that already had it
 # ---------------------------------------------------------------------------
 
-#: `end` portait seul cette garantie. Les quatre autres matérialisaient leur
-#: résultat AVANT l'absorption qu'elles déclenchent : le reçu n'était pas muet,
-#: il était EN RETARD D'UN APPEL. Mesuré en production le 2026-08-25 — un
-#: premier `heartbeat` a rendu `attributed_knowledge_ids: []` sur une session
-#: portant 5 artefacts au ledger, le second a rendu les 5.
-#: `start` est ABSENT de cette liste, et ce n'est pas une exemption de confort.
-#: Sa cible n'existe pas avant qu'il ne matérialise : `absorb_derived_capture`
-#: exige un `session_id`, et `start` est justement ce qui le résout. Exiger de
-#: lui l'ordre « absorber d'abord » forcerait une conception fausse pour
-#: satisfaire un test. Ce qu'on lui demande est la PROPRIÉTÉ, pas le mécanisme —
-#: que son résultat reflète l'absorption — et c'est le test suivant qui l'épingle.
+#: `end` alone carried this guarantee. The other four materialized their result
+#: BEFORE the absorption they trigger: the receipt was not mute, it was ONE CALL
+#: BEHIND. Measured in production on 2026-08-25 — a first `heartbeat` returned
+#: `attributed_knowledge_ids: []` on a session carrying 5 artifacts in the
+#: ledger, the second returned all 5.
+#: `start` is ABSENT from this list, and that is not an exemption of convenience.
+#: Its target does not exist before it materializes: `absorb_derived_capture`
+#: requires a `session_id`, and `start` is precisely what resolves it. Demanding
+#: an "absorb first" order from it would force a wrong design to satisfy a test.
+#: What is asked of it is the PROPERTY, not the mechanism — that its result
+#: reflect the absorption — and the next test is what pins that.
 _ORDERED_COMMANDS = ["resume", "capture", "heartbeat", "end"]
 
 
 @dataclass(frozen=True)
 class _FakeSession:
-    """Miroir minimal de `BrainSession` — le service n'en touche que ces deux champs."""
+    """Minimal mirror of `BrainSession` — the service touches only these two fields."""
 
     id: UUID
     attributed_knowledge_ids: list[UUID]
@@ -188,7 +187,7 @@ class _FakeStartResult:
 
 
 def _ordering_repo(session_id: UUID, order: list[str]) -> MagicMock:
-    """Dépôt qui NOTE l'ordre réel des appels, absorption comprise."""
+    """A repository that RECORDS the real call order, absorption included."""
     repo = _repo(session_id)
 
     def _record(name: str, value: object) -> object:
@@ -209,14 +208,15 @@ def _ordering_repo(session_id: UUID, order: list[str]) -> MagicMock:
 
 @pytest.mark.parametrize("command", _ORDERED_COMMANDS)
 async def test_every_command_absorbs_before_it_materializes(command: str, _open_flag: None) -> None:
-    """Un résultat calculé avant l'absorption qu'il déclenche MENT d'un tour.
+    """A result computed before the absorption it triggers LIES by one round.
 
-    C'est le défaut mesuré en production, et il n'était pas un angle mort de
-    conception : `end` portait déjà cette garantie, testée nommément. Elle n'a
-    simplement jamais été étendue aux quatre autres commandes.
+    That is the defect measured in production, and it was not a design blind
+    spot: `end` already carried this guarantee, tested by name. It simply was
+    never extended to the other four commands.
 
-    La garantie asserée ici est la seule qui compte pour l'appelant : quand le
-    dépôt matérialise ce qu'il va rendre, l'absorption a DÉJÀ eu lieu.
+    The guarantee asserted here is the only one that matters to the caller: when
+    the repository materializes what it will return, the absorption has ALREADY
+    happened.
     """
     session_id = uuid4()
     order: list[str] = []
@@ -231,20 +231,20 @@ async def test_every_command_absorbs_before_it_materializes(command: str, _open_
 
 
 async def test_start_result_reflects_the_absorption_it_triggered(_open_flag: None) -> None:
-    """La PROPRIÉTÉ pour `start`, puisque l'ordre lui est structurellement interdit.
+    """The PROPERTY for `start`, since the order is structurally forbidden to it.
 
-    Sur la branche de REJEU — une session déjà ouverte que `start` retrouve —
-    l'absorption peut déplacer des artefacts. Le résultat rendu doit les porter,
-    sinon `start` ment exactement comme `heartbeat` mentait : d'un appel.
+    On the REPLAY branch — an already open session that `start` finds — the
+    absorption can move artifacts. The returned result must carry them, otherwise
+    `start` lies exactly as `heartbeat` lied: by one call.
 
-    On n'asserte donc pas « absorbe avant », qui serait impossible, mais « ce que
-    tu me rends a vu l'absorption ».
+    So we do not assert "absorbs first", which would be impossible, but "what you
+    hand me has seen the absorption".
     """
     session_id, moved = uuid4(), sorted([uuid4(), uuid4()], key=str)
     repo = _repo(session_id)
-    # Un `MagicMock` répondrait `[]` à `list(...)` par la grâce de `__iter__`,
-    # donc verdirait le jour où le service cesserait de réhydrater. Ce double-ci
-    # implémente `model_copy` pour de vrai : il ne peut pas mentir par omission.
+    # A `MagicMock` would answer `[]` to `list(...)` by grace of `__iter__`, so
+    # it would go green the day the service stopped rehydrating. This double
+    # implements `model_copy` for real: it cannot lie by omission.
     repo.start = AsyncMock(return_value=_FakeStartResult(_FakeSession(session_id, [])))
     repo.attributed_knowledge_ids = AsyncMock(return_value=moved)
 

@@ -1,33 +1,31 @@
-"""Le CORPS d'un ticket peut être corrigé, et on voit qu'il l'a été.
+"""A ticket's BODY can be corrected, and one can see that it was.
 
-Ticket `cabb7503`. Le triage de la nuit du 2026-08-22 a trouvé six tickets
-périmés dont TROIS portaient un corps faux — une prémisse morte écrite en dur.
-Aucun n'a pu être corrigé : les cinq tools `brain_ticket_*` savent créer,
-répondre, transitionner, lister et lire, mais aucun n'écrit `tickets.body`
-après la création. Les corrections n'ont donc pu vivre qu'au fil, là où un
-lecteur pressé ne les voit pas — pendant que le corps faux, lui, reste en tête
-de la vue et continue d'orienter le jugement.
+Ticket `cabb7503`. The triage of the night of 2026-08-22 found six stale tickets,
+THREE of which carried a wrong body — a dead premise written in stone. None could
+be corrected: the five `brain_ticket_*` tools can create, reply, transition, list
+and read, but none writes `tickets.body` after creation. Corrections could
+therefore only live in the thread, where a hurried reader does not see them —
+while the wrong body stays at the top of the view and keeps steering judgement.
 
-CHEMIN RETENU : étendre `reply`, pas ajouter un tool. Une correction de corps
-EST un message de fil qui, en plus, réécrit le corps ; et le contrat MCP public
-n'a plus de marge gratuite.
+CHOSEN PATH: extend `reply`, not add a tool. A body correction IS a thread
+message that additionally rewrites the body; and the public MCP contract has no
+free room left.
 
-TROIS PROPRIÉTÉS QUE CES TESTS ÉPINGLENT :
+THREE PROPERTIES THESE TESTS PIN:
 
-1. La justification est OBLIGATOIRE. Corriger une prémisse morte est légitime ;
-   réécrire une demande pour la rendre rétrospectivement juste ne l'est pas.
-   Un corps qui change sans un mot au fil serait exactement cette réécriture
-   silencieuse.
-2. L'ANCIEN CORPS SURVIT, dans le message. C'est ce qui distingue « le corps a
-   été corrigé » de « le corps a toujours dit ça » : le fil porte la trace, et
-   le texte remplacé n'est pas perdu.
-3. UN CORPS IDENTIQUE EST REFUSÉ. Sinon on poserait au fil la trace d'une
-   correction qui n'a rien corrigé — un faux positif dans la mémoire même qui
-   sert à juger.
+1. The justification is MANDATORY. Fixing a dead premise is legitimate;
+   rewriting a request to make it retrospectively right is not. A body that
+   changes without a word in the thread would be exactly that silent rewrite.
+2. THE OLD BODY SURVIVES, inside the message. That is what distinguishes "the
+   body was corrected" from "the body always said that": the thread carries the
+   trace, and the replaced text is not lost.
+3. AN IDENTICAL BODY IS REFUSED. Otherwise we would put into the thread the trace
+   of a correction that corrected nothing — a false positive in the very memory
+   used to judge.
 
-TÉMOIN NÉGATIF, ici et pas ailleurs : `test_a_plain_reply_never_touches_the_body`.
-Sans lui, un chemin qui réécrirait le corps à CHAQUE réponse passerait tous les
-tests ci-dessus — on aurait rendu le corps corrigeable en le rendant instable.
+NEGATIVE WITNESS, here and nowhere else: `test_a_plain_reply_never_touches_the_body`.
+Without it, a path rewriting the body on EVERY reply would pass every test above —
+we would have made the body correctable by making it unstable.
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -64,7 +62,7 @@ def _svc(ticket: Ticket | None = None) -> tuple[TicketService, MagicMock]:
 
 
 def _add_message_kwargs(repo: MagicMock) -> dict:
-    """Arguments nommés du dernier `add_message`, quel que soit l'appel positionnel."""
+    """Keyword arguments of the last `add_message`, whatever the positional call."""
     assert repo.add_message.await_count == 1, (
         f"add_message appelé {repo.add_message.await_count} fois — attendu exactement 1"
     )
@@ -73,7 +71,7 @@ def _add_message_kwargs(repo: MagicMock) -> dict:
 
 class TestAStaleBodyCanBeCorrected:
     async def test_the_ticket_body_is_replaced(self) -> None:
-        """Le cas du ticket : une prémisse morte est remplacée par le texte juste."""
+        """The ticket's case: a dead premise is replaced by the right text."""
         svc, repo = _svc()
 
         await svc.reply(
@@ -87,7 +85,7 @@ class TestAStaleBodyCanBeCorrected:
         )
 
     async def test_the_thread_keeps_the_replaced_text(self) -> None:
-        """On doit pouvoir voir QUE le corps a changé, et CE QU'il disait avant."""
+        """One must be able to see THAT the body changed, and WHAT it said before."""
         svc, repo = _svc()
 
         await svc.reply(
@@ -106,7 +104,7 @@ class TestAStaleBodyCanBeCorrected:
 
 class TestASilentRewriteIsRefused:
     async def test_a_correction_without_a_justification_is_refused(self) -> None:
-        """Réécrire un corps sans un mot au fil, c'est réécrire l'histoire."""
+        """Rewriting a body without a word in the thread is rewriting history."""
         svc, repo = _svc()
 
         with pytest.raises(TicketError):
@@ -115,7 +113,7 @@ class TestASilentRewriteIsRefused:
         repo.add_message.assert_not_awaited()
 
     async def test_an_identical_body_is_refused(self) -> None:
-        """Une correction qui ne corrige rien poserait une fausse trace."""
+        """A correction that corrects nothing would lay down a false trace."""
         svc, repo = _svc()
 
         with pytest.raises(TicketError):
@@ -124,7 +122,7 @@ class TestASilentRewriteIsRefused:
         repo.add_message.assert_not_awaited()
 
     async def test_a_third_party_cannot_correct_the_body(self) -> None:
-        """Le contrôle de participation vaut aussi pour une correction."""
+        """The participation check applies to a correction too."""
         svc, repo = _svc()
 
         with pytest.raises(NotAllowedError):
@@ -136,7 +134,7 @@ class TestASilentRewriteIsRefused:
 
 
 class TestAPlainReplyIsUnchanged:
-    """Témoin négatif — sans lui, réécrire à chaque réponse passerait pour un succès."""
+    """Negative witness — without it, rewriting on every reply would pass as success."""
 
     async def test_a_plain_reply_never_touches_the_body(self) -> None:
         svc, repo = _svc()
@@ -150,7 +148,7 @@ class TestAPlainReplyIsUnchanged:
         )
 
     async def test_a_plain_reply_body_is_stored_verbatim(self) -> None:
-        """Aucun pied de page ne doit s'ajouter quand rien n'est corrigé."""
+        """No footer must be appended when nothing is corrected."""
         svc, repo = _svc()
 
         await svc.reply(uuid4(), TO, "juste une remarque")
