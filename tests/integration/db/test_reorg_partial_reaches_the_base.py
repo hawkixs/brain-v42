@@ -1,18 +1,18 @@
-"""Une ValidationFailure REORG écrit RÉELLEMENT `status='partial'` en base.
+"""A REORG ValidationFailure REALLY writes `status='partial'` to the database.
 
-Ticket `38104499` : le 2026-08-20, G4 a détecté une vraie masked-failure, le
-marquage a crashé (`RuntimeError: … attached to a different loop`), et le log a
-imprimé « dream_runs marked partial » — trois couches, la troisième mentait.
-Les correctifs (`536bc0a` : une seule boucle ; `36645bf` : le log n'affirme
-plus un marquage non observé) sont sur main, gardés par un harnais UNITAIRE à
-pool factice (`test_dream_validators_single_event_loop.py`).
+Ticket `38104499`: on 2026-08-20, G4 detected a real masked failure, the marking
+crashed (`RuntimeError: … attached to a different loop`), and the log printed
+"dream_runs marked partial" — three layers, the third lying. The fixes (`536bc0a`:
+a single loop; `36645bf`: the log no longer asserts an unobserved marking) are on
+main, guarded by a UNIT harness with a fake pool
+(`test_dream_validators_single_event_loop.py`).
 
-Ce que ce harnais ne peut structurellement pas prouver, et que la table
-mesurée crie — 0 `partial` REORG sur toute l'histoire contre 1 côté promote —
-c'est l'ÉCRITURE : que le chemin réel (`main()` → `Settings` → engine réel →
-`_amain` → `_mark_dream_run_partial`) dépose la ligne dans un vrai PostgreSQL.
-Ce test-ci joue une ValidationFailure de bout en bout contre la base
-d'intégration et lit la ligne — pas le log.
+What that harness structurally cannot prove, and what the measured table shouts —
+0 REORG `partial` in the whole history against 1 on the promote side — is the
+WRITE: that the real path (`main()` → `Settings` → real engine → `_amain` →
+`_mark_dream_run_partial`) deposits the row in a real PostgreSQL. This test plays a
+ValidationFailure end to end against the integration database and reads the row —
+not the log.
 """
 
 from __future__ import annotations
@@ -62,9 +62,9 @@ def test_a_reorg_validation_failure_lands_as_partial_in_dream_runs(
         project_key,
     )
 
-    # Un rapport WET SANS marqueurs : `found_marker=False` lève AVANT toute
-    # lecture d'entité — la ValidationFailure la plus courte qui existe, et
-    # celle-là même que la ligne `partial` de promote porte depuis juin.
+    # A WET report with NO markers: `found_marker=False` raises BEFORE any entity
+    # read — the shortest ValidationFailure there is, and the very one promote's
+    # `partial` row has carried since June.
     report_log = tmp_path / "reorg.log"
     report_log.write_text("prose du run, aucun trailer machine\n", encoding="utf-8")
     events = tmp_path / "events.jsonl"

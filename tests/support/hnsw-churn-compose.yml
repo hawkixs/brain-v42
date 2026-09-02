@@ -1,36 +1,36 @@
-# Banc isolé pour `scripts/hnsw_churn_measure.sh`.
+# Isolated bench for `scripts/hnsw_churn_measure.sh`.
 #
-# Même digest que le service `postgres` de `docker-compose.yml` : le banc
-# mesure donc sur la CIBLE VERSIONNÉE, ce qui le rend reproductible et épinglé.
+# The same digest as `docker-compose.yml`'s `postgres` service: the bench therefore
+# measures against the VERSIONED TARGET, which makes it reproducible and pinned.
 #
-# CE QU'IL NE FAIT PAS, et qu'il ne faut pas lui prêter : reproduire le RUNTIME
-# de production. Mesuré le 2026-08-28, les deux ont divergé — le conteneur
-# `brain_v42_postgres` en cours tourne l'image `b295c2aa…`, démarrée depuis le
-# tag nu avant l'épinglage, quand le digest déclaré ici résout vers
-# `5fa1d4c7…`. Conséquence sur `vector` : 0.8.4 disponible côté runtime, 0.8.5
-# côté cible versionnée, et 0.8.2 réellement INSTALLÉ en production. Trois
-# valeurs, aucune interchangeable. Un `docker compose up -d` recréerait le
-# conteneur et ferait bouger la première sans prévenir.
+# WHAT IT DOES NOT DO, and must not be credited with: reproducing the production
+# RUNTIME. Measured on 2026-08-28, the two have diverged — the running
+# `brain_v42_postgres` container runs image `b295c2aa…`, started from the bare tag
+# before the pinning, while the digest declared here resolves to `5fa1d4c7…`.
+# Consequence for `vector`: 0.8.4 available on the runtime side, 0.8.5 on the
+# versioned target side, and 0.8.2 actually INSTALLED in production. Three values,
+# none interchangeable. A `docker compose up -d` would recreate the container and
+# move the first one without warning.
 #
-# `pull_policy: never` verrouille l'image au contenu local : le banc ne peut pas
-# basculer en silence sur une version plus récente entre deux mesures.
+# `pull_policy: never` locks the image to the local content: the bench cannot switch
+# silently to a newer version between two measurements.
 #
-# RÉSEAU : le banc porte une COPIE des embeddings de production, en `trust`,
-# sans mot de passe. Il vit donc sur le réseau INTERNE de son propre projet
-# compose (`internal: true` : pas de passerelle, pas d'egress), jamais sur le
-# bridge par défaut — où tout conteneur co-résident l'atteignait en superuser
-# sans jeton, port publié ou non (reproduit pendant la review de la PR #41).
-# Tout passe par `docker exec` ; aucun port n'est publié ; le script lance ce
-# fichier avec `-p` et son trap `down` emporte le réseau avec le conteneur.
+# NETWORK: the bench carries a COPY of the production embeddings, in `trust`, with
+# no password. It therefore lives on its own compose project's INTERNAL network
+# (`internal: true`: no gateway, no egress), never on the default bridge — where any
+# co-resident container reached it as superuser with no token, published port or not
+# (reproduced during the PR #41 review). Everything goes through `docker exec`; no
+# port is published; the script launches this file with `-p` and its `down` trap
+# takes the network away with the container.
 services:
   postgres:
     image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
     pull_policy: never
     container_name: ${CHURN_CONTAINER:?CHURN_CONTAINER is required}
-    # Marqueur de propriété : le teardown du script ne détruit QUE ce qui le
+    # An ownership marker: the script's teardown destroys ONLY what carries it
     # porte. Sans lui, `docker compose -p <nom> down` matche projet+service
-    # par label et un CHURN_CONTAINER homonyme d'un projet vivant (brain_v42…)
-    # ferait emporter ce projet par le trap.
+    # by label, and a CHURN_CONTAINER sharing a live project's name (brain_v42…)
+    # would make the trap take that project away.
     labels:
       com.brain-v42.hnsw-churn-bench: "true"
     environment:

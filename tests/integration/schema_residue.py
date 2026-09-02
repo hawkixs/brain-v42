@@ -44,9 +44,9 @@ DOWNGRADING_TEST_FILES: tuple[str, ...] = (
     "tests/integration/db/test_migration_026.py",
     "tests/integration/db/test_migration_037.py",
     "tests/integration/db/test_migration_039_project_context_timestamp.py",
-    # 047 : son downgrade est fail-closed et DOIT échouer quand une
-    # fermeture dérivée existe — mais il touche quand même la tête
-    # partagée, donc il se déclare ici comme les autres.
+    # 047: its downgrade is fail-closed and MUST fail when a derived closure
+    # exists — but it touches the shared head all the same, so it declares itself
+    # here like the others.
     "tests/integration/db/test_migration_047_end_gate.py",
     "tests/integration/db/test_migration_048_attribution_mode.py",
 )

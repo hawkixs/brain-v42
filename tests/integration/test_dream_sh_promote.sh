@@ -52,9 +52,9 @@ echo "$out" | python -c "import sys, json; json.loads(sys.stdin.read())" \
   || fail "recent-promotions output is not valid JSON"
 ok "recent-promotions emits a JSON array"
 
-# --project-key est REQUIS depuis 6de8ffd9 (« les trois lookups de run_id
-# filtrent le projet »). Ce test appelait encore l'ancienne signature et
-# échouait sur argparse, pas sur le comportement mesuré.
+# --project-key has been REQUIRED since 6de8ffd9 ("the three run_id lookups filter
+# on the project"). This test still called the old signature and failed on argparse,
+# not on the measured behaviour.
 out=$(python -m scripts.dream._promote_helpers dream-run-id \
   --date 2099-01-01 --project-key brain-v42 2>&1) \
   || fail "dream-run-id dispatch failed"
