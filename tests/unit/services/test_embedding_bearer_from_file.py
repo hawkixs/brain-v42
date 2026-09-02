@@ -27,7 +27,12 @@ from brain_v42.services.embedding_factory import (
 )
 
 DSN = "postgresql+asyncpg://brain:brain@localhost:5433/brain"
-TOKEN = "b8b0f0a1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9"
+# Word-shaped on purpose. A 64-hex fixture reads as a real key to a secret
+# scanner, and `security-gitleaks` flagged exactly this line under
+# `generic-api-key`. Low entropy keeps the scanner quiet; staying
+# distinctive keeps the "never leaks" assertions below meaningful, which a
+# repeated character would not.
+TOKEN = "fixture-token-not-a-secret"
 
 
 def _settings(**kwargs: object) -> Settings:
