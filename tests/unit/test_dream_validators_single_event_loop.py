@@ -1,36 +1,35 @@
-"""Un validateur qui échoue doit MARQUER la ligne, pas mourir en la marquant.
+"""A validator that fails must MARK the row, not die while marking it.
 
-La nuit du 19→20 : `reorg` a échoué, `dream.sh` a imprimé « dream_runs marked
-partial », et la ligne `dream_runs` est restée `done`. Les deux faits sont vrais
-en même temps parce que le marquage lui-même a crashé.
+The night of the 19→20: `reorg` failed, `dream.sh` printed "dream_runs marked
+partial", and the `dream_runs` row stayed `done`. Both facts are true at the same
+time because the marking itself crashed.
 
-LA FORME, exactement. `main()` construit l'engine HORS de toute boucle, puis
-l'utilise dans DEUX `asyncio.run()` successifs :
+THE SHAPE, exactly. `main()` builds the engine OUTSIDE any loop, then uses it in
+TWO successive `asyncio.run()` calls:
 
-    session_factory = _build_factory(...)      # engine créé hors boucle
+    session_factory = _build_factory(...)      # engine created outside a loop
     try:
-        asyncio.run(validate(..., session_factory, ...))     # boucle 1, puis FERMÉE
+        asyncio.run(validate(..., session_factory, ...))     # loop 1, then CLOSED
     except ValidationFailure as exc:
-        asyncio.run(_mark_dream_run_partial(session_factory, ...))   # boucle 2
+        asyncio.run(_mark_dream_run_partial(session_factory, ...))   # loop 2
 
-`asyncio.run` ferme sa boucle en sortant. Les connexions que le pool a ouvertes
-pendant la boucle 1 restent attachées à cette boucle morte ; `pool_pre_ping=True`
-les touche au premier checkout de la boucle 2, et asyncpg lève
-`RuntimeError: Event loop is closed`. Le marquage n'a donc jamais lieu — et il
-lève APRÈS le `except`, donc l'exception remonte hors de `main()` : le `print`
-d'échec ne s'exécute pas non plus.
+`asyncio.run` closes its loop on exit. The connections the pool opened during
+loop 1 stay attached to that dead loop; `pool_pre_ping=True` touches them at the
+first checkout of loop 2, and asyncpg raises
+`RuntimeError: Event loop is closed`. The marking therefore never happens — and
+it raises AFTER the `except`, so the exception propagates out of `main()`: the
+failure `print` does not run either.
 
-Ce chemin ne se déclenche QUE sur le chemin d'échec, c'est-à-dire exactement
-quand on a besoin de lui. Une nuit verte ne le rencontre jamais — voilà pourquoi
-il a survécu.
+This path only triggers on the failure path, that is, exactly when it is needed.
+A green night never meets it — which is why it survived.
 
-`connect_validate.py` est le modèle sain : un seul `asyncio.run`.
+`connect_validate.py` is the healthy model: a single `asyncio.run`.
 
-POURQUOI LES TESTS EXISTANTS NE LE VOYAIENT PAS : `test_main_logs_positive_wet_
-validation_evidence` remplace la fabrique par un `MagicMock()`, qui se laisse
-utiliser depuis n'importe quelle boucle et n'a pas de pool. Il teste le chemin
-VERT avec un objet qui ne peut pas reproduire le défaut. Le harnais ci-dessous
-reproduit l'affinité de boucle, qui est le fait de production.
+WHY THE EXISTING TESTS DID NOT SEE IT: `test_main_logs_positive_wet_
+validation_evidence` replaces the factory with a `MagicMock()`, which lets itself
+be used from any loop and has no pool. It tests the GREEN path with an object
+that cannot reproduce the defect. The harness below reproduces the loop affinity,
+which is the production fact.
 """
 
 from __future__ import annotations
@@ -56,7 +55,7 @@ _WET_PROMOTE_TRAILER = (
 
 
 class _DeadLoopError(RuntimeError):
-    """Ce qu'asyncpg lève quand on retouche une connexion d'une boucle fermée."""
+    """What asyncpg raises when a connection from a closed loop is touched again."""
 
 
 class _Begin:
@@ -72,7 +71,7 @@ class _Session:
         self._pool = pool
 
     async def __aenter__(self) -> _Session:
-        # Le checkout du pool : c'est ICI que `pool_pre_ping` touche la connexion.
+        # The pool checkout: it is HERE that `pool_pre_ping` touches the connection.
         self._pool.checkout()
         return self
 
@@ -91,11 +90,11 @@ class _Session:
 
 
 class _LoopAffinePool:
-    """Une fabrique de sessions qui se lie à la boucle du PREMIER checkout.
+    """A session factory that binds to the loop of the FIRST checkout.
 
-    C'est le comportement d'un pool asyncpg sous `pool_pre_ping=True`, réduit à
-    ce qui compte ici. Un `MagicMock` ne peut pas le reproduire : il n'a pas de
-    pool, donc pas d'affinité.
+    This is the behaviour of an asyncpg pool under `pool_pre_ping=True`, reduced
+    to what matters here. A `MagicMock` cannot reproduce it: it has no pool, hence
+    no affinity.
     """
 
     def __init__(self) -> None:
@@ -162,12 +161,12 @@ def _argv(name: str, tmp_path: pathlib.Path) -> list[str]:
 
 
 def _install(name: str, monkeypatch: pytest.MonkeyPatch, pool: _LoopAffinePool) -> Any:
-    """Câbler le module sur la fabrique affine, avec un `validate` de production.
+    """Wire the module onto the affine factory, with a production `validate`.
 
-    « De production » veut dire : il TOUCHE la base — donc il lie la boucle 1 —
-    puis il échoue. C'est la séquence de la nuit du 19→20. Un `validate` qui
-    échouerait sans toucher la base ne reproduirait rien : le pool resterait
-    vierge et la boucle 2 fonctionnerait.
+    "Production" means: it TOUCHES the database — hence binds loop 1 — then fails.
+    That is the 19→20 night's sequence. A `validate` that failed without touching
+    the database would reproduce nothing: the pool would stay pristine and loop 2
+    would work.
     """
     module = _module(name)
     monkeypatch.setattr(
@@ -191,7 +190,7 @@ def test_a_failing_validator_actually_marks_the_row_partial(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Le fait de production : le marquage doit ABOUTIR, pas lever."""
+    """The production fact: the marking must SUCCEED, not raise."""
     module = _install(name, monkeypatch, pool := _LoopAffinePool())
 
     rc = module.main(_argv(name, tmp_path))
@@ -213,10 +212,10 @@ def test_the_pool_is_never_used_from_a_second_event_loop(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """La propriété structurelle, énoncée directement plutôt que déduite.
+    """The structural property, stated directly rather than deduced.
 
-    Le harnais LÈVE si un second checkout vient d'une autre boucle ; ce test
-    échoue donc sur `_DeadLoopError` tant que `main()` ouvre deux boucles.
+    The harness RAISES if a second checkout comes from another loop; this test
+    therefore fails on `_DeadLoopError` as long as `main()` opens two loops.
     """
     module = _install(name, monkeypatch, pool := _LoopAffinePool())
 
@@ -228,10 +227,11 @@ def test_the_pool_is_never_used_from_a_second_event_loop(
 
 @pytest.mark.parametrize("name", ["reorg", "promote", "connect"])
 def test_a_validator_opens_exactly_one_event_loop(name: str) -> None:
-    """Épinglage textuel : un `asyncio.run` par module, `connect` compris.
+    """Textual pinning: one `asyncio.run` per module, `connect` included.
 
-    `connect_validate` est le modèle sain et sert de témoin — si ce test devenait
-    vert pour une mauvaise raison (le motif ne matche plus), il rougirait ici.
+    `connect_validate` is the healthy model and serves as a witness — if this test
+    went green for a bad reason (the pattern no longer matches), it would redden
+    here.
     """
     module = _module(name)
     source = pathlib.Path(module.__file__).read_text(encoding="utf-8")

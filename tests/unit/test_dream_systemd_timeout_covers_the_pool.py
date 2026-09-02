@@ -1,29 +1,29 @@
-"""Le plafond systemd couvre le pool, et il est DÉRIVÉ, pas recopié.
+"""The systemd cap covers the pool, and it is DERIVED, not retyped.
 
-Spec `2026-08-08-dream-project-pool-design.md` §4.3 et §10.
+Spec `2026-08-08-dream-project-pool-design.md` §4.3 and §10.
 
-`TimeoutStartSec` doit être calé sur la borne (b) — le plafond CONFIGURÉ — et
-pas sur la moyenne mesurée, parce que systemd tue à la borne. Le calcul :
+`TimeoutStartSec` must be set on bound (b) — the CONFIGURED cap — and not on the
+measured average, because systemd kills at the bound. The calculation:
 
-    N × (somme des timeouts de phase) + budget de retries + globales
+    N × (sum of the phase timeouts) + retry budget + global phases
 
-À 180 min (10800 s), la valeur d'avant le pool, **deux projets suffisaient à
-dépasser** : 2 × 53 + 43 + 35 = 227 min. La nuit serait tuée au milieu du
-deuxième projet, et les projets suivants n'auraient AUCUNE ligne dans
-`dream_runs` — invisible pour un lecteur `DISTINCT ON (phase)` qui verrait les
-phases des projets déjà traités.
+At 180 min (10800 s), the pre-pool value, **two projects were enough to
+overshoot**: 2 × 53 + 43 + 35 = 227 min. The night would be killed in the middle
+of the second project, and the following projects would have NO row at all in
+`dream_runs` — invisible to a `DISTINCT ON (phase)` reader that would see the
+phases of the projects already processed.
 
-Ce test ne recopie aucun nombre. Il lit les timeouts réels dans `PHASES` et
-dans les trois `timeout Nm` des phases globales, puis vérifie que le template
-versionné couvre `_MAX_POOL` projets. Un timeout de phase relevé sans relever
-le plafond échoue ici, en nommant le manque.
+This test retypes no number. It reads the real timeouts from `PHASES` and from
+the three `timeout Nm` of the global phases, then checks that the versioned
+template covers `_MAX_POOL` projects. A phase timeout raised without raising the
+cap fails here, naming what is missing.
 
-ET IL VÉRIFIE LE TEMPLATE, PAS L'UNITÉ VIVANTE. `deploy/systemd/install.sh`
-régénère l'unité depuis le template, et son garde-fou n'avertit que sur les
-lignes `Environment=` ajoutées à la main — `TimeoutStartSec` n'en est pas une.
-Un plafond relevé à la main dans ~/.config/systemd/user/ serait réécrit à la
-prochaine réinstallation, sans un mot. C'est le jumeau de l'incident du
-2026-06-30 (PROMOTE+REORG éteints deux nuits par une régénération).
+AND IT CHECKS THE TEMPLATE, NOT THE LIVE UNIT. `deploy/systemd/install.sh`
+regenerates the unit from the template, and its guardrail only warns about
+`Environment=` lines added by hand — `TimeoutStartSec` is not one of them. A cap
+raised by hand in ~/.config/systemd/user/ would be rewritten at the next
+reinstall, without a word. This is the twin of the 2026-06-30 incident
+(PROMOTE+REORG switched off for two nights by a regeneration).
 """
 
 from __future__ import annotations
@@ -35,14 +35,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DREAM_SH = REPO_ROOT / "scripts" / "dream.sh"
 TEMPLATE = REPO_ROOT / "deploy" / "systemd" / "brain-v42-dream.service.tmpl"
 
-# Taille de pool que le plafond versionné doit soutenir. Les « 10 gros » de la
-# décision 4158d142. Élargir au-delà est un nombre à changer ICI d'abord — et
-# ce test est ce qui force à s'en apercevoir.
+# Pool size the versioned cap must sustain. The "10 big ones" of decision
+# 4158d142. Widening beyond that is a number to change HERE first — and this test
+# is what forces you to notice.
 _MAX_POOL = 10
 
 
 def _agent_phase_minutes() -> int:
-    """Somme des timeouts des six phases agent, lue dans PHASES."""
+    """Sum of the six agent phases' timeouts, read from PHASES."""
     content = DREAM_SH.read_text(encoding="utf-8")
     entries = re.findall(r'"(\w+):(?:fast|deep):(\d+):\d+"', content)
     assert len(entries) == 6, f"attendu 6 phases agent dans PHASES, mesuré {len(entries)}"
@@ -50,7 +50,7 @@ def _agent_phase_minutes() -> int:
 
 
 def _global_phase_minutes() -> int:
-    """Somme des trois `timeout Nm` des phases globales."""
+    """Sum of the global phases' three `timeout Nm`."""
     content = DREAM_SH.read_text(encoding="utf-8")
     total = 0
     for module in ("scripts.ticket_extract", "scripts.roadmap_curate", "session_sweep"):
@@ -68,10 +68,10 @@ def _retry_budget() -> int:
 
 
 def _longest_retriable_phase_minutes() -> int:
-    """La phase la plus chère qui puisse être retentée.
+    """The most expensive phase that can be retried.
 
-    PROMOTE est explicitement exclue du retry, et un timeout n'est jamais
-    retenté — seul un échec dur l'est.
+    PROMOTE is explicitly excluded from retry, and a timeout is never retried —
+    only a hard failure is.
     """
     content = DREAM_SH.read_text(encoding="utf-8")
     entries = re.findall(r'"(\w+):(?:fast|deep):(\d+):\d+"', content)
@@ -101,16 +101,16 @@ def test_the_versioned_template_covers_the_configured_worst_case() -> None:
 
 
 def test_the_old_ceiling_could_not_have_served_the_intended_pool() -> None:
-    """Combien de projets l'ancien plafond couvrait-il ? Dérivé, pas recopié.
+    """How many projects did the old cap cover? Derived, not retyped.
 
-    §4.3 chiffre « 227 min à deux projets, déjà dépassé ». Ce nombre était juste
-    SOUS L'ANCIEN RÉGIME de retry, où chaque projet portait ses +43 min
-    éligibles. L'allocation de nuit livrée avec la boucle a racheté cette
-    marge : à deux projets on est maintenant à 171 min, sous les 180.
+    §4.3 puts it at "227 min at two projects, already over". That number was right
+    UNDER THE OLD retry REGIME, where each project carried its own +43 eligible
+    min. The night-wide allocation shipped with the loop bought that margin back:
+    at two projects we are now at 171 min, under 180.
 
-    L'ancien plafond casse donc à TROIS projets, pas deux. La conclusion de la
-    spec tient — il ne pouvait pas servir les dix — mais son chiffre décrit un
-    script qui a changé depuis. On mesure.
+    The old cap therefore breaks at THREE projects, not two. The spec's conclusion
+    holds — it could not serve the ten — but its figure describes a script that
+    has changed since. We measure.
     """
     fixed = _retry_budget() * _longest_retriable_phase_minutes() + _global_phase_minutes()
     per_project = _agent_phase_minutes()
@@ -127,10 +127,9 @@ def test_the_old_ceiling_could_not_have_served_the_intended_pool() -> None:
 
 
 def test_the_ceiling_is_not_absurdly_oversized() -> None:
-    """Un plafond doit rester un plafond, pas une absence de plafond.
+    """A cap must stay a cap, not an absence of cap.
 
-    Le timer est quotidien : au-delà de 24 h, une nuit pourrait chevaucher la
-    suivante — et `Type=oneshot` fait alors PERDRE le déclenchement, sans file
-    ni erreur.
+    The timer is daily: beyond 24 h, a night could overlap the next one — and
+    `Type=oneshot` then LOSES the trigger, with no queue and no error.
     """
     assert _template_timeout_seconds() < 24 * 3600

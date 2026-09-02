@@ -1,23 +1,23 @@
-"""La nuit rapproche elle-même ses phases OK de ses lignes écrites (b95c5742).
+"""The night reconciles its own OK phases with its written rows (b95c5742).
 
-Les 15-16/08, la boucle a signé « 61/63 phases OK » pendant que `dream_runs`
-ne recevait que 2 lignes — 240 `InvalidPasswordError` avalées en best-effort.
-Depuis, l'absence d'une ligne `done` ne prouve pas un échec de phase : elle
-peut prouver un INSERT perdu, et toute analyse de fiabilité menée sur la table
-seule est fausse dans le sens pessimiste.
+On 15-16/08, the loop signed off "61/63 phases OK" while `dream_runs` received
+only 2 rows — 240 `InvalidPasswordError` swallowed best-effort. Since then, the
+absence of a `done` row does not prove a phase failure: it may prove a lost
+INSERT, and any reliability analysis carried out on the table alone is wrong in
+the pessimistic direction.
 
-L'INSERT reste best-effort — c'est la leçon de la 042, un `NOT NULL` y ferait
-un avertissement imprimé sur tous — mais l'écart devient VISIBLE : dream.sh
-passe son compteur `OK_TOTAL` à `post_run_alert`, qui imprime une ligne
-machine `RECONCILIATION phases_ok=N pairs_written=M gap=K`. Un `gap` non nul
-au matin est exactement la perte des 15-16/08, lisible sans croiser le journal.
+The INSERT stays best-effort — that is 042's lesson, a `NOT NULL` there would
+make a warning printed on all of them — but the gap becomes VISIBLE: dream.sh
+passes its `OK_TOTAL` counter to `post_run_alert`, which prints a machine line
+`RECONCILIATION phases_ok=N pairs_written=M gap=K`. A non-zero `gap` in the
+morning is exactly the loss of 15-16/08, readable without cross-checking the log.
 
-Le repli in-band du manifeste (e30a1cec) est gardé au même endroit : quand la
-ligne COVERAGE dit `mode=fallback` alors que dream.sh vient d'écrire son
-manifeste, le moteur le DIT (FAIL) et le grave (record_coverage_gap) — sans
-toucher au code de sortie : le rapporteur garde son « jamais 2 » (paires
-indécidables), c'est le SEUL appelant qui sait que le manifeste devait exister
-qui escalade, et il n'escalade que la visibilité.
+The manifest's in-band fallback (e30a1cec) is guarded in the same place: when the
+COVERAGE line says `mode=fallback` while dream.sh has just written its manifest,
+the engine SAYS so (FAIL) and records it (record_coverage_gap) — without touching
+the exit code: the reporter keeps its "never 2" (undecidable pairs), it is the
+ONLY caller that knows the manifest was supposed to exist that escalates, and it
+escalates visibility only.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ def _row(phase: str, status: str, project_key: str | None) -> dict[str, object]:
 
 
 def test_a_night_that_loses_an_insert_produces_a_nonzero_gap() -> None:
-    """Le scénario des 15-16/08 : 61 phases OK, 2 lignes — gap 59, lisible."""
+    """The 15-16/08 scenario: 61 phases OK, 2 rows — gap 59, readable."""
     rows = [_row("extract", "done", "*"), _row("roadmap", "done", "*")]
 
     line = format_reconciliation_line(61, rows)
@@ -56,9 +56,9 @@ def test_a_complete_night_reconciles_to_zero() -> None:
 
 
 def test_a_fallback_retry_counts_its_pair_once() -> None:
-    """« dream_runs compte des tentatives, dream.sh compte des phases » :
-    l'attempt codex mort + le rattrapage gemini font DEUX lignes, UNE paire —
-    sans quoi les six nuits de secours d'août auraient toutes un gap négatif."""
+    """dream_runs counts attempts, dream.sh counts phases: the dead codex attempt
+    + the gemini catch-up make TWO rows, ONE pair — without which August's six
+    fallback nights would all have a negative gap."""
     rows = [
         _row("clean", "fail", "brain-v42"),
         _row("clean", "done", "brain-v42"),
@@ -70,9 +70,9 @@ def test_a_fallback_retry_counts_its_pair_once() -> None:
 
 
 def test_a_partial_row_is_a_written_row() -> None:
-    """`partial` = la phase a écrit PUIS le validateur l'a invalidée : la
-    ligne existe, la compter perdue déclencherait une chasse à l'INSERT sur
-    chaque nuit où G4 fait son travail."""
+    """`partial` = the phase wrote THEN the validator invalidated it: the row
+    exists, counting it as lost would trigger an INSERT hunt on every night where
+    G4 does its job."""
     rows = [_row("reorg", "partial", "brain-v42")]
 
     line = format_reconciliation_line(1, rows)
@@ -81,7 +81,7 @@ def test_a_partial_row_is_a_written_row() -> None:
 
 
 def test_pure_failure_rows_do_not_count_as_written_success() -> None:
-    """Une paire qui n'a QUE des échecs n'explique pas une phase OK."""
+    """A pair that has ONLY failures does not explain an OK phase."""
     rows = [
         _row("clean", "fail", "brain-v42"),
         _row("connect", "timeout", "brain-v42"),
@@ -93,8 +93,8 @@ def test_pure_failure_rows_do_not_count_as_written_success() -> None:
 
 
 def test_a_negative_gap_is_printed_never_masked() -> None:
-    """Plus de paires écrites que de phases OK (skips enregistrés, rejeux) :
-    l'écart s'imprime tel quel — un clamp à zéro serait un compteur qui ment."""
+    """More pairs written than OK phases (recorded skips, replays): the gap is
+    printed as is — clamping to zero would be a counter that lies."""
     rows = [
         _row("promote", "done", "red-lab"),
         _row("promote", "done", "brain-v42"),
@@ -106,10 +106,10 @@ def test_a_negative_gap_is_printed_never_masked() -> None:
 
 
 def test_skipped_phases_do_not_read_as_lost_inserts() -> None:
-    """Review PR 47 : OK_TOTAL = TOTAL_PHASES - FAIL_TOTAL inclut les phases
-    SKIPPÉES (corpus inchangé, killswitch), qui n'écrivent pas de ligne — sans
-    les soustraire, le WARN gap≠0 tirerait presque chaque nuit saine : le cri
-    au loup exact que ce lot corrige pour REORG."""
+    """PR 47 review: OK_TOTAL = TOTAL_PHASES - FAIL_TOTAL includes the SKIPPED
+    phases (unchanged corpus, killswitch), which write no row — without
+    subtracting them, the gap≠0 WARN would fire on nearly every healthy night: the
+    exact wolf-crying this batch fixes for REORG."""
     rows = [_row("extract", "done", "*"), _row("clean", "done", "brain-v42")]
 
     line = format_reconciliation_line(5, rows, skipped=3)
@@ -118,7 +118,7 @@ def test_skipped_phases_do_not_read_as_lost_inserts() -> None:
 
 
 def test_a_lost_insert_still_shows_through_the_skips() -> None:
-    """Le témoin inverse : les skips soustraits, une vraie perte reste visible."""
+    """The inverse witness: with the skips subtracted, a real loss stays visible."""
     rows = [_row("extract", "done", "*")]
 
     line = format_reconciliation_line(5, rows, skipped=3)
@@ -127,16 +127,16 @@ def test_a_lost_insert_still_shows_through_the_skips() -> None:
 
 
 def test_a_recorded_empty_pool_skip_is_not_double_counted() -> None:
-    """2e fix review PR 47 : le skip « promote pool vide » ÉCRIT une vraie
-    ligne (record-empty-pool, status done) ET vit dans SKIPPED_PHASES. Le
-    soustraire en plus de le trouver dans pairs_written donnait gap=-1 → WARN
-    sur une nuit saine routinière (PROMOTE wet en prod). dream.sh ne passe
-    donc que les skips SANS ligne : ici, skipped=0 et la paire écrite couvre
-    sa phase — gap=0, silence."""
+    """2nd PR 47 review fix: the "promote empty pool" skip WRITES a real row
+    (record-empty-pool, status done) AND lives in SKIPPED_PHASES. Subtracting it
+    on top of finding it in pairs_written gave gap=-1 → a WARN on a routine
+    healthy night (PROMOTE wet in production). dream.sh therefore passes only the
+    skips WITHOUT a row: here, skipped=0 and the written pair covers its phase —
+    gap=0, silence."""
     rows = [
         _row("extract", "done", "*"),
         _row("clean", "done", "brain-v42"),
-        _row("promote", "done", "brain-v42"),  # la ligne du record-empty-pool
+        _row("promote", "done", "brain-v42"),  # the record-empty-pool row
     ]
 
     line = format_reconciliation_line(3, rows, skipped=0)
@@ -145,9 +145,9 @@ def test_a_recorded_empty_pool_skip_is_not_double_counted() -> None:
 
 
 def test_dream_sh_does_not_count_the_recorded_empty_pool_as_unwritten() -> None:
-    """Le pin structurel : l'incrément UNWRITTEN vit dans la branche
-    `empty-pool-unrecorded` (l'écriture a ÉCHOUÉ, aucune ligne due) et JAMAIS
-    dans la branche `empty-pool-recorded` (la ligne existe)."""
+    """The structural pin: the UNWRITTEN increment lives in the
+    `empty-pool-unrecorded` branch (the write FAILED, no row owed) and NEVER in
+    the `empty-pool-recorded` branch (the row exists)."""
     recorded = DREAM_SH.split("empty-pool-recorded", 1)[0].rsplit("if (( record_rc == 0 ))", 1)[1]
     assert "SKIPPED_UNWRITTEN" not in recorded
     unrecorded = DREAM_SH.split("empty-pool-unrecorded", 1)[1].split("fi\n", 1)[0]
@@ -155,16 +155,16 @@ def test_dream_sh_does_not_count_the_recorded_empty_pool_as_unwritten() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Le câblage moteur — dream.sh est du shell, son contrat est textuel, comme
-# pour les validateurs (test_dream_sh_reorg_validator.py).
+# The engine wiring — dream.sh is shell, its contract is textual, as for the
+# validators (test_dream_sh_reorg_validator.py).
 # ---------------------------------------------------------------------------
 
 
 def test_dream_sh_passes_its_own_ok_counter() -> None:
     assert '--phases-ok "$OK_TOTAL"' in DREAM_SH
-    # Le compte passé est celui des skips SANS ligne : un skip qui écrit
-    # (promote pool vide) est déjà dans pairs_written — le passer aussi en
-    # skipped le compterait deux fois et rendrait gap=-1 sur une nuit saine.
+    # The count passed is that of the skips WITHOUT a row: a skip that writes
+    # (promote empty pool) is already in pairs_written — passing it as skipped too
+    # would count it twice and give gap=-1 on a healthy night.
     assert '--phases-skipped "$SKIPPED_UNWRITTEN"' in DREAM_SH
     assert "SKIPPED_UNWRITTEN=0" in DREAM_SH
 
@@ -172,15 +172,15 @@ def test_dream_sh_passes_its_own_ok_counter() -> None:
 def test_dream_sh_logs_the_reconciliation_and_warns_on_gap() -> None:
     assert "grep -m1 '^RECONCILIATION '" in DREAM_SH
     assert 'log "=== dream_runs $reconciliation_line ==="' in DREAM_SH
-    # Le WARN ne tire que sur écart non nul — une nuit saine reste silencieuse.
+    # The WARN only fires on a non-zero gap — a healthy night stays silent.
     assert '"$reconciliation_line" != *" gap=0"*' in DREAM_SH
 
 
 def test_dream_sh_records_an_in_band_fallback_durably() -> None:
-    """e30a1cec : le rapporteur garde son « jamais 2 » ; c'est dream.sh — le
-    seul qui SAIT avoir écrit un manifeste quelques minutes plus tôt — qui
-    grave le repli (FAIL au journal + ligne dream_runs `coverage`), sans
-    toucher au code de sortie de la nuit."""
+    """e30a1cec: the reporter keeps its "never 2"; it is dream.sh — the only one
+    that KNOWS it wrote a manifest a few minutes earlier — that records the
+    fallback (FAIL in the log + a `coverage` dream_runs row), without touching the
+    night's exit code."""
     assert '"$coverage_line" == *"mode=fallback"*' in DREAM_SH
     fallback_block = DREAM_SH.split('*"mode=fallback"*', 1)[1].split("fi\n", 1)[0]
     assert "record_coverage_gap" in fallback_block
