@@ -250,9 +250,9 @@ def _assert_no_migration_test_residue(db_url: str, project_root: Path) -> None:
     )
     if message is not None:
         raise RuntimeError(message)
-    # À head, les comptes PARLENT au lieu d'être jetés (review PR 44) — une
-    # notice, jamais un refus : un run concurrent sain tient légitimement des
-    # lignes integ- pendant sa propre suite.
+    # At head, the counts SPEAK instead of being thrown away (PR 44 review) — a
+    # notice, never a refusal: a healthy concurrent run legitimately holds integ-
+    # rows during its own suite.
     notice = describe_data_residue_notice(residue=residue)
     if notice is not None:
         warnings.warn(notice, stacklevel=2)
@@ -322,12 +322,12 @@ def run_migrations() -> None:
     This is a sync fixture (session-scoped) that calls subprocess.run().
     It runs before the async engine fixtures so the schema is ready.
 
-    Sous le MÊME verrou consultatif que le fence : sans lui, deux worktrees
-    lançant leur suite sur la base partagée entrelacent leur probe+upgrade
-    HORS de toute protection — c'est le trou par lequel la course de
-    ``288d7121`` restait atteignable après la pose du verrou du fence
-    (mineur de la review PR 44). Le setup attend son tour au lieu de lire
-    une base qu'un autre run tient rétrogradée.
+    Under the SAME advisory lock as the fence: without it, two worktrees launching
+    their suite against the shared database interleave their probe+upgrade OUTSIDE
+    any protection — that is the hole through which ``288d7121``'s race stayed
+    reachable after the fence's lock was laid (a minor finding of the PR 44 review).
+    The setup waits its turn instead of reading a database another run is holding
+    downgraded.
     """
     db_url = _get_integration_db_url_or_skip()
     lock = _SharedDatabaseMigrationLock(db_url)
@@ -356,12 +356,11 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) ->
     return report
 
 
-#: Verrou consultatif des tests qui migrent la base partagée. La clé EST le
-#: ticket qui a mesuré la course : 0x288D7121 (« deux exécutions concurrentes
-#: s'entrelacent destructivement »). Tenu sur une connexion DÉDIÉE pendant
-#: toute la fenêtre du fence : les runs concurrents se sérialisent, et un kill
-#: libère le verrou avec la connexion — résistant au crash par construction,
-#: là où un fichier de verrou ne l'est pas.
+#: Advisory lock of the tests that migrate the shared database. The key IS the
+#: ticket that measured the race: 0x288D7121 ("two concurrent executions interleave
+#: destructively"). Held on a DEDICATED connection for the whole fence window: the
+#: concurrent runs serialise, and a kill releases the lock with the connection —
+#: crash-resistant by construction, where a lock file is not.
 _MIGRATION_ADVISORY_LOCK_KEY = 0x288D7121
 
 
@@ -374,10 +373,10 @@ class _SharedDatabaseMigrationLock:
     """
 
     def __init__(self, db_url: str) -> None:
-        # Chaque étage nettoie le sien en cas d'échec : un verrou qui ne se
-        # prend pas ne doit laisser derrière lui ni connexion ni engine — une
-        # connexion détentrice qui fuit fige tout fence ultérieur (attente
-        # infinie muette, le verrou n'ayant pas de lock_timeout).
+        # Each layer cleans up its own on failure: a lock that is not acquired must
+        # leave behind neither a connection nor an engine — a leaked holding
+        # connection freezes every later fence (a mute infinite wait, the lock having
+        # no lock_timeout).
         self._loop = asyncio.new_event_loop()
         try:
             self._engine = create_async_engine(db_url, poolclass=NullPool)
@@ -401,9 +400,9 @@ class _SharedDatabaseMigrationLock:
             raise
 
     def release(self) -> None:
-        # try/finally PAR ÉTAPE : un unlock qui lève ne doit pas empêcher la
-        # fermeture de la connexion — c'est elle qui libère réellement le
-        # verrou de session ; la laisser fuir fige tout fence ultérieur.
+        # try/finally PER STEP: an unlock that raises must not prevent the
+        # connection from closing — it is the connection that actually releases the
+        # session lock; leaking it freezes every later fence.
         try:
             try:
                 self._loop.run_until_complete(
@@ -774,47 +773,45 @@ async def graph_service(neo4j_driver):  # type: ignore[misc]
 
 
 class SseExitLatchArmed(UserWarning):
-    """Le latch de sortie de ``sse-starlette`` était armé, et on l'a désarmé.
+    """``sse-starlette``'s exit latch was armed, and we disarmed it.
 
-    Émise pour être VUE : sans elle on referme un défaut amont sous un tapis de
-    test, et le jour où ``sse-starlette`` corrige son latch personne ne saura ni
-    que cette fixture existe ni pourquoi. Une garde muette devient du folklore.
+    Emitted to be SEEN: without it we sweep an upstream defect under a test rug, and
+    the day ``sse-starlette`` fixes its latch nobody will know either that this
+    fixture exists or why. A mute guard becomes folklore.
     """
 
 
-#: Le défaut amont, en une phrase : ``sse_starlette.sse.AppStatus.should_exit``
-#: est un attribut de CLASSE, global au processus, que rien ne remet jamais à
-#: ``False``. Une veille (``sse_starlette/sse.py:81-113``) sonde toutes les 0,5 s
-#: le serveur uvicorn qu'elle retrouve par ``signal.getsignal(SIGTERM).__self__``,
-#: et l'arme dès qu'elle le voit s'arrêter — y compris pour un arrêt PARFAITEMENT
-#: NORMAL, c'est-à-dire à chaque teardown de banc. Une fois armé, il fait revenir
-#: ``_listen_for_exit_signal`` (l. 311-313) immédiatement, ce qui annule tout le
-#: task group de ``EventSourceResponse`` juste après l'envoi des en-têtes : le
-#: serveur répond 200 puis REVIENT SANS CORPS, client encore connecté, sans lever
-#: ni journaliser. Un client MCP dont la réponse ``initialize`` transite par ce
-#: flux attend alors pour toujours.
+#: The upstream defect, in one sentence: ``sse_starlette.sse.AppStatus.should_exit``
+#: is a CLASS attribute, process-global, that nothing ever resets to ``False``. A
+#: watcher (``sse_starlette/sse.py:81-113``) polls every 0.5 s the uvicorn server it
+#: finds through ``signal.getsignal(SIGTERM).__self__``, and arms it as soon as it
+#: sees it stop — including for a PERFECTLY NORMAL shutdown, that is, at every bench
+#: teardown. Once armed, it makes ``_listen_for_exit_signal`` (l. 311-313) return
+#: immediately, which cancels the whole ``EventSourceResponse`` task group just after
+#: the headers are sent: the server answers 200 then RETURNS WITH NO BODY, client
+#: still connected, without raising or logging. An MCP client whose ``initialize``
+#: response transits through that stream then waits forever.
 #:
-#: MESURÉ le 2026-08-25 : la fenêtre de teardown d'un banc dure ~0,144 s contre
-#: une sonde à 0,5 s, soit ~28 % d'armement par teardown — conforme au rapport
-#: géométrique 0,144/0,5. C'est une fonction de la DURÉE des tests, pas un tirage
-#: indépendant : d'où un échec de CI qui se lit comme un coin-flip.
+#: MEASURED on 2026-08-25: a bench's teardown window lasts ~0.144 s against a probe
+#: at 0.5 s, i.e. ~28 % arming per teardown — consistent with the geometric ratio
+#: 0.144/0.5. It is a function of the tests' DURATION, not an independent draw: hence
+#: a CI failure that reads as a coin-flip.
 #:
-#: La réparation est AMONT. Ici on se protège et on laisse une trace.
+#: The repair is UPSTREAM. Here we protect ourselves and leave a trace.
 _SSE_LATCH_ATTR = "should_exit"
 
 
 def _read_sse_exit_latch() -> bool | None:
-    """Rendre l'état du latch, ou ``None`` si l'amont a bougé sous nos pieds.
+    """Return the latch's state, or ``None`` if upstream moved under our feet.
 
-    Import tardif et total : cette fixture est autouse sur TOUTE la suite
-    d'intégration, et une garde qui fait tomber les tests qu'elle protège est
-    pire que pas de garde.
+    A late and total import: this fixture is autouse over the WHOLE integration
+    suite, and a guard that brings down the tests it protects is worse than no guard.
     """
     try:
         from sse_starlette.sse import AppStatus
 
         return bool(getattr(AppStatus, _SSE_LATCH_ATTR))
-    except Exception:  # noqa: BLE001 - jamais fatal, c'est une garde
+    except Exception:  # noqa: BLE001 - never fatal, it is a guard
         return None
 
 
@@ -823,26 +820,26 @@ def _disarm_sse_exit_latch() -> None:
         from sse_starlette.sse import AppStatus
 
         setattr(AppStatus, _SSE_LATCH_ATTR, False)
-    except Exception:  # noqa: BLE001 - jamais fatal, c'est une garde
+    except Exception:  # noqa: BLE001 - never fatal, it is a guard
         pass
 
 
 @pytest.fixture(autouse=True)
 def disarm_sse_exit_latch(request: pytest.FixtureRequest) -> Iterator[None]:
-    """Désarmer le latch avant ET après chaque test, en DISANT quand il l'était.
+    """Disarm the latch before AND after each test, SAYING when it was armed.
 
-    Les deux moments comptent, et ils ne disent pas la même chose :
+    Both moments count, and they do not say the same thing:
 
-    - **avant** : le latch était déjà armé en entrant, donc un test antérieur
-      l'a laissé ainsi et celui-ci allait le subir sans l'avoir causé ;
-    - **après** : le latch a été armé PENDANT ce test ou par son teardown — et
-      c'est la seule mesure qui NOMME le coupable. C'est aussi pour ça que le
-      désarmement d'après existe : sans lui, la trace d'avant accuserait la
-      victime suivante au lieu de l'auteur.
+    - **before**: the latch was already armed on entry, so an earlier test left it
+      that way and this one was about to suffer it without having caused it;
+    - **after**: the latch was armed DURING this test or by its teardown — and that
+      is the only measurement that NAMES the culprit. That is also why the after
+      disarming exists: without it, the before trace would accuse the next victim
+      instead of the author.
 
-    Cette fixture est déclarée dans ``conftest.py`` et non dans un module, parce
-    que les deux bancs qui montent uvicorn vivent dans des répertoires différents
-    (``mcp/`` et ``metrics/``) et que le latch, lui, ignore les répertoires.
+    This fixture is declared in ``conftest.py`` and not in a module, because the two
+    benches that stand up uvicorn live in different directories (``mcp/`` and
+    ``metrics/``) and the latch, for its part, ignores directories.
     """
     if _read_sse_exit_latch():
         _disarm_sse_exit_latch()

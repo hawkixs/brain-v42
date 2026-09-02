@@ -1,17 +1,15 @@
-"""Auto-ouverture et observation contre une vraie base — l'index PARTIEL au travail.
+"""Auto-open and observation against a real database — the PARTIAL index at work.
 
-Ce que le harnais unitaire ne peut PAS prouver, et qui est tout l'enjeu :
+What the unit harness CANNOT prove, and which is the whole point:
 
-- l'``ON CONFLICT`` s'infère bien sur ``uq_brain_sessions_connection``, et le
-  ``WHERE status = 'open'`` du prédicat d'index est ce qui rend la RÉOUVERTURE
-  possible après une fermeture nocturne. Un index PLEIN brûlerait la connexion à
-  vie dès la première auto-fermeture — le piège hérité de `SPEC-M-G` §5, qui ne
-  se voit qu'ici ;
-- ``client_key`` reçoit un UUID neuf parce que ``uq_brain_sessions_project_client``
-  est PLEINE : réutiliser une clé stable par connexion ferait échouer cette même
-  réouverture, le piège déplacé d'une colonne ;
-- et les DEUX horloges bougent réellement, ce qu'aucune assertion sur du SQL
-  compilé ne peut établir.
+- the ``ON CONFLICT`` does infer on ``uq_brain_sessions_connection``, and the index
+  predicate's ``WHERE status = 'open'`` is what makes REOPENING possible after a
+  nightly closure. A FULL index would burn the connection for life at the first
+  auto-closure — the trap inherited from `SPEC-M-G` §5, which is only visible here;
+- ``client_key`` receives a fresh UUID because ``uq_brain_sessions_project_client``
+  is FULL: reusing a stable per-connection key would fail that same reopening, the
+  trap moved one column over;
+- and BOTH clocks really move, which no assertion on compiled SQL can establish.
 """
 
 from __future__ import annotations
@@ -84,7 +82,7 @@ async def test_the_first_call_writes_the_five_046_columns(
     session_factory: async_sessionmaker[AsyncSession],
     autoopen_project: str,
 ) -> None:
-    """La 046 avait posé cinq colonnes et zéro écrivain. Voici les quatre écrites."""
+    """046 laid down five columns and zero writers. Here are the four written."""
     identity = _Identity(autoopen_project, uuid4().hex)
     now = datetime(2026, 8, 22, 9, 0, tzinfo=UTC)
 
@@ -96,8 +94,8 @@ async def test_the_first_call_writes_the_five_046_columns(
     assert row["connection_id"] == identity.connection_id
     assert row["started_by_actor"] == "integ-actor"
     assert row["last_observed_at"] == now
-    # `intent` est le seul champ de JUGEMENT des cinq : NULL veut dire
-    # « pas mesuré », et le serveur n'en fabrique pas.
+    # `intent` is the only JUDGEMENT field of the five: NULL means "not measured",
+    # and the server does not manufacture one.
     assert row["intent"] is None
     assert row["status"] == "open"
 
@@ -106,12 +104,12 @@ async def test_a_second_call_on_the_same_connection_redates_the_same_row(
     session_factory: async_sessionmaker[AsyncSession],
     autoopen_project: str,
 ) -> None:
-    """`DO UPDATE`, pas `DO NOTHING` : un conflit EST une observation.
+    """`DO UPDATE`, not `DO NOTHING`: a conflict IS an observation.
 
-    Avec son TÉMOIN NÉGATIF — l'horloge doit avoir BOUGÉ. Sans lui, un
-    `DO NOTHING` suivi d'un `SELECT` rendrait le même id et laisserait ce test
-    vert, alors que `last_observed_at` resterait figé à l'heure d'ouverture et
-    que la règle des 4 h finirait par prendre une connexion active.
+    With its NEGATIVE WITNESS — the clock must have MOVED. Without it, a
+    `DO NOTHING` followed by a `SELECT` would return the same id and would leave this
+    test green, while `last_observed_at` stayed frozen at the opening time and the
+    4 h rule ended up taking an active connection.
     """
     repo = PgBrainSessionRepo(session_factory)
     identity = _Identity(autoopen_project, uuid4().hex)
@@ -141,12 +139,12 @@ async def test_a_closed_session_does_not_burn_its_connection(
     session_factory: async_sessionmaker[AsyncSession],
     autoopen_project: str,
 ) -> None:
-    """LE test que l'index partiel existe pour rendre vrai.
+    """THE test the partial index exists to make true.
 
-    Après une fermeture nocturne, la MÊME connexion doit pouvoir rouvrir. Un
-    index UNIQUE plein — sur le modèle de `uq_brain_sessions_project_client` —
-    rendrait cet insert impossible pour toujours, et `closed_inactive` fait
-    précisément sortir des lignes de `status = 'open'` en masse chaque nuit.
+    After a nightly closure, the SAME connection must be able to reopen. A full
+    UNIQUE index — on the model of `uq_brain_sessions_project_client` — would make
+    this insert impossible forever, and `closed_inactive` precisely takes rows out of
+    `status = 'open'` in bulk every night.
     """
     repo = PgBrainSessionRepo(session_factory)
     identity = _Identity(autoopen_project, uuid4().hex)
@@ -166,8 +164,8 @@ async def test_a_closed_session_does_not_burn_its_connection(
     assert second != first
     assert (await _row(session_factory, first))["status"] == "closed_inactive"
     assert (await _row(session_factory, second))["status"] == "open"
-    # `client_key` doit différer : `uq_brain_sessions_project_client` est PLEINE,
-    # donc une clé stable par connexion aurait fait échouer cette réouverture.
+    # `client_key` must differ: `uq_brain_sessions_project_client` is FULL, so a
+    # stable per-connection key would have failed this reopening.
     assert (await _row(session_factory, second))["client_key"] != (
         await _row(session_factory, first)
     )["client_key"]
@@ -177,11 +175,11 @@ async def test_observe_reports_whether_the_session_is_still_open(
     session_factory: async_sessionmaker[AsyncSession],
     autoopen_project: str,
 ) -> None:
-    """Le booléen qui fait jeter la mémo — les trois cas, dans un seul test.
+    """The boolean that makes the memo be discarded — all three cases, in one test.
 
-    Ouverte `agent` ⇒ `True` et l'horloge bouge. Fermée ⇒ `False`, et c'est un
-    FAIT, pas une panne. Inexistante ⇒ `False` aussi : un UUID inconnu ne doit
-    pas lever sur un chemin dont tout le contrat est de ne jamais lever.
+    Open `agent` ⇒ `True` and the clock moves. Closed ⇒ `False`, and that is a FACT,
+    not a failure. Non-existent ⇒ `False` too: an unknown UUID must not raise on a
+    path whose whole contract is never to raise.
     """
     repo = PgBrainSessionRepo(session_factory)
     identity = _Identity(autoopen_project, uuid4().hex)
@@ -206,12 +204,11 @@ async def test_observe_never_touches_an_operator_session(
     session_factory: async_sessionmaker[AsyncSession],
     autoopen_project: str,
 ) -> None:
-    """Garde DURE : une mémo empoisonnée ne doit rien pouvoir dater ailleurs.
+    """A HARD guard: a poisoned memo must not be able to date anything elsewhere.
 
-    L'auto-ouverture ne produit que des traçantes, donc ce cas ne devrait pas
-    exister. C'est précisément pourquoi il est gardé en base plutôt qu'en
-    commentaire : les invariants qu'on croit inatteignables sont ceux dont la
-    violation passe inaperçue.
+    Auto-open only produces tracers, so this case should not exist. That is
+    precisely why it is guarded in the database rather than in a comment: the
+    invariants we believe unreachable are the ones whose violation goes unnoticed.
     """
     repo = PgBrainSessionRepo(session_factory)
     stamped = datetime(2026, 8, 22, 4, 0, tzinfo=UTC)
@@ -239,29 +236,28 @@ async def test_a_fresh_tracer_never_dates_its_heartbeat_before_its_start(
     session_factory: async_sessionmaker[AsyncSession],
     autoopen_project: str,
 ) -> None:
-    """`last_heartbeat_at >= started_at` — l'invariant que le contrat DR compte.
+    """`last_heartbeat_at >= started_at` — the invariant the DR contract counts.
 
-    Mesuré en production le 2026-08-22 : la traçante ouvrait avec un heartbeat
-    daté **1,5 ms AVANT** son propre démarrage, et
-    `brain_runtime_032_036_037.focus_revision_violations` comptait chaque ligne.
-    Le reçu passait de 29/29 à 28/29 sur les DEUX variantes de l'actif.
+    Measured in production on 2026-08-22: the tracer opened with a heartbeat dated
+    **1.5 ms BEFORE** its own start, and
+    `brain_runtime_032_036_037.focus_revision_violations` counted every row. The
+    receipt went from 29/29 to 28/29 on BOTH variants of the asset.
 
-    La cause est un désaccord d'horloges, pas une erreur de signe : `reference`
-    est lu par l'application AVANT l'ouverture de la transaction, tandis que
-    `started_at` tombe sur le `DEFAULT now()` de la base — l'estampille de
-    DÉBUT DE TRANSACTION, donc postérieure. `start()` échappe au piège en ne
-    posant aucune des deux colonnes : ses deux horloges viennent du même
-    défaut. `auto_open` en posait une seule, et c'est l'asymétrie qui coûte.
+    The cause is a clock disagreement, not a sign error: `reference` is read by the
+    application BEFORE the transaction opens, while `started_at` falls on the
+    database's `DEFAULT now()` — the TRANSACTION-START stamp, hence later. `start()`
+    escapes the trap by setting neither column: both its clocks come from the same
+    default. `auto_open` set only one, and it is the asymmetry that costs.
 
-    Ce test tourne SANS `now=` injecté — c'est la forme de production, et la
-    seule où l'écart des deux horloges est celui que la prod a réellement
-    porté. Un `now=` injecté rendrait l'écart si grand qu'il masquerait le fait
-    que le défaut se mesure en millisecondes.
+    This test runs WITHOUT an injected `now=` — that is the production form, and the
+    only one where the two clocks' gap is the one production actually carried. An
+    injected `now=` would make the gap so large that it would mask the fact that the
+    defect measures in milliseconds.
 
-    Le défaut est TRANSITOIRE et c'est ce qui le rend coûteux : la première
-    `observe()` venue repousse `last_heartbeat_at` et efface la violation. Le
-    contrôle DR clignote donc rouge/vert selon qu'une traçante fraîche a déjà
-    rappelé, et un reçu vert ne prouve rien.
+    The defect is TRANSIENT and that is what makes it costly: the first `observe()`
+    to come along pushes `last_heartbeat_at` forward and erases the violation. The DR
+    check therefore blinks red/green depending on whether a fresh tracer has already
+    called back, and a green receipt proves nothing.
     """
     identity = _Identity(autoopen_project, uuid4().hex)
 
@@ -273,9 +269,9 @@ async def test_a_fresh_tracer_never_dates_its_heartbeat_before_its_start(
         "une traçante fraîche date sa présence avant son propre démarrage : "
         f"heartbeat={row['last_heartbeat_at']} < started={row['started_at']}"
     )
-    # UNE seule lecture d'horloge, pas trois qui se suivent. C'est le témoin
-    # qui distingue le correctif de son contrefaçon : borner l'écart à « moins
-    # d'une seconde » laisserait passer deux lectures distinctes, donc le bug.
+    # ONE single clock read, not three in a row. This is the witness that
+    # distinguishes the fix from its counterfeit: bounding the gap to "less than a
+    # second" would let two distinct reads through, hence the bug.
     assert row["started_at"] == row["last_heartbeat_at"] == row["last_observed_at"]
 
 
@@ -283,19 +279,17 @@ async def test_reobserving_a_tracer_moves_both_clocks_but_never_its_start(
     session_factory: async_sessionmaker[AsyncSession],
     autoopen_project: str,
 ) -> None:
-    """Le TÉMOIN NÉGATIF du correctif : `started_at` est une date d'OUVERTURE.
+    """The fix's NEGATIVE WITNESS: `started_at` is an OPENING date.
 
-    Le correctif le plus court — glisser `started_at` dans
-    `_observation_columns()` — verdit le test précédent et ment : chaque
-    réobservation réécrirait la date d'ouverture, la traçante aurait
-    éternellement zéro seconde d'âge, et le balayage des 7 j ne prendrait plus
-    jamais rien. Une session qui rajeunit à chaque appel d'outil est un pire
-    défaut que celui qu'on répare.
+    The shortest fix — slipping `started_at` into `_observation_columns()` — greens
+    the previous test and lies: every re-observation would rewrite the opening date,
+    the tracer would eternally be zero seconds old, and the 7-day sweep would never
+    take anything again. A session that grows younger at every tool call is a worse
+    defect than the one being repaired.
 
-    Ce test échoue donc sur ce faux correctif, là où le précédent passerait.
-    Les deux ensemble bornent la seule forme correcte : la branche INSERT pose
-    les trois horloges d'une même lecture, la branche `DO UPDATE` n'en déplace
-    que deux.
+    This test therefore fails on that false fix, where the previous one would pass.
+    Together the two bound the only correct form: the INSERT branch sets all three
+    clocks from a single read, the `DO UPDATE` branch moves only two of them.
     """
     repo = PgBrainSessionRepo(session_factory)
     identity = _Identity(autoopen_project, uuid4().hex)
@@ -317,19 +311,18 @@ async def test_open_session_count_speaks_of_humans_never_of_tracers(
     session_factory: async_sessionmaker[AsyncSession],
     autoopen_project: str,
 ) -> None:
-    """Le compteur a affiché 36 quand la concurrence humaine réelle était 2.
+    """The counter displayed 36 when the real human concurrency was 2.
 
-    Ticket 92fe7f0f : 63 traçantes ouvertes mesurées le 2026-08-29, chacune
-    pointant un transport mort — et `open_session_count`, rendu à chaque
-    `brain_session_start`, les additionne aux sessions de travail. Un lecteur
-    pressé y lit une concurrence qui n'existe pas ; ce compteur a déjà induit
-    en erreur une fois, pendant l'instruction du défaut d'absorption.
+    Ticket 92fe7f0f: 63 open tracers measured on 2026-08-29, each pointing at a dead
+    transport — and `open_session_count`, returned at every `brain_session_start`,
+    adds them to the working sessions. A hurried reader sees a concurrency that does
+    not exist there; this counter has already misled once, during the investigation
+    of the absorption defect.
 
-    La règle : le compteur parle des sessions que le CYCLE EXPLICITE gouverne
-    — `nature IS NULL` (pré-046, humaines par construction) ou non-`agent`.
-    Les traçantes ont leurs propres compteurs (le sweep les nomme séparément) ;
-    les cacher d'ICI n'est pas les cacher, c'est cesser de les faire passer
-    pour ce qu'elles ne sont pas.
+    The rule: the counter speaks of the sessions the EXPLICIT CYCLE governs —
+    `nature IS NULL` (pre-046, human by construction) or non-`agent`. The tracers
+    have their own counters (the sweep names them separately); hiding them from HERE
+    is not hiding them, it is ceasing to pass them off as what they are not.
     """
     repo = PgBrainSessionRepo(session_factory)
 
