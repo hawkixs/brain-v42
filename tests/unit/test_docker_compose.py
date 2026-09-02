@@ -9,6 +9,7 @@ Red phase: all tests MUST fail before implementation.
 Green phase: implement docker-compose.yml + data/postgres/.gitkeep + .gitignore
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -360,6 +361,54 @@ class TestEmbeddingShimBearerWiring:
         assert "SHIM_BEARER_TOKEN" not in environment
         for name, value in environment.items():
             assert "BEARER" not in name or value.startswith(("/run/secrets/", "optional"))
+
+
+class TestComposeSecretSources:
+    """Every secret source must be overridable, and every override documented.
+
+    The versioned defaults point under `./.secrets/`, a directory this host does
+    not have. That is fine for a fresh install and a trap for an existing one:
+    `docker compose up -d` fails on the first service whose secret source does
+    not resolve. The escape variable is what makes the running host work — so it
+    has to be discoverable, which means written down in a versioned example.
+    """
+
+    @pytest.fixture
+    def compose_secrets(self) -> dict:  # type: ignore[type-arg]
+        compose_file = REPO_ROOT / "docker-compose.yml"
+        with compose_file.open() as f:
+            return yaml.safe_load(f).get("secrets", {})  # type: ignore[no-any-return]
+
+    @staticmethod
+    def _override_variable(source: str) -> str | None:
+        """The `VAR` of a `${VAR:-fallback}` source, or None if hard-coded."""
+        match = re.fullmatch(r"\$\{([A-Z0-9_]+)(?::-[^}]*)?\}", source.strip())
+        return match.group(1) if match else None
+
+    def test_no_secret_source_is_hard_coded(self, compose_secrets: dict) -> None:  # type: ignore[type-arg]
+        """A literal path would tie the compose file to one machine."""
+        for name, secret in compose_secrets.items():
+            assert self._override_variable(str(secret.get("file", ""))) is not None, (
+                f"secret {name!r} must take its source from an override variable"
+            )
+
+    def test_every_override_variable_is_documented(self, compose_secrets: dict) -> None:  # type: ignore[type-arg]
+        """An undiscoverable variable is one nobody sets, so the default bites.
+
+        Measured 2026-09-02: `BRAIN_NEO4J_AUTH_FILE` was set nowhere in the
+        repository, the running container was bind-mounted from a path only the
+        operator knew, and the versioned default resolved to a file that does
+        not exist on this host.
+        """
+        example = REPO_ROOT / "deploy" / "compose-secrets.env.example"
+        assert example.exists(), f"{example.name} must document the override variables"
+        documented = example.read_text(encoding="utf-8")
+
+        for name, secret in compose_secrets.items():
+            variable = self._override_variable(str(secret.get("file", "")))
+            assert variable is not None and f"{variable}=" in documented, (
+                f"secret {name!r} uses {variable}, absent from {example.name}"
+            )
 
 
 class TestGitignore:
