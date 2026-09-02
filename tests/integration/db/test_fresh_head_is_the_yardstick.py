@@ -45,18 +45,34 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import subprocess
-import sys
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-import asyncpg
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
+
+from tests.integration.disposable_db import (
+    alembic_upgrade_head as _alembic_upgrade_head,
+)
+from tests.integration.disposable_db import (
+    asyncpg_dsn as _asyncpg_dsn,
+)
+from tests.integration.disposable_db import (
+    create_database as _create_database,
+)
+from tests.integration.disposable_db import (
+    drop_database as _drop_database,
+)
+from tests.integration.disposable_db import (
+    run_sql as _run_sql,
+)
+from tests.integration.disposable_db import (
+    swap_database as _swap_database,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -144,48 +160,6 @@ def _database_url_or_skip() -> str:
     if not url:
         pytest.skip("BRAIN_V42_TEST_DB_URL is not set")
     return url
-
-
-def _asyncpg_dsn(url: str) -> str:
-    return url.replace("postgresql+asyncpg://", "postgresql://", 1)
-
-
-def _swap_database(url: str, database: str) -> str:
-    base, _, _old = url.rpartition("/")
-    return f"{base}/{database}"
-
-
-def _run_sql(dsn: str, statements: list[str]) -> None:
-    async def run() -> None:
-        connection = await asyncpg.connect(dsn)
-        try:
-            for statement in statements:
-                await connection.execute(statement)
-        finally:
-            await connection.close()
-
-    asyncio.run(run())
-
-
-def _create_database(admin_url: str, database: str) -> None:
-    _run_sql(_asyncpg_dsn(admin_url), [f'CREATE DATABASE "{database}"'])
-
-
-def _drop_database(admin_url: str, database: str) -> None:
-    _run_sql(_asyncpg_dsn(admin_url), [f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)'])
-
-
-def _alembic_upgrade_head(db_url: str) -> None:
-    result = subprocess.run(
-        [sys.executable, "-m", "alembic", "upgrade", "head"],
-        env={**os.environ, "POSTGRES_URL": db_url},
-        cwd=str(PROJECT_ROOT),
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"alembic upgrade head failed:\n{result.stderr}\n{result.stdout}")
 
 
 @pytest.fixture(scope="module")
