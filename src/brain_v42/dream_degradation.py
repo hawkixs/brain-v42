@@ -1,39 +1,38 @@
-"""Le préfixe qui distingue une nuit DÉGRADÉE d'une nuit simplement bavarde.
+"""The prefix that tells a DEGRADED night from a merely talkative one.
 
-Une phase Dream peut réussir en ayant été servie par son modèle de SECOURS :
-`dream_runs.status` vaut `'done'`, et la phrase de dégradation voyage dans
-`error_message` sans toucher au statut. C'est délibéré — un repli réussi n'est
-pas un échec, et le confondre avec un échec a déjà coûté un ticket (`4480d3df`,
-report confondu avec timeout).
+A Dream phase can succeed while having been served by its FALLBACK model:
+`dream_runs.status` reads `'done'`, and the degradation sentence travels in
+`error_message` without touching the status. That is deliberate — a successful
+fallback is not a failure, and confusing it with one has already cost a ticket
+(`4480d3df`, a deferral mistaken for a timeout).
 
-Mais `error_message` n'est PAS réservée à la dégradation. `extract` y écrit
-légitimement « N ticket(s) deferred or timed out before run deadline » sur des
-runs `'done'`. Un lecteur qui se contenterait de « il y a un message » lirait
-donc une nuit parfaitement propre comme une nuit dégradée. Le contrat porte sur
-le PRÉFIXE, et sur lui seul.
+But `error_message` is NOT reserved for degradation. `extract` legitimately
+writes "N ticket(s) deferred or timed out before run deadline" there on `'done'`
+runs. A reader settling for "there is a message" would therefore read a perfectly
+clean night as a degraded one. The contract is on the PREFIX, and on it alone.
 
-NE PAS DÉSACCENTUER CETTE VALEUR, ni la réécrire « à l'identique » ailleurs.
-Les lignes déjà en base la portent accentuée et il n'y a aucun backfill : une
-variante ASCII n'orpheliner pas seulement les lignes passées, elle les rendrait
-muettes sans qu'aucun test ne rougisse — le lecteur cesserait simplement de
-trouver ce qu'il cherche. C'est pour ça que la valeur vit ici plutôt que dans
-deux littéraux tenus d'accord par la discipline.
+DO NOT STRIP THE ACCENTS FROM THIS VALUE, nor rewrite it "identically" elsewhere.
+The rows already in the database carry it accented and there is no backfill: an
+ASCII variant would not merely orphan the past rows, it would make them mute
+without a single test turning red — the reader would simply stop finding what
+they are looking for. That is why the value lives here rather than in two
+literals held in agreement by discipline.
 
-Ce module vit à la racine du paquet et n'importe RIEN, comme
-`dream_run_project_key` et pour la même raison : le graphe de layering mesure
-`_root: []`, et une seule arête sortante d'ici referme huit cycles et fait
-sortir `scripts/check_module_layering.py` en `rc=2`, avant même pytest.
+This module lives at the package root and imports NOTHING, like
+`dream_run_project_key` and for the same reason: the layering graph measures
+`_root: []`, and a single outgoing edge from here closes eight cycles and makes
+`scripts/check_module_layering.py` exit with `rc=2`, before pytest even runs.
 
-Et il vit sous `src/`, pas sous `scripts/`, parce que le sens autorisé est
-`scripts → src`. Le `Dockerfile` ne copie jamais `scripts/` : un import
-`src → scripts` serait vert en local, vert en CI, et casserait l'image de
-production à l'import.
+And it lives under `src/`, not under `scripts/`, because the allowed direction is
+`scripts → src`. The `Dockerfile` never copies `scripts/`: an `src → scripts`
+import would be green locally, green in CI, and would break the production image
+at import time.
 """
 
 from __future__ import annotations
 
-# Écrit par `scripts/roadmap_curate.py::_degradation_notice`, lu par
-# `brain_v42.services.dream_run_service`. Les deux côtés doivent le tenir de
-# ce module — un littéral recopié dans le lecteur OU dans un test annule la
-# garde, exactement comme la révision Alembic retapée du learning `8dc7e042`.
+# Written by `scripts/roadmap_curate.py::_degradation_notice`, read by
+# `brain_v42.services.dream_run_service`. Both sides must take it from this
+# module — a literal copied into the reader OR into a test cancels the guard,
+# exactly like the retyped Alembic revision of learning `8dc7e042`.
 DEGRADED_PREFIX = "DÉGRADÉ"

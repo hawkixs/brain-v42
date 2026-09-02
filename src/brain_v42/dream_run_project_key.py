@@ -1,35 +1,34 @@
-"""La sentinelle de projet des phases Dream globales.
+"""The project sentinel of the global Dream phases.
 
-`dream_runs.project_key` (migration 042) distingue trois états, et les trois
-sont porteurs :
+`dream_runs.project_key` (migration 042) distinguishes three states, and all
+three carry meaning:
 
-- `NULL` — ligne écrite AVANT la 042. Pour toujours : il n'y a eu aucun
-  backfill, et il n'y en aura pas. Toute mesure rétrospective par projet sur
-  les lignes d'avant est impossible, définitivement. (Aucun décompte n'est
-  épinglé ici : `dream_runs` gagne six à neuf lignes chaque nuit à 06:00, et
-  un chiffre écrit dans un commentaire est faux le lendemain matin.)
-- `'*'` — phase GLOBALE. `extract`, `roadmap` et `sweep` sortent de la boucle
-  et tournent une fois par nuit, pour personne en particulier : elles n'ont pas
-  de projet à nommer. `RESONANCE` la pose aussi, bien qu'il soit mort et non
-  câblé, pour ne pas être le seul écrivain incohérent le jour où quelqu'un le
-  rebranche.
-- une clé kebab-case — phase PAR PROJET, telle que reçue par l'orchestrateur.
+- `NULL` — a row written BEFORE 042. Forever: there was no backfill, and there
+  will be none. Any retrospective per-project measurement over the earlier rows
+  is impossible, definitively. (No count is pinned here: `dream_runs` gains six
+  to nine rows every night at 06:00, and a figure written into a comment is
+  wrong by the following morning.)
+- `'*'` — a GLOBAL phase. `extract`, `roadmap` and `sweep` sit outside the loop
+  and run once a night, for nobody in particular: they have no project to name.
+  `RESONANCE` sets it too, although it is dead and unwired, so as not to be the
+  only inconsistent writer the day someone reconnects it.
+- a kebab-case key — a PER-PROJECT phase, as received by the orchestrator.
 
-Ce module vit à la racine du paquet et n'importe RIEN, volontairement. Le
-graphe de layering mesure `_root: []` alors que huit sous-paquets ciblent la
-racine : une seule arête sortante d'ici refermerait huit cycles et ferait
-sortir `scripts/check_module_layering.py` en `rc=2`, avant même pytest.
+This module lives at the package root and imports NOTHING, deliberately. The
+layering graph measures `_root: []` while eight sub-packages target the root: a
+single outgoing edge from here would close eight cycles and make
+`scripts/check_module_layering.py` exit with `rc=2`, before pytest even runs.
 
-Et il vit sous `src/`, pas sous `scripts/`, parce que le sens autorisé est
-`scripts → src`. Le `Dockerfile` ne copie jamais `scripts/` : un import
-`src → scripts` serait vert en local, vert en CI, et casserait l'image de
-production à l'import.
+And it lives under `src/`, not under `scripts/`, because the allowed direction is
+`scripts → src`. The `Dockerfile` never copies `scripts/`: an `src → scripts`
+import would be green locally, green in CI, and would break the production image
+at import time.
 """
 
 from __future__ import annotations
 
-# NE PAS faire transiter cette valeur par `canonicalize_project_key` : son
-# motif `^[a-z0-9]+([:-][a-z0-9]+)*$` la rejette. Sur les trois écrivains
-# best-effort l'exception serait avalée par conception, et la colonne
-# resterait NULL en silence, chaque nuit, sur les phases globales.
+# DO NOT route this value through `canonicalize_project_key`: its
+# `^[a-z0-9]+([:-][a-z0-9]+)*$` pattern rejects it. On the three best-effort
+# writers the exception would be swallowed by design, and the column would stay
+# NULL silently, every night, on the global phases.
 GLOBAL_PHASE_PROJECT_KEY = "*"

@@ -22,10 +22,10 @@ _KS_KEYS = {
 }
 
 
-# Clé À VALEUR DE LISTE, délibérément hors de `_KS_KEYS`. Ce dictionnaire rend un
-# `dict[str, bool]` et coerce par `value.lower() == "true"` : une liste de projets
-# y entrerait comme `False` et éteindrait une phase dans le briefing de session et
-# dans `/metrics` sans toucher la nuit. Une seconde fonction, pas une clé de plus.
+# A LIST-VALUED key, deliberately outside `_KS_KEYS`. That dictionary returns a
+# `dict[str, bool]` and coerces through `value.lower() == "true"`: a project list
+# would enter it as `False` and switch a phase off in the session briefing and in
+# `/metrics` without touching the night. A second function, not one more key.
 PROJECT_POOL_KEY = "BRAIN_DREAM_PROJECT_POOL"
 
 
@@ -44,25 +44,25 @@ def parse_killswitches(content: str) -> dict[str, bool]:
 
 
 def parse_project_pool(content: str) -> list[str]:
-    """Rend le pool de projets déclaré par le drop-in, dans l'ordre, sans doublon.
+    """Return the project pool the drop-in declares, in order, without duplicates.
 
-    Une clé absente rend une liste VIDE, jamais un défaut deviné. Ce parseur ne
-    voit pas le positionnel de ``ExecStart=`` ; inventer ``brain-v42`` ici
-    fabriquerait des attentes pour un projet que la nuit n'a peut-être pas servi,
-    c'est-à-dire une alarme sortie de nulle part.
+    A missing key returns an EMPTY list, never a guessed default. This parser
+    does not see ``ExecStart=``'s positional argument; inventing ``brain-v42``
+    here would manufacture expectations for a project the night may not have
+    served — that is, an alarm out of nowhere.
 
-    Il accepte les DEUX transports, et ce n'est pas de la complaisance :
+    It accepts BOTH transports, and that is not indulgence:
 
-    - ``Environment=KEY=a,b,c`` — la forme retenue, sans blanc à protéger ;
-    - ``Environment="KEY=a b"`` — la forme protégée, qui arrive entière.
+    - ``Environment=KEY=a,b,c`` — the chosen form, with no whitespace to quote;
+    - ``Environment="KEY=a b"`` — the quoted form, which arrives whole.
 
-    Et il rend plusieurs clés pour ``Environment=KEY=a b`` NON protégé, alors
-    que systemd, lui, poserait la variable à ``a`` et jetterait ``b``. La
-    divergence est volontaire. ``dream.sh`` ne peut pas voir ce piège : au
-    moment où il démarre, ``b`` a déjà disparu de son environnement. Ce fichier
-    est le seul endroit qui lise le texte d'origine, donc le seul qui puisse
-    faire sonner quelque chose — une alarme bruyante sur ``b`` manquant vaut
-    mieux qu'un accord silencieux avec une configuration cassée.
+    And it returns several keys for an UNQUOTED ``Environment=KEY=a b``, where
+    systemd would set the variable to ``a`` and throw ``b`` away. The divergence
+    is deliberate. ``dream.sh`` cannot see that trap: by the time it starts, ``b``
+    has already disappeared from its environment. This file is the only place
+    that reads the original text, hence the only one that can make something
+    ring — a loud alarm about a missing ``b`` is better than silent agreement
+    with a broken configuration.
     """
     pool: list[str] = []
     for raw in content.splitlines():

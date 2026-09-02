@@ -213,48 +213,48 @@ class Settings(BaseSettings):
     # --- Metrics sidecar ---
     metrics_enabled: bool = Field(default=False, validation_alias=_brain_alias("METRICS_ENABLED"))
     metrics_port: int = Field(default=9200, validation_alias=_brain_alias("METRICS_PORT"))
-    # Loopback par défaut (2026-07-04, supersède le 0.0.0.0 de b68356c2) :
-    # les consommateurs réels (red-monitor) sont locaux ; le webhook GitLab
-    # qui justifiait le bind LAN est off. Overridable via METRICS_HOST si
-    # revival (gateway docker) — pas de validator loopback-only exprès.
+    # Loopback by default (2026-07-04, supersedes the 0.0.0.0 of b68356c2): the
+    # real consumers (red-monitor) are local; the GitLab webhook that justified
+    # the LAN bind is off. Overridable through METRICS_HOST on revival (docker
+    # gateway) — deliberately no loopback-only validator.
     metrics_host: str = Field(default="127.0.0.1", validation_alias=_brain_alias("METRICS_HOST"))
-    # Posture du bind NON-loopback (eac03668). Sur un tel bind, les trois
-    # receveurs POST ne sont pas enregistrés et le refus vient du routeur
-    # aiohttp, invisible de l'access log comme des compteurs. Trois postures :
-    # `silent` (historique, DÉFAUT — le comportement que deux tests épinglaient
-    # sans le nommer), `warn` (routes toujours absentes, une ligne au démarrage
-    # qui nomme le sacrifice), `fail_closed` (la construction refuse). Le choix
-    # entre les trois est un ARBITRAGE OPÉRATEUR, pas un correctif : ce champ
-    # existe pour qu'il se prenne en une variable d'environnement, pas en lot.
+    # Posture for a NON-loopback bind (eac03668). On such a bind the three POST
+    # receivers are not registered and the refusal comes from the aiohttp router,
+    # invisible to the access log and to the counters alike. Three postures:
+    # `silent` (historical, DEFAULT — the behaviour two tests pinned without
+    # naming it), `warn` (routes still absent, one line at startup naming the
+    # sacrifice), `fail_closed` (construction refuses). Choosing between the
+    # three is an OPERATOR DECISION, not a fix: this field exists so it can be
+    # taken in one environment variable, not in a batch.
     metrics_nonloopback_posture: Literal["silent", "warn", "fail_closed"] = Field(
         default="silent", validation_alias=_brain_alias("METRICS_NONLOOPBACK_POSTURE")
     )
 
-    # --- Identité de transport (Mcp-Session-Id frappé par le serveur) ---
-    # Contrairement au reste du dépôt, ce réglage est livré OUVERT (donc avec
-    # état), parce que son alternative n'est pas « rien » mais « un panneau
-    # faux » : sans identifiant de connexion, quatre moteurs lancés dans un
-    # même répertoire déclarent le même acteur et s'effondrent en UNE ligne.
-    # Le levier de secours est l'environnement, pas une édition de code —
-    # MCP_HTTP_STATELESS=true suffit à revenir au mode sans état.
+    # --- Transport identity (Mcp-Session-Id, minted by the server) ---
+    # Unlike the rest of this repository, this setting ships OPEN (hence
+    # stateful), because its alternative is not "nothing" but "a wrong panel":
+    # without a connection identifier, four engines launched in the same
+    # directory declare the same actor and collapse into ONE row. The escape
+    # lever is the environment, not a code edit — MCP_HTTP_STATELESS=true is
+    # enough to go back to stateless mode.
     mcp_http_stateless: bool = Field(
         default=False, validation_alias=_brain_alias("MCP_HTTP_STATELESS")
     )
-    # Une session sans état vit dans un dict en mémoire et n'est rendue qu'au
-    # DELETE du client. Un client tué net n'en envoie pas : sans échéance, son
-    # état survit jusqu'au prochain redémarrage du processus.
+    # A stateful session lives in an in-memory dict and is only released on the
+    # client's DELETE. A client killed outright sends none: without a deadline,
+    # its state survives until the next process restart.
     mcp_http_session_idle_seconds: float = Field(
         default=900.0, validation_alias=_brain_alias("MCP_HTTP_SESSION_IDLE_SECONDS")
     )
 
-    # --- Client activity reporting (émetteur côté processus MCP) ---
-    # Livré FERMÉ, comme toute capacité neuve de ce dépôt. brain-mcp-http a
-    # Restart=always et le paquet est en install éditable sur src/ : un défaut
-    # ouvert armerait l'émetteur au premier redémarrage venu, sans que
-    # personne l'ait décidé. Le sidecar, lui, expose bien la route depuis la
-    # tâche 9 — ce n'est donc pas le récepteur qui manque, c'est le geste
-    # d'armement. Il appartient à l'opérateur, au rollout, avec la
-    # vérification de bout en bout et la déclaration de frontière réseau.
+    # --- Client activity reporting (emitter on the MCP process side) ---
+    # Shipped CLOSED, like every new capability in this repository.
+    # brain-mcp-http has Restart=always and the package is an editable install on
+    # src/: an open default would arm the emitter at the first restart to come,
+    # with nobody having decided it. The sidecar does expose the route, since
+    # task 9 — so it is not the receiver that is missing, it is the arming
+    # gesture. That belongs to the operator, to the rollout, with the end-to-end
+    # verification and the network boundary declaration.
     client_activity_reporting_enabled: bool = Field(
         default=False, validation_alias=_brain_alias("CLIENT_ACTIVITY_REPORTING_ENABLED")
     )
@@ -263,55 +263,53 @@ class Settings(BaseSettings):
         validation_alias=_brain_alias("CLIENT_ACTIVITY_URL"),
     )
 
-    # Auto-ouverture d'une session traçante `agent` par connexion HTTP, forme
-    # signée `ae0d0475` / ADR §0ter. Livré FERMÉ, comme toute capacité neuve —
-    # et ici la raison est plus dure qu'ailleurs : armé, ce drapeau fait ÉCRIRE
-    # le serveur sur une frontière de cycle de vie que le covenant réserve aux
-    # commandes explicites de l'utilisateur. Son armement est un geste
-    # d'opérateur, avec sa fenêtre d'observation, jamais un défaut.
+    # Auto-opening of an `agent` tracer session per HTTP connection, the signed
+    # shape `ae0d0475` / ADR §0ter. Shipped CLOSED, like every new capability —
+    # and here the reason is harder than elsewhere: armed, this flag makes the
+    # server WRITE on a lifecycle boundary the covenant reserves for the user's
+    # explicit commands. Arming it is an operator gesture, with its observation
+    # window, never a default.
     #
-    # Le nom suit la famille `BRAIN_SESSION_*` du PLAN §8bis, mais ne s'y
-    # trouve PAS : ce récapitulatif ne nomme aucun drapeau d'auto-ouverture.
-    # À faire signer avant armement.
+    # The name follows the `BRAIN_SESSION_*` family of PLAN §8bis, but is NOT in
+    # it: that summary names no auto-open flag. To be signed off before arming.
     brain_session_auto_open_enabled: bool = Field(default=False)
 
-    # Capture DÉRIVÉE : le serveur dépose l'artefact dans la traçante de la
-    # connexion à sa création, et la session de l'utilisateur ABSORBE ce ledger
-    # à sa commande suivante. Livré FERMÉ, et ici « fermé » est une CONDITION
-    # de livraison, pas de la prudence : la fermeture (`end`) exige encore
-    # « ledger non vide XOR nothing_to_capture_reason », donc armer ce drapeau
-    # ferait échouer `end` en fail-closed sur une session dont le ledger a été
-    # rempli sans qu'aucune capture explicite ait été demandée. Le retrait de ce
-    # XOR est un arbitrage qui n'est pas rendu.
+    # DERIVED capture: the server deposits the artifact into the connection's
+    # tracer at creation time, and the user's session ABSORBS that ledger on its
+    # next command. Shipped CLOSED, and here "closed" is a delivery CONDITION,
+    # not caution: closing (`end`) still requires "non-empty ledger XOR
+    # nothing_to_capture_reason", so arming this flag would make `end` fail
+    # closed on a session whose ledger was filled without any explicit capture
+    # being requested. Removing that XOR is a decision that has not been made.
     brain_session_derived_capture_enabled: bool = Field(default=False)
 
-    # Fermeture nocturne des traçantes `agent` inobservées (M-G, migration 046).
-    # Livré FERMÉ, et ici « fermé » n'est pas de la prudence de forme : le
-    # balayage tourne WET toutes les nuits depuis `dream.sh`, en `uv run` DEPUIS
-    # LE DÉPÔT. Sans ce drapeau, merger la règle l'ARMERAIT dès la nuit suivante,
-    # sans redémarrage, sans fenêtre d'observation et sans geste d'opérateur.
+    # Nightly closing of unobserved `agent` tracers (M-G, migration 046).
+    # Shipped CLOSED, and here "closed" is not formal caution: the sweep runs WET
+    # every night from `dream.sh`, under `uv run` FROM THE REPOSITORY. Without
+    # this flag, merging the rule would ARM it from the following night, with no
+    # restart, no observation window and no operator gesture.
     #
-    # Fermé, le prédicat du balayage est IDENTIQUE à celui d'avant la 046 —
-    # épinglé par un test, pas seulement par cette phrase.
+    # Closed, the sweep's predicate is IDENTICAL to the pre-046 one — pinned by a
+    # test, not only by this sentence.
     #
-    # Un drapeau et non un argument de `dream.sh` : `test_dream_sh_sweep.py`
-    # épingle `sweep_args` à `["--wet"]` et refuse tout argument de plus.
+    # A flag and not a `dream.sh` argument: `test_dream_sh_sweep.py` pins
+    # `sweep_args` to `["--wet"]` and refuses any further argument.
     #
-    # Nom NON SIGNÉ, comme celui de l'auto-ouverture. À faire trancher avant
-    # armement — c'est un détail réversible, pas la capacité.
+    # An UNSIGNED name, like the auto-open one. To be settled before arming — it
+    # is a reversible detail, not the capability.
     brain_session_inactive_sweep_enabled: bool = Field(default=False)
 
     @field_validator("client_activity_url")
     @classmethod
     def _client_activity_loopback_only(cls, v: str) -> str:
-        """Même garde que les binds, appliquée à une SORTIE.
+        """The same guard as the binds, applied to an OUTPUT.
 
-        ``mcp_http_host`` et ``automation_host`` contraignent ce que la machine
-        écoute ; cette URL décide de ce qu'elle émet, un enregistrement par
-        appel de tool, en feu-et-oubli. Un ``CLIENT_ACTIVITY_URL`` LAN posé
-        dans le ``.env`` partagé de ``brain-mcp-http.service`` sortirait donc
-        silencieusement de la machine. Fail-closed : ce qui n'est pas lisible
-        est refusé, pas ignoré.
+        ``mcp_http_host`` and ``automation_host`` constrain what the machine
+        listens on; this URL decides what it emits, one record per tool call, in
+        fire-and-forget. A LAN ``CLIENT_ACTIVITY_URL`` placed in
+        ``brain-mcp-http.service``'s shared ``.env`` would therefore silently
+        leave the machine. Fail-closed: what is not readable is refused, not
+        ignored.
         """
         try:
             parsed = urlsplit(v)
@@ -322,16 +320,16 @@ class Settings(BaseSettings):
             raise ValueError(f"client_activity_url must be http(s) (got scheme {parsed.scheme!r})")
         host = parsed.hostname
         if host not in {"127.0.0.1", "localhost", "::1"}:
-            # Seul l'hôte est recopié : une URL peut porter des identifiants.
+            # Only the host is copied over: a URL can carry credentials.
             raise ValueError(
                 f"client_activity_url must be loopback (got {host!r}); off-host egress is forbidden"
             )
         return v
 
-    # --- Tracing OTel (spans par appel de tool) ---
-    # Livré FERMÉ, même doctrine que l'émetteur d'activité : le processus MCP
-    # redémarre seul (``Restart=always``), donc un défaut ouvert armerait le
-    # tracing dès la fusion, vers un collecteur que personne n'a déployé.
+    # --- OTel tracing (spans per tool call) ---
+    # Shipped CLOSED, the same doctrine as the activity emitter: the MCP process
+    # restarts on its own (``Restart=always``), so an open default would arm
+    # tracing from the merge onwards, towards a collector nobody deployed.
     otel_tracing_enabled: bool = Field(
         default=False, validation_alias=_brain_alias("OTEL_TRACING_ENABLED")
     )
@@ -342,12 +340,12 @@ class Settings(BaseSettings):
     @field_validator("otel_endpoint")
     @classmethod
     def _otel_endpoint_loopback_only(cls, v: str) -> str:
-        """Un endpoint de traces est une SORTIE, il se valide comme un bind.
+        """A traces endpoint is an OUTPUT, it is validated like a bind.
 
-        Même garde que ``client_activity_url``, pour la même raison et un
-        contenu plus sensible : un span par appel de tool, portant l'acteur et
-        le nom du tool. Un endpoint LAN posé dans le ``.env`` PARTAGÉ sortirait
-        ça de la machine sans que personne ne l'ait décidé.
+        The same guard as ``client_activity_url``, for the same reason and over
+        more sensitive content: one span per tool call, carrying the actor and
+        the tool name. A LAN endpoint placed in the SHARED ``.env`` would take
+        that off the machine without anyone having decided it.
         """
         try:
             parsed = urlsplit(v)
@@ -358,7 +356,7 @@ class Settings(BaseSettings):
             raise ValueError(f"otel_endpoint must be http(s) (got scheme {parsed.scheme!r})")
         host = parsed.hostname
         if host not in {"127.0.0.1", "localhost", "::1"}:
-            # Seul l'hôte est recopié : une URL peut porter des identifiants.
+            # Only the host is copied over: a URL can carry credentials.
             raise ValueError(
                 f"otel_endpoint must be loopback (got {host!r}); off-host egress is forbidden"
             )
@@ -401,16 +399,16 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _codex_gateway_private_bind_only(self) -> Self:
         host = self.brain_codex_gateway_host
-        # Exception bandit B104 datée du 2026-08-16 (burn-in sécurité, ticket 7adeddf2).
-        # Le littéral ci-dessous n'est PAS une adresse de bind : c'est le motif que ce
-        # validateur REFUSE. La valeur comparée vient du champ `brain_codex_gateway_host`,
-        # dont le défaut est "127.0.0.1" et dont la seule autre source est la variable
-        # d'environnement BRAIN_CODEX_GATEWAY_HOST ; le bind réel se fait plus loin, sur
-        # le champ déjà validé (codex_gateway/launcher.py et codex_gateway/__main__.py).
-        # Poser 0.0.0.0 sans `brain_codex_gateway_allow_all_interfaces=true` (défaut False)
-        # lève ici, avant tout démarrage. Invariant épinglé par
-        # tests/unit/test_config_codex_gateway.py.
-        if host == "0.0.0.0":  # nosec B104 - rejet, source env BRAIN_CODEX_GATEWAY_HOST
+        # Bandit B104 exception dated 2026-08-16 (security burn-in, ticket 7adeddf2).
+        # The literal below is NOT a bind address: it is the pattern this validator
+        # REFUSES. The compared value comes from the `brain_codex_gateway_host` field,
+        # whose default is "127.0.0.1" and whose only other source is the
+        # BRAIN_CODEX_GATEWAY_HOST environment variable; the real bind happens later, on
+        # the already validated field (codex_gateway/launcher.py and
+        # codex_gateway/__main__.py). Setting 0.0.0.0 without
+        # `brain_codex_gateway_allow_all_interfaces=true` (default False) raises here,
+        # before any startup. Invariant pinned by tests/unit/test_config_codex_gateway.py.
+        if host == "0.0.0.0":  # nosec B104 - rejection, env source BRAIN_CODEX_GATEWAY_HOST
             if not self.brain_codex_gateway_allow_all_interfaces:
                 raise ValueError(
                     "brain_codex_gateway_host=0.0.0.0 requires explicit "
@@ -428,11 +426,11 @@ class Settings(BaseSettings):
     decay_flush_interval_seconds: int = Field(
         default=300, validation_alias=_brain_alias("DECAY_FLUSH_INTERVAL_SECONDS")
     )
-    # §5.5 de la spec dream v2 — le SEUL changement du chantier qu'un humain
-    # sentirait le jour même, donc livré fermé. Ouvert, le decay lit
-    # `access_count_human` et `last_accessed_at_human` au lieu des totaux :
-    # ce que la MACHINE relit cesse de faire vivre un artefact. Fermé, les
-    # deux signaux restent les totaux et rien ne change.
+    # §5.5 of the dream v2 spec — the ONLY change in this project a human would
+    # feel the same day, hence shipped closed. Open, the decay reads
+    # `access_count_human` and `last_accessed_at_human` instead of the totals:
+    # what the MACHINE re-reads stops keeping an artifact alive. Closed, both
+    # signals stay the totals and nothing changes.
     decay_human_signal_enabled: bool = Field(
         default=False, validation_alias=_brain_alias("DECAY_HUMAN_SIGNAL_ENABLED")
     )

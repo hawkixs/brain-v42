@@ -1,11 +1,11 @@
-"""Provenance du corpus — qui a touché quelle entité.
+"""Corpus provenance — who touched which entity.
 
-Le header ``X-Brain-Agent`` est déclaré par le client, donc falsifiable : c'est
-un signal d'hygiène, pas une frontière de sécurité — même posture que le
-``client_key`` de session, « déclarée, pas prouvée ».
+The ``X-Brain-Agent`` header is declared by the client, hence falsifiable: it is
+a hygiene signal, not a security boundary — the same posture as the session
+``client_key``, "declared, not proven".
 
-Module feuille volontairement : aucune dépendance MCP ni base de données, pour
-qu'il soit importable depuis la couche transport comme depuis les services.
+A leaf module on purpose: no MCP and no database dependency, so it is importable
+from the transport layer as well as from the services.
 """
 
 from __future__ import annotations
@@ -17,48 +17,50 @@ from contextvars import ContextVar, Token
 UNKNOWN_ACTOR = "unknown"
 UNEXPANDED_ACTOR = "_unexpanded"
 
-# Largeur de la colonne access_log.actor (VARCHAR(64)) : un événement plus
-# long que ça fait échouer l'executemany en lot (PG 22001) et l'échec fait
-# perdre tout le batch, pas juste l'événement fautif.
+# Width of the access_log.actor column (VARCHAR(64)): an event longer than that
+# makes the batched executemany fail (PG 22001), and the failure loses the whole
+# batch, not just the offending event.
 MAX_ACTOR_LENGTH = 64
 
-# Préfixes des acteurs système qui se déclarent. On reconnaît la FAMILLE
-# `dream-`, jamais un rail nommé : les trois runners câblés émettent
-# `dream-codex-{phase}`, `dream-claude-{phase}` et `dream-agy-{phase}`, et tout
-# rail futur suivra le même gabarit. Énumérer un seul rail — ce que faisait
-# `("dream-codex-",)` — laissait les deux autres compter leurs relectures
-# nocturnes comme des lectures HUMAINES.
+# Prefixes of the system actors that declare themselves. We recognize the
+# `dream-` FAMILY, never a named rail: the three wired runners emit
+# `dream-codex-{phase}`, `dream-claude-{phase}` and `dream-agy-{phase}`, and any
+# future rail will follow the same template. Enumerating a single rail — which
+# `("dream-codex-",)` did — let the other two count their nightly re-reads as
+# HUMAN reads.
 #
-# La garantie ne vient pas de ce tuple mais de
-# `test_every_dream_rail_header_is_machine`, qui relit les runners et exige que
-# chaque en-tête émis soit classé machine : un quatrième rail qui s'écarterait du
-# gabarit fait rougir la suite au lieu de passer au travers.
+# The guarantee does not come from this tuple but from
+# `test_every_dream_rail_header_is_machine`, which re-reads the runners and
+# requires every emitted header to be classified as machine: a fourth rail
+# straying from the template reddens the suite instead of slipping through.
 #
-# Public : le prédicat SQL de `db/session_derived_capture.py` est le MIROIR de
-# `is_human_actor` — il importe ces constantes au lieu de les redéclarer, sans
-# quoi les deux classifications ne divergeraient qu'à la lecture, sur certains
-# chemins seulement (le mode de panne maison).
+# Public: the SQL predicate of `db/session_derived_capture.py` is the MIRROR of
+# `is_human_actor` — it imports these constants instead of redeclaring them,
+# without which the two classifications would diverge only at read time, on some
+# paths only (the in-house failure mode).
 SYSTEM_ACTOR_PREFIXES = ("dream-",)
 _SYSTEM_ACTOR_PREFIXES = SYSTEM_ACTOR_PREFIXES
 
-# Acteurs machine HORS famille `dream-`, recensés PAR SITE D'APPEL le
-# 2026-08-29 (ticket 6878077f). Des noms EXACTS, jamais un préfixe : `red-`
-# avalerait les basenames humains (`red-games` lancé interactivement).
+# Machine actors OUTSIDE the `dream-` family, surveyed BY CALL SITE on
+# 2026-08-29 (ticket 6878077f). EXACT names, never a prefix: `red-` would
+# swallow human basenames (`red-games` launched interactively).
 #
-# - `red-shrik` : bot actif (`systemctl is-active` → active), `brain_search`
-#   en boucle, se déclare via `red-shrik/src/shrik/mcp_client.py:83` ;
-# - `antigravity` : le même client, déploiement agy
-#   (`deploy/agy/settings.mcp.example.json`) ;
-# - `red-lab-factory` : l'acteur que red-lab DOIT poser (ticket a3fa6696) —
-#   pré-classé ici pour que le correctif cross-repo, le jour où il arrive, ne
-#   fasse pas basculer ce trafic d'`unknown` (machine) vers un nom compté
-#   humain : fermer un trou n'a pas à en ouvrir un ;
-# - `pc-dev-red` : client scripté du PC dev, mesuré sur `brain_ticket_list`.
+# - `red-shrik`: an active bot (`systemctl is-active` → active), `brain_search`
+#   in a loop, declaring itself through
+#   `red-shrik/src/shrik/mcp_client.py:83`;
+# - `antigravity`: the same client, agy deployment
+#   (`deploy/agy/settings.mcp.example.json`);
+# - `red-lab-factory`: the actor red-lab MUST set (ticket a3fa6696) —
+#   pre-classified here so that the cross-repo fix, the day it lands, does not
+#   flip this traffic from `unknown` (machine) to a name counted as human:
+#   closing one hole must not open another;
+# - `pc-dev-red`: the dev PC's scripted client, measured on
+#   `brain_ticket_list`.
 #
-# Coût assumé, dans le sens conservateur : une session interactive lancée
-# DEPUIS le répertoire d'un de ces services déclare le même basename et compte
-# machine. L'erreur coûte en couverture humaine (un plancher), jamais en
-# fausse écriture — le sens que 6878077f bénit.
+# An accepted cost, in the conservative direction: an interactive session
+# launched FROM one of these services' directories declares the same basename
+# and counts as machine. The error costs human coverage (a floor), never a false
+# write — the direction 6878077f blesses.
 SYSTEM_ACTOR_NAMES = frozenset(
     {
         "red-shrik",
@@ -76,19 +78,18 @@ _current_actor: ContextVar[str] = ContextVar(
 
 
 def normalize_agent(value: str | None) -> str:
-    """Réduire un ``X-Brain-Agent`` brut en nom d'acteur propre.
+    """Reduce a raw ``X-Brain-Agent`` to a clean actor name.
 
-    Les sessions Claude Code interactives envoient ``${PWD}``, que Claude Code
-    expanse en chemin absolu du projet : on garde le basename. Les libellés de
-    service statiques passent tels quels. Une session démon (pas de ``PWD``
-    dans l'environnement) laisse le gabarit non expansé, qu'on effondre sur un
-    seul seau plutôt que d'inventer un acteur par littéral. Le résultat est
-    tronqué à ``MAX_ACTOR_LENGTH`` : la colonne ``access_log.actor`` est
-    ``VARCHAR(64)`` et une valeur plus longue ferait échouer l'insert en lot
-    pour tout le batch. La troncature est déterministe et préserve la
-    classification humain/système — un nom de projet légitime trop long reste
-    compté comme humain plutôt que de basculer silencieusement sur
-    ``unknown``.
+    Interactive Claude Code sessions send ``${PWD}``, which Claude Code expands
+    into the project's absolute path: we keep the basename. Static service
+    labels pass through unchanged. A daemon session (no ``PWD`` in the
+    environment) leaves the template unexpanded, which we collapse onto a single
+    bucket rather than invent one actor per literal. The result is truncated to
+    ``MAX_ACTOR_LENGTH``: the ``access_log.actor`` column is ``VARCHAR(64)`` and
+    a longer value would fail the batched insert for the whole batch. The
+    truncation is deterministic and preserves the human/system classification —
+    a legitimate project name that is too long stays counted as human rather than
+    silently flipping to ``unknown``.
     """
     value = (value or "").strip()
     if not value:
@@ -109,12 +110,12 @@ _current_session: ContextVar[str | None] = ContextVar(
 
 
 def normalize_session(value: str | None) -> str | None:
-    """Réduire un ``X-Brain-Session`` brut en UUID canonique, ou ``None``.
+    """Reduce a raw ``X-Brain-Session`` to a canonical UUID, or ``None``.
 
-    Seule la forme canonique minuscule est acceptée : la valeur sert de clé de
-    jointure, et deux graphies de la même session produiraient deux lignes.
-    Tout ce qui n'est pas un UUID — gabarit non expansé, libellé, valeur
-    surdimensionnée — vaut ``None``, c'est-à-dire « pas de session déclarée ».
+    Only the canonical lowercase form is accepted: the value serves as a join
+    key, and two spellings of the same session would produce two rows. Anything
+    that is not a UUID — an unexpanded template, a label, an oversized value —
+    is ``None``, that is, "no session declared".
     """
     value = (value or "").strip()
     if not value or len(value) > _MAX_SESSION_CHARS:
@@ -136,20 +137,19 @@ _current_transport: ContextVar[str | None] = ContextVar(
 
 
 def normalize_transport(value: str | None) -> str | None:
-    """Réduire un ``Mcp-Session-Id`` brut en identifiant de transport, ou ``None``.
+    """Reduce a raw ``Mcp-Session-Id`` to a transport identifier, or ``None``.
 
-    Domaine de clés SÉPARÉ de ``normalize_session``, et c'est délibéré.
-    ``Mcp-Session-Id`` est frappé par le SERVEUR (``uuid4().hex`` dans
-    ``streamable_http_manager``) : 32 hexadécimaux minuscules, sans tirets. Il
-    identifie une CONNEXION, pas une conversation d'agent, et n'a aucun pendant
-    dans les flux OTLP — il ne peut donc rien joindre. ``normalize_session``,
-    elle, garde l'espace des sessions d'agent, seul domicile légitime d'une
-    vraie jointure le jour où un client sait la déclarer.
+    A key domain SEPARATE from ``normalize_session``, and deliberately so.
+    ``Mcp-Session-Id`` is minted by the SERVER (``uuid4().hex`` in
+    ``streamable_http_manager``): 32 lowercase hex characters, no dashes. It
+    identifies a CONNECTION, not an agent conversation, and has no counterpart in
+    the OTLP streams — it can therefore join nothing. ``normalize_session``, for
+    its part, keeps the agent-session space, the only legitimate home of a real
+    join the day a client knows how to declare one.
 
-    Fail-closed strict sur la forme : la valeur reste bornée même si la garde de
-    transport saute en amont. La longueur est vérifiée AVANT le contenu — cet
-    en-tête est une entrée non maîtrisée et rien n'oblige un appelant à être
-    raisonnable.
+    Strictly fail-closed on the shape: the value stays bounded even if the
+    transport guard fails upstream. Length is checked BEFORE content — this
+    header is uncontrolled input and nothing obliges a caller to be reasonable.
     """
     value = (value or "").strip()
     if len(value) != _TRANSPORT_CHARS:
@@ -158,27 +158,27 @@ def normalize_transport(value: str | None) -> str | None:
 
 
 def set_current_transport(transport: str | None) -> None:
-    """Poser l'identifiant de transport pour la durée du contexte courant."""
+    """Set the transport identifier for the duration of the current context."""
     _current_transport.set(transport)
 
 
 def get_current_transport() -> str | None:
-    """Lire le transport courant. ``None`` hors contexte ou en mode sans état."""
+    """Read the current transport. ``None`` outside a context or when stateless."""
     return _current_transport.get()
 
 
 def set_current_session(session: str | None) -> None:
-    """Poser la session pour la durée du contexte courant."""
+    """Set the session for the duration of the current context."""
     _current_session.set(session)
 
 
 def get_current_session() -> str | None:
-    """Lire la session courante. ``None`` hors contexte ou sans déclaration."""
+    """Read the current session. ``None`` outside a context or undeclared."""
     return _current_session.get()
 
 
 def set_current_actor(actor: str) -> None:
-    """Poser l'acteur pour la durée du contexte courant."""
+    """Set the actor for the duration of the current context."""
     _current_actor.set(actor or UNKNOWN_ACTOR)
 
 
@@ -188,23 +188,22 @@ def get_current_actor() -> str:
 
 
 def is_human_actor(actor: str | None) -> bool:
-    """Vrai si l'acteur est une session humaine.
+    """True if the actor is a human session.
 
-    Fail-closed sur les sentinelles ET sur la famille système : un acteur
-    inconnu, non expansé ou préfixé `dream-` n'est PAS humain, donc ne peut pas
-    faire franchir à une entité le seuil de maturité de PROMOTE.
+    Fail-closed on the sentinels AND on the system family: an actor that is
+    unknown, unexpanded or prefixed `dream-` is NOT human, and therefore cannot
+    push an entity past PROMOTE's maturity threshold.
 
-    PORTÉE EXACTE, à ne pas surestimer — c'est ce que `test_promote_prepare`
-    rappelle déjà au juge PROMOTE : ceci n'est pas une liste blanche d'humains.
-    Un acteur humain est le basename du projet appelant, arbitraire par
-    construction, donc inénumérable ; exiger qu'un humain se déclare casserait
-    le cas légitime. Le bot d'un AUTRE projet qui pose son propre
-    `X-Brain-Agent` reste donc compté comme humain. La garde couvre la famille
-    `dream-` ET les acteurs machine RECENSÉS (`SYSTEM_ACTOR_NAMES`, par site
-    d'appel, datés dans leur commentaire) — pas toute machine concevable : le
-    reste du monde est humain par défaut, c'est le prix d'un espace de noms
-    inénumérable, et il se paie en plancher de couverture, jamais en fausse
-    écriture.
+    EXACT SCOPE, not to be overstated — this is what `test_promote_prepare`
+    already reminds the PROMOTE judge: this is not an allowlist of humans. A
+    human actor is the calling project's basename, arbitrary by construction and
+    hence unenumerable; requiring a human to declare themselves would break the
+    legitimate case. ANOTHER project's bot setting its own `X-Brain-Agent` is
+    therefore still counted as human. The guard covers the `dream-` family AND
+    the SURVEYED machine actors (`SYSTEM_ACTOR_NAMES`, by call site, dated in
+    their comment) — not every conceivable machine: the rest of the world is
+    human by default, that is the price of an unenumerable namespace, and it is
+    paid in coverage floor, never in false writes.
     """
     value = (actor or "").strip()
     if value in _NON_HUMAN:
@@ -218,7 +217,7 @@ _call_depth: ContextVar[int] = ContextVar("brain_v42_call_depth", default=0)
 
 
 def enter_call() -> Token[int]:
-    """Entrer d'un niveau dans la chaîne d'appels de tools."""
+    """Descend one level into the tool call chain."""
     return _call_depth.set(_call_depth.get() + 1)
 
 
@@ -228,11 +227,11 @@ def exit_call(token: Token[int]) -> None:
 
 
 def is_outermost_call() -> bool:
-    """Vrai au seul premier niveau d'imbrication.
+    """True at the outermost nesting level only.
 
-    En profil ``compact`` la passerelle ``brain_call_tool`` ré-entre dans la
-    chaîne de middlewares (mesuré, commit 58329a84) : ``on_call_tool`` se
-    déclenche deux fois par appel client. Compter à tous les niveaux
-    gonflerait le compteur x2 en production et x1 en profil natif.
+    Under the ``compact`` profile the ``brain_call_tool`` gateway re-enters the
+    middleware chain (measured, commit 58329a84): ``on_call_tool`` fires twice
+    per client call. Counting at every level would inflate the counter x2 in
+    production and x1 under the native profile.
     """
     return _call_depth.get() == 1
