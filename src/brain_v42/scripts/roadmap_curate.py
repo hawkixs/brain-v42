@@ -12,14 +12,15 @@ Hard guardrails:
 - merge within a project only, `into` must be in the batch;
 - cap of MAX_PROPOSALS_PER_NIGHT proposals/night (drop logged, never silent).
 
-Aggressive regime (evening of 2026-07-04): --wet applies ALL FOUR ops only if the
-model that produced the batch is in AUTO_APPLY_MODELS (WET_APPLYABLE_OPS =
-VALID_OPS, merge/rename included); --apply-ids remains the reviewed apply without
-an LLM.
+Wet scope (narrowed 2026-09-02): --wet applies only the ops WET_APPLYABLE_OPS
+names — `archive` and `status` — and only if the model that produced the batch is
+in AUTO_APPLY_MODELS. `merge` and `rename` are still proposed, never applied
+unattended; --apply-ids remains the reviewed apply without an LLM, and it applies
+every op.
 
 Usage:
     python -m scripts.roadmap_curate [--limit 10]        # propose (dry)
-    python -m scripts.roadmap_curate --limit 10 --wet    # propose + apply (all ops)
+    python -m scripts.roadmap_curate --limit 10 --wet    # propose + apply (archive/status)
     python -m scripts.roadmap_curate --apply-ids "3,4" --project-key red-lab
 """
 
@@ -139,11 +140,24 @@ MODEL_GONE_MARKER = "MODÈLE ABSENT CHEZ LE FOURNISSEUR"
 VALID_OPS = ("merge", "archive", "status", "rename")
 # 'archived' excluded: the `archive` op exists for that.
 PROPOSABLE_STATUSES = ("planned", "research", "design", "building", "deployed", "done")
-# Aggressive regime (evening of 2026-07-04, Armand's decision): wet applies ALL
-# FOUR ops, merge/rename included — the roadmap is lightly consumed, the cost of
-# a wrong curation is low, and Claude validates the applications at the morning
-# check. Replaces the §4 rollout ("archive/status ONLY").
-WET_APPLYABLE_OPS = VALID_OPS
+# NARROWED on 2026-09-02 (operator decision) back to what rollout §4 always
+# described. The 2026-07-04 aggressive regime bet that a wrong curation was cheap
+# and that the morning check would catch it; the history, measured read-only that
+# day, says otherwise. Of the 181 proposals the wet has ever applied, 150 (83%)
+# were `merge` or `rename` — the two ops the plan told an operator were out of
+# scope — and every apply falls inside one 11-day window (2026-07-04 → 07-14),
+# nothing since. Human review rejected 592 against those 181, including 14 of 14
+# on brain-v42 on 2026-09-02, all title rewrites (decision `892c1491`).
+#
+# Narrowing is free today because the nightly is DRY: what it changes is the day
+# of a flip, which would apply the 185 pending proposals under the old scope and
+# 45 under this one. `merge` and `rename` stay applicable BY REVIEW — `--apply-ids`
+# and `brain_apply_curation_proposal` both pass `allowed_ops=None`. What is
+# bounded here is the UNATTENDED path, and only it.
+#
+# A tuple, not a frozenset: `apply_proposals(allowed_ops: tuple[str, ...] | None)`
+# is the declared type, and membership is all this is ever used for.
+WET_APPLYABLE_OPS = ("archive", "status")
 MAX_FEATURES_PER_PROJECT = 30
 MAX_ARTIFACTS_PER_FEATURE = 10
 # Descriptions are prose, and some are essays. MEASURED read-only on 2026-09-02:

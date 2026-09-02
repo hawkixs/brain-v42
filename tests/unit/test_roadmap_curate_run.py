@@ -661,3 +661,60 @@ class TestDegradationNotice:
     def test_a_nominal_run_says_nothing(self):
         """The nominal case is MUTE: no batch served by the fallback."""
         assert rc._degradation_notice("primaire-vivant", 0, 10, []) is None
+
+
+class TestReviewKeepsEveryOpTheWetGaveUp:
+    """Narrowing the unattended path must not narrow the reviewed one (2026-09-02).
+
+    Until that day the two were indistinguishable in effect: `allowed_ops=None`
+    and `WET_APPLYABLE_OPS` admitted the same four ops, so nothing tested told
+    them apart and either could have been passed anywhere. Bounding the wet to
+    archive/status makes the difference load-bearing for the first time — and it
+    is the difference that keeps the 140 pending `merge`/`rename` proposals
+    applicable at all, instead of stranding them.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_reviewed_apply_ids_path_allows_every_op(self, run_mocks, monkeypatch):
+        rcode = await rc._run(
+            _args(wet=False, apply_ids="10,11", project_key="brain-v42"),
+            api_key="k",
+            model=rc.DEFAULT_ROADMAP_MODEL,
+            base_url="https://mock.nvidia.local/v1",
+            clock=_Clock([0.0]),
+        )
+
+        assert rcode == 0
+        run_mocks["apply"].assert_awaited_once()
+        assert run_mocks["apply"].await_args.kwargs["allowed_ops"] is None, (
+            "--apply-ids is the HUMAN review: bounding it to the wet scope would "
+            "make merge and rename unapplyable by anyone"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_nightly_wet_path_is_bounded_to_the_wet_scope(self, run_mocks, monkeypatch):
+        batch = _mk_batch("p1")
+        draft = _archive_draft(batch)
+        monkeypatch.setattr(rc, "fetch_project_batches", AsyncMock(return_value=[batch]))
+
+        async def fake_curate(client, model, b, **kw):
+            return BatchOutcome(batch=b, drafts=[draft], model_used=rc.DEFAULT_WET_ROADMAP_MODEL)
+
+        monkeypatch.setattr(rc, "curate_batch", fake_curate)
+        monkeypatch.setattr(
+            rc, "persist_proposals", AsyncMock(return_value=PersistResult(inserted=[10]))
+        )
+
+        rcode = await rc._run(
+            _args(wet=True),
+            api_key="k",
+            model=rc.DEFAULT_WET_ROADMAP_MODEL,
+            base_url="https://mock.nvidia.local/v1",
+            clock=_Clock([0.0]),
+        )
+
+        assert rcode == 0
+        run_mocks["apply"].assert_awaited_once()
+        passed = run_mocks["apply"].await_args.kwargs["allowed_ops"]
+        assert set(passed) == {"archive", "status"}
+        assert "merge" not in passed and "rename" not in passed
