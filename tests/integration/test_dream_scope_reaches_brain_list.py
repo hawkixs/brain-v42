@@ -1,27 +1,27 @@
-"""L'injection du middleware doit ATTEINDRE le SQL de brain_list, bout en bout.
+"""The middleware's injection must REACH brain_list's SQL, end to end.
 
-Les deux moitiés sont déjà prouvées, chacune de son côté :
+Both halves are already proved, each on its own side:
 
-- `tests/unit/mcp/test_dream_project_authorization.py` prouve que le middleware
-  INJECTE `project_key` dans les arguments de `brain_list` et refuse un
-  `project_key` divergent ;
-- `tests/integration/test_project_scoped_crud.py` prouve que les repos honorent un
-  `project_key` qu'on leur PASSE explicitement.
+- `tests/unit/mcp/test_dream_project_authorization.py` proves the middleware
+  INJECTS `project_key` into `brain_list`'s arguments and refuses a divergent
+  `project_key`;
+- `tests/integration/test_project_scoped_crud.py` proves the repositories honour a
+  `project_key` they are explicitly PASSED.
 
-Aucune ne prouve la jonction. Un remaniement de `brain_list` qui cesserait
-d'honorer l'argument injecté — un `project_key` oublié dans l'appel au service,
-un `canonicalize_project_key` qui l'écraserait — laisserait les DEUX suites
-vertes, et la nuit REORG repaginerait le corpus entier en silence. C'est le point
-le plus exposé du dispositif : `brain_list` est le SEUL outil CRUD qui n'appelle
-jamais `get_dream_project_scope()` lui-même, donc sa borne vit entièrement dans le
-middleware et n'a aucune redondance en aval.
+Neither proves the junction. A refactor of `brain_list` that stopped honouring the
+injected argument — a `project_key` forgotten in the call to the service, a
+`canonicalize_project_key` that overwrote it — would leave BOTH suites green, and
+the REORG night would re-paginate the whole corpus in silence. This is the setup's
+most exposed point: `brain_list` is the ONLY CRUD tool that never calls
+`get_dream_project_scope()` itself, so its bound lives entirely in the middleware
+and has no downstream redundancy.
 
-Le témoin négatif est dans le test, pas à côté : la même page demandée SANS
-l'autorisation doit rendre le corpus des deux projets. Sans lui, un `brain_list`
-qui ne rendrait jamais rien passerait pour parfaitement borné.
+The negative witness is inside the test, not next to it: the same page requested
+WITHOUT the authorisation must return both projects' corpus. Without it, a
+`brain_list` that never returned anything would pass for perfectly bounded.
 
-Contre `brain_test`, jamais `brain` — les clés portent le préfixe `integ-` que la
-purge de fin de session reconnaît.
+Against `brain_test`, never `brain` — the keys carry the `integ-` prefix the
+end-of-session purge recognises.
 """
 
 from __future__ import annotations
@@ -58,14 +58,14 @@ class MockMCP:
 
 
 class _UnusedResolver:
-    """`brain_list` n'a pas de référence à résoudre — l'appeler serait un défaut."""
+    """`brain_list` has no reference to resolve — calling it would be a defect."""
 
     async def references_belong_to_project(self, *_args: Any) -> bool:
         raise AssertionError("brain_list carries no reference to resolve")
 
 
 def _other_services() -> dict[str, Any]:
-    """Les quatre services que `brain_list` ne touche pas sur le chemin learning."""
+    """The four services `brain_list` does not touch on the learning path."""
     services: dict[str, Any] = {}
     for name in ("decision_svc", "snippet_svc", "runbook_svc", "adr_svc"):
         svc = MagicMock()
@@ -78,7 +78,7 @@ def _other_services() -> dict[str, Any]:
 
 @pytest.fixture
 def brain_list(session_factory: async_sessionmaker[AsyncSession]) -> Any:
-    """`brain_list` réel, câblé sur un LearningService réel et la vraie base."""
+    """The real `brain_list`, wired to a real LearningService and the real database."""
     from brain_v42.mcp.tools.crud_tools import register_crud_tools
 
     mcp = MockMCP()
@@ -95,7 +95,7 @@ def brain_list(session_factory: async_sessionmaker[AsyncSession]) -> Any:
 async def two_projects(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> tuple[str, str, str, str]:
-    """Un learning dans le projet du run, un dans un projet voisin."""
+    """One learning in the run's project, one in a neighbouring project."""
     service = LearningService(PgLearningRepo(session_factory=session_factory))
     suffix = uuid.uuid4().hex[:10]
     mine_key = f"integ-scope-mine-{suffix}"
@@ -139,10 +139,10 @@ async def _authorized_arguments(project_key: str, arguments: dict[str, Any]) -> 
 async def test_an_injected_perimeter_actually_bounds_the_page(
     brain_list: Any, two_projects: tuple[str, str, str, str]
 ) -> None:
-    """LE test de jonction : le middleware injecte, et le SQL en tient compte.
+    """THE junction test: the middleware injects, and the SQL takes it into account.
 
-    La page demandée est celle de REORG Partie 1 — `summary_only`, sans
-    `project_key`, parce que la phase n'en fournit jamais un elle-même.
+    The page requested is REORG Part 1's — `summary_only`, with no `project_key`,
+    because the phase never supplies one itself.
     """
     mine_key, mine_topic, _, theirs_topic = two_projects
     page = {"entity_type": "learning", "limit": 100, "offset": 0, "summary_only": True}
@@ -166,11 +166,11 @@ async def test_an_injected_perimeter_actually_bounds_the_page(
 async def test_the_same_page_unbounded_returns_both_projects(
     brain_list: Any, two_projects: tuple[str, str, str, str]
 ) -> None:
-    """Témoin négatif, sans lequel le test ci-dessus ne prouve rien.
+    """The negative witness, without which the test above proves nothing.
 
-    Un `brain_list` cassé qui ne rendrait jamais rien satisferait l'assertion
-    « le voisin n'apparaît pas ». Ce test-ci exige que le voisin SOIT visible
-    quand rien ne borne la page — c'est ce qui rend son absence significative.
+    A broken `brain_list` that never returned anything would satisfy the assertion
+    "the neighbour does not appear". This test requires the neighbour to BE visible
+    when nothing bounds the page — that is what makes its absence significant.
     """
     _, mine_topic, _, theirs_topic = two_projects
 
@@ -187,10 +187,10 @@ async def test_the_same_page_unbounded_returns_both_projects(
 async def test_a_forged_perimeter_never_reaches_the_page(
     brain_list: Any, two_projects: tuple[str, str, str, str]
 ) -> None:
-    """Le refus est en AMONT du SQL : l'appel n'a jamais lieu.
+    """The refusal is UPSTREAM of the SQL: the call never happens.
 
-    Complète la jonction par l'autre bout — l'injection borne, et une tentative
-    de la contredire ne descend pas jusqu'à la base.
+    Completes the junction from the other end — the injection bounds, and an attempt
+    to contradict it does not reach the database.
     """
     from fastmcp.exceptions import AuthorizationError
 

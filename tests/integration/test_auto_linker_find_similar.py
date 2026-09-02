@@ -1,23 +1,24 @@
-"""Integration: le SQL réel de ``AutoLinker._find_similar`` contre Postgres+pgvector.
+"""Integration: ``AutoLinker._find_similar``'s real SQL against Postgres+pgvector.
 
-Ticket c623fa75 — sur les 36 tests unitaires d'auto_linker, aucun ne fait parser
-cette requête par Postgres : 23 remplacent ``_find_similar`` par un AsyncMock,
-10 l'appellent contre ``_RecordingSession``, un faux qui rend ``fetchall() == []``.
-Un SQL invalide (espace perdu entre deux bras de l'UNION, colonne renommée par une
-migration) garderait donc tout vert ; à l'exécution l'exception serait avalée par
-le ``except Exception`` d'``auto_link`` et CONNECT sortirait
-``created=0 matched=0 skipped=0 errors=0`` — la nuit marquée verte EN NE LIANT RIEN.
+Ticket c623fa75 — of auto_linker's 36 unit tests, none makes Postgres parse this
+query: 23 replace ``_find_similar`` with an AsyncMock, 10 call it against
+``_RecordingSession``, a fake that returns ``fetchall() == []``. Invalid SQL (a lost
+space between two arms of the UNION, a column renamed by a migration) would
+therefore keep everything green; at run time the exception would be swallowed by
+``auto_link``'s ``except Exception`` and CONNECT would return
+``created=0 matched=0 skipped=0 errors=0`` — the night marked green WHILE LINKING
+NOTHING.
 
-Ces tests exécutent la vraie requête, dans ses deux variantes (scopée projet et
-non scopée — deux textes SQL distincts), et prouvent que le filtre lifecycle
-FILTRE au lieu de seulement exister : la cible archivée au registre porte
-toujours son embedding et sortirait en tête (similarité 1.0) si le prédicat
-EXISTS ne la retenait pas. C'est la transcription du triplet hors-bande du
-2026-08-18 : ancien prédicat -> 1 ligne, prédicat qualifié -> 0 ligne.
+These tests execute the real query, in both its variants (project-scoped and
+unscoped — two distinct SQL texts), and prove that the lifecycle filter FILTERS
+instead of merely existing: the target archived in the registry still carries its
+embedding and would come out first (similarity 1.0) if the EXISTS predicate did not
+hold it back. This is the transcription of the out-of-band triplet of 2026-08-18:
+old predicate -> 1 row, qualified predicate -> 0 rows.
 
-Aucune condition de skip propre à ce fichier : il suit exactement le régime de la
-suite (``BRAIN_V42_TEST_DB_URL`` requis), et la CI publique le fait tourner sur
-son service Postgres ``brain_test``.
+No skip condition specific to this file: it follows exactly the suite's regime
+(``BRAIN_V42_TEST_DB_URL`` required), and the public CI runs it against its
+``brain_test`` Postgres service.
 """
 
 from __future__ import annotations
@@ -40,15 +41,15 @@ pytestmark = pytest.mark.integration
 
 
 def _unique_key() -> str:
-    # Kebab-case pour le validateur de clé ; le cleanup de session purge
-    # LIKE 'integ_%' où '_' est un joker mono-caractère, donc 'integ-…' est purgé.
+    # Kebab-case for the key validator; the session cleanup purges LIKE 'integ_%'
+    # where '_' is a single-character wildcard, so 'integ-…' is purged.
     return f"integ-autolink-{uuid_module.uuid4().hex[:8]}"
 
 
 def _marker_vec(dim: int = _EMBEDDING_DIM) -> list[float]:
-    # Axe 1, pas l'axe 0 utilisé par les autres tests d'intégration : les résidus
-    # éventuels d'autres fichiers tombent à similarité 0.0 et ne peuvent pas
-    # évincer nos candidats (similarité 1.0) du LIMIT de la variante non scopée.
+    # Axis 1, not the axis 0 used by the other integration tests: any residue from
+    # other files falls to similarity 0.0 and cannot evict our candidates (similarity
+    # 1.0) from the unscoped variant's LIMIT.
     v = [0.0] * dim
     v[1] = 1.0
     return v
@@ -58,7 +59,7 @@ async def _archive_registry_row(
     session_factory: async_sessionmaker[AsyncSession],
     source_uuid: UUID,
 ) -> None:
-    """Archive l'entité AU REGISTRE (brain_entities), là où le prédicat lit."""
+    """Archive the entity IN THE REGISTRY (brain_entities), where the predicate reads."""
     async with session_factory() as session:
         result = await session.execute(
             sa.text(
@@ -66,8 +67,8 @@ async def _archive_registry_row(
             ),
             {"source_uuid": source_uuid},
         )
-        # rowcount == 1 prouve au passage que le trigger 033 a bien enregistré
-        # l'entité : un 0 ici signalerait un registre mort, pas un filtre mort.
+        # rowcount == 1 also proves the 033 trigger did register the entity: a 0 here
+        # would signal a dead registry, not a dead filter.
         assert result.rowcount == 1
         await session.commit()
 
@@ -77,7 +78,7 @@ async def _seed(
     project_key: str,
     vec: list[float],
 ) -> tuple[UUID, UUID, UUID]:
-    """Insère source, cible active et cible archivée ; rend leurs UUID."""
+    """Insert the source, the active target and the archived target; return their UUIDs."""
     repo = PgLearningRepo(session_factory)
     source = await repo.create(
         LearningCreate(
@@ -110,7 +111,7 @@ async def _seed(
 async def test_scoped_variant_runs_and_lifecycle_filter_filters(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """La variante scopée parse, rend les actives (multi-tables) et retient l'archivée."""
+    """The scoped variant parses, returns the active ones (multi-table) and holds back the archived one."""
     project_key = _unique_key()
     vec = _marker_vec()
     source_id, active_id, archived_id = await _seed(session_factory, project_key, vec)
@@ -135,8 +136,9 @@ async def test_scoped_variant_runs_and_lifecycle_filter_filters(
     ids = {row["id"] for row in rows}
     assert active_id in ids
     assert cross_table.id in ids
-    # Le cœur du ticket : le filtre FILTRE. L'embedding archivé existe toujours
-    # et sortirait à similarité 1.0 sans le prédicat EXISTS qualifié.
+    # The heart of the ticket: the filter FILTERS. The archived embedding still
+    # exists and would come out at similarity 1.0 without the qualified EXISTS
+    # predicate.
     assert archived_id not in ids
     assert source_id not in ids
 
@@ -148,7 +150,7 @@ async def test_scoped_variant_runs_and_lifecycle_filter_filters(
 async def test_unscoped_variant_runs_and_lifecycle_filter_filters(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """La variante non scopée est un AUTRE texte SQL : elle doit parser et filtrer aussi."""
+    """The unscoped variant is ANOTHER SQL text: it must parse and filter too."""
     project_key = _unique_key()
     vec = _marker_vec()
     source_id, active_id, archived_id = await _seed(session_factory, project_key, vec)

@@ -1,16 +1,15 @@
-"""Le chien de garde de diagnostic doit TIRER, SURVIVRE, être BORNÉ, et NOMMER ses trous.
+"""The diagnostic watchdog must FIRE, SURVIVE, be BOUNDED, and NAME its gaps.
 
-Un dump jamais déclenché est du code mort qui se lit comme une protection. Un
-dump déclenché dans un canal que le processus jette en sortant l'est tout autant,
-et c'est le défaut MESURÉ de la première rédaction : sous
-``-o faulthandler_exit_on_timeout=true``, faulthandler sort par ``os._exit``,
-pytest n'écrit jamais le rapport de l'item, et ``grep -c "DUMP TÂCHES"`` sur la
-sortie complète du run rend **0**. La CI arme exactement cette configuration.
+A dump that is never triggered is dead code that reads as a protection. A dump
+triggered into a channel the process throws away on its way out is just as much
+so, and that is the MEASURED defect of the first draft: under
+``-o faulthandler_exit_on_timeout=true``, faulthandler exits through ``os._exit``,
+pytest never writes the item's report, and ``grep -c "DUMP TÂCHES"`` over the run's
+whole output returns **0**. CI arms exactly that configuration.
 
-Ces tests-ci ne mesurent donc pas une mise en forme : ils mesurent que le dump
-s'exécute pendant que la tâche est encore suspendue, qu'il EXISTE ENCORE après une
-sortie brutale du processus, que son volume est majoré, et qu'une pile illisible
-est DITE.
+These tests therefore do not measure a formatting: they measure that the dump runs
+while the task is still suspended, that it STILL EXISTS after a brutal process
+exit, that its volume is over-estimated, and that an unreadable stack is SAID.
 """
 
 from __future__ import annotations
@@ -37,20 +36,20 @@ from tests.integration.metrics.task_dump import (
 
 pytestmark = pytest.mark.integration
 
-#: Ce que le sous-processus de la preuve de survie doit dépenser au pire. Le
-#: faulthandler y est armé à 3 s : au-delà de cette borne c'est le lanceur qui a
-#: un problème, pas le cas mesuré.
+#: What the survival proof's subprocess must spend at worst. faulthandler is armed
+#: at 3 s there: beyond this bound it is the launcher that has a problem, not the
+#: measured case.
 _SURVIVAL_PROOF_BUDGET_SECONDS = 90.0
 
 
 @pytest.fixture(autouse=True)
 def _durable_sink_under_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Les dumps de CE module écrivent dans ``tmp_path``, pas dans les vrais puits.
+    """THIS module's dumps write into ``tmp_path``, not into the real sinks.
 
-    Plusieurs tests ici déclenchent un dump EXPRÈS. Sans cette redirection, ils
-    appenderaient au journal partagé du runner et au résumé d'étape GitHub à
-    chaque run vert : le canal qu'on vient de rendre durable deviendrait un bruit
-    permanent, et un bruit permanent finit par être filtré par son lecteur.
+    Several tests here trigger a dump ON PURPOSE. Without this redirection, they
+    would append to the runner's shared log and to the GitHub step summary on every
+    green run: the channel we have just made durable would become permanent noise,
+    and permanent noise ends up filtered out by its reader.
     """
     sink = tmp_path / "dump.log"
     monkeypatch.setenv(DUMP_FILE_ENV, str(sink))
@@ -59,11 +58,11 @@ def _durable_sink_under_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
 
 
 async def test_the_watchdog_fires_while_the_task_is_still_suspended() -> None:
-    """Le dump tire PENDANT l'attente, et nomme la frame encore suspendue.
+    """The dump fires DURING the wait, and names the still-suspended frame.
 
-    C'est la différence avec un dump posé dans le ``except TimeoutError`` :
-    ``asyncio.wait_for`` annule puis ATTEND l'annulation, donc là-bas
-    ``Task.get_stack()`` d'une tâche terminée rend une liste vide.
+    This is the difference with a dump placed in the ``except TimeoutError``:
+    ``asyncio.wait_for`` cancels then WAITS for the cancellation, so over there
+    ``Task.get_stack()`` on a finished task returns an empty list.
     """
     stream = io.StringIO()
     never = asyncio.Event()
@@ -84,22 +83,22 @@ async def test_the_watchdog_fires_while_the_task_is_still_suspended() -> None:
     text = stream.getvalue()
     assert "témoin" in text
     assert "la-victime" in text
-    # La frame suspendue est nommée, pas seulement la tâche.
+    # The suspended frame is named, not only the task.
     assert "waits_forever" in text
     assert "test_task_dump.py:" in text
-    # Et la CHAÎNE, pas seulement la frame externe : `Task.get_stack()` d'une
-    # coroutine suspendue ne rend QU'UNE frame. Sans le parcours `cr_await`, le
-    # dump dirait « la tâche est dans waits_forever » — ce qu'on savait déjà —
-    # et tairait le maillon qui attend réellement.
+    # And the CHAIN, not only the outer frame: `Task.get_stack()` on a suspended
+    # coroutine returns only ONE frame. Without the `cr_await` walk, the dump would
+    # say "the task is in waits_forever" — which we already knew — and would leave
+    # unsaid the link that is actually waiting.
     assert "asyncio/locks.py:" in text, f"chaîne d'attente absente du dump:\n{text}"
 
 
 async def test_the_watchdog_does_not_fire_or_survive_on_the_happy_path() -> None:
-    """Chemin heureux : aucun dump, et AUCUNE tâche laissée vivante.
+    """Happy path: no dump, and NO task left alive.
 
-    Un chien de garde est une tâche de plus sur la même boucle. Non annulé, il
-    recrée la tâche immortelle que ``asyncio.Runner.close()`` attend ensuite sans
-    borne — le hang serait déplacé, pas fermé.
+    A watchdog is one more task on the same loop. Not cancelled, it recreates the
+    immortal task ``asyncio.Runner.close()`` then waits for without a bound — the
+    hang would be moved, not closed.
     """
     stream = io.StringIO()
     before = {t.get_name() for t in asyncio.all_tasks()}
@@ -114,7 +113,7 @@ async def test_the_watchdog_does_not_fire_or_survive_on_the_happy_path() -> None
 
 
 async def test_the_watchdog_never_fails_the_test_it_observes() -> None:
-    """Une sonde cassée doit rendre ``# indisponible``, jamais masquer la panne."""
+    """A broken probe must return ``# indisponible``, never mask the failure."""
     stream = io.StringIO()
 
     class Explodes:
@@ -130,7 +129,7 @@ async def test_the_watchdog_never_fails_the_test_it_observes() -> None:
 
 
 def test_the_dump_is_capped_and_says_how_much_it_omitted() -> None:
-    """Un log noyé est aussi inexploitable qu'un log absent : le budget est majoré."""
+    """A drowned log is as unusable as an absent one: the budget is over-estimated."""
 
     class FakeTask:
         def __init__(self, index: int) -> None:
@@ -163,12 +162,12 @@ def test_the_dump_is_capped_and_says_how_much_it_omitted() -> None:
     lines = text.splitlines()
     assert len(lines) <= MAX_LINES, f"{len(lines)} lignes — le dump noie le log"
     assert f"{len(tasks) - MAX_TASKS} tâche(s) omise(s)" in text
-    # Trou NOMMÉ, pas omis en silence.
+    # A NAMED gap, not one silently omitted.
     assert "pile illisible" in text
 
 
 def test_a_task_without_a_recoverable_stack_is_named_not_dropped() -> None:
-    """Une tâche sans pile récupérable DOIT apparaître, avec son trou déclaré."""
+    """A task with no recoverable stack MUST appear, with its gap declared."""
 
     class Finished:
         def get_name(self) -> str:
@@ -200,11 +199,11 @@ def test_a_task_without_a_recoverable_stack_is_named_not_dropped() -> None:
 
 
 async def test_a_chain_that_ends_is_not_reported_as_truncated() -> None:
-    """« tronquée » doit vouloir dire tronquée.
+    """The word "tronquée" must mean truncated.
 
-    La première rédaction posait la note dans le ``else`` du ``for`` : une chaîne
-    qui se terminait pile au dernier maillon était annoncée coupée. Une borne qui
-    ment sur elle-même se relit comme un maillon manquant qui n'existe pas.
+    The first draft put the note in the ``for``'s ``else``: a chain that ended
+    exactly at the last link was announced as cut. A bound that lies about itself
+    reads back as a missing link that does not exist.
     """
     stream = io.StringIO()
     async with dump_tasks_after(0.02, label="chaîne-courte", stream=stream):
@@ -212,20 +211,20 @@ async def test_a_chain_that_ends_is_not_reported_as_truncated() -> None:
 
     text = stream.getvalue()
     assert "tronquée" not in text.split("-- tâches")[0]
-    # La tâche courante dort : sa chaîne tient en trois maillons et se termine.
+    # The current task is sleeping: its chain fits in three links and terminates.
     assert "asyncio/tasks.py" in text
 
 
 def test_the_dump_survives_a_faulthandler_hard_exit(tmp_path: Path) -> None:
-    """LA preuve : le dump existe encore APRÈS ``os._exit``.
+    """THE proof: the dump still exists AFTER ``os._exit``.
 
-    Rejoué du chemin de CI, pas d'un équivalent : un vrai pytest, avec
-    ``faulthandler_timeout`` + ``exit_on_timeout``, sur un cas armé qui ne revient
-    jamais. Sur la rédaction stderr-seule, ce même run rendait
-    ``grep -c "DUMP TÂCHES"`` = **0** sur toute sa sortie — le diagnostic était
-    muet précisément là où il sert. On n'assert PAS l'absence côté console : ce
-    serait épingler le comportement de capture de pytest, qui n'est pas le contrat
-    de ce module. Ce qu'on épingle est la présence côté fichier.
+    Replayed from CI's path, not from an equivalent: a real pytest, with
+    ``faulthandler_timeout`` + ``exit_on_timeout``, on an armed case that never
+    returns. On the stderr-only draft, that same run returned
+    ``grep -c "DUMP TÂCHES"`` = **0** over its whole output — the diagnosis was mute
+    precisely where it serves. We do NOT assert the absence on the console side:
+    that would pin pytest's capture behaviour, which is not this module's contract.
+    What is pinned is the presence on the file side.
     """
     repo_root = Path(__file__).resolve().parents[3]
     sink = tmp_path / "durable" / "dump.log"
@@ -274,8 +273,8 @@ def test_the_dump_survives_a_faulthandler_hard_exit(tmp_path: Path) -> None:
     )
 
     console = completed.stdout + completed.stderr
-    # Le processus est bien sorti PAR le filet, sinon la preuve porte sur un
-    # autre chemin que celui de la CI.
+    # The process did exit THROUGH the net, otherwise the proof bears on a path
+    # other than CI's.
     assert "Timeout (0:00:03)!" in console, f"faulthandler n'a pas tiré:\n{console[-2000:]}"
     assert completed.returncode != 0
 
@@ -285,8 +284,8 @@ def test_the_dump_survives_a_faulthandler_hard_exit(tmp_path: Path) -> None:
     )
     durable = sink.read_text(encoding="utf-8")
     assert "DUMP TÂCHES ASYNCIO — preuve-os-exit" in durable
-    # Et il porte le maillon utile, pas seulement le titre : le parcours
-    # `cr_await` est le coeur du livrable, la survie ne vaut rien sans lui.
+    # And it carries the useful link, not only the title: the `cr_await` walk is the
+    # heart of the deliverable, survival is worth nothing without it.
     assert "asyncio/locks.py:" in durable, f"chaîne d'attente absente:\n{durable}"
     assert "item:" in durable and "horodatage:" in durable
 
@@ -294,7 +293,7 @@ def test_the_dump_survives_a_faulthandler_hard_exit(tmp_path: Path) -> None:
 def test_the_default_sink_lands_under_runner_temp(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Le puits par défaut est le scratch du runner, et l'explicite le remplace."""
+    """The default sink is the runner's scratch, and the explicit one replaces it."""
     monkeypatch.delenv(DUMP_FILE_ENV, raising=False)
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path / "runner"))
@@ -303,8 +302,8 @@ def test_the_default_sink_lands_under_runner_temp(
     monkeypatch.setenv(DUMP_FILE_ENV, str(tmp_path / "explicite.log"))
     assert durable_sink_paths() == [tmp_path / "explicite.log"]
 
-    # Le résumé d'étape s'AJOUTE : il porte la visibilité, pas la durabilité,
-    # et il n'existe que sous GitHub Actions.
+    # The step summary is ADDED: it carries visibility, not durability, and it only
+    # exists under GitHub Actions.
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
     assert durable_sink_paths() == [tmp_path / "explicite.log", tmp_path / "summary.md"]
 
@@ -312,10 +311,10 @@ def test_the_default_sink_lands_under_runner_temp(
 async def test_an_unreachable_sink_is_named_and_never_fails_the_test(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Un puits injoignable est DIT dans le dump, jamais tu, jamais levé.
+    """An unreachable sink is SAID in the dump, never left unsaid, never raised.
 
-    Le canal durable est du code qui tourne pendant une panne. S'il levait, il
-    remplacerait le diagnostic par le sien.
+    The durable channel is code that runs during an outage. If it raised, it would
+    replace the diagnosis with its own.
     """
     blocker = tmp_path / "pas-un-dossier"
     blocker.write_text("je suis un fichier", encoding="utf-8")
@@ -332,11 +331,11 @@ async def test_an_unreachable_sink_is_named_and_never_fails_the_test(
 
 
 class _FakeMcp:
-    """Un singleton FastMCP crédible : toutes les sondes MCP y réussissent.
+    """A credible FastMCP singleton: every MCP probe succeeds on it.
 
-    Le contraire du ``Explodes`` ci-dessus. Ici on ne mesure pas la robustesse
-    d'une sonde cassée, on mesure QUELLES sondes sont relevées — un faux qui lève
-    rendrait « indisponible » et masquerait une sonde qu'on croit retirée.
+    The opposite of the ``Explodes`` above. Here we do not measure a broken probe's
+    robustness, we measure WHICH probes are read — a fake that raised would return
+    "indisponible" and would mask a probe we believe removed.
     """
 
     _lifespan_ref_count = 0
@@ -353,35 +352,36 @@ class _FakeMcp:
 
 
 def test_the_refuted_lifespan_probes_are_no_longer_collected() -> None:
-    """Les TROIS sondes lifespan sont RÉFUTÉES PAR LE CODE, donc retirées.
+    """The THREE lifespan probes are REFUTED BY THE CODE, hence removed.
 
-    ``mcp = FastMCP("brain", mask_error_details=True)`` (server.py) est construit
-    SANS lifespan : ``_lifespan_proxy`` (fastmcp/server/server.py:264-266) rend
-    ``{}`` et SORT avant de lire ``_lifespan_ref_count``, ``_lifespan_result_set``
-    ou ``_lifespan_result``. Aucune des trois ne peut influencer une requête, donc
-    aucune ne peut expliquer une panne. C'est du bruit qui se lit comme de
-    l'information dans un dump qu'on ne relit qu'en panne.
+    ``mcp = FastMCP("brain", mask_error_details=True)`` (server.py) is built WITHOUT
+    a lifespan: ``_lifespan_proxy`` (fastmcp/server/server.py:264-266) returns ``{}``
+    and EXITS before reading ``_lifespan_ref_count``, ``_lifespan_result_set`` or
+    ``_lifespan_result``. None of the three can influence a request, so none can
+    explain a failure. It is noise that reads as information in a dump one only
+    re-reads during an outage.
     """
     probes = collect_probes(mcp=_FakeMcp())
 
     assert "mcp._lifespan_ref_count" not in probes
     assert "mcp._lifespan_result_set" not in probes
-    # `_lifespan_result` tombe avec les deux autres, et pour la même raison : le
-    # proxy sort avant de la lire. Elle varie (`None`/`{}`), mais c'est exactement
-    # ce que dit `_started.is_set()` — un doublon causalement inerte n'est pas une
-    # mesure. `_FakeMcp` la PORTE, donc ce test échouerait si on la remettait.
+    # `_lifespan_result` falls with the other two, and for the same reason: the
+    # proxy exits before reading it. It does vary (`None`/`{}`), but that is exactly
+    # what `_started.is_set()` says — a causally inert duplicate is not a
+    # measurement. `_FakeMcp` DOES carry it, so this test would fail if it came back.
     assert "mcp._lifespan_result is None" not in probes
     assert "mcp._started.is_set()" in probes
 
 
 def test_the_sse_exit_latch_is_probed_and_named_apart_from_uvicorns() -> None:
-    """DEUX ``should_exit`` distincts, et la sortie ne doit pas les confondre.
+    """TWO distinct ``should_exit``, and the output must not confuse them.
 
-    ``sse_starlette.sse.AppStatus.should_exit`` est un attribut de CLASSE, donc
-    GLOBAL AU PROCESSUS et jamais remis à ``False``; il arme la seule sortie
-    immédiate et muette de ``_listen_for_exit_signal``. ``server.should_exit`` est
-    l'instance uvicorn de CE banc. Les lire pour la même variable annulerait la
-    mesure, donc leurs clés doivent être lisibles séparément.
+    ``sse_starlette.sse.AppStatus.should_exit`` is a CLASS attribute, hence
+    PROCESS-GLOBAL and never reset to ``False``; it arms
+    ``_listen_for_exit_signal``'s only immediate and silent exit.
+    ``server.should_exit`` is THIS bench's uvicorn instance. Reading them as the
+    same variable would cancel the measurement, so their keys must be readable
+    separately.
     """
 
     class _FakeUvicorn:
@@ -403,22 +403,22 @@ def test_the_sse_exit_latch_is_probed_and_named_apart_from_uvicorns() -> None:
     assert len(instance) == 1, f"sonde uvicorn absente ou dupliquée: {sorted(probes)}"
     assert latch != instance
 
-    # Rendues, les deux lignes doivent rester distinguables à l'oeil nu.
+    # Once rendered, the two lines must stay distinguishable by eye.
     text = format_probe_report(label="deux-latches", probes=probes)
     assert "GLOBAL processus" in text
     assert "INSTANCE locale du banc" in text
-    # Et la valeur réellement lue, pas un placeholder.
+    # And the value actually read, not a placeholder.
     assert probes[latch[0]].endswith(("True", "False")), probes[latch[0]]
 
 
 def test_the_sse_latch_probe_is_named_unavailable_when_the_module_is_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``sse_starlette`` peut ne pas être importable : la sonde DIT, ne lève pas.
+    """``sse_starlette`` may not be importable: the probe SAYS so, it does not raise.
 
-    L'import est tardif et défensif. Une ``ImportError`` doit rendre une ligne
-    « indisponible », jamais faire échouer le dump — un diagnostic qui meurt de
-    son annexe remplace la panne observée par la sienne.
+    The import is late and defensive. An ``ImportError`` must return an
+    "indisponible" line, never fail the dump — a diagnosis that dies of its annex
+    replaces the observed failure with its own.
     """
     monkeypatch.setitem(sys.modules, "sse_starlette.sse", None)
 
@@ -426,20 +426,20 @@ def test_the_sse_latch_probe_is_named_unavailable_when_the_module_is_absent(
 
     (latch,) = [name for name in probes if "AppStatus.should_exit" in name]
     assert "indisponible" in probes[latch]
-    # La FAMILLE, pas la classe exacte : un module absent lève
-    # `ModuleNotFoundError`, sous-classe d'`ImportError`. Épingler le nom littéral
-    # « ImportError » ferait échouer ce test sur le cas le plus banal de son propre
-    # scénario.
+    # The FAMILY, not the exact class: a missing module raises
+    # `ModuleNotFoundError`, a subclass of `ImportError`. Pinning the literal name
+    # "ImportError" would fail this test on the most mundane case of its own
+    # scenario.
     assert "Error" in probes[latch] and "sse_starlette" in probes[latch]
 
 
 def test_the_sse_latch_probe_is_named_unavailable_when_the_attribute_moves(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``AppStatus.should_exit`` est un attribut PRIVÉ d'amont : il peut disparaître.
+    """``AppStatus.should_exit`` is a PRIVATE upstream attribute: it can disappear.
 
-    Même contrat que pour l'import manquant, autre exception : une
-    ``AttributeError`` doit rendre une ligne « indisponible », jamais tuer le dump.
+    The same contract as for the missing import, a different exception: an
+    ``AttributeError`` must return an "indisponible" line, never kill the dump.
     """
     from sse_starlette.sse import AppStatus
 
@@ -453,26 +453,26 @@ def test_the_sse_latch_probe_is_named_unavailable_when_the_attribute_moves(
 
 
 def test_the_entry_witness_reads_the_latch_before_the_bench_touches_anything() -> None:
-    """Le relevé d'entrée est la mesure qui tranche : il doit être PREMIER.
+    """The entry reading is the measurement that settles it: it must come FIRST.
 
-    ``True`` à l'entrée du banc metrics = un module antérieur a laissé le latch
-    armé (``tests/integration/mcp/**`` est collecté avant : « mcp » < « metrics »),
-    et la cause est établie. ``False`` tue l'hypothèse proprement. Le relevé ne
-    vaut que s'il est pris AVANT que ce banc ne construise quoi que ce soit :
-    déplacé sous ``build_services()``, il mesurerait l'état que le banc vient
-    lui-même de produire et ne pourrait plus attribuer le latch à personne.
+    ``True`` on entering the metrics bench = an earlier module left the latch armed
+    (``tests/integration/mcp/**`` is collected before: "mcp" < "metrics"), and the
+    cause is established. ``False`` kills the hypothesis cleanly. The reading is only
+    worth anything if it is taken BEFORE this bench builds anything at all: moved
+    below ``build_services()``, it would measure the state the bench has just
+    produced itself and could no longer attribute the latch to anyone.
 
-    Épinglé sur le TEXTE parce que l'ordre est la seule chose qui compte ici et
-    qu'aucune exécution ne peut le prouver sans monter le banc entier.
+    Pinned on the TEXT because the order is the only thing that matters here and no
+    execution can prove it without standing up the whole bench.
     """
     source = (Path(__file__).parent / "test_agent_attribution.py").read_text(encoding="utf-8")
 
     witness = source.index("collect_probes(mcp=mcp)")
     build = source.index("services = build_services()")
     assert witness < build, "le témoin d'entrée est passé APRÈS le montage du banc"
-    # Et il reste un RELEVÉ : aucune assertion sur le latch, tant qu'on ne sait
-    # pas ce que la valeur vaut en pratique. Asserter ici convertirait un
-    # coin-flip en rouge franc sans qu'on sache pourquoi.
+    # And it stays a READING: no assertion on the latch, as long as we do not know
+    # what the value is worth in practice. Asserting here would convert a coin-flip
+    # into a plain red without anyone knowing why.
     between = source[witness:build]
     asserting = [line for line in between.splitlines() if line.strip().startswith("assert ")]
     assert asserting == [], f"le témoin d'entrée assert au lieu de relever: {asserting}"

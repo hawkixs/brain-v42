@@ -286,7 +286,7 @@ async def _compose_full(session_factory, graph_enabled: bool = False):
     ctx = SimpleNamespace(**ctx_data)
     decisions_list = [SimpleNamespace(**dict(r)) for r in decision_rows]
     learnings_list = [SimpleNamespace(**dict(r)) for r in learning_rows]
-    # Chemin inexistant → fallback sur dream_runs : golden déterministe (hors host).
+    # Non-existent path → fallback on dream_runs: a deterministic golden (host-free).
     killswitches = await dream_svc.killswitch_state(
         killswitches_path=Path("/nonexistent/killswitches.conf")
     )

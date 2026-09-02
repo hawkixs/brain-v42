@@ -228,7 +228,7 @@ async def test_persist_proposals_then_apply_proposals_roundtrip():
 
 
 async def test_create_skipped_persists_and_excluded_from_pending_scan():
-    """Un ticket créé 'skipped' persiste et n'entre jamais dans le scan extract."""
+    """A ticket created 'skipped' persists and never enters the extract scan."""
     db_url = require_test_db_url()
     _run_alembic_upgrade(db_url)
     engine = create_async_engine(db_url)

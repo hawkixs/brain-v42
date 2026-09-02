@@ -1,4 +1,4 @@
-"""Migration 041 — la date de contenu ne bouge que sur un changement de valeur."""
+"""Migration 041 — the content date only moves on a change of value."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ class TestContentUpdatedAtTrigger:
         assert value is None
 
     async def test_counter_write_does_not_stamp_content(self, db_session) -> None:
-        """Le cas qui a produit la boucle de 23 nuits."""
+        """The case that produced the 23-night loop."""
         lid = uuid.uuid4()
         await db_session.execute(
             sa.text(
@@ -72,7 +72,7 @@ class TestContentUpdatedAtTrigger:
         assert value is not None
 
     async def test_rewriting_identical_content_does_not_stamp(self, db_session) -> None:
-        """Sémantique de valeur : recopier le même texte ne rajeunit rien."""
+        """Value semantics: copying the same text back rejuvenates nothing."""
         lid = uuid.uuid4()
         await db_session.execute(
             sa.text(
@@ -94,7 +94,7 @@ class TestContentUpdatedAtTrigger:
 
 class TestMigrationShape:
     async def test_update_updated_at_is_untouched(self, db_session) -> None:
-        """La 039 épingle cette fonction par SHA256 : la 041 ne doit pas y toucher."""
+        """039 pins this function by SHA256: 041 must not touch it."""
         digest = (
             await db_session.execute(
                 sa.text(

@@ -1,4 +1,4 @@
-"""L'agrégation sépare les lectures humaines des lectures du dream."""
+"""The aggregation separates the human reads from the dream's reads."""
 
 from __future__ import annotations
 

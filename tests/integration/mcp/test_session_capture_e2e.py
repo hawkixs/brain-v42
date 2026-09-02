@@ -91,19 +91,19 @@ def _free_port() -> int:
 
 
 _SHUTDOWN_BUDGET_SECONDS = 15.0
-#: Un appel d'outil traverse HTTP, la base, et parfois un service d'embedding
-#: injoignable qui réessaie. Large, donc — mais BORNÉ : ce qui compte n'est pas
-#: la valeur, c'est qu'aucune attente ne soit infinie.
+#: A tool call crosses HTTP, the database, and sometimes an unreachable embedding
+#: service that retries. Generous, then — but BOUNDED: what matters is not the
+#: value, it is that no wait is infinite.
 _CALL_BUDGET_SECONDS = 90.0
-#: Ce qu'on accorde à une annulation pour aboutir. Courte : passé ce délai le
-#: diagnostic doit sortir, même si la tâche survit.
+#: What a cancellation is granted to complete. Short: past that delay the
+#: diagnosis must come out, even if the task survives.
 _CANCEL_BUDGET_SECONDS = 10.0
 _LINK_BUDGET_SECONDS = 30.0
 
-#: Les clés que ce banc pose dans l'environnement du PROCESSUS. Le témoin de
-#: sortie les relit une par une : une seule qui fuit arme l'auto-ouverture pour
-#: tous les modules suivants du même `pytest`, et leur ajoute une traçante et
-#: des connexions à chaque appel d'outil.
+#: The keys this bench sets in the PROCESS environment. The exit witness reads
+#: them back one by one: a single one leaking arms auto-open for every following
+#: module of the same `pytest`, and adds a tracer and connections to each of their
+#: tool calls.
 _BENCH_ENV_KEYS = (
     "POSTGRES_URL",
     "BRAIN_MCP_TRANSPORT",
@@ -122,13 +122,13 @@ _BENCH_ENV_KEYS = (
 
 
 async def _bounded(awaitable: Any, *, budget: float, what: str) -> Any:
-    """Attendre AVEC une borne, et NOMMER ce qui n'est pas revenu.
+    """Wait WITH a bound, and NAME what did not come back.
 
-    Le banc n'a plus aucune attente infinie, et c'est une exigence en soi : une
-    attente non bornée transforme une panne en SILENCE. La CI l'a payé deux
-    fois — trente minutes de rien, un job tué, et un journal qui ne dit pas ce
-    qui bloquait. Un rouge nommé au bout de N secondes vaut mieux qu'un timeout
-    de job, même quand la borne se déclenche pour une bonne raison.
+    The bench no longer has any infinite wait, and that is a requirement in itself:
+    an unbounded wait turns a failure into SILENCE. CI paid for it twice — thirty
+    minutes of nothing, a killed job, and a log that does not say what was blocking.
+    A named red after N seconds is worth more than a job timeout, even when the
+    bound fires for a good reason.
     """
     try:
         return await asyncio.wait_for(awaitable, timeout=budget)
@@ -157,11 +157,11 @@ async def _stop_or_fail(serving: asyncio.Task[None], port: int) -> None:
         await asyncio.wait_for(asyncio.shield(serving), timeout=_SHUTDOWN_BUDGET_SECONDS)
     except TimeoutError:
         serving.cancel()
-        # BORNÉE elle aussi, et c'est le défaut que W19-b avait laissé : ce
-        # `await` était NU, avec le `pytest.fail` DERRIÈRE lui. Un diagnostic
-        # nommé, mort sur exactement le chemin d'erreur pour lequel il est
-        # écrit. FastMCP ferme son lifespan sous `anyio.CancelScope(shield=True)`
-        # — l'annulation peut être absorbée, et l'attente ne revient jamais.
+        # BOUNDED too, and this is the defect W19-b had left behind: that `await`
+        # was BARE, with the `pytest.fail` BEHIND it. A named diagnosis, dead on
+        # exactly the error path it is written for. FastMCP closes its lifespan
+        # under `anyio.CancelScope(shield=True)` — the cancellation can be absorbed,
+        # and the wait never returns.
         with suppress(asyncio.CancelledError, TimeoutError):
             await asyncio.wait_for(asyncio.shield(serving), timeout=_CANCEL_BUDGET_SECONDS)
         pytest.fail(
@@ -197,18 +197,17 @@ async def _backend_count(engine: AsyncEngine) -> int:
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def module_exit_witness(engine: AsyncEngine) -> AsyncIterator[None]:
-    """Prouver qu'à la sortie du module le PROCESSUS est rendu comme il a été pris.
+    """Prove that on the module's exit the PROCESS is returned as it was taken.
 
-    Ce banc est le seul de la suite à toucher des états de processus : des
-    variables d'environnement, une classe de FastMCP substituée, un ouvreur
-    mémoïsé, un moteur global. Chacun de ces états, laissé derrière, arme
-    l'auto-ouverture ou casse le démarrage HTTP pour TOUS les modules suivants du
-    même `pytest` — et ça ne se voit pas comme un rouge chez nous, ça se voit
-    comme un hang chez le voisin. C'est exactement ce qui a coûté deux fois
-    trente minutes de CI.
+    This bench is the suite's only one to touch process state: environment
+    variables, a substituted FastMCP class, a memoised opener, a global engine. Each
+    of those states, left behind, arms auto-open or breaks the HTTP startup for ALL
+    the following modules of the same `pytest` — and it does not show as a red on
+    our side, it shows as a hang on the neighbour's. That is exactly what cost two
+    lots of thirty CI minutes.
 
-    Il tourne APRÈS ``mcp_base_url`` parce que celui-ci en dépend : pytest
-    finalise à l'envers de la mise en place.
+    It runs AFTER ``mcp_base_url`` because that one depends on it: pytest finalises
+    in reverse order of setup.
     """
     import fastmcp.server.http as fastmcp_http
 
@@ -248,8 +247,8 @@ async def module_exit_witness(engine: AsyncEngine) -> AsyncIterator[None]:
         "la factory de session globale n'a pas été rendue"
     )
 
-    # Les backends ne disparaissent pas à l'instant du `dispose()` : on ATTEND
-    # qu'ils redescendent, mais avec une borne, comme tout le reste ici.
+    # The backends do not disappear at the instant of `dispose()`: we WAIT for them
+    # to come down, but with a bound, like everything else here.
     deadline = _SHUTDOWN_BUDGET_SECONDS
     while deadline > 0:
         after = await _backend_count(engine)
@@ -335,12 +334,12 @@ async def mcp_base_url(module_exit_witness: None) -> AsyncIterator[str]:
 
         original_session_manager = fastmcp_http.StreamableHTTPSessionManager
 
-        # MESURÉ : `apply_tool_catalog_profile` fait `mcp.add_transform(...)` sur
-        # le singleton de MODULE, et les transforms S'EMPILENT — 0, puis 1, puis
-        # 2 à la deuxième application. `build_server()` en pose une ; le banc de
-        # `tests/integration/metrics/` en pose une autre sur le MÊME objet. Le
-        # module suivant sert donc son catalogue à travers DEUX passerelles
-        # compactes chaînées. On rend la pile telle qu'on l'a prise.
+        # MEASURED: `apply_tool_catalog_profile` does `mcp.add_transform(...)` on
+        # the MODULE singleton, and the transforms STACK — 0, then 1, then 2 at the
+        # second application. `build_server()` adds one; the
+        # `tests/integration/metrics/` bench adds another on the SAME object. The
+        # next module therefore serves its catalogue through TWO chained compact
+        # gateways. We return the stack as we took it.
         from brain_v42.mcp.server import mcp as shared_mcp
 
         original_transforms = list(shared_mcp.transforms)
@@ -366,13 +365,13 @@ async def mcp_base_url(module_exit_witness: None) -> AsyncIterator[str]:
                 port=port,
                 log_level="error",
                 loop="asyncio",
-                # MESURÉ : uvicorn 0.41.0 livre `timeout_graceful_shutdown=None`,
-                # et `Server.shutdown()` fait
-                # `wait_for(self._wait_tasks_to_complete(), timeout=None)` —
-                # une attente INFINIE, à l'intérieur de la tâche. Aucune borne
-                # posée à l'extérieur ne la libère : FastMCP ferme son lifespan
-                # sous `anyio.CancelScope(shield=True)`, donc un `cancel()` peut
-                # être ABSORBÉ. La seule borne qui mord est celle-ci, dedans.
+                # MEASURED: uvicorn 0.41.0 ships `timeout_graceful_shutdown=None`,
+                # and `Server.shutdown()` does
+                # `wait_for(self._wait_tasks_to_complete(), timeout=None)` — an
+                # INFINITE wait, inside the task. No bound set from the outside
+                # releases it: FastMCP closes its lifespan under
+                # `anyio.CancelScope(shield=True)`, so a `cancel()` can be ABSORBED.
+                # The only bound that bites is this one, inside.
                 timeout_graceful_shutdown=5,
             )
         )
@@ -383,9 +382,9 @@ async def mcp_base_url(module_exit_witness: None) -> AsyncIterator[str]:
                 break
         else:
             server.should_exit = True
-            # Bornée elle aussi : ce chemin ne s'emprunte QUE lorsque le serveur
-            # va déjà mal, et c'est exactement là qu'un `await` nu pend pour
-            # toujours au lieu de rapporter.
+            # Bounded too: this path is only taken when the server is ALREADY
+            # unwell, and that is exactly where a bare `await` hangs forever instead
+            # of reporting.
             await _bounded(
                 serving,
                 budget=_SHUTDOWN_BUDGET_SECONDS,
@@ -402,10 +401,9 @@ async def mcp_base_url(module_exit_witness: None) -> AsyncIterator[str]:
             reset_session_autoopener()
             await _stop_or_fail(serving, port)
             if engine_module._engine is not None:
-                # `dispose()` ATTEND que les connexions soient réellement
-                # rendues. C'est la seule attente non bornée qui restait après
-                # le correctif de W17-e, et elle tombe exactement là où la CI
-                # s'est tue : APRÈS le dernier test du module.
+                # `dispose()` WAITS for the connections to be genuinely returned.
+                # It is the only unbounded wait left after W17-e's fix, and it falls
+                # exactly where CI went silent: AFTER the module's last test.
                 await _bounded(
                     engine_module._engine.dispose(),
                     budget=_SHUTDOWN_BUDGET_SECONDS,
@@ -511,12 +509,12 @@ _READ_BUDGET_SECONDS = 30.0
 
 
 async def _read_rows(engine: AsyncEngine, statement: Any, params: dict[str, Any]) -> list[Any]:
-    """Relire la base, BORNÉ — y compris l'obtention de la connexion.
+    """Read the database back, BOUNDED — the connection acquisition included.
 
-    C'est la famille d'attentes qui restait nue, et c'est celle qui a la forme
-    exacte d'un hang sans erreur : **un pool saturé n'échoue pas, il ATTEND.**
-    `engine.connect()` peut donc pendre indéfiniment sans qu'aucune requête ne
-    soit en cause, et sans rien écrire dans le journal.
+    This is the family of waits that stayed bare, and it is the one with the exact
+    shape of a hang with no error: **a saturated pool does not fail, it WAITS.**
+    `engine.connect()` can therefore hang indefinitely with no query at fault, and
+    without writing anything to the log.
     """
 
     async def _run() -> list[Any]:
@@ -648,12 +646,12 @@ async def test_the_bench_can_see_a_tracer_at_all(mcp_base_url: str, engine: Asyn
 
 @contextmanager
 def _derived_capture(enabled: bool) -> Iterator[None]:
-    """Ouvrir ou fermer la dérivation POUR DE VRAI, dans le serveur qui tourne.
+    """Open or close the derivation FOR REAL, in the running server.
 
-    Le drapeau est lu à l'appel — par ``derive_capture`` et par le service — et
-    non capturé au démarrage. Le basculer ici prouve donc les deux régimes sur
-    UN seul serveur ; en monter un second appellerait ``plan_http_transport``
-    une deuxième fois, ce que ``_configure_http_security`` refuse à raison.
+    The flag is read at call time — by ``derive_capture`` and by the service — and
+    not captured at startup. Toggling it here therefore proves both regimes on ONE
+    server; standing up a second would call ``plan_http_transport`` a second time,
+    which ``_configure_http_security`` rightly refuses.
     """
     from brain_v42.config import get_settings
 
@@ -679,7 +677,7 @@ async def _tracer_of(engine: AsyncEngine, project_key: str, connection_id: str) 
 
 
 async def _sole_tracer(engine: AsyncEngine, project_key: str) -> str:
-    """L'unique traçante ouverte du projet — l'unicité est elle-même l'assertion."""
+    """The project's single open tracer — the uniqueness is itself the assertion."""
     rows = await _read_rows(engine, _OPEN_TRACER_IDS, {"project_key": project_key})
     assert len(rows) == 1, f"attendu une seule traçante ouverte, vu {len(rows)}"
     return str(rows[0][0])
@@ -689,32 +687,32 @@ async def _sole_tracer(engine: AsyncEngine, project_key: str) -> str:
 async def test_capture_is_derived_and_converges_without_a_single_explicit_capture(
     mcp_base_url: str, engine: AsyncEngine
 ) -> None:
-    """La demande de l'utilisateur, prouvée depuis la base : zéro `brain_session_capture`.
+    """The user's request, proved from the database: zero `brain_session_capture`.
 
-    Trois temps. (a) Drapeau FERMÉ : rien n'est attribué — c'est le témoin
-    négatif, et il vaut maintenant pour le régime fermé, pas pour l'absence de
-    mécanisme. (b) Drapeau OUVERT : l'artefact atterrit dans la TRAÇANTE, jamais
-    directement dans la session de l'utilisateur. (c) La convergence : au
-    heartbeat, la session absorbe et l'artefact lui appartient.
+    Three moments. (a) Flag CLOSED: nothing is attributed — this is the negative
+    witness, and it now holds for the closed regime, not for the absence of a
+    mechanism. (b) Flag OPEN: the artifact lands in the TRACER, never directly in
+    the user's session. (c) The convergence: at the heartbeat, the session absorbs
+    and the artifact belongs to it.
     """
     project_key = f"integ-w18-{uuid4().hex[:10]}"
     async with _Conn(mcp_base_url, project_key) as link:
         await _bootstrap_project(link, project_key)
         session_id = await _session_id(link, project_key, "task-a")
 
-        # (a) témoin de DRAPEAU FERMÉ
+        # (a) CLOSED-FLAG witness
         with _derived_capture(False):
             quiet = await _learning_id(link, project_key, f"w18 closed {uuid4().hex[:8]}")
         assert await _ledger_sessions_for(engine, quiet) == []
 
         with _derived_capture(True):
-            # (b) la dérivation dépose dans la traçante, PAS dans la session
+            # (b) the derivation deposits into the tracer, NOT into the session
             derived = await _learning_id(link, project_key, f"w18 derived {uuid4().hex[:8]}")
             tracer = await _sole_tracer(engine, project_key)
             assert await _ledger_sessions_for(engine, derived) == [tracer]
             assert tracer != str(session_id)
 
-            # (c) la CONVERGENCE : une commande explicite, mais pas une capture
+            # (c) the CONVERGENCE: an explicit command, but not a capture
             await link.call(
                 "brain_session_heartbeat",
                 {"session_id": str(session_id), "expected_client_key": "task-a"},
@@ -726,15 +724,15 @@ async def test_capture_is_derived_and_converges_without_a_single_explicit_captur
 async def test_the_derivation_keeps_the_row_identity_the_bound_and_the_distinction(
     mcp_base_url: str, engine: AsyncEngine
 ) -> None:
-    """(d) identité de ligne, (e) borne déclarée, (f) distinction entre connexions."""
+    """(d) row identity, (e) declared bound, (f) distinction between connections."""
     project_key = f"integ-w18-{uuid4().hex[:10]}"
 
     with _derived_capture(True):
         async with _Conn(mcp_base_url, project_key) as first:
             await _bootstrap_project(first, project_key)
 
-            # (e) émis AVANT le `start` : hors de la fenêtre qu'une capture
-            # explicite aurait acceptée, donc il doit RESTER chez la traçante.
+            # (e) emitted BEFORE the `start`: outside the window an explicit
+            # capture would have accepted, so it must STAY with the tracer.
             early = await _learning_id(first, project_key, f"w18 early {uuid4().hex[:8]}")
             session_a = await _session_id(first, project_key, "task-a")
             mine = await _learning_id(first, project_key, f"w18 mine {uuid4().hex[:8]}")
@@ -752,16 +750,16 @@ async def test_the_derivation_keeps_the_row_identity_the_bound_and_the_distincti
                     {"session_id": str(session_b), "expected_client_key": "task-b"},
                 )
 
-                # (f) deux connexions, zéro croisement DANS LES DEUX SENS
+                # (f) two connections, zero crossing IN BOTH DIRECTIONS
                 assert await _ledger_sessions_for(engine, mine) == [str(session_a)]
                 assert await _ledger_sessions_for(engine, theirs) == [str(session_b)]
 
-                # (e) la borne tient : l'artefact d'avant le `start` n'a pas bougé
+                # (e) the bound holds: the pre-`start` artifact has not moved
                 landed = await _ledger_sessions_for(engine, early)
                 assert landed and landed != [str(session_a)]
                 assert landed != [str(session_b)]
 
-                # (d) la session de l'utilisateur n'est JAMAIS promue en traçante
+                # (d) the user's session is NEVER promoted into a tracer
                 for session in (session_a, session_b):
                     identity = (
                         await _read_rows(engine, _ROW_IDENTITY, {"session_id": str(session)})
@@ -775,13 +773,13 @@ async def test_the_derivation_keeps_the_row_identity_the_bound_and_the_distincti
 
 @pytest.mark.asyncio(loop_scope="module")
 async def test_a_stalled_await_becomes_a_named_failure_not_a_hang() -> None:
-    """Le témoin de la BORNE elle-même — et il vaut plus que la cause du hang.
+    """The witness of the BOUND itself — and it is worth more than the hang's cause.
 
-    Une attente non bornée transforme une panne en silence : la CI a rendu deux
-    fois trente minutes de rien, tuées par le timeout du job, avec un journal qui
-    ne dit pas ce qui bloquait. Ce test prouve que `_bounded` rend un échec qui
-    se NOMME, et il rougirait si quelqu'un retirait la borne — auquel cas il
-    pendrait, ce qui est précisément le défaut qu'il garde.
+    An unbounded wait turns a failure into silence: CI returned two lots of thirty
+    minutes of nothing, killed by the job timeout, with a log that does not say what
+    was blocking. This test proves that `_bounded` returns a failure that NAMES
+    itself, and it would redden if someone removed the bound — in which case it
+    would hang, which is precisely the defect it guards.
     """
 
     async def never_returns() -> None:
@@ -796,22 +794,22 @@ async def test_a_stalled_await_becomes_a_named_failure_not_a_hang() -> None:
 
 
 async def _started_focus_revision(engine: AsyncEngine, session_id: UUID) -> int:
-    """La révision que la session a vue à son ouverture, relue depuis la base.
+    """The revision the session saw at its opening, read back from the database.
 
-    `end` exige un compare-and-swap ; le lire ici évite de faire dépendre la
-    scène du rendu textuel de `brain_session_start`. Une révision concurrente
-    ferme quand même la session (`focus_outcome='conflict'`), donc ce test ne
-    peut pas rougir pour un motif de focus.
+    `end` requires a compare-and-swap; reading it here avoids making the scene
+    depend on `brain_session_start`'s textual rendering. A concurrent revision still
+    closes the session (`focus_outcome='conflict'`), so this test cannot redden for
+    a focus reason.
     """
     rows = await _read_rows(engine, _STARTED_FOCUS_REVISION, {"session_id": str(session_id)})
     return int(rows[0][0])
 
 
 def _end_result(payload: str) -> dict[str, Any]:
-    """Le résultat de `brain_session_end`, décodé — et une panne de décodage le DIT.
+    """`brain_session_end`'s result, decoded — and a decoding failure SAYS so.
 
-    Un test qui retomberait silencieusement sur une regex rougirait plus tard
-    pour un motif de format, en se présentant comme une preuve d'attribution.
+    A test that silently fell back on a regex would redden later for a formatting
+    reason, while presenting itself as a proof of attribution.
     """
     try:
         decoded = json.loads(payload)
@@ -827,28 +825,27 @@ def _end_result(payload: str) -> dict[str, Any]:
 async def test_the_session_absorbs_across_a_transport_that_died(
     mcp_base_url: str, engine: AsyncEngine
 ) -> None:
-    """La scène de production, à DEUX connexions. ROUGE aujourd'hui.
+    """The production scene, with TWO connections. RED today.
 
-    C'est le test que l'invariant « one connection, one tracer » de ce fichier
-    (``_Conn``) rendait jusqu'ici inécrivable : chaque scène tenait un client
-    unique du début à la fin, donc l'appariement par connexion ne pouvait pas y
-    échouer. La suite était verte pendant que la production était inerte.
+    This is the test this file's "one connection, one tracer" invariant (``_Conn``)
+    made unwritable until now: each scene held a single client from start to finish,
+    so the per-connection pairing could not fail there. The suite was green while
+    production was inert.
 
-    Aucun redémarrage d'uvicorn n'est simulé, et c'est délibéré : en production
-    la traçante `32662769` est née APRÈS le redémarrage de 23:18:22Z, puis son
-    transport a été tué par l'idle timeout de 900 s
-    (``mcp_http_session_idle_seconds``) 23 min avant le `end`. Le redémarrage
-    est INCIDENT ; changer de `Mcp-Session-Id` est tout le trou. Un test qui
-    redémarrerait le serveur testerait la mauvaise chose.
+    No uvicorn restart is simulated, and that is deliberate: in production the
+    `32662769` tracer was born AFTER the 23:18:22Z restart, then its transport was
+    killed by the 900 s idle timeout (``mcp_http_session_idle_seconds``) 23 min
+    before the `end`. The restart is INCIDENTAL; changing `Mcp-Session-Id` is the
+    whole hole. A test that restarted the server would test the wrong thing.
 
-    Il ne peut pas auto-réaliser son hypothèse : le `Mcp-Session-Id` est frappé
-    par le SDK à l'ouverture du lien, jamais posé par le test. Deux ``_Conn``
-    successifs, c'est deux transports, mesurés comme tels.
+    It cannot self-fulfil its hypothesis: the `Mcp-Session-Id` is minted by the SDK
+    when the link opens, never set by the test. Two successive ``_Conn`` are two
+    transports, measured as such.
     """
     project_key = f"integ-w20-{uuid4().hex[:10]}"
 
     with _derived_capture(True):
-        # Connexion 1 : la session s'ouvre, l'artefact se dérive dans SA traçante.
+        # Connection 1: the session opens, the artifact derives into ITS tracer.
         async with _Conn(mcp_base_url, project_key) as first:
             await _bootstrap_project(first, project_key)
             session_id = await _session_id(first, project_key, "task-w20")
@@ -861,13 +858,13 @@ async def test_the_session_absorbs_across_a_transport_that_died(
                 "dirait rien de l'absorption"
             )
 
-        # Le lien est fermé : ce `Mcp-Session-Id` ne reviendra jamais. La LIGNE
-        # de la traçante, elle, reste `open` — exactement l'état mesuré en
-        # production au moment de la fermeture ratée.
+        # The link is closed: this `Mcp-Session-Id` will never come back. The
+        # tracer's ROW, for its part, stays `open` — exactly the state measured in
+        # production at the moment of the failed closure.
         revision = await _started_focus_revision(engine, session_id)
 
-        # Connexion 2 : transport neuf, traçante neuve et VIDE. L'utilisateur
-        # ferme sa session depuis là, comme il l'a fait le 2026-08-24 à 23:58Z.
+        # Connection 2: fresh transport, fresh and EMPTY tracer. The user closes
+        # their session from there, as they did on 2026-08-24 at 23:58Z.
         async with _Conn(mcp_base_url, project_key) as second:
             payload = await second.call(
                 "brain_session_end",
@@ -880,13 +877,13 @@ async def test_the_session_absorbs_across_a_transport_that_died(
                 },
             )
 
-    # (1) LA PREUVE, relue depuis la base et non depuis le retour du tool.
+    # (1) THE PROOF, read back from the database and not from the tool's return.
     assert await _ledger_sessions_for(engine, derived) == [str(session_id)], (
         "l'artefact est resté dans la traçante d'un transport mort : la "
         "promesse faite à l'utilisateur n'est pas tenue"
     )
 
-    # (2) Et le reçu rendu à l'utilisateur doit dire la même chose que la base.
+    # (2) And the receipt returned to the user must say the same as the database.
     result = _end_result(payload)
     assert result["session"]["attributed_knowledge_ids"] == [str(derived)]
     assert result["unattributed_in_window"] == 0
@@ -902,12 +899,12 @@ async def _attribution_mode(engine: AsyncEngine, knowledge_id: UUID) -> str | No
 async def test_the_absorption_says_by_which_key_it_matched(
     mcp_base_url: str, engine: AsyncEngine
 ) -> None:
-    """PAR QUELLE CLÉ — sans quoi une rétrogradation silencieuse resterait verte.
+    """BY WHICH KEY — without which a silent regression would stay green.
 
-    Le test frère prouve que l'artefact ARRIVE. Celui-ci prouve par quel chemin :
-    `derived_window`, la DÉDUCTION, et non `derived_connection`, la preuve. Si un
-    jour l'étage exact se remettait à répondre ici, ce serait une bonne nouvelle
-    — mais il faut qu'elle se VOIE, et un total ne la montrerait pas.
+    The sibling test proves the artifact ARRIVES. This one proves by which path:
+    `derived_window`, the DEDUCTION, and not `derived_connection`, the proof. If the
+    exact layer started answering here again some day, that would be good news — but
+    it must be VISIBLE, and a total would not show it.
     """
     project_key = f"integ-w20-{uuid4().hex[:10]}"
 
@@ -939,16 +936,16 @@ async def test_the_absorption_says_by_which_key_it_matched(
 async def test_two_concurrent_user_sessions_leave_the_artifact_where_it_is(
     mcp_base_url: str, engine: AsyncEngine
 ) -> None:
-    """Le témoin NÉGATIF, sans lequel le test ne mesure pas la règle.
+    """The NEGATIVE witness, without which the test does not measure the rule.
 
-    Deux sessions utilisateur couvrent l'instant de création. Aucune n'a plus de
-    titre que l'autre : personne n'absorbe, et l'artefact reste chez la traçante
-    — un orphelin VISIBLE, que `unattributed_in_window` compte désormais comme
-    tel et qu'un humain peut reprendre en nommant son UUID.
+    Two user sessions cover the creation instant. Neither has more claim than the
+    other: nobody absorbs, and the artifact stays with the tracer — a VISIBLE
+    orphan, which `unattributed_in_window` now counts as such and which a human can
+    take back by naming its UUID.
 
-    C'est le prix assumé de la rivalité symétrique : la promesse n'est pas tenue
-    tant que deux sessions se chevauchent. Un lot qui attribuerait quand même
-    aurait choisi le vol plutôt que l'abstention.
+    This is the accepted price of symmetric rivalry: the promise is not kept while
+    two sessions overlap. A batch that attributed anyway would have chosen theft
+    over abstention.
     """
     project_key = f"integ-w20-{uuid4().hex[:10]}"
 
@@ -976,12 +973,12 @@ async def test_two_concurrent_user_sessions_leave_the_artifact_where_it_is(
                 },
             )
 
-    # L'artefact n'a bougé nulle part — relu depuis la base.
+    # The artifact has moved nowhere — read back from the database.
     assert await _ledger_sessions_for(engine, derived) == tracer
     assert tracer != [str(mine)] and tracer != [str(rival)]
 
-    # Et le reçu ne ment plus : un artefact garé chez le serveur COMPTE comme
-    # non attribué. C'est ce qui rend le refus visible au lieu de muet.
+    # And the receipt no longer lies: an artifact parked with the server COUNTS as
+    # unattributed. That is what makes the refusal visible instead of mute.
     result = _end_result(payload)
     assert result["session"]["attributed_knowledge_ids"] == []
     assert result["unattributed_in_window"] >= 1

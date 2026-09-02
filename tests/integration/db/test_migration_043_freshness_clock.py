@@ -1,26 +1,26 @@
-"""Migration 043 — dater le STATUT de fraîcheur, ce qu'`updated_at` ne peut pas faire.
+"""Migration 043 — dating the freshness STATUS, which `updated_at` cannot do.
 
-Spec `2026-08-08-dream-v2-design.md` §4.3 et §6.2. C'est le **préalable dur de
-la purge**, pas une préférence d'ordonnancement.
+Spec `2026-08-08-dream-v2-design.md` §4.3 and §6.2. This is the **purge's hard
+precondition**, not a scheduling preference.
 
-Le critère de suppression existe déjà dans le dépôt — `decay_tools.py`, affiché
-à SCAN toutes les nuits — et il est faux sur ses deux termes :
+The deletion criterion already exists in the repository — `decay_tools.py`,
+displayed at SCAN every night — and it is wrong on both its terms:
 
-- `access_count = 0` est le compteur TOTAL : un artefact relu par le seul dream
-  sort du critère et devient indéfiniment non-purgeable ;
-- `updated_at < cutoff` REDÉMARRE à chaque écriture du flusher de compteurs,
-  parce que `trg_<table>_updated` est présent. Il n'existe donc aujourd'hui
-  **aucune horloge honnête** pour mesurer un séjour en archive.
+- `access_count = 0` is the TOTAL counter: an artifact re-read by the dream alone
+  leaves the criterion and becomes indefinitely non-purgeable;
+- `updated_at < cutoff` RESTARTS at every write of the counter flusher, because
+  `trg_<table>_updated` is present. There is therefore today **no honest clock** to
+  measure a stay in the archive.
 
-D'où la colonne. Sans backfill : `NULL` veut dire « jamais mesuré », jamais
-« archivé depuis toujours » — la distinction décide qui serait supprimé.
+Hence the column. With no backfill: `NULL` means "never measured", never "archived
+since forever" — the distinction decides who would be deleted.
 
-MÉCANISME 041, PAS 040, et la spec explique pourquoi : `focus_updated_at` est
-écrite en code applicatif parce que le focus n'a QU'UN écrivain ;
-`freshness_status` en a quatre, dont le jugement REORG qui passe par le tool
-générique `brain_update`, lequel ne sait rien du decay. Stamper en applicatif
-obligerait à le faire dans `brain_update` lui-même, pour une colonne que 99 % de
-ses appels ne touchent pas. C'est donc un trigger conditionnel.
+041's MECHANISM, NOT 040's, and the spec explains why: `focus_updated_at` is
+written in application code because the focus has ONLY ONE writer;
+`freshness_status` has four, including the REORG judgement which goes through the
+generic `brain_update` tool, which knows nothing of the decay. Stamping in the
+application would require doing it in `brain_update` itself, for a column 99 % of
+its calls do not touch. So it is a conditional trigger.
 """
 
 from __future__ import annotations
@@ -60,9 +60,9 @@ class TestColumnShape:
         assert row is not None, f"{table} n'a pas freshness_status_updated_at"
         data_type, is_nullable, default = row
         assert data_type == "timestamp with time zone"
-        # NULL = « jamais mesuré ». Un backfill à now() ferait croire que tout
-        # le corpus vient de changer de statut, et la purge compterait 180 jours
-        # à partir d'une date inventée.
+        # NULL = "never measured". A backfill to now() would suggest the whole
+        # corpus has just changed status, and the purge would count 180 days from an
+        # invented date.
         assert is_nullable == "YES"
         assert default is None
 
@@ -86,10 +86,10 @@ class TestColumnShape:
 
     @pytest.mark.parametrize("table", _DECAY_TABLES)
     async def test_no_backfill_happened(self, table: str, db_session) -> None:
-        """Aucune ligne existante ne doit porter une date inventée.
+        """No existing row must carry an invented date.
 
-        La migration n'écrit pas. Une ligne datée sans transition de statut
-        depuis la bascule signalerait un backfill, donc une horloge qui ment.
+        The migration does not write. A row dated with no status transition since the
+        cutover would signal a backfill, hence a lying clock.
         """
         stamped = (
             await db_session.execute(
@@ -130,18 +130,17 @@ class TestTriggerBehaviour:
         assert stamped is not None, "le trigger n'a pas daté la transition de statut"
 
     async def test_writing_the_same_status_does_not_rejuvenate_the_clock(self, db_session) -> None:
-        """Réécrire `archived` sur une entité déjà archivée ne la rajeunit pas.
+        """Rewriting `archived` on an already-archived entity does not rejuvenate it.
 
-        C'est toute la raison du `WHEN … IS DISTINCT FROM`. Sans lui, un
-        traitement idempotent qui repose le même statut chaque nuit remettrait
-        le compteur de séjour à zéro tous les jours — et rien ne serait jamais
-        purgeable, silencieusement.
+        This is the whole reason for the `WHEN … IS DISTINCT FROM`. Without it, an
+        idempotent job that re-sets the same status every night would reset the stay
+        counter to zero every day — and nothing would ever be purgeable, silently.
 
-        L'ASSERTION NE COMPARE PAS DEUX HORODATAGES, et c'est délibéré :
-        `CURRENT_TIMESTAMP` vaut l'heure de DÉBUT DE TRANSACTION en PostgreSQL,
-        donc deux écritures dans la même transaction produisent la même valeur
-        et un `first == second` passerait à vide, trigger armé ou non. On pose
-        une sentinelle datée d'un an et on vérifie qu'elle SURVIT.
+        THE ASSERTION DOES NOT COMPARE TWO TIMESTAMPS, and that is deliberate:
+        `CURRENT_TIMESTAMP` is the TRANSACTION-START time in PostgreSQL, so two
+        writes in the same transaction produce the same value and a
+        `first == second` would pass on nothing, trigger armed or not. We set a
+        sentinel dated a year back and check that it SURVIVES.
         """
         row_id = (
             await db_session.execute(
@@ -176,13 +175,12 @@ class TestTriggerBehaviour:
         )
 
     async def test_a_counter_write_does_not_touch_the_clock(self, db_session) -> None:
-        """LE défaut que la colonne répare, prouvé sans comparer de dates.
+        """THE defect the column repairs, proved without comparing dates.
 
-        `updated_at` bouge à chaque écriture du flusher de compteurs, donc
-        l'horloge de 180 jours redémarrait sur un simple accès. La preuve exacte
-        que la nouvelle colonne ne fait pas ça : elle vaut NULL à l'insertion,
-        et une écriture de compteur ne doit pas la faire sortir de NULL. Aucun
-        horodatage n'est comparé, donc rien ne peut passer à vide.
+        `updated_at` moves at every write of the counter flusher, so the 180-day
+        clock restarted on a mere access. The exact proof that the new column does
+        not do that: it is NULL at insertion, and a counter write must not take it
+        out of NULL. No timestamp is compared, so nothing can pass on nothing.
         """
         row_id = (
             await db_session.execute(
@@ -210,17 +208,16 @@ class TestTriggerBehaviour:
             "une écriture de compteur a daté l'horloge de statut — le trigger "
             "n'est pas restreint à `UPDATE OF freshness_status`"
         )
-        # Garde du harnais : la ligne a bien été touchée, sinon l'assertion
-        # ci-dessus serait verte sur une écriture qui n'a jamais eu lieu.
+        # Harness guard: the row was indeed touched, otherwise the assertion above
+        # would be green on a write that never happened.
         assert updated is not None
 
     async def test_a_stale_source_never_survives_a_transition(self, db_session) -> None:
-        """Un écrivain qui ne déclare pas sa source ne doit pas hériter de l'ancienne.
+        """A writer that does not declare its source must not inherit the old one.
 
-        Sans cette remise à NULL, `freshness_source` mentirait : elle
-        décrirait la transition PRÉCÉDENTE, avec la date de la nouvelle. Une
-        provenance fausse est pire qu'une provenance absente — la seconde se
-        voit, la première se croit.
+        Without this reset to NULL, `freshness_source` would lie: it would describe
+        the PREVIOUS transition, with the new one's date. A false provenance is worse
+        than an absent one — the second is visible, the first is believed.
         """
         row_id = (
             await db_session.execute(
@@ -279,7 +276,7 @@ class TestTriggerBehaviour:
         assert stored == source
 
     async def test_an_unknown_source_is_refused(self, db_session) -> None:
-        """La contrainte est un vocabulaire, pas une suggestion."""
+        """The constraint is a vocabulary, not a suggestion."""
         row_id = (
             await db_session.execute(
                 sa.text(

@@ -1,31 +1,30 @@
-"""L'absorption dérivée face à une connexion MORTE — la moitié qui sert l'utilisateur.
+"""Derived absorption facing a DEAD connection — the half that serves the user.
 
-Ce que les tests existants prouvent déjà, et qui ne suffit pas : la dérivation
-dépose l'artefact dans la traçante de SA connexion, et l'absorption le rend à la
-session de l'utilisateur *tant que la connexion n'a pas changé*. Les deux vivent
-dans la même scène, sous le même identifiant de transport, et l'appariement ne
-peut donc pas y échouer.
+What the existing tests already prove, and why it is not enough: the derivation
+deposits the artifact into ITS connection's tracer session, and the absorption
+returns it to the user's session *as long as the connection has not changed*. Both
+live in the same scene, under the same transport identifier, so the pairing cannot
+fail there.
 
-En production il change. `connection_id` est le `Mcp-Session-Id`, un identifiant
-de TRANSPORT frappé par le SDK, tué par l'idle timeout de 900 s
-(`mcp_http_session_idle_seconds`) bien avant que l'utilisateur ne ferme sa
-session. Mesuré le 2026-08-25 sur la première fermeture réelle après armement :
-l'artefact était dans la traçante de la connexion `7588e2a2…`, morte 37 minutes
-plus tôt ; le `brain_session_end` est arrivé sur `b7d8e65b…`, dont la traçante
-était vide. Ledger de l'utilisateur : 0. La durée de vie médiane d'une traçante
-mesurée en base est sous 2 minutes, contre 16 h pour la session qu'elle sert.
+In production it does change. `connection_id` is the `Mcp-Session-Id`, a TRANSPORT
+identifier minted by the SDK, killed by the 900 s idle timeout
+(`mcp_http_session_idle_seconds`) long before the user closes their session.
+Measured on 2026-08-25 on the first real closure after arming: the artifact was in
+the tracer of connection `7588e2a2…`, dead 37 minutes earlier; the
+`brain_session_end` arrived on `b7d8e65b…`, whose tracer was empty. The user's
+ledger: 0. A tracer's median lifetime measured in the database is under 2 minutes,
+against 16 h for the session it serves.
 
-**Le critère d'acceptation est la PROMESSE, pas le mécanisme** : un artefact créé
-sans `brain_session_capture` atterrit dans la session de l'utilisateur à sa
-fermeture, même si la connexion qui l'a déposé est morte entre-temps. Ces tests
-ne disent RIEN de la clé d'appariement à retenir — elle est en arbitrage — et
-doivent rester verts quelle qu'elle soit.
+**The acceptance criterion is the PROMISE, not the mechanism**: an artifact created
+without `brain_session_capture` lands in the user's session at closing time, even
+if the connection that deposited it has died in between. These tests say NOTHING
+about which pairing key to keep — that is under arbitration — and must stay green
+whichever it is.
 
-**Ils ne peuvent pas auto-réaliser leur hypothèse.** Le test ne tend jamais un
-identifiant à la production : il pose le contextvar que `ProvenanceMiddleware`
-poserait, et le code sous test résout ce qu'il veut à partir de là. Poser
-l'identifiant à la main est exactement le geste qui rend la suite actuelle verte
-pendant que la prod est inerte.
+**They cannot self-fulfil their hypothesis.** The test never hands an identifier to
+production: it sets the contextvar `ProvenanceMiddleware` would set, and the code
+under test resolves whatever it wants from there. Setting the identifier by hand is
+exactly the gesture that makes the current suite green while production is inert.
 """
 
 from __future__ import annotations
@@ -57,7 +56,7 @@ pytestmark = pytest.mark.integration
 
 @dataclass(frozen=True)
 class _Identity:
-    """Miroir de `AutoOpenIdentity` — l'auto-ouverture ne lit que ces champs."""
+    """A mirror of `AutoOpenIdentity` — auto-open reads only these fields."""
 
     project_key: str
     connection_id: str
@@ -68,7 +67,7 @@ class _Identity:
 
 @contextmanager
 def _derived_capture(enabled: bool) -> Iterator[None]:
-    """Ouvrir la dérivation pour de vrai : le drapeau est lu À L'APPEL."""
+    """Open the derivation for real: the flag is read AT CALL TIME."""
     from brain_v42.config import get_settings
 
     key = "BRAIN_SESSION_DERIVED_CAPTURE_ENABLED"
@@ -87,13 +86,13 @@ def _derived_capture(enabled: bool) -> Iterator[None]:
 
 @contextmanager
 def _transport(connection_id: str) -> Iterator[str]:
-    """Jouer le middleware, et RIEN d'autre.
+    """Play the middleware, and NOTHING else.
 
-    C'est la garde anti-triche de ce fichier. `ProvenanceMiddleware` pose le
-    `Mcp-Session-Id` sur ce contextvar et n'en dit rien de plus ; tout le reste
-    — quelle traçante, quel donneur — est une décision de la production. Un test
-    qui tendrait l'identifiant à `absorb_derived_capture` prouverait la requête
-    SQL et jamais l'appariement.
+    This is the file's anti-cheat guard. `ProvenanceMiddleware` sets the
+    `Mcp-Session-Id` on this contextvar and says nothing more about it; all the rest
+    — which tracer, which donor — is a production decision. A test that handed the
+    identifier to `absorb_derived_capture` would prove the SQL query and never the
+    pairing.
     """
     from brain_v42.provenance import get_current_transport, set_current_transport
 
@@ -108,14 +107,14 @@ def _transport(connection_id: str) -> Iterator[str]:
 async def _absorb_from_the_current_connection(
     repo: PgBrainSessionRepo, session_id: UUID, client_key: str
 ) -> int:
-    """Absorber exactement comme `BrainSessionService._absorb_derived`.
+    """Absorb exactly as `BrainSessionService._absorb_derived` does.
 
-    La connexion vient du contextvar, jamais de l'appelant : c'est tout ce que
-    le serveur sait au moment où l'utilisateur ferme sa session.
+    The connection comes from the contextvar, never from the caller: that is all
+    the server knows at the moment the user closes their session.
 
-    `client_key` est passée parce que la GARDE D'IDENTITÉ vit dans l'absorption
-    elle-même, dans la même transaction que la mutation. Un banc qui ne la
-    passerait pas prouverait un chemin que la production n'emprunte pas.
+    `client_key` is passed because the IDENTITY GUARD lives in the absorption
+    itself, in the same transaction as the mutation. A bench that did not pass it
+    would prove a path production does not take.
     """
     from brain_v42.provenance import get_current_transport
 
@@ -163,7 +162,7 @@ async def absorption_project(
 async def _ledger_owner(
     session_factory: async_sessionmaker[AsyncSession], knowledge_id: UUID
 ) -> UUID | None:
-    """Relire le propriétaire DEPUIS LA BASE, jamais depuis le retour du tool."""
+    """Re-read the owner FROM THE DATABASE, never from the tool's return value."""
     async with session_factory() as session:
         owners = (
             (
@@ -181,11 +180,11 @@ async def _ledger_owner(
 
 
 async def _derive_one_artifact(learning_repo: PgLearningRepo, project_key: str) -> UUID:
-    """Créer un artefact SANS aucune capture explicite. C'est tout le point.
+    """Create an artifact WITHOUT any explicit capture. That is the whole point.
 
-    Par le VRAI dépôt : `derive_capture` est appelée depuis
-    `BasePgRepository.create`, donc une insertion écrite à la main dans
-    `learnings` ne dériverait rien et le banc décrirait un monde vide.
+    Through the REAL repository: `derive_capture` is called from
+    `BasePgRepository.create`, so an insert written by hand into `learnings` would
+    derive nothing and the bench would describe an empty world.
     """
     created = await learning_repo.create(
         LearningCreate(
@@ -202,24 +201,23 @@ async def test_the_user_session_absorbs_what_a_dead_connection_left_behind(
     session_factory: async_sessionmaker[AsyncSession],
     absorption_project: str,
 ) -> None:
-    """LA promesse, à travers un changement de connexion. ROUGE aujourd'hui.
+    """THE promise, across a connection change. RED today.
 
-    Trois temps, et le second est celui que la production traverse ~26 fois par
-    jour : la connexion qui a déposé l'artefact n'existe plus quand
-    l'utilisateur ferme. Aucun redémarrage de serveur n'est simulé — il n'y en a
-    pas besoin, et en simuler un testerait la mauvaise chose : changer de
-    `Mcp-Session-Id` est TOUT le trou.
+    Three moments, and the second is the one production goes through ~26 times a
+    day: the connection that deposited the artifact no longer exists when the user
+    closes. No server restart is simulated — there is no need, and simulating one
+    would test the wrong thing: changing `Mcp-Session-Id` is the WHOLE hole.
     """
     repo = PgBrainSessionRepo(session_factory)
     learning_repo = PgLearningRepo(session_factory)
 
     with _derived_capture(True):
-        # (1) La session de l'utilisateur. Elle ne porte AUCUNE connexion —
-        # mesuré en production : 490 lignes non-`agent`, zéro `connection_id`.
+        # (1) The user's session. It carries NO connection — measured in
+        # production: 490 non-`agent` rows, zero `connection_id`.
         started = await repo.start(absorption_project, "task-w20")
         user_session = UUID(str(started.session.id))
 
-        # (2) Connexion A : une traçante s'ouvre, l'artefact s'y dérive seul.
+        # (2) Connection A: a tracer opens, the artifact derives itself into it.
         with _transport(uuid4().hex) as connection_a:
             tracer = await repo.auto_open(_Identity(absorption_project, connection_a))
             assert tracer is not None, "sans traçante, la scène ne prouve rien"
@@ -228,9 +226,9 @@ async def test_the_user_session_absorbs_what_a_dead_connection_left_behind(
                 "la dérivation elle-même est cassée — ce rouge ne dirait rien de l'absorption"
             )
 
-        # (3) Connexion A est MORTE. En production l'idle timeout de 900 s l'a
-        # tuée, et rien ne la rejoue. L'utilisateur revient sur une connexion
-        # neuve, dont la traçante est vide, et ferme sa session.
+        # (3) Connection A is DEAD. In production the 900 s idle timeout killed it,
+        # and nothing replays it. The user comes back on a fresh connection, whose
+        # tracer is empty, and closes their session.
         with _transport(uuid4().hex) as connection_b:
             assert connection_b != connection_a
             await repo.auto_open(_Identity(absorption_project, connection_b))
@@ -247,12 +245,12 @@ async def test_the_same_scene_on_a_single_connection_already_converges(
     session_factory: async_sessionmaker[AsyncSession],
     absorption_project: str,
 ) -> None:
-    """Témoin de BANC, et il ne prétend rien sur le défaut.
+    """A BENCH witness, and it claims nothing about the defect.
 
-    Scène identique, à une variable près : la connexion ne change pas. Si
-    celui-ci est vert et l'autre rouge, le rouge porte sur le CHANGEMENT de
-    connexion et non sur un banc cassé, un drapeau fermé ou une dérivation en
-    panne. Sans ce témoin, un rouge ne vaudrait rien.
+    An identical scene, one variable apart: the connection does not change. If this
+    one is green and the other red, the red bears on the connection CHANGE and not
+    on a broken bench, a closed flag or a failing derivation. Without this witness,
+    a red would be worth nothing.
     """
     repo = PgBrainSessionRepo(session_factory)
     learning_repo = PgLearningRepo(session_factory)
@@ -272,16 +270,16 @@ async def test_the_user_session_never_carries_the_connection_that_served_it(
     session_factory: async_sessionmaker[AsyncSession],
     absorption_project: str,
 ) -> None:
-    """Pourquoi la session ne peut pas retrouver « sa » connexion toute seule.
+    """Why the session cannot find "its" connection on its own.
 
-    Mesuré en production le 2026-08-25 : `nature='user'` n'existe NULLE PART, et
-    aucune session non-`agent` n'a jamais porté de `connection_id` (490 lignes,
-    zéro). La résolution ne peut donc passer que par la connexion COURANTE de
-    l'appel qui ferme — celle qui, précisément, n'est plus la bonne.
+    Measured in production on 2026-08-25: `nature='user'` exists NOWHERE, and no
+    non-`agent` session has ever carried a `connection_id` (490 rows, zero).
+    Resolution can therefore only go through the CURRENT connection of the call that
+    closes — the one that, precisely, is no longer the right one.
 
-    Ce test est VERT aujourd'hui et doit le rester : la 046 refuse de promouvoir
-    une session d'utilisateur en traçante, sous peine d'en faire un fantôme que
-    le balayage 7 j ne peut plus atteindre.
+    This test is GREEN today and must stay so: 046 refuses to promote a user session
+    into a tracer, on pain of making it a ghost the 7-day sweep can no longer
+    reach.
     """
     repo = PgBrainSessionRepo(session_factory)
 
@@ -312,10 +310,10 @@ _ATTRIBUTION_MODE = sa.text(
 async def _attribution_mode(
     session_factory: async_sessionmaker[AsyncSession], knowledge_id: UUID
 ) -> str | None:
-    """Relire la CLÉ d'appariement en base — texte brut, jamais l'objet Table.
+    """Re-read the pairing KEY from the database — raw text, never the Table object.
 
-    Une constante SQLAlchemy se tairait sur une colonne absente au moment de la
-    compilation ; ce texte-ci rougit franchement tant que la 048 n'est pas là.
+    A SQLAlchemy constant would stay silent about a column missing at compilation
+    time; this text reddens plainly as long as 048 is not there.
     """
     async with session_factory() as session:
         rows = (await session.execute(_ATTRIBUTION_MODE, {"knowledge_id": knowledge_id})).all()
@@ -327,14 +325,14 @@ async def test_two_open_user_sessions_covering_the_instant_block_the_absorption(
     session_factory: async_sessionmaker[AsyncSession],
     absorption_project: str,
 ) -> None:
-    """Le témoin d'AMBIGUÏTÉ. Sans lui, la règle ne peut structurellement pas échouer.
+    """The AMBIGUITY witness. Without it, the rule structurally cannot fail.
 
-    Deux sessions non-`agent` ouvertes couvrent l'instant de création. Aucune des
-    deux n'a plus de titre que l'autre sur l'artefact : la règle REFUSE, et
-    l'artefact reste chez la traçante — visible, pas perdu.
+    Two open non-`agent` sessions cover the creation instant. Neither has more claim
+    than the other on the artifact: the rule REFUSES, and the artifact stays with the
+    tracer — visible, not lost.
 
-    Ce test doit rester VERT quelle que soit la clé retenue. S'il rougit un jour,
-    c'est que la règle est devenue permissive et attribue au hasard.
+    This test must stay GREEN whichever key is kept. If it ever reddens, the rule has
+    become permissive and attributes at random.
     """
     repo = PgBrainSessionRepo(session_factory)
     learning_repo = PgLearningRepo(session_factory)
@@ -363,12 +361,12 @@ async def test_a_rival_that_closed_before_the_instant_is_not_a_rival(
     session_factory: async_sessionmaker[AsyncSession],
     absorption_project: str,
 ) -> None:
-    """La rivale fermée AVANT l'instant ne couvre rien. ROUGE aujourd'hui.
+    """A rival closed BEFORE the instant covers nothing. RED today.
 
-    Deux raisons de rougir aujourd'hui, et c'est voulu : rien ne bouge (l'étage
-    fenêtre n'existe pas) et `attribution_mode` n'existe pas encore. La seconde
-    assertion est ce qui interdit une rétrogradation silencieuse : un jour où
-    l'appariement redeviendrait une devinette, un total resterait vert.
+    Two reasons to redden today, and that is intended: nothing moves (the window
+    layer does not exist) and `attribution_mode` does not exist yet. The second
+    assertion is what forbids a silent regression: on a day when the pairing became
+    a guess again, a total would stay green.
     """
     repo = PgBrainSessionRepo(session_factory)
     learning_repo = PgLearningRepo(session_factory)
@@ -397,13 +395,13 @@ async def test_a_rival_open_at_the_instant_still_blocks_after_it_has_closed(
     session_factory: async_sessionmaker[AsyncSession],
     absorption_project: str,
 ) -> None:
-    """La couverture se juge à l'INSTANT, pas au moment de la commande.
+    """Coverage is judged at the INSTANT, not at command time.
 
-    C'est le seul cas qui sépare deux lectures possibles de la règle : la rivale
-    était ouverte quand l'artefact est né, puis s'est fermée avant que
-    l'utilisateur ne commande. Juger « est-elle ouverte MAINTENANT » rendrait
-    l'attribution dépendante de l'ordre de fermeture — deux sessions ambiguës,
-    et c'est la dernière à fermer qui rafle tout. On juge donc la couverture.
+    This is the only case that separates two possible readings of the rule: the
+    rival was open when the artifact was born, then closed before the user issued
+    the command. Judging "is it open NOW" would make the attribution depend on the
+    closing order — two ambiguous sessions, and the last to close takes everything.
+    So we judge the coverage.
     """
     repo = PgBrainSessionRepo(session_factory)
     learning_repo = PgLearningRepo(session_factory)
@@ -416,7 +414,7 @@ async def test_a_rival_open_at_the_instant_still_blocks_after_it_has_closed(
             tracer = await repo.auto_open(_Identity(absorption_project, connection_a))
             artifact = await _derive_one_artifact(learning_repo, absorption_project)
 
-        # La rivale part APRÈS la naissance de l'artefact : elle l'a couvert.
+        # The rival leaves AFTER the artifact's birth: it covered it.
         await repo.abandon(rival.session.id, "task-w20-rival", "partie après l'instant")
 
         with _transport(uuid4().hex) as connection_b:
@@ -433,16 +431,16 @@ async def test_a_human_can_reclaim_what_the_rule_refused_to_attribute(
     session_factory: async_sessionmaker[AsyncSession],
     absorption_project: str,
 ) -> None:
-    """La contrepartie du fail-closed : refuser n'est pas perdre.
+    """The counterpart of fail-closed: refusing is not losing.
 
-    La règle d'exclusivité s'abstient dès que deux sessions se chevauchent, et
-    l'artefact reste chez le serveur. Sans ce chemin, ce serait une perte sèche :
-    `capture()` levait « session artifact ownership could not be resolved » sur
-    une ligne détenue par une traçante, donc plus personne ne pouvait l'en
-    sortir. Un humain qui NOMME l'UUID doit toujours pouvoir reprendre.
+    The exclusivity rule abstains as soon as two sessions overlap, and the artifact
+    stays with the server. Without this path it would be a dead loss: `capture()`
+    raised "session artifact ownership could not be resolved" on a row held by a
+    tracer, so nobody could get it out any more. A human who NAMES the UUID must
+    always be able to take it back.
 
-    Le mode devient `explicit` : c'est le seul qui soit une preuve. La ligne
-    cesse d'être une déduction du serveur au moment où quelqu'un la revendique.
+    The mode becomes `explicit`: it is the only one that is a proof. The row stops
+    being a server deduction the moment someone claims it.
     """
     repo = PgBrainSessionRepo(session_factory)
     learning_repo = PgLearningRepo(session_factory)
@@ -455,8 +453,8 @@ async def test_a_human_can_reclaim_what_the_rule_refused_to_attribute(
             tracer = await repo.auto_open(_Identity(absorption_project, connection_a))
             artifact = await _derive_one_artifact(learning_repo, absorption_project)
 
-        # La règle s'abstient — deux prétendantes — et c'est bien le cas qu'on
-        # veut réparer à la main, pas un cas artificiel.
+        # The rule abstains — two claimants — and this is indeed the case we want to
+        # repair by hand, not an artificial one.
         with _transport(uuid4().hex) as connection_b:
             await repo.auto_open(_Identity(absorption_project, connection_b))
             refused = await _absorb_from_the_current_connection(
@@ -476,12 +474,12 @@ async def test_capture_never_takes_what_another_human_already_holds(
     session_factory: async_sessionmaker[AsyncSession],
     absorption_project: str,
 ) -> None:
-    """La reprise est bornée à la NATURE du détenteur, jamais à l'UUID nommé.
+    """The take-back is bounded by the holder's NATURE, never by the named UUID.
 
-    C'est ce qui empêche la greffe de devenir un passe-droit : nommer un UUID
-    donne le droit de le reprendre AU SERVEUR, pas à un autre humain.
-    L'exclusivité du ledger existe précisément pour ça, et un chemin de
-    réparation qui l'enjamberait serait pire que le trou qu'il bouche.
+    This is what stops the graft from becoming a free pass: naming a UUID gives the
+    right to take it back FROM THE SERVER, not from another human. The ledger's
+    exclusivity exists precisely for that, and a repair path that stepped over it
+    would be worse than the hole it plugs.
     """
     from brain_v42.models.brain_session import BrainSessionCaptureConflictError
 
@@ -495,13 +493,13 @@ async def test_capture_never_takes_what_another_human_already_holds(
         with _transport(uuid4().hex) as connection:
             tracer = await repo.auto_open(_Identity(absorption_project, connection))
             artifact = await _derive_one_artifact(learning_repo, absorption_project)
-            # La ligne part bien de chez le SERVEUR : sans traçante, ce test
-            # n'exercerait que l'insertion normale et la frontière qu'il prétend
-            # garder — reprendre au serveur, jamais à un humain — resterait
-            # entière.
+            # The row really leaves the SERVER: with no tracer, this test would
+            # exercise only the normal insertion and the boundary it claims to guard
+            # — take back from the server, never from a human — would stay
+            # untouched.
             assert await _ledger_owner(session_factory, artifact) == UUID(str(tracer))
 
-        # Un humain la revendique en premier, par la REPRISE.
+        # A human claims it first, through the TAKE-BACK.
         await repo.capture(holder.session.id, "task-w20-holder", [artifact])
         assert await _attribution_mode(session_factory, artifact) == "explicit"
 
@@ -512,11 +510,11 @@ async def test_capture_never_takes_what_another_human_already_holds(
 
 
 async def _derive_one_decision(decision_repo: Any, project_key: str) -> UUID:
-    """Un artefact dans la PREMIÈRE branche du `UNION ALL` (`decisions`).
+    """An artifact in the FIRST branch of the `UNION ALL` (`decisions`).
 
-    La branche compte : sans `ORDER BY`, un `LIMIT` posé sur l'union sert les
-    premières branches d'abord. Mettre les artefacts contestés en tête est ce
-    qui rend le témoin déterministe au lieu de probabiliste.
+    The branch matters: with no `ORDER BY`, a `LIMIT` placed on the union serves the
+    first branches first. Putting the contested artifacts at the front is what makes
+    the witness deterministic instead of probabilistic.
     """
     from brain_v42.models.decision import DecisionCreate
 
@@ -536,19 +534,18 @@ async def test_the_bound_never_hides_an_eligible_artifact_behind_contested_ones(
     absorption_project: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A1 — filtrer, PUIS borner. Un témoin qui ne dépasse pas le plafond ne verrait rien.
+    """A1 — filter, THEN bound. A witness that does not exceed the cap would see nothing.
 
-    Le `UNION ALL` des six tables n'a pas d'`ORDER BY`. Borner AVANT le filtre de
-    rivalité laissait Postgres rendre un lot arbitraire — ici les deux décisions
-    contestées, servies par la première branche — et l'artefact légitime, en
-    seconde branche, n'était jamais absorbé. En silence, et différemment d'un
-    appel à l'autre.
+    The six tables' `UNION ALL` has no `ORDER BY`. Bounding BEFORE the rivalry filter
+    let Postgres return an arbitrary batch — here the two contested decisions, served
+    by the first branch — and the legitimate artifact, in the second branch, was
+    never absorbed. Silently, and differently from one call to the next.
 
-    Le seuil réel n'est pas le plafond de 100 mais `100 - occupé`, qui rétrécit à
-    mesure qu'une session accumule : le cas se produit en fin de session longue,
-    exactement quand l'absorption sert le plus. On abaisse donc le plafond plutôt
-    que de fabriquer cent artefacts — le défaut porte sur le RAPPORT entre
-    `remaining` et le nombre d'éligibles, jamais sur la valeur 100.
+    The real threshold is not the cap of 100 but `100 - occupied`, which shrinks as a
+    session accumulates: the case happens at the end of a long session, exactly when
+    the absorption is most useful. So we lower the cap rather than manufacture a
+    hundred artifacts — the defect bears on the RATIO between `remaining` and the
+    number of eligible artifacts, never on the value 100.
     """
     import brain_v42.db.session_derived_capture as module
     from brain_v42.repositories.pg_decision import PgDecisionRepo
@@ -563,14 +560,13 @@ async def test_the_bound_never_hides_an_eligible_artifact_behind_contested_ones(
 
         with _transport(uuid4().hex) as connection_a:
             tracer = await repo.auto_open(_Identity(absorption_project, connection_a))
-            # Deux CONTESTÉS, en première branche du UNION ALL, et autant que
-            # `remaining` : sous l'ancien ordre ils remplissaient le lot à eux
-            # seuls.
+            # Two CONTESTED ones, in the UNION ALL's first branch, and as many as
+            # `remaining`: under the old order they filled the batch on their own.
             contested = [await _derive_one_decision(decision_repo, absorption_project)]
             contested.append(await _derive_one_decision(decision_repo, absorption_project))
 
-            # La rivale part APRÈS eux : elle les couvre, et elle ne couvrira pas
-            # ce qui suit.
+            # The rival leaves AFTER them: it covers them, and it will not cover
+            # what follows.
             await repo.abandon(rival.session.id, "task-w20-bound-rival", "partie")
 
             legitimate = await _derive_one_artifact(learning_repo, absorption_project)
@@ -578,10 +574,10 @@ async def test_the_bound_never_hides_an_eligible_artifact_behind_contested_ones(
         for item in (*contested, legitimate):
             assert await _ledger_owner(session_factory, item) == UUID(str(tracer))
 
-        # Le plafond n'est abaissé qu'ICI. `derive_capture` lit le MÊME
-        # plafond : le baisser plus tôt aurait refusé de déposer le troisième
-        # artefact, et le témoin aurait décrit une fenêtre qui ne déborde pas —
-        # exactement le test qui ne voit rien.
+        # The cap is lowered only HERE. `derive_capture` reads the SAME cap:
+        # lowering it earlier would have refused to deposit the third artifact, and
+        # the witness would have described a window that does not overflow — exactly
+        # the test that sees nothing.
         monkeypatch.setattr(module, "_capture_cap", lambda: 2)
 
         with _transport(uuid4().hex) as connection_b:
@@ -596,8 +592,8 @@ async def test_the_bound_never_hides_an_eligible_artifact_behind_contested_ones(
     )
     assert await _ledger_owner(session_factory, legitimate) == UUID(str(mine.session.id))
     assert await _attribution_mode(session_factory, legitimate) == "derived_window"
-    # Les contestés n'ont pas bougé : borner après filtrer ne rend pas la règle
-    # permissive.
+    # The contested ones have not moved: bounding after filtering does not make the
+    # rule permissive.
     for item in contested:
         assert await _ledger_owner(session_factory, item) == UUID(str(tracer))
 
@@ -606,17 +602,17 @@ async def test_the_repository_reads_the_ledger_not_the_terminal_snapshot(
     session_factory: async_sessionmaker[AsyncSession],
     absorption_project: str,
 ) -> None:
-    """`attributed_knowledge_ids` lit la SOURCE, pas la photo de fin.
+    """`attributed_knowledge_ids` reads the SOURCE, not the terminal snapshot.
 
-    `brain_sessions.captured_knowledge_ids` n'est écrit qu'à la fermeture, et la
-    contrainte `open` interdit qu'il soit rempli avant : mesuré le 2026-08-25,
-    aucune session ouverte n'en a jamais porté un non vide. Une implémentation
-    qui lirait le tableau rendrait donc TOUJOURS `[]` sur une session vivante —
-    et c'est précisément le retard d'un appel que ce lot répare.
+    `brain_sessions.captured_knowledge_ids` is only written at closing time, and the
+    `open` constraint forbids it being filled before: measured on 2026-08-25, no open
+    session has ever carried a non-empty one. An implementation that read the array
+    would therefore ALWAYS return `[]` on a live session — and that is precisely the
+    one-call lag this batch repairs.
 
-    Ce test existe parce que `start` en dépend : il est le seul des cinq à ne pas
-    pouvoir absorber avant de matérialiser, et il relit ici ce qu'il vient de
-    déplacer.
+    This test exists because `start` depends on it: it is the only one of the five
+    that cannot absorb before materialising, and here it re-reads what it has just
+    moved.
     """
     repo = PgBrainSessionRepo(session_factory)
     learning_repo = PgLearningRepo(session_factory)
@@ -634,7 +630,7 @@ async def test_the_repository_reads_the_ledger_not_the_terminal_snapshot(
     ids = await repo.attributed_knowledge_ids(mine.session.id)
     assert [UUID(str(item)) for item in ids] == [artifact]
 
-    # Et le tableau terminal est TOUJOURS vide : la session est ouverte.
+    # And the terminal array is ALWAYS empty: the session is open.
     async with session_factory() as session:
         snapshot = (
             await session.execute(
@@ -653,18 +649,17 @@ async def test_a_mistargeted_absorption_moves_NOTHING_before_it_refuses(
     session_factory: async_sessionmaker[AsyncSession],
     absorption_project: str,
 ) -> None:
-    """La garde d'identité doit précéder la MUTATION, pas seulement la commande.
+    """The identity guard must precede the MUTATION, not only the command.
 
-    `CLAUDE.md` est littéral : « le serveur refuse une paire incohérente AVANT
-    TOUTE MUTATION. Cette garde protège du mauvais ciblage entre sessions
-    parallèles. » L'absorption mutait sans aucun contrôle de propriété : un appel
-    mal ciblé déplaçait le ledger d'une traçante dans la session d'autrui, PUIS
-    se faisait refuser. Le ledger étant EXCLUSIF, ce déplacement est
-    IRRÉVERSIBLE — et l'appelant, qui ne voit qu'un refus, n'a aucune raison de
-    le soupçonner.
+    `CLAUDE.md` is literal: "le serveur refuse une paire incohérente AVANT TOUTE
+    MUTATION. Cette garde protège du mauvais ciblage entre sessions parallèles."
+    The absorption mutated with no ownership check at all: a mis-targeted call moved
+    a tracer's ledger into someone else's session, THEN got refused. The ledger being
+    EXCLUSIVE, that move is IRREVERSIBLE — and the caller, who only sees a refusal,
+    has no reason to suspect it.
 
-    Ce test vérifie l'ABSENCE DE MUTATION, pas la présence du refus : le refus
-    existait déjà, c'est lui qui rendait le défaut invisible.
+    This test verifies the ABSENCE OF MUTATION, not the presence of the refusal: the
+    refusal already existed, and it is what made the defect invisible.
     """
     from brain_v42.models.brain_session import BrainSessionIdentityConflictError
 

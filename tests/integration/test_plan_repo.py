@@ -149,12 +149,11 @@ async def test_delete_cascades_to_chunks(db_session):
 
 
 async def test_upsert_declares_its_provenance_on_both_branches(db_session):
-    """Ticket 55a21fb8, fermé par la 049 : l'upsert posait `fresh` SANS source,
-    le trigger de la 043 remettait la provenance à NULL — un plan ARCHIVÉ dont
-    le fichier est réédité repassait fresh par ici, désarchivage légitime mais
-    INVISIBLE (ni compté, ni attribué). Les deux branches (INSERT et ON
-    CONFLICT UPDATE) déclarent désormais `plan_reindex`, un mot que le
-    vocabulaire de la 049 admet."""
+    """Ticket 55a21fb8, closed by 049: the upsert set `fresh` WITHOUT a source,
+    043's trigger reset the provenance to NULL — an ARCHIVED plan whose file is
+    re-edited went back to fresh through here, a legitimate unarchival but an
+    INVISIBLE one (neither counted nor attributed). Both branches (INSERT and ON
+    CONFLICT UPDATE) now declare `plan_reindex`, a word 049's vocabulary admits."""
     repo = PgIndexedPlanRepo(db_session)
     base = IndexedPlanCreate(
         file_path="tests/fixtures/provenance_test.md",
@@ -195,7 +194,7 @@ async def test_upsert_declares_its_provenance_on_both_branches(db_session):
     assert row["freshness_status"] == "fresh"
     assert row["freshness_source"] == "plan_reindex", "branche INSERT"
 
-    # Simuler le cas du ticket : plan archivé, provenance effacée, fichier réédité.
+    # Simulate the ticket's case: archived plan, erased provenance, re-edited file.
     await db_session.execute(
         sa.text(
             "UPDATE indexed_plans SET freshness_status='archived', freshness_source=NULL "
@@ -223,8 +222,8 @@ async def test_upsert_declares_its_provenance_on_both_branches(db_session):
         "branche ON CONFLICT : le désarchivage par réédition se déclare"
     )
 
-    # Auto-nettoyage : une ligne laissée avec le vocabulaire de la 049 ferait
-    # tirer le refus fail-closed du downgrade dans les round-trips voisins —
-    # mesuré sur le banc jetable : le garde a mordu son propre banc.
+    # Self-cleanup: a row left with 049's vocabulary would make the downgrade's
+    # fail-closed refusal fire in the neighbouring round-trips — measured on the
+    # disposable bench: the guard bit its own bench.
     await db_session.execute(sa.text("DELETE FROM indexed_plans WHERE id = :i"), {"i": plan_id})
     await db_session.commit()

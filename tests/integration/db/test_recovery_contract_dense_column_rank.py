@@ -1,20 +1,20 @@
-"""Le rang dense se calcule APRÈS `NOT attisdropped` — prouvé sur colonne morte.
+"""The dense rank is computed AFTER `NOT attisdropped` — proved on a dropped column.
 
-Ce module est le seul endroit du dépôt où l'empreinte de colonnes du contrat DR
-est jouée contre une base qui porte un TROU d'`attnum`. Sans ce cas, le module
-serait vert et INERTE : sur une base sans colonne morte, `row_number()` sur les
-colonnes vivantes et `attnum` rendent la MÊME suite, donc le bug — recalculer le
-rang avant le filtre — survivrait à tous les tests. Le témoin négatif
-`test_a_hole_free_pair_cannot_tell_the_two_expressions_apart` épingle exactement
-cette inertie, pour qu'on ne puisse pas croire qu'un cas plat suffisait.
+This module is the repository's only place where the DR contract's column
+fingerprint is played against a database carrying an `attnum` HOLE. Without that
+case, the module would be green and INERT: on a database with no dropped column,
+`row_number()` over the live columns and `attnum` return the SAME sequence, so the
+bug — recomputing the rank before the filter — would survive every test. The
+negative witness `test_a_hole_free_pair_cannot_tell_the_two_expressions_apart` pins
+exactly that inertia, so that nobody can believe a flat case was enough.
 
-Mesuré le 2026-08-23 sur trois bases à la tête `046` : 24 colonnes mortes sur 8
-tables en production, 11 sur 6 tables sur une base bâtie à neuf par `alembic
-upgrade head`, ZÉRO sur une base sortie de `pg_restore`. Une empreinte ordinale
-mesure donc l'historique de l'INSTANCE, pas le schéma.
+Measured on 2026-08-23 across three databases at head `046`: 24 dropped columns
+over 8 tables in production, 11 over 6 tables on a database built afresh by
+`alembic upgrade head`, ZERO on a database out of `pg_restore`. An ordinal
+fingerprint therefore measures the INSTANCE's history, not the schema.
 
-Le SQL joué n'est pas retapé ici : il est EXTRAIT des deux actifs versionnés. Un
-test qui recopierait l'expression prouverait la conformité de sa propre copie.
+The SQL played is not retyped here: it is EXTRACTED from the two versioned assets.
+A test that copied the expression would prove its own copy's conformity.
 """
 
 from __future__ import annotations
@@ -34,8 +34,8 @@ ASSETS = ("brain-v42-v5.sql", "brain-v42-v5-pgrestore.sql")
 HOLED = "zz_dense_rank_probe_holed"
 DENSE = "zz_dense_rank_probe_dense"
 
-#: Le rang dense du contrat, verbatim. La mutation de contrôle le remplace par
-#: `attnum` — c'est-à-dire par le rang tel qu'il serait calculé AVANT le filtre.
+#: The contract's dense rank, verbatim. The control mutation replaces it with
+#: `attnum` — that is, with the rank as it would be computed BEFORE the filter.
 DENSE_RANK = """         row_number() OVER (
              PARTITION BY observed_column.table_name
              ORDER BY attribute_record.attnum
@@ -65,7 +65,7 @@ async def _fingerprints(connection: AsyncConnection, cte: str) -> dict[str, str]
 
 
 async def _build_twins(connection: AsyncConnection, *, holed: bool) -> None:
-    """Deux tables de forme VIVANTE identique, dont l'une porte un trou d'attnum."""
+    """Two tables with an identical LIVE shape, one of which carries an attnum hole."""
     if holed:
         await connection.execute(
             sa.text(
@@ -84,7 +84,7 @@ async def _build_twins(connection: AsyncConnection, *, holed: bool) -> None:
 async def test_a_dead_column_does_not_move_the_contract_fingerprint(
     engine: AsyncEngine, asset: str
 ) -> None:
-    """Mutation de contrôle dans les DEUX SENS, sur le même cas à colonne morte."""
+    """A control mutation in BOTH DIRECTIONS, on the same dropped-column case."""
     cte = _observed_cte(asset)
 
     async with engine.connect() as connection:
@@ -101,21 +101,21 @@ async def test_a_dead_column_does_not_move_the_contract_fingerprint(
             )
             assert live == 1, "le cas ne porte pas de colonne morte, il ne prouve rien"
 
-            # SENS 1 — le contrat tel qu'il est LIVRÉ : le trou ne se voit pas.
-            # Cette assertion vient AVANT toute inspection du texte : une garde
-            # structurelle placée plus haut masquerait la preuve sémantique en
-            # échouant la première, et le module ne dirait plus que le contrat
-            # est conforme — seulement qu'il ressemble à ce qu'on attendait.
+            # DIRECTION 1 — the contract as SHIPPED: the hole is invisible. This
+            # assertion comes BEFORE any inspection of the text: a structural guard
+            # placed higher would mask the semantic proof by failing first, and the
+            # module would no longer say the contract is conforming — only that it
+            # looks like what was expected.
             contract = await _fingerprints(connection, cte)
             assert contract[HOLED] == contract[DENSE], asset
 
-            # SENS 2 — rang recalculé AVANT le filtre : le trou grave l'instance.
+            # DIRECTION 2 — rank recomputed BEFORE the filter: the hole engraves the instance.
             assert DENSE_RANK in cte, asset
             mutated = cte.replace(DENSE_RANK, RANK_BEFORE_THE_FILTER)
             broken = await _fingerprints(connection, mutated)
             assert broken[HOLED] != broken[DENSE], asset
 
-            # SENS 1 rejoué après la mutation : le vert revient sans autre geste.
+            # DIRECTION 1 replayed after the mutation: the green comes back with no other move.
             assert (await _fingerprints(connection, cte))[HOLED] == contract[DENSE], asset
         finally:
             await transaction.rollback()
@@ -126,7 +126,7 @@ async def test_a_dead_column_does_not_move_the_contract_fingerprint(
 async def test_a_hole_free_pair_cannot_tell_the_two_expressions_apart(
     engine: AsyncEngine, asset: str
 ) -> None:
-    """Le témoin d'INERTIE : sans colonne morte, le bug passe les deux tests."""
+    """The INERTIA witness: with no dropped column, the bug passes both tests."""
     cte = _observed_cte(asset)
     mutated = cte.replace(DENSE_RANK, RANK_BEFORE_THE_FILTER)
     assert mutated != cte, asset

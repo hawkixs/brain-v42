@@ -63,9 +63,9 @@ chmod +x "$MOCK_BIN/claude"
 
 cat > "$MOCK_BIN/uv" <<'MOCK_UV'
 #!/usr/bin/env bash
-# Le rail claude passe par scripts.dream.claude_runner depuis le 2026-08-11 :
-# c'est lui, et non plus dream.sh, qui construit la ligne de commande. Le mock
-# delegue donc au VRAI runner, qui execute ensuite le `claude` bouchonne du PATH.
+# The claude rail has gone through scripts.dream.claude_runner since 2026-08-11:
+# it, and no longer dream.sh, builds the command line. The mock therefore delegates
+# to the REAL runner, which then executes the stubbed `claude` from the PATH.
 if [[ "${1:-} ${2:-} ${3:-} ${4:-}" == "run python -m scripts.dream.claude_runner" ]]; then
   shift 4
   exec "$REPO_PYTHON" -m scripts.dream.claude_runner "$@"

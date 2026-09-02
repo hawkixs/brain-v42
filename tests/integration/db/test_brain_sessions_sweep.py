@@ -1,9 +1,9 @@
-"""Le balayage serveur contre une vraie base : frontière et invariants.
+"""The server sweep against a real database: boundary and invariants.
 
-Seuil de 365 jours partout : le balayage est GLOBAL par conception, et la base
-d'intégration est partagée. Antidater les lignes de la fixture et viser un an
-rend structurellement impossible d'emporter la session d'un test voisin, qui
-est forcément créée « maintenant ».
+A 365-day threshold everywhere: the sweep is GLOBAL by design, and the integration
+database is shared. Back-dating the fixture's rows and aiming at a year makes it
+structurally impossible to take away a neighbouring test's session, which is
+necessarily created "now".
 """
 
 from __future__ import annotations
@@ -74,12 +74,11 @@ async def _insert_open_session(
     nature: str | None = None,
     observed: datetime | None = None,
 ):
-    """Insérer une session OUVERTE, avec ou sans les colonnes de la 046.
+    """Insert an OPEN session, with or without 046's columns.
 
-    ``nature=None`` et ``observed=None`` par défaut : c'est l'état d'AVANT la
-    046, celui de toutes les lignes existantes, et il doit rester le cas par
-    défaut de la fixture pour que les tests antérieurs prouvent encore ce qu'ils
-    prouvaient.
+    ``nature=None`` and ``observed=None`` by default: that is the state from BEFORE
+    046, the state of every existing row, and it must stay the fixture's default case
+    so that the earlier tests still prove what they proved.
     """
     async with session_factory.begin() as session:
         row = (
@@ -237,9 +236,9 @@ async def test_sweep_preserves_focus_revision_and_attributions(
     assert list(attributions) == [knowledge_id]
     swept = await _read(session_factory, ghost)
     assert swept["status"] == "abandoned"
-    # Le snapshot terminal reste vide : c'est la contrainte CHECK
-    # brain_sessions_terminal_state_valid pour 'abandoned'. Le ledger, lui,
-    # vit dans brain_session_artifacts et survit.
+    # The terminal snapshot stays empty: that is the
+    # brain_sessions_terminal_state_valid CHECK constraint for 'abandoned'. The
+    # ledger, for its part, lives in brain_session_artifacts and survives.
     assert list(swept["captured_knowledge_ids"]) == []
 
 
@@ -280,13 +279,13 @@ async def test_manual_abandonment_reason_is_never_overwritten(
     assert row["abandonment_reason"] == "abandon manuel de l'opérateur"
 
 
-# ─── M-G : la règle des 4 h contre une vraie base ────────────────────────────
+# ─── M-G: the 4 h rule against a real database ───────────────────────────────
 #
-# Le harnais unitaire prouve la FORME du prédicat ; il ne peut rien dire du
-# CHECK `brain_sessions_terminal_state_valid` de la 046, qui n'existe que dans
-# PostgreSQL. Une ligne `closed_inactive` mal formée — une raison d'abandon
-# laissée en place, un `ended_at` oublié — ne se voit QUE ici, et elle ferait
-# tomber la nuit entière sur une violation de contrainte.
+# The unit harness proves the predicate's SHAPE; it can say nothing about 046's
+# `brain_sessions_terminal_state_valid` CHECK, which only exists in PostgreSQL. A
+# malformed `closed_inactive` row — an abandonment reason left in place, a forgotten
+# `ended_at` — is only visible HERE, and it would bring the whole night down on a
+# constraint violation.
 
 INACTIVE = timedelta(hours=4)
 
@@ -295,11 +294,11 @@ async def test_an_agent_tracer_inactive_past_the_threshold_is_closed_not_abandon
     session_factory: async_sessionmaker[AsyncSession],
     sweep_project: str,
 ) -> None:
-    """Le fait central de M-G, contre la base : le 4ᵉ état est ATTEIGNABLE.
+    """M-G's central fact, against the database: the 4th state is REACHABLE.
 
-    Et il l'est sous le CHECK de la 046, qui interdit sur cette branche tout ce
-    qu'un abandon exige. Que la ligne existe après le statement est la preuve
-    que le `CASE` produit une forme que la base accepte.
+    And it is so under 046's CHECK, which forbids on that branch everything an
+    abandonment requires. That the row exists after the statement is the proof that
+    the `CASE` produces a shape the database accepts.
     """
     now = datetime.now(UTC)
     tracer = await _insert_open_session(
@@ -320,8 +319,8 @@ async def test_an_agent_tracer_inactive_past_the_threshold_is_closed_not_abandon
     closed = await _read(session_factory, tracer)
     assert closed["status"] == "closed_inactive"
     assert closed["ended_at"] is not None
-    # Les quatre interdits de la branche, relus un par un : c'est ce que le
-    # CHECK exige, et c'est ce qui distingue cet état d'un abandon.
+    # The branch's four prohibitions, read back one by one: that is what the CHECK
+    # requires, and it is what distinguishes this state from an abandonment.
     assert closed["abandonment_reason"] is None
     assert closed["summary"] is None
     assert closed["next_focus"] is None
@@ -333,13 +332,13 @@ async def test_a_never_observed_session_survives_the_four_hour_rule(
     session_factory: async_sessionmaker[AsyncSession],
     sweep_project: str,
 ) -> None:
-    """S3, tranché — avec son TÉMOIN NÉGATIF dans le même test.
+    """S3, settled — with its NEGATIVE WITNESS in the same test.
 
-    `last_observed_at IS NULL` veut dire « jamais observée », pas « observée il
-    y a longtemps ». La paire est indispensable : la survivante seule resterait
-    verte si la règle ne prenait JAMAIS personne, et la fermée seule ne dirait
-    rien du sort de `NULL`. Les deux sessions sont identiques à une colonne
-    près, et cette colonne est exactement celle que S3 tranche.
+    `last_observed_at IS NULL` means "never observed", not "observed a long time
+    ago". The pair is indispensable: the survivor alone would stay green if the rule
+    NEVER took anyone, and the closed one alone would say nothing about `NULL`'s
+    fate. The two sessions are identical but for one column, and that column is
+    exactly the one S3 settles.
     """
     now = datetime.now(UTC)
     never_observed = await _insert_open_session(
@@ -374,13 +373,13 @@ async def test_an_operator_session_is_never_closed_by_inactivity(
     session_factory: async_sessionmaker[AsyncSession],
     sweep_project: str,
 ) -> None:
-    """La garantie principale n'est pas le seuil, c'est la NATURE (§0bis.3).
+    """The main guarantee is not the threshold, it is the NATURE (§0bis.3).
 
-    Une session `claimed` — donc `operator` — n'est jamais fermée par
-    inactivité, quel que soit son âge. Le CHECK de la 046 le rend d'ailleurs
-    impossible en base : la branche `closed_inactive` exige `nature = 'agent'`.
-    Ce test prouve que le PRÉDICAT ne l'essaie même pas, donc que la nuit ne
-    tombe pas sur la contrainte.
+    A `claimed` session — hence `operator` — is never closed for inactivity, whatever
+    its age. 046's CHECK makes it impossible in the database anyway: the
+    `closed_inactive` branch requires `nature = 'agent'`. This test proves the
+    PREDICATE does not even try, hence that the night does not fall on the
+    constraint.
     """
     now = datetime.now(UTC)
     operator = await _insert_open_session(
@@ -404,10 +403,10 @@ async def test_a_recently_observed_tracer_is_not_taken(
     session_factory: async_sessionmaker[AsyncSession],
     sweep_project: str,
 ) -> None:
-    """Le critère de sortie que la SPEC-M-G §7 dit explicitement manquant ailleurs.
+    """The exit criterion SPEC-M-G §7 explicitly says is missing elsewhere.
 
-    « Ne prouve rien sur les sessions actives : il faut aussi montrer qu'une
-    session ayant observé un appel dans les 4 h n'est PAS prise. »
+    "Ne prouve rien sur les sessions actives : il faut aussi montrer qu'une session
+    ayant observé un appel dans les 4 h n'est PAS prise."
     """
     now = datetime.now(UTC)
     active = await _insert_open_session(
@@ -431,12 +430,12 @@ async def test_seven_days_wins_over_four_hours_on_a_session_matching_both(
     session_factory: async_sessionmaker[AsyncSession],
     sweep_project: str,
 ) -> None:
-    """PRÉSÉANCE, prouvée sur la ligne écrite — pas sur le SQL compilé.
+    """PRECEDENCE, proved on the written row — not on the compiled SQL.
 
-    Une traçante inactive depuis plus que le seuil de PRÉSENCE matche les deux
-    prédicats. Elle doit partir en `abandoned` AVEC sa raison, jamais en
-    `closed_inactive` muet : perdre la raison, c'est perdre la seule trace de
-    POURQUOI la session est terminée.
+    A tracer inactive for longer than the PRESENCE threshold matches both
+    predicates. It must leave as `abandoned` WITH its reason, never as a mute
+    `closed_inactive`: losing the reason means losing the only trace of WHY the
+    session is terminated.
     """
     now = datetime.now(UTC)
     both = await _insert_open_session(
@@ -463,11 +462,11 @@ async def test_a_closed_rule_leaves_an_inactive_tracer_open(
     session_factory: async_sessionmaker[AsyncSession],
     sweep_project: str,
 ) -> None:
-    """Livré FERMÉ, prouvé contre la base et pas seulement contre le défaut.
+    """Shipped CLOSED, proved against the database and not only against the default.
 
-    C'est la mutation qui compte le plus ici : le balayage tourne WET toutes les
-    nuits. Si `close_inactive_after=None` ne fermait pas complètement la règle,
-    merger ce lot fermerait des sessions dès la nuit suivante.
+    This is the mutation that matters most here: the sweep runs WET every night. If
+    `close_inactive_after=None` did not close the rule completely, merging this batch
+    would close sessions from the very next night.
     """
     now = datetime.now(UTC)
     tracer = await _insert_open_session(
@@ -492,15 +491,15 @@ async def test_closing_a_tracer_preserves_its_ledger_and_the_project_focus(
     session_factory: async_sessionmaker[AsyncSession],
     sweep_project: str,
 ) -> None:
-    """La raison d'être de la 046, et le bruit qu'elle refuse de fabriquer.
+    """046's reason to exist, and the noise it refuses to manufacture.
 
-    `abandoned` FORCE `cardinality(captured_knowledge_ids) = 0` : une traçante
-    qui a fait son travail y déclarerait un ledger vide. Sur `closed_inactive`
-    la colonne n'a AUCUNE contrainte — c'est le point entier de la migration.
+    `abandoned` FORCES `cardinality(captured_knowledge_ids) = 0`: a tracer that has
+    done its work would declare an empty ledger there. On `closed_inactive` the
+    column has NO constraint at all — that is the migration's whole point.
 
-    Et `focus_revision` doit être INCHANGÉE : une fermeture groupée qui
-    tenterait un CAS par ligne produirait N−1 `conflict` fabriqués sur les
-    sessions opérateur concurrentes (`SPEC-M-G` §3.2).
+    And `focus_revision` must be UNCHANGED: a bulk closure attempting a CAS per row
+    would produce N−1 manufactured `conflict` on the concurrent operator sessions
+    (`SPEC-M-G` §3.2).
     """
     now = datetime.now(UTC)
     tracer = await _insert_open_session(
@@ -568,17 +567,17 @@ async def test_a_closed_inactive_row_survives_the_pydantic_rail(
     session_factory: async_sessionmaker[AsyncSession],
     sweep_project: str,
 ) -> None:
-    """Piège (a) : le rail ne doit pas refuser ce que la base accepte.
+    """Trap (a): the rail must not refuse what the database accepts.
 
-    Le dispatcher de `BrainSession` n'a plus de branche fourre-tout, il LÈVE.
-    Avant la 046 il finissait par `else: _validate_abandoned_state()`, qui exige
-    `abandonment_reason` — le champ que la branche `closed_inactive` INTERDIT.
-    Une ligne parfaitement valide en base aurait donc fait exploser toute
-    lecture qui la croise : `brain_session_list`, le briefing, la reprise.
+    `BrainSession`'s dispatcher no longer has a catch-all branch, it RAISES. Before
+    046 it ended with `else: _validate_abandoned_state()`, which requires
+    `abandonment_reason` — the field the `closed_inactive` branch FORBIDS. A
+    perfectly valid row in the database would therefore have blown up every read
+    that crossed it: `brain_session_list`, the briefing, the resume.
 
-    C'est le seul test qui fasse aller-retour la ligne RÉELLE — écrite par le
-    balayage, relue par le modèle. Les tests unitaires construisent le modèle à
-    la main et ne peuvent pas voir un écart entre le CHECK et le rail.
+    This is the only test that round-trips the REAL row — written by the sweep, read
+    back by the model. The unit tests build the model by hand and cannot see a gap
+    between the CHECK and the rail.
     """
     now = datetime.now(UTC)
     tracer = await _insert_open_session(
@@ -599,8 +598,8 @@ async def test_a_closed_inactive_row_survives_the_pydantic_rail(
     assert loaded is not None
     assert loaded.status.value == "closed_inactive"
     assert loaded.nature == "agent"
-    # `is_stale` n'est vrai que sur `open` : une session terminale qui le
-    # porterait ferait lever le rail, et le balayage en produit toutes les nuits.
+    # `is_stale` is only true on `open`: a terminal session carrying it would make
+    # the rail raise, and the sweep produces such sessions every night.
     assert loaded.is_stale is False
 
     listed = await repo.list(project_key=sweep_project, status="all")
@@ -611,13 +610,13 @@ async def test_the_persisted_series_keeps_the_two_counters_distinct_on_a_mixed_n
     session_factory: async_sessionmaker[AsyncSession],
     sweep_project: str,
 ) -> None:
-    """Ticket 24ca3b73, l'exigence terminale : le compteur ÉCRIT EN BASE est
-    distinct d'abandoned_count sur une nuit où les deux sont non nuls.
+    """Ticket 24ca3b73, the terminal requirement: the counter WRITTEN TO THE DATABASE
+    is distinct from abandoned_count on a night where both are non-zero.
 
-    Sans la colonne de la 049, une nuit qui fermait 200 traçantes pour
-    inactivité ne laissait AUCUNE série temporelle — et un compteur qui
-    additionnerait les deux événements de sens opposé serait pire qu'absent.
-    La ligne dream_runs doit porter 1 (les fermetures), jamais 2 (la somme).
+    Without 049's column, a night that closed 200 tracers for inactivity left NO time
+    series at all — and a counter that added the two opposite-meaning events together
+    would be worse than absent. The dream_runs row must carry 1 (the closures), never
+    2 (the sum).
     """
     from brain_v42.maintenance.session_sweep import record_dream_run
 

@@ -1,13 +1,13 @@
-"""Exécute les deux attestations v5 dans une transaction PostgreSQL en lecture seule.
+"""Execute both v5 attestations inside a read-only PostgreSQL transaction.
 
-Jumeau de `test_recovery_contract_v4_execution`, et il n'était pas décoratif : le
-lot `8eaefe36` a fait passer les deux actifs de ~2 700 à ~3 600 lignes de SQL que
-RIEN n'exécutait en CI. Un `pytest tests/unit` entier reste vert sur un contrat
-qui ne se parse pas — les modules statiques lisent du texte, pas un plan.
+Twin of `test_recovery_contract_v4_execution`, and it was not decorative: the
+`8eaefe36` batch took the two assets from ~2,700 to ~3,600 lines of SQL that
+NOTHING executed in CI. A whole `pytest tests/unit` stays green on a contract that
+does not parse — the static modules read text, not a plan.
 
-Le périmètre du snapshot est DÉRIVÉ de `table_set` plutôt qu'énuméré : la preuve
-« l'attestation n'écrit rien » doit couvrir la 33ᵉ table le jour où elle entre,
-sans qu'un rédacteur ait à y penser.
+The snapshot's scope is DERIVED from `table_set` rather than enumerated: the proof
+that "the attestation writes nothing" must cover the 33rd table the day it enters,
+without a writer having to think about it.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ V5_JSON = RECOVERY / "brain-v42-v5.json"
 
 CHECK_ID = "table_shape"
 
-#: Les trois sous-compteurs de la check row `table_shape`, posée par `8eaefe36`.
+#: The `table_shape` check row's three sub-counters, laid down by `8eaefe36`.
 SHAPE_COUNTERS = (
     "table_column_mismatches",
     "table_constraint_mismatches",
@@ -104,12 +104,12 @@ async def test_v5_assets_execute_read_only_without_mutation(
 async def test_the_receipt_reports_the_three_shape_counters(
     engine: AsyncEngine, asset: str
 ) -> None:
-    """Le reçu doit RENDRE les trois compteurs, pas seulement les calculer.
+    """The receipt must RETURN the three counters, not merely compute them.
 
-    Un compteur qui n'atteint pas le reçu est le mode de panne maison : vert,
-    et invisible. Le même test garde l'autre moitié de l'arbitrage : que
-    `catalog_counts` soit RESTÉ à ses quatre entiers, parce que le moteur DSL de
-    `red-backup` le modélise `extra="forbid"` et refuserait un cinquième champ.
+    A counter that does not reach the receipt is the house failure mode: green, and
+    invisible. The same test guards the other half of the arbitration: that
+    `catalog_counts` STAYED at its four integers, because `red-backup`'s DSL engine
+    models it `extra="forbid"` and would refuse a fifth field.
     """
     sql = (RECOVERY / asset).read_text(encoding="utf-8")
     async with engine.connect() as connection:

@@ -35,9 +35,9 @@ async def health_client(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[httpx.
 
     monkeypatch.setenv("POSTGRES_URL", INTEGRATION_DB_URL)
     monkeypatch.setenv("GRAPH_ENABLED", "false")
-    # Le couple, jamais la moitié — même raison que test_lifecycle : un .env
-    # de dev porte GRAPH_LEDGER_WRITE_ENABLED=true et Settings refuse un
-    # ledger armé sans graphe.
+    # The pair, never half of it — same reason as test_lifecycle: a dev .env carries
+    # GRAPH_LEDGER_WRITE_ENABLED=true and Settings refuses a ledger armed without a
+    # graph.
     monkeypatch.setenv("GRAPH_LEDGER_WRITE_ENABLED", "false")
     get_settings.cache_clear()
 

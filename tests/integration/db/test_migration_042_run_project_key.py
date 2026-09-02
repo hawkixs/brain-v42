@@ -1,20 +1,20 @@
-"""Migration 042 — dream_runs sait enfin dire pour quel projet une nuit a tourné.
+"""Migration 042 — dream_runs can finally say which project a night ran for.
 
-Le défaut que cette colonne répare est mesuré : `dream_runs` couvre huit phases
-sur quatre mois et aucune ligne ne dit à quel projet elle appartient, donc toute
-cette télémétrie est indistinguable. Le schéma lui-même ne pouvait pas exprimer
-la dimension qu'on croyait couverte. (Aucun décompte de lignes ni de nuits n'est
-épinglé ici : la table en gagne six à neuf chaque matin à 06:00, et un test qui
-fige un tel chiffre rougit tout seul le lendemain.)
+The defect this column repairs is measured: `dream_runs` covers eight phases over
+four months and no row says which project it belongs to, so all that telemetry is
+indistinguishable. The schema itself could not express the dimension we believed
+covered. (No row or night count is pinned here: the table gains six to nine every
+morning at 06:00, and a test freezing such a figure reddens by itself the next
+day.)
 
-Ce que ces tests fixent, et que le seul `add_column` ne dirait pas :
-  1. La colonne est NULLABLE, et c'est une conséquence — aucun des SIX écrivains
-     ne fait remonter son échec (spec §15.3). NOT NULL transformerait une erreur
-     de schéma en avertissement imprimé sur tous ceux qui tournent.
-  2. Aucun backfill : les lignes d'avant restent NULL, définitivement.
-  3. La sentinelle `'*'` des phases globales est stockable.
-  4. L'index composite existe, dans le bon ordre — c'est lui qui rend la
-     télémétrie par projet interrogeable sans balayer la table.
+What these tests fix, and what the `add_column` alone would not say:
+  1. The column is NULLABLE, and that is a consequence — none of the SIX writers
+     surfaces its failure (spec §15.3). NOT NULL would turn a schema error into a
+     warning printed on all the ones that run.
+  2. No backfill: the earlier rows stay NULL, permanently.
+  3. The global phases' `'*'` sentinel is storable.
+  4. The composite index exists, in the right order — it is what makes per-project
+     telemetry queryable without scanning the table.
 """
 
 from __future__ import annotations
@@ -44,12 +44,12 @@ class TestColumnShape:
         data_type, is_nullable, max_length = row
         assert data_type == "character varying"
         assert max_length == 64
-        # Nullable n'est pas de la prudence : voir spec §14.3. Un NOT NULL ferait
-        # avaler l'erreur par ticket_extract, roadmap_curate et session_sweep.
+        # Nullable is not caution: see spec §14.3. A NOT NULL would have the error
+        # swallowed by ticket_extract, roadmap_curate and session_sweep.
         assert is_nullable == "YES"
 
     async def test_has_no_default(self, db_session) -> None:
-        """Un défaut 'brain-v42' étiquetterait chaque nuit du mauvais projet."""
+        """A 'brain-v42' default would label every night with the wrong project."""
         default = (
             await db_session.execute(
                 sa.text(
@@ -63,7 +63,7 @@ class TestColumnShape:
 
 class TestNoBackfill:
     async def test_a_row_inserted_without_the_key_stays_null(self, db_session) -> None:
-        """NULL veut dire « écrit avant la 042 », et rien d'autre."""
+        """NULL means "written before 042", and nothing else."""
         run_id = (
             await db_session.execute(
                 sa.text(
@@ -83,7 +83,7 @@ class TestNoBackfill:
 
 class TestSentinelAndRealKeys:
     async def test_global_phase_sentinel_is_storable(self, db_session) -> None:
-        """`'*'` est écrit par les trois phases globales, et par elles seules."""
+        """`'*'` is written by the three global phases, and by them alone."""
         run_id = (
             await db_session.execute(
                 sa.text(
@@ -101,8 +101,8 @@ class TestSentinelAndRealKeys:
         assert value == "*"
 
     async def test_a_long_project_key_fits(self, db_session) -> None:
-        """64 caractères, pas 50 : les clés composées comme `red-lab:orchestrator`
-        existent déjà et rien ne garantit qu'elles ne s'allongeront pas."""
+        """64 characters, not 50: composite keys like `red-lab:orchestrator` already
+        exist and nothing guarantees they will not get longer."""
         key = "a" * 64
         run_id = (
             await db_session.execute(
@@ -134,11 +134,11 @@ class TestIndex:
         assert "project_key" in definition
 
     async def test_the_pre_042_date_index_is_left_alone(self, db_session) -> None:
-        """Le nouvel index s'ajoute, il ne remplace pas.
+        """The new index is added, it does not replace.
 
-        `idx_dream_runs_date(run_date DESC)` sert les lectures qui ignorent le
-        projet — les lecteurs recensés en §15.6 sont tous dans ce cas
-        aujourd'hui. Le retirer casserait leur plan pour un gain nul.
+        `idx_dream_runs_date(run_date DESC)` serves the reads that ignore the project
+        — the readers surveyed in §15.6 are all in that case today. Removing it would
+        break their plan for zero gain.
         """
         found = (
             await db_session.execute(

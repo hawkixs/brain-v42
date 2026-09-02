@@ -106,9 +106,9 @@ repair fail-closed in production at the smallest drift. So:
    and were not.** Inventory redone by hand with grep, guards named one by one:
    - pin bump + its test (`tests/unit/test_plan_index_repair_head_pin.py`);
    - **README** and **MCP_TOOLS**: the `migration {head}` string
-     (`test_documentation_contract.py:1816,1819`);
+     (`test_documentation_contract.py:1840,1843`);
    - **ARCHITECTURE**: a **different** string, `migrations 001–{head} defined`, em
-     dash included (same test, l.1815). Following the old recipe to the letter on
+     dash included (same test, l.1839). Following the old recipe to the letter on
      ARCHITECTURE made the test red;
    - **CLAUDE.md**: to be updated (work contract), but **it cannot be in ANY commit
      of this repo** — `git check-ignore -v CLAUDE.md` → `.gitignore:74`, absent from

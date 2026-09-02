@@ -288,16 +288,15 @@ def test_migration_037_round_trip_backfill_and_fail_closed_guards(
 def test_downgrade_fence_holds_the_shared_database_advisory_lock(
     migration_downgrade_fence: Callable[..., None],
 ) -> None:
-    """SIX fichiers migrent la MÊME base partagée, sans aucun verrou : deux
-    exécutions concurrentes s'entrelacent destructivement (288d7121, défaut 1
-    — resté ouvert après la garde de setup). Le fence tient donc un
-    `pg_advisory_lock` de session pendant TOUTE sa fenêtre : les runs
-    concurrents se sérialisent au lieu de s'entre-casser, et un crash libère
-    le verrou avec la connexion — résistant au kill par construction, là où
-    un fichier de verrou ne l'est pas.
+    """SIX files migrate the SAME shared database, with no lock at all: two
+    concurrent executions interleave destructively (288d7121, defect 1 — left open
+    after the setup guard). The fence therefore holds a session
+    `pg_advisory_lock` for its WHOLE window: concurrent runs serialise instead of
+    breaking each other, and a crash releases the lock with the connection —
+    kill-resistant by construction, where a lock file is not.
 
-    La clé est le ticket : 0x288D7121 = 680358177. `pg_advisory_lock(bigint)`
-    la range dans (classid=0, objid=680358177, objsubid=1).
+    The key is the ticket: 0x288D7121 = 680358177. `pg_advisory_lock(bigint)` files
+    it under (classid=0, objid=680358177, objsubid=1).
     """
     held = _sql(
         "SELECT count(*) AS held FROM pg_locks "
@@ -312,16 +311,15 @@ def test_downgrade_fence_holds_the_shared_database_advisory_lock(
 
 
 def test_the_advisory_lock_actually_serializes_two_holders() -> None:
-    """Le test de présence prouve qu'un verrou EXISTE ; celui-ci prouve qu'il
-    SÉRIALISE — la propriété que le message de commit affirmait sans test.
+    """The presence test proves a lock EXISTS; this one proves it SERIALISES — the
+    property the commit message asserted without a test.
 
-    Deux connexions distinctes (= deux sessions Postgres, comme deux runs
-    pytest concurrents) : le second détenteur ne progresse PAS pendant que le
-    premier tient (0,5 s d'attente observée), et ne progresse qu'à la
-    libération. Un timeout de 5 s borne l'attente : si la libération ne
-    débloquait pas, le test échoue en nommant la panne au lieu de pendre.
-    Instrument prouvé mordant par mutation (clé divergente pour le second
-    détenteur → « a progressé pendant que le premier tenait »).
+    Two distinct connections (= two Postgres sessions, like two concurrent pytest
+    runs): the second holder does NOT progress while the first holds (0.5 s of
+    observed waiting), and only progresses at release time. A 5 s timeout bounds the
+    wait: if the release did not unblock, the test fails naming the failure instead
+    of hanging. The instrument was proved to bite by mutation (a divergent key for
+    the second holder → "progressed while the first was holding").
     """
     import asyncpg
 

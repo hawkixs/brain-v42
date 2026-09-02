@@ -69,11 +69,11 @@ cat > "$MOCK_BIN/uv" <<'MOCK_UV'
 if [[ -n "${UV_ARGS_LOG:-}" ]]; then
   printf '%s\n' "$*" >> "$UV_ARGS_LOG"
 fi
-# Le rail claude est passé derrière scripts.dream.claude_runner : c'est lui, et
-# non plus dream.sh, qui construit la ligne de commande. Le mock DÉLÈGUE donc au
-# vrai runner (REPO_PYTHON, injecté par le test) — sinon ce test mesurerait le
-# mock. Le runner exécute ensuite le `claude` bouchonné trouvé dans le PATH, si
-# bien que les arguments enregistrés sont ceux réellement produits par le code.
+# The claude rail has moved behind scripts.dream.claude_runner: it, and no longer
+# dream.sh, builds the command line. The mock therefore DELEGATES to the real runner
+# (REPO_PYTHON, injected by the test) — otherwise this test would measure the mock.
+# The runner then executes the stubbed `claude` found in the PATH, so that the
+# recorded arguments are the ones the code really produced.
 if [[ "${1:-} ${2:-} ${3:-} ${4:-}" == \
   "run python -m scripts.dream.claude_runner" ]]; then
   shift 4
@@ -174,21 +174,20 @@ else
   awk '/^---BEGIN CLAUDE CALL---/,/^---END CLAUDE CALL---/' "$ARGS_LOG" | head -25 | sed 's/^/    /' >&2 || true
 fi
 
-# --- Assertion: le joker a disparu au profit de l'allowlist EXACTE ---
+# --- Assertion: the wildcard is gone in favour of the EXACT allowlist ---
 #
-# `mcp__brain-v42__*` a été le contrat de ce rail jusqu'au 2026-08-11. Il ne
-# l'est plus : le joker et le jeton admin étaient les deux moitiés du même trou,
-# et un bearer scopé servi avec une liste d'outils illimitée n'est qu'un demi
-# pare-feu. Le contrat est désormais : brain reste joignable, mais UNIQUEMENT
-# par les outils de la phase.
+# `mcp__brain-v42__*` was this rail's contract until 2026-08-11. It is not any
+# more: the wildcard and the admin token were the two halves of the same hole, and a
+# scoped bearer served with an unlimited tool list is only half a firewall. The
+# contract is now: brain stays reachable, but ONLY through the phase's tools.
 if grep -q '^ARG:mcp__brain-v42__\*$' "$ARGS_LOG"; then
   fail "le joker mcp__brain-v42__* est de retour — le pare-feu de capacité est contourné"
 else
   pass "aucun joker d'outils dans les appels claude"
 fi
 
-# scan est la première phase : son allowlist exacte doit apparaître, et un outil
-# d'une AUTRE phase (brain_update, propre à reorg) doit rester absent.
+# scan is the first phase: its exact allowlist must appear, and a tool from ANOTHER
+# phase (brain_update, specific to reorg) must stay absent.
 if grep -q '^ARG:mcp__brain-v42__brain_decay_status,' "$ARGS_LOG"; then
   pass "chaque phase reçoit son allowlist exacte (brain MCP joignable)"
 else
@@ -243,11 +242,11 @@ env -i HOME="$HOME" PATH="$MOCK_BIN:/usr/bin:/bin" \
   "$TMP/scripts/dream.sh" test-project >"$TMP/claude-enabled.out" 2>&1
 claude_enabled_rc=$?
 set -e
-# Sous enforcement, claude n'est plus REFUSÉ — il est SCOPÉ. Mais l'ancienne
-# propriété qui comptait vraiment survit intacte : rien ne tourne quand la
-# configuration de capacité est incomplète. Ici le registre est absent, donc le
-# préflight doit tuer la nuit AVANT la première phase, exactement comme le refus
-# le faisait. Un fail-closed remplacé par un autre fail-closed.
+# Under enforcement, claude is no longer REFUSED — it is SCOPED. But the old
+# property that really mattered survives intact: nothing runs when the capability
+# configuration is incomplete. Here the registry is absent, so the preflight must
+# kill the night BEFORE the first phase, exactly as the refusal did. One fail-closed
+# replaced by another fail-closed.
 if [[ "$claude_enabled_rc" -ne 0 ]] \
   && grep -q 'FAIL Claude preflight' "$TMP/claude-enabled.out"; then
   pass "un registre de capacité absent tue la nuit au préflight claude"
