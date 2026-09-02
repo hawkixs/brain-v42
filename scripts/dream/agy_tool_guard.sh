@@ -1,46 +1,46 @@
 #!/usr/bin/env bash
 #
-# Garde d'outils du rail agy — hook `PreToolUse`, deny par défaut.
+# Tool guard of the agy rail — a `PreToolUse` hook, deny by default.
 #
-# POURQUOI ELLE EXISTE. agy n'a aucun équivalent du `--tools ""` de claude ni de
-# l'`enabled_tools` de codex. Mesuré le 2026-08-11 sur v1.1.11 : il expose 56
-# outils, dont run_command, write_to_file, invoke_subagent, schedule et le
-# contrôle du navigateur. `--dangerously-skip-permissions`, REQUIS en headless
-# sinon la session attend une approbation qui ne viendra jamais, les
-# auto-approuve tous. Sur un prompt demandant UN appel MCP, agy a exécuté douze
-# étapes d'outils et lancé `ps aux`. Sans cette garde, une phase de dream non
-# surveillée obtient un shell sous un compte membre de `sudo` et `docker`.
+# WHY IT EXISTS. agy has no equivalent of claude's `--tools ""` nor of codex's
+# `enabled_tools`. Measured on 2026-08-11 against v1.1.11: it exposes 56 tools,
+# among them run_command, write_to_file, invoke_subagent, schedule and browser
+# control. `--dangerously-skip-permissions`, REQUIRED in headless mode or the
+# session waits for an approval that will never come, auto-approves every one
+# of them. On a prompt asking for ONE MCP call, agy ran twelve tool steps and
+# launched `ps aux`. Without this guard, an unattended dream phase gets a shell
+# under an account that belongs to `sudo` and `docker`.
 #
-# Trois autres mécanismes ont été essayés et MESURÉS inopérants : `disabledTools`
-# dans settings.json (aucun effet), `--mode plan` documenté « read-only »
-# (exécute quand même le shell), et un flag CLI de restriction (n'existe pas).
-# Le hook `PreToolUse` rendant `{"decision":"deny"}` est le seul qui tienne — et
-# il survit à `--dangerously-skip-permissions`, ce qui est le point qui aurait
-# pu tout invalider.
+# Three other mechanisms were tried and MEASURED inoperative: `disabledTools`
+# in settings.json (no effect), `--mode plan` documented as "read-only" (runs
+# the shell anyway), and a CLI restriction flag (does not exist). The
+# `PreToolUse` hook returning `{"decision":"deny"}` is the only one that holds
+# — and it survives `--dangerously-skip-permissions`, which is the point that
+# could have invalidated everything.
 #
-# CE QU'ELLE NE FAIT PAS. Elle protège la MACHINE, pas le corpus. Ce qu'une
-# phase peut faire au brain est borné côté SERVEUR par le bearer de
-# (projet, phase) — vérifié : un tools/call direct hors périmètre répond
-# « Dream capability authorization denied ». D'où l'autorisation en bloc de
-# `call_mcp_tool` ici : cette garde n'a pas à rejouer un contrôle que le serveur
-# fait mieux, et le dupliquer créerait deux listes à tenir d'accord à la main.
+# WHAT IT DOES NOT DO. It protects the MACHINE, not the corpus. What a phase
+# can do to the brain is bounded SERVER-side by the (project, phase) bearer —
+# verified: a direct tools/call outside the perimeter answers
+# "Dream capability authorization denied". Hence authorising `call_mcp_tool`
+# wholesale here: this guard has no business replaying a check the server does
+# better, and duplicating it would create two lists to keep agreeing by hand.
 #
-# INCONDITIONNELLE, sans interrupteur. Une version antérieure la conditionnait à
-# BRAIN_DREAM_PHASE ; le HOME éphémère du runner rend ça inutile, puisqu'elle
-# n'est câblée que là. Un interrupteur ne serait qu'une chose à oublier de
-# poser — et son oubli serait silencieux.
+# UNCONDITIONAL, with no switch. An earlier version made it conditional on
+# BRAIN_DREAM_PHASE; the runner's ephemeral HOME makes that pointless, since it
+# is wired nowhere else. A switch would only be one more thing to forget to
+# set — and forgetting it would be silent.
 #
-# Contrat (docs/hooks.md d'agy) : payload JSON sur stdin, décision JSON sur
-# stdout. Tout ce qui s'écrirait d'autre sur stdout casserait le parsing et
+# Contract (agy's docs/hooks.md): JSON payload on stdin, JSON decision on
+# stdout. Anything else written to stdout would break the parsing and
 # transformerait un refus en autorisation.
 
 set -uo pipefail
 
 payload=$(cat 2>/dev/null || true)
 
-# Allowlist, pas denylist. agy expose 56 outils aujourd'hui et en gagnera
-# d'autres à chaque version : une allowlist se périme dans le bon sens (un outil
-# neuf est refusé), une denylist dans le mauvais (un outil neuf passe).
+# An allowlist, not a denylist. agy exposes 56 tools today and will gain more
+# with every release: an allowlist goes stale in the right direction (a new tool
+# is refused), a denylist in the wrong one (a new tool gets through).
 _allow() { printf '{"decision":"allow"}'; }
 _deny()  { printf '{"decision":"deny","reason":"%s"}' "$1"; }
 
@@ -62,17 +62,17 @@ if isinstance(name, str):
 ' 2>/dev/null
 )
 
-# Fail-closed. Un payload vide, illisible ou d'une forme inattendue ne prouve
-# rien — et le jour où agy changera ce format, une garde qui s'ouvre sur
-# l'inconnu laisserait tout passer sans un bruit.
+# Fail-closed. An empty, unreadable or unexpectedly shaped payload proves
+# nothing — and the day agy changes this format, a guard that opens on the
+# unknown would let everything through without a sound.
 if [[ -z "$tool_name" ]]; then
   _deny "payload de hook illisible — refus par defaut"
   exit 0
 fi
 
 case "$tool_name" in
-  # La passerelle vers brain-v42, et le strict nécessaire pour qu'un tour
-  # d'agent puisse rendre son rapport.
+  # The gateway to brain-v42, and the strict minimum for an agent turn to be
+  # able to hand back its report.
   call_mcp_tool|list_resources|read_resource|finish|send_message)
     _allow
     ;;

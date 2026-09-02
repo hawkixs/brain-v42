@@ -1,44 +1,44 @@
 #!/usr/bin/env bash
-# Rattrapage des 10 gros — une nuit par projet, en séquence (le verrou de
-# dream.sh est global), avec une GARDE DE FUITE entre chaque.
+# Catch-up run for the ten biggest — one night per project, in sequence (the
+# dream.sh lock is global), with a LEAK GUARD between each.
 #
-# Le scope serveur est éteint (BRAIN_DREAM_CAPABILITY_ENFORCEMENT absente, les
-# cinq DreamProjectToolPolicy() vides) : une nuit lancée pour un projet PEUT
-# muter la connaissance d'un autre. `watchk-claude` ne l'a pas fait le
-# 2026-08-09, sur 4 phases et 109 entités — ça ne prouve rien pour 870.
+# The server scope is off (BRAIN_DREAM_CAPABILITY_ENFORCEMENT absent, the five
+# DreamProjectToolPolicy() empty): a night launched for one project CAN mutate
+# another's knowledge. `watchk-claude` did not do so on 2026-08-09, over 4
+# phases and 109 entities — that proves nothing for 870.
 #
-# La garde compare les cinq tables de connaissance, projet par projet, avant et
-# après chaque nuit. Toute variation AILLEURS que sur le projet servi arrête la
-# chaîne : composer une fuite sur sept nuits de plus la rendrait irréparable.
+# The guard compares the five knowledge tables, project by project, before and
+# after each night. Any variation ANYWHERE but on the project served stops the
+# chain: compounding a leak over seven more nights would make it unrepairable.
 #
-# Ordre : masse croissante. On mesure comment la durée passe à l'échelle avant
-# d'arriver à `red` (870), et une fuite est moins chère à réparer sur 113 que
-# sur 870.
+# Order: increasing mass. We measure how the duration scales before
+# reaching `red` (870), and a leak is cheaper to repair on 113 entities
+# than on 870.
 #
-# Ce script reste l'échappatoire MANUELLE, et il garde une chose que la boucle
-# nocturne n'a pas : la garde de fuite entre deux projets. La boucle de
-# `dream.sh` sert le pool sans jamais comparer les tables de connaissance —
-# tant que l'étape 8 n'est pas livrée, c'est ici, et seulement ici, qu'un
-# débord d'écriture arrête la chaîne.
+# This script stays the MANUAL escape hatch, and it keeps one thing the
+# nightly loop does not have: the leak guard between two projects. The
+# `dream.sh` loop serves the pool without ever comparing the knowledge
+# tables — until step 8 ships, it is here, and only here, that a write
+# overflow stops the chain.
 #
 # Usage : rattrapage-10-gros.sh [projet ...]
-#   Sans argument, la liste par défaut ci-dessous (les huit déjà rattrapés le
-#   2026-08-09). Avec arguments, cette liste est remplacée.
+#   With no argument, the default list below (the eight already caught up on
+#   2026-08-09). With arguments, that list is replaced.
 set -uo pipefail
 
-# Racine dérivée de la position du script : il a vécu dans `.claude/` avec un
-# chemin absolu en dur, ce qui le liait à une machine. Un script versionné ne
-# peut pas connaître le répertoire de qui l'a écrit.
-# Forme CANONIQUE, à la lettre près : `check_container_image_pins.py` compare
-# cette ligne à une constante littérale pour décider si `$SCRIPT_DIR` est de
-# confiance. La variante avec `--` était équivalente pour bash et inconnue du
-# gate, qui refusait alors tout chemin dérivé de la variable.
+# Root derived from the script's own location: it once lived in `.claude/` with
+# a hard-coded absolute path, which tied it to one machine. A versioned script
+# cannot know the directory of whoever wrote it.
+# The CANONICAL form, to the letter: `check_container_image_pins.py` compares
+# this line against a literal constant to decide whether `$SCRIPT_DIR` is
+# trusted. The variant with `--` was equivalent for bash and unknown to the
+# gate, which then refused every path derived from the variable.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 cd "$REPO_ROOT" || exit 1
 
-# `logs/` est déjà ignoré par git (.gitignore). Les snapshots portent des noms
-# de projet et des décomptes d'entités : ils ne vont pas dans l'index.
+# `logs/` is already ignored by git (.gitignore). The snapshots carry project
+# names and entity counts: they do not belong in the index.
 OUT="logs/dream-rattrapage/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$OUT"
 
@@ -47,18 +47,18 @@ if [[ $# -gt 0 ]]; then
   PROJETS=("$@")
 fi
 
-# La garde ne vaut que si elle échoue BRUYAMMENT. Première écriture : le
-# `group by 1` portait sur l'expression entière, count(*) inclus — PostgreSQL
-# refusait, le fichier « avant » contenait le message d'erreur, le « après »
-# aussi, et le diff était vide. La garde était désactivée en silence, ce qui est
-# pire que pas de garde du tout. Elle valide donc maintenant sa propre sortie.
+# The guard is worth something only if it fails LOUDLY. First writing: the
+# `group by 1` covered the whole expression, count(*) included — PostgreSQL
+# refused, the "before" file contained the error message, the "after" one did
+# too, and the diff was empty. The guard was disabled in silence, which is worse
+# than no guard at all. So it now validates its own output.
 snapshot() {
   local cible="$1" sortie rc brut
-  # Redirection plutôt que substitution : `check_container_image_pins.py` refuse
-  # toute exécution Docker dans un `$(…)`, et il a raison de le faire — la règle
-  # ne connaît pas le verbe et ne peut donc pas prouver qu'il n'y a pas d'ingress
-  # d'image. Le gate tournant AVANT pytest dans `test:unit`, une violation ici
-  # n'échoue pas seule : elle empêche toute la suite unitaire de s'exécuter.
+  # Redirection rather than substitution: `check_container_image_pins.py`
+  # refuses any Docker execution inside a `$(…)`, and it is right to — the rule
+  # does not know the verb and so cannot prove there is no image ingress. The
+  # gate running BEFORE pytest in `test:unit`, a violation here does not fail
+  # alone: it stops the whole unit suite from running.
   brut=$(mktemp)
   docker exec brain_v42_postgres psql -U brain -d brain -Atc "
     with a as (
@@ -97,12 +97,12 @@ for projet in "${PROJETS[@]}"; do
 
   snapshot "$OUT/apres-$projet.txt"
 
-  # Garde de fuite : toute ligne qui diffère et qui ne concerne PAS le projet servi.
+  # Leak guard: any line that differs and does NOT concern the project served.
   fuite=$(diff "$OUT/avant-$projet.txt" "$OUT/apres-$projet.txt" \
           | grep -E '^[<>]' | grep -v "^[<>] ${projet}=" || true)
 
-  # Ce que la nuit a écrit dans dream_runs, avec sa clé. Même contrainte de gate
-  # que `snapshot` : redirection, jamais de Docker dans une substitution.
+  # What the night wrote into dream_runs, with its key. Same gate constraint as
+  # `snapshot`: redirection, never Docker inside a substitution.
   brut_runs=$(mktemp)
   docker exec brain_v42_postgres psql -U brain -d brain -Atc \
     "select count(*)||' lignes, clés: '||string_agg(distinct coalesce(project_key,'<NULL>'),',')

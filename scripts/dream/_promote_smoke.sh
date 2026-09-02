@@ -42,11 +42,11 @@ case "$BRAIN_DREAM_CAPABILITY_ENFORCEMENT" in
     exit 2
     ;;
 esac
-# Le refus de claude sous enforcement a été levé ici comme dans dream.sh, et
-# pour la même raison : le rail porte désormais un bearer par (projet, phase).
-# Le préflight suit le provider — les deux runners lisent le même registre,
-# mais faire porter la vérification par le rail qui va réellement tourner évite
-# qu'un smoke claude soit validé par le préflight de codex.
+# The refusal of claude under enforcement was lifted here as in dream.sh, and
+# for the same reason: the rail now carries a bearer per (project, phase). The
+# preflight follows the provider — both runners read the same registry, but
+# having the check carried by the rail that will actually run avoids a claude
+# smoke being validated by codex's preflight.
 _PREFLIGHT_RUNNER="scripts.dream.codex_runner"
 if [[ "$BRAIN_DREAM_AGENT_PROVIDER" == "claude" ]]; then
   _PREFLIGHT_RUNNER="scripts.dream.claude_runner"
@@ -123,11 +123,11 @@ for i in $(seq 1 "$ITERATIONS"); do
       runner_rc=$?
     fi
   else
-    # Rail claude, scopé comme celui de dream.sh depuis le 2026-08-11. Il ne
-    # passe plus par la config MCP du dépôt ni par le joker d'outils : garder
-    # l'ancien appel ici ferait qu'un smoke « de comparaison » tournerait avec
-    # le jeton admin et toute la surface d'outils, donc ne comparerait plus
-    # rien de la nuit qu'il est censé représenter.
+    # The claude rail, scoped like dream.sh's since 2026-08-11. It no longer
+    # goes through the repository's MCP config nor the tool wildcard: keeping
+    # the old call here would make a "comparison" smoke run with the admin
+    # token and the whole tool surface, hence compare nothing of the night it
+    # is supposed to represent.
     if printf '%s' "$prompt" | uv run python -m scripts.dream.claude_runner \
       --phase promote \
       --project-key "$PROJECT_KEY" \

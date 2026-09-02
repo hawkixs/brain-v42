@@ -43,30 +43,30 @@ LOOPBACK_MCP_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 LOOPBACK_NO_PROXY_ENTRIES = ("127.0.0.1", "localhost", "::1")
 TERMINATION_GRACE_SECONDS = 5.0
 
-# Code de sortie qui autorise `dream.sh` à rejouer la phase sur le provider
-# SUIVANT. Il ne dit pas « j'ai échoué » — 1 le dit déjà — mais « j'ai échoué ET
-# je peux PROUVER qu'aucun appel d'outil Brain n'a abouti », donc qu'aucune
-# mutation WET n'a été commitée.
+# The exit code that lets `dream.sh` replay the phase on the NEXT provider. It
+# does not say "I failed" — 1 already says that — but "I failed AND I can
+# PROVE that no Brain tool call succeeded", hence that no WET mutation was
+# committed.
 #
-# C'est la seule chose qui rende une bascule sûre. dream.sh a longtemps interdit
-# tout fallback pour cette raison exacte, et l'interdiction n'est pas levée mais
-# raffinée : « ne jamais basculer » devient « ne basculer que sur une preuve ».
-# Élargir la condition à « rc != 0 » rendrait la nuit capable de rejouer une
-# phase ayant déjà écrit, en silence et en doublant ses écritures.
+# It is the only thing that makes a switchover safe. dream.sh forbade any
+# fallback for that exact reason for a long time, and the ban is not lifted but
+# refined: "never switch over" becomes "switch over on proof only". Widening the
+# condition to "rc != 0" would make the night able to replay a phase that had
+# already written, silently, doubling its writes.
 PROVIDER_FALLBACK_EXIT_CODE = 3
 
-# Code conventionnel « délai dépassé », celui de la commande `timeout(1)`.
+# The conventional "deadline exceeded" code, the one from `timeout(1)`.
 #
-# Les runners possèdent désormais leur propre échéance et le rendent sur
-# TimeoutExpired. Mais un ENFANT qui sort lui-même en 124 doit continuer d'être
-# lu comme un timeout : c'est ce que faisait `timeout ${n}m claude ...`, et
-# toute la chaîne d'aval — journal, métriques, budget de retry de la nuit — est
-# écrite autour de cette convention.
+# The runners now own their own deadline and return it on TimeoutExpired.
+# But a CHILD that exits with 124 itself must keep being read as a timeout:
+# that is what `timeout ${n}m claude ...` did, and the whole downstream
+# chain — log, metrics, the night's retry budget — is written around that
+# convention.
 #
-# L'ambiguïté est assumée et bornée : un CLI qui choisirait 124 pour une raison
-# à lui serait mal étiqueté. C'est le bon compromis, parce que se tromper dans
-# ce sens REFUSE la bascule (un timeout ne prouve rien), là que l'inverse
-# l'autoriserait sur une phase ayant peut-être écrit.
+# The ambiguity is accepted and bounded: a CLI choosing 124 for a reason of its
+# own would be mislabelled. That is the right trade, because erring in this
+# direction REFUSES the switchover (a timeout proves nothing), where the reverse
+# would authorise it on a phase that may have written.
 TIMEOUT_EXIT_CODE = 124
 
 # Variables every rail needs to run at all: locale, TLS trust, proxy policy and

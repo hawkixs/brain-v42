@@ -38,12 +38,12 @@ from sqlalchemy.ext.asyncio import (
 from brain_v42.config import Settings
 from brain_v42.db.tables import dream_promotions, dream_runs
 
-# Statut de la row « pool vide ». `done` n'est pas un choix cosmétique : c'est
-# le SEUL statut non-échec du système. post_run_alert exclut
-# {fail, partial, timeout}, mais collector_dream et
-# DreamRunService.last_failure comptent tout `!= 'done'` comme un échec. Un
-# statut « neutre » inventé (skipped, noop) déplacerait la fausse alarme de
-# l'alerte vers le briefing au lieu de l'éteindre.
+# Status of the "empty pool" row. `done` is no cosmetic choice: it is the ONLY
+# non-failure status in the system. post_run_alert excludes
+# {fail, partial, timeout}, but collector_dream and
+# DreamRunService.last_failure count anything `!= 'done'` as a failure. An
+# invented "neutral" status (skipped, noop) would move the false alarm from the
+# alert to the briefing instead of putting it out.
 EMPTY_POOL_STATUS = "done"
 EMPTY_POOL_MESSAGE = (
     "empty candidate pool — no learning met the promotion maturity filter "
@@ -85,23 +85,23 @@ async def _recent_promotions(
 
 
 def dream_run_id_statement(run_date: dt.date, project_key: str) -> sa.Select:
-    """SELECT de la ligne `promote` d'un projet pour une date.
+    """SELECT one project's `promote` row for a given date.
 
-    Le filtre de projet n'est pas cosmétique. L'appelant, `promote_validate`,
-    ÉCRIT sur la ligne rendue : il la marque `partial` et backfille
-    `dream_promotions.dream_run_id`. Sans le filtre, à plusieurs projets, la
-    requête rend la dernière ligne `promote` de la journée, quel que soit le
-    projet — et l'attribution fausse n'est plus récupérable depuis les lignes
-    une fois écrite (spec §12).
+    The project filter is not cosmetic. Its caller, `promote_validate`, WRITES
+    on the row returned: it marks it `partial` and backfills
+    `dream_promotions.dream_run_id`. Without the filter, across several
+    projects, the query returns the day's last `promote` row whatever the
+    project — and once written, the wrong attribution can no longer be
+    recovered from the rows (spec §12).
 
-    Dans la boucle séquentielle actuelle, l'absence de filtre donnait
-    fortuitement la bonne ligne : chaque projet écrit puis relit aussitôt. Mais
-    la correction reposait alors sur « personne n'écrit entre mon écriture et
-    ma lecture », un invariant que rien n'impose et que la boucle ne déclare
-    pas.
+    In the current sequential loop, the missing filter happened to return
+    the right row: each project writes then immediately reads back. But
+    the correctness then rested on "nobody writes between my write and
+    my read", an invariant that nothing enforces and that the loop does
+    not declare.
 
-    `ORDER BY id DESC LIMIT 1` reste : un projet peut avoir deux lignes le même
-    jour après un re-run manuel, et c'est la dernière qui compte.
+    `ORDER BY id DESC LIMIT 1` stays: a project can have two rows on the same
+    day after a manual re-run, and it is the last one that counts.
     """
     return (
         sa.select(dream_runs.c.id)
@@ -134,29 +134,29 @@ async def _record_empty_pool(
     *,
     project_key: str,
 ) -> None:
-    """INSERT la row dream_runs d'une nuit à pool de candidats vide.
+    """INSERT the dream_runs row of a night whose candidate pool is empty.
 
-    Sans elle, la phase promote — attendue tant que son killswitch est ouvert —
-    est ABSENTE de dream_runs, et l'alerte fabrique un `partial` de synthèse
-    chaque nuit. Depuis la migration 041 (filtre de maturité sur
-    `access_count_human`, sans backfill) le pool est légitimement vide : cette
-    fausse alarme pousserait l'opérateur à défaire la 041.
+    Without it, the promote phase — expected for as long as its killswitch is
+    open — is ABSENT from dream_runs, and the alert manufactures a synthetic
+    `partial` every night. Since migration 041 (maturity filter on
+    `access_count_human`, no backfill) the pool is legitimately empty: that
+    false alarm would push the operator into undoing 041.
 
-    La bonne réponse est de rendre la phase OBSERVÉE, jamais de la retirer des
-    phases attendues : un promote qui CRASHE n'écrit toujours aucune row et
-    déclenche encore l'alerte.
+    The right answer is to make the phase OBSERVED, never to remove it from the
+    expected phases: a promote that CRASHES still writes no row at all and
+    still fires the alert.
 
-    `model` reste NULL — aucun modèle n'a été appelé. `phase_dry_run` reste
-    faux : rien n'a tourné, donc la nuit n'est pas une répétition à blanc
-    propre et ne doit pas nourrir `_clean_dry_streak`.
+    `model` stays NULL — no model was called. `phase_dry_run` stays false:
+    nothing ran, so the night is not a clean dry rehearsal and must not feed
+    `_clean_dry_streak`.
 
-    `project_key` est REQUIS et sans défaut. `promote` est une phase PAR
-    PROJET, donc la vraie clé, jamais la sentinelle des phases globales — et
-    c'est ce site que l'inventaire de la spec §14.2 avait oublié tout en
-    rangeant ce fichier parmi les lecteurs. Depuis le filtre de maturité de la
-    041, le pool est légitimement vide et c'est ce chemin-là qui écrit la ligne
-    `promote` la plupart des nuits : le laisser à NULL ferait mentir la
-    sémantique « NULL = écrit avant la 042 », sans que rien ne le signale.
+    `project_key` is REQUIRED and has no default. `promote` is a PER-PROJECT
+    phase, so the real key, never the global-phase sentinel — and this is the
+    site the spec §14.2 inventory had forgotten, while filing this very file
+    among the readers. Since 041's maturity filter, the pool is legitimately
+    empty and this is the path that writes the `promote` row on most nights:
+    leaving it NULL would make the "NULL = written before 042" semantics lie,
+    with nothing to signal it.
     """
     statement = sa.insert(dream_runs).values(
         run_date=run_date,
@@ -232,8 +232,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         except Exception as exc:  # noqa: BLE001 — rc != 0 suffit ; dream.sh journalise un WARN
-            # Ne jamais avaler : sans row, l'alerte de synthèse revient. Bruyant
-            # mais observable — c'est le sens de la marche.
+            # Never swallow: without a row, the synthetic alert comes back.
+            # Noisy but observable — that is the direction of travel.
             print(f"record-empty-pool failed: {exc!r}", file=sys.stderr)
             return 1
         return 0

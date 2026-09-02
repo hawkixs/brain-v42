@@ -1,31 +1,31 @@
-"""Adaptateur ``agy`` isolé pour une phase de Dream.
+"""An isolated ``agy`` adapter for one Dream phase.
 
-agy ne prend AUCUNE configuration en ligne de commande : ni ``--mcp-config``, ni
-allowlist d'outils, ni équivalent du ``--tools ""`` de claude. Sa doc embarquée
-(``docs/mcp_servers.md``) ne connaît que deux emplacements, globaux tous les
-deux, et un ``.agents/hooks.json`` au niveau projet n'est PAS découvert — mesuré
-le 2026-08-11, en workspace de confiance et dépôt git.
+agy takes NO configuration on the command line: no ``--mcp-config``, no tool
+allowlist, no equivalent of claude's ``--tools ""``. Its bundled documentation
+(``docs/mcp_servers.md``) knows only two locations, both global, and a
+project-level ``.agents/hooks.json`` is NOT discovered — measured 2026-08-11,
+in a trusted workspace and a git repository.
 
-D'où le HOME éphémère : c'est la seule voie qui donne un contrôle par
-invocation. agy y trouve ``.gemini/config/{mcp_config.json,hooks.json}`` et
-s'authentifie par les credentials liés depuis le vrai HOME.
+Hence the ephemeral HOME: it is the only route that gives per-invocation
+control. agy finds ``.gemini/config/{mcp_config.json,hooks.json}`` there and
+authenticates through credentials symlinked from the real HOME.
 
-Ce qu'il évite compte autant que ce qu'il permet. Sans lui, la sécurité du rail
-reposerait sur un fichier global hors dépôt, qu'une édition manuelle ou une mise
-à jour d'agy retirerait en silence — et deux phases concurrentes se
-marcheraient dessus en réécrivant le même ``mcp_config.json``.
+What it avoids counts as much as what it allows. Without it, the rail's security
+would rest on a global file outside the repository, which a manual edit or an
+agy upgrade would remove in silence — and two concurrent phases would tread on
+each other by rewriting the same ``mcp_config.json``.
 
-DEUX PROTECTIONS, DEUX PÉRIMÈTRES, à ne pas confondre :
-- ``agy_tool_guard.sh``, câblé en hook ``PreToolUse``, protège la MACHINE ;
-- le bearer de ``(projet, phase)`` protège le CORPUS, et c'est le serveur qui
-  l'applique.
+TWO PROTECTIONS, TWO PERIMETERS, never to be confused:
+- ``agy_tool_guard.sh``, wired as a ``PreToolUse`` hook, protects the MACHINE;
+- the ``(project, phase)`` bearer protects the CORPUS, and the server is what
+  enforces it.
 
-LE SEUL ÉCART DU RAIL. L'``Authorization`` d'agy est un littéral : sa doc ne
-documente aucune interpolation ``${VAR}``, contrairement au ``.mcp.json`` que
-lit claude. Le bearer est donc ÉCRIT dans un fichier là où les deux autres rails
-le passent par l'environnement. Il est confiné à un HOME en 0700 sous
-``XDG_RUNTIME_DIR`` — un tmpfs, jamais le disque persistant — et détruit avec
-lui. Nommé ici pour qu'il ne se redécouvre pas par accident.
+THE RAIL'S ONLY DEVIATION. agy's ``Authorization`` is a literal: its
+documentation describes no ``${VAR}`` interpolation, unlike the ``.mcp.json``
+claude reads. The bearer is therefore WRITTEN to a file where the other two
+rails pass it through the environment. It is confined to a 0700 HOME under
+``XDG_RUNTIME_DIR`` — a tmpfs, never persistent disk — and destroyed with it.
+Named here so it is not rediscovered by accident.
 """
 
 from __future__ import annotations
@@ -61,8 +61,8 @@ PHASE_TOOL_ALLOWLISTS = DREAM_PHASE_TOOL_ALLOWLISTS
 
 GUARD_PATH = Path(__file__).resolve().parent / "agy_tool_guard.sh"
 
-# Fichiers d'identité lus depuis le vrai HOME. LIÉS, jamais copiés : dupliquer
-# les jetons OAuth d'un humain en ferait des copies à révoquer une par une.
+# Identity files read from the real HOME. SYMLINKED, never copied: duplicating
+# a human's OAuth tokens would make copies to revoke one by one.
 _CREDENTIAL_PATHS = (
     ".gemini/oauth_creds.json",
     ".gemini/google_accounts.json",
@@ -72,11 +72,11 @@ _CREDENTIAL_PATHS = (
 
 
 def ephemeral_root(environ: Mapping[str, str]) -> Path | None:
-    """Racine des HOME éphémères — tmpfs de préférence.
+    """Root of the ephemeral HOMEs — a tmpfs by preference.
 
-    Le bearer y est écrit : il ne doit pas atterrir sur du disque persistant.
-    ``None`` signifie « pas de tmpfs disponible », et laisse l'appelant
-    retomber sur ``tempfile`` plutôt que d'inventer un chemin.
+    The bearer is written there: it must not land on persistent disk. ``None``
+    means "no tmpfs available", and lets the caller fall back on ``tempfile``
+    rather than inventing a path.
     """
     runtime_dir = environ.get("XDG_RUNTIME_DIR")
     if runtime_dir and Path(runtime_dir).is_dir():
@@ -93,7 +93,7 @@ def build_ephemeral_home(
     real_home: Path,
     mcp_url: str | None = None,
 ) -> Path:
-    """Composer le HOME d'une phase : bearer scopé, garde câblée, rien d'autre."""
+    """Compose a phase HOME: scoped bearer, wired guard, nothing else."""
     dream_phase_tool_allowlist(phase)
     validate_loopback_mcp_url(environ)
     token = active_capability_token(project_key=project_key, phase=phase, environ=environ)
@@ -104,8 +104,8 @@ def build_ephemeral_home(
     (home / ".gemini" / "antigravity-cli").mkdir(parents=True, exist_ok=True)
     home.chmod(0o700)
 
-    # Le mcp_config du vrai HOME déclare aussi red-writer, sur une URL publique.
-    # On ne le copie pas : on en écrit un qui ne connaît que brain-v42.
+    # The real HOME's mcp_config also declares red-writer, on a public URL.
+    # We do not copy it: we write one that knows brain-v42 and nothing else.
     server_url = mcp_url or environ.get(MCP_URL_ENV, DEFAULT_MCP_URL)
     mcp_config = {
         "mcpServers": {
@@ -124,8 +124,8 @@ def build_ephemeral_home(
     config_path.write_text(json.dumps(mcp_config), encoding="utf-8")
     config_path.chmod(0o600)
 
-    # La garde vient du DÉPÔT. Une copie posée à côté du secret serait
-    # modifiable sans revue et divergerait de ses tests.
+    # The guard comes from the REPOSITORY. A copy dropped next to the secret
+    # would be editable without review and would drift from its tests.
     hooks = {
         "dream-phase-guard": {
             "PreToolUse": [
@@ -138,8 +138,8 @@ def build_ephemeral_home(
     }
     (config_dir / "hooks.json").write_text(json.dumps(hooks), encoding="utf-8")
 
-    # Le workspace de confiance doit être le HOME éphémère lui-même : sans lui,
-    # agy refuse de charger ses customisations.
+    # The trusted workspace must be the ephemeral HOME itself: without it, agy
+    # refuses to load its customisations.
     (home / ".gemini" / "antigravity-cli" / "settings.json").write_text(
         json.dumps({"enableTelemetry": False, "trustedWorkspaces": [str(home)]}),
         encoding="utf-8",
@@ -155,8 +155,8 @@ def build_ephemeral_home(
     return home
 
 
-# Limite noyau d'un SEUL argument (MAX_ARG_STRLEN = 32 pages). Au-delà, execve
-# rend E2BIG. On garde une marge pour le reste de la ligne de commande.
+# Kernel limit on a SINGLE argument (MAX_ARG_STRLEN = 32 pages). Beyond it,
+# execve returns E2BIG. We keep a margin for the rest of the command line.
 _MAX_PROMPT_BYTES = 120_000
 
 
@@ -167,29 +167,29 @@ def build_agy_command(
     agy_executable: str = "agy",
     timeout_seconds: float = 300.0,
 ) -> list[str]:
-    """Ligne de commande headless d'une phase.
+    """The headless command line of one phase.
 
-    LE PROMPT PASSE EN ARGV, et ce n'est pas un choix. Mesuré le 2026-08-11 :
-    agy IGNORE stdin — ``--print ""`` avec le prompt sur stdin rend une réponse
-    vide, et un prompt en argument plus un contexte sur stdin répond sans le
-    contexte. Les deux autres rails passent délibérément par stdin pour éviter
-    ARG_MAX ; agy ne laisse pas le choix.
+    THE PROMPT GOES IN ARGV, and that is not a choice. Measured 2026-08-11: agy
+    IGNORES stdin — ``--print ""`` with the prompt on stdin returns an empty
+    answer, and a prompt in an argument plus context on stdin answers without
+    the context. The other two rails deliberately go through stdin to dodge
+    ARG_MAX; agy leaves no such option.
 
-    Le mode de panne si l'on se trompe est traître : agy répond quand même, par
-    une salutation, et la phase sort en 0 avec un rapport hors sujet.
+    The failure mode if you get it wrong is treacherous: agy answers all the
+    same, with a greeting, and the phase exits 0 with an off-topic report.
 
-    Aucun secret ne transite par argv : le bearer vit dans le ``mcp_config.json``
-    du HOME éphémère. Le prompt, lui, y est visible — c'est de la consigne de
-    phase et des rapports précédents, pas un secret.
+    No secret travels through argv: the bearer lives in the ephemeral HOME's
+    ``mcp_config.json``. The prompt is visible there — it is phase instructions
+    and previous reports, not a secret.
 
-    ``--dangerously-skip-permissions`` est REQUIS : sans lui, agy attend en
-    headless une approbation qui ne viendra jamais. Ce n'est pas ce qui borne
-    la phase — c'est la garde ``PreToolUse``, qui survit à ce drapeau.
+    ``--dangerously-skip-permissions`` is REQUIRED: without it, agy waits in
+    headless mode for an approval that will never come. It is not what bounds
+    the phase — that is the ``PreToolUse`` guard, which survives this flag.
     """
     prompt_bytes = len(prompt.encode("utf-8"))
     if prompt_bytes > _MAX_PROMPT_BYTES:
-        # Refuser AVANT execve : un E2BIG au fond d'un Popen est une OSError
-        # opaque, là où ceci nomme la cause et sa taille.
+        # Refuse BEFORE execve: an E2BIG deep inside a Popen is an opaque
+        # OSError, where this names the cause and its size.
         raise ValueError(
             f"prompt trop long pour argv : {prompt_bytes} octets > {_MAX_PROMPT_BYTES}"
         )
@@ -210,16 +210,16 @@ def build_agy_command(
 
 
 def brain_tool_call_completed(events_log: Path) -> bool:
-    """Un appel d'outil Brain a-t-il ABOUTI dans ce flux stream-json ?
+    """Did a Brain tool call SUCCEED in this stream-json flow?
 
-    Pendant des prédicats de codex et claude. ``False`` prouve qu'aucune
-    mutation n'a été commitée, donc que rejouer la phase ailleurs est sans
-    risque.
+    The counterpart of codex's and claude's predicates. ``False`` proves no
+    mutation was committed, hence that replaying the phase elsewhere carries no
+    risk.
 
-    Seul ``call_mcp_tool`` compte : c'est la passerelle par laquelle agy atteint
-    brain-v42, et la garde refuse tout le reste. Un ``run_command`` REFUSÉ
-    produit bien une étape d'outil — la compter bloquerait la bascule sur une
-    phase qui n'a manifestement rien écrit.
+    Only ``call_mcp_tool`` counts: it is the gateway through which agy reaches
+    brain-v42, and the guard refuses everything else. A REFUSED ``run_command``
+    does produce a tool step — counting it would block the switchover on a
+    phase that plainly wrote nothing.
     """
     if not events_log.is_file():
         return False
@@ -245,12 +245,12 @@ def brain_tool_call_completed(events_log: Path) -> bool:
 
 
 def guard_denies_machine_tools(guard: Path | None = None) -> bool:
-    """PROUVER que la garde refuse, au lieu de constater qu'elle existe.
+    """PROVE the guard refuses, instead of noting that it exists.
 
-    La garde est le seul rempart entre une phase nocturne et un shell. Vérifier
-    sa présence laisserait passer une garde vide, non exécutable, mal nommée ou
-    rendue permissive par une édition — tous des états où le fichier existe.
-    On lui soumet donc un vrai payload et on exige le refus.
+    The guard is the only wall between a nightly phase and a shell. Checking it
+    is present would let through a guard that is empty, non-executable,
+    misnamed or made permissive by an edit — all states in which the file
+    exists. So we submit a real payload to it and demand the refusal.
     """
     guard_path = guard or GUARD_PATH
     if not guard_path.is_file():
@@ -290,7 +290,7 @@ def run_agy(
     stderr_log: Path,
     agy_executable: str = "agy",
 ) -> int:
-    """Jouer une phase et rendre son code (``124`` sur délai, ``3`` si rejouable)."""
+    """Run a phase and return its code (``124`` on deadline, ``3`` if replayable)."""
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
 
@@ -298,9 +298,9 @@ def run_agy(
         path.parent.mkdir(parents=True, exist_ok=True)
     report_log.write_text("", encoding="utf-8")
 
-    # Fail-closed AVANT de lancer quoi que ce soit : sans garde prouvée, une
-    # phase agy aurait un shell libre. Refuser de démarrer est le seul choix
-    # sûr, et il est journalisé.
+    # Fail-closed BEFORE launching anything: without a proven guard, an agy
+    # phase would have a free shell. Refusing to start is the only safe
+    # choice, and it is logged.
     if not guard_denies_machine_tools():
         stderr_log.write_text(
             "garde d'outils agy absente ou permissive — phase refusée\n", encoding="utf-8"
@@ -388,12 +388,12 @@ def run_agy(
 
 
 def extract_report(events_log: Path, report_log: Path) -> None:
-    """Reconstituer le rapport de phase depuis le flux d'événements.
+    """Rebuild the phase report from the event stream.
 
-    La réponse finale vit sous ``{"event":"result","result":{"response":...}}``.
-    La chercher ailleurs produit un rapport VIDE, et dream.sh injecte ce fichier
-    dans la phase suivante puis le donne à ses validateurs : la chaîne de
-    dépendances se casserait sans erreur, la phase sortant en 0.
+    The final answer lives under ``{"event":"result","result":{"response":...}}``.
+    Looking for it elsewhere produces an EMPTY report, and dream.sh injects this
+    file into the next phase then hands it to its validators: the dependency
+    chain would break without an error, the phase exiting 0.
     """
     if not events_log.is_file():
         return

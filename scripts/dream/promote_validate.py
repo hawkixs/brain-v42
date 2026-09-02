@@ -242,11 +242,11 @@ async def _amain(
     session_factory: async_sessionmaker[AsyncSession],
     args: argparse.Namespace,
 ) -> int:
-    """Validation ET marquage dans UNE SEULE boucle — même défaut que reorg.
+    """Validation AND marking in ONE SINGLE loop — the same defect as reorg.
 
-    Non trouvé par une nuit mais par lecture, après la panne de `reorg` du
-    19→20 : la forme était identique ici, au caractère près. Une seule des deux
-    a tiré, parce que seule `reorg` a échoué cette nuit-là.
+    Found not by a night but by reading, after `reorg`'s failure of the 19th to
+    20th: the shape was identical here, character for character. Only one of the
+    two fired, because only `reorg` failed that night.
     """
     try:
         report = parse_report(raw)
