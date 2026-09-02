@@ -1,35 +1,35 @@
-"""Instrumente les tools enregistrés, sans muter ``mcp.tool`` (ticket c352eaaa).
+"""Instrument the registered tools, without mutating ``mcp.tool`` (ticket c352eaaa).
 
-Le câblage historique remplaçait ``FastMCP.tool`` par un wrapper au moment de
-l'enregistrement (``brain_tools.register_tools``). Trois défauts, tous cités par
-la spec §1 : couplage à ``metrics_collector`` passé à UNE fonction
-d'enregistrement particulière, dépendance à l'ordre de déclaration (un tool
-enregistré avant le patch n'était pas compté), et mutation d'une méthode d'objet
-tiers.
+The historical wiring replaced ``FastMCP.tool`` with a wrapper at registration
+time (``brain_tools.register_tools``). Three defects, all named by spec §1:
+coupling to a ``metrics_collector`` passed to ONE particular registration
+function, dependence on declaration order (a tool registered before the patch
+was not counted), and mutation of a third-party object's method.
 
-Envelopper les tools APRÈS enregistrement supprime les trois. Même mécanisme que
-``brain_v42.mcp.business_errors`` : ``FunctionTool.run`` lit ``self.fn`` à chaque
-appel, donc remplacer ``fn`` par une enveloppe transparente à la signature
-(``functools.wraps``) instrumente le tool sans toucher au schéma publié.
+Wrapping the tools AFTER registration removes all three. Same mechanism as
+``brain_v42.mcp.business_errors``: ``FunctionTool.run`` reads ``self.fn`` on
+every call, so replacing ``fn`` with a signature-transparent wrapper
+(``functools.wraps``) instruments the tool without touching the published
+schema.
 
-Pourquoi pas un middleware ``on_call_tool``
--------------------------------------------
-Le ticket proposait un middleware, la re-mesure Q2 ayant montré qu'il voit aussi
-le nom du tool réel derrière la passerelle compact. C'est vrai, mais insuffisant,
-et MESURÉ : ``FastMCP.call_tool`` applique les middlewares PUIS ré-entre dans
-``call_tool(run_middleware=False)``, qui porte le ``try/except`` de masquage. Un
-middleware est donc au-dessus du masquage et ne reçoit que le ``ToolError``
-générique — la contrainte 2 du ticket (« préserver EXACTEMENT la capture
-d'AuthorizationError ») serait tenue par chance (``AuthorizationError`` est un
-``FastMCPError``, relancé tel quel) mais le journal ``exception_type`` dégénérerait
-en « ToolError » pour toute autre panne, perdant le diagnostic qu'il existe pour
-donner. Envelopper la fonction voit l'exception AVANT masquage.
+Why not an ``on_call_tool`` middleware
+--------------------------------------
+The ticket proposed a middleware, the Q2 re-measurement having shown that it
+also sees the real tool name behind the compact gateway. That is true, but
+insufficient, and MEASURED: ``FastMCP.call_tool`` applies the middlewares THEN
+re-enters ``call_tool(run_middleware=False)``, which carries the masking
+``try/except``. A middleware therefore sits above the masking and receives only
+the generic ``ToolError`` — the ticket's constraint 2 ("preserve EXACTLY the
+AuthorizationError capture") would be met by luck (``AuthorizationError`` is a
+``FastMCPError``, re-raised as is) but the ``exception_type`` log would
+degenerate into "ToolError" for every other failure, losing the diagnosis it
+exists to give. Wrapping the function sees the exception BEFORE masking.
 
-La contrainte 1 (« ignorer les noms de passerelle, sinon double comptage ») est
-satisfaite PAR CONSTRUCTION, sans liste noire à maintenir : ``_list_tools()`` rend
-le registre brut, où ``brain_call_tool`` et ``brain_find_tool`` n'existent pas —
-ils ne vivent que dans la vue transformée de ``list_tools()``. Un renommage futur
-des passerelles ne peut donc pas rouvrir le double comptage.
+Constraint 1 ("ignore gateway names, otherwise double counting") is satisfied BY
+CONSTRUCTION, with no denylist to maintain: ``_list_tools()`` returns the raw
+registry, where ``brain_call_tool`` and ``brain_find_tool`` do not exist — they
+live only in ``list_tools()``'s transformed view. A future rename of the
+gateways therefore cannot reopen the double counting.
 """
 
 from __future__ import annotations
@@ -46,12 +46,12 @@ _INSTRUMENTED_MARKER = "__brain_metrics_instrumented__"
 
 
 def _wrap(fn: Any, collector: MetricsCollector, tool_name: str) -> Any:
-    """Appliquer ``instrument_tool`` et marquer la fonction comme déjà traitée.
+    """Apply ``instrument_tool`` and mark the function as already processed.
 
-    Seul le POINT D'APPLICATION change : le décorateur lui-même est réutilisé tel
-    quel, ce qui satisfait littéralement la contrainte 2 du ticket (« préserver
-    EXACTEMENT la capture d'AuthorizationError et la mesure de latence ») plutôt
-    que de la ré-implémenter à l'identique et d'espérer.
+    Only the POINT OF APPLICATION changes: the decorator itself is reused as is,
+    which literally satisfies the ticket's constraint 2 ("preserve EXACTLY the
+    AuthorizationError capture and the latency measurement") rather than
+    re-implementing it identically and hoping.
     """
     instrumented = instrument_tool(collector, tool_name)(fn)
     setattr(instrumented, _INSTRUMENTED_MARKER, True)
@@ -62,10 +62,10 @@ async def instrument_registered_tools(
     mcp: FastMCP,
     collector: MetricsCollector,
 ) -> tuple[str, ...]:
-    """Instrumenter tout tool enregistré et rendre les noms effectivement traités.
+    """Instrument every registered tool and return the names actually processed.
 
-    Idempotent : un tool déjà instrumenté est laissé tel quel, si bien qu'un
-    double appel ne superpose pas les enveloppes et ne double pas les compteurs.
+    Idempotent: an already instrumented tool is left as is, so a double call
+    does not stack wrappers and does not double the counters.
     """
     instrumented: list[str] = []
     for tool in await mcp._list_tools():

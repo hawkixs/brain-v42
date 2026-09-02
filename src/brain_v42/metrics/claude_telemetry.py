@@ -1,21 +1,19 @@
-"""Projection bornée des logs OTLP/HTTP JSON de Claude Code.
+"""Bounded projection of Claude Code's OTLP/HTTP JSON logs.
 
-Schéma distinct de celui de Codex : l'identifiant est ``session.id`` et non
-``conversation.id``, les noms d'événements sont nus (``user_prompt``,
-``api_request`` — le préfixe ``claude_code.`` vit dans le corps, pas dans
-l'attribut), et les compteurs d'entrée sont éclatés en trois : nouveaux tokens,
-lecture de cache et création de cache. Les bornes sont partagées avec le
-récepteur existant, ``codex_telemetry``.
+A schema distinct from Codex's: the identifier is ``session.id`` and not
+``conversation.id``, event names are bare (``user_prompt``, ``api_request`` —
+the ``claude_code.`` prefix lives in the body, not in the attribute), and the
+input counters are split in three: new tokens, cache read and cache creation.
+The bounds are shared with the existing receiver, ``codex_telemetry``.
 
-La projection par liste blanche est la partie qui compte : mesuré le
-2026-08-06 sur Claude Code 2.1.220, la source envoie aussi ``user.email``,
-``user.id``, ``user.account_uuid`` et ``organization.id`` en clair sur *chaque*
-enregistrement, événements de hook et de plugin compris. Rien de tout cela ne
-doit atteindre le registre exposé en HTTP.
+The allowlist projection is the part that matters: measured on 2026-08-06 on
+Claude Code 2.1.220, the source also sends ``user.email``, ``user.id``,
+``user.account_uuid`` and ``organization.id`` in clear on *every* record, hook
+and plugin events included. None of that must reach the registry exposed over
+HTTP.
 
-L'oracle des noms d'attributs est ``tests/fixtures/claude_otlp_logs.json`` ;
-le relevé complet est dans
-``docs/upstream/2026-08-06-claude-otlp-session-join.md``.
+The oracle for attribute names is ``tests/fixtures/claude_otlp_logs.json``; the
+full survey is in ``docs/upstream/2026-08-06-claude-otlp-session-join.md``.
 """
 
 from __future__ import annotations
@@ -37,9 +35,8 @@ from brain_v42.metrics.codex_telemetry import (
     _token_value,
 )
 
-# Liste blanche STRICTE. Tout ce qui n'est pas ici est jeté avant même d'être
-# lu : c'est la seule barrière entre l'adresse e-mail de l'opérateur et le
-# registre.
+# STRICT allowlist. Anything not here is dropped before it is even read: this
+# is the only barrier between the operator's email address and the registry.
 _PROJECTED_KEYS = frozenset(
     {
         "session.id",
@@ -52,18 +49,18 @@ _PROJECTED_KEYS = frozenset(
         "cost_usd",
     }
 )
-# Sans préfixe : `event.name` vaut `user_prompt`, le corps vaut
-# `claude_code.user_prompt`. Mesuré sur Claude Code 2.1.220.
+# Unprefixed: `event.name` is `user_prompt`, the body is
+# `claude_code.user_prompt`. Measured on Claude Code 2.1.220.
 _KNOWN_EVENTS = frozenset({"user_prompt", "api_request"})
 _MAX_COST_USD = 1_000_000.0
 
 
 @dataclass(frozen=True, slots=True)
 class ClaudeRecord:
-    """Le peu qu'on retient d'un enregistrement OTLP de Claude Code.
+    """The little we keep from a Claude Code OTLP record.
 
-    ``None`` — jamais ``0`` — pour tout compteur absent de la source : un zéro
-    cosmétique serait indiscernable d'un zéro mesuré.
+    ``None`` — never ``0`` — for any counter absent from the source: a cosmetic
+    zero would be indistinguishable from a measured zero.
     """
 
     session_id: str
@@ -135,7 +132,7 @@ def _project_record(record: dict[str, object]) -> ClaudeRecord | None:
 
 
 def decode_claude_logs(payload: bytes) -> tuple[ClaudeRecord, ...]:
-    """Valider une charge OTLP complète et en extraire la projection sûre."""
+    """Validate a complete OTLP payload and extract the safe projection from it."""
     root = _load_json(payload)
     resource_logs = root.get("resourceLogs")
     if not isinstance(resource_logs, list):

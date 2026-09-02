@@ -1,26 +1,26 @@
-"""Normaliser le flux ``agy --output-format stream-json`` et persister une phase.
+"""Normalize the ``agy --output-format stream-json`` stream and persist a phase.
 
-Troisième parser du dream, après ``dream_parser`` (claude, OTEL) et
-``codex_dream_parser`` (codex, JSONL). Sans lui, une phase jouée par agy était
-jouée mais NON MESURÉE — et ce trou a dicté quelques heures durant un ordre de
-chaîne absurde, claude placé avant agy pour préserver les lignes ``dream_runs``,
-donc l'abonnement qu'on voulait épargner mis en première ligne.
+Third parser of the dream, after ``dream_parser`` (claude, OTEL) and
+``codex_dream_parser`` (codex, JSONL). Without it, a phase played by agy was
+played but NOT MEASURED — and that hole dictated, for a few hours, an absurd
+chain order, claude placed before agy to preserve the ``dream_runs`` rows, thus
+putting the subscription we wanted to spare on the front line.
 
-LA CONVENTION DE CACHE EST L'INVERSE DE CELLE DE CODEX. Mesuré sur un vrai run :
+THE CACHE CONVENTION IS THE OPPOSITE OF CODEX'S. Measured on a real run:
 
     input_tokens      = 20137
-    cache_read_tokens = 56950      <-- PLUS GRAND que input_tokens
-    total_tokens      = 21691      = input + output, le cache n'y est PAS
+    cache_read_tokens = 56950      <-- LARGER than input_tokens
+    total_tokens      = 21691      = input + output, the cache is NOT in it
 
-Chez codex, ``cached_input_tokens`` est un SOUS-ENSEMBLE de ``input_tokens``, et
-son parser calcule ``frais = input - cached``. Chez agy les deux compteurs sont
-INDÉPENDANTS : ``input_tokens`` est déjà le frais. Copier la formule de codex
-produirait ici un nombre NÉGATIF, et une colonne de tokens n'est pas regardée
-d'assez près pour que quiconque s'en aperçoive avant des semaines.
+With codex, ``cached_input_tokens`` is a SUBSET of ``input_tokens``, and its
+parser computes ``fresh = input - cached``. With agy the two counters are
+INDEPENDENT: ``input_tokens`` is already the fresh one. Copying codex's formula
+would produce a NEGATIVE number here, and a token column is not watched closely
+enough for anyone to notice for weeks.
 
-L'ÉVÉNEMENT ``result`` EST L'AGRÉGAT AUTORITATIF. Mesuré aussi : la somme des
-usages ``step_update`` égale exactement celui du ``result``. Additionner les deux
-doublerait tous les compteurs.
+THE ``result`` EVENT IS THE AUTHORITATIVE AGGREGATE. Also measured: the sum of
+the ``step_update`` usages equals exactly that of the ``result``. Adding both
+would double every counter.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from brain_v42.metrics.dream_parser import PhaseTelemetry, _insert_dream_run, _s
 
 
 def _events(content: str) -> Iterable[dict[str, object]]:
-    """Rendre les événements JSON, en ignorant lignes vides, bruit et inconnues."""
+    """Yield the JSON events, ignoring blank lines, noise and unknown shapes."""
     for raw_line in content.splitlines():
         if not raw_line.strip():
             continue
@@ -59,11 +59,11 @@ def _counter(usage: dict[str, object], key: str) -> int:
 
 
 def parse_agy_stream(content: str) -> PhaseTelemetry:
-    """Mapper le flux stream-json d'agy sur le schéma historique du dream."""
+    """Map agy's stream-json output onto the dream's historical schema."""
     telemetry = PhaseTelemetry(
-        # Adossé à un abonnement : ni coût, ni nombre d'appels API, ni tokens
-        # de création de cache ne sont exposés. Écrire 0 affirmerait « gratuit »
-        # et « aucun appel » — deux mensonges. NULL dit « non mesuré ».
+        # Backed by a subscription: neither cost, nor API call count, nor
+        # cache-creation tokens are exposed. Writing 0 would assert "free" and
+        # "no call" — two lies. NULL says "not measured".
         cache_creation_tokens=None,
         cost_usd=None,
         api_calls=None,
@@ -84,9 +84,9 @@ def parse_agy_stream(content: str) -> PhaseTelemetry:
             step = event.get("step_update")
             if not isinstance(step, dict):
                 continue
-            # Seuls les appels MCP ABOUTIS comptent. Un run_command refusé par
-            # la garde produit bien une étape d'outil : la compter ferait croire
-            # qu'une phase a touché le brain alors qu'elle en a été empêchée.
+            # Only COMPLETED MCP calls count. A run_command refused by the
+            # guard does produce a tool step: counting it would suggest a phase
+            # touched the brain when it was prevented from doing so.
             if (
                 step.get("step_type") == "tool"
                 and step.get("state") == "DONE"
@@ -101,21 +101,21 @@ def parse_agy_stream(content: str) -> PhaseTelemetry:
     telemetry.input_tokens = _counter(result_usage, "input_tokens")
     telemetry.output_tokens = _counter(result_usage, "output_tokens")
     telemetry.cache_read_tokens = _counter(result_usage, "cache_read_tokens")
-    # 049 : mesuré SÉPARÉMENT, jamais additionné à output_tokens — les rails
-    # qui ne distinguent pas le thinking laisseraient une somme incomparable.
-    # Absent du flux = NULL (« pas mesuré »), pas 0 (« mesuré nul »).
+    # 049: measured SEPARATELY, never added to output_tokens — the rails that
+    # do not distinguish thinking would leave an incomparable sum. Absent from
+    # the stream = NULL ("not measured"), not 0 ("measured as nothing").
     if "thinking_tokens" in result_usage:
         telemetry.thinking_tokens = _counter(result_usage, "thinking_tokens")
     return telemetry
 
 
-#: Préfixe exact posé par agy quand c'est un APPEL D'OUTIL qui a échoué, et non
-#: agy lui-même. C'est la seule famille d'échec qu'un retry peut rattraper.
+#: Exact prefix agy writes when it is a TOOL CALL that failed, and not agy
+#: itself. It is the only family of failure a retry can recover from.
 _TOOL_ERROR_PREFIX = "Error in MCP tool execution"
 
 
 def _failure_messages(content: str) -> list[str]:
-    """Tous les messages d'échec portés par le flux, dans l'ordre du flux."""
+    """Every failure message carried by the stream, in stream order."""
     messages: list[str] = []
     for event in _events(content):
         result = event.get("result")
@@ -131,21 +131,22 @@ def _failure_messages(content: str) -> list[str]:
 
 
 def _terminal_error(content: str) -> str | None:
-    """Le dernier message d'échec porté par le flux, s'il y en a un."""
+    """The last failure message carried by the stream, if there is one."""
     messages = _failure_messages(content)
     return messages[-1] if messages else None
 
 
 def _last_failed_call_was_retried(content: str) -> bool:
-    """Le dernier appel MCP en échec a-t-il été REJOUÉ avec succès ?
+    """Was the last failed MCP call REPLAYED successfully?
 
-    Le nom de l'outil vit dans ``tool_info.parameters.ToolName`` : ``tool_name``
-    vaut toujours ``call_mcp_tool`` et ne distingue rien. Exiger le MÊME outil
-    n'est pas du zèle — mesuré sur la nuit du 2026-08-12, se contenter de
-    « un appel quelconque a réussi ensuite » blanchissait aussi refondrre/connect,
-    dont le ``brain_assign_domain`` perdu n'a jamais été retenté.
+    The tool name lives in ``tool_info.parameters.ToolName``: ``tool_name`` is
+    always ``call_mcp_tool`` and distinguishes nothing. Requiring the SAME tool
+    is not zeal — measured on the night of 2026-08-12, settling for "some call
+    succeeded afterwards" also cleared refondrre/connect, whose lost
+    ``brain_assign_domain`` was never retried.
 
-    Sans indice d'étape, « après » n'a pas de sens : on répond non, fail-closed.
+    Without a step index, "afterwards" has no meaning: we answer no,
+    fail-closed.
     """
     last_failed_index = -1
     last_failed_tool: str | None = None
@@ -178,18 +179,18 @@ def _last_failed_call_was_retried(content: str) -> bool:
 
 
 def _unrecovered_error(content: str) -> str | None:
-    """Le message d'échec qui a réellement emporté la phase, s'il y en a un.
+    """The failure message that actually carried off the phase, if there is one.
 
-    agy LATCHE ``result.status=ERROR`` dès qu'un appel d'outil a échoué, même
-    quand l'agent a retenté et réussi ensuite. Mesuré sur la nuit du 2026-08-12 :
-    19 phases sur 21 étaient comptées ``fail`` en ayant produit 27 artefacts
-    durables, tous vérifiés en base. Un rouge qui ne porte sur rien coûte aussi
-    cher qu'un vert qui ne porte sur rien — il fait chercher une panne absente.
+    agy LATCHES ``result.status=ERROR`` as soon as one tool call has failed,
+    even when the agent retried and succeeded afterwards. Measured on the night
+    of 2026-08-12: 19 phases out of 21 were counted ``fail`` while producing 27
+    durable artifacts, all verified in the database. A red that stands for
+    nothing costs as much as a green that stands for nothing — it sends people
+    looking for a failure that is not there.
 
-    Seul un échec d'OUTIL est rattrapable. Une panne d'agy lui-même reste
-    terminale, et c'est pourquoi on retombe sur le message suivant plutôt que de
-    rendre ``None`` : supprimer l'échec d'outil ne doit jamais masquer ce qui se
-    trouvait derrière lui.
+    Only a TOOL failure is recoverable. A failure of agy itself stays terminal,
+    and that is why we fall back on the next message rather than returning
+    ``None``: removing the tool failure must never mask what stood behind it.
     """
     messages = _failure_messages(content)
     if not messages:
@@ -244,8 +245,9 @@ def main() -> None:
     status = args.status
     terminal_error = _unrecovered_error(events_content)
     if terminal_error is None and _terminal_error(events_content) is not None:
-        # Jamais en silence : la phase a bien échoué quelque part, et l'opérateur
-        # doit pouvoir compter ces reprises sans relire les flux à la main.
+        # Never silently: the phase did fail somewhere, and the operator must
+        # be able to count these recoveries without re-reading the streams by
+        # hand.
         print(f"[agy_dream_parser] {args.phase}: échec d'outil rejoué avec succès — statut tenu")
     if status == "done" and (terminal_error or telemetry_error):
         status = "fail"

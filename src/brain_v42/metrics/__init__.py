@@ -28,12 +28,12 @@ from brain_v42.metrics.client_activity import (
     ClientActivityRegistry,
 )
 
-# Nom historique : le registre n'est plus spécifique à Codex depuis qu'il
-# fusionne les sources, mais l'ancien nom (et les anciennes constantes)
-# restent importés depuis `codex_telemetry` par les tests existants.
-# mypy ne peut pas vérifier statiquement une assignation d'attribut de
-# module ajoutée dynamiquement — c'est le prix de cette porte de sortie
-# anti-cycle, assumé et isolé ici plutôt que masqué plus largement.
+# Historical name: the registry is no longer Codex-specific now that it merges
+# sources, but the old name (and the old constants) are still imported from
+# `codex_telemetry` by existing tests. mypy cannot statically check an
+# attribute assignment added dynamically to a module — that is the price of
+# this anti-cycle escape hatch, accepted and isolated here rather than masked
+# more widely.
 codex_telemetry.CodexConversationRegistry = ClientActivityRegistry  # type: ignore[attr-defined]
 codex_telemetry.MAX_ACTIVE_CONVERSATIONS = MAX_ACTIVE_CONVERSATIONS  # type: ignore[attr-defined]
 codex_telemetry.ACTIVITY_TTL_SECONDS = ACTIVITY_TTL_SECONDS  # type: ignore[attr-defined]

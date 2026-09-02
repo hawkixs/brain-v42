@@ -281,16 +281,17 @@ async def run_cleanup_loop(
         try:
             await asyncio.sleep(interval)
             async with session_factory() as session:
-                # Le seul fragment interpolé est PROCESS_METRICS_STALE_SQL, importé en
-                # tête de module depuis brain_v42.metrics.retention. Il y est construit
-                # à l'import à partir du littéral entier PROCESS_METRICS_RETENTION_SECONDS
-                # = 3600 ; retention.py n'importe ni os, ni Settings, ni rien d'externe.
-                # Ni `session_factory` ni `interval`, seuls paramètres de cette boucle,
-                # ne touchent la chaîne SQL. L'invariant est épinglé par
+                # The only interpolated fragment is PROCESS_METRICS_STALE_SQL,
+                # imported at module top from brain_v42.metrics.retention. It is
+                # built there at import time from the literal integer
+                # PROCESS_METRICS_RETENTION_SECONDS = 3600; retention.py imports
+                # neither os, nor Settings, nor anything external. Neither
+                # `session_factory` nor `interval`, this loop's only parameters,
+                # touches the SQL string. The invariant is pinned by
                 # tests/unit/metrics/test_runtime_stale_sql_is_a_literal_constant.py,
-                # qui échoue si la constante devient dynamique.
+                # which fails if the constant becomes dynamic.
                 await session.execute(
-                    text(f"DELETE FROM process_metrics WHERE {PROCESS_METRICS_STALE_SQL}")  # nosec B608 - fragment = constante d'import PROCESS_METRICS_STALE_SQL (metrics/retention.py), figée sur l'int littéral 3600, hors de portée de toute entrée ; exception revue le 2026-08-16, à réexaminer avant le 2026-09-30
+                    text(f"DELETE FROM process_metrics WHERE {PROCESS_METRICS_STALE_SQL}")  # nosec B608 - fragment = the imported constant PROCESS_METRICS_STALE_SQL (metrics/retention.py), frozen on the literal int 3600, out of reach of any input; exception reviewed on 2026-08-16, to be re-examined before 2026-09-30
                 )
                 now = time.time()
                 if now - last_search_log_cleanup > 3600:

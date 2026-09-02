@@ -54,9 +54,9 @@ class PhaseTelemetry:
     cost_usd: float | None = 0.0
     api_calls: int | None = 0
     tool_calls: int = 0
-    #: 049 — NULL = « ce rail ne distingue pas le thinking » (claude/codex
-    #: aujourd'hui). Seul agy le mesure : 962 thinking pour 1554 output sur le
-    #: run du 2026-08-11, ~38 % de tokens comptés nulle part (ticket 76e11c9f).
+    #: 049 — NULL = "this rail does not distinguish thinking" (claude/codex
+    #: today). Only agy measures it: 962 thinking for 1554 output on the
+    #: 2026-08-11 run, ~38 % of tokens counted nowhere (ticket 76e11c9f).
     thinking_tokens: int | None = None
 
 
@@ -197,9 +197,10 @@ async def _insert_dream_run(
     # asyncpg needs datetime.date, not str
     run_date_obj = date_type.fromisoformat(run_date)
 
-    # Pas de DSN par défaut ici : voir brain_v42.db.dsn. Le littéral qui vivait
-    # à cette ligne était le DSN de production par coïncidence, et sa rotation a
-    # vidé dream_runs pendant deux nuits sans qu'aucune phase ne se dise en échec.
+    # No default DSN here: see brain_v42.db.dsn. The literal that used to live
+    # on this line was the production DSN by coincidence, and rotating it
+    # emptied dream_runs for two nights without a single phase calling itself
+    # failed.
     dsn = resolve_postgres_dsn()
 
     # When telemetry parsing yields nothing, store NULL — not zero. Zero
@@ -230,8 +231,8 @@ async def _insert_dream_run(
             telemetry.tool_calls if telemetry else None,
             error_message,
             project_key,
-            # 049 — AVANT phase_dry_run : le drapeau de répétition à blanc
-            # reste le DERNIER lié, pin de test_dream_parser_phase_dry_run.
+            # 049 — BEFORE phase_dry_run: the dry-run flag stays the LAST one
+            # bound, pinned by test_dream_parser_phase_dry_run.
             telemetry.thinking_tokens if telemetry else None,
             phase_dry_run,
         )

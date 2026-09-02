@@ -225,16 +225,17 @@ class MetricsFlusher:
             # Age out idle per-agent rows that mark_flushed stopped re-upserting.
             # Same window as the read side — see brain_v42.metrics.retention.
             #
-            # Le seul fragment interpolé est PROCESS_METRICS_STALE_SQL, importé en
-            # tête de module depuis brain_v42.metrics.retention. Il y est construit à
-            # l'import à partir du littéral entier PROCESS_METRICS_RETENTION_SECONDS
-            # = 3600 ; retention.py n'importe ni os, ni Settings, ni rien d'externe.
-            # Aucun paramètre d'appel, aucune variable d'environnement et aucun
-            # payload ne peut donc atteindre cette chaîne. L'invariant est épinglé par
-            # tests/unit/metrics/test_flusher_stale_sql_is_a_literal_constant.py, qui
-            # échoue si la constante devient dynamique.
+            # The only interpolated fragment is PROCESS_METRICS_STALE_SQL,
+            # imported at module top from brain_v42.metrics.retention. It is
+            # built there at import time from the literal integer
+            # PROCESS_METRICS_RETENTION_SECONDS = 3600; retention.py imports
+            # neither os, nor Settings, nor anything external. No call
+            # parameter, no environment variable and no payload can therefore
+            # reach this string. The invariant is pinned by
+            # tests/unit/metrics/test_flusher_stale_sql_is_a_literal_constant.py,
+            # which fails if the constant becomes dynamic.
             await session.execute(
-                text(f"DELETE FROM process_metrics WHERE {PROCESS_METRICS_STALE_SQL}")  # nosec B608 - fragment = constante d'import PROCESS_METRICS_STALE_SQL (metrics/retention.py), figée sur l'int littéral 3600, hors de portée de toute entrée ; exception revue le 2026-08-16, à réexaminer avant le 2026-09-30
+                text(f"DELETE FROM process_metrics WHERE {PROCESS_METRICS_STALE_SQL}")  # nosec B608 - fragment = the imported constant PROCESS_METRICS_STALE_SQL (metrics/retention.py), frozen on the literal int 3600, out of reach of any input; exception reviewed on 2026-08-16, to be re-examined before 2026-09-30
             )
 
             # Clean old search_log (>30 days) — once per hour

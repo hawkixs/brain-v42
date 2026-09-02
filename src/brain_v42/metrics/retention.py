@@ -1,31 +1,30 @@
-"""Source de vérité unique pour la fenêtre de séjour de ``process_metrics``.
+"""Single source of truth for ``process_metrics``' residency window.
 
-La table porte une ligne par ``agent_name`` (c'est sa clé primaire), rafraîchie à chaque
-flush et supprimée quand elle cesse d'être rafraîchie. Deux questions en découlent, et
-elles doivent recevoir la MÊME réponse :
+The table carries one row per ``agent_name`` (that is its primary key), refreshed on
+every flush and deleted when it stops being refreshed. Two questions follow, and they
+must receive the SAME answer:
 
-* jusqu'à quand garde-t-on une ligne ? (la purge, dans ``flusher`` et ``runtime``)
-* jusqu'à quand la montre-t-on ? (la lecture, dans ``collector_db``)
+* how long do we keep a row? (the purge, in ``flusher`` and ``runtime``)
+* how long do we show it? (the read, in ``collector_db``)
 
-Le 2026-08-10 elles divergeaient d'un facteur 60 — purge à 1 h, lecture à 60 s — et deux
-appelants réels sur cinq étaient donc invisibles du panneau alors que leurs lignes
-existaient en base. Le correctif n'est pas d'élargir un littéral mais de supprimer les
-littéraux : trois constantes qui doivent s'accorder sans que rien ne les relie finissent
-toujours par diverger.
+On 2026-08-10 they diverged by a factor of 60 — purge at 1 h, read at 60 s — and two of
+five real callers were therefore invisible on the panel while their rows existed in the
+database. The fix is not to widen one literal but to remove the literals: three constants
+that must agree with nothing linking them always end up diverging.
 
-La purge frappe l'INACTIVITÉ, pas l'ancienneté : une ligne rafraîchie reste indéfiniment.
-La fenêtre ci-dessous borne donc le SILENCE d'un agent, pas la durée de vie de sa ligne.
+The purge strikes INACTIVITY, not age: a refreshed row stays indefinitely. The window
+below therefore bounds an agent's SILENCE, not its row's lifetime.
 """
 
 from __future__ import annotations
 
 PROCESS_METRICS_RETENTION_SECONDS = 3600
-"""Silence toléré avant qu'un agent quitte la table et le panneau (1 heure)."""
+"""Silence tolerated before an agent leaves the table and the panel (1 hour)."""
 
 PROCESS_METRICS_FRESH_SQL = (
     f"updated_at > NOW() - INTERVAL '{PROCESS_METRICS_RETENTION_SECONDS} seconds'"
 )
-"""Prédicat de LECTURE : les agents encore montrés par le panneau."""
+"""READ predicate: the agents the panel still shows."""
 
 PROCESS_METRICS_STALE_SQL = (
     f"updated_at < NOW() - INTERVAL '{PROCESS_METRICS_RETENTION_SECONDS} seconds'"
@@ -33,22 +32,22 @@ PROCESS_METRICS_STALE_SQL = (
 """Prédicat de PURGE : strict complément du précédent, par construction."""
 
 PROCESS_METRICS_LIVE_SECONDS = 60
-"""Silence au-delà duquel un PROCESS cesse d'être compté comme vivant.
+"""Silence beyond which a PROCESS stops being counted as alive.
 
-Deux fenêtres, deux questions, et les confondre est exactement le défaut d'origine.
-« Quels agents montre-t-on ? » se répond sur la rétention — un agent qui s'est tu il y a
-dix minutes a bien travaillé et doit rester au panneau. « Combien de process tournent ? »
-ne se répond que sur un silence court : le flush est périodique, donc un process vivant
-réécrit forcément sa ligne. Mesuré le 2026-08-10 : le pid 1082528 était dans la fenêtre
-d'une heure et absent de ``ps`` — sur la seule rétention, il aurait été « actif ».
+Two windows, two questions, and confusing them is exactly the original defect. "Which
+agents do we show?" is answered on retention — an agent that went quiet ten minutes ago
+did work and must stay on the panel. "How many processes are running?" is answered only
+on a short silence: the flush is periodic, so a live process necessarily rewrites its
+row. Measured on 2026-08-10: pid 1082528 was inside the one-hour window and absent from
+``ps`` — on retention alone, it would have been "active".
 """
 
 PROCESS_METRICS_IS_LIVE_SQL = (
     f"(updated_at > NOW() - INTERVAL '{PROCESS_METRICS_LIVE_SECONDS} seconds')"
 )
-"""Vivacité calculée par PostgreSQL.
+"""Liveness computed by PostgreSQL.
 
-Volontairement pas en Python : ``updated_at`` vient de la base, le sidecar a sa propre
-horloge, et un écart entre les deux dériverait en production sans jamais échouer
-bruyamment. Une seule horloge décide.
+Deliberately not in Python: ``updated_at`` comes from the database, the sidecar has its
+own clock, and a gap between the two would drift in production without ever failing
+loudly. One clock decides.
 """

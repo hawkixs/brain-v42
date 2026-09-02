@@ -1,13 +1,13 @@
-"""Nightly-ops collectors for MetricsCollector — section `nightly` du sidecar.
+"""Nightly-ops collectors for MetricsCollector — the sidecar's `nightly` section.
 
-Réplique le check matinal pour le panel red-monitor (ticket de1ad785) :
-killswitches du drop-in systemd, proposals roadmap en attente de review
-(dont les merges retenus par le juge — 39fc6a9 : ils restent 'proposed'),
-extract en attente, dernier échec dream.
+Replicates the morning check for the red-monitor panel (ticket de1ad785):
+killswitches from the systemd drop-in, roadmap proposals awaiting review
+(including the merges the judge held back — 39fc6a9: they stay 'proposed'),
+pending extract, last dream failure.
 
-Pattern collector_dream : ne crashe JAMAIS le sidecar — chaque bloc
-(fichier killswitches, DB) dégrade indépendamment ; si tout échoue la
-méthode rend {} et le server omet la section.
+collector_dream pattern: NEVER crashes the sidecar — each block (killswitch
+file, DB) degrades independently; if everything fails the method returns {} and
+the server omits the section.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ class _NightlyCollectorsMixin:
         _session_factory: async_sessionmaker[AsyncSession]
 
     async def collect_nightly_ops(self, killswitches_path: Path | None = None) -> dict[str, Any]:
-        """Section `nightly` du payload /metrics — {} si tout est indisponible."""
+        """The /metrics payload's `nightly` section — {} if all is unavailable."""
         result: dict[str, Any] = {}
 
         # ── killswitches (fichier local, hors DB) ────────────────────────
@@ -48,8 +48,8 @@ class _NightlyCollectorsMixin:
             killswitches = None
 
         # ── DB : roadmap / extract / last failure ────────────────────────
-        # L'assemblage vit DANS le try : une row de forme inattendue dégrade
-        # comme une erreur SQL (le sidecar ne crashe jamais).
+        # Assembly lives INSIDE the try: a row of unexpected shape degrades
+        # like a SQL error (the sidecar never crashes).
         try:
             async with self._session_factory() as session:
                 status_rows = (
