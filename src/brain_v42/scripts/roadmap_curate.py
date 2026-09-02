@@ -1,8 +1,9 @@
 """Roadmap curation — audited proposal and guarded auto-apply (spec 2026-07-04 §3).
 
-One batch per project: live features (status ∉ done/archived, not merged) plus a
-digest of recent artifacts (title, type, date — NOT the bodies), sent to the LLM
-(NVIDIA API, strict JSON WITHOUT tools — the exact skeleton of ticket_extract).
+One batch per project: live features (status ∉ done/archived, not merged), their
+description when it says more than the title, plus a digest of recent artifacts
+(title, type, date — NOT the bodies), sent to the LLM (NVIDIA API, strict JSON
+WITHOUT tools — the exact skeleton of ticket_extract).
 Four auditable ops: merge, archive, status, rename.
 
 Hard guardrails:
@@ -19,7 +20,7 @@ an LLM.
 Usage:
     python -m scripts.roadmap_curate [--limit 10]        # propose (dry)
     python -m scripts.roadmap_curate --limit 10 --wet    # propose + apply (all ops)
-    python -m scripts.roadmap_curate --apply-ids "3,4"   # reviewed apply, no LLM
+    python -m scripts.roadmap_curate --apply-ids "3,4" --project-key red-lab
 """
 
 from __future__ import annotations
@@ -145,6 +146,15 @@ PROPOSABLE_STATUSES = ("planned", "research", "design", "building", "deployed", 
 WET_APPLYABLE_OPS = VALID_OPS
 MAX_FEATURES_PER_PROJECT = 30
 MAX_ARTIFACTS_PER_FEATURE = 10
+# Descriptions are prose, and some are essays. MEASURED read-only on 2026-09-02:
+# a 30-card brain-v42 batch carries 2 733 bytes of names and would carry 29 469
+# more of descriptions — an 11× feature section, ~7 400 tokens of input — with a
+# single description reaching 3 543 bytes across all projects. Sending them whole
+# would break the path this is meant to improve: that batch was already truncated
+# once at 4 096 (first wet run of 2026-07-04, char 12160). The cap keeps the first
+# sentences, where these descriptions state their subject, and the truncation is
+# ANNOUNCED — a silently cut description reads as a description that stops there.
+MAX_DESCRIPTION_CHARS = 240
 MAX_PROPOSALS_PER_NIGHT = 40
 # The consolidator prompt produces long answers (the brain-v42 batch truncated
 # at 4096 on the first wet run of 2026-07-04, char 12160) — 2× margin.
@@ -241,6 +251,11 @@ class FeatureCard:
     status: str
     pinned: bool
     artifacts: list[str] = field(default_factory=list)
+    # Optional, and it must stay so: the shrink rebuilds cards field by field, and
+    # a required field would break the retry path at the worst moment. `None` and
+    # "same as the name" both mean the same thing to the reader — this feature
+    # says nothing beyond its title (359 live features out of 422 on 2026-09-02).
+    description: str | None = None
 
 
 @dataclass
@@ -298,11 +313,26 @@ def format_digest(
     return base
 
 
+def _clip(text: str, limit: int = MAX_DESCRIPTION_CHARS) -> str:
+    """Bound a description, saying so when it is cut."""
+    flat = " ".join(text.split())
+    if len(flat) <= limit:
+        return flat
+    return f"{flat[:limit]}… (tronquée à {limit} caractères)"
+
+
 def render_batch(batch: ProjectBatch) -> str:
     lines = [f"Projet: {batch.project_key} — {len(batch.features)} features vivantes"]
     for f in batch.features:
         pin = " [PINNED — seule l'op status est permise]" if f.pinned else ""
         lines.append(f"\n- feature_id: {f.id}\n  nom: {f.name}\n  statut: {f.status}{pin}")
+        # Rendered only when it adds something. Repeating the title on the 85 % of
+        # features where description == name would spend prompt budget on a line
+        # the model already has, on a path that has already been truncated once
+        # (brain-v42, first wet run of 2026-07-04, char 12160). Its ABSENCE is
+        # itself the signal a curator needs.
+        if f.description and f.description != f.name:
+            lines.append(f"  description: {_clip(f.description)}")
         if f.artifacts:
             lines.append("  artifacts récents:")
             lines.extend(f"    - {a}" for a in f.artifacts)
@@ -327,6 +357,7 @@ def _compact_batch(
                 status=feature.status,
                 pinned=feature.pinned,
                 artifacts=list(feature.artifacts[:artifact_cap]),
+                description=feature.description,
             )
             for feature in batch.features[:feature_cap]
         ],
@@ -500,13 +531,13 @@ ORDER BY project_key
 """
 
 _FEATURES_SQL = """
-SELECT f.id, f.name, f.status, COALESCE(f.pinned, false) AS pinned
+SELECT f.id, f.name, f.status, COALESCE(f.pinned, false) AS pinned, f.description
 FROM features f
 LEFT JOIN feature_artifacts fa ON fa.feature_id = f.id
 WHERE f.project_key = :pk
   AND f.status NOT IN ('done', 'archived')
   AND f.merged_into IS NULL
-GROUP BY f.id, f.name, f.status, f.pinned
+GROUP BY f.id, f.name, f.status, f.pinned, f.description
 ORDER BY MAX(fa.created_at) DESC NULLS LAST
 LIMIT :cap
 """
@@ -628,6 +659,7 @@ async def fetch_project_batches(
                     name=r["name"],
                     status=r["status"],
                     pinned=bool(r["pinned"]),
+                    description=r["description"],
                 )
                 for r in feat_rows
             }
@@ -1152,12 +1184,18 @@ async def apply_proposals(
     session_factory: Any,
     proposal_ids: list[int],
     allowed_ops: tuple[str, ...] | None = None,
+    project_key: str | None = None,
 ) -> int:
     """CLI facade applying reviewed proposals — one transaction per proposal.
 
     allowed_ops: in the nightly wet, WET_APPLYABLE_OPS; None (--apply-ids,
     human review) = every op. A failed post-condition rolls the proposal back
     (it stays 'proposed') and we continue.
+
+    project_key: forwarded as the service's `project_group`, which adds the EXISTS
+    on `features.project_key` — the SAME guard the MCP tools use, not a copy. The
+    reviewed apply always declares it; the nightly wet does not, because its
+    proposals come from the run that just produced them.
     """
     from brain_v42.services.proposal_service import (  # noqa: PLC0415
         ProposalApplyError,
@@ -1171,8 +1209,22 @@ async def apply_proposals(
     applied = 0
     for proposal_id in dict.fromkeys(proposal_ids):
         try:
-            await service.apply_roadmap_curation(proposal_id, allowed_ops=allowed_ops)
-        except (ProposalNotFoundError, ProposalNotProposedError):
+            await service.apply_roadmap_curation(
+                proposal_id, allowed_ops=allowed_ops, project_group=project_key
+            )
+        except ProposalNotFoundError:
+            # Under a declared project the guard makes a foreign row simply not
+            # match, so this is also how a cross-project id arrives. The CLI
+            # cannot tell "unknown" from "outside the project" here and does not
+            # pretend to — but staying silent let a mistyped id read as an id
+            # that was applied, which is the defect.
+            if project_key is not None:
+                print(
+                    f"~ proposal {proposal_id} inconnue ou hors du projet "
+                    f"{project_key} — rien appliqué"
+                )
+            continue
+        except ProposalNotProposedError:
             continue
         except ProposalOperationNotAllowedError as exc:
             print(
@@ -1253,7 +1305,8 @@ def _positive_int(value: str) -> int:
     return number
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
+    """The CLI surface, built apart so a test can read it without running a night."""
     parser = argparse.ArgumentParser(
         prog="roadmap_curate",
         description="Roadmap curation (NVIDIA API).",
@@ -1268,6 +1321,15 @@ def main() -> int:
         "--apply-ids",
         default=None,
         help='apply des proposals reviewées (ex: "3,4") — incompatible avec --wet',
+    )
+    # No default, deliberately: a default would put the guard back to sleep. The
+    # reviewed apply is driven by hand from a morning review, where a mistyped id
+    # is the expected human error and 25 other projects are one digit away —
+    # ticket e9b2faf4, defect 2.
+    parser.add_argument(
+        "--project-key",
+        default=None,
+        help="projet dont les proposals peuvent être appliquées — requis avec --apply-ids",
     )
     parser.add_argument(
         "--model",
@@ -1291,10 +1353,17 @@ def main() -> int:
             f"le SIGTERM shell (défaut: {NIGHT_BUDGET_S:.0f}s)"
         ),
     )
+    return parser
+
+
+def main() -> int:
+    parser = _build_parser()
     args = parser.parse_args()
 
     if args.wet and args.apply_ids is not None:
         parser.error("--wet et --apply-ids sont incompatibles")
+    if args.apply_ids is not None and args.project_key is None:
+        parser.error("--apply-ids exige --project-key (garde de projet, ticket e9b2faf4)")
 
     load_env_file(_ENV_FILE)
 
@@ -1381,7 +1450,7 @@ async def _run(
                 file=sys.stderr,
             )
             return 1
-        applied = await apply_proposals(sf, ids, allowed_ops=None)
+        applied = await apply_proposals(sf, ids, allowed_ops=None, project_key=args.project_key)
         duration = clock() - t0
         print(f"apply: {applied} appliqués")
         await record_dream_run(sf, "done", dry=False, duration_s=duration, error=None)

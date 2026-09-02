@@ -1538,6 +1538,9 @@ class TestFetchRotationWiring:
                 "name": f"F{i}",
                 "status": "research",
                 "pinned": False,
+                # Selected by _FEATURES_SQL since ticket e9b2faf4 (defect 3): a row
+                # without it would stop reproducing the query these tests exercise.
+                "description": None,
             }
             for i in range(30)
         ]
@@ -1572,6 +1575,9 @@ class TestFetchRotationWiring:
                 "name": f"F{i}",
                 "status": "research",
                 "pinned": False,
+                # Selected by _FEATURES_SQL since ticket e9b2faf4 (defect 3): a row
+                # without it would stop reproducing the query these tests exercise.
+                "description": None,
             }
             for i in range(30)
         ]

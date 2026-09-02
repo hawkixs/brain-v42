@@ -1622,7 +1622,7 @@ and `001_initial.py:244-247`; `036_codex_contract_views.py:23-45,205-227,230`;
 `tests/unit/test_recovery_contract_v4_pgrestore.py:29-33`,
 `tests/unit/test_recovery_contract_v3.py:164-168,488`,
 `tests/integration/db/test_recovery_contract_v4_execution.py:106`;
-`tests/unit/test_documentation_contract.py:25-32,1815-1819`;
+`tests/unit/test_documentation_contract.py:25-32,1820-1825`;
 `tests/unit/test_plan_index_repair_head_pin.py:45-52`; `tests/integration/conftest.py:129-155`;
 `docs/OPERATIONS.md:118`. Migrations directory verified: `alembic/versions/`, versioned
 head 045, **no 046**. No commit, no brain write, no DB write,

@@ -449,7 +449,7 @@ It is **signed**; the dossier does not choose it, it fixes its rank (first) and 
 `/home/hawixs/hawkixs_infra/git_repo/brain_v42/tests/unit/test_recovery_contract_v4.py:23,44-84,444`
 `/home/hawixs/hawkixs_infra/git_repo/brain_v42/tests/unit/test_recovery_contract_v4_pgrestore.py:29-33`
 `/home/hawixs/hawkixs_infra/git_repo/brain_v42/tests/unit/test_recovery_contract.py:279,281-295`
-`/home/hawixs/hawkixs_infra/git_repo/brain_v42/tests/unit/test_documentation_contract.py:150-168,1772-1819`
+`/home/hawixs/hawkixs_infra/git_repo/brain_v42/tests/unit/test_documentation_contract.py:150-168,1772-1825`
 `/home/hawixs/hawkixs_infra/git_repo/brain_v42/tests/unit/test_model_column_width_contract.py` (hole: `brain_sessions` absent)
 `/home/hawixs/hawkixs_infra/git_repo/brain_v42/ops/recovery/brain-v42-v4.json` (`alembic_head:039`, `indexes:128`)
 `/home/hawixs/hawkixs_infra/git_repo/brain_v42/ops/recovery/brain-v42-v4.sql:267-282,404-412,437-470,917,1789-1791` (mode 0644, anomaly)
