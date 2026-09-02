@@ -1,21 +1,23 @@
-"""Contrat de `derive_capture` : déposer dans la traçante, ne jamais voler, ne jamais casser.
+"""`derive_capture` contract: deposit in the tracer, never steal, never break.
 
-Le harnais compile les statements sans PostgreSQL : il prouve la FORME émise et
-les chemins de refus, pas l'arbitrage du moteur. Ce qui ne se prouve qu'en base
-— l'unicité de la traçante sur (projet, connexion) — est épinglé côté e2e.
+The harness compiles the statements without PostgreSQL: it proves the SHAPE
+emitted and the refusal paths, not the engine's arbitration. What can only be
+proven in the database — the uniqueness of the tracer on (project, connection) —
+is pinned on the e2e side.
 
-Trois propriétés gouvernent ce module et se lisent une par une plus bas :
+Three properties govern this module and are read one by one below:
 
-1. **Elle ne VOLE jamais.** L'insertion porte `ON CONFLICT DO NOTHING` sur
-   `knowledge_id`, qui EST la clé primaire du ledger : un artefact déjà attribué
-   — à une session explicite ou à une autre traçante — reste où il est.
-2. **Elle ne casse pas la création qu'elle observe.** Tout passe par un
-   `begin_nested()`, et toute `Exception` est avalée. « Pas » et non « jamais » :
-   `except Exception` n'attrape pas `BaseException`, et une `CancelledError`
-   pendant le `ROLLBACK TO SAVEPOINT` reste hors garantie. Fenêtre étroite,
-   mais l'écrire coûte moins cher que de laisser croire à une garantie totale.
-3. **Fermée par défaut.** Drapeau fermé ⇒ zéro statement, pas « un statement qui
-   ne fait rien ».
+1. **It never STEALS.** The insert carries `ON CONFLICT DO NOTHING` on
+   `knowledge_id`, which IS the ledger's primary key: an artifact already
+   attributed — to an explicit session or to another tracer — stays where it is.
+2. **It does not break the creation it observes.** Everything goes through a
+   `begin_nested()`, and every `Exception` is swallowed. "Does not" and not
+   "never": `except Exception` does not catch `BaseException`, and a
+   `CancelledError` during the `ROLLBACK TO SAVEPOINT` stays outside the
+   guarantee. A narrow window, but writing it down costs less than letting
+   anyone believe in a total guarantee.
+3. **Closed by default.** Flag closed ⇒ zero statements, not "a statement that
+   does nothing".
 """
 
 from __future__ import annotations
@@ -55,7 +57,7 @@ def _open_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _session(router: Any) -> tuple[Any, list[Any]]:
-    """Session factice qui sait entrer dans un savepoint, comme la vraie."""
+    """A fake session that can enter a savepoint, like the real one."""
     statements: list[Any] = []
 
     async def execute(statement: Any, *args: Any, **kwargs: Any) -> Any:
@@ -116,7 +118,7 @@ class TestItDeposits:
         assert params["knowledge_type"] == "learning"
 
     async def test_the_write_lives_in_a_savepoint(self, _open_flag: None) -> None:
-        """Sans savepoint, une erreur ici emporterait la transaction de création."""
+        """Without a savepoint, an error here would take the creating transaction."""
         session, _ = _session(_router(tracer=uuid4(), inserted=uuid4()))
         await _derive(session)
         assert session.begin_nested.called
@@ -124,11 +126,11 @@ class TestItDeposits:
     async def test_the_tracer_is_looked_up_by_project_connection_open_and_agent(
         self, _open_flag: None
     ) -> None:
-        """Quatre bornes, et aucune n'est décorative.
+        """Four bounds, and none is decorative.
 
-        Sans `nature = 'agent'`, la dérivation pourrait déposer dans une session
-        `operator` — donc écrire dans la session d'un humain sans qu'il l'ait
-        demandé. C'est exactement ce que l'absorption doit rester seule à faire.
+        Without `nature = 'agent'`, derivation could deposit into an `operator`
+        session — that is, write into a human's session without them asking. That
+        is exactly what absorption must remain alone in doing.
         """
         session, statements = _session(_router(tracer=uuid4(), inserted=uuid4()))
         await _derive(session)
@@ -147,7 +149,7 @@ class TestItRefuses:
         assert not session.begin_nested.called
 
     async def test_no_connection_means_nothing_to_derive_into(self, _open_flag: None) -> None:
-        """stdio et mode sans état : pas d'identifiant de connexion, pas de clé."""
+        """stdio and stateless mode: no connection identifier, no key."""
         set_current_transport(None)
         session, statements = _session(_router(tracer=uuid4()))
         assert await _derive(session) is None
@@ -169,10 +171,10 @@ class TestItRefuses:
         assert statements == []
 
     async def test_a_full_ledger_is_left_exactly_as_it_is(self, _open_flag: None) -> None:
-        """Le plafond de 100 appartient à la capture explicite : on ne le franchit pas.
+        """The 100 ceiling belongs to explicit capture: we do not cross it.
 
-        Le dépasser par le chemin dérivé rendrait `brain_session_capture`
-        refusable pour une raison que l'utilisateur n'a pas provoquée.
+        Exceeding it through the derived path would make `brain_session_capture`
+        refusable for a reason the user did not cause.
         """
         from brain_v42.models.brain_session import MAX_CAPTURED_KNOWLEDGE_IDS
 
@@ -183,7 +185,7 @@ class TestItRefuses:
         assert not any("insert into brain_session_artifacts" in _sql(s) for s in statements)
 
     async def test_an_already_attributed_artifact_is_never_stolen(self, _open_flag: None) -> None:
-        """`ON CONFLICT DO NOTHING` sur la PK : la ligne existante gagne, toujours."""
+        """`ON CONFLICT DO NOTHING` on the PK: the existing row wins, always."""
         session, statements = _session(_router(tracer=uuid4(), inserted=None))
         assert await _derive(session) is None
         insert = _sql(statements[-1])
@@ -192,7 +194,7 @@ class TestItRefuses:
     async def test_any_failure_is_swallowed_and_never_reaches_the_creation(
         self, _open_flag: None
     ) -> None:
-        """Une capture dérivée qui casserait un `brain_learn` serait pire que rien."""
+        """A derived capture that broke a `brain_learn` would be worse than nothing."""
 
         def explode(_statement: Any) -> Any:
             raise RuntimeError("la base a hoqueté")
@@ -202,11 +204,12 @@ class TestItRefuses:
 
 
 async def test_the_table_map_agrees_with_the_repository_capture_tables() -> None:
-    """Anti-dérive, sans cycle d'import.
+    """Anti-drift, without an import cycle.
 
-    `pg_brain_session` importe `pg_base`, et `pg_base` appellera ce module : lui
-    importer `CAPTURE_TABLES` fermerait le cycle. Les deux listes vivent donc
-    séparément, et ce test est ce qui les empêche de diverger en silence.
+    `pg_brain_session` imports `pg_base`, and `pg_base` will call this module:
+    importing `CAPTURE_TABLES` into it would close the cycle. The two lists
+    therefore live separately, and this test is what keeps them from diverging in
+    silence.
     """
     from brain_v42.db.session_derived_capture import CAPTURE_TABLES as derived
     from brain_v42.repositories.pg_brain_session import CAPTURE_TABLES as canonical
@@ -223,7 +226,7 @@ _CLIENT_KEY = "task-w20"
 
 
 def _session_row(session_id: UUID) -> dict[str, Any]:
-    """Ligne assez complète pour que `_to_model` la valide — la garde la lit."""
+    """A row complete enough for `_to_model` to validate — the guard reads it."""
     return {
         "id": session_id,
         "project_key": _PROJECT,
@@ -250,7 +253,7 @@ def _session_row(session_id: UUID) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class _Target:
-    """Miroir minimal de `BrainSession` — l'absorption ne lit que ces trois champs."""
+    """Minimal mirror of `BrainSession` — absorption reads only these three fields."""
 
     id: UUID
     project_key: str = _PROJECT
@@ -276,12 +279,12 @@ def _absorb_router(
 async def _absorb(
     session: Any, target: _Target | None = None, connection: str = _CONNECTION
 ) -> int:
-    """Le TOTAL déplacé, tous étages confondus.
+    """The TOTAL moved, across all stages.
 
-    `absorb_tracer_ledger` rend désormais un `AbsorptionOutcome` — un total nu
-    ne pouvait pas dire par quelle clé l'appariement avait eu lieu. Ce helper
-    garde le contrat que les tests ci-dessous asserent : le nombre de lignes
-    déplacées. Les tests par étage vivent dans `TestTwoStageAbsorption`.
+    `absorb_tracer_ledger` now returns an `AbsorptionOutcome` — a bare total
+    could not say by which key the match happened. This helper keeps the contract
+    the tests below assert: the number of rows moved. The per-stage tests live in
+    `TestTwoStageAbsorption`.
     """
     from brain_v42.db.session_derived_capture import absorb_tracer_ledger
 
@@ -297,15 +300,15 @@ class TestAbsorption:
         session, statements = _session(_absorb_router(tracer=uuid4(), candidates=moved))
 
         assert await _absorb(session, target) == 2
-        # Cherché par CONTENU, plus par position : l'étage fenêtre émet un
-        # comptage de rivales après l'UPDATE, et `statements[-1]` désignait
-        # désormais ce comptage. La propriété assertée n'a pas bougé.
+        # Looked up by CONTENT, no longer by position: the window stage emits a
+        # rival count after the UPDATE, and `statements[-1]` had come to mean
+        # that count. The asserted property has not moved.
         update = next(item for item in statements if "update brain_session_artifacts" in _sql(item))
         assert target.id in _params(update).values()
 
     async def test_the_donor_can_only_be_an_open_agent_tracer(self, _open_flag: None) -> None:
-        """Le donneur est `agent` UNIQUEMENT : absorber une session `operator`
-        déplacerait le ledger d'un humain vers un autre humain."""
+        """The donor is `agent` ONLY: absorbing an `operator` session would move
+        one human's ledger to another human."""
         session, statements = _session(_absorb_router(tracer=uuid4(), candidates=[uuid4()]))
         await _absorb(session)
 
@@ -315,21 +318,21 @@ class TestAbsorption:
     async def test_it_accepts_only_what_an_explicit_capture_would_have_accepted(
         self, _open_flag: None
     ) -> None:
-        """L'INVARIANT du lot : la dérivation n'est pas un passe-droit.
+        """The batch's INVARIANT: derivation is not a special dispensation.
 
-        `_validate_captures` borne une capture explicite à « même projet ET
-        `created_at >= started_at` », sur six tables. L'absorption doit porter
-        EXACTEMENT les mêmes bornes : sans ça, elle attribuerait des artefacts
-        qu'un utilisateur n'aurait pas pu capturer lui-même, et la dérivation
-        deviendrait un chemin plus permissif que la commande qu'elle remplace.
+        `_validate_captures` bounds an explicit capture to "same project AND
+        `created_at >= started_at`", over six tables. Absorption must carry
+        EXACTLY the same bounds: without that, it would attribute artifacts a
+        user could not have captured themselves, and derivation would become a
+        path more permissive than the command it replaces.
         """
         from brain_v42.db.session_derived_capture import CAPTURE_TABLES
 
         session, statements = _session(_absorb_router(tracer=uuid4(), candidates=[uuid4()]))
         await _absorb(session)
 
-        # Les bornes voyagent dans le sous-select de l'UPDATE : une seule
-        # instruction, comme la forme arbitrée le demandait.
+        # The bounds travel in the UPDATE's sub-select: a single statement, as
+        # the settled shape required.
         update = _sql(statements[-1])
         for table_name in CAPTURE_TABLES:
             assert f"from {table_name}" in update, f"{table_name} hors du périmètre"
@@ -363,19 +366,19 @@ class TestAbsorption:
         assert statements == []
 
     async def test_no_connection_absorbs_nothing(self, _open_flag: None) -> None:
-        """stdio et mode sans état : sans identifiant de connexion, pas de donneur."""
+        """stdio and stateless mode: without a connection identifier, no donor."""
         session, statements = _session(_absorb_router(tracer=uuid4()))
         assert await _absorb(session, connection="") == 0
         assert statements == []
 
     async def test_no_tracer_absorbs_nothing(self, _open_flag: None) -> None:
-        """Pas de traçante sur CETTE connexion ⇒ l'étage exact ne rend rien.
+        """No tracer on THIS connection ⇒ the exact stage returns nothing.
 
-        AMENDÉ avec le lot à deux étages. La forme précédente asseyait
-        `len(statements) == 1`, c'est-à-dire « après l'étage connexion, on
-        s'arrête » — la conception même que ce lot répare, épinglée par un
-        compteur. Ce qui reste asserté est le comportement, qui n'a pas changé :
-        rien ne bouge, et l'étage EXACT est toujours évalué en PREMIER.
+        AMENDED with the two-stage batch. The previous form asserted
+        `len(statements) == 1`, that is, "after the connection stage, we stop" —
+        the very design this batch repairs, pinned by a counter. What remains
+        asserted is the behaviour, which has not changed: nothing moves, and the
+        EXACT stage is still evaluated FIRST.
         """
         session, statements = _session(_absorb_router(tracer=None))
         assert await _absorb(session) == 0
@@ -390,7 +393,7 @@ class TestAbsorption:
 
 
 class TestRepositoryEntryPoint:
-    """Le point d'entrée du dépôt ne décide rien — il retrouve et délègue."""
+    """The repository entry point decides nothing — it finds and delegates."""
 
     async def _absorb_via_repo(
         self, monkeypatch: pytest.MonkeyPatch, *, row: dict[str, Any] | None
@@ -402,8 +405,8 @@ class TestRepositoryEntryPoint:
         seen: list[Any] = []
 
         async def _fake(session: Any, target: Any, connection_id: str) -> Any:
-            # Le double MIROITE la signature du vrai appelé, sinon il prouverait
-            # un contrat que plus personne n'honore.
+            # The double MIRRORS the real callee's signature, otherwise it would
+            # prove a contract nobody honours any more.
             from brain_v42.db.session_derived_capture import AbsorptionOutcome
 
             seen.append((target, connection_id))
@@ -422,9 +425,9 @@ class TestRepositoryEntryPoint:
         session_id = uuid4()
         moved, seen = await self._absorb_via_repo(
             monkeypatch,
-            # `client_key` est désormais LU par la garde d'identité, qui vit
-            # dans la même transaction que la mutation. Une ligne double sans
-            # elle ne décrirait plus le chemin réel.
+            # `client_key` is now READ by the identity guard, which lives in the
+            # same transaction as the mutation. A double row without it would no
+            # longer describe the real path.
             row=_session_row(session_id),
         )
 
@@ -446,25 +449,25 @@ class TestRepositoryEntryPoint:
 
 
 # ---------------------------------------------------------------------------
-# Absorption à DEUX étages — l'étage exact, puis la fenêtre d'exclusivité
+# TWO-stage absorption — the exact stage, then the exclusivity window
 # ---------------------------------------------------------------------------
 
 _WINDOW_TRACER = uuid4()
 
 
-#: Donneuse par défaut des candidats de l'étage fenêtre. Distincte de la
-#: traçante de la connexion : c'est ce qui permet d'asserter que `donors` porte
-#: bien la donneuse DÉDUITE et pas seulement celle de l'étage exact.
+#: Default donor of the window stage's candidates. Distinct from the
+#: connection's tracer: that is what makes it possible to assert `donors` really
+#: carries the INFERRED donor and not only the exact stage's.
 _WINDOW_DONOR = uuid4()
 
 
 def _tuple_result(rows: list[tuple[Any, ...]]) -> Any:
-    """Résultat dont `.all()` rend des TUPLES.
+    """A result whose `.all()` returns TUPLES.
 
-    `_result` construit ses scalaires en appelant `.get()` sur chaque ligne : il
-    suppose des mappings. La sélection des candidats rend `(knowledge_id,
-    session_id)`, donc un double distinct — sinon le harnais casserait sur la
-    forme au lieu de prouver quoi que ce soit.
+    `_result` builds its scalars by calling `.get()` on each row: it assumes
+    mappings. The candidate selection returns `(knowledge_id, session_id)`, hence
+    a distinct double — otherwise the harness would break on the shape instead of
+    proving anything.
     """
     result = MagicMock()
     result.all.return_value = rows
@@ -480,7 +483,7 @@ def _two_stage_router(
     window_donor: UUID | None = None,
     blocked: int = 0,
 ) -> Any:
-    """Router qui sait distinguer les DEUX étages, ce que le total masquerait."""
+    """A router that tells the TWO stages apart, which the total would mask."""
     donor = window_donor or _WINDOW_DONOR
 
     def route(statement: Any) -> Any:
@@ -490,15 +493,15 @@ def _two_stage_router(
         if sql.startswith("select brain_sessions.id"):
             return _result(scalar=connection_tracer)
         if "update brain_session_artifacts" in sql:
-            # L'étage se lit au MODE ÉCRIT, lu dans les paramètres. C'est le
-            # discriminant sémantique : la version précédente cherchait l'alias
-            # `rival` dans le SQL, qui a disparu de l'UPDATE fenêtre le jour où
-            # celui-ci a cessé d'embarquer son filtre — le double servait alors
-            # silencieusement les lignes du mauvais étage.
-            # LISTE et non `set` : un `IN (...)` voyage comme une liste de
-            # paramètres, qui n'est pas hashable. Un `set()` lève ici, et le
-            # `except Exception` de l'absorption avalerait l'erreur du HARNAIS
-            # en la faisant passer pour un refus légitime.
+            # The stage is read from the MODE WRITTEN, taken from the
+            # parameters. That is the semantic discriminant: the previous version
+            # looked for the `rival` alias in the SQL, which disappeared from the
+            # window UPDATE the day it stopped embedding its filter — the double
+            # then silently served the wrong stage's rows.
+            # A LIST and not a `set`: an `IN (...)` travels as a list of
+            # parameters, which is not hashable. A `set()` raises here, and
+            # absorption's `except Exception` would swallow the HARNESS's error
+            # and pass it off as a legitimate refusal.
             values = list(_params(statement).values())
             moved = window_moved if "derived_window" in values else connection_moved
             return _result(rows=[{"knowledge_id": item} for item in (moved or [])])
@@ -510,25 +513,25 @@ def _two_stage_router(
 
 
 def _window_sql(statements: list[Any]) -> str:
-    """Le SQL des statements de l'étage FENÊTRE, reconnus à leur alias `rival`."""
+    """The SQL of the WINDOW stage statements, recognized by their `rival` alias."""
     return " ".join(_sql(item) for item in statements if "rival" in _sql(item))
 
 
 def _window_values(statements: list[Any]) -> set[Any]:
-    """Les VALEURS liées de l'étage fenêtre.
+    """The BOUND VALUES of the window stage.
 
-    Elles ne sont pas dans le texte compilé : SQLAlchemy les passe en
-    paramètres. Les chercher dans le SQL rendrait ces tests verts pour une
-    mauvaise raison — ils ne verraient jamais rien.
+    They are not in the compiled text: SQLAlchemy passes them as parameters.
+    Looking for them in the SQL would turn these tests green for the wrong reason
+    — they would never see anything.
     """
     values: set[Any] = set()
     for item in statements:
         if "rival" not in _sql(item):
             continue
         for value in _params(item).values():
-            # Un `IN (...)` voyage comme une LISTE de paramètres, pas comme
-            # autant de scalaires : ne pas l'aplatir laisserait `closed_inactive`
-            # invisible et le test vert sans rien avoir vu.
+            # An `IN (...)` travels as a LIST of parameters, not as that many
+            # scalars: not flattening it would leave `closed_inactive` invisible
+            # and the test green having seen nothing.
             values.update(value) if isinstance(value, list) else values.add(value)
     return values
 
@@ -540,8 +543,8 @@ async def _outcome(session: Any, target: _Target | None = None) -> Any:
 
 
 class TestTwoStageAbsorption:
-    """Un total qui masque une rétrogradation de l'étage exact vers la devinette
-    est un vert qui ment. L'absorption doit DIRE par quelle clé elle a apparié."""
+    """A total that masks a demotion from the exact stage to guesswork is a green
+    that lies. Absorption must SAY by which key it matched."""
 
     async def test_it_counts_each_stage_separately(self, _open_flag: None) -> None:
         moved = [uuid4()]
@@ -554,7 +557,7 @@ class TestTwoStageAbsorption:
         assert outcome.reason == "absorbed"
 
     async def test_the_window_stage_is_reported_as_such(self, _open_flag: None) -> None:
-        """Le même total, une clé différente — et le rapport doit le dire."""
+        """The same total, a different key — and the report must say so."""
         moved = [uuid4()]
         session, _ = _session(_two_stage_router(connection_tracer=None, window_moved=moved))
 
@@ -566,7 +569,7 @@ class TestTwoStageAbsorption:
     async def test_the_connection_stage_still_demands_an_open_tracer(
         self, _open_flag: None
     ) -> None:
-        """L'étage EXACT ne change pas : il reste borné à la connexion courante."""
+        """The EXACT stage does not change: it stays bounded to the current connection."""
         session, statements = _session(
             _two_stage_router(connection_tracer=uuid4(), connection_moved=[uuid4()])
         )
@@ -577,11 +580,11 @@ class TestTwoStageAbsorption:
         assert "status" in exact and "nature" in exact
 
     async def test_the_window_stage_accepts_a_closed_inactive_donor(self, _open_flag: None) -> None:
-        """Le balayage 4 h sort une traçante de `open` EN GARDANT son ledger.
+        """The 4 h sweep moves a tracer out of `open` WHILE KEEPING its ledger.
 
-        Un correctif borné à `'open'` redeviendrait muet le jour où le placement
-        du drop-in `BRAIN_SESSION_INACTIVE_SWEEP_ENABLED` sera corrigé — sans un
-        bruit, parce que rien n'échouerait.
+        A fix bounded to `'open'` would go silent again the day the placement of
+        the `BRAIN_SESSION_INACTIVE_SWEEP_ENABLED` drop-in is corrected — without
+        a sound, because nothing would fail.
         """
         session, statements = _session(_two_stage_router(window_moved=[uuid4()]))
         await _outcome(session)
@@ -591,11 +594,11 @@ class TestTwoStageAbsorption:
         assert "open" in values
 
     async def test_the_window_stage_never_absorbs_a_system_actor(self, _open_flag: None) -> None:
-        """Le dream n'est pas un créateur inconnu : il est identifié.
+        """The dream is not an unknown creator: it is identified.
 
-        Le laisser dans le pot commun rendrait le mode de panne quotidien au
-        lieu de marginal — le `promote` de 03:00 tombe dans la fenêtre de toute
-        session ouverte la nuit.
+        Leaving it in the common pool would make the failure mode daily instead
+        of marginal — the 03:00 `promote` falls inside the window of every
+        session open that night.
         """
         session, statements = _session(_two_stage_router(window_moved=[uuid4()]))
         await _outcome(session)
@@ -611,11 +614,11 @@ class TestTwoStageAbsorption:
     async def test_the_window_stage_refuses_what_a_rival_session_covers(
         self, _open_flag: None
     ) -> None:
-        """La rivalité est SYMÉTRIQUE : aucune clause de fraîcheur.
+        """Rivalry is SYMMETRIC: no recency clause.
 
-        Deux prétendantes valent une abstention. La couverture se juge à
-        l'instant de création, `started_at <= t <= coalesce(ended_at, now())`,
-        donc une session close APRÈS l'instant reste une rivale.
+        Two claimants mean an abstention. Coverage is judged at the creation
+        instant, `started_at <= t <= coalesce(ended_at, now())`, so a session
+        closed AFTER the instant is still a rival.
         """
         session, statements = _session(_two_stage_router(window_moved=[uuid4()]))
         await _outcome(session)
@@ -626,11 +629,11 @@ class TestTwoStageAbsorption:
 
 
 class TestTheThreeZerosAreDistinguishable:
-    """« Refus légitime » et « rien à absorber » rendaient le même `0`.
+    """A legitimate refusal and "nothing to absorb" returned the same `0`.
 
-    C'est le fil rouge de ce projet : une capacité armée, verte, et muette là où
-    elle échoue. Trois retours `0` indiscernables en API comme au journal sont
-    la prochaine régression invisible.
+    That is this project's running theme: a capability armed, green, and silent
+    where it fails. Three `0` returns indistinguishable in the API as in the log
+    are the next invisible regression.
     """
 
     async def test_a_closed_flag_says_so(self) -> None:
@@ -651,7 +654,7 @@ class TestTheThreeZerosAreDistinguishable:
         assert outcome.reason == "no_connection"
 
     async def test_nothing_eligible_is_not_a_refusal(self, _open_flag: None) -> None:
-        """Aucune ligne à déplacer n'est pas la même chose qu'un refus de la règle."""
+        """No row to move is not the same thing as a refusal by the rule."""
         session, _ = _session(_two_stage_router(connection_tracer=None))
         outcome = await _outcome(session)
 
@@ -677,7 +680,7 @@ class TestTheThreeZerosAreDistinguishable:
 
 
 # ---------------------------------------------------------------------------
-# L'OBSERVABLE — un lot qui rend le silence lisible doit avoir un journal LU
+# THE OBSERVABLE — a batch that makes silence legible must have a log that is READ
 # ---------------------------------------------------------------------------
 
 
@@ -686,16 +689,15 @@ def _absorption_events(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 class TestTheJournalIsAsserted:
-    """Trois défauts d'observabilité ont survécu à cette suite parce qu'elle
-    comptait les compteurs et ne lisait jamais le journal. Un lot dont la raison
-    d'être est de rendre le silence lisible ne peut pas livrer un journal que
-    rien ne lit — sinon on recommence."""
+    """Three observability defects survived this suite because it counted the
+    counters and never read the log. A batch whose whole purpose is to make
+    silence legible cannot ship a log nothing reads — otherwise we start over."""
 
     async def test_a_window_absorption_names_its_DONOR(self, _open_flag: None) -> None:
-        """A2b. Sans la donneuse, l'étage DÉDUIT est le seul qu'on ne peut pas défaire.
+        """A2b. Without the donor, the INFERRED stage is the one we cannot undo.
 
-        Le `RETURNING` d'un UPDATE rend la NOUVELLE valeur de `session_id` : la
-        donneuse se perdait au moment exact où elle compte.
+        An UPDATE's `RETURNING` yields the NEW value of `session_id`: the donor
+        was lost at the exact moment it matters.
         """
         donor, moved = uuid4(), [uuid4()]
         session, _ = _session(
@@ -712,11 +714,11 @@ class TestTheJournalIsAsserted:
         assert event["moved_by_window"] == 1
 
     async def test_a_partial_absorption_still_counts_its_rivals(self, _open_flag: None) -> None:
-        """A2a. Le « total qui masque », réintroduit d'un cran plus bas.
+        """A2a. The "total that masks", reintroduced one level down.
 
-        Absorber 1 ligne par la connexion et en refuser 5 par ambiguïté
-        journalisait `absorbed` / `rivals_blocked=0`. Le comptage était sous
-        `if rien n'a bougé` — donc muet dès qu'une seule ligne bougeait.
+        Absorbing 1 row by connection and refusing 5 for ambiguity logged
+        `absorbed` / `rivals_blocked=0`. The count sat under `if nothing moved` —
+        hence silent as soon as a single row moved.
         """
         session, _ = _session(
             _two_stage_router(connection_tracer=uuid4(), connection_moved=[uuid4()], blocked=5)
@@ -735,7 +737,7 @@ class TestTheJournalIsAsserted:
     async def test_a_full_ledger_reaches_the_JOURNAL_and_not_only_the_api(
         self, _open_flag: None
     ) -> None:
-        """A2c. Le lot promettait des raisons distinguables « en API comme au journal »."""
+        """A2c. The batch promised reasons distinguishable "in the API as in the log"."""
         session, _ = _session(_two_stage_router(connection_tracer=uuid4(), occupied=100))
 
         with capture_logs() as records:
@@ -746,11 +748,11 @@ class TestTheJournalIsAsserted:
         assert event["reason"] == "ledger_full"
 
     async def test_the_two_silent_refusals_stay_silent(self, _open_flag: None) -> None:
-        """Drapeau fermé et absence de connexion n'écrivent RIEN, et c'est voulu.
+        """A closed flag and a missing connection write NOTHING, and that is intended.
 
-        Ce sont les deux seuls cas où l'absorption n'a même pas été tentée. Les
-        journaliser mettrait une ligne par appel d'outil sur toute installation
-        qui n'a pas armé la capture — un bruit qui enterrerait les six autres.
+        They are the only two cases where absorption was not even attempted.
+        Logging them would put one line per tool call on every installation that
+        has not armed capture — noise that would bury the other six.
         """
         from brain_v42.db.session_derived_capture import absorb_tracer_ledger
 
@@ -761,15 +763,15 @@ class TestTheJournalIsAsserted:
 
 
 class TestTheWindowFiltersBeforeItBounds:
-    """A1, gardé structurellement en plus du banc d'intégration."""
+    """A1, guarded structurally on top of the integration bench."""
 
     async def test_the_bound_comes_AFTER_the_rivalry_filter(self, _open_flag: None) -> None:
-        """Borner avant de filtrer rend l'absorption fausse ET non déterministe.
+        """Bounding before filtering makes absorption wrong AND non-deterministic.
 
-        Le `UNION ALL` n'a pas d'`ORDER BY` : un `LIMIT` posé avant le filtre
-        laisse Postgres rendre un lot arbitraire, qui peut être entièrement
-        contesté. Les lignes légitimes ne sont alors jamais absorbées — en
-        silence, et différemment d'un appel à l'autre.
+        The `UNION ALL` has no `ORDER BY`: a `LIMIT` placed before the filter
+        lets Postgres return an arbitrary batch, which can be entirely contested.
+        The legitimate rows are then never absorbed — silently, and differently
+        from one call to the next.
         """
         session, statements = _session(_two_stage_router(window_moved=[uuid4()]))
         await _outcome(session)

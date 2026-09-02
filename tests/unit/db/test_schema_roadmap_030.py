@@ -1,4 +1,4 @@
-"""Unit tests for migration 030 — roadmap curée (spec 2026-07-04).
+"""Unit tests for migration 030 — curated roadmap (spec 2026-07-04).
 
 Covers:
 1. features.merged_into declared in tables.py (UUID nullable, FK self-ref).
@@ -36,7 +36,7 @@ class TestFeaturesMergedInto:
         assert len(fks) == 1
         assert fks[0].column.table.name == "features"
         assert fks[0].column.name == "id"
-        # Jamais de DELETE sur features → pas d'ON DELETE sur ce FK.
+        # Never a DELETE on features → no ON DELETE on this FK.
         assert fks[0].ondelete is None
 
 
@@ -122,10 +122,10 @@ class TestMigration030Structure:
         assert "REFERENCES features(id)" in content
 
     def test_no_check_clause_constrains_merged_into(self) -> None:
-        """Gotcha postgres-check-vs-on-delete-set-null : merged_into jamais dans un CHECK.
+        """postgres-check-vs-on-delete-set-null gotcha: merged_into never in a CHECK.
 
-        On inspecte le CONTENU des clauses CHECK (...) — pas le texte
-        environnant, sinon les commentaires déclenchent des faux positifs.
+        We inspect the CONTENT of the CHECK (...) clauses — not the surrounding
+        text, otherwise comments trigger false positives.
         """
         import re
 
@@ -133,7 +133,7 @@ class TestMigration030Structure:
             assert "merged_into" not in m.group(1).lower(), m.group(0)
 
     def test_no_check_constraint_on_features_table_declaration(self) -> None:
-        """tables.py : aucune CheckConstraint de features ne référence merged_into."""
+        """tables.py: no CheckConstraint of features references merged_into."""
         from brain_v42.db.tables import features
 
         for c in features.constraints:
@@ -154,15 +154,15 @@ class TestMigration030Structure:
         assert "DROP COLUMN IF EXISTS merged_into" in content
 
     def test_downgrade_updates_archived_before_restoring_check(self) -> None:
-        """L'UPDATE archived→research doit précéder l'ADD CONSTRAINT restauré."""
+        """The archived→research UPDATE must precede the restored ADD CONSTRAINT."""
         downgrade_src = self.content.split("def downgrade")[1]
         assert downgrade_src.index("UPDATE features SET status = 'research'") < downgrade_src.index(
             "ADD CONSTRAINT features_status_check"
         )
 
     def test_alembic_chain_links_030(self) -> None:
-        """030 reste chaînée sur 029 ; le head courant vit dans le canary
-        test_migration_heads_to_latest (031+ : apply_log, etc.)."""
+        """030 stays chained on 029; the current head lives in the
+        test_migration_heads_to_latest canary (031+: apply_log, etc.)."""
         from alembic.config import Config
         from alembic.script import ScriptDirectory
 

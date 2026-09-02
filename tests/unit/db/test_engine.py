@@ -160,7 +160,7 @@ def test_engine_uses_settings_postgres_url(mock_settings):
 
 
 def test_engine_log_masks_password(mock_settings):
-    """Le DSN loggé ne doit pas contenir le password (finding 2026-07-04)."""
+    """The logged DSN must not contain the password (finding 2026-07-04)."""
     from structlog.testing import capture_logs
 
     mock_settings.postgres_url = "postgresql+asyncpg://brain:s3cret@localhost:5433/brain"

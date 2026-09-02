@@ -1,24 +1,25 @@
-"""045 — `dream_runs.model` cesse de refuser les noms de modèles configurés.
+"""045 — `dream_runs.model` stops refusing the configured model names.
 
-Ticket `bcb5e6d8`. La colonne est un `varchar(30)` depuis
-`alembic/versions/013_dream_runs.py`. Deux des cinq modèles de phase configurés
-n'y entrent pas, et l'un des deux — `nvidia/nemotron-3-super-120b-a12b`, 33 car.
-— est le secours WET **déjà configuré** : il perdrait sa ligne le jour de la
-bascule WET, c'est-à-dire précisément le jour où l'on voudra mesurer.
+Ticket `bcb5e6d8`. The column has been a `varchar(30)` since
+`alembic/versions/013_dream_runs.py`. Two of the five configured phase models do
+not fit in it, and one of the two — `nvidia/nemotron-3-super-120b-a12b`, 33
+chars — is the **already configured** WET fallback: it would lose its row on the
+day of the WET cutover, which is precisely the day one wants to measure.
 
-Ce qui est perdu n'est pas la colonne `model` : c'est la LIGNE `dream_runs`
-entière. `StringDataRightTruncation` remonte dans un `except Exception`
-best-effort qui imprime `! warning: could not record dream_run` et continue. Une
-nuit qui a réellement tourné n'aurait aucune trace.
+What is lost is not the `model` column: it is the whole `dream_runs` ROW.
+`StringDataRightTruncation` surfaces inside a best-effort `except Exception`
+that prints `! warning: could not record dream_run` and continues. A night that
+really ran would leave no trace at all.
 
-Le canary du 2026-08-16 rend ce préalable DUR et non plus prudentiel : les deux
-seuls candidats vivants pour remplacer le primaire DRY mort font 34 et 37 car.
+The canary of 2026-08-16 makes this precondition HARD rather than prudential:
+the only two live candidates to replace the dead DRY primary are 34 and 37 chars.
 
-PORTÉE DE CE FICHIER. Le test de `tables.py` ci-dessous est DOCUMENTAIRE et il
-ne faut pas le vendre autrement : l'écrivain réel est un INSERT en SQL brut, où
-la longueur déclarée dans la metadata SQLAlchemy n'a aucun rôle à l'exécution.
-Élargir `tables.py` sans appliquer la migration donnerait un vert local sur une
-production toujours en `varchar(30)`. Seule la révision mesurée en base fait foi.
+SCOPE OF THIS FILE. The `tables.py` test below is DOCUMENTARY and must not be
+sold as anything else: the real writer is a raw SQL INSERT, where the length
+declared in the SQLAlchemy metadata plays no role at execution time. Widening
+`tables.py` without applying the migration would give a green locally against a
+production still on `varchar(30)`. Only the revision measured in the database is
+authoritative.
 """
 
 from __future__ import annotations
@@ -30,14 +31,14 @@ ROOT = Path(__file__).parents[3]
 MIGRATION = ROOT / "alembic" / "versions" / "045_dream_run_model_width.py"
 DREAM_SH = ROOT / "scripts" / "dream.sh"
 
-# La largeur visée. 120 et non « la plus longue + marge » : un nombre rond
-# survit au prochain nom de modèle sans redemander une migration.
+# The target width. 120 and not "the longest + margin": a round number survives
+# the next model name without asking for another migration.
 TARGET_WIDTH = 120
 PREVIOUS_WIDTH = 30
 
 
 def _load_migration_module() -> object:
-    """Charger la révision par chemin : `alembic/versions` n'est pas un package."""
+    """Load the revision by path: `alembic/versions` is not a package."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location("migration_045", MIGRATION)
@@ -48,7 +49,7 @@ def _load_migration_module() -> object:
 
 
 def _declared_model_width() -> int:
-    """Longueur déclarée pour `dream_runs.model` dans la metadata."""
+    """Length declared for `dream_runs.model` in the metadata."""
     from brain_v42.db.tables import dream_runs
 
     length = dream_runs.c.model.type.length
@@ -57,12 +58,12 @@ def _declared_model_width() -> int:
 
 
 def _rail_models() -> list[str]:
-    """Modèles de RAIL, lus dans `dream.sh` — jamais retapés.
+    """RAIL models, read from `dream.sh` — never retyped.
 
-    Le fil du ticket le demande explicitement : `configured_models()` n'énumère
-    que les cinq modèles de phase, aucun modèle de rail (codex, agy, claude).
-    Une garde qui ne lirait que l'inventaire de phase resterait aveugle à un
-    futur nom de rail long — exactement le mode de panne que la 045 ferme.
+    The ticket thread asks for this explicitly: `configured_models()` enumerates
+    only the five phase models, no rail model (codex, agy, claude). A guard
+    reading only the phase inventory would stay blind to a future long rail name
+    — exactly the failure mode 045 closes.
     """
     source = DREAM_SH.read_text(encoding="utf-8")
     pattern = re.compile(
@@ -89,10 +90,10 @@ def test_migration_045_chains_from_044() -> None:
 
 
 def test_migration_045_widens_the_model_column_and_can_narrow_it_back() -> None:
-    """Lire les largeurs réelles du module, pas leur orthographe dans le source.
+    """Read the module's real widths, not how they are spelled in the source.
 
-    Une assertion textuelle sur `length=120` casserait sur une constante nommée
-    — c'est-à-dire sur une écriture meilleure que celle qu'elle impose.
+    A textual assertion on `length=120` would break on a named constant — that
+    is, on a better piece of writing than the one it imposes.
     """
     module = _load_migration_module()
 
@@ -102,7 +103,7 @@ def test_migration_045_widens_the_model_column_and_can_narrow_it_back() -> None:
 
 
 def test_migration_045_touches_only_the_model_column() -> None:
-    """Une migration de largeur n'ajoute rien, ne supprime rien, ne remplit rien."""
+    """A width migration adds nothing, drops nothing, fills nothing."""
     source = MIGRATION.read_text(encoding="utf-8")
 
     assert "op.add_column" not in source
@@ -111,10 +112,10 @@ def test_migration_045_touches_only_the_model_column() -> None:
 
 
 def test_migration_045_downgrade_refuses_to_truncate_existing_rows() -> None:
-    """Rétrécir en silence effacerait la preuve que la colonne existe pour porter.
+    """Shrinking silently would erase the proof that the column exists to carry.
 
-    Postgres refuse déjà un `varchar(30)` sur une valeur de 34 car. — la
-    migration doit le dire au lieu de laisser remonter une erreur de driver nue.
+    Postgres already refuses a `varchar(30)` for a 34-char value — the migration
+    must say so instead of letting a bare driver error surface.
     """
     source = MIGRATION.read_text(encoding="utf-8")
 
@@ -123,33 +124,34 @@ def test_migration_045_downgrade_refuses_to_truncate_existing_rows() -> None:
 
 
 def test_migration_045_drops_and_recreates_the_view_that_blocks_the_alter() -> None:
-    """Mesuré en production le 2026-08-16, pas anticipé : l'ALTER est refusé.
+    """Measured in production on 2026-08-16, not anticipated: the ALTER is refused.
 
         FeatureNotSupportedError: cannot alter type of a column used by a view
         DETAIL: rule _RETURN on view codex_dream_run_v1 depends on column "model"
 
-    Postgres refuse de retyper une colonne qu'une vue projette. La vue doit
-    tomber avant, et revenir après — dans les deux sens de la migration.
+    Postgres refuses to retype a column a view projects. The view must drop
+    before, and come back after — in both directions of the migration.
     """
     source = MIGRATION.read_text(encoding="utf-8")
     module = _load_migration_module()
 
-    # Les deux sens : monter et redescendre butent sur la même vue.
+    # Both directions: upgrade and downgrade hit the same view.
     assert source.count("DROP VIEW IF EXISTS codex_dream_run_v1") == 2
     assert source.count("op.execute(_DREAM_RUN_VIEW_SQL)") == 2
 
-    # Un DROP VIEW emporte ses GRANT : `codex_ro` doit être re-servi des deux
-    # côtés, sinon la vue revient sans lecteur et la panne se lit côté client.
+    # A DROP VIEW takes its GRANTs with it: `codex_ro` must be re-served on both
+    # sides, otherwise the view comes back with no reader and the failure is read
+    # on the client side.
     assert module._GRANT_SQL == "GRANT SELECT ON codex_dream_run_v1 TO codex_ro"
     assert source.count("op.execute(_GRANT_SQL)") == 2
 
 
 def test_migration_045_reuses_the_036_definition_instead_of_retyping_the_view() -> None:
-    """Recopier le SELECT ferait de la 045 une seconde source de vérité.
+    """Copying the SELECT would make 045 a second source of truth.
 
-    Le contrat codex est gardé par `test_codex_contract_views_036.py`. Une vue
-    recréée à la main dériverait de lui au premier oubli de colonne, et la
-    dérive ne serait visible que côté codex, en lecture.
+    The codex contract is guarded by `test_codex_contract_views_036.py`. A view
+    recreated by hand would drift from it at the first forgotten column, and the
+    drift would be visible only on the codex side, at read time.
     """
     source = MIGRATION.read_text(encoding="utf-8")
 
@@ -163,10 +165,10 @@ def test_migration_045_reuses_the_036_definition_instead_of_retyping_the_view() 
 
 
 def test_declared_width_holds_every_configured_model() -> None:
-    """Garde DOCUMENTAIRE : l'inventaire est lu, jamais recopié.
+    """DOCUMENTARY guard: the inventory is read, never copied.
 
-    Une liste retapée ici dériverait de la configuration réelle et rendrait un
-    vert sur des modèles que plus personne n'appelle (learning 93dc2ec2).
+    A list retyped here would drift from the real configuration and would go
+    green on models nobody calls any more (learning 93dc2ec2).
     """
     declared = _declared_model_width()
     for model in _all_configured_models():
@@ -176,10 +178,10 @@ def test_declared_width_holds_every_configured_model() -> None:
 
 
 def test_the_two_sqlite_mirrors_do_not_drift_from_tables_py() -> None:
-    """Les miroirs de test se re-déclarent à la main : ils peuvent rester en 30.
+    """Test mirrors are re-declared by hand: they can stay at 30.
 
-    Un miroir resté étroit ferait passer un test sur une contrainte que la
-    production n'a plus — le faux vert dans l'autre sens.
+    A mirror left narrow would pass a test against a constraint production no
+    longer has — the false green in the other direction.
     """
     declared = _declared_model_width()
     mirrors = (

@@ -1,16 +1,16 @@
-"""Migration 049 — la série du sweep, le rail sous-déclaré, deux mots de vocabulaire.
+"""Migration 049 — the sweep series, the under-declared rail, two vocabulary words.
 
-Un regroupement sous le critère (c) de la décision signée 9d22bc6a : trois
-objets d'une même famille (ADD COLUMN nullable + élargissement de CHECK) dont
-les downgrades échouent INDÉPENDAMMENT — c'est cette indépendance, testée ici,
-qui rend la tête multi-objets légitime. M-C (checkpoint) n'y entre pas : son
-approbation produit de livraison est encore due (d04dc588). M-D reste isolée
-et prend la tête suivante.
+A grouping under criterion (c) of signed decision 9d22bc6a: three objects of one
+family (nullable ADD COLUMN + CHECK widening) whose downgrades fail
+INDEPENDENTLY — it is that independence, tested here, that makes the
+multi-object head legitimate. M-C (checkpoint) does not join it: its delivery
+product approval is still due (d04dc588). M-D stays isolated and takes the next
+head.
 
-Gabarit statique de la 045 : ces tests lisent le fichier de migration — ils
-prouvent sa FORME (chaîne, idempotence, refus nommés), pas son exécution ;
-l'exécution est prouvée par la suite d'intégration, qui applique la chaîne
-entière sur brain_test à chaque run.
+The static template of 045: these tests read the migration file — they prove its
+SHAPE (chain, idempotence, named refusals), not its execution; execution is
+proven by the integration suite, which applies the whole chain against
+brain_test on every run.
 """
 
 from __future__ import annotations
@@ -37,14 +37,14 @@ def test_migration_049_chains_from_048() -> None:
 
 
 def test_the_pin_moves_in_the_same_commit() -> None:
-    """La règle du couloir : migration et pin voyagent ensemble, jamais séparés."""
+    """The corridor rule: migration and pin travel together, never apart."""
     assert '_REQUIRED_ALEMBIC_HEAD = "049"' in PIN.read_text(encoding="utf-8")
 
 
 def test_both_columns_are_added_idempotently_and_nullable() -> None:
-    """Rejouable À LA MAIN (gabarit 048) : quelqu'un rejouera ces lignes pendant
-    la bascule. Et nullable sans défaut — NULL veut dire « écrit avant la 049 »,
-    jamais backfillé : un zéro rétroactif mentirait sur des nuits non comptées."""
+    """Replayable BY HAND (048 template): someone will replay these lines during
+    the cutover. And nullable without a default — NULL means "written before
+    049", never backfilled: a retroactive zero would lie about uncounted nights."""
     text = _text()
     assert "ADD COLUMN IF NOT EXISTS closed_inactive_count INTEGER" in text
     assert "ADD COLUMN IF NOT EXISTS thinking_tokens INTEGER" in text
@@ -62,8 +62,8 @@ def test_the_vocabulary_gains_exactly_two_words_on_all_six_tables() -> None:
 
 
 def test_tables_py_mirrors_the_extended_vocabulary() -> None:
-    """La métadonnée applicative et la base doivent dire le MÊME vocabulaire —
-    la 041 a atterri un jour sans que rien ne le signale, plus jamais."""
+    """The application metadata and the database must speak the SAME vocabulary —
+    041 landed one day with nothing flagging it; never again."""
     tables = TABLES.read_text(encoding="utf-8")
     extended = (
         "freshness_source IS NULL OR freshness_source IN "
@@ -75,9 +75,9 @@ def test_tables_py_mirrors_the_extended_vocabulary() -> None:
 
 
 def test_the_downgrade_carries_three_independent_named_refusals() -> None:
-    """C'est l'indépendance des refus qui a rendu le regroupement légitime
-    (9d22bc6a, critère (c)) : trois destructions, trois opt-ins NOMMÉS, trois
-    blocs DO séparés — jamais un drapeau générique qui se recopie sans relire."""
+    """It is the independence of the refusals that made the grouping legitimate
+    (9d22bc6a, criterion (c)): three destructions, three NAMED opt-ins, three
+    separate DO blocks — never a generic flag that gets copied without rereading."""
     text = _text()
     for opt_in in (
         "allow_sweep_series_downgrade",
@@ -90,10 +90,10 @@ def test_the_downgrade_carries_three_independent_named_refusals() -> None:
 
 
 def test_the_vocabulary_downgrade_nulls_before_restoring_the_old_check() -> None:
-    """Re-poser le CHECK de la 043 contre des lignes qui portent les valeurs
-    nouvelles échouerait tout court. L'opt-in les remet à NULL — une provenance
-    ABSENTE se voit, une provenance effacée en silence se croit (les mots de la
-    043) — puis seulement restaure l'ancien vocabulaire."""
+    """Re-applying 043's CHECK against rows carrying the new values would simply
+    fail. The opt-in resets them to NULL — a MISSING provenance is visible, a
+    silently erased one is believed (043's own words) — and only then restores
+    the old vocabulary."""
     text = _text()
     assert "SET freshness_source = NULL" in text
     restore_at = text.rfind("_SOURCES_BEFORE")
@@ -102,9 +102,9 @@ def test_the_vocabulary_downgrade_nulls_before_restoring_the_old_check() -> None
 
 
 def test_the_thinking_column_is_fed_separately_never_summed() -> None:
-    """Le point du ticket 76e11c9f : additionner le thinking à output_tokens
-    rendrait les rails incomparables dans l'autre sens. Colonne séparée,
-    alimentée par le seul rail qui la mesure, NULL partout ailleurs."""
+    """The point of ticket 76e11c9f: adding thinking to output_tokens would make
+    the rails incomparable in the other direction. A separate column, fed by the
+    only rail that measures it, NULL everywhere else."""
     parser = (ROOT / "src" / "brain_v42" / "metrics" / "agy_dream_parser.py").read_text(
         encoding="utf-8"
     )

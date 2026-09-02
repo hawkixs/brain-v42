@@ -48,8 +48,8 @@ def test_brain_sessions_table_contract() -> None:
         "last_heartbeat_at",
         "ended_at",
         "updated_at",
-        # Migration 046 — identité de session et nature. Ensemble FERMÉ : c'est
-        # ce qui rend tout ajout de colonne délibéré plutôt que silencieux.
+        # Migration 046 — session identity and nature. A CLOSED set: that is
+        # what makes any column addition deliberate rather than silent.
         "started_by_actor",
         "last_observed_at",
         "intent",
@@ -96,14 +96,14 @@ def test_brain_sessions_table_contract() -> None:
     terminal_sql = str(terminal_constraint.sqltext).lower()
     assert "summary is not null" in terminal_sql
     assert "next_focus is not null" in terminal_sql
-    # La 047 a retiré le XOR de fermeture : `nothing_to_capture_reason` n'est
-    # plus jamais EXIGÉE, seulement non blanche SI donnée. L'ancien pin
-    # (`is not null`) cimentait la divergence create_all()↔prod du ticket
-    # 8f59f6b7 ; la parité réelle est jouée contre la chaîne alembic par
+    # 047 removed the closing XOR: `nothing_to_capture_reason` is never
+    # REQUIRED any more, only non-blank IF given. The old pin (`is not null`)
+    # cemented the create_all()↔production divergence of ticket 8f59f6b7; real
+    # parity is played against the alembic chain by
     # tests/integration/db/test_fresh_head_is_the_yardstick.py.
     assert "nothing_to_capture_reason is not null" not in terminal_sql
     assert "btrim(nothing_to_capture_reason) <> ''" in terminal_sql
-    # La branche `closed_inactive` de la 046, absente jusqu'au même ticket.
+    # The `closed_inactive` branch of 046, absent until that same ticket.
     assert "status = 'closed_inactive'" in terminal_sql
     assert "abandonment_reason is not null" in terminal_sql
 
