@@ -1,23 +1,23 @@
-"""Le teardown d'intégration ne purge que ce qui porte le préfixe ``integ-``.
+"""The integration teardown only purges what carries the ``integ-`` prefix.
 
-Ticket adfc24eb. Mesuré le 2026-08-10 sur ``brain_test`` : 159 learnings sous
-``project_key='brain-v42'``, toutes portant ``topic='sujet'`` — donc 100 % issues de
-``tests/integration/dream/test_promote_prepare_provenance.py``, qui semait sous une clé
-de PRODUCTION que le prédicat de purge ne matche pas. Sous ``integ%`` : zéro ligne. La
-purge fait exactement ce qu'elle vise ; elle ne vise pas assez large.
+Ticket adfc24eb. Measured on 2026-08-10 on ``brain_test``: 159 learnings under
+``project_key='brain-v42'``, all carrying ``topic='sujet'`` — hence 100 % coming from
+``tests/integration/dream/test_promote_prepare_provenance.py``, which seeded under a
+PRODUCTION key the purge predicate does not match. Under ``integ%``: zero rows. The
+purge does exactly what it aims at; it does not aim widely enough.
 
-CE QUE LE TICKET SE TROMPE, et il faut le dire : il désigne
-``test_real_content_edit_readmits_the_candidate`` comme victime. C'était vrai le
-2026-08-06. Le commit 508439d2 du 08-08 a basculé l'``ORDER BY`` de ``promote_prepare``
-de ``access_count`` vers ``access_count_human``, ce qui inverse le classement. Avec le
-code d'aujourd'hui c'est ``test_human_reads_mature_a_learning`` (acch=4) qui sera évincé,
-et le premier (acch=9) est rang 1 et ne tombera jamais. Écrire la reproduction depuis la
-prose du ticket viserait le seul test qui ne peut pas casser.
+WHERE THE TICKET IS WRONG, and it must be said: it designates
+``test_real_content_edit_readmits_the_candidate`` as the victim. That was true on
+2026-08-06. Commit 508439d2 of 08-08 switched ``promote_prepare``'s ``ORDER BY`` from
+``access_count`` to ``access_count_human``, which inverts the ranking. With today's code
+it is ``test_human_reads_mature_a_learning`` (acch=4) that will be evicted, and the
+first (acch=9) is rank 1 and will never fall. Writing the reproduction from the
+ticket's prose would target the one test that cannot break.
 
-CE QU'ON NE FERA JAMAIS : ajouter ``DELETE FROM learnings WHERE project_key='brain-v42'``
-au teardown. Le garde-fou du conftest ne refuse que le NOM de base ``brain`` ; un
-``BRAIN_V42_TEST_DB_URL`` pointé sur une restauration effacerait les learnings réels du
-projet. La correction est en amont — des clés uniques — pas en aval.
+WHAT WE WILL NEVER DO: add ``DELETE FROM learnings WHERE project_key='brain-v42'`` to
+the teardown. The conftest's guardrail only refuses the database NAME ``brain``; a
+``BRAIN_V42_TEST_DB_URL`` pointed at a restoration would erase the project's real
+learnings. The fix is upstream — unique keys — not downstream.
 """
 
 from __future__ import annotations
@@ -55,11 +55,11 @@ async def _seed(session, project_key: str, *, access_count_human: int, age_days:
 
 @pytest.mark.asyncio
 async def test_each_promote_test_gets_its_own_project_key() -> None:
-    """Le témoin DIRECT de l'hermétisme, sans base.
+    """The DIRECT witness of hermeticity, with no database.
 
-    Il retombe si quelqu'un revient à une constante partagée, même en gardant le
-    préfixe ``integ-`` : le préfixe règle la purge, l'unicité règle le couplage
-    entre tests d'un même run.
+    It falls if someone goes back to a shared constant, even while keeping the
+    ``integ-`` prefix: the prefix governs the purge, uniqueness governs the coupling
+    between tests of the same run.
     """
     assert make_promote_project_key() != make_promote_project_key()
 
@@ -86,11 +86,11 @@ async def test_the_promote_fixture_key_is_actually_purged(engine, db_session) ->
 
 @pytest.mark.asyncio
 async def test_the_purge_leaves_a_non_integration_key_alone(engine, db_session) -> None:
-    """La sonde NÉGATIVE de la purge, et le garde-fou du correctif dangereux.
+    """The purge's NEGATIVE probe, and the guardrail against the dangerous fix.
 
-    Elle est verte dès l'écriture — ce n'est pas un RED. Sa raison d'être est
-    d'échouer le jour où quelqu'un élargit le prédicat pour « nettoyer aussi
-    brain-v42 » et efface des données réelles.
+    It is green from the moment it is written — this is not a RED. Its reason to
+    exist is to fail the day someone widens the predicate to "also clean brain-v42"
+    and erases real data.
     """
     key = f"notinteg-{uuid.uuid4().hex[:8]}"
     learning_id = await _seed(db_session, key, access_count_human=1, age_days=1)
@@ -119,12 +119,12 @@ async def test_the_purge_leaves_a_non_integration_key_alone(engine, db_session) 
 async def test_accumulated_survivors_do_not_evict_a_freshly_matured_row(
     engine, db_session, session_factory
 ) -> None:
-    """La reproduction du VRAI mode de panne — le seul test qui prouve l'utilité.
+    """The reproduction of the REAL failure mode — the only test that proves the point.
 
-    Dix survivants acch=9 laissés par dix runs antérieurs, puis une ligne acch=4
-    fraîchement mûrie. Avec la clé partagée, ``ORDER BY access_count_human DESC``
-    et ``LIMIT 10`` rendent les dix vieux et la nouvelle est au rang onze : le test
-    qui la cherche échoue, sans que rien n'ait changé dans le code de production.
+    Ten acch=9 survivors left by ten earlier runs, then a freshly matured acch=4 row.
+    With the shared key, ``ORDER BY access_count_human DESC`` and ``LIMIT 10`` return
+    the ten old ones and the new one is at rank eleven: the test looking for it fails,
+    with nothing having changed in the production code.
     """
     from scripts.dream.promote_prepare import fetch_candidates
 
@@ -133,9 +133,9 @@ async def test_accumulated_survivors_do_not_evict_a_freshly_matured_row(
         await _seed(db_session, old_key, access_count_human=9, age_days=30)
 
     new_key = make_promote_project_key()
-    # 8 jours, pas 1 : le filtre exige (NOW() - created_at) >= 7 jours. « Fraîche »
-    # veut dire fraîchement MÛRIE — elle vient de franchir le seuil de lectures
-    # humaines — pas fraîchement créée.
+    # 8 days, not 1: the filter requires (NOW() - created_at) >= 7 days. "Fresh"
+    # means freshly MATURED — it has just crossed the human-read threshold — not
+    # freshly created.
     await _seed(db_session, new_key, access_count_human=4, age_days=8)
     await db_session.commit()
 
