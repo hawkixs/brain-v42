@@ -1,22 +1,22 @@
-"""Le signal humain doit ARRIVER jusqu'au modèle, pas seulement exister en base.
+"""The human signal must REACH the model, not merely exist in the database.
 
-`decay_human_signal_enabled` a été livré comme un interrupteur entre le signal
-machine et le signal humain. Mesuré le 2026-08-22, c'était un interrupteur entre
-le signal machine et **RIEN** : `brain_service` lit
-`getattr(entity, "access_count_human", 0)` sur un modèle **Pydantic** qui ne
-déclarait pas le champ, donc le `getattr` tombait toujours sur son défaut. Le
-DecayFlusher, lui, lit les vraies colonnes en SQLAlchemy Core. Armer le drapeau
-aurait fait **diverger les deux chemins** : l'un sur une constante, l'autre sur
-la donnée.
+`decay_human_signal_enabled` was shipped as a switch between the machine signal
+and the human signal. Measured on 2026-08-22, it was a switch between the machine
+signal and **NOTHING**: `brain_service` reads
+`getattr(entity, "access_count_human", 0)` on a **Pydantic** model that did not
+declare the field, so the `getattr` always fell back on its default. The
+DecayFlusher, for its part, reads the real columns in SQLAlchemy Core. Arming the
+flag would have made **the two paths diverge**: one on a constant, the other on
+the data.
 
-**POURQUOI CE TEST EST EN INTÉGRATION, ET PAS UNITAIRE.**
-`tests/unit/test_decay_human_signal.py` fabrique un `SimpleNamespace` portant les
-deux attributs, puis recopie la logique de production dans le corps du test. Il
-prouve la FORME du code et rien d'autre — c'est lui qui a masqué ce défaut
-pendant tout le chantier. **Un test qui construit lui-même l'objet qu'il vérifie
-ne prouve rien sur le chemin réel.** Ici l'objet vient d'une VRAIE ligne, lue par
-le VRAI dépôt, hydratée par le VRAI modèle. C'est la seule forme qui pouvait
-détecter le défaut, et c'est la seule qui le gardera fermé.
+**WHY THIS TEST IS AN INTEGRATION TEST, AND NOT A UNIT TEST.**
+`tests/unit/test_decay_human_signal.py` builds a `SimpleNamespace` carrying both
+attributes, then copies the production logic into the test body. It proves the
+code's SHAPE and nothing else — it is the one that masked this defect for the whole
+workstream. **A test that builds the object it verifies itself proves nothing about
+the real path.** Here the object comes from a REAL row, read by the REAL
+repository, hydrated by the REAL model. It is the only form that could have
+detected the defect, and the only one that will keep it closed.
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ from brain_v42.repositories.pg_learning import PgLearningRepo
 pytestmark = pytest.mark.integration
 
 _PROJECT = "integ-decay-human-signal"
-#: Deux valeurs volontairement DIFFÉRENTES des compteurs machine : si le modèle
-#: retombait sur le total, ou sur un défaut, l'assert le verrait.
+#: Two values deliberately DIFFERENT from the machine counters: if the model fell
+#: back on the total, or on a default, the assert would see it.
 _HUMAN_COUNT = 3
 _MACHINE_COUNT = 400
 _HUMAN_RECENCY = dt.datetime(2026, 2, 1, tzinfo=dt.UTC)
@@ -43,7 +43,7 @@ _MACHINE_RECENCY = dt.datetime(2026, 8, 10, tzinfo=dt.UTC)
 
 @pytest.fixture
 async def seeded_learning_id(db_session) -> uuid.UUID:
-    """Écrire une vraie ligne portant les quatre compteurs, et rendre son id."""
+    """Write a real row carrying the four counters, and return its id."""
     row_id = uuid.uuid4()
     await db_session.execute(
         sa.insert(learnings).values(
@@ -65,14 +65,14 @@ class TestTheHumanSignalReachesTheModel:
     async def test_get_by_id_carries_both_human_columns(
         self, session_factory, seeded_learning_id: uuid.UUID
     ) -> None:
-        """Le chemin de lecture unitaire — RETURNING */projection complète."""
+        """The single-read path — RETURNING */full projection."""
         learning = await PgLearningRepo(session_factory).get_by_id(seeded_learning_id)
 
         assert learning is not None
         assert learning.access_count_human == _HUMAN_COUNT
         assert learning.last_accessed_at_human == _HUMAN_RECENCY
-        # TÉMOIN NÉGATIF, dans le test lui-même : sans lui, un modèle qui
-        # recopierait le compteur TOTAL dans le champ humain passerait.
+        # NEGATIVE WITNESS, inside the test itself: without it, a model copying the
+        # TOTAL counter into the human field would pass.
         assert learning.access_count == _MACHINE_COUNT
         assert learning.last_accessed_at == _MACHINE_RECENCY
         assert learning.access_count_human != learning.access_count
@@ -81,12 +81,12 @@ class TestTheHumanSignalReachesTheModel:
     async def test_search_path_carries_both_human_columns(
         self, session_factory, seeded_learning_id: uuid.UUID
     ) -> None:
-        """Le chemin qui compte VRAIMENT : c'est lui qui alimente le decay.
+        """The path that REALLY matters: it is the one that feeds the decay.
 
-        `_search_columns()` projette toutes les colonnes sauf `embedding` et
-        `search_vector`, donc la donnée arrivait déjà dans la LIGNE. Elle était
-        jetée par Pydantic, faute de champ déclaré. Ce test épingle la jonction
-        exacte où elle se perdait.
+        `_search_columns()` projects every column except `embedding` and
+        `search_vector`, so the data already arrived in the ROW. It was thrown away
+        by Pydantic, for lack of a declared field. This test pins the exact junction
+        where it was lost.
         """
         repo = PgLearningRepo(session_factory)
         rows = await repo.list_all(project_key=_PROJECT, limit=10)
@@ -102,13 +102,13 @@ class TestBothPathsReadTheSameValue:
     async def test_flusher_columns_and_model_fields_agree(
         self, db_session, session_factory, seeded_learning_id: uuid.UUID
     ) -> None:
-        """La divergence est le vrai danger, pas l'absence.
+        """Divergence is the real danger, not absence.
 
-        Le DecayFlusher lit `table.c.access_count_human` en Core ; le service lit
-        `entity.access_count_human` en Pydantic. Tant que le modèle ne portait
-        pas le champ, armer le drapeau donnait DEUX valeurs pour une même entité
-        — une constante d'un côté, la donnée de l'autre. Ce test compare les deux
-        lectures sur la même ligne, par les deux chemins réels.
+        The DecayFlusher reads `table.c.access_count_human` in Core; the service
+        reads `entity.access_count_human` in Pydantic. As long as the model did not
+        carry the field, arming the flag gave TWO values for one entity — a constant
+        on one side, the data on the other. This test compares both readings on the
+        same row, through both real paths.
         """
         core_row = (
             (
@@ -131,15 +131,14 @@ class TestBothPathsReadTheSameValue:
 
 
 class TestThePlanPathCarriesTheParentHumanSignal:
-    """Les plans sont le SIXIÈME type suivi par le decay, et le seul asymétrique.
+    """Plans are the SIXTH type tracked by the decay, and the only asymmetric one.
 
-    Seul le PARENT (`indexed_plans`) porte les colonnes humaines ; les chunks ne
-    les ont pas (vérifié dans `tables.py`). Le chemin machine le sait déjà et
-    substitue les compteurs du parent (`brain_service`, branche `t == "plan"`).
-    La branche humaine, elle, lisait l'attribut sur le CHUNK — introuvable, donc
-    `0` et `None` **pour tout plan, toujours**. Ce n'était pas seulement une
-    divergence d'avec le flusher : c'était structurellement inatteignable sans
-    la jointure parent.
+    Only the PARENT (`indexed_plans`) carries the human columns; the chunks do not
+    (verified in `tables.py`). The machine path already knows that and substitutes
+    the parent's counters (`brain_service`, the `t == "plan"` branch). The human
+    branch, for its part, read the attribute on the CHUNK — not found, hence `0` and
+    `None` **for every plan, always**. It was not merely a divergence from the
+    flusher: it was structurally unreachable without the parent join.
     """
 
     @pytest.fixture
@@ -174,9 +173,9 @@ class TestThePlanPathCarriesTheParentHumanSignal:
                 project_key=_PROJECT,
                 plan_type="plan",
                 status="active",
-                # `search_vector` n'est PAS une colonne générée sur les chunks :
-                # sans la poser, le `@@` du FTS ne matche rien et le test
-                # rougirait pour une raison qui n'est pas celle qu'il vise.
+                # `search_vector` is NOT a generated column on the chunks: without
+                # setting it, the FTS `@@` matches nothing and the test would redden
+                # for a reason other than the one it targets.
                 search_vector=sa.func.to_tsvector(
                     "english",
                     "Le signal humain du plan vient du parent, jamais du chunk.",
@@ -202,6 +201,6 @@ class TestThePlanPathCarriesTheParentHumanSignal:
         chunk = chunks[0]
         assert chunk.parent_access_count_human == _HUMAN_COUNT
         assert chunk.parent_last_accessed_at_human == _HUMAN_RECENCY
-        # TÉMOIN NÉGATIF : le parent machine reste distinct du parent humain.
+        # NEGATIVE WITNESS: the machine parent stays distinct from the human parent.
         assert chunk.parent_access_count == _MACHINE_COUNT
         assert chunk.parent_access_count_human != chunk.parent_access_count
