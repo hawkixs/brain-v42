@@ -129,6 +129,20 @@ class Settings(BaseSettings):
     """Sent as ``Authorization: Bearer`` only when non-empty. Belongs in a
     private 0600 file, never in the shared .env — same doctrine as MCP_HTTP_TOKEN."""
 
+    brain_embedding_token_file: Path | None = Field(
+        default=None, validation_alias=_brain_alias("EMBEDDING_TOKEN_FILE")
+    )
+    """Path to the shim bearer, read at startup. ``None`` keeps today's contract:
+    no Authorization header at all, which is what the shim's ``optional`` census
+    mode accepts and logs.
+
+    A PATH and never a value: `systemctl show` and `docker inspect` both print an
+    environment verbatim, so a token passed that way is readable by anyone who can
+    reach the service manager or the daemon. Configured but unreadable is a named
+    startup failure, never a silent call without the header — once the shim is
+    armed to ``required``, that silence would be an outage with no cause in this
+    process's own logs."""
+
     embedding_timeout: float = Field(
         default=30.0, gt=0, validation_alias=_brain_alias("EMBEDDING_TIMEOUT")
     )

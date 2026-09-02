@@ -9,6 +9,8 @@ search-quality drift.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import structlog
 from pydantic import ValidationError
 
@@ -19,6 +21,51 @@ from brain_v42.services.rerank_wire import CohereRerankWire, RerankWire, ShimRer
 from brain_v42.services.reranker_client import RerankerClient
 
 logger = structlog.get_logger(__name__)
+
+
+class EmbeddingBearerError(RuntimeError):
+    """The shim bearer was configured and could not be used.
+
+    Raised at construction time, which is startup for all nine runtimes that go
+    through this module. Failing here rather than falling back to an unauthenticated
+    call is the whole point: the shim answers `optional` today, so a bearer-less
+    call still succeeds and would leave a misconfiguration invisible until the day
+    someone arms `required` — at which point every search stops with no clue in
+    this process's logs.
+    """
+
+
+def _resolve_shim_bearer(settings: Settings, api_key: str) -> str:
+    """The single place the shim bearer is resolved, for both clients.
+
+    Returns the token to hand to the client's existing ``api_key`` parameter, so
+    the header keeps being injected once per client rather than once per route.
+    An unconfigured file returns the caller's ``api_key`` untouched, which is how
+    the hosted-provider path and today's header-less contract both survive.
+
+    Never logs, never renders and never returns the value in an exception: the
+    only things named here are paths and the two setting names.
+    """
+    token_file = settings.brain_embedding_token_file
+    if token_file is None:
+        return api_key
+    if api_key:
+        raise EmbeddingBearerError(
+            "two sources for one Authorization header: "
+            "brain_embedding_token_file is set and an api key is configured; "
+            "clear one of them"
+        )
+    path = Path(token_file)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise EmbeddingBearerError(
+            f"embedding bearer file {path} cannot be read: {exc.strerror}"
+        ) from exc
+    token = raw.strip()
+    if not token:
+        raise EmbeddingBearerError(f"embedding bearer file {path} is empty")
+    return token
 
 
 def settings_for_standalone_script(postgres_url: str) -> Settings:
@@ -75,7 +122,7 @@ def build_embedding_service(settings: Settings) -> GPUEmbeddingService:
         wire=wire,
         query_prefix=settings.embedding_query_prefix,
         document_prefix=settings.embedding_document_prefix,
-        api_key=settings.embedding_api_key.get_secret_value(),
+        api_key=_resolve_shim_bearer(settings, settings.embedding_api_key.get_secret_value()),
     )
 
 
@@ -96,5 +143,5 @@ def build_reranker_client(settings: Settings) -> RerankerClient:
         base_url=settings.reranker_url,
         timeout=settings.reranker_timeout,
         wire=build_rerank_wire(settings),
-        api_key=settings.rerank_api_key.get_secret_value(),
+        api_key=_resolve_shim_bearer(settings, settings.rerank_api_key.get_secret_value()),
     )
