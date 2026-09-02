@@ -802,19 +802,19 @@ class _RecordingSession:
 
 
 class TestFindSimilarSqlAssembly:
-    """Invariant portant les deux `# nosec B608` de `_find_similar`.
+    """The invariant that carries `_find_similar`'s two `# nosec B608`.
 
-    Le nosec affirme que les seuls fragments interpolés dans le SQL sont des identifiants
-    littéraux venant de `_ENTITY_TABLES`, plus un vecteur de nombres — et qu'aucune valeur
-    d'appelant (clé de projet, id d'entité, limite) n'atteint le texte de la requête. Ces
-    tests échouent si quelqu'un rend la constante dynamique ou fait entrer une entrée dans
-    la chaîne SQL, ce qui doit rouvrir le finding au lieu de le laisser muet.
+    The nosec asserts that the only fragments interpolated into the SQL are literal
+    identifiers coming from `_ENTITY_TABLES`, plus a vector of numbers — and that no
+    caller value (project key, entity id, limit) reaches the query text. These tests
+    fail if someone makes the constant dynamic or lets an input into the SQL string,
+    which must reopen the finding instead of leaving it mute.
     """
 
     def test_entity_tables_is_immutable_at_runtime(self) -> None:
-        """Ticket c623fa75 (résidu) — le test AST prouve la DÉCLARATION littérale,
-        pas l'immuabilité : une `list` module-level resterait mutable au runtime
-        sans que rien ne rougisse. Un tuple ferme ce trou."""
+        """Ticket c623fa75 (residual) — the AST test proves the literal
+        DECLARATION, not immutability: a module-level `list` would stay mutable at
+        runtime without anything reddening. A tuple closes that hole."""
         assert isinstance(_ENTITY_TABLES, tuple)
 
     def test_entity_tables_is_a_literal_constant_of_sql_identifiers(self) -> None:
@@ -896,13 +896,14 @@ class TestFindSimilarSqlAssembly:
 
 
 class TestFindSimilarLifecycleFilter:
-    """Ticket 6d2cf2a9 (a) — ne jamais proposer une cible que le résolveur refusera.
+    """Ticket 6d2cf2a9 (a) — never propose a target the resolver will refuse.
 
-    `pg_graph_ledger._resolve_endpoints` exige `lifecycle='active'` sur LES DEUX
-    ancres et lève `UnknownGraphEndpoint` sinon. `_find_similar` sélectionnait sur
-    `embedding IS NOT NULL` seul : il proposait donc des cibles archived, mesurées
-    à 408 lignes sur 14 projets le 2026-08-18. Le sélecteur doit porter le même
-    prédicat que le résolveur, sinon le désaccord se paie en connect partial.
+    `pg_graph_ledger._resolve_endpoints` requires `lifecycle='active'` on BOTH
+    anchors and raises `UnknownGraphEndpoint` otherwise. `_find_similar` selected on
+    `embedding IS NOT NULL` alone: it therefore proposed archived targets, measured
+    at 408 rows over 14 projects on 2026-08-18. The selector must carry the same
+    predicate as the resolver, otherwise the disagreement is paid for in connect
+    partials.
     """
 
     @pytest.mark.asyncio
@@ -918,7 +919,7 @@ class TestFindSimilarLifecycleFilter:
 
     @pytest.mark.asyncio
     async def test_guard_sits_inside_each_arm_never_after_the_global_limit(self) -> None:
-        """Un filtre posé après le ORDER BY global rendrait moins de lignes que `limit`."""
+        """A filter placed after the global ORDER BY would return fewer rows than `limit`."""
         session = _RecordingSession()
         linker = AutoLinker(session_factory=lambda: session, graph=None)
 
@@ -931,11 +932,11 @@ class TestFindSimilarLifecycleFilter:
     async def test_correlation_is_qualified_because_brain_entities_owns_an_id_column(
         self,
     ) -> None:
-        """`be.source_uuid = id` lierait `id` à `brain_entities.id` — jamais à la candidate.
+        """`be.source_uuid = id` would bind `id` to `brain_entities.id` — never to the candidate.
 
-        `brain_entities` porte sa propre colonne `id` (clé primaire du ledger), donc
-        un `id` nu dans la sous-requête résout vers la table INTERNE et le EXISTS
-        devient vrai pour toute ligne du ledger : le filtre ne filtrerait rien.
+        `brain_entities` carries its own `id` column (the ledger's primary key), so
+        a bare `id` in the subquery resolves to the INTERNAL table and the EXISTS
+        becomes true for every ledger row: the filter would filter nothing.
         """
         session = _RecordingSession()
         linker = AutoLinker(session_factory=lambda: session, graph=None)
@@ -965,7 +966,7 @@ class TestFindSimilarLifecycleFilter:
 
     @pytest.mark.asyncio
     async def test_lifecycle_guard_adds_no_bind_and_no_project_leak_when_unscoped(self) -> None:
-        """Le garde-fou est un littéral figé : il ne doit ni créer de bind ni citer le projet."""
+        """The guardrail is a frozen literal: it must neither create a bind nor name the project."""
         session = _RecordingSession()
         linker = AutoLinker(session_factory=lambda: session, graph=None)
 
@@ -977,12 +978,12 @@ class TestFindSimilarLifecycleFilter:
 
 
 class TestUnknownEndpointIsBucketedNotRaised:
-    """Ticket 6d2cf2a9 (c) — une pathologie de données ne doit pas tuer le lot.
+    """Ticket 6d2cf2a9 (c) — a data pathology must not kill the batch.
 
-    Le chemin scopé propage DÉLIBÉRÉMENT (graph_helpers l.59-62) pour qu'un refus
-    d'autorisation ne soit jamais avalé. `UnknownGraphEndpoint` n'est pas un refus
-    d'autorisation : c'est la donnée qui est sale. Il doit tomber dans `errors`
-    — donc rester visible en `errors=N` — sans interrompre les autres candidats.
+    The scoped path propagates DELIBERATELY (graph_helpers l.59-62) so that an
+    authorisation refusal is never swallowed. `UnknownGraphEndpoint` is not an
+    authorisation refusal: it is the data that is dirty. It must fall into `errors`
+    — hence stay visible as `errors=N` — without interrupting the other candidates.
     """
 
     @pytest.mark.asyncio
@@ -1050,9 +1051,9 @@ class TestUnknownEndpointIsBucketedNotRaised:
     async def test_scoped_authorization_refusal_still_propagates(
         self, linker, mock_graph, fake_embedding
     ) -> None:
-        """Le garde anti-régression du fix (c) : ne JAMAIS élargir le catch.
+        """Fix (c)'s anti-regression guard: NEVER widen the catch.
 
-        Si ce test devient vert avec un `except Exception`, la garde scopée est morte.
+        If this test goes green with an `except Exception`, the scoped guard is dead.
         """
         denial = DreamProjectAuthorizationError("object_not_authorized")
         authorization = MagicMock(project_key="owned-project")
@@ -1075,13 +1076,13 @@ class TestUnknownEndpointIsBucketedNotRaised:
 
 
 class TestUnknownEndpointWarnIdentifiesTheCulprit:
-    """Le WARN scopé doit nommer l'entité fautive, sinon il est incomptable.
+    """The scoped WARN must name the offending entity, otherwise it is uncountable.
 
-    Mesuré sur la nuit du 2026-08-18 : la pathologie produit des dizaines de
-    lignes par nuit. Sans identifiant, elles sont strictement interchangeables et
-    l'opérateur doit rejouer du SQL à la main pour retrouver les entités. Les ids
-    d'un chemin scopé appartiennent au projet du scope — les journaliser n'expose
-    rien que le scope ne possède déjà, contrairement à un refus d'autorisation.
+    Measured on the night of 2026-08-18: the pathology produces dozens of lines a
+    night. Without an identifier they are strictly interchangeable and the operator
+    has to replay SQL by hand to find the entities again. A scoped path's ids belong
+    to the scope's project — logging them exposes nothing the scope does not already
+    own, unlike an authorisation refusal.
     """
 
     @pytest.mark.asyncio

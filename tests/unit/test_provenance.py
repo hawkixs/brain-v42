@@ -1,4 +1,4 @@
-"""Tests de la couche de provenance — classification et contexte d'acteur."""
+"""Tests of the provenance layer — classification and actor context."""
 
 from __future__ import annotations
 
@@ -22,14 +22,14 @@ from brain_v42.provenance import (
 
 
 class TestNormalizeTransport:
-    """``Mcp-Session-Id`` frappé par le serveur, jamais par le client.
+    """``Mcp-Session-Id`` is minted by the server, never by the client.
 
-    Forme mesurée le 2026-08-10 sur mcp 1.28.1 :
-    ``streamable_http_manager.py`` fait ``uuid4().hex`` — 32 hexadécimaux
-    MINUSCULES, **sans tirets**. C'est précisément ce qui interdit de la faire
-    passer par ``normalize_session`` : cette dernière n'accepte que la forme
-    canonique tiretée, et la re-tirer injecterait dans l'espace des sessions
-    d'agent une valeur qui n'en est pas une.
+    Shape measured on 2026-08-10 on mcp 1.28.1:
+    ``streamable_http_manager.py`` does ``uuid4().hex`` — 32 LOWERCASE hex
+    characters, **without hyphens**. That is precisely what forbids passing it
+    through ``normalize_session``: the latter only accepts the canonical hyphenated
+    form, and re-hyphenating it would inject into the agent-session key space a
+    value that is not one.
     """
 
     def test_minted_form_is_accepted(self) -> None:
@@ -38,12 +38,12 @@ class TestNormalizeTransport:
         )
 
     def test_canonical_uuid_is_rejected(self) -> None:
-        # La forme tirée est celle d'une SESSION D'AGENT. L'accepter ici
-        # confondrait deux espaces de clés qui ne se joignent pas.
+        # The hyphenated form is that of an AGENT SESSION. Accepting it here would
+        # conflate two key spaces that do not join.
         assert normalize_transport("3d7a88d7-791b-45da-b8b9-75727e3c9eec") is None
 
     def test_uppercase_is_rejected(self) -> None:
-        # Deux graphies de la même valeur produiraient deux lignes de panneau.
+        # Two spellings of the same value would produce two dashboard rows.
         assert normalize_transport("0F9D2C1B3A4E5F60718293A4B5C6D7E8") is None
 
     def test_wrong_length_is_rejected(self) -> None:
@@ -60,8 +60,8 @@ class TestNormalizeTransport:
         assert normalize_transport(None) is None
 
     def test_oversized_input_is_rejected_without_scanning(self) -> None:
-        # L'en-tête est une entrée non maîtrisée : la borne doit tenir même
-        # quand l'appelant envoie un mégaoctet.
+        # The header is an untrusted input: the bound must hold even when the
+        # caller sends a megabyte.
         assert normalize_transport("a" * 1_000_000) is None
 
     def test_surrounding_whitespace_is_tolerated(self) -> None:
@@ -108,39 +108,38 @@ class TestNormalizeAgent:
 
 class TestIsHumanActor:
     def test_interactive_session_is_human(self) -> None:
-        """Le témoin HUMAIN exigé par 6878077f : fermer le trou sans casser le
-        cas légitime — un basename de projet arbitraire reste humain."""
+        """The HUMAN witness required by 6878077f: close the hole without breaking
+        the legitimate case — an arbitrary project basename stays human."""
         assert is_human_actor("red-lab") is True
         assert is_human_actor("brain_v42") is True
 
     def test_measured_machine_names_are_not_human(self) -> None:
-        """Recensement PAR SITE D'APPEL du 2026-08-29 (6878077f) — des rails
-        machine VIVANTS hors famille `dream-` comptaient humains :
+        """PER-CALL-SITE census of 2026-08-29 (6878077f) — LIVE machine rails
+        outside the `dream-` family counted as human:
 
-        - `red-shrik` : bot actif (`systemctl is-active` → active), fait du
-          `brain_search` en se déclarant par `mcp_client.py:83` ;
-        - `antigravity` : le même client, déploiement agy
-          (`deploy/agy/settings.mcp.example.json`) ;
-        - `red-lab-factory` : l'acteur que red-lab DOIT poser (a3fa6696) —
-          pré-classé pour que le correctif cross-repo n'ouvre pas le trou
-          qu'il ferme ;
-        - `pc-dev-red` : client scripté du PC dev, mesuré sur
-          `brain_ticket_list` (fil a3fa6696).
+        - `red-shrik`: an active bot (`systemctl is-active` → active), does
+          `brain_search` declaring itself through `mcp_client.py:83`;
+        - `antigravity`: the same client, agy deployment
+          (`deploy/agy/settings.mcp.example.json`);
+        - `red-lab-factory`: the actor red-lab MUST set (a3fa6696) — pre-classified
+          so that the cross-repo fix does not open the hole it closes;
+        - `pc-dev-red`: the dev PC's scripted client, measured on
+          `brain_ticket_list` (thread a3fa6696).
 
-        Des noms EXACTS, jamais un préfixe `red-` : il avalerait les basenames
-        humains (`red-games` lancé interactivement). Coût assumé, sens
-        conservateur : une session interactive lancée DEPUIS le répertoire
-        red-shrik déclare le même basename et comptera machine — l'erreur
-        coûte en couverture humaine, jamais en fausse écriture.
+        EXACT names, never a `red-` prefix: it would swallow the human basenames
+        (`red-games` launched interactively). An accepted cost, in the conservative
+        direction: an interactive session launched FROM the red-shrik directory
+        declares the same basename and will count as machine — the error costs
+        human coverage, never a false write.
         """
         for name in ("red-shrik", "antigravity", "red-lab-factory", "pc-dev-red"):
             assert is_human_actor(name) is False, name
 
     def test_the_sql_mirror_shares_the_same_constants(self) -> None:
-        """`session_derived_capture` porte un prédicat SQL « miroir de
-        provenance.is_human_actor » : deux sources de vérité qui ne divergent
-        qu'à la lecture sont le mode de panne maison — le miroir doit IMPORTER
-        les constantes, jamais les redéclarer."""
+        """`session_derived_capture` carries an SQL predicate that "mirrors
+        provenance.is_human_actor": two sources of truth that only diverge at read
+        time are the house failure mode — the mirror must IMPORT the constants,
+        never redeclare them."""
         from brain_v42.db import session_derived_capture as mirror
         from brain_v42.provenance import (
             SYSTEM_ACTOR_NAMES,
@@ -155,7 +154,7 @@ class TestIsHumanActor:
         assert is_human_actor("dream-codex-reorg") is False
 
     def test_unknown_is_not_human(self) -> None:
-        """Fail-closed : un appelant non identifié ne débloque aucune promotion."""
+        """Fail-closed: an unidentified caller unlocks no promotion."""
         assert is_human_actor(UNKNOWN_ACTOR) is False
         assert is_human_actor(None) is False
         assert is_human_actor("") is False
@@ -166,10 +165,10 @@ class TestIsHumanActor:
 
 class TestCurrentActor:
     def test_default_is_unknown(self) -> None:
-        """Contexte neuf : un ContextVar non posé rend sa valeur par défaut.
+        """A fresh context: an unset ContextVar returns its default value.
 
-        `Context()` est vide — ne PAS utiliser `get_current_actor()` nu ici, un
-        test voisin ayant déjà posé une valeur dans le contexte courant.
+        `Context()` is empty — do NOT use a bare `get_current_actor()` here, a
+        neighbouring test having already set a value in the current context.
         """
         from contextvars import Context
 
@@ -184,7 +183,7 @@ class TestCurrentActor:
         assert get_current_actor() == UNKNOWN_ACTOR
 
     async def test_value_does_not_leak_across_tasks(self) -> None:
-        """Chaque requête doit voir son propre acteur, pas celui d'une voisine."""
+        """Each request must see its own actor, not a neighbour's."""
         seen: list[str] = []
 
         async def worker(actor: str) -> None:
@@ -209,8 +208,8 @@ class TestNormalizeSession:
         assert normalize_session("brain-v42") is None
 
     def test_uppercase_uuid_is_rejected(self) -> None:
-        # Une seule forme canonique, sinon deux clients écrivant la même
-        # session sous deux casses produiraient deux lignes distinctes.
+        # A single canonical form, otherwise two clients writing the same session
+        # in two cases would produce two distinct rows.
         assert normalize_session("3D7A88D7-791B-45DA-B8B9-75727E3C9EEC") is None
 
     def test_blank_and_none_are_rejected(self) -> None:
@@ -223,10 +222,10 @@ class TestNormalizeSession:
 
 class TestCurrentSession:
     def test_default_is_none(self) -> None:
-        """Contexte neuf : un ContextVar non posé rend sa valeur par défaut.
+        """A fresh context: an unset ContextVar returns its default value.
 
-        `Context()` est vide — ne PAS utiliser `get_current_session()` nu ici, un
-        test voisin ayant déjà posé une valeur dans le contexte courant.
+        `Context()` is empty — do NOT use a bare `get_current_session()` here, a
+        neighbouring test having already set a value in the current context.
         """
         from contextvars import Context
 

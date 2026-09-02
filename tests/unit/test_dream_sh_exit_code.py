@@ -588,7 +588,7 @@ def test_full_run_with_controlled_extract_deadline_exits_zero(tmp_path: Path) ->
 def test_full_run_with_outer_guard_extract_timeout_exits_non_zero(
     tmp_path: Path,
 ) -> None:
-    """Même script, garde-fou externe (`timeout 10m`) : l'unité rougit."""
+    """Same script, external guardrail (`timeout 10m`): the unit reddens."""
     proc, main_log = _run_full_dream(tmp_path, extract_rc=124)
     assert "TIMEOUT extract (outer guard" in main_log, (
         f"le scénario n'a pas été atteint. log={main_log!r} stdout={proc.stdout!r}"

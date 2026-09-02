@@ -1,4 +1,4 @@
-"""Le middleware de provenance face à la ré-entrance du profil compact."""
+"""The provenance middleware facing the compact profile's re-entrancy."""
 
 from __future__ import annotations
 
@@ -18,12 +18,12 @@ TRANSPORT_ID = "0f9d2c1b3a4e5f60718293a4b5c6d7e8"
 
 
 class _SpyReporter:
-    """Double d'émetteur qui note ce qu'on lui passe, dans l'ordre reçu.
+    """An emitter double that records what it is given, in the order received.
 
-    ``calls`` reste un couple ``(acteur, session)`` : les assertions qui le
-    lisent épinglent l'ordre des deux positions historiques, et y greffer le
-    transport les rendrait toutes vraies pour une mauvaise raison. Le troisième
-    argument est donc noté à part.
+    ``calls`` stays a pair ``(actor, session)``: the assertions reading it pin the
+    order of the two historical positions, and grafting the transport onto it would
+    make them all true for a bad reason. The third argument is therefore recorded
+    separately.
     """
 
     def __init__(self) -> None:
@@ -42,11 +42,11 @@ class _SpyReporter:
 
 @pytest.mark.asyncio
 async def test_compact_gateway_reports_one_outermost_call() -> None:
-    """Un appel compact déclenche on_call_tool deux fois : passerelle puis
-    tool interne. La garde ne doit en retenir qu'un.
+    """A compact call triggers on_call_tool twice: the gateway then the inner
+    tool. The guard must keep only one.
 
-    Ce test DOIT simuler l'imbrication réelle. Un test qui appelle le
-    middleware deux fois à plat passerait au vert sans rien prouver.
+    This test MUST simulate the real nesting. A test calling the middleware twice
+    flat would go green without proving anything.
     """
     middleware = ProvenanceMiddleware()
 
@@ -54,7 +54,7 @@ async def test_compact_gateway_reports_one_outermost_call() -> None:
         return "inner"
 
     async def outer_call_next(_context: Any) -> str:
-        # Le tool passerelle ré-entre dans la chaîne de middlewares.
+        # The gateway tool re-enters the middleware chain.
         return await middleware.on_call_tool(object(), inner_call_next)
 
     with patch.object(ProvenanceMiddleware, "_report", autospec=True) as report:
@@ -111,25 +111,23 @@ async def test_absent_session_header_leaves_session_none() -> None:
 
 @pytest.mark.asyncio
 async def test_reporter_receives_actor_then_session_in_that_order() -> None:
-    """Le VRAI ``_report`` doit atteindre l'émetteur, chaque valeur à sa place.
+    """The REAL ``_report`` must reach the emitter, each value in its place.
 
-    Les trois tests ci-dessus remplacent ``_report`` par un mock, et les tests
-    de tests/unit/mcp/ le traversent killswitch fermé, donc
-    ``get_activity_reporter()`` rend ``None`` et le corps ne fait rien
-    d'observable. Résultat mesuré : neutraliser entièrement le corps de
-    ``_report``, ou échanger ses deux arguments, laissait la suite complète
-    verte. C'est le motif du faux témoin (learning a6e1dd1f) dans sa version
-    dure — la valeur n'est pas seulement capturée sans être relue, elle est
-    remplacée par un mock dans 100% des tests qui touchent le point
-    d'application.
+    The three tests above replace ``_report`` with a mock, and the tests in
+    tests/unit/mcp/ traverse it with the killswitch closed, so
+    ``get_activity_reporter()`` returns ``None`` and the body does nothing
+    observable. Measured result: neutralising ``_report``'s body entirely, or
+    swapping its two arguments, left the whole suite green. This is the false
+    witness pattern (learning a6e1dd1f) in its hard version — the value is not
+    merely captured without being read back, it is replaced by a mock in 100% of
+    the tests that touch the point of application.
 
-    L'échange des arguments n'est pas cosmétique : il ferait passer l'UUID de
-    session brut en position acteur sur le fil. ``normalize_agent`` côté
-    sidecar le laisserait tel quel (pas de ``${``, pas de ``/``, 36 <= 64
-    caractères) et le cockpit publierait
-    ``"id": "unattributed:<uuid>"`` — la propriété centrale de la conception,
-    « aucun identifiant brut ne sort du registre », contournée par le seul
-    chemin jamais exécuté.
+    Swapping the arguments is not cosmetic: it would put the raw session UUID in
+    the actor position on the wire. ``normalize_agent`` on the sidecar side would
+    leave it as is (no ``${``, no ``/``, 36 <= 64 characters) and the cockpit would
+    publish ``"id": "unattributed:<uuid>"`` — the design's central property, "no
+    raw identifier leaves the registry", bypassed through the one path never
+    executed.
     """
     middleware = ProvenanceMiddleware()
     spy = _SpyReporter()
@@ -152,11 +150,11 @@ async def test_reporter_receives_actor_then_session_in_that_order() -> None:
 
 @pytest.mark.asyncio
 async def test_reporter_receives_a_null_session_when_none_is_declared() -> None:
-    """Sans session déclarée, l'acteur reste en position acteur.
+    """With no declared session, the actor stays in the actor position.
 
-    Contrôle négatif du test précédent : il interdit de remplir la position
-    session avec l'acteur faute de mieux. ``None`` veut dire « pas de session
-    déclarée » et doit rester distinguable.
+    Negative control for the previous test: it forbids filling the session position
+    with the actor for want of anything better. ``None`` means "no declared
+    session" and must stay distinguishable.
     """
     middleware = ProvenanceMiddleware()
     spy = _SpyReporter()
@@ -176,12 +174,12 @@ async def test_reporter_receives_a_null_session_when_none_is_declared() -> None:
 
 @pytest.mark.asyncio
 async def test_transport_reaches_the_reporter_from_the_mcp_header() -> None:
-    """``Mcp-Session-Id`` doit traverser jusqu'à l'émetteur.
+    """``Mcp-Session-Id`` must travel through to the emitter.
 
-    Il n'y arrive pas tout seul : ``get_http_headers()`` EXCLUT
-    ``mcp-session-id`` par défaut (vérifié dans fastmcp 3.x, il figure en dur
-    dans ``exclude_headers``). Sans ``include=``, ce test resterait vert sur un
-    ``None`` — le motif du faux témoin que documente déjà ce fichier.
+    It does not get there on its own: ``get_http_headers()`` EXCLUDES
+    ``mcp-session-id`` by default (verified in fastmcp 3.x, it is hard-coded in
+    ``exclude_headers``). Without ``include=``, this test would stay green on a
+    ``None`` — the false witness pattern this file already documents.
     """
     middleware = ProvenanceMiddleware()
     spy = _SpyReporter()
@@ -198,13 +196,13 @@ async def test_transport_reaches_the_reporter_from_the_mcp_header() -> None:
 
     assert spy.transports == [TRANSPORT_ID]
     assert spy.calls == [("codex", None)], "le transport ne doit PAS occuper la place session"
-    # Le contrôle qui interdit de croire l'en-tête accessible par défaut.
+    # The control that forbids believing the header accessible by default.
     assert headers.call_args.kwargs.get("include") == {"mcp-session-id"}
 
 
 @pytest.mark.asyncio
 async def test_stateless_mode_leaves_transport_none() -> None:
-    """Sans en-tête frappé par le serveur, l'absence doit rester dicible."""
+    """With no server-minted header, the absence must stay speakable."""
     middleware = ProvenanceMiddleware()
     spy = _SpyReporter()
     set_activity_reporter(spy)  # type: ignore[arg-type]
@@ -223,11 +221,11 @@ async def test_stateless_mode_leaves_transport_none() -> None:
 
 @pytest.mark.asyncio
 async def test_client_forged_transport_is_refused_by_shape() -> None:
-    """Une valeur qui n'a pas la forme frappée par le serveur vaut ``None``.
+    """A value that lacks the server-minted shape is ``None``.
 
-    En mode sans état le serveur sert un ``mcp-session-id`` inventé par le
-    client sans le valider : la seule chose qui tienne à ce niveau est la
-    FORME. Un panneau piloté par l'appelant serait pire qu'un panneau vide.
+    In stateless mode the server serves an ``mcp-session-id`` invented by the
+    client without validating it: the only thing that holds at this level is the
+    SHAPE. A dashboard driven by the caller would be worse than an empty one.
     """
     middleware = ProvenanceMiddleware()
     spy = _SpyReporter()

@@ -745,9 +745,9 @@ async def test_index_project_counts_invalid_path_without_leaking_exception(mock_
         "chunks_created": 0,
         "failures": [{"file_path": "/safe/missing", "error_type": "PlanScanPathError:missing"}],
     }
-    # Le chemin et le CODE de raison remontent — jamais le texte de l'exception.
-    # Cette assertion étend au résultat RENDU la garantie que le test ne vérifiait
-    # jusqu'ici que sur le journal.
+    # The path and the reason CODE are surfaced — never the exception's text. This
+    # assertion extends to the RETURNED result the guarantee the test until now
+    # only checked on the log.
     assert sentinel not in repr(result)
     invalid_logs = [log for log in logs if log["event"] == "plan_indexer.invalid_scan_path"]
     assert invalid_logs == [
@@ -788,8 +788,8 @@ async def test_index_project_counts_symlink_loop_without_scanning(mock_deps, tmp
         "chunks_created": 0,
         "failures": result["failures"],
     }
-    # Le chemin est celui du décor temporaire ; ce qui est épinglé ici est la
-    # FORME — un échec nommé, avec son code de raison borné.
+    # The path is the temporary fixture's; what is pinned here is the SHAPE — a
+    # named failure, with its bounded reason code.
     assert [f["error_type"] for f in result["failures"]] == ["PlanScanPathError:missing"]
     assert result["failures"][0]["file_path"].endswith("scan-loop-a")
     find_plan_files.assert_not_called()
@@ -1086,14 +1086,13 @@ async def test_index_path_continues_when_embed_fails(mock_deps, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Les échecs doivent être NOMMÉS, pas seulement comptés
+# Failures must be NAMED, not merely counted
 #
-# Ticket 1c6911a4 demande de « confirmer qu'aucun plan attendu n'est
-# silencieusement absent de l'index ». `stats["errors"]` est un pur compteur :
-# les chemins n'existent que dans structlog, donc dans le journal du serveur.
-# Un opérateur qui lit « 3 errors » dans la sortie de brain_reindex_plans ne
-# peut pas répondre à la question — il doit quitter le tool et grepper
-# journalctl. Le compteur dit qu'il manque quelque chose, jamais quoi.
+# Ticket 1c6911a4 asks to "confirm that no expected plan is silently absent from
+# the index". `stats["errors"]` is a pure counter: the paths exist only in
+# structlog, hence in the server's log. An operator reading "3 errors" in
+# brain_reindex_plans's output cannot answer the question — they have to leave the
+# tool and grep journalctl. The counter says something is missing, never what.
 # ---------------------------------------------------------------------------
 
 
@@ -1115,18 +1114,18 @@ async def test_index_path_names_the_files_it_could_not_index(mock_deps, tmp_path
     assert [f["file_path"] for f in failures] == [str(plan_file)]
     assert failures[0]["error_type"] == "ValidationError"
 
-    # NON-DIVULGATION : le type d'erreur et le chemin remontent, JAMAIS la valeur
-    # fautive. C'est le contrat que `plan_indexer.file_error` respecte déjà côté
-    # journal, et le faire remonter ne doit pas l'affaiblir.
+    # NON-DISCLOSURE: the error type and the path are surfaced, NEVER the faulty
+    # value. This is the contract `plan_indexer.file_error` already honours on the
+    # log side, and surfacing it must not weaken it.
     assert sentinel not in repr(stats)
 
 
 @pytest.mark.asyncio
 async def test_a_clean_run_reports_no_failures_at_all(mock_deps, tmp_path):
-    """Le cas nominal ne doit produire aucune liste à lire.
+    """The nominal case must produce no list to read.
 
-    Sans cette assertion, on « corrigerait » en rendant toujours une clé, et le
-    lecteur cesserait de la regarder.
+    Without this assertion, one would "fix" it by always returning a key, and the
+    reader would stop looking at it.
     """
     plan_file = tmp_path / "ok-plan.md"
     plan_file.write_text("---\ntitle: Fine\nstatus: active\n---\n\n# Fine\n")

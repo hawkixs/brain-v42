@@ -224,16 +224,15 @@ class TestBrainAssignDomain:
 
 
 class TestBrainAssignDomainUnknownEndpoint:
-    """Ticket fb62624f (résidu 1) — même pathologie lifecycle que STEP_A.
+    """Ticket fb62624f (residual 1) — the same lifecycle pathology as STEP_A.
 
-    `pg_graph_ledger._resolve_named_target` exige `lifecycle='active'` sur les
-    deux ancres et lève sinon la même `UnknownGraphEndpoint` que le chantier
-    6d2cf2a9 a traitée côté backfill. Sans catch dans le tool, l'exception
-    s'échappe et `mask_error_details` la réduit à un message opaque : l'agent
-    CONNECT compte une erreur qu'il ne peut ni nommer ni éviter, et STEP_B
-    rougit sans trace actionnable. Miroir du traitement STEP_A : catch ÉTROIT
-    sur `UnknownGraphEndpoint` seule, comptage visible, jamais un
-    `except Exception`.
+    `pg_graph_ledger._resolve_named_target` requires `lifecycle='active'` on both
+    anchors and otherwise raises the same `UnknownGraphEndpoint` the 6d2cf2a9
+    workstream handled on the backfill side. Without a catch in the tool, the
+    exception escapes and `mask_error_details` reduces it to an opaque message: the
+    CONNECT agent counts an error it can neither name nor avoid, and STEP_B reddens
+    with no actionable trace. A mirror of the STEP_A treatment: a NARROW catch on
+    `UnknownGraphEndpoint` alone, visible counting, never an `except Exception`.
     """
 
     @pytest.mark.asyncio
@@ -241,7 +240,7 @@ class TestBrainAssignDomainUnknownEndpoint:
         self,
         session_factory: MagicMock,
     ) -> None:
-        """L'entité archivée entre le listing et l'assignation rend 'error', ne lève pas."""
+        """An entity archived between the listing and the assignment returns 'error', does not raise."""
         graph = MockGraph(upsert_result="ok")
         graph.link_entity_to_domain = AsyncMock(
             side_effect=UnknownGraphEndpoint("the named graph endpoint is not registered")
@@ -257,7 +256,7 @@ class TestBrainAssignDomainUnknownEndpoint:
         self,
         session_factory: MagicMock,
     ) -> None:
-        """Un WARN sans identifiant est incomptable : l'entité et le domaine sont nommés."""
+        """A WARN with no identifier is uncountable: the entity and the domain are named."""
         graph = MockGraph(upsert_result="ok")
         graph.link_entity_to_domain = AsyncMock(
             side_effect=UnknownGraphEndpoint("the named graph endpoint is not registered")
@@ -281,9 +280,9 @@ class TestBrainAssignDomainUnknownEndpoint:
         self,
         session_factory: MagicMock,
     ) -> None:
-        """Le catch doit rester étroit : un `except Exception` avalerait un refus
-        d'autorisation scopé (`DreamProjectAuthorizationError` dérive de
-        `AuthorizationError`, pas de `ValueError`)."""
+        """The catch must stay narrow: an `except Exception` would swallow a scoped
+        authorisation refusal (`DreamProjectAuthorizationError` derives from
+        `AuthorizationError`, not from `ValueError`)."""
         graph = MockGraph(upsert_result="ok")
         graph.link_entity_to_domain = AsyncMock(side_effect=RuntimeError("infra down"))
         tools = make_tools(session_factory, graph)

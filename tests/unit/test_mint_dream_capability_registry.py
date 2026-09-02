@@ -1,19 +1,19 @@
-"""Frappe du registre de capacités Dream — étape 8 de la spec dream v2.
+"""Minting the Dream capability registry — step 8 of the dream v2 spec.
 
-Le registre `MCP_HTTP_DREAM_TOKENS` est ce qui fait passer le principal de
-`unscoped` à `scoped`. Tant qu'il est absent, `on_call_tool` laisse tout passer
-sans périmètre : c'est l'état de production jusqu'ici, et c'est pourquoi une
-nuit lancée pour un projet peut lire et muter le corpus d'un autre.
+The `MCP_HTTP_DREAM_TOKENS` registry is what moves the principal from `unscoped`
+to `scoped`. As long as it is absent, `on_call_tool` lets everything through with
+no scope: that is the state of production so far, and it is why a night launched
+for one project can read and mutate another's corpus.
 
-Le mode d'échec de ce lot est CONNU et il est vert. Le 2026-07-03, un bearer
-manquant a fait tourner chaque phase en 401 — zéro outil brain — et la nuit a
-rendu « 6/6 OK ». Le drop-in `token.conf` existe à cause de ça. Un registre
-incomplet ou mal formé produit exactement la même nuit.
+This batch's failure mode is KNOWN and it is green. On 2026-07-03, a missing
+bearer made every phase run in 401 — zero brain tools — and the night returned
+"6/6 OK". The `token.conf` drop-in exists because of that. An incomplete or
+malformed registry produces exactly the same night.
 
-D'où la garde centrale de ce fichier : l'outil de frappe valide sa propre
-sortie en la repassant dans `parse_dream_capability_registry`, LA fonction que
-le serveur utilise. Pas une copie de ses règles — la fonction. Un registre que
-le serveur refuserait ne peut donc pas sortir de l'outil.
+Hence this file's central guard: the minting tool validates its own output by
+passing it back through `parse_dream_capability_registry`, THE function the
+server uses. Not a copy of its rules — the function. A registry the server would
+refuse therefore cannot come out of the tool.
 """
 
 from __future__ import annotations
@@ -41,12 +41,11 @@ def _registry_payload(path: Path) -> dict:
 
 
 def test_the_matrix_is_complete_for_every_project(tmp_path: Path) -> None:
-    """Le parseur exige les SIX phases par projet, sinon il refuse tout.
+    """The parser requires the SIX phases per project, otherwise it refuses everything.
 
-    Ce n'est pas une politesse : un projet à cinq phases fait lever
-    `parse_dream_capability_registry` au DÉMARRAGE du serveur MCP, donc la
-    production ne repart pas. Mieux vaut que l'outil de frappe ne puisse pas
-    produire ça.
+    This is not a politeness: a five-phase project makes
+    `parse_dream_capability_registry` raise at MCP server STARTUP, so production
+    does not come back up. Better that the minting tool cannot produce that.
     """
     out = tmp_path / "dream-tokens.env"
     mint.mint(["alpha", "beta"], out, admin_token=_ADMIN)
@@ -58,7 +57,7 @@ def test_the_matrix_is_complete_for_every_project(tmp_path: Path) -> None:
 
 
 def test_the_output_round_trips_through_the_production_parser(tmp_path: Path) -> None:
-    """LA garde. L'outil ne peut pas frapper ce que le serveur refuserait."""
+    """THE guard. The tool cannot mint what the server would refuse."""
     out = tmp_path / "dream-tokens.env"
     mint.mint(["alpha", "beta"], out, admin_token=_ADMIN)
 
@@ -72,11 +71,10 @@ def test_the_output_round_trips_through_the_production_parser(tmp_path: Path) ->
 
 
 def test_every_token_is_distinct(tmp_path: Path) -> None:
-    """Le parseur rejette un doublon, mais l'outil ne doit pas en produire.
+    """The parser rejects a duplicate, but the tool must not produce one.
 
-    Un doublon entre deux profils signifierait deux (projet, phase) partageant
-    une identité : le middleware lirait la mauvaise et scoperait le mauvais
-    projet.
+    A duplicate between two profiles would mean two (project, phase) sharing one
+    identity: the middleware would read the wrong one and scope the wrong project.
     """
     out = tmp_path / "dream-tokens.env"
     mint.mint(["alpha", "beta", "gamma"], out, admin_token=_ADMIN)
@@ -89,14 +87,14 @@ def test_every_token_is_distinct(tmp_path: Path) -> None:
 
 
 def test_a_collision_with_the_admin_token_is_refused(tmp_path: Path) -> None:
-    """Un profil qui porterait le bearer admin donnerait `brain:admin` à une phase."""
+    """A profile carrying the admin bearer would give `brain:admin` to a phase."""
     out = tmp_path / "dream-tokens.env"
     with pytest.raises(DreamCapabilityConfigurationError):
         mint.mint(["alpha"], out, admin_token=_ADMIN, _token_source=lambda: _ADMIN)
 
 
 def test_the_file_is_written_private(tmp_path: Path) -> None:
-    """0600. Le preflight MCP l'exige et refuse le service sinon."""
+    """0600. The MCP preflight requires it and refuses the service otherwise."""
     out = tmp_path / "dream-tokens.env"
     mint.mint(["alpha"], out, admin_token=_ADMIN)
 
@@ -106,7 +104,7 @@ def test_the_file_is_written_private(tmp_path: Path) -> None:
 def test_no_token_material_reaches_stdout_or_stderr(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Le runbook l'interdit : jamais dans l'historique, un diff ou un ticket."""
+    """The runbook forbids it: never in the history, a diff or a ticket."""
     out = tmp_path / "dream-tokens.env"
     mint.mint(["alpha"], out, admin_token=_ADMIN)
     captured = capsys.readouterr()
@@ -120,10 +118,10 @@ def test_no_token_material_reaches_stdout_or_stderr(
 
 
 def test_an_existing_file_is_never_silently_overwritten(tmp_path: Path) -> None:
-    """Écraser un registre vivant invalide les bearers que les phases portent.
+    """Overwriting a live registry invalidates the bearers the phases carry.
 
-    Le résultat serait 401 sur toute la nuit suivante, donc « 6/6 OK » sur du
-    vide. On refuse, et l'appelant décide.
+    The result would be 401 for the whole following night, hence "6/6 OK" on
+    nothing. We refuse, and the caller decides.
     """
     out = tmp_path / "dream-tokens.env"
     mint.mint(["alpha"], out, admin_token=_ADMIN)
@@ -135,7 +133,7 @@ def test_an_existing_file_is_never_silently_overwritten(tmp_path: Path) -> None:
 def test_the_project_keys_are_canonicalised_and_rejected_when_malformed(
     tmp_path: Path,
 ) -> None:
-    """Le parseur exige la clé CANONIQUE : `brain_v42` y ferait lever."""
+    """The parser requires the CANONICAL key: `brain_v42` would make it raise."""
     out = tmp_path / "dream-tokens.env"
     mint.mint(["brain_v42"], out, admin_token=_ADMIN)
 
@@ -146,12 +144,12 @@ def test_the_project_keys_are_canonicalised_and_rejected_when_malformed(
 
 
 def test_a_duplicate_project_is_refused(tmp_path: Path) -> None:
-    """Deux fois le même projet écraserait silencieusement ses six profils."""
+    """The same project twice would silently overwrite its six profiles."""
     with pytest.raises(ValueError):
         mint.mint(["alpha", "alpha"], tmp_path / "x.env", admin_token=_ADMIN)
 
 
 def test_an_empty_pool_is_refused(tmp_path: Path) -> None:
-    """Le parseur exige au moins un projet complet ; l'outil s'arrête avant."""
+    """The parser requires at least one complete project; the tool stops earlier."""
     with pytest.raises(ValueError):
         mint.mint([], tmp_path / "x.env", admin_token=_ADMIN)

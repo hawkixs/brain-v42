@@ -1,8 +1,8 @@
 """Unit tests for scripts.domain_backfill (proposer-only NVIDIA classifier).
 
-Réseau interdit : client NVIDIA mocké (httpx.MockTransport), GraphService
-stubbé. Les tests PG suivent la convention test_promote_prepare.py
-(require_test_db_url + skip si base absente).
+Network forbidden: mocked NVIDIA client (httpx.MockTransport), stubbed
+GraphService. The PG tests follow the test_promote_prepare.py convention
+(require_test_db_url + skip if the database is absent).
 """
 
 from __future__ import annotations
@@ -34,11 +34,11 @@ from tests.conftest import require_test_db_url
 def test_load_env_file_parses_systemd_style(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """KEY=VALUE littéral après le premier '=', commentaires ignorés.
+    """KEY=VALUE literal after the first '=', comments ignored.
 
-    Clés NEUTRES (X_BACKFILL_TEST_*) : load_env_file fait un setdefault dans
-    os.environ — utiliser les vraies clés BRAIN_NVIDIA_* ici polluerait la
-    session pytest entière et fausserait test_main_missing_api_key_exits_2.
+    NEUTRAL keys (X_BACKFILL_TEST_*): load_env_file does a setdefault into
+    os.environ — using the real BRAIN_NVIDIA_* keys here would pollute the whole
+    pytest session and falsify test_main_missing_api_key_exits_2.
     """
     monkeypatch.delenv("X_BACKFILL_TEST_KEY", raising=False)
     monkeypatch.delenv("X_BACKFILL_TEST_MODEL", raising=False)
@@ -64,7 +64,7 @@ def test_load_env_file_missing_returns_empty(tmp_path: Path) -> None:
 def test_load_env_file_does_not_override_existing_environ(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """os.environ gagne sur le fichier (injection CI/tests)."""
+    """os.environ wins over the file (CI/test injection)."""
     monkeypatch.setenv("X_BACKFILL_TEST_KEY", "from-environ")
     f = tmp_path / "nvidia.env"
     f.write_text("X_BACKFILL_TEST_KEY=from-file\n")
@@ -164,7 +164,7 @@ async def test_fetch_entity_cards_learning_and_truncation(
 async def test_fetch_entity_cards_skips_ids_absent_from_pg(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Un id graph sans ligne PG (drift) est ignoré sans crash."""
+    """A graph id with no PG row (drift) is ignored without crashing."""
     cards = await db.fetch_entity_cards(
         session_factory, [{"id": str(uuid.uuid4()), "entity_type": "decision"}]
     )
@@ -175,9 +175,9 @@ async def test_fetch_entity_cards_skips_ids_absent_from_pg(
 async def test_fetch_entity_cards_skips_non_uuid_graph_ids(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Pollution graph réelle : nœud Decision id="None" (str(None) fuité,
-    trouvé au premier run --limit 50 du 2026-07-03) → skip, pas de crash.
-    L'écart orphans_seen vs cards_classified du rapport rend le drift visible."""
+    """Real graph pollution: a Decision node with id="None" (a leaked str(None),
+    found on the first --limit 50 run of 2026-07-03) → skip, no crash. The report's
+    orphans_seen vs cards_classified gap makes the drift visible."""
     cards = await db.fetch_entity_cards(
         session_factory,
         [
@@ -227,9 +227,9 @@ def test_parse_and_validate_happy_path_with_fences() -> None:
     assert rejections == []
     assert len(proposals) == 1
     p = proposals[0]
-    assert p.domain == "memory"  # normalisé lowercase
+    assert p.domain == "memory"  # normalised to lowercase
     assert p.confidence == "high"
-    assert p.title == "Titre 1"  # enrichi depuis la carte
+    assert p.title == "Titre 1"  # enriched from the card
 
 
 def _item(entity_id: str, domain: str, confidence: str, reason: str = "r") -> dict:
@@ -261,7 +261,7 @@ def test_parse_and_validate_rejects_bad_domain_id_confidence_and_dups() -> None:
         "invalid_confidence",
         "invalid_domain",
         "invalid_item",
-        "missing_in_response",  # batch[0] n'a AUCUNE proposition acceptée
+        "missing_in_response",  # batch[0] has NO accepted proposal
         "unknown_entity_id",
     ]
 
@@ -342,7 +342,7 @@ async def test_classify_batch_happy_path() -> None:
     assert outcome.prompt_tokens == 100
     assert calls[0]["model"] == "test-model"
     assert calls[0]["temperature"] == pytest.approx(0.2)
-    assert "tools" not in calls[0]  # jamais de tool-calling
+    assert "tools" not in calls[0]  # never any tool-calling
 
 
 @pytest.mark.asyncio
@@ -402,7 +402,7 @@ async def test_classify_batch_reprompts_once_on_bad_json_then_succeeds() -> None
         outcome = await db.classify_batch(client, "m", batch, sleep=_no_sleep)
     assert not outcome.failed
     assert len(bodies) == 2
-    # le re-prompt embarque la réponse fautive + une consigne corrective
+    # the re-prompt carries the faulty answer + a corrective instruction
     assert bodies[1]["messages"][-2]["role"] == "assistant"
     assert "JSON" in bodies[1]["messages"][-1]["content"]
 
@@ -483,7 +483,7 @@ async def test_run_backfill_batches_and_aggregates(
 
     result = await db.run_backfill(
         stub_graph,
-        None,  # type: ignore[arg-type]  # fetch_entity_cards monkeypatché
+        None,  # type: ignore[arg-type]  # fetch_entity_cards monkeypatched
         fake_classify,
         limit=5,
         batch_size=2,
@@ -491,7 +491,7 @@ async def test_run_backfill_batches_and_aggregates(
     assert seen_batches == [2, 2, 1]
     assert result.orphans_seen == 5
     assert result.cards_classified == 5
-    assert len(result.proposals) == 3  # batch 2 a échoué
+    assert len(result.proposals) == 3  # batch 2 failed
     assert result.failed_batches == ["boom"]
     assert result.prompt_tokens == 20  # 2 batches ok × 10
 
@@ -538,15 +538,15 @@ def test_parse_args_defaults() -> None:
     args = db.parse_args([])
     assert args.limit == 30
     assert args.batch_size == 15
-    assert args.model is None  # résolu ensuite : env puis DEFAULT_MODEL
+    assert args.model is None  # resolved later: env then DEFAULT_MODEL
     assert args.base_url is None
     assert args.env_file == db.DEFAULT_ENV_FILE
     assert args.out_dir == Path("logs/domain_backfill")
 
 
 def test_parse_args_rejects_non_positive_batch_size_and_limit() -> None:
-    """--batch-size 0 crashait _chunks (range step 0) en ValueError brute ;
-    argparse doit refuser proprement (usage + exit 2) avant d'atteindre le run."""
+    """--batch-size 0 crashed _chunks (range step 0) with a raw ValueError;
+    argparse must refuse cleanly (usage + exit 2) before reaching the run."""
     with pytest.raises(SystemExit) as exc_batch:
         db.parse_args(["--batch-size", "0"])
     assert exc_batch.value.code == 2
@@ -567,7 +567,7 @@ def test_resolve_model_and_base_url_precedence(monkeypatch: pytest.MonkeyPatch) 
 def test_main_warns_on_loose_env_file_permissions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Fichier env en 0644 → warning stderr (puis exit 2 : pas de clé dedans)."""
+    """An env file at 0644 → a stderr warning (then exit 2: no key in it)."""
     monkeypatch.delenv("BRAIN_NVIDIA_API_KEY", raising=False)
     f = tmp_path / "nvidia.env"
     f.write_text("# vide\n")
@@ -579,9 +579,9 @@ def test_main_warns_on_loose_env_file_permissions(
 
 
 # ---------------------------------------------------------------------------
-# _post_chat — timeouts transport retryables (incident extract 2026-07-04 :
-# ReadTimeout à 180 s pile, latence de queue NVIDIA ~100 s sur un prompt
-# trivial ; le timeout s'échappait de la boucle de retry et str(exc) == "").
+# _post_chat — retryable transport timeouts (extract incident of 2026-07-04:
+# ReadTimeout at exactly 180 s, NVIDIA queue latency ~100 s on a trivial prompt;
+# the timeout escaped the retry loop and str(exc) == "").
 # ---------------------------------------------------------------------------
 
 
@@ -615,12 +615,12 @@ async def test_post_chat_retries_transport_timeout_then_succeeds() -> None:
 
 @pytest.mark.asyncio
 async def test_post_chat_retries_529_overloaded() -> None:
-    """529 = surcharge fournisseur, transitoire comme 503.
+    """529 = provider overload, transient like 503.
 
-    Canary ROADMAP du 2026-08-05 : 2 batches sur 8 en 529 sur le nouveau
-    primaire. Non retryable, ce code faisait échouer le batch ET ouvrait le
-    circuit — donc un seul 529 renvoyait TOUTE la nuit sur le modèle de
-    secours, ce qui recrée exactement la panne silencieuse qu'on corrige.
+    ROADMAP canary of 2026-08-05: 2 batches out of 8 in 529 on the new primary.
+    Non-retryable, this code failed the batch AND opened the circuit — so a single
+    529 sent the WHOLE night onto the fallback model, which recreates exactly the
+    silent failure we are fixing.
     """
     attempts = {"n": 0}
 
@@ -647,8 +647,8 @@ async def test_post_chat_retries_529_overloaded() -> None:
 
 @pytest.mark.asyncio
 async def test_post_chat_timeout_exhaustion_raises_named_error() -> None:
-    """Après épuisement, RuntimeError nomme le type d'exception — str(ReadTimeout)
-    est souvent vide, le nom de classe est la seule info fiable."""
+    """Once exhausted, RuntimeError names the exception type — str(ReadTimeout) is
+    often empty, the class name is the only reliable information."""
     attempts = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -664,8 +664,9 @@ async def test_post_chat_timeout_exhaustion_raises_named_error() -> None:
 
 @pytest.mark.asyncio
 async def test_post_chat_max_tokens_default_and_override() -> None:
-    """max_tokens paramétrable (finding wet 2026-07-04 : batch brain-v42 tronqué
-    à 4096 par le prompt consolidateur) — défaut 4096 inchangé pour les jumeaux."""
+    """max_tokens is parameterisable (wet finding of 2026-07-04: the brain-v42
+    batch truncated at 4096 by the consolidating prompt) — the 4096 default is
+    unchanged for the twins."""
     seen: list[int] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -684,10 +685,10 @@ async def test_post_chat_max_tokens_default_and_override() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _post_chat — 410/404, la mort d'un modèle chez le fournisseur.
-# Mesuré le 2026-08-12 : `deepseek-ai/deepseek-v4-pro` rend 410 Gone, et les 20
-# tickets de la nuit ont échoué en 0,907 s sur un budget de 540 s. Un 410 n'est
-# pas transitoire — il ne doit ni être retenté, ni se confondre avec un 5xx.
+# _post_chat — 410/404, the death of a model at the provider.
+# Measured on 2026-08-12: `deepseek-ai/deepseek-v4-pro` returns 410 Gone, and the
+# night's 20 tickets failed in 0.907 s on a 540 s budget. A 410 is not transient —
+# it must neither be retried nor confused with a 5xx.
 # ---------------------------------------------------------------------------
 
 
@@ -717,8 +718,8 @@ async def test_post_chat_raises_model_gone_on_410_without_retrying() -> None:
 
 @pytest.mark.asyncio
 async def test_post_chat_raises_model_gone_on_404() -> None:
-    """404 = modèle inconnu du fournisseur. Même conclusion qu'un 410 : le nom
-    configuré ne désigne rien, et aucune répétition ne le fera exister."""
+    """404 = a model unknown to the provider. Same conclusion as a 410: the
+    configured name designates nothing, and no repetition will make it exist."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, text="model not found")
@@ -732,8 +733,8 @@ async def test_post_chat_raises_model_gone_on_404() -> None:
 
 @pytest.mark.asyncio
 async def test_a_retryable_status_is_not_mistaken_for_a_dead_model() -> None:
-    """La garde qui compte : 503 reste transitoire. Confondre les deux ferait
-    remplacer un modèle parfaitement vivant sur une surcharge passagère."""
+    """The guard that matters: 503 stays transient. Confusing the two would have a
+    perfectly alive model replaced over a passing overload."""
     attempts = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:

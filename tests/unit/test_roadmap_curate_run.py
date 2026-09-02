@@ -659,5 +659,5 @@ class TestDegradationNotice:
         assert notice.startswith("ZZZTEST")
 
     def test_a_nominal_run_says_nothing(self):
-        """Le cas nominal est MUET : aucun batch servi par le secours."""
+        """The nominal case is MUTE: no batch served by the fallback."""
         assert rc._degradation_notice("primaire-vivant", 0, 10, []) is None
