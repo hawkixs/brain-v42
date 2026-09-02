@@ -87,8 +87,8 @@ def collector() -> MetricsCollector:
     c.collect_dream_promoted_health = AsyncMock(  # type: ignore[method-assign]
         return_value=[]
     )
-    # Section nightly (ticket de1ad785) : stub vide par défaut — sinon le
-    # handler lirait le VRAI fichier killswitches de la machine de test.
+    # Nightly section (ticket de1ad785): an empty stub by default — otherwise the
+    # handler would read the test machine's REAL killswitches file.
     c.collect_nightly_ops = AsyncMock(  # type: ignore[method-assign]
         return_value={}
     )

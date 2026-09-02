@@ -253,10 +253,10 @@ def test_migration_heads_to_latest() -> None:
     script = ScriptDirectory.from_config(cfg)
     heads = script.get_heads()
 
-    # Le head est DÉRIVÉ, pas épinglé : l'invariant est « une seule tête », pas
-    # « la tête vaut N ». Épingler le numéro faisait échouer ce canari à chaque
-    # migration pour la seule raison qu'une migration avait atterri, ce qui est
-    # précisément le cas nominal. Même correction que le commit e29f0e5b.
+    # The head is DERIVED, not pinned: the invariant is "a sole head", not "the
+    # head is N". Pinning the number made this canary fail at every migration for
+    # the sole reason that a migration had landed, which is precisely the nominal
+    # case. Same correction as commit e29f0e5b.
     latest = max(revision.revision for revision in script.walk_revisions())
     assert heads == [latest], f"Expected a sole head, got {heads}"
 

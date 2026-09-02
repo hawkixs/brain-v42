@@ -1,43 +1,42 @@
-"""Clés de projet des tests unitaires qui écrivent dans la base partagée.
+"""Project keys for the unit tests that write to the shared database.
 
-`tests/unit/` frappe la MÊME base `brain_test` que la suite d'intégration dès
-que `BRAIN_V42_TEST_DB_URL` est posée — et les deux rails CI la posent. Mais le
-nettoyage de fin de session vit dans `tests/integration/conftest.py`, ne
-s'applique qu'à sa propre suite, et ne reconnaît qu'un seul préfixe : `integ-`.
+`tests/unit/` hits the SAME `brain_test` database as the integration suite as soon
+as `BRAIN_V42_TEST_DB_URL` is set — and both CI rails set it. But the end-of-session
+cleanup lives in `tests/integration/conftest.py`, only applies to its own suite, and
+recognises a single prefix: `integ-`.
 
-Chaque module unitaire fabriquait donc sa clé sur place, avec son préfixe à lui
-— `t8-`, `t9-`, `rv-`, `t-adr-`, `t-run-`. Aucun n'était purgé. Mesuré le
-2026-08-11 : 5 674 learnings dans brain_test, dont 4 241 sous `t8-` et 581 sous
-`t9-`, pour 188 lignes réelles. Le symptôme est INVISIBLE en CI, qui recrée sa
-base à chaque pipeline ; il ne grossit que sur les bases de développement, donc
-différemment sur chaque machine (ticket cb888186).
+Each unit module therefore built its key on the spot, with its own prefix — `t8-`,
+`t9-`, `rv-`, `t-adr-`, `t-run-`. None was purged. Measured on 2026-08-11: 5,674
+learnings in brain_test, of which 4,241 under `t8-` and 581 under `t9-`, for 188
+real rows. The symptom is INVISIBLE in CI, which recreates its database at every
+pipeline; it only grows on development databases, hence differently on each machine
+(ticket cb888186).
 
-Passer par ce module est ce qui rattache une clé unitaire au nettoyage. Le
-contrat est tenu par tests/unit/test_unit_project_keys_are_purged.py, qui
-applique la purge RÉELLE à une clé fabriquée ici.
+Going through this module is what attaches a unit key to the cleanup. The contract
+is held by tests/unit/test_unit_project_keys_are_purged.py, which applies the REAL
+purge to a key built here.
 
-Ne JAMAIS étendre le préfixe à une clé de production comme `brain-v42` : le
-garde-fou du conftest ne refuse que le NOM de base `brain`, donc un
-`BRAIN_V42_TEST_DB_URL` pointé sur une restauration effacerait des données
-réelles. La sonde négative `test_the_purge_leaves_a_non_integration_key_alone`
-existe pour faire échouer cette tentation.
+NEVER extend the prefix to a production key like `brain-v42`: the conftest's
+guardrail only refuses the database NAME `brain`, so a `BRAIN_V42_TEST_DB_URL`
+pointed at a restoration would erase real data. The negative probe
+`test_the_purge_leaves_a_non_integration_key_alone` exists to make that temptation
+fail.
 """
 
 from __future__ import annotations
 
 import uuid
 
-#: Le seul préfixe que `_INTEGRATION_PROJECT_PREDICATE` reconnaît. Le tag reste
-#: dans la clé après lui, pour qu'une ligne orpheline nomme encore le test qui
-#: l'a écrite.
+#: The only prefix `_INTEGRATION_PROJECT_PREDICATE` recognises. The tag stays in the
+#: key after it, so that an orphan row still names the test that wrote it.
 UNIT_KEY_PREFIX = "integ-"
 
 
 def make_unit_project_key(tag: str) -> str:
     """Return a per-test project key that the shared purge will delete.
 
-    ``tag`` identifie le module appelant (``t8``, ``rv``, …) et n'a aucun effet
-    sur le nettoyage : c'est le préfixe qui compte.
+    ``tag`` identifies the calling module (``t8``, ``rv``, …) and has no effect on
+    the cleanup: it is the prefix that counts.
     """
     if not tag or not tag.strip():
         raise ValueError("tag is required — an unnamed key cannot be traced back to its test")

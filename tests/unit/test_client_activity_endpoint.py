@@ -1,14 +1,14 @@
-"""Frontière HTTP des deux récepteurs d'activité du sidecar.
+"""HTTP boundary of the sidecar's two activity receivers.
 
-``POST /v1/client-activity`` reçoit les observations poussées par le processus
-MCP ; ``POST /v1/logs/claude`` reçoit l'OTLP de Claude Code. Deux routes
-distinctes plutôt qu'un récepteur qui devine le schéma : deviner obligerait à
-sonder les attributs d'une charge pas encore validée.
+``POST /v1/client-activity`` receives the observations pushed by the MCP process;
+``POST /v1/logs/claude`` receives Claude Code's OTLP. Two distinct routes rather
+than one receiver guessing the schema: guessing would require probing the
+attributes of a payload that has not been validated yet.
 
-Chaque propriété de durcissement de ``/v1/logs`` est réépinglée **route par
-route** : loopback-only, corps borné, saturation, rejet fail-closed,
-``Content-Type`` et encodage stricts. Un décorateur partagé ne prouve rien tant
-qu'on n'a pas vu la route neuve refuser d'elle-même.
+Every hardening property of ``/v1/logs`` is re-pinned **route by route**:
+loopback-only, bounded body, saturation, fail-closed rejection, strict
+``Content-Type`` and encoding. A shared decorator proves nothing until the new
+route has been seen refusing on its own.
 """
 
 from __future__ import annotations
@@ -81,7 +81,7 @@ def _valid_body(path: str) -> bytes:
 
 
 def _partially_invalid_body(path: str) -> bytes:
-    """Un lot dont le premier élément est valide et le second ne l'est pas."""
+    """A batch whose first element is valid and whose second is not."""
     if path == CLIENT_ACTIVITY_PATH:
         return _observations(
             [{"actor": "brain-v42", "calls": 1}, {"actor": "brain-v42", "calls": "2"}]
@@ -113,7 +113,7 @@ def _loopback_transport(address: str) -> MagicMock:
 
 
 def _fed_stream(*chunks: bytes) -> streams.StreamReader:
-    """Un corps déjà en mémoire, dont on peut observer s'il a été lu ou non."""
+    """A body already in memory, whose read-or-not state can be observed."""
     stream = streams.StreamReader(MagicMock(), 2**16, loop=asyncio.get_running_loop())
     for chunk in chunks:
         stream.feed_data(chunk)
@@ -127,7 +127,7 @@ def _request_with_body(
     *,
     declared_length: int | None,
 ) -> Any:
-    """``declared_length=None`` simule un corps chunké, sans ``Content-Length``."""
+    """``declared_length=None`` simulates a chunked body, with no ``Content-Length``."""
     headers = {"Content-Type": "application/json"}
     if declared_length is not None:
         headers["Content-Length"] = str(declared_length)
@@ -155,18 +155,18 @@ async def _rpc_status(response: Any, *, http_status: int, rpc_code: int) -> str:
 @pytest.mark.parametrize("path", _RECEIVER_PATHS)
 @pytest.mark.parametrize("host", ["127.0.0.1", "127.42.0.9", "::1", "localhost"])
 def test_receiver_route_is_registered_on_a_loopback_bind(host: str, path: str) -> None:
-    """Contrôle positif du test d'absence qui suit."""
+    """Positive control for the absence test that follows."""
     assert ("POST", path) in _routes(_server(_registry(), host=host)._build_app())
 
 
 @pytest.mark.parametrize("path", _RECEIVER_PATHS)
 @pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.0.2.8", "metrics.internal"])
 def test_receiver_route_is_absent_on_a_non_loopback_bind(host: str, path: str) -> None:
-    """Posture PAR DÉFAUT (`silent`, eac03668) — un choix nommé, pas un oubli.
+    """The DEFAULT posture (`silent`, eac03668) — a named choice, not an oversight.
 
-    Ce test épingle le comportement historique en ATTENDANT l'arbitrage
-    opérateur, il ne le consacre plus par omission : les deux autres postures
-    (warn, fail_closed) existent et sont testées par
+    This test pins the historical behaviour WHILE AWAITING the operator's
+    arbitration, it no longer enshrines it by omission: the other two postures
+    (warn, fail_closed) exist and are tested by
     test_metrics_nonloopback_posture.py.
     """
     assert ("POST", path) not in _routes(_server(_registry(), host=host)._build_app())
@@ -192,7 +192,7 @@ async def test_client_activity_applies_the_observation(aiohttp_client: Any) -> N
 async def test_client_activity_without_a_session_yields_a_residual_row(
     aiohttp_client: Any,
 ) -> None:
-    """Le cas NOMINAL mesuré : aucun client ne déclare sa session aujourd'hui."""
+    """The measured NOMINAL case: no client declares its session today."""
     registry = _registry()
     client = await aiohttp_client(_server(registry)._build_app())
 
@@ -211,10 +211,10 @@ async def test_client_activity_without_a_session_yields_a_residual_row(
 
 
 async def test_client_activity_hashes_the_session_at_reception(aiohttp_client: Any) -> None:
-    """L'UUID brut traverse la socket loopback ; il ne doit jamais en ressortir.
+    """The raw UUID crosses the loopback socket; it must never come back out.
 
-    L'assertion d'absence a son contrôle positif dans la même charge : la ligne
-    existe bien, donc le vert ne vient pas d'un registre resté vide.
+    The absence assertion has its positive control in the same payload: the row
+    does exist, so the green does not come from a registry left empty.
     """
     registry = _registry()
     client = await aiohttp_client(_server(registry)._build_app())
@@ -252,9 +252,9 @@ async def test_claude_logs_route_feeds_the_registry(aiohttp_client: Any) -> None
 async def test_claude_logs_route_leaves_the_legacy_codex_list_empty(
     aiohttp_client: Any,
 ) -> None:
-    """Une session Claude ne doit pas gonfler « Codex activity » avant la bascule.
+    """A Claude session must not inflate "Codex activity" before the switch-over.
 
-    Contrôle positif de l'absence : ``clients`` est peuplé dans la même charge.
+    Positive control for the absence: ``clients`` is populated in the same payload.
     """
     registry = _registry()
     client = await aiohttp_client(_server(registry)._build_app())
@@ -277,7 +277,7 @@ async def test_receiver_rejects_a_non_loopback_peer_despite_forwarding_headers(
     path: str,
     handler: str,
 ) -> None:
-    """Contrôle positif : les tests de chemin nominal passent par un vrai pair loopback."""
+    """Positive control: the nominal-path tests go through a real loopback peer."""
     server = _server(_registry())
     request = make_mocked_request(
         "POST",
@@ -318,7 +318,7 @@ async def test_receiver_returns_retryable_unavailable_without_waiting_when_satur
     path: str,
     handler: str,
 ) -> None:
-    """Les récepteurs neufs partagent le budget de requêtes en vol du sidecar."""
+    """The new receivers share the sidecar's in-flight request budget."""
     server = _server(_registry())
     for _ in range(MAX_IN_FLIGHT_REQUESTS):
         await server._codex_request_slots.acquire()
@@ -389,7 +389,7 @@ async def test_receiver_accepts_an_explicit_identity_encoding(
     aiohttp_client: Any,
     path: str,
 ) -> None:
-    """Contrôle positif du rejet d'encodage : ``identity`` reste accepté."""
+    """Positive control for the encoding rejection: ``identity`` stays accepted."""
     registry = _registry()
     client = await aiohttp_client(_server(registry)._build_app())
 
@@ -461,10 +461,10 @@ async def test_receiver_validates_the_whole_batch_before_mutating_the_registry(
     aiohttp_client: Any,
     path: str,
 ) -> None:
-    """Le lot porte un élément valide puis un invalide : rien ne doit rester.
+    """The batch carries a valid element then an invalid one: nothing must remain.
 
-    Contrôle positif : les tests de chemin nominal envoient le même premier
-    élément, seul, et produisent bien une ligne.
+    Positive control: the nominal-path tests send that same first element, alone,
+    and do produce a row.
     """
     registry = _registry()
     client = await aiohttp_client(_server(registry)._build_app())
@@ -497,11 +497,11 @@ async def test_receiver_rejects_an_oversize_body_without_echoing_it(
 async def test_client_activity_accepts_a_body_exactly_at_its_own_size_limit(
     aiohttp_client: Any,
 ) -> None:
-    """Contrôle positif du 413 : la borne du fil est bien MAX_OBSERVATION_BYTES.
+    """Positive control for the 413: the wire bound really is MAX_OBSERVATION_BYTES.
 
-    Sans lui, un récepteur qui refuserait tout corps de plus de cent octets
-    passerait le test de rejet au vert. La borne est bien plus serrée que celle
-    de l'OTLP : elle doit être prouvée pour elle-même.
+    Without it, a receiver refusing any body over a hundred bytes would pass the
+    rejection test green. The bound is far tighter than OTLP's: it must be proved
+    on its own terms.
     """
     registry = _registry()
     client = await aiohttp_client(_server(registry)._build_app())
@@ -518,13 +518,13 @@ async def test_client_activity_accepts_a_body_exactly_at_its_own_size_limit(
 async def test_client_activity_rejects_a_body_one_byte_over_the_otlp_limit_too(
     aiohttp_client: Any,
 ) -> None:
-    """La borne serrée s'applique même à un corps que l'OTLP accepterait.
+    """The tight bound applies even to a body OTLP would accept.
 
-    ``MAX_OBSERVATION_BYTES`` (16 KiB) est loin sous ``MAX_REQUEST_BYTES``
-    (256 KiB). Ce test épingle le **statut** de bout en bout, et rien de plus :
-    mesuré, il reste vert sur un récepteur privé de toute borne, parce que
-    ``decode_observations`` refuse le même corps par lui-même. Le garde-fou HTTP
-    a ses propres témoins, juste en dessous.
+    ``MAX_OBSERVATION_BYTES`` (16 KiB) is far below ``MAX_REQUEST_BYTES``
+    (256 KiB). This test pins the end-to-end **status**, and nothing more:
+    measured, it stays green on a receiver stripped of every bound, because
+    ``decode_observations`` refuses the same body on its own. The HTTP guardrail
+    has its own witnesses, just below.
     """
     registry = _registry()
     client = await aiohttp_client(_server(registry)._build_app())
@@ -544,17 +544,17 @@ async def test_receiver_refuses_a_declared_oversize_length_without_reading_the_b
     handler: str,
     max_bytes: int,
 ) -> None:
-    """Le seul témoin possible de la borne HTTP : le corps n'est pas bufferisé.
+    """The only possible witness of the HTTP bound: the body is not buffered.
 
-    Mesuré : retirer les deux bornes de ``server.py`` laisse tous les 413 verts,
-    parce que ``decode_observations`` (16 KiB) et ``_load_json`` (256 KiB)
-    refusent le même corps une couche plus bas. Le statut ne distingue donc rien.
-    Ce que le récepteur HTTP apporte, et lui seul, c'est de refuser **avant** de
-    lire — c'est cette propriété qu'on épingle ici.
+    Measured: removing ``server.py``'s two bounds leaves every 413 green, because
+    ``decode_observations`` (16 KiB) and ``_load_json`` (256 KiB) refuse the same
+    body one layer below. The status therefore distinguishes nothing. What the HTTP
+    receiver brings, and it alone, is refusing **before** reading — that is the
+    property pinned here.
 
-    Le cas ``/v1/client-activity`` déclare une longueur qui tient largement sous
-    ``MAX_REQUEST_BYTES`` : un récepteur qui se contenterait du garde-fou OTLP
-    partagé lirait ce corps-là intégralement.
+    The ``/v1/client-activity`` case declares a length that sits well under
+    ``MAX_REQUEST_BYTES``: a receiver settling for the shared OTLP guardrail would
+    read that body in full.
     """
     server = _server(_registry())
     stream = _fed_stream(b"x" * (max_bytes + 1))
@@ -574,12 +574,11 @@ async def test_receiver_stops_reading_a_chunked_body_that_crosses_its_limit(
     handler: str,
     max_bytes: int,
 ) -> None:
-    """Sans ``Content-Length``, seule la borne de flux protège la mémoire.
+    """Without ``Content-Length``, only the stream bound protects memory.
 
-    Un corps chunké ne déclare aucune longueur : le contrôle d'en-tête ne peut
-    pas se déclencher, et la lecture doit s'arrêter d'elle-même. Le corps est
-    volontairement plus gros que ce que la lecture bornée consommera, pour qu'il
-    reste des octets non lus à observer.
+    A chunked body declares no length: the header check cannot fire, and the read
+    must stop by itself. The body is deliberately larger than the bounded read will
+    consume, so that unread bytes remain to observe.
     """
     server = _server(_registry())
     chunk = 2**16
@@ -601,11 +600,11 @@ async def test_receiver_reads_a_body_that_sits_exactly_on_its_limit(
     handler: str,
     max_bytes: int,
 ) -> None:
-    """Contrôle positif des deux ``not stream.at_eof()`` ci-dessus.
+    """Positive control for the two ``not stream.at_eof()`` above.
 
-    Sans lui, un récepteur qui refuserait tout sans jamais rien lire les
-    passerait au vert. Ici le corps est accepté, donc lu jusqu'au bout — le
-    harnais sait bien distinguer les deux cas.
+    Without it, a receiver refusing everything without ever reading anything would
+    pass them green. Here the body is accepted, hence read to the end — the harness
+    does distinguish the two cases.
     """
     server = _server(_registry())
     core = _valid_body(path)

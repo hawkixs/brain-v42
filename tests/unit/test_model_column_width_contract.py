@@ -1,26 +1,25 @@
 """Every Pydantic write field must be bounded by its VARCHAR column.
 
-Ticket 39cc4986 (et son doublon red-shrik 2af71e69). Deux fois le 2026-08-06,
-une valeur trop longue pour sa colonne a fait échouer une écriture à l'INSERT au
-lieu d'être rejetée à la validation : ``access_log.actor`` VARCHAR(64) face à un
-acteur non borné (corrigé par c4122058), puis ``runbooks.estimated_duration``
-VARCHAR(50) face à un champ sans ``max_length``.
+Ticket 39cc4986 (and its red-shrik duplicate 2af71e69). Twice on 2026-08-06, a
+value too long for its column made a write fail at INSERT time instead of being
+rejected at validation: ``access_log.actor`` VARCHAR(64) facing an unbounded actor
+(fixed by c4122058), then ``runbooks.estimated_duration`` VARCHAR(50) facing a
+field with no ``max_length``.
 
-Ce n'est donc pas un accident isolé mais une CLASSE de défaut : partout où un
-modèle Pydantic ne reflète pas la largeur de sa colonne, l'échec surgit trop
-tard, côté base, sous une forme que l'appelant ne peut pas diagnostiquer.
+This is therefore not an isolated accident but a CLASS of defect: wherever a
+Pydantic model does not mirror its column's width, the failure surfaces too late,
+on the database side, in a shape the caller cannot diagnose.
 
-Ce test est le garde générique demandé par le ticket — le seul moyen d'empêcher
-la réapparition. Il compare ``db.tables`` (source de vérité en dépôt) aux
-modèles d'écriture, et échoue sur TOUTES les divergences d'un coup.
+This test is the generic guard the ticket asked for — the only way to prevent a
+recurrence. It compares ``db.tables`` (the in-repository source of truth) with the
+write models, and fails on ALL the divergences at once.
 
-Deux façons légitimes de borner un champ :
+Two legitimate ways to bound a field:
 
-- ``Field(max_length=n)`` avec ``n`` au plus la largeur de la colonne ;
-- une annotation ``Literal[...]`` dont toutes les valeurs tiennent dans la
-  colonne — les champs de type énumération (``status``, ``confidence``,
-  ``freshness_status``) sont déjà bornés par construction et n'ont pas besoin
-  d'une contrainte de longueur redondante.
+- ``Field(max_length=n)`` with ``n`` at most the column's width;
+- a ``Literal[...]`` annotation whose values all fit in the column — the
+  enumeration-typed fields (``status``, ``confidence``, ``freshness_status``) are
+  already bounded by construction and need no redundant length constraint.
 """
 
 from __future__ import annotations
@@ -48,17 +47,16 @@ from brain_v42.models.runbook import RunbookCreate, RunbookUpdate
 from brain_v42.models.snippet import SnippetCreate, SnippetUpdate
 from brain_v42.models.ticket import TicketCreate
 
-#: Modèles empruntés par une écriture client, table par table.
-#: Ajouter un modèle d'écriture ici est obligatoire : un modèle absent de cette
-#: table n'est PAS audité, et rouvrirait silencieusement la classe de défaut.
+#: Models taken by a client write, table by table. Adding a write model here is
+#: mandatory: a model absent from this table is NOT audited, and would silently
+#: reopen the class of defect.
 WRITE_MODELS_BY_TABLE: dict[str, tuple[type[BaseModel], ...]] = {
     "adrs": (ADRCreate, ADRUpdate),
-    # Inscrit par la 046, et il ne l'était PAS avant : `brain_sessions` portait
-    # déjà des colonnes bornées (`project_key` 50, `client_key` 128) sans être
-    # audité. La 046 y ajoute `intent` VARCHAR(500), `started_by_actor` et
-    # `connection_id` VARCHAR(64), toutes avec un rail Pydantic — oublier cette
-    # ligne ne rougirait RIEN, ce qui est exactement la classe de défaut que ce
-    # fichier existe pour fermer.
+    # Registered by 046, and it was NOT before: `brain_sessions` already carried
+    # bounded columns (`project_key` 50, `client_key` 128) without being audited. 046
+    # adds `intent` VARCHAR(500), `started_by_actor` and `connection_id` VARCHAR(64)
+    # to it, all with a Pydantic rail — forgetting this line would redden NOTHING,
+    # which is exactly the class of defect this file exists to close.
     "brain_sessions": (BrainSession,),
     "decisions": (DecisionCreate, DecisionUpdate),
     "dream_promotions": (DreamPromotionCreate,),

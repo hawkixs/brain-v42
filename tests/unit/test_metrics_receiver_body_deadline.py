@@ -1,19 +1,19 @@
-"""Les trois récepteurs du sidecar doivent borner la LECTURE du corps, pas seulement sa taille.
+"""The sidecar's three receivers must bound the body READ, not only its size.
 
-Mesuré le 2026-08-10 (ticket 5fa2771e). ``_read_bounded_otlp_body`` n'avait aucune
-échéance, et le sémaphore des 4 requêtes en vol est acquis AUTOUR de la lecture. Quatre
-connexions loopback qui annoncent un corps chunké, envoient un octet puis se taisent
-suffisaient donc à verrouiller les trois récepteurs — mesuré encore verrouillé après 3,2 s,
-et sans aucun mécanisme de sortie : c'est « à vie », pas « quelques secondes ».
+Measured on 2026-08-10 (ticket 5fa2771e). ``_read_bounded_otlp_body`` had no deadline,
+and the 4-in-flight-request semaphore is acquired AROUND the read. Four loopback
+connections announcing a chunked body, sending one byte then going quiet were therefore
+enough to lock the three receivers — measured still locked after 3.2 s, and with no exit
+mechanism at all: that is "for life", not "a few seconds".
 
-aiohttp 3.14.3 n'offre aucune garde amont : ``RequestHandler`` expose keepalive_timeout,
-lingering_time, read_bufsize, max_line_size, et rien sur la lecture du corps. Le correctif
-applicatif est le seul possible.
+aiohttp 3.14.3 offers no upstream guard: ``RequestHandler`` exposes keepalive_timeout,
+lingering_time, read_bufsize, max_line_size, and nothing about the body read. The
+application-level fix is the only one possible.
 
-La forme est celle du shim d'embedding (``services/embedding_shim/shim_app.py:167``), qui
-a exactement cette garde depuis sa livraison : une échéance TOTALE posée à l'extérieur de
-la boucle, jamais par morceau — un émetteur qui envoie un octet toutes les quatre secondes
-passerait indéfiniment sous une garde par morceau.
+The shape is the embedding shim's (``services/embedding_shim/shim_app.py:167``), which
+has had exactly this guard since it shipped: a TOTAL deadline set outside the loop, never
+per chunk — a sender emitting one byte every four seconds would pass indefinitely under a
+per-chunk guard.
 """
 
 from __future__ import annotations
@@ -47,14 +47,14 @@ def _loopback_transport() -> MagicMock:
 
 
 def _stalled_stream() -> streams.StreamReader:
-    """Un corps chunké qui commence puis se tait : un octet, jamais de ``feed_eof``."""
+    """A chunked body that starts then goes quiet: one byte, never a ``feed_eof``."""
     stream = streams.StreamReader(MagicMock(), 2**16, loop=asyncio.get_running_loop())
     stream.feed_data(b"{")
     return stream
 
 
 def _request(path: str, stream: streams.StreamReader) -> Any:
-    """Sans ``Content-Length`` : c'est un corps chunké, la seule forme qui puisse figer."""
+    """Without ``Content-Length``: it is a chunked body, the only shape that can freeze."""
     return make_mocked_request(
         "POST",
         path,
@@ -76,10 +76,10 @@ _RECEIVERS = [
 async def test_a_stalled_body_is_abandoned_by_every_receiver(
     monkeypatch: pytest.MonkeyPatch, path: str, handler_name: str, _max_bytes: int
 ) -> None:
-    """Les TROIS récepteurs, parce qu'ils partagent le même budget de requêtes en vol.
+    """The THREE receivers, because they share the same in-flight request budget.
 
-    RED avant correctif : le handler ne rend jamais la main, ``asyncio.wait_for``
-    l'annule et le test part en TimeoutError avant même le premier assert.
+    RED before the fix: the handler never returns, ``asyncio.wait_for`` cancels it and
+    the test goes to TimeoutError before even the first assert.
     """
     monkeypatch.setattr(
         server_module, "_OTLP_BODY_READ_TIMEOUT_SECONDS", _DEADLINE_FOR_TESTS, raising=True
@@ -99,11 +99,10 @@ async def test_a_stalled_body_is_abandoned_by_every_receiver(
 async def test_a_storm_of_stalled_bodies_releases_the_shared_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Le test qui vaut le ticket : l'ingestion des trois routes doit REPRENDRE.
+    """The test that is worth the ticket: the three routes' ingestion must RESUME.
 
-    Sans échéance, quatre corps figés verrouillaient le sémaphore jusqu'au
-    redémarrage de brain-metrics — mesuré : POST propre → 503 + Retry-After, et le
-    registre restait vide.
+    Without a deadline, four frozen bodies locked the semaphore until brain-metrics was
+    restarted — measured: clean POST → 503 + Retry-After, and the registry stayed empty.
     """
     monkeypatch.setattr(
         server_module, "_OTLP_BODY_READ_TIMEOUT_SECONDS", _DEADLINE_FOR_TESTS, raising=True
@@ -115,8 +114,8 @@ async def test_a_storm_of_stalled_bodies_releases_the_shared_budget(
         asyncio.create_task(server._handle_codex_logs(_request("/v1/logs", _stalled_stream())))
         for _ in range(MAX_IN_FLIGHT_REQUESTS)
     ]
-    # Contrôle positif : sans saturation constatée, les assertions suivantes
-    # seraient vraies pour rien.
+    # Positive control: with no observed saturation, the assertions below would be
+    # true for nothing.
     while not server._codex_request_slots.locked():
         await asyncio.sleep(0)
 
@@ -125,8 +124,8 @@ async def test_a_storm_of_stalled_bodies_releases_the_shared_budget(
     assert server._codex_request_slots.locked() is False, (
         "le budget de requêtes en vol n'est pas rendu : les trois récepteurs restent morts"
     )
-    # Filet plus fin que locked() — il attrape une libération PARTIELLE. Attribut
-    # privé assumé : le contrat est locked(), ceci est la ceinture.
+    # A finer net than locked() — it catches a PARTIAL release. A private attribute
+    # by choice: the contract is locked(), this is the belt.
     assert server._codex_request_slots._value == MAX_IN_FLIGHT_REQUESTS
 
     observation = json.dumps(
@@ -146,11 +145,11 @@ async def test_a_storm_of_stalled_bodies_releases_the_shared_budget(
 async def test_a_slow_but_progressing_body_is_not_cut_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """La sonde ANTI-TAUTOLOGIE : un corps lent mais qui avance doit aboutir.
+    """The ANTI-TAUTOLOGY probe: a slow but progressing body must succeed.
 
-    Sans elle, on rendrait le test précédent vert en refusant tout corps sans
-    Content-Length, ou en posant un budget quasi nul — et la garde ne garderait plus
-    rien d'utile, elle casserait l'usage légitime.
+    Without it, the previous test could be made green by refusing every body with no
+    Content-Length, or by setting a near-zero budget — and the guard would no longer
+    guard anything useful, it would break the legitimate use.
     """
     monkeypatch.setattr(
         server_module, "_OTLP_BODY_READ_TIMEOUT_SECONDS", _DEADLINE_FOR_TESTS, raising=True
@@ -182,19 +181,19 @@ async def test_a_slow_but_progressing_body_is_not_cut_off(
 
 
 def test_the_body_read_deadline_is_five_seconds() -> None:
-    """La valeur livrée, épinglée — même forme que les limites du shim d'embedding.
+    """The shipped value, pinned — same shape as the embedding shim's limits.
 
-    Elle est lue DANS LE CORPS de la fonction et jamais en valeur par défaut d'argument :
-    une valeur par défaut est liée au moment du ``def``, donc un monkeypatch resterait
-    sans effet et les tests ci-dessus dureraient cinq secondes en croyant mesurer la garde.
+    It is read INSIDE THE BODY of the function and never as an argument default: a
+    default is bound at ``def`` time, so a monkeypatch would have no effect and the
+    tests above would take five seconds while believing they measured the guard.
     """
     assert server_module._OTLP_BODY_READ_TIMEOUT_SECONDS == 5.0
 
 
 def test_the_timeout_status_is_declared_before_it_is_used() -> None:
-    """``_otlp_error(408)`` lève KeyError tant que 408 n'est pas déclaré.
+    """``_otlp_error(408)`` raises KeyError as long as 408 is not declared.
 
-    Sans cette entrée, le RED des tests ci-dessus serait rouge pour la MAUVAISE raison
-    (KeyError → 500) et on croirait l'échéance cassée.
+    Without this entry, the RED of the tests above would be red for the WRONG reason
+    (KeyError → 500) and one would believe the deadline broken.
     """
     assert 408 in server_module._OTLP_ERROR_STATUSES

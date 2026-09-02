@@ -1,17 +1,16 @@
-"""Le canary comptait les propositions et jetait leur contenu.
+"""The canary counted the proposals and threw away their content.
 
-Ses trois mesures — JSON valide, secondes par batch, NOMBRE de propositions —
-ne disent rien de ce qui est proposé. Deux modèles peuvent rendre 30
-propositions chacun, l'un archivant des features vivantes et l'autre voyant les
-vrais doublons, et le tableau les classerait à égalité. Le choix du 2026-08-16
-allait se faire sur ce tableau.
+Its three measurements — valid JSON, seconds per batch, NUMBER of proposals — say
+nothing about what is proposed. Two models can return 30 proposals each, one
+archiving live features and the other seeing the real duplicates, and the table
+would rank them equal. The 2026-08-16 choice was going to be made on that table.
 
-Le dump ne mesure pas la qualité — il rend le contenu LISIBLE pour qu'un humain
-ou un juge la mesure. C'est délibéré : un score de qualité rendu par le même
-étage qui produit les propositions n'aurait aucune valeur d'arbitrage.
+The dump does not measure quality — it makes the content READABLE so that a human
+or a judge can measure it. That is deliberate: a quality score returned by the same
+layer that produces the proposals would have no arbitration value.
 
-Rien n'est persisté : le canary n'appelle ni `persist_proposals` ni
-`apply_proposals`, et ce dump n'y change rien.
+Nothing is persisted: the canary calls neither `persist_proposals` nor
+`apply_proposals`, and this dump changes nothing about that.
 """
 
 from __future__ import annotations
@@ -47,10 +46,10 @@ def _outcome() -> BatchOutcome:
 
 
 def test_dump_carries_the_target_feature_not_just_its_uuid() -> None:
-    """Un UUID nu ne se juge pas : il faut la feature que la proposition vise.
+    """A bare UUID cannot be judged: the feature the proposal targets is needed.
 
-    Sans le nom, le statut et l'épinglage de la cible, personne ne peut dire si
-    `archive` sur cette ligne est un bon appel ou la destruction d'un engagement.
+    Without the target's name, status and pinning, nobody can say whether `archive`
+    on this row is a good call or the destruction of a commitment.
     """
     payload = _proposals_payload("mistralai/mistral-nemotron", _outcome())
 
@@ -68,14 +67,14 @@ def test_dump_keeps_the_rationale_which_is_the_judgeable_part() -> None:
 
 
 def test_merge_names_the_feature_it_would_absorb_into() -> None:
-    """`merge` sans la cible d'absorption est illisible : qui mange qui ?"""
+    """`merge` without the absorbing target is unreadable: who eats whom?"""
     payload = _proposals_payload("mistralai/mistral-nemotron", _outcome())
 
     assert payload["proposals"][0]["payload"]["into_name"] == "Feature vivante"
 
 
 def test_dump_is_json_serialisable_end_to_end() -> None:
-    """Les UUID doivent sortir en str, sinon `json.dump` casse à l'écriture."""
+    """The UUIDs must come out as str, otherwise `json.dump` breaks on write."""
     import json
 
     json.dumps(_proposals_payload("m", _outcome()))

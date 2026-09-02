@@ -1,4 +1,4 @@
-"""Fixtures partagées des tests unitaires."""
+"""Shared fixtures for the unit tests."""
 
 from __future__ import annotations
 
@@ -11,22 +11,21 @@ import pytest_asyncio
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def _purge_unit_rows() -> None:  # type: ignore[misc]
-    """Nettoyer, une fois la session unitaire finie, ce qu'elle a écrit en base.
+    """Clean up, once the unit session is over, what it wrote to the database.
 
-    ``tests/unit/`` frappe la MÊME base ``brain_test`` que la suite
-    d'intégration dès que ``BRAIN_V42_TEST_DB_URL`` est posée, et les deux rails
-    CI la posent. Mais ``cleanup_test_data`` est une fixture de
-    ``tests/integration/conftest.py`` : elle ne s'applique qu'à SA suite. Sept
-    modules unitaires écrivaient donc sans que rien ne les efface — 5 674
-    learnings mesurés dans brain_test le 2026-08-11 pour 188 lignes réelles
-    (ticket cb888186).
+    ``tests/unit/`` hits the SAME ``brain_test`` database as the integration suite
+    as soon as ``BRAIN_V42_TEST_DB_URL`` is set, and both CI rails set it. But
+    ``cleanup_test_data`` is a fixture of ``tests/integration/conftest.py``: it only
+    applies to ITS suite. Seven unit modules were therefore writing with nothing
+    erasing them — 5,674 learnings measured in brain_test on 2026-08-11 for 188 real
+    rows (ticket cb888186).
 
-    Le symptôme est invisible en CI, qui recrée sa base à chaque pipeline ; il ne
-    grossit que sur les bases de développement locales, donc différemment sur
-    chaque machine. C'est le pire endroit pour un défaut.
+    The symptom is invisible in CI, which recreates its database at every pipeline;
+    it only grows on local development databases, hence differently on each machine.
+    That is the worst place for a defect.
 
-    Silencieuse quand la variable est absente : la majorité des tests unitaires
-    ne touchent aucune base et ne doivent pas payer une connexion pour ça.
+    Silent when the variable is absent: most unit tests touch no database and must
+    not pay for a connection because of this.
     """
     yield  # type: ignore[misc]
 
@@ -38,17 +37,17 @@ async def _purge_unit_rows() -> None:  # type: ignore[misc]
     from sqlalchemy.ext.asyncio import create_async_engine
     from sqlalchemy.pool import NullPool
 
-    # Importé du conftest d'intégration à dessein : DEUX purges divergeraient, et
-    # la divergence ne se verrait que le jour où l'une des deux laisse passer
-    # quelque chose. `tests` est un package et ce croisement est déjà un motif du
-    # dépôt (tests/integration/test_cleanup_purge_scope.py).
+    # Imported from the integration conftest on purpose: TWO purges would diverge,
+    # and the divergence would only be seen the day one of them lets something
+    # through. `tests` is a package and this crossing is already a repository pattern
+    # (tests/integration/test_cleanup_purge_scope.py).
     from tests.integration.conftest import purge_integration_rows
 
     engine = create_async_engine(url, poolclass=NullPool, echo=False)
     try:
         async with engine.connect() as conn:
             await conn.execute(sa.text("SELECT 1"))
-    except Exception:  # noqa: BLE001 — base injoignable : rien à nettoyer, rien à signaler
+    except Exception:  # noqa: BLE001 — unreachable database: nothing to clean, nothing to report
         await engine.dispose()
         return
     try:
@@ -60,15 +59,14 @@ async def _purge_unit_rows() -> None:  # type: ignore[misc]
 
 @pytest.fixture(autouse=True)
 def _reset_activity_reporter() -> Iterator[None]:
-    """Remettre l'émetteur d'activité global à ``None`` autour de chaque test.
+    """Reset the global activity emitter to ``None`` around each test.
 
-    ``brain_v42.mcp.activity_reporter._reporter`` est un global de processus,
-    construit paresseusement au premier appel de tool. Deux modules de tests y
-    injectent un double — l'émetteur lui-même et le câblage du middleware de
-    provenance — et un double laissé en place fuiterait sur tous les tests
-    suivants du processus. La remise à zéro vit ici plutôt que dupliquée dans
-    chaque module : elle protège aussi les tests qui traversent le middleware
-    sans savoir qu'ils touchent ce global.
+    ``brain_v42.mcp.activity_reporter._reporter`` is a process global, built lazily
+    at the first tool call. Two test modules inject a double into it — the emitter
+    itself and the provenance middleware's wiring — and a double left in place would
+    leak into every following test of the process. The reset lives here rather than
+    duplicated in each module: it also protects the tests that traverse the
+    middleware without knowing they touch this global.
     """
     from brain_v42.mcp import activity_reporter
 

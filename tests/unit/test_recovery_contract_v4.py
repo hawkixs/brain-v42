@@ -430,23 +430,22 @@ def test_full_runbook_has_one_039_operator_order_and_no_live_claim() -> None:
     assert "Production is already running schema 039" not in runbook
     assert "Production runs schema 039" not in runbook
     architecture = re.sub(r"\s+", " ", ARCHITECTURE.read_text(encoding="utf-8"))
-    # L'épingle littérale « Repository target: 040. » a vécu ici jusqu'au 2026-08-22
-    # et n'a JAMAIS été bumpée pendant que le dépôt passait à 046 : elle portait donc
-    # exactement la maladie qu'elle était censée surveiller. Le recensement `f7d013eb`
-    # la remplace par un contrôle DÉRIVÉ de `alembic/versions/`, dans
-    # `test_documents_agree_with_the_repository_head.py` — plus rien à bumper ici.
+    # The literal pin "Repository target: 040." lived here until 2026-08-22 and was
+    # NEVER bumped while the repository moved to 046: it therefore carried exactly
+    # the disease it was meant to watch. The `f7d013eb` census replaces it with a
+    # check DERIVED from `alembic/versions/`, in
+    # `test_documents_agree_with_the_repository_head.py` — nothing left to bump here.
     assert "Repository target: 040." not in architecture
     assert "Production remains at 037 before an authorized cutover." not in architecture
     schema = re.sub(r"\s+", " ", SCHEMA.read_text(encoding="utf-8"))
-    # L'épingle littérale « La cible du dépôt est 046. » vivait ici, doublon de
-    # `test_documentation_contract.py`, bumpée à 042, 043, 044 puis 045 sur quatre
-    # bascules. Retirée par `f7d013eb` : la VALEUR est désormais vérifiée par un
-    # contrôle DÉRIVÉ de `alembic/versions/` — `test_documents_agree_with_the_
+    # The literal pin "La cible du dépôt est 046." lived here, a duplicate of
+    # `test_documentation_contract.py`, bumped to 042, 043, 044 then 045 over four
+    # cutovers. Removed by `f7d013eb`: the VALUE is now checked by a control DERIVED
+    # from `alembic/versions/` — `test_documents_agree_with_the_
     # repository_head.py::test_every_repository_scoped_claim_equals_the_measured_head`,
-    # qui couvre `SCHEMA.md` — et la PRÉSENCE de la phrase reste tenue par
-    # `test_documentation_contract.py`. Rien n'est perdu, une passe de bump l'est.
-    # La garde négative ci-dessous reste : elle ne vieillit pas, elle interdit une
-    # chaîne morte.
+    # which covers `SCHEMA.md` — and the PRESENCE of the sentence stays held by
+    # `test_documentation_contract.py`. Nothing is lost, a bump pass is. The negative
+    # guard below stays: it does not age, it forbids a dead string.
     assert "La production reste à 037 avant une bascule autorisée." not in schema
 
     assert "Production remains at 037 before an authorized cutover." not in schema

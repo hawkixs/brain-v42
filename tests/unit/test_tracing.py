@@ -1,24 +1,24 @@
-"""Le tracing OTel des appels de tool — et le provider qu'on n'installe JAMAIS.
+"""OTel tracing of tool calls — and the provider we NEVER install.
 
-LE PIÈGE CENTRAL, vérifié dans le venv le 2026-08-12. FastMCP porte sa PROPRE
-télémétrie : ``fastmcp/server/telemetry.py::server_span`` (ligne 57) fait, sur
-échec ::
+THE CENTRAL TRAP, verified in the venv on 2026-08-12. FastMCP carries its OWN
+telemetry: ``fastmcp/server/telemetry.py::server_span`` (line 57) does, on
+failure::
 
     span.record_exception(e)                          # args + stacktrace
-    span.set_status(Status(StatusCode.ERROR, str(e)))  # message brut
+    span.set_status(Status(StatusCode.ERROR, str(e)))  # raw message
 
-et pose ``enduser.id`` via ``get_auth_span_attributes()`` (ligne 85). Son tracer
-vient de ``fastmcp/telemetry.py::get_tracer`` (ligne 38), qui appelle
-``otel_get_tracer(INSTRUMENTATION_NAME)`` — donc le provider **GLOBAL**.
+and sets ``enduser.id`` through ``get_auth_span_attributes()`` (line 85). Its
+tracer comes from ``fastmcp/telemetry.py::get_tracer`` (line 38), which calls
+``otel_get_tracer(INSTRUMENTATION_NAME)`` — hence the **GLOBAL** provider.
 
-Poser un provider global armerait ce bloc. Or ``business_errors.py:101`` fait
-``raise ToolError(str(exc)) from exc`` : ``str(e)`` EST le message métier brut,
-et ``record_exception`` sérialise une stacktrace qui suit ``__cause__``. Le
-secret que ``test_decorator_does_not_log_authorization_failure_context`` existe
-pour retenir ressortirait par ce canal-là.
+Installing a global provider would arm that block. Yet ``business_errors.py:101``
+does ``raise ToolError(str(exc)) from exc``: ``str(e)`` IS the raw business
+message, and ``record_exception`` serialises a stacktrace that follows
+``__cause__``. The secret ``test_decorator_does_not_log_authorization_failure_context``
+exists to hold back would come out through that channel.
 
-D'où un provider PRIVÉ, et un test qui lit la source pour l'épingler — il doit
-rester vert en CI, où le SDK n'est pas installé.
+Hence a PRIVATE provider, and a test that reads the source to pin it — it must
+stay green in CI, where the SDK is not installed.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ _SOURCE = Path(tracing.__file__).read_text(encoding="utf-8")
 
 
 class _FakeSpan:
-    """Double de span : enregistre ce qu'on lui pose, rien de plus."""
+    """A span double: records what is set on it, nothing more."""
 
     def __init__(self) -> None:
         self.attributes: dict[str, object] = {}
@@ -84,13 +84,13 @@ def _clean_tracer():
 
 
 def _called_attribute_names(source: str) -> set[str]:
-    """Les noms d'attributs RÉELLEMENT appelés, docstrings exclus.
+    """The attribute names REALLY called, docstrings excluded.
 
-    Un `assert "set_tracer_provider" not in source` paraît plus simple et il
-    est faux dans les deux sens : il rougit sur le docstring qui EXPLIQUE
-    pourquoi on ne l'appelle pas (mesuré — c'est arrivé à l'écriture de ce
-    fichier), et il resterait vert sur un `getattr(trace, "set_tracer" + …)`.
-    L'AST répond à la question posée : cet appel a-t-il lieu ?
+    An `assert "set_tracer_provider" not in source` looks simpler and is wrong in
+    both directions: it reddens on the docstring that EXPLAINS why we do not call it
+    (measured — it happened while writing this file), and it would stay green on a
+    `getattr(trace, "set_tracer" + …)`. The AST answers the question asked: does
+    this call take place?
     """
     names: set[str] = set()
     for node in ast.walk(ast.parse(source)):
@@ -106,10 +106,10 @@ def _called_attribute_names(source: str) -> set[str]:
 
 class TestTheGlobalProviderIsNeverInstalled:
     def test_the_module_never_calls_set_tracer_provider(self) -> None:
-        """LE test de ce fichier. Il lit la SOURCE, donc il vaut sans le SDK.
+        """THE test of this file. It reads the SOURCE, so it holds without the SDK.
 
-        Un `set_tracer_provider` ici armerait le `record_exception` de FastMCP
-        et ferait sortir le message métier brut plus la stacktrace.
+        A `set_tracer_provider` here would arm FastMCP's `record_exception` and
+        would let the raw business message plus the stacktrace out.
         """
         assert "set_tracer_provider" not in _called_attribute_names(_SOURCE), (
             "un provider GLOBAL arme la télémétrie interne de FastMCP, qui pose "
@@ -117,20 +117,20 @@ class TestTheGlobalProviderIsNeverInstalled:
         )
 
     def test_the_module_never_records_an_exception_object(self) -> None:
-        """On pose le NOM de la classe, jamais l'exception : ses args portent
-        le message métier, et sa stacktrace suit __cause__."""
+        """We set the class NAME, never the exception: its args carry the business
+        message, and its stacktrace follows __cause__."""
         assert "record_exception" not in _called_attribute_names(_SOURCE)
 
     def test_the_guard_would_catch_a_real_call(self) -> None:
-        """Un test-garde qui n'a jamais rougi pour la bonne raison ne prouve
-        rien. On lui donne ici le code qu'il doit refuser."""
+        """A guard test that has never reddened for the right reason proves
+        nothing. Here we give it the code it must refuse."""
         coupable = "import x\ndef f(p):\n    trace.set_tracer_provider(p)\n"
         assert "set_tracer_provider" in _called_attribute_names(coupable)
 
     def test_the_module_imports_no_otel_symbol_at_top_level(self) -> None:
-        """Le SDK est une dépendance OPTIONNELLE. Un import de module ferait
-        échouer le démarrage du serveur là où il est absent — c'est-à-dire en
-        CI et en production tant que l'extra n'est pas installé."""
+        """The SDK is an OPTIONAL dependency. A module-level import would fail the
+        server's startup where it is absent — that is, in CI and in production as
+        long as the extra is not installed."""
         tree = ast.parse(_SOURCE)
         top_level_imports: list[str] = []
         for node in tree.body:
@@ -145,9 +145,9 @@ class TestTheGlobalProviderIsNeverInstalled:
 
 class TestTheKillswitchActuallyCuts:
     def test_no_tracer_means_no_span(self) -> None:
-        """`get_tracer()` doit pouvoir rendre None, sinon le killswitch ne
-        coupe rien : l'API OTel rend un tracer no-op mais on paierait quand
-        même la construction des attributs sur le chemin chaud."""
+        """`get_tracer()` must be able to return None, otherwise the killswitch cuts
+        nothing: the OTel API returns a no-op tracer but we would still pay for
+        building the attributes on the hot path."""
         assert tracing.get_tracer() is None
         assert tracing.start_tool_span("brain_search") is None
 
@@ -161,10 +161,10 @@ class TestTheKillswitchActuallyCuts:
         assert tracer.calls[0]["name"] == "execute_tool brain_search"
 
     def test_the_span_is_forced_to_be_a_root(self) -> None:
-        """`start_span(name)` sans contexte explicite résout le parent depuis
-        le contexte COURANT. Un span client propagé par `traceparent` nous
-        adopterait alors comme enfant — et déciderait de notre échantillonnage.
-        On passe donc un contexte VIDE, explicitement."""
+        """`start_span(name)` without an explicit context resolves the parent from
+        the CURRENT context. A client span propagated through `traceparent` would
+        then adopt us as a child — and would decide our sampling. We therefore pass
+        an EMPTY context, explicitly."""
         tracer = _FakeTracer()
         tracing.set_tracer(tracer)
 
@@ -179,11 +179,10 @@ class TestTheActorCardinalityIsBounded:
         assert tracing.bounded_actor("brain-v42") == "brain-v42"
 
     def test_beyond_the_cap_actors_collapse_into_one_bucket(self) -> None:
-        """`X-Brain-Agent` est déclaré par le client, donc falsifiable. Un
-        attribut de span n'a AUCUN plafond natif : sans borne, un appelant qui
-        varie son en-tête fait exploser la cardinalité du backend. Même plafond
-        que `MetricsCollector._MAX_AGENTS` (collector.py:130), pour la même
-        raison."""
+        """`X-Brain-Agent` is declared by the client, hence forgeable. A span
+        attribute has NO native cap: without a bound, a caller varying its header
+        blows up the backend's cardinality. Same cap as
+        `MetricsCollector._MAX_AGENTS` (collector.py:130), for the same reason."""
         for index in range(tracing.MAX_TRACED_ACTORS):
             tracing.bounded_actor(f"agent-{index}")
 
@@ -195,8 +194,8 @@ class TestTheActorCardinalityIsBounded:
 
 class TestTelemetryNeverBreaksTheObservedCall:
     def test_a_tracer_that_raises_yields_no_span_and_no_exception(self) -> None:
-        """Même posture que `_report` et que la sonde de provenance : un canal
-        d'observation ne peut pas faire tomber l'opération observée."""
+        """Same posture as `_report` and the provenance probe: an observation
+        channel cannot bring down the operation it observes."""
 
         class _BoomTracer:
             def start_span(self, *_a: object, **_kw: object) -> None:
@@ -238,8 +237,8 @@ class TestTheSpanCarriesTheRightAttributes:
         assert tracer.spans[0].ended
 
     def test_a_failed_call_names_the_exception_class_and_never_its_message(self) -> None:
-        """Le nom de classe diagnostique ; le message, lui, EST la donnée
-        métier (`business_errors.py:101` relaie `str(exc)`)."""
+        """The class name diagnoses; the message, for its part, IS the business
+        data (`business_errors.py:101` relays `str(exc)`)."""
         tracer = _FakeTracer()
         tracing.set_tracer(tracer)
 
@@ -260,9 +259,9 @@ class TestTheSpanCarriesTheRightAttributes:
         assert tracer.spans[0].recorded_exceptions == []
 
     def test_a_masked_business_error_is_unwrapped_to_its_real_cause(self) -> None:
-        """`business_errors._wrap` relaie tout en `ToolError`. Sans déballage,
-        `error.type` dégénérerait en « ToolError » pour toute panne — ce qui
-        est exactement le défaut qui avait fait écarter le middleware."""
+        """`business_errors._wrap` relays everything as `ToolError`. Without
+        unwrapping, `error.type` would degenerate into "ToolError" for every failure
+        — which is exactly the defect that got the middleware discarded."""
         tracer = _FakeTracer()
         tracing.set_tracer(tracer)
 
@@ -279,12 +278,12 @@ class TestTheSpanCarriesTheRightAttributes:
 
 
 class TestShutdownIsBoundedAndNeverRaises:
-    """Contrepartie de `shutdown_on_exit=False`.
+    """The counterpart of `shutdown_on_exit=False`.
 
-    L'`atexit` du SDK a été désactivé pour qu'un exporter injoignable ne fasse
-    pas traîner l'arrêt du serveur. Sans flush explicite, on aurait juste
-    échangé ce défaut contre un autre : des spans qui disparaissent en silence.
-    Trou trouvé par l'e2e, pas par relecture.
+    The SDK's `atexit` was disabled so that an unreachable exporter does not drag
+    out the server's shutdown. Without an explicit flush, we would merely have
+    traded that defect for another: spans disappearing in silence. A hole found by
+    the e2e, not by review.
     """
 
     def test_shutdown_flushes_then_closes_the_provider(self) -> None:

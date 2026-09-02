@@ -1,35 +1,34 @@
-"""Le contrat v5 empreinte les QUATORZE fonctions de trigger, pas une seule.
+"""The v5 contract fingerprints the FOURTEEN trigger functions, not just one.
 
-`75112bc6`, troisième enfant de la porte `8eaefe36`, et le dernier des cinq.
+`75112bc6`, third child of the `8eaefe36` gate, and the last of the five.
 
-**Le chiffre du corps du ticket était faux d'un facteur ~4, et la passe
-sceptique l'avait déjà corrigé.** Ce n'est pas 55 fonctions : 55 est le nombre de
-TRIGGERS. Les fonctions distinctes sont **14**. Les trois nombres du ticket ont
-été REMESURÉS ici, à la tête `046`, le 2026-08-22 :
+**The figure in the ticket body was wrong by a factor of ~4, and the sceptical
+pass had already corrected it.** It is not 55 functions: 55 is the number of
+TRIGGERS. The distinct functions are **14**. The ticket's three numbers were
+RE-MEASURED here, at head `046`, on 2026-08-22:
 
-- **55** triggers non internes ;
-- **44** déjà nommés dans l'actif, donc **11** ne l'étaient pas — l'écart réel,
-  et non « ~40 » ;
-- **6** `trg_*_freshness_stamped`, et non 12 ;
-- **14** fonctions de trigger distinctes, dont **UNE SEULE** était empreintée
-  (`update_updated_at`, par l'invariant 039 hérité). Treize pouvaient changer de
-  corps sans qu'un octet du contrat ne bouge.
+- **55** non-internal triggers;
+- **44** already named in the asset, hence **11** were not — the real gap, not
+  "~40";
+- **6** `trg_*_freshness_stamped`, not 12;
+- **14** distinct trigger functions, of which **ONE** was fingerprinted
+  (`update_updated_at`, by the inherited 039 invariant). Thirteen could change
+  body without a byte of the contract moving.
 
-**LE PRÉALABLE DUR EST LEVÉ, ET PAR MESURE.** Le parent l'exigeait en toutes
-lettres : normaliser puis auditer la dérive prod vs migration fraîche AVANT tout
-fingerprint, sans quoi l'empreinte graverait la dérive comme référence. Une base
-a été construite À NEUF par `alembic upgrade head`, puis les 14 `prosrc_sha256`
-comparés à la production : **écart ZÉRO**. La comparaison n'a délibérément PAS
-été faite contre `brain_test` — cette base est migrée à chaque session mais on
-ne peut pas établir qu'elle n'a jamais été clonée depuis la prod, et un contrôle
-dont on ne peut pas exclure que l'objet ait produit le témoin est creux.
+**THE HARD PRECONDITION IS LIFTED, AND BY MEASUREMENT.** The parent required it in
+so many words: normalise then audit the prod vs fresh-migration drift BEFORE any
+fingerprint, without which the fingerprint would engrave the drift as the
+reference. A database was built AFRESH by `alembic upgrade head`, then the 14
+`prosrc_sha256` compared to production: **ZERO difference**. The comparison was
+deliberately NOT made against `brain_test` — that database is migrated at every
+session but it cannot be established that it was never cloned from production, and
+a control where the object may have produced the witness is hollow.
 
-**L'échantillonnage par classe, proposé par le ticket, n'a pas été retenu** — la
-passe sceptique l'avait déjà rendu facultatif en ramenant le volume de 55 à 14.
-Quatorze empreintes tiennent dans UNE liste `VALUES`, là où les deux fonctions
-déjà attestées coûtent ~135 lignes de CTE chacune. Échantillonner aurait laissé
-des fonctions hors contrat pour économiser des lignes qu'on n'a pas besoin
-d'économiser.
+**Sampling by class, proposed by the ticket, was not adopted** — the sceptical
+pass had already made it optional by bringing the volume down from 55 to 14.
+Fourteen fingerprints fit in ONE `VALUES` list, where the two already-attested
+functions cost ~135 CTE lines each. Sampling would have left functions outside the
+contract to save lines we have no need to save.
 """
 
 from __future__ import annotations
@@ -46,10 +45,10 @@ V5_PGRESTORE = RECOVERY / "brain-v42-v5-pgrestore.sql"
 
 CHECK_ID = "trigger_function_fingerprints"
 
-#: MESURÉ le 2026-08-22 contre la production à la tête `046`, et rejoué contre
-#: une base construite à neuf : identiques. `update_updated_at` figure ici ET
-#: dans l'invariant 039 — un test compare les deux exemplaires, sinon l'un
-#: dériverait de l'autre en restant vert.
+#: MEASURED on 2026-08-22 against production at head `046`, and replayed against a
+#: freshly built database: identical. `update_updated_at` appears here AND in the
+#: 039 invariant — a test compares the two copies, otherwise one would drift from
+#: the other while staying green.
 TRIGGER_FUNCTIONS: tuple[tuple[str, str, int], ...] = (
     (
         "enforce_immutable_ticket_participants",
@@ -119,13 +118,13 @@ TRIGGER_FUNCTIONS: tuple[tuple[str, str, int], ...] = (
     ("update_updated_at", "83ca0f7a3230405dae8b4f4e692b4983869b58e4225b6e60bbf96db3f6ae9a59", 96),
 )
 
-#: L'empreinte de `update_updated_at` telle que l'invariant 039 la pinne déjà.
-#: Écrite à la main ICI, exprès : c'est le TERME DE COMPARAISON, et le dériver de
-#: la même source que ce qu'il compare le rendrait creux.
+#: `update_updated_at`'s fingerprint as the 039 invariant already pins it. Written
+#: by hand HERE, on purpose: it is the TERM OF COMPARISON, and deriving it from the
+#: same source as what it compares would make it hollow.
 UPDATE_UPDATED_AT_SHA256 = "83ca0f7a3230405dae8b4f4e692b4983869b58e4225b6e60bbf96db3f6ae9a59"
 
-#: Les 11 triggers de tamponnage que l'actif ne NOMMAIT pas — 5 de la 041, 6 de
-#: la 043. `19` = BEFORE + INSERT + UPDATE + FOR EACH ROW.
+#: The 11 stamping triggers the asset did not NAME — 5 from 041, 6 from 043.
+#: `19` = BEFORE + INSERT + UPDATE + FOR EACH ROW.
 STAMPING_TRIGGERS: tuple[tuple[str, str, str], ...] = (
     ("adrs", "trg_adrs_content_updated", "stamp_content_updated_at"),
     ("adrs", "trg_adrs_freshness_stamped", "stamp_freshness_status"),
@@ -149,10 +148,10 @@ NEW_CTES = (
     "stamping_trigger_mismatches",
 )
 
-#: Les attributs qu'une fonction de trigger doit garder pour entrer dans
-#: l'ensemble OBSERVÉ. Les mettre dans le prédicat plutôt que dans la liste
-#: attendue est ce qui fait tomber une fonction dérivée HORS de l'observation :
-#: elle devient « attendue et introuvable », ce qui est exactement le fait.
+#: The attributes a trigger function must keep to enter the OBSERVED set. Putting
+#: them in the predicate rather than in the expected list is what makes a drifted
+#: function fall OUT of the observation: it becomes "expected and not found", which
+#: is exactly the fact.
 INVARIANT_ATTRIBUTES = (
     "prokind = 'f'",
     "provolatile = 'v'",
@@ -176,14 +175,14 @@ def _cte_body(path: Path, name: str) -> str:
 
 
 def test_the_remeasured_volume_is_pinned() -> None:
-    """Les trois nombres du ticket, remesurés — le corps en avait faux deux."""
+    """The ticket's three numbers, re-measured — the body had two of them wrong."""
     assert len(TRIGGER_FUNCTIONS) == 14
     assert len({entry[0] for entry in TRIGGER_FUNCTIONS}) == 14
     assert len(STAMPING_TRIGGERS) == 11
     assert sum(1 for _, name, _ in STAMPING_TRIGGERS if name.endswith("_freshness_stamped")) == 6
     assert sum(1 for _, name, _ in STAMPING_TRIGGERS if name.endswith("_content_updated")) == 5
-    # Toutes les empreintes sont des SHA-256 hexadécimaux, et toutes distinctes :
-    # deux fonctions au même digest signalerait un copier-coller de la liste.
+    # All the fingerprints are hexadecimal SHA-256, and all distinct: two functions
+    # at the same digest would signal a copy-paste of the list.
     for _, digest, octets in TRIGGER_FUNCTIONS:
         assert re.fullmatch(r"[0-9a-f]{64}", digest)
         assert octets > 0
@@ -198,29 +197,29 @@ def test_both_assets_pin_every_trigger_function() -> None:
 
 
 def test_the_039_fingerprint_and_the_census_agree_on_update_updated_at() -> None:
-    """Deux exemplaires de la même empreinte : les comparer, ou l'un dérivera.
+    """Two copies of the same fingerprint: compare them, or one will drift.
 
-    L'invariant 039 pinne `update_updated_at` depuis longtemps ; le recensement
-    la pinne à nouveau. Chacun resterait vert en dérivant de l'autre — c'est le
-    mode de panne des empreintes dupliquées, celui que `2bb1988f` a déjà
-    rencontré sur la formule de colonnes.
+    The 039 invariant has pinned `update_updated_at` for a long time; the census
+    pins it again. Each would stay green while drifting from the other — that is
+    the failure mode of duplicated fingerprints, the one `2bb1988f` already met on
+    the column formula.
     """
     census = {name: digest for name, digest, _ in TRIGGER_FUNCTIONS}
     assert census["update_updated_at"] == UPDATE_UPDATED_AT_SHA256
 
     for asset in (V5_SQL, V5_PGRESTORE):
         sql = asset.read_text(encoding="utf-8")
-        # Présente DEUX fois : une dans l'invariant 039, une dans le recensement.
+        # Present TWICE: once in the 039 invariant, once in the census.
         assert sql.count(UPDATE_UPDATED_AT_SHA256) == 2, asset.name
 
 
 def test_the_observed_set_is_bounded_by_the_invariant_attributes() -> None:
-    """Une fonction qui perd un de ces attributs SORT de l'observation.
+    """A function that loses one of these attributes LEAVES the observation.
 
-    C'est délibéré et c'est le point : `SECURITY DEFINER` posé sur une fonction
-    de trigger est une escalade de privilège, pas une divergence de corps. En la
-    faisant sortir de l'ensemble observé, elle devient « attendue et
-    introuvable » — l'exacte vérité, et un échec plutôt qu'un silence.
+    That is deliberate and it is the point: `SECURITY DEFINER` set on a trigger
+    function is a privilege escalation, not a body divergence. By making it leave
+    the observed set, it becomes "expected and not found" — the exact truth, and a
+    failure rather than a silence.
     """
     for asset in (V5_SQL, V5_PGRESTORE):
         body = _cte_body(asset, "observed_trigger_functions")
@@ -230,7 +229,7 @@ def test_the_observed_set_is_bounded_by_the_invariant_attributes() -> None:
 
 
 def test_both_assets_declare_the_eleven_unnamed_stamping_triggers() -> None:
-    """Les 11 que l'actif ne nommait pas — l'écart RÉEL, mesuré à 11 et non ~40."""
+    """The 11 the asset did not name — the REAL gap, measured at 11 and not ~40."""
     for asset in (V5_SQL, V5_PGRESTORE):
         expected = _cte_body(asset, "expected_stamping_triggers")
         for table, trigger, function in STAMPING_TRIGGERS:
@@ -240,13 +239,13 @@ def test_both_assets_declare_the_eleven_unnamed_stamping_triggers() -> None:
 
 
 def test_the_stamping_check_pins_the_when_clause() -> None:
-    """La clause WHEN est TOUT le sens de ces triggers, et elle est perdable.
+    """The WHEN clause is the WHOLE meaning of these triggers, and it is losable.
 
-    Les 11 sont CONDITIONNELS : `WHEN (old.x IS DISTINCT FROM new.x)`. Recréé
-    sans sa clause, le trigger tamponnerait à CHAQUE écriture — la 041 a été
-    écrite précisément pour que `content_updated_at` ne bouge que sur un vrai
-    changement de contenu. Le nom, la table et la fonction seraient tous les
-    trois intacts : seul le md5 de la condition voit la perte.
+    The 11 are CONDITIONAL: `WHEN (old.x IS DISTINCT FROM new.x)`. Recreated
+    without its clause, the trigger would stamp at EVERY write — 041 was written
+    precisely so that `content_updated_at` only moves on a real content change. The
+    name, the table and the function would all three be intact: only the md5 of the
+    condition sees the loss.
     """
     for asset in (V5_SQL, V5_PGRESTORE):
         body = _cte_body(asset, "observed_stamping_triggers")
@@ -257,11 +256,11 @@ def test_the_stamping_check_pins_the_when_clause() -> None:
 
 
 def test_a_disabled_trigger_falls_out_of_the_observed_set() -> None:
-    """`tgenabled = 'O'` dans le prédicat, et c'est la panne la plus muette.
+    """`tgenabled = 'O'` in the predicate, and it is the most silent failure.
 
-    Un trigger DÉSACTIVÉ existe encore, porte son nom, sa table et sa fonction —
-    `pg_trigger` le rend, un `\\d table` l'affiche. Il ne fait simplement plus
-    rien. Sans ce prédicat, l'attestation le compterait comme présent.
+    A DISABLED trigger still exists, carries its name, its table and its function —
+    `pg_trigger` returns it, a `\\d table` displays it. It simply no longer does
+    anything. Without this predicate, the attestation would count it as present.
     """
     for asset in (V5_SQL, V5_PGRESTORE):
         assert "trigger_record.tgenabled = 'O'" in _cte_body(asset, "observed_stamping_triggers"), (
@@ -270,12 +269,12 @@ def test_a_disabled_trigger_falls_out_of_the_observed_set() -> None:
 
 
 def test_both_checks_are_bidirectional() -> None:
-    """Les deux sens, et le second n'est pas décoratif.
+    """Both directions, and the second is not decorative.
 
-    Une fonction de trigger AJOUTÉE n'est attrapée par rien d'autre : elle n'est
-    ni une table, ni un index, ni une contrainte. Un trigger de tamponnage posé
-    sur une table de plus ferait bouger `content_updated_at` là où personne ne
-    l'attend — et le recensement des fonctions, lui, resterait vert.
+    An ADDED trigger function is caught by nothing else: it is neither a table, nor
+    an index, nor a constraint. A stamping trigger placed on one more table would
+    move `content_updated_at` where nobody expects it — and the function census,
+    for its part, would stay green.
     """
     for asset in (V5_SQL, V5_PGRESTORE):
         for name in ("trigger_function_mismatches", "stamping_trigger_mismatches"):
@@ -285,11 +284,11 @@ def test_both_checks_are_bidirectional() -> None:
 
 
 def test_the_stamping_observation_is_bounded_by_function_not_by_name() -> None:
-    """Le second sens doit pouvoir voir une table NEUVE, pas seulement les onze.
+    """The second direction must be able to see a NEW table, not only the eleven.
 
-    Borner l'observation aux tables attendues aurait rendu le terme inverse
-    aveugle au cas qui compte — un tamponnage posé ailleurs. Le borner aux deux
-    FONCTIONS de tamponnage le garde ouvert à toute la base.
+    Bounding the observation to the expected tables would have made the inverse
+    term blind to the case that matters — a stamp placed elsewhere. Bounding it to
+    the two stamping FUNCTIONS keeps it open to the whole database.
     """
     for asset in (V5_SQL, V5_PGRESTORE):
         body = _cte_body(asset, "observed_stamping_triggers")
@@ -302,11 +301,11 @@ def test_the_stamping_observation_is_bounded_by_function_not_by_name() -> None:
 
 
 def test_the_new_ctes_are_byte_identical_across_the_two_variants() -> None:
-    """Parité MESURÉE : zéro clause WHEN ne porte de motif normalisé.
+    """MEASURED parity: not one WHEN clause carries a normalised pattern.
 
-    Elles contiennent des `::text` nus — `(old.title)::text` — mais aucun
-    `::character varying::text` ni `]::text[]`, les deux seules formes que
-    `pg_restore` réécrit. Vérifié EN BASE sur les 55 triggers, pas à l'œil.
+    They contain bare `::text` — `(old.title)::text` — but no
+    `::character varying::text` nor `]::text[]`, the only two forms `pg_restore`
+    rewrites. Verified IN THE DATABASE over the 55 triggers, not by eye.
     """
     for name in NEW_CTES:
         assert _cte_body(V5_SQL, name) == _cte_body(V5_PGRESTORE, name), name

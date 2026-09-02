@@ -268,16 +268,16 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
     script = ScriptDirectory.from_config(config)
 
     assert checks["alembic_head"]["revision"] == "031"
-    # Marqueur « ce contrat a été relu à cette tête ». La 045 n'ajoute aucune
-    # table — 32 tables `public` mesurées sur `brain` juste après l'application —
-    # et n'élargit qu'une colonne existante : un dump/restore la transporte à sa
-    # largeur déclarée, sans rien à reprendre côté contrat. Elle recrée
-    # `codex_dream_run_v1` à l'identique, en relisant la définition de la 036,
-    # et repose son GRANT ; la FORME décrite par le contrat est donc intacte.
-    # Il reste épinglé à 031 parce que c'est la révision dont il décrit la
-    # forme, pas la tête courante. Relu à la 049 : elle n'ajoute aucune table
-    # (32 `public` inchangées) — deux colonnes nullable sur `dream_runs` et un
-    # vocabulaire de CHECK élargi, rien que le contrat v1 décrive.
+    # A "this contract was re-read at this head" marker. 045 adds no table — 32
+    # `public` tables measured on `brain` just after the application — and only
+    # widens an existing column: a dump/restore transports it at its declared width,
+    # with nothing to revisit on the contract side. It recreates
+    # `codex_dream_run_v1` identically, by re-reading 036's definition, and re-lays
+    # its GRANT; the SHAPE described by the contract is therefore intact. It stays
+    # pinned at 031 because that is the revision whose shape it describes, not the
+    # current head. Re-read at 049: it adds no table (32 `public` unchanged) — two
+    # nullable columns on `dream_runs` and a widened CHECK vocabulary, nothing the
+    # v1 contract describes.
     assert script.get_heads() == ["049"]
     post_contract_tables = {
         "brain_session_artifacts",

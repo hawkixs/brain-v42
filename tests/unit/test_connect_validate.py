@@ -112,10 +112,11 @@ async def test_marks_only_latest_connect_row_partial_with_bounded_error(
                 .returning(dream_runs.c.id)
             )
         ).scalar_one()
-        # Le leurre, et c'est lui qui fait la preuve : même date, même phase, id le
-        # PLUS HAUT, autre projet. Sans le filtre de projet de connect_run_id_statement
-        # le validateur marquerait CETTE ligne — l'échec d'un projet écrit sur un autre,
-        # ce que la spec §12 interdit. Un test sans ce leurre reste vert filtre retiré.
+        # The decoy, and it is what makes the proof: same date, same phase, HIGHEST
+        # id, different project. Without connect_run_id_statement's project filter the
+        # validator would mark THAT row — one project's failure written onto another,
+        # which spec §12 forbids. A test without this decoy stays green with the
+        # filter removed.
         decoy_id = (
             await session.execute(
                 dream_runs.insert()
@@ -157,7 +158,7 @@ async def test_marks_only_latest_connect_row_partial_with_bounded_error(
     assert rows[0]["error_message"] is None
     assert rows[1]["status"] == "partial"
     assert rows[1]["error_message"] == "x" * 1_000
-    # Le leurre est intact : le validateur n'a pas débordé sur l'autre projet.
+    # The decoy is intact: the validator did not spill over onto the other project.
     assert rows[2]["status"] == "done"
     assert rows[2]["error_message"] is None
 

@@ -1,15 +1,15 @@
-"""Le registre généralisé — équivalence avec l'ancien, puis fusion.
+"""The generalised registry — equivalence with the old one, then the merge.
 
-La fusion réunit deux sources qui ne se recouvrent pas : la télémétrie OTLP
-d'un CLI (tokens, tours, coût) et l'activité observée côté brain (appels de
-tools). La clé de jointure est le pseudonyme HMAC de l'UUID de session.
+The merge brings together two sources that do not overlap: a CLI's OTLP
+telemetry (tokens, turns, cost) and the activity observed on the brain side (tool
+calls). The join key is the HMAC pseudonym of the session UUID.
 
-Mesuré le 2026-08-06 (``docs/upstream/2026-08-06-claude-otlp-session-join.md``) :
-aucun client ne sait déclarer sa session dans un en-tête MCP aujourd'hui. Le cas
-NOMINAL est donc deux lignes disjointes — une OTLP-only, une « non attribué » —
-et non une ligne jointe. Les deux situations sont épinglées ici : la jointure
-parce que le code doit la porter pour le jour où un client le pourra, la
-disjonction parce que c'est ce que la production produit.
+Measured on 2026-08-06 (``docs/upstream/2026-08-06-claude-otlp-session-join.md``):
+no client today knows how to declare its session in an MCP header. The NOMINAL
+case is therefore two disjoint rows — one OTLP-only, one "unattributed" — and not
+a joined row. Both situations are pinned here: the join because the code must
+carry it for the day a client can, the disjunction because it is what production
+produces.
 """
 
 from __future__ import annotations
@@ -34,16 +34,16 @@ SECRET = b"\x02" * 32
 OTHER_SECRET = b"\x03" * 32
 PSEUDONYM_PATTERN = re.compile(r"claude-[0-9a-f]{32}")
 CODEX_PSEUDONYM_PATTERN = re.compile(r"codex-[0-9a-f]{32}")
-# Côté brain, l'identifiant ne nomme aucun agent : le processus MCP ne sait
-# pas quel CLI l'appelle, et un préfixe en inventerait un.
+# On the brain side, the identifier names no agent: the MCP process does not know
+# which CLI is calling it, and a prefix would invent one.
 SESSION_PATTERN = re.compile(r"session-[0-9a-f]{32}")
 
 
 class _Clock:
-    """Horloge monotone pilotée par le test.
+    """A monotonic clock driven by the test.
 
-    Un itérateur de valeurs figées casserait dès que l'implémentation lit
-    l'horloge une fois de plus ou de moins ; ici seul le temps écoulé compte.
+    An iterator of frozen values would break as soon as the implementation reads
+    the clock one time more or less; here only the elapsed time matters.
     """
 
     def __init__(self) -> None:
@@ -113,7 +113,7 @@ def _claude_api_request(
 
 
 def _claude_session(session_id: str = FAKE_UUID) -> bytes:
-    """Une session Claude nominale : un prompt, puis une requête d'API."""
+    """A nominal Claude session: a prompt, then an API request."""
     return _envelope(
         [
             _claude_prompt(session_id=session_id),
@@ -140,7 +140,7 @@ def _codex_payload(*, conversation_id: str = OTHER_UUID, timestamp: str = "1") -
 def _codex_completion(
     *, conversation_id: str = OTHER_UUID, timestamp: str = "2", tokens: int = 12_345
 ) -> bytes:
-    """Une complétion Codex, seule source des ``ctx_tokens`` hérités."""
+    """A Codex completion, the sole source of the legacy ``ctx_tokens``."""
     return _envelope(
         [
             {
@@ -158,16 +158,15 @@ def _codex_completion(
 
 
 def _nth_uuid(index: int) -> str:
-    """Un UUID canonique distinct par index, pour peupler le registre."""
+    """A distinct canonical UUID per index, to populate the registry."""
     return f"00000000-0000-4000-8000-{index:012d}"
 
 
 def _rows(registry: ClientActivityRegistry) -> dict[str, dict[str, object]]:
-    """Indexer les lignes par identifiant, en refusant tout doublon d'id.
+    """Index the rows by identifier, refusing any duplicate id.
 
-    Sans ce garde, deux lignes partageant un id s'écraseraient l'une l'autre
-    dans le dictionnaire et le test compterait une ligne là où le registre en
-    produit deux.
+    Without this guard, two rows sharing an id would overwrite each other in the
+    dictionary and the test would count one row where the registry produces two.
     """
     clients = registry.snapshot()["clients"]
     assert isinstance(clients, list)
@@ -190,13 +189,13 @@ def test_empty_snapshot_keeps_the_legacy_shape() -> None:
 
 class TestJoin:
     def test_same_session_from_both_sources_yields_one_row(self) -> None:
-        """La jointure fonctionne — mais aucun client ne la déclenche aujourd'hui.
+        """The join works — but no client triggers it today.
 
-        Mesuré le 2026-08-06 : ni Claude Code ni Codex ne savent déclarer leur
-        session dans un en-tête MCP. Ce test garde la mécanique vivante et
-        testée pour le jour où l'un des deux le pourra ; il construit donc une
-        observation que la production ne produit pas encore. C'est délibéré :
-        ne pas le « corriger » en test d'absence, celui-ci existe à côté.
+        Measured on 2026-08-06: neither Claude Code nor Codex knows how to declare
+        its session in an MCP header. This test keeps the mechanism alive and
+        tested for the day one of the two can; it therefore builds an observation
+        production does not yet produce. That is deliberate: do not "fix" it into
+        an absence test, that one exists alongside.
         """
         registry = _registry()
         registry.ingest_claude_otlp_json(_claude_session())
@@ -223,18 +222,18 @@ class TestJoin:
         }
 
     def test_a_codex_that_declares_its_session_joins_its_own_row(self) -> None:
-        """La jointure ne doit pas marcher pour un seul des deux agents.
+        """The join must not work for only one of the two agents.
 
-        ``X-Brain-Agent`` porte un nom de projet, pas une marque de CLI : le
-        brain ne sait pas QUI l'appelle. Hacher son observation avec le sel
-        d'un agent en invente un — mesuré, celui de Claude pour tout le monde.
-        Un Codex qui déclarerait sa session sortait alors en ligne fantôme
-        ``claude-…`` à côté de sa vraie ligne ``codex-…``, sans jamais joindre.
+        ``X-Brain-Agent`` carries a project name, not a CLI brand: the brain does
+        not know WHO is calling it. Hashing its observation with an agent's salt
+        invents one — measured, Claude's for everybody. A Codex that declared its
+        session then came out as a ghost ``claude-…`` row next to its real
+        ``codex-…`` row, never joining.
 
-        Ce test épingle AUSSI l'égalité de la décision ``4890a475`` : la ligne
-        OTLP est clée par ``conversation.id``, l'observation brain déclare le
-        même UUID comme SESSION — la jointure ne tient que parce que, pour
-        Codex, les deux identifiants sont strictement égaux (863ff2ca).
+        This test ALSO pins the equality of decision ``4890a475``: the OTLP row is
+        keyed by ``conversation.id``, the brain observation declares the same UUID
+        as its SESSION — the join only holds because, for Codex, the two
+        identifiers are strictly equal (863ff2ca).
         """
         registry = _registry()
         registry.ingest_otlp_json(_codex_payload())
@@ -251,11 +250,11 @@ class TestJoin:
         assert rows[identifier]["brain_calls"] == 3
 
     def test_the_brain_side_identifier_claims_no_agent(self) -> None:
-        """Une observation seule ne sait pas de quel CLI elle vient.
+        """An observation alone does not know which CLI it came from.
 
-        Elle doit donc sortir sous un identifiant qui ne nomme aucun agent.
-        S'annoncer ``claude-…`` serait une affirmation que rien ne mesure :
-        ici l'acteur est ``red-lab``, qui n'est pas plus Claude que Codex.
+        It must therefore come out under an identifier that names no agent.
+        Announcing itself as ``claude-…`` would be an assertion nothing measures:
+        here the actor is ``red-lab``, which is no more Claude than Codex.
         """
         registry = _registry()
         registry.record_observations(
@@ -268,14 +267,14 @@ class TestJoin:
         assert SESSION_PATTERN.fullmatch(identifier)
 
     def test_tokens_sum_the_three_input_counters(self) -> None:
-        """``input_tokens`` seul mentirait d'un facteur mille.
+        """``input_tokens`` alone would lie by a factor of a thousand.
 
-        Relevé du 2026-08-06 : ``input_tokens=10`` pour un contexte réel de
-        18590 tokens, le reste vivant dans ``cache_read_tokens`` et
-        ``cache_creation_tokens``. Les quatre compteurs de la charge sont
-        choisis distincts : 1200 n'est atteignable ni par ``input_tokens``
-        seul (10), ni par le seul cache (1190), ni par la somme de tout,
-        sortie comprise (1540).
+        Reading of 2026-08-06: ``input_tokens=10`` for a real context of 18590
+        tokens, the rest living in ``cache_read_tokens`` and
+        ``cache_creation_tokens``. The payload's four counters are chosen
+        distinct: 1200 is reachable neither by ``input_tokens`` alone (10), nor by
+        the cache alone (1190), nor by the sum of everything, output included
+        (1540).
         """
         registry = _registry()
         registry.ingest_claude_otlp_json(_claude_session())
@@ -283,12 +282,12 @@ class TestJoin:
         assert row["tokens"] == 10 + 1_000 + 190
 
     def test_claude_today_yields_two_rows_not_one(self) -> None:
-        """Le cas NOMINAL mesuré : Claude ne déclare pas sa session.
+        """The measured NOMINAL case: Claude does not declare its session.
 
-        Son en-tête arrive en gabarit non expansé, que ``normalize_session``
-        rejette. On obtient donc une ligne OTLP-only et une ligne résiduelle
-        distinctes — exactement la situation de Codex. C'est le comportement
-        attendu en production, pas une dégradation accidentelle.
+        Its header arrives as an unexpanded template, which ``normalize_session``
+        rejects. We therefore get one OTLP-only row and one residual row, distinct
+        — exactly Codex's situation. This is the expected behaviour in production,
+        not an accidental degradation.
         """
         registry = _registry()
         registry.ingest_claude_otlp_json(_claude_session())
@@ -300,19 +299,19 @@ class TestJoin:
         assert len(rows) == 2
         residual = rows["unattributed:brain-v42"]
         (otlp,) = (row for key, row in rows.items() if key != "unattributed:brain-v42")
-        # Les deux moitiés de la même session, côte à côte et non jointes.
-        # Chaque absence est appariée à sa présence dans l'autre ligne : sans
-        # ce couple, un « is None » passerait au vert sur un registre mort.
+        # The two halves of the same session, side by side and not joined. Each
+        # absence is paired with its presence in the other row: without that pair,
+        # an "is None" would go green on a dead registry.
         assert otlp["tokens"] == 1_200
         assert otlp["brain_calls"] is None
         assert residual["brain_calls"] == 4
         assert residual["tokens"] is None
 
     def test_the_row_identifier_depends_on_the_process_secret(self) -> None:
-        """Le pseudonyme est un HMAC, pas un hachage nu.
+        """The pseudonym is an HMAC, not a bare hash.
 
-        Deux processus voient deux identifiants pour la même session, et
-        personne ne remonte à l'UUID en devinant une empreinte.
+        Two processes see two identifiers for the same session, and nobody gets
+        back to the UUID by guessing a fingerprint.
         """
         first = _registry()
         first.ingest_claude_otlp_json(_claude_session())
@@ -326,7 +325,7 @@ class TestJoin:
         assert first_id != second_id
 
     def test_raw_identifiers_never_appear_in_the_snapshot(self) -> None:
-        """Ni l'UUID de session ni le ``conversation.id`` ne sortent du registre."""
+        """Neither the session UUID nor the ``conversation.id`` leaves the registry."""
         registry = _registry()
         registry.ingest_claude_otlp_json(_claude_session())
         registry.ingest_otlp_json(_codex_payload())
@@ -335,9 +334,9 @@ class TestJoin:
         )
 
         serialized = json.dumps(registry.snapshot())
-        # Contrôle positif : les deux lignes sont bien là et le pseudonyme est
-        # bien dans la charge sérialisée. L'absence de l'UUID ne vient donc pas
-        # d'un instantané vide.
+        # Positive control: both rows are indeed there and the pseudonym is indeed
+        # in the serialised payload. The UUID's absence therefore does not come
+        # from an empty snapshot.
         assert len(_rows(registry)) == 2
         assert PSEUDONYM_PATTERN.search(serialized) is not None
         for raw in (FAKE_UUID, OTHER_UUID):
@@ -368,11 +367,11 @@ class TestRowShapes:
         }
 
     def test_brain_only_session_row_has_no_token_columns(self) -> None:
-        """``agent`` vaut ``None``, et l'identifiant le dit aussi.
+        """``agent`` is ``None``, and the identifier says so too.
 
-        Cette ligne épinglait ``claude-…`` pour une observation de ``red-lab``,
-        c'est-à-dire un agent affirmé là où la colonne voisine avoue n'en
-        connaître aucun. L'identifiant neutre est le seul cohérent des deux.
+        This row used to pin ``claude-…`` for an observation from ``red-lab``,
+        that is, an agent asserted where the neighbouring column admits knowing
+        none. The neutral identifier is the only one consistent with both.
         """
         registry = _registry()
         registry.record_observations(
@@ -397,10 +396,10 @@ class TestRowShapes:
         }
 
     def test_unattributed_row_fills_only_what_it_measured(self) -> None:
-        """Seuls ``actor``, ``brain_calls`` et ``last_seen_s`` ont une source.
+        """Only ``actor``, ``brain_calls`` and ``last_seen_s`` have a source.
 
-        Le reste vaut ``null`` et jamais ``0`` : un zéro cosmétique serait
-        indiscernable d'un vrai zéro mesuré.
+        The rest is ``null`` and never ``0``: a cosmetic zero would be
+        indistinguishable from a real measured zero.
         """
         registry = _registry()
         registry.record_observations((ClientObservation(actor="codex", session_id=None, calls=7),))
@@ -422,37 +421,36 @@ class TestRowShapes:
         }
 
     def test_a_session_without_api_request_reports_null_not_zero(self) -> None:
-        """Un prompt seul ne mesure ni contexte, ni coût, ni modèle."""
+        """A prompt alone measures neither context, nor cost, nor model."""
         registry = _registry()
         registry.ingest_claude_otlp_json(_envelope([_claude_prompt()]))
 
         (row,) = _rows(registry).values()
-        # Contrôle positif : la ligne est bien alimentée par la source OTLP.
+        # Positive control: the row is indeed fed by the OTLP source.
         assert row["turns"] == 1
         assert row["tokens"] is None
         assert row["cost"] is None
         assert row["model"] is None
 
     def test_the_model_survives_an_event_that_does_not_carry_one(self) -> None:
-        """Une vraie session alterne requête d'API et prompt, sans fin.
+        """A real session alternates API request and prompt, endlessly.
 
-        Toutes les autres charges de ce fichier ordonnent le prompt AVANT la
-        requête d'API — l'ordre d'ouverture d'une session, joué une fois. La
-        garde qui reporte le modèle déjà mesuré n'y est donc jamais sollicitée.
+        Every other payload in this file orders the prompt BEFORE the API request
+        — a session's opening order, played once. The guard that carries forward
+        the already-measured model is therefore never exercised there.
 
-        Or dès que l'utilisateur tape la ligne suivante, ``user_prompt``
-        arrive : il ne porte aucun attribut ``model``, ``_model_value`` rend
-        ``unknown``, et la ligne traduit ``unknown`` en ``None``. Sans la
-        garde, la colonne modèle du panneau retombe sur un tiret cadratin à
-        chaque frappe et ne se rallume qu'à la réponse suivante, pendant que la
-        session est bien vivante. C'est la confusion « null = non mesuré » que
-        la doctrine interdit : ici le modèle EST mesuré, il l'a été au tour
-        d'avant.
+        Yet as soon as the user types the next line, ``user_prompt`` arrives: it
+        carries no ``model`` attribute, ``_model_value`` returns ``unknown``, and
+        the row translates ``unknown`` into ``None``. Without the guard, the
+        dashboard's model column falls back to an em dash at every keystroke and
+        only lights up again at the next answer, while the session is very much
+        alive. This is the "null = not measured" confusion the doctrine forbids:
+        here the model IS measured, it was measured on the previous turn.
         """
         registry = _registry()
         registry.ingest_claude_otlp_json(_envelope([_claude_api_request(timestamp="2")]))
-        # Contrôle positif : le modèle est bien mesuré avant le prompt suivant,
-        # sinon sa survie ne prouverait rien.
+        # Positive control: the model is indeed measured before the next prompt,
+        # otherwise its survival would prove nothing.
         (row,) = _rows(registry).values()
         assert row["model"] == "claude-opus-5"
 
@@ -460,22 +458,22 @@ class TestRowShapes:
 
         (row,) = _rows(registry).values()
         assert row["model"] == "claude-opus-5"
-        # Second contrôle positif : le prompt a bien été appliqué. Sans lui, un
-        # lot ignoré — dédupliqué, jeté — laisserait le modèle intact pour une
-        # tout autre raison que celle qu'on épingle.
+        # Second positive control: the prompt was indeed applied. Without it, an
+        # ignored batch — deduplicated, discarded — would leave the model intact
+        # for an entirely different reason than the one being pinned.
         assert row["turns"] == 1
 
     def test_cost_accumulates_while_tokens_keep_the_latest_context(self) -> None:
-        """Deux colonnes voisines, deux natures que la ligne ne traite pas pareil.
+        """Two neighbouring columns, two natures the row does not treat alike.
 
-        Le coût est une dépense : il se cumule sur toute la session. Les tokens
-        sont une taille de contexte : la dernière requête d'API fait foi, un
-        cumul gonflerait la ligne à chaque tour.
+        Cost is an expense: it accumulates over the whole session. Tokens are a
+        context size: the last API request is authoritative, an accumulation would
+        inflate the row at every turn.
 
-        Une session à une seule requête d'API ne sait pas distinguer les deux —
-        c'est le cas de toutes les autres charges de ce fichier. Il en faut donc
-        deux, aux compteurs disjoints : 2400 n'est ni le premier contexte
-        (1200), ni la somme des deux (3600).
+        A session with a single API request cannot distinguish the two — which is
+        the case for every other payload in this file. Two are therefore needed,
+        with disjoint counters: 2400 is neither the first context (1200), nor the
+        sum of the two (3600).
         """
         registry = _registry()
         registry.ingest_claude_otlp_json(
@@ -500,12 +498,12 @@ class TestRowShapes:
 
 class TestUnattributed:
     def test_residual_and_otlp_rows_coexist_for_codex(self) -> None:
-        """Codex sort en N conversations PLUS une ligne non attribuée.
+        """Codex comes out as N conversations PLUS one unattributed row.
 
-        Ce n'est pas un doublon : sa configuration MCP n'expose aucun
-        identifiant de conversation, donc ses appels de tools ne sont
-        attribuables à aucune de ses conversations. Le panneau montre ce trou
-        au lieu de le combler par une corrélation inventée.
+        This is not a duplicate: its MCP configuration exposes no conversation
+        identifier, so its tool calls are attributable to none of its
+        conversations. The dashboard shows that hole instead of filling it with an
+        invented correlation.
         """
         registry = _registry()
         registry.ingest_otlp_json(_codex_payload())
@@ -529,17 +527,17 @@ class TestUnattributed:
 
 
 class TestActorLabel:
-    """L'acteur est déclaré par le client : il sert d'étiquette, pas de texte.
+    """The actor is declared by the client: it serves as a label, not as text.
 
-    ``normalize_agent`` ne fait que strip / basename / troncature — aucune
-    borne sur les caractères. Un ``X-Brain-Agent`` hostile traversait donc le
-    registre verbatim jusqu'au JSON de ``/api/cockpit``, à la fois en colonne
-    ``actor`` et dans l'``id`` de la ligne non attribuée. La ligne héritée
-    écrit ``topic: "[redacted]"`` et le décodeur OTLP effondre un ``model``
-    non conforme sur ``unknown`` — précisément pour cette raison ; la moitié
-    brain n'avait pas son équivalent.
+    ``normalize_agent`` only does strip / basename / truncation — no bound on the
+    characters. A hostile ``X-Brain-Agent`` therefore crossed the registry verbatim
+    all the way to ``/api/cockpit``'s JSON, both in the ``actor`` column and in the
+    unattributed row's ``id``. The legacy row writes ``topic: "[redacted]"`` and
+    the OTLP decoder collapses a non-conforming ``model`` onto ``unknown`` — for
+    precisely this reason; the brain half had no equivalent.
 
-    Ce qu'un client fait du rendu ne se décide pas ici : on borne à la source.
+    What a client does with the rendering is not decided here: we bound at the
+    source.
     """
 
     HOSTILE = "</script><img src=x onerror=alert(1)>"
@@ -554,8 +552,9 @@ class TestActorLabel:
         (row,) = rows.values()
         assert row["actor"] == "_rejected"
         assert row["id"] == "unattributed:_rejected"
-        # La mesure survit au rejet de l'étiquette : on refuse le libellé, pas
-        # l'observation. Sans ce contrôle, jeter l'observation passerait vert.
+        # The measurement survives the label's rejection: we refuse the label, not
+        # the observation. Without this control, discarding the observation would
+        # go green.
         assert row["brain_calls"] == 3
         serialized = json.dumps(registry.snapshot())
         assert self.HOSTILE not in serialized
@@ -563,11 +562,10 @@ class TestActorLabel:
         assert "onerror" not in serialized
 
     def test_a_hostile_actor_is_bounded_on_the_joined_row_too(self) -> None:
-        """La colonne ``actor`` de la ligne jointe est un second chemin.
+        """The joined row's ``actor`` column is a second path.
 
-        Elle lit le même acteur stocké mais depuis une autre branche de la
-        projection : une correction posée sur la seule ligne résiduelle la
-        laisserait fuir.
+        It reads the same stored actor but from another branch of the projection:
+        a fix applied to the residual row alone would let it leak.
         """
         registry = _registry()
         registry.ingest_claude_otlp_json(_claude_session())
@@ -579,9 +577,9 @@ class TestActorLabel:
         assert len(rows) == 1
         (row,) = rows.values()
         assert row["actor"] == "_rejected"
-        # Contrôle positif : la jointure a bien eu lieu, sinon la colonne
-        # ``actor`` vaudrait ``None`` et l'assertion ci-dessus ne prouverait
-        # rien de l'assainissement.
+        # Positive control: the join did happen, otherwise the ``actor`` column
+        # would be ``None`` and the assertion above would prove nothing about the
+        # sanitisation.
         assert row["brain_calls"] == 4
         assert row["tokens"] == 1_200
 
@@ -590,13 +588,13 @@ class TestActorLabel:
         ["brain-v42", "red-lab", "codex", "dream-codex-synth", "_unexpanded", "unknown", "a" * 64],
     )
     def test_a_legitimate_actor_reaches_the_panel_intact(self, actor: str) -> None:
-        """Contrôle positif indispensable.
+        """An indispensable positive control.
 
-        Sans lui, un assainissement qui effondrerait TOUT sur la sentinelle
-        passerait au vert tout en effaçant le seul renseignement de la ligne.
-        Les six premières valeurs sont celles que ``normalize_agent`` produit
-        réellement en production, sentinelles comprises ; la septième est la
-        troncature à ``MAX_ACTOR_LENGTH``, longueur légitime maximale.
+        Without it, a sanitisation collapsing EVERYTHING onto the sentinel would go
+        green while erasing the row's only piece of information. The first six
+        values are those ``normalize_agent`` really produces in production,
+        sentinels included; the seventh is the truncation at ``MAX_ACTOR_LENGTH``,
+        the maximum legitimate length.
         """
         registry = _registry()
         registry.record_observations((ClientObservation(actor=actor, session_id=None, calls=1),))
@@ -605,12 +603,12 @@ class TestActorLabel:
         assert rows[f"unattributed:{actor}"]["actor"] == actor
 
     def test_two_hostile_labels_collapse_into_a_single_bucket(self) -> None:
-        """Un seul seau, pas un pseudonyme par littéral.
+        """A single bucket, not one pseudonym per literal.
 
-        C'est le choix déjà fait par ``normalize_agent`` pour ``_unexpanded``
-        et par le décodeur OTLP pour ``unknown``. Il borne aussi l'arrosage :
-        un client qui inventerait mille étiquettes hostiles occuperait mille
-        lignes du plafond de 64, et évincerait les acteurs légitimes.
+        This is the choice already made by ``normalize_agent`` for ``_unexpanded``
+        and by the OTLP decoder for ``unknown``. It also bounds the spraying: a
+        client inventing a thousand hostile labels would occupy a thousand rows of
+        the cap of 64, and would evict the legitimate actors.
         """
         registry = _registry()
         registry.record_observations(
@@ -627,7 +625,7 @@ class TestActorLabel:
 
 class TestLegacyContract:
     def test_snapshot_keeps_the_legacy_keys_next_to_clients(self) -> None:
-        """Le contrat est additif : le panneau livré lit encore ces trois clés."""
+        """The contract is additive: the shipped dashboard still reads these three keys."""
         registry = _registry()
         registry.ingest_otlp_json(_codex_payload())
         registry.record_observations((ClientObservation(actor="codex", session_id=None, calls=1),))
@@ -652,10 +650,10 @@ class TestLegacyContract:
         assert len(_rows(registry)) == 2
 
     def test_brain_observations_stay_out_of_the_legacy_list(self) -> None:
-        """Une observation brain-side n'est pas une conversation OTLP.
+        """A brain-side observation is not an OTLP conversation.
 
-        La faire apparaître dans ``activeConvs`` gonflerait le compteur de
-        conversations du panneau livré avec des lignes sans tokens.
+        Making it appear in ``activeConvs`` would inflate the shipped dashboard's
+        conversation counter with rows carrying no tokens.
         """
         registry = _registry()
         registry.record_observations((ClientObservation(actor="codex", session_id=None, calls=7),))
@@ -664,20 +662,20 @@ class TestLegacyContract:
         assert snapshot["activeConvs"] == []
         assert snapshot["active_convs"] == 0
         assert snapshot["ctx_tokens"] == 0
-        # Contrôle positif : l'observation existe bien, ailleurs.
+        # Positive control: the observation does exist, elsewhere.
         assert _rows(registry)["unattributed:codex"]["brain_calls"] == 7
 
     def test_legacy_list_never_mislabels_a_claude_row_as_codex(self) -> None:
-        """Le panneau livré affiche ``activeConvs`` sous le titre « Codex ».
+        """The shipped dashboard displays ``activeConvs`` under the "Codex" title.
 
-        Une session Claude qui s'y présenterait comme ``codex`` lui mentirait.
+        A Claude session presenting itself there as ``codex`` would lie to it.
         """
         codex_registry = _registry()
         codex_registry.ingest_otlp_json(_codex_payload())
         legacy_codex = codex_registry.snapshot()["activeConvs"]
         assert isinstance(legacy_codex, list)
-        # Contrôle positif : l'étiquette existe et vaut « codex » pour Codex,
-        # sans quoi l'assertion d'absence ci-dessous serait vide de sens.
+        # Positive control: the label exists and is "codex" for Codex, without
+        # which the absence assertion below would be meaningless.
         assert [entry["agent"] for entry in legacy_codex] == ["codex"]
 
         claude_registry = _registry()
@@ -687,12 +685,12 @@ class TestLegacyContract:
         assert "codex" not in [entry["agent"] for entry in legacy_claude]
 
     def test_a_claude_session_never_enters_the_legacy_codex_list(self) -> None:
-        """``activeConvs`` compte des conversations Codex, et rien d'autre.
+        """``activeConvs`` counts Codex conversations, and nothing else.
 
-        Vérifier l'étiquette ne suffit pas : une session Claude admise dans la
-        liste s'y annoncerait honnêtement comme ``claude``. Le mensonge serait
-        dans les deux compteurs — ``active_convs`` et ``ctx_tokens`` — que le
-        panneau « Codex activity » livré affiche aujourd'hui, avant sa bascule.
+        Checking the label is not enough: a Claude session admitted into the list
+        would honestly announce itself as ``claude``. The lie would be in the two
+        counters — ``active_convs`` and ``ctx_tokens`` — that the shipped "Codex
+        activity" dashboard displays today, before its switch-over.
         """
         registry = _registry()
         registry.ingest_claude_otlp_json(_claude_session())
@@ -701,9 +699,9 @@ class TestLegacyContract:
         assert snapshot["activeConvs"] == []
         assert snapshot["active_convs"] == 0
         assert snapshot["ctx_tokens"] == 0
-        # Contrôle positif : la session est bien mesurée, dans la moitié neuve
-        # du registre. Sans lui, les trois absences ci-dessus passeraient au
-        # vert sur un registre qui n'a rien ingéré.
+        # Positive control: the session is indeed measured, in the registry's new
+        # half. Without it, the three absences above would go green on a registry
+        # that ingested nothing.
         (row,) = _rows(registry).values()
         assert row["agent"] == "claude"
         assert row["tokens"] == 1_200
@@ -711,25 +709,25 @@ class TestLegacyContract:
 
 class TestBounds:
     def test_rows_expire_after_the_ttl(self) -> None:
-        """Le TTL tient sur les deux moitiés du registre fusionné."""
+        """The TTL holds on both halves of the merged registry."""
         clock = _Clock()
         registry = _registry(clock)
         registry.ingest_claude_otlp_json(_claude_session())
         registry.record_observations((ClientObservation(actor="codex", session_id=None, calls=1),))
-        # Contrôle positif : les deux lignes sont présentes avant l'échéance.
+        # Positive control: both rows are present before the deadline.
         assert len(_rows(registry)) == 2
 
         clock.advance(ACTIVITY_TTL_SECONDS + 1.0)
         assert registry.snapshot()["clients"] == []
 
     def test_last_seen_is_measured_on_both_halves_and_not_a_constant_zero(self) -> None:
-        """``last_seen_s`` est une mesure, pas un zéro décoratif.
+        """``last_seen_s`` is a measurement, not a decorative zero.
 
-        Toutes les autres lignes de ce fichier sont lues à l'instant zéro de
-        l'horloge, où un compteur figé à 0 est indiscernable d'un vrai écoulé
-        nul. Il faut donc avancer l'horloge sans franchir le TTL, et le faire
-        sur les deux moitiés : la ligne OTLP et la ligne non attribuée lisent
-        deux horodatages distincts, dans deux branches distinctes du code.
+        Every other row in this file is read at the clock's instant zero, where a
+        counter frozen at 0 is indistinguishable from a real null elapsed time. The
+        clock must therefore be advanced without crossing the TTL, and on both
+        halves: the OTLP row and the unattributed row read two distinct timestamps,
+        in two distinct branches of the code.
         """
         clock = _Clock()
         registry = _registry(clock)
@@ -742,7 +740,7 @@ class TestBounds:
         assert {row["last_seen_s"] for row in rows.values()} == {42}
 
     def test_brain_side_rows_are_capped(self) -> None:
-        """Un acteur inventé par appel ne doit pas faire grossir le registre."""
+        """An actor invented per call must not make the registry grow."""
         registry = _registry()
         registry.record_observations(
             tuple(
@@ -750,7 +748,7 @@ class TestBounds:
                 for index in range(MAX_ACTIVE_CONVERSATIONS)
             )
         )
-        # Contrôle positif : sous le plafond, rien n'est jeté.
+        # Positive control: under the cap, nothing is discarded.
         assert len(_rows(registry)) == MAX_ACTIVE_CONVERSATIONS
 
         registry.record_observations(
@@ -762,22 +760,21 @@ class TestBounds:
         assert len(_rows(registry)) == MAX_ACTIVE_CONVERSATIONS
 
     def test_the_brain_side_cap_keeps_the_newest_actor_not_the_first_arrived(self) -> None:
-        """Compter les survivants ne dit rien du SENS de l'éviction.
+        """Counting the survivors says nothing about the DIRECTION of the eviction.
 
-        Le test voisin insère ses 69 acteurs sans jamais avancer l'horloge :
-        les 69 ``last_seen`` valent le même instant, le tri de ``_trim_brain``
-        n'a rien à trier, et ``[:64]`` retombe sur l'ordre d'insertion quel que
-        soit le sens du tri. Un plafond inversé y reste vert.
+        The neighbouring test inserts its 69 actors without ever advancing the
+        clock: the 69 ``last_seen`` are the same instant, ``_trim_brain``'s sort
+        has nothing to sort, and ``[:64]`` falls back on the insertion order
+        whatever the sort direction. An inverted cap stays green there.
 
-        Or le plafond existe précisément parce qu'un acteur est déclaré par le
-        client, donc de cardinalité non bornée. Une fois 64 acteurs distincts
-        vus dans la fenêtre de 600 s, une politique « les 64 premiers arrivés
-        gagnent » jette les ``brain_calls`` de toute session neuve — y compris
-        celle de l'opérateur en train de travailler, qui n'apparaît alors
-        jamais dans le panneau. Le panneau « live » devient un panneau
-        « les 64 premiers arrivés ».
+        Yet the cap exists precisely because an actor is declared by the client,
+        hence of unbounded cardinality. Once 64 distinct actors have been seen in
+        the 600 s window, a "first 64 to arrive win" policy discards the
+        ``brain_calls`` of every new session — including that of the operator
+        currently at work, who then never appears in the dashboard. The "live"
+        dashboard becomes a "first 64 to arrive" dashboard.
 
-        Il faut donc faire avancer l'horloge pour que le tri ait de quoi trier.
+        The clock must therefore be advanced so that the sort has something to sort.
         """
         clock = _Clock()
         registry = _registry(clock)
@@ -787,8 +784,8 @@ class TestBounds:
                 for index in range(MAX_ACTIVE_CONVERSATIONS)
             )
         )
-        # Contrôle positif : le registre est déjà plein d'anciens, sans quoi
-        # l'arrivée du nouvel acteur ne disputerait aucune place.
+        # Positive control: the registry is already full of old ones, without
+        # which the new actor's arrival would contest no slot.
         assert len(_rows(registry)) == MAX_ACTIVE_CONVERSATIONS
 
         clock.advance(1.0)
@@ -801,21 +798,20 @@ class TestBounds:
         assert rows["unattributed:operateur"]["brain_calls"] == 9
 
     def test_one_batch_of_new_actors_never_erases_a_measured_join(self) -> None:
-        """La borne d'UN lot valait la capacité TOTALE de la moitié brain.
+        """ONE batch's bound equalled the brain half's TOTAL capacity.
 
-        ``MAX_OBSERVATIONS`` vaut 64, ``MAX_ACTIVE_CONVERSATIONS`` aussi : un
-        unique POST pouvait donc renouveler intégralement la table. Mesuré, une
-        session Claude jointe des deux côtés — ``actor='brain_v42'``,
-        ``brain_calls=7`` — redevenait ``actor=None``, ``brain_calls=None``
-        après un seul POST de 64 acteurs neufs (2151 octets). Ce ne sont pas
-        « des résidus évincés » : c'est une JOINTURE MESURÉE effacée, remplacée
-        par des null que le panneau rend comme « rien de mesuré ». Il perd
-        exactement ce pour quoi il existe.
+        ``MAX_OBSERVATIONS`` is 64, ``MAX_ACTIVE_CONVERSATIONS`` too: a single POST
+        could therefore renew the table entirely. Measured, a Claude session joined
+        on both sides — ``actor='brain_v42'``, ``brain_calls=7`` — became
+        ``actor=None``, ``brain_calls=None`` again after a single POST of 64 fresh
+        actors (2151 bytes). These are not "evicted residuals": it is a MEASURED
+        JOIN erased, replaced by nulls the dashboard renders as "nothing measured".
+        It loses exactly what it exists for.
 
-        L'arbitrage ne touche pas au SENS de l'éviction épinglé juste au-dessus
-        (e5cda111) : entre résidus, les plus récents gagnent toujours. Ce test
-        n'oppose pas deux résidus, il oppose une ligne JOINTE à un lot de
-        résidus neufs — et la jointure passe devant.
+        The arbitration does not touch the eviction DIRECTION pinned just above
+        (e5cda111): between residuals, the most recent always win. This test does
+        not oppose two residuals, it opposes a JOINED row to a batch of fresh
+        residuals — and the join comes first.
         """
         clock = _Clock()
         registry = _registry(clock)
@@ -823,9 +819,9 @@ class TestBounds:
         registry.record_observations(
             (ClientObservation(actor="brain_v42", session_id=FAKE_UUID, calls=7),)
         )
-        # Contrôle positif : la jointure porte bien une mesure AVANT le lot,
-        # sinon « elle survit » passerait au vert sur un registre qui n'a
-        # jamais rien joint.
+        # Positive control: the join does carry a measurement BEFORE the batch,
+        # otherwise "it survives" would go green on a registry that never joined
+        # anything.
         before = _rows(registry)
         (identifier,) = before
         assert before[identifier]["actor"] == "brain_v42"
@@ -843,22 +839,21 @@ class TestBounds:
         rows = _rows(registry)
         assert rows[identifier]["actor"] == "brain_v42"
         assert rows[identifier]["brain_calls"] == 7
-        # Contrôle positif : le plafond borne TOUJOURS. Sans lui, la jointure
-        # survivrait elle aussi, et les deux assertions ci-dessus passeraient
-        # au vert sur un registre qui ne plafonne plus rien.
+        # Positive control: the cap ALWAYS bounds. Without it, the join would
+        # survive too, and the two assertions above would go green on a registry
+        # that no longer caps anything.
         assert len(rows) == MAX_ACTIVE_CONVERSATIONS
 
     def test_a_dead_conversation_protects_no_residual_row(self) -> None:
-        """La priorité va à une jointure VIVANTE, pas au souvenir d'une jointure.
+        """Priority goes to a LIVE join, not to the memory of a join.
 
-        Le chemin des observations ne purge pas la moitié OTLP. Sans y
-        réappliquer le TTL, une conversation périmée depuis longtemps rangerait
-        encore « sa » ligne brain devant tous les résidus — alors qu'à
-        l'instantané suivant cette conversation est purgée et que la ligne
-        retombe en ligne orpheline, sans agent, sans tours et sans tokens — un
-        résidu comme un autre, mais plus ancien. Il gagnerait alors contre des
-        résidus neufs : exactement le sens d'éviction qu'interdit e5cda111, par
-        la porte de derrière.
+        The observations path does not purge the OTLP half. Without reapplying the
+        TTL there, a long-expired conversation would still rank "its" brain row
+        ahead of every residual — whereas at the next snapshot that conversation is
+        purged and the row falls back to an orphan row, with no agent, no turns and
+        no tokens — a residual like any other, but older. It would then win against
+        fresh residuals: exactly the eviction direction e5cda111 forbids, through
+        the back door.
         """
         clock = _Clock()
         registry = _registry(clock)
@@ -866,19 +861,19 @@ class TestBounds:
         registry.record_observations(
             (ClientObservation(actor="brain_v42", session_id=FAKE_UUID, calls=7),)
         )
-        # Rafraîchir la moitié brain SANS rafraîchir la moitié OTLP : la ligne
-        # brain restera vivante quand sa conversation, elle, aura expiré.
+        # Refresh the brain half WITHOUT refreshing the OTLP half: the brain row
+        # will stay alive when its conversation has expired.
         clock.advance(500.0)
         registry.record_observations(
             (ClientObservation(actor="brain_v42", session_id=FAKE_UUID, calls=1),)
         )
-        # Contrôle positif : à cet instant la jointure vit encore et se voit.
+        # Positive control: at this instant the join is still alive and visible.
         before = _rows(registry)
         (identifier,) = before
         assert before[identifier]["brain_calls"] == 8
 
-        # La conversation OTLP dépasse le TTL ; la ligne brain, elle, ne l'a pas
-        # atteint et survit à ``_prune_brain``.
+        # The OTLP conversation passes the TTL; the brain row has not reached it
+        # and survives ``_prune_brain``.
         clock.advance(200.0)
         registry.record_observations(
             tuple(
@@ -888,31 +883,30 @@ class TestBounds:
         )
 
         rows = _rows(registry)
-        # L'identifiant de la ligne orpheline est la clé de session brute, que
-        # le test ne peut pas recalculer sans le secret : c'est l'acteur qui la
-        # nomme. Le viser par ``unattributed:brain_v42`` ne mordrait jamais.
+        # The orphan row's identifier is the raw session key, which the test cannot
+        # recompute without the secret: it is the actor that names it. Targeting it
+        # through ``unattributed:brain_v42`` would never bite.
         assert all(row["actor"] != "brain_v42" for row in rows.values())
         assert set(rows) == {
             f"unattributed:neuf-{index}" for index in range(MAX_ACTIVE_CONVERSATIONS)
         }
 
     def test_claude_traffic_never_evicts_the_codex_counters(self) -> None:
-        """Le contrat hérité est ADDITIF : le trafic Claude ne le touche pas.
+        """The legacy contract is ADDITIVE: Claude traffic does not touch it.
 
-        Les deux moitiés OTLP partageaient un seul plafond de 64. Soixante-
-        quatre sessions Claude dans la fenêtre TTL évinçaient donc la
-        conversation Codex, et les trois clés que le panneau red-monitor livré
-        consomme aujourd'hui retombaient à ``ctx_tokens=0``, ``active_convs=0``,
-        ``activeConvs=[]``. C'est la pire façon de casser le contrat : écrire
-        un zéro là où une vraie valeur mesurée se trouvait, indiscernable d'un
-        zéro honnête.
+        The two OTLP halves shared a single cap of 64. Sixty-four Claude sessions
+        in the TTL window therefore evicted the Codex conversation, and the three
+        keys the shipped red-monitor dashboard consumes today fell back to
+        ``ctx_tokens=0``, ``active_convs=0``, ``activeConvs=[]``. That is the worst
+        way to break the contract: writing a zero where a real measured value was,
+        indistinguishable from an honest zero.
         """
         registry = _registry()
         registry.ingest_otlp_json(_codex_payload())
         registry.ingest_otlp_json(_codex_completion())
         before = registry.snapshot()
-        # Contrôle positif : les compteurs hérités portent bien une mesure
-        # avant l'arrivée de Claude, sinon leur survie ne prouverait rien.
+        # Positive control: the legacy counters do carry a measurement before
+        # Claude arrives, otherwise their survival would prove nothing.
         assert before["active_convs"] == 1
         assert before["ctx_tokens"] == 12_345
 
@@ -925,13 +919,13 @@ class TestBounds:
         assert after["activeConvs"] == before["activeConvs"]
 
     def test_each_agent_is_capped_on_its_own(self) -> None:
-        """Des plafonds par agent restent des plafonds.
+        """Per-agent caps are still caps.
 
-        L'ensemble des agents est CLOS — l'étiquette vient du récepteur qui a
-        décodé le lot, jamais du client — donc le registre reste borné par le
-        plafond multiplié par le nombre de récepteurs, ici deux. Un acteur,
-        lui, est déclaré par le client : c'est pourquoi la moitié brain garde
-        un plafond global.
+        The set of agents is CLOSED — the label comes from the receiver that
+        decoded the batch, never from the client — so the registry stays bounded by
+        the cap multiplied by the number of receivers, here two. An actor, by
+        contrast, is declared by the client: that is why the brain half keeps a
+        global cap.
         """
         registry = _registry()
         for index in range(MAX_ACTIVE_CONVERSATIONS + 6):
@@ -940,14 +934,14 @@ class TestBounds:
         assert len(_rows(registry)) == MAX_ACTIVE_CONVERSATIONS
 
     def test_codex_dedup_still_holds_on_the_codex_path(self) -> None:
-        """La dédup par empreinte survit au déménagement, sur le chemin Codex.
+        """Fingerprint dedup survives the move, on the Codex path.
 
-        Un exportateur OTLP rejoue ses lots ; sans empreinte, un tour serait
-        compté deux fois dans la ligne de client comme dans la liste héritée.
+        An OTLP exporter replays its batches; without a fingerprint, a turn would
+        be counted twice both in the client row and in the legacy list.
 
-        Ce test n'exerce QUE ``ingest_otlp_json``. Son titre a longtemps
-        promis « le registre fusionné » — le chemin Claude n'y était pour
-        rien, et n'avait aucune dédup. Le pendant Claude est le test suivant.
+        This test exercises ONLY ``ingest_otlp_json``. Its title long promised "the
+        merged registry" — the Claude path had nothing to do with it, and had no
+        dedup at all. The Claude counterpart is the next test.
         """
         registry = _registry()
         registry.ingest_otlp_json(_codex_payload(timestamp="1"))
@@ -955,19 +949,19 @@ class TestBounds:
         (row,) = _rows(registry).values()
         assert row["turns"] == 1
 
-        # Contrôle positif : un vrai second tour, lui, est compté.
+        # Positive control: a real second turn, by contrast, is counted.
         registry.ingest_otlp_json(_codex_payload(timestamp="2"))
         (row,) = _rows(registry).values()
         assert row["turns"] == 2
 
     def test_claude_dedup_holds_on_the_claude_path(self) -> None:
-        """Le rejeu d'un lot Claude ne doit ni recompter, ni recumuler.
+        """Replaying a Claude batch must neither recount nor re-accumulate.
 
-        Le récepteur borné répond ``503`` avec ``Retry-After: 1`` dès que ses
-        quatre requêtes en vol sont prises : un statut explicitement rejouable,
-        que l'exportateur honore en repoussant le MÊME lot. Le coût, lui, est
-        cumulatif — un tour à 0,05 $ compté trois fois affiche 0,15 $ et
-        l'erreur ne se résorbe jamais tant que la ligne vit.
+        The bounded receiver answers ``503`` with ``Retry-After: 1`` as soon as its
+        four in-flight requests are taken: an explicitly replayable status, which
+        the exporter honours by pushing the SAME batch again. Cost, for its part,
+        is cumulative — a turn at $0.05 counted three times displays $0.15 and the
+        error never resolves as long as the row lives.
         """
         registry = _registry()
         replayed = _claude_session()
@@ -979,9 +973,9 @@ class TestBounds:
         assert row["tokens"] == 1_200
         assert row["cost"] == pytest.approx(0.05)
 
-        # Contrôle positif : un vrai second tour, aux horodatages neufs, compte
-        # son tour et sa dépense. Sans lui, un registre qui n'ingère plus rien
-        # passerait les trois assertions ci-dessus.
+        # Positive control: a real second turn, with fresh timestamps, counts its
+        # turn and its spending. Without it, a registry that ingests nothing would
+        # pass the three assertions above.
         registry.ingest_claude_otlp_json(
             _envelope([_claude_prompt(timestamp="3"), _claude_api_request(timestamp="4")])
         )
@@ -995,12 +989,12 @@ TRANSPORT_B = "1a2b3c4d5e6f708192a3b4c5d6e7f809"
 
 
 def _brain_rows(registry: ClientActivityRegistry) -> list[dict[str, object]]:
-    """Les lignes portant une activité brain, quel que soit leur ``kind``.
+    """The rows carrying brain activity, whatever their ``kind``.
 
-    Filtrer sur ``kind != 'session'`` serait faux : une observation brain qui
-    déclare une session produit elle aussi une ligne ``kind='session'``, sans
-    conversation OTLP en face. Le critère honnête est « cette ligne porte-t-elle
-    des appels brain ».
+    Filtering on ``kind != 'session'`` would be wrong: a brain observation that
+    declares a session also produces a ``kind='session'`` row, with no OTLP
+    conversation opposite it. The honest criterion is "does this row carry brain
+    calls".
     """
     rows = registry.snapshot()["clients"]
     assert isinstance(rows, list)
@@ -1008,11 +1002,11 @@ def _brain_rows(registry: ClientActivityRegistry) -> list[dict[str, object]]:
 
 
 class TestTransportRows:
-    """Une connexion frappée par le serveur vaut une LIGNE, pas un seau.
+    """A server-minted connection is worth a ROW, not a bucket.
 
-    C'est le problème que ce champ existe pour résoudre : quatre moteurs Claude
-    dans un même répertoire déclarent le même acteur et s'effondraient en une
-    ligne unique. Ils ont en revanche quatre transports distincts.
+    This is the problem this field exists to solve: four Claude engines in the same
+    directory declare the same actor and used to collapse into a single row. They
+    do, however, have four distinct transports.
     """
 
     def test_two_transports_same_actor_produce_two_rows(self) -> None:
@@ -1045,13 +1039,13 @@ class TestTransportRows:
             )
         (row,) = _brain_rows(registry)
         assert row["brain_calls"] == 6
-        # Sans cette ligne le test passerait au vert avec un transport IGNORÉ :
-        # les trois observations retomberaient dans le seau de l'acteur et
-        # totaliseraient 6 tout pareil.
+        # Without this line the test would go green with the transport IGNORED:
+        # the three observations would fall back into the actor's bucket and would
+        # total 6 all the same.
         assert row["kind"] == "transport"
 
     def test_transport_row_id_is_pseudonymous(self) -> None:
-        """Aucun identifiant brut ne sort du registre — la propriété centrale."""
+        """No raw identifier leaves the registry — the central property."""
         registry = _registry()
         registry.record_observations(
             (ClientObservation(actor="brain-v42", session_id=None, calls=1, transport=TRANSPORT_A),)
@@ -1061,10 +1055,10 @@ class TestTransportRows:
         assert str(row["id"]).startswith("transport-")
 
     def test_transport_and_session_keys_never_collide(self) -> None:
-        """Le même octet-à-octet dans deux espaces ne doit pas fusionner.
+        """The same bytes in two spaces must not merge.
 
-        Les deux sels diffèrent : sans ça, une valeur qui serait à la fois une
-        session et un transport écraserait l'autre ligne.
+        The two salts differ: without that, a value that was both a session and a
+        transport would overwrite the other row.
         """
         registry = _registry()
         shared = "1a2b3c4d5e6f708192a3b4c5d6e7f809"
@@ -1080,11 +1074,10 @@ class TestTransportRows:
         assert len(set(ids)) == len(ids), f"collision d'identifiants : {ids}"
 
     def test_session_wins_over_transport(self) -> None:
-        """Une session déclarée JOINT ; un transport ne joint rien.
+        """A declared session JOINS; a transport joins nothing.
 
-        Quand les deux sont présents, la clé de jointure doit l'emporter,
-        sinon la ligne perdrait ses colonnes OTLP au profit d'un identifiant
-        de connexion qui ne se joint à rien.
+        When both are present, the join key must win, otherwise the row would lose
+        its OTLP columns in favour of a connection identifier that joins nothing.
         """
         registry = _registry()
         registry.record_observations(
@@ -1099,7 +1092,7 @@ class TestTransportRows:
         assert not str(row["id"]).startswith("transport-")
 
     def test_no_transport_still_falls_back_to_the_actor_bucket(self) -> None:
-        """Contrôle négatif : le mode sans état doit garder son comportement."""
+        """Negative control: stateless mode must keep its behaviour."""
         registry = _registry()
         registry.record_observations((ClientObservation(actor="codex", session_id=None, calls=7),))
         (row,) = _brain_rows(registry)

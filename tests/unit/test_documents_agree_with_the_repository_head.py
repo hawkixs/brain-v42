@@ -1,52 +1,50 @@
-"""Un document de référence ne recopie pas la tête du dépôt : elle est dérivée.
+"""A reference document does not copy the repository head: it is derived.
 
-Recensement `f7d013eb`, 2026-08-22. Après la réparation du runbook DR
-(`681dbe2e`), la question ouverte était : combien d'AUTRES documents portent une
-valeur normative périmée ? Trois angles indépendants sur les 134 markdown
-suivis — littéral de révision, nom d'actif de récupération, dénominateur de reçu
-— ont rendu 70 documents, dont 14 hors des plans et specs datés. Un seul portait
-un défaut, et il en portait TROIS :
+Census `f7d013eb`, 2026-08-22. After the DR runbook's repair (`681dbe2e`), the
+open question was: how many OTHER documents carry a stale normative value? Three
+independent angles over the 134 tracked markdown files — revision literal,
+recovery asset name, receipt denominator — returned 70 documents, of which 14
+outside the dated plans and specs. Only one carried a defect, and it carried
+THREE:
 
-* `docs/ARCHITECTURE.md:6` annonçait « Repository target: 040 » quand
-  `docs/SCHEMA.md` et `docs/MCP_TOOLS.md` disaient tous deux 046 — trois
-  documents, deux réponses ;
-* `docs/ARCHITECTURE.md:665` annonçait « migrations 001 .. 039 defined » quand
-  sa PROPRE ligne 4 disait « 001–046 defined » — le même document se
-  contredisait, 661 lignes plus loin ;
-* `docs/ARCHITECTURE.md:238` exigeait « a tested PostgreSQL restore at the exact
-  deployed head (`037` on current production) » — faux depuis la 040, et
-  contredit par sa propre ligne 4 qui dit que la tête déployée « is not asserted
-  here — measure it ».
+* `docs/ARCHITECTURE.md:6` announced "Repository target: 040" while
+  `docs/SCHEMA.md` and `docs/MCP_TOOLS.md` both said 046 — three documents, two
+  answers;
+* `docs/ARCHITECTURE.md:665` announced "migrations 001 .. 039 defined" while its
+  OWN line 4 said "001–046 defined" — the same document contradicting itself, 661
+  lines further on;
+* `docs/ARCHITECTURE.md:238` required "a tested PostgreSQL restore at the exact
+  deployed head (`037` on current production)" — false since 040, and contradicted
+  by its own line 4 which says the deployed head "is not asserted here — measure
+  it".
 
-**Pourquoi ce n'est PAS la garde du runbook.** `test_runbook_normative_values_
-have_one_source.py` interdit tout littéral hors d'une région déclarée. Cette
-forme tient sur un runbook : petite surface normative, blocs de récit nettement
-délimités. `ARCHITECTURE.md` a la forme INVERSE — du récit partout (« migration
-033 installs the ledger »), trois assertions normatives. L'y appliquer
-demanderait d'emballer la majorité du document dans des fenêtres de récit, ce
-qui viderait la garde de son sens. Aucun autre document du recensement n'entre
-donc dans cette garde-là ; la raison est dite plutôt qu'un second mécanisme
-inventé pour la forme.
+**Why this is NOT the runbook's guard.** `test_runbook_normative_values_
+have_one_source.py` forbids any literal outside a declared region. That form holds
+on a runbook: a small normative surface, clearly delimited narrative blocks.
+`ARCHITECTURE.md` has the INVERSE shape — narrative everywhere ("migration 033
+installs the ledger"), three normative assertions. Applying it there would require
+wrapping most of the document in narrative windows, which would empty the guard of
+its meaning. No other document from the census therefore enters that guard; the
+reason is stated rather than a second mechanism invented for form's sake.
 
-Ce module applique le MÊME invariant avec une autre source de vérité : au lieu
-d'interdire le littéral, il exige que **tout littéral de portée dépôt soit égal
-à la tête calculée depuis `alembic/versions/`**. Rien à rebaser à chaque
-migration : la valeur attendue se mesure. C'est aussi ce qui le distingue des
-épingles de chaîne existantes dans `test_documentation_contract.py`, qui
-demandent une passe de bump à chaque bascule et dont ce dépôt a déjà noté le
-coût.
+This module applies the SAME invariant with another source of truth: instead of
+forbidding the literal, it requires that **every repository-scoped literal equal
+the head computed from `alembic/versions/`**. Nothing to rebase at every
+migration: the expected value is measured. That is also what distinguishes it from
+the existing string pins in `test_documentation_contract.py`, which require a bump
+pass at every cutover and whose cost this repository has already noted.
 
-Trois contrôles, et un quatrième contre l'angle mort :
+Three checks, and a fourth against the blind spot:
 
-1. toute **cible de dépôt** annoncée vaut la tête calculée ;
-2. toute **plage de migrations** annoncée se termine sur cette tête ;
-3. aucun littéral de révision ne cohabite avec une affirmation de tête
-   **DÉPLOYÉE** sur une ligne **NON DATÉE** — une mesure datée reste licite,
-   c'est la doctrine ratifiée le 2026-08-04 ;
-4. toute ligne qui PARLE d'une cible de dépôt doit être reconnue par les motifs
-   du contrôle 1, sinon le test échoue en demandant une formulation connue. Un
-   recensement par motifs a un angle mort par construction ; celui-ci le rend
-   bruyant au lieu de le laisser se lire « rien à signaler ».
+1. every announced **repository target** equals the computed head;
+2. every announced **migration range** ends on that head;
+3. no revision literal coexists with a **DEPLOYED** head assertion on an
+   **UNDATED** line — a dated measurement stays licit, that is the doctrine
+   ratified on 2026-08-04;
+4. every line that SPEAKS of a repository target must be recognised by check 1's
+   patterns, otherwise the test fails asking for a known phrasing. A
+   pattern-based census has a blind spot by construction; this one makes it noisy
+   instead of letting it read as "nothing to report".
 """
 
 from __future__ import annotations
@@ -60,14 +58,14 @@ import pytest
 ROOT = Path(__file__).parents[2]
 VERSIONS = ROOT / "alembic" / "versions"
 
-#: Le témoin négatif : `docs/ARCHITECTURE.md` avant le recensement `f7d013eb`,
-#: gelé verbatim. Blob git `a748ff86ba918ae033b960723a9c98bb7cb6c7cf`, dernier
-#: commit à l'avoir écrit `88a5c10`. Sans lui ce module est une opinion verte.
+#: The negative witness: `docs/ARCHITECTURE.md` before census `f7d013eb`, frozen
+#: verbatim. Git blob `a748ff86ba918ae033b960723a9c98bb7cb6c7cf`, last commit to
+#: have written it `88a5c10`. Without it this module is a green opinion.
 BEFORE_F7D013EB = Path(__file__).parent / "data" / "ARCHITECTURE.2026-08-22-before-f7d013eb.md"
 
-#: Les documents de RÉFÉRENCE et d'OPÉRATION. Les plans, specs et ADR datés
-#: décrivent l'état de leur jour et n'ont rien à faire ici — c'est la décision
-#: de périmètre du recensement, pas un oubli.
+#: The REFERENCE and OPERATIONS documents. Dated plans, specs and ADRs describe
+#: the state of their own day and have no business here — that is the census's
+#: scope decision, not an oversight.
 GUARDED_DOCUMENTS = (
     ROOT / "README.md",
     ROOT / "docs" / "ARCHITECTURE.md",
@@ -80,8 +78,8 @@ GUARDED_DOCUMENTS = (
 _REVISION = re.compile(r"^revision(?::\s*[^=]+)?\s*=\s*[\"']([^\"']+)", re.M)
 _DOWN_REVISION = re.compile(r"^down_revision(?::\s*[^=]+)?\s*=\s*[\"']([^\"']+)", re.M)
 
-#: « Repository target: 046 », « La cible du dépôt est 046 »,
-#: « Migration 046 is the repository target », « La révision 046 est la tête du dépôt ».
+#: "Repository target: 046", "La cible du dépôt est 046",
+#: "Migration 046 is the repository target", "La révision 046 est la tête du dépôt".
 _TARGET_PATTERNS = (
     re.compile(r"(?:Repository target:|La cible du dépôt est)\s*`?(0\d{2})`?"),
     re.compile(
@@ -90,14 +88,14 @@ _TARGET_PATTERNS = (
     ),
 )
 
-#: Le vocabulaire qui ANNONCE une cible de dépôt, quelle que soit la tournure.
-#: Le contrôle 4 exige qu'une ligne le portant soit reconnue par un motif.
+#: The vocabulary that ANNOUNCES a repository target, whatever the phrasing. Check
+#: 4 requires a line carrying it to be recognised by a pattern.
 _TARGET_VOCABULARY = re.compile(r"repository target|cible du dépôt|tête du dépôt", re.I)
 
-#: « migrations 001–046 defined », « migrations 001 .. 046 ».
+#: "migrations 001–046 defined", "migrations 001 .. 046".
 _RANGE = re.compile(r"migrations?\s+001\s*(?:–|—|-|\.\.|to|à)\s*`?(0\d{2})`?")
 
-#: Le vocabulaire d'une tête DÉPLOYÉE — celle qu'aucun document ne peut prouver.
+#: The vocabulary of a DEPLOYED head — the one no document can prove.
 _DEPLOYED = re.compile(
     r"current production|deployed head|deployed Alembic head|"
     r"production actuelle|head déployé|tête déployée",
@@ -106,8 +104,9 @@ _DEPLOYED = re.compile(
 
 _HEAD_LITERAL = re.compile(r"(?<![\w.])0\d{2}(?![\w.])")
 
-#: Une mesure DATÉE d'une tête déployée reste licite : c'est ce que ce dépôt a
-#: décidé le 2026-08-04. Ce qui est interdit, c'est la même phrase sans sa date.
+#: A DATED measurement of a deployed head stays licit: that is what this
+#: repository decided on 2026-08-04. What is forbidden is the same sentence without
+#: its date.
 _DATE = re.compile(
     r"20\d{2}-\d{2}-\d{2}"
     r"|\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September"
@@ -120,19 +119,19 @@ _DATE = re.compile(
 
 @dataclass(frozen=True)
 class Claim:
-    """Une affirmation de portée dépôt, avec la ligne qui la porte."""
+    """A repository-scoped assertion, with the line that carries it."""
 
     kind: str
     value: str
     line: int
     text: str
 
-    def __str__(self) -> str:  # pragma: no cover - lisibilité d'échec seulement
+    def __str__(self) -> str:  # pragma: no cover - failure readability only
         return f"L{self.line} [{self.kind}] {self.value} — {self.text.strip()[:120]}"
 
 
 def repository_head() -> str:
-    """Calcule la tête depuis `alembic/versions/`, sans la lire nulle part."""
+    """Compute the head from `alembic/versions/`, without reading it anywhere."""
     revisions: set[str] = set()
     parents: set[str] = set()
     for path in VERSIONS.glob("*.py"):
@@ -149,7 +148,7 @@ def repository_head() -> str:
 
 
 def repository_claims(document: str) -> list[Claim]:
-    """Rend les cibles de dépôt et plages de migrations annoncées."""
+    """Return the announced repository targets and migration ranges."""
     claims: list[Claim] = []
     for index, line in enumerate(document.splitlines(), 1):
         for pattern in _TARGET_PATTERNS:
@@ -164,7 +163,7 @@ def repository_claims(document: str) -> list[Claim]:
 
 
 def undated_deployed_head_claims(document: str) -> list[Claim]:
-    """Rend les littéraux de révision collés à une tête déployée non datée."""
+    """Return the revision literals attached to an undated deployed head."""
     claims: list[Claim] = []
     for index, line in enumerate(document.splitlines(), 1):
         if not _DEPLOYED.search(line) or _DATE.search(line):
@@ -177,7 +176,7 @@ def undated_deployed_head_claims(document: str) -> list[Claim]:
 
 
 def unrecognised_target_lines(document: str) -> list[Claim]:
-    """Rend les lignes qui PARLENT d'une cible sans qu'un motif la reconnaisse."""
+    """Return the lines that SPEAK of a target without a pattern recognising it."""
     return [
         Claim("unrecognised target phrasing", "", index, line)
         for index, line in enumerate(document.splitlines(), 1)
@@ -187,7 +186,7 @@ def unrecognised_target_lines(document: str) -> list[Claim]:
 
 
 def test_the_repository_head_is_derived_not_declared() -> None:
-    """La valeur attendue se mesure : rien à rebaser à chaque migration."""
+    """The expected value is measured: nothing to rebase at every migration."""
     head = repository_head()
     files = sorted(VERSIONS.glob("*.py"))
 
@@ -200,7 +199,7 @@ def test_the_repository_head_is_derived_not_declared() -> None:
 
 @pytest.mark.parametrize("document_path", GUARDED_DOCUMENTS, ids=lambda path: path.name)
 def test_every_repository_scoped_claim_equals_the_measured_head(document_path: Path) -> None:
-    """Trois documents annonçaient la cible; deux disaient 046 et un 040."""
+    """Three documents announced the target; two said 046 and one said 040."""
     head = repository_head()
     stale = [
         claim
@@ -216,7 +215,7 @@ def test_every_repository_scoped_claim_equals_the_measured_head(document_path: P
 
 @pytest.mark.parametrize("document_path", GUARDED_DOCUMENTS, ids=lambda path: path.name)
 def test_no_document_asserts_an_undated_deployed_head(document_path: Path) -> None:
-    """Aucun document ne peut prouver la tête déployée; il la mesure ou la date."""
+    """No document can prove the deployed head; it measures it or dates it."""
     claims = undated_deployed_head_claims(document_path.read_text(encoding="utf-8"))
 
     assert not claims, (
@@ -228,11 +227,11 @@ def test_no_document_asserts_an_undated_deployed_head(document_path: Path) -> No
 
 @pytest.mark.parametrize("document_path", GUARDED_DOCUMENTS, ids=lambda path: path.name)
 def test_a_new_phrasing_fails_loudly_instead_of_slipping_through(document_path: Path) -> None:
-    """L'angle mort de motif rendu bruyant.
+    """The pattern blind spot made noisy.
 
-    Un recensement par motifs en a un par construction. Sans ce contrôle, une
-    quatrième tournure de « cible du dépôt » passerait sans être vérifiée, et
-    l'absence de signalement se lirait « rien à signaler ».
+    A pattern-based census has one by construction. Without this check, a fourth
+    phrasing of "repository target" would pass unverified, and the absence of a
+    report would read as "nothing to report".
     """
     unrecognised = unrecognised_target_lines(document_path.read_text(encoding="utf-8"))
 
@@ -244,9 +243,9 @@ def test_a_new_phrasing_fails_loudly_instead_of_slipping_through(document_path: 
 
 
 def test_the_gate_catches_the_document_it_was_written_for() -> None:
-    """Le témoin négatif : `ARCHITECTURE.md` d'AVANT doit échouer, trois fois.
+    """The negative witness: the ARCHITECTURE.md from BEFORE must fail, three times.
 
-    Verbatim, pas reconstitué — c'est le blob `a748ff86`.
+    Verbatim, not reconstructed — it is blob `a748ff86`.
     """
     document = BEFORE_F7D013EB.read_text(encoding="utf-8")
     head = repository_head()
@@ -264,10 +263,10 @@ def test_the_gate_catches_the_document_it_was_written_for() -> None:
 
 
 def test_a_dated_measurement_of_the_deployed_head_stays_legitimate() -> None:
-    """Le faux positif qui désarmerait la garde ne se produit pas.
+    """The false positive that would disarm the guard does not happen.
 
-    La ligne 4 d'`ARCHITECTURE.md` dit la tête déployée ET la date. Elle est
-    licite, elle l'était déjà avant la correction, et elle doit le rester.
+    `ARCHITECTURE.md`'s line 4 states the deployed head AND the date. It is licit,
+    it already was before the fix, and it must stay so.
     """
     dated = "The deployed Alembic head is not asserted here — measure it. Last measurement: "
     dated += "`045` on 16 August 2026, right after the 044→045 cutover."
@@ -277,7 +276,7 @@ def test_a_dated_measurement_of_the_deployed_head_stays_legitimate() -> None:
 
 
 def test_the_same_claim_without_its_date_is_caught() -> None:
-    """Contre-témoin : c'est la DATE qui autorise, pas le sujet de la phrase."""
+    """Counter-witness: it is the DATE that permits, not the sentence's subject."""
     undated = (
         "A tested PostgreSQL restore at the exact deployed head (`037` on current production)."
     )

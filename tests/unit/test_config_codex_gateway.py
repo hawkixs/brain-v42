@@ -53,11 +53,11 @@ def test_codex_gateway_all_interfaces_bind_requires_explicit_container_opt_in() 
 def test_codex_gateway_env_bind_all_interfaces_is_refused_without_the_opt_in(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Invariant portant le `# nosec B104` de `_codex_gateway_private_bind_only`.
+    """The invariant that carries `_codex_gateway_private_bind_only`'s `# nosec B104`.
 
-    Le littéral "0.0.0.0" de config.py est le motif REFUSÉ par le validateur, pas une
-    adresse de bind. Ce test échoue si quelqu'un retire le garde-fou, ouvre son défaut,
-    ou laisse la variable d'environnement — seule entrée du champ — atteindre le bind.
+    config.py's "0.0.0.0" literal is the pattern REFUSED by the validator, not a bind
+    address. This test fails if someone removes the guardrail, opens its default, or
+    lets the environment variable — the field's only input — reach the bind.
     """
     monkeypatch.setenv("BRAIN_CODEX_GATEWAY_HOST", "0.0.0.0")
 

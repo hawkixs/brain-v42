@@ -1,19 +1,19 @@
-"""Décodage borné des logs OTLP/HTTP JSON de Claude Code.
+"""Bounded decoding of Claude Code's OTLP/HTTP JSON logs.
 
-L'oracle des noms d'attributs est `tests/fixtures/claude_otlp_logs.json`, capture
-réelle du spike (Claude Code 2.1.220, verdict dans
-`docs/upstream/2026-08-06-claude-otlp-session-join.md`). Quand la fixture et le
-plan divergent, la fixture gagne : elle a été mesurée, le plan supposait.
+The oracle for the attribute names is `tests/fixtures/claude_otlp_logs.json`, a
+real capture from the spike (Claude Code 2.1.220, verdict in
+`docs/upstream/2026-08-06-claude-otlp-session-join.md`). When the fixture and the
+plan diverge, the fixture wins: it was measured, the plan assumed.
 
-Trois écarts mesurés que ces tests figent :
+Three measured discrepancies these tests freeze:
 
-1. `event.name` n'est PAS préfixé — l'attribut vaut `user_prompt`, le préfixe
-   `claude_code.` vit dans `body.stringValue`.
-2. `input_tokens` ne mesure pas le contexte (10 relevé quand `cache_read_tokens`
-   valait 12 973) : les trois compteurs d'entrée doivent être projetés.
-3. Chaque enregistrement porte `user.email` en clair. La projection par liste
-   blanche est la seule barrière entre cette adresse et un registre exposé en
-   HTTP — d'où le premier test du fichier.
+1. `event.name` is NOT prefixed — the attribute is `user_prompt`, the
+   `claude_code.` prefix lives in `body.stringValue`.
+2. `input_tokens` does not measure the context (10 observed when
+   `cache_read_tokens` was 12,973): the three input counters must be projected.
+3. Every record carries `user.email` in the clear. Allowlist projection is the only
+   barrier between that address and a registry exposed over HTTP — hence the file's
+   first test.
 """
 
 from __future__ import annotations
@@ -30,9 +30,8 @@ from brain_v42.metrics.claude_telemetry import (
     decode_claude_logs,
 )
 from brain_v42.metrics.claude_telemetry import (
-    # Le filtre lui-même, aliasé : `_attribute` plus bas FABRIQUE un attribut
-    # OTLP, `_attributes` PROJETTE un enregistrement — un caractère d'écart
-    # pour deux rôles opposés.
+    # The filter itself, aliased: `_attribute` below BUILDS an OTLP attribute,
+    # `_attributes` PROJECTS a record — one character apart for two opposite roles.
     _attributes as _project_attributes,
 )
 from brain_v42.metrics.codex_telemetry import (
@@ -44,12 +43,12 @@ from brain_v42.metrics.codex_telemetry import (
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "claude_otlp_logs.json"
 
 FAKE_UUID = "12345678-1234-4abc-8def-1234567890ab"
-# Distincts de la session : réutiliser FAKE_UUID rendrait l'assertion d'absence
-# ininterprétable, la session légitime portant alors la même chaîne.
+# Distinct from the session: reusing FAKE_UUID would make the absence assertion
+# uninterpretable, the legitimate session then carrying the same string.
 ACCOUNT_UUID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 ORGANIZATION_UUID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
-# Valeurs qui ne doivent JAMAIS ressortir du décodage, quelle que soit la forme.
+# Values that must NEVER come back out of the decoding, in any shape.
 SENSITIVE_VALUES: dict[str, str] = {
     "user.email": "personne@exemple.test",
     "user.id": "e" * 64,
@@ -59,12 +58,12 @@ SENSITIVE_VALUES: dict[str, str] = {
     "prompt": "phrase secrete de l operateur",
 }
 
-# Fragments de nom qui trahissent un canal de données personnelles, qu'il
-# s'agisse d'un champ rendu ou d'une clé admise en amont.
+# Name fragments that betray a personal-data channel, whether in a returned field
+# or in a key admitted upstream.
 PERSONAL_DATA_MARKERS = ("email", "user", "account", "organization", "prompt")
 
-# Valeurs de la liste blanche : leur survie est le contrôle positif de toute
-# assertion d'absence de ce fichier.
+# Allowlist values: their survival is the positive control for every absence
+# assertion in this file.
 PROJECTED_MODEL = "claude-opus-5"
 
 
@@ -98,10 +97,10 @@ def _sensitive_attributes() -> list[dict[str, object]]:
 
 
 def _readable_state(record: object) -> dict[str, Any]:
-    """Toutes les valeurs lisibles d'un enregistrement décodé, nom par nom.
+    """Every readable value of a decoded record, name by name.
 
-    Ne suppose pas la dataclass : un décodeur qui stockerait les attributs bruts
-    dans un objet quelconque doit être vu par ce test.
+    Does not assume the dataclass: a decoder storing the raw attributes in some
+    other object must be seen by this test.
     """
     if is_dataclass(record) and not isinstance(record, type):
         names = [field.name for field in fields(record)]
@@ -115,12 +114,11 @@ def _readable_state(record: object) -> dict[str, Any]:
 
 
 class TestPersonalDataNeverSurvives:
-    """La liste blanche est la seule barrière avant un registre exposé en HTTP.
+    """The allowlist is the only barrier before a registry exposed over HTTP.
 
-    Trois témoins, parce qu'une barrière se casse de trois façons : le rendu
-    (un champ personnel dans l'enregistrement décodé), la LISTE (une clé
-    personnelle admise) et le FILTRE (la liste plus consultée du tout). Les
-    deux premiers ne voient rien du troisième.
+    Three witnesses, because a barrier breaks in three ways: the output (a personal
+    field in the decoded record), the LIST (a personal key admitted) and the FILTER
+    (the list no longer consulted at all). The first two see nothing of the third.
     """
 
     def test_account_identifiers_never_survive_the_projection(self) -> None:
@@ -134,12 +132,12 @@ class TestPersonalDataNeverSurvives:
                         *_sensitive_attributes(),
                     ],
                 ),
-                # Mesuré : les événements de hook portent AUSSI l'e-mail en clair.
+                # Measured: hook events ALSO carry the email in the clear.
                 _record(event_name="hook_execution_start", extra=_sensitive_attributes()),
             ]
         )
 
-        # Contrôle d'entrée : les sentinelles sont bien dans la charge soumise.
+        # Input control: the sentinels are indeed in the submitted payload.
         for key, value in SENSITIVE_VALUES.items():
             assert value.encode() in payload, f"sentinelle {key} absente de la charge de test"
 
@@ -149,8 +147,8 @@ class TestPersonalDataNeverSurvives:
         state = _readable_state(records[0])
         rendered_by_name = {name: repr(value) for name, value in state.items()}
 
-        # Contrôle positif : le canal de lecture montre bien les valeurs projetées.
-        # Sans lui, « aucune sentinelle trouvée » passerait au vert sur un objet vide.
+        # Positive control: the read channel does show the projected values. Without
+        # it, "no sentinel found" would go green on an empty object.
         assert any(PROJECTED_MODEL in rendered for rendered in rendered_by_name.values()), (
             f"le modèle projeté n'apparaît dans aucun champ lu : {rendered_by_name}"
         )
@@ -162,30 +160,29 @@ class TestPersonalDataNeverSurvives:
             for key, value in SENSITIVE_VALUES.items():
                 assert value not in rendered, f"{key} a survécu dans le champ {name}"
 
-        # Aucun champ ne doit même offrir un canal nommé pour ces données.
+        # No field must even offer a named channel for this data.
         for name in rendered_by_name:
             lowered = name.lower()
             for marker in PERSONAL_DATA_MARKERS:
                 assert marker not in lowered, f"le champ {name} ouvre un canal « {marker} »"
 
-        # Et rien ne doit fuir par une structure annexe du résultat.
+        # And nothing must leak through a side structure of the result.
         whole = repr(records)
         for key, value in SENSITIVE_VALUES.items():
             assert value not in whole, f"{key} a survécu dans le résultat complet"
 
     def test_the_whitelist_admits_no_personal_data_key(self) -> None:
-        """La barrière amont, testée pour elle-même.
+        """The upstream barrier, tested on its own terms.
 
-        Le test ci-dessus ne lit que les champs de l'enregistrement rendu :
-        il ne voit donc QUE la seconde barrière, la liste figée des champs.
-        Mesuré par mutation — ajouter ``user.email`` à ``_PROJECTED_KEYS`` sans
-        toucher à la dataclass lui laissait passer les douze tests. Un tel
-        élargissement ne fuit rien le jour où il est fait ; il arme la fuite
-        pour le champ suivant qu'on ajoutera. La liste blanche étant décrite
-        comme « la seule barrière », elle doit mordre seule.
+        The test above only reads the fields of the returned record: it therefore
+        sees ONLY the second barrier, the frozen list of fields. Measured by
+        mutation — adding ``user.email`` to ``_PROJECTED_KEYS`` without touching the
+        dataclass let it through all twelve tests. Such a widening leaks nothing the
+        day it is made; it arms the leak for the next field added. The allowlist
+        being described as "the only barrier", it must bite on its own.
         """
-        # Contrôle positif : sans lui, une liste blanche vidée ou renommée
-        # rendrait les deux assertions suivantes vraies pour rien.
+        # Positive control: without it, an emptied or renamed allowlist would make
+        # the two assertions below true for nothing.
         assert {"session.id", "event.name", "model"} <= _PROJECTED_KEYS
 
         admitted = SENSITIVE_VALUES.keys() & _PROJECTED_KEYS
@@ -197,21 +194,20 @@ class TestPersonalDataNeverSurvives:
                 assert marker not in lowered, f"la liste blanche admet {key} (canal « {marker} »)"
 
     def test_the_projection_drops_every_key_outside_the_whitelist(self) -> None:
-        """Le FILTRE, éprouvé sur ce qu'il retient — pas sur ce que la liste contient.
+        """The FILTER, exercised on what it retains — not on what the list contains.
 
-        Les deux tests ci-dessus ne peuvent pas voir ce troisième défaut.
-        Mesuré le 2026-08-07 : retirer entièrement
-        ``if key not in _PROJECTED_KEYS: continue`` laisse ``decode_claude_logs``
-        rendre un ``ClaudeRecord`` IDENTIQUE, champ pour champ, sur une charge
-        portant les cinq identifiants personnels. La dataclass est gelée : un
-        attribut non projeté n'a nulle part où atterrir, donc aucune assertion
-        sur l'objet rendu ne peut mordre. Une liste blanche jamais consultée
-        reste pourtant une barrière morte, et le prochain champ ajouté à la
-        dataclass la traverserait sans rien casser.
+        The two tests above cannot see this third defect. Measured on 2026-08-07:
+        removing ``if key not in _PROJECTED_KEYS: continue`` entirely leaves
+        ``decode_claude_logs`` returning an IDENTICAL ``ClaudeRecord``, field for
+        field, on a payload carrying the five personal identifiers. The dataclass is
+        frozen: an unprojected attribute has nowhere to land, so no assertion on the
+        returned object can bite. An allowlist that is never consulted is
+        nevertheless a dead barrier, and the next field added to the dataclass would
+        cross it without breaking anything.
 
-        Le seul endroit où la barrière est observable est donc la projection
-        elle-même : quatre clés retenues sur les dix soumises ici. C'est ce que
-        ce test mesure, à l'endroit exact où le filtre s'applique.
+        The only place the barrier is observable is therefore the projection itself:
+        four keys retained out of the ten submitted here. That is what this test
+        measures, at the exact place the filter applies.
         """
         record = _record(
             event_name="api_request",
@@ -227,19 +223,19 @@ class TestPersonalDataNeverSurvives:
         leaked = SENSITIVE_VALUES.keys() & retained.keys()
         assert not leaked, f"clés personnelles retenues par la projection : {sorted(leaked)}"
 
-        # Exhaustif : mord aussi sur une clé personnelle qu'on n'a pas mesurée.
-        # Contrôle positif inclus — une projection vide échouerait ici, ce qui
-        # interdit à l'assertion d'absence ci-dessus de passer pour rien.
+        # Exhaustive: it also bites on a personal key we have not measured. Positive
+        # control included — an empty projection would fail here, which forbids the
+        # absence assertion above from passing for nothing.
         assert set(retained) == {"event.name", "session.id", "model", "input_tokens"}
 
 
 class TestEventFiltering:
     def test_bare_event_name_is_recognized_and_prefixed_one_is_not(self) -> None:
-        """Le préfixe `claude_code.` est dans le CORPS, pas dans `event.name`.
+        """The `claude_code.` prefix is in the BODY, not in `event.name`.
 
-        Mesuré le 2026-08-06. Les deux enregistrements sont soumis ensemble :
-        un décodeur qui filtrerait sur `claude_code.*` ne rendrait rien, un
-        décodeur qui ne filtrerait rien en rendrait deux.
+        Measured on 2026-08-06. The two records are submitted together: a decoder
+        filtering on `claude_code.*` would return nothing, a decoder filtering
+        nothing would return two.
         """
         payload = _envelope(
             [
@@ -268,7 +264,7 @@ class TestEventFiltering:
 
 class TestCounters:
     def test_the_three_input_counters_are_projected(self) -> None:
-        """`input_tokens` seul sous-estimerait le contexte de trois ordres."""
+        """`input_tokens` alone would under-estimate the context by three orders."""
         payload = _envelope(
             [
                 _record(
@@ -307,7 +303,7 @@ class TestCounters:
         negative, positive = decode_claude_logs(payload)
 
         assert negative.cost_usd is None
-        # Contrôle positif : sans lui, un décodeur qui perdrait TOUT coût passerait.
+        # Positive control: without it, a decoder losing ALL cost would pass.
         assert positive.cost_usd == pytest.approx(0.0125)
 
     def test_absent_model_falls_back_to_unknown_and_present_model_is_kept(self) -> None:
@@ -337,9 +333,9 @@ class TestMalformedSession:
             decode_claude_logs(_envelope([_record(session_id=None)]))
 
     def test_canonical_session_is_accepted(self) -> None:
-        """Contrôle positif des deux rejets ci-dessus.
+        """Positive control for the two rejections above.
 
-        Sans lui, un décodeur qui lèverait sur TOUTE charge les ferait passer.
+        Without it, a decoder raising on ANY payload would make them pass.
         """
         record = decode_claude_logs(_envelope([_record(session_id=FAKE_UUID)]))[0]
 
@@ -355,7 +351,7 @@ class TestPayloadBounds:
             decode_claude_logs(oversized)
 
     def test_payload_at_the_shared_limit_still_decodes(self) -> None:
-        """Contrôle positif : le rejet ci-dessus tient à la taille, pas au reste."""
+        """Positive control: the rejection above is about the size, not the rest."""
         envelope = _envelope([_record()])
         padded = envelope + b" " * (MAX_REQUEST_BYTES - len(envelope))
 
@@ -364,7 +360,7 @@ class TestPayloadBounds:
 
 
 class TestRealCapture:
-    """La capture du spike est l'oracle : si ce test échoue, c'est le code."""
+    """The spike's capture is the oracle: if this test fails, it is the code."""
 
     def test_recorded_capture_decodes_with_its_measured_counters(self) -> None:
         records = decode_claude_logs(FIXTURE_PATH.read_bytes())

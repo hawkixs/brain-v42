@@ -2662,15 +2662,14 @@ def test_gate_boundary_shell_compose_rejects_external_files(
 def test_gate_boundary_shell_compose_accepts_an_explicit_project_name(
     checker: ModuleType | _MissingChecker, tmp_path: Path
 ) -> None:
-    """`-p` nomme le projet compose ; il ne change rien aux images résolues.
+    """`-p` names the compose project; it changes nothing about the resolved images.
 
-    Sans projet explicite, compose dérive le projet du DOSSIER du fichier et
-    réconcilie sur (projet, service) : deux bancs jetables aux noms de
-    conteneur différents se recréaient l'un l'autre — destruction collatérale
-    mesurée sur le banc churn HNSW le 2026-08-28. Refuser `-p` ici forçait un
-    script de banc à choisir entre le gate et l'isolation. `down` entre au
-    même titre : c'est le geste de teardown du même banc, et il ne fait
-    entrer aucune image.
+    With no explicit project, compose derives the project from the file's FOLDER and
+    reconciles on (project, service): two disposable benches with different container
+    names recreated each other — collateral destruction measured on the HNSW churn
+    bench on 2026-08-28. Refusing `-p` here forced a bench script to choose between
+    the gate and isolation. `down` enters on the same grounds: it is the same bench's
+    teardown gesture, and it brings in no image.
     """
     sources = _write_valid_repo(tmp_path)
     _write_yaml(
@@ -2696,7 +2695,7 @@ def test_gate_boundary_shell_compose_accepts_an_explicit_project_name(
 def test_gate_boundary_shell_compose_project_name_does_not_bypass_the_scan(
     checker: ModuleType | _MissingChecker, tmp_path: Path
 ) -> None:
-    """Accepter `-p` n'exempte pas le fichier compose de l'épinglage."""
+    """Accepting `-p` does not exempt the compose file from pinning."""
     _write_valid_repo(tmp_path)
     _write_yaml(
         tmp_path / "ops/bad.yml",
@@ -2727,9 +2726,9 @@ def test_gate_boundary_shell_compose_rejects_a_dangling_project_flag(
 def test_gate_boundary_shell_accepts_docker_network_management(
     checker: ModuleType | _MissingChecker, tmp_path: Path
 ) -> None:
-    """`docker network inspect|rm` ne fait entrer aucune image : c'est le
-    teardown et la garde d'homonymie du banc churn (le réseau du projet doit
-    être inspecté avant destruction et retiré par le filet)."""
+    """`docker network inspect|rm` brings in no image: it is the churn bench's
+    teardown and homonymy guard (the project's network must be inspected before
+    destruction and removed by the safety net)."""
     _write_valid_repo(tmp_path)
     (tmp_path / "scripts/build-image.sh").write_text(
         "#!/usr/bin/env bash\n"
@@ -11550,17 +11549,17 @@ def test_github_workflow_fails_closed_on_unverifiable_step_context(
 def test_docker_exec_is_modelled_as_a_non_ingress_verb(
     checker: ModuleType | _MissingChecker, tmp_path: Path
 ) -> None:
-    """``docker exec`` nomme un CONTENEUR, jamais une image — rien à épingler.
+    """``docker exec`` names a CONTAINER, never an image — nothing to pin.
 
-    Le gate le refusait comme « unsupported Docker command », ce qui n'était pas
-    une politique mais un trou du modèle : ``DOCKER_COMPOSE_VERBS`` contient déjà
-    ``exec``, donc ``docker compose exec`` passait et la forme nue non. Et le jeu
-    « sans ingress » contient déjà ``load``, qui fait bel et bien entrer une image
-    depuis une archive — ``exec`` en est strictement plus éloigné.
+    The gate refused it as an "unsupported Docker command", which was not a policy
+    but a hole in the model: ``DOCKER_COMPOSE_VERBS`` already contains ``exec``, so
+    ``docker compose exec`` passed and the bare form did not. And the "no ingress"
+    set already contains ``load``, which does bring an image in from an archive —
+    ``exec`` is strictly further from that.
 
-    Le coût du trou n'était pas cosmétique : ``check_container_image_pins.py``
-    s'exécute AVANT ``pytest`` dans le job ``test:unit``, donc un script refusé
-    empêchait la suite unitaire entière de s'exécuter.
+    The hole's cost was not cosmetic: ``check_container_image_pins.py`` runs BEFORE
+    ``pytest`` in the ``test:unit`` job, so a refused script prevented the whole unit
+    suite from running.
     """
     _write_valid_repo(tmp_path)
     (tmp_path / "scripts/query-db.sh").write_text(
@@ -11575,10 +11574,10 @@ def test_docker_exec_is_modelled_as_a_non_ingress_verb(
 def test_a_verb_that_really_pulls_an_image_is_still_refused(
     checker: ModuleType | _MissingChecker, tmp_path: Path
 ) -> None:
-    """La sonde NÉGATIVE : modéliser ``exec`` ne doit rien ouvrir d'autre.
+    """The NEGATIVE probe: modelling ``exec`` must open nothing else.
 
-    Sans elle, on ne saurait pas si le test ci-dessus passe parce que ``exec`` est
-    correctement modélisé ou parce que le gate a cessé d'inspecter les scripts.
+    Without it, we would not know whether the test above passes because ``exec`` is
+    correctly modelled or because the gate stopped inspecting scripts.
     """
     _write_valid_repo(tmp_path)
     (tmp_path / "scripts/pull-unpinned.sh").write_text(

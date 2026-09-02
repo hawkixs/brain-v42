@@ -22,9 +22,9 @@ CI_WORKFLOW_PATH = WORKFLOW_DIRECTORY / "continuous-integration.yml"
 CD_WORKFLOW_PATH = WORKFLOW_DIRECTORY / "continuous-delivery.yml"
 RELEASE_WORKFLOW_PATH = WORKFLOW_DIRECTORY / "release.yml"
 
-# Ce fichier ne chargeait que les deux rails qu'il nomme, si bien qu'un troisième
-# fichier de workflow était invisible de toutes ses assertions — y compris de la
-# frontière de runner qu'il existe pour tenir. La liste est donc épinglée.
+# This file only loaded the two rails it names, so a third workflow file was
+# invisible to all of its assertions — including the runner boundary it exists to
+# hold. The list is therefore pinned.
 KNOWN_WORKFLOWS = {
     "continuous-integration.yml",
     "continuous-delivery.yml",
@@ -80,11 +80,11 @@ def test_the_gitlab_rail_stays_retired() -> None:
 
 
 def test_the_workflow_directory_holds_exactly_the_known_rails() -> None:
-    """Un quatrième fichier doit passer par ici avant d'exister.
+    """A fourth file has to come through here before it can exist.
 
-    Les assertions de ce module ne chargent que les chemins qu'elles nomment :
-    un workflow ajouté à côté n'était contraint par rien, et pouvait donc viser
-    le runner à la demande sans qu'aucun test ne bronche.
+    This module's assertions only load the paths they name: a workflow added
+    alongside was constrained by nothing, and could therefore target the
+    on-demand runner without any test flinching.
     """
     present = {
         path.name
@@ -95,10 +95,10 @@ def test_the_workflow_directory_holds_exactly_the_known_rails() -> None:
 
 
 def test_only_the_delivery_rail_reaches_the_on_demand_runner() -> None:
-    """La frontière de runner tenue sur TOUT le répertoire, pas sur deux fichiers.
+    """The runner boundary held over the WHOLE directory, not over two files.
 
-    Mesuré le 2026-08-14 : 19 runs de livraison, 19 `cancelled`, 0 succès. Un job
-    posé sur ce runner n'a pas « une latence » — il ne tourne pas.
+    Measured on 2026-08-14: 19 delivery runs, 19 `cancelled`, 0 successes. A job
+    placed on this runner does not have "a latency" — it does not run.
     """
     for path in sorted(WORKFLOW_DIRECTORY.iterdir()):
         if not path.is_file() or path.suffix not in {".yml", ".yaml"}:
@@ -112,11 +112,11 @@ def test_only_the_delivery_rail_reaches_the_on_demand_runner() -> None:
 
 
 def test_the_release_rail_is_hosted_and_tag_driven() -> None:
-    """La release tourne runner ÉTEINT, et c'est sa raison d'être.
+    """The release runs with the runner OFF, and that is its whole point.
 
-    Le registre interne est privé et à DNS interne : il ne publie rien qu'un
-    consommateur de release puisse atteindre, donc le rail n'attache que la wheel
-    et le sdist, depuis un runner hébergé qu'aucun opérateur n'a à démarrer.
+    The internal registry is private and on internal DNS: it publishes nothing a
+    release consumer can reach, so the rail attaches only the wheel and the sdist,
+    from a hosted runner no operator has to start.
     """
     release = _load(RELEASE_WORKFLOW_PATH)
     assert release[True] == {"push": {"tags": ["v*"]}}
@@ -225,19 +225,19 @@ def test_github_test_unit_applies_the_schema_before_pytest(
 def test_github_coverage_sees_the_same_world_as_test_unit(
     ci_workflow: dict[Any, Any],
 ) -> None:
-    """La couverture doit mesurer le code que la suite teste RÉELLEMENT.
+    """Coverage must measure the code the suite REALLY tests.
 
-    Ce test en remplace un qui exigeait l'INVERSE — « test-coverage ne doit pas
-    réveiller les tests adossés à une base **tant que le Postgres de la CI ne
-    les supporte pas** ». Sa prémisse était conditionnelle, et la condition est
-    fausse : `test-unit` et `test-integration` font tourner ces mêmes tests
-    contre ce même service Postgres, et sont verts. Le job coverage s'en privait
-    donc sans raison, et publiait un pourcentage mesuré sur un sous-ensemble
-    (ticket `f779092b`) — mesuré le 2026-08-22 : 60 tests sautés, 85,36 % au lieu
-    de 85,44 %.
+    This test replaces one that required the OPPOSITE — "test-coverage must not
+    wake the database-backed tests **as long as the CI Postgres does not support
+    them**". Its premise was conditional, and the condition is false: `test-unit`
+    and `test-integration` run those same tests against that same Postgres
+    service, and are green. The coverage job was therefore going without them for
+    no reason, and published a percentage measured on a subset (ticket
+    `f779092b`) — measured on 2026-08-22: 60 tests skipped, 85.36 % instead of
+    85.44 %.
 
-    On garde l'assertion utile de l'ancien test — `POSTGRES_URL` doit être posé,
-    sinon `Settings()` lève — et on inverse la seconde.
+    We keep the useful assertion of the old test — `POSTGRES_URL` must be set,
+    otherwise `Settings()` raises — and we invert the second one.
     """
     job = ci_workflow["jobs"]["test-coverage"]
     env = job.get("env", {})
@@ -264,12 +264,12 @@ def test_github_coverage_sees_the_same_world_as_test_unit(
 def test_github_coverage_refuses_a_measurement_made_on_a_subset(
     ci_workflow: dict[Any, Any],
 ) -> None:
-    """Le témoin inversé — c'est LUI le livrable, pas le pourcentage.
+    """The inverted witness — IT is the deliverable, not the percentage.
 
-    Un test qui SAUTE ne fait pas rougir un job : sans ce garde-fou, la recette
-    du job pourrait redériver de celle de `test-unit` et la CI resterait verte
-    sur une couverture partielle, exactement comme avant. Le test ci-dessus
-    épingle la recette ; celui-ci épingle ce qui la surveille.
+    A test that SKIPS does not redden a job: without this guardrail, the job's
+    recipe could drift away from `test-unit`'s again and CI would stay green on
+    partial coverage, exactly as before. The test above pins the recipe; this one
+    pins what watches it.
     """
     steps = ci_workflow["jobs"]["test-coverage"].get("steps", [])
     runs = [str(step.get("run", "")) for step in steps]

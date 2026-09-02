@@ -65,21 +65,20 @@ class TestTicketsSilencedCount:
 
 
 class TestDatedSilencedSurfacing:
-    """La convention de titre devient opérante AU-DELÀ du cap (259cfbe5, mission re-démontrée).
+    """The title convention becomes operative BEYOND the cap (259cfbe5, mission re-demonstrated).
 
-    Mesuré le 2026-08-29 : `191b2dba` porte « REVUE 2026-09-03 » dans son titre
-    — la seule échéance datée du carnet, à cinq jours — et il est au rang 49
-    sur 62, invisible du briefing. Le tri par récence punit précisément les
-    tickets qu'on ne touche pas pendant que leur date approche : la convention
-    de titre ne fonctionne que tant que le ticket est affiché, c'est-à-dire
-    jamais quand elle compte.
+    Measured on 2026-08-29: `191b2dba` carries "REVUE 2026-09-03" in its title — the
+    notebook's only dated deadline, five days out — and it sits at rank 49 out of
+    62, invisible from the briefing. Sorting by recency punishes precisely the
+    tickets one does not touch while their date approaches: the title convention only
+    works as long as the ticket is displayed, that is, never when it matters.
 
-    La forme à coût zéro : parmi les tickets TUS par le cap, ceux dont le titre
-    porte une date ISO sont nommés sous la ligne du compteur, triés par date,
-    plafonnés à 2. Une DATE est falsifiable et s'auto-périme — aucun rang posé
-    à la main, aucun flag à policer (le contre-exemple `pinned` est documenté
-    au ticket), aucune colonne : la migration deadline (lot C12) reste un
-    arbitrage opérateur, que cette ligne n'épuise pas.
+    The zero-cost shape: among the tickets SILENCED by the cap, those whose title
+    carries an ISO date are named under the counter line, sorted by date, capped at
+    2. A DATE is falsifiable and self-expiring — no hand-set rank, no flag to police
+    (the `pinned` counter-example is documented in the ticket), no column: the
+    deadline migration (batch C12) stays an operator arbitration, which this line
+    does not exhaust.
     """
 
     def test_a_dated_silenced_ticket_is_named_with_its_date(self):
@@ -129,9 +128,9 @@ class TestDatedSilencedSurfacing:
         assert "2099-12-01" not in section
 
     def test_a_past_date_is_said_overdue_not_hidden(self):
-        """Une échéance dépassée reste visible tant que le ticket est ouvert :
-        la toucher (la réviser) le remonte dans la récence et l'éteint ici —
-        la péremption est le geste de revue lui-même, pas un timer."""
+        """A passed deadline stays visible as long as the ticket is open: touching
+        it (reviewing it) lifts it back up in recency and switches it off here —
+        expiry is the review gesture itself, not a timer."""
         a_traiter = [_ticket(f"t{i}") for i in range(_TICKETS_CAP)]
         a_traiter.append(_ticket("REVUE 2020-01-01 — oubliée depuis longtemps"))
         groups = TicketGroups(a_traiter=a_traiter)

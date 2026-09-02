@@ -2155,9 +2155,9 @@ def test_post_037_production_truth_is_consistent_and_fail_closed() -> None:
     assert "Conservez la migration `036` pendant ce rollback" not in CODEX_GATEWAY
 
     assert "Keep migration `036` during this rollback" not in CODEX_GATEWAY
-    # Ticket 8285215c : le head n'est plus une constante NULLE PART, ni en prose ni
-    # dans le CLI. Ces deux phrases étaient exactes tant que le script encodait
-    # `037` ; elles sont devenues fausses le jour où il a cessé de le faire.
+    # Ticket 8285215c: the head is no longer a constant ANYWHERE, neither in prose
+    # nor in the CLI. Those two sentences were exact as long as the script encoded
+    # `037`; they became false the day it stopped doing so.
     assert "la production exactement à `037`" not in gateway_normalized
     assert "production exactly at `037`" not in gateway_normalized
     assert "`alembic_revision=037`" not in gateway_normalized
@@ -2167,9 +2167,9 @@ def test_post_037_production_truth_is_consistent_and_fail_closed() -> None:
         "production exactly at the head YOU declared — measured immediately "
         "before the procedure, never copied" in gateway_normalized
     )
-    # La procédure est INEXÉCUTABLE si le runbook oublie l'argument requis.
-    # La forme d'INVOCATION, pas la mention : la prose cite aussi l'argument, et
-    # compter les mentions ferait passer le test avec trois blocs sur quatre corrigés.
+    # The procedure is UNRUNNABLE if the runbook forgets the required argument.
+    # The INVOCATION form, not the mention: the prose also cites the argument, and
+    # counting mentions would pass the test with three blocks out of four fixed.
     assert gateway_normalized.count('--expected-alembic-revision "$DEPLOYED_HEAD"') == 4, (
         "les quatre invocations du CLI doivent toutes déclarer le head mesuré"
     )
@@ -2364,13 +2364,13 @@ def test_documented_ci_rails_match_the_workflow_files() -> None:
     assert ".github/workflows/continuous-delivery.yml" in normalized
     assert ".github/workflows/release.yml" in normalized
     assert not (REPO_ROOT / ".gitlab-ci.yml").exists()
-    # Le rail de release existe pour tourner runner ÉTEINT : une section qui le
-    # décrirait sur le runner à la demande enverrait un opérateur poser un tag
-    # qui n'aboutirait jamais. Le déclencheur et le runner sont donc cités depuis
-    # le câblage, pas récrits à la main.
+    # The release rail exists to run with the runner OFF: a section describing it
+    # on the on-demand runner would send an operator to push a tag that would never
+    # complete. The trigger and the runner are therefore quoted from the wiring,
+    # not retyped by hand.
     release_job = release_workflow["jobs"]["release"]
     assert str(release_job["runs-on"]) in normalized
-    # PyYAML 1.1 lit une clé `on:` nue comme le booléen True.
+    # PyYAML 1.1 reads a bare `on:` key as the boolean True.
     for glob in release_workflow[True]["push"]["tags"]:
         assert glob in normalized
     # The runner boundary of decision c62a98c1, quoted from the wiring itself.
@@ -2504,11 +2504,11 @@ def _blockquote_holding(document: str, marker: str) -> str:
     return "\n".join(lines[start:end])
 
 
-# Une concession de fermeture automatique réunit trois traits : la phrase parle
-# d'une session, elle la ferme, et elle le fait sans commande de l'utilisateur.
-# Chercher un vocabulaire littéral (« ferme automatiquement ») ne détecte que la
-# formulation qu'avait en tête l'auteur de la garde ; la conjonction des trois
-# traits détecte aussi « clore », « abandonner de lui-même » ou « auto-close ».
+# An auto-closure concession brings together three traits: the sentence speaks of
+# a session, it closes it, and it does so without a user command. Looking for a
+# literal vocabulary (« ferme automatiquement ») only detects the phrasing the
+# guard's author had in mind; the conjunction of the three traits also detects
+# « clore », « abandonner de lui-même » or « auto-close ».
 _MENTIONS_A_SESSION = re.compile(r"session", re.IGNORECASE)
 _CLOSES_THE_SESSION = re.compile(
     r"ferm\w*|cl[oô](?:re|s\w*|t\w*)|abandon\w*|balay\w*|sweep|brain_session_(?:end|abandon)",
@@ -2528,9 +2528,9 @@ _SESSION_CLOSURE_PROHIBITION = (
     "Aucun hook, auto-close, livraison de travail ou fin de réponse ne ferme une session "
     "côté agent ou client."
 )
-# « sans heartbeat », pas « sans signe de vie » : le prédicat du sweep porte sur
-# `last_heartbeat_at`, que seuls `capture` et `heartbeat` rafraîchissent. Un
-# `resume` quotidien est un signe de vie et ne repousse pourtant pas l'abandon.
+# « sans heartbeat », not « sans signe de vie »: the sweep's predicate bears on
+# `last_heartbeat_at`, which only `capture` and `heartbeat` refresh. A daily
+# `resume` is a sign of life and yet does not push back the abandonment.
 _SERVER_SIDE_SWEEP_EXCEPTION = (
     "la phase Dream `sweep` — livrée fermée et dry (`BRAIN_DREAM_SWEEP_ENABLED=false`, "
     "`BRAIN_DREAM_SWEEP_DRY_RUN=true`) — abandonne une session ouverte sans heartbeat "
@@ -2604,7 +2604,7 @@ _ARCHITECTURE_STALENESS_CLOSES_NOTHING = (
     "never auto-closes a session."
 )
 
-# Chaque énoncé est ancré à la section qui gouverne son lecteur, pas au fichier.
+# Each statement is anchored to the section that governs its reader, not the file.
 _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
     *(
         (
@@ -2683,8 +2683,8 @@ _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
     ),
 )
 
-# Le scan anti-élargissement, lui, balaie le document entier : c'est justement
-# une concession écrite ailleurs qu'il doit attraper.
+# The anti-widening scan, for its part, sweeps the whole document: a concession
+# written elsewhere is exactly what it has to catch.
 _DOCTRINE_DOCUMENTS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     *(
         (
@@ -2754,8 +2754,8 @@ _DOCTRINE_DOCUMENTS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ),
 )
 
-# Reformulations plausibles d'un même élargissement. Aucune n'emploie le
-# vocabulaire de la garde d'origine : c'est tout l'intérêt.
+# Plausible rewordings of one and the same widening. None uses the original
+# guard's vocabulary: that is the whole point.
 _REWORDED_CLOSURE_GRANTS = (
     "Un hook de fin de réponse peut clore une session inactive au bout de trois jours.",
     "L'agent abandonne de lui-même une session livrée.",
@@ -2874,11 +2874,11 @@ def test_sweep_killswitches_are_documented_in_the_shared_environment() -> None:
 
 
 def test_readme_versioning_contract_matches_the_shipped_version() -> None:
-    """Le numéro annoncé au lecteur est celui que la distribution portera.
+    """The number announced to the reader is the one the distribution will carry.
 
-    Sans cette porte, la section survivrait à un bump en affirmant l'ancien
-    numéro — la forme exacte de dérive que ce dépôt a déjà payée sur une tête
-    de migration.
+    Without this gate, the section would outlive a bump while asserting the old
+    number — the exact shape of drift this repository has already paid for on a
+    migration head.
     """
     manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
     version = manifest["project"]["version"]
@@ -2891,7 +2891,7 @@ def test_readme_versioning_contract_matches_the_shipped_version() -> None:
 
 
 def test_readme_versioning_contract_refuses_to_promise_a_downgrade() -> None:
-    """Les deux révisions citées doivent VRAIMENT refuser leur downgrade."""
+    """The two cited revisions must REALLY refuse their downgrade."""
     section = _section(README, "## Versioning")
 
     assert "No lossless downgrade is promised" in section
@@ -2905,7 +2905,7 @@ def test_readme_versioning_contract_refuses_to_promise_a_downgrade() -> None:
 
 
 def test_readme_versioning_contract_points_at_the_measured_health_fields() -> None:
-    """La prose doit nommer les champs que `/health` expose réellement.
+    """The prose must name the fields `/health` really exposes.
 
     The open-source draft README (ticket bdc4db73) moved this sentence from
     "## Versioning" to "## Production state" -- "measure it, do not read it

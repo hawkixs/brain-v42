@@ -1,60 +1,58 @@
-"""Le runbook DR ne déclare sa cible courante qu'à UN seul endroit.
+"""The DR runbook declares its current target in ONE place only.
 
-Le 2026-08-22, `docs/PLAN_INDEX_REPAIR_RUNBOOK.md` portait deux moitiés qui ne
-parlaient pas de la même base. Ses sections datées annonçaient le head `046`, le
-contrat `brain-v42-v5.sql` et un reçu `29/29`; sa PROCÉDURE — celle qu'un
-opérateur suit en sinistre — disait encore head `037`, `brain-v42-v4.sql` et
-`25/25`. Quatre extensions du contrat livrées le même jour avaient toutes
-atterri dans les sections datées, aucune n'avait touché la procédure, et aucun
-test n'avait rougi.
+On 2026-08-22, `docs/PLAN_INDEX_REPAIR_RUNBOOK.md` carried two halves that were
+not talking about the same database. Its dated sections announced head `046`, the
+contract `brain-v42-v5.sql` and a `29/29` receipt; its PROCEDURE — the one an
+operator follows in a disaster — still said head `037`, `brain-v42-v4.sql` and
+`25/25`. Four contract extensions shipped the same day had all landed in the dated
+sections, none had touched the procedure, and no test had reddened.
 
-Ce que ce module épingle n'est PAS « deux valeurs différentes dans le même
-fichier » : un document doit pouvoir parler de son passé, et une section datée
-qui raconte le head `037` de juillet est légitime. La règle est plus étroite et
-elle est décidable sans lire l'intention d'une phrase :
+What this module pins is NOT "two different values in the same file": a document
+must be able to speak of its past, and a dated section telling the story of July's
+head `037` is legitimate. The rule is narrower and it is decidable without reading
+a sentence's intent:
 
-    hors d'une région déclarée, le fichier n'écrit AUCUN head, AUCUN nom d'actif
-    de contrat et AUCUN dénominateur de reçu en littéral.
+    outside a declared region, the file writes NO head, NO contract asset name and
+    NO receipt denominator as a literal.
 
-Deux familles de régions, et deux seulement :
+Two families of regions, and two only:
 
-* `dr-current` — la déclaration. Le SEUL endroit où une valeur courante
-  s'écrit. Une seule valeur par nature, donc deux valeurs courantes
-  divergentes sont impossibles par construction.
-* les fenêtres historiques enregistrées dans `HISTORICAL_REGIONS` — le récit
-  d'une bascule datée, libre de porter les nombres de son époque.
+* `dr-current` — the declaration. The ONLY place a current value is written. One
+  value per kind, so two divergent current values are impossible by construction.
+* the historical windows registered in `HISTORICAL_REGIONS` — the story of a dated
+  cutover, free to carry the numbers of its own time.
 
-Tout le reste est de la prose normative, et elle ne cite plus de nombre : elle
-renvoie à la déclaration ou fait mesurer. C'est la doctrine déjà appliquée le
-2026-08-04 à README, ARCHITECTURE, MCP_TOOLS, SCHEMA, au runbook gateway et au
-runbook graph (voir `test_documentation_contract.py`, « ces gates doivent
-maintenant MESURER le head déployé au lieu d'affirmer 037 ») — ce fichier-ci
-avait été sauté par cette passe.
+Everything else is normative prose, and it no longer cites a number: it refers to
+the declaration or makes you measure. This is the doctrine already applied on
+2026-08-04 to README, ARCHITECTURE, MCP_TOOLS, SCHEMA, the gateway runbook and the
+graph runbook (see `test_documentation_contract.py`, "these gates must now MEASURE
+the deployed head instead of asserting 037") — this file had been skipped by that
+pass.
 
-Formes écartées, et pourquoi :
+Forms discarded, and why:
 
-* **Détecter le mode impératif** (« restaurer » = instruction, « a restauré » =
-  récit). Désarmé au premier faux positif : `restore head 037` est impératif et
-  historique, `production measured 039` est narratif et normatif. On classerait
-  l'intention d'une phrase avec une liste de verbes, et le prochain rédacteur
-  la contournerait sans le savoir.
-* **Marquer chaque valeur** avec une balise inline. Correct, mais ~50 balises
-  dans ce seul fichier, illisible en prose, et un oubli est SILENCIEUX — il se
-  lit comme « pas de valeur ici ».
-* **Une source unique dont les deux moitiés dérivent** (génération). Ne résout
-  pas le problème : une section historique ne DOIT PAS dériver de la valeur
-  courante, sinon elle devient fausse. Il faudrait quand même marquer ce qui
-  dérive et ce qui ne dérive pas, donc cette forme-ci plus une machinerie.
+* **Detecting the imperative mood** ("restore" = instruction, "restored" = story).
+  Disarmed at the first false positive: `restore head 037` is imperative and
+  historical, `production measured 039` is narrative and normative. We would be
+  classifying a sentence's intent with a list of verbs, and the next writer would
+  bypass it without knowing.
+* **Marking each value** with an inline tag. Correct, but ~50 tags in this file
+  alone, unreadable in prose, and an omission is SILENT — it reads as "no value
+  here".
+* **A single source both halves derive from** (generation). Does not solve the
+  problem: a historical section must NOT derive from the current value, or it
+  becomes false. What derives and what does not would still have to be marked,
+  hence this form plus machinery.
 
-La porte est-elle contournable ? Oui, par une voie : envelopper une instruction
-vivante dans une fenêtre historique. C'est pourquoi les noms de fenêtres sont
-ÉNUMÉRÉS ICI et non découverts : en ajouter une échoue tant que ce fichier n'a
-pas été édité et relu. C'est le prix voulu.
+Is the gate bypassable? Yes, by one route: wrapping a live instruction in a
+historical window. That is why the window names are ENUMERATED HERE and not
+discovered: adding one fails until this file has been edited and reviewed. That is
+the intended price.
 
-Portée : ce module ne garde qu'un fichier. `docs/ARCHITECTURE.md` porte le même
-défaut à sa ligne 238 (« a tested PostgreSQL restore at the exact deployed head
-(`037` on current production) », faux depuis la bascule 040) et n'est PAS couvert
-ici — c'est une limite déclarée, pas un oubli. L'étendre coûte une entrée dans
+Scope: this module guards one file only. `docs/ARCHITECTURE.md` carries the same
+defect at its line 238 ("a tested PostgreSQL restore at the exact deployed head
+(`037` on current production)", false since the 040 cutover) and is NOT covered
+here — that is a declared limit, not an oversight. Extending it costs one entry in
 `GUARDED_DOCUMENTS`.
 """
 
@@ -69,20 +67,21 @@ import pytest
 ROOT = Path(__file__).parents[2]
 RUNBOOK = ROOT / "docs" / "PLAN_INDEX_REPAIR_RUNBOOK.md"
 
-# Le document AVANT la correction du ticket `681dbe2e`, gelé verbatim. Blob git
-# `d3af73d62617a07db555dccc09e9249927a06c27`, dernier commit à l'avoir écrit
-# `bab434b`. C'est le témoin négatif : sans lui, ce module est une opinion verte.
+# The document BEFORE ticket `681dbe2e`'s fix, frozen verbatim. Git blob
+# `d3af73d62617a07db555dccc09e9249927a06c27`, last commit to have written it
+# `bab434b`. This is the negative witness: without it, this module is a green
+# opinion.
 BEFORE_681DBE2E = (
     Path(__file__).parent / "data" / "PLAN_INDEX_REPAIR_RUNBOOK.2026-08-22-before-681dbe2e.md"
 )
 
 GUARDED_DOCUMENTS = (RUNBOOK,)
 
-#: La région qui déclare les cibles courantes. Une seule, obligatoire.
+#: The region that declares the current targets. One only, mandatory.
 DECLARATION_REGION = "dr-current"
 
-#: Les fenêtres de récit. Énumérées à la main : c'est la seule dérogation
-#: possible à la règle, et elle doit coûter une édition relue de ce fichier.
+#: The narrative windows. Enumerated by hand: this is the rule's only possible
+#: derogation, and it must cost a reviewed edit of this file.
 HISTORICAL_REGIONS = (
     "project-context-cas-039",
     "project-context-focus-updated-at-040",
@@ -90,42 +89,42 @@ HISTORICAL_REGIONS = (
 
 _REGION_MARKER = re.compile(r"<!--\s*([a-z0-9-]+):(start|end)\s*-->")
 
-#: Les trois natures gouvernées. Le head est cherché par sa FORME (`0` suivi de
-#: deux chiffres, isolé), jamais par les mots qui l'entourent : un recensement
-#: par mots-clés a un angle mort par construction, et l'angle mort d'une garde
-#: se lit « rien à signaler ».
+#: The three governed kinds. The head is looked for by its SHAPE (`0` followed by
+#: two digits, isolated), never by the words around it: a keyword-based census has
+#: a blind spot by construction, and a guard's blind spot reads as "nothing to
+#: report".
 GOVERNED_VALUES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("alembic head", re.compile(r"(?<![\w.])0\d{2}(?![\w.])")),
     ("recovery contract asset", re.compile(r"brain-v42-v[\w.-]*\.(?:sql|json)")),
     ("contract receipt", re.compile(r"(?<![\w/.])\d{1,3}/\d{1,3}(?![\d/])")),
 )
 
-#: Constructions qui portent un nombre de la MÊME forme qu'une révision sans en
-#: être une. Elles sont retirées de la ligne avant le balayage, et énumérées une
-#: par une. L'autre remède — borner le motif du head à `0[0-5]\d` pour éviter
-#: `umask 077` — rendrait la garde aveugle à la révision 060 sans que personne
-#: ne l'apprenne : un plafond silencieux se lit « rien à signaler ».
+#: Constructions that carry a number of the SAME shape as a revision without being
+#: one. They are removed from the line before the sweep, and enumerated one by one.
+#: The other remedy — bounding the head pattern to `0[0-5]\d` to avoid `umask 077`
+#: — would make the guard blind to revision 060 without anyone learning it: a
+#: silent ceiling reads as "nothing to report".
 _NOT_A_HEAD: tuple[re.Pattern[str], ...] = (re.compile(r"\bumask\s+0\d{2}\b"),)
 
 
 @dataclass(frozen=True)
 class Violation:
-    """Une valeur gouvernée écrite hors de toute région déclarée."""
+    """A governed value written outside any declared region."""
 
     kind: str
     value: str
     line: int
     text: str
 
-    def __str__(self) -> str:  # pragma: no cover - lisibilité d'échec seulement
+    def __str__(self) -> str:  # pragma: no cover - failure readability only
         return f"L{self.line} [{self.kind}] {self.value!r} — {self.text.strip()}"
 
 
 def _region_of_each_line(document: str) -> tuple[list[str | None], set[str]]:
-    """Associe à chaque ligne la région qui la contient, et rend les noms vus.
+    """Map each line to the region containing it, and return the names seen.
 
-    Les marqueurs eux-mêmes appartiennent à leur région : sinon la ligne
-    `<!-- dr-current:start -->` serait de la prose normative.
+    The markers themselves belong to their region: otherwise the line
+    `<!-- dr-current:start -->` would be normative prose.
     """
     lines = document.splitlines()
     regions: list[str | None] = [None] * len(lines)
@@ -151,7 +150,7 @@ def _region_of_each_line(document: str) -> tuple[list[str | None], set[str]]:
 
 
 def find_undeclared_values(document: str) -> list[Violation]:
-    """Rend toute valeur gouvernée écrite hors d'une région déclarée."""
+    """Return every governed value written outside a declared region."""
     regions, _ = _region_of_each_line(document)
     violations: list[Violation] = []
     for index, line in enumerate(document.splitlines()):
@@ -167,7 +166,7 @@ def find_undeclared_values(document: str) -> list[Violation]:
 
 
 def declared_values(document: str, kind: str) -> list[str]:
-    """Rend les valeurs d'une nature écrites DANS la déclaration."""
+    """Return the values of a kind written INSIDE the declaration."""
     regions, _ = _region_of_each_line(document)
     pattern = dict(GOVERNED_VALUES)[kind]
     values: list[str] = []
@@ -180,7 +179,7 @@ def declared_values(document: str, kind: str) -> list[str]:
 
 @pytest.mark.parametrize("document_path", GUARDED_DOCUMENTS, ids=lambda path: path.name)
 def test_no_normative_value_lives_outside_the_declaration(document_path: Path) -> None:
-    """La prose normative ne cite ni head, ni actif, ni dénominateur."""
+    """Normative prose cites neither head, nor asset, nor denominator."""
     violations = find_undeclared_values(document_path.read_text(encoding="utf-8"))
 
     assert not violations, (
@@ -193,10 +192,10 @@ def test_no_normative_value_lives_outside_the_declaration(document_path: Path) -
 
 @pytest.mark.parametrize("document_path", GUARDED_DOCUMENTS, ids=lambda path: path.name)
 def test_the_declaration_states_every_governed_nature(document_path: Path) -> None:
-    """Une déclaration muette annulerait la garde en silence.
+    """A mute declaration would cancel the guard in silence.
 
-    Sans ce contrôle, envelopper le document entier dans une fenêtre historique
-    et vider `dr-current` rendrait le module vert sur un fichier sans cible.
+    Without this check, wrapping the whole document in a historical window and
+    emptying `dr-current` would make the module green on a file with no target.
     """
     document = document_path.read_text(encoding="utf-8")
     _, seen = _region_of_each_line(document)
@@ -210,7 +209,7 @@ def test_the_declaration_states_every_governed_nature(document_path: Path) -> No
 
 @pytest.mark.parametrize("document_path", GUARDED_DOCUMENTS, ids=lambda path: path.name)
 def test_no_unregistered_region_may_appear(document_path: Path) -> None:
-    """Ajouter une fenêtre est la seule échappatoire; elle doit coûter cher."""
+    """Adding a window is the only escape hatch; it must be expensive."""
     _, seen = _region_of_each_line(document_path.read_text(encoding="utf-8"))
 
     assert seen == {DECLARATION_REGION, *HISTORICAL_REGIONS}, (
@@ -222,10 +221,10 @@ def test_no_unregistered_region_may_appear(document_path: Path) -> None:
 
 
 def test_the_gate_catches_the_document_it_was_written_for() -> None:
-    """Le témoin négatif : le runbook d'AVANT la correction doit ÉCHOUER.
+    """The negative witness: the runbook from BEFORE the fix must FAIL.
 
-    Verbatim, pas reconstitué. Sans ce test le module ne prouve rien — il
-    affirmerait qu'un document corrigé est corrigé.
+    Verbatim, not reconstructed. Without this test the module proves nothing — it
+    would assert that a corrected document is corrected.
     """
     violations = find_undeclared_values(BEFORE_681DBE2E.read_text(encoding="utf-8"))
 
@@ -235,23 +234,22 @@ def test_the_gate_catches_the_document_it_was_written_for() -> None:
         for kind, _ in GOVERNED_VALUES
     }
 
-    # Les trois natures que le ticket `681dbe2e` a nommées, chacune attrapée
-    # dans la moitié PROCÉDURE du document, celle qu'un opérateur suit.
+    # The three kinds ticket `681dbe2e` named, each caught in the document's
+    # PROCEDURE half, the one an operator follows.
     assert "037" in by_kind["alembic head"]
     assert "brain-v42-v4.sql" in by_kind["recovery contract asset"]
     assert "25/25" in by_kind["contract receipt"]
 
-    # Et les lignes exactes que le ticket citait.
+    # And the exact lines the ticket cited.
     caught = {violation.line for violation in violations}
     assert {273, 282, 308, 321, 675, 676} <= caught
 
 
 def test_a_dated_record_may_keep_the_numbers_of_its_day() -> None:
-    """Le faux positif qui désarmerait la garde ne se produit pas.
+    """The false positive that would disarm the guard does not happen.
 
-    Un document DOIT pouvoir dire « la bascule de juillet a rendu 25/25 au head
-    037 avec `brain-v42-v4.sql` ». Mêmes valeurs, dans une fenêtre enregistrée :
-    aucun signalement.
+    A document MUST be able to say "July's cutover returned 25/25 at head 037 with
+    `brain-v42-v4.sql`". Same values, inside a registered window: no report.
     """
     record = "\n".join(
         (
@@ -276,10 +274,10 @@ def test_a_dated_record_may_keep_the_numbers_of_its_day() -> None:
 
 
 def test_the_same_sentence_outside_a_window_is_caught() -> None:
-    """Témoin de contrôle : c'est la FENÊTRE qui exempte, pas le texte.
+    """Control witness: it is the WINDOW that exempts, not the text.
 
-    Mêmes phrases que le test précédent, hors fenêtre. Sans ce contre-témoin,
-    un `find_undeclared_values` qui ne rendrait jamais rien passerait les deux.
+    The same sentences as the previous test, outside a window. Without this
+    counter-witness, a `find_undeclared_values` returning nothing would pass both.
     """
     live = "\n".join(
         (
@@ -307,7 +305,7 @@ def test_the_same_sentence_outside_a_window_is_caught() -> None:
 
 
 def test_ordinary_prose_is_not_mistaken_for_a_governed_value() -> None:
-    """Les formes voisines qui NE sont pas des valeurs gouvernées."""
+    """The neighbouring shapes that are NOT governed values."""
     ordinary = "\n".join(
         (
             "<!-- dr-current:start -->",
@@ -327,7 +325,7 @@ def test_ordinary_prose_is_not_mistaken_for_a_governed_value() -> None:
 
 
 def _heading_section(document: str, heading: str) -> str:
-    """Rend une section de niveau 2, marqueurs de région compris."""
+    """Return a level-2 section, region markers included."""
     assert document.count(f"\n{heading}\n") == 1, f"`{heading}` n'est pas unique"
     body = document.split(f"\n{heading}\n", 1)[1]
     body = body.split("\n## ", 1)[0]
@@ -346,14 +344,14 @@ def _region_text(document: str, name: str) -> str:
 
 @pytest.mark.parametrize("document_path", GUARDED_DOCUMENTS, ids=lambda path: path.name)
 def test_the_caveat_lives_wherever_a_receipt_is_read(document_path: Path) -> None:
-    """Un reçu ne se lit jamais sans ce qu'il ne prouve pas.
+    """A receipt is never read without what it does not prove.
 
-    C'est la phrase qu'une réécriture de section emporte sans le vouloir : tous
-    les reçus de ce fichier viennent de la production VIVANTE et ne disent RIEN
-    d'une restauration réelle. Elle est donc exigée aux DEUX endroits où un
-    dénominateur se lit — la déclaration en tête, et la section datée qui
-    raconte les cinq extensions du 2026-08-22 — et non pas à un seul, sans quoi
-    déplacer le chiffre suffirait à la diluer.
+    This is the sentence a section rewrite carries away without meaning to: every
+    receipt in this file comes from LIVE production and says NOTHING about a real
+    restoration. It is therefore required in BOTH places where a denominator is
+    read — the declaration at the top, and the dated section telling the story of
+    the five extensions of 2026-08-22 — and not in one only, without which moving
+    the figure would be enough to dilute it.
     """
     document = document_path.read_text(encoding="utf-8")
     places = {
@@ -366,12 +364,12 @@ def test_the_caveat_lives_wherever_a_receipt_is_read(document_path: Path) -> Non
     for name, text in places.items():
         assert "`pg_restore`d" in text, f"{name} ne dit pas d'où le reçu NE vient PAS"
         assert '"DR is proven"' in text, f"{name} laisse lire le reçu comme une preuve DR"
-        # La porte P1 vit dans `58711012` depuis le 2026-08-28 : `8eaefe36`,
-        # qui l'a portée d'abord, a été clos comme supersédé par ses splits
-        # CATALOGUE — aucun ne porte cette porte — et `closed` est terminal.
-        # Ce pin a cimenté le numéro périmé pendant un jour ; il épingle
-        # désormais la porte VIVANTE, et la corriger coûte, à dessein,
-        # d'éditer ce test et le document d'un seul geste relu.
+        # Gate P1 has lived in `58711012` since 2026-08-28: `8eaefe36`, which
+        # carried it first, was closed as superseded by its CATALOGUE splits — none
+        # of which carries this gate — and `closed` is terminal. This pin cemented
+        # the stale number for a day; it now pins the LIVE gate, and correcting it
+        # costs, by design, editing this test and the document in a single reviewed
+        # move.
         assert "58711012" in text, f"{name} ne nomme pas la porte P1 restée ouverte"
         assert "is true by construction" in text, (
             f"{name} ne dit pas que le contrôle écrit POUR un restore est celui "
@@ -381,7 +379,7 @@ def test_the_caveat_lives_wherever_a_receipt_is_read(document_path: Path) -> Non
 
 @pytest.mark.parametrize("document_path", GUARDED_DOCUMENTS, ids=lambda path: path.name)
 def test_the_declaration_comes_before_the_records(document_path: Path) -> None:
-    """En sinistre, on lit de haut en bas et on s'arrête à la première réponse."""
+    """In a disaster you read top to bottom and stop at the first answer."""
     document = document_path.read_text(encoding="utf-8")
     declaration = document.index(f"<!-- {DECLARATION_REGION}:start -->")
 

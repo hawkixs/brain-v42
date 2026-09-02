@@ -1,16 +1,16 @@
-"""Un rejet du sidecar de métriques doit laisser une trace — sans rien réintroduire.
+"""A metrics-sidecar rejection must leave a trace — without reintroducing anything.
 
-Ticket `d5e4bd73`. Les trois récepteurs POST refusent un pair non-loopback (403), une
-représentation non supportée (415), un corps trop gros (413), la saturation (503), un
-corps qui traîne (408) et un payload malformé (400). **Toutes ces défenses fonctionnent
-et personne ne les voit fonctionner** : aucun rejet ne laissait de trace, donc on ne
-pouvait ni savoir qu'on saturait, ni savoir qu'on avait saturé hier.
+Ticket `d5e4bd73`. The three POST receivers refuse a non-loopback peer (403), an
+unsupported representation (415), an oversize body (413), saturation (503), a body that
+drags (408) and a malformed payload (400). **All these defences work and nobody sees
+them work**: no rejection left a trace, so one could neither know one was saturating,
+nor know one had saturated yesterday.
 
-Le piège que ces tests épinglent autant que la fonctionnalité : ce composant hache les
-identifiants bruts À LA RÉCEPTION, avec un secret par processus. Un access log naïf
-réintroduirait exactement ce que le hachage retire. D'où
-``test_the_access_log_carries_nothing_but_constants``, qui verrouille le jeu de champs
-par égalité — pas par « ne contient pas », qui laisserait passer le champ suivant.
+The trap these tests pin as much as the functionality: this component hashes the raw
+identifiers ON RECEPTION, with a per-process secret. A naive access log would
+reintroduce exactly what the hashing removes. Hence
+``test_the_access_log_carries_nothing_but_constants``, which locks the field set by
+equality — not by "does not contain", which would let the next field through.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from brain_v42.metrics.server import MetricsServer
 _DEADLINE_FOR_TESTS = 0.2
 _ACCESS_LOG_EVENT = "metrics_server.receiver_rejected"
 
-# Le pair non-loopback des tests 403 : une adresse TEST-NET-3 (RFC 5737), jamais routée.
+# The non-loopback peer of the 403 tests: a TEST-NET-3 address (RFC 5737), never routed.
 _FOREIGN_PEER = "203.0.113.9"
 
 
@@ -55,7 +55,7 @@ def _transport(address: str = "127.0.0.1") -> MagicMock:
 def _stream(*, data: bytes | None = None, stall: bool = False) -> streams.StreamReader:
     stream = streams.StreamReader(MagicMock(), 2**16, loop=asyncio.get_running_loop())
     if stall:
-        stream.feed_data(b"{")  # commence puis se tait : jamais de feed_eof
+        stream.feed_data(b"{")  # starts then goes quiet: never a feed_eof
         return stream
     stream.feed_data(data or b"")
     stream.feed_eof()
@@ -78,9 +78,9 @@ def _rejections(server: MetricsServer, records: list[dict[str, Any]]) -> list[di
     return [r for r in records if r.get("event") == _ACCESS_LOG_EVENT]
 
 
-# --- Les six déclencheurs, un par code réellement atteignable -------------------------
-# Six et non cinq : `415` est atteint par DEUX sites (encodage non-identity, media type
-# non supporté) et n'apparaît dans aucune description du ticket. Mesuré, pas supposé.
+# --- The six triggers, one per genuinely reachable code -------------------------------
+# Six and not five: `415` is reached by TWO sites (non-identity encoding, unsupported
+# media type) and appears in no description in the ticket. Measured, not assumed.
 
 
 async def _trigger_403(server: MetricsServer) -> Any:
@@ -151,7 +151,7 @@ def _short_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_every_rejection_code_emits_exactly_one_access_log_line(
     status: int, trigger: Any
 ) -> None:
-    """Un rejet servi, une ligne émise — pour CHACUN des six codes, pas pour le seul 503."""
+    """One rejection served, one line emitted — for EACH of the six codes, not for the 503 alone."""
     server = _server()
 
     with capture_logs() as records:
@@ -166,7 +166,7 @@ async def test_every_rejection_code_emits_exactly_one_access_log_line(
 
 @pytest.mark.asyncio
 async def test_an_accepted_request_emits_no_access_log_line() -> None:
-    """TÉMOIN NÉGATIF : sans lui, un log inconditionnel passerait tous les tests ci-dessus."""
+    """NEGATIVE WITNESS: without it, an unconditional log would pass every test above."""
     server = _server()
     body = json.dumps({"resourceLogs": []}, separators=(",", ":")).encode()
 
@@ -195,7 +195,7 @@ async def test_an_accepted_request_emits_no_access_log_line() -> None:
 async def test_the_access_log_names_which_receiver_rejected(
     handler_name: str, expected_receiver: str, path: str
 ) -> None:
-    """Trois récepteurs partagent UN budget : sans ce champ, un 503 ne dit pas qui saturait."""
+    """Three receivers share ONE budget: without this field, a 503 does not say who was saturating."""
     server = _server()
     handler = getattr(server, handler_name)
 
@@ -210,21 +210,21 @@ async def test_the_access_log_names_which_receiver_rejected(
 
 @pytest.mark.asyncio
 async def test_the_access_log_carries_nothing_but_constants() -> None:
-    """Le cœur du lot : l'égalité de jeu de clés, pas un « ne contient pas ».
+    """The heart of the batch: key-set equality, not a "does not contain".
 
-    Un `assert "peer" not in line` laisserait passer le champ suivant. L'égalité fait
-    échouer le test dès qu'un champ est AJOUTÉ, ce qui force la question à être reposée.
+    An `assert "peer" not in line` would let the next field through. Equality fails the
+    test as soon as a field is ADDED, which forces the question to be asked again.
     """
     server = _server()
-    # Un CANARI, pas un secret. La forme précédente nommait cette variable avec le
-    # mot « secret » et lui donnait une valeur à l'allure de clé : `gitleaks` la
-    # relevait en `generic-api-key`, entropie 3,913, et faisait rougir la CI. Faux
-    # positif au sens strict — mais le corriger À LA SOURCE vaut mieux qu'un
-    # `gitleaks:allow` ou une entrée d'allowlist, qui affaibliraient un contrôle
-    # pour faire taire un rouge dû à notre propre formulation. « Canari » dit
-    # d'ailleurs mieux ce que la valeur fait : elle est injectée pour qu'on vérifie
-    # qu'elle ne ressort PAS. Ne pas reciter ici l'ancienne valeur — un commentaire
-    # qui cite ce qu'il explique le réintroduit, ce qui est arrivé au premier essai.
+    # A CANARY, not a secret. The previous form named this variable with the word
+    # "secret" and gave it a key-shaped value: `gitleaks` flagged it as
+    # `generic-api-key`, entropy 3.913, and reddened CI. A false positive in the
+    # strict sense — but fixing it AT THE SOURCE beats a `gitleaks:allow` or an
+    # allowlist entry, which would weaken a control to silence a red caused by our
+    # own phrasing. "Canary" also says better what the value does: it is injected so
+    # that we can check it does NOT come back out. Do not re-quote the old value here
+    # — a comment that quotes what it explains reintroduces it, which happened on the
+    # first attempt.
     canary = "canary-must-not-leak"
 
     with capture_logs() as records:
@@ -238,12 +238,12 @@ async def test_the_access_log_carries_nothing_but_constants() -> None:
 
     line = _rejections(server, records)[0]
     assert set(line) == {"event", "log_level", "receiver", "status", "reason"}
-    # Ni l'adresse du pair, ni un en-tête, ni le chemin brut ne doivent transparaître.
+    # Neither the peer address, nor a header, nor the raw path must show through.
     rendered = repr(line)
     assert canary not in rendered
     assert _FOREIGN_PEER not in rendered
     assert "/v1/logs" not in rendered
-    # Les trois valeurs restantes appartiennent à des ensembles CONSTANTS et clos.
+    # The three remaining values belong to CONSTANT, closed sets.
     assert line["receiver"] in {"codex_logs", "claude_logs", "client_activity"}
     assert line["status"] in server_module._OTLP_ERROR_STATUSES
     assert line["reason"] == server_module._OTLP_ERROR_STATUSES[line["status"]][1]
@@ -254,7 +254,7 @@ async def test_the_access_log_carries_nothing_but_constants() -> None:
 async def test_a_failing_access_log_can_never_break_the_rejection(
     monkeypatch: pytest.MonkeyPatch, status: int, trigger: Any
 ) -> None:
-    """L'instrument ne devient pas la panne — et surtout pas sous saturation, qu'il mesure."""
+    """The instrument does not become the failure — least of all under saturation, which it measures."""
     server = _server()
 
     def _explode(*_args: Any, **_kwargs: Any) -> None:
@@ -269,11 +269,11 @@ async def test_a_failing_access_log_can_never_break_the_rejection(
 
 
 def test_no_declared_status_can_ship_without_an_access_log() -> None:
-    """Garde STRUCTURELLE : un 7ᵉ code ajouté à la table sera journalisé sans y penser.
+    """A STRUCTURAL guard: a 7th code added to the table will be logged without a thought.
 
-    Les six rejets passent tous par `_otlp_error`, seul constructeur de ces réponses.
-    Journaliser LÀ rend la couverture indéfectible par construction, au lieu de la
-    laisser dépendre de la vigilance du prochain site d'appel.
+    The six rejections all go through `_otlp_error`, the sole constructor of these
+    responses. Logging THERE makes the coverage unfailing by construction, instead of
+    leaving it to depend on the next call site's vigilance.
     """
     counters = server_module.ReceiverRejectionCounters()
     for status in server_module._OTLP_ERROR_STATUSES:

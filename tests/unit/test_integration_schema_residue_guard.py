@@ -92,11 +92,11 @@ def test_leftover_rows_at_the_head_produce_a_named_notice() -> None:
 
     assert notice is not None
     assert "brain_sessions: 3" in notice
-    # Une table à zéro ne pollue pas la notice : seul ce qui reste se nomme.
+    # A table at zero does not pollute the notice: only what remains is named.
     assert "project_contexts" not in notice
     assert "integ-" in notice
-    # Les deux causes possibles sont dites — un run interrompu ET un run
-    # concurrent sain — pour que personne ne « répare » un run voisin en vol.
+    # Both possible causes are stated — an interrupted run AND a healthy concurrent
+    # run — so that nobody "repairs" a neighbouring run in flight.
     assert "concurrent" in notice
     assert "interrupted" in notice
 

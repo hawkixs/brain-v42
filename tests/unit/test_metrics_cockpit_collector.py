@@ -284,12 +284,12 @@ async def test_snapshot_cached_within_ttl(cockpit: CockpitCollector) -> None:
 
 
 def _merged_registry() -> ClientActivityRegistry:
-    """Un registre qui porte les deux moitiés à la fois.
+    """A registry carrying both halves at once.
 
-    Une conversation Codex venue de l'OTLP, et une observation brain-side sans
-    session déclarée — le cas nominal mesuré le 2026-08-06. Les deux sont
-    nécessaires pour que « clients arrive » et « activeConvs survit » se
-    prouvent l'un l'autre sur la même charge.
+    A Codex conversation coming from the OTLP, and a brain-side observation with no
+    declared session — the nominal case measured on 2026-08-06. Both are needed for
+    "clients arrives" and "activeConvs survives" to prove each other on the same
+    payload.
     """
     registry = ClientActivityRegistry(secret=b"\x04" * 32)
     registry.ingest_otlp_json(_CODEX_FIXTURE.read_bytes())
@@ -312,8 +312,8 @@ async def test_cockpit_payload_gains_a_clients_key(collector: MetricsCollector) 
 
     rows = {row["kind"]: row for row in snap["clients"]}
     assert set(rows) == {"session", "unattributed"}
-    # Chaque « is None » a son contrôle positif dans l'autre ligne de la MÊME
-    # charge : sans lui, un payload entièrement nul passerait au vert.
+    # Each "is None" has its positive control in the other row of the SAME payload:
+    # without it, an entirely null payload would go green.
     assert rows["session"]["agent"] == "codex"
     assert rows["session"]["tokens"] == 1234
     assert rows["session"]["brain_calls"] is None
@@ -323,10 +323,10 @@ async def test_cockpit_payload_gains_a_clients_key(collector: MetricsCollector) 
 
 
 async def test_legacy_codex_keys_survive_next_to_clients(collector: MetricsCollector) -> None:
-    """Contrat additif : le panneau red-monitor livré lit encore activeConvs.
+    """An additive contract: the shipped red-monitor dashboard still reads activeConvs.
 
-    Il bascule sur ``clients`` plus tard ; d'ici là, ajouter la clé neuve ne
-    doit rien retirer ni rien déplacer.
+    It switches to ``clients`` later; until then, adding the new key must remove
+    nothing and move nothing.
     """
     cockpit = CockpitCollector(
         collector=collector,
@@ -351,10 +351,10 @@ async def test_legacy_codex_keys_survive_next_to_clients(collector: MetricsColle
 async def test_cockpit_reports_an_empty_clients_list_without_a_registry(
     cockpit: CockpitCollector,
 ) -> None:
-    """Sans registre, ``clients`` existe et vaut la liste vide, pas KeyError.
+    """With no registry, ``clients`` exists and is the empty list, not a KeyError.
 
-    Contrôle positif des deux assertions de vide : les deux tests précédents
-    peuplent ``clients`` et ``activeConvs`` sur le même code.
+    Positive control for the two emptiness assertions: the two previous tests
+    populate ``clients`` and ``activeConvs`` through the same code.
     """
     with patch(
         "brain_v42.metrics.cockpit.collect_memory_stats",

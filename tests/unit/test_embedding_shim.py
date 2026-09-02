@@ -1,7 +1,7 @@
-"""Tests du shim embedding (services/embedding_shim/) — backends + app.
+"""Tests of the embedding shim (services/embedding_shim/) — backends + app.
 
-Le shim n'est pas un package installé : on l'importe via sys.path.
-Contrat de référence : services/embedding/main.py v2.0.0 (PyTorch legacy).
+The shim is not an installed package: it is imported through sys.path.
+Reference contract: services/embedding/main.py v2.0.0 (PyTorch legacy).
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from shim_backends import (  # noqa: E402
 
 
 def _openai_payload(vecs_by_index: dict[int, list[float]]) -> dict:
-    """Réponse /v1/embeddings au format OpenAI (index volontairement mélangés)."""
+    """An OpenAI-format /v1/embeddings response (indexes deliberately shuffled)."""
     return {
         "data": [
             {"object": "embedding", "index": i, "embedding": v} for i, v in vecs_by_index.items()
@@ -52,12 +52,12 @@ async def test_embed_sorts_by_index_and_normalizes():
         body = json.loads(request.content)
         assert request.url.path == "/v1/embeddings"
         assert body["input"] == ["aaa", "bbb"]
-        # Réponse dans le désordre + vecteurs non normalisés
+        # An out-of-order response + unnormalised vectors
         return httpx.Response(200, json=_openai_payload({1: [0.0, 2.0], 0: [3.0, 4.0]}))
 
     vecs = await _make_backend(handler).embed(["aaa", "bbb"])
     assert len(vecs) == 2
-    # index 0 en premier, L2-normalisé : [3,4] → [0.6, 0.8]
+    # index 0 first, L2-normalised: [3,4] → [0.6, 0.8]
     assert vecs[0] == pytest.approx([0.6, 0.8])
     assert vecs[1] == pytest.approx([0.0, 1.0])
     for v in vecs:
@@ -120,8 +120,8 @@ async def test_healthy_true_false():
 
 
 def test_rerank_empty_candidates_short_circuits(tmp_path):
-    # Chemins volontairement inexistants : si le lazy-load se déclenche
-    # sur candidates=[], le test explose — c'est le comportement testé.
+    # Deliberately non-existent paths: if the lazy load fires on candidates=[], the
+    # test blows up — that is the behaviour under test.
     backend = OnnxRerankBackend(str(tmp_path / "nope.onnx"), str(tmp_path / "nope.json"))
     assert backend.rerank("query", []) == []
 
@@ -135,7 +135,7 @@ def test_rerank_builds_pairs_and_returns_raw_logits():
 
     class FakeSession:
         def get_inputs(self):
-            # export Xenova : token_type_ids présent
+            # Xenova export: token_type_ids present
             return [
                 FakeInput("input_ids"),
                 FakeInput("attention_mask"),
