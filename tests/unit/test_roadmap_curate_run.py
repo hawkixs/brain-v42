@@ -1,12 +1,12 @@
 """Unit tests for scripts.roadmap_curate._run orchestration (mocked, no DB/LLM).
 
-Nuit 2026-07-05 : SIGTERM à 20 m en plein batch 7/10 — l'apply terminal
-n'a jamais tourné (24 proposals bloquées 'proposed', 0 appliquée) et
-record_dream_run n'a pas écrit de row. Contrats testés ici :
-- apply PAR BATCH (un SIGTERM ne perd que le batch en vol) ;
-- budget nuit : plus aucun nouveau batch après NIGHT_BUDGET_S, fin propre
-  (record_dream_run écrit, rc=0, la rotation resservira les projets) ;
-- merges retenus par le juge : persistés 'proposed', JAMAIS auto-appliqués.
+Night of 2026-07-05: SIGTERM at 20 m in the middle of batch 7/10 — the terminal
+apply never ran (24 proposals stuck 'proposed', 0 applied) and record_dream_run
+wrote no row. Contracts tested here:
+- apply PER BATCH (a SIGTERM loses only the batch in flight);
+- night budget: no new batch after NIGHT_BUDGET_S, a clean end (record_dream_run
+  written, rc=0, the rotation will serve the projects again);
+- merges held back by the judge: persisted 'proposed', NEVER auto-applied.
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ def _args(**over: Any) -> argparse.Namespace:
 
 
 class _Clock:
-    """Horloge injectable : rend les valeurs de la liste puis répète la dernière."""
+    """An injectable clock: returns the list's values then repeats the last."""
 
     def __init__(self, values: list[float]):
         self._values = list(values)
@@ -97,9 +97,10 @@ def run_mocks(monkeypatch):
 class TestFairShareWindow:
     @pytest.mark.asyncio
     async def test_curate_batch_receives_fair_share_window(self, run_mocks, monkeypatch):
-        """Chaque batch reçoit une fenêtre LLM fair-share du budget restant —
-        un gros projet ne peut plus manger la part des suivants (nuit
-        2026-07-10 : red 383s → budget épuisé au 5e projet, 5 reportés)."""
+        """Each batch gets a fair-share LLM window of the remaining budget — a
+        large project can no longer eat the next ones' share (night of
+        2026-07-10: red 383 s → budget exhausted at the 5th project, 5
+        deferred)."""
         batches = [_mk_batch("p1"), _mk_batch("p2"), _mk_batch("p3")]
         monkeypatch.setattr(rc, "fetch_project_batches", AsyncMock(return_value=batches))
 
@@ -116,7 +117,7 @@ class TestFairShareWindow:
             "persist_proposals",
             AsyncMock(side_effect=lambda sf, d: PersistResult(inserted=next(inserted))),
         )
-        # t0=0 ; checks avant batch : 0, 400, 600 ; puis durée finale.
+        # t0=0; pre-batch checks: 0, 400, 600; then the final duration.
         clock = _Clock([0.0, 0.0, 400.0, 600.0, 700.0])
 
         rcode = await rc._run(
@@ -136,8 +137,8 @@ class TestFairShareWindow:
 class TestBudgetGuard:
     @pytest.mark.asyncio
     async def test_budget_stops_new_batches_cleanly(self, run_mocks, monkeypatch, capsys):
-        """Après NIGHT_BUDGET_S, plus AUCUN nouveau batch : fin propre,
-        record_dream_run écrit (status done), rc=0 — pas un échec."""
+        """After NIGHT_BUDGET_S, NO new batch at all: a clean end,
+        record_dream_run written (status done), rc=0 — not a failure."""
         batches = [_mk_batch("p1"), _mk_batch("p2"), _mk_batch("p3")]
         monkeypatch.setattr(rc, "fetch_project_batches", AsyncMock(return_value=batches))
 
@@ -151,8 +152,8 @@ class TestBudgetGuard:
             "persist_proposals",
             AsyncMock(side_effect=lambda sf, d: PersistResult(inserted=next(inserted))),
         )
-        # t0=0 ; checks avant batch : 0 (b1 passe), 400 (b2 passe), 800 (> 720
-        # → stop) ; puis durée finale.
+        # t0=0; pre-batch checks: 0 (b1 passes), 400 (b2 passes), 800 (> 720 →
+        # stop); then the final duration.
         clock = _Clock([0.0, 0.0, 400.0, 800.0, 810.0])
 
         rcode = await rc._run(
@@ -171,13 +172,12 @@ class TestBudgetGuard:
         )
         out = capsys.readouterr().out
         assert "budget" in out.lower()
-        assert "1 projet" in out  # p3 non traité, annoncé — pas de drop silencieux
+        assert "1 projet" in out  # p3 not processed, announced — no silent drop
 
     @pytest.mark.asyncio
     async def test_apply_runs_per_batch_not_terminally(self, run_mocks, monkeypatch):
-        """L'apply wet court APRÈS CHAQUE batch avec les ids de CE batch —
-        plus d'apply terminal (SIGTERM 2026-07-05 : 24 proposals jamais
-        appliquées)."""
+        """The wet apply runs AFTER EACH batch with THAT batch's ids — no more
+        terminal apply (SIGTERM of 2026-07-05: 24 proposals never applied)."""
         batches = [_mk_batch("p1"), _mk_batch("p2")]
         monkeypatch.setattr(rc, "fetch_project_batches", AsyncMock(return_value=batches))
 
@@ -235,7 +235,7 @@ class TestJudgeGateInRun:
     async def test_unreviewed_fallback_is_persisted_but_never_auto_applied(
         self, run_mocks, monkeypatch
     ):
-        """Tout fallback hors allowlist reste review-only même si le run est wet."""
+        """Any fallback outside the allowlist stays review-only even in a wet run."""
         batch = _mk_batch("p1")
         draft = _merge_draft(batch)
         monkeypatch.setattr(rc, "fetch_project_batches", AsyncMock(return_value=[batch]))
@@ -267,8 +267,8 @@ class TestJudgeGateInRun:
 
     @pytest.mark.asyncio
     async def test_held_merges_persisted_but_never_applied(self, run_mocks, monkeypatch, capsys):
-        """Merge retenu par le juge → persisté 'proposed' (review du matin),
-        exclu des ids d'apply. Le status non-merge du même batch s'applique."""
+        """A merge held back by the judge → persisted 'proposed' (morning review),
+        excluded from the apply ids. The same batch's non-merge status applies."""
         batch = _mk_batch("p1")
         monkeypatch.setattr(rc, "fetch_project_batches", AsyncMock(return_value=[batch]))
         merge = _merge_draft(batch)
@@ -288,7 +288,7 @@ class TestJudgeGateInRun:
             )
 
         monkeypatch.setattr(rc, "curate_batch", fake_curate)
-        run_mocks["judge"].return_value = {0}  # l'unique merge est retenu
+        run_mocks["judge"].return_value = {0}  # the single merge is held back
         persist_calls: list[list[CurationDraft]] = []
         results = iter([PersistResult(inserted=[7]), PersistResult(inserted=[8])])
 
@@ -307,14 +307,14 @@ class TestJudgeGateInRun:
         )
 
         assert rcode == 0
-        # Le juge n'a vu QUE les merges.
+        # The judge saw ONLY the merges.
         judged = run_mocks["judge"].await_args.args[3]
         assert judged == [merge]
         assert run_mocks["judge"].await_args.args[1] == rc.DEFAULT_WET_ROADMAP_FALLBACK_MODEL
-        # Persist 1 : drafts applicables (sans le merge) ; persist 2 : retenus.
+        # Persist 1: applicable drafts (without the merge); persist 2: held back.
         assert persist_calls[0] == [keep]
         assert persist_calls[1] == [merge]
-        # Apply : ids du persist applicable uniquement — jamais le retenu.
+        # Apply: ids from the applicable persist only — never the held-back one.
         ids_applied = [c.args[1] for c in run_mocks["apply"].await_args_list]
         assert ids_applied == [[7]]
         assert "retenu" in capsys.readouterr().out
@@ -346,11 +346,11 @@ class TestJudgeGateInRun:
 
 
 class TestFallbackDegradationIsReported:
-    """Une nuit entièrement servie par le secours doit se voir sans lire les logs bruts.
+    """A night served entirely by the fallback must be visible without reading raw logs.
 
-    2026-08-05 : dix nuits consécutives à 100 % de secours 8B, toutes `done`,
-    toutes `8/8 phases OK`. Le run reste `done` — le passer `fail` referait
-    l'erreur que 4480d3df vient de corriger — mais il cesse d'être muet.
+    2026-08-05: ten consecutive nights at 100 % 8B fallback, all `done`, all
+    `8/8 phases OK`. The run stays `done` — making it `fail` would repeat the error
+    4480d3df has just corrected — but it stops being mute.
     """
 
     @pytest.mark.asyncio
@@ -388,7 +388,7 @@ class TestFallbackDegradationIsReported:
 
     @pytest.mark.asyncio
     async def test_nominal_run_stays_silent_about_fallback(self, run_mocks, monkeypatch, capsys):
-        """Pas de bruit quand le primaire sert : l'alarme doit rester rare."""
+        """No noise when the primary serves: the alarm must stay rare."""
         batches = [_mk_batch("p1")]
         monkeypatch.setattr(rc, "fetch_project_batches", AsyncMock(return_value=batches))
 
@@ -410,8 +410,8 @@ class TestFallbackDegradationIsReported:
 
     @pytest.mark.asyncio
     async def test_dream_run_records_the_model_actually_used(self, run_mocks, monkeypatch):
-        """dream_runs.model était NULL pour roadmap : la table qui sert le
-        briefing ignorait quel modèle avait tourné."""
+        """dream_runs.model was NULL for roadmap: the table that feeds the briefing
+        did not know which model had run."""
         batches = [_mk_batch("p1")]
         monkeypatch.setattr(rc, "fetch_project_batches", AsyncMock(return_value=batches))
 
@@ -467,50 +467,48 @@ class TestBudgetSecondsArg:
         assert capture_args["args"].budget_seconds == 300.0
 
     def test_default_model_is_the_live_canaryed_primary(self, capture_args, monkeypatch):
-        """Troisième primaire en trois semaines : chacun est mort chez le fournisseur.
+        """Third primary in three weeks: each one died at the provider.
 
-        qwen3-next-80b a atteint son EOL le 2026-07-27, remplacé par
-        deepseek-v4-flash après canary du 2026-08-05 (3/3 valides, 16,6 s/batch).
-        deepseek-v4-flash est mort à son tour le 2026-08-07, découvert le 08-16.
+        qwen3-next-80b reached its EOL on 2026-07-27, replaced by
+        deepseek-v4-flash after the canary of 2026-08-05 (3/3 valid, 16.6 s/batch).
+        deepseek-v4-flash died in its turn on 2026-08-07, discovered on 08-16.
 
-        Remplacé par mistral-nemotron sur DEUX mesures, parce que la première
-        a failli faire choisir le mauvais candidat :
+        Replaced by mistral-nemotron on TWO measurements, because the first nearly
+        picked the wrong candidate:
 
-        - Vitesse et forme : 3/3 valides, 12-20 s/batch, soit 126-204 s sur les
-          dix projets contre 720 s de budget. Le snapshot daté de la famille
-          morte, deepseek-v4-flash-0731, est aussi 3/3 valides mais à 69,3 s —
-          693 s, 96 % du budget, et QUATRE FOIS plus lent que l'alias qu'il
-          remplace. Un pin daté n'hérite pas du profil de son alias.
+        - Speed and shape: 3/3 valid, 12-20 s/batch, i.e. 126-204 s over the ten
+          projects against a 720 s budget. The dated snapshot of the dead family,
+          deepseek-v4-flash-0731, is also 3/3 valid but at 69.3 s — 693 s, 96 % of
+          the budget, and FOUR TIMES slower than the alias it replaces. A dated pin
+          does not inherit its alias's profile.
 
-        - Qualité du contenu, qui a renversé le classement. Le compte de
-          propositions ne classe rien : sur trois runs des mêmes batches,
-          mistral-nemotron a rendu 31 puis 21, gpt-oss-20b 29 puis 13, et le
-          8B 28/30/29. Jugement en aveugle du contenu : mistral-nemotron
-          48/100, gpt-oss-20b 35, llama-3.1-8b 10.
+        - Content quality, which overturned the ranking. The proposal count ranks
+          nothing: over three runs of the same batches, mistral-nemotron returned 31
+          then 21, gpt-oss-20b 29 then 13, and the 8B 28/30/29. Blind judgement of
+          the content: mistral-nemotron 48/100, gpt-oss-20b 35, llama-3.1-8b 10.
 
-        Le secours 8B reste secours. Il est le plus RAPIDE et le PIRE sur le
-        fond — 9 rationales vides, 2 merges vers une cible qu'il archive dans
-        le même lot, et sept runs orchestrator fondus dans le plus ancien
-        d'entre eux. Le promouvoir aurait aussi effondré la chaîne à un maillon
-        (voir tests/unit/test_roadmap_model_chain.py).
+        The 8B fallback stays a fallback. It is the FASTEST and the WORST on
+        substance — 9 empty rationales, 2 merges towards a target it archives in the
+        same batch, and seven orchestrator runs melted into the oldest of them.
+        Promoting it would also have collapsed the chain to a single link (see
+        tests/unit/test_roadmap_model_chain.py).
 
-        SECOURS REMPLACÉ le 2026-08-29 : le 8B a atteint sa fin de vie le
-        2026-08-26 (410 mesuré par la sonde ET par les nuits des 27 et 28,
-        toutes deux en fail). Remplaçant : openai/gpt-oss-20b, re-mesuré DANS
-        SON RÉGIME EXACT après correction de l'instrument (fenêtres de nuit
-        60 s, dix batches réels, caps secours FALLBACK_*) : 10/10 portés,
-        12 propositions, 7,8 s/batch — et 35/100 en jugement aveugle contre
-        10/100 pour le mort. Le profil secours n'est pas « réduit » : mêmes
-        3 features, tokens DOUBLÉS (1024), ce qui évite la troncature de
-        raisonnement qui coûtait 74,5 s/batch sous l'ancien instrument à
-        512 tokens. Écartés au même régime : nano-30b (9,9 s/batch mais 5/10
-        JSON valides) ; deepseek-v4-flash-0731 (69,3 s/batch le 08-16,
-        famille morte deux fois en un mois, contenu jamais jugé).
+        FALLBACK REPLACED on 2026-08-29: the 8B reached its end of life on
+        2026-08-26 (410 measured by the probe AND by the nights of the 27th and
+        28th, both in fail). Replacement: openai/gpt-oss-20b, re-measured IN ITS
+        EXACT REGIME after correcting the instrument (60 s night windows, ten real
+        batches, FALLBACK_* fallback caps): 10/10 carried, 12 proposals,
+        7.8 s/batch — and 35/100 in blind judgement against 10/100 for the dead one.
+        The fallback profile is not "reduced": same 3 features, tokens DOUBLED
+        (1024), which avoids the reasoning truncation that cost 74.5 s/batch under
+        the old instrument at 512 tokens. Discarded in the same regime: nano-30b
+        (9.9 s/batch but 5/10 valid JSON); deepseek-v4-flash-0731 (69.3 s/batch on
+        08-16, a family dead twice in one month, content never judged).
 
-        Les assertions comparent aux CONSTANTES : ce test prouve le ROUTAGE
-        (le défaut atteint curate), pas l'identité du modèle — la forme de la
-        chaîne vit dans test_roadmap_model_chain, l'historique du choix dans
-        le commentaire des constantes.
+        The assertions compare against the CONSTANTS: this test proves the ROUTING
+        (the default reaches curate), not the model's identity — the shape of the
+        chain lives in test_roadmap_model_chain, the history of the choice in the
+        constants' comment.
         """
         monkeypatch.delenv("BRAIN_NVIDIA_ROADMAP_MODEL", raising=False)
         monkeypatch.delenv("BRAIN_NVIDIA_MODEL", raising=False)
@@ -522,8 +520,8 @@ class TestBudgetSecondsArg:
         assert capture_args["fallback_model"] == rc.DEFAULT_ROADMAP_FALLBACK_MODEL
 
     def test_dry_primary_can_never_auto_apply(self, capture_args, monkeypatch):
-        """Le primaire DRY doit rester hors allowlist : un modèle non canaryé
-        pour le wet ne doit jamais devenir applicable par un simple swap."""
+        """The DRY primary must stay out of the allowlist: a model not canaried for
+        wet must never become applicable through a mere swap."""
         assert rc.DEFAULT_ROADMAP_MODEL not in rc.AUTO_APPLY_MODELS
         assert rc.DEFAULT_ROADMAP_MODEL in rc.PROPOSER_ONLY_MODELS
 
@@ -547,12 +545,12 @@ class TestBudgetSecondsArg:
     def test_a_fallback_equal_to_the_primary_warns_about_the_one_link_chain(
         self, capture_args, monkeypatch, capsys
     ):
-        """curate_batch traite secours==primaire comme AUCUN secours, en silence.
+        """curate_batch treats fallback==primary as NO fallback, silently.
 
-        Le cas n'arrive que par override env (les constantes sont gardées
-        distinctes par test_roadmap_model_chain) — et c'est la config que
-        deploy/nvidia.env.example a portée en exemple pendant des semaines.
-        Une chaîne à un maillon qui se croit à deux doit faire du bruit.
+        The case only arises through an env override (the constants are kept
+        distinct by test_roadmap_model_chain) — and it is the configuration
+        deploy/nvidia.env.example carried as an example for weeks. A one-link chain
+        that believes it has two must make noise.
         """
         monkeypatch.setenv("BRAIN_NVIDIA_ROADMAP_FALLBACK_MODEL", rc.DEFAULT_ROADMAP_MODEL)
         monkeypatch.setattr("sys.argv", ["roadmap_curate"])
@@ -578,18 +576,17 @@ class TestBudgetSecondsArg:
         assert capture_args["model"] == "cli-model"
 
     def test_default_wet_model_is_reviewed_and_keeps_auto_apply(self, capture_args, monkeypatch):
-        """PAIRE WET REMPLACÉE le 2026-08-29 : llama-3.3-70b est mort en 410.
+        """WET PAIR REPLACED on 2026-08-29: llama-3.3-70b died with a 410.
 
-        Fin de vie mesurée entre les nuits du 27 (extract done) et du 28
-        (extract fail 410) — un maillon DORMANT côté roadmap, puisque la phase
-        tourne en DRY. Le secours d'hier devient primaire et gpt-oss-120b
-        prend le poste de secours : des maillons VIVANTS, pas une paire prête
-        à armer. Mesuré le 2026-08-29 au régime WET réel — la voie non-gérée
-        DIVISE la fenêtre par deux dès qu'un secours existe (30 s à dix
-        projets ; la borne n'est PAS le read-timeout httpx de 180 s) : la
-        paire telle qu'ordonnée ne porte pas (super-120b 1/10, 9 sauvés par
-        le secours). Réarmer WET exige un canary sous 30 s d'abord — le
-        commentaire des constantes porte la précondition complète.
+        End of life measured between the nights of the 27th (extract done) and the
+        28th (extract fail 410) — a DORMANT link on the roadmap side, since the
+        phase runs in DRY. Yesterday's fallback becomes primary and gpt-oss-120b
+        takes the fallback post: LIVE links, not a pair ready to arm. Measured on
+        2026-08-29 in the real WET regime — the unmanaged path HALVES the window as
+        soon as a fallback exists (30 s at ten projects; the bound is NOT the 180 s
+        httpx read-timeout): the pair as ordered does not carry (super-120b 1/10, 9
+        saved by the fallback). Re-arming WET requires a canary under 30 s first —
+        the constants' comment carries the full precondition.
         """
         monkeypatch.delenv("BRAIN_NVIDIA_ROADMAP_MODEL", raising=False)
         monkeypatch.delenv("BRAIN_NVIDIA_MODEL", raising=False)
@@ -630,29 +627,29 @@ class TestBudgetSecondsArg:
 
 
 class TestDegradationNotice:
-    """Le préfixe de dégradation est un CONTRAT entre deux processus.
+    """The degradation prefix is a CONTRACT between two processes.
 
-    `scripts/roadmap_curate.py` l'écrit dans `dream_runs.error_message` ; le
-    briefing (`DreamRunService`) le relit pour refuser de compter la nuit
-    comme propre. Rien ne les tient d'accord à part ce préfixe, et il n'y a
-    aucun backfill : une divergence rend les lignes passées muettes.
+    `scripts/roadmap_curate.py` writes it into `dream_runs.error_message`; the
+    briefing (`DreamRunService`) reads it back to refuse counting the night as
+    clean. Nothing holds them in agreement but that prefix, and there is no
+    backfill: a divergence makes the past rows mute.
     """
 
     def test_the_degraded_prefix_literal_is_frozen(self):
-        """Quatre nuits déjà en base en dépendent — 08-06, 08-08, 08-09, 08-10.
+        """Four nights already in the database depend on it — 08-06, 08-08, 08-09, 08-10.
 
-        Elles portent le préfixe ACCENTUÉ. Le désaccentuer ou le traduire
-        n'orphelinerait pas seulement ces lignes : il les rendrait
-        invisibles au lecteur sans qu'aucune écriture n'échoue.
+        They carry the ACCENTED prefix. De-accenting or translating it would not
+        merely orphan those rows: it would make them invisible to the reader
+        without any write failing.
         """
         assert DEGRADED_PREFIX == "DÉGRADÉ"
 
     def test_the_notice_is_built_from_the_shared_prefix(self, monkeypatch):
-        """Prouve l'USAGE, pas l'import.
+        """Proves the USAGE, not the import.
 
-        Un `rc.DEGRADED_PREFIX is DEGRADED_PREFIX` resterait vrai avec le
-        littéral réinliné dans la f-string : il prouverait qu'un import
-        existe, jamais qu'il sert. Seule la substitution mord.
+        An `rc.DEGRADED_PREFIX is DEGRADED_PREFIX` would stay true with the literal
+        re-inlined into the f-string: it would prove that an import exists, never
+        that it is used. Only substitution bites.
         """
         monkeypatch.setattr(rc, "DEGRADED_PREFIX", "ZZZTEST")
 

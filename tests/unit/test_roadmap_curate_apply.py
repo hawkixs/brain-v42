@@ -60,7 +60,7 @@ def _feature_row(
 
 
 def _session_with(side_effects: list[Any]) -> tuple[Any, MagicMock]:
-    """Fake session factory — spec=AsyncSession pour attraper session.mappings()."""
+    """Fake session factory — spec=AsyncSession to catch session.mappings()."""
     mock_session = MagicMock(spec=AsyncSession)
     mock_session.execute = AsyncMock(side_effect=side_effects)
     begin_cm = MagicMock()
@@ -102,7 +102,7 @@ class TestApplyArchive:
         factory, _ = _session_with(
             [
                 _mappings_all([row]),  # SELECT proposals
-                _mappings_all([_feature_row(row["feature_id"])]),  # lock état antérieur
+                _mappings_all([_feature_row(row["feature_id"])]),  # lock the prior state
                 MagicMock(),  # UPDATE features → archived
                 _mappings_one({"status": "archived"}),  # post-condition re-read
                 MagicMock(),  # UPDATE proposal → applied + apply_log
@@ -117,9 +117,9 @@ class TestApplyArchive:
         factory, session = _session_with(
             [
                 _mappings_all([row]),
-                _mappings_all([_feature_row(row["feature_id"])]),  # lock état antérieur
+                _mappings_all([_feature_row(row["feature_id"])]),  # lock the prior state
                 MagicMock(),
-                _mappings_one({"status": "research"}),  # état inattendu → rollback
+                _mappings_one({"status": "research"}),  # unexpected state → rollback
             ]
         )
         applied = await apply_proposals(factory, [1])
@@ -134,7 +134,7 @@ class TestApplyStatusRename:
         factory, _ = _session_with(
             [
                 _mappings_all([row]),
-                _mappings_all([_feature_row(row["feature_id"])]),  # lock état antérieur
+                _mappings_all([_feature_row(row["feature_id"])]),  # lock the prior state
                 MagicMock(),
                 _mappings_one({"status": "deployed"}),
                 MagicMock(),
@@ -170,12 +170,12 @@ class TestApplyMerge:
                         _feature_row(row["feature_id"], status="research", name="Perdant"),
                         _feature_row(into, status="research", name="Cible"),
                     ]
-                ),  # locks source + cible
+                ),  # source + target locks
                 MagicMock(),  # UPDATE fa repoint (RETURNING → iter vide)
                 MagicMock(),  # DELETE fa restants (RETURNING → iter vide)
                 MagicMock(),  # UPDATE features loser
                 _mappings_one({"merged_into": into, "status": "archived"}),
-                _scalar_one(0),  # 0 artifacts restants sur le perdant
+                _scalar_one(0),  # 0 artifacts left on the loser
                 MagicMock(),  # UPDATE proposal → applied + apply_log
             ]
         )
@@ -219,8 +219,8 @@ class TestAllowedOps:
                 _mappings_all([rows[0]]),
                 _mappings_all([rows[1]]),
                 _mappings_all([rows[2]]),
-                # seul archive (id 3) est appliqué :
-                _mappings_all([_feature_row(rows[2]["feature_id"])]),  # lock état antérieur
+                # only archive (id 3) is applied:
+                _mappings_all([_feature_row(rows[2]["feature_id"])]),  # lock the prior state
                 MagicMock(),
                 _mappings_one({"status": "archived"}),
                 MagicMock(),
@@ -231,10 +231,10 @@ class TestAllowedOps:
 
 
 class TestApplyLogProvenance:
-    """Défusion impossible constatée le 2026-07-05 (10 merges aberrants
-    acceptés faute de provenance : artifacts commingés sans trace). Chaque
-    apply capture désormais dans proposals.apply_log de quoi réverser :
-    états antérieurs + artifacts déplacés/liens doublons supprimés."""
+    """Un-merging proved impossible on 2026-07-05 (10 aberrant merges accepted for
+    lack of provenance: artifacts commingled without a trace). Each apply now
+    captures in proposals.apply_log what is needed to revert: prior states +
+    moved artifacts / deleted duplicate links."""
 
     @staticmethod
     def _rows_result(rows: list[tuple]) -> MagicMock:
@@ -260,9 +260,9 @@ class TestApplyLogProvenance:
                         _feature_row(row["feature_id"], status="research", name="Perdant"),
                         _feature_row(into, status="research", name="Cible"),
                     ]
-                ),  # locks source + cible
+                ),  # source + target locks
                 self._rows_result([("decision", a1), ("learning", a2)]),  # moved
-                self._rows_result([("snippet", a3)]),  # doublons supprimés
+                self._rows_result([("snippet", a3)]),  # deleted duplicates
                 MagicMock(),  # UPDATE features loser
                 _mappings_one({"merged_into": into, "status": "archived"}),
                 _scalar_one(0),
@@ -340,18 +340,18 @@ class TestPersistProposals:
 
     @pytest.mark.asyncio
     async def test_duplicate_proposed_is_refreshed_not_reinserted(self):
-        """Doublon 'proposed' → pas d'INSERT, id retourné en refreshed (flip WET non inerte)."""
+        """A 'proposed' duplicate → no INSERT, id returned as refreshed (a non-inert WET flip)."""
         draft = CurationDraft(op="archive", feature_id=uuid4(), payload={}, rationale="r")
         dup_found = MagicMock()
         dup_found.first = MagicMock(return_value=(123, "proposed"))
         factory, session = _session_with([dup_found])
         res = await persist_proposals(factory, [draft])
         assert res.inserted == [] and res.refreshed == [123] and res.rejected_skipped == 0
-        assert session.execute.await_count == 1  # SELECT seulement, pas d'INSERT
+        assert session.execute.await_count == 1  # SELECT only, no INSERT
 
     @pytest.mark.asyncio
     async def test_duplicate_rejected_is_skipped_for_good(self):
-        """Doublon 'rejected' → ni INSERT ni refresh — pas de résurrection en review."""
+        """A 'rejected' duplicate → neither INSERT nor refresh — no resurrection in review."""
         draft = CurationDraft(op="archive", feature_id=uuid4(), payload={}, rationale="r")
         dup_found = MagicMock()
         dup_found.first = MagicMock(return_value=(55, "rejected"))
@@ -362,7 +362,7 @@ class TestPersistProposals:
 
     @pytest.mark.asyncio
     async def test_new_draft_is_inserted(self):
-        """Pas de doublon → SELECT (None) puis INSERT (returning id)."""
+        """No duplicate → SELECT (None) then INSERT (returning id)."""
         draft = CurationDraft(op="archive", feature_id=uuid4(), payload={}, rationale="r")
         dup_none = MagicMock()
         dup_none.first = MagicMock(return_value=None)
@@ -373,15 +373,15 @@ class TestPersistProposals:
 
 
 class TestArchiveEmission:
-    """L'ÉMISSION de l'op archive, du texte modèle jusqu'à l'INSERT.
+    """The EMISSION of the archive op, from model text through to the INSERT.
 
-    Ticket 2e921e14, point 2 : « le nocturne ne sait pas dire archive » était
-    faux depuis le 2026-08-20 (une émission réelle sur le projet red), mais ce
-    fichier ne testait que l'APPLICATION — un pipeline qui aurait perdu l'op
-    entre le parse et la persistance serait resté vert. Ces tests suivent une
-    réponse modèle CONTENANT archive jusqu'aux valeurs de l'INSERT : c'est la
-    propriété adossée à un test que le ticket exigeait, sans éroder la garde
-    « une feature PINNED n'accepte QUE l'op status ».
+    Ticket 2e921e14, point 2: "the nightly run cannot say archive" had been false
+    since 2026-08-20 (a real emission on the red project), but this file only
+    tested the APPLICATION — a pipeline that lost the op between the parse and the
+    persistence would have stayed green. These tests follow a model answer
+    CONTAINING archive down to the INSERT's values: that is the test-backed
+    property the ticket required, without eroding the guard "a PINNED feature
+    accepts ONLY the status op".
     """
 
     @pytest.mark.asyncio
@@ -432,9 +432,9 @@ class TestArchiveEmission:
         assert values["payload"] == {}
 
     def test_emission_on_a_pinned_feature_stays_refused(self):
-        """Le témoin inverse : prouver l'émission ne doit pas éroder la garde
-        du prompt — PINNED n'accepte que l'op status, et c'est le PARSEUR qui
-        le refuse, pas une phrase."""
+        """The inverse witness: proving the emission must not erode the prompt's
+        guard — PINNED accepts only the status op, and it is the PARSER that
+        refuses it, not a sentence."""
         import json as _json
 
         from scripts.roadmap_curate import (

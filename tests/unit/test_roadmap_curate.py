@@ -72,7 +72,7 @@ def _batch() -> ProjectBatch:
 
 
 def _batch_n(n: int, artifacts_per_feature: int = 0) -> ProjectBatch:
-    """Batch de n features distinctes — pour les tests de shrink progressif."""
+    """A batch of n distinct features — for the progressive-shrink tests."""
     return ProjectBatch(
         project_key="big",
         features=[
@@ -100,7 +100,7 @@ class TestRenderAndBuild:
         assert str(_F1) in text and str(_F2) in text
         assert "Recherche hybride" in text
         assert "research" in text
-        assert "PINNED" in text  # marqueur sur la feature épinglée
+        assert "PINNED" in text  # marker on the pinned feature
         assert "RRF retenu" in text
 
     def test_build_messages_has_system_and_user(self):
@@ -171,7 +171,7 @@ class TestParseAndValidate:
     def test_pinned_only_status_allowed(self):
         with pytest.raises(ResponseParseError, match="pinned"):
             parse_and_validate(_item("archive", _PINNED, {}), _batch())
-        # status sur pinned : OK
+        # status on pinned: OK
         drafts = parse_and_validate(_item("status", _PINNED, {"status": "deployed"}), _batch())
         assert drafts[0].feature_id == _PINNED
 
@@ -187,24 +187,26 @@ class TestParseAndValidate:
         assert len(drafts[0].payload["name"]) == 200
 
     def test_wet_applyable_ops_includes_all_ops(self):
-        """Régime agressif 2026-07-04 soir (décision Armand : roadmap peu
-        consommée, Claude valide au check matinal) : le wet applique AUSSI
-        merge/rename — remplace le pin « QUE archive/status » du rollout §4."""
+        """Aggressive regime of the 2026-07-04 evening (Armand's decision: the
+        roadmap is little consumed, Claude validates at the morning check): wet
+        ALSO applies merge/rename — replaces the "archive/status ONLY" pin of
+        rollout §4."""
         assert set(WET_APPLYABLE_OPS) == set(VALID_OPS)
 
     def test_system_prompt_pins_aggressive_grouping(self):
-        """Le prompt est consolidateur (merges thématiques), plus « conservateur »,
-        et porte la consigne anti-chaîne alignée sur la garde de parse_and_validate."""
+        """The prompt is a consolidator (thematic merges), no longer "conservative",
+        and carries the anti-chain instruction aligned with parse_and_validate's
+        guard."""
         assert "conservateur" not in _SYSTEM_PROMPT
         assert "regroup" in _SYSTEM_PROMPT.lower()
         assert "chaîne" in _SYSTEM_PROMPT
 
     def test_system_prompt_pins_anti_dump_rules(self):
-        """Nuit 2026-07-05 : 10/23 merges aberrants — pattern « tout déverser
-        dans un survivant » (gotchas techniques distincts fusionnés dans un
-        chantier voisin, plans/cycles distincts fusionnés entre eux). La
-        similarité embedding et le comptage par cible ne discriminent PAS
-        (mesuré sur 62 merges appliqués) — le garde-fou est le prompt + judge."""
+        """Night of 2026-07-05: 10/23 aberrant merges — a "dump everything into one
+        survivor" pattern (distinct technical gotchas merged into a neighbouring
+        workstream, distinct plans/cycles merged into each other). Embedding
+        similarity and per-target counting do NOT discriminate (measured over 62
+        applied merges) — the guardrail is the prompt + judge."""
         assert "rangement" in _SYSTEM_PROMPT
         assert "même sujet" in _SYSTEM_PROMPT.lower()
         assert "proximité" in _SYSTEM_PROMPT
@@ -235,8 +237,8 @@ class TestParseAndValidate:
 
 
 class TestMergeChainGuards:
-    """Prompt agressif ⇒ merges thématiques multiples — jamais en chaîne :
-    appliquer A→B puis B→C échouerait les artifacts de A sur B archivée."""
+    """An aggressive prompt ⇒ multiple thematic merges — never chained: applying
+    A→B then B→C would fail A's artifacts onto an archived B."""
 
     def _batch3(self):
         a, b, c = uuid4(), uuid4(), uuid4()
@@ -277,9 +279,9 @@ class TestMergeChainGuards:
 class TestCurateBatchErrorCapture:
     @pytest.mark.asyncio
     async def test_full_batch_uses_extended_max_tokens(self) -> None:
-        """Le prompt consolidateur produit des réponses longues — le batch
-        brain-v42 (30 features) a été tronqué à 4096 tokens au premier run wet
-        (2026-07-04, char 12160) ; le cureur demande MAX_COMPLETION_TOKENS."""
+        """The consolidating prompt produces long answers — the brain-v42 batch (30
+        features) was truncated at 4096 tokens on the first wet run (2026-07-04,
+        char 12160); the curator asks for MAX_COMPLETION_TOKENS."""
         seen: list[int] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -301,7 +303,7 @@ class TestCurateBatchErrorCapture:
 
     @pytest.mark.asyncio
     async def test_small_batch_uses_economic_completion_budget(self) -> None:
-        """Un shrink à 3 features ne réserve pas les 8192 tokens du batch plein."""
+        """A shrink to 3 features does not reserve the full batch's 8192 tokens."""
         seen: list[int] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -322,7 +324,7 @@ class TestCurateBatchErrorCapture:
 
     @pytest.mark.asyncio
     async def test_medium_batch_uses_balanced_completion_budget(self) -> None:
-        """Le batch économique de 10 garde assez de marge sans réserver 8k."""
+        """The economical batch of 10 keeps enough headroom without reserving 8k."""
         seen: list[int] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -395,7 +397,7 @@ class TestCurateBatchErrorCapture:
 
     @pytest.mark.asyncio
     async def test_corrective_reprompt_keeps_economic_completion_budget(self) -> None:
-        """Une réponse JSON invalide ne doit pas refaire un appel à 8192 tokens."""
+        """An invalid JSON answer must not redo a call at 8192 tokens."""
         seen: list[int] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -452,7 +454,7 @@ class TestCurateBatchErrorCapture:
 
     @pytest.mark.asyncio
     async def test_transport_error_names_exception_type(self) -> None:
-        """str() vide des erreurs transport → outcome.error nommé (learning 7144c5ae)."""
+        """Empty str() on transport errors → a named outcome.error (learning 7144c5ae)."""
 
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("", request=request)
@@ -855,11 +857,11 @@ class TestManagedModelChain:
 
 
 class TestPrimaryFailureIsNeverSwallowed:
-    """Un secours qui réussit ne doit pas effacer la panne du primaire.
+    """A fallback that succeeds must not erase the primary's failure.
 
-    Découvert le 2026-08-05 : qwen 80B est mort en 410 le 2026-07-27 et la
-    curation a tourné dix nuits sur le secours 8B sans qu'aucun run ne le
-    signale. `errors` n'était remontée que si TOUTE la chaîne échouait.
+    Discovered on 2026-08-05: qwen 80B died with a 410 on 2026-07-27 and curation
+    ran ten nights on the 8B fallback without a single run reporting it. `errors`
+    was only surfaced if the WHOLE chain failed.
     """
 
     @pytest.mark.asyncio
@@ -890,7 +892,7 @@ class TestPrimaryFailureIsNeverSwallowed:
 
     @pytest.mark.asyncio
     async def test_model_gone_is_flagged_permanent_not_transient(self) -> None:
-        """410 Gone (EOL fournisseur) ≠ 503 occupé : aucun retry ne le réparera."""
+        """410 Gone (provider EOL) ≠ 503 busy: no retry will repair it."""
 
         def handler(request: httpx.Request) -> httpx.Response:
             if json.loads(request.content)["model"] == rc.DEFAULT_ROADMAP_MODEL:
@@ -921,7 +923,7 @@ class TestPrimaryFailureIsNeverSwallowed:
 
     @pytest.mark.asyncio
     async def test_open_circuit_still_reports_why_the_primary_is_skipped(self) -> None:
-        """Batch 2..N sautent le primaire sans l'appeler — le motif doit survivre."""
+        """Batches 2..N skip the primary without calling it — the pattern must survive."""
 
         def handler(request: httpx.Request) -> httpx.Response:
             if json.loads(request.content)["model"] == rc.DEFAULT_ROADMAP_MODEL:
@@ -1073,11 +1075,11 @@ class TestReviewedModelFallback:
 
 
 class TestCurateBatchShrinkRetry:
-    """Nuit 2026-07-05 : red (30 features, génération 8k tokens) a brûlé
-    ~9 min en ReadTimeout×3 sur le MÊME payload — re-tenter à l'identique
-    est inutile quand la génération dépasse le read-timeout. Le retry doit
-    RÉTRÉCIR le batch (moitié des features) sous un plafond asyncio par
-    tentative — sans toucher _post_chat (impact CRITICAL cross-scripts)."""
+    """Night of 2026-07-05: red (30 features, 8k-token generation) burned ~9 min in
+    ReadTimeout×3 on the SAME payload — retrying identically is useless when
+    generation exceeds the read-timeout. The retry must SHRINK the batch (half the
+    features) under a per-attempt asyncio cap — without touching _post_chat (impact
+    CRITICAL cross-scripts)."""
 
     def _slow_then_ok_handler(self, calls: list[dict]):
         async def handler(request: httpx.Request) -> httpx.Response:
@@ -1106,7 +1108,7 @@ class TestCurateBatchShrinkRetry:
         assert not outcome.failed
         assert outcome.shrunk is True
         assert len(calls) == 2
-        # Le 2e appel ne porte que la moitié des features (3 → 1).
+        # The 2nd call carries only half the features (3 → 1).
         user1 = calls[0]["messages"][1]["content"]
         user2 = calls[1]["messages"][1]["content"]
         ids_in = lambda text: sum(str(f.id) in text for f in _batch().features)  # noqa: E731
@@ -1135,7 +1137,7 @@ class TestCurateBatchShrinkRetry:
 
     @pytest.mark.asyncio
     async def test_single_feature_batch_cannot_shrink(self) -> None:
-        """Un batch d'une feature ne peut pas rétrécir — échec direct, 1 seul appel."""
+        """A one-feature batch cannot shrink — direct failure, a single call."""
         calls: list[dict] = []
 
         async def slow(request: httpx.Request) -> httpx.Response:
@@ -1162,11 +1164,11 @@ class TestCurateBatchShrinkRetry:
 
     @pytest.mark.asyncio
     async def test_tight_window_uses_two_viable_small_attempts(self, monkeypatch) -> None:
-        """Régression 2026-07-13 : 60s puis 30s+30s faisaient échouer 30→3.
+        """Regression of 2026-07-13: 60 s then 30 s+30 s made 30→3 fail.
 
-        En fenêtre serrée, ROADMAP doit économiser le provider : commencer à
-        10 features puis donner la fenêtre complète au shrink à 3. Le test
-        ramène 60s à 60ms et simule une réponse NVIDIA en 40ms.
+        In a tight window, ROADMAP must spare the provider: start at 10 features
+        then give the full window to the shrink at 3. The test scales 60 s down to
+        60 ms and simulates an NVIDIA answer in 40 ms.
         """
         monkeypatch.setattr(rc, "MIN_LLM_WINDOW_S", 0.06)
         batch = _batch_n(30)
@@ -1195,7 +1197,7 @@ class TestCurateBatchShrinkRetry:
         assert sizes == [10, 3]
 
     def test_tight_window_first_size_is_monotone_up_to_economic_cap(self, monkeypatch) -> None:
-        """Passer de 8 à 9 features ne doit pas réduire le premier essai à 3."""
+        """Going from 8 to 9 features must not reduce the first attempt to 3."""
         monkeypatch.setattr(rc, "MIN_LLM_WINDOW_S", 60.0)
 
         assert rc._llm_attempt_schedule(8, 60.0) == [(8, 60.0), (2, 60.0)]
@@ -1204,11 +1206,11 @@ class TestCurateBatchShrinkRetry:
 
     @pytest.mark.asyncio
     async def test_multi_step_shrink_lands_smaller_batch(self, monkeypatch) -> None:
-        """Nuits 2026-07-06 (red-shrik) / 2026-07-07 (brain-v42) : le full 30 ET
-        le shrink ÷2 à 15 ont tous deux timeout → l'ancien ÷2-une-fois échouait
-        la phase. Le shrink progressif retente par paliers de plus en plus
-        petits : ici full(9) et le 1er palier(3) timeout, mais le 2e palier(1)
-        passe → succès (pas d'échec), et chaque tranche est ÷3 plus petite."""
+        """Nights of 2026-07-06 (red-shrik) / 2026-07-07 (brain-v42): the full 30 AND
+        the ÷2 shrink to 15 both timed out → the old shrink-once-by-half failed the
+        phase. Progressive shrink retries in smaller and smaller steps: here full(9)
+        and the 1st step(3) time out, but the 2nd step(1) passes → success (not a
+        failure), and each slice is ÷3 smaller."""
         monkeypatch.setattr(rc, "MIN_LLM_WINDOW_S", 0.01)
         batch = _batch_n(9)
         calls: list[dict] = []
@@ -1238,9 +1240,9 @@ class TestCurateBatchShrinkRetry:
 
     @pytest.mark.asyncio
     async def test_multi_step_shrink_bounded_by_max_retries(self, monkeypatch) -> None:
-        """Une nuit NIM totalement bloquée ne fait PAS exploser le budget : au
-        plus full + SHRINK_MAX_RETRIES paliers, qui partagent une seule fenêtre
-        LLM_ATTEMPT_TIMEOUT_S (total ≈ 2×timeout, marge SIGTERM 20m préservée)."""
+        """A wholly stuck NIM night does NOT blow up the budget: at most full +
+        SHRINK_MAX_RETRIES steps, which share a single LLM_ATTEMPT_TIMEOUT_S window
+        (total ≈ 2×timeout, the 20 m SIGTERM margin preserved)."""
         from scripts.roadmap_curate import SHRINK_MAX_RETRIES
 
         monkeypatch.setattr(rc, "MIN_LLM_WINDOW_S", 0.005)
@@ -1268,10 +1270,10 @@ class TestCurateBatchShrinkRetry:
 
 
 class TestJudgeMerges:
-    """Gate anti-dump two-tier (nuit 2026-07-05 : 10/23 merges aberrants).
-    Un juge LLM ne valide que les merges « même sujet » ; les recalés restent
-    'proposed' pour la review du matin. FAIL-CLOSED : erreur/timeout/index
-    manquant → merge retenu (jamais auto-appliqué sur silence du juge)."""
+    """Two-tier anti-dump gate (night of 2026-07-05: 10/23 aberrant merges). An LLM
+    judge validates only "same subject" merges; the rejected ones stay 'proposed'
+    for the morning review. FAIL-CLOSED: error/timeout/missing index → the merge is
+    held back (never auto-applied on the judge's silence)."""
 
     def _merges(self, batch: ProjectBatch) -> list[CurationDraft]:
         return [
@@ -1296,7 +1298,7 @@ class TestJudgeMerges:
         batch = _batch()
 
         def handler(request: httpx.Request) -> httpx.Response:
-            # i=0 validé ; i=1 ABSENT de la réponse → fail-closed.
+            # i=0 validated; i=1 ABSENT from the answer → fail-closed.
             return httpx.Response(
                 200,
                 json={
@@ -1413,7 +1415,7 @@ class TestJudgeMerges:
         user = seen[0]["messages"][1]["content"]
         assert "sujet" in system.lower()
         assert "Recherche hybride" in user  # source i=0
-        assert "Feature épinglée" in user  # cible commune
+        assert "Feature épinglée" in user  # shared target
 
 
 class TestDropNoops:
@@ -1509,7 +1511,7 @@ class TestFetchRotationWiring:
 
     @pytest.mark.asyncio
     async def test_fetch_queries_only_rotated_window(self):
-        """fetch_project_batches n'interroge que les projets de la fenêtre rotée."""
+        """fetch_project_batches only queries the projects of the rotated window."""
         keys_result = MagicMock()
         keys_result.all = MagicMock(return_value=[("a",), ("b",), ("c",)])
         empty_features = MagicMock()
@@ -1522,14 +1524,14 @@ class TestFetchRotationWiring:
             yield session
 
         batches = await fetch_project_batches(factory, limit=2, day_ordinal=1)
-        assert batches == []  # features vides → batchs skippés
-        # offset = (1*2) % 3 = 2 → fenêtre rotée = ['c', 'a']
+        assert batches == []  # empty features → batches skipped
+        # offset = (1*2) % 3 = 2 → rotated window = ['c', 'a']
         feature_calls = session.execute.await_args_list[1:]
         assert [call.args[1]["pk"] for call in feature_calls] == ["c", "a"]
 
     @pytest.mark.asyncio
     async def test_fetch_rotates_features_for_tight_window_coverage(self):
-        """L'ordre avance du fallback de 3 pour servir de nouvelles cartes."""
+        """The order advances by the fallback of 3 to serve new cards."""
         rows = [
             {
                 "id": uuid4(),
@@ -1562,7 +1564,7 @@ class TestFetchRotationWiring:
 
     @pytest.mark.asyncio
     async def test_feature_rotation_advances_between_project_cycles(self):
-        """Même si seul le fallback à 3 passe, dix cycles couvrent les 30 cartes."""
+        """Even if only the fallback of 3 passes, ten cycles cover the 30 cards."""
         keys = [(f"p{i:02d}",) for i in range(30)]
         rows = [
             {
@@ -1605,7 +1607,7 @@ class TestBatchAllowance:
         assert batch_allowance(40, 10) == 4
 
     def test_ceil_redistributes(self):
-        assert batch_allowance(38, 9) == 5  # ceil — les slots non consommés se redistribuent
+        assert batch_allowance(38, 9) == 5  # ceil — unconsumed slots are redistributed
 
     def test_last_batch_gets_all_remaining(self):
         assert batch_allowance(7, 1) == 7
@@ -1615,35 +1617,35 @@ class TestBatchAllowance:
 
 
 class TestBatchLlmWindow:
-    """Fair-share TEMPS par projet (sœur de batch_allowance pour le cap).
+    """Per-project TIME fair-share (sister of batch_allowance, for the cap).
 
-    Nuit 2026-07-10 : le projet red a mangé 383s (fenêtre pleine + shrink)
-    → budget 720s épuisé au 5e projet, 5 projets reportés à la rotation.
-    La fenêtre LLM d'un batch devient min(pleine, max(plancher, part/2)) —
-    part = budget restant / batches restants ; /2 car un batch consomme
-    ≈ 2 fenêtres (tentative pleine + paliers de shrink partagés).
+    Night of 2026-07-10: the red project ate 383 s (full window + shrink) → the
+    720 s budget was exhausted at the 5th project, 5 projects deferred to the
+    rotation. A batch's LLM window becomes min(full, max(floor, share/2)) — share =
+    remaining budget / remaining batches; /2 because a batch consumes ≈ 2 windows
+    (the full attempt + the shared shrink steps).
     """
 
     def test_plenty_of_budget_gives_full_window(self):
-        # part 720/1 = 720 → /2 = 360, plafonnée à la fenêtre pleine
+        # share 720/1 = 720 → /2 = 360, capped at the full window
         assert batch_llm_window(720.0, 0.0, 1) == LLM_ATTEMPT_TIMEOUT_S
 
     def test_fair_share_caps_big_project(self):
-        # part 720/3 = 240 → fenêtre 120 : un gros projet ne mange plus tout
+        # share 720/3 = 240 → window 120: a large project no longer eats everything
         assert batch_llm_window(720.0, 0.0, 3) == 120.0
 
     def test_slack_rolls_forward_to_later_batches(self):
-        # les batches rapides laissent du budget : part (720-400)/2 = 160 → 80
+        # fast batches leave budget behind: share (720-400)/2 = 160 → 80
         assert batch_llm_window(720.0, 400.0, 2) == 80.0
 
     def test_floor_keeps_tight_windows_viable(self):
-        # part (720-700)/5 = 4 → /2 = 2 → plancher : un projet normal
-        # (~40s d'appel LLM) reste servable ; le hard-break budget de _run
-        # reste le garde-fou d'arrêt
+        # share (720-700)/5 = 4 → /2 = 2 → floor: a normal project (~40 s of LLM
+        # call) stays servable; _run's budget hard-break remains the stop
+        # guardrail
         assert batch_llm_window(720.0, 700.0, 5) == MIN_LLM_WINDOW_S
 
     def test_budget_overrun_returns_floor(self):
-        # elapsed > budget : part nulle → plancher (c'est _run qui break)
+        # elapsed > budget: a null share → the floor (it is _run that breaks)
         assert batch_llm_window(720.0, 900.0, 2) == MIN_LLM_WINDOW_S
 
     def test_no_remaining_batches_defensive_full_window(self):
@@ -1654,7 +1656,7 @@ class TestBatchLlmWindow:
 
 
 class TestRunProposeLoop:
-    """Flux propose de _run — collaborateurs monkeypatchés, aucun I/O réel."""
+    """_run's propose flow — monkeypatched collaborators, no real I/O."""
 
     def _args(self, limit=10, wet=False):
         return SimpleNamespace(limit=limit, wet=wet, apply_ids=None, model=None, base_url=None)
@@ -1678,7 +1680,7 @@ class TestRunProposeLoop:
 
     @pytest.mark.asyncio
     async def test_persist_called_per_batch_and_progress_flushed(self, monkeypatch, capsys):
-        """Persist incrémental : un persist PAR batch + ligne [i/N] par batch."""
+        """Incremental persist: one persist PER batch + an [i/N] line per batch."""
         rc = self._hermetic(monkeypatch)
         fid1, fid2 = uuid4(), uuid4()
         b1 = ProjectBatch(project_key="p1", features=[self._feature(fid1)])
@@ -1697,13 +1699,13 @@ class TestRunProposeLoop:
         exit_code = await rc._run(self._args(), "key", "model", "https://api.test")
 
         assert exit_code == 0
-        assert persist.await_count == 2  # incrémental — l'ancien design persistait 1 fois
+        assert persist.await_count == 2  # incremental — the old design persisted once
         out = capsys.readouterr().out
         assert "[1/2] p1:" in out and "[2/2] p2:" in out
 
     @pytest.mark.asyncio
     async def test_cap_exhausted_skips_remaining_llm_calls(self, monkeypatch, capsys):
-        """Cap épuisé → break AVANT l'appel LLM suivant, message explicite."""
+        """Cap exhausted → break BEFORE the next LLM call, explicit message."""
         rc = self._hermetic(monkeypatch)
         monkeypatch.setattr(rc, "MAX_PROPOSALS_PER_NIGHT", 1)
         fid1, fid2 = uuid4(), uuid4()
@@ -1719,5 +1721,5 @@ class TestRunProposeLoop:
         exit_code = await rc._run(self._args(), "key", "model", "https://api.test")
 
         assert exit_code == 0
-        assert curate.await_count == 1  # le batch 2 n'est jamais envoyé au LLM
+        assert curate.await_count == 1  # batch 2 is never sent to the LLM
         assert "épuisé" in capsys.readouterr().out

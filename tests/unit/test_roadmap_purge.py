@@ -1,4 +1,4 @@
-"""Unit tests for scripts.roadmap_purge — règles pures + apply mocké."""
+"""Unit tests for scripts.roadmap_purge — pure rules + mocked apply."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ class TestClassifyFeature:
         assert classify_feature(f, _KNOWN, _NOW) == "R1"
 
     def test_r1_spares_key_in_red_group(self):
-        # 'red' est dans known_keys (via get_keys_by_group) → épargné.
+        # 'red' is in known_keys (via get_keys_by_group) → spared.
         f = _feature(project_key="red", artifact_count=5)
         assert classify_feature(f, _KNOWN, _NOW) is None
 
@@ -117,7 +117,7 @@ class TestApplyArchive:
         mock_session = MagicMock(spec=AsyncSession)
         update_result = MagicMock()
         count_result = MagicMock()
-        count_result.scalar_one.return_value = 0  # rien d'archivé → post-cond KO
+        count_result.scalar_one.return_value = 0  # nothing archived → post-cond KO
         mock_session.execute = AsyncMock(side_effect=[update_result, count_result])
         begin_cm = MagicMock()
         begin_cm.__aenter__ = AsyncMock(return_value=None)
