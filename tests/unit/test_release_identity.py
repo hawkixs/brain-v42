@@ -1,13 +1,13 @@
-"""Contrat : l'identité du build se MESURE, elle ne se recopie pas.
+"""Contract: the build's identity is MEASURED, it is not copied.
 
-Ce dépôt a un historique documenté de claims périmés sur exactement ce point —
-le README a affirmé « la production reste à 037 » pendant trois jours après la
-bascule en 039. Un numéro de révision écrit à la main dans le code serait la
-même faute en pire : il se lirait dans `/health`, donc il se croirait.
+This repository has a documented history of stale claims on exactly this point —
+the README asserted « la production reste à 037 » for three days after the cutover
+to 039. A revision number written by hand in the code would be the same fault,
+worse: it would be read from `/health`, hence believed.
 
-D'où la forme des tests : la tête attendue n'est jamais un littéral, elle est
-recalculée par `ScriptDirectory`, l'implémentation faisant autorité, et par une
-chaîne fabriquée que rien dans le dépôt ne connaît.
+Hence the shape of these tests: the expected head is never a literal, it is
+recomputed by `ScriptDirectory`, the authoritative implementation, and by a
+fabricated chain nothing in the repository knows about.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ VERSIONS_DIRECTORY = REPO_ROOT / "alembic" / "versions"
 
 @pytest.fixture(autouse=True)
 def _clear_identity_caches() -> Iterator[None]:
-    """Les deux lectures sont mémoïsées : isoler chaque test des précédents."""
+    """Both reads are memoised: isolate each test from the previous ones."""
     release.package_version.cache_clear()
     release.shipped_alembic_head.cache_clear()
     yield
@@ -37,7 +37,7 @@ def _clear_identity_caches() -> Iterator[None]:
 
 
 def _authoritative_head() -> str:
-    """Recalcule la tête avec Alembic lui-même, pas avec le code sous test."""
+    """Recompute the head with Alembic itself, not with the code under test."""
     config = Config(str(REPO_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(REPO_ROOT / "alembic"))
     heads = ScriptDirectory.from_config(config).get_heads()
@@ -54,17 +54,17 @@ def _write_revision(directory: Path, revision: str, down_revision: str | None) -
 
 
 def test_the_repository_still_has_revisions_to_identify() -> None:
-    """Canari : sans lui, un glob cassé rendrait tout ce module vert à vide."""
+    """Canary: without it, a broken glob would make this whole module green on nothing."""
     assert VERSIONS_DIRECTORY.is_dir()
     assert list(VERSIONS_DIRECTORY.glob("*.py"))
 
 
 def test_package_version_reports_the_installed_distribution() -> None:
-    """Ce que /health annonce est la version INSTALLÉE, pas celle de pyproject.
+    """What /health announces is the INSTALLED version, not pyproject's.
 
-    La production tourne un install éditable : `importlib.metadata` lit le
-    dist-info figé à l'installation. C'est la mesure honnête — elle dit quel
-    paquet tourne, et non quel paquet le dépôt prétend décrire.
+    Production runs an editable install: `importlib.metadata` reads the dist-info
+    frozen at installation time. That is the honest measurement — it says which
+    package is running, not which package the repository claims to describe.
     """
     assert release.package_version() == importlib.metadata.version("brain_v42")
 
@@ -85,10 +85,10 @@ def test_shipped_head_matches_the_authoritative_script_directory() -> None:
 
 
 def test_shipped_head_follows_a_fabricated_chain(tmp_path: Path) -> None:
-    """La preuve que la tête est DÉRIVÉE : une chaîne que le dépôt ignore.
+    """The proof that the head is DERIVED: a chain the repository knows nothing of.
 
-    Les fichiers sont écrits dans le désordre alphabétique de la chaîne, pour
-    qu'un `max(filenames)` naïf réponde faux.
+    The files are written out of the chain's alphabetical order, so that a naive
+    `max(filenames)` answers wrong.
     """
     _write_revision(tmp_path, "zzz", None)
     _write_revision(tmp_path, "aaa", "mmm")
@@ -102,7 +102,7 @@ def test_head_of_an_empty_directory_is_unknown(tmp_path: Path) -> None:
 
 
 def test_head_of_a_forked_chain_is_unknown(tmp_path: Path) -> None:
-    """Deux têtes ne se résument pas : mieux vaut ne rien annoncer qu'inventer."""
+    """Two heads do not reduce to one: better to announce nothing than to invent."""
     _write_revision(tmp_path, "001", None)
     _write_revision(tmp_path, "002", "001")
     _write_revision(tmp_path, "003", "001")
@@ -113,14 +113,14 @@ def test_head_of_a_forked_chain_is_unknown(tmp_path: Path) -> None:
 def test_shipped_head_is_unknown_when_no_revision_ships(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Un paquet amputé de ses migrations doit le DIRE, pas mentir par défaut."""
+    """A package stripped of its migrations must SAY so, not lie by default."""
     monkeypatch.setattr(release, "_versions_directory", lambda: None)
 
     assert release.shipped_alembic_head() is None
 
 
 def test_the_reporting_module_carries_no_revision_literal() -> None:
-    """Ceinture : le module qui rapporte la tête ne doit pas la contenir."""
+    """Belt: the module that reports the head must not contain it."""
     source = (REPO_ROOT / "src" / "brain_v42" / "release.py").read_text(encoding="utf-8")
 
     assert _authoritative_head() not in source

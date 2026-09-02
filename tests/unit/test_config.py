@@ -567,14 +567,14 @@ class TestAutomationRuntimeConfig:
 
 
 class TestClientActivityReportingConfig:
-    """L'émetteur d'activité est livré killswitch FERMÉ.
+    """The activity emitter ships with the killswitch CLOSED.
 
-    Doctrine du projet : tout commit touchant ``src/`` doit être sûr à exécuter
-    la nuit même, sans CI ni revue. Le processus MCP est redémarré tout seul
-    (``Restart=always``), donc un défaut ouvert armerait l'émetteur dès la
-    fusion — vers une route que le sidecar n'exposera qu'à la tâche 9. Chaque
-    appel de tool paierait alors une tâche asyncio et un aller-retour httpx
-    pour rien, sans que rien ne le signale : le feu-et-oubli avale l'échec.
+    Project doctrine: any commit touching ``src/`` must be safe to run that same
+    night, with no CI and no review. The MCP process restarts on its own
+    (``Restart=always``), so an open default would arm the emitter as soon as it
+    merged — towards a route the sidecar will only expose at task 9. Every tool call
+    would then pay for an asyncio task and an httpx round-trip for nothing, with
+    nothing reporting it: fire-and-forget swallows the failure.
     """
 
     @staticmethod
@@ -597,8 +597,8 @@ class TestClientActivityReportingConfig:
         assert settings.client_activity_url == "http://127.0.0.1:9200/v1/client-activity"
 
     def test_reporting_is_armed_from_the_environment(self, monkeypatch) -> None:
-        # Cible loopback délibérée : armer l'émetteur ne doit jamais servir de
-        # prétexte à sortir de la machine (cf. la garde ci-dessous).
+        # A deliberate loopback target: arming the emitter must never serve as a
+        # pretext for leaving the machine (cf. the guard below).
         monkeypatch.setenv("CLIENT_ACTIVITY_REPORTING_ENABLED", "true")
         monkeypatch.setenv("CLIENT_ACTIVITY_URL", "http://127.0.0.1:9999/v1/probe")
 
@@ -609,16 +609,15 @@ class TestClientActivityReportingConfig:
 
 
 class TestClientActivityUrlIsLoopbackOnly:
-    """``client_activity_url`` est une sortie réseau : elle se valide comme un bind.
+    """``client_activity_url`` is a network egress: it is validated like a bind.
 
-    ``mcp_http_host`` et ``automation_host`` ont chacun leur garde loopback ;
-    cette URL SORTANTE n'en avait aucune. Le scénario mesuré est un
-    ``CLIENT_ACTIVITY_URL`` LAN posé dans le ``.env`` PARTAGÉ — celui que
-    ``brain-mcp-http.service`` charge par ``EnvironmentFile`` : un
-    ``{"actor": ..., "session": ..., "calls": 1}`` quitterait alors la machine
-    à CHAQUE appel de tool, et le feu-et-oubli de l'émetteur avalerait
-    jusqu'à l'échec. La frontière réseau que ce dépôt suit (bloc « Tracked
-    network boundary ») se garde ici, pas dans une note.
+    ``mcp_http_host`` and ``automation_host`` each have their loopback guard; this
+    OUTBOUND URL had none. The measured scenario is a LAN ``CLIENT_ACTIVITY_URL``
+    placed in the SHARED ``.env`` — the one ``brain-mcp-http.service`` loads through
+    ``EnvironmentFile``: an ``{"actor": ..., "session": ..., "calls": 1}`` would then
+    leave the machine at EVERY tool call, and the emitter's fire-and-forget would
+    swallow even the failure. The network boundary this repository tracks (the
+    "Tracked network boundary" block) is guarded here, not in a note.
     """
 
     @staticmethod
@@ -643,10 +642,10 @@ class TestClientActivityUrlIsLoopbackOnly:
         assert self._settings(client_activity_url=url).client_activity_url == url
 
     def test_the_shipped_default_passes_the_validator(self) -> None:
-        """La valeur livrée doit franchir sa propre garde, pas la contourner.
+        """The shipped value must clear its own guard, not bypass it.
 
-        Elle est lue depuis le champ pour que déplacer le défaut hors du
-        loopback fasse tomber ce test au lieu de passer inaperçu.
+        It is read from the field so that moving the default off loopback fails this
+        test instead of going unnoticed.
         """
         from brain_v42.config import Settings
 
@@ -657,13 +656,13 @@ class TestClientActivityUrlIsLoopbackOnly:
     @pytest.mark.parametrize(
         "url",
         [
-            "http://192.168.1.11:9200/v1/client-activity",  # PC Dev GPU, scénario mesuré
-            "http://192.168.1.12:9200/v1/client-activity",  # PC Serveur par son IP LAN
+            "http://192.168.1.11:9200/v1/client-activity",  # GPU dev PC, measured scenario
+            "http://192.168.1.12:9200/v1/client-activity",  # server PC by its LAN IP
             "http://10.0.0.5:9200/v1/client-activity",
             "http://collector.example.com/v1/client-activity",
             "https://collector.example.com/v1/client-activity",
-            "http://127.0.0.1.example.com/v1/client-activity",  # préfixe trompeur
-            "http://127.0.0.1@example.com/v1/client-activity",  # hôte réel = example.com
+            "http://127.0.0.1.example.com/v1/client-activity",  # misleading prefix
+            "http://127.0.0.1@example.com/v1/client-activity",  # real host = example.com
         ],
     )
     def test_lan_and_external_targets_are_refused(self, url: str) -> None:
@@ -675,28 +674,28 @@ class TestClientActivityUrlIsLoopbackOnly:
         [
             "file:///tmp/exfil",
             "ftp://127.0.0.1:9200/v1/client-activity",
-            "//127.0.0.1:9200/v1/client-activity",  # schéma absent
+            "//127.0.0.1:9200/v1/client-activity",  # missing scheme
             "not a url",
             "",
-            "http://[::1:9200/v1/client-activity",  # IPv6 non refermé : illisible
+            "http://[::1:9200/v1/client-activity",  # unclosed IPv6: unreadable
             "http://127.0.0.1:notaport/v1/client-activity",
             "http://127.0.0.1:99999/v1/client-activity",
         ],
     )
     def test_unreadable_or_absurd_urls_are_refused(self, url: str) -> None:
-        """Fail-closed : ce qu'on ne sait pas lire, on le refuse.
+        """Fail-closed: what cannot be read is refused.
 
-        Une URL illisible acceptée puis passée telle quelle à httpx serait un
-        garde-fou qui ne garde rien.
+        An unreadable URL accepted then passed as is to httpx would be a guardrail
+        that guards nothing.
         """
         with pytest.raises(ValidationError, match="client_activity_url must be"):
             self._settings(client_activity_url=url)
 
     def test_a_lan_url_in_the_shared_env_is_refused(self, monkeypatch) -> None:
-        """Le scénario mesuré, par le chemin réel : l'environnement du service.
+        """The measured scenario, through the real path: the service's environment.
 
-        Passer par ``CLIENT_ACTIVITY_URL`` et non par un kwarg prouve que la
-        garde mord là où la fuite se produirait — le ``.env`` partagé.
+        Going through ``CLIENT_ACTIVITY_URL`` and not through a kwarg proves the
+        guard bites where the leak would happen — the shared ``.env``.
         """
         monkeypatch.setenv("CLIENT_ACTIVITY_REPORTING_ENABLED", "true")
         monkeypatch.setenv("CLIENT_ACTIVITY_URL", "http://192.168.1.11:9200/v1/client-activity")
@@ -706,12 +705,12 @@ class TestClientActivityUrlIsLoopbackOnly:
 
 
 class TestOtelTracingConfig:
-    """Le tracing OTel est livré killswitch FERMÉ, et son endpoint est une SORTIE.
+    """OTel tracing ships with the killswitch CLOSED, and its endpoint is an EGRESS.
 
-    Même raisonnement que ``client_activity_url``, et même garde : ce qui décide
-    de ce que la machine ÉMET se valide comme un bind. Un endpoint LAN posé dans
-    le ``.env`` PARTAGÉ de ``brain-mcp-http.service`` ferait sortir un span par
-    appel de tool — et un span porte l'acteur et le nom du tool.
+    Same reasoning as ``client_activity_url``, and the same guard: what decides what
+    the machine EMITS is validated like a bind. A LAN endpoint placed in
+    ``brain-mcp-http.service``'s SHARED ``.env`` would send out one span per tool
+    call — and a span carries the actor and the tool's name.
     """
 
     @staticmethod
@@ -725,8 +724,8 @@ class TestOtelTracingConfig:
         )
 
     def test_tracing_is_disabled_by_default(self) -> None:
-        """Un défaut ouvert armerait le tracing dès la fusion : le processus MCP
-        redémarre tout seul (``Restart=always``)."""
+        """An open default would arm the tracing as soon as it merged: the MCP
+        process restarts on its own (``Restart=always``)."""
         assert self._settings().otel_tracing_enabled is False
 
     def test_the_default_endpoint_is_loopback(self) -> None:
@@ -742,12 +741,12 @@ class TestOtelTracingConfig:
             self._settings(otel_endpoint="file:///etc/passwd")
 
     def test_an_unreadable_url_is_refused_not_ignored(self) -> None:
-        """Fail-closed : ce qui n'est pas lisible est refusé."""
+        """Fail-closed: what is not readable is refused."""
         with pytest.raises(ValidationError):
             self._settings(otel_endpoint="http://127.0.0.1:notaport/v1/traces")
 
     def test_the_error_never_echoes_the_whole_url(self) -> None:
-        """Une URL peut porter des identifiants : seul l'hôte est recopié."""
+        """A URL can carry credentials: only the host is copied."""
         with pytest.raises(ValidationError) as excinfo:
             self._settings(otel_endpoint="http://user:motdepasse@10.0.0.5:4318/v1/traces")
         assert "motdepasse" not in str(excinfo.value)
@@ -888,12 +887,12 @@ class TestBrainPrefixEndToEnd:
 
 
 class TestDerivedCaptureFlag:
-    """La dérivation de capture est livrée FERMÉE, comme toute capacité neuve ici.
+    """Capture derivation ships CLOSED, like every new capability here.
 
-    Le défaut fermé n'est pas de la prudence de forme : c'est lui qui garde vert
-    l'ensemble du contrat de capture explicite sans qu'on y touche, et c'est lui
-    qui rend ce lot livrable alors que la fermeture (`end`) n'a pas encore appris
-    à accepter un ledger dérivé.
+    The closed default is not caution for form's sake: it is what keeps the whole
+    explicit-capture contract green without touching it, and it is what makes this
+    batch shippable while closing (`end`) has not yet learned to accept a derived
+    ledger.
     """
 
     def test_flag_exists_and_defaults_to_false(self) -> None:
