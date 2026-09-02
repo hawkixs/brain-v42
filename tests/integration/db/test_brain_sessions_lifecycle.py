@@ -389,3 +389,54 @@ async def test_database_rejects_incoherent_focus_outcome_snapshots(
                     "final_revision": final_revision,
                 },
             )
+
+
+async def test_end_reports_what_its_focus_write_changed(
+    session_factory: async_sessionmaker[AsyncSession],
+    session_project: str,
+) -> None:
+    """§5.5 on the real path: an applied close says what it did to the prose.
+
+    Three closes, three facts. The fixture opens at `"initial focus"` (13 chars).
+    """
+    service = _service(session_factory)
+
+    opened = await service.start(session_project, "diff-canary-1")
+    grown = await service.end(
+        session_id=opened.session.id,
+        expected_client_key="diff-canary-1",
+        summary="s",
+        next_focus="initial focus, plus more",
+        expected_focus_revision=opened.session.started_focus_revision,
+        nothing_to_capture_reason="canary",
+    )
+    assert grown.focus_diff == "+11/-0 chars"
+
+    reopened = await service.start(session_project, "diff-canary-2")
+    carried = await service.end(
+        session_id=reopened.session.id,
+        expected_client_key="diff-canary-2",
+        summary="s",
+        next_focus="initial focus, plus more",
+        expected_focus_revision=int(grown.focus_revision_at_end or 0),
+        nothing_to_capture_reason="canary",
+    )
+    assert carried.focus_diff == "unchanged", (
+        "re-posting the previous prose is the NORMAL regime of a close, and the "
+        "word is what tells a reader it was deliberate"
+    )
+
+    third = await service.start(session_project, "diff-canary-3")
+    conflicted = await service.end(
+        session_id=third.session.id,
+        expected_client_key="diff-canary-3",
+        summary="s",
+        next_focus="never applied",
+        expected_focus_revision=0,
+        nothing_to_capture_reason="canary",
+    )
+    assert conflicted.focus_outcome.value == "conflict"
+    assert conflicted.focus_diff == "", (
+        "a refused CAS wrote nothing; before == after there, so a naive renderer "
+        "would announce 'unchanged' for a write that never happened"
+    )

@@ -14,7 +14,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from brain_v42.db.focus_history import record_focus_history
+from brain_v42.db.focus_history import record_focus_history, render_focus_diff
 from brain_v42.db.focus_stamp import focus_stamp
 from brain_v42.db.tables import (
     adrs,
@@ -928,6 +928,17 @@ class PgBrainSessionRepo(BasePgRepository):
                 ended.ended_at or model.started_at,
             )
 
+            # Computed HERE because this is the only scope holding both sides of
+            # the write. On `conflict` the returned focus IS the stored one, so
+            # before == after and the renderer would say "unchanged" — announcing
+            # a copy-forward for a write that never happened. Empty is the honest
+            # value, and it is the default the budget bought.
+            rendered_diff = (
+                render_focus_diff(focus_before["current_focus"], focus["current_focus"])
+                if focus_outcome is BrainSessionFocusOutcome.APPLIED
+                else ""
+            )
+
             return BrainSessionEndResult(
                 session=ended,
                 replayed=False,
@@ -938,6 +949,7 @@ class PgBrainSessionRepo(BasePgRepository):
                 focus_outcome=focus_outcome,
                 focus_at_end=focus["current_focus"],
                 focus_revision_at_end=focus["focus_revision"],
+                focus_diff=rendered_diff,
             )
 
     async def abandon(

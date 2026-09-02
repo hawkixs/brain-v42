@@ -60,7 +60,19 @@ LIGHTWEIGHT_OUTPUT_SCHEMA_TOOLS = frozenset(
 # on 2026-09-02 — the read surface of SPEC §2.4 goes to the briefing TEXT instead,
 # where it costs nothing, and that is the shape the spec itself describes ("to stay
 # under the briefing ceiling").
-OUTPUT_SCHEMA_TOTAL = 10_095
+# Bumped by the §5.5 graft, MEASURED and not tuned until green: 10_095 + 44 =
+# 10_139 for `BrainSessionEndResult.focus_diff`. The field costs 65 bytes on the
+# model in isolation and 44 here, the derived schemas sharing their `$defs` — the
+# in-situ number is the one that counts and it is the one written.
+#
+# The margin goes from 79 to 10_174 - 10_139 = 35. That is the tightest it has
+# been, and it is why the field is a STRING: measured the same day against this
+# very margin, a structured object cost 168 bytes and `str | None` cost 95. Only
+# `str = ""` fit, the dropped null branch being worth 30. The NEXT field on these
+# eight tools will not fit in 35 bytes — when that day comes we stop, we do not
+# loosen OUTPUT_SCHEMA_MINIMUM_SAVINGS, and the read surface goes to the briefing
+# TEXT where it costs nothing (051's route for `recent_checkpoints`).
+OUTPUT_SCHEMA_TOTAL = 10_139
 # Lowered from 10_000 to 9_500: the floor had been set against a THREE-state
 # machine, and the fourth state costs 600 bytes on its own — only 554 of margin
 # were left. The loosened floor is still a floor: the effective saving is 9_660
@@ -384,6 +396,9 @@ async def test_tool_run_preserves_every_public_structured_content_contract() -> 
         # 047: the MEASURE that replaces the XOR. Public and owned — a figure the
         # user does not see replaces nothing.
         "unattributed_in_window",
+        # §5.5: what this close DID to the focus, rendered. Public for the same
+        # reason — a diff the user does not see prevents nothing.
+        "focus_diff",
     }
     assert capture is not None and set(capture) == {
         "session",

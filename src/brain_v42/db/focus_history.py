@@ -120,6 +120,32 @@ def focus_diff(before: str | None, after: str | None) -> dict[str, int | bool]:
     }
 
 
+def render_focus_diff(before: str | None, after: str | None) -> str:
+    """The diff as ONE short string — the only shape that fit the schema budget.
+
+    Measured on 2026-09-02 against the real `BrainSessionEndResult`, with the
+    eight lifecycle tools holding 79 bytes of output-schema margin: a structured
+    object costs 168, `str | None` costs 95, and `str = ""` costs 65. Dropping
+    the null branch is what bought the graft, which is why the caller passes an
+    empty string rather than `None` when there is nothing to say.
+
+    Three wordings, because three distinct facts. "+0/-0 chars" is arithmetically
+    true for a copy-forward and operationally useless — it reads as a broken
+    measurement, when the interesting thing is that the close carried the
+    previous prose forward ON PURPOSE, which is the normal regime of `end`. And
+    `None → text` is a birth, not an edit: reporting "+N/-0" there would invent a
+    predecessor that never existed.
+    """
+    if before is None and after is None:
+        return "no focus"
+    if before is None:
+        return "first focus"
+    delta = focus_diff(before, after)
+    if delta["unchanged"]:
+        return "unchanged"
+    return f"+{delta['added']}/-{delta['removed']} chars"
+
+
 def focus_history_select(project_key: str, *, limit: int, offset: int) -> sa.Select:
     """Newest revision first — the order the primary key already serves."""
     return (

@@ -396,6 +396,18 @@ class BrainSessionEndResult(BaseModel):
     #: goes down by actually attributing. A counter one could improve by staying
     #: silent would be the retired receipt under a new name.
     unattributed_in_window: int = Field(..., ge=0)
+    #: What this close DID to the focus, rendered — "+42/-0 chars", "unchanged",
+    #: "first focus", or "" when nothing was written. Visibility before any
+    #: guard (§5.5 graft C); the hard shrink threshold the same proposal carried
+    #: is NOT here, an arbitrary percentage having been disqualified by two
+    #: judges (open question #7).
+    #:
+    #: A STRING, and not by preference. Measured 2026-09-02 against the eight
+    #: lifecycle tools' 79 bytes of output-schema margin: a structured object
+    #: costs 168 bytes, `str | None` costs 95, `str = ""` costs 65. The empty
+    #: default is what removes the null branch, and the null branch is what did
+    #: not fit — so "" is the load-bearing value, not a placeholder.
+    focus_diff: str = ""
 
 
 class BrainSessionCaptureResult(BaseModel):
