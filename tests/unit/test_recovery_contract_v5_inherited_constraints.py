@@ -1,26 +1,26 @@
-"""Le contrat v5 atteste les contraintes HÉRITÉES par définition, plus par nom.
+"""The v5 contract attests INHERITED constraints by definition, no longer by name.
 
-Trou vérifié par le ticket `81c4f366`, un des cinq enfants de la porte
-`8eaefe36` : les tables du périmètre v4/v5 sont attestées par **définition**
-(`md5(pg_get_constraintdef(...))`, cf. `session_constraint_mismatches` et
-`artifact_constraint_mismatches`), mais les contraintes **héritées** des
-migrations 033/034/035 et de `projects` ne l'étaient que par **NOM** :
+A hole verified by ticket `81c4f366`, one of the five children of the `8eaefe36`
+gate: the tables of the v4/v5 scope are attested by **definition**
+(`md5(pg_get_constraintdef(...))`, cf. `session_constraint_mismatches` and
+`artifact_constraint_mismatches`), but the constraints **inherited** from
+migrations 033/034/035 and from `projects` were attested by **NAME** only:
 
-- `graph_foundation_033_observation` : `conname = 'projects_key_format_valid'`
-  et `convalidated`, rien de plus ;
-- `graph_projection_034_035_observation` : quatre `conname` de
-  `graph_projection_leases`, et `convalidated`, rien de plus.
+- `graph_foundation_033_observation`: `conname = 'projects_key_format_valid'` and
+  `convalidated`, nothing more;
+- `graph_projection_034_035_observation`: four `conname` of
+  `graph_projection_leases`, and `convalidated`, nothing more.
 
-Une contrainte dont la DÉFINITION dérive — un littéral retiré d'un `IN`, une
-borne relâchée — garde son nom et passait donc verte. Le contrôle est ajouté
-comme une check row PROPRE (`inherited_constraint_definitions`) et non fondu
-dans `brain_runtime_032_036_037` : fondu, le durcissement serait invisible au
-reçu, qui continuerait de rendre 25/25 en vérifiant plus. Le dénominateur bouge
-à 26, et c'est le point.
+A constraint whose DEFINITION drifts — a literal removed from an `IN`, a bound
+relaxed — keeps its name and therefore passed green. The check is added as a
+DEDICATED check row (`inherited_constraint_definitions`) and not merged into
+`brain_runtime_032_036_037`: merged, the hardening would be invisible in the
+receipt, which would keep returning 25/25 while verifying more. The denominator
+moves to 26, and that is the point.
 
-**Les deux jeux de md5 ne sont pas interchangeables.** `pgrestore` normalise en
-plus `::character varying::text` et `]::text[]` ; six des vingt-neuf contraintes
-en dépendent. Les confondre produirait un contrat rouge sans dire pourquoi.
+**The two md5 sets are not interchangeable.** `pgrestore` additionally normalises
+`::character varying::text` and `]::text[]`; six of the twenty-nine constraints
+depend on it. Confusing them would produce a red contract without saying why.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ V5_JSON = RECOVERY / "brain-v42-v5.json"
 V5_SQL = RECOVERY / "brain-v42-v5.sql"
 V5_PGRESTORE = RECOVERY / "brain-v42-v5-pgrestore.sql"
 
-#: Les cinq tables dont les contraintes n'étaient attestées que par nom.
+#: The five tables whose constraints were attested by name only.
 INHERITED_TABLES = (
     "brain_entities",
     "entity_relations",
@@ -44,12 +44,12 @@ INHERITED_TABLES = (
     "projects",
 )
 
-#: MESURÉ le 2026-08-22 contre la production à la tête `046`, avec l'expression
-#: littérale du contrat existant, puis REJOUÉ indépendamment en Python sur le
-#: `pg_get_constraintdef` brut (29/29, zéro écart) — la valeur ne vient donc pas
-#: du seul `md5()` de Postgres.
+#: MEASURED on 2026-08-22 against production at head `046`, with the existing
+#: contract's literal expression, then REPLAYED independently in Python on the raw
+#: `pg_get_constraintdef` (29/29, zero difference) — the value therefore does not
+#: come from Postgres's `md5()` alone.
 #:
-#: Ordre : (table, contrainte, contype, confdeltype, md5 live, md5 pgrestore).
+#: Order: (table, constraint, contype, confdeltype, live md5, pgrestore md5).
 INHERITED_CONSTRAINTS: tuple[tuple[str, str, str, str | None, str, str], ...] = (
     # fmt: off
     (
@@ -287,9 +287,9 @@ INHERITED_CONSTRAINTS: tuple[tuple[str, str, str, str | None, str, str], ...] = 
     # fmt: on
 )
 
-#: Les cinq contraintes que les deux sites historiques vérifiaient par NOM seul.
-#: C'est la couverture minimale que ce contrôle doit reprendre — le reste est du
-#: gain, celles-ci sont la dette nommée par `81c4f366`.
+#: The five constraints the two historical sites checked by NAME alone. That is the
+#: minimum coverage this check must take over — the rest is gain, these are the debt
+#: named by `81c4f366`.
 NAME_ONLY_BEFORE = {
     "projects_key_format_valid",
     "graph_projection_leases_armed_generation_valid",
@@ -309,13 +309,12 @@ def _sql_row(entry: tuple[str, str, str, str | None, str, str], variant: str) ->
 
 
 def test_the_measured_table_is_neither_a_copy_nor_a_confusion() -> None:
-    """Témoin négatif INTERNE : les deux colonnes de md5 se distinguent, et pas partout.
+    """INTERNAL negative witness: the two md5 columns differ, and not everywhere.
 
-    Deux modes de panne opposés, tous deux silencieux si on ne les épingle pas
-    ici : recopier la colonne `live` dans `pgrestore` (les 29 md5 égaux), ou
-    passer un jeu pour l'autre (les 29 différents). La vérité mesurée est entre
-    les deux — six écarts, exactement ceux dont la définition porte un cast que
-    `pg_restore` normalise.
+    Two opposite failure modes, both silent if not pinned here: copying the `live`
+    column into `pgrestore` (all 29 md5 equal), or passing one set for the other
+    (all 29 different). The measured truth is between the two — six differences,
+    exactly those whose definition carries a cast `pg_restore` normalises.
     """
     assert len(INHERITED_CONSTRAINTS) == 29
     assert len({(entry[0], entry[1]) for entry in INHERITED_CONSTRAINTS}) == 29
@@ -325,12 +324,12 @@ def test_the_measured_table_is_neither_a_copy_nor_a_confusion() -> None:
     assert len(divergent) == 6, "le nombre d'écarts live/pgrestore mesuré a bougé"
     assert 0 < len(divergent) < len(INHERITED_CONSTRAINTS)
 
-    # Un écart de normalisation ne peut naître que d'un CHECK : ni une clé, ni
-    # une contrainte d'unicité, ni une FK ne portent d'expression castée.
+    # A normalisation difference can only arise from a CHECK: neither a key, nor a
+    # unique constraint, nor an FK carries a cast expression.
     assert {entry[2] for entry in divergent} == {"c"}
 
-    # Une action de suppression n'est déclarée que pour les FK — sinon le
-    # contrat comparerait un champ que Postgres laisse à ' ' hors FK.
+    # A delete action is only declared for FKs — otherwise the contract would
+    # compare a field Postgres leaves at ' ' outside FKs.
     for _, _, contype, delete_action, _, _ in INHERITED_CONSTRAINTS:
         assert (delete_action is None) == (contype != "f")
 
@@ -345,7 +344,7 @@ def test_both_v5_assets_declare_every_inherited_constraint_by_definition() -> No
 
 
 def test_neither_asset_carries_the_other_variant_md5() -> None:
-    """La mutation la plus probable : coller le mauvais jeu dans le bon fichier."""
+    """The most likely mutation: pasting the wrong set into the right file."""
     live_sql = V5_SQL.read_text(encoding="utf-8")
     pgrestore_sql = V5_PGRESTORE.read_text(encoding="utf-8")
 
@@ -365,15 +364,15 @@ def test_the_inherited_check_is_wired_end_to_end_in_both_assets() -> None:
         assert f"'{CHECK_ID}'," in sql, asset.name
         assert "FROM inherited_constraint_mismatches" in sql, asset.name
 
-        # Les cinq tables du périmètre sont bornées dans l'observation, sinon
-        # le contrôle « présent hors liste » compterait tout le catalogue.
+        # The scope's five tables are bounded in the observation, otherwise the
+        # "present off-list" check would count the whole catalogue.
         for table in INHERITED_TABLES:
             assert f"'{table}'" in sql, f"{asset.name}: {table}"
 
 
 def test_the_inherited_check_is_bidirectional() -> None:
-    """Manquant-ou-divergent ET présent-hors-liste : sans le second, une contrainte
-    ajoutée à la main sur une table du périmètre passerait sans un bruit."""
+    """Missing-or-divergent AND present-off-list: without the second, a constraint
+    added by hand on a table in scope would pass unnoticed."""
     for asset in (V5_SQL, V5_PGRESTORE):
         body = re.search(
             r"^inherited_constraint_mismatches AS \((.*?)^\),$",
@@ -389,11 +388,11 @@ def test_the_inherited_check_is_bidirectional() -> None:
 
 
 def test_the_pgrestore_normalisation_lives_only_in_the_pgrestore_variant() -> None:
-    """Témoin négatif de la parité : la même CTE, deux normalisations distinctes.
+    """Negative witness for the parity: the same CTE, two distinct normalisations.
 
-    Le nom de CTE est identique des deux côtés — la liste FERMÉE d'écart de
-    `test_the_two_v5_variants_keep_their_exact_cte_parity` reste donc à deux
-    entrées, sans y toucher. Ce qui diffère est le corps, exactement comme pour
+    The CTE name is identical on both sides — the CLOSED difference list of
+    `test_the_two_v5_variants_keep_their_exact_cte_parity` therefore stays at two
+    entries, untouched. What differs is the body, exactly as for
     `session_constraint_mismatches`.
     """
 
@@ -422,10 +421,10 @@ def test_the_json_manifest_declares_the_inherited_check() -> None:
 
     assert CHECK_ID in ids
     assert ids == sorted(ids)
-    # Le COMPTE exact vit dans `test_v5_json_is_the_exact_v4_delta`, et nulle
-    # part ailleurs : trois splits DR passent encore dans ce contrat, et un
-    # chiffre dupliqué ici les forcerait à éditer le test d'un autre split pour
-    # une vérité qui n'est pas la sienne.
+    # The exact COUNT lives in `test_v5_json_is_the_exact_v4_delta`, and nowhere
+    # else: three DR splits still pass through this contract, and a figure
+    # duplicated here would force them to edit another split's test for a truth
+    # that is not its own.
     assert next(check for check in document["checks"] if check["id"] == CHECK_ID) == {
         "id": CHECK_ID,
         "kind": "brain_schema_invariant",
@@ -434,33 +433,32 @@ def test_the_json_manifest_declares_the_inherited_check() -> None:
 
 
 def test_the_md5_census_keys_on_the_row_never_on_the_digest_alone() -> None:
-    """Recensement à DEUX motifs — et le motif naïf est faux ici, c'est mesuré.
+    """A TWO-pattern census — and the naive pattern is wrong here, that is measured.
 
-    Première rédaction : « aucun de mes md5 ne doit apparaître ailleurs ».
-    ROUGE, et le test avait tort. `cc3552dbb61b18accca876af5296eb1f` est
-    `md5('primary key (id)')` : **24 contraintes de la base le partagent**
-    (mesuré le 2026-08-22), et il vit déjà dans v3, v4 et v5. Un md5 empreinte
-    une DÉFINITION, pas une contrainte — deux contraintes homonymes de forme
-    collisionnent par construction, ce n'est pas une fuite.
+    First draft: "none of my md5 must appear elsewhere". RED, and the test was
+    wrong. `cc3552dbb61b18accca876af5296eb1f` is `md5('primary key (id)')`: **24
+    constraints of the database share it** (measured on 2026-08-22), and it already
+    lives in v3, v4 and v5. An md5 fingerprints a DEFINITION, not a constraint —
+    two constraints alike in shape collide by construction, that is not a leak.
 
-    Le recensement porte donc sur la LIGNE — `(table, nom, type, action, md5)` —
-    et le motif digest-seul ne sert plus qu'à une chose pour laquelle il est
-    juste : le manifeste JSON ne doit porter AUCUN md5, jamais.
+    The census therefore bears on the ROW — `(table, name, type, action, md5)` — and
+    the digest-only pattern now serves only one thing for which it is correct: the
+    JSON manifest must carry NO md5, ever.
     """
     hex32 = re.compile(r"\b[0-9a-f]{32}\b")
 
-    # Motif 1 — la ligne entière. Les actifs v4 sont gelés : aucune des miennes.
+    # Pattern 1 — the whole row. The v4 assets are frozen: none of mine.
     for name in ("brain-v42-v4.sql", "brain-v42-v4-pgrestore.sql"):
         text = (RECOVERY / name).read_text(encoding="utf-8")
         for entry in INHERITED_CONSTRAINTS:
             assert _sql_row(entry, "live") not in text, f"{name}: {entry[1]}"
             assert _sql_row(entry, "pgrestore") not in text, f"{name}: {entry[1]}"
 
-    # Motif 2 — le digest nu, sur le seul fichier où il est un invariant.
+    # Pattern 2 — the bare digest, on the only file where it is an invariant.
     assert not hex32.findall(V5_JSON.read_text(encoding="utf-8"))
 
-    # La collision légitime, épinglée : la retirer du corpus rendrait le motif 1
-    # inutile et ferait croire le motif 2 applicable partout.
+    # The legitimate collision, pinned: removing it from the corpus would make
+    # pattern 1 useless and would suggest pattern 2 applies everywhere.
     shared = "cc3552dbb61b18accca876af5296eb1f"
     assert sum(1 for entry in INHERITED_CONSTRAINTS if entry[4] == shared) == 3
     assert shared in hex32.findall((RECOVERY / "brain-v42-v4.sql").read_text(encoding="utf-8"))

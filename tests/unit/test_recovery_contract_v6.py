@@ -1,33 +1,33 @@
-"""Contrat de récupération v6 — le mint 047/048, l'extension qui dit vrai, la parité ACL.
+"""Recovery contract v6 — the 047/048 mint, the extension that tells the truth, ACL parity.
 
-Pourquoi un v6 : la 047 (le CHECK de la branche `ended` réécrit) et la 048
-(`attribution_mode` + index partiel) ont atterri APRÈS le mint de v5 — mesuré le
-2026-08-29, le reçu v5 joué contre la production rendait 3 échecs, tous
-conséquences de migrations, aucun une dégradation. La lignée S1 (décision
-`9d22bc6a`) répond à ça par un mint, jamais par une réécriture : v5 reste gelé
-octet pour octet et décrit l'état qu'il décrivait.
+Why a v6: 047 (the rewritten CHECK of the `ended` branch) and 048
+(`attribution_mode` + partial index) landed AFTER v5's mint — measured on
+2026-08-29, the v5 receipt played against production returned 3 failures, all
+consequences of migrations, none a degradation. The S1 lineage (decision
+`9d22bc6a`) answers that with a mint, never with a rewrite: v5 stays frozen
+byte-for-byte and describes the state it described.
 
-Trois choses NEUVES dans ce mint, chacune mesurée avant d'être écrite :
+Three NEW things in this mint, each measured before being written:
 
-1. **L'extension dit vrai des deux côtés** (ticket `2ed0d4e0`). Le contrat de
-   base épingle l'inventaire complet `extname || ' ' || extversion` de la
-   SOURCE. Le jumeau -pgrestore n'épingle que les NOMS : la version restaurée
-   est portée par l'IMAGE cible (`CREATE EXTENSION` sans clause VERSION), et une
-   restauration parfaitement saine passe de 0.8.2 à 0.8.5 — mesuré sur banc le
-   2026-08-29. Re-épingler 0.8.2 dans le jumeau refabriquerait le faux rouge
-   que la PR 41 documente. Le reçu du jumeau DIT les versions (« restauré sous
-   X, origine 0.8.2 ») sans en faire un échec.
+1. **The extension tells the truth on both sides** (ticket `2ed0d4e0`). The base
+   contract pins the SOURCE's complete `extname || ' ' || extversion` inventory.
+   The -pgrestore twin pins the NAMES only: the restored version is carried by the
+   target IMAGE (`CREATE EXTENSION` with no VERSION clause), and a perfectly
+   healthy restoration moves from 0.8.2 to 0.8.5 — measured on a bench on
+   2026-08-29. Re-pinning 0.8.2 in the twin would remanufacture the false red PR 41
+   documents. The twin's receipt SAYS the versions ("restored under X, origin
+   0.8.2") without making a failure of it.
 
-2. **La preuve ACL retrouve son jumeau** (ticket `ac7b3a49`). La dérogation v5
-   était auto-référentielle : `--no-owner --no-acl` n'existait que dans la
-   phrase qui la justifiait, la commande de sinistre du runbook ne les porte
-   pas. Rejouée sur banc (dump réel, rôles pré-créés, commande au format du
-   runbook) : propriétaires et GRANTs survivent INTÉGRALEMENT. Seule différence
-   vraie : le rôle superuser du service de maintenance du cluster cible —
-   toléré ET nommé par le jumeau, jamais tu.
+2. **The ACL proof gets its twin back** (ticket `ac7b3a49`). The v5 derogation was
+   self-referential: `--no-owner --no-acl` existed only in the sentence justifying
+   it, the runbook's disaster command does not carry them. Replayed on a bench
+   (real dump, roles pre-created, command in the runbook's form): owners and GRANTs
+   survive IN FULL. The only real difference: the superuser role of the target
+   cluster's maintenance service — tolerated AND named by the twin, never left
+   unsaid.
 
-3. **La liste des GRANTs est DÉRIVÉE, plus retapée** (ticket `60708007`) : le
-   test ci-dessous la recalcule depuis les migrations 036/045 à chaque run.
+3. **The GRANT list is DERIVED, no longer retyped** (ticket `60708007`): the test
+   below recomputes it from migrations 036/045 on every run.
 """
 
 from __future__ import annotations
@@ -51,9 +51,9 @@ V6_ACL_PGRESTORE_JSON = RECOVERY / "brain-v42-v6-acl-pgrestore.json"
 
 V5_JSON = RECOVERY / "brain-v42-v5.json"
 
-#: Les actifs v5 sont GELÉS à l'octet, exactement comme v5 gelait v4 : une
-#: lignée d'attestation ne se réécrit pas, chaque contrat décrit l'état qu'il
-#: décrivait, et le suivant se dérive du précédent.
+#: The v5 assets are FROZEN byte-for-byte, exactly as v5 froze v4: an attestation
+#: lineage is not rewritten, each contract describes the state it described, and
+#: the next one is derived from the previous one.
 V5_SHA256 = {
     "brain-v42-v5.json": "f1e3a474da46ead7e8f4564caa73a8a6de1b05dbefdce363d579cdc838e14c2b",
     "brain-v42-v5.sql": "86a91b0d5c5ac26ba2f8f8af9a02e39110733230744b3ddce15fe69eda6da4bb",
@@ -72,16 +72,16 @@ def test_v5_recovery_assets_remain_byte_identical() -> None:
 
 
 def test_v6_json_is_the_exact_v5_delta() -> None:
-    """v6 est le DELTA de v5, dérivé — jamais retapé (discipline de la lignée)."""
+    """v6 is v5's DELTA, derived — never retyped (the lineage's discipline)."""
     document = json.loads(V5_JSON.read_text(encoding="utf-8"))
     document["contract_id"] = "brain-v42/postgresql-recovery/v6"
     document["schema_version"] = 6
     by_id = {check["id"]: check for check in document["checks"]}
 
-    # 048 : l'index partiel d'attribution entre au catalogue.
+    # 048: the partial attribution index enters the catalogue.
     by_id["catalog_counts"]["indexes"] = 131
 
-    # 2ed0d4e0 : la version d'extension cesse d'être un scalaire vector-only.
+    # 2ed0d4e0: the extension version stops being a vector-only scalar.
     extension = by_id["extension_vector"]
     extension.clear()
     extension.update(
@@ -110,7 +110,7 @@ def test_the_v6_identities_are_exact() -> None:
 
 
 def test_the_two_v6_variants_keep_their_exact_cte_parity() -> None:
-    """L'écart autorisé reste CLOS : exactement deux CTE, pas « environ deux »."""
+    """The allowed difference stays CLOSED: exactly two CTEs, not "about two"."""
 
     def cte_names(path: Path) -> set[str]:
         return set(
@@ -143,7 +143,7 @@ def test_the_v6_assets_are_regular_non_executable_files() -> None:
 
 
 def test_the_v6_contracts_read_and_never_write() -> None:
-    """Une attestation qui écrit n'est plus une attestation."""
+    """An attestation that writes is no longer an attestation."""
     forbidden = re.compile(
         r"^\s*(INSERT|UPDATE|DELETE|TRUNCATE|DROP|CREATE|ALTER|GRANT|REVOKE|COPY|CALL|DO)\b",
         re.IGNORECASE | re.M,
@@ -162,13 +162,12 @@ def test_the_v6_contracts_read_and_never_write() -> None:
 
 
 def test_v6_carries_the_047_and_048_mechanisms() -> None:
-    """Le mint encode CE QUE les migrations ont changé, pas autre chose.
+    """The mint encodes WHAT the migrations changed, and nothing else.
 
-    047 : le XOR « ledger vide XOR nothing_to_capture_reason » de la branche
-    `ended` est DÉTRUIT — le fragment qui l'épinglait sort, remplacé par la
-    forme nouvelle (raison optionnelle mais jamais blanche). 048 : la colonne
-    `attribution_mode`, sa contrainte CHECK et l'index partiel des modes
-    DÉDUITS entrent dans les deux variantes.
+    047: the "empty ledger XOR nothing_to_capture_reason" XOR of the `ended` branch
+    is DESTROYED — the fragment pinning it goes out, replaced by the new shape (an
+    optional but never blank reason). 048: the `attribution_mode` column, its CHECK
+    constraint and the partial index of DERIVED modes enter both variants.
     """
     for asset in (V6_SQL, V6_PGRESTORE):
         text = asset.read_text(encoding="utf-8")
@@ -188,13 +187,13 @@ def test_v6_carries_the_047_and_048_mechanisms() -> None:
 
 
 def test_the_extension_check_tells_the_truth_on_both_sides() -> None:
-    """La forme qui dit vrai — et qui ne refabrique pas le faux rouge.
+    """The shape that tells the truth — and does not remanufacture the false red.
 
-    Base : l'inventaire complet de la SOURCE est épinglé ; une version qui
-    bouge en production sans re-mint doit rougir. Jumeau : seule la PRÉSENCE
-    des extensions est exigée — la version est portée par l'image cible et
-    une restauration saine la change (0.8.2 → 0.8.5 mesuré) ; le reçu la DIT
-    (`inventory` observé) sans en faire un échec.
+    Base: the SOURCE's complete inventory is pinned; a version that moves in
+    production without a re-mint must redden. Twin: only the PRESENCE of the
+    extensions is required — the version is carried by the target image and a
+    healthy restoration changes it (0.8.2 → 0.8.5 measured); the receipt SAYS it
+    (observed `inventory`) without making a failure of it.
     """
     base = V6_SQL.read_text(encoding="utf-8")
     twin = V6_PGRESTORE.read_text(encoding="utf-8")
@@ -203,22 +202,22 @@ def test_the_extension_check_tells_the_truth_on_both_sides() -> None:
     assert "extname || ' ' || extversion" in twin
     assert "extension_observation.inventory = 'plpgsql 1.0, vector 0.8.2'" in base
 
-    # Le jumeau ne compare JAMAIS une version pour décider pass/fail.
+    # The twin NEVER compares a version to decide pass/fail.
     assert "extension_observation.inventory = " not in twin
     assert "= '0.8.2'" not in twin
     assert 'extension_observation.names = \'["plpgsql", "vector"]\'::jsonb' in twin
-    # Mais il la MONTRE : la divergence est visible, jamais silencieuse.
+    # But it SHOWS it: the divergence is visible, never silent.
     assert "'inventory', extension_observation.inventory" in twin
 
 
 def test_the_acl_grant_list_is_derived_from_the_migrations() -> None:
-    """Ticket 60708007 : dériver des GRANT 036/045, ne pas recopier.
+    """Ticket 60708007: derive from the 036/045 GRANTs, do not copy.
 
-    La 036 pose les dix GRANT ; la 045 re-pose celui de `codex_dream_run_v1`
-    après le DROP/CREATE de la vue (un DROP VIEW emporte ses droits). Ce test
-    recalcule la liste depuis les migrations à chaque run : si une migration
-    future ajoute une vue codex, l'actif ACL DOIT être re-minté ou ce test
-    rougit — la liste ne peut plus dériver en silence.
+    036 lays down the ten GRANTs; 045 re-lays `codex_dream_run_v1`'s after the
+    view's DROP/CREATE (a DROP VIEW takes its rights away). This test recomputes
+    the list from the migrations on every run: if a future migration adds a codex
+    view, the ACL asset MUST be re-minted or this test reddens — the list can no
+    longer drift in silence.
     """
     granted: set[str] = set()
     for migration in ("036_codex_contract_views.py", "045_dream_run_model_width.py"):
@@ -236,13 +235,13 @@ def test_the_acl_grant_list_is_derived_from_the_migrations() -> None:
 
 
 def test_the_acl_twin_tolerates_only_named_superuser_maintenance_roles() -> None:
-    """La parité revient avec UNE différence dite, jamais tue (ac7b3a49).
+    """Parity comes back with ONE stated difference, never an unsaid one (ac7b3a49).
 
-    Le cluster de restauration porte le superuser de son service de
-    maintenance (mesuré : `postgres` sur le banc du 2026-08-29). Le jumeau le
-    tolère — ET le nomme dans le reçu. Un rôle non-superuser inattendu reste
-    un échec. L'actif de base, lui, garde le recensement STRICT de v5 : en
-    production, un rôle surnuméraire — même superuser — est une dérive.
+    The restoration cluster carries its maintenance service's superuser (measured:
+    `postgres` on the 2026-08-29 bench). The twin tolerates it — AND names it in
+    the receipt. An unexpected non-superuser role stays a failure. The base asset,
+    for its part, keeps v5's STRICT census: in production, a supernumerary role —
+    even a superuser — is a drift.
     """
     twin = V6_ACL_PGRESTORE.read_text(encoding="utf-8")
     base = V6_ACL_SQL.read_text(encoding="utf-8")
@@ -254,7 +253,7 @@ def test_the_acl_twin_tolerates_only_named_superuser_maintenance_roles() -> None
 
 
 def test_the_base_acl_is_v5_verbatim_but_for_its_identity() -> None:
-    """Aucune réécriture d'opportunité : v6-acl = v5-acl à l'identité près."""
+    """No opportunistic rewrite: v6-acl = v5-acl up to its identity."""
     v5 = (RECOVERY / "brain-v42-v5-acl.sql").read_text(encoding="utf-8")
     v6 = V6_ACL_SQL.read_text(encoding="utf-8")
 

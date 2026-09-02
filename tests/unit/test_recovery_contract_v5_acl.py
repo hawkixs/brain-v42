@@ -1,33 +1,31 @@
-"""Les ACL et les propriétaires sont une preuve SÉPARÉE, et c'est structurel.
+"""ACLs and owners are a SEPARATE proof, and that is structural.
 
-`60708007`, quatrième enfant de la porte `8eaefe36`. Le constat hérité du parent
-n'est pas une préférence de rangement : **le restore sandbox tourne
-`--no-owner --no-acl`**. Une attestation de restauration ne peut donc pas,
-même en principe, prouver quoi que ce soit sur les droits — elle les a effacés
-avant de regarder.
+`60708007`, fourth child of the `8eaefe36` gate. The finding inherited from the
+parent is not a filing preference: **the sandbox restore runs
+`--no-owner --no-acl`**. A restoration attestation therefore cannot, even in
+principle, prove anything about the rights — it erased them before looking.
 
-D'où un actif à part, `brain-v42-v5-acl.sql`, joué contre la PRODUCTION en
-lecture seule. Et d'où, surtout, **l'absence de variante `-pgrestore`** : ce
-n'est pas un oubli de parité, c'est le contenu de la décision. Un jumeau
-`-pgrestore` de cette preuve laisserait croire qu'elle s'applique là où elle ne
-peut pas s'appliquer. Un test ci-dessous épingle cette absence pour que personne
-ne la « complète ».
+Hence a separate asset, `brain-v42-v5-acl.sql`, played against PRODUCTION
+read-only. And hence, above all, **the absence of a `-pgrestore` variant**: this
+is not a parity oversight, it is the content of the decision. A `-pgrestore` twin
+of this proof would suggest it applies where it cannot apply. A test below pins
+that absence so that nobody "completes" it.
 
-**Le contrat principal est structurellement MUET là-dessus**, et c'est mesuré :
-sous un `REVOKE` sur une vue du contrat, sous un changement de propriétaire, et
-sous un `ALTER ROLE codex_ro CREATEDB`, il rend exactement son bruit de fond.
-C'est la prémisse du split, vérifiée plutôt que supposée.
+**The main contract is structurally MUTE about this**, and that is measured: under
+a `REVOKE` on one of the contract's views, under an owner change, and under an
+`ALTER ROLE codex_ro CREATEDB`, it returns exactly its background noise. That is
+the split's premise, verified rather than assumed.
 
-**La liste attendue est DÉRIVÉE de la migration 036**, jamais recopiée — exigence
-explicite du ticket. Le précédent qui la motive est la 045 : un `DROP VIEW`
-emporte ses `GRANT` en silence, la vue revient, et `codex_ro` a perdu sa lecture
-sans qu'une seule ligne ne le dise.
+**The expected list is DERIVED from migration 036**, never copied — an explicit
+requirement of the ticket. The precedent motivating it is 045: a `DROP VIEW` takes
+its `GRANT`s away silently, the view comes back, and `codex_ro` has lost its read
+access without a single line saying so.
 
-**Volume chiffré AVANT d'écrire, mesuré le 2026-08-22 à la tête `046`** : 51
-relations (32 tables, 10 vues, 9 séquences), toutes propriété de `brain` ; 40
-portent une ACL explicite, 11 sont à `NULL` ; un seul bénéficiaire hors
-propriétaire, `codex_ro`, avec `SELECT` sur exactement 10 vues ; 0 ACL de
-colonne, 0 ACL de fonction, 0 `GRANT OPTION`, 0 appartenance de rôle.
+**Volume quantified BEFORE writing, measured on 2026-08-22 at head `046`**: 51
+relations (32 tables, 10 views, 9 sequences), all owned by `brain`; 40 carry an
+explicit ACL, 11 are `NULL`; a single non-owner grantee, `codex_ro`, with `SELECT`
+on exactly 10 views; 0 column ACL, 0 function ACL, 0 `GRANT OPTION`, 0 role
+membership.
 """
 
 from __future__ import annotations
@@ -45,8 +43,8 @@ MIGRATION_045 = ROOT / "alembic" / "versions" / "045_dream_run_model_width.py"
 
 CHECK_ID = "acl_and_ownership"
 
-#: Les quatre sous-compteurs. Chacun a été prouvé par une mutation qui ne touche
-#: QUE lui — sept mutations au total, sur `brain_test`, transactions annulées.
+#: The four sub-counters. Each was proved by a mutation touching ONLY it — seven
+#: mutations in total, on `brain_test`, with the transactions rolled back.
 COUNTERS = (
     "contract_grant_mismatches",
     "relation_owner_mismatches",
@@ -56,16 +54,16 @@ COUNTERS = (
 
 
 def _granted_views(source: Path) -> set[str]:
-    """Les vues qui reçoivent `SELECT` pour `codex_ro`, LUES dans la migration."""
+    """The views that receive `SELECT` for `codex_ro`, READ from the migration."""
     return set(re.findall(r"GRANT SELECT ON (codex_\w+) TO codex_ro", source.read_text("utf-8")))
 
 
 def test_the_expected_grants_are_derived_from_the_migration_not_retyped() -> None:
-    """Exigence explicite du ticket : dériver le registre, ne pas le recopier.
+    """Explicit requirement of the ticket: derive the registry, do not copy it.
 
-    Une liste tapée à la main dériverait de la migration au premier ajout de vue,
-    et l'attestation validerait alors un périmètre que plus personne n'a décidé.
-    Ce test relit la 036 à chaque exécution.
+    A hand-typed list would drift from the migration at the first view added, and
+    the attestation would then validate a scope nobody decided any more. This test
+    re-reads 036 on every run.
     """
     expected = _granted_views(MIGRATION_036)
     assert len(expected) == 10
@@ -79,21 +77,21 @@ def test_the_expected_grants_are_derived_from_the_migration_not_retyped() -> Non
 
 
 def test_the_045_regrant_stays_inside_the_derived_registry() -> None:
-    """La 045 repose UN grant après un `DROP VIEW`. Il doit être dans la liste.
+    """045 re-lays ONE grant after a `DROP VIEW`. It must be in the list.
 
-    C'est le précédent qui justifie tout ce lot : un `DROP VIEW` emporte ses
-    droits en silence. Si la 045 regrantait une vue absente du registre de la
-    036, le registre serait déjà incomplet — et personne ne le saurait.
+    This is the precedent that justifies this whole batch: a `DROP VIEW` takes its
+    rights away silently. If 045 re-granted a view absent from 036's registry, the
+    registry would already be incomplete — and nobody would know.
     """
     assert _granted_views(MIGRATION_045) <= _granted_views(MIGRATION_036)
 
 
 def test_this_proof_has_no_pgrestore_twin_and_that_is_the_point() -> None:
-    """L'absence de jumeau est le CONTENU de la décision, pas un trou de parité.
+    """The absence of a twin is the CONTENT of the decision, not a parity hole.
 
-    Le restore sandbox tourne `--no-owner --no-acl` : il efface l'objet de cette
-    preuve avant de l'observer. Un `brain-v42-v5-acl-pgrestore.sql` ferait croire
-    qu'elle s'applique là-bas, et rendrait `0/1` sur toute restauration valide.
+    The sandbox restore runs `--no-owner --no-acl`: it erases this proof's object
+    before observing it. A `brain-v42-v5-acl-pgrestore.sql` would suggest it
+    applies over there, and would return `0/1` on any valid restoration.
     """
     assert not (RECOVERY / "brain-v42-v5-acl-pgrestore.sql").exists()
     assert json.loads(ACL_JSON.read_text(encoding="utf-8"))["proof_scope"] == (
@@ -102,22 +100,22 @@ def test_this_proof_has_no_pgrestore_twin_and_that_is_the_point() -> None:
 
 
 def test_the_proof_is_read_only() -> None:
-    """Une attestation qui mute son objet n'atteste rien."""
+    """An attestation that mutates its object attests nothing."""
     sql = ACL_SQL.read_text(encoding="utf-8")
     assert sql.startswith("WITH ") and sql.endswith(";\n") and sql.count(";") == 1
     for forbidden in ("GRANT ", "REVOKE ", "ALTER ", "CREATE ", "DROP ", "INSERT ", "UPDATE "):
-        # Les littéraux du registre contiennent « GRANT » en prose de commentaire
-        # nulle part : la seule occurrence acceptable serait dans une chaîne
-        # quotée, et il n'y en a pas.
+        # The registry's literals contain "GRANT" in comment prose nowhere: the
+        # only acceptable occurrence would be inside a quoted string, and there is
+        # none.
         assert forbidden not in sql, forbidden
 
 
 def test_the_check_row_names_its_four_counters() -> None:
-    """Un échec doit dire LEQUEL des quatre a bougé.
+    """A failure must say WHICH of the four moved.
 
-    Les quatre ont des causes sans rapport : un `REVOKE` accidentel, un
-    `ALTER TABLE ... OWNER TO`, un rôle qui gagne un attribut, un bénéficiaire
-    inattendu. Un booléen nu ferait relire tout le SQL.
+    The four have unrelated causes: an accidental `REVOKE`, an
+    `ALTER TABLE ... OWNER TO`, a role gaining an attribute, an unexpected grantee.
+    A bare boolean would force re-reading all the SQL.
     """
     sql = ACL_SQL.read_text(encoding="utf-8")
     for counter in COUNTERS:
@@ -128,13 +126,13 @@ def test_the_check_row_names_its_four_counters() -> None:
 
 
 def test_the_contract_grant_check_is_bidirectional() -> None:
-    """Les deux sens, et ils attrapent deux pannes différentes.
+    """Both directions, and they catch two different failures.
 
-    Sens 1 — un `GRANT` du registre qui a DISPARU : le précédent 045, une vue
-    recréée qui a perdu ses droits. Sens 2 — un `GRANT` en TROP : `codex_ro` qui
-    gagne la lecture d'une table hors contrat, ce qu'aucun autre contrôle ne
-    verrait. Le second terme exclut `brain` : le propriétaire n'est pas un
-    bénéficiaire à recenser, et l'y inclure ferait rougir les 40 relations.
+    Direction 1 — a registry `GRANT` that has DISAPPEARED: the 045 precedent, a
+    recreated view that lost its rights. Direction 2 — an EXTRA `GRANT`: `codex_ro`
+    gaining read access to a table outside the contract, which no other check would
+    see. The second term excludes `brain`: the owner is not a grantee to be
+    surveyed, and including it would redden the 40 relations.
     """
     sql = ACL_SQL.read_text(encoding="utf-8")
     body = sql.split("contract_grant_mismatches AS (", 1)[1].split("\n),", 1)[0]
@@ -145,11 +143,11 @@ def test_the_contract_grant_check_is_bidirectional() -> None:
 
 
 def test_the_owner_check_reads_every_relation_kind() -> None:
-    """Séquences et vues comprises : un propriétaire dérive aussi bien là.
+    """Sequences and views included: an owner drifts just as well there.
 
-    Une séquence dont le propriétaire change laisse l'application capable de
-    lire et incapable d'insérer — la panne se présente comme un bug applicatif,
-    jamais comme un problème de droits.
+    A sequence whose owner changes leaves the application able to read and unable
+    to insert — the failure presents itself as an application bug, never as a
+    rights problem.
     """
     sql = ACL_SQL.read_text(encoding="utf-8")
     assert "relation_record.relkind IN ('r', 'v', 'S', 'm')" in sql
@@ -157,11 +155,11 @@ def test_the_owner_check_reads_every_relation_kind() -> None:
 
 
 def test_the_role_check_pins_what_codex_ro_must_never_gain() -> None:
-    """Le fait de sécurité, pas la forme : `codex_ro` reste strictement lecteur.
+    """The security fact, not the shape: `codex_ro` stays strictly a reader.
 
-    `brain` n'est PAS épinglé en superutilisateur — l'y figer graverait l'état
-    courant comme une exigence et rougirait le jour où quelqu'un le durcirait.
-    Ce qui est épinglé est ce qui ne doit jamais bouger dans le mauvais sens.
+    `brain` is NOT pinned as a superuser — freezing it there would engrave the
+    current state as a requirement and would redden the day someone hardened it.
+    What is pinned is what must never move in the wrong direction.
     """
     sql = ACL_SQL.read_text(encoding="utf-8")
     for attribute in (
@@ -173,11 +171,11 @@ def test_the_role_check_pins_what_codex_ro_must_never_gain() -> None:
     ):
         assert f"role_record.{attribute}" in sql, attribute
     assert "role_record.rolname = 'codex_ro'" in sql
-    # Le rôle en TROP est le sens inverse, et il compte : un compte de service
-    # ajouté à la main n'est visible nulle part ailleurs dans ce dépôt.
+    # The EXTRA role is the inverse direction, and it counts: a service account
+    # added by hand is visible nowhere else in this repository.
     assert "expected_role.role_name IS NULL" in sql
-    # L'appartenance de rôle est un contournement classique du contrôle
-    # ci-dessus : `GRANT brain TO codex_ro` ne change aucun attribut.
+    # Role membership is a classic bypass of the check above: `GRANT brain TO
+    # codex_ro` changes no attribute.
     assert "pg_auth_members" in sql
-    # Et l'USAGE sur le schéma : sans lui, les dix GRANT sont inertes.
+    # And USAGE on the schema: without it, the ten GRANTs are inert.
     assert "acl_entry.privilege_type = 'USAGE'" in sql

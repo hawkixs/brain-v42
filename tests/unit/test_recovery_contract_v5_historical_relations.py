@@ -1,28 +1,28 @@
-"""Le contrat v5 atteste la FORME des tables historiques, pas seulement leurs contraintes.
+"""The v5 contract attests the SHAPE of the historical tables, not only their constraints.
 
-`2bb1988f`, cinquième et dernier enfant de la porte `8eaefe36` — créé par la
-passe sceptique qui a RÉFUTÉ la couverture du premier split. Le bullet « fermer
-propriétés de relation, colonnes et index des tables historiques » n'était mappé
-dans aucun des quatre premiers enfants : `81c4f366` était borné aux
-**contraintes**. C'est le pan oublié, et il est mesurable :
+`2bb1988f`, fifth and last child of the `8eaefe36` gate — created by the sceptical
+pass that REFUTED the first split's coverage. The bullet "close relation
+properties, columns and indexes of the historical tables" was mapped in none of
+the first four children: `81c4f366` was bounded to **constraints**. That is the
+forgotten side, and it is measurable:
 
-- `pg_get_indexdef` n'était appliqué qu'à `brain_sessions` et
-  `brain_session_artifacts` ;
-- le gabarit de propriétés de relation (`relkind`/`relpersistence`/
-  `relrowsecurity`/`reloptions`/héritage/méthode d'accès) ne visait que ces deux
-  mêmes tables ;
-- les empreintes de colonnes ne couvraient que ces deux tables et les vues codex.
+- `pg_get_indexdef` was only applied to `brain_sessions` and
+  `brain_session_artifacts`;
+- the relation-properties template (`relkind`/`relpersistence`/
+  `relrowsecurity`/`reloptions`/inheritance/access method) only targeted those same
+  two tables;
+- the column fingerprints only covered those two tables and the codex views.
 
-Les **17 index**, **58 colonnes** et **5 relations** de `brain_entities`,
-`entity_relations`, `graph_outbox`, `graph_projection_leases` et `projects`
-n'étaient donc attestés par RIEN — pas même leur existence en tant que table
-ordinaire non partitionnée.
+The **17 indexes**, **58 columns** and **5 relations** of `brain_entities`,
+`entity_relations`, `graph_outbox`, `graph_projection_leases` and `projects` were
+therefore attested by NOTHING — not even their existence as an ordinary
+non-partitioned table.
 
-**Parité maximale ici, et c'est mesuré, pas espéré.** Aucun `pg_get_indexdef` ni
-aucun `column_default` de ces cinq tables ne porte les motifs que `pg_restore`
-normalise (`::character varying::text`, `]::text[]`). Les huit CTE ajoutées sont
-donc **littéralement identiques** dans les deux actifs — la liste FERMÉE d'écart
-de CTE reste à ses DEUX entrées, intacte.
+**Maximal parity here, and it is measured, not hoped for.** No `pg_get_indexdef`
+and no `column_default` of these five tables carries the patterns `pg_restore`
+normalises (`::character varying::text`, `]::text[]`). The eight added CTEs are
+therefore **literally identical** in both assets — the CLOSED list of CTE
+differences stays at its TWO entries, intact.
 """
 
 from __future__ import annotations
@@ -47,10 +47,10 @@ HISTORICAL_TABLES = (
 
 CHECK_ID = "historical_relation_shape"
 
-#: MESURÉ le 2026-08-22 contre la production à la tête `046`. Volume chiffré
-#: AVANT d'écrire, comme le ticket l'exige : 5 tables, 17 index, 58 colonnes.
-#: Aucun de ces `pg_get_indexdef` ne porte de motif normalisé par `pg_restore` —
-#: les md5 sont donc les mêmes dans les deux variantes, ce qu'un test vérifie.
+#: MEASURED on 2026-08-22 against production at head `046`. Volume quantified
+#: BEFORE writing, as the ticket requires: 5 tables, 17 indexes, 58 columns. None
+#: of these `pg_get_indexdef` carries a pattern normalised by `pg_restore` — the
+#: md5 are therefore the same in both variants, which a test verifies.
 HISTORICAL_INDEXES: tuple[tuple[str, str, bool, bool, tuple[str, ...], str], ...] = (
     # fmt: off
     (
@@ -178,9 +178,9 @@ HISTORICAL_INDEXES: tuple[tuple[str, str, bool, bool, tuple[str, ...], str], ...
     # fmt: on
 )
 
-#: Empreinte de colonnes par table, MESURÉE le 2026-08-22 avec l'expression
-#: littérale de `observed_column_fingerprints` — dix-sept champs
-#: d'`information_schema.columns`, agrégés par `ordinal_position`.
+#: Per-table column fingerprint, MEASURED on 2026-08-22 with
+#: `observed_column_fingerprints`'s literal expression — seventeen fields of
+#: `information_schema.columns`, aggregated by `ordinal_position`.
 HISTORICAL_COLUMN_FINGERPRINTS: dict[str, str] = {
     "brain_entities": "29129c0e227139630018e4da8f8274ef",
     "entity_relations": "6f646a72602beef83e1918181f283e73",
@@ -189,10 +189,10 @@ HISTORICAL_COLUMN_FINGERPRINTS: dict[str, str] = {
     "projects": "09f1991c6d569501b3da449bf8a2b4b7",
 }
 
-#: Le gabarit de propriétés de relation, repris MOT POUR MOT de
-#: `session_column_mismatches`. Une table ordinaire, permanente, non
-#: partitionnée, sans règle, sans RLS, sans `reloptions`, hors héritage, en
-#: `heap`. Neuf propriétés : en oublier une, c'est laisser passer sa dérive.
+#: The relation-properties template, taken WORD FOR WORD from
+#: `session_column_mismatches`. An ordinary, permanent, non-partitioned table, with
+#: no rule, no RLS, no `reloptions`, outside inheritance, on `heap`. Nine
+#: properties: forgetting one means letting its drift through.
 RELATION_PROPERTY_PREDICATES = (
     "relation_record.relkind = 'r'",
     "relation_record.relpersistence = 'p'",
@@ -205,9 +205,10 @@ RELATION_PROPERTY_PREDICATES = (
     "access_method.amname = 'heap'",
 )
 
-#: Les dix-sept champs de l'empreinte de colonnes. Le contrat en porte DEUX
-#: exemplaires depuis ce lot — la CTE historique et `observed_column_fingerprints`.
-#: Un test les compare, sinon l'un dériverait de l'autre en restant vert.
+#: The seventeen fields of the column fingerprint. The contract carries TWO copies
+#: of it since this batch — the historical CTE and `observed_column_fingerprints`.
+#: A test compares them, otherwise one would drift from the other while staying
+#: green.
 FINGERPRINT_FIELDS = (
     "ordinal_position",
     "column_name",
@@ -253,21 +254,21 @@ def _cte_body(path: Path, name: str) -> str:
 
 
 def test_the_measured_volume_is_pinned_and_internally_consistent() -> None:
-    """Le volume, chiffré avant d'écrire — et qui rougit s'il bouge sans être remesuré."""
+    """The volume, quantified before writing — and reddening if it moves without a re-measure."""
     assert len(HISTORICAL_INDEXES) == 17
     assert len(HISTORICAL_COLUMN_FINGERPRINTS) == 5
     assert {entry[0] for entry in HISTORICAL_INDEXES} == set(HISTORICAL_TABLES)
     assert set(HISTORICAL_COLUMN_FINGERPRINTS) == set(HISTORICAL_TABLES)
     assert len({(entry[0], entry[1]) for entry in HISTORICAL_INDEXES}) == 17
 
-    # Un index PRIMARY est toujours UNIQUE, et il y en a exactement un par table.
+    # A PRIMARY index is always UNIQUE, and there is exactly one per table.
     for _, _, is_unique, is_primary, _, _ in HISTORICAL_INDEXES:
         assert is_unique or not is_primary
     primaries = [entry[0] for entry in HISTORICAL_INDEXES if entry[3]]
     assert sorted(primaries) == sorted(HISTORICAL_TABLES)
 
-    # Aucun md5 d'index ne collisionne : deux index de définition identique
-    # seraient un signal, pas un détail — `pg_get_indexdef` porte le nom.
+    # No index md5 collides: two indexes with an identical definition would be a
+    # signal, not a detail — `pg_get_indexdef` carries the name.
     assert len({entry[5] for entry in HISTORICAL_INDEXES}) == 17
 
 
@@ -281,13 +282,13 @@ def test_both_assets_declare_every_historical_index_and_fingerprint() -> None:
 
 
 def test_the_new_ctes_are_byte_identical_across_the_two_variants() -> None:
-    """La parité la plus forte possible — et elle est MESURÉE, pas décrétée.
+    """The strongest possible parity — and it is MEASURED, not decreed.
 
-    Aucun `pg_get_indexdef` ni aucun `column_default` de ces cinq tables ne porte
-    `::character varying::text` ni `]::text[]`. Rien à normaliser, donc rien à
-    faire diverger : les huit CTE sont les mêmes octets des deux côtés. Si une
-    migration future introduisait un défaut casté, ce test rougirait — et ce
-    serait le bon moment pour se poser la question, pas six mois plus tard.
+    No `pg_get_indexdef` and no `column_default` of these five tables carries
+    `::character varying::text` nor `]::text[]`. Nothing to normalise, hence
+    nothing to make diverge: the eight CTEs are the same bytes on both sides. If a
+    future migration introduced a cast default, this test would redden — and that
+    would be the right moment to ask the question, not six months later.
     """
     names = (
         "expected_historical_indexes",
@@ -305,20 +306,20 @@ def test_the_new_ctes_are_byte_identical_across_the_two_variants() -> None:
     for asset in (V5_SQL, V5_PGRESTORE):
         for name in names:
             body = _cte_body(asset, name)
-            # Les ARGUMENTS de `replace()`, entre quotes — pas la construction
-            # SQL nue. `cardinality(COALESCE(reloptions, ARRAY[]::text[]))`
-            # contient littéralement `]::text[]` sans être une normalisation :
-            # première rédaction rouge là-dessus, et c'est le test qui avait
-            # tort. Ce qu'on interdit, c'est qu'une variante normalise ce que
-            # l'autre ne normalise pas.
+            # The ARGUMENTS of `replace()`, in quotes — not the bare SQL
+            # construction. `cardinality(COALESCE(reloptions, ARRAY[]::text[]))`
+            # literally contains `]::text[]` without being a normalisation: the
+            # first draft went red on this, and it was the test that was wrong.
+            # What is forbidden is one variant normalising what the other does
+            # not.
             assert "'::character varying::text'" not in body, f"{asset.name}: {name}"
             assert "']::text[]'" not in body, f"{asset.name}: {name}"
 
 
 def test_the_index_check_is_bidirectional() -> None:
-    """Sans le second sens, un index ajouté à la main sur une table historique
-    passerait sans un bruit — et c'est exactement ce qu'un `REINDEX` bâclé ou une
-    optimisation posée à chaud laisse derrière lui."""
+    """Without the second direction, an index added by hand on a historical table
+    would pass unnoticed — and that is exactly what a botched `REINDEX` or a
+    hot-applied optimisation leaves behind."""
     for asset in (V5_SQL, V5_PGRESTORE):
         body = _cte_body(asset, "historical_index_mismatches")
         assert "LEFT JOIN observed_historical_indexes" in body, asset.name
@@ -330,14 +331,14 @@ def test_the_index_check_is_bidirectional() -> None:
 
 
 def test_the_column_check_has_one_direction_and_says_why() -> None:
-    """Un contrôle qui NE PEUT PAS échouer est pire que pas de contrôle.
+    """A check that CANNOT fail is worse than no check.
 
-    L'empreinte de colonnes n'a qu'un sens, et c'est délibéré : l'observation est
-    bornée par la liste attendue, donc un second terme « observé hors liste »
-    serait structurellement vide — il rassurerait sans jamais rien voir. Une
-    table qui APPARAÎT est déjà attrapée par `table_set`, une colonne ajoutée ou
-    retypée change l'empreinte. Ce test épingle l'absence pour qu'on ne
-    « complète » pas plus tard par un terme creux.
+    The column fingerprint has only one direction, and that is deliberate: the
+    observation is bounded by the expected list, so a second "observed off-list"
+    term would be structurally empty — it would reassure without ever seeing
+    anything. A table that APPEARS is already caught by `table_set`, a column added
+    or retyped changes the fingerprint. This test pins the absence so that nobody
+    "completes" it later with a hollow term.
     """
     for asset in (V5_SQL, V5_PGRESTORE):
         body = _cte_body(asset, "historical_column_mismatches")
@@ -349,11 +350,11 @@ def test_the_column_check_has_one_direction_and_says_why() -> None:
 
 
 def test_the_fingerprint_formula_is_the_contract_s_own_and_has_not_drifted() -> None:
-    """Deux exemplaires de la même formule : les comparer, ou l'un dérivera seul.
+    """Two copies of the same formula: compare them, or one will drift alone.
 
-    `observed_column_fingerprints` existait déjà. La CTE historique en est une
-    seconde instance. Chacune resterait verte en dérivant de l'autre — c'est le
-    mode de panne des empreintes dupliquées. Les dix-sept champs, dans l'ordre.
+    `observed_column_fingerprints` already existed. The historical CTE is a second
+    instance of it. Each would stay green while drifting from the other — that is
+    the failure mode of duplicated fingerprints. The seventeen fields, in order.
     """
     for asset in (V5_SQL, V5_PGRESTORE):
         historical = _cte_body(asset, "observed_historical_column_fingerprints")
@@ -376,7 +377,7 @@ def test_the_relation_property_template_carries_all_nine_predicates() -> None:
 
 
 def test_the_check_row_names_its_three_counters_in_both_assets() -> None:
-    """Un compteur agrégé anonyme ne dit pas QUOI a bougé — celui-ci le dit."""
+    """An anonymous aggregate counter does not say WHAT moved — this one does."""
     counters = (
         "historical_column_mismatches",
         "historical_index_mismatches",
@@ -408,16 +409,16 @@ def test_the_json_manifest_declares_the_historical_check() -> None:
 
 
 def test_the_md5_census_keys_on_the_row_never_on_the_digest_alone() -> None:
-    """Même règle qu'au 4/5, et pour la même raison mesurée.
+    """Same rule as in 4/5, and for the same measured reason.
 
-    Un md5 empreinte une DÉFINITION, pas un objet : `md5('primary key (id)')`
-    est partagé par 24 contraintes de la base. Le recensement porte donc sur la
-    LIGNE, jamais sur le digest nu. Le digest nu ne garde qu'un emploi juste :
-    le manifeste JSON ne doit porter AUCUN md5.
+    An md5 fingerprints a DEFINITION, not an object: `md5('primary key (id)')` is
+    shared by 24 constraints of the database. The census therefore bears on the
+    ROW, never on the bare digest. The bare digest keeps only one correct use: the
+    JSON manifest must carry NO md5 at all.
     """
     hex32 = re.compile(r"\b[0-9a-f]{32}\b")
 
-    # Motif 1 — la ligne entière, dans les actifs GELÉS.
+    # Pattern 1 — the whole row, in the FROZEN assets.
     for name in ("brain-v42-v4.sql", "brain-v42-v4-pgrestore.sql"):
         text = (RECOVERY / name).read_text(encoding="utf-8")
         for entry in HISTORICAL_INDEXES:
@@ -425,10 +426,10 @@ def test_the_md5_census_keys_on_the_row_never_on_the_digest_alone() -> None:
         for table, md5 in HISTORICAL_COLUMN_FINGERPRINTS.items():
             assert f"('{table}', '{md5}')" not in text, f"{name}: {table}"
 
-    # Motif 2 — le digest nu, sur le seul fichier où l'absence est l'invariant.
+    # Pattern 2 — the bare digest, on the only file where absence is the invariant.
     assert not hex32.findall(V5_JSON.read_text(encoding="utf-8"))
 
-    # Motif 3 — présence effective, des deux côtés, sans distinction de variante.
+    # Pattern 3 — effective presence, on both sides, without variant distinction.
     mine = {entry[5] for entry in HISTORICAL_INDEXES} | set(HISTORICAL_COLUMN_FINGERPRINTS.values())
     for asset in (V5_SQL, V5_PGRESTORE):
         assert mine <= set(hex32.findall(asset.read_text(encoding="utf-8"))), asset.name

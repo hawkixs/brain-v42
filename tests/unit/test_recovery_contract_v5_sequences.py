@@ -1,29 +1,29 @@
-"""Le contrat v5 atteste les NEUF séquences — leur forme, et surtout leur avance.
+"""The v5 contract attests the NINE sequences — their shape, and above all their advance.
 
-`f36846a1`, deuxième enfant de la porte `8eaefe36`. Le trou était TOTAL et se
-mesurait d'une commande : `grep -ci sequence ops/recovery/brain-v42-v4.sql`
-rendait **0**. Aucune séquence n'était attestée, ni par sa forme, ni par sa
-liaison à sa colonne, ni par son avance.
+`f36846a1`, second child of the `8eaefe36` gate. The hole was TOTAL and could be
+measured with one command: `grep -ci sequence ops/recovery/brain-v42-v4.sql`
+returned **0**. No sequence was attested, neither by its shape, nor by its binding
+to its column, nor by its advance.
 
-**Le contrôle qui compte n'est pas la forme, c'est `last_value >= max(id)`.**
-C'est la panne SILENCIEUSE du restore : les séquences repartent à 1, la base
-paraît restaurée, tous les `SELECT` passent — et le premier `INSERT` tombe en
-collision de clé primaire. Une restauration qui se déclare réussie et refuse la
-première écriture est exactement ce que ce contrat existe pour attraper, et
-c'est le seul contrôle du lot qui ne peut mordre QUE sur un restore réel : sur
-la prod vivante il est vrai par construction.
+**The check that matters is not the shape, it is `last_value >= max(id)`.** That
+is the SILENT restore failure: the sequences restart at 1, the database looks
+restored, every `SELECT` passes — and the first `INSERT` hits a primary-key
+collision. A restoration that declares itself successful and refuses the first
+write is exactly what this contract exists to catch, and it is the batch's only
+check that can bite ONLY on a real restore: on live production it is true by
+construction.
 
-**Volume chiffré AVANT d'écrire, mesuré le 2026-08-22 contre la tête `046` :**
-9 séquences, 9 liées à une colonne, 0 orpheline.
+**Volume quantified BEFORE writing, measured on 2026-08-22 against head `046`:**
+9 sequences, 9 bound to a column, 0 orphaned.
 
-**Parité maximale, mesurée.** Ces CTE ne lisent ni `pg_get_indexdef` ni
-`column_default` : il n'y a rien que `pg_restore` normalise, donc les quatre CTE
-ajoutées sont les mêmes octets des deux côtés. La liste FERMÉE d'écart de CTE
-reste à ses DEUX entrées.
+**Maximal parity, measured.** These CTEs read neither `pg_get_indexdef` nor
+`column_default`: there is nothing `pg_restore` normalises, so the four added CTEs
+are the same bytes on both sides. The CLOSED list of CTE differences stays at its
+TWO entries.
 
-**Lecture SEULE, et ce n'était pas gratuit.** `last_value` est lu dans la vue
-`pg_sequences`, jamais par `currval()` ni `nextval()` — un contrat d'attestation
-qui ferait avancer une séquence pour l'observer changerait l'objet qu'il mesure.
+**READ-ONLY, and that was not free.** `last_value` is read from the `pg_sequences`
+view, never through `currval()` nor `nextval()` — an attestation contract that
+advanced a sequence to observe it would change the object it measures.
 """
 
 from __future__ import annotations
@@ -40,11 +40,11 @@ V5_PGRESTORE = RECOVERY / "brain-v42-v5-pgrestore.sql"
 
 CHECK_ID = "sequence_shape"
 
-#: MESURÉ le 2026-08-22 contre la production à la tête `046`, puis rejoué contre
-#: une base construite À NEUF par `alembic upgrade head` : les neuf séquences y
-#: sont identiques. `(séquence, table, colonne, type, pas, min, max, départ)` —
-#: `cycle` est FALSE partout et n'entre pas dans ce tableau, il est asserté à
-#: part pour qu'un `TRUE` qui apparaîtrait ne se cache pas dans une colonne.
+#: MEASURED on 2026-08-22 against production at head `046`, then replayed against
+#: a database built AFRESH by `alembic upgrade head`: the nine sequences are
+#: identical there. `(sequence, table, column, type, step, min, max, start)` —
+#: `cycle` is FALSE everywhere and does not enter this table, it is asserted
+#: separately so that a `TRUE` appearing does not hide inside a column.
 SEQUENCES: tuple[tuple[str, str, str, str, int, int, int, int], ...] = (
     ("access_log_id_seq", "access_log", "id", "bigint", 1, 1, 9223372036854775807, 1),
     (
@@ -58,8 +58,8 @@ SEQUENCES: tuple[tuple[str, str, str, str, int, int, int, int], ...] = (
         1,
     ),
     ("dream_promotions_id_seq", "dream_promotions", "id", "bigint", 1, 1, 9223372036854775807, 1),
-    # La SEULE `integer` des neuf, et c'est précisément le genre d'écart qu'une
-    # liste écrite à la main aplatirait sans le voir.
+    # The ONLY `integer` of the nine, and it is precisely the kind of difference a
+    # hand-written list would flatten without seeing it.
     ("dream_runs_id_seq", "dream_runs", "id", "integer", 1, 1, 2147483647, 1),
     ("graph_outbox_id_seq", "graph_outbox", "id", "bigint", 1, 1, 9223372036854775807, 1),
     (
@@ -115,12 +115,12 @@ def _cte_body(path: Path, name: str) -> str:
 
 
 def test_the_measured_volume_is_pinned_and_internally_consistent() -> None:
-    """Le volume, chiffré avant d'écrire — et qui rougit s'il bouge sans remesure."""
+    """The volume, quantified before writing — and reddening if it moves without a re-measure."""
     assert len(SEQUENCES) == 9
     assert len({entry[0] for entry in SEQUENCES}) == 9
-    # Une séquence par table, et jamais deux séquences sur la même colonne : la
-    # forme `<table>_<colonne>_seq` de PostgreSQL le suggère, elle ne le garantit
-    # pas — un `ALTER SEQUENCE ... OWNED BY` peut la déplacer.
+    # One sequence per table, and never two sequences on the same column:
+    # PostgreSQL's `<table>_<column>_seq` shape suggests it, it does not guarantee
+    # it — an `ALTER SEQUENCE ... OWNED BY` can move it.
     assert len({(entry[1], entry[2]) for entry in SEQUENCES}) == 9
     for name, table, column, *_ in SEQUENCES:
         assert name == f"{table}_{column}_seq", name
@@ -133,18 +133,18 @@ def test_both_assets_declare_every_sequence_with_its_owning_column() -> None:
             assert f"'{name}', '{table}', '{column}', '{data_type}'" in expected, (
                 f"{asset.name}: {name}"
             )
-        # `cycle` FALSE sur les neuf : une séquence cyclique réémettrait des
-        # identifiants déjà attribués.
+        # `cycle` FALSE on all nine: a cyclic sequence would re-emit identifiers
+        # already allocated.
         assert expected.count("FALSE)") == 9, asset.name
         assert "TRUE)" not in expected, asset.name
 
 
 def test_the_high_water_mark_reads_every_owning_table() -> None:
-    """`last_value >= max(id)` ne peut pas être générique en SQL statique.
+    """`last_value >= max(id)` cannot be generic in static SQL.
 
-    Il faut nommer les neuf tables, une par une. C'est verbeux et c'est le prix :
-    une boucle demanderait du SQL dynamique, donc une fonction, donc une écriture
-    — dans un contrat qui doit rester en LECTURE SEULE.
+    The nine tables must be named, one by one. It is verbose and that is the price:
+    a loop would require dynamic SQL, hence a function, hence a write — in a
+    contract that must stay READ-ONLY.
     """
     for asset in (V5_SQL, V5_PGRESTORE):
         body = _cte_body(asset, "sequence_high_water")
@@ -156,13 +156,13 @@ def test_the_high_water_mark_reads_every_owning_table() -> None:
 
 
 def test_the_backfill_check_treats_a_never_called_sequence_as_zero() -> None:
-    """`last_value` est NULL quand la séquence n'a jamais servi — pas « à jour ».
+    """`last_value` is NULL when the sequence has never been used — not "up to date".
 
-    C'est exactement l'état d'une séquence fraîchement restaurée qui n'a pas reçu
-    son `setval`. Sans le `COALESCE`, la comparaison rendrait NULL, le `WHERE`
-    serait faux, et la panne qu'on cherche passerait en silence. Le `COALESCE`
-    sur `max(id)` est l'autre moitié : une table VIDE et une séquence jamais
-    appelée sont cohérentes entre elles.
+    That is exactly the state of a freshly restored sequence that has not received
+    its `setval`. Without the `COALESCE`, the comparison would return NULL, the
+    `WHERE` would be false, and the failure we are looking for would pass in
+    silence. The `COALESCE` on `max(id)` is the other half: an EMPTY table and a
+    never-called sequence are consistent with each other.
     """
     for asset in (V5_SQL, V5_PGRESTORE):
         body = _cte_body(asset, "sequence_backfill_mismatches")
@@ -172,11 +172,11 @@ def test_the_backfill_check_treats_a_never_called_sequence_as_zero() -> None:
 
 
 def test_the_contract_never_advances_a_sequence_to_observe_it() -> None:
-    """Une attestation qui mute son objet n'atteste rien.
+    """An attestation that mutates its object attests nothing.
 
-    `currval()` lèverait hors session ; `nextval()` avancerait la séquence — donc
-    ferait passer un contrôle qui aurait dû échouer, en le faisant échouer une
-    fois de plus au prochain restore. La vue `pg_sequences` lit sans écrire.
+    `currval()` would raise outside a session; `nextval()` would advance the
+    sequence — hence pass a check that should have failed, while making it fail one
+    more time at the next restore. The `pg_sequences` view reads without writing.
     """
     for asset in (V5_SQL, V5_PGRESTORE):
         sql = asset.read_text(encoding="utf-8")
@@ -187,11 +187,11 @@ def test_the_contract_never_advances_a_sequence_to_observe_it() -> None:
 
 
 def test_the_property_check_is_bidirectional() -> None:
-    """Sans le second sens, une séquence CRÉÉE à la main passerait sans un bruit.
+    """Without the second direction, a hand-CREATED sequence would pass unnoticed.
 
-    Et elle ne serait attrapée par rien d'autre : `table_set` lit `pg_tables`,
-    qui ignore les séquences, et `catalog_counts` ne compte qu'index et clés
-    étrangères. Ce second terme est le SEUL filet.
+    And it would be caught by nothing else: `table_set` reads `pg_tables`, which
+    ignores sequences, and `catalog_counts` only counts indexes and foreign keys.
+    This second term is the ONLY net.
     """
     for asset in (V5_SQL, V5_PGRESTORE):
         body = _cte_body(asset, "sequence_property_mismatches")
@@ -202,13 +202,13 @@ def test_the_property_check_is_bidirectional() -> None:
 
 
 def test_the_backfill_check_has_one_direction_and_says_why() -> None:
-    """Un contrôle qui NE PEUT PAS échouer est pire que pas de contrôle.
+    """A check that CANNOT fail is worse than no check.
 
-    L'avance n'a qu'un sens, et c'est un FAIT sur les séquences, pas un choix :
-    une séquence EN AVANCE sur `max(id)` est le régime normal — toute
-    transaction annulée en laisse une. Un terme « last_value trop grand »
-    rougirait sur du fonctionnement nominal. Ce test épingle l'absence pour
-    qu'on ne « complète » pas la symétrie plus tard par un terme faux.
+    The advance has only one direction, and that is a FACT about sequences, not a
+    choice: a sequence AHEAD of `max(id)` is the normal regime — every rolled-back
+    transaction leaves one. A "last_value too large" term would redden on nominal
+    operation. This test pins the absence so that nobody "completes" the symmetry
+    later with a false term.
     """
     for asset in (V5_SQL, V5_PGRESTORE):
         body = _cte_body(asset, "sequence_backfill_mismatches")
@@ -217,12 +217,12 @@ def test_the_backfill_check_has_one_direction_and_says_why() -> None:
 
 
 def test_the_new_ctes_are_byte_identical_across_the_two_variants() -> None:
-    """Parité MAXIMALE, et mesurée plutôt que décrétée.
+    """MAXIMAL parity, and measured rather than decreed.
 
-    Ces CTE ne lisent ni `pg_get_indexdef` ni `column_default` : il n'y a
-    littéralement rien que `pg_restore` normalise. Si une migration future
-    ajoutait un défaut casté sur une de ces colonnes, ce test rougirait — et ce
-    serait le bon moment pour se poser la question.
+    These CTEs read neither `pg_get_indexdef` nor `column_default`: there is
+    literally nothing `pg_restore` normalises. If a future migration added a cast
+    default on one of these columns, this test would redden — and that would be the
+    right moment to ask the question.
     """
     for name in NEW_CTES:
         assert _cte_body(V5_SQL, name) == _cte_body(V5_PGRESTORE, name), name
@@ -235,12 +235,12 @@ def test_the_new_ctes_are_byte_identical_across_the_two_variants() -> None:
 
 
 def test_the_check_row_names_its_two_counters_in_both_assets() -> None:
-    """Un échec doit dire LEQUEL des deux contrôles a bougé.
+    """A failure must say WHICH of the two checks moved.
 
-    Gabarit de `brain_runtime_032_036_037` et de `historical_relation_shape` : un
-    booléen nu ferait relire tout le SQL pour savoir si c'est la forme ou
-    l'avance qui a dérivé — et les deux ont des causes et des correctifs
-    entièrement différents.
+    Template from `brain_runtime_032_036_037` and `historical_relation_shape`: a
+    bare boolean would force re-reading all the SQL to find out whether it is the
+    shape or the advance that drifted — and the two have entirely different causes
+    and fixes.
     """
     for asset in (V5_SQL, V5_PGRESTORE):
         sql = asset.read_text(encoding="utf-8")
