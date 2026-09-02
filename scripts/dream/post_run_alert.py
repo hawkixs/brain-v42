@@ -41,9 +41,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
+import re
 import sys
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import sqlalchemy as sa
@@ -60,6 +61,7 @@ from brain_v42.db.tables import (
     runbooks,
     snippets,
 )
+from brain_v42.dream_degradation import DEGRADED_PREFIX
 from brain_v42.dream_run_project_key import GLOBAL_PHASE_PROJECT_KEY
 from brain_v42.metrics.collector_dream import (
     expected_dream_phase_pairs,
@@ -95,6 +97,81 @@ FAILED_STATUSES = {"fail", "partial", "timeout"}
 # report line reads as a bullet or a wildcard, not as "the three global ones".
 GLOBAL_GROUP_LABEL = "global"
 UNLABELLED_GROUP_LABEL = "unlabelled"
+
+# ── DEGRADED: a phase that succeeded on its STANDBY model ────────────────────
+# Measured over 2026-08-27 → 09-02: roadmap ran clean once in seven nights,
+# three nights were served 10/10 batches by the standby, and all three printed
+# `no failures`. `status` reads `'done'` on purpose — a successful fallback is
+# not a failure — so the only way to see them is to read the mark, which lives
+# in `error_message` and NOWHERE else.
+#
+# Rendered in French, like the two `###` blocks already under it: this file's
+# blocks are French and its headline English, and injecting an English heading
+# between them would be accretion, not consistency.
+DEGRADED_HEADING = f"### {DEGRADED_PREFIX} (secours)"
+# Same 240-char, first-line-only shape as `_detail_line`: a report is read in a
+# terminal at 6 a.m., and a wrapped stack trace hides the line under it.
+DEGRADED_CAUSE_CHARS = 240
+# The producer is `roadmap_curate._degradation_notice`. This regex mirrors its
+# sentence but is NOT the contract — the prefix is (see `dream_degradation`).
+# A row whose sentence no longer matches is still listed, with its raw message:
+# a reader that dropped it would turn a producer-side rewording into a blind
+# morning, which is the defect being closed here.
+_DEGRADED_SHAPE = re.compile(
+    r"(?P<fallback>\d+)/(?P<scanned>\d+)\s+batches"
+    r".*?le primaire\s+(?P<primary>\S+)\s+n'a pas répondu\s+—\s+(?P<cause>.+)",
+    re.DOTALL,
+)
+
+
+@dataclass(frozen=True)
+class DegradedPhase:
+    """One phase that reached `'done'` on its standby model."""
+
+    phase: str
+    project_key: str
+    message: str
+    served_model: str | None = None
+    primary_model: str | None = None
+    fallback_batches: int | None = None
+    scanned: int | None = None
+    cause: str | None = None
+
+
+def _is_degraded(row: Mapping[str, object]) -> bool:
+    message = row.get("error_message")
+    return isinstance(message, str) and message.startswith(DEGRADED_PREFIX)
+
+
+def degraded_rows(rows: Iterable[Mapping[str, object]]) -> list[DegradedPhase]:
+    """The night's degraded phases, read from rows ALREADY fetched.
+
+    Keyed on the prefix, never on "there is a message": `promote` writes its
+    empty-pool sentence and `extract` its deferral count on `'done'` rows too,
+    and counting those as degradations would make the rubric fire every night —
+    an alarm that fires every night stops being read.
+    """
+    degraded: list[DegradedPhase] = []
+    for row in rows:
+        if not _is_degraded(row):
+            continue
+        message = str(row["error_message"])
+        served = row.get("model")
+        match = _DEGRADED_SHAPE.search(message)
+        degraded.append(
+            DegradedPhase(
+                phase=str(row.get("phase", "?")),
+                project_key=str(row.get("project_key") or ""),
+                message=message,
+                served_model=str(served) if served else None,
+                primary_model=match.group("primary") if match else None,
+                fallback_batches=int(match.group("fallback")) if match else None,
+                scanned=int(match.group("scanned")) if match else None,
+                cause=match.group("cause").strip() if match else None,
+            )
+        )
+    return degraded
+
 
 # Four wordings, because four distinct FIRST MOVES. Conflating them sends the
 # operator to the wrong place, which wears an alert out as surely as not
@@ -289,6 +366,44 @@ def _detail_line(row: dict) -> str:
     return f"- {phase} [{status}]: {err_line}"
 
 
+def _degraded_detail_line(degraded: DegradedPhase) -> str:
+    project = degraded.project_key or GLOBAL_PHASE_PROJECT_KEY
+    if degraded.fallback_batches is None:
+        return f"- {degraded.phase} [{project}] : {degraded.message[:DEGRADED_CAUSE_CHARS]}"
+    served = degraded.served_model or "(modèle de secours non enregistré)"
+    return (
+        f"- {degraded.phase} [{project}] : {degraded.fallback_batches}/{degraded.scanned} "
+        f"batches au SECOURS {served} — primaire {degraded.primary_model} muet"
+    )
+
+
+def degraded_headline(run_date: dt.date, degraded: Sequence[DegradedPhase]) -> str:
+    """The first line when nothing FAILED but something ran degraded.
+
+    It must not contain "no failures": that string is what three nights of a
+    dead primary hid behind. The count is the phases, not the batches.
+    """
+    ran = "1 phase ran" if len(degraded) == 1 else f"{len(degraded)} phases ran"
+    return f"no failed phase for {run_date.isoformat()} — but {ran} DEGRADED (standby model)"
+
+
+def build_degraded_block(run_date: dt.date, degraded: Sequence[DegradedPhase]) -> list[str]:
+    """The rubric, kept APART from the failures.
+
+    Bounded by construction: its rows are a subset of the night's own phases,
+    already read and already in memory.
+    """
+    if not degraded:
+        return []
+    lines = [f"{DEGRADED_HEADING} — {run_date.isoformat()}", ""]
+    for phase in degraded:
+        lines.append(_degraded_detail_line(phase))
+        if phase.cause:
+            lines.append(f"  cause : {phase.cause.splitlines()[0][:DEGRADED_CAUSE_CHARS]}")
+    lines.append("")
+    return lines
+
+
 def _group_label(row: dict) -> str:
     project = row.get("project_key")
     if not project:
@@ -423,6 +538,10 @@ class NightReport:
 
     report: str | None
     coverage: CoverageReport
+    #: Phases that reached `'done'` on their standby model. Never folded into
+    #: `report`: a degradation is not a failure, and the morning must be able to
+    #: tell "the night worked" from "the night worked on its spare tyre".
+    degraded: list[DegradedPhase] = field(default_factory=list)
 
 
 def missing_rows_from_verdict(verdict: CoverageVerdict) -> list[dict]:
@@ -581,11 +700,17 @@ async def fetch_failed_runs(
     run_date: dt.date,
     *,
     manifest: RunManifest | None = None,
-) -> tuple[list[dict], int, CoverageReport]:
+) -> tuple[list[dict], int, CoverageReport, list[DegradedPhase]]:
+    # `model` and `error_message` ride ALONG: the degradation mark is read from
+    # this very SELECT rather than from a fourth one. `review_night`'s
+    # three-read contract is pinned by its tests, and a night is not worth one
+    # more round trip to learn something already on the wire.
     observed_statement = sa.select(
         dream_runs.c.phase,
         dream_runs.c.status,
         dream_runs.c.project_key,
+        dream_runs.c.model,
+        dream_runs.c.error_message,
     ).where(dream_runs.c.run_date == run_date)
     observed_result = await session.execute(observed_statement)
     observed_rows = [dict(row._mapping) for row in observed_result.all()]
@@ -637,7 +762,12 @@ async def fetch_failed_runs(
             missing=synthetic_count,
         )
 
-    return failed, synthetic_count + persisted_failure_count, coverage
+    return (
+        failed,
+        synthetic_count + persisted_failure_count,
+        coverage,
+        degraded_rows(observed_rows),
+    )
 
 
 async def review_night(
@@ -650,11 +780,13 @@ async def review_night(
 
     Read-only, as always: three bounded `SELECT`s, no `commit`.
     """
-    failed, total_failures, coverage = await fetch_failed_runs(session, run_date, manifest=manifest)
+    failed, total_failures, coverage, degraded = await fetch_failed_runs(
+        session, run_date, manifest=manifest
+    )
     report = (
         build_alert_insight(run_date, failed, total_failures=total_failures) if failed else None
     )
-    return NightReport(report=report, coverage=coverage)
+    return NightReport(report=report, coverage=coverage, degraded=degraded)
 
 
 async def write_alert_if_failed(
@@ -672,6 +804,8 @@ def render_stdout(
     run_date: dt.date,
     coverage: CoverageReport,
     provenance: ProvenanceReport | None = None,
+    *,
+    degraded: Sequence[DegradedPhase] = (),
 ) -> str:
     """The coverage block under the first line, the machine line LAST.
 
@@ -679,9 +813,24 @@ def render_stdout(
     numbers nobody was reconciling end up adjacent in journald, under the
     "N/M phases OK" summary dream.sh has just printed.
     """
-    body = report.splitlines() if report else [f"no failures for {run_date.isoformat()}"]
+    if report:
+        body = report.splitlines()
+    elif degraded:
+        body = [degraded_headline(run_date, degraded)]
+    else:
+        body = [f"no failures for {run_date.isoformat()}"]
     provenance_block = provenance.block if provenance is not None else []
-    lines = [body[0], "", *coverage.block, *provenance_block, *body[1:]]
+    # The rubric files itself AFTER the two existing blocks: the coverage block
+    # sitting directly under the first line is a pinned contract
+    # (`test_the_coverage_block_sits_under_the_first_line_of_the_report`).
+    lines = [
+        body[0],
+        "",
+        *coverage.block,
+        *provenance_block,
+        *build_degraded_block(run_date, degraded),
+        *body[1:],
+    ]
     if coverage.silent_line:
         lines.append(coverage.silent_line)
     # `COVERAGE …` stays the LAST line of stdout: that is ticket `0a9c067e`'s
@@ -712,7 +861,12 @@ async def review_and_render(
     """
     night = await review_night(session, run_date, manifest=manifest)
     provenance = await fetch_mute_transitions(session, run_date)
-    rendered = render_stdout(night.report, run_date, night.coverage, provenance)
+    rendered = render_stdout(
+        night.report, run_date, night.coverage, provenance, degraded=night.degraded
+    )
+    # The verdict still comes from COVERAGE alone. A degraded night is LOUD, not
+    # escalating: `dream.sh` turns `rc=2` into a `coverage` dream_runs row that
+    # says expected rows are missing, and a degraded night has all of its rows.
     return rendered, night.coverage.escalates
 
 

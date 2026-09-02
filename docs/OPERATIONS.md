@@ -286,6 +286,32 @@ administrator stays global. The runner forwards only the `active` bearer, in a
 allow-listed child environment, and strips the full registry. `BRAIN_CODE_MODE=true`
 is incompatible with it.
 
+## Reading a Dream night: the file, not journald
+
+`dream.sh` tees every `log()` line to `logs/dream/<date>.log` AND to the unit's
+stdout. Only the file is complete. Measured line for line over the seven nights
+2026-08-27 → 2026-09-02, journald holds 25-32 % fewer lines every single night —
+252 in the file against 181 in the journal for 2026-09-02, to the point of showing
+six `START clean` for eight `DONE clean`, which cannot happen. The cause is not
+established: it is neither a `stdout` capture upstream (`run_phase_chain` is called
+directly) nor a declared journald rate limit. Until it is, a morning check greps
+`logs/dream/<date>.log`; `journalctl --user -u brain-v42-dream` is a convenience,
+not the record. Note the `--user`: the unit is a user unit, and `journalctl -u
+brain-v42-dream` answers `-- No entries --`.
+
+The morning report itself is replayable read-only against the night's own manifest:
+
+```bash
+uv run python -m scripts.dream.post_run_alert --date 2026-09-02
+```
+
+It prints the coverage block, the freshness provenance block, and — since the seven
+nights above, where roadmap ran clean once and three degraded nights printed
+`no failures` — a `### DÉGRADÉ (secours)` rubric naming the mute primary model and
+how many batches the standby served. A degraded phase does NOT change the exit code:
+escalation to `2` belongs to coverage alone, because `dream.sh` reads that `2` as
+"expected rows are missing" and writes a `coverage` row saying so.
+
 ## Automation service
 
 The `brain-v42-automation.service` unit is generated and verified, but stays dormant.
