@@ -36,8 +36,8 @@ class AccessLogger:
     def log_access(self, entity_type: str, entity_id: UUID, access_type: str) -> None:
         """Enqueue an access event. Logs warning and drops if queue is full.
 
-        L'acteur est lu ICI, dans le contexte de la requête. `_flush_batch`
-        tourne dans une tâche de fond où le ContextVar vaudrait `unknown`.
+        The actor is read HERE, in the request context. `_flush_batch` runs in a
+        background task where the ContextVar would read `unknown`.
         """
         try:
             self._queue.put_nowait(

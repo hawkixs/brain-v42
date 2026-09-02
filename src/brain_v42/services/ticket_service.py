@@ -35,10 +35,10 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-# Séparateur du pied de page qui archive un corps remplacé. Il est CONSTANT et
-# nommé pour deux raisons : un lecteur humain doit le reconnaître d'un coup
-# d'œil dans `brain_ticket_get`, et un test doit pouvoir l'épingler sans
-# recopier une chaîne littérale qui dériverait en silence.
+# Separator of the footer that archives a replaced body. It is CONSTANT and
+# named for two reasons: a human reader must recognize it at a glance in
+# `brain_ticket_get`, and a test must be able to pin it without copying a string
+# literal that would drift in silence.
 _BODY_CORRECTION_MARKER = "--- corps précédent, remplacé par cette réponse ---"
 
 
@@ -104,28 +104,27 @@ class TicketService:
     ) -> TicketMessage:
         """Post a thread message; with ``corrects_body``, also fix the ticket body.
 
-        Un corps faux ne coûte pas qu'une lecture perdue : il est en tête de la
-        vue, il oriente le jugement, et il survit à toutes les corrections
-        postées en dessous. Le rendre corrigeable est le point ; le rendre
-        corrigeable SANS TRACE serait échanger une dette contre une pire.
+        A wrong body does not cost only one lost read: it sits at the top of
+        the view, it steers judgement, and it outlives every correction posted
+        below it. Making it correctable is the point; making it correctable
+        WITHOUT A TRACE would trade one debt for a worse one.
 
-        D'où trois refus, et un seul chemin d'écriture :
+        Hence three refusals, and a single write path:
 
-        - Pas de justification, pas de correction. Corriger une prémisse morte
-          est légitime ; réécrire une demande pour la rendre rétrospectivement
-          juste ne l'est pas, et c'est le fil qui fait la différence entre les
-          deux. Un corps qui change sans un mot est indistinguable du second cas.
-        - Pas de correction identique. Elle poserait au fil la trace d'une
-          correction qui n'a rien corrigé — un faux positif dans la mémoire
-          même qui sert à juger.
-        - Le contrôle de participation vaut pour une correction comme pour une
-          réponse : il est fait AVANT, l'autorisation ne se déduit pas du
-          contenu.
+        - No justification, no correction. Fixing a dead premise is legitimate;
+          rewriting a request to make it retrospectively right is not, and the
+          thread is what tells the two apart. A body that changes without a word
+          is indistinguishable from the second case.
+        - No identical correction. It would put into the thread the trace of a
+          correction that corrected nothing — a false positive in the very
+          memory used to judge.
+        - The participation check applies to a correction as to a reply: it is
+          done BEFORE, authorization is not inferred from content.
 
-        Le message conserve la justification telle quelle, puis un pied de page
-        qui archive le texte remplacé. C'est ce qui distingue « le corps a été
-        corrigé » de « le corps a toujours dit ça », sans colonne neuve : le fil
-        est déjà la mémoire de ce qui a été dit, on n'en invente pas une seconde.
+        The message keeps the justification as it is, then a footer archiving
+        the replaced text. That is what distinguishes "the body was corrected"
+        from "the body always said that", without a new column: the thread is
+        already the memory of what was said, we do not invent a second one.
         """
         author = canonicalize_project_key(author_project)
         ticket = await self._get_or_raise(ticket_id)
@@ -174,8 +173,8 @@ class TicketService:
             valid = sorted(a.value for a in TicketAction)
             raise IllegalTransitionError(f"unknown action '{action}' — valid: {valid}") from None
 
-        # Self-ticket (from_project == to_project) : une seule partie, donc pas de
-        # contrôle de rôle (spec §1.1, §4.1) — SELF_TRANSITIONS remplace TRANSITIONS.
+        # Self-ticket (from_project == to_project): a single party, hence no
+        # role check (spec §1.1, §4.1) — SELF_TRANSITIONS replaces TRANSITIONS.
         self_ticket = ticket.from_project == ticket.to_project
         if self_ticket:
             new_status = SELF_TRANSITIONS.get((ticket.kind, ticket.status, act))
@@ -202,7 +201,7 @@ class TicketService:
             resolved_at = None
         if new_status in TERMINAL_STATUSES:
             closed_at = now
-            # Respecte un opt-out posé à la création : ne pas écraser 'skipped'.
+            # Honour an opt-out set at creation time: do not overwrite 'skipped'.
             if extraction is not ExtractionStatus.SKIPPED:
                 extraction = ExtractionStatus.PENDING
 

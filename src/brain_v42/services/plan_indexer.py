@@ -422,8 +422,8 @@ class PlanIndexer:
             stats["linked"] += linked
             stats["chunks_created"] += chunks_created
             if errors:
-                # Échec INTERNE au traitement du fichier (décodage, chunking) : le
-                # chemin est connu, il doit être nommé comme les autres.
+                # A failure INTERNAL to processing the file (decoding,
+                # chunking): the path is known, it must be named like the rest.
                 stats["errors"] += errors
                 stats["failures"].append(
                     {"file_path": str(file_path), "error_type": "PlanFileRejected"}

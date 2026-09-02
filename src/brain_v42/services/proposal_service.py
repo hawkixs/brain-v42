@@ -814,7 +814,7 @@ class ProposalService:
         row = (
             (
                 await session.execute(
-                    sa.text(f"SELECT {field} FROM features WHERE id = :fid FOR UPDATE"),  # nosec B608 - field est un Literal["name", "status"] et ses trois seuls appelants (_apply_archive, _apply_status, _apply_rename) passent la constante littérale en clair ; l'opération lue dans la proposition n'atteint jamais ce paramètre, et feature_id part en bind :fid — exception revue le 2026-08-16, à réexaminer avant le 2026-09-30
+                    sa.text(f"SELECT {field} FROM features WHERE id = :fid FOR UPDATE"),  # nosec B608 - field is a Literal["name", "status"] and its only three callers (_apply_archive, _apply_status, _apply_rename) pass the literal constant inline; the operation read from the proposal never reaches this parameter, and feature_id goes out as the :fid bind — exception reviewed on 2026-08-16, to be re-examined before 2026-09-30
                     {"fid": feature_id},
                 )
             )

@@ -55,7 +55,7 @@ LIMIT :lim
 
 @dataclass(frozen=True)
 class RoadmapAliveFeature:
-    """Ligne de la section briefing « Roadmap » (spec 2026-07-04 §5)."""
+    """Row of the briefing's "Roadmap" section (spec 2026-07-04 §5)."""
 
     name: str
     status: str
@@ -86,11 +86,11 @@ class FeatureService:
         project_key: str,
         limit: int = 5,
     ) -> list[RoadmapAliveFeature]:
-        """Features vivantes : statut ∉ {done, archived} ∧ non mergées.
+        """Live features: status ∉ {done, archived} ∧ not merged.
 
-        Pinned en tête, puis dernière activité artifact desc (NULLS LAST).
-        Remplace in_flight (spec 2026-07-04 §5 — la section briefing
-        « Roadmap » remplace « In-flight »).
+        Pinned first, then last artifact activity desc (NULLS LAST). Replaces
+        in_flight (spec 2026-07-04 §5 — the briefing's "Roadmap" section
+        replaces "In-flight").
         """
         async with self._sf() as session:
             rows = (
@@ -156,11 +156,11 @@ class FeatureService:
             return list((await session.execute(stmt)).scalars().all())
 
     async def resolve_feature(self, project_key: str, feature: str) -> Feature | str:
-        """Résout `feature` : nom exact → id (UUID/préfixe ≥8 hex) → ILIKE unique.
+        """Resolve `feature`: exact name → id (UUID/prefix ≥8 hex) → unique ILIKE.
 
-        Retourne la Feature ou un message d'erreur (pattern resolve_entity_id :
-        str = erreur, isinstance-check au call site). Les candidats ambigus
-        sont listés (id court + nom).
+        Returns the Feature or an error message (the resolve_entity_id pattern:
+        str = error, isinstance check at the call site). Ambiguous candidates
+        are listed (short id + name).
         """
         t = self._t
         async with self._sf() as session:
@@ -228,11 +228,11 @@ class FeatureService:
         feature_id: uuid_mod.UUID,
         status: str,
     ) -> Feature | None:
-        """UPDATE status + status_updated_at=now + pinned=true (même contrat
-        que le chemin update_feature_statuses de brain_update_project_focus).
+        """UPDATE status + status_updated_at=now + pinned=true (same contract as
+        brain_update_project_focus's update_feature_statuses path).
 
-        Exception : archiver une feature ne l'épingle PAS — un feature archivée
-        doit disparaître des briefings, pas y rester accrochée indéfiniment.
+        Exception: archiving a feature does NOT pin it — an archived feature
+        must disappear from briefings, not stay hooked to them indefinitely.
         """
         t = self._t
         if status == "archived":

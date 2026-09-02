@@ -77,10 +77,10 @@ class EntityMaintenanceService:
             .values(
                 freshness_status="fresh",
                 last_accessed_at=accessed_at,
-                # Même geste que `brain_refresh_entity`, donc même terme du
-                # vocabulaire fermé de la 043 : deux portes d'entrée sur une
-                # seule transition, qui doivent se déclarer pareil — les voir
-                # divergentes dans la colonne serait pire que muettes.
+                # Same gesture as `brain_refresh_entity`, hence the same term
+                # from 043's closed vocabulary: two entry doors onto a single
+                # transition, which must declare themselves identically — seeing
+                # them diverge in the column would be worse than silence.
                 freshness_source="revive",
             )
             .returning(table.c.id, table.c.last_accessed_at)
