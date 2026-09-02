@@ -19,7 +19,7 @@ an LLM.
 Usage:
     python -m scripts.roadmap_curate [--limit 10]        # propose (dry)
     python -m scripts.roadmap_curate --limit 10 --wet    # propose + apply (all ops)
-    python -m scripts.roadmap_curate --apply-ids "3,4"   # reviewed apply, no LLM
+    python -m scripts.roadmap_curate --apply-ids "3,4" --project-key red-lab
 """
 
 from __future__ import annotations
@@ -1152,12 +1152,18 @@ async def apply_proposals(
     session_factory: Any,
     proposal_ids: list[int],
     allowed_ops: tuple[str, ...] | None = None,
+    project_key: str | None = None,
 ) -> int:
     """CLI facade applying reviewed proposals — one transaction per proposal.
 
     allowed_ops: in the nightly wet, WET_APPLYABLE_OPS; None (--apply-ids,
     human review) = every op. A failed post-condition rolls the proposal back
     (it stays 'proposed') and we continue.
+
+    project_key: forwarded as the service's `project_group`, which adds the EXISTS
+    on `features.project_key` — the SAME guard the MCP tools use, not a copy. The
+    reviewed apply always declares it; the nightly wet does not, because its
+    proposals come from the run that just produced them.
     """
     from brain_v42.services.proposal_service import (  # noqa: PLC0415
         ProposalApplyError,
@@ -1171,8 +1177,22 @@ async def apply_proposals(
     applied = 0
     for proposal_id in dict.fromkeys(proposal_ids):
         try:
-            await service.apply_roadmap_curation(proposal_id, allowed_ops=allowed_ops)
-        except (ProposalNotFoundError, ProposalNotProposedError):
+            await service.apply_roadmap_curation(
+                proposal_id, allowed_ops=allowed_ops, project_group=project_key
+            )
+        except ProposalNotFoundError:
+            # Under a declared project the guard makes a foreign row simply not
+            # match, so this is also how a cross-project id arrives. The CLI
+            # cannot tell "unknown" from "outside the project" here and does not
+            # pretend to — but staying silent let a mistyped id read as an id
+            # that was applied, which is the defect.
+            if project_key is not None:
+                print(
+                    f"~ proposal {proposal_id} inconnue ou hors du projet "
+                    f"{project_key} — rien appliqué"
+                )
+            continue
+        except ProposalNotProposedError:
             continue
         except ProposalOperationNotAllowedError as exc:
             print(
@@ -1253,7 +1273,8 @@ def _positive_int(value: str) -> int:
     return number
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
+    """The CLI surface, built apart so a test can read it without running a night."""
     parser = argparse.ArgumentParser(
         prog="roadmap_curate",
         description="Roadmap curation (NVIDIA API).",
@@ -1268,6 +1289,15 @@ def main() -> int:
         "--apply-ids",
         default=None,
         help='apply des proposals reviewées (ex: "3,4") — incompatible avec --wet',
+    )
+    # No default, deliberately: a default would put the guard back to sleep. The
+    # reviewed apply is driven by hand from a morning review, where a mistyped id
+    # is the expected human error and 25 other projects are one digit away —
+    # ticket e9b2faf4, defect 2.
+    parser.add_argument(
+        "--project-key",
+        default=None,
+        help="projet dont les proposals peuvent être appliquées — requis avec --apply-ids",
     )
     parser.add_argument(
         "--model",
@@ -1291,10 +1321,17 @@ def main() -> int:
             f"le SIGTERM shell (défaut: {NIGHT_BUDGET_S:.0f}s)"
         ),
     )
+    return parser
+
+
+def main() -> int:
+    parser = _build_parser()
     args = parser.parse_args()
 
     if args.wet and args.apply_ids is not None:
         parser.error("--wet et --apply-ids sont incompatibles")
+    if args.apply_ids is not None and args.project_key is None:
+        parser.error("--apply-ids exige --project-key (garde de projet, ticket e9b2faf4)")
 
     load_env_file(_ENV_FILE)
 
@@ -1381,7 +1418,7 @@ async def _run(
                 file=sys.stderr,
             )
             return 1
-        applied = await apply_proposals(sf, ids, allowed_ops=None)
+        applied = await apply_proposals(sf, ids, allowed_ops=None, project_key=args.project_key)
         duration = clock() - t0
         print(f"apply: {applied} appliqués")
         await record_dream_run(sf, "done", dry=False, duration_s=duration, error=None)
