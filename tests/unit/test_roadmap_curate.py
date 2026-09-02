@@ -186,12 +186,33 @@ class TestParseAndValidate:
         drafts = parse_and_validate(_item("rename", _F1, {"name": "x" * 300}), _batch())
         assert len(drafts[0].payload["name"]) == 200
 
-    def test_wet_applyable_ops_includes_all_ops(self):
-        """Aggressive regime of the 2026-07-04 evening (Armand's decision: the
-        roadmap is little consumed, Claude validates at the morning check): wet
-        ALSO applies merge/rename — replaces the "archive/status ONLY" pin of
-        rollout §4."""
-        assert set(WET_APPLYABLE_OPS) == set(VALID_OPS)
+    def test_wet_applyable_ops_excludes_merge_and_rename(self):
+        """Narrowed on 2026-09-02 (operator decision) back to archive/status.
+
+        The 2026-07-04 aggressive regime was taken on the expectation that a wrong
+        curation was cheap and that the morning check would catch it. Measured
+        read-only on production on 2026-09-02, the history says otherwise: of the
+        181 proposals the wet ever applied, 150 (83%) were `merge` or `rename` —
+        exactly the two ops the rollout plan told an operator were out of scope —
+        and the wet has applied nothing since, every apply falling inside a single
+        11-day window (2026-07-04 → 2026-07-14). Against those 181 applies stand
+        592 rejections by human review, including 14 of 14 on brain-v42 on
+        2026-09-02, all title rewrites (decision `892c1491`).
+
+        Narrowing costs nothing today because the nightly is DRY: what it changes
+        is the day of a flip. With the aggressive regime a flip would apply the
+        185 pending proposals; bounded to archive/status it applies 45.
+
+        `merge` and `rename` stay applicable BY REVIEW — see
+        `test_human_review_still_applies_every_op`. This bounds the unattended
+        path only.
+        """
+        assert set(WET_APPLYABLE_OPS) == {"archive", "status"}
+        assert not {"merge", "rename"} & set(WET_APPLYABLE_OPS)
+        assert set(WET_APPLYABLE_OPS) < set(VALID_OPS), (
+            "the wet scope must stay a strict subset of the proposable ops: "
+            "narrowing what is APPLIED unattended never narrows what may be PROPOSED"
+        )
 
     def test_system_prompt_pins_aggressive_grouping(self):
         """The prompt is a consolidator (thematic merges), no longer "conservative",
