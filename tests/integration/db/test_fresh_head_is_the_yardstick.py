@@ -21,8 +21,25 @@ leur valeur exacte et leur ticket — jamais tolérés en bande : une dérive qu
 grandit (049 ajoute un index) casse l'épingle, une dérive qui guérit (l'actif
 remis à niveau) la casse aussi, et l'exception se retire au lieu de survivre.
 
+**Le module pointe l'actif v7 depuis le 2026-09-02**, et les deux moitiés de
+cette phrase se sont vérifiées le même jour : le mint v7 a fait PASSER les trois
+écarts que v5 portait, la boucle a exigé leur retrait un par un, et
+`PINNED_ASSET_DRIFT` est reparti vide. Mesuré : 23 checks sur 30 passent contre
+une base neuve, les sept échecs étant six checks de données et l'inventaire des
+extensions. Zéro écart structurel entre l'actif et la chaîne — pour la première
+fois depuis que ce module existe.
+
+Le jumeau `-pgrestore` est rejoué ici LUI AUSSI, et c'est délibérément un
+demi-test : une base neuve n'est pas une restauration, donc il ne dit rien de
+l'aller-retour `pg_dump`/`pg_restore`. Ce qu'il dit, et que rien d'autre ne
+disait, c'est que les empreintes du jumeau décrivent bien le schéma 049 —
+canonicalisation comprise, les six contraintes DÉRIVÉES de la 049 incluses. Il
+en diverge par exactement un index, épinglé.
+
 Les bases jetables vivent dans le MÊME serveur que `BRAIN_V42_TEST_DB_URL`,
 comme `brain_test` lui-même ; elles sont créées et détruites par le module.
+Elles ne touchent jamais `brain` : `conftest` refuse ce nom avant toute
+connexion, et chaque base porte un nom `brain_fresh_*` unique.
 """
 
 from __future__ import annotations
@@ -46,8 +63,9 @@ from sqlalchemy.pool import NullPool
 pytestmark = pytest.mark.integration
 
 PROJECT_ROOT = Path(__file__).parents[3]
-V5_SQL = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v5.sql"
-V5_JSON = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v5.json"
+V7_SQL = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v7.sql"
+V7_JSON = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v7.json"
+V7_PGRESTORE = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v7-pgrestore.sql"
 
 #: Les checks du contrat qui attestent des DONNÉES transportées par une
 #: restauration. Une base neuve est vide par construction : ils ne peuvent pas
@@ -55,52 +73,42 @@ V5_JSON = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v5.json"
 #: check de données ajouté demain est exempté pour la même raison mesurable.
 DATA_CHECK_KINDS = frozenset({"row_count_sum_min"})
 
-#: Les écarts CONNUS entre l'actif v5 — frappé le 2026-08-22, AVANT les
-#: migrations 047 (contrainte terminale réécrite) et 048 (colonne
-#: `attribution_mode` + index partiel sur `brain_session_artifacts`) — et la
-#: chaîne alembic à head. Chaque valeur `observed` est épinglée EXACTEMENT,
-#: mesurée le 2026-08-29, et portée par `23be2271` (le mécanisme) et le lot
-#: DR v5 à venir (la remise à niveau). Retirer une entrée exige que l'actif
-#: ait été re-frappé ; la laisser bouger d'un cran fait rougir ce test —
-#: c'est sa raison d'être.
-PINNED_ASSET_DRIFT: dict[str, dict[str, Any]] = {
-    # 23be2271 : v5 fige 130 index ; la 048 en a ajouté un 131e.
-    "catalog_counts": {
-        "indexes": 131,
-        "foreign_keys": 26,
-        "invalid_indexes": 0,
-        "unvalidated_constraints": 0,
-    },
-    "brain_runtime_032_036_037": {
-        "artifact_column_mismatches": 2,
-        "artifact_constraint_mismatches": 1,
-        "artifact_index_mismatches": 1,
-        "artifact_project_mismatches": 0,
-        "ended_snapshot_mismatches": 0,
-        "focus_revision_violations": 0,
-        "runtime_trigger_mismatches": 0,
-        "session_column_mismatches": 0,
-        "session_constraint_mismatches": 3,
-        "view_column_mismatches": 0,
-        "view_definition_mismatches": 0,
-        "view_option_mismatches": 0,
-    },
-    "table_shape": {
-        # 049 (re-mesuré le 2026-08-29) : +1 colonne-md5 (dream_runs gagne
-        # closed_inactive_count et thinking_tokens — un seul md5 par table),
-        # +6 contraintes (les six CHECK ck_*_freshness_source re-signés avec
-        # manual_update/plan_reindex). Le re-mint de l'actif (v7, lot DR)
-        # accompagne le rollout de la 049 et fera retomber ces épingles.
-        "table_column_mismatches": 2,
-        "table_constraint_mismatches": 8,
-        "table_index_mismatches": 1,
-    },
+#: Les écarts CONNUS entre l'actif DR courant et la chaîne alembic à head.
+#: **VIDE depuis le 2026-09-02**, et c'est un résultat mesuré, pas un
+#: relâchement : le mint v7 a remis l'actif au niveau de la chaîne. L'actif v5
+#: en portait trois, tous pré-mesurés le 2026-08-29 en prévision de ce lot —
+#: `catalog_counts` (v5 figeait 130 index, la 048 en a ajouté un 131e),
+#: `brain_runtime_032_036_037` (047 + 048 sur `brain_session_artifacts`) et
+#: `table_shape` {2 colonnes, 8 contraintes, 1 index}, le « yardstick {2,8,1} »
+#: du focus. Les trois sont retombés d'un coup, comme le commentaire de la 049
+#: l'annonçait, et la boucle plus bas a EXIGÉ leur retrait un par un au lieu de
+#: les absorber.
+#:
+#: Le dictionnaire reste, vide, parce que c'est le mécanisme et non la donnée
+#: qui a de la valeur : la prochaine migration livrée avant son re-mint le
+#: remplira. Vide, il ne rend rien vacuant — c'est `unexplained` qui porte
+#: alors toute la charge, et il exige que TOUT échec non-données soit connu.
+PINNED_ASSET_DRIFT: dict[str, dict[str, Any]] = {}
+
+#: Le seul écart du jumeau `-pgrestore` contre une base NEUVE, et il est
+#: structurel : `idx_dream_promotions_source_materialized` est épinglé par le
+#: jumeau sous sa forme RE-SÉRIALISÉE par `pg_restore`, que la chaîne alembic
+#: ne produit pas — mesuré le 2026-09-02, et c'est bien 1 index et 0 le reste.
+#: L'épingler ici plutôt que l'exempter en bande est ce qui rend la mesure
+#: utile : si un deuxième index se mettait à diverger, ce test rougirait.
+PINNED_TWIN_DRIFT: dict[str, Any] = {
+    "table_index_mismatches": 1,
+    "table_column_mismatches": 0,
+    "table_constraint_mismatches": 0,
 }
 
-#: 2ed0d4e0 : l'actif épingle la version que la prod DÉCLARE (0.8.2) ; toute
-#: base neuve déclare le build de son image — 0.8.4 (runtime de prod) ou
+#: 2ed0d4e0 : l'actif de BASE épingle l'inventaire que la prod DÉCLARE
+#: (`plpgsql 1.0, vector 0.8.2`) ; toute base neuve déclare le build de son
+#: image — 0.8.4 (mesuré ici le 2026-09-02, `default_version` du cluster) ou
 #: 0.8.5 (cible compose épinglée). L'observé dépend donc du serveur qui porte
 #: la base jetable, pas de la chaîne alembic : bande fermée, pas valeur unique.
+#: Le JUMEAU, lui, n'exige que les NOMS (règle names-only du mint v6) et passe
+#: donc ce check — c'est pour ça qu'il n'apparaît pas dans `PINNED_TWIN_DRIFT`.
 RESTORE_BUILD_VECTOR_VERSIONS = frozenset({"0.8.4", "0.8.5"})
 
 
@@ -301,54 +309,67 @@ async def test_a_create_all_bench_accepts_what_production_accepts(
         await engine.dispose()
 
 
-@pytest.mark.asyncio
-async def test_the_recovery_asset_passes_against_a_fresh_head_database(
-    fresh_head_db_url: str,
-) -> None:
-    """Rejoue `brain-v42-v5.sql` contre l'étalon : actif↔schéma réel, enfin.
+async def _replay(url: str, asset: Path) -> dict[str, dict[str, Any]]:
+    """Rejouer un actif d'attestation en LECTURE SEULE, rendre ses seuls échecs.
 
-    Chaque check du reçu doit passer, sauf :
-    * les checks de DONNÉES (`DATA_CHECK_KINDS`) — une base neuve est vide ;
-    * les écarts ÉPINGLÉS de `PINNED_ASSET_DRIFT`, à leur valeur exacte.
-
-    Une migration qui ajoute un index sans remise à niveau de l'actif casse
-    l'épingle `catalog_counts` (observé 132 ≠ 131) ; une remise à niveau de
-    l'actif la casse aussi (le check passe) et l'épingle se retire. Le trou
-    du ticket — « l'écart n'apparaît qu'au rejeu live, un geste manuel » —
-    est fermé par ce rejeu automatique.
+    `SET TRANSACTION READ ONLY` puis rollback : un contrat qui écrirait ne
+    serait plus un contrat, et cette base jetable ne doit sa propreté qu'à la
+    chaîne alembic — pas au fait que personne n'ait regardé.
     """
-    sql = V5_SQL.read_text(encoding="utf-8")
-    engine = create_async_engine(fresh_head_db_url, poolclass=NullPool)
+    engine = create_async_engine(url, poolclass=NullPool)
     try:
         async with engine.connect() as connection:
             transaction = await connection.begin()
             try:
                 await connection.execute(sa.text("SET TRANSACTION READ ONLY"))
-                raw = await connection.scalar(sa.text(sql))
+                raw = await connection.scalar(sa.text(asset.read_text(encoding="utf-8")))
             finally:
                 await transaction.rollback()
     finally:
         await engine.dispose()
 
     receipt = json.loads(str(raw))
-    failures: dict[str, dict[str, Any]] = {}
-    for check in receipt["checks"]:
-        if check["status"] != "pass":
-            failures[check["id"]] = check
+    return {check["id"]: check for check in receipt["checks"] if check["status"] != "pass"}
+
+
+@pytest.mark.asyncio
+async def test_the_recovery_asset_passes_against_a_fresh_head_database(
+    fresh_head_db_url: str,
+) -> None:
+    """Rejoue `brain-v42-v7.sql` contre l'étalon : actif↔schéma réel, enfin.
+
+    Chaque check du reçu doit passer, sauf :
+    * les checks de DONNÉES (`DATA_CHECK_KINDS`) — une base neuve est vide ;
+    * les écarts ÉPINGLÉS de `PINNED_ASSET_DRIFT`, à leur valeur exacte ;
+    * `extension_versions`, dont l'observé est le build du serveur qui porte la
+      base jetable, pas une propriété de la chaîne alembic.
+
+    Mesuré le 2026-09-02 sur v7 : **23 checks passent sur 30**, et les sept
+    échecs sont SIX checks de données et l'extension. Zéro écart structurel —
+    ce test ne le déclare pas, il l'exige.
+
+    Une migration qui ajoute un index sans remise à niveau de l'actif fait
+    apparaître un échec inconnu ; une remise à niveau de l'actif fait passer un
+    check épinglé, et l'épingle DOIT alors se retirer. Les deux sens rougissent,
+    et c'est ce qui a fait retomber les trois épingles de v5 dans ce lot. Le trou
+    du ticket — « l'écart n'apparaît qu'au rejeu live, un geste manuel » — est
+    fermé par ce rejeu automatique.
+    """
+    failures = await _replay(fresh_head_db_url, V7_SQL)
 
     # Le reçu ne porte pas `kind` ; la nature de chaque check vit dans le
     # contrat JSON, la même source que le moteur DSL de red-backup.
-    contract = json.loads(V5_JSON.read_text(encoding="utf-8"))
+    contract = json.loads(V7_JSON.read_text(encoding="utf-8"))
     kinds = {check["id"]: check.get("kind") for check in contract["checks"]}
     unexplained = {
         check_id: failure
         for check_id, failure in failures.items()
         if kinds.get(check_id) not in DATA_CHECK_KINDS
         and check_id not in PINNED_ASSET_DRIFT
-        and check_id != "extension_vector"
+        and check_id != "extension_versions"
     }
     assert not unexplained, (
-        "the v5 asset and the alembic chain disagree beyond the pinned drift:\n"
+        "the v7 asset and the alembic chain disagree beyond the pinned drift:\n"
         + json.dumps(unexplained, indent=2, default=str)
     )
 
@@ -368,9 +389,71 @@ async def test_the_recovery_asset_passes_against_a_fresh_head_database(
             f"observed: {json.dumps(failure['observed'], sort_keys=True)}"
         )
 
-    vector = failures.get("extension_vector")
-    assert vector is not None, (
-        "extension_vector now passes: the asset was re-minted — remove its pin"
+    extensions = failures.get("extension_versions")
+    assert extensions is not None, (
+        "extension_versions now passes: the asset was re-minted — remove its pin"
     )
-    assert vector["expected"] == "0.8.2"
-    assert vector["observed"] in RESTORE_BUILD_VECTOR_VERSIONS
+    assert extensions["expected"] == "plpgsql 1.0, vector 0.8.2"
+    assert extensions["observed"] in {
+        f"plpgsql 1.0, vector {version}" for version in RESTORE_BUILD_VECTOR_VERSIONS
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_pgrestore_twin_diverges_from_a_fresh_head_by_exactly_one_index(
+    fresh_head_db_url: str,
+) -> None:
+    """Le jumeau `-pgrestore` mesuré là où on PEUT le mesurer sans restauration.
+
+    Le jumeau existe pour être rejoué contre une cible RESTAURÉE, et le lot v7
+    ne l'y a pas rejoué — aucun banc n'a été monté, c'est écrit dans le runbook
+    et ce test ne le remplace pas. Mais une base neuve bâtie par la chaîne
+    alembic n'est pas rien : elle porte le schéma 049 pour de vrai, donc elle
+    peut dire si les empreintes du jumeau décrivent CE schéma, canonicalisation
+    comprise.
+
+    Elle le dit, et c'est la moitié de preuve qui manquait au mint : les 118
+    contraintes et les 32 empreintes de colonnes du jumeau — les six
+    `ck_*_freshness_source` de la 049 incluses, dont les valeurs ont été
+    DÉRIVÉES et non lues sur un restore — tombent juste, `0` et `0`. Ce qui ne
+    tombe pas juste est UN index et un seul,
+    `idx_dream_promotions_source_materialized`, que le jumeau épingle sous la
+    forme que `pg_restore` re-sérialise et que la chaîne alembic ne produit
+    jamais. C'est sa raison d'être, pas un défaut : ce test l'épingle à sa
+    valeur exacte pour qu'un SECOND index divergent ne passe pas pour lui.
+
+    Ce que ce test ne prouve toujours pas : l'aller-retour `pg_dump`/`pg_restore`
+    lui-même. Il faut un banc pour ça.
+    """
+    failures = await _replay(fresh_head_db_url, V7_PGRESTORE)
+
+    contract = json.loads(V7_JSON.read_text(encoding="utf-8"))
+    kinds = {check["id"]: check.get("kind") for check in contract["checks"]}
+    unexplained = {
+        check_id: failure
+        for check_id, failure in failures.items()
+        if kinds.get(check_id) not in DATA_CHECK_KINDS and check_id != "table_shape"
+    }
+    assert not unexplained, (
+        "the v7 -pgrestore twin disagrees with the alembic chain somewhere other "
+        "than its one re-serialized index:\n" + json.dumps(unexplained, indent=2, default=str)
+    )
+
+    # Le jumeau n'exige que les NOMS des extensions : contrairement à l'actif de
+    # base, il DOIT passer ce check sur une base neuve. S'il échoue, la règle
+    # names-only du mint v6 a été perdue par le mint v7.
+    assert "extension_versions" not in failures, (
+        "the twin now judges extension VERSIONS — the names-only rule was lost"
+    )
+
+    shape = failures.get("table_shape")
+    assert shape is not None, (
+        "the twin now matches a fresh head exactly: either pg_restore stopped "
+        "re-serializing idx_dream_promotions_source_materialized, or the twin was "
+        "minted from a non-restored source — re-measure before removing this pin"
+    )
+    assert shape["observed"] == PINNED_TWIN_DRIFT, (
+        "the twin's divergence from a fresh head MOVED since 2026-09-02:\n"
+        f"pinned:   {json.dumps(PINNED_TWIN_DRIFT, sort_keys=True)}\n"
+        f"observed: {json.dumps(shape['observed'], sort_keys=True)}"
+    )
