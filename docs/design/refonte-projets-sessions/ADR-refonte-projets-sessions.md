@@ -1497,7 +1497,7 @@ the strictest of the three proposals, required by two judges:
    - **README** and **MCP_TOOLS**, which expect the string `migration {head}`
      (`test_documentation_contract.py::test_documented_migration_head_matches_repository`);
    - **ARCHITECTURE**, which does **not** expect that string but `migrations 001–{head}
-     defined` — **em dash** included (same test, l.1815). Following the old recipe to the
+     defined` — **em dash** included (same test, l.1839). Following the old recipe to the
      letter on ARCHITECTURE produced a red test;
    - **CLAUDE.md**, which is **outside the repository**: `git check-ignore -v CLAUDE.md`
      returns `.gitignore:74`, `git ls-files` doesn't contain it, and the test itself
@@ -1943,7 +1943,7 @@ a closed list of three indexes checked `:665` and `:687`) +
 `tests/integration/db/test_recovery_contract_v4_execution.py:106` (**both** assets
 run against a real database) (fingerprints, `table_set` derived from `METADATA`,
 head duplicates); `docs/OPERATIONS.md:118`;
-`tests/unit/test_documentation_contract.py:25-32,1815-1819`;
+`tests/unit/test_documentation_contract.py:25-32,1820-1825`;
 `tests/integration/conftest.py:129-155`; `alembic/versions/039_…:17,337-339` (`-x
 allow_project_context_trigger_downgrade=yes`); the dream unit's systemd drop-in
 `killswitches.conf` (DRY sweep armed and pool at ten, read on 2026-08-18);
