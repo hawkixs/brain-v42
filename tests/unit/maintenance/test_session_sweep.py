@@ -1,11 +1,11 @@
-"""Contrat du CLI de balayage : DRY par défaut, règle 4 h FERMÉE, rapport lisible.
+"""Sweep CLI contract: DRY by default, the 4 h rule CLOSED, a readable report.
 
-Deux frontières de sûreté, pas une, et elles se composent : `--wet` décide si le
-balayage ÉCRIT, `BRAIN_SESSION_INACTIVE_SWEEP_ENABLED` décide si la règle des 4 h
-EXISTE. La seconde est neuve, et son défaut fermé n'est pas de la prudence de
-forme : cette phase tourne WET toutes les nuits, en `uv run` depuis le dépôt.
-Merger la règle sans drapeau l'armerait dès la nuit suivante, sans redémarrage
-et sans fenêtre d'observation.
+Two safety boundaries, not one, and they compose: `--wet` decides whether the
+sweep WRITES, `BRAIN_SESSION_INACTIVE_SWEEP_ENABLED` decides whether the 4 h rule
+EXISTS. The second is new, and its closed default is not formal caution: this
+phase runs WET every night, under `uv run` from the repository. Merging the rule
+without a flag would arm it from the following night, with no restart and no
+observation window.
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ def test_dry_report_says_would_and_never_says_did() -> None:
     assert "auraient reçu" in report
     assert "ont reçu" not in report
     assert "projet-0" in report and "projet-1" in report
-    assert "2026-07-31" in report  # cutoff rendu, pas seulement le compte
+    assert "2026-07-31" in report  # the cutoff is rendered, not just the count
 
 
 def test_wet_report_states_what_was_written() -> None:
@@ -117,7 +117,7 @@ def test_empty_sweep_is_reported_as_a_normal_night() -> None:
 
 
 class TestTheReportNeverMergesTheTwoOutcomes:
-    """`abandoned` et `closed_inactive` sont deux faits, jamais un total."""
+    """`abandoned` and `closed_inactive` are two facts, never one total."""
 
     def test_each_outcome_is_counted_and_named_separately(self) -> None:
         from brain_v42.maintenance.session_sweep import render_report
@@ -126,9 +126,9 @@ class TestTheReportNeverMergesTheTwoOutcomes:
 
         assert "1 abandoned (7 j)" in report
         assert "2 closed_inactive (4 h)" in report
-        # TÉMOIN : le total existe, mais jamais SEUL — « 3 sessions » sans la
-        # ventilation se lirait « 3 abandons », et l'écart entre les deux règles
-        # est précisément ce qu'on surveille.
+        # WITNESS: the total exists, but never ALONE — "3 sessions" without the
+        # breakdown would read as "3 abandonments", and the gap between the two
+        # rules is precisely what is being watched.
         assert "3 sessions ont reçu" in report
 
     def test_every_line_names_the_outcome_it_received(self) -> None:
@@ -139,7 +139,7 @@ class TestTheReportNeverMergesTheTwoOutcomes:
         assert [line.split()[0] for line in lines] == ["abandoned", "closed_inactive"]
 
     def test_a_never_observed_session_reads_never_not_a_date(self) -> None:
-        """`NULL` doit se lire « jamais observée », jamais comme un blanc."""
+        """`NULL` must read as "never observed", never as a blank."""
         from brain_v42.maintenance.session_sweep import render_report
 
         report = render_report(_result(dry_run=False, count=1))
@@ -147,10 +147,10 @@ class TestTheReportNeverMergesTheTwoOutcomes:
         assert "observed=never" in report
 
     def test_a_closed_rule_says_so_instead_of_reading_as_zero_findings(self) -> None:
-        """Pas de plafond silencieux : « off » ≠ « aucune traçante inactive ».
+        """No silent ceiling: "off" ≠ "no inactive tracer".
 
-        Sans cette ligne, une nuit à zéro fermeture se lirait « rien à fermer »
-        alors que la règle n'a même pas été évaluée.
+        Without this line, a night with zero closures would read as "nothing to
+        close" when the rule was not even evaluated.
         """
         from brain_v42.maintenance.session_sweep import render_report
 
@@ -169,19 +169,18 @@ async def test_record_dream_run_never_raises_when_the_database_is_down() -> None
 
     await record_dream_run(
         broken_factory, "done", dry=True, duration_s=1.0, error=None
-    )  # ne doit pas lever
+    )  # must not raise
 
 
 async def _capture_sweep_call(
     monkeypatch: pytest.MonkeyPatch, args: object, *, rule_armed: bool = False
 ) -> dict[str, object]:
-    """Exécuter `_run` en espionnant l'appel RÉEL à `sweep_open_sessions`.
+    """Run `_run` while spying on the REAL call to `sweep_open_sessions`.
 
-    Retourne les kwargs effectivement reçus par la méthode (``older_than``,
-    ``reason``, ``dry_run``, ``close_inactive_after``) plus le code retour —
-    jamais une reconstruction indépendante de la f-string de l'implémentation.
-    Partagé par tous les tests de frontière pour qu'ils espionnent identiquement
-    le même chemin réel.
+    Returns the kwargs the method actually received (``older_than``, ``reason``,
+    ``dry_run``, ``close_inactive_after``) plus the return code — never an
+    independent reconstruction of the implementation's f-string. Shared by every
+    boundary test so they all spy on the same real path identically.
     """
     from brain_v42.maintenance.session_sweep import _run
     from brain_v42.repositories.pg_brain_session import PgBrainSessionRepo
@@ -228,16 +227,16 @@ async def _capture_sweep_call(
 async def test_default_threshold_reason_matches_the_module_constant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Au seuil par défaut, le motif RÉELLEMENT transmis doit être la constante.
+    """At the default threshold, the reason ACTUALLY passed must be the constant.
 
-    Remplace l'ancien test décoratif qui comparait `AUTO_STALE_ABANDONMENT_REASON`
-    à sa propre reconstruction (`f"auto_stale_{AUTO_STALE_AFTER.days}d"`) sans
-    jamais toucher `session_sweep.py` — un typo dans le template de `_run`
-    (ex. `f"auto_stale_{n}_days"`) l'aurait laissé passer. Celui-ci espionne
-    l'appel réel à `sweep_open_sessions` : si `AUTO_STALE_AFTER` change un jour sans
-    que `AUTO_STALE_ABANDONMENT_REASON` suive, le CLI émettrait `auto_stale_<N>d`
-    alors que ce test attend encore la constante — et échouerait ici, à
-    l'endroit qui compte.
+    Replaces the old decorative test that compared `AUTO_STALE_ABANDONMENT_REASON`
+    with its own reconstruction (`f"auto_stale_{AUTO_STALE_AFTER.days}d"`) without
+    ever touching `session_sweep.py` — a typo in `_run`'s template (say
+    `f"auto_stale_{n}_days"`) would have slipped through. This one spies on the
+    real call to `sweep_open_sessions`: if `AUTO_STALE_AFTER` ever changes without
+    `AUTO_STALE_ABANDONMENT_REASON` following, the CLI would emit
+    `auto_stale_<N>d` while this test still expects the constant — and it would
+    fail here, at the place that matters.
     """
     from brain_v42.maintenance.session_sweep import build_parser
 
@@ -253,11 +252,12 @@ async def test_default_threshold_reason_matches_the_module_constant(
 async def test_non_default_threshold_reason_reaches_the_repository(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Le motif écrit doit refléter le seuil RÉELLEMENT utilisé.
+    """The reason written must reflect the threshold ACTUALLY used.
 
-    Sans ça, `--older-than-days 30` écrirait `abandonment_reason='auto_stale_7d'`
-    — un mensonge d'audit permanent, la trouvaille reportée de la Task 1. On
-    espionne l'appel réel à `sweep_open_sessions`, pas notre propre f-string.
+    Without this, `--older-than-days 30` would write
+    `abandonment_reason='auto_stale_7d'` — a permanent audit lie, the deferred
+    finding of Task 1. We spy on the real call to `sweep_open_sessions`, not on
+    our own f-string.
     """
     from brain_v42.maintenance.session_sweep import build_parser
 
@@ -274,15 +274,15 @@ async def test_non_default_threshold_reason_reaches_the_repository(
 async def test_default_invocation_reaches_the_repository_in_dry_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`args.wet is False` ne prouve rien sur ce que reçoit le repository.
+    """`args.wet is False` proves nothing about what the repository receives.
 
-    Entre le drapeau et l'appel il y a une traduction — `dry = not args.wet` —
-    et c'est elle, pas le défaut du parser, qui est l'unique frontière de sûreté
-    de la phase : l'inverser fait abandonner pour de vrai des sessions sur une
-    invocation sans `--wet`, et l'abandon est irréversible. Mesuré le 2026-08-07 :
-    cette inversion survivait aux 6997 tests unitaires ET aux 256 d'intégration,
-    parce que `_capture_sweep_call` capturait déjà `dry_run` sans que
-    personne ne le relise. On espionne donc le kwarg réellement transmis.
+    Between the flag and the call there is a translation — `dry = not args.wet` —
+    and it, not the parser default, is the phase's only safety boundary:
+    inverting it really does abandon sessions on an invocation without `--wet`,
+    and abandonment is irreversible. Measured 2026-08-07: that inversion survived
+    the 6997 unit tests AND the 256 integration ones, because
+    `_capture_sweep_call` already captured `dry_run` without anyone re-reading
+    it. So we spy on the kwarg actually passed.
     """
     from brain_v42.maintenance.session_sweep import build_parser
 
@@ -297,13 +297,12 @@ async def test_default_invocation_reaches_the_repository_in_dry_mode(
 async def test_wet_flag_reaches_the_repository_as_a_real_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Contrôle positif du test voisin.
+    """Positive control for the neighbouring test.
 
-    Sans lui, un `dry = True` codé en dur satisferait « DRY par défaut » tout en
-    rendant `--wet` inopérant — le balayage ne ferait jamais rien et le soak
-    paraîtrait propre indéfiniment. Les deux assertions se tuent par des
-    mutations distinctes : `dry = False` tue celle du défaut, `dry = True` tue
-    celle-ci.
+    Without it, a hardcoded `dry = True` would satisfy "DRY by default" while
+    making `--wet` inoperative — the sweep would never do anything and the soak
+    would look clean indefinitely. The two assertions are killed by distinct
+    mutations: `dry = False` kills the default one, `dry = True` kills this one.
     """
     from brain_v42.maintenance.session_sweep import build_parser
 
@@ -315,7 +314,7 @@ async def test_wet_flag_reaches_the_repository_as_a_real_run(
 
 
 class TestTheInactivityRuleIsDeliveredClosed:
-    """La seconde frontière de sûreté, et elle n'est pas celle de `--wet`."""
+    """The second safety boundary, and it is not `--wet`'s."""
 
     def test_the_flag_default_is_false(self) -> None:
         assert Settings.model_fields["brain_session_inactive_sweep_enabled"].default is False
@@ -324,11 +323,11 @@ class TestTheInactivityRuleIsDeliveredClosed:
     async def test_a_closed_flag_sends_no_threshold_at_all(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """`None`, jamais `timedelta(0)` : la règle n'EXISTE pas, elle n'est pas nulle.
+        """`None`, never `timedelta(0)`: the rule does not EXIST, it is not zero.
 
-        Un zéro rendrait toute traçante éligible à l'instant même. Les deux
-        valeurs se ressemblent à la lecture et n'ont rien en commun à
-        l'exécution — d'où l'assertion sur l'identité, pas sur la véracité.
+        A zero would make every tracer eligible that very instant. The two values
+        look alike when read and have nothing in common when executed — hence the
+        assertion on identity, not on truthiness.
         """
         from brain_v42.maintenance.session_sweep import build_parser
 
@@ -342,11 +341,11 @@ class TestTheInactivityRuleIsDeliveredClosed:
     async def test_an_armed_flag_sends_the_single_constant(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Contrôle positif : sans lui, un `None` codé en dur passerait le test voisin.
+        """Positive control: without it, a hardcoded `None` would pass its neighbour.
 
-        Le seuil transmis est LU de `AGENT_INACTIVE_AFTER`, jamais recopié : deux
-        exemplaires d'un même seuil, c'est le défaut de classe du learning
-        8dc7e042, et celui-ci est déjà écrit dans le modèle et dans l'ADR.
+        The threshold passed is READ from `AGENT_INACTIVE_AFTER`, never copied:
+        two copies of one threshold is the class of defect learning 8dc7e042
+        records, and this one is already written in the model and in the ADR.
         """
         from brain_v42.maintenance.session_sweep import build_parser
 
@@ -361,11 +360,11 @@ class TestTheInactivityRuleIsDeliveredClosed:
     async def test_arming_the_rule_does_not_arm_writing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Les deux frontières se composent, elles ne se remplacent pas.
+        """The two boundaries compose, they do not replace each other.
 
-        Armer la règle sans `--wet` doit rester un DRY : sinon le geste
-        d'observation deviendrait lui-même le geste d'écriture, et la fenêtre
-        d'observation n'existerait pas.
+        Arming the rule without `--wet` must stay a DRY: otherwise the act of
+        observing would itself become the act of writing, and the observation
+        window would not exist.
         """
         from brain_v42.maintenance.session_sweep import build_parser
 

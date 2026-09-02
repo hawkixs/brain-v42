@@ -50,15 +50,15 @@ async def test_readiness_accepts_a_compatible_future_schema() -> None:
 
 
 def test_build_production_runtime_wires_the_project_guard() -> None:
-    """La SECONDE racine de composition, et c'est le rail vivant du dream.
+    """The SECOND composition root, and it is the dream's live rail.
 
-    ``BRAIN_DREAM_AGENT_PROVIDER=codex`` par défaut : les écritures de connaissance
-    de la nuit passent par cette passerelle, pas par le serveur MCP. Un test qui
-    n'épinglerait que ``build_services`` laisserait ce chemin-là sans témoin —
-    et aucun test ne référençait ``build_production_runtime``.
+    ``BRAIN_DREAM_AGENT_PROVIDER=codex`` by default: the night's knowledge writes
+    go through this gateway, not through the MCP server. A test pinning only
+    ``build_services`` would leave that path without a witness — and no test
+    referenced ``build_production_runtime``.
 
-    Comme son jumeau, il épingle un câblage plutôt qu'un comportement : la garde
-    est fail-open quand le repo manque, donc son absence ne casse rien d'autre.
+    Like its twin, it pins a wiring rather than a behaviour: the guard is
+    fail-open when the repo is missing, so its absence breaks nothing else.
     """
     from unittest.mock import patch
 
@@ -77,10 +77,10 @@ def test_build_production_runtime_wires_the_project_guard() -> None:
     ):
         runtime = build_production_runtime(settings)
 
-    # Le service de décision n'est pas exposé directement par GatewayServices : il
-    # n'est atteignable qu'à travers ProposalService, qui est justement le chemin
-    # d'application des propositions du dream. C'est donc bien celui-là qu'il faut
-    # atteindre, pas une référence de commodité.
+    # The decision service is not exposed directly by GatewayServices: it is only
+    # reachable through ProposalService, which is precisely the path that applies
+    # the dream's proposals. So that is the one to reach, not a convenience
+    # reference.
     for name, service in (
         ("learning", runtime.services.learning),
         ("decision", runtime.services.proposal._decision_service),
@@ -91,8 +91,8 @@ def test_build_production_runtime_wires_the_project_guard() -> None:
             f"rail d'écriture de la nuit dream, et l'échec sera SILENCIEUX"
         )
 
-    # Les tickets, eux, ne PEUVENT pas être mal câblés : TicketService exige son
-    # repo en argument positionnel et refuse en ligne, sans passer par
-    # require_known_project. Cette asymétrie est la raison d'être du test — les
-    # cinq services de connaissance acceptent None et se taisent, celui-ci non.
+    # Tickets, on the other hand, CANNOT be miswired: TicketService requires its
+    # repo as a positional argument and refuses inline, without going through
+    # require_known_project. That asymmetry is the test's whole point — the five
+    # knowledge services accept None and stay silent, this one does not.
     assert runtime.services.ticket._service._ctx_repo is not None
