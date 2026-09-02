@@ -77,6 +77,75 @@ class TestTheSummaryLineIsBuiltHonestly:
         assert format_missing_db_url_summary(0) is None
 
 
+class TestTheBannerFiresOnAbsenceOfMEASUREMENT:
+    """What decides the banner is the run's outcome, not the environment."""
+
+    def test_a_whole_suite_of_skips_and_nothing_else_is_unmeasured(self) -> None:
+        from tests.integration.conftest import nothing_was_measured
+
+        assert nothing_was_measured({"skipped": [object()] * 423})
+
+    def test_a_single_passing_test_means_the_suite_ran(self) -> None:
+        """One real measurement is enough to make the run readable as itself."""
+        from tests.integration.conftest import nothing_was_measured
+
+        assert not nothing_was_measured({"skipped": [object()] * 422, "passed": [object()]})
+
+    def test_failures_are_measurement_too(self) -> None:
+        from tests.integration.conftest import nothing_was_measured
+
+        assert not nothing_was_measured({"skipped": [object()], "failed": [object()]})
+
+    def test_errors_suppress_the_banner_because_that_run_is_already_loud(self) -> None:
+        """Measured 2026-09-02: an unreachable host gives `422 errors` in 63 s and a
+        NON-ZERO exit. Nobody reads that as a pass, so the banner would be noise on
+        an already-red screen. The line is for the run that looks GREEN."""
+        from tests.integration.conftest import nothing_was_measured
+
+        assert not nothing_was_measured({"skipped": [object()], "error": [object()] * 422})
+
+    def test_a_run_with_no_skips_at_all_is_not_the_case_this_guards(self) -> None:
+        from tests.integration.conftest import nothing_was_measured
+
+        assert not nothing_was_measured({"passed": [object()] * 10})
+        assert not nothing_was_measured({})
+
+
+class TestTheRejectedValueIsDistinguishedFromTheMissingOne:
+    """ "Set it" and "the value you set was refused" are different next gestures."""
+
+    def test_an_unset_variable_is_reported_as_unset(self) -> None:
+        from tests.integration.conftest import format_missing_db_url_summary
+
+        line = format_missing_db_url_summary(423)
+
+        assert "is not set" in line
+
+    def test_a_rejected_value_carries_the_reason_and_not_the_url(self) -> None:
+        """The reason is the resolver's own sentence; the DSN carries a password."""
+        from tests.integration.conftest import format_missing_db_url_summary
+
+        line = format_missing_db_url_summary(
+            423, "Resolved URL targets the prod 'brain' database — skipping"
+        )
+
+        assert "is not set" not in line
+        assert "refused" in line
+        assert "targets the prod" in line
+        assert "postgresql" not in line
+        assert "@" not in line
+
+    def test_a_rejected_value_still_never_suggests_the_production_database(self) -> None:
+        from tests.integration.conftest import format_missing_db_url_summary
+
+        line = format_missing_db_url_summary(1, "Unsafe integration DB URL")
+
+        assert "brain_test" in line
+        assert not any(
+            token == "brain" for token in line.replace("=", " ").replace("/", " ").split()
+        )
+
+
 class TestTheLineReachesARealTerminal:
     """The anti-tautology proof: a formatter nobody wires is a formatter that never fires."""
 
@@ -98,3 +167,36 @@ class TestTheLineReachesARealTerminal:
 
         assert "BRAIN_V42_TEST_DB_URL" in completed.stdout, completed.stdout[-2000:]
         assert "brain_test" in completed.stdout, completed.stdout[-2000:]
+
+    def test_a_real_run_whose_variable_was_REJECTED_says_so_too(self) -> None:
+        """The defect the first version of this guard left open, reproduced.
+
+        The banner used to return early on `os.environ.get(...)` being non-empty
+        — the presence of a KEYSTROKE, never the presence of a MEASUREMENT. But
+        `_resolve_integration_db_url` rejects a URL pointing at the prod `brain`
+        database, and `_get_integration_db_url_or_skip` turns that into
+        `pytest.skip` — the very bucket the banner exists to explain. Measured on
+        2026-09-02 at HEAD 610c24d: both runs print `423 skipped` and exit 0, one
+        warns and the other is silent, and the silent one is the run of the
+        person who tried to configure the suite and got it wrong.
+
+        Setting the variable is exactly when a reader is most convinced the suite
+        ran.
+        """
+        completed = subprocess.run(
+            [sys.executable, "-m", "pytest", "tests/integration", "-q", "-p", "no:randomly"],
+            cwd=REPO_ROOT,
+            env={
+                **os.environ,
+                "BRAIN_V42_TEST_DB_URL": "postgresql+asyncpg://brain:x@localhost:5433/brain",
+            },
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+
+        assert "not measured" in completed.stdout, completed.stdout[-2000:]
+        assert "brain_test" in completed.stdout, completed.stdout[-2000:]
+        assert "postgresql" not in completed.stdout.split("short test summary")[-1], (
+            "the summary must never echo the DSN — it carries a password"
+        )
