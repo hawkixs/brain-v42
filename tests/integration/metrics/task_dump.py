@@ -1,55 +1,52 @@
-"""Nommer QUI attend, quand le banc metrics pend.
+"""Name WHO is waiting, when the metrics bench hangs.
 
-Ce module n'existe que parce que le seul filet armé sur ce dépôt ne peut pas
-répondre à la question. Deux mesures, pas un raisonnement :
+This module only exists because the one net armed in this repository cannot answer
+the question. Two measurements, not an argument:
 
-1. **Le filet est injoignable — mais l'arithmétique qui le disait était FAUSSE.**
-   ``pyproject.toml`` arme ``faulthandler_timeout = 120`` / ``exit_on_timeout``,
-   et le plugin l'arme sur le PROTOCOLE d'un item (setup + call + teardown), pas
-   sur son corps. La première rédaction annonçait « 60 s de corps + 40 s de
-   teardown = 100 s, sous les 120 » : elle oubliait le démarrage du serveur, et
-   surtout que le corps porte DEUX attentes bornées CONSÉCUTIVES. 5 + 60 + 60 + 40
-   franchit les 120 sans rien de pathologique, et le runner est mesuré 22 % plus
-   lent le 2026-08-25 (148 s contre 120,9 s sur la même suite). Les budgets de
-   ``test_agent_attribution.py`` sont donc redescendus : 5 + 25 + 25 + 21 = 76 s
-   au pire, soit 93 s à +22 %, contre un filet à 120. La borne applicative
-   regagne la course, au lieu de le prétendre. Le seul run qui a jamais atteint
-   120 s (32779161805) est celui qui n'avait aucune borne dans le corps du test.
-2. **Et même s'il tirait, il ne verrait rien d'utile.**
-   ``faulthandler.dump_traceback_later`` dumpe les THREADS. La coroutine coupable
-   n'est sur aucune pile de thread : elle est SUSPENDUE dans
-   ``client.py:571 ready_event.wait()``, ses frames vivent dans l'objet ``Task``,
-   et le MainThread n'affiche que ``run_forever → _run_once → epoll.poll``. Le
-   seul lecteur de ces frames est ``Task.get_stack()``, que faulthandler
-   n'appelle jamais.
+1. **The net is unreachable — but the arithmetic that said so was WRONG.**
+   ``pyproject.toml`` arms ``faulthandler_timeout = 120`` / ``exit_on_timeout``,
+   and the plugin arms it on an item's PROTOCOL (setup + call + teardown), not on
+   its body. The first draft announced "60 s of body + 40 s of teardown = 100 s,
+   under 120": it forgot the server's startup, and above all that the body carries
+   TWO CONSECUTIVE bounded waits. 5 + 60 + 60 + 40 crosses 120 with nothing
+   pathological, and the runner was measured 22 % slower on 2026-08-25 (148 s
+   against 120.9 s on the same suite). ``test_agent_attribution.py``'s budgets
+   were therefore brought back down: 5 + 25 + 25 + 21 = 76 s at worst, i.e. 93 s
+   at +22 %, against a net at 120. The application-level bound wins the race back,
+   instead of claiming to. The only run that ever reached 120 s (32779161805) is
+   the one that had no bound inside the test body.
+2. **And even if it fired, it would see nothing useful.**
+   ``faulthandler.dump_traceback_later`` dumps THREADS. The guilty coroutine is on
+   no thread stack: it is SUSPENDED in ``client.py:571 ready_event.wait()``, its
+   frames live in the ``Task`` object, and the MainThread only shows
+   ``run_forever → _run_once → epoll.poll``. The only reader of those frames is
+   ``Task.get_stack()``, which faulthandler never calls.
 
-D'où le résultat mesuré : on sait QUE ça bloque, jamais QUI.
+Hence the measured result: we know THAT it hangs, never WHO.
 
-Trois règles de conception, chacune payée par un incident de ce fichier voisin :
+Three design rules, each paid for by an incident in the neighbouring file:
 
-- **Le chien de garde tire PENDANT l'attente.** Posé dans un
-  ``except TimeoutError``, il serait du code mort sur son propre chemin :
-  ``asyncio.wait_for`` annule le gather, ATTEND l'annulation, PUIS lève — les
-  tâches sont alors terminées et ``Task.get_stack()`` rend une liste vide.
-- **Il n'annule jamais rien** et il ne fait jamais échouer le test qu'il observe.
-  Un run vert avec un dump reste vert : le dump devient la mesure du dérapage.
-- **Il écrit dans un FICHIER, pas seulement sur stderr.** C'est le défaut qui
-  rendait ce module inutile sur exactement le chemin pour lequel il est écrit, et
-  il est MESURÉ, pas déduit :
-  ``pytest -o faulthandler_timeout=2 -o faulthandler_exit_on_timeout=true`` sur un
-  cas armé, puis ``grep -c "DUMP TÂCHES"`` sur la sortie complète du run → **0**.
-  faulthandler sort par ``os._exit`` ; pytest n'écrit jamais le rapport de l'item
-  et le tampon de capture part avec le processus. Mesuré aussi, parce que c'était
-  la sortie de secours évidente : ``os.write(2, ...)`` ne s'échappe pas non plus,
-  la capture de pytest est au niveau du DESCRIPTEUR. Un fichier écrit puis FLUSHÉ
-  survit, lui — les octets sont déjà chez le noyau quand ``os._exit`` tombe.
-  stderr reste écrit, pour le chemin rouge normal où pytest rend
-  ``Captured stderr call`` ; il n'est plus le seul canal. Un dump ne devient
-  jamais un échec.
-- **Il meurt sur le chemin heureux.** Un chien de garde est une tâche de plus sur
-  la même boucle ; non annulé, il recrée la tâche immortelle que
-  ``asyncio.Runner.close()`` attend ensuite sans borne. Le hang serait déplacé,
-  pas fermé.
+- **The watchdog fires DURING the wait.** Placed in an ``except TimeoutError``, it
+  would be dead code on its own path: ``asyncio.wait_for`` cancels the gather,
+  WAITS for the cancellation, THEN raises — the tasks are finished by then and
+  ``Task.get_stack()`` returns an empty list.
+- **It never cancels anything** and it never fails the test it observes. A green
+  run with a dump stays green: the dump becomes the measurement of the overrun.
+- **It writes to a FILE, not only to stderr.** That is the defect that made this
+  module useless on exactly the path it is written for, and it is MEASURED, not
+  deduced: ``pytest -o faulthandler_timeout=2 -o faulthandler_exit_on_timeout=true``
+  on an armed case, then ``grep -c "DUMP TÂCHES"`` over the run's whole output →
+  **0**. faulthandler exits through ``os._exit``; pytest never writes the item's
+  report and the capture buffer goes with the process. Also measured, because it
+  was the obvious escape route: ``os.write(2, ...)`` does not escape either,
+  pytest's capture is at the DESCRIPTOR level. A file written then FLUSHED does
+  survive — the bytes are already with the kernel when ``os._exit`` lands. stderr
+  is still written, for the normal red path where pytest returns
+  ``Captured stderr call``; it is no longer the only channel. A dump never becomes
+  a failure.
+- **It dies on the happy path.** A watchdog is one more task on the same loop; not
+  cancelled, it recreates the immortal task ``asyncio.Runner.close()`` then waits
+  for without a bound. The hang would be moved, not closed.
 """
 
 from __future__ import annotations
@@ -78,50 +75,50 @@ __all__ = [
     "write_durable_copy",
 ]
 
-#: Bornes du dump. Sur un runner chargé, ``asyncio.all_tasks()`` d'un banc HTTP +
-#: uvicorn + SQLAlchemy rend plusieurs dizaines de tâches : le budget est MAJORÉ
-#: et connu, pas espéré.
+#: The dump's bounds. On a loaded runner, ``asyncio.all_tasks()`` of an HTTP +
+#: uvicorn + SQLAlchemy bench returns several dozen tasks: the budget is an
+#: OVER-estimate and known, not hoped for.
 MAX_TASKS = 40
 STACK_FRAME_LIMIT = 8
-#: MESURÉ : pour une coroutine SUSPENDUE, ``Task.get_stack()`` ne rend QU'UNE
-#: frame — la plus externe. Sur ce banc elle dit ``visible_tools:292``, ce qu'on
-#: savait déjà. Le maillon utile (``client.py:571 ready_event.wait()``) vit plus
-#: bas, dans la chaîne ``cr_await``, que seul un parcours explicite atteint.
+#: MEASURED: for a SUSPENDED coroutine, ``Task.get_stack()`` returns only ONE
+#: frame — the outermost. On this bench it says ``visible_tools:292``, which we
+#: already knew. The useful link (``client.py:571 ready_event.wait()``) lives
+#: further down, in the ``cr_await`` chain, which only an explicit walk reaches.
 AWAIT_CHAIN_LIMIT = 12
 MAX_LINES = 300
 
-#: Budget de jointure du chien de garde sur le chemin heureux.
+#: The watchdog's join budget on the happy path.
 _JOIN_BUDGET_SECONDS = 5.0
 
 _UNAVAILABLE = "indisponible"
 
-#: Le canal DURABLE. `BRAIN_TEST_TASK_DUMP_FILE` surcharge le chemin ; par défaut
-#: le dump atterrit sous `$RUNNER_TEMP` (le scratch du runner GitHub), avec repli
-#: sur le temporaire local pour qu'un run de poste ait le MÊME canal — un canal
-#: qu'on ne peut pas exercer chez soi n'est pas un canal.
+#: The DURABLE channel. `BRAIN_TEST_TASK_DUMP_FILE` overrides the path; by default
+#: the dump lands under `$RUNNER_TEMP` (the GitHub runner's scratch), falling back
+#: to the local temporary directory so that a workstation run gets the SAME channel
+#: — a channel you cannot exercise at home is not a channel.
 DUMP_FILE_ENV = "BRAIN_TEST_TASK_DUMP_FILE"
 DUMP_FILE_NAME = "brain-v42-task-dump.log"
 _RUNNER_TEMP_ENV = "RUNNER_TEMP"
-#: Second puits, et il porte la VISIBILITÉ : rien n'uploade `$RUNNER_TEMP` dans ce
-#: dépôt, donc un dump qui n'existe que là est durable et invisible. GitHub rend
-#: `$GITHUB_STEP_SUMMARY` sur la page du run sans qu'aucun workflow ne change,
-#: et c'est un simple fichier — donc il survit à `os._exit` comme l'autre.
+#: The second sink, and it carries VISIBILITY: nothing uploads `$RUNNER_TEMP` in
+#: this repository, so a dump that exists only there is durable and invisible.
+#: GitHub renders `$GITHUB_STEP_SUMMARY` on the run's page without any workflow
+#: changing, and it is a plain file — so it survives `os._exit` like the other.
 _STEP_SUMMARY_ENV = "GITHUB_STEP_SUMMARY"
-#: Le résumé d'étape est du Markdown : hors clôture, un dump de piles y serait
-#: reflué en un seul paragraphe. La même clôture sert de séparateur dans le
-#: journal brut, qui est en APPEND et mêle les items.
+#: The step summary is Markdown: outside a fence, a stack dump would be reflowed
+#: there into a single paragraph. The same fence serves as a separator in the raw
+#: log, which is APPEND-only and interleaves items.
 _FENCE = "```"
 
 
 @dataclass
 class DumpState:
-    """Ce que l'appelant peut mesurer d'un armement : a-t-il tiré, une seule fois."""
+    """What the caller can measure of an arming: did it fire, exactly once."""
 
     fired: bool = False
 
 
 # ---------------------------------------------------------------------------
-# Mise en forme — pure, donc testable sans boucle ni serveur
+# Formatting — pure, hence testable with no loop and no server
 # ---------------------------------------------------------------------------
 
 
@@ -131,10 +128,10 @@ def _short_path(path: str) -> str:
 
 
 def _describe_coro(task: Any) -> str:
-    """Rendre le coro d'une tâche, ou DIRE qu'on n'y a pas eu accès."""
+    """Return a task's coro, or SAY that we could not reach it."""
     try:
         coro = task.get_coro()
-    except Exception as exc:  # noqa: BLE001 — une sonde ne lève jamais
+    except Exception as exc:  # noqa: BLE001 — a probe never raises
         return f"coro {_UNAVAILABLE}: {exc!r}"
     if coro is None:
         return f"coro {_UNAVAILABLE}: get_coro() a rendu None"
@@ -148,7 +145,7 @@ def _describe_coro(task: Any) -> str:
 
 
 def _describe_stack(task: Any) -> list[str]:
-    """Rendre les frames suspendues, en NOMMANT chaque trou plutôt qu'en l'omettant."""
+    """Return the suspended frames, NAMING each gap rather than omitting it."""
     try:
         frames = task.get_stack(limit=STACK_FRAME_LIMIT)
     except Exception as exc:  # noqa: BLE001
@@ -166,12 +163,11 @@ def _describe_stack(task: Any) -> list[str]:
 
 
 def _describe_await_chain(task: Any) -> list[str]:
-    """Descendre la chaîne ``cr_await`` — le seul chemin vers le maillon qui attend.
+    """Walk down the ``cr_await`` chain — the only path to the link that waits.
 
-    Chaque maillon est rendu, y compris ceux qu'on ne sait pas lire : une attente
-    non-coroutine (Future, primitive anyio) est NOMMÉE par son type plutôt
-    qu'omise, sinon la chaîne s'arrêterait en silence exactement là où elle
-    devient intéressante.
+    Every link is returned, including the ones we cannot read: a non-coroutine
+    awaitable (Future, anyio primitive) is NAMED by its type rather than omitted,
+    otherwise the chain would stop silently exactly where it becomes interesting.
     """
     try:
         node = task.get_coro()
@@ -208,8 +204,8 @@ def _describe_await_chain(task: Any) -> list[str]:
             truncated = False
             break
     if truncated:
-        # Dire qu'on s'arrête AVANT la fin est le contraire d'omettre : sans
-        # cette ligne, une chaîne coupée se lit comme une chaîne complète.
+        # Saying that we stop BEFORE the end is the opposite of omitting: without
+        # this line, a truncated chain reads as a complete one.
         lines.append(f"<chaîne tronquée à {AWAIT_CHAIN_LIMIT} maillons>")
 
     if not lines:
@@ -239,7 +235,7 @@ def format_task_dump(
     probes: Mapping[str, str] | None = None,
     context: Mapping[str, str] | None = None,
 ) -> str:
-    """Rendre le dump borné. Aucune E/S, aucune boucle : testable en unitaire."""
+    """Return the bounded dump. No I/O, no loop: unit-testable."""
     ordered = sorted(tasks, key=_sort_key)
     shown = ordered[:MAX_TASKS]
     omitted = len(ordered) - len(shown)
@@ -247,10 +243,10 @@ def format_task_dump(
     lines: list[str] = [
         f"=== DUMP TÂCHES ASYNCIO — {label} ===",
     ]
-    # Le journal durable est en APPEND et partagé par tous les items du run :
-    # sans horodatage ni nodeid, deux dumps se relisent comme un seul. Ces
-    # lignes sont DANS la liste bornée, pas au-dessus : la borne MAX_LINES
-    # resterait sinon un majorant de tout sauf de l'en-tête.
+    # The durable log is APPEND-only and shared by every item of the run: without a
+    # timestamp or a nodeid, two dumps read back as one. These lines are INSIDE the
+    # bounded list, not above it: otherwise the MAX_LINES bound would stay an
+    # over-estimate of everything except the header.
     if context:
         lines.extend(f"{name}: {value}" for name, value in context.items())
     lines += [
@@ -280,9 +276,9 @@ def format_task_dump(
         lines.append(f"    {_describe_coro(task)}")
         stack = _describe_stack(task)
         chain = _describe_await_chain(task)
-        # Le premier maillon de la chaîne REDIT la frame externe rendue par
-        # get_stack(). Une ligne par tâche, quarante tâches : le budget se dépense
-        # à répéter ce qu'on vient de lire.
+        # The chain's first link REPEATS the outer frame returned by get_stack().
+        # One line per task, forty tasks: the budget is spent repeating what we have
+        # just read.
         if stack and chain and chain[0] == f"↳ {stack[-1]}":
             chain = chain[1:]
         lines.extend(f"    {frame}" for frame in stack)
@@ -296,15 +292,14 @@ def format_task_dump(
 
 
 def format_probe_report(*, label: str, probes: Mapping[str, str]) -> str:
-    """Rendre les sondes SÉPARÉMENT du corps du dump.
+    """Return the probes SEPARATELY from the dump's body.
 
-    Séparées parce qu'elles ne coûtent pas la même chose. Le corps du dump ne
-    fait aucun import ; `collect_probes` en fait quatre, paresseux (`fastmcp`,
-    `brain_v42.db.engine`). MESURÉ le 2026-08-25 : sous
-    `-o faulthandler_timeout=0.5`, le chien de garde a été tué PENDANT ces
-    imports — sortie 139 et dump de faulthandler tronqué en plein
-    `<frozen posixpath>` — donc AVANT toute écriture. Un seul enregistrement
-    faisait dépendre le noyau du diagnostic du coût de son annexe.
+    Separate because they do not cost the same. The dump's body makes no import;
+    `collect_probes` makes four, lazily (`fastmcp`, `brain_v42.db.engine`).
+    MEASURED on 2026-08-25: under `-o faulthandler_timeout=0.5`, the watchdog was
+    killed DURING those imports — exit 139 and a faulthandler dump truncated in the
+    middle of `<frozen posixpath>` — hence BEFORE any write. A single record made
+    the diagnosis's core depend on the cost of its annex.
     """
     lines = [f"=== SONDES — {label} ==="]
     lines.extend(f"{name} = {value}" for name, value in probes.items())
@@ -316,20 +311,20 @@ def format_probe_report(*, label: str, probes: Mapping[str, str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Sondes — chacune isolée : une sonde cassée ne masque JAMAIS la vraie panne
+# Probes — each isolated: a broken probe NEVER masks the real failure
 # ---------------------------------------------------------------------------
 
 
-#: Les DEUX `should_exit`, épelés pour être distinguables à l'oeil nu dans la
-#: sortie. Ce sont deux variables différentes : la première est un attribut de
-#: classe de `sse_starlette`, partagé par tout le processus et jamais remis à
-#: False ; la seconde est un champ de l'instance `uvicorn.Server` du banc.
+#: The TWO `should_exit`, spelled out so that they are distinguishable by eye in
+#: the output. They are two different variables: the first is a class attribute of
+#: `sse_starlette`, shared by the whole process and never reset to False; the
+#: second is a field of the bench's `uvicorn.Server` instance.
 _SSE_LATCH_PROBE = "sse_starlette.sse.AppStatus.should_exit [GLOBAL processus]"
 _UVICORN_EXIT_PROBE = "uvicorn.Server.should_exit [INSTANCE locale du banc]"
 
 
 def _sse_exit_latch() -> str:
-    """Lire le latch de sortie de `sse_starlette`, sans exiger qu'il soit importé."""
+    """Read `sse_starlette`'s exit latch, without requiring it to be imported."""
     from sse_starlette.sse import AppStatus
 
     return str(AppStatus.should_exit)
@@ -343,47 +338,46 @@ def _probe(probes: dict[str, str], name: str, read: Any) -> None:
 
 
 def collect_probes(*, mcp: Any = None, server: Any = None) -> dict[str, str]:
-    """Relever l'état du singleton partagé, du serveur local et du moteur.
+    """Read the state of the shared singleton, the local server and the engine.
 
-    Aucune requête SQL : une attente réseau dans un chien de garde serait un
-    second point de pendaison.
+    No SQL query: a network wait inside a watchdog would be a second hanging point.
     """
     probes: dict[str, str] = {}
 
-    # EN PREMIER, parce que c'est la sonde qui tranche.
+    # FIRST, because it is the probe that settles the matter.
     #
-    # `AppStatus.should_exit` est un attribut de CLASSE : GLOBAL AU PROCESSUS, et
-    # JAMAIS remis à False. Il arme `sse_starlette/sse.py:311-313
-    # _listen_for_exit_signal`, seule sortie immédiate et MUETTE des quatre tâches
-    # de `EventSourceResponse.__call__` — la forme même de la panne observée, où le
-    # serveur envoie les en-têtes SSE puis REVIENT SANS CORPS, client encore
-    # connecté (`ASGI callable returned without completing response`, h11 exigeant
-    # `disconnected=False`). Le latch est posé par une veille qui sonde
-    # `uvicorn_server.should_exit` toutes les 0,5 s depuis un état
-    # `threading.local()` partagé par TOUTES les boucles pytest-asyncio : un module
-    # antérieur peut donc l'avoir armé pour tous les suivants.
+    # `AppStatus.should_exit` is a CLASS attribute: PROCESS-GLOBAL, and NEVER reset
+    # to False. It arms `sse_starlette/sse.py:311-313 _listen_for_exit_signal`, the
+    # only immediate and SILENT exit of the four tasks of
+    # `EventSourceResponse.__call__` — the very shape of the observed failure, where
+    # the server sends the SSE headers then RETURNS WITH NO BODY, client still
+    # connected (`ASGI callable returned without completing response`, h11 requiring
+    # `disconnected=False`). The latch is set by a watcher that polls
+    # `uvicorn_server.should_exit` every 0.5 s from a `threading.local()` state
+    # shared by ALL pytest-asyncio loops: an earlier module can therefore have armed
+    # it for every following one.
     #
-    # Import TARDIF et défensif : `sse_starlette` peut ne pas être importé, et
-    # `_probe` transforme ImportError comme AttributeError en ligne
-    # « indisponible » — un diagnostic ne meurt jamais de son annexe.
+    # A LATE and defensive import: `sse_starlette` may not be imported, and `_probe`
+    # turns ImportError as well as AttributeError into an "unavailable" line — a
+    # diagnosis never dies of its annex.
     _probe(probes, _SSE_LATCH_PROBE, _sse_exit_latch)
 
     if mcp is None:
         probes["mcp"] = f"{_UNAVAILABLE}: aucun serveur FastMCP passé à l'armement"
     else:
-        # Attributs PRIVÉS de fastmcp (server/mixins/lifespan.py) : susceptibles
-        # de bouger en version, donc chacun sous sa propre sonde.
+        # PRIVATE fastmcp attributes (server/mixins/lifespan.py): liable to move
+        # between versions, so each under its own probe.
         #
-        # LES TROIS sondes de lifespan ont été RETIRÉES d'ici — `_lifespan_ref_count`,
-        # `_lifespan_result_set` et `_lifespan_result` — pour la MÊME raison, qui les
-        # réfute toutes les trois d'un coup : `mcp = FastMCP("brain",
-        # mask_error_details=True)` (server.py) est construit SANS lifespan, donc
-        # `_lifespan_proxy` (fastmcp/server/server.py:264-266) rend `{}` et SORT avant
-        # de lire quoi que ce soit. Aucune des trois ne peut influencer une requête.
-        # `_lifespan_result` alterne bien `None`/`{}`, mais c'est exactement ce que
-        # `_started.is_set()` dit déjà, en mieux : elle n'ajoutait qu'un doublon
-        # causalement inerte. Une sonde qui ne peut rien expliquer se relit comme de
-        # l'information dans un dump qu'on n'ouvre qu'en panne.
+        # ALL THREE lifespan probes were REMOVED from here — `_lifespan_ref_count`,
+        # `_lifespan_result_set` and `_lifespan_result` — for the SAME reason, which
+        # refutes all three at once: `mcp = FastMCP("brain",
+        # mask_error_details=True)` (server.py) is built WITHOUT a lifespan, so
+        # `_lifespan_proxy` (fastmcp/server/server.py:264-266) returns `{}` and EXITS
+        # before reading anything. None of the three can influence a request.
+        # `_lifespan_result` does alternate `None`/`{}`, but that is exactly what
+        # `_started.is_set()` already says, and better: it only added a causally
+        # inert duplicate. A probe that can explain nothing reads back as information
+        # in a dump one only opens during an outage.
         _probe(probes, "mcp._started.is_set()", lambda: mcp._started.is_set())
 
     def _session_manager() -> str:
@@ -397,12 +391,12 @@ def collect_probes(*, mcp: Any = None, server: Any = None) -> dict[str, str]:
         probes["uvicorn"] = f"{_UNAVAILABLE}: aucun serveur uvicorn passé à l'armement"
     else:
         _probe(probes, "uvicorn.server.started", lambda: server.started)
-        # Nommée INSTANCE, parce qu'il y a maintenant DEUX `should_exit` dans ce
-        # dump et que les confondre annulerait la mesure : celui-ci est l'objet
-        # `uvicorn.Server` de CE banc, celui-là est un global de processus.
+        # Named INSTANCE, because there are now TWO `should_exit` in this dump and
+        # confusing them would cancel the measurement: this one is THIS bench's
+        # `uvicorn.Server` object, the other is a process global.
         _probe(probes, _UVICORN_EXIT_PROBE, lambda: server.should_exit)
-        # Mesure DIRECTE des « requêtes en vol » que l'erreur ASGI ne fait
-        # qu'inférer à l'arrêt.
+        # A DIRECT measurement of the "in-flight requests" the ASGI error only
+        # infers at shutdown.
         _probe(probes, "len(server.server_state.tasks)", lambda: len(server.server_state.tasks))
 
     def _engine_present() -> str:
@@ -425,22 +419,22 @@ def collect_probes(*, mcp: Any = None, server: Any = None) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Le canal durable — la seule sortie qui existe encore après `os._exit`
+# The durable channel — the only output that still exists after `os._exit`
 # ---------------------------------------------------------------------------
 
 
 def durable_sink_paths() -> list[Path]:
-    """Où le dump doit exister APRÈS la sortie brutale du processus.
+    """Where the dump must exist AFTER the process's brutal exit.
 
-    Deux puits, pour deux lecteurs, et aucun des deux n'est un buffer :
+    Two sinks, for two readers, and neither is a buffer:
 
-    - un fichier — `BRAIN_TEST_TASK_DUMP_FILE` s'il est posé, sinon
-      `$RUNNER_TEMP/brain-v42-task-dump.log`, avec repli sur le temporaire local
-      pour qu'un run de poste écrive dans le même canal que la CI ;
-    - `$GITHUB_STEP_SUMMARY` quand il existe, parce que le premier fichier est
-      durable mais INVISIBLE : rien n'uploade `$RUNNER_TEMP` dans ce dépôt, et
-      ajouter cette étape touche le workflow, hors surface de ce lot. Le résumé
-      d'étape, lui, est rendu par GitHub sur la page du run tel quel.
+    - a file — `BRAIN_TEST_TASK_DUMP_FILE` if it is set, otherwise
+      `$RUNNER_TEMP/brain-v42-task-dump.log`, falling back to the local temporary
+      directory so that a workstation run writes into the same channel as CI;
+    - `$GITHUB_STEP_SUMMARY` when it exists, because the first file is durable but
+      INVISIBLE: nothing uploads `$RUNNER_TEMP` in this repository, and adding that
+      step touches the workflow, outside this batch's surface. The step summary, by
+      contrast, is rendered by GitHub on the run's page as is.
     """
     explicit = os.environ.get(DUMP_FILE_ENV, "").strip()
     base = os.environ.get(_RUNNER_TEMP_ENV, "").strip() or tempfile.gettempdir()
@@ -452,17 +446,16 @@ def durable_sink_paths() -> list[Path]:
 
 
 def write_durable_copy(text: str, *, paths: Iterable[Path] | None = None) -> list[str]:
-    """Écrire le dump dans chaque puits, FLUSHÉ, et rendre ce qui s'est passé.
+    """Write the dump into each sink, FLUSHED, and return what happened.
 
-    Le flush EST le mécanisme : il rend les octets au noyau, donc le fichier
-    porte le dump même quand le processus sort ensuite par `os._exit`, qui ne
-    déroule ni `atexit` ni les tampons Python. Pas de `fsync` : ce qui tue ce
-    diagnostic est une sortie brutale de processus, pas une coupure de courant —
-    prétendre couvrir la seconde coûterait une E/S synchrone dans un chien de
-    garde.
+    The flush IS the mechanism: it hands the bytes to the kernel, so the file
+    carries the dump even when the process then exits through `os._exit`, which
+    unwinds neither `atexit` nor Python's buffers. No `fsync`: what kills this
+    diagnosis is a brutal process exit, not a power cut — claiming to cover the
+    second would cost a synchronous I/O inside a watchdog.
 
-    Ne lève jamais et ne fait jamais échouer le test observé. Un puits
-    injoignable est NOMMÉ dans le dump lui-même, jamais tu.
+    Never raises and never fails the observed test. An unreachable sink is NAMED in
+    the dump itself, never left unsaid.
     """
     notes: list[str] = []
     for path in durable_sink_paths() if paths is None else paths:
@@ -478,7 +471,7 @@ def write_durable_copy(text: str, *, paths: Iterable[Path] | None = None) -> lis
 
 
 # ---------------------------------------------------------------------------
-# Le chien de garde
+# The watchdog
 # ---------------------------------------------------------------------------
 
 
@@ -496,17 +489,17 @@ async def _watch(
     try:
         await asyncio.sleep(deadline)
     except asyncio.CancelledError:
-        # Chemin heureux : l'attente observée est revenue avant la deadline.
+        # Happy path: the observed wait returned before the deadline.
         return
 
-    # UNE SEULE FOIS par armement : après ce bloc la tâche se termine.
+    # EXACTLY ONCE per arming: after this block the task terminates.
     #
-    # L'ORDRE de ce bloc est le fix, pas un détail de style. La course est contre
-    # un `os._exit` déclenché par faulthandler : ce qui est écrit et flushé avant
-    # existe, le reste n'a jamais existé. Donc le NOYAU d'abord — les tâches et
-    # leurs chaînes d'attente, zéro import — écrit sur disque, et seulement
-    # ensuite les sondes, qui coûtent des imports paresseux et sous lesquelles le
-    # chien de garde s'est fait tuer en vol lors de la mesure du 2026-08-25.
+    # The ORDER of this block is the fix, not a matter of style. The race is against
+    # an `os._exit` triggered by faulthandler: what is written and flushed before
+    # exists, the rest never existed. So the CORE first — the tasks and their await
+    # chains, zero imports — written to disk, and only then the probes, which cost
+    # lazy imports and under which the watchdog was killed in flight during the
+    # 2026-08-25 measurement.
     try:
         me = asyncio.current_task()
         watched = [t for t in asyncio.all_tasks() if t is not me]
@@ -550,11 +543,11 @@ async def dump_tasks_after(
     server: Any = None,
     stream: TextIO | None = None,
 ) -> AsyncIterator[DumpState]:
-    """Armer un chien de garde qui DUMPE les tâches si le corps dépasse ``deadline``.
+    """Arm a watchdog that DUMPS the tasks if the body exceeds ``deadline``.
 
-    Il n'annule rien, ne lève rien et ne change pas le verdict du test. Sur le
-    chemin heureux il est annulé dans le ``finally`` — sinon on recrée la tâche
-    immortelle qui pend à la fermeture de la boucle.
+    It cancels nothing, raises nothing and does not change the test's verdict. On
+    the happy path it is cancelled in the ``finally`` — otherwise we recreate the
+    immortal task that hangs at the loop's close.
     """
     state = DumpState()
     watchdog = asyncio.create_task(
