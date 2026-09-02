@@ -21,15 +21,15 @@ here and the restore procedure below were found to be describing two different d
 <!-- dr-current:start -->
 | Target | Value | Measured, and against what |
 | --- | --- | --- |
-| Alembic head | `049` | 2026-09-02, live production |
-| Recovery contract, live target | `ops/recovery/brain-v42-v7.sql` | 2026-09-02, live production |
-| Recovery contract, restored target | `ops/recovery/brain-v42-v7-pgrestore.sql` | **Replayed against a real restore**, 2026-09-02: `pg_restore --exit-on-error --clean --create` of a read-only `pg_dump -Fc` of live `brain` into a disposable container on the production container's own image, destroyed after |
-| Contract receipt, live asset replayed live | `30/30` — no red at all, a first for this lineage: the `045c6302` data bug the v6 row reported was cleared in production on 2026-09-02 (`focus_revision_violations: 0`), and 049 closed the `table_shape` gap this mint exists for | 2026-09-02, live production |
-| Contract receipt, `-pgrestore` asset against a real restore | `30/30` — no red. The canonicalization the previous row promised holds against an actual restore, not only off live production. Restored head **measured** at `049`, equal to production, so no `alembic upgrade head` was needed. The extension check states its drift and passes on names, by design: expected origin inventory `vector 0.8.2`, observed `vector 0.8.4` | 2026-09-02, disposable restore — dump `brain-p1drill-20260902.dump`, sha256 `75e0ddd404ee9d6094a60bf746dd0d78051557ff9f5bca907e655a2f6d1a169e`, image `sha256:b295c2aa9272` (`pgvector/pgvector:0.8.4-pg16`, PostgreSQL 16.14) |
-| ACL contract, live target | `ops/recovery/brain-v42-v7-acl.sql` | 2026-09-02, live production |
-| ACL contract, restored target | `ops/recovery/brain-v42-v7-acl-pgrestore.sql` | **Replayed against the same real restore**, 2026-09-02; still byte-identical to the v6 twin but for its identity, because 049 grants nothing and touches no view |
-| ACL receipt, live | `1/1` | 2026-09-02, live production |
-| ACL receipt, restored | `1/1` — 0 owner, 0 grant, 0 role-privilege and 0 unexpected-grantee mismatches, naming its one tolerance `tolerated_superuser_roles: ["postgres"]`, the maintenance superuser that performed the restore. The restore ran WITHOUT `--no-owner --no-acl`, which is the whole point of this asset | 2026-09-02, same disposable restore as the row above |
+| Alembic head | `051` | 2026-09-03, live production |
+| Recovery contract, live target | `ops/recovery/brain-v42-v8.sql` | 2026-09-03, live production |
+| Recovery contract, restored target | `ops/recovery/brain-v42-v8-pgrestore.sql` | **NOT replayed against a real restore.** The v7 twin was, on 2026-09-02; the v8 twin has not been, and no dump on hand can do it — the pre-050 dump `brain-pre050-20260902.dump` is at head **049**, two migrations behind what this twin describes. It is DERIVED (its canonicalization computed read-only against production) and replayed against a fresh chain-built 051 database by `tests/integration/db/test_fresh_head_is_the_yardstick.py`. The real-restore replay waits for the next P1 drill, ticket `58711012` |
+| Contract receipt, live asset replayed live | `30/30` — zero failing checks, out of 30 checks total (050 and 051 add no CHECK to the receipt: they extend existing invariants, they do not create new ones). The v7 receipt read **24/30** at head 051 before this mint, its six reds being `table_set`, `table_shape`, `catalog_counts`, `sequence_shape`, `trigger_function_fingerprints` and `brain_runtime_032_036_037` — every one of them a consequence of 050/051 | 2026-09-03, live production |
+| Contract receipt, `-pgrestore` asset against a real restore | **NOT MEASURED for v8.** The last real-restore receipt is the v7 one: `30/30` on 2026-09-02 against a disposable restore of `brain-p1drill-20260902.dump` (sha256 `75e0ddd404ee9d6094a60bf746dd0d78051557ff9f5bca907e655a2f6d1a169e`, image `sha256:b295c2aa9272`, `pgvector/pgvector:0.8.4-pg16`) at head `049`. It attests v7 and head 049, and nothing about 050 or 051. Do not read it forward | 2026-09-02, and deliberately left at that date |
+| ACL contract, live target | `ops/recovery/brain-v42-v8-acl.sql` | 2026-09-03, live production |
+| ACL contract, restored target | `ops/recovery/brain-v42-v8-acl-pgrestore.sql` | **Not replayed for v8** (the v7 file was, on 2026-09-02). Still byte-identical to the v7 twin but for its identity, because 050 and 051 grant nothing and touch no view — a premise re-derived from EVERY migration file, not from named ones |
+| ACL receipt, live | `1/1` — 0 owner, 0 grant, 0 role-privilege and 0 unexpected-grantee mismatches | 2026-09-03, live production |
+| ACL receipt, restored | **NOT MEASURED for v8.** The v7 receipt read `1/1` on 2026-09-02, naming its one tolerance `tolerated_superuser_roles: ["postgres"]`, the maintenance superuser that performed the restore, which ran WITHOUT `--no-owner --no-acl` | 2026-09-02, same disposable restore as the row above |
 | Search top-10 churn across HNSW rebuilds, `learnings` ONLY, n=40 probes | `0` — overlap `10/10` on ten build pairs (`BUILDS=5`, seed 0.42), strict order included, both probe bands | 2026-08-29, copy of the 3243 real `learnings` embeddings, index path forced |
 
 Replay the head and the two live-target assets against production:
@@ -37,7 +37,7 @@ Replay the head and the two live-target assets against production:
 ```bash
 docker exec brain_v42_postgres psql -U brain -d brain -Atc \
   "select version_num from alembic_version;"
-for asset in brain-v42-v7.sql brain-v42-v7-acl.sql; do
+for asset in brain-v42-v8.sql brain-v42-v8-acl.sql; do
   docker exec -i brain_v42_postgres psql -U brain -d brain -Atq -v ON_ERROR_STOP=1 -f - \
     < "ops/recovery/$asset"
 done
@@ -60,7 +60,7 @@ prescribes. Run them only against a genuinely restored target, and say which one
 # against the production cluster itself.
 RESTORED_CONTAINER=${RESTORED_CONTAINER:?name the container holding the restored instance}
 [ "$RESTORED_CONTAINER" != "brain_v42_postgres" ] || { echo "refusing: that is the production cluster" >&2; exit 2; }
-for twin in brain-v42-v7-pgrestore.sql brain-v42-v7-acl-pgrestore.sql; do
+for twin in brain-v42-v8-pgrestore.sql brain-v42-v8-acl-pgrestore.sql; do
   docker exec -i "$RESTORED_CONTAINER" psql -U brain -d "${RESTORED_DB:-brain}" -Atq -v ON_ERROR_STOP=1 -f - \
     < "ops/recovery/$twin"
 done
@@ -70,7 +70,7 @@ done
 twin pinned `vector 0.8.2` — the version production *declares* — while every image this
 repository can restore into reports `0.8.4` or `0.8.5`, so a perfectly healthy restore failed
 that one check (the flaw ticket `2ed0d4e0` named). The twin requires the extension NAMES
-only — the rule was introduced by v6 and v7 inherits it byte for byte — and its receipt states
+only — the rule was introduced by v6 and v8 still inherits it byte for byte — and its receipt states
 both versions instead of judging them: measured 2026-08-29 on the v6 twin, the
 `extension_versions` check **passes** while printing `origin_inventory: plpgsql 1.0, vector
 0.8.2` against `inventory: plpgsql 1.0, vector 0.8.5`. Do not read that version line as a
@@ -78,6 +78,20 @@ failure — a healthy `0.8.2 → 0.8.5` restore is exactly what it looks like. T
 pin still lives where it can bite honestly: the live asset pins the full inventory production
 declares, so a version moving under production without a re-mint reddens *there*. A twin
 receipt short on any check is a failed restore, with no named exception left.
+
+**What the v8 mint measured, and what it did not.** Minted 2026-09-03 at head 051 to carry
+050 and 051 jointly. Measured: the live receipt at `30/30`; the live ACL receipt at `1/1`; a
+negative-mutation matrix of thirteen rows, each corrupting ONE of the new pins in the ASSET
+(never in the database) and each dropping the receipt to `29/30`, so no new pin is vacuous;
+and a diff against the frozen v7 bytes showing the delta is purely ADDITIVE — the only removed
+lines are the two catalog counters and the identity, so no expected value of v7 was re-signed.
+NOT measured: any replay against a real restore, for either twin. One more thing is measured
+and worth carrying: a database freshly built by `alembic upgrade head` does **not** reproduce
+production here, by exactly one trigger. 050 ships
+`project_contexts_focus_history_required` DISABLED at birth and arming it is a separate
+operator gesture (performed 2026-09-02 at 23:54:27), so production reads `tgenabled = 'O'` and
+a chain-built database reads `'D'`. The contract demands the ARMED form on purpose; the
+yardstick pins the gap at its exact value rather than absorbing it.
 
 **Read "variants" as two FILES, never as two targets.** There is one database in the loop above
 and two assets; the word has already been read the other way once, and that misreading is what
