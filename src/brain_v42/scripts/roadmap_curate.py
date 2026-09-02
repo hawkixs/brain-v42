@@ -1,8 +1,9 @@
 """Roadmap curation — audited proposal and guarded auto-apply (spec 2026-07-04 §3).
 
-One batch per project: live features (status ∉ done/archived, not merged) plus a
-digest of recent artifacts (title, type, date — NOT the bodies), sent to the LLM
-(NVIDIA API, strict JSON WITHOUT tools — the exact skeleton of ticket_extract).
+One batch per project: live features (status ∉ done/archived, not merged), their
+description when it says more than the title, plus a digest of recent artifacts
+(title, type, date — NOT the bodies), sent to the LLM (NVIDIA API, strict JSON
+WITHOUT tools — the exact skeleton of ticket_extract).
 Four auditable ops: merge, archive, status, rename.
 
 Hard guardrails:
@@ -145,6 +146,15 @@ PROPOSABLE_STATUSES = ("planned", "research", "design", "building", "deployed", 
 WET_APPLYABLE_OPS = VALID_OPS
 MAX_FEATURES_PER_PROJECT = 30
 MAX_ARTIFACTS_PER_FEATURE = 10
+# Descriptions are prose, and some are essays. MEASURED read-only on 2026-09-02:
+# a 30-card brain-v42 batch carries 2 733 bytes of names and would carry 29 469
+# more of descriptions — an 11× feature section, ~7 400 tokens of input — with a
+# single description reaching 3 543 bytes across all projects. Sending them whole
+# would break the path this is meant to improve: that batch was already truncated
+# once at 4 096 (first wet run of 2026-07-04, char 12160). The cap keeps the first
+# sentences, where these descriptions state their subject, and the truncation is
+# ANNOUNCED — a silently cut description reads as a description that stops there.
+MAX_DESCRIPTION_CHARS = 240
 MAX_PROPOSALS_PER_NIGHT = 40
 # The consolidator prompt produces long answers (the brain-v42 batch truncated
 # at 4096 on the first wet run of 2026-07-04, char 12160) — 2× margin.
@@ -241,6 +251,11 @@ class FeatureCard:
     status: str
     pinned: bool
     artifacts: list[str] = field(default_factory=list)
+    # Optional, and it must stay so: the shrink rebuilds cards field by field, and
+    # a required field would break the retry path at the worst moment. `None` and
+    # "same as the name" both mean the same thing to the reader — this feature
+    # says nothing beyond its title (359 live features out of 422 on 2026-09-02).
+    description: str | None = None
 
 
 @dataclass
@@ -298,11 +313,26 @@ def format_digest(
     return base
 
 
+def _clip(text: str, limit: int = MAX_DESCRIPTION_CHARS) -> str:
+    """Bound a description, saying so when it is cut."""
+    flat = " ".join(text.split())
+    if len(flat) <= limit:
+        return flat
+    return f"{flat[:limit]}… (tronquée à {limit} caractères)"
+
+
 def render_batch(batch: ProjectBatch) -> str:
     lines = [f"Projet: {batch.project_key} — {len(batch.features)} features vivantes"]
     for f in batch.features:
         pin = " [PINNED — seule l'op status est permise]" if f.pinned else ""
         lines.append(f"\n- feature_id: {f.id}\n  nom: {f.name}\n  statut: {f.status}{pin}")
+        # Rendered only when it adds something. Repeating the title on the 85 % of
+        # features where description == name would spend prompt budget on a line
+        # the model already has, on a path that has already been truncated once
+        # (brain-v42, first wet run of 2026-07-04, char 12160). Its ABSENCE is
+        # itself the signal a curator needs.
+        if f.description and f.description != f.name:
+            lines.append(f"  description: {_clip(f.description)}")
         if f.artifacts:
             lines.append("  artifacts récents:")
             lines.extend(f"    - {a}" for a in f.artifacts)
@@ -327,6 +357,7 @@ def _compact_batch(
                 status=feature.status,
                 pinned=feature.pinned,
                 artifacts=list(feature.artifacts[:artifact_cap]),
+                description=feature.description,
             )
             for feature in batch.features[:feature_cap]
         ],
@@ -500,13 +531,13 @@ ORDER BY project_key
 """
 
 _FEATURES_SQL = """
-SELECT f.id, f.name, f.status, COALESCE(f.pinned, false) AS pinned
+SELECT f.id, f.name, f.status, COALESCE(f.pinned, false) AS pinned, f.description
 FROM features f
 LEFT JOIN feature_artifacts fa ON fa.feature_id = f.id
 WHERE f.project_key = :pk
   AND f.status NOT IN ('done', 'archived')
   AND f.merged_into IS NULL
-GROUP BY f.id, f.name, f.status, f.pinned
+GROUP BY f.id, f.name, f.status, f.pinned, f.description
 ORDER BY MAX(fa.created_at) DESC NULLS LAST
 LIMIT :cap
 """
@@ -628,6 +659,7 @@ async def fetch_project_batches(
                     name=r["name"],
                     status=r["status"],
                     pinned=bool(r["pinned"]),
+                    description=r["description"],
                 )
                 for r in feat_rows
             }
