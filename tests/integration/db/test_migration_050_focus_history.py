@@ -25,6 +25,8 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 pytestmark = pytest.mark.integration
@@ -38,6 +40,23 @@ _PROBE = "w44-focus-history-probe"
 #: as a single byte rather than a str. Comparing to "D" passes silently as
 #: False, so the constant is bytes and stays bytes.
 _DISABLED = b"D"
+
+
+def _repo_head() -> str:
+    """The head, READ from the chain rather than written here.
+
+    These tests restore the database after downgrading it, and the revision they
+    must restore to is whatever head currently is — not 050. Writing `"050"`
+    made them leave the shared database one revision behind the day 051 landed:
+    they PASSED and still poisoned the run, which is exactly the failure mode
+    `migration_downgrade_fence` exists to catch and refuses to paper over.
+
+    What stays literal is `"049"`: that is 050's parent, a fact about 050 rather
+    than about the tree, and it does not move when a revision is added.
+    """
+    head = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini"))).get_current_head()
+    assert head is not None, "migration chain has no single head"
+    return head
 
 
 def _run_alembic(*args: str) -> subprocess.CompletedProcess[str]:
@@ -283,9 +302,15 @@ async def test_downgrade_is_refused_outside_the_seed_then_accepted_by_its_named_
                 )
             ).scalar_one() == 0
     finally:
-        assert _run_alembic("upgrade", "050").returncode == 0
+        assert _run_alembic("upgrade", "head").returncode == 0
 
     async with engine.connect() as connection:
+        assert (
+            await connection.execute(sa.text("SELECT version_num FROM alembic_version"))
+        ).scalar_one() == _repo_head(), (
+            "the restore must reach the HEAD, not the revision this file is about — "
+            "a test that passes and leaves the database behind poisons the run"
+        )
         assert (
             await connection.execute(
                 sa.text("SELECT tgenabled FROM pg_trigger WHERE tgname = :n"), {"n": _TRIGGER}
@@ -317,7 +342,7 @@ async def test_the_seed_anchors_every_context_including_one_with_a_null_focus(
     try:
         migration_downgrade_fence(downgraded_to="049")
         assert _run_alembic("-x", f"{_OPT_IN}=yes", "downgrade", "049").returncode == 0
-        assert _run_alembic("upgrade", "050").returncode == 0
+        assert _run_alembic("upgrade", "head").returncode == 0
 
         async with engine.connect() as connection:
             seeded = (
