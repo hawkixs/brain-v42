@@ -3,8 +3,8 @@
 Revision ID: 042
 Revises: 041
 
-The dream has always been single-project — `dream.sh:70` carries
-`PROJECT_KEY="${1:-brain-v42}"`, no loop, one systemd unit — and `dream_runs`
+The dream is single-project when this revision is written — `dream.sh` still
+defaults its positional to `brain-v42`, no loop, one systemd unit — and `dream_runs`
 has NO project column at all. The schema itself therefore cannot express the
 dimension we believed was covered: eight phases over four months, 124 nights,
 all indistinguishable. This is the column that must exist before the loop can
