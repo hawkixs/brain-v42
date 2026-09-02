@@ -37,9 +37,9 @@ down_revision = "045"
 branch_labels = None
 depends_on = None
 
-#: Gabarit 039 : un downgrade qui perd du JUGEMENT humain exige un opt-in nommé,
-#: pas un drapeau générique. `intent` est déclaré par un humain et n'est pas
-#: re-dérivable ; le perdre en silence serait la panne que ce dépôt refuse.
+#: 039's template: a downgrade that destroys human JUDGEMENT demands a named
+#: opt-in, not a generic flag. `intent` is declared by a human and cannot be
+#: re-derived; losing it silently is the failure this repository refuses.
 _DOWNGRADE_OPT_IN = "allow_session_intent_downgrade"
 
 

@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
-"""Sonder la vivacité des modèles NVIDIA configurés, hors de tout run.
+"""Probe the liveness of the configured NVIDIA models, outside any run.
 
-Item (3) du ticket 911bb6f5, différé le 2026-08-05 avec une condition explicite —
-« à rouvrir si un deuxième EOL passe ». Il est passé : `deepseek-v4-flash`, choisi
-par canary ce jour-là, a atteint sa fin de vie deux jours plus tard, et la nuit du
-2026-08-10 est repartie sur son secours 8B.
+Item (3) of ticket 911bb6f5, deferred on 2026-08-05 with an explicit condition —
+"to reopen if a second EOL goes by". It did: `deepseek-v4-flash`, chosen by
+canary that very day, reached its end of life two days later, and the night of
+2026-08-10 fell back on its 8B standby.
 
-La machinerie de signalement construite alors FONCTIONNE — la ligne `DÉGRADÉ`
-figure bien dans le rapport. Ce qui reste est la LATENCE : on apprend la mort d'un
-modèle en lisant le rapport du lendemain, après une nuit dégradée sur dix projets.
+The reporting machinery built then WORKS — the `DEGRADED` line does appear in the
+report. What remains is the LATENCY: a model's death is learned by reading the
+next day's report, after one degraded night across ten projects.
 
-Un 410 n'est pas transitoire : aucun retry ne le réparera jamais. Le savoir AVANT
-la nuit permet de choisir un remplaçant sur mesure plutôt que sur la fiche du
-fournisseur — et c'est exactement l'erreur que le canary du 08-05 avait déjà
-évitée une fois.
+A 410 is not transient: no retry will ever repair it. Knowing it BEFORE the night
+allows choosing a replacement on measurement rather than on the provider's
+datasheet — and that is exactly the mistake the 08-05 canary had already avoided
+once.
 
-Lecture seule, non câblé à aucun run, aucune persistance.
+Read-only, wired into no run, no persistence.
 
-Usage :
+Usage:
     set -a; . ~/.config/brain-v42/nvidia.env; set +a
     uv run python -m scripts.probe_model_liveness
 
-Sortie non nulle si au moins un modèle configuré est définitivement absent.
+Non-zero exit if at least one configured model is definitively absent.
 """
 
 from __future__ import annotations
@@ -36,20 +36,20 @@ import httpx
 BASE_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 API_KEY_VAR = "BRAIN_NVIDIA_API_KEY"
 PROBE_MAX_TOKENS = 8
-# 90 s, pas 30 : gpt-oss-120b — un maillon DORMANT, exactement ce que cette
-# sonde surveille — répond en 75 s en queue froide (mesuré le 2026-08-29,
-# puis 2,6 s à chaud). À 30 s il rendait OTHER chaque lundi, et OTHER sortait
-# en 0 : l'unité restait verte sur le seul site qu'elle ne mesurait pas.
+# 90 s, not 30: gpt-oss-120b — a DORMANT link, exactly what this probe watches
+# — answers in 75 s from a cold queue (measured 2026-08-29, then 2.6 s warm). At
+# 30 s it returned OTHER every Monday, and OTHER exited 0: the unit stayed green
+# on the one site it was not measuring.
 PROBE_TIMEOUT_SECONDS = 90.0
 
-# 529 est présent délibérément : il manquait à RETRYABLE_STATUS et un seul 529
-# renvoyait une nuit entière sur le secours (commit 0eda7e18). Le confondre avec
-# un EOL ferait remplacer un modèle parfaitement vivant.
+# 529 is present deliberately: it was missing from RETRYABLE_STATUS and a single
+# 529 sent a whole night onto the standby (commit 0eda7e18). Mistaking it for an
+# EOL would have a perfectly live model replaced.
 _BUSY_STATUSES = frozenset({429, 500, 502, 503, 504, 529})
 
 
 class Verdict(enum.Enum):
-    """Ce que la sonde peut conclure — et ce qu'elle refuse de conclure."""
+    """What the probe can conclude — and what it refuses to conclude."""
 
     ALIVE = "alive"
     GONE = "gone"
@@ -59,10 +59,10 @@ class Verdict(enum.Enum):
 
 @dataclass(frozen=True, slots=True)
 class ModelEntry:
-    """Un modèle configuré, et le site qui l'utilise.
+    """One configured model, and the site that uses it.
 
-    Le site d'usage n'est pas décoratif : un verdict sans lui n'est pas
-    actionnable, parce qu'il ne dit pas quelle constante remplacer.
+    The usage site is not decorative: a verdict without it is not actionable,
+    because it does not say which constant to replace.
     """
 
     model: str
@@ -78,12 +78,12 @@ class ProbeResult:
 
 
 def configured_models() -> list[ModelEntry]:
-    """Lire l'inventaire DEPUIS les modules qui s'en servent, jamais le retaper.
+    """Read the inventory FROM the modules that use it, never retype it.
 
-    Une liste recopiée ici dériverait de la configuration réelle, et la sonde
-    rendrait un vert sur un modèle que plus personne n'appelle pendant que le
-    vrai primaire meurt sans être vu. C'est la faute que ce dépôt corrige
-    partout ailleurs : mesurer, ne pas recopier.
+    A list copied here would drift from the real configuration, and the probe
+    would return green on a model nobody calls any more while the true primary
+    dies unseen. That is the fault this repository corrects everywhere else:
+    measure, do not copy.
     """
     from scripts.domain_backfill import DEFAULT_MODEL as DEFAULT_EXTRACT_MODEL
     from scripts.roadmap_curate import (
@@ -95,11 +95,11 @@ def configured_models() -> list[ModelEntry]:
     from scripts.ticket_extract import DEFAULT_EXTRACT_FALLBACK_MODEL
 
     def resolved(env_var: str, default: str, site: str) -> ModelEntry:
-        """La précédence des SITES (env > défaut) — l'unité charge nvidia.env.
+        """SITE precedence (env > default) — the unit loads nvidia.env.
 
-        Sans elle, la sonde lirait la constante pendant que la nuit sert
-        l'override : vert sur un modèle que plus personne n'appelle. Le site
-        nomme la VARIABLE quand elle gagne — c'est elle qu'on remplace alors.
+        Without it, the probe would read the constant while the night serves the
+        override: green on a model nobody calls any more. The site names the
+        VARIABLE when it wins — that is what gets replaced then.
         """
         override = os.environ.get(env_var)
         if override:
@@ -132,9 +132,9 @@ def configured_models() -> list[ModelEntry]:
             DEFAULT_EXTRACT_MODEL,
             "domain_backfill.DEFAULT_MODEL (extract + backfill)",
         ),
-        # Maillon dormant : appelé seulement quand le primaire tombe. Égal au
-        # primaire il est couvert par coïncidence ; divergent, il serait la seule
-        # constante que ni la nuit ni la sonde ne voient mourir.
+        # A dormant link: called only when the primary falls. Equal to the
+        # primary it is covered by coincidence; divergent, it would be the one
+        # constant neither the night nor the probe sees die.
         resolved(
             "BRAIN_NVIDIA_FALLBACK_MODEL",
             DEFAULT_EXTRACT_FALLBACK_MODEL,
@@ -144,10 +144,10 @@ def configured_models() -> list[ModelEntry]:
 
 
 def classify_status(status: int) -> Verdict:
-    """410 est définitif, 5xx/429 sont transitoires, le reste n'est pas deviné.
+    """410 is definitive, 5xx/429 are transient, the rest is not guessed.
 
-    Ne jamais replier un statut inconnu sur ALIVE : un 401 mal lu ferait conclure
-    « tous les modèles sont morts », et un repli optimiste ferait l'inverse.
+    Never fold an unknown status onto ALIVE: a misread 401 would conclude "every
+    model is dead", and an optimistic fallback would do the opposite.
     """
     if status == 200:
         return Verdict.ALIVE
@@ -161,7 +161,7 @@ def classify_status(status: int) -> Verdict:
 def probe_models(
     entries: list[ModelEntry], *, client: httpx.Client, api_key: str
 ) -> list[ProbeResult]:
-    """Une requête minimale par modèle. Aucune écriture, aucune persistance."""
+    """One minimal request per model. No write, no persistence."""
     results: list[ProbeResult] = []
     for entry in entries:
         try:
@@ -179,8 +179,8 @@ def probe_models(
                 timeout=PROBE_TIMEOUT_SECONDS,
             )
         except httpx.HTTPError as exc:
-            # Le type d'erreur, jamais son texte : une URL ou un en-tête peuvent
-            # s'y retrouver, et ce résultat est fait pour être imprimé.
+            # The error type, never its text: a URL or a header can end up in
+            # there, and this result is made to be printed.
             results.append(ProbeResult(entry, None, Verdict.OTHER, type(exc).__name__))
             continue
         detail = ""
@@ -193,13 +193,13 @@ def probe_models(
 
 
 def exit_code_for(results: list[ProbeResult]) -> int:
-    """GONE → 1, OTHER → 3, sinon 0. « Je ne sais pas » n'est pas un vert.
+    """GONE → 1, OTHER → 3, else 0. "I do not know" is not a green.
 
-    Mesuré le 2026-08-29 : le maillon WET dormant répondait au-delà du timeout
-    de sonde et sortait en 0 — l'unité restait verte, chaque lundi, sur le
-    seul site qu'elle n'avait pas mesuré. GONE domine : un modèle mort est
-    plus urgent qu'un modèle illisible. BUSY reste 0 — transitoire, et le
-    transformer en échec ferait remplacer un modèle vivant (commit 0eda7e18).
+    Measured 2026-08-29: the dormant WET link answered past the probe timeout
+    and exited 0 — the unit stayed green, every Monday, on the one site it had
+    not measured. GONE dominates: a dead model is more urgent than an
+    unreadable one. BUSY stays 0 — transient, and turning it into a failure
+    would have a live model replaced (commit 0eda7e18).
     """
     if any(result.verdict is Verdict.GONE for result in results):
         return 1
@@ -222,9 +222,9 @@ def main() -> int:
         print(f"{API_KEY_VAR} absente — source ~/.config/brain-v42/nvidia.env", file=sys.stderr)
         return 2
 
-    # Entrée par entrée, verdict imprimé AU FIL DE L'EAU : une exception sur
-    # le site 5 ne doit pas emporter les quatre verdicts déjà acquis — c'est
-    # le journal du lundi matin qui dit quelle constante remplacer.
+    # Entry by entry, the verdict printed AS IT COMES: an exception on site 5
+    # must not carry away the four verdicts already earned — it is Monday
+    # morning's log that says which constant to replace.
     results: list[ProbeResult] = []
     with httpx.Client() as client:
         for entry in configured_models():

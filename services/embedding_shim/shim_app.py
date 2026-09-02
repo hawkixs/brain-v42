@@ -1,17 +1,17 @@
-"""App Starlette du shim — contrat legacy embedding brain-v42 (port 8003).
+"""Starlette app of the shim — brain-v42 legacy embedding contract (port 8003).
 
-Parity exacte avec services/embedding/main.py v2.0.0 (PyTorch) :
+Exact parity with services/embedding/main.py v2.0.0 (PyTorch):
   POST /embed         {"texts": [...]}          -> [[float,...],...]
   POST /embed/query   {"text": "..."} | ?text=  -> [float,...]
   POST /embed/single  idem /embed/query         -> [float,...]
   POST /rerank        {"query","candidates"}    -> {"scores": [...]}
-  GET  /              -> info modèles/runtime
-  GET  /healthz       -> 200 si upstream llama healthy, sinon 503
-  GET  /health        -> 200 (compat RerankerClient.is_available)
+  GET  /              -> model/runtime info
+  GET  /healthz       -> 200 if the llama upstream is healthy, else 503
+  GET  /health        -> 200 (compat with RerankerClient.is_available)
 
-Différence assumée : /healthz sonde l'upstream (l'ancien /healthz ne
-touchait jamais le GPU — c'est le bug du false-green de l'incident
-2026-04-12, learning 410eb227 ; ici on corrige).
+One deliberate difference: /healthz probes the upstream (the old /healthz
+never touched the GPU — that is the false-green bug of the 2026-04-12
+incident, learning 410eb227; fixed here).
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ _LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class ShimLimits:
-    """Bornes de ressources appliquées par une instance du shim."""
+    """Resource bounds enforced by one shim instance."""
 
     max_body_bytes: int = 8 * 1024 * 1024
     max_ingress_requests: int = 8
@@ -59,30 +59,30 @@ class ShimLimits:
 
 _DEFAULT_LIMITS = ShimLimits()
 
-#: Patron de src/brain_v42/codex_gateway/auth.py — pas un import : l'image du
-#: shim n'embarque pas le package brain_v42.
+#: Patterned on src/brain_v42/codex_gateway/auth.py — not an import: the shim
+#: image does not ship the brain_v42 package.
 MIN_BEARER_TOKEN_BYTES = 32
 
-#: Les endpoints de santé restent ouverts même en mode armé : le watchdog
-#: systemd et RerankerClient.is_available ne portent pas de jeton, et un 401
-#: sur /healthz transformerait l'armement en fausse panne d'upstream.
+#: The health endpoints stay open even in armed mode: the systemd watchdog and
+#: RerankerClient.is_available carry no token, and a 401 on /healthz would turn
+#: the arming into a fake upstream outage.
 _AUTH_EXEMPT_PATHS = frozenset({"/healthz", "/health"})
 
-#: L'intérieur du netns est DANS la frontière de confiance du processus.
-#: Hypothèse explicite : seul un processus du namespace réseau du conteneur
-#: peut sourcer 127.0.0.1 — le noyau refuse les paquets à source loopback
-#: arrivant par une interface non-lo (filtrage martien, route_localnet=0), et
-#: les connexions publiées par Docker arrivent avec l'adresse de la passerelle
-#: bridge, jamais 127.0.0.1. Le SEUL prober de prod vit là : le healthcheck
-#: compose (POST /embed sans Authorization, exécuté dans le conteneur) —
-#: sans cette exemption, l'armement le mettrait unhealthy à vie pendant que
-#: /healthz resterait vert (review PR 43, reproduit).
+#: The inside of the netns is WITHIN the process's trust boundary. Explicit
+#: assumption: only a process in the container's network namespace can source
+#: 127.0.0.1 — the kernel drops loopback-sourced packets arriving on a non-lo
+#: interface (martian filtering, route_localnet=0), and connections published
+#: by Docker arrive with the bridge gateway's address, never 127.0.0.1. The
+#: ONLY production prober lives there: the compose healthcheck (POST /embed
+#: with no Authorization, run inside the container) — without this exemption,
+#: arming would leave it unhealthy forever while /healthz stayed green
+#: (PR 43 review, reproduced).
 _LOOPBACK_CLIENT_HOSTS = frozenset({"127.0.0.1", "::1"})
 
-#: Le recensement ne connaît que les routes réelles du shim : un chemin
-#: inconnu est contrôlé par l'appelant (percent-décodé, %0A devient une vraie
-#: nouvelle ligne) et journalisé brut il devient un canal d'injection. Un
-#: chemin inconnu rend son 404 (ou 401 en mode armé) sans une ligne de log.
+#: The census knows only the shim's real routes: an unknown path is controlled
+#: by the caller (percent-decoded, %0A becomes a real newline) and, logged raw,
+#: turns into an injection channel. An unknown path returns its 404 (or 401 in
+#: armed mode) without a single log line.
 _GUARDED_CENSUS_PATHS = frozenset({"/embed", "/embed/query", "/embed/single", "/rerank", "/"})
 
 
@@ -90,11 +90,11 @@ _GUARDED_CENSUS_PATHS = frozenset({"/embed", "/embed/query", "/embed/single", "/
 class BearerGuard:
     """Bearer statique du shim — ticket 530d796a, point (a).
 
-    ``required=False`` est le mode OPTIONNEL : un header absent ou faux est
-    accepté mais journalisé, pour recenser les clients sans jeton sans en
-    casser un seul (les deux ``auto-discord`` sont vivants sur ``brain-net``).
-    L'armement — ``required=True`` — est un geste opérateur séparé, à ne
-    prendre qu'après le ticket client 9ef5c69d.
+    ``required=False`` is the OPTIONAL mode: a missing or wrong header is
+    accepted but logged, so that clients without a token can be counted without
+    breaking a single one (both ``auto-discord`` are alive on ``brain-net``).
+    Arming — ``required=True`` — is a separate operator gesture, to be taken
+    only after client ticket 9ef5c69d.
     """
 
     token: bytes
@@ -102,14 +102,14 @@ class BearerGuard:
 
 
 def load_bearer_token(path: Path | str) -> bytes:
-    """Lire le secret depuis un fichier 0600, mêmes gardes que codex_gateway.
+    """Read the secret from a 0600 file, with codex_gateway's guards.
 
-    Un secret lisible au-delà du propriétaire, trop court, ou resté sur son
-    placeholder ``REPLACE_`` est refusé au démarrage : mieux vaut un service
-    qui ne démarre pas qu'une authentification décorative.
+    A secret readable beyond its owner, too short, or still carrying its
+    ``REPLACE_`` placeholder is refused at startup: better a service that does
+    not start than a decorative authentication.
 
-    Lu UNE FOIS, au démarrage : une rotation du secret exige un restart du
-    conteneur — le geste opérateur doit le savoir.
+    Read ONCE, at startup: rotating the secret requires a container restart —
+    the operator gesture must know it.
     """
     token_path = Path(path)
     mode = stat.S_IMODE(token_path.stat().st_mode)
@@ -130,12 +130,12 @@ def load_bearer_token(path: Path | str) -> bytes:
 
 
 def bearer_from_env(environ: Mapping[str, str] = os.environ) -> BearerGuard | None:
-    """Câblage env du bearer — livré fermé.
+    """Env wiring of the bearer — shipped closed.
 
-    Sans ``SHIM_BEARER_TOKEN_FILE`` ni ``SHIM_BEARER_MODE``, aucun garde :
-    le contrat actuel du shim ne bouge pas. Un mode posé sans fichier de
-    secret, ou un mode inconnu, tue le démarrage plutôt que d'ouvrir en
-    silence — une faute de frappe ne doit jamais valoir « optionnel ».
+    Without ``SHIM_BEARER_TOKEN_FILE`` or ``SHIM_BEARER_MODE``, there is no
+    guard: the shim's current contract does not move. A mode set without a
+    secret file, or an unknown mode, kills startup rather than opening in
+    silence — a typo must never amount to "optional".
     """
     token_file = environ.get("SHIM_BEARER_TOKEN_FILE", "")
     mode = environ.get("SHIM_BEARER_MODE", "")
@@ -149,8 +149,8 @@ def bearer_from_env(environ: Mapping[str, str] = os.environ) -> BearerGuard | No
 
 
 class _BearerMiddleware:
-    """ASGI pur, jamais BaseHTTPMiddleware : le shim streame les corps de
-    requête, et ce contrôle ne lit que les headers du scope."""
+    """Pure ASGI, never BaseHTTPMiddleware: the shim streams request bodies,
+    and this check reads nothing but the scope's headers."""
 
     def __init__(self, app: ASGIApp, guard: BearerGuard) -> None:
         self._app = app
@@ -163,9 +163,9 @@ class _BearerMiddleware:
 
         client = scope.get("client")
         if client and client[0] in _LOOPBACK_CLIENT_HOSTS:
-            # Netns-interne (healthcheck compose) : même frontière de confiance
-            # que le processus. Pas de recensement non plus — il tire toutes
-            # les 60 s et noierait le journal d'observation.
+            # Netns-internal (compose healthcheck): the same trust boundary
+            # as the process. No census either — it fires every 60 s and would
+            # drown the observation log.
             await self._app(scope, receive, send)
             return
 
@@ -180,9 +180,9 @@ class _BearerMiddleware:
                 await response(scope, receive, send)
                 return
             if scope["path"] in _GUARDED_CENSUS_PATHS:
-                # Jamais la valeur présentée : un log n'est pas un canal
-                # d'exfiltration. Le user-agent est contrôlé par l'appelant :
-                # %r le cite, une nouvelle ligne y reste \n.
+                # Never the presented value: a log is not an exfiltration
+                # channel. The user agent is caller-controlled: %r quotes it,
+                # and a newline stays \n inside.
                 client_address = f"{client[0]}:{client[1]}" if client else "client-inconnu"
                 _LOGGER.warning(
                     "shim bearer %s on %s from %s ua=%r — accepted (optional mode)",
@@ -201,7 +201,7 @@ class _BearerMiddleware:
         return "-"
 
     def _outcome(self, scope: Scope) -> str | None:
-        """``None`` si le jeton présenté est le bon, sinon la raison à journaliser."""
+        """``None`` if the presented token is right, else the reason to log."""
         raw: bytes | None = None
         for name, value in scope["headers"]:
             if name == b"authorization":
@@ -246,7 +246,7 @@ class _Lease:
 
 
 class _TryGate:
-    """CapacityLimiter avec acquisition atomique sans attente."""
+    """A CapacityLimiter with atomic, non-waiting acquisition."""
 
     def __init__(self, capacity: int) -> None:
         self._limiter = anyio.CapacityLimiter(capacity)
@@ -419,7 +419,7 @@ async def _run_physical[Result](
 
 
 async def _run_sync_in_thread[Result](operation: Callable[[], Result]) -> Result:
-    """Exécute un calcul bloquant sans détacher sa durée de vie physique."""
+    """Run a blocking computation without detaching its physical lifetime."""
 
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="embedding-shim")
     try:

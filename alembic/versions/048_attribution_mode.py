@@ -1,27 +1,27 @@
-"""Dire PAR QUELLE CLÉ un artefact a été attribué, et rendre la devinette défaisable.
+"""Say BY WHICH KEY an artifact was attributed, and make the guess undoable.
 
 Revision ID: 048
 Revises: 047
 
-L'absorption dérivée gagne un second étage : quand la traçante de la connexion
-courante ne porte rien — parce que ce transport est mort, ce qui arrive ~26 fois
-par jour, tué par l'idle timeout de 900 s — la session de l'utilisateur peut
-reprendre le ledger d'une AUTRE traçante du projet, à condition d'être la seule
-session non-`agent` qui couvrait l'instant de création.
+Derived absorption gains a second tier: when the tracer of the current
+connection carries nothing — because that transport is dead, which happens ~26
+times a day, killed by the 900 s idle timeout — the user's session may take
+over the ledger of ANOTHER tracer of the project, provided it is the only
+non-`agent` session covering the instant of creation.
 
-Le premier étage est une PREUVE : même connexion, appariement exact. Le second
-est une DÉDUCTION : personne d'autre ne pouvait l'avoir produit. Les deux
-écrivent la même colonne `session_id`, et sans cette révision rien ne les
-distingue ensuite — ni pour un audit, ni pour un humain qui voudrait défaire une
-mauvaise attribution. **Un taux ne se défait pas, une liste si.**
+The first tier is a PROOF: same connection, exact pairing. The second is a
+DEDUCTION: nobody else could have produced it. Both write the same `session_id`
+column, and without this revision nothing tells them apart afterwards — not for
+an audit, not for a human wanting to undo a bad attribution. **A rate cannot be
+undone, a list can.**
 
-NULLABLE ET SANS DÉFAUT, doctrine des 040-041-042-046 : `NULL` veut dire « écrit
-avant la 048 ». Aucun backfill, et c'est un refus motivé — poser `'explicit'`
-partout mentirait sur les lignes que `derive_capture` avait déjà déposées, qui
-n'ont jamais été une capture explicite de qui que ce soit.
+NULLABLE AND WITHOUT A DEFAULT, the doctrine of 040-041-042-046: `NULL` means
+"written before 048". No backfill, and that is a reasoned refusal — setting
+`'explicit'` everywhere would lie about the rows `derive_capture` had already
+deposited, which were never anyone's explicit capture.
 
-L'INDEX EST PARTIEL sur le seul mode déduit : défaire une devinette doit être une
-requête, pas un scan. Les trois autres modes ne se cherchent pas en masse.
+THE INDEX IS PARTIAL on the derived mode alone: undoing a guess must be a
+query, not a scan. The other three modes are not searched in bulk.
 """
 
 from __future__ import annotations
@@ -33,19 +33,19 @@ down_revision = "047"
 branch_labels = None
 depends_on = None
 
-#: L'opt-in qui lève le refus de downgrade. NOMMÉ, jamais générique — gabarit
-#: 039 puis 046 : un drapeau générique se recopie d'une migration à l'autre sans
-#: qu'on relise ce qu'il autorise.
+#: The opt-in that lifts the downgrade refusal. NAMED, never generic — the
+#: template of 039 then 046: a generic flag gets copied from one migration to
+#: the next without anyone re-reading what it authorises.
 _DOWNGRADE_OPT_IN = "allow_attribution_mode_downgrade"
 
-#: Miroir exact du CHECK posé plus bas ET de `tables.py`. Les quatre modes :
-#: `explicit` (un humain a nommé l'UUID), `derived_deposit` (le serveur a déposé
-#: dans une traçante), `derived_connection` (étage exact) et `derived_window`
-#: (étage déduit par exclusivité temporelle).
+#: An exact mirror of the CHECK installed below AND of `tables.py`. The four
+#: modes: `explicit` (a human named the UUID), `derived_deposit` (the server
+#: deposited into a tracer), `derived_connection` (the exact tier) and
+#: `derived_window` (the tier deduced by temporal exclusivity).
 _MODES = ("explicit", "derived_deposit", "derived_connection", "derived_window")
 
-#: Postgres n'a pas d'``ADD CONSTRAINT IF NOT EXISTS`` : on retire d'abord.
-#: Gabarit 047, qui fait déjà DROP puis ADD sur cette famille de contraintes.
+#: Postgres has no ``ADD CONSTRAINT IF NOT EXISTS``: so we drop first. The
+#: template of 047, which already does DROP then ADD on this constraint family.
 _DROP_CHECK = (
     "ALTER TABLE brain_session_artifacts "
     "DROP CONSTRAINT IF EXISTS brain_session_artifacts_attribution_mode_valid"
@@ -61,13 +61,13 @@ _ADD_CHECK = (
 
 
 def upgrade() -> None:
-    # REJOUABLE POUR DE VRAI, et c'est un choix tranché plutôt que cosmétique.
-    # La version précédente portait `ADD COLUMN IF NOT EXISTS` — donc promettait
-    # d'être rejouable — à côté d'un `ADD CONSTRAINT` qui ne l'était pas.
-    # Alembic annule la révision entière sur échec, donc rien ne cassait par ce
-    # chemin ; ce qui cassait, c'est la promesse, pour quiconque rejouerait ces
-    # instructions À LA MAIN. Vu l'ordre de bascule — appliquer la 048 et la
-    # VÉRIFIER avant tout redémarrage — quelqu'un les rejouera à la main.
+    # GENUINELY REPLAYABLE, and that is a settled choice rather than a cosmetic
+    # one. The previous version carried `ADD COLUMN IF NOT EXISTS` — thereby
+    # promising to be replayable — next to an `ADD CONSTRAINT` that was not.
+    # Alembic rolls back the whole revision on failure, so nothing broke by that
+    # path; what broke was the promise, for anyone replaying these statements BY
+    # HAND. Given the cutover order — apply 048 and VERIFY it before any restart
+    # — someone will replay them by hand.
     op.execute(
         "ALTER TABLE brain_session_artifacts ADD COLUMN IF NOT EXISTS attribution_mode VARCHAR(24)"
     )
@@ -81,13 +81,13 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Ce downgrade ne détruit AUCUNE ligne de ledger : les attributions restent,
-    # les artefacts gardent leur session. Il détruit la seule chose qui
-    # distingue une PREUVE d'une DÉDUCTION — et c'est précisément ce qu'il faut
-    # nommer, parce que la perte est invisible dans les données restantes.
+    # This downgrade destroys NO ledger row: the attributions remain, the
+    # artifacts keep their session. It destroys the one thing that tells a PROOF
+    # from a DEDUCTION — and that is precisely what must be named, because the
+    # loss is invisible in the data left behind.
     #
-    # Compter ET NOMMER, gabarit 047 : un message qui dit « N lignes » sans dire
-    # lesquelles laisse l'opérateur sans geste possible.
+    # Count AND NAME, 047's template: a message saying "N rows" without saying
+    # which ones leaves the operator with no possible move.
     arguments = context.get_x_argument(as_dictionary=True)
     opted_in = arguments.get(_DOWNGRADE_OPT_IN) == "yes"
 

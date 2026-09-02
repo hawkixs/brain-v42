@@ -1,7 +1,7 @@
-"""Proposals d'extraction de connaissance depuis les tickets terminaux.
+"""Knowledge-extraction proposals drawn from terminal tickets.
 
-Pattern PROMOTE (dream_promotions) : table d'audit proposer-only, review
-humaine → apply. Spec §6.
+PROMOTE pattern (dream_promotions): a proposer-only audit table, human
+review → apply. Spec §6.
 
 Revision ID: 029
 Revises: 028

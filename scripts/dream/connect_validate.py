@@ -89,11 +89,11 @@ def parse_report(raw: str) -> ConnectReport:
 
 
 def connect_run_id_statement(run_date: dt.date, project_key: str) -> sa.Select:
-    """SELECT de la ligne `connect` d'un projet pour une date.
+    """SELECT one project's `connect` row for a given date.
 
-    Ce validateur ÉCRIT sur la ligne rendue — il la marque `partial`. Sans
-    filtre de projet, à plusieurs projets, il marquerait l'échec de l'un sur la
-    ligne d'un autre (spec §12).
+    This validator WRITES on the row it returns — it marks it `partial`. Without
+    a project filter, across several projects, it would mark one project's
+    failure on another project's row (spec §12).
     """
     return (
         sa.select(dream_runs.c.id)

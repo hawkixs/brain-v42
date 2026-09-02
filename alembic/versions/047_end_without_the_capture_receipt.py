@@ -1,35 +1,35 @@
-"""Retirer le XOR de fermeture : `end` cesse de mesurer la diligence du client.
+"""Drop the closing XOR: `end` stops measuring the client's diligence.
 
 Revision ID: 047
 Revises: 046
 
-CE N'EST PAS UN AFFAIBLISSEMENT, et la nuance décide de tout. Le XOR
-« ledger non vide XOR `nothing_to_capture_reason` » mesurait une seule chose :
-« le client a-t-il DÉCLARÉ ce qu'il a produit ». La capture dérivée
-(`brain_session_derived_capture_enabled`) supprime le mode de panne qu'il
-attrapait — produit-mais-non-déclaré — et alimenterait désormais son signal
-DEPUIS LE SERVEUR.
+THIS IS NOT A WEAKENING, and the nuance decides everything. The XOR
+"non-empty ledger XOR `nothing_to_capture_reason`" measured a single thing:
+"did the client DECLARE what it produced". Derived capture
+(`brain_session_derived_capture_enabled`) removes the failure mode it caught —
+produced-but-undeclared — and would from now on feed its signal FROM THE
+SERVER.
 
-**Un contrôle est creux dès que l'objet contrôlé peut influencer son signal.**
-Le conserver ne garderait donc rien : ce serait un reçu que le serveur se
-délivre à lui-même. Pire, il rendrait INFERMABLE toute session dont le serveur a
-rempli le ledger — l'utilisateur ferme en disant « rien de durable », le serveur
-a déjà attribué pour lui, et la base refuse. Un drapeau qui rend une session
-infermable n'est pas armable.
+**A check is hollow as soon as the thing checked can influence its signal.**
+Keeping it would therefore keep nothing: it would be a receipt the server
+issues to itself. Worse, it would make UNCLOSABLE any session whose ledger the
+server filled — the user closes saying "nothing durable", the server has
+already attributed on their behalf, and the database refuses. A flag that makes
+a session unclosable cannot be armed.
 
-CE QUI RESTE est ce que le serveur ne peut pas fabriquer à la place de
-l'utilisateur : `summary` et `next_focus` non blancs, et une raison qui dit
-quelque chose SI elle est donnée. Prouvé plutôt qu'affirmé par
-`tests/unit/repositories/test_end_gate_is_judgement_only.py` : `summary` n'a que
-deux sites dans tout `src/` — le tool qui relaie le texte humain et le dépôt qui
-le persiste — et la branche `closed_inactive` du CHECK 046 INTERDIT à un
-balayage d'en écrire un.
+WHAT REMAINS is what the server cannot manufacture in the user's place:
+non-blank `summary` and `next_focus`, and a reason that says something IF one is
+given. Proven rather than asserted by
+`tests/unit/repositories/test_end_gate_is_judgement_only.py`: `summary` has only
+two sites in all of `src/` — the tool that relays the human text and the
+repository that persists it — and the `closed_inactive` branch of CHECK 046
+FORBIDS a sweep from writing one.
 
-LE TEXTE DU CHECK EST RELU DANS LA 046, jamais retapé — gabarit de la 045. Une
-seconde source de vérité pour cette contrainte ne divergerait qu'en production,
-et seulement le jour où quelqu'un tenterait une ligne que l'autre version
-refuse. Le remplacement est ASSERTÉ : si la 046 bougeait, cette révision
-échouerait à l'import au lieu de reposer une contrainte inchangée.
+THE CHECK'S TEXT IS RE-READ FROM 046, never retyped — 045's template. A second
+source of truth for this constraint would diverge only in production, and only
+the day someone attempted a row the other version refuses. The replacement is
+ASSERTED: if 046 moved, this revision would fail at import instead of
+re-installing an unchanged constraint.
 """
 
 from __future__ import annotations
@@ -45,8 +45,8 @@ branch_labels = None
 depends_on = None
 
 
-#: Le bloc retiré, tel qu'il est écrit dans la 046. Sert de repère de coupe ET
-#: de témoin : sa disparition de la 046 doit faire échouer cette révision.
+#: The removed block, exactly as written in 046. It serves both as the cut
+#: marker AND as a witness: if it vanishes from 046, this revision must fail.
 _CAPTURE_RECEIPT = """
         AND (
             (
@@ -60,7 +60,7 @@ _CAPTURE_RECEIPT = """
             )
         )"""
 
-#: Ce qui le remplace : donner une raison reste un acte, ne pas en donner aussi.
+#: What replaces it: giving a reason stays an act, and so does giving none.
 _JUDGEMENT_ONLY = """
         AND (
             nothing_to_capture_reason IS NULL
@@ -69,10 +69,10 @@ _JUDGEMENT_ONLY = """
 
 
 def _terminal_state_046() -> str:
-    """Relire la contrainte terminale DANS la 046, jamais la retaper ici."""
+    """Re-read the terminal constraint FROM 046, never retype it here."""
     source = Path(__file__).with_name("046_session_identity_and_nature.py")
     spec = importlib.util.spec_from_file_location("_migration_046_sessions", source)
-    if spec is None or spec.loader is None:  # pragma: no cover — chemin figé
+    if spec is None or spec.loader is None:  # pragma: no cover — frozen path
         raise RuntimeError(f"046 illisible depuis la 047 : {source}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -81,27 +81,27 @@ def _terminal_state_046() -> str:
 
 _TERMINAL_STATE_V6_SOURCE = _terminal_state_046()
 
-if _CAPTURE_RECEIPT not in _TERMINAL_STATE_V6_SOURCE:  # pragma: no cover — garde d'import
+if _CAPTURE_RECEIPT not in _TERMINAL_STATE_V6_SOURCE:  # pragma: no cover — import guard
     raise RuntimeError(
         "le bloc XOR de la 046 a changé de forme : la 047 reposerait une "
         "contrainte inchangée en croyant l'avoir relâchée"
     )
 
-#: v6 = v5 sans le reçu. `captured_knowledge_ids` ne porte plus AUCUNE
-#: contrainte sur la branche `ended`, exactement comme sur `closed_inactive`.
+#: v6 = v5 without the receipt. `captured_knowledge_ids` no longer carries ANY
+#: constraint on the `ended` branch, exactly as on `closed_inactive`.
 _TERMINAL_STATE_V6 = _TERMINAL_STATE_V6_SOURCE.replace(_CAPTURE_RECEIPT, _JUDGEMENT_ONLY)
 
-#: Ce qu'un downgrade restaurerait — et donc ce qu'il détruirait.
+#: What a downgrade would restore — and therefore what it would destroy.
 _TERMINAL_STATE_V5 = _TERMINAL_STATE_V6_SOURCE
 
 _DROP = "ALTER TABLE brain_sessions DROP CONSTRAINT brain_sessions_terminal_state_valid"
 
-#: Fail-closed, gabarit 037. Deux formes deviennent légales avec la 047 et
-#: illégales sans elle : « ledger ET raison » (le cas dérivé, celui qui motive
-#: la révision) et « ni ledger ni raison » (la fermeture honnête d'une session
-#: qui n'a rien produit). Un downgrade silencieux ne les corromprait pas — la
-#: base refuserait la contrainte — mais il échouerait au milieu, avec un message
-#: de contrainte, sans dire ce qui est en cause. Celui-ci le dit.
+#: Fail-closed, 037's template. Two shapes become legal with 047 and illegal
+#: without it: "ledger AND reason" (the derived case, the one that motivates
+#: this revision) and "neither ledger nor reason" (the honest closing of a
+#: session that produced nothing). A silent downgrade would not corrupt them —
+#: the database would refuse the constraint — but it would fail halfway, with a
+#: constraint message, without naming what is at stake. This one names it.
 _REFUSE_LOSSY_DOWNGRADE = """
 DO $$
 DECLARE

@@ -155,27 +155,27 @@ def build_claude_command(
 
 
 def brain_tool_call_completed(raw_log: Path) -> bool:
-    """Un appel d'outil Brain a-t-il ABOUTI dans cette télémétrie OTEL ?
+    """Did a Brain tool call SUCCEED in this OTEL telemetry?
 
-    Pendant du prédicat de ``codex_runner``, sur la seule source que le rail
-    claude expose : le flux OTEL console mélangé au rapport dans ``raw_log``.
+    The counterpart of ``codex_runner``'s predicate, on the only source the
+    claude rail exposes: the OTEL console stream mixed into ``raw_log``.
 
-    Forme MESURÉE le 2026-08-11 sur claude 2.1.226, pas déduite d'une doc :
+    A shape MEASURED on 2026-08-11 against claude 2.1.226, not from a doc:
 
         body: "claude_code.tool_result"
         attributes: { tool_name: "mcp_tool", success: "true", ... }
 
-    ``tool_name`` vaut génériquement ``mcp_tool`` — il ne nomme PAS l'outil.
-    Ce n'est pas une lacune ici : le runner ne déclare que brain-v42 et pose
-    ``--strict-mcp-config``, donc tout résultat MCP abouti est nécessairement
-    un appel Brain. Si un jour un second serveur MCP est déclaré sur ce rail,
-    ce raisonnement tombe et ce prédicat doit être resserré.
+    ``tool_name`` is generically ``mcp_tool`` — it does NOT name the tool. That
+    is no gap here: the runner declares brain-v42 alone and sets
+    ``--strict-mcp-config``, so any successful MCP result is necessarily a Brain
+    call. The day a second MCP server is declared on this rail, the reasoning
+    falls and this predicate must be tightened.
     """
     if not raw_log.is_file():
         return False
     content = raw_log.read_text(encoding="utf-8", errors="replace")
-    # Le flux console est du pseudo-JSON multi-lignes, pas du JSON : on
-    # découpe sur l'enregistrement plutôt que de le parser.
+    # The console stream is multi-line pseudo-JSON, not JSON: we split on the
+    # record rather than parsing it.
     for record in content.split('body: "claude_code.tool_result"')[1:]:
         window = record[:2000]
         if 'tool_name: "mcp_tool"' in window and 'success: "true"' in window:
@@ -253,15 +253,15 @@ def run_claude(
                 )
             except OSError as exc:
                 raw_stream.write(f"unable to start Claude: {exc}\n")
-                # Claude n'a pas démarré : rien n'a pu être écrit.
+                # Claude did not start: nothing could have been written.
                 return PROVIDER_FALLBACK_EXIT_CODE
 
             try:
                 process.communicate(input=prompt, timeout=timeout_seconds)
             except subprocess.TimeoutExpired:
                 terminate_process_group(process)
-                # Un timeout ne prouve RIEN : la phase a pu écrire puis rester
-                # bloquée. Jamais de bascule ici.
+                # A timeout proves NOTHING: the phase may have written and
+                # then hung. Never a switchover here.
                 return 124
 
     exit_code = int(process.returncode or 0)
@@ -269,11 +269,11 @@ def run_claude(
         return 0
     if exit_code == TIMEOUT_EXIT_CODE:
         return TIMEOUT_EXIT_CODE
-    # Le rail claude ne peut pas prouver l'absence d'écriture autrement que par
-    # sa télémétrie : sans les OTEL_* exportés par dream.sh, raw_log ne contient
-    # aucun événement d'outil et le prédicat renverra False. C'est le bon défaut
-    # — il autorise la bascule sur un rail qui n'a manifestement rien fait — et
-    # c'est aussi pourquoi ces variables sont dans _CLAUDE_CHILD_ENV_EXTRA.
+    # The claude rail cannot prove the absence of a write other than through
+    # its telemetry: without the OTEL_* exported by dream.sh, raw_log holds no
+    # tool event at all and the predicate returns False. That is the right
+    # default — it allows the switchover on a rail that plainly did nothing —
+    # and it is also why those variables live in _CLAUDE_CHILD_ENV_EXTRA.
     if brain_tool_call_completed(raw_log):
         return exit_code
     return PROVIDER_FALLBACK_EXIT_CODE

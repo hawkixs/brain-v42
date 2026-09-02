@@ -1,31 +1,31 @@
-"""Validation du cutover embedding — gold bench v1 contre une baseline.
+"""Embedding cutover validation — gold bench v1 against a baseline.
 
-Trois mesures sur l'endpoint cible (contrat natif /embed, /rerank) :
+Three measurements on the target endpoint (native /embed, /rerank contract):
 
-  self   — corpus ET queries embeddés par la cible (qualité du modèle
-           servi, harnais identique à bench/embedding_v1/run_bench.py).
-  cross  — corpus = vecteurs STOCKÉS en PG (embeddés par le PyTorch
-           fp16 historique), queries embeddées par la cible. C'est le
-           scénario réel post-cutover : requêtes GGUF contre un corpus
-           fp16 non ré-embeddé.
-  rerank — scores /rerank sur des paires déterministes (parity ONNX vs
-           CrossEncoder PyTorch).
+  self   — corpus AND queries embedded by the target (quality of the model
+           served, same harness as bench/embedding_v1/run_bench.py).
+  cross  — corpus = vectors STORED in PG (embedded by the historical fp16
+           PyTorch), queries embedded by the target. This is the real
+           post-cutover scenario: GGUF queries against a corpus of
+           non-re-embedded fp16.
+  rerank — /rerank scores on deterministic pairs (ONNX parity against the
+           PyTorch CrossEncoder).
 
-Usage :
-  # baseline (PyTorch encore en prod)
+Usage:
+  # baseline (PyTorch still in production)
   python scripts/embedding_cutover_check.py \\
       --url http://localhost:8003 \\
       --output bench/embedding_v1/cutover/baseline_pytorch.json
 
-  # post-cutover (shim en place) + gates
+  # post-cutover (shim in place) + gates
   python scripts/embedding_cutover_check.py \\
       --url http://localhost:8003 \\
       --output bench/embedding_v1/cutover/candidate_gguf.json \\
       --baseline bench/embedding_v1/cutover/baseline_pytorch.json
 
-Gates (candidate vs baseline) : dMRR_self >= -0.01,
+Gates (candidate vs baseline): dMRR_self >= -0.01,
 drecall@10_self >= -0.005, dMRR_cross >= -0.01, pearson_rerank >= 0.995.
-Exit 2 = échantillon cross insuffisant (ni PASS ni FAIL).
+Exit 2 = insufficient cross sample (neither PASS nor FAIL).
 """
 
 from __future__ import annotations
@@ -54,8 +54,8 @@ from run_bench import (  # noqa: E402
 
 GOLD_PATH = BENCH / "gold_v1.jsonl"
 
-# etype (gen_gold) -> table PG. Les tables sans colonne embedding sont
-# exclues du mode cross à l'exécution (log explicite, pas de cap silencieux).
+# etype (gen_gold) -> PG table. Tables without an embedding column are excluded
+# from cross mode at runtime (explicit log, never a silent cap).
 TABLES = {
     "learning": "learnings",
     "feature": "features",
@@ -68,13 +68,13 @@ TABLES = {
 }
 
 RERANK_PAIRS = 20
-# 8 textes max par batch : le service PyTorch prod (et le shim GGUF) retourne
-# HTTP 500 pour des payloads > ~12 KB (≈ 13 textes à 2000 chars). Batch=8
-# est le plafond sûr validé empiriquement sur l'ensemble du corpus (305 items).
+# 8 texts per batch at most: the production PyTorch service (and the GGUF shim)
+# returns HTTP 500 for payloads > ~12 KB (≈ 13 texts of 2000 chars). Batch=8 is
+# the safe ceiling validated empirically over the whole corpus (305 items).
 EMBED_BATCH = 8
-# En dessous de ce nombre de queries gold résolvables en mode cross, le
-# gate dMRR_cross n'est pas statistiquement significatif → exit 2 (ni
-# PASS ni FAIL : échantillon insuffisant, à investiguer avant cutover).
+# Below this number of gold queries resolvable in cross mode, the dMRR_cross
+# gate is not statistically significant → exit 2 (neither PASS nor FAIL:
+# insufficient sample, to investigate before the cutover).
 MIN_CROSS_GOLD = 100
 
 GATES = {
@@ -116,7 +116,7 @@ def load_gold() -> list[dict]:
 async def load_stored_vectors(
     ids_by_type: dict[str, list[str]],
 ) -> dict[str, list[float]]:
-    """Vecteurs PG stockés (fp16 historique) pour les ids du corpus."""
+    """Stored PG vectors (historical fp16) for the corpus ids."""
     conn = await asyncpg.connect(PG_DSN)
     stored: dict[str, list[float]] = {}
     try:
@@ -125,7 +125,7 @@ async def load_stored_vectors(
             try:
                 rows = await conn.fetch(
                     f"SELECT id::text AS id, embedding::text AS emb "
-                    f"FROM {table} "  # table depuis le dict fermé TABLES
+                    f"FROM {table} "  # table from the closed TABLES dict
                     f"WHERE id::text = ANY($1) AND embedding IS NOT NULL",
                     ids,
                 )
@@ -164,7 +164,7 @@ def evaluate(
 def build_rerank_pairs(
     gold: list[dict], corpus: list[tuple[str, str, str]]
 ) -> list[tuple[str, list[str]]]:
-    """Paires déterministes : (query, [texte gold, distracteur fixe])."""
+    """Deterministic pairs: (query, [gold text, fixed distractor])."""
     if not corpus:
         return []
     text_by_id = {cid: text for _etype, cid, text in corpus}

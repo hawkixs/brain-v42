@@ -1,45 +1,45 @@
 #!/usr/bin/env bash
-# Mesure le CHURN de reconstruction HNSW sur les embeddings RÉELS du corpus.
+# Measures the HNSW rebuild CHURN on the corpus's REAL embeddings.
 #
 # POURQUOI CE SCRIPT EXISTE
-# Le ticket cfd26e9d a établi deux faits : `pg_dump` ne transporte aucun graphe
-# HNSW (9 `CREATE INDEX ... USING hnsw`, zéro octet d'index), et une
-# reconstruction HNSW n'est pas déterministe. La mesure de référence sur les
-# embeddings réels vit dans
+# Ticket cfd26e9d established two facts: `pg_dump` carries no HNSW graph
+# at all (9 `CREATE INDEX ... USING hnsw`, zero bytes of index), and an
+# HNSW rebuild is not deterministic. The reference measurement on the
+# real embeddings lives in
 # `docs/runbooks/2026-08-23-hnsw-restore-churn-declaration.md` (n=1544
-# requêtes, les 9 tables, bandes de bruit et sonde opérateur) ; ce script est
-# l'instrument REJOUABLE, une table à la fois, pour rafraîchir la ligne churn
-# du runbook quand le corpus grossit. Il ne remplace pas la déclaration.
+# queries, the 9 tables, noise bands and operator probe); this script is
+# the REPLAYABLE instrument, one table at a time, for refreshing the
+# runbook's churn line as the corpus grows. It does not replace it.
 #
-# NE TOUCHE JAMAIS LA PRODUCTION : les vecteurs sont lus par un
-# `COPY ... TO STDOUT` (lecture seule) et tout le reste vit dans un conteneur
-# éphémère sur tmpfs, détruit par trap à la sortie — le banc porte une copie
-# des embeddings de production en trust, il ne doit pas survivre au script.
+# NEVER TOUCHES PRODUCTION: the vectors are read by a `COPY ... TO STDOUT`
+# (read-only) and everything else lives in an ephemeral container on tmpfs,
+# destroyed by a trap on exit — the bench holds a copy of the production
+# embeddings in trust, and must not outlive the script.
 #
-# TROIS PIÈGES, tous rencontrés en écrivant ou en relisant ce script :
+# THREE TRAPS, all met while writing or re-reading this script:
 #
-# 1. HNSW exige un opérande CONSTANT. Formuler la requête en jointure
-#    (`from corpus, probe ... order by corpus.embedding <=> probe.v`) donne un
-#    Nested Loop + Seq Scan : l'index n'est PAS emprunté. On mesurerait alors
-#    trois fois la recherche EXACTE, on obtiendrait 10,00/10, et on conclurait
-#    « aucun churn ». Un faux vert parfaitement crédible. D'où la boucle
-#    plpgsql, qui passe le vecteur en paramètre.
+# 1. HNSW requires a CONSTANT operand. Writing the query as a join
+#    (`from corpus, probe ... order by corpus.embedding <=> probe.v`) yields a
+#    Nested Loop + Seq Scan: the index is NOT used. We would then measure the
+#    EXACT search three times, obtain 10.00/10, and conclude "no churn". A
+#    perfectly credible false green. Hence the plpgsql loop, which passes the
+#    vector as a parameter.
 #
-# 2. Une garde par EXPLAIN prouve le PLAN, pas l'EXÉCUTION. On vérifie donc le
-#    compteur `pg_stat_user_indexes.idx_scan` : il doit avancer d'exactement une
-#    unité par sonde. C'est une preuve d'exécution, pas d'intention. Elle est
-#    arithmétiquement DÉFAITE à zéro sonde — d'où la garde de banc vide plus
-#    bas, sans laquelle un COPY interrompu produit un « churn nul » en exit 0.
+# 2. An EXPLAIN guard proves the PLAN, not the EXECUTION. So we check the
+#    `pg_stat_user_indexes.idx_scan` counter: it must advance by exactly one
+#    per probe. That is proof of execution, not of intent. It is
+#    arithmetically DEFEATED at zero probes — hence the empty-bench guard
+#    below, without which an interrupted COPY produces a "zero churn" at exit 0.
 #
-# 3. `row_number()` SANS ordre de fenêtre numérote la POSITION DE SCAN. Sur le
-#    chemin exact, le planner place la WindowAgg sous le Sort : le rang écrit
-#    valait 1..N sur toute la table au lieu de 1..10 (mesuré). Le rang est donc
-#    explicitement ordonné par la distance, dans les DEUX blocs.
+# 3. `row_number()` WITHOUT a window order numbers the SCAN POSITION. On the
+#    exact path, the planner places the WindowAgg below the Sort: the rank
+#    written was 1..N across the whole table instead of 1..10 (measured). The
+#    rank is therefore explicitly ordered by distance, in BOTH blocks.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Ne PAS nommer cette variable COMPOSE_FILE : le CLI compose lit une variable
-# d'environnement de ce nom, et l'assignation écraserait un export hérité.
+# Do NOT name this variable COMPOSE_FILE: the compose CLI reads an environment
+# variable of that name, and the assignment would clobber an inherited export.
 BENCH_COMPOSE="$SCRIPT_DIR/../tests/support/hnsw-churn-compose.yml"
 
 C=${CHURN_CONTAINER:-brain_v42_hnsw_churn}
@@ -51,11 +51,11 @@ export CHURN_CONTAINER="$C"
 q() { docker exec "$C" psql -U churn -d churn -Atc "$1"; }
 qq() { docker exec "$C" psql -U churn -d churn -q -c "$1"; }
 
-# Le banc MARQUE ce qu'il crée — label posé par le compose sur le conteneur ET
-# sur le réseau — et ne détruit RIEN qui ne porte pas ce marqueur. Sans cette
-# garde, `docker compose -p "$C" down` matche projet+service PAR LABEL : avec
-# CHURN_CONTAINER=brain_v42, le trap emportait brain_v42_postgres dès la
-# première provision, stderr jeté — reproduit deux fois en re-review.
+# The bench MARKS what it creates — a label set by the compose on the container
+# AND on the network — and destroys NOTHING that does not carry that marker.
+# Without this guard, `docker compose -p "$C" down` matches project+service BY
+# LABEL: with CHURN_CONTAINER=brain_v42, the trap took brain_v42_postgres away on
+# the very first provision, stderr discarded — reproduced twice in re-review.
 BENCH_LABEL="com.brain-v42.hnsw-churn-bench"
 
 bench_marked_container() {
@@ -67,11 +67,11 @@ bench_marked_network() {
     | grep -qx true
 }
 
-# `-p "$C"` partout : sans projet explicite, compose dérive le projet du
-# dossier du fichier (`support`) et réconcilie sur (projet, service) — deux
-# bancs aux CHURN_CONTAINER différents se recréeraient l'un l'autre.
-# Pas d'option de retrait des orphelins sur le down : aucun effet légitime
-# sur un projet dédié, et elle élargit ce que le down peut emporter.
+# `-p "$C"` everywhere: with no explicit project, compose derives the project
+# from the file's folder (`support`) and reconciles on (project, service) — two
+# benches with different CHURN_CONTAINER would recreate one another.
+# No orphan-removal option on the down: no legitimate effect on a dedicated
+# project, and it widens what the down is able to take away.
 cleanup_bench() {
   if bench_marked_container "$C"; then
     if ! docker compose -p "$C" -f "$BENCH_COMPOSE" down --timeout 5 >/dev/null 2>&1; then
@@ -79,16 +79,16 @@ cleanup_bench() {
     fi
     docker rm -f "$C" >/dev/null 2>&1 || true
   fi
-  # Un `up` interrompu avant la création du conteneur laisse le réseau seul,
-  # et le filet `docker rm -f` ne supprime jamais un réseau. Marqueur exigé
-  # ici aussi : on ne retire que le réseau que ce banc a créé.
+  # An `up` interrupted before the container is created leaves the network
+  # behind, and the `docker rm -f` net never removes a network. The marker is
+  # required here too: we remove only the network this bench created.
   if bench_marked_network "${C}_default"; then
     docker network rm "${C}_default" >/dev/null 2>&1 || true
   fi
 }
 
-# --- garde d'homonymie — AVANT d'armer le moindre trap -----------------------
-# Un trap armé avant cette garde détruirait au moment même du refus.
+# --- name-collision guard — BEFORE arming any trap --------------------------
+# A trap armed before this guard would destroy at the very moment of refusal.
 if [ "$C" = "$PROD" ]; then
   echo "ABANDON : CHURN_CONTAINER=$C désigne le conteneur de production ($PROD)." >&2
   exit 2
@@ -120,13 +120,13 @@ trap 'trap - EXIT; cleanup_bench; exit 130' INT
 trap 'trap - EXIT; cleanup_bench; exit 143' TERM
 
 # --- provisionnement ---------------------------------------------------------
-# Le banc est décrit par `tests/support/hnsw-churn-compose.yml`, PAS par un
-# `docker run` : il hérite ainsi du digest épinglé, donc d'une mesure
-# reproductible. Le gate `scripts/check_container_image_pins.py` refuse de
-# toute façon un `docker run` non épinglé, et il a raison ici.
+# The bench is described by `tests/support/hnsw-churn-compose.yml`, NOT by a
+# `docker run`: it thereby inherits the pinned digest, hence a reproducible
+# measurement. The `scripts/check_container_image_pins.py` gate refuses an
+# unpinned `docker run` anyway, and it is right to here.
 #
-# Le banc reproduit la CIBLE VERSIONNÉE, pas le runtime de production : les
-# deux ont divergé (voir l'en-tête du fichier compose).
+# The bench reproduces the VERSIONED TARGET, not the production runtime: the
+# two have diverged (see the compose file's header).
 provision() {
   echo "== provisionnement du banc isolé =="
   cleanup_bench
@@ -142,20 +142,20 @@ provision() {
       create table truth  (qid int, rank int, id uuid, d float8);
       create table meta   (src_table text not null, prod_container text not null,
                            copied_at timestamptz not null, seed float8 not null);"
-  # LECTURE SEULE sur la production.
+  # READ-ONLY against production.
   docker exec "$PROD" psql -U brain -d brain -Atc \
     "copy (select id, embedding from $SRC_TABLE where embedding is not null) to stdout" \
   | docker exec -i "$C" psql -U churn -d churn -q -c "copy corpus (id, embedding) from stdin"
   qq "insert into meta (src_table, prod_container, copied_at, seed)
       values ('$SRC_TABLE', '$PROD', now(), $SEED);"
-  # Sondes NON-MEMBRES du corpus, en DEUX groupes, la graine posée dans la
-  # MÊME session que les random() qu'elle gouverne :
-  # - 'proche'   : bruit ±0,01/dim → distance cosinus ≈ 0,025 de la base. Une
-  #   sonde qui EST dans le corpus a son top-1 à distance nulle, ce qui biaise
-  #   vers la stabilité — piège rencontré au premier jet.
-  # - 'realiste' : bruit ±0,045/dim — mesuré d(1-NN) 0,282–0,325 sur les
-  #   embeddings réels de learnings (2026-08-29, seed 0,42). La bande obtenue
-  #   est IMPRIMÉE à chaque run : c'est elle qui fait foi, pas ce commentaire.
+  # NON-MEMBER probes of the corpus, in TWO groups, the seed set in the SAME
+  # session as the random() calls it governs:
+  # - 'proche'   : noise ±0.01/dim → cosine distance ≈ 0.025 from the base. A
+  #   probe that IS in the corpus has its top-1 at zero distance, which biases
+  #   towards stability — a trap met on the first draft.
+  # - 'realiste' : noise ±0.045/dim — measured d(1-NN) 0.282–0.325 on the real
+  #   learnings embeddings (2026-08-29, seed 0.42). The band obtained is
+  #   PRINTED on every run: that is what counts, not this comment.
   qq "select setseed($SEED);
       insert into probe (qid, grp, v)
       select qid, 'proche', (select array_agg(e + (random()-0.5)*0.02)::vector
@@ -175,17 +175,17 @@ provision() {
 if ! docker exec "$C" pg_isready -U churn -d churn >/dev/null 2>&1; then
   provision
 else
-  # Banc survivant d'un run tué avant son trap. Ne le resservir que si sa
-  # provenance correspond à la demande : sans ce contrôle, une relance
-  # `SRC_TABLE=decisions` remesurait l'ancienne table en silence.
+  # A bench surviving a run killed before its trap. Reuse it only if its
+  # provenance matches the request: without this check, a re-run with
+  # `SRC_TABLE=decisions` would silently re-measure the old table.
   META=$(q "select src_table||'|'||prod_container from meta;" 2>/dev/null || true)
   if [ "$META" != "$SRC_TABLE|$PROD" ]; then
     echo "== banc réutilisé de provenance divergente (${META:-aucune}) ≠ $SRC_TABLE|$PROD — reprovisionnement =="
     provision
   else
-    # Même provenance ≠ même corpus : la consigne du runbook « re-run after
-    # corpus growth » resservirait l'ANCIENNE copie et « prouverait » que la
-    # croissance n'a rien changé. Le compte source est rejoué, lecture seule.
+    # Same provenance != same corpus: the runbook's "re-run after corpus
+    # growth" instruction would reuse the OLD copy and "prove" that the growth
+    # changed nothing. The source count is replayed, read-only.
     SRC_COUNT=$(docker exec "$PROD" psql -U brain -d brain -Atc \
       "select count(*) from $SRC_TABLE where embedding is not null;")
     BENCH_COUNT=$(q "select count(*) from corpus;")
@@ -229,8 +229,8 @@ qq "truncate truth;
       end loop;
     end \$\$;"
 echo "   $(q "select count(*) from truth;") lignes de référence"
-# La distance de sonde est un RÉGLAGE, pas un fait : imprimer la bande
-# réellement obtenue, pour que le runbook cite une mesure et non une intention.
+# The probe distance is a SETTING, not a fact: print the band actually
+# obtained, so the runbook cites a measurement and not an intention.
 q "select '   '||p.grp||' : d(1-NN) min '||round(min(t.d)::numeric,3)
       ||' · moyenne '||round(avg(t.d)::numeric,3)
       ||' · max '||round(max(t.d)::numeric,3)

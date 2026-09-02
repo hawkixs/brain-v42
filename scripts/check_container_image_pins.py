@@ -129,8 +129,8 @@ DOCKER_NON_INGRESS_VERBS = {
     "inspect",
     "load",
     "login",
-    # ``network`` (create/inspect/rm/…) manipule des réseaux, jamais des
-    # images : c'est le teardown et la garde d'homonymie du banc churn.
+    # ``network`` (create/inspect/rm/…) manipulates networks, never images:
+    # it is the churn bench's teardown and its name-collision guard.
     "network",
     "ps",
     "push",
@@ -138,17 +138,17 @@ DOCKER_NON_INGRESS_VERBS = {
     "rmi",
     "save",
 }
-# ``exec`` nomme un CONTENEUR déjà en cours, jamais une image : il n'y a rien à
-# épingler. Son absence était un trou du modèle et non une politique —
-# ``DOCKER_COMPOSE_VERBS`` contient déjà ``exec``, si bien que
-# ``docker compose exec`` passait quand la forme nue était refusée. Le jeu
-# ci-dessus admet d'ailleurs ``load``, qui fait réellement entrer une image
-# depuis une archive.
+# ``exec`` names a CONTAINER already running, never an image: there is nothing
+# to pin. Its absence was a hole in the model and not a policy —
+# ``DOCKER_COMPOSE_VERBS`` already contains ``exec``, so that
+# ``docker compose exec`` passed where the bare form was refused. The set above
+# admits ``load`` besides, which genuinely brings an image in from an
+# archive.
 #
-# Le trou coûtait cher : ce gate s'exécute AVANT ``pytest`` dans ``test:unit``,
-# donc un seul script refusé empêchait la suite unitaire ENTIÈRE de tourner.
-# ``down`` détruit un déploiement existant sans faire entrer d'image ; c'est le
-# geste de teardown des bancs jetables (churn HNSW), au même titre qu'``exec``.
+# The hole was expensive: this gate runs BEFORE ``pytest`` in ``test:unit``, so
+# a single refused script stopped the ENTIRE unit suite from running. ``down``
+# destroys an existing deployment without bringing an image in; it is the
+# teardown gesture of the disposable benches (HNSW churn), just like ``exec``.
 DOCKER_COMPOSE_VERBS = {"build", "config", "down", "exec", "up"}
 GITLAB_CI_SOURCE = ".gitlab-ci.yml"
 GITHUB_WORKFLOW_DIRECTORY = ".github/workflows"
@@ -2042,9 +2042,9 @@ def _docker_compose_invocation(tokens: Sequence[str], index: int) -> DockerInvoc
             files.append(option.split("=", 1)[1])
             index += 1
             continue
-        # ``-p`` nomme le projet : sans lui, compose dérive le projet du
-        # dossier du fichier et deux bancs jetables aux noms différents se
-        # recréent l'un l'autre. Le nom de projet ne change aucune image.
+        # ``-p`` names the project: without it, compose derives the project
+        # from the file's folder and two disposable benches with different
+        # names recreate one another. A project name changes no image.
         if option in {"-p", "--project-name"}:
             if index + 1 >= len(tokens):
                 return DockerInvocation(

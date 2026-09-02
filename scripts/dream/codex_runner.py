@@ -178,27 +178,27 @@ def build_codex_command(
 
 
 def _failure_exit_code(events_log: Path, default: int) -> int:
-    """Traduire un échec en « rejouable ailleurs » ou non, jamais en succès."""
+    """Translate a failure into "replayable elsewhere" or not, never success."""
     if brain_tool_call_completed(events_log):
         return default
     return PROVIDER_FALLBACK_EXIT_CODE
 
 
 def brain_tool_call_completed(events_log: Path) -> bool:
-    """Un appel d'outil Brain a-t-il ABOUTI dans ce flux d'événements ?
+    """Did a Brain tool call SUCCEED anywhere in this event stream?
 
-    Prédicat EXACT, et c'est ce qui le rend utilisable comme condition de
-    bascule : `False` prouve qu'aucune mutation n'a été commitée, donc que
-    rejouer la phase sur un autre provider ne peut pas écrire deux fois.
+    An EXACT predicate, and that is what makes it usable as a switchover
+    condition: `False` proves no mutation was committed, hence that replaying
+    the phase on another provider cannot write twice.
 
-    Fail-closed dans les deux sens qui comptent. Un flux absent ou illisible
-    ne prouve RIEN — mais il ne prouve pas non plus qu'on a écrit, et la
-    bascule reste alors autorisée : la nuit du 2026-08-11 est exactement ce
-    cas (codex mort avant d'émettre quoi que ce soit d'exploitable). Ce qui
-    bloque la bascule, c'est UNIQUEMENT la preuve positive d'un appel abouti.
+    Fail-closed in both directions that matter. An absent or unreadable stream
+    proves NOTHING — but neither does it prove that we wrote, so the switchover
+    stays allowed: the night of 2026-08-11 is exactly that case (codex died
+    before emitting anything usable). What blocks the switchover is ONLY the
+    positive proof of a successful call.
 
-    Un appel en erreur n'a rien commité ; un appel vers un autre serveur n'a
-    rien commité DANS Brain. Ni l'un ni l'autre ne bloque.
+    A call that errored committed nothing; a call to another server committed
+    nothing IN Brain. Neither one blocks.
     """
     if not events_log.is_file():
         return False
@@ -358,15 +358,15 @@ def run_codex(
                     )
             except OSError as exc:
                 stderr_stream.write(f"unable to start Codex: {exc}\n")
-                # Codex n'a même pas démarré : rien n'a pu être écrit.
+                # Codex did not even start: nothing could have been written.
                 return PROVIDER_FALLBACK_EXIT_CODE
 
             try:
                 process.communicate(input=prompt, timeout=timeout_seconds)
             except subprocess.TimeoutExpired:
                 terminate_process_group(process)
-                # Un timeout ne prouve RIEN : la phase a pu écrire puis rester
-                # bloquée. Jamais de bascule ici.
+                # A timeout proves NOTHING: the phase may have written and
+                # then hung. Never a switchover here.
                 return 124
 
         if process.returncode != 0:

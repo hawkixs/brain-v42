@@ -1,14 +1,14 @@
-"""Provenance d'apply — roadmap_curation_proposals.apply_log.
+"""Apply provenance — roadmap_curation_proposals.apply_log.
 
-Constat 2026-07-05 : les merges roadmap sont irréversibles en pratique
-(artifacts re-pointés puis liens doublons DELETE sans trace — 86 artifacts
-commingés sur « architect plan data-lab-endpoints », défusion impraticable).
-apply_log capture, au moment de l'apply, de quoi réverser :
-- merge   : into, statut/nom antérieurs du perdant, artifacts déplacés,
-            liens doublons supprimés
-- archive : statut antérieur
-- status  : statut antérieur
-- rename  : nom antérieur
+Measured 2026-07-05: roadmap merges are irreversible in practice (artifacts
+re-pointed, then duplicate links DELETEd without a trace — 86 artifacts
+commingled on "architect plan data-lab-endpoints", unmergeable by hand).
+apply_log captures, at apply time, enough to reverse:
+- merge   : into, the loser's prior status/name, artifacts moved,
+            duplicate links removed
+- archive : prior status
+- status  : prior status
+- rename  : prior name
 
 Revision ID: 031
 Revises: 030

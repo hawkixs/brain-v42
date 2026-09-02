@@ -40,39 +40,39 @@ _ENTITY_TABLES = ("decisions", "learnings", "snippets", "runbooks", "adrs")
 
 
 def _mutation_sql() -> str:
-    """Bâtir la requête du signal de mutation d'origine non-dream.
+    """Build the query for the non-dream-origin mutation signal.
 
-    Deux exclusions par rapport à la version d'origine :
+    Two exclusions compared with the original version:
 
-    - `content_updated_at` remplace `updated_at`, qui bougeait à chaque
-      écriture de compteur — cause principale des 48 RUN pour 2 SKIP mesurés
-      sur 50 nuits ;
-    - les entités taguées `dream:generated` sortent du signal, sinon SYNTH
-      garantit en créant ses insights que la nuit suivante synthétisera
+    - `content_updated_at` replaces `updated_at`, which moved on every counter
+      write — the main cause of the 48 RUN against 2 SKIP measured over 50
+      nights;
+    - entities tagged `dream:generated` leave the signal, otherwise SYNTH
+      guarantees, by creating its insights, that the next night will
       par-dessus sa propre production.
 
-    `tags` est NOT NULL DEFAULT '{}' sur les cinq tables (vérifié le
-    2026-08-06, zéro NULL en base), donc `ANY(tags)` ne peut pas rendre NULL
-    et faire disparaître une ligne du signal. Si cette contrainte tombait un
-    jour, il faudrait un COALESCE : un prédicat NULL exclurait la ligne et
-    produirait un SKIP à tort, ce que ce module promet impossible.
+    `tags` is NOT NULL DEFAULT '{}' on all five tables (verified 2026-08-06,
+    zero NULL in the database), so `ANY(tags)` cannot return NULL and make a
+    row vanish from the signal. Were that constraint ever to fall, a COALESCE
+    would be needed: a NULL predicate would exclude the row and produce a SKIP
+    wrongly, which this module promises is impossible.
 
-    `greatest()` porte ici la MÊME charge, et c'est moins visible.
-    `content_updated_at` est livré par la 041 sans backfill : mesuré le
-    2026-08-08, il vaut NULL sur 2739 learnings sur 2740. Le signal ne tient
-    donc que parce que `GREATEST` d'ANSI/PostgreSQL **ignore les NULL** et
-    retombe sur `created_at` — vérifié en base, pas supposé. C'est une
-    sémantique propre à PostgreSQL : MySQL et Oracle rendent NULL dès qu'un
-    argument est NULL, ce qui annulerait le `max()` de chaque table et
-    produirait un SKIP permanent. Aucun test ne couvre ce comportement — le
-    seul test du module compte des occurrences de chaîne dans le SQL. Ne pas
-    remplacer `greatest` par une expression « équivalente » sans mesurer son
-    comportement sur NULL.
+    `greatest()` carries the SAME load here, and it is less visible.
+    `content_updated_at` ships with 041 without a backfill: measured
+    2026-08-08, it is NULL on 2739 learnings out of 2740. The signal
+    therefore only holds because ANSI/PostgreSQL's `GREATEST` **ignores
+    NULLs** and falls back on `created_at` — verified in the database, not
+    assumed. That is a PostgreSQL-specific semantics: MySQL and Oracle return
+    NULL as soon as one argument is NULL, which would cancel each table's
+    `max()` and produce a permanent SKIP. No test covers this behaviour — the
+    module's only test counts string occurrences in the SQL. Do not replace
+    `greatest` with an "equivalent" expression without measuring how it
+    behaves on NULL.
 
-    Angle mort accepté : l'exclusion se fait par tag d'entité, pas par
-    acteur d'écriture, donc une édition humaine du contenu d'une entité déjà
-    taguée `dream:generated` reste invisible au signal de mutation — pire cas,
-    une nuit SYNTH différée.
+    An accepted blind spot: the exclusion works by entity tag, not by writing
+    actor, so a human edit to the content of an entity already tagged
+    `dream:generated` stays invisible to the mutation signal — worst case, one
+    deferred SYNTH night.
     """
     return " UNION ALL ".join(
         f"SELECT max(greatest(created_at, content_updated_at)) AS ts FROM {t} "
@@ -126,12 +126,12 @@ def main() -> None:
         print("RUN (asyncpg unavailable)")
         return
 
-    # La résolution est DANS le try : elle lève quand rien ne configure
-    # POSTGRES_URL, et cette porte doit rester fail-open — une erreur de
-    # configuration ne doit jamais faire sauter les phases Opus par erreur. Le
-    # littéral `brain:brain` qui vivait ici a survécu à la rotation du mot de
-    # passe en imprimant `RUN (preflight error: …)` nuit après nuit : correct
-    # pour cette porte, mais aucune preuve que la configuration allait bien.
+    # The resolution is INSIDE the try: it raises when nothing configures
+    # POSTGRES_URL, and this gate must stay fail-open — a configuration error
+    # must never skip the Opus phases by mistake. The `brain:brain` literal that
+    # used to live here survived the password rotation by printing
+    # `RUN (preflight error: …)` night after night: correct for this gate, but
+    # no proof at all that the configuration was sound.
     try:
         latest_mutation, last_run = asyncio.run(
             _fetch_signals(resolve_postgres_dsn(), current_date)

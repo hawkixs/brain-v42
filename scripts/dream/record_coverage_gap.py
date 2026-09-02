@@ -1,37 +1,37 @@
-"""Pose la ligne `dream_runs` qui porte le verdict de couverture d'une nuit.
+"""Write the `dream_runs` row carrying a night's coverage verdict.
 
-Ticket `0a9c067e`. Sa leçon centrale : une alerte que personne ne lit est
-indiscernable d'une alerte absente. Le comparateur de couverture avait raison
-trois nuits de suite et rien ne s'est passé, parce que sa sortie n'atteignait
-que le fichier daté.
+Ticket `0a9c067e`. Its central lesson: an alert nobody reads is
+indistinguishable from an absent alert. The coverage comparator was right three
+nights running and nothing happened, because its output reached the dated file
+and nothing else.
 
-`post_run_alert` reste READ-ONLY — c'est un contrat épinglé par test. Le writer
-vit donc ici, dans un module séparé appelé par `dream.sh` quand le verdict
-escalade. La ligne qu'il pose atteint DEUX lecteurs existants sans une ligne de
-code chez eux :
+`post_run_alert` stays READ-ONLY — that is a contract pinned by a test. The
+writer therefore lives here, in a separate module called by `dream.sh` when the
+verdict escalates. The row it writes reaches TWO existing readers without a
+line of code on their side:
 
-- `DreamRunService.last_failure` → « ### Last failure » du briefing de session ;
+- `DreamRunService.last_failure` → the session briefing's "### Last failure";
 - `collect_nightly_ops` → `/metrics` `nightly.last_failure`.
 
-Prix assumé et dit : étant la plus récente, elle prend la place « Last failure »
-d'un échec de phase de la même nuit, et `/metrics` `last_run.status` passe à
-`partial` ces nuits-là — ce qui est vrai.
+An accepted price, stated: being the most recent, it takes the "Last failure"
+slot from a phase failure of the same night, and `/metrics` `last_run.status`
+turns `partial` on those nights — which is true.
 
-Calque de `_promote_helpers._record_empty_pool`, avec ses deux propriétés :
+Modelled on `_promote_helpers._record_empty_pool`, with its two properties:
 
-- il n'élève JAMAIS — une erreur de télémétrie ne tue pas une nuit ;
-- il RAPPORTE quand même, par son code retour. « Best-effort » n'est pas « rend
-  toujours 0 » : c'est précisément le code retour de `record-empty-pool` qui
-  rend observable une ligne `dream_runs` perdue. Son appelant l'encadre donc par
-  `set +e`, `set -euo pipefail` étant actif dans `dream.sh`.
+- it NEVER raises — a telemetry error does not kill a night;
+- it REPORTS all the same, through its exit code. "Best-effort" is not "always
+  returns 0": it is precisely `record-empty-pool`'s exit code that makes a lost
+  `dream_runs` row observable. Its caller therefore wraps it in `set +e`,
+  `set -euo pipefail` being active in `dream.sh`.
 
 CLI:
     python -m scripts.dream.record_coverage_gap --date 2026-08-18 \\
         --summary "COVERAGE mode=manifest …" [--detail "COVERAGE_SILENT …"]
 
 Exit codes:
-    0  → ligne posée (ou mise à jour)
-    1  → échec — un WARN est imprimé sur stderr, aucune exception ne remonte
+    0  → row written (or updated)
+    1  → failure — a WARN is printed on stderr, no exception propagates
 """
 
 from __future__ import annotations
@@ -48,18 +48,18 @@ from brain_v42.config import Settings
 from brain_v42.db.tables import dream_runs
 from brain_v42.dream_run_project_key import GLOBAL_PHASE_PROJECT_KEY
 
-# 8 caractères — `dream_runs.phase` est un `varchar(10)`, mesuré, et un test lit
-# la longueur dans les métadonnées réelles plutôt que de recopier le nombre.
+# 8 characters — `dream_runs.phase` is a `varchar(10)`, measured, and a test
+# reads the length from the real metadata rather than copying the number.
 COVERAGE_PHASE = "coverage"
 
-# `fail`, pas un statut neuf. `collector_dream` et `DreamRunService.last_failure`
-# comptent tout `!= 'done'` comme un échec, et `codex_dream_run_v1` projette
-# `status` vers `codex_ro` : inventer une valeur serait un changement de contrat
-# externe pour ne rien gagner. Ici l'échec est réel, il n'y a rien à adoucir.
+# `fail`, not a new status. `collector_dream` and
+# `DreamRunService.last_failure` count anything `!= 'done'` as a failure, and
+# `codex_dream_run_v1` projects `status` to `codex_ro`: inventing a value would
+# be an external contract change for no gain. Here the failure is real.
 COVERAGE_STATUS = "fail"
 
-# `error_message` est du `text` non borné — mesuré. On borne quand même : un
-# rapport illisible n'est pas lu, ce qui est le défaut d'origine du ticket.
+# `error_message` is unbounded `text` — measured. We bound it anyway: an
+# unreadable report goes unread, which is the ticket's original defect.
 MAX_ERROR_MESSAGE_CHARS = 4000
 
 EMPTY_VERDICT_MESSAGE = (
@@ -74,7 +74,7 @@ def _build_factory(postgres_url: str) -> async_sessionmaker[AsyncSession]:
 
 
 def build_error_message(summary: str, detail: str | None) -> str:
-    """La ligne machine, puis les paires fautives. Jamais vide, jamais démesuré."""
+    """The machine line, then the offending pairs. Never empty, never huge."""
     parts = [part.strip() for part in (summary, detail or "") if part and part.strip()]
     message = "\n".join(parts) if parts else EMPTY_VERDICT_MESSAGE
     if len(message) <= MAX_ERROR_MESSAGE_CHARS:
@@ -99,15 +99,15 @@ async def record_coverage_gap(
     summary: str,
     detail: str | None = None,
 ) -> None:
-    """Écrit UNE ligne `coverage` pour la nuit, idempotente par `run_date`.
+    """Write ONE `coverage` row for the night, idempotent on `run_date`.
 
-    Un rejeu manuel du matin met la ligne à jour au lieu d'en empiler une
-    seconde : deux verdicts contradictoires pour la même nuit vaudraient moins
-    que pas de verdict du tout.
+    A manual morning replay updates the row instead of stacking a second one:
+    two contradictory verdicts for the same night would be worth less than no
+    verdict at all.
 
-    `project_key` porte la sentinelle des phases globales : `coverage` juge la
-    nuit entière, pas un projet. Elle ne transite JAMAIS par
-    `canonicalize_project_key`, dont le motif la rejette.
+    `project_key` carries the global-phase sentinel: `coverage` judges the whole
+    night, not one project. It NEVER travels through
+    `canonicalize_project_key`, whose pattern rejects it.
     """
     message = build_error_message(summary, detail)
     async with session_factory() as session:
@@ -153,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         asyncio.run(
             record_coverage_gap(session_factory, run_date, summary=args.summary, detail=args.detail)
         )
-    except Exception as exc:  # noqa: BLE001 — n'élève jamais ; le rc porte l'échec
+    except Exception as exc:  # noqa: BLE001 — never raises; the rc carries it
         print(f"WARN record-coverage-gap failed: {exc!r}", file=sys.stderr)
         return 1
     return 0

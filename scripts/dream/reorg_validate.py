@@ -177,10 +177,10 @@ def _reject_foreign_project(
     """Fail when a mutated entity does not belong to the run's project.
 
     The perimeter is REQUIRED, and deliberately has no ``None`` branch. It used
-    to have one — « a ``None`` perimeter disables the check rather than guessing
-    one » — which read as prudence and behaved as silence: the validator still
+    to have one — "a ``None`` perimeter disables the check rather than guessing
+    one" — which read as prudence and behaved as silence: the validator still
     printed ``REORG VALIDATE: OK`` while checking no perimeter at all, so a
-    drapeau dropped from dream.sh's argument array would have looked like a
+    flag dropped from dream.sh's argument array would have looked like a
     clean night. Parity with promote_validate and connect_validate, which have
     both required it all along.
     """
@@ -423,22 +423,22 @@ async def _amain(
     session_factory: async_sessionmaker[AsyncSession],
     args: argparse.Namespace,
 ) -> int:
-    """Validation ET marquage dans UNE SEULE boucle — voir `main`.
+    """Validation AND marking in ONE SINGLE loop — see `main`.
 
-    Le marquage ne peut aboutir que dans la boucle qui a servi la validation :
-    `asyncio.run` ferme la sienne en sortant, et `pool_pre_ping=True` retouche
-    depuis la boucle suivante des connexions attachées à la boucle morte. Le
-    chemin d'échec est le SEUL à enchaîner deux usages du pool, donc le seul à
-    l'avoir rencontré — et c'est exactement le chemin qui doit marcher.
+    The marking can only land in the loop that served the validation:
+    `asyncio.run` closes its own on exit, and `pool_pre_ping=True` reaches, from
+    the next loop, connections attached to the dead one. The failure path is the
+    ONLY one to chain two uses of the pool, hence the only one to have met it —
+    and it is exactly the path that has to work.
     """
     try:
         report = parse_report(raw)
         # CLI --dry-run flag is authoritative over JSON trailer (belt+suspenders)
         if args.dry_run:
             report = {**report, "dry_run": True}
-        # Avant `validate`, pour que le verdict de symétrie s'imprime même quand
-        # la validation échoue juste après — c'est la nuit qui échoue qui a le
-        # plus besoin d'être lue.
+        # Before `validate`, so the symmetry verdict prints even when the
+        # validation fails right after — the night that fails is the one that
+        # most needs reading.
         _emit_symmetry(report, args.events_jsonl)
         await validate(
             report,

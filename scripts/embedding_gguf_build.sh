@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Reproduit le GGUF Q8_0 de Qodo-Embed-1-1.5B (produit initialement le
-# 2026-07-06). Sortie : $OUT_DIR/qodo-embed-1.5b-{f16,q8_0}.gguf
+# Reproduces the Q8_0 GGUF of Qodo-Embed-1-1.5B (originally produced on
+# 2026-07-06). Output: $OUT_DIR/qodo-embed-1.5b-{f16,q8_0}.gguf
 #
 # Usage: scripts/embedding_gguf_build.sh [OUT_DIR]
 set -euo pipefail
