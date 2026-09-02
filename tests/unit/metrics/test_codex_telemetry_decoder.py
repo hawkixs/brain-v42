@@ -332,13 +332,13 @@ def test_decoder_does_not_mutate_the_caller_owned_json_shape() -> None:
 
 
 # ---------------------------------------------------------------------------
-# La barrière de confidentialité, éprouvée pour elle-même
+# The confidentiality barrier, tested for its own sake
 #
-# Chaque enregistrement OTLP de Codex porte en clair user.email, user.id,
-# user.account_uuid, user.account_id et organization.id — mesuré au spike du
-# 2026-08-06. La liste blanche est ce qui les empêche d'entrer dans un registre
-# exposé par HTTP. Elle n'avait AUCUN témoin : la retirer laissait la suite
-# entièrement verte (mesuré 2026-08-10, delta zéro sur 7416 tests).
+# Every Codex OTLP record carries user.email, user.id, user.account_uuid,
+# user.account_id and organization.id in clear — measured at the spike of
+# 2026-08-06. The allowlist is what stops them entering a registry exposed over
+# HTTP. It had NO witness: removing it left the suite entirely green (measured
+# 2026-08-10, zero delta over 7416 tests).
 # ---------------------------------------------------------------------------
 
 SENSITIVE_VALUES = {
@@ -351,10 +351,10 @@ SENSITIVE_VALUES = {
     "mcp_servers": "brain-v42,red-data",
 }
 
-# Identiques à ceux du jumeau Claude (tests/unit/test_claude_telemetry.py:64), et
-# volontairement : les deux barrières ont la même forme et doivent se juger pareil.
-# Ne PAS y ajouter « token » — il accuserait input_token_count, qui est un COMPTE
-# de tokens et non un jeton d'authentification.
+# Identical to the Claude twin's (tests/unit/test_claude_telemetry.py:64), and
+# deliberately so: the two barriers have the same shape and must be judged alike.
+# Do NOT add "token" to it — it would accuse input_token_count, which is a COUNT
+# of tokens and not an authentication token.
 PERSONAL_DATA_MARKERS = ("email", "user", "account", "organization", "prompt")
 
 
@@ -363,16 +363,16 @@ def _sensitive_attributes() -> list[dict[str, object]]:
 
 
 def test_the_codex_whitelist_admits_no_personal_data_key() -> None:
-    """La LISTE, testée seule — elle n'avait pas non plus de témoin côté Codex.
+    """The LIST, tested alone — it had no witness on the Codex side either.
 
-    L'élargir ne fuit rien le jour où on le fait ; ça arme la fuite pour le champ
-    suivant. Mesuré : ajouter ``user.email`` à la liste, filtre intact, laisse les
-    414 tests métriques verts en 1,93 s.
+    Widening it leaks nothing on the day it is done; it arms the leak for the next
+    field. Measured: adding ``user.email`` to the list, filter intact, leaves the
+    414 metrics tests green in 1.93 s.
     """
     from brain_v42.metrics.codex_telemetry import _PROJECTED_ATTRIBUTE_KEYS
 
-    # Contrôle positif : sans lui, une liste vidée ou renommée rendrait les
-    # deux assertions suivantes vraies pour rien.
+    # Positive control: without it, an emptied or renamed list would make the
+    # two assertions below true for nothing.
     assert {"conversation.id", "event.name", "model"} <= _PROJECTED_ATTRIBUTE_KEYS
 
     admitted = SENSITIVE_VALUES.keys() & _PROJECTED_ATTRIBUTE_KEYS
@@ -385,20 +385,20 @@ def test_the_codex_whitelist_admits_no_personal_data_key() -> None:
 
 
 def test_the_codex_projection_drops_every_key_outside_the_whitelist() -> None:
-    """Le FILTRE, éprouvé là où il est OBSERVABLE : la projection elle-même.
+    """The FILTER, tested where it is OBSERVABLE: the projection itself.
 
-    Aucune assertion sur l'enregistrement RENDU ne peut mordre. Mesuré, charge
-    identique avec et sans filtre : le ``_ProjectedRecord`` est le même champ pour
-    champ. La dataclass est ``frozen=True, slots=True`` et la projection ne lit que
-    des noms whitelistés via ``.get()`` — un attribut non projeté n'a nulle part où
-    atterrir. C'est pourquoi ce test s'accroche à un symbole privé : c'est le prix
-    d'une barrière invisible depuis l'API publique. Si quelqu'un inline la
-    projection, ce test meurt à l'import, donc bruyamment.
+    No assertion on the RETURNED record can bite. Measured, identical payload with
+    and without the filter: the ``_ProjectedRecord`` is the same field for field.
+    The dataclass is ``frozen=True, slots=True`` and the projection reads only
+    allowlisted names through ``.get()`` — an unprojected attribute has nowhere to
+    land. That is why this test hangs onto a private symbol: it is the price of a
+    barrier invisible from the public API. If anyone inlines the projection, this
+    test dies at import, hence loudly.
     """
     from brain_v42.metrics.codex_telemetry import _attributes as _project_attributes
 
     record = _record(
-        token_value={"intValue": 10},  # sinon la clé manque et l'exhaustivité ment
+        token_value={"intValue": 10},  # otherwise the key is missing and exhaustiveness lies
         extra_attributes=_sensitive_attributes(),
     )
 
@@ -407,9 +407,9 @@ def test_the_codex_projection_drops_every_key_outside_the_whitelist() -> None:
     leaked = SENSITIVE_VALUES.keys() & retained.keys()
     assert not leaked, f"clés personnelles retenues par la projection : {sorted(leaked)}"
 
-    # Exhaustif, et contrôle positif du même coup : une projection vide ou
-    # rétrécie échoue ici, ce qui interdit à l'assertion d'absence ci-dessus de
-    # passer pour rien. Deux sondes positives ne prouvent pas qu'une garde existe.
+    # Exhaustive, and a positive control at the same time: an empty or shrunken
+    # projection fails here, which stops the absence assertion above from passing
+    # for nothing. Two positive probes do not prove a guard exists.
     assert set(retained) == {
         "conversation.id",
         "event.kind",

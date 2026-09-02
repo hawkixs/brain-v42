@@ -213,10 +213,10 @@ class TestTransitionTable:
         assert TRANSITIONS[(kind, status, action)] == (role, new_status)
 
     def test_exactly_15_legal_transitions(self):
-        # Pin la surface complète : les 15 légales sont énumérées ci-dessus et
-        # ce count garantit qu'AUCUNE autre combinaison (kind × status × action,
-        # 84 au total) n'est légale — la matrice illégale est couverte par
-        # construction (spec §8), les cas ci-dessous ne sont que documentaires.
+        # Pins the whole surface: the 15 legal ones are enumerated above and
+        # this count guarantees NO other combination (kind × status × action,
+        # 84 in total) is legal — the illegal matrix is covered by construction
+        # (spec §8), the cases below are documentation only.
         assert len(TRANSITIONS) == 15
 
     @pytest.mark.parametrize(
@@ -224,8 +224,8 @@ class TestTransitionTable:
         [
             (TicketKind.REQUEST, TicketStatus.CLOSED, TicketAction.REOPEN),  # terminal
             (TicketKind.REQUEST, TicketStatus.OPEN, TicketAction.ACK),  # ack = fyi only
-            (TicketKind.REQUEST, TicketStatus.OPEN, TicketAction.CONFIRM),  # rien à confirmer
-            (TicketKind.FYI, TicketStatus.OPEN, TicketAction.RESOLVE),  # fyi ne se résout pas
+            (TicketKind.REQUEST, TicketStatus.OPEN, TicketAction.CONFIRM),  # nothing to confirm
+            (TicketKind.FYI, TicketStatus.OPEN, TicketAction.RESOLVE),  # fyi does not resolve
             (TicketKind.FYI, TicketStatus.ACKED, TicketAction.ACK),  # terminal
             (TicketKind.FYI, TicketStatus.OPEN, TicketAction.START),
         ],
@@ -260,8 +260,8 @@ class TestSelfTransitions:
         assert cross != self_
 
     def test_self_transitions_cover_every_reachable_non_terminal_state(self):
-        # fyi inclus : sans une entrée self pour (FYI, OPEN), un self-ticket fyi
-        # deviendrait intransitionnable (spec §4.1).
+        # fyi included: without a self entry for (FYI, OPEN), an fyi self-ticket
+        # would become untransitionable (spec §4.1).
         reachable = {(k, s) for (k, s, _a) in TRANSITIONS}
         for kind, status in reachable:
             assert status not in TERMINAL_STATUSES

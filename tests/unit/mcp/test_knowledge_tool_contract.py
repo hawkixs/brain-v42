@@ -48,8 +48,8 @@ ADDITIVE_WRITE_TOOLS = frozenset(
 IDEMPOTENT_DESTRUCTIVE_TOOLS = frozenset(
     {
         "brain_delete",
-        # Le rejet est TERMINAL (aucune résurrection en review) et idempotent
-        # (re-rejeter rend « déjà rejected »).
+        # Rejection is TERMINAL (no resurrection at review) and idempotent
+        # (re-rejecting returns "already rejected").
         "brain_reject_curation_proposals",
     }
 )
@@ -60,8 +60,8 @@ DESTRUCTIVE_TOOLS = frozenset(
         "brain_execute_runbook",
         "brain_feature_update",
         "brain_merge_entities",
-        # Un apply de curation mute la FEATURE (merge archive la perdante,
-        # rename écrase le titre) — même famille que brain_feature_update.
+        # A curation apply mutates the FEATURE (merge archives the loser, rename
+        # overwrites the title) — the same family as brain_feature_update.
         "brain_apply_curation_proposal",
         "brain_refresh_entity",
         "brain_reindex_plans",

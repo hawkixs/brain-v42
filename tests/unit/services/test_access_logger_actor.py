@@ -1,4 +1,4 @@
-"""L'acteur doit être capturé à la mise en file, pas au flush."""
+"""The actor must be captured at enqueue time, not at flush time."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ class TestAccessLoggerActor:
         assert event["actor"] == "dream-codex-reorg"
 
     def test_actor_is_frozen_at_enqueue_not_at_flush(self) -> None:
-        """Le flush tourne hors contexte de requête : l'acteur doit déjà être figé."""
+        """The flush runs outside the request context: the actor must already be frozen."""
         logger = AccessLogger(session_factory=MagicMock())
 
         set_current_actor("red-lab")

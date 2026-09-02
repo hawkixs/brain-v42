@@ -1,17 +1,16 @@
-"""Les propositions de curation roadmap doivent être lisibles depuis le catalogue MCP.
+"""Roadmap curation proposals must be readable from the MCP catalogue.
 
-Ticket 2547b4a2. Mesuré le 2026-08-11 : 499 lignes `proposed` en base, dont 43 pour
-brain-v42. Aucun tool MCP ne les liste, et la seule surface apply/reject vit dans la
-passerelle Codex `:9211`, que le ticket constate non démarrée. Un relecteur Dream a dû
-ouvrir une transaction PostgreSQL READ ONLY pour rendre son verdict — c'est-à-dire
-sortir de l'outillage que ce verdict est censé piloter.
+Ticket 2547b4a2. Measured on 2026-08-11: 499 `proposed` rows in the database, 43 of
+them for brain-v42. No MCP tool lists them, and the only apply/reject surface lives
+in the Codex gateway `:9211`, which the ticket finds not started. A Dream reviewer had
+to open a READ ONLY PostgreSQL transaction to reach a verdict — that is, to leave the
+tooling that verdict is supposed to drive.
 
-Une table de 499 lignes que le catalogue ne sait pas montrer n'est pas « en attente » :
-elle est invisible, et son décompte n'apparaît que dans un agrégat de briefing qui ne
-permet aucune attribution item par item.
+A 499-row table the catalogue cannot show is not "pending": it is invisible, and its
+count appears only in a briefing aggregate that allows no item-by-item attribution.
 
-Ce lot expose la LECTURE seule. Le ticket est explicite — « Aucun SQL write n'est
-demandé dans ce ticket » — et la surface apply/reject reste une décision séparée.
+This batch exposes READING only. The ticket is explicit — "no SQL write is requested
+in this ticket" — and the apply/reject surface stays a separate decision.
 """
 
 from __future__ import annotations
@@ -101,11 +100,11 @@ class TestListCurationProposals:
 
     @pytest.mark.asyncio
     async def test_it_renders_every_field_the_reviewer_needs(self) -> None:
-        """Le ticket énumère ce qu'il faut pour décider item par item.
+        """The ticket enumerates what is needed to decide item by item.
 
-        Sans le contexte de cible (nom de la feature), un `feature_id` nu oblige à
-        une seconde requête par ligne — soit exactement le retour au SQL brut que
-        ce tool existe pour supprimer.
+        Without the target context (the feature name), a bare `feature_id` forces a
+        second query per row — that is, exactly the return to raw SQL this tool
+        exists to remove.
         """
         captured: list[tuple[str, dict[str, Any]]] = []
         tools = _tools([_row()], captured)
@@ -125,11 +124,11 @@ class TestListCurationProposals:
 
     @pytest.mark.asyncio
     async def test_the_query_is_scoped_to_the_requested_project(self) -> None:
-        """La sonde qui compte : la table n'a PAS de project_key.
+        """The probe that matters: the table has NO project_key.
 
-        Le scope passe par une jointure sur `features`. Retirer ce filtre rendrait
-        les 499 lignes de tous les projets sous une demande scopée — un tool qui
-        déborde silencieusement de son périmètre.
+        Scoping goes through a join on `features`. Removing that filter would return
+        all projects' 499 rows under a scoped request — a tool silently overflowing
+        its own perimeter.
         """
         captured: list[tuple[str, dict[str, Any]]] = []
         tools = _tools([_row()], captured)
@@ -139,10 +138,10 @@ class TestListCurationProposals:
         assert captured, "aucune requête exécutée"
         sql, params = captured[0]
         assert "features" in sql, "la requête ne joint pas features : scope impossible"
-        # Le FILTRE, pas seulement le paramètre. Première écriture de ce test :
-        # j'assertais `params["project_key"] == "brain-v42"`, ce qui reste VRAI
-        # quand on supprime la clause WHERE — le paramètre est lié, simplement
-        # jamais utilisé. Vérifié par mutation : la sonde ne mordait pas.
+        # The FILTER, not merely the parameter. First draft of this test: it
+        # asserted `params["project_key"] == "brain-v42"`, which stays TRUE when
+        # the WHERE clause is deleted — the parameter is bound, simply never used.
+        # Verified by mutation: the probe did not bite.
         assert "f.project_key = :project_key" in sql, (
             f"le project_key est lié mais pas filtré — la requête déborde sur "
             f"tous les projets :\n{sql}"
@@ -153,7 +152,7 @@ class TestListCurationProposals:
 
     @pytest.mark.asyncio
     async def test_the_default_status_is_proposed(self) -> None:
-        """Les 174 appliquées et 35 rejetées noieraient les 43 à décider."""
+        """The 174 applied and 35 rejected ones would drown the 43 left to decide."""
         captured: list[tuple[str, dict[str, Any]]] = []
         tools = _tools([_row()], captured)
 
@@ -163,7 +162,7 @@ class TestListCurationProposals:
 
     @pytest.mark.asyncio
     async def test_an_empty_result_says_so_instead_of_rendering_nothing(self) -> None:
-        """Une sortie vide serait indiscernable d'une panne de lecture."""
+        """An empty output would be indistinguishable from a read failure."""
         tools = _tools([], [])
 
         out = await tools["brain_list_curation_proposals"](project_key="brain-v42")
@@ -173,7 +172,7 @@ class TestListCurationProposals:
 
     @pytest.mark.asyncio
     async def test_an_oversized_limit_is_capped_and_announced(self) -> None:
-        """Réutilise la garde du ticket af3b58dd : un plafond muet ferait mentir la page."""
+        """Reuses ticket af3b58dd's guard: a silent cap would make the page lie."""
         captured: list[tuple[str, dict[str, Any]]] = []
         tools = _tools([_row()], captured)
 
@@ -184,10 +183,10 @@ class TestListCurationProposals:
 
     @pytest.mark.asyncio
     async def test_the_payload_is_rendered_without_being_dumped_raw(self) -> None:
-        """Le payload est du JSONB libre : il est rendu, mais borné.
+        """The payload is free-form JSONB: it is returned, but bounded.
 
-        Un dump intégral de 43 payloads reproduirait le token-bomb que le reste du
-        catalogue borne déjà.
+        A full dump of 43 payloads would reproduce the token bomb the rest of the
+        catalogue already bounds.
         """
         big = {"reason": "x" * 5_000}
         tools = _tools([_row(payload=big)], [])

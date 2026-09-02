@@ -138,7 +138,7 @@ class TestResolveFeature:
         row = _row()
         factory, _ = _factory(
             [
-                _mappings_all([]),  # exact: miss (pas hex → pas de branche id)
+                _mappings_all([]),  # exact: miss (not hex → no id branch)
                 _mappings_all([row]),  # ILIKE: 1 match
             ]
         )
@@ -178,7 +178,7 @@ class TestUpdateStatus:
         assert updated is not None
         assert updated.status == "deployed"
         assert updated.pinned is True
-        # Le statement UPDATE porte bien status + pinned + status_updated_at.
+        # The UPDATE statement does carry status + pinned + status_updated_at.
         stmt = session.execute.call_args[0][0]
         compiled = str(stmt)
         assert "status" in compiled and "pinned" in compiled

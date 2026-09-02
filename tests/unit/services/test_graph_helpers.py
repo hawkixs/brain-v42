@@ -513,13 +513,13 @@ class TestLinkArtifactIfEnabled:
 
 
 class TestAutoLinkIfEnabledReturnsItsResult:
-    """Ticket 6d2cf2a9 (d) — le résultat de liaison ne doit plus être jeté en silence.
+    """Ticket 6d2cf2a9 (d) — the link result must no longer be dropped in silence.
 
-    `brain_propose_adr` passe par ce helper. Quand un lien graphe échoue, le
-    LinkJobResult porte le décompte dans `errors` — mais le helper retournait
-    None, donc l'échec n'existait nulle part au-dessus du journal. Le rendre
-    permet à un appelant de le remonter ; ceux qui n'en veulent pas l'ignorent
-    EXPLICITEMENT, ce qui est une décision lisible plutôt qu'une perte muette.
+    `brain_propose_adr` goes through this helper. When a graph link fails, the
+    LinkJobResult carries the count in `errors` — but the helper returned None, so
+    the failure existed nowhere above the log. Returning it lets a caller surface
+    it; those who do not want it ignore it EXPLICITLY, which is a readable
+    decision rather than a silent loss.
     """
 
     async def test_returns_the_link_job_result_in_admin_mode(self) -> None:
@@ -552,7 +552,7 @@ class TestAutoLinkIfEnabledReturnsItsResult:
         assert await auto_link_if_enabled(None, "ADR", FIXED_UUID, FAKE_EMBEDDING) is None
 
     async def test_returns_none_when_the_admin_path_swallowed_an_exception(self) -> None:
-        """Le contrat de dégradation admin est inchangé : on avale, donc pas de résultat."""
+        """The admin degradation contract is unchanged: we swallow, hence no result."""
         linker = MagicMock()
         linker.auto_link = AsyncMock(side_effect=RuntimeError("graph down"))
 

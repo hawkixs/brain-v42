@@ -125,18 +125,18 @@ async def test_lifecycle_tools_publish_exact_safety_annotations() -> None:
 
 
 async def test_lifecycle_docstrings_keep_boundaries_under_user_control() -> None:
-    """Le covenant tel que le CLIENT le reçoit, pas tel que le source l'écrit.
+    """The covenant as the CLIENT receives it, not as the source writes it.
 
-    Second point d'ancrage, et il n'est pas redondant avec
-    `test_session_covenant_docstrings_anchor` : celui-là lit l'AST du module,
-    celui-ci lit la `description` que FastMCP publie réellement. Les deux ont
-    rougi ensemble à la réécriture par nature (046) — le premier était nommé
-    dans le mandat, le second ne l'était pas. C'est la classe d'instantané
-    périmé « document SATELLITE » : seule une suite complète le sort.
+    A second anchor point, and it is not redundant with
+    `test_session_covenant_docstrings_anchor`: that one reads the module's AST,
+    this one reads the `description` FastMCP actually publishes. Both turned red
+    together at the rewrite by nature (046) — the first was named in the mandate,
+    the second was not. That is the "SATELLITE document" class of stale snapshot:
+    only a full suite surfaces it.
 
-    Réécrit par nature (ADR §0ter (d)) : depuis la 046 le serveur ouvre et ferme
-    ses propres traçantes `agent`. Le covenant NOMME cette exception au lieu de
-    la nier ; la phrase d'avant est retenue ci-dessous comme témoin négatif.
+    Rewritten by nature (ADR §0ter (d)): since 046 the server opens and closes its
+    own `agent` tracers. The covenant NAMES that exception instead of denying it;
+    the previous sentence is kept below as a negative witness.
     """
     server, _, _ = _registered_server()
 
@@ -171,11 +171,11 @@ async def test_lifecycle_input_schemas_are_bounded_and_discoverable() -> None:
     )
     assert list_project_key["minLength"] == 1
     assert list_project_key["maxLength"] == 50
-    # `closed_inactive` ajouté par `24ca3b73` : le 4e état de la 046 était
-    # atteignable en base et posé par le balayage, mais absent du seul filtre
-    # publié — donc indemandable par un client. Coût MESURÉ du seul ajout à
-    # cette énumération : +18 octets sur le schéma d'entrée de ce tool (377 ->
-    # 395), et zéro sur les sept schémas de sortie.
+    # `closed_inactive` added by `24ca3b73`: 046's 4th state was reachable in the
+    # database and set by the sweep, but absent from the only published filter —
+    # hence unrequestable by a client. MEASURED cost of that single addition to
+    # the enumeration: +18 bytes on this tool's input schema (377 -> 395), and
+    # zero on the seven output schemas.
     assert listing["status"]["enum"] == [
         "open",
         "stale",
@@ -202,7 +202,7 @@ async def test_next_focus_description_scopes_judgment_out_of_measurable_state() 
 
     assert "jugement" in description
     assert "briefing" in description
-    assert "mesur" in description  # couvre mesurable/mesuré/mesure
+    assert "mesur" in description  # covers mesurable/mesuré/mesure
 
 
 async def test_end_rejects_boolean_focus_revision_before_service_call() -> None:

@@ -1607,7 +1607,7 @@ class TestWhatDoIKnowAboutDegradedPropagation:
 
     @pytest.mark.asyncio
     async def test_wdika_degraded_field_present_on_model(self) -> None:
-        """WhatDoIKnowResponse model must accept degraded field (rétro-compatible, default None)."""
+        """WhatDoIKnowResponse model must accept degraded field (backward-compatible, default None)."""
         # If the field doesn't exist on the model, this construction will fail
         response = WhatDoIKnowResponse(
             topic="test",

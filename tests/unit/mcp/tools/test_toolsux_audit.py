@@ -1154,16 +1154,16 @@ class TestPlanDetailContiguousTruncation:
 
 
 # ===========================================================================
-# 9. Cap GLOBAL sur le nombre de projets, et son échappatoire (ticket 316a8b50)
+# 9. GLOBAL cap on the number of projects, and its escape hatch (ticket 316a8b50)
 # ===========================================================================
 
 
 class TestRoadmapProjectCapEscapeHatch:
-    """Le cap projets doit être contournable, et son échappatoire bornée.
+    """The project cap must be bypassable, and its escape hatch bounded.
 
-    Mesuré le 2026-08-10 : 30 projets rendus, 33 943 caractères. Une échappatoire
-    comprise comme « plus aucun cap » rendrait 61 882 caractères — on inventerait
-    un pire cas 1,8× pire que celui qu'on prétend corriger.
+    Measured on 2026-08-10: 30 projects rendered, 33,943 characters. An escape
+    hatch understood as "no cap at all" would return 61,882 characters — we would
+    invent a worst case 1.8× worse than the one we claim to fix.
     """
 
     def _make_tools(self, projects_data: list[dict]) -> dict[str, Any]:
@@ -1213,11 +1213,11 @@ class TestRoadmapProjectCapEscapeHatch:
 
     @pytest.mark.asyncio
     async def test_full_true_does_not_lift_the_per_project_feature_cap(self) -> None:
-        """La sonde NÉGATIVE de l'échappatoire.
+        """The escape hatch's NEGATIVE probe.
 
-        Elle tombe sur l'implémentation paresseuse la plus tentante —
-        ``max_features = 10_000 if (project_key or full) else 20`` — qui ferait de
-        ``full=True`` un « aucun cap » et doublerait le pire cas.
+        It catches the most tempting lazy implementation —
+        ``max_features = 10_000 if (project_key or full) else 20`` — which would
+        turn ``full=True`` into "no cap" and double the worst case.
         """
         features = [
             {
@@ -1245,11 +1245,11 @@ class TestRoadmapProjectCapEscapeHatch:
 
     @pytest.mark.asyncio
     async def test_a_scoped_call_never_emits_a_project_omission_notice(self) -> None:
-        """Garde de régression, honnêtement déclarée comme telle.
+        """A regression guard, honestly declared as such.
 
-        Elle passe trivialement aujourd'hui. Sa valeur est postérieure : elle tombe
-        si quelqu'un applique le cap projets avant le test ``if project_key``, ou
-        cesse de le neutraliser sur la branche scopée.
+        It passes trivially today. Its value is later: it fires if anyone applies
+        the project cap before the ``if project_key`` test, or stops neutralizing
+        it on the scoped branch.
         """
         tools = self._make_tools(self._projects(30))
         result = await tools["brain_get_roadmap"](project_key="proj-01")

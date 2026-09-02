@@ -1,15 +1,15 @@
-"""Les DEUX parsers exigent `--project-key` et le font descendre jusqu'au bind SQL.
+"""BOTH parsers require `--project-key` and carry it down to the SQL bind.
 
-Il n'y a qu'un site d'`INSERT` (`dream_parser._insert_dream_run`) mais deux points
-d'entrée en ligne de commande, et `dream.sh` leur construit un tableau
-d'arguments UNIQUE (`dream.sh:315-317`). Le rail réellement emprunté en
-production est `codex_dream_parser` — `BRAIN_DREAM_AGENT_PROVIDER` vaut `codex`
-par défaut (`dream.sh:19`) — et il n'avait jusqu'ici aucun test de CLI.
+There is only one `INSERT` site (`dream_parser._insert_dream_run`) but two
+command-line entry points, and `dream.sh` builds a SINGLE argument array for them
+(`dream.sh:315-317`). The rail actually taken in production is
+`codex_dream_parser` — `BRAIN_DREAM_AGENT_PROVIDER` is `codex` by default
+(`dream.sh:19`) — and until now it had no CLI test at all.
 
-N'enseigner le flag qu'à `dream_parser` répare donc le rail de repli et casse le
-rail vivant : `argparse` sort en 2, `set -euo pipefail` propage, et `dream.sh`
-journalise `WARN codex_dream_parser failed for $name (non-fatal)`. La nuit perd
-ses six lignes par projet, en silence. C'est ce que ces tests interdisent.
+Teaching the flag to `dream_parser` alone therefore repairs the fallback rail and
+breaks the live one: `argparse` exits 2, `set -euo pipefail` propagates, and
+`dream.sh` logs `WARN codex_dream_parser failed for $name (non-fatal)`. The night
+loses its six rows per project, silently. That is what these tests forbid.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ _INSERT = re.compile(
 
 
 def _insert_shape(sql: str) -> tuple[list[str], list[str]]:
-    """Colonnes et placeholders de l'INSERT, dans l'ordre où ils sont écrits."""
+    """Columns and placeholders of the INSERT, in the order they are written."""
     match = _INSERT.search(sql)
     assert match is not None, f"INSERT dream_runs introuvable dans : {sql}"
     columns = [part.strip() for part in match.group("cols").split(",")]
@@ -60,8 +60,8 @@ def test_both_parsers_refuse_to_run_without_a_project_key(module: object) -> Non
 
 @pytest.mark.parametrize("module", [dream_parser, codex_dream_parser], ids=["claude", "codex"])
 def test_neither_parser_offers_a_default_project_key(module: object) -> None:
-    """Un défaut `brain-v42` est exactement la classe de bug visée : il
-    étiquetterait la nuit d'un autre projet sans que rien ne le signale."""
+    """A `brain-v42` default is exactly the class of bug targeted: it would label
+    another project's night with nothing flagging it."""
     action = next(
         candidate
         for candidate in module._build_arg_parser()._actions
@@ -83,12 +83,12 @@ def test_both_parsers_accept_the_flag_dream_sh_will_pass(module: object) -> None
 
 @pytest.mark.asyncio
 async def test_insert_dream_run_binds_the_project_key_before_phase_dry_run() -> None:
-    """`project_key` est `$14`, `phase_dry_run` reste le DERNIER lié.
+    """`project_key` is `$14`, `phase_dry_run` stays the LAST one bound.
 
-    L'ordre n'est pas cosmétique : `test_dream_parser_phase_dry_run` épingle
-    `bind_args[-1] is True` pour prouver que le drapeau de répétition à blanc
-    n'est pas perdu. Insérer la clé en fin de `VALUES` rendrait ce pin rouge
-    pour une raison sans rapport avec ce qu'il garde.
+    The order is not cosmetic: `test_dream_parser_phase_dry_run` pins
+    `bind_args[-1] is True` to prove the dry-run flag is not lost. Inserting the
+    key at the end of `VALUES` would turn that pin red for a reason unrelated to
+    what it guards.
     """
     mock_conn = MagicMock()
     mock_conn.execute = AsyncMock()
@@ -112,12 +112,12 @@ async def test_insert_dream_run_binds_the_project_key_before_phase_dry_run() -> 
     sql, *bind_args = mock_conn.execute.await_args.args
     columns, placeholders = _insert_shape(sql)
 
-    # Colonne ↔ placeholder ↔ argument, joints — jamais lus comme trois faits
-    # séparés. Les quatre écrivains `sa.text` ont cette garde (le zip de
-    # `_written_project_key`) ; celui-ci, qui écrit le plus de lignes, ne
-    # l'avait pas : permuter la seule liste de colonnes laissait les assertions
-    # vertes tout en liant `project_key` au booléen et `phase_dry_run` à la clé.
-    # 049 : seize colonnes — thinking_tokens s'insère avant le drapeau.
+    # Column ↔ placeholder ↔ argument, joined — never read as three separate
+    # facts. The four `sa.text` writers have this guard (the zip in
+    # `_written_project_key`); this one, which writes the most rows, did not:
+    # permuting the column list alone left the assertions green while binding
+    # `project_key` to the boolean and `phase_dry_run` to the key.
+    # 049: sixteen columns — thinking_tokens slots in before the flag.
     assert len(columns) == len(placeholders) == len(bind_args) == 16
     assert placeholders == [f"${index + 1}" for index in range(16)], (
         "les placeholders doivent être en ordre : sinon l'index d'une colonne "
@@ -133,8 +133,8 @@ async def test_insert_dream_run_binds_the_project_key_before_phase_dry_run() -> 
 
 @pytest.mark.asyncio
 async def test_insert_dream_run_demands_the_project_key() -> None:
-    """Aucun défaut au niveau de la fonction non plus : les deux `main()`
-    doivent la fournir, sinon l'oubli d'un seul appelant passerait inaperçu."""
+    """No default at the function level either: both `main()` must supply it,
+    otherwise one forgetful caller would go unnoticed."""
     with pytest.raises(TypeError, match="project_key"):
         await dream_parser._insert_dream_run(  # type: ignore[call-arg]
             run_date="2026-08-09",
@@ -154,7 +154,7 @@ async def test_insert_dream_run_demands_the_project_key() -> None:
 def test_both_mains_forward_the_project_key_to_the_insert(
     module: object, name: str, monkeypatch: pytest.MonkeyPatch, tmp_path: object
 ) -> None:
-    """Le test qui compte : le flag ne sert à rien s'il s'arrête à `argparse`."""
+    """The test that matters: the flag is useless if it stops at `argparse`."""
     inserted = AsyncMock()
     monkeypatch.setattr(module, "_insert_dream_run", inserted)
     monkeypatch.setattr(

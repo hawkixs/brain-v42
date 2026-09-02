@@ -19,13 +19,12 @@ def test_entity_maintenance_service_is_available() -> None:
 @pytest.fixture
 async def entity_store():
     metadata = sa.MetaData()
-    # Ce gabarit doit porter TOUTE colonne que le service écrit. Il avait
-    # dérivé : `freshness_source` (migration 043) manquait, et SQLAlchemy
-    # rendait `CompileError: Unconsumed column names` dès que le service s'est
-    # mis à déclarer sa provenance. Une table de test qu'on écrit soi-même ne
-    # peut pas détecter son propre décalage d'avec les six vraies tables — la
-    # preuve du chemin réel vit en intégration
-    # (`tests/integration/db/test_freshness_source_provenance.py`).
+    # This template must carry EVERY column the service writes. It had drifted:
+    # `freshness_source` (migration 043) was missing, and SQLAlchemy returned
+    # `CompileError: Unconsumed column names` as soon as the service started
+    # declaring its provenance. A test table one writes oneself cannot detect its
+    # own drift from the six real tables — the proof of the real path lives in
+    # integration (`tests/integration/db/test_freshness_source_provenance.py`).
     entities = sa.Table(
         "test_entities",
         metadata,

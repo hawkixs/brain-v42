@@ -22,8 +22,8 @@ from brain_v42.services.ticket_service import (
     UnknownProjectError,
 )
 
-# PAS de pytestmark : pyproject a asyncio_mode = "auto", les unit tests du
-# repo écrivent des `async def test_*` nus (cf. tests/unit existants).
+# NO pytestmark: pyproject sets asyncio_mode = "auto", and the repo's unit tests
+# write bare `async def test_*` (see the existing tests/unit).
 
 FROM, TO = "red-shrik", "red-data"
 SELF_PROJECT = "brain-v42"
@@ -59,7 +59,7 @@ def _svc(ticket=None, known_projects=(FROM, TO)):
     repo.create = AsyncMock(side_effect=lambda data: _ticket(kind=data.kind))
     repo.add_message = AsyncMock()
 
-    # apply_transition renvoie le ticket muté (echo simplifié pour les tests)
+    # apply_transition returns the mutated ticket (a simplified echo for tests)
     async def _apply(
         ticket_id,
         new_status,
@@ -232,7 +232,7 @@ class TestTransition:
             await svc.transition(uuid4(), "red-lab", "resolve")
 
     async def test_terminal_transition_preserves_preset_skipped(self):
-        # Opt-out : un ticket créé 'skipped' ne doit PAS repasser 'pending' en se fermant.
+        # Opt-out: a ticket created 'skipped' must NOT go back to 'pending' on closing.
         svc, repo, _ = _svc(
             ticket=_ticket(status=TicketStatus.RESOLVED, extraction_status=ExtractionStatus.SKIPPED)
         )
@@ -279,7 +279,7 @@ class TestSelfTicketTransition:
         assert updated.status is TicketStatus.CLOSED
 
     async def test_confirm_from_resolved_closes(self):
-        # Les 11 self-tickets 'resolved' existants restent fermables (spec §1.4, §6).
+        # The 11 existing 'resolved' self-tickets stay closable (spec §1.4, §6).
         svc, repo, _ = _svc(ticket=_self_ticket(status=TicketStatus.RESOLVED))
         updated = await svc.transition(uuid4(), SELF_PROJECT, "confirm")
         assert updated.status is TicketStatus.CLOSED
@@ -293,8 +293,9 @@ class TestSelfTicketTransition:
         assert repo.apply_transition.await_args.kwargs["resolved_at"] is None
 
     async def test_no_role_check_regardless_of_declared_author(self):
-        # 'red-lab' n'est ni from_project ni to_project — sur un cross-ticket ce serait
-        # un NotAllowedError. Sur un self-ticket la partie unique rend le rôle sans objet.
+        # 'red-lab' is neither from_project nor to_project — on a cross-ticket that
+        # would be a NotAllowedError. On a self-ticket the single party makes the
+        # role moot.
         svc, _, _ = _svc(ticket=_self_ticket())
         updated = await svc.transition(uuid4(), "red-lab", "resolve")
         assert updated.status is TicketStatus.CLOSED
@@ -334,7 +335,7 @@ class TestReply:
             await svc.reply(uuid4(), "red-lab", "hello")
 
     async def test_reply_allowed_in_terminal_state(self):
-        # Le statut contraint les transitions, pas la discussion (spec §3).
+        # The status constrains transitions, not discussion (spec §3).
         svc, repo, _ = _svc(ticket=_ticket(status=TicketStatus.CLOSED))
         await svc.reply(uuid4(), FROM, "post-mortem")
         repo.add_message.assert_awaited_once()

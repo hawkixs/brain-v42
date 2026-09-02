@@ -1,21 +1,20 @@
-"""Contrat unitaire du balayage serveur — DEUX règles, UN statement, une préséance.
+"""Unit contract of the server sweep — TWO rules, ONE statement, one precedence.
 
-Le harnais compile les statements SQLAlchemy sans PostgreSQL : il prouve la
-FORME du prédicat et le fait que le DRY n'émet aucun UPDATE. La frontière
-réelle du prédicat (N-1 / N+1 jour) ne se prouve que contre une vraie base :
-elle vit dans tests/integration/db/test_brain_sessions_sweep.py.
+The harness compiles the SQLAlchemy statements without PostgreSQL: it proves the
+predicate's SHAPE and the fact that DRY emits no UPDATE. The predicate's real
+boundary (day N-1 / N+1) can only be proven against a real database: it lives in
+tests/integration/db/test_brain_sessions_sweep.py.
 
-**Ce que M-G ajoute, et ce que ce fichier doit donc garder :**
+**What M-G adds, and what this file must therefore guard:**
 
-- la règle des 4 h ne prend QUE des traçantes `nature = 'agent'` ;
-- elle ne prend JAMAIS une session dont `last_observed_at` est NULL (S3,
-  tranché) — `NULL` veut dire « jamais observée », pas « observée il y a
-  longtemps » ;
-- la règle 7 j PRIME sur la règle 4 h, parce qu'une traçante inactive depuis
-  plus de sept jours matche les DEUX ;
-- drapeau fermé ⇒ le prédicat est celui d'AVANT la 046, au caractère près ;
-- et tout cela reste UN SEUL statement : la fenêtre `SELECT`-puis-`UPDATE` que
-  le faux-mort du 2026-08-06 a coûtée ne doit pas se rouvrir par la porte de M-G.
+- the 4 h rule takes ONLY `nature = 'agent'` tracers;
+- it NEVER takes a session whose `last_observed_at` is NULL (S3, settled) —
+  `NULL` means "never observed", not "observed a long time ago";
+- the 7 d rule BEATS the 4 h rule, because a tracer inactive for more than seven
+  days matches BOTH;
+- flag closed ⇒ the predicate is the pre-046 one, character for character;
+- and all of it stays ONE statement: the `SELECT`-then-`UPDATE` window the false
+  corpse of 2026-08-06 cost must not reopen through M-G's door.
 """
 
 from __future__ import annotations
@@ -40,16 +39,16 @@ FOUR_HOURS = timedelta(hours=4)
 
 
 def _where(statement: Any) -> str:
-    """Le SEUL prédicat, sans le RETURNING.
+    """The predicate ALONE, without the RETURNING.
 
-    `last_observed_at` figure aussi dans la projection : lire « tout ce qui suit
-    WHERE » ferait passer pour un prédicat une colonne simplement RENDUE.
+    `last_observed_at` also appears in the projection: reading "everything after
+    WHERE" would pass off a merely RETURNED column as a predicate.
     """
     return _sql(statement).split(" where ", 1)[1].split(" returning ", 1)[0]
 
 
 def _bound(statement: Any, token: str) -> Any:
-    """Rendre la valeur derrière un `%(nom)s` compilé."""
+    """Return the value behind a compiled `%(name)s`."""
     match = re.fullmatch(r"%\((\w+)\)s", token.strip())
     assert match is not None, token
     return _params(statement)[match.group(1)]
@@ -121,11 +120,11 @@ async def test_wet_run_updates_in_a_single_statement() -> None:
 
 @pytest.mark.asyncio
 async def test_the_inactivity_rule_still_emits_one_single_statement() -> None:
-    """La garde « un seul statement » doit survivre à la règle neuve.
+    """The "one statement" guard must survive the new rule.
 
-    Le test voisin ne la prouve QUE drapeau fermé. Sans celui-ci, une seconde
-    passe ajoutée pour la règle des 4 h rouvrirait la fenêtre
-    `SELECT`-puis-`UPDATE` sans qu'une seule suite ne rougisse.
+    Its neighbour proves it ONLY with the flag closed. Without this one, a second
+    pass added for the 4 h rule would reopen the `SELECT`-then-`UPDATE` window
+    without a single suite turning red.
     """
     _, statements = await _sweep(
         [_stale_row(outcome="closed_inactive", observed_hours_ago=5)],
@@ -179,10 +178,10 @@ async def test_non_positive_threshold_is_refused() -> None:
 
 @pytest.mark.asyncio
 async def test_non_positive_inactivity_threshold_is_refused() -> None:
-    """Symétrie du voisin : un seuil nul fermerait TOUTES les traçantes.
+    """Symmetric with its neighbour: a zero threshold would close EVERY tracer.
 
-    `None` ferme la règle ; `timedelta(0)` la rendrait universelle. Les deux
-    valeurs se ressemblent à la lecture et n'ont rien en commun à l'exécution.
+    `None` closes the rule; `timedelta(0)` would make it universal. The two
+    values look alike when read and have nothing in common when executed.
     """
     from brain_v42.models.brain_session import BrainSessionInputError
 
@@ -191,7 +190,7 @@ async def test_non_positive_inactivity_threshold_is_refused() -> None:
 
 
 class TestTheRuleIsDeliveredClosed:
-    """Drapeau fermé ⇒ le balayage est celui d'AVANT la 046, au caractère près."""
+    """Flag closed ⇒ the sweep is the pre-046 one, character for character."""
 
     @pytest.mark.asyncio
     async def test_a_closed_rule_leaves_the_predicate_untouched(self) -> None:
@@ -205,7 +204,7 @@ class TestTheRuleIsDeliveredClosed:
 
     @pytest.mark.asyncio
     async def test_an_armed_rule_adds_the_predicate_and_the_case(self) -> None:
-        """TÉMOIN NÉGATIF du test ci-dessus, sans lequel il passerait sur du code mort."""
+        """NEGATIVE WITNESS for the test above, without which it would pass over dead code."""
         result, statements = await _sweep([], dry_run=False, close_inactive_after=FOUR_HOURS)
         sql = _sql(statements[0])
 
@@ -218,10 +217,10 @@ class TestTheRuleIsDeliveredClosed:
 class TestTheFourHourRuleScope:
     @pytest.mark.asyncio
     async def test_only_agent_tracers_are_eligible(self) -> None:
-        """Une session `operator` n'est JAMAIS fermée par inactivité (§0bis.3).
+        """An `operator` session is NEVER closed for inactivity (§0bis.3).
 
-        C'est la garantie principale, et elle ne repose pas sur le seuil : elle
-        repose sur la nature. Le prédicat doit donc la NOMMER.
+        That is the main guarantee, and it does not rest on the threshold: it
+        rests on the nature. The predicate must therefore NAME it.
         """
         _, statements = await _sweep([], dry_run=False, close_inactive_after=FOUR_HOURS)
 
@@ -230,13 +229,13 @@ class TestTheFourHourRuleScope:
 
     @pytest.mark.asyncio
     async def test_a_never_observed_session_is_out_of_reach(self) -> None:
-        """S3, tranché : `last_observed_at IS NULL` n'est JAMAIS pris par les 4 h.
+        """S3, settled: `last_observed_at IS NULL` is NEVER taken by the 4 h rule.
 
-        `NULL` veut dire « jamais observée », pas « observée il y a longtemps ».
-        Le prédicat `IS NOT NULL` est explicite plutôt que laissé à la sémantique
-        de la comparaison SQL : l'intention doit se lire, et un jour où quelqu'un
-        remplacerait `<` par `IS NOT DISTINCT FROM` ou passerait par `COALESCE`,
-        c'est cette ligne qui rougirait.
+        `NULL` means "never observed", not "observed a long time ago". The
+        `IS NOT NULL` predicate is explicit rather than left to SQL comparison
+        semantics: the intent must read, and the day someone replaced `<` with
+        `IS NOT DISTINCT FROM` or went through `COALESCE`, this line is the one
+        that would turn red.
         """
         _, statements = await _sweep([], dry_run=False, close_inactive_after=FOUR_HOURS)
         where = _sql(statements[0]).split(" where ")[1]
@@ -251,15 +250,15 @@ class TestTheFourHourRuleScope:
 
 
 class TestPrecedence:
-    """7 j PRIME sur 4 h : une traçante inactive depuis 8 jours matche les DEUX."""
+    """7 d BEATS 4 h: a tracer inactive for 8 days matches BOTH."""
 
     @pytest.mark.asyncio
     async def test_the_case_tests_presence_before_observation(self) -> None:
-        """La préséance vit dans du SQL EXÉCUTÉ, pas dans un commentaire.
+        """The precedence lives in EXECUTED SQL, not in a comment.
 
-        Le `CASE` doit tester `last_heartbeat_at` en PREMIER. Inverser les deux
-        branches ferait partir une traçante de huit jours en `closed_inactive`
-        muet, là où elle doit partir en `abandoned` avec sa raison.
+        The `CASE` must test `last_heartbeat_at` FIRST. Swapping the two branches
+        would send an eight-day-old tracer to a silent `closed_inactive`, where it
+        must go to `abandoned` with its reason.
         """
         _, statements = await _sweep([], dry_run=False, close_inactive_after=FOUR_HOURS)
         branch = _sql(statements[0]).split("set status=case when ", 1)[1].split(" end,", 1)[0]
@@ -273,10 +272,10 @@ class TestPrecedence:
 
     @pytest.mark.asyncio
     async def test_a_session_matching_both_rules_is_abandoned_not_closed(self) -> None:
-        """Le fait, pas la forme : l'issue persistée d'une double-matche.
+        """The fact, not the shape: the persisted outcome of a double match.
 
-        La ligne rendue est celle que PostgreSQL a écrite (RETURNING lit la ligne
-        NEUVE), donc ce test lit l'issue réelle et pas un recalcul Python.
+        The returned row is the one PostgreSQL wrote (RETURNING reads the NEW
+        row), so this test reads the real outcome and not a Python recomputation.
         """
         both = _stale_row(days=8, outcome="abandoned", observed_hours_ago=8 * 24)
         result, _ = await _sweep([both], dry_run=False, close_inactive_after=FOUR_HOURS)
@@ -286,10 +285,10 @@ class TestPrecedence:
 
     @pytest.mark.asyncio
     async def test_the_abandonment_reason_is_null_on_the_inactive_branch(self) -> None:
-        """`closed_inactive` INTERDIT `abandonment_reason` — CHECK de la 046.
+        """`closed_inactive` FORBIDS `abandonment_reason` — the 046 CHECK.
 
-        Ce n'est pas de la symétrie : sans le `CASE`, la ligne serait refusée par
-        la base, et toute la nuit tomberait sur une contrainte.
+        This is not symmetry: without the `CASE`, the row would be refused by the
+        database, and the whole night would fall over on a constraint.
         """
         _, statements = await _sweep([], dry_run=False, close_inactive_after=FOUR_HOURS)
         assignment = _sql(statements[0]).split(" set ", 1)[1].split(" where ", 1)[0]
@@ -302,10 +301,10 @@ class TestPrecedence:
 class TestTheTwoCountersNeverMerge:
     @pytest.mark.asyncio
     async def test_each_outcome_lands_in_its_own_counter(self) -> None:
-        """`abandoned_count` était unique ; il ne doit pas absorber le second.
+        """`abandoned_count` used to be alone; it must not absorb the second.
 
-        Les additionner effacerait la seule distinction que la 046 a coûté une
-        migration à créer — un ledger conservé contre un ledger vidé.
+        Adding them would erase the one distinction 046 cost a migration to
+        create — a ledger kept versus a ledger emptied.
         """
         rows = [
             _stale_row(project_key="a", days=9, outcome="abandoned"),
@@ -320,7 +319,7 @@ class TestTheTwoCountersNeverMerge:
 
     @pytest.mark.asyncio
     async def test_dry_leaves_both_counters_at_zero(self) -> None:
-        """Un journal ne doit jamais lire « 2 fermées » là où rien n'a été écrit."""
+        """A log must never read "2 closed" where nothing was written."""
         rows = [
             _stale_row(project_key="a", days=9, outcome="abandoned"),
             _stale_row(project_key="b", days=0.1, outcome="closed_inactive", observed_hours_ago=5),
@@ -334,11 +333,11 @@ class TestTheTwoCountersNeverMerge:
 
 @pytest.mark.asyncio
 async def test_an_outcome_the_sweep_cannot_produce_is_refused() -> None:
-    """Le rail Pydantic doit refuser ce que le balayage ne peut pas écrire.
+    """The Pydantic rail must refuse what the sweep cannot write.
 
-    `ended` demande un rituel et `open` n'est pas terminal : les voir sortir
-    d'ici signalerait un `CASE` cassé, et un rapport qui les afficherait
-    tranquillement serait pire que l'erreur.
+    `ended` requires a ritual and `open` is not terminal: seeing them come out of
+    here would signal a broken `CASE`, and a report displaying them calmly would
+    be worse than the error.
     """
     from brain_v42.models.brain_session import BrainSessionSweepCandidate
 

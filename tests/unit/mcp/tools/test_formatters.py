@@ -1527,13 +1527,13 @@ from brain_v42.mcp.tools.formatters import format_roadmap  # noqa: E402
 
 
 class TestFormatRoadmapProjectCap:
-    """Le rendu all-projects doit être borné en NOMBRE DE PROJETS, pas seulement
-    en features par projet.
+    """The all-projects rendering must be bounded by NUMBER OF PROJECTS, not only
+    by features per project.
 
-    Ticket 316a8b50. Mesuré le 2026-08-10 : 30 projets rendus (le ticket en
-    annonçait 11, il datait du 08-03), 33 943 caractères, ~9,4k tokens. Le cap
-    par projet n'y peut rien : il n'en tronque que 5 sur 30, le volume vient du
-    NOMBRE de sections.
+    Ticket 316a8b50. Measured on 2026-08-10: 30 projects rendered (the ticket
+    announced 11, it dated from 08-03), 33,943 characters, ~9.4k tokens. The
+    per-project cap can do nothing about it: it truncates 5 out of 30, the volume
+    comes from the NUMBER of sections.
     """
 
     @staticmethod
@@ -1560,13 +1560,14 @@ class TestFormatRoadmapProjectCap:
         assert "20 project(s) omitted" in result
 
     def test_format_roadmap_keeps_the_most_recently_active_projects(self) -> None:
-        """LE test qui distingue « un cap » du « BON cap ».
+        """THE test that tells "a cap" from "the RIGHT cap".
 
-        Le formatter reçoit les projets dans l'ordre du SQL, ``ORDER BY project_key`` :
-        ALPHABÉTIQUE. Un ``projects[:cap]`` naïf — le « miroir exact » que demandait
-        le ticket — garderait donc les six ``aaa`` morts depuis 2020 et jetterait les
-        six ``zzz`` actifs d'aujourd'hui. Mesuré sur la production : il aurait jeté
-        14 projets actifs dans les 30 derniers jours, dont un actif la veille.
+        The formatter receives the projects in SQL order, ``ORDER BY project_key``:
+        ALPHABETICAL. A naive ``projects[:cap]`` — the "exact mirror" the ticket
+        asked for — would therefore keep the six ``aaa`` dead since 2020 and throw
+        away the six ``zzz`` active today. Measured on production: it would have
+        thrown away 14 projects active in the last 30 days, one of them active the
+        day before.
         """
         projects = [self._project(f"aaa-{i:02d}", "2020-01-01T00:00:00") for i in range(6)]
         projects += [self._project(f"zzz-{i:02d}", "2026-08-10T00:00:00") for i in range(6)]
@@ -1578,10 +1579,10 @@ class TestFormatRoadmapProjectCap:
             assert f"### aaa-{i:02d}" not in result, "un projet mort a été gardé"
 
     def test_the_omission_notice_names_the_omitted_projects(self) -> None:
-        """Un compte seul laisse l'appelant sans action possible.
+        """A count alone leaves the caller with no possible action.
 
-        La notice par projet donne déjà l'ARGUMENT du rappel ; la notice globale
-        doit nommer ce qu'elle a caché, sinon on ne peut pas aller le chercher.
+        The per-project notice already gives the recall ARGUMENT; the global notice
+        must name what it hid, otherwise one cannot go and fetch it.
         """
         projects = [self._project(f"aaa-{i:02d}", "2020-01-01T00:00:00") for i in range(6)]
         projects += [self._project(f"zzz-{i:02d}", "2026-08-10T00:00:00") for i in range(6)]
@@ -1591,17 +1592,17 @@ class TestFormatRoadmapProjectCap:
         assert "aaa-03" in result
 
     def test_a_zero_or_negative_cap_never_empties_the_roadmap(self) -> None:
-        """Symétrie exacte du clamp per-projet : max(1, …), jamais une sortie vide."""
+        """Exact symmetry with the per-project clamp: max(1, …), never an empty output."""
         projects = [self._project("solo", "2026-08-10T00:00:00")]
 
         assert "### solo" in format_roadmap(projects, max_projects=0)
         assert "### solo" in format_roadmap(projects, max_projects=-5)
 
     def test_a_missing_last_activity_never_crashes_the_sort(self) -> None:
-        """NULL veut dire « jamais mesuré », pas « le plus récent ».
+        """NULL means "never measured", not "the most recent".
 
-        Les fixtures passent ``None``, le chemin tool passe une chaîne ISO, et
-        certains appels un ``datetime``. Les trois doivent trier sans lever.
+        The fixtures pass ``None``, the tool path passes an ISO string, and some
+        calls a ``datetime``. All three must sort without raising.
         """
         projects = [
             self._project("sans-date", None),
@@ -1615,18 +1616,18 @@ class TestFormatRoadmapProjectCap:
 
 
 class TestRoadmapPhaseIsRenderedNextToItsBacklog:
-    """La phase déclarée d'un projet doit voisiner ce qu'elle prétend résumer.
+    """A project's declared phase must sit next to what it claims to summarize.
 
-    Ticket 2e921e14, point 3. `project_contexts.current_phase` de brain-v42 vaut
-    « production — all milestones done, deployed », et c'est la PREMIÈRE ligne que
-    lit un agent qui ouvre la roadmap. Mesuré le 2026-08-11 : 4 features
-    `building`, 23 `design`, 73 `research`, 1 `planned`, plus 35 tickets ouverts.
-    « All milestones done » est faux depuis longtemps.
+    Ticket 2e921e14, point 3. brain-v42's `project_contexts.current_phase` reads
+    "production — all milestones done, deployed", and it is the FIRST line an agent
+    opening the roadmap reads. Measured on 2026-08-11: 4 `building` features, 23
+    `design`, 73 `research`, 1 `planned`, plus 35 open tickets. "All milestones
+    done" has been false for a long time.
 
-    Comme `current_phase` est du texte libre sans lien avec la table, rien ne le
-    contredit — même famille que le focus qui affirmait 037 pendant trois jours.
-    On ne juge pas la prose : on met la mesure à côté, exactement ce que fait le
-    bloc « État technique (mesuré) » du briefing.
+    Since `current_phase` is free text with no link to the table, nothing
+    contradicts it — the same family as the focus that asserted 037 for three days.
+    We do not judge the prose: we put the measurement beside it, exactly what the
+    briefing's "État technique (mesuré)" block does.
     """
 
     @staticmethod
@@ -1663,10 +1664,10 @@ class TestRoadmapPhaseIsRenderedNextToItsBacklog:
         assert "1 research" in result
 
     def test_finished_statuses_are_not_counted_as_open_work(self) -> None:
-        """`done` et `archived` ne contredisent pas « milestones done » — ils l'appuient.
+        """`done` and `archived` do not contradict "milestones done" — they support it.
 
-        Les compter gonflerait la ligne et la rendrait illisible sur un projet
-        ancien, où l'historique domine toujours le travail en cours.
+        Counting them would inflate the line and make it unreadable on an old
+        project, where history always dominates work in progress.
         """
         projects = [self._project("p", "production", ["done", "done", "archived", "deployed"])]
 
@@ -1675,10 +1676,10 @@ class TestRoadmapPhaseIsRenderedNextToItsBacklog:
         assert "done" not in result.split("### p")[1].split("|")[0].replace("production", "")
 
     def test_a_project_with_no_open_work_gets_no_counts_line(self) -> None:
-        """Le cas nominal est MUET.
+        """The nominal case is SILENT.
 
-        Une ligne « 0 en cours » à chaque projet terminé apprendrait au lecteur à
-        sauter la ligne, donc à la rater le jour où elle contredit la phase.
+        A "0 in progress" line on every finished project would teach the reader to
+        skip the line, and so to miss it the day it contradicts the phase.
         """
         projects = [self._project("p", "production", ["done", "archived"])]
 
@@ -1687,7 +1688,7 @@ class TestRoadmapPhaseIsRenderedNextToItsBacklog:
         assert "en cours" not in section
 
     def test_the_counts_survive_a_missing_phase(self) -> None:
-        """Un projet sans phase déclarée garde le droit d'être mesuré."""
+        """A project with no declared phase keeps the right to be measured."""
         projects = [self._project("p", None, ["building"])]
 
         assert "1 building" in format_roadmap(projects)

@@ -1,14 +1,14 @@
-"""Garde d'invariant du `# nosec B608` de indexed_plan_search_service.
+"""Invariant guard for indexed_plan_search_service's `# nosec B608`.
 
-Les deux requêtes de ce service sont des f-strings : bandit les signale (B608) et
-l'exception posée sur les lignes de fermeture repose sur UN invariant unique —
-le seul fragment interpolé, ``{where}``, est le join de fragments qui sont TOUS
-des littéraux de `_build_where`. Toute valeur d'appel (texte de recherche,
-embedding, project_key(s), tags) n'atteint le SQL que par un bind.
+Both of this service's queries are f-strings: bandit flags them (B608) and the
+exception placed on the closing lines rests on ONE single invariant — the only
+interpolated fragment, ``{where}``, is the join of fragments that are ALL
+literals from `_build_where`. Every call value (search text, embedding,
+project_key(s), tags) reaches the SQL only through a bind.
 
-Ces tests échouent si quelqu'un rend un fragment de clause dynamique (f-string,
-`%`, `+`, `.format`, ou un paramètre passé tel quel), c'est-à-dire exactement au
-moment où le nosec cesserait d'être justifié.
+These tests fail if anyone makes a clause fragment dynamic (f-string, `%`, `+`,
+`.format`, or a parameter passed through), which is exactly the moment the nosec
+would stop being justified.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import pytest
 from brain_v42.services import indexed_plan_search_service as mod
 from brain_v42.services.indexed_plan_search_service import IndexedPlanSearchService
 
-# Injections classiques, plus une valeur qui ressemble à un fragment SQL valide.
+# Classic injections, plus a value that looks like a valid SQL fragment.
 HOSTILE = "x' OR 1=1 --"
 
 
@@ -31,7 +31,7 @@ def _service() -> IndexedPlanSearchService:
 
 
 # ---------------------------------------------------------------------------
-# 1. Invariant structurel : les clauses sont des littéraux, pas du texte calculé
+# 1. Structural invariant: the clauses are literals, not computed text
 # ---------------------------------------------------------------------------
 
 
@@ -45,10 +45,10 @@ def _build_where_ast() -> ast.FunctionDef:
 
 
 def test_build_where_only_ever_appends_string_literals() -> None:
-    """Chaque fragment de clause doit être un littéral écrit dans le source.
+    """Every clause fragment must be a literal written in the source.
 
-    Échoue si `_build_where` devient dynamique : `clauses.append(f"...")`,
-    `clauses.append("x = " + col)`, `.format(...)`, ou l'append d'un paramètre.
+    Fails if `_build_where` becomes dynamic: `clauses.append(f"...")`,
+    `clauses.append("x = " + col)`, `.format(...)`, or appending a parameter.
     """
     fn = _build_where_ast()
 
@@ -70,7 +70,7 @@ def test_build_where_only_ever_appends_string_literals() -> None:
             "le nosec B608 des requêtes FTS/vector n'est plus justifié"
         )
 
-    # Le littéral initial de la liste doit l'être aussi.
+    # The list's initial literal must be one too.
     for node in ast.walk(fn):
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.List):
             for elt in node.value.elts:
@@ -78,7 +78,7 @@ def test_build_where_only_ever_appends_string_literals() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 2. Invariant comportemental : rien d'hostile ne ressort dans le WHERE
+# 2. Behavioural invariant: nothing hostile comes back out in the WHERE
 # ---------------------------------------------------------------------------
 
 
@@ -124,7 +124,7 @@ def test_build_where_project_keys_branch_also_binds() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3. Le texte de recherche utilisateur et l'embedding passent par un BIND
+# 3. The user's search text and the embedding go through a BIND
 # ---------------------------------------------------------------------------
 
 

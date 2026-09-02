@@ -1,23 +1,22 @@
-"""Ancrage Phase 0 — la FORME ACTUELLE de l'erreur de capture, épinglée pour être cassée.
+"""Phase 0 anchor — the CURRENT SHAPE of the capture error, pinned to be broken.
 
-C'est la douleur **B13** : `_validate_captures` liste bien les ids rejetés, mais leur
-attribue **une seule raison agrégée**. L'appelant qui soumet dix ids dont un mauvais
-apprend que « des ids sont invalides » et doit deviner lequel a échoué pourquoi —
-projet différent ? créé avant la session ? type ambigu ? inexistant ?
+This is pain point **B13**: `_validate_captures` does list the rejected ids, but gives
+them **a single aggregated reason**. A caller submitting ten ids, one of them bad,
+learns that "some ids are invalid" and has to guess which failed why — wrong project?
+created before the session? ambiguous type? nonexistent?
 
-Ce test n'existe pas pour défendre ce comportement. Il existe pour que **la Phase 1 le
-change en Red d'abord** : le composant D2 doit rendre `rejections: [{id, reason}]` avec
+This test does not exist to defend that behaviour. It exists so that **Phase 1 changes
+it Red first**: component D2 must return `rejections: [{id, reason}]` with
 `reason ∈ {not_found, wrong_project, created_before_session, ambiguous_type,
-attributed_elsewhere, unsupported_type}`, plus `capturable_subset`. Le jour où D2
-arrive, **les assertions négatives de la fin de ce fichier tombent en premier** — c'est
-leur seule raison d'être.
+attributed_elsewhere, unsupported_type}`, plus `capturable_subset`. The day D2 lands,
+**the negative assertions at the end of this file fall first** — that is their only
+purpose.
 
-Sans cet ancrage, D2 pourrait changer la sémantique des lots acceptés/refusés en même
-temps que la forme du message, et rien ne le verrait.
+Without this anchor, D2 could change the semantics of accepted/refused batches at the
+same time as the message shape, and nothing would see it.
 
-Harnais maison, sans PostgreSQL : mêmes doubles que
-`tests/unit/repositories/test_pg_brain_session.py`, dont ce fichier réutilise les
-helpers.
+An in-house harness, without PostgreSQL: the same doubles as
+`tests/unit/repositories/test_pg_brain_session.py`, whose helpers this file reuses.
 """
 
 from __future__ import annotations
@@ -37,12 +36,12 @@ PROJECT = "brain-v42"
 
 
 def _brain_session() -> Any:
-    """`_validate_captures` ne lit que ces deux attributs — le double le dit."""
+    """`_validate_captures` reads only these two attributes — the double says so."""
     return SimpleNamespace(project_key=PROJECT, started_at=STARTED_AT)
 
 
 def _router_finding(found: dict[UUID, str]):
-    """Rendre `found` sur la table du type déclaré, rien sur les autres."""
+    """Return `found` on the declared type's table, nothing on the others."""
     seen: list[str] = []
 
     def route(statement: Any):
@@ -66,7 +65,7 @@ async def _validate(capture_ids: list[UUID], found: dict[UUID, str] | None = Non
 
 @pytest.mark.asyncio
 async def test_the_capture_window_is_strict_project_and_created_after_start() -> None:
-    """La fenêtre est dans le SQL, pas dans une garde applicative."""
+    """The window is in the SQL, not in an application-level guard."""
     _, statements = await _validate([], {})
     assert statements, "aucun statement émis"
     sql = _sql(statements[0])
@@ -77,7 +76,7 @@ async def test_the_capture_window_is_strict_project_and_created_after_start() ->
 
 @pytest.mark.asyncio
 async def test_one_bad_id_rejects_the_whole_batch() -> None:
-    """All-or-nothing : le lot mélangé est refusé EN BLOC (moitié de B4)."""
+    """All-or-nothing: a mixed batch is refused WHOLESALE (half of B4)."""
     good, bad = uuid4(), uuid4()
     with pytest.raises(BrainSessionInputError) as exc:
         await _validate([good, bad], {good: "decision"})
@@ -96,23 +95,23 @@ async def test_rejected_ids_are_listed_and_sorted() -> None:
     assert positions == sorted(positions), "les ids sont listés triés"
 
 
-# ── LES ASSERTIONS QUI DOIVENT TOMBER EN PREMIER QUAND D2 ARRIVE ─────────────
+# ── THE ASSERTIONS THAT MUST FALL FIRST WHEN D2 LANDS ───────────────────────
 
 
 @pytest.mark.asyncio
 async def test_b13_today_all_rejected_ids_share_ONE_aggregated_reason() -> None:
-    """B13, épinglée telle qu'elle est aujourd'hui.
+    """B13, pinned exactly as it is today.
 
-    Trois ids rejetés pour des motifs potentiellement différents reçoivent la MÊME
-    phrase, qui les énumère tous les motifs possibles sans dire lequel s'applique.
-    **C'est le défaut**, pas le contrat souhaité.
+    Three ids rejected for potentially different reasons receive the SAME sentence,
+    which enumerates every possible reason without saying which applies. **That is
+    the defect**, not the desired contract.
     """
     ids = [uuid4() for _ in range(3)]
     with pytest.raises(BrainSessionInputError) as exc:
         await _validate(ids, {})
     message = str(exc.value)
 
-    # Une seule phrase de motif, qui énumère les causes au lieu de les attribuer.
+    # A single reason sentence, enumerating the causes instead of assigning them.
     assert message.count("invalid ids:") == 1, "une seule raison agrégée, pour tous les ids"
     assert "must exist in the same project" in message
     assert "created during the session" in message
@@ -121,10 +120,10 @@ async def test_b13_today_all_rejected_ids_share_ONE_aggregated_reason() -> None:
 
 @pytest.mark.asyncio
 async def test_b13_today_the_error_carries_no_structured_rejections() -> None:
-    """D2 ajoutera `rejections` et `capturable_subset`. Aujourd'hui : rien.
+    """D2 will add `rejections` and `capturable_subset`. Today: nothing.
 
-    Ces trois assertions sont les PREMIÈRES à tomber en Phase 1. Les inverser est le
-    geste Red qui ouvre la livraison de D2 — pas un dégât collatéral à réparer après.
+    These three assertions are the FIRST to fall in Phase 1. Inverting them is the Red
+    gesture that opens D2's delivery — not collateral damage to repair afterwards.
     """
     with pytest.raises(BrainSessionInputError) as exc:
         await _validate([uuid4()], {})

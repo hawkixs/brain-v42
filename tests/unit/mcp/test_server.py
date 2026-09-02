@@ -491,18 +491,18 @@ async def test_stdio_transport_never_constructs_dream_project_resolver(
 
 
 def test_build_services_wires_the_project_guard_into_every_knowledge_service() -> None:
-    """La garde projet-inconnu est FAIL-OPEN par défaut : c'est le câblage qui la crée.
+    """The unknown-project guard is FAIL-OPEN by default: the wiring is what creates it.
 
-    ``require_known_project`` rend immédiatement quand ``project_context_repo`` est
-    ``None`` — un défaut assumé, pour que les nombreux doubles de test qui
-    construisent ces services sans lui continuent d'exercer le reste. La
-    conséquence est que retirer ``project_context_repo=`` d'un site de câblage ne
-    casse RIEN : la garde disparaît en silence et les écritures sous un projet
-    inexistant recommencent à rendre ``ok``.
+    ``require_known_project`` returns immediately when ``project_context_repo`` is
+    ``None`` — an accepted default, so the many test doubles that build these
+    services without it keep exercising the rest. The consequence is that removing
+    ``project_context_repo=`` from a wiring site breaks NOTHING: the guard
+    disappears silently and writes under a nonexistent project start returning
+    ``ok`` again.
 
-    Livrée le 2026-08-06 (87389e6d), elle n'avait aucun témoin. Ce test est un
-    épinglage : il ne passe pas du rouge au vert, il empêche le vert de mentir.
-    Vérifié en retirant l'argument de learning_svc — il tombe, et lui seul.
+    Delivered on 2026-08-06 (87389e6d), it had no witness. This test is a pin: it
+    does not go from red to green, it stops the green from lying. Verified by
+    removing the argument from learning_svc — it falls, and it alone.
     """
     session_factory = MagicMock()
     embedding_svc = MagicMock()

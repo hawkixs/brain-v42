@@ -23,7 +23,7 @@ from brain_v42.services.ticket_service import (
 )
 from tests.unit.mcp._tool_error_adapter import capture_tool_errors
 
-# asyncio_mode = "auto" — pas de pytestmark (style unit tests du repo).
+# asyncio_mode = "auto" — no pytestmark (the repo's unit test style).
 
 FROM, TO = "red-shrik", "red-data"
 
@@ -247,9 +247,9 @@ class TestListAndGet:
         assert "À confirmer (1)" in result
 
     async def test_list_renders_awaiting_requester_confirmation_section_and_total(self):
-        # spec 2026-08-03-ticket-briefing-fourth-quadrant §2.4, test 7: le total
-        # inclut le nouveau groupe (donc pas de "aucun ticket" quand lui seul
-        # est non vide), et une section complète est rendue.
+        # spec 2026-08-03-ticket-briefing-fourth-quadrant §2.4, test 7: the total
+        # includes the new group (so no "no ticket" when it alone is non-empty),
+        # and a complete section is rendered.
         svc = MagicMock()
         svc.list_grouped = AsyncMock(
             return_value=TicketGroups(
@@ -381,8 +381,8 @@ class TestListAndGet:
         assert result and result[0].isalnum()
 
     async def test_get_self_ticket_lists_resolve_pending(self):
-        # spec §4.2/§4.3 : sur un self-ticket (from == to), resolve_pending doit être
-        # découvrable — le drapeau self_ticket doit atteindre allowed_actions() ici.
+        # spec §4.2/§4.3: on a self-ticket (from == to), resolve_pending must be
+        # discoverable — the self_ticket flag must reach allowed_actions() here.
         t = _ticket(from_project="brain-v42", to_project="brain-v42")
         svc = MagicMock()
         svc.get_with_thread = AsyncMock(return_value=(t, []))
@@ -443,19 +443,19 @@ class TestIdPrefixResolution:
 
 
 class TestReplyCanCorrectTheTicketBody:
-    """`cabb7503` — corriger un corps périmé SANS ajouter de tool au catalogue.
+    """`cabb7503` — fix a stale body WITHOUT adding a tool to the catalogue.
 
-    Le contrat MCP public n'a plus de marge gratuite : son plancher a déjà dû
-    être renégocié par mesure (10 000 → 9 500). Le sixième tool aurait été la
-    solution évidente ; c'est pour ça qu'on ne l'a pas prise.
+    The public MCP contract has no free room left: its floor already had to be
+    renegotiated by measurement (10,000 → 9,500). A sixth tool would have been the
+    obvious solution; that is why it was not taken.
     """
 
     async def test_the_ticket_catalog_still_has_exactly_five_tools(self):
-        """Garde d'architecture : aucun tool ajouté, la correction passe par `reply`.
+        """Architecture guard: no tool added, the fix goes through `reply`.
 
-        Ce test ne mesure pas des octets — il épingle la DÉCISION. Un sixième
-        tool ici serait une décision d'opérateur, pas un lot de worker, et ce
-        rouge est ce qui force à la poser plutôt qu'à la prendre au passage.
+        This test does not measure bytes — it pins the DECISION. A sixth tool here
+        would be an operator decision, not a worker's batch, and this red is what
+        forces it to be put rather than taken in passing.
         """
         mcp = _mcp_with(MagicMock())
 
@@ -490,7 +490,7 @@ class TestReplyCanCorrectTheTicketBody:
         )
 
     async def test_a_plain_reply_forwards_none_and_says_nothing_about_the_body(self):
-        """Témoin négatif au niveau du tool : rien ne change pour une réponse ordinaire."""
+        """Negative witness at tool level: nothing changes for an ordinary reply."""
         svc = MagicMock()
         svc.reply = AsyncMock()
         tool = await _tool(_mcp_with(svc), "brain_ticket_reply")

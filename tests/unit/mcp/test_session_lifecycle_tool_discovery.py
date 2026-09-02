@@ -39,35 +39,34 @@ LIGHTWEIGHT_OUTPUT_SCHEMA_TOOLS = frozenset(
         "brain_session_abandon",
     }
 )
-# Bumpé par la 046, et le nombre est MESURÉ, pas ajusté jusqu'au vert.
-# Coût irréductible du 4e état de la machine (`closed_inactive`) : le seul ajout
-# à l'énumération de statut porte le total de 8487 à 9087 — 600 octets, répartis
-# sur les quatre tools qui dérivent encore un schéma. `nature` en Literal ajoute
-# 294 de plus. Une session `closed_inactive` DOIT pouvoir être chargée par le
-# modèle, sinon la 046 rend illisibles les lignes qu'elle rend valides.
-# Bumpé par la 047, et le nombre est MESURÉ, pas ajusté jusqu'au vert : 9462,
-# soit +81 pour le seul champ neuf `unattributed_in_window` sur
-# `BrainSessionEndResult`. La marge disponible était `19_041 - 9_500 = 9_541` ;
-# il en reste 79. C'est étroit, et c'est la raison pour laquelle le second
-# compteur envisagé (« détenu par une traçante ») a été refusé : il n'entrait
-# pas. Si un futur champ dépasse 9_541, on s'arrête — on ne desserre PAS
-# OUTPUT_SCHEMA_MINIMUM_SAVINGS, ce serait modifier un test pour faire passer
-# du code.
+# Bumped by 046, and the number is MEASURED, not tuned until green.
+# The irreducible cost of the machine's 4th state (`closed_inactive`): that single
+# addition to the status enumeration takes the total from 8487 to 9087 — 600
+# bytes, spread over the four tools that still derive a schema. `nature` as a
+# Literal adds 294 more. A `closed_inactive` session MUST be loadable by the
+# model, otherwise 046 makes unreadable the very rows it makes valid.
+# Bumped by 047, and the number is MEASURED, not tuned until green: 9462, i.e.
+# +81 for the single new `unattributed_in_window` field on
+# `BrainSessionEndResult`. The available margin was `19_041 - 9_500 = 9_541`; 79
+# are left. That is tight, and it is why the second counter considered ("held by
+# a tracer") was refused: it did not fit. If a future field exceeds 9_541, we
+# stop — we do NOT loosen OUTPUT_SCHEMA_MINIMUM_SAVINGS, that would be modifying a
+# test to make code pass.
 OUTPUT_SCHEMA_TOTAL = 9462
-# Abaissé de 10_000 à 9_500 : le plancher avait été fixé contre une machine à
-# TROIS états, et le quatrième coûte 600 octets à lui seul — il ne restait que
-# 554 de marge. Le plancher relâché reste un plancher : l'économie effective est
-# de 9_660 octets sur les 19_041 de la ligne de base, soit toujours plus de la
-# moitié. C'est un budget INTERNE qu'on relâche de 500 octets, jamais un contrat
-# client : les sept tools gardent exactement la même surface publique, et les
-# trois `output_schema=None` restent trois.
+# Lowered from 10_000 to 9_500: the floor had been set against a THREE-state
+# machine, and the fourth state costs 600 bytes on its own — only 554 of margin
+# were left. The loosened floor is still a floor: the effective saving is 9_660
+# bytes out of the baseline's 19_041, still more than half. This is an INTERNAL
+# budget loosened by 500 bytes, never a client contract: the seven tools keep
+# exactly the same public surface, and the three `output_schema=None` stay
+# three.
 OUTPUT_SCHEMA_MINIMUM_SAVINGS = 9_500
 SESSION_PUBLIC_FIELDS = {
     "id",
-    # 046 : `nature` seule entre au contrat public. Les quatre autres colonnes
-    # de la migration (`started_by_actor`, `last_observed_at`, `intent`,
-    # `connection_id`) n'ont encore aucun écrivain et n'entrent PAS ici — chacune
-    # paiera son schéma avec le commit qui l'utilise.
+    # 046: `nature` alone enters the public contract. The migration's four other
+    # columns (`started_by_actor`, `last_observed_at`, `intent`, `connection_id`)
+    # still have no writer and do NOT enter here — each will pay for its schema
+    # with the commit that uses it.
     "nature",
     "project_key",
     "client_key",
@@ -363,8 +362,8 @@ async def test_tool_run_preserves_every_public_structured_content_contract() -> 
         "focus_outcome",
         "focus_at_end",
         "focus_revision_at_end",
-        # 047 : la MESURE qui remplace le XOR. Publique et assumée — un chiffre
-        # que l'utilisateur ne voit pas ne remplace rien.
+        # 047: the MEASURE that replaces the XOR. Public and owned — a figure the
+        # user does not see replaces nothing.
         "unattributed_in_window",
     }
     assert capture is not None and set(capture) == {

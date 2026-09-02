@@ -26,7 +26,7 @@ def test_session_v4_columns_and_artifact_ledger_are_declared() -> None:
         "session_id",
         "knowledge_type",
         "captured_at",
-        # 048 : PAR QUELLE CLÉ cette ligne a été attribuée.
+        # 048: BY WHICH KEY this row was attributed.
         "attribution_mode",
     }
     assert ledger.c.knowledge_id.primary_key is True
@@ -76,17 +76,17 @@ def test_migration_037_downgrade_refuses_lossy_v4_state() -> None:
 
 
 def test_migration_048_upgrade_is_replayable_by_hand() -> None:
-    """Une promesse d'idempotence tenue à moitié piège qui rejoue à la main.
+    """A half-kept idempotence promise traps whoever replays it by hand.
 
-    Alembic annule la révision entière sur échec, donc un `upgrade` interrompu
-    ne laissait rien derrière lui — le défaut n'était pas là. Il était dans la
-    PROMESSE : `ADD COLUMN IF NOT EXISTS` à côté d'un `ADD CONSTRAINT` qui
-    n'existe pas en variante `IF NOT EXISTS`. Or l'ordre de bascule de ce lot
-    demande explicitement d'appliquer la 048 et de la VÉRIFIER avant tout
-    redémarrage : quelqu'un rejouera ces instructions à la main.
+    Alembic rolls back the whole revision on failure, so an interrupted
+    `upgrade` left nothing behind — the defect was not there. It was in the
+    PROMISE: `ADD COLUMN IF NOT EXISTS` next to an `ADD CONSTRAINT` that has no
+    `IF NOT EXISTS` variant. And this batch's cutover order explicitly requires
+    applying 048 and VERIFYING it before any restart: someone will replay these
+    statements by hand.
 
-    On garde donc les trois objets sur la même promesse — colonne, contrainte,
-    index — la contrainte par un DROP-IF-EXISTS préalable, gabarit de la 047.
+    So all three objects are kept on the same promise — column, constraint,
+    index — the constraint through a prior DROP-IF-EXISTS, the 047 template.
     """
     import importlib.util
     from pathlib import Path

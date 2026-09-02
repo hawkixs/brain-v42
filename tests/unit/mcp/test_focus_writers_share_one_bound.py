@@ -1,39 +1,39 @@
-"""Les écrivains de `project_contexts.current_focus` portent TOUS la même borne.
+"""The writers of `project_contexts.current_focus` ALL carry the same bound.
 
-Le défaut (`bfb4cf93`) : `brain_session_end` plafonne `next_focus` à
-``NEXT_FOCUS_MAX_LENGTH`` caractères, et cette valeur REMPLACE `current_focus`
-quand le compare-and-swap réussit. Les autres écrivains de la MÊME colonne
-prenaient un ``str`` nu — aucune borne, ni dans l'argument, ni dans le modèle,
-ni dans le service, ni dans la colonne (``text``). Le plafond MCP était la SEULE
-borne du chemin d'écriture, et elle ne couvrait qu'un écrivain sur trois.
+The defect (`bfb4cf93`): `brain_session_end` caps `next_focus` at
+``NEXT_FOCUS_MAX_LENGTH`` characters, and that value REPLACES `current_focus`
+when the compare-and-swap succeeds. The other writers of the SAME column took a
+bare ``str`` — no bound, not in the argument, not in the model, not in the
+service, not in the column (``text``). The MCP cap was the ONLY bound on the
+write path, and it covered one writer out of three.
 
-Conséquence, et c'est le fond : **l'écrivain non borné met le projet dans un
-état que l'écrivain borné ne sait pas représenter.** Une session honnête, qui a
-lu un focus de 12 000 caractères, ne peut plus le rendre à la fermeture — elle
-est refusée par une validation dont elle n'est pas responsable.
+The consequence, and it is the heart of it: **the unbounded writer puts the
+project into a state the bounded writer cannot represent.** An honest session,
+having read a 12,000-character focus, can no longer return it at closing time —
+it is refused by a validation it is not responsible for.
 
-Rejoué le 2026-08-23 sur les instantanés `brain_sessions.started_focus` : la
-révision 217 a porté **12 157 caractères** — 2 157 de plus que ce que
-`brain_session_end` sait écrire — du 2026-08-21 16:14:45 au 2026-08-22 08:27:43,
-soit **seize heures, vue par sept sessions**.
+Replayed on 2026-08-23 over the `brain_sessions.started_focus` snapshots:
+revision 217 carried **12,157 characters** — 2,157 more than `brain_session_end`
+can write — from 2026-08-21 16:14:45 to 2026-08-22 08:27:43, that is **sixteen
+hours, seen by seven sessions**.
 
-**TROIS écrivains, pas deux.** Le ticket et son mandat n'en nommaient que deux.
-Le recensement par plusieurs motifs en trouve un troisième,
-`brain_set_project_context`, dont le `current_focus` est optionnel et donc
-invisible à qui cherche un argument obligatoire. C'est le même angle mort de
-motif que le focus met en garde : compter par PLUSIEURS motifs.
+**THREE writers, not two.** The ticket and its mandate named only two. A survey
+through several angles finds a third, `brain_set_project_context`, whose
+`current_focus` is optional and therefore invisible to anyone looking for a
+mandatory argument. It is the same pattern blind spot the focus warns about:
+count through SEVERAL angles.
 
-**L'unité est le CARACTÈRE, et ce test porte le cas qui les distingue.** Ce
-n'est pas une précaution de style : rejoué le 2026-08-23, **trois** révisions du
-focus de `brain-v42` tenaient sous le plafond en caractères tout en le dépassant
-en octets — 192 (9 996 / 10 277), **194 (9 984 / 10 287)** et 219 (9 977 /
-10 285). La 194 est la plus tranchante : **seize caractères sous la borne, 287
-octets au-dessus**. Une borne qui compterait des octets aurait donc refusé trois
-focus parfaitement légaux.
+**The unit is the CHARACTER, and this test carries the case that tells them
+apart.** That is not a stylistic precaution: replayed on 2026-08-23, **three**
+revisions of `brain-v42`'s focus fitted under the cap in characters while
+exceeding it in bytes — 192 (9,996 / 10,277), **194 (9,984 / 10,287)** and 219
+(9,977 / 10,285). 194 is the sharpest: **sixteen characters under the bound, 287
+bytes over**. A bound counting bytes would therefore have refused three perfectly
+legal focuses.
 
-Le témoin de distinction est un cas non-ASCII de longueur exactement égale au
-plafond, donc deux fois plus lourd en octets : il doit être ACCEPTÉ, et le test
-rougit le jour où quelqu'un réécrit la borne en octets.
+The distinguishing witness is a non-ASCII case whose length is exactly the cap,
+hence twice as heavy in bytes: it must be ACCEPTED, and the test turns red the
+day someone rewrites the bound in bytes.
 """
 
 from __future__ import annotations
@@ -49,18 +49,18 @@ from pydantic import ValidationError
 
 from brain_v42.mcp.tools.session_lifecycle_tools import NEXT_FOCUS_MAX_LENGTH
 
-#: Chaque entrée est (nom du tool MCP, nom de l'argument qui écrit le focus).
-#: `next_focus` et `current_focus` portent des noms différents mais écrivent la
-#: MÊME colonne : `next_focus` DEVIENT `current_focus` quand le CAS réussit.
-#: C'est ce qui rend leur borne commune, et non deux contrats voisins.
+#: Each entry is (MCP tool name, name of the argument that writes the focus).
+#: `next_focus` and `current_focus` have different names but write the SAME
+#: column: `next_focus` BECOMES `current_focus` when the CAS succeeds. That is
+#: what makes their bound shared, rather than two neighbouring contracts.
 FOCUS_WRITERS: tuple[tuple[str, str], ...] = (
     ("brain_session_end", "next_focus"),
     ("brain_update_project_focus", "current_focus"),
     ("brain_set_project_context", "current_focus"),
 )
 
-#: Un caractère non-ASCII de 2 octets en UTF-8. `len()` en compte 1, `encode()`
-#: en compte 2 : c'est tout l'objet du témoin de distinction.
+#: A non-ASCII character of 2 bytes in UTF-8. `len()` counts 1, `encode()` counts
+#: 2: that is the whole point of the distinguishing witness.
 _TWO_BYTE_CHAR = "é"
 
 
@@ -89,10 +89,10 @@ def _project_context_server() -> FastMCP:
 
 
 def _invocation(tool_name: str, argument: str) -> tuple[FastMCP, Any, Any]:
-    """Rendre (serveur, mock du service écrivain, fabrique d'arguments).
+    """Return (server, mock of the writing service, argument factory).
 
-    Le mock rendu est celui que le tool appelle POUR ÉCRIRE — pas le service
-    entier : c'est sur lui que porte le « jamais appelé » du fail-closed.
+    The mock returned is the one the tool calls TO WRITE — not the whole service:
+    it is what the fail-closed "never called" applies to.
     """
     if tool_name == "brain_session_end":
         service = MagicMock()
@@ -152,9 +152,9 @@ async def _focus_property(tool_name: str, argument: str) -> dict[str, Any]:
     tool = await server.get_tool(tool_name)
     assert tool is not None, f"missing MCP tool {tool_name}"
     schema = tool.parameters["properties"][argument]
-    # `brain_set_project_context` déclare son focus optionnel : la borne vit
-    # alors dans la branche `string` de l'`anyOf`, pas à la racine. La chercher
-    # au seul niveau racine rendrait ce test VERT sur un argument non borné.
+    # `brain_set_project_context` declares its focus optional: the bound then
+    # lives in the `anyOf`'s `string` branch, not at the root. Looking for it at
+    # the root level only would turn this test GREEN on an unbounded argument.
     if "anyOf" in schema:
         schema = next(v for v in schema["anyOf"] if v.get("type") == "string")
     return schema
@@ -162,11 +162,11 @@ async def _focus_property(tool_name: str, argument: str) -> dict[str, Any]:
 
 @pytest.mark.parametrize(("tool_name", "argument"), FOCUS_WRITERS)
 async def test_every_focus_writer_publishes_the_same_bound(tool_name: str, argument: str) -> None:
-    """Les trois écrivains annoncent la MÊME borne dans leur schéma publié.
+    """The three writers announce the SAME bound in their published schema.
 
-    L'assertion porte sur le schéma PUBLIÉ, pas sur une constante importée :
-    c'est ce que voit un client, et c'est le seul niveau où une divergence est
-    observable de l'extérieur.
+    The assertion is on the PUBLISHED schema, not on an imported constant: that
+    is what a client sees, and it is the only level where a divergence is
+    observable from the outside.
     """
     schema = await _focus_property(tool_name, argument)
 
@@ -180,17 +180,17 @@ async def test_every_focus_writer_publishes_the_same_bound(tool_name: str, argum
 async def test_every_focus_writer_refuses_one_character_too_many(
     tool_name: str, argument: str
 ) -> None:
-    """Un caractère de trop est REFUSÉ **avant tout appel de service**, jamais tronqué.
+    """One character too many is REFUSED **before any service call**, never truncated.
 
-    C'est la preuve fail-closed, et elle se joue en APPELANT le tool, pas en
-    relisant son schéma : un schéma qui annonce une borne ne prouve pas qu'elle
-    s'applique. Deux assertions, indissociables :
+    That is the fail-closed proof, and it is played by CALLING the tool, not by
+    re-reading its schema: a schema announcing a bound does not prove the bound
+    applies. Two assertions, inseparable:
 
-    - à ``CAP + 1`` : ``ValidationError``, **et le service n'est jamais appelé**
-      — donc rien n'est écrit, et rien n'est tronqué en silence ;
-    - à ``CAP`` exactement (témoin négatif) : **le service EST appelé**. Sans
-      lui, un argument devenu obligatoire-mais-toujours-refusé, ou une borne
-      tombée à zéro, rendrait la première moitié verte.
+    - at ``CAP + 1``: ``ValidationError``, **and the service is never called** —
+      so nothing is written, and nothing is silently truncated;
+    - at exactly ``CAP`` (negative witness): **the service IS called**. Without
+      it, an argument that became mandatory-but-always-refused, or a bound fallen
+      to zero, would turn the first half green.
     """
     server, service, call = _invocation(tool_name, argument)
     tool = await server.get_tool(tool_name)
@@ -200,20 +200,20 @@ async def test_every_focus_writer_refuses_one_character_too_many(
         await tool.run(call("x" * (NEXT_FOCUS_MAX_LENGTH + 1)))
     service.assert_not_called()
 
-    # Témoin négatif : à la longueur exacte, la validation laisse passer et le
-    # service reçoit l'écriture.
+    # Negative witness: at the exact length, validation lets it through and the
+    # service receives the write.
     await tool.run(call("x" * NEXT_FOCUS_MAX_LENGTH))
     service.assert_called_once()
 
 
 @pytest.mark.parametrize(("tool_name", "argument"), FOCUS_WRITERS)
 async def test_the_bound_counts_characters_not_bytes(tool_name: str, argument: str) -> None:
-    """Le témoin de distinction : plafond en CARACTÈRES, pas en octets.
+    """The distinguishing witness: the cap is in CHARACTERS, not in bytes.
 
-    Un focus non-ASCII de longueur exactement égale au plafond pèse DEUX FOIS
-    le plafond en octets. Il doit être accepté. Ce test rougit le jour où
-    quelqu'un réécrit la borne en octets — le cas que le focus réel de
-    `brain-v42` rencontrait déjà (9 977 caractères pour 10 285 octets).
+    A non-ASCII focus whose length is exactly the cap weighs TWICE the cap in
+    bytes. It must be accepted. This test turns red the day someone rewrites the
+    bound in bytes — the case `brain-v42`'s real focus already met (9,977
+    characters for 10,285 bytes).
     """
     schema = await _focus_property(tool_name, argument)
 
@@ -221,18 +221,18 @@ async def test_the_bound_counts_characters_not_bytes(tool_name: str, argument: s
     assert len(non_ascii) == NEXT_FOCUS_MAX_LENGTH
     assert len(non_ascii.encode("utf-8")) == 2 * NEXT_FOCUS_MAX_LENGTH
 
-    # Les deux comptes DIFFÈRENT sur cette entrée : c'est ce qui en fait un
-    # témoin. Une borne en octets la refuserait ; une borne en caractères non.
+    # The two counts DIFFER on this input: that is what makes it a witness. A
+    # byte bound would refuse it; a character bound would not.
     assert len(non_ascii) <= schema["maxLength"] < len(non_ascii.encode("utf-8"))
 
 
 async def test_the_three_writers_are_not_parallel_literals() -> None:
-    """Une borne partagée, pas trois littéraux qui dérivent séparément.
+    """One shared bound, not three literals drifting separately.
 
-    Trois `10_000` écrits à trois endroits seraient verts aujourd'hui et
-    divergeraient au premier changement — exactement le défaut que ce lot
-    répare, reproduit une couche plus haut. Le test compare les bornes entre
-    elles, sans citer aucun nombre : il rougit si l'une bouge seule.
+    Three `10_000` written in three places would be green today and would diverge
+    at the first change — exactly the defect this batch repairs, reproduced one
+    layer up. The test compares the bounds against each other, citing no number:
+    it turns red if one of them moves alone.
     """
     bounds = {}
     for tool_name, argument in FOCUS_WRITERS:
@@ -243,13 +243,13 @@ async def test_the_three_writers_are_not_parallel_literals() -> None:
 
 
 async def test_no_focus_writer_escapes_the_census() -> None:
-    """Le recensement des écrivains est CLOS, et se compte par plusieurs motifs.
+    """The writer survey is CLOSED, and is counted through several angles.
 
-    `bfb4cf93` et son mandat n'en nommaient que DEUX ; il y en a trois. Ce test
-    épingle la liste pour qu'un quatrième écrivain ajouté plus tard casse ici
-    plutôt que d'être découvert par un focus irrécupérable. Le motif de
-    recherche est le nom de la COLONNE dans la signature publiée, pas le nom de
-    l'argument — c'est ce qui rattrape un `current_focus` optionnel.
+    `bfb4cf93` and its mandate named only TWO; there are three. This test pins the
+    list so that a fourth writer added later breaks here rather than being
+    discovered through an unrecoverable focus. The search angle is the COLUMN name
+    in the published signature, not the argument name — that is what catches an
+    optional `current_focus`.
     """
     from brain_v42.mcp.tools.project_context_tools import register_project_context_tools
     from brain_v42.mcp.tools.session_lifecycle_tools import register_session_lifecycle_tools

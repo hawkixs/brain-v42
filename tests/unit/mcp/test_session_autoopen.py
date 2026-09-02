@@ -1,16 +1,15 @@
-"""Auto-ouverture de session — synchrone, fail-open, mémoïsée, ET OBSERVANTE.
+"""Session auto-opening — synchronous, fail-open, memoized, AND OBSERVING.
 
-Forme signée `ae0d0475` / ADR §0ter. Quatre propriétés, chacune avec son test :
-écriture AVANT l'outil ; échec JAMAIS propagé ; une seule ouverture par appel
-client malgré le double tir de `on_call_tool` en profil `compact` ; et rien du
-tout en stdio, où il n'existe aucun identifiant de connexion (§0ter.2).
+Signed shape `ae0d0475` / ADR §0ter. Four properties, each with its test: the
+write happens BEFORE the tool; failure is NEVER propagated; one opening per
+client call despite `on_call_tool` firing twice under the `compact` profile; and
+nothing at all under stdio, where no connection identifier exists (§0ter.2).
 
-**Cinquième propriété, celle sans laquelle M-G est inerte** : un chemin mémoïsé
-n'est pas un chemin muet. La garantie 2 du `§0bis.3` est littérale —
-`last_observed_at` bouge à CHAQUE appel d'outil — et c'est la seule colonne que
-la règle des 4 h du balayage sait lire. Une mémo qui rendrait l'UUID sans dater
-laisserait la colonne à NULL sur toute la table, donc la règle sans aucune ligne
-à prendre : verte, silencieuse, et fausse.
+**Fifth property, the one without which M-G is inert**: a memoized path is not a
+mute path. Guarantee 2 of `§0bis.3` is literal — `last_observed_at` moves on
+EVERY tool call — and it is the only column the sweep's 4 h rule can read. A memo
+returning the UUID without stamping would leave the column NULL across the whole
+table, hence the rule with no row to take: green, silent, and wrong.
 """
 
 from __future__ import annotations
@@ -37,9 +36,9 @@ from brain_v42.provenance import (
 
 _CONNECTION = "3f2b1a0c9d8e7f6a5b4c3d2e1f0a9b8c"
 _OTHER_CONNECTION = "aaaa1111bbbb2222cccc3333dddd4444"
-#: Ce que `normalize_agent` rend du `${PWD}` de ce dépôt : le basename.
+#: What `normalize_agent` returns from this repository's `${PWD}`: the basename.
 _ACTOR = "brain_v42"
-#: DSN jetable — `Settings` l'exige, rien ne s'y connecte dans ces tests.
+#: A throwaway DSN — `Settings` requires one, nothing connects to it in these tests.
 _DSN = "postgresql+asyncpg://brain:brain@127.0.0.1:5433/brain_test"
 
 
@@ -63,7 +62,7 @@ def _headers(
 
 
 class _RecordingOpener:
-    """Ouvreur de test : enregistre chaque identité, rend un UUID neuf."""
+    """Test opener: records every identity, returns a fresh UUID."""
 
     def __init__(self, *, raises: BaseException | None = None) -> None:
         self.seen: list[AutoOpenIdentity] = []
@@ -77,7 +76,7 @@ class _RecordingOpener:
 
 
 class _RecordingObserver:
-    """Observateur de test : enregistre les UUID datés, rend « encore ouverte »."""
+    """Test observer: records the stamped UUIDs, returns "still open"."""
 
     def __init__(self, *, still_open: bool = True, raises: BaseException | None = None) -> None:
         self.seen: list[UUID] = []
@@ -95,7 +94,7 @@ def _opener(
     opener: _RecordingOpener | None = None,
     observer: _RecordingObserver | None = None,
 ) -> SessionAutoOpener:
-    """Monter un ouvreur avec ses deux écrivains, pour ne pas les oublier."""
+    """Build an opener with both its writers, so neither is forgotten."""
     return SessionAutoOpener(opener or _RecordingOpener(), observer or _RecordingObserver())
 
 
@@ -111,18 +110,17 @@ def _isolate_autoopener() -> Iterator[None]:
 
 class TestClosedByDefault:
     def test_flag_default_is_false(self) -> None:
-        """Le drapeau est livré FERMÉ — exigence R3, pas une préférence."""
+        """The flag ships CLOSED — requirement R3, not a preference."""
         assert Settings.model_fields["brain_session_auto_open_enabled"].default is False
 
     def test_getter_returns_none_when_flag_is_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Drapeau fermé ⇒ aucun ouvreur, donc le middleware ne fait rien.
+        """Flag closed ⇒ no opener, so the middleware does nothing.
 
-        ``get_settings`` est ``lru_cache(maxsize=1)`` : sans neutraliser ce
-        cache, ce test resterait VERT quel que soit le défaut du champ — il
-        lirait les settings d'un appel antérieur. MESURÉ : la première
-        rédaction de ce test survivait au retournement du défaut à ``True``,
-        donc ne prouvait rien. La substitution ci-dessous et le sens INVERSE
-        sont ce qui le rend mordant.
+        ``get_settings`` is ``lru_cache(maxsize=1)``: without neutralizing that
+        cache, this test would stay GREEN whatever the field default — it would
+        read the settings of an earlier call. MEASURED: the first draft of this
+        test survived flipping the default to ``True``, so it proved nothing. The
+        substitution below and the REVERSE direction are what make it bite.
         """
         monkeypatch.setattr(
             "brain_v42.mcp.session_autoopen.get_settings",
@@ -133,7 +131,7 @@ class TestClosedByDefault:
     def test_getter_builds_an_opener_when_flag_is_armed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Sens inverse — sans lui, le test ci-dessus passerait sur du code mort."""
+        """The reverse direction — without it, the test above would pass over dead code."""
         monkeypatch.setattr(
             "brain_v42.mcp.session_autoopen.get_settings",
             lambda: Settings(postgres_url=_DSN, brain_session_auto_open_enabled=True),
@@ -147,18 +145,18 @@ class TestIdentityResolution:
         assert await _opener(opener).ensure_open() is not None
         assert len(opener.seen) == 1
         identity = opener.seen[0]
-        # `nature` est la SEULE colonne de la 046 au contrat public MCP ; les
-        # quatre autres voyagent ici, dans l'identité interne.
+        # `nature` is the ONLY 046 column in the public MCP contract; the other
+        # four travel here, in the internal identity.
         assert identity.nature == "agent"
         assert identity.connection_id == _CONNECTION
         assert identity.started_by_actor == _ACTOR
-        # basename `brain_v42` -> clé canonique `brain-v42`.
+        # basename `brain_v42` -> canonical key `brain-v42`.
         assert identity.project_key == "brain-v42"
-        # `intent` NULL veut dire « pas mesuré », jamais « vide ».
+        # A NULL `intent` means "not measured", never "empty".
         assert identity.intent is None
 
     async def test_stdio_opens_nothing(self) -> None:
-        """§0ter.2 : PAS DE SESSION AUTOMATIQUE du tout en stdio."""
+        """§0ter.2: NO AUTOMATIC SESSION at all under stdio."""
         set_current_transport(None)
         opener = _RecordingOpener()
         auto = _opener(opener)
@@ -167,7 +165,7 @@ class TestIdentityResolution:
         assert auto.skipped["no_connection"] == 1
 
     async def test_unexpanded_actor_opens_nothing(self) -> None:
-        """Sans acteur normalisable, aucun projet honnête : on n'invente pas."""
+        """Without a normalizable actor there is no honest project: we do not invent one."""
         set_current_actor(UNEXPANDED_ACTOR)
         opener = _RecordingOpener()
         auto = _opener(opener)
@@ -176,7 +174,7 @@ class TestIdentityResolution:
         assert auto.skipped["no_actor"] == 1
 
     async def test_non_canonical_actor_opens_nothing(self) -> None:
-        """Un acteur qui n'est pas une clé de projet valide ne devient pas un projet."""
+        """An actor that is not a valid project key does not become a project."""
         set_current_actor("Not A Project Key")
         opener = _RecordingOpener()
         auto = _opener(opener)
@@ -209,12 +207,12 @@ class TestIdempotence:
         ]
 
     async def test_double_dispatch_opens_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Profil `compact` : `on_call_tool` tire DEUX fois par appel client.
+        """`compact` profile: `on_call_tool` fires TWICE per client call.
 
-        C'est `is_outermost_call()` qui rend l'auto-ouverture idempotente — la
-        garde de profondeur, pas la mémo. Le témoin est donc un compteur
-        d'APPELS à `ensure_open`, pas l'ouvreur : la mémo masquerait un second
-        tir au lieu de prouver qu'il n'a pas eu lieu.
+        It is `is_outermost_call()` that makes auto-opening idempotent — the depth
+        guard, not the memo. The witness is therefore a counter of CALLS to
+        `ensure_open`, not the opener: the memo would mask a second firing instead
+        of proving it did not happen.
         """
         monkeypatch.setattr(
             "brain_v42.mcp.provenance_middleware.get_http_headers",
@@ -238,7 +236,7 @@ class TestIdempotence:
             return "inner"
 
         async def outer(ctx: object) -> str:
-            # La passerelle `brain_call_tool` ré-entre dans la chaîne.
+            # The `brain_call_tool` gateway re-enters the chain.
             return await middleware.on_call_tool(ctx, inner)
 
         assert await middleware.on_call_tool(_context(), outer) == "inner"
@@ -249,10 +247,10 @@ class TestSynchronousBeforeTheTool:
     async def test_session_exists_before_the_tool_runs(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Le feu-et-oubli n'attribue rien : l'ouverture précède l'outil.
+        """Fire-and-forget attributes nothing: the opening precedes the tool.
 
-        Témoin d'ORDRE dans le journal partagé — si l'ouverture était
-        asynchrone, `call_next` s'exécuterait avant elle.
+        An ORDER witness in the shared log — if the opening were asynchronous,
+        `call_next` would run before it.
         """
         monkeypatch.setattr(
             "brain_v42.mcp.provenance_middleware.get_http_headers",
@@ -281,12 +279,12 @@ class TestFailOpen:
     async def test_open_failure_never_breaks_the_tool_call(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Fail-open : l'appel passe quand même. Avec TÉMOIN NÉGATIF.
+        """Fail-open: the call goes through anyway. With a NEGATIVE WITNESS.
 
-        Le témoin est indispensable : un test qui n'observe que « l'appel a
-        réussi » resterait vert si l'auto-ouverture n'était jamais tentée. On
-        prouve donc les DEUX sens dans le même test — l'ouvreur a bien été
-        appelé et a bien levé, et l'appel d'outil a quand même rendu sa valeur.
+        The witness is indispensable: a test observing only "the call succeeded"
+        would stay green if auto-opening were never attempted. So we prove BOTH
+        directions in the same test — the opener was called and did raise, and the
+        tool call still returned its value.
         """
         monkeypatch.setattr(
             "brain_v42.mcp.provenance_middleware.get_http_headers",
@@ -304,12 +302,12 @@ class TestFailOpen:
 
         result = await ProvenanceMiddleware().on_call_tool(_context(), call_next)
 
-        assert result == "ok"  # l'appel passe
-        assert len(boom.seen) == 1  # TÉMOIN NÉGATIF : l'ouverture a bien été TENTÉE
-        assert auto.failed == 1  # et elle a bien ÉCHOUÉ
+        assert result == "ok"  # the call goes through
+        assert len(boom.seen) == 1  # NEGATIVE WITNESS: the opening WAS attempted
+        assert auto.failed == 1  # and it did FAIL
 
     async def test_failure_is_not_memoized(self) -> None:
-        """Un échec ne pose pas de mémo : sinon la connexion perdrait sa session à vie."""
+        """A failure lays down no memo: otherwise the connection would lose its session for life."""
         boom = _RecordingOpener(raises=RuntimeError("transient"))
         auto = _opener(boom)
         await auto.ensure_open()
@@ -319,10 +317,10 @@ class TestFailOpen:
 
 
 class TestObservation:
-    """`last_observed_at` bouge à CHAQUE appel — sinon la règle des 4 h est morte."""
+    """`last_observed_at` moves on EVERY call — otherwise the 4 h rule is dead."""
 
     async def test_a_fresh_open_does_not_also_observe(self) -> None:
-        """L'INSERT date déjà la ligne : une seconde écriture serait gratuite."""
+        """The INSERT already stamps the row: a second write would be free of purpose."""
         opener, observer = _RecordingOpener(), _RecordingObserver()
         auto = _opener(opener, observer)
         assert await auto.ensure_open() is not None
@@ -330,11 +328,11 @@ class TestObservation:
         assert observer.seen == []
 
     async def test_the_memoized_path_dates_the_same_session(self) -> None:
-        """Le chemin rapide n'est pas un chemin muet.
+        """The fast path is not a mute path.
 
-        TÉMOIN NÉGATIF dans le test : on vérifie AUSSI que l'ouvreur n'a pas
-        rejoué. Sans lui, un observateur appelé par une réouverture silencieuse
-        rendrait ce test vert en prouvant le contraire de son nom.
+        NEGATIVE WITNESS inside the test: we ALSO check the opener did not replay.
+        Without it, an observer called by a silent reopening would turn this test
+        green while proving the opposite of its name.
         """
         opener, observer = _RecordingOpener(), _RecordingObserver()
         auto = _opener(opener, observer)
@@ -348,12 +346,12 @@ class TestObservation:
         assert auto.memoized == 2
 
     async def test_a_session_closed_under_us_is_reopened(self) -> None:
-        """Le cas nommé par la forme signée : le balayage ferme, la connexion vit.
+        """The case the signed shape names: the sweep closes, the connection lives.
 
-        La mémo doit y survivre. L'autorité est l'index UNIQUE **PARTIEL**
-        `WHERE status = 'open'` : la ligne fermée ne bloque pas, donc rouvrir
-        est le chemin normal. Un cache qui trancherait « déjà fait » sans la
-        base rendrait cette connexion muette à vie.
+        The memo must survive it. The authority is the **PARTIAL** UNIQUE index
+        `WHERE status = 'open'`: the closed row does not block, so reopening is the
+        normal path. A cache deciding "already done" without the database would
+        make this connection mute for life.
         """
         opener = _RecordingOpener()
         observer = _RecordingObserver(still_open=False)
@@ -368,11 +366,10 @@ class TestObservation:
         assert auto.memoized == 0
 
     async def test_an_observation_failure_keeps_the_memo_and_never_raises(self) -> None:
-        """`None` n'est pas `False` : un hoquet ne doit pas fabriquer un doublon.
+        """`None` is not `False`: a hiccup must not manufacture a duplicate.
 
-        Confondre les deux ferait rouvrir une session parfaitement vivante à
-        chaque erreur transitoire — un doublon par hoquet, là où la perte réelle
-        est une seule datation.
+        Confusing the two would reopen a perfectly live session on every transient
+        error — one duplicate per hiccup, where the real loss is a single stamp.
         """
         opener = _RecordingOpener()
         observer = _RecordingObserver(raises=RuntimeError("database is down"))
@@ -380,7 +377,7 @@ class TestObservation:
         first = await auto.ensure_open()
         second = await auto.ensure_open()
         assert second == first
-        assert len(opener.seen) == 1  # TÉMOIN : aucune réouverture
-        assert observer.seen == [first]  # et l'observation a bien été TENTÉE
+        assert len(opener.seen) == 1  # WITNESS: no reopening
+        assert observer.seen == [first]  # and the observation WAS attempted
         assert auto.observe_failed == 1
         assert auto.reopened == 0

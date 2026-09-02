@@ -408,8 +408,9 @@ class TestListGrouped:
         assert [t.id for t in groups.awaiting_requester_confirmation] == [ticket_id]
 
     async def test_self_ticket_resolved_stays_in_a_confirmer_only(self) -> None:
-        # Sans l'exclusion from_project != to_project, un self-ticket resolved
-        # remonterait aussi dans awaiting_requester_confirmation (double comptage).
+        # Without the from_project != to_project exclusion, a resolved
+        # self-ticket would also surface in awaiting_requester_confirmation
+        # (double counting).
         ticket_id = uuid4()
         self_ticket = _ticket_row(ticket_id, status=TicketStatus.RESOLVED)
         self_ticket["from_project"] = "brain-v42"

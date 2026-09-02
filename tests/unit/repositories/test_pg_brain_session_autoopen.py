@@ -1,14 +1,14 @@
-"""Contrat SQL de l'auto-ouverture et de l'observation d'une traçante `agent`.
+"""SQL contract of auto-opening and of observing an `agent` tracer.
 
-Le harnais compile les statements SQLAlchemy sans PostgreSQL : il prouve la
-FORME émise, pas le comportement du moteur. La frontière réelle — l'index
-UNIQUE **PARTIEL** qui arbitre le conflit — ne se prouve que contre une vraie
-base ; ce qui se prouve ici est que le code la NOMME, et qu'il ne repart pas
-sans dater ce qu'il vient de retrouver.
+The harness compiles the SQLAlchemy statements without PostgreSQL: it proves the
+SHAPE emitted, not the engine's behaviour. The real boundary — the **PARTIAL**
+UNIQUE index that arbitrates the conflict — can only be proven against a real
+database; what is proven here is that the code NAMES it, and that it does not
+leave without stamping what it just found.
 
-La 046 a livré cinq colonnes et un seul écrivain. `last_observed_at` était la
-colonne sans écrivain qui compte : c'est la SEULE que la règle des 4 h du
-balayage sait lire, donc la laisser NULL rendait M-G verte et inerte.
+046 delivered five columns and a single writer. `last_observed_at` was the
+writer-less column that mattered: it is the ONLY one the sweep's 4 h rule can
+read, so leaving it NULL made M-G green and inert.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ _CONNECTION = "3f2b1a0c9d8e7f6a5b4c3d2e1f0a9b8c"
 
 @dataclass(frozen=True)
 class _Identity:
-    """Miroir minimal d'`AutoOpenIdentity` — le dépôt ne connaît que ces champs."""
+    """Minimal mirror of `AutoOpenIdentity` — the repository knows only these fields."""
 
     project_key: str = "brain-v42"
     connection_id: str = _CONNECTION
@@ -73,17 +73,17 @@ class TestAutoOpen:
         assert params["nature"] == "agent"
         assert params["connection_id"] == _CONNECTION
         assert params["started_by_actor"] == "brain_v42"
-        # `intent` est le champ de JUGEMENT humain : le serveur n'en fabrique pas.
+        # `intent` is the human JUDGEMENT field: the server manufactures none.
         assert params["intent"] is None
         assert params["last_observed_at"] == NOW
 
     async def test_the_conflict_is_inferred_on_the_partial_index_and_dates_the_row(self) -> None:
-        """`DO UPDATE`, pas `DO NOTHING` : un conflit EST une observation.
+        """`DO UPDATE`, not `DO NOTHING`: a conflict IS an observation.
 
-        Et `WHERE status = 'open'` doit figurer dans l'inférence. Sans le
-        prédicat, PostgreSQL ne peut pas désigner l'index partiel et lève —
-        c'est la différence entre un chemin qui rouvre après une fermeture
-        nocturne et un chemin qui échoue tous les matins.
+        And `WHERE status = 'open'` must appear in the inference. Without the
+        predicate, PostgreSQL cannot designate the partial index and raises —
+        that is the difference between a path that reopens after a nightly
+        closure and a path that fails every morning.
         """
         sql = _sql(
             (
@@ -100,11 +100,11 @@ class TestAutoOpen:
         assert "returning" in sql
 
     async def test_retrieving_an_existing_session_costs_no_second_round_trip(self) -> None:
-        """TÉMOIN : exactement deux statements — le focus, puis l'upsert.
+        """WITNESS: exactly two statements — the focus, then the upsert.
 
-        L'ancienne forme suivait le `DO NOTHING` d'un `SELECT` pour retrouver
-        l'id : deux allers-retours qui ne dataient rien. Compter les statements
-        est la seule façon de prouver que ce `SELECT` a bien disparu.
+        The old form followed the `DO NOTHING` with a `SELECT` to find the id:
+        two round trips that stamped nothing. Counting the statements is the only
+        way to prove that `SELECT` really is gone.
         """
         _, statements = await _auto_open(
             _open_router(session_id=uuid4(), focus={"current_focus": "f", "focus_revision": 7})
@@ -113,18 +113,18 @@ class TestAutoOpen:
         assert "from brain_sessions" not in _sql(statements[0])
 
     async def test_a_conflict_on_an_operator_row_dates_nothing_and_returns_none(self) -> None:
-        """Le conflit ne doit JAMAIS pouvoir dater une ligne non-`agent`.
+        """The conflict must NEVER be able to stamp a non-`agent` row.
 
-        `observe()` porte déjà cette garde (`nature = 'agent'` DUR dans son
-        WHERE). Le chemin du CONFLIT ne l'avait pas : un `DO UPDATE` sans garde
-        re-daterait `last_heartbeat_at` sur une ligne `operator` à chaque appel
-        d'outil. Or l'éligibilité 7 jours du balayage lit `last_heartbeat_at`
-        **sans filtre de nature** — la seule exception ÉCRITE au covenant
-        deviendrait donc inatteignable, et la ligne un fantôme immortel.
+        `observe()` already carries this guard (a HARD `nature = 'agent'` in its
+        WHERE). The CONFLICT path did not: a `DO UPDATE` without a guard would
+        re-stamp `last_heartbeat_at` on an `operator` row at every tool call. But
+        the sweep's 7-day eligibility reads `last_heartbeat_at` **with no nature
+        filter** — the one WRITTEN exception to the covenant would therefore
+        become unreachable, and the row an immortal ghost.
 
-        Deux moitiés, et il faut les deux : la FORME émise doit nommer la garde,
-        et le refus de PostgreSQL (aucune ligne rendue) doit se traduire par
-        `None` sans qu'un rattrapage vienne dater quoi que ce soit derrière.
+        Two halves, and both are needed: the SHAPE emitted must name the guard,
+        and PostgreSQL's refusal (no row returned) must translate into `None`
+        with no fallback stamping anything behind it.
         """
         opened, statements = await _auto_open(
             _open_router(session_id=None, focus={"current_focus": "f", "focus_revision": 7})
@@ -139,7 +139,7 @@ class TestAutoOpen:
         assert "agent" in _params(statements[-1]).values()
 
     async def test_a_project_without_context_opens_nothing_and_writes_nothing(self) -> None:
-        """Le serveur ne fabrique pas de projet : personne n'a rien nommé ici."""
+        """The server manufactures no project: nobody named anything here."""
         opened, statements = await _auto_open(_open_router(session_id=uuid4(), focus=None))
         assert opened is None
         assert len(statements) == 1
@@ -154,13 +154,13 @@ class TestObserve:
         return alive, statements
 
     async def test_observation_moves_both_clocks_and_leaves_updated_at_alone(self) -> None:
-        """Deux horloges bougent, la troisième non — et chacune pour sa raison.
+        """Two clocks move, the third does not — and each for its own reason.
 
-        `last_observed_at` nourrit la règle des 4 h. `last_heartbeat_at` évite le
-        faux-mort du balayage 7 j sur une connexion qui vit plus d'une semaine
-        sans qu'aucun humain ne rappelle de heartbeat. `updated_at` ne bouge
-        PAS : observer n'est pas muter l'état déclaré, et en faire un signal
-        d'activité rendrait creux tout contrôle qui s'y adosse.
+        `last_observed_at` feeds the 4 h rule. `last_heartbeat_at` avoids the 7 d
+        sweep's false corpse on a connection that lives more than a week without
+        any human sending a heartbeat. `updated_at` does NOT move: observing is
+        not mutating the declared state, and turning it into an activity signal
+        would hollow out every control that leans on it.
         """
         alive, statements = await self._observe(found=uuid4())
 
@@ -174,11 +174,11 @@ class TestObserve:
         assert "updated_at" not in _sql(statement).split("where")[0]
 
     async def test_the_predicate_can_never_reach_an_operator_session(self) -> None:
-        """Garde DURE, pas redondance : une mémo empoisonnée ne doit rien dater.
+        """A HARD guard, not a redundancy: a poisoned memo must stamp nothing.
 
-        `nature = 'agent'` et `status = 'open'` sont dans le WHERE, donc une
-        session `operator` — ou une session déjà terminale — est hors d'atteinte
-        de ce chemin, quel que soit l'UUID qu'on lui présente.
+        `nature = 'agent'` and `status = 'open'` are in the WHERE, so an
+        `operator` session — or an already terminal one — is out of this path's
+        reach, whatever UUID it is handed.
         """
         _, statements = await self._observe(found=uuid4())
         where = _sql(statements[0]).split(" where ")[1]
@@ -189,10 +189,10 @@ class TestObserve:
         assert params["nature_1"] == "agent"
 
     async def test_no_row_means_closed_under_us_not_an_error(self) -> None:
-        """`False` est un FAIT — la session a été fermée — pas une panne.
+        """`False` is a FACT — the session was closed — not a failure.
 
-        C'est ce booléen qui fait jeter la mémo côté ouvreur et rouvrir. Le
-        confondre avec une erreur ferait perdre la session de cette connexion.
+        That boolean is what makes the opener discard the memo and reopen.
+        Confusing it with an error would lose this connection's session.
         """
         alive, _ = await self._observe(found=None)
         assert alive is False
@@ -200,12 +200,12 @@ class TestObserve:
 
 @pytest.mark.parametrize("column", ["last_observed_at", "last_heartbeat_at"])
 async def test_both_writers_move_exactly_the_same_clocks(column: str) -> None:
-    """L'upsert et l'observation doivent dater le MÊME ensemble de colonnes.
+    """The upsert and the observation must stamp the SAME set of columns.
 
-    Les laisser diverger donnerait à une connexion réidentifiée une horloge de
-    présence différente de celle d'une connexion réobservée : deux régimes pour
-    un seul geste, et un balayage qui lirait l'un ou l'autre selon le hasard du
-    chemin emprunté.
+    Letting them diverge would give a re-identified connection a presence clock
+    different from a re-observed one: two regimes for a single gesture, and a
+    sweep that would read one or the other depending on which path happened to be
+    taken.
     """
     from brain_v42.repositories.pg_brain_session import PgBrainSessionRepo
 

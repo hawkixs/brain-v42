@@ -1,36 +1,37 @@
-"""Ancrage Phase 0 — la regex de la clé de projet a HUIT gardiens, et rien ne les reliait.
+"""Phase 0 anchor — the project-key regex has EIGHT guardians, and nothing linked them.
 
-`models/project_key.py` se déclare « seule source de vérité » du format de clé. Il ne
-l'est pas : le même motif est recopié à la main dans huit surfaces d'application
-vivantes, réparties sur trois registres qui ne se lisent jamais entre eux —
+`models/project_key.py` declares itself the "single source of truth" for the key format.
+It is not: the same pattern is copied by hand into eight live enforcement surfaces,
+spread over three registers that never read each other —
 
-  1. `_KEBAB`, le chemin d'écriture Python (Pydantic, via `ProjectKeyCanonicalMixin`) ;
-  2. le `CheckConstraint` `projects_key_format_valid` déclaré dans `db/tables.py` ;
-  3. deux `CHECK` SQL en migration : la **012** (`chk_project_key_format` sur
-     `project_contexts`) et la **033** (`projects_key_format_valid` sur `projects`) ;
-  4. **cinq assets d'attestation de récupération** (`ops/recovery/*.sql`), où le motif
-     apparaît sous sa forme NIÉE (`!~`) pour compter les clés non conformes.
+  1. `_KEBAB`, the Python write path (Pydantic, through `ProjectKeyCanonicalMixin`);
+  2. the `CheckConstraint` `projects_key_format_valid` declared in `db/tables.py`;
+  3. two SQL `CHECK`s in migrations: **012** (`chk_project_key_format` on
+     `project_contexts`) and **033** (`projects_key_format_valid` on `projects`);
+  4. **five recovery attestation assets** (`ops/recovery/*.sql`), where the pattern
+     appears in its NEGATED form (`!~`) to count non-conforming keys.
 
-**Aucun test ne les reliait** — recensé le 2026-08-20 par trois motifs indépendants :
-`_KEBAB` n'apparaît dans `tests/` que dans de la prose de docstring, jamais importé ;
-les tests qui citent les contraintes le font par leur NOM ; et
+**No test linked them** — surveyed on 2026-08-20 through three independent angles:
+`_KEBAB` appears in `tests/` only in docstring prose, never imported; the tests that
+cite the constraints do so by NAME; and
 `test_migration_trims_project_references_and_rejects_noncanonical_keys`
-(`test_schema_data_foundation_033.py:373`) épingle la source de la migration contre un
-littéral **réécrit dans le test**, ce qui ne prouve rien sur `_KEBAB`.
+(`test_schema_data_foundation_033.py:373`) pins the migration source against a literal
+**retyped inside the test**, which proves nothing about `_KEBAB`.
 
-Conséquence mesurable, et c'est la dérive que `docs/PROJECTS_SYSTEM.md` §8 nomme sans
-la garder : élargir la regex Python laisserait passer, côté Pydantic, des clés que la
-base refuserait — **et rien ne rougirait avant l'INSERT**. Dans l'autre sens, toucher un
-asset `ops/recovery/` casse la preuve de restauration sans casser aucun test.
+The measurable consequence, and it is the drift `docs/PROJECTS_SYSTEM.md` §8 names
+without guarding: widening the Python regex would let through, on the Pydantic side,
+keys the database would refuse — **and nothing would turn red before the INSERT**. In
+the other direction, touching an `ops/recovery/` asset breaks the restoration proof
+without breaking any test.
 
-Ce test est donc BIDIRECTIONNEL par construction : il n'écrit le motif nulle part. Il
-importe `_KEBAB` et **extrait** les huit autres de l'arbre — la contrainte des métadonnées
-est lue sur l'objet SQLAlchemy, les sept autres sur leur fichier. Muter un seul côté rougit ;
-muter les neuf de façon cohérente reste vert, ce qui est le comportement voulu — la
-propriété gardée est l'ACCORD, pas une valeur figée.
+This test is therefore BIDIRECTIONAL by construction: it writes the pattern nowhere. It
+imports `_KEBAB` and **extracts** the other eight from the tree — the metadata
+constraint is read off the SQLAlchemy object, the other seven off their file. Mutating a
+single side turns it red; mutating all nine consistently stays green, which is the
+intended behaviour — the guarded property is AGREEMENT, not a frozen value.
 
-Phase 0 = photographier l'existant. Ce test n'exprime aucune préférence sur le format de
-clé et n'anticipe aucune décision de la refonte.
+Phase 0 = photograph what exists. This test expresses no preference about the key format
+and anticipates no decision of the redesign.
 """
 
 from __future__ import annotations
@@ -45,18 +46,19 @@ from brain_v42.models.project_key import _KEBAB
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
-#: `project_key ~ '<motif>'` ou, dans les assets d'attestation, `project_key !~ '<motif>'`.
+#: `project_key ~ '<pattern>'` or, in the attestation assets, `project_key !~ '<pattern>'`.
 _SQL_PREDICATE = re.compile(r"project_key\s*!?~\s*'([^']*)'")
 
-#: Les deux migrations qui posent un CHECK de format, et le nom de la contrainte posée.
+#: The two migrations that install a format CHECK, and the name of the constraint set.
 _MIGRATIONS = {
     "012_project_groups_and_normalization.py": "chk_project_key_format",
     "033_graph_relation_ledger.py": "projects_key_format_valid",
 }
 
-#: Les cinq assets d'attestation qui portent aujourd'hui le prédicat. Pinné VOLONTAIREMENT :
-#: un asset v5 doit soit reprendre le motif, soit forcer une décision explicite ici. Le
-#: sixième `.sql` du dossier (`brain-v42-v1.sql`) précède la contrainte et ne le porte pas.
+#: The five attestation assets that carry the predicate today. Pinned DELIBERATELY: a v5
+#: asset must either reuse the pattern or force an explicit decision here. The sixth
+#: `.sql` of the directory (`brain-v42-v1.sql`) predates the constraint and does not
+#: carry it.
 _RECOVERY_ASSETS_WITH_PREDICATE = frozenset(
     {
         "brain-v42-v2.sql",
@@ -64,20 +66,20 @@ _RECOVERY_ASSETS_WITH_PREDICATE = frozenset(
         "brain-v42-v3-pgrestore.sql",
         "brain-v42-v4.sql",
         "brain-v42-v4-pgrestore.sql",
-        # Ajoutés le 2026-08-21 par le mint v5. La friction a fonctionné comme
-        # écrite : ces deux assets sont nés en dérivant v4, ils ont donc hérité
-        # du prédicat — et ce test a rougi pour l'exiger, au lieu de les laisser
-        # entrer sans que personne ne vérifie qu'ils le portaient.
+        # Added on 2026-08-21 by the v5 mint. The friction worked as written:
+        # these two assets were born by deriving v4, so they inherited the
+        # predicate — and this test turned red to require it, instead of letting
+        # them in with nobody checking that they carried it.
         "brain-v42-v5.sql",
         "brain-v42-v5-pgrestore.sql",
-        # Ajoutés le 2026-08-29 par le mint v6 (047/048) : dérivés de v5, ils
-        # héritent du prédicat — et cette friction a rougi une troisième fois,
-        # exactement comme écrite.
+        # Added on 2026-08-29 by the v6 mint (047/048): derived from v5, they
+        # inherit the predicate — and this friction turned red a third time,
+        # exactly as written.
         "brain-v42-v6.sql",
         "brain-v42-v6-pgrestore.sql",
-        # Ajoutés le 2026-09-02 par le mint v7 (049) : dérivés de v6 à sept
-        # empreintes près, ils héritent du prédicat — quatrième rougissement de
-        # cette friction, toujours exactement comme écrite.
+        # Added on 2026-09-02 by the v7 mint (049): derived from v6 bar seven
+        # fingerprints, they inherit the predicate — the fourth reddening of this
+        # friction, still exactly as written.
         "brain-v42-v7.sql",
         "brain-v42-v7-pgrestore.sql",
     }
@@ -89,7 +91,7 @@ def _patterns_in(text: str) -> list[str]:
 
 
 def _recovery_assets() -> dict[str, list[str]]:
-    """Rendre, pour chaque asset `.sql` de `ops/recovery/`, les motifs qu'il porte."""
+    """Return, for each `.sql` asset of `ops/recovery/`, the patterns it carries."""
     return {
         path.name: _patterns_in(path.read_text(encoding="utf-8"))
         for path in sorted((PROJECT_ROOT / "ops" / "recovery").glob("*.sql"))
@@ -97,7 +99,7 @@ def _recovery_assets() -> dict[str, list[str]]:
 
 
 def test_the_sqlalchemy_check_constraint_uses_the_python_source_of_truth() -> None:
-    """La contrainte déclarée dans les métadonnées est lue sur l'objet, pas sur la source."""
+    """The constraint declared in the metadata is read off the object, not the source."""
     from brain_v42.db.tables import projects
 
     constraint = next(
@@ -135,10 +137,10 @@ def test_both_format_migrations_check_the_python_source_of_truth(
 
 
 def test_the_set_of_recovery_assets_carrying_the_predicate_is_pinned() -> None:
-    """Friction voulue : un nouvel asset d'attestation force une décision ici.
+    """Intended friction: a new attestation asset forces a decision here.
 
-    Sans ce pin, un asset v5 qui OMET le prédicat passerait inaperçu — et l'attestation
-    de récupération cesserait silencieusement de compter les clés non conformes.
+    Without this pin, a v5 asset OMITTING the predicate would go unnoticed — and the
+    recovery attestation would silently stop counting non-conforming keys.
     """
     carrying = {name for name, patterns in _recovery_assets().items() if patterns}
 
@@ -165,13 +167,13 @@ def test_every_recovery_attestation_asset_checks_the_python_source_of_truth(
 
 
 def test_the_anchor_covers_every_live_enforcement_surface() -> None:
-    """Garde de non-vacuité : compter les surfaces, pour qu'aucune n'échappe en silence.
+    """Non-vacuity guard: count the surfaces, so none escapes in silence.
 
-    QUATORZE gardiens hors `_KEBAB` (1 métadonnées + 2 migrations + 11 assets) depuis
-    le mint v7 du 2026-09-02 — c'était huit à l'écriture de cet ancrage, dix au mint v5,
-    douze au mint v6. Ce compte n'inclut délibérément AUCUN document : `docs/design/`
-    n'est pas tracké, et un test qui compterait la prose échouerait selon l'arbre de
-    travail.
+    FOURTEEN guardians besides `_KEBAB` (1 metadata + 2 migrations + 11 assets) since
+    the v7 mint of 2026-09-02 — it was eight when this anchor was written, ten at the v5
+    mint, twelve at the v6 mint. This count deliberately includes NO document:
+    `docs/design/` is not tracked, and a test counting prose would fail depending on the
+    working tree.
     """
     from brain_v42.db.tables import projects
 

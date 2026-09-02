@@ -1,16 +1,15 @@
-"""Hygiène de processus pour les tests qui traversent le vrai ``_run_mcp``.
+"""Process hygiene for the tests that go through the real ``_run_mcp``.
 
-``_install_session_idle_timeout`` substitue un symbole DANS le module de
-FastMCP, faute de point d'extension public pour l'échéance d'inactivité des
-sessions avec état. En production c'est sans conséquence : un seul processus,
-une seule installation, au démarrage. Dans une suite de tests, non — plusieurs
-tests appellent le vrai ``_run_mcp`` dans le même interpréteur, et la
-substitution survivrait au test qui l'a provoquée.
+``_install_session_idle_timeout`` substitutes a symbol INSIDE FastMCP's module,
+for want of a public extension point for the stateful sessions' idle deadline. In
+production that is inconsequential: one process, one installation, at startup. In
+a test suite it is not — several tests call the real ``_run_mcp`` in the same
+interpreter, and the substitution would outlive the test that caused it.
 
-Mesuré en écrivant ce chantier : sans cette restauration, cinq tests de
-``test_dream_capability_http.py`` échouaient alors qu'ils passaient tous
-isolément — le symptôme classique d'un état de processus qui fuit d'un test à
-l'autre, et le genre d'échec qu'on impute à tort au test suivant.
+Measured while writing this work: without this restoration, five tests of
+``test_dream_capability_http.py`` failed while all passing in isolation — the
+classic symptom of process state leaking from one test to the next, and the kind
+of failure wrongly blamed on the following test.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _restore_fastmcp_session_manager() -> Iterator[None]:
-    """Rendre à FastMCP son gestionnaire de sessions après chaque test."""
+    """Give FastMCP its session manager back after each test."""
     from fastmcp.server import http as fastmcp_http
 
     original = fastmcp_http.StreamableHTTPSessionManager

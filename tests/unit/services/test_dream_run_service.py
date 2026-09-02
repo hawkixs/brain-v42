@@ -23,8 +23,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from brain_v42.dream_degradation import DEGRADED_PREFIX
 from brain_v42.services.dream_run_service import DreamRunService
 
-# Formes RÉELLES lues dans dream_runs.error_message le 2026-08-11. Les deux
-# vivent sur des runs status='done' : c'est ce qui rend le prédicat délicat.
+# REAL shapes read from dream_runs.error_message on 2026-08-11. Both live on
+# status='done' runs: that is what makes the predicate delicate.
 _DEGRADED_MESSAGE = (
     f"{DEGRADED_PREFIX} : 10/10 batches servis par le modèle de SECOURS meta/llama-3.1-8b-instruct"
 )
@@ -101,7 +101,7 @@ class TestKillswitchState:
         await _insert_run(session_factory, run_date=today, phase="reorg", phase_dry_run=True)
 
         svc = DreamRunService(session_factory, table=_dream_runs)
-        # Pas de fichier killswitch → fallback sur la présence dans le run.
+        # No killswitch file → fall back on presence in the run.
         state = await svc.killswitch_state(killswitches_path=tmp_path / "absent.conf")
         assert state.promote_enabled is True
         assert state.promote_dry is False
@@ -130,11 +130,11 @@ class TestKillswitchState:
 
     @pytest.mark.asyncio
     async def test_model_change_resets_counter(self, session_factory, tmp_path):
-        """Les nuits propres d'un AUTRE modèle ne sont pas une preuve pour celui-ci.
+        """Clean nights from ANOTHER model are no evidence for this one.
 
-        2026-08-05 : le briefing annonçait « 22 clean DRY nights » pour
-        ROADMAP, dont 10 produites par le secours 8B après la mort du
-        primaire 80B. Ce compteur servait d'argument pour basculer en WET.
+        2026-08-05: the briefing announced "22 clean DRY nights" for ROADMAP, 10
+        of them produced by the 8B fallback after the 80B primary died. That
+        counter was being used as an argument to switch to WET.
         """
         for i in (4, 3, 2):
             await _insert_run(
@@ -159,7 +159,7 @@ class TestKillswitchState:
 
     @pytest.mark.asyncio
     async def test_unrecorded_model_does_not_reset_a_stable_streak(self, session_factory, tmp_path):
-        """Un modèle jamais renseigné reste une valeur constante, pas un changement."""
+        """A model never recorded stays a constant value, not a change."""
         for i in (2, 1, 0):
             await _insert_run(
                 session_factory,
@@ -175,13 +175,13 @@ class TestKillswitchState:
 
     @pytest.mark.asyncio
     async def test_a_degraded_night_resets_the_counter(self, session_factory, tmp_path):
-        """Une nuit servie par le modèle de SECOURS n'est pas une nuit propre.
+        """A night served by the FALLBACK model is not a clean night.
 
-        Mesuré le 2026-08-11 : les nuits roadmap des 08-08, 08-09 et 08-10
-        portent toutes status='done' ET un error_message « DÉGRADÉ : 10/10
-        batches servis par le modèle de SECOURS ». Le compteur les comptait
-        comme propres, et c'est ce compteur qui sert d'argument pour basculer
-        une phase en WET.
+        Measured on 2026-08-11: the roadmap nights of 08-08, 08-09 and 08-10 all
+        carry status='done' AND an error_message reading "DÉGRADÉ : 10/10
+        batches servis par le modèle de SECOURS". The counter counted them as
+        clean, and that counter is what is used as an argument to switch a phase
+        to WET.
         """
         await _insert_run(
             session_factory,
@@ -205,12 +205,11 @@ class TestKillswitchState:
 
     @pytest.mark.asyncio
     async def test_an_informative_message_is_not_a_degradation(self, session_factory, tmp_path):
-        """Le prédicat porte sur le PRÉFIXE, jamais sur « il y a un message ».
+        """The predicate is on the PREFIX, never on "there is a message".
 
-        `extract` écrit légitimement « N ticket(s) deferred… » sur un run
-        'done'. Un prédicat `error_message IS NOT NULL` remettrait ce compteur
-        à zéro sur une nuit parfaitement propre — et il passerait tous les
-        autres tests de ce fichier.
+        `extract` legitimately writes "N ticket(s) deferred…" on a 'done' run. An
+        `error_message IS NOT NULL` predicate would zero this counter on a
+        perfectly clean night — and it would pass every other test in this file.
         """
         for i in (2, 1, 0):
             await _insert_run(
@@ -265,7 +264,7 @@ class TestKillswitchState:
 
     @pytest.mark.asyncio
     async def test_promote_ran_reorg_did_not(self, session_factory, tmp_path):
-        # Fallback (fichier killswitch absent) : enabled = présence dans le run.
+        # Fallback (killswitch file absent): enabled = presence in the run.
         today = date.today()
         await _insert_run(session_factory, run_date=today, phase="promote", phase_dry_run=False)
         svc = DreamRunService(session_factory, table=_dream_runs)
@@ -300,9 +299,9 @@ class TestKillswitchState:
 
     @pytest.mark.asyncio
     async def test_streak_counts_distinct_nights_not_rows(self, session_factory, tmp_path):
-        """Un re-run manuel le même jour ne doit PAS gonfler le streak (finding 2026-07-04)."""
+        """A manual re-run on the same day must NOT inflate the streak (finding 2026-07-04)."""
         d = date.today()
-        for _ in range(2):  # nightly + run manuel le même jour
+        for _ in range(2):  # nightly + a manual run on the same day
             await _insert_run(
                 session_factory, run_date=d, phase="roadmap", status="done", phase_dry_run=True
             )
@@ -314,13 +313,13 @@ class TestKillswitchState:
     async def test_enabled_from_killswitch_file_when_preflight_skipped(
         self, session_factory, tmp_path
     ):
-        """Fix faux positif (learning 6d5ee46b) : le pre-flight gate skippe
-        promote/reorg quand le corpus est inchangé → ABSENTS du dernier run
-        MAIS toujours enabled. L'état enabled vient du FICHIER killswitch, pas
-        de la présence dans dream_runs. Le mode dry d'une phase skippée retombe
-        sur le DRY_RUN déclaré du fichier."""
+        """False-positive fix (learning 6d5ee46b): the pre-flight gate skips
+        promote/reorg when the corpus is unchanged → ABSENT from the last run BUT
+        still enabled. The enabled state comes from the killswitch FILE, not from
+        presence in dream_runs. A skipped phase's dry mode falls back on the
+        file's declared DRY_RUN."""
         today = date.today()
-        # Nuit pre-flight-skippée : seules les phases non-Opus tournent.
+        # A pre-flight-skipped night: only the non-Opus phases run.
         await _insert_run(session_factory, run_date=today, phase="extract", phase_dry_run=True)
         await _insert_run(session_factory, run_date=today, phase="roadmap", phase_dry_run=False)
         ks = tmp_path / "killswitches.conf"
@@ -332,15 +331,15 @@ class TestKillswitchState:
         )
         svc = DreamRunService(session_factory, table=_dream_runs)
         state = await svc.killswitch_state(killswitches_path=ks)
-        assert state.promote_enabled is True  # depuis le fichier, malgré absence du run
+        assert state.promote_enabled is True  # from the file, despite absence from the run
         assert state.reorg_enabled is True
         assert state.reorg_dry is True  # phase absente → fallback DRY_RUN fichier
         assert state.last_run_date == today
 
     @pytest.mark.asyncio
     async def test_file_disabled_is_source_of_truth(self, session_factory, tmp_path):
-        """Le fichier est la source de vérité : REORG=false → disabled même si
-        une row reorg existe (edge : killswitch posé après un run)."""
+        """The file is the source of truth: REORG=false → disabled even if a reorg
+        row exists (edge case: killswitch set after a run)."""
         await _insert_run(session_factory, run_date=date.today(), phase="reorg", phase_dry_run=True)
         ks = tmp_path / "killswitches.conf"
         ks.write_text("[Service]\nEnvironment=BRAIN_DREAM_REORG_ENABLED=false\n")
@@ -350,7 +349,7 @@ class TestKillswitchState:
 
     @pytest.mark.asyncio
     async def test_sweep_enabled_and_dry_from_the_drop_in(self, session_factory, tmp_path):
-        """SWEEP armé et déclaré dry par le drop-in, phase absente du dernier run."""
+        """SWEEP armed and declared dry by the drop-in, phase absent from the last run."""
         await _insert_run(session_factory, run_date=date.today(), phase="promote")
         ks = tmp_path / "killswitches.conf"
         ks.write_text(
@@ -369,7 +368,7 @@ class TestKillswitchState:
     async def test_sweep_dry_is_false_when_the_drop_in_declares_wet(
         self, session_factory, tmp_path
     ):
-        """Un `sweep_dry = True` en dur passerait tous les autres tests : celui-ci le tue."""
+        """A hardcoded `sweep_dry = True` would pass every other test: this one kills it."""
         await _insert_run(session_factory, run_date=date.today(), phase="promote")
         ks = tmp_path / "killswitches.conf"
         ks.write_text(
@@ -387,7 +386,7 @@ class TestKillswitchState:
     async def test_sweep_dry_defaults_to_true_when_the_key_is_absent(
         self, session_factory, tmp_path
     ):
-        """Clé DRY_RUN absente → défaut conservateur dry, comme extract et roadmap."""
+        """DRY_RUN key absent → conservative dry default, like extract and roadmap."""
         await _insert_run(session_factory, run_date=date.today(), phase="promote")
         ks = tmp_path / "killswitches.conf"
         ks.write_text("[Service]\nEnvironment=BRAIN_DREAM_SWEEP_ENABLED=true\n")
@@ -414,7 +413,7 @@ class TestKillswitchState:
     async def test_sweep_disabled_when_the_drop_in_says_false_despite_a_row(
         self, session_factory, tmp_path
     ):
-        """Le fichier reste la source de vérité même si la phase a tourné."""
+        """The file stays the source of truth even when the phase ran."""
         await _insert_run(
             session_factory, run_date=date.today(), phase="sweep", phase_dry_run=True, model=None
         )
@@ -428,7 +427,7 @@ class TestKillswitchState:
 
     @pytest.mark.asyncio
     async def test_sweep_clean_dry_nights_counts_the_real_streak(self, session_factory, tmp_path):
-        """Un constant 0 passerait un test à streak nulle : on exige un compte exact non nul."""
+        """A constant 0 would pass a zero-streak test: we demand an exact non-zero count."""
         for i in range(3):
             await _insert_run(
                 session_factory,

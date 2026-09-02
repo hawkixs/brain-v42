@@ -236,13 +236,13 @@ def test_scanner_ignores_reads_and_ddl(tmp_path: Path) -> None:
 
 
 def test_capture_declares_its_take_over_update() -> None:
-    """La reprise par `capture` est un ÉCRIVAIN de plus, pas un détail.
+    """The takeover by `capture` is one more WRITER, not a detail.
 
-    `capture()` refusait une ligne détenue par une traçante ; elle la REPREND
-    désormais quand — et seulement quand — le détenteur est `nature='agent'`.
-    C'est un `UPDATE` du ledger, donc un site que l'allowlist doit nommer :
-    ce que la règle d'exclusivité refuse d'attribuer reste réparable par un
-    humain qui nomme l'UUID, et ce chemin-là doit être vu en revue.
+    `capture()` used to refuse a row held by a tracer; it now TAKES IT OVER when
+    — and only when — the holder is `nature='agent'`. That is an `UPDATE` of the
+    ledger, hence a site the allowlist must name: what the exclusivity rule
+    refuses to attribute stays repairable by a human who names the UUID, and
+    that path must be seen at review.
     """
     from brain_v42.db.session_ledger_writers import DECLARED_SESSION_LEDGER_WRITERS
 

@@ -1,9 +1,9 @@
-"""Unit tests for nightly-ops metrics collection (section `nightly` du sidecar).
+"""Unit tests for nightly-ops metrics collection (the sidecar's `nightly` section).
 
-Consommé par red-monitor (ticket de1ad785) : le panel nightly-ops du
-dashboard doit répliquer le check matinal — killswitches, proposals
-roadmap en attente de review (dont les merges retenus par le juge depuis
-39fc6a9), extract en attente, dernier échec dream.
+Consumed by red-monitor (ticket de1ad785): the dashboard's nightly-ops panel must
+replicate the morning check — killswitches, roadmap proposals awaiting review
+(including the merges the judge has held back since 39fc6a9), pending extract,
+last dream failure.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ class TestParseKillswitches:
 def _make_collector(
     side_effects: list,
 ) -> MetricsCollector:
-    """MetricsCollector avec session factory mockée (idiome test_dream_metrics)."""
+    """MetricsCollector with a mocked session factory (the test_dream_metrics idiom)."""
     collector = MetricsCollector.__new__(MetricsCollector)
     collector._session_factory = MagicMock()
     mock_session = AsyncMock()
@@ -109,7 +109,7 @@ def _db_side_effects(
     extract_pending: int = 9,
     failure_row=None,
 ) -> list:
-    """Ordre d'exécution : statuts roadmap → applied 24h → extract → last failure."""
+    """Execution order: roadmap statuses → applied 24h → extract → last failure."""
     return [
         _all_result(
             status_rows if status_rows is not None else [("proposed", 26), ("applied", 80)]
@@ -163,7 +163,7 @@ class TestCollectNightlyOps:
 
     @pytest.mark.asyncio
     async def test_missing_killswitch_file_degrades_to_none(self, tmp_path) -> None:
-        """Fichier absent/illisible → killswitches=None, le reste vit sa vie."""
+        """File absent/unreadable → killswitches=None, the rest carries on."""
         collector = _make_collector(_db_side_effects())
 
         result = await collector.collect_nightly_ops(killswitches_path=tmp_path / "absent.conf")
@@ -173,8 +173,8 @@ class TestCollectNightlyOps:
 
     @pytest.mark.asyncio
     async def test_db_error_degrades_to_killswitches_only(self, tmp_path) -> None:
-        """Le sidecar ne crashe JAMAIS (pattern collector_dream) : DB en
-        échec → seules les killswitches restent."""
+        """The sidecar NEVER crashes (the collector_dream pattern): DB failing →
+        only the killswitches remain."""
         ks_file = tmp_path / "killswitches.conf"
         ks_file.write_text(_DROPIN)
         collector = _make_collector([RuntimeError("db down")])
@@ -188,7 +188,7 @@ class TestCollectNightlyOps:
 
     @pytest.mark.asyncio
     async def test_everything_down_returns_empty(self, tmp_path) -> None:
-        """Ni fichier ni DB → {} : le server omet la section nightly."""
+        """Neither file nor DB → {}: the server omits the nightly section."""
         collector = _make_collector([RuntimeError("db down")])
 
         result = await collector.collect_nightly_ops(killswitches_path=tmp_path / "absent.conf")

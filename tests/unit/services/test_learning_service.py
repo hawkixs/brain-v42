@@ -576,14 +576,14 @@ class TestLearningServiceUpdate:
         mock_repo.update.assert_awaited_once_with(FIXED_UUID, data, embedding=FAKE_EMBEDDING)
 
     async def test_a_status_only_update_never_touches_the_gpu(self) -> None:
-        """Désarchiver un learning doit réussir GPU éteint (ticket 5ab70135).
+        """Unarchiving a learning must succeed with the GPU down (ticket 5ab70135).
 
-        Mesuré le 2026-08-23 : un update ne portant QUE `freshness_status`
-        déclenchait 1 appel d'embedding sur `learning` et 0 sur les quatre
-        autres types — désarchiver un learning ÉCHOUAIT quand le service
-        d'embedding était à terre, une décision réussissait, et la docstring
-        affirmait le contraire. L'embedding_svc de ce test LÈVE : si le
-        chemin le touche, le test meurt comme la prod mourait.
+        Measured on 2026-08-23: an update carrying ONLY `freshness_status`
+        triggered 1 embedding call on `learning` and 0 on the other four types —
+        unarchiving a learning FAILED when the embedding service was down, a
+        decision succeeded, and the docstring asserted the opposite. This test's
+        embedding_svc RAISES: if the path touches it, the test dies the way
+        production died.
         """
         svc, mock_repo, mock_embedding_svc = _make_service(with_embedding_svc=True)
         assert mock_embedding_svc is not None

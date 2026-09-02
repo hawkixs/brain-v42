@@ -172,13 +172,13 @@ async def test_propose_adr_translates_duplicate_source_integrity_error() -> None
 
 @pytest.mark.asyncio
 async def test_propose_adr_rejects_a_lone_dream_run_id_instead_of_swallowing_it() -> None:
-    """Le troisième membre du trio était AVALÉ en silence (ticket af3b58dd, item 2).
+    """The trio's third member was SWALLOWED in silence (ticket af3b58dd, item 2).
 
-    Mesuré le 2026-08-29 : `dream_run_id` sans la paire tombait dans le chemin
-    standard qui ne le lit jamais — l'appelant croyait tracer une promotion que
-    rien n'enregistrait. L'invariant du trio vit désormais en UN endroit
-    (`_dream_promotion_invariant`), pas en gardes dispersées : un paramètre
-    dream-only orphelin est un refus nommé, jamais un silence.
+    Measured on 2026-08-29: `dream_run_id` without the pair fell into the standard
+    path, which never reads it — the caller believed they were tracing a promotion
+    nothing was recording. The trio's invariant now lives in ONE place
+    (`_dream_promotion_invariant`), not in scattered guards: an orphan dream-only
+    parameter is a named refusal, never a silence.
     """
     mcp, mock_svc = _make_mcp_with_adr_tools()
     fn = await _get_tool_fn(mcp, "brain_propose_adr")

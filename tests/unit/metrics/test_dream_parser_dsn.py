@@ -1,23 +1,23 @@
-"""Les parsers n'inventent pas d'identifiants de base : ils les résolvent.
+"""The parsers do not invent database credentials: they resolve them.
 
-`_insert_dream_run` portait `postgresql+asyncpg://brain:brain@localhost:5433/brain`
-en défaut de `os.environ.get("POSTGRES_URL", ...)`. L'unité `brain-v42-dream`
-n'exporte pas cette variable — mesuré : `systemctl --user show
-brain-v42-dream.service -p Environment` n'en contient aucune — donc ce littéral
-N'ÉTAIT PAS un défaut de développement, c'était le DSN de production, juste par
-coïncidence, tant que le mot de passe valait `brain`.
+`_insert_dream_run` carried `postgresql+asyncpg://brain:brain@localhost:5433/brain`
+as the default of `os.environ.get("POSTGRES_URL", ...)`. The `brain-v42-dream`
+unit does not export that variable — measured: `systemctl --user show
+brain-v42-dream.service -p Environment` contains none — so that literal WAS NOT a
+development default, it was the production DSN, purely by coincidence, for as
+long as the password was `brain`.
 
-La rotation de ce mot de passe a donc coupé le seul écrivain qui pose la vraie
-clé de projet dans `dream_runs`, et l'a coupé du côté où personne ne regarde :
-`asyncpg.exceptions.InvalidPasswordError` remonte dans un appelant qui
-journalise `WARN … (non-fatal)` puis continue. Mesuré le 2026-08-16 : 122 lignes
-le 08-14, **2** le 08-15 et **2** le 08-16 — les seules survivantes étant
-`extract` et `roadmap`, qui écrivent par le chemin applicatif et lisent donc
-`.env`. Les deux nuits ont malgré tout annoncé « 61/63 phases OK ».
+Rotating that password therefore cut the only writer that sets the real project
+key in `dream_runs`, and cut it on the side nobody watches:
+`asyncpg.exceptions.InvalidPasswordError` surfaces in a caller that logs
+`WARN … (non-fatal)` then continues. Measured on 2026-08-16: 122 rows on 08-14,
+**2** on 08-15 and **2** on 08-16 — the only survivors being `extract` and
+`roadmap`, which write through the application path and therefore read `.env`.
+Both nights nonetheless announced "61/63 phases OK".
 
-Ces tests interdisent le retour du littéral : la résolution passe par la même
-configuration que le reste de l'application, et l'absence totale de
-configuration lève au lieu de fabriquer un identifiant.
+These tests forbid the literal from returning: resolution goes through the same
+configuration as the rest of the application, and a total absence of
+configuration raises instead of manufacturing a credential.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ _ROTATED = "postgresql+asyncpg://brain:s3cret-rotated@localhost:5433/brain"
 
 @pytest.fixture(autouse=True)
 def _isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Couper le `.env` du dépôt : sinon le test lit la vraie production."""
+    """Cut off the repository's `.env`: otherwise the test reads real production."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("POSTGRES_URL", raising=False)
 
@@ -50,9 +50,9 @@ def test_environment_dsn_wins_and_loses_the_asyncpg_driver_tag(
 
 
 def test_dot_env_supplies_the_dsn_when_the_environment_is_silent(tmp_path: Path) -> None:
-    """La forme de production : `WorkingDirectory` est le dépôt, `.env` y vit.
+    """The production shape: `WorkingDirectory` is the repository, `.env` lives there.
 
-    C'est exactement ce que l'ancien défaut court-circuitait.
+    That is exactly what the old default short-circuited.
     """
     (tmp_path / ".env").write_text(f"POSTGRES_URL={_ROTATED}\n", encoding="utf-8")
 
@@ -60,10 +60,10 @@ def test_dot_env_supplies_the_dsn_when_the_environment_is_silent(tmp_path: Path)
 
 
 def test_no_credential_is_invented_when_nothing_configures_one() -> None:
-    """Ni environnement ni `.env` : lever, jamais deviner.
+    """Neither environment nor `.env`: raise, never guess.
 
-    Un défaut ici ne se contente pas d'être faux — il est INDISCERNABLE d'une
-    configuration correcte tant que le mot de passe deviné reste valide.
+    A default here is not merely wrong — it is INDISTINGUISHABLE from a correct
+    configuration for as long as the guessed password stays valid.
     """
     with pytest.raises(RuntimeError) as excinfo:
         resolve_postgres_dsn()
@@ -72,10 +72,10 @@ def test_no_credential_is_invented_when_nothing_configures_one() -> None:
 
 
 def test_the_dead_default_is_gone_from_the_parser_source() -> None:
-    """Garde-fou textuel : le littéral ne doit revenir dans aucun des deux sites.
+    """Textual guardrail: the literal must return in neither of the two sites.
 
-    Le test de comportement ci-dessus ne verrait pas un défaut réintroduit dans
-    un AUTRE appel `os.environ.get` du même fichier.
+    The behavioural test above would not see a default reintroduced in ANOTHER
+    `os.environ.get` call of the same file.
     """
     for module_path in (
         Path(dream_parser.__file__),
@@ -90,7 +90,7 @@ def test_the_dead_default_is_gone_from_the_parser_source() -> None:
 async def test_insert_dream_run_connects_with_the_resolved_dsn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Le site d'INSERT emprunte le résolveur, pas `os.environ` en direct."""
+    """The INSERT site goes through the resolver, not `os.environ` directly."""
     monkeypatch.setenv("POSTGRES_URL", _ROTATED)
     connection = AsyncMock()
 

@@ -276,7 +276,7 @@ class TestSectionKillswitches:
         assert "- SWEEP  : enabled (dry · 3 clean DRY nights)" in out
 
     def test_sweep_row_sits_between_roadmap_and_graph(self):
-        """La position est le contrat : après ROADMAP, juste avant GRAPH."""
+        """The position is the contract: after ROADMAP, just before GRAPH."""
         state = KillswitchState(
             last_run_date=date(2026, 8, 7),
             promote_enabled=False,
@@ -291,8 +291,8 @@ class TestSectionKillswitches:
         )
 
         lines = _section_killswitches(state, graph_enabled=True).splitlines()
-        # Repéré par préfixe : ce test porte sur la POSITION, pas sur le rendu
-        # (couvert par test_sweep_enabled_dry_with_streak).
+        # Located by prefix: this test is about the POSITION, not the rendering
+        # (covered by test_sweep_enabled_dry_with_streak).
         sweep_index = next(i for i, line in enumerate(lines) if line.startswith("- SWEEP"))
 
         assert sweep_index == next(i for i, x in enumerate(lines) if x.startswith("- ROADMAP")) + 1
@@ -833,7 +833,7 @@ class TestTicketsSection:
             tool = await mcp.get_tool("brain_session_start")
             result = await tool.fn(project_key="p", client_key="client-1")
         assert "### Tickets (0 à traiter · 0 à confirmer · 1 livrés à valider)" in result.briefing
-        assert "exposer ndjson" not in result.briefing  # compté, pas listé (spec §2.3)
+        assert "exposer ndjson" not in result.briefing  # counted, not listed (spec §2.3)
 
     @pytest.mark.asyncio
     async def test_third_counter_omitted_when_awaiting_group_empty(self):
@@ -864,7 +864,7 @@ class TestTicketsSection:
 
     @pytest.mark.asyncio
     async def test_section_renders_when_only_awaiting_group_non_empty(self):
-        # spec test 6: a_traiter/a_confirmer vides mais early-return élargi.
+        # spec test 6: a_traiter/a_confirmer empty but the early return widened.
         from brain_v42.models.ticket import Ticket, TicketGroups, TicketKind, TicketStatus
 
         groups = TicketGroups(
