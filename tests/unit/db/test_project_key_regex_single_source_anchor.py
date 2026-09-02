@@ -75,6 +75,11 @@ _RECOVERY_ASSETS_WITH_PREDICATE = frozenset(
         # exactement comme écrite.
         "brain-v42-v6.sql",
         "brain-v42-v6-pgrestore.sql",
+        # Ajoutés le 2026-09-02 par le mint v7 (049) : dérivés de v6 à sept
+        # empreintes près, ils héritent du prédicat — quatrième rougissement de
+        # cette friction, toujours exactement comme écrite.
+        "brain-v42-v7.sql",
+        "brain-v42-v7-pgrestore.sql",
     }
 )
 
@@ -162,10 +167,11 @@ def test_every_recovery_attestation_asset_checks_the_python_source_of_truth(
 def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     """Garde de non-vacuité : compter les surfaces, pour qu'aucune n'échappe en silence.
 
-    DOUZE gardiens hors `_KEBAB` (1 métadonnées + 2 migrations + 9 assets) depuis le
-    mint v6 du 2026-08-29 — c'était huit à l'écriture de cet ancrage, dix au mint v5. Ce compte
-    n'inclut délibérément AUCUN document : `docs/design/` n'est pas tracké, et un test
-    qui compterait la prose échouerait selon l'arbre de travail.
+    QUATORZE gardiens hors `_KEBAB` (1 métadonnées + 2 migrations + 11 assets) depuis
+    le mint v7 du 2026-09-02 — c'était huit à l'écriture de cet ancrage, dix au mint v5,
+    douze au mint v6. Ce compte n'inclut délibérément AUCUN document : `docs/design/`
+    n'est pas tracké, et un test qui compterait la prose échouerait selon l'arbre de
+    travail.
     """
     from brain_v42.db.tables import projects
 
@@ -182,9 +188,9 @@ def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     )
     recovery_sites = sum(len(patterns) for patterns in _recovery_assets().values())
 
-    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 9), (
+    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 11), (
         "la ventilation des surfaces d'application a changé "
         f"(métadonnées={metadata_sites}, migrations={migration_sites}, "
-        f"attestation={recovery_sites} ; attendu 1/2/9). Recenser avant de corriger le "
+        f"attestation={recovery_sites} ; attendu 1/2/11). Recenser avant de corriger le "
         "compte : c'est ce recensement qui a été faux trois fois."
     )

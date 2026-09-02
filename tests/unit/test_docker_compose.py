@@ -307,6 +307,61 @@ class TestNeo4jPrivateAuthentication:
             assert forbidden not in lowered
 
 
+class TestEmbeddingShimBearerWiring:
+    """Pin how the shim receives its static bearer: by file, in optional mode.
+
+    The value itself must never reach Compose metadata — `docker inspect` on
+    the container prints `Config.Env` verbatim, so a token wired as a plain
+    variable would be readable by anyone who can talk to the daemon.
+    """
+
+    @pytest.fixture
+    def compose_config(self) -> dict:  # type: ignore[type-arg]
+        compose_file = REPO_ROOT / "docker-compose.yml"
+        with compose_file.open() as f:
+            return yaml.safe_load(f)  # type: ignore[return-value]
+
+    @staticmethod
+    def _environment(service: dict) -> dict:  # type: ignore[type-arg]
+        """Compose accepts both forms; the shim block uses the list form."""
+        raw = service.get("environment", {})
+        if isinstance(raw, dict):
+            return {str(key): str(value) for key, value in raw.items()}
+        return dict(str(item).split("=", 1) for item in raw)
+
+    def test_shim_reads_its_bearer_from_a_compose_secret(self, compose_config: dict) -> None:  # type: ignore[type-arg]
+        shim = compose_config["services"]["embedding-shim"]
+        environment = self._environment(shim)
+
+        assert environment.get("SHIM_BEARER_TOKEN_FILE") == "/run/secrets/embedding_shim_bearer"
+        assert "embedding_shim_bearer" in shim.get("secrets", [])
+
+    def test_shim_bearer_mode_is_optional_and_never_required(self, compose_config: dict) -> None:  # type: ignore[type-arg]
+        """`optional` accepts and logs; `required` would 401 every client.
+
+        Six auto-discord containers reach :8003 on brain-net carrying no bearer
+        at all. Arming this to `required` is a separate operator gesture that
+        waits on the client-side ticket, so the versioned target pins the
+        census mode and nothing else.
+        """
+        environment = self._environment(compose_config["services"]["embedding-shim"])
+
+        assert environment.get("SHIM_BEARER_MODE") == "optional"
+
+    def test_shim_bearer_secret_comes_from_a_private_host_file(self, compose_config: dict) -> None:  # type: ignore[type-arg]
+        secret = compose_config.get("secrets", {}).get("embedding_shim_bearer", {})
+
+        assert secret.get("file") == ("${BRAIN_SHIM_BEARER_FILE:-./.secrets/embedding-shim-bearer}")
+
+    def test_the_bearer_value_never_lands_in_compose_metadata(self, compose_config: dict) -> None:  # type: ignore[type-arg]
+        """Only the PATH is wired; a `SHIM_BEARER_TOKEN` variable would leak."""
+        environment = self._environment(compose_config["services"]["embedding-shim"])
+
+        assert "SHIM_BEARER_TOKEN" not in environment
+        for name, value in environment.items():
+            assert "BEARER" not in name or value.startswith(("/run/secrets/", "optional"))
+
+
 class TestGitignore:
     """Validate .gitignore entries for data/postgres."""
 

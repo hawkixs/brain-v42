@@ -21,15 +21,15 @@ here and the restore procedure below were found to be describing two different d
 <!-- dr-current:start -->
 | Target | Value | Measured, and against what |
 | --- | --- | --- |
-| Alembic head | `048` | 2026-08-29, live production |
-| Recovery contract, live target | `ops/recovery/brain-v42-v6.sql` | 2026-08-29, live production |
-| Recovery contract, restored target | `ops/recovery/brain-v42-v6-pgrestore.sql` | 2026-08-29, disposable bench restored by `pg_restore` from a same-day production dump |
-| Contract receipt, live asset replayed live | `29/30` — the single red is the measured production bug carried by ticket `045c6302` (`focus_revision_violations: 2`), not a contract failure | 2026-08-29, live production |
-| Contract receipt, `-pgrestore` asset against a real restore | `29/30` — the same single red: the bug travels with the dump, exactly as a faithful restore must reproduce it | 2026-08-29, restored bench |
-| ACL contract, live target | `ops/recovery/brain-v42-v6-acl.sql` | 2026-08-29, live production |
-| ACL contract, restored target | `ops/recovery/brain-v42-v6-acl-pgrestore.sql` | 2026-08-29, restored bench |
-| ACL receipt, live | `1/1` | 2026-08-29, live production |
-| ACL receipt, restored | `1/1` — the receipt itself names its one tolerance, `tolerated_superuser_roles: ["postgres"]`, the maintenance superuser that performs the restore | 2026-08-29, restored bench |
+| Alembic head | `049` | 2026-09-02, live production |
+| Recovery contract, live target | `ops/recovery/brain-v42-v7.sql` | 2026-09-02, live production |
+| Recovery contract, restored target | `ops/recovery/brain-v42-v7-pgrestore.sql` | **Not replayed against a restore.** Derived from the v6 twin (benched 2026-08-29) by canonicalizing the six 049 fingerprints off live production — see the row below |
+| Contract receipt, live asset replayed live | `30/30` — no red at all, a first for this lineage: the `045c6302` data bug the v6 row reported was cleared in production on 2026-09-02 (`focus_revision_violations: 0`), and 049 closed the `table_shape` gap this mint exists for | 2026-09-02, live production |
+| Contract receipt, `-pgrestore` asset against a real restore | **NOT REPLAYED for v7** — no disposable bench was restored on 2026-09-02, so no receipt exists and none is quoted. What *is* measured: the twin's canonicalization reproduces the v6 twin's fingerprint for 112 of 118 constraints straight off live production, the six exceptions being exactly the six 049 rewrote. Bench it before trusting it in a disaster | 2026-08-29 for the v6 twin it derives from; v7 unmeasured |
+| ACL contract, live target | `ops/recovery/brain-v42-v7-acl.sql` | 2026-09-02, live production |
+| ACL contract, restored target | `ops/recovery/brain-v42-v7-acl-pgrestore.sql` | **Not replayed against a restore**; byte-identical to the v6 twin but for its identity, because 049 grants nothing and touches no view |
+| ACL receipt, live | `1/1` | 2026-09-02, live production |
+| ACL receipt, restored | **NOT REPLAYED for v7.** The v6 twin rendered `1/1` on a real restore, naming its one tolerance `tolerated_superuser_roles: ["postgres"]`, the maintenance superuser that performs the restore; v7 changes not one byte of that asset | 2026-08-29 for the v6 twin; v7 unmeasured |
 | Search top-10 churn across HNSW rebuilds, `learnings` ONLY, n=40 probes | `0` — overlap `10/10` on ten build pairs (`BUILDS=5`, seed 0.42), strict order included, both probe bands | 2026-08-29, copy of the 3243 real `learnings` embeddings, index path forced |
 
 Replay the head and the two live-target assets against production:
@@ -37,7 +37,7 @@ Replay the head and the two live-target assets against production:
 ```bash
 docker exec brain_v42_postgres psql -U brain -d brain -Atc \
   "select version_num from alembic_version;"
-for asset in brain-v42-v6.sql brain-v42-v6-acl.sql; do
+for asset in brain-v42-v7.sql brain-v42-v7-acl.sql; do
   docker exec -i brain_v42_postgres psql -U brain -d brain -Atq -v ON_ERROR_STOP=1 -f - \
     < "ops/recovery/$asset"
 done
@@ -60,7 +60,7 @@ prescribes. Run them only against a genuinely restored target, and say which one
 # against the production cluster itself.
 RESTORED_CONTAINER=${RESTORED_CONTAINER:?name the container holding the restored instance}
 [ "$RESTORED_CONTAINER" != "brain_v42_postgres" ] || { echo "refusing: that is the production cluster" >&2; exit 2; }
-for twin in brain-v42-v6-pgrestore.sql brain-v42-v6-acl-pgrestore.sql; do
+for twin in brain-v42-v7-pgrestore.sql brain-v42-v7-acl-pgrestore.sql; do
   docker exec -i "$RESTORED_CONTAINER" psql -U brain -d "${RESTORED_DB:-brain}" -Atq -v ON_ERROR_STOP=1 -f - \
     < "ops/recovery/$twin"
 done
@@ -69,8 +69,9 @@ done
 **The extension check on the restored target is names-only, and its receipt says so.** The v5
 twin pinned `vector 0.8.2` — the version production *declares* — while every image this
 repository can restore into reports `0.8.4` or `0.8.5`, so a perfectly healthy restore failed
-that one check (the flaw ticket `2ed0d4e0` named). The v6 twin requires the extension NAMES
-only, and its receipt states both versions instead of judging them: measured 2026-08-29, the
+that one check (the flaw ticket `2ed0d4e0` named). The twin requires the extension NAMES
+only — the rule was introduced by v6 and v7 inherits it byte for byte — and its receipt states
+both versions instead of judging them: measured 2026-08-29 on the v6 twin, the
 `extension_versions` check **passes** while printing `origin_inventory: plpgsql 1.0, vector
 0.8.2` against `inventory: plpgsql 1.0, vector 0.8.5`. Do not read that version line as a
 failure — a healthy `0.8.2 → 0.8.5` restore is exactly what it looks like. The strict version

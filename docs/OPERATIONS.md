@@ -113,6 +113,59 @@ is true, MCP systemd startup runs a preflight that checks the private file's sha
 rejects legacy keys in it; it proves neither the revocation of the previous
 credential, nor writer quiescence, nor the absence of Neo4j sessions.
 
+### Embedding shim static bearer
+
+The shim reads its bearer from a file, never from a variable: `docker inspect`
+prints `Config.Env` verbatim, so a token wired as a value would be readable by
+anyone who can reach the daemon. Compose passes only the path.
+
+```dotenv
+BRAIN_SHIM_BEARER_FILE=/home/hawixs/.config/brain-v42/embedding-shim-bearer
+```
+
+Generate it without letting the value reach a terminal, an argument list or the
+shell history — a redirection under a tight `umask`, never `echo`:
+
+```bash
+( umask 077; openssl rand -hex 32 > ~/.config/brain-v42/embedding-shim-bearer )
+```
+
+Mode `0600` is a hard precondition, not hygiene. Compose bind-mounts a file
+secret **as-is**: the mode the container sees is the mode on the host, and
+`load_bearer_token` refuses anything readable beyond its owner, anything under
+32 bytes, and anything still carrying a `REPLACE_` placeholder. A loose secret
+does not degrade the guard, it stops the container from starting. Unlike the
+Neo4j secret, whose override is exported ad hoc at cutover time, this path lives
+in the shared `.env` so an ordinary `docker compose up -d` resolves it; the
+versioned default (`./.secrets/embedding-shim-bearer`) is a fallback that does
+not exist on this host.
+
+`SHIM_BEARER_MODE=optional` is a **census**, not an authentication: every caller
+is served, and the ones arriving without a valid token are logged with their
+address and user agent, never with the value they presented. That is the point —
+six `auto-discord` containers reach `:8003` on `brain-net` carrying no bearer at
+all, and `required` would 401 all of them. Arming is a separate operator gesture
+that waits on the client-side ticket; it is not a config tweak.
+
+The token is read **once, at startup**. Rotating the file changes nothing until
+the container restarts:
+
+```bash
+docker compose build embedding-shim
+docker compose up -d --no-deps embedding-shim   # --no-deps: never recreate embedding-llama
+```
+
+Never widen that to a bare `docker compose up -d`. Without `QODO_GGUF_DIR` set,
+Compose mounts an empty model directory and puts `embedding-llama` into a
+crash-loop (incident 2026-08-21), and the versioned Neo4j secret default is
+absent on this host.
+
+Rollback, once the previous image is tagged before the build:
+
+```bash
+docker tag <previous-image-id> brain_v42_embedding_shim:pre-bearer-<date>
+```
+
 ## Migration history
 
 The repository migration target is 046. No page in this repository proves a live
