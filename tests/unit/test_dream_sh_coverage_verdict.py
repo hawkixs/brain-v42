@@ -1,17 +1,17 @@
-"""Le verdict de couverture, du code retour de l'alerte jusqu'à journald.
+"""The coverage verdict, from the alert's return code through to journald.
 
-Ticket `0a9c067e`, seconde moitié de son fil : « l'alerte n'est lue par
-personne ». Ce n'était pas une figure de style. Deux faits mesurés :
+Ticket `0a9c067e`, the second half of its thread: "the alert is read by nobody".
+That was not a figure of speech. Two measured facts:
 
-- `scripts/dream.sh` redirigeait la sortie de `post_run_alert` vers le FICHIER
-  daté seul (`>> "$LOG_DIR/$TIMESTAMP.log" 2>&1`), quand `log()` fait un `tee`
-  vers stdout, donc vers journald. Le corps de l'alerte n'a jamais atteint
-  `journalctl -u brain-v42-dream` ;
-- aucun code de sortie ne suivait un trou de couverture : l'unité restait verte.
+- `scripts/dream.sh` redirected `post_run_alert`'s output to the dated FILE alone
+  (`>> "$LOG_DIR/$TIMESTAMP.log" 2>&1`), while `log()` does a `tee` to stdout,
+  hence to journald. The alert's body never reached
+  `journalctl -u brain-v42-dream`;
+- no exit code followed a coverage hole: the unit stayed green.
 
-Ces tests découpent le bloc de verdict RÉEL et l'exécutent, avec un `uv` stub qui
-rend un code et une sortie choisis. Ils prouvent que bash décide, journalise et
-sort comme il faut — pas que le texte existe.
+These tests extract the REAL verdict block and run it, with a `uv` stub returning
+a chosen code and output. They prove bash decides, logs and exits as it should —
+not that the text exists.
 """
 
 from __future__ import annotations
@@ -77,8 +77,8 @@ def _run_verdict(
             f"RECORD_RC={record_rc}",
             f"ALERT_OUT={shlex.quote(alert_out)}",
             *([] if strict is None else [f"BRAIN_DREAM_COVERAGE_STRICT={shlex.quote(strict)}"]),
-            # Un seul stub pour les deux CLI : le writer de la ligne `coverage`
-            # n'imprime rien et rend son propre code, comme le vrai.
+            # A single stub for both CLIs: the `coverage` row writer prints
+            # nothing and returns its own code, like the real one.
             "uv() {",
             '  printf "%s\\n" "$*" >> "$ALERT_CALLS"',
             '  case "$*" in',
@@ -108,10 +108,10 @@ def test_the_manifest_is_handed_to_the_alert(tmp_path: Path) -> None:
 
 
 def test_the_coverage_line_reaches_journald_on_a_green_night(tmp_path: Path) -> None:
-    """La ligne machine passe par `log()`, donc par le `tee` vers stdout.
+    """The machine line goes through `log()`, hence through the `tee` to stdout.
 
-    Toutes les nuits, y compris vertes : c'est ce qui met les deux nombres du
-    ticket côte à côte, sous le résumé « N/M phases OK » imprimé juste avant.
+    On every night, green ones included: that is what puts the ticket's two
+    numbers side by side, under the "N/M phases OK" summary printed just before.
     """
     proc, _, dated_log = _run_verdict(tmp_path, alert_rc=0)
 
@@ -129,7 +129,7 @@ def test_a_silent_gap_turns_the_unit_red(tmp_path: Path) -> None:
 
 
 def test_a_broken_reporter_keeps_its_historic_wording(tmp_path: Path) -> None:
-    """rc=1 n'est pas rc=2 : « l'outil est cassé » ≠ « la nuit a un trou »."""
+    """rc=1 is not rc=2: "the tool is broken" ≠ "the night has a hole"."""
     proc, _, _ = _run_verdict(tmp_path, alert_rc=1)
 
     assert proc.returncode == 1
@@ -138,7 +138,7 @@ def test_a_broken_reporter_keeps_its_historic_wording(tmp_path: Path) -> None:
 
 
 def test_the_escalation_can_be_disarmed_but_never_in_silence(tmp_path: Path) -> None:
-    """Rollback opérateur : l'unité redevient verte, le verdict continue d'être dit."""
+    """Operator rollback: the unit goes green again, the verdict is still spoken."""
     proc, _, _ = _run_verdict(tmp_path, alert_rc=2, strict="false")
 
     assert proc.returncode == 0
@@ -153,14 +153,14 @@ def test_the_disarm_switch_defaults_to_armed(tmp_path: Path) -> None:
 
 
 def test_disarming_coverage_never_hides_a_real_phase_failure(tmp_path: Path) -> None:
-    """Le désarmement ne touche QUE la couverture, jamais la garde structurelle."""
+    """Disarming touches ONLY the coverage, never the structural guard."""
     proc, _, _ = _run_verdict(tmp_path, alert_rc=2, strict="false", failed=("brain-v42/connect",))
 
     assert proc.returncode == 1
 
 
 def test_an_alert_without_a_coverage_line_is_not_an_error(tmp_path: Path) -> None:
-    """`grep` ne trouve rien : sous `set -e`, ça ne doit pas tuer la nuit."""
+    """`grep` finds nothing: under `set -e`, that must not kill the night."""
     proc, _, _ = _run_verdict(tmp_path, alert_rc=0, alert_out="no failures for 2026-08-18")
 
     assert proc.returncode == 0
@@ -176,16 +176,16 @@ _ARGPARSE_USAGE_ERROR = "\n".join(
 
 
 def test_a_rc2_without_a_coverage_line_is_never_read_as_a_gap(tmp_path: Path) -> None:
-    """Le 2 d'argparse n'est PAS le 2 du verdict — mesuré, pas supposé.
+    """argparse's 2 is NOT the verdict's 2 — measured, not assumed.
 
-    `parser.error()` sort en 2 par un `SystemExit` que le `except Exception` de
-    `main()` ne peut pas intercepter. Le déclencheur est nommé par la spec §8 :
-    au rollback dur du lecteur, `dream.sh` continue de passer `--manifest` à un
-    `post_run_alert` qui ne le connaît plus. Sans preuve positive, chaque matin
-    imprimerait « des lignes attendues manquent sans explication » et poserait
-    une ligne `dream_runs` `coverage` mensongère — pour un drapeau inconnu.
-    `uv` et l'interpréteur ont le même 2 d'usage, donc renuméroter l'escalade ne
-    fermerait pas la classe ; exiger la ligne machine, si.
+    `parser.error()` exits 2 through a `SystemExit` that `main()`'s
+    `except Exception` cannot intercept. The trigger is named by spec §8: on a hard
+    rollback of the reader, `dream.sh` keeps passing `--manifest` to a
+    `post_run_alert` that no longer knows it. Without positive proof, every morning
+    would print "expected rows are missing with no explanation" and lay down a
+    lying `coverage` `dream_runs` row — over an unknown flag. `uv` and the
+    interpreter share the same usage 2, so renumbering the escalation would not
+    close the class; requiring the machine line does.
     """
     proc, alert_calls, _ = _run_verdict(tmp_path, alert_rc=2, alert_out=_ARGPARSE_USAGE_ERROR)
 
@@ -196,7 +196,7 @@ def test_a_rc2_without_a_coverage_line_is_never_read_as_a_gap(tmp_path: Path) ->
 
 
 def test_a_rc2_without_a_coverage_line_stays_red_even_disarmed(tmp_path: Path) -> None:
-    """L'interrupteur désarme la COUVERTURE, jamais un rapporteur cassé."""
+    """The switch disarms the COVERAGE, never a broken reporter."""
     proc, _, _ = _run_verdict(tmp_path, alert_rc=2, alert_out=_ARGPARSE_USAGE_ERROR, strict="false")
 
     assert proc.returncode == 1
@@ -207,7 +207,7 @@ def test_dream_shell_remains_valid_bash() -> None:
     subprocess.run(["bash", "-n", str(DREAM_SH)], check=True)
 
 
-# --- T2 : le verdict porté jusqu'au briefing --------------------------------
+# --- T2: the verdict carried through to the briefing ------------------------
 
 
 def test_a_silent_gap_writes_the_coverage_row(tmp_path: Path) -> None:
@@ -227,13 +227,13 @@ def test_a_green_night_writes_no_coverage_row(tmp_path: Path) -> None:
 
 
 def test_a_failing_writer_never_short_circuits_the_exit_guard(tmp_path: Path) -> None:
-    """FINDING 4 exécuté : sans `set +e`, bash sortirait AVANT la garde.
+    """FINDING 4 executed: without `set +e`, bash would exit BEFORE the guard.
 
-    `set -e` est restauré juste après l'appel à l'alerte et la garde de sortie
-    vit une trentaine de lignes plus bas. Un writer rendant 1 — argparse rc=2,
-    `Settings()` invalide, `ValidationError` hors du `try` — ferait sortir
-    dream.sh sur-le-champ. Le WARN ne serait jamais imprimé, et surtout le
-    désarmement ci-dessous ne serait jamais consulté.
+    `set -e` is restored right after the alert call and the exit guard lives some
+    thirty lines below. A writer returning 1 — argparse rc=2, an invalid
+    `Settings()`, a `ValidationError` outside the `try` — would exit dream.sh on
+    the spot. The WARN would never be printed, and above all the disarming below
+    would never be consulted.
     """
     proc, _, _ = _run_verdict(tmp_path, alert_rc=2, record_rc=1)
 
@@ -242,11 +242,10 @@ def test_a_failing_writer_never_short_circuits_the_exit_guard(tmp_path: Path) ->
 
 
 def test_a_failing_writer_still_lets_the_disarm_switch_be_read(tmp_path: Path) -> None:
-    """La preuve que l'exécution CONTINUE après un writer en échec.
+    """The proof that execution CONTINUES after a failed writer.
 
-    Sans `set +e`, bash serait mort à l'appel : ni le WARN, ni la ligne de
-    désarmement, et un code de sortie 1 au lieu de 0. Les trois assertions
-    tombent ensemble.
+    Without `set +e`, bash would have died at the call: no WARN, no disarming
+    line, and an exit code of 1 instead of 0. The three assertions fall together.
     """
     proc, _, _ = _run_verdict(tmp_path, alert_rc=2, record_rc=1, strict="false")
 
@@ -258,7 +257,7 @@ def test_a_failing_writer_still_lets_the_disarm_switch_be_read(tmp_path: Path) -
 def test_the_coverage_row_is_written_even_when_the_escalation_is_disarmed(
     tmp_path: Path,
 ) -> None:
-    """Désarmer ne veut pas dire éteindre : le verdict continue d'atteindre le briefing."""
+    """Disarming does not mean switching off: the verdict still reaches the briefing."""
     _, alert_calls, _ = _run_verdict(tmp_path, alert_rc=2, strict="false")
 
     assert "scripts.dream.record_coverage_gap" in alert_calls

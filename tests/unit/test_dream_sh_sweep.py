@@ -1,4 +1,4 @@
-"""Épingle le câblage de la phase SWEEP dans dream.sh (grep, sans exécution)."""
+"""Pins the SWEEP phase wiring in dream.sh (grep, no execution)."""
 
 import re
 from pathlib import Path
@@ -34,15 +34,13 @@ def test_sweep_step_has_timeout_and_own_log():
 
 
 def test_sweep_step_does_not_duplicate_the_threshold():
-    """Le seuil vit dans brain_v42.models.brain_session.AUTO_STALE_AFTER, pas
-    dans dream.sh. Une deuxième copie ici serait la bombe à retardement du
-    learning 8dc7e042 : deux constantes qui se contredisent en silence le
-    jour où l'une bouge.
+    """The threshold lives in brain_v42.models.brain_session.AUTO_STALE_AFTER, not
+    in dream.sh. A second copy here would be learning 8dc7e042's time bomb: two
+    constants silently contradicting each other the day one of them moves.
 
-    Le bloc est borné des deux côtés (marqueur `--- SWEEP` jusqu'au
-    `FAIL_TOTAL=` qui suit) pour qu'une phase ajoutée plus tard après SWEEP
-    ne puisse ni casser ni affaiblir ce test en glissant hors de la portée
-    scannée.
+    The block is bounded on both sides (the `--- SWEEP` marker through to the
+    following `FAIL_TOTAL=`) so that a phase added later after SWEEP can neither
+    break nor weaken this test by sliding out of the scanned range.
     """
     content = _content()
     sweep_block = content.split("--- SWEEP", maxsplit=1)[1]
@@ -50,8 +48,7 @@ def test_sweep_step_does_not_duplicate_the_threshold():
 
     assert "--older-than-days" not in sweep_block
 
-    # sweep_args ne doit jamais recevoir autre chose que --wet : un flag de
-    # seuil sous n'importe quelle autre orthographe (ou tout autre argument)
-    # doit faire échouer ce test.
+    # sweep_args must never receive anything but --wet: a threshold flag under
+    # any other spelling (or any other argument) must fail this test.
     appended = re.findall(r"sweep_args\+=\(([^)]*)\)", sweep_block)
     assert appended == ["--wet"]

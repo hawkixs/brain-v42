@@ -23,7 +23,7 @@ def test_extract_step_invokes_cli_module():
 
 def test_extract_wet_flag_only_when_dry_run_false():
     content = _content()
-    # Le flag --wet doit être conditionné au sous-flag DRY_RUN, jamais inconditionnel.
+    # The --wet flag must be conditioned on the DRY_RUN sub-flag, never unconditional.
     assert 'if [[ "$BRAIN_DREAM_EXTRACT_DRY_RUN" != "true" ]]' in content
 
 

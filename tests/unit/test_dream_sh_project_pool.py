@@ -1,18 +1,16 @@
-"""Le pool de projets — la boucle EXÉCUTÉE, pas seulement le texte du script.
+"""The project pool — the loop EXECUTED, not merely the script's text.
 
 Spec `2026-08-08-dream-project-pool-design.md` §3, §6, §9, §10.
 
-Ces tests lancent une copie réelle de `dream.sh` avec des stubs pour `uv`,
-`claude` et `codex`. Aucun appel réseau, aucune écriture en base : on observe
-le journal et l'arborescence de `logs/dream/`, qui suffisent à prouver ce qui
-compte ici — combien de projets ont été servis, et si leurs journaux ont
-survécu les uns aux autres.
+These tests launch a real copy of `dream.sh` with stubs for `uv`, `claude` and
+`codex`. No network call, no database write: we observe the log and the
+`logs/dream/` tree, which are enough to prove what matters here — how many
+projects were served, and whether their logs survived each other.
 
-Le mode de panne visé est **vert et silencieux** dans les deux sens :
-- un pool qui rétrécit à un projet sans erreur (transport systemd, §6) ;
-- des journaux qui se tronquent l'un l'autre, ne laissant que le dernier
-  projet au matin (§3.2).
-Aucun des deux ne produit de code de sortie non nul. Seule une mesure les voit.
+The targeted failure mode is **green and silent** in both directions:
+- a pool shrinking to one project with no error (systemd transport, §6);
+- logs truncating one another, leaving only the last project by morning (§3.2).
+Neither produces a non-zero exit code. Only a measurement sees them.
 """
 
 from __future__ import annotations
@@ -26,11 +24,11 @@ DREAM_SH = REPO_ROOT / "scripts" / "dream.sh"
 
 
 def _sandbox(tmp_path: Path) -> tuple[Path, dict[str, str]]:
-    """Copie exécutable de dream.sh, hors production à tous les égards.
+    """An executable copy of dream.sh, out of production in every respect.
 
-    `LOG_DIR` vaut `$SCRIPT_DIR/../logs/dream`, donc la copie journalise sous
-    `tmp_path`. `XDG_RUNTIME_DIR` privé, sinon le script sortirait 0 en trouvant
-    le flock de production pris — un vert pour rien.
+    `LOG_DIR` is `$SCRIPT_DIR/../logs/dream`, so the copy logs under `tmp_path`.
+    A private `XDG_RUNTIME_DIR`, otherwise the script would exit 0 on finding
+    production's flock taken — a green for nothing.
     """
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir()
@@ -45,10 +43,10 @@ def _sandbox(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     mock_bin = tmp_path / "bin"
     mock_bin.mkdir()
 
-    # `date` chirurgical : n'intercepte QUE `+%j`, délègue tout le reste au vrai
-    # binaire (horodatages, noms de fichiers de log). Sans lui, la rotation
-    # quotidienne du pool — `_rotation=$(( 10#$(date +%j) % taille ))` — rend
-    # l'ORDRE du pool dépendant du jour où la suite tourne.
+    # A surgical `date`: it intercepts ONLY `+%j` and delegates everything else
+    # to the real binary (timestamps, log file names). Without it, the pool's
+    # daily rotation — `_rotation=$(( 10#$(date +%j) % size ))` — makes the pool's
+    # ORDER depend on the day the suite runs.
     date_stub = mock_bin / "date"
     date_stub.write_text(
         "#!/usr/bin/env bash\n"
@@ -65,17 +63,17 @@ def _sandbox(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         stub.write_text("#!/usr/bin/env bash\ncat >/dev/null 2>&1 || true\nexit 0\n")
         stub.chmod(0o755)
 
-    # `uv` échoue SÉLECTIVEMENT sur otel_split. Ce n'est pas un artifice : un
-    # otel_split réussi supprime le brut (`rm -f "$raw_log"`) et laisse le vrai
-    # binaire écrire report/otel, que le stub ne sait pas faire. Le faire
-    # échouer emprunte la branche WARN — du code réel — qui recopie le brut vers
-    # le rapport et touche l'otel. Les trois chemins projetés existent alors sur
-    # disque, construits par le script et non par le test.
-    # Le rail claude passe par scripts.dream.claude_runner depuis le
-    # 2026-08-11. Le brut n'est donc plus créé par une redirection de dream.sh
-    # mais par le runner lui-même : le stub doit reproduire ce contrat
-    # observable, sinon la branche WARN d'otel_split n'a rien à recopier et le
-    # test échoue sur une absence que la production ne produit pas.
+    # `uv` fails SELECTIVELY on otel_split. That is not a contrivance: a
+    # successful otel_split deletes the raw log (`rm -f "$raw_log"`) and lets the
+    # real binary write report/otel, which the stub cannot do. Making it fail
+    # takes the WARN branch — real code — which copies the raw log into the report
+    # and touches the otel one. The three projected paths then exist on disk,
+    # built by the script and not by the test.
+    # The claude rail goes through scripts.dream.claude_runner since 2026-08-11.
+    # The raw log is therefore no longer created by a dream.sh redirection but by
+    # the runner itself: the stub must reproduce that observable contract,
+    # otherwise otel_split's WARN branch has nothing to copy and the test fails on
+    # an absence production does not produce.
     uv_stub = mock_bin / "uv"
     uv_stub.write_text(
         "#!/usr/bin/env bash\n"
@@ -100,9 +98,9 @@ def _sandbox(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "PATH": f"{mock_bin}:/usr/bin:/bin",
         "XDG_RUNTIME_DIR": str(tmp_path),
         "BRAIN_DREAM_AGENT_PROVIDER": "claude",
-        # Le rail claude a reçu son préflight le 2026-08-11, symétrique de
-        # celui de codex. Une nuit sans jeton MCP ne doit pas démarrer : c'est
-        # l'incident du 2026-07-03, six phases aveugles et « 6/6 OK ».
+        # The claude rail got its preflight on 2026-08-11, symmetric with
+        # codex's. A night without an MCP token must not start: that is the
+        # incident of 2026-07-03, six blind phases and "6/6 OK".
         "MCP_HTTP_TOKEN": "test-only-token",
     }
     return dream_copy, env
@@ -124,22 +122,22 @@ def _run(
 
 
 def _main_log(tmp_path: Path) -> str:
-    """Le récit unique de la nuit — `$TIMESTAMP.log`, sans composante de phase."""
+    """The night's single narrative — `$TIMESTAMP.log`, with no phase component."""
     logs = sorted((tmp_path / "logs" / "dream").glob("*.log"))
     return "\n".join(
         path.read_text(encoding="utf-8", errors="replace") for path in logs if "_" not in path.name
     )
 
 
-# --- Le pool se forme, et il dit d'où il vient -----------------------------
+# --- The pool forms, and it says where it came from ------------------------
 
 
 def test_a_single_positional_still_serves_exactly_one_project(tmp_path: Path) -> None:
-    """Régression de la propriété qui rend ce chantier sûr.
+    """Regression on the property that makes this work safe.
 
-    Étapes 1 à 5 de §12 sont livrables « sans qu'une seule nuit change de
-    comportement ». Un positionnel nu doit donc produire exactement la nuit
-    d'avant : un projet, servi une fois.
+    Steps 1 to 5 of §12 are deliverable "without a single night changing
+    behaviour". A bare positional must therefore produce exactly the previous
+    night: one project, served once.
     """
     _run(tmp_path, "brain-v42")
     log = _main_log(tmp_path)
@@ -158,14 +156,15 @@ def test_a_comma_separated_pool_serves_every_project_once(tmp_path: Path) -> Non
 
 
 def test_the_drop_in_variable_beats_the_positional(tmp_path: Path) -> None:
-    """Le sens de priorité est une garde, pas une préférence.
+    """The precedence direction is a guard, not a preference.
 
-    `ExecStart=` vit dans le template versionné que install.sh régénère ; le
-    drop-in survit. Si le positionnel gagnait, élargir le pool dans le drop-in
-    ne changerait rien et la nuit resterait à un projet — verte et muette.
+    `ExecStart=` lives in the versioned template install.sh regenerates; the
+    drop-in survives. If the positional won, widening the pool in the drop-in
+    would change nothing and the night would stay at one project — green and mute.
     """
-    # Jour pair -> rotation nulle sur un pool de 2, donc ordre d'écriture
-    # préservé. L'ordre est ce que ce test épingle ; la rotation a son témoin.
+    # An even day -> zero rotation on a pool of 2, so the write order is
+    # preserved. The order is what this test pins; the rotation has its own
+    # witness.
     _run(
         tmp_path,
         "brain-v42",
@@ -178,27 +177,27 @@ def test_the_drop_in_variable_beats_the_positional(tmp_path: Path) -> None:
 
 
 def test_the_pool_source_is_named_in_the_log(tmp_path: Path) -> None:
-    """Une nuit à un projet ne doit pas être ambiguë au matin.
+    """A one-project night must not be ambiguous by morning.
 
-    Sans la source, « pool de 1 » ne distingue pas « le drop-in dit un projet »
-    de « systemd a mangé la variable et on est retombé sur le positionnel ».
+    Without the source, "pool of 1" does not distinguish "the drop-in says one
+    project" from "systemd ate the variable and we fell back on the positional".
     """
     _run(tmp_path, "brain-v42", extra_env={"BRAIN_DREAM_PROJECT_POOL": "solo"})
 
     assert "from BRAIN_DREAM_PROJECT_POOL" in _main_log(tmp_path)
 
 
-# --- Les pièges de transport font sortir en 2, jamais rétrécir en silence ---
+# --- Transport traps exit with 2, never shrink in silence ------------------
 
 
 def test_a_space_separated_pool_is_a_hard_failure(tmp_path: Path) -> None:
-    """§6, le piège de transport nommé.
+    """§6, the named transport trap.
 
-    `Environment=BRAIN_DREAM_PROJECT_POOL=a b` pose la variable à `a` et jette
-    `b`. Mais une valeur protégée (`Environment="…=a b"`) arrive ENTIÈRE, avec
-    son blanc. La traiter comme une seule clé fabriquerait un `project_key` que
-    canonicalize_project_key rejette au fond d'une fonction best-effort qui
-    avale son exception : la colonne resterait NULL sans un bruit.
+    `Environment=BRAIN_DREAM_PROJECT_POOL=a b` sets the variable to `a` and throws
+    `b` away. But a quoted value (`Environment="…=a b"`) arrives WHOLE, with its
+    space. Treating it as a single key would manufacture a `project_key` that
+    canonicalize_project_key rejects deep inside a best-effort function which
+    swallows its exception: the column would stay NULL without a sound.
     """
     proc = _run(tmp_path, "alpha", extra_env={"BRAIN_DREAM_PROJECT_POOL": "alpha beta"})
 
@@ -207,7 +206,7 @@ def test_a_space_separated_pool_is_a_hard_failure(tmp_path: Path) -> None:
 
 
 def test_a_duplicate_key_is_a_hard_failure(tmp_path: Path) -> None:
-    """Servir deux fois le même projet est une faute de frappe, pas un choix."""
+    """Serving the same project twice is a typo, not a choice."""
     proc = _run(tmp_path, "alpha,beta,alpha")
 
     assert proc.returncode == 2
@@ -215,7 +214,7 @@ def test_a_duplicate_key_is_a_hard_failure(tmp_path: Path) -> None:
 
 
 def test_an_empty_entry_is_a_hard_failure(tmp_path: Path) -> None:
-    """`a,,b` est une virgule de trop, pas un projet anonyme."""
+    """`a,,b` is one comma too many, not an anonymous project."""
     proc = _run(tmp_path, "alpha,,beta")
 
     assert proc.returncode == 2
@@ -223,7 +222,7 @@ def test_an_empty_entry_is_a_hard_failure(tmp_path: Path) -> None:
 
 
 def test_a_slash_in_a_key_is_a_hard_failure(tmp_path: Path) -> None:
-    """La clé entre dans un nom de fichier de journal (§3.2)."""
+    """The key enters a log file name (§3.2)."""
     proc = _run(tmp_path, "alpha/beta")
 
     assert proc.returncode == 2
@@ -231,38 +230,38 @@ def test_a_slash_in_a_key_is_a_hard_failure(tmp_path: Path) -> None:
 
 
 def test_surrounding_whitespace_is_trimmed_not_rejected(tmp_path: Path) -> None:
-    """`a, b` est une écriture humaine naturelle et sans ambiguïté."""
+    """`a, b` is a natural, unambiguous human spelling."""
     _run(tmp_path, "alpha, beta", extra_env={"BRAIN_DREAM_FAKE_DOY": "222"})
     log = _main_log(tmp_path)
 
     assert "Pool (2) from positional argument: alpha beta" in log
 
 
-# --- §3.2 : les journaux d'un projet ne survivent pas au suivant ------------
+# --- §3.2: one project's logs do not survive the next ----------------------
 
 
 def test_each_project_keeps_its_own_phase_logs(tmp_path: Path) -> None:
-    """codex_runner tronque : sans projection, seul le dernier projet survit.
+    """codex_runner truncates: without projection, only the last project survives.
 
-    Le rapport de phase n'est pas qu'un journal — `PHASE_DEPS` le RELIT pour
-    injecter le contexte de la phase précédente (§3.3). Un rapport écrasé fait
-    lire à CONNECT de `beta` le rapport CLEAN d'`alpha`.
+    The phase report is not merely a log — `PHASE_DEPS` RE-READS it to inject the
+    previous phase's context (§3.3). An overwritten report makes `beta`'s CONNECT
+    read `alpha`'s CLEAN report.
     """
     _run(tmp_path, "alpha,beta")
     names = {path.name for path in (tmp_path / "logs" / "dream").glob("*")}
 
-    # La preuve n'est pas « chaque projet a des fichiers » : c'est que la MÊME
-    # phase coexiste pour les deux. Un gabarit non projeté produirait un seul
-    # `…_scan.log`, et le test passerait quand même si on se contentait de
-    # compter des fichiers par projet.
+    # The proof is not "each project has files": it is that the SAME phase
+    # coexists for both. An unprojected template would produce a single
+    # `…_scan.log`, and the test would still pass if we settled for counting files
+    # per project.
     for phase in ("scan", "clean", "connect"):
         alpha = {n for n in names if n.endswith(f"_alpha_{phase}.log")}
         beta = {n for n in names if n.endswith(f"_beta_{phase}.log")}
         assert alpha, f"pas de rapport {phase} pour alpha: {sorted(names)}"
         assert beta, f"pas de rapport {phase} pour beta: {sorted(names)}"
 
-    # Et aucun rapport de phase ne doit rester SANS projet : ce serait le
-    # gabarit d'avant, que le second projet écraserait.
+    # And no phase report must stay WITHOUT a project: that would be the old
+    # template, which the second project would overwrite.
     for phase in ("scan", "clean", "connect"):
         assert not [
             n for n in names if n.endswith(f"_{phase}.log") and "alpha" not in n and "beta" not in n
@@ -270,10 +269,10 @@ def test_each_project_keeps_its_own_phase_logs(tmp_path: Path) -> None:
 
 
 def test_the_night_narrative_stays_a_single_file(tmp_path: Path) -> None:
-    """§3.2 : le journal principal n'est PAS projeté.
+    """§3.2: the main log is NOT projected.
 
-    Il est ouvert en `tee -a`, c'est le récit unique de la nuit et la cible de
-    l'alerte agrégée de §11. Le fragmenter par projet contredirait Q6.
+    It is opened with `tee -a`, it is the night's single narrative and the target
+    of §11's aggregated alert. Fragmenting it per project would contradict Q6.
     """
     _run(tmp_path, "alpha,beta")
     unprojected = [
@@ -283,28 +282,28 @@ def test_the_night_narrative_stays_a_single_file(tmp_path: Path) -> None:
     assert len(unprojected) == 1, f"le récit de la nuit s'est fragmenté: {unprojected}"
 
 
-# --- §10 : l'allocation de retries est une ressource de nuit ---------------
+# --- §10: the retry allocation is a resource of the NIGHT -------------------
 
 
 def test_the_retry_budget_is_a_night_allocation_not_a_per_phase_one() -> None:
-    """La forme, parce que l'effet demande une phase qui échoue vraiment.
+    """The shape, because the effect requires a phase that really fails.
 
-    +43 min éligibles PAR PROJET, c'est +344 min de plafond à huit — la
-    différence entre 7,7 h et 13,4 h de pire cas configuré.
+    +43 min eligible PER PROJECT is +344 min of ceiling at eight — the difference
+    between 7.7 h and 13.4 h of configured worst case.
     """
     source = DREAM_SH.read_text(encoding="utf-8")
 
     assert 'BRAIN_DREAM_RETRY_BUDGET="${BRAIN_DREAM_RETRY_BUDGET:-2}"' in source
     assert "RETRY_BUDGET_LEFT=$(( RETRY_BUDGET_LEFT - 1 ))" in source
     assert "(( RETRY_BUDGET_LEFT > 0 ))" in source
-    # Le budget épuisé ne doit pas éteindre le signal : la phase garde son rc.
+    # An exhausted budget must not switch the signal off: the phase keeps its rc.
     assert "NO-RETRY" in source
 
 
 def test_the_pool_order_rotates_so_the_same_project_is_not_always_last() -> None:
-    """§10 : sans rotation, c'est toujours le même projet qui est sacrifié.
+    """§10: without rotation, it is always the same project that is sacrificed.
 
-    Même idiome que roadmap_curate.rotate_keys, en service depuis 2026-07-04.
+    Same idiom as roadmap_curate.rotate_keys, in service since 2026-07-04.
     """
     source = DREAM_SH.read_text(encoding="utf-8")
 
@@ -314,14 +313,14 @@ def test_the_pool_order_rotates_so_the_same_project_is_not_always_last() -> None
     )
 
 
-# --- §3.4 : les exports ne survivent pas à l'itération ---------------------
+# --- §3.4: the exports do not survive the iteration ------------------------
 
 
 def test_the_promote_exports_are_reset_per_project() -> None:
-    """Un projet qui saute PROMOTE ne doit pas hériter du pool d'un autre.
+    """A project that skips PROMOTE must not inherit another's pool.
 
-    La remise à zéro est en TÊTE d'itération : les cinq `continue` du corps
-    sauteraient un nettoyage placé en queue.
+    The reset is at the HEAD of the iteration: the body's five `continue`s would
+    skip a cleanup placed at the tail.
     """
     source = DREAM_SH.read_text(encoding="utf-8")
     body_start = source.index("run_project_phases() {")
@@ -333,13 +332,13 @@ def test_the_promote_exports_are_reset_per_project() -> None:
 
 
 def test_the_pool_rotates_by_one_notch_per_day(tmp_path: Path) -> None:
-    """Le témoin que la rotation n'avait pas, et dont l'absence coûtait cher.
+    """The witness the rotation did not have, and whose absence cost dearly.
 
-    `dream.sh` fait tourner le pool d'un cran par jour — sans quoi le projet en
-    queue est toujours celui qu'on sacrifie quand la nuit dépasse son plafond.
-    Ce comportement n'était prouvé par AUCUN test dédié : sa seule trace était
-    l'ordre asserté par deux tests voisins, qui le SUBISSAIENT au lieu de le
-    vérifier. D'où leur rouge un jour sur deux.
+    `dream.sh` rotates the pool by one notch a day — without which the project at
+    the tail is always the one sacrificed when the night exceeds its ceiling. That
+    behaviour was proven by NO dedicated test: its only trace was the order
+    asserted by two neighbouring tests, which SUFFERED it instead of checking it.
+    Hence their red every other day.
     """
     _run(
         tmp_path,
@@ -347,15 +346,15 @@ def test_the_pool_rotates_by_one_notch_per_day(tmp_path: Path) -> None:
         extra_env={"BRAIN_DREAM_PROJECT_POOL": "alpha,beta,gamma", "BRAIN_DREAM_FAKE_DOY": "223"},
     )
 
-    # 223 % 3 == 1 : le pool démarre sur son deuxième élément.
+    # 223 % 3 == 1: the pool starts on its second element.
     assert "Pool (3) from BRAIN_DREAM_PROJECT_POOL: beta gamma alpha" in _main_log(tmp_path)
 
 
 def test_the_rotation_serves_every_project_whatever_the_day(tmp_path: Path) -> None:
-    """La rotation change l'ORDRE, jamais l'ENSEMBLE.
+    """The rotation changes the ORDER, never the SET.
 
-    Une rotation mal écrite — un décalage qui tronque au lieu de faire tourner —
-    perdrait un projet par nuit sans que le compte annoncé le dise.
+    A badly written rotation — a shift that truncates instead of rotating — would
+    lose one project per night without the announced count saying so.
     """
     _run(
         tmp_path,
@@ -370,14 +369,14 @@ def test_the_rotation_serves_every_project_whatever_the_day(tmp_path: Path) -> N
 
 
 def test_no_test_asserts_a_multi_project_pool_order_without_pinning_the_day() -> None:
-    """La garde ANTI-RÉCIDIVE, et c'est elle qui vaut le lot.
+    """The ANTI-RECURRENCE guard, and it is what the batch is worth.
 
-    Le défaut n'était pas dans `dream.sh` : la rotation quotidienne est correcte
-    et voulue. Il était dans deux tests qui asseraient un ORDRE de pool sans
-    fixer le jour, donc verts ou rouges selon la parité de `date +%j`. Mesuré le
-    2026-08-11 (jour 223, rotation 1 sur un pool de 2) : rouges. La veille
-    (jour 222, rotation 0) : verts. Un test vert un jour sur deux ne garde rien,
-    et sa couleur ne dit rien du code.
+    The defect was not in `dream.sh`: the daily rotation is correct and intended.
+    It was in two tests that asserted a pool ORDER without fixing the day, hence
+    green or red depending on the parity of `date +%j`. Measured on 2026-08-11
+    (day 223, rotation 1 on a pool of 2): red. The day before (day 222, rotation
+    0): green. A test green every other day guards nothing, and its colour says
+    nothing about the code.
     """
     source = Path(__file__).read_text(encoding="utf-8")
 
@@ -386,7 +385,7 @@ def test_no_test_asserts_a_multi_project_pool_order_without_pinning_the_day() ->
         name = block.split("(", 1)[0].strip()
         if not name.startswith("test_"):
             continue
-        # « Pool (1) » est insensible à la rotation : n % 1 vaut toujours 0.
+        # "Pool (1)" is insensitive to rotation: n % 1 is always 0.
         if re.search(r'"Pool \((?!1\))\d+\) from [^"]*: \w+ \w+', block) and (
             "BRAIN_DREAM_FAKE_DOY" not in block
         ):

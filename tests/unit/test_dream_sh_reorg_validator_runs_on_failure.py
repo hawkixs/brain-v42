@@ -1,26 +1,26 @@
-"""Le validateur REORG doit tourner AUSSI quand la phase a échoué.
+"""The REORG validator must run ALSO when the phase has failed.
 
-CE FICHIER TOUCHE AU MOTEUR DE LA NUIT. `scripts/dream.sh` s'exécute depuis le
-dépôt à chaque nuit, sans redémarrage : un changement y est actif dès le merge.
+THIS FILE TOUCHES THE NIGHT'S ENGINE. `scripts/dream.sh` runs from the repository
+every night, with no restart: a change there is active from the merge onwards.
 
-Le bloc était gardé par `[[ "$name" == "reorg" && "$phase_rc" == "0" ]]`. La
-seconde condition retire le contrôle exactement du cas où il sert : une phase
-REORG qui échoue ou qui expire a pu écrire AVANT de mourir, et ce sont ces
-écritures-là — partielles, non relues par personne — qui ont le plus besoin
-d'être confrontées au périmètre du projet. Une phase verte, elle, a au moins
-émis son rapport et suivi son prompt jusqu'au bout.
+The block was guarded by `[[ "$name" == "reorg" && "$phase_rc" == "0" ]]`. The
+second condition removes the check from exactly the case where it serves: a REORG
+phase that fails or times out may have written BEFORE dying, and it is those
+writes — partial, re-read by nobody — that most need to be confronted with the
+project's perimeter. A green phase, by contrast, at least emitted its report and
+followed its prompt to the end.
 
-Le piège en fermant ce trou est la double comptabilité : le `case "$phase_rc"`
-qui suit classe la phase en FAILED ou en TIMED_OUT selon le code. Poser
-`phase_rc=1` sur une phase déjà à 2 déplacerait un dépassement de budget dans le
-seau des échecs durs, et la nuit rapporterait un incident qui n'a pas eu lieu à
-la place de celui qui a eu lieu. Le verdict du validateur s'ajoute donc au
-journal, jamais à la classification, quand la phase est déjà tombée.
+The trap when closing this hole is double accounting: the `case "$phase_rc"` that
+follows classifies the phase as FAILED or TIMED_OUT depending on the code. Setting
+`phase_rc=1` on a phase already at 2 would move a budget overrun into the hard
+failure bucket, and the night would report an incident that did not happen instead
+of the one that did. The validator's verdict is therefore added to the log, never
+to the classification, when the phase has already fallen.
 
-Ces tests n'inspectent pas le TEXTE du script : ils découpent le bloc réel et
-l'EXÉCUTENT sous bash avec des stubs pour `log` et `uv`, dans la forme établie
-par test_dream_sh_exit_code.py. Un test qui cherche une chaîne prouve que le
-texte existe ; celui-ci prouve que bash prend la bonne décision.
+These tests do not inspect the script's TEXT: they extract the real block and
+EXECUTE it under bash with stubs for `log` and `uv`, in the form established by
+test_dream_sh_exit_code.py. A test that greps for a string proves the text exists;
+this one proves bash takes the right decision.
 """
 
 from __future__ import annotations
@@ -52,13 +52,13 @@ def _run_block(
     validator_rc: int,
     name: str = "reorg",
 ) -> tuple[subprocess.CompletedProcess[str], str, int]:
-    """Exécute le bloc réel; rend (process, argv `uv` capturés, phase_rc final)."""
+    """Run the real block; return (process, captured `uv` argv, final phase_rc)."""
     log_dir = tmp_path / "logs"
     log_dir.mkdir(exist_ok=True)
     uv_calls = tmp_path / "uv_calls.txt"
     uv_calls.write_text("", encoding="utf-8")
-    # run_phase a déjà écrit ce fichier au moment où le bloc s'exécute — y
-    # compris sur une phase qui échoue, la redirection le créant avant l'agent.
+    # run_phase has already written this file by the time the block runs —
+    # including on a failing phase, the redirection creating it before the agent.
     (log_dir / f"2026-08-20_brain-v42_{name}.log").write_text("", encoding="utf-8")
 
     harness = "\n".join(
@@ -71,15 +71,15 @@ def _run_block(
             f"phase_rc={phase_rc}",
             "DRY_RUN=false",
             "BRAIN_DREAM_REORG_DRY_RUN=false",
-            # Posé par le bloc d'instantané, qui s'exécute plus haut dans la
-            # même itération (test_dream_sh_reorg_tags_snapshot.py le couvre).
+            # Set by the snapshot block, which runs higher up in the same
+            # iteration (test_dream_sh_reorg_tags_snapshot.py covers it).
             f"REORG_TAGS_BEFORE={shlex.quote(str(log_dir / 'tags_before.json'))}",
             f"UV_CALLS={shlex.quote(str(uv_calls))}",
             f"VALIDATOR_RC={validator_rc}",
             'log() { printf "%s\\n" "$*"; }',
-            # Deux appels distincts passent par ce stub : la récupération de
-            # l'id `dream_runs` (`uv run python -c …`) et le validateur lui-même.
-            # Seul le second porte un code de retour intéressant.
+            # Two distinct calls go through this stub: fetching the `dream_runs`
+            # id (`uv run python -c …`) and the validator itself. Only the second
+            # carries an interesting return code.
             "uv() {",
             '  printf "%s\\n" "$*" >> "$UV_CALLS"',
             '  case "$*" in',
@@ -96,8 +96,8 @@ def _run_block(
     proc = subprocess.run(
         ["bash", "-c", harness], capture_output=True, text=True, cwd=str(REPO_ROOT)
     )
-    # Garde de harnais, pas une assertion de comportement : sous `set -u` une
-    # variable oubliée sortirait en 1 et rendrait vert un test qui attend 1.
+    # Harness guard, not a behavioural assertion: under `set -u` a forgotten
+    # variable would exit 1 and turn green a test expecting 1.
     assert proc.stderr == "", f"le harnais a bruité sur stderr: {proc.stderr!r}"
     final_rc = int(proc.stdout.rsplit("PHASE_RC=", 1)[1].strip())
     return proc, uv_calls.read_text(encoding="utf-8"), final_rc
@@ -105,12 +105,12 @@ def _run_block(
 
 @pytest.mark.parametrize("phase_rc", [0, 1, 2])
 def test_the_validator_runs_whatever_the_phase_returned(tmp_path: Path, phase_rc: int) -> None:
-    """Échec (1) et dépassement (2) sont précisément les cas à contrôler.
+    """Failure (1) and overrun (2) are precisely the cases to check.
 
-    Une phase morte en cours de route a pu franchir la frontière de projet avant
-    de mourir. Le validateur est le dernier endroit qui puisse encore le dire :
-    `brain_list` est le seul outil CRUD sans contrôle de scope propre, sa borne
-    vivant dans le middleware seul.
+    A phase that died mid-course may have crossed the project boundary before
+    dying. The validator is the last place that can still say so: `brain_list` is
+    the only CRUD tool with no scope check of its own, its bound living in the
+    middleware alone.
     """
     _, uv_calls, _ = _run_block(tmp_path, phase_rc=phase_rc, validator_rc=0)
 
@@ -134,7 +134,7 @@ def test_the_validator_runs_whatever_the_phase_returned(tmp_path: Path, phase_rc
 
 
 def test_a_rejected_report_fails_a_phase_that_was_green(tmp_path: Path) -> None:
-    """Contre-épreuve : sur une phase verte, le verdict compte toujours."""
+    """Counter-proof: on a green phase, the verdict still counts."""
     proc, _, final_rc = _run_block(tmp_path, phase_rc=0, validator_rc=1)
 
     assert final_rc == 1, "un rapport rejeté doit encore faire rougir une phase verte"
@@ -145,12 +145,12 @@ def test_a_rejected_report_fails_a_phase_that_was_green(tmp_path: Path) -> None:
 def test_a_failed_phase_keeps_its_own_classification(
     tmp_path: Path, phase_rc: int, label: str
 ) -> None:
-    """Le verdict du validateur s'ajoute au journal, pas à la classification.
+    """The validator's verdict is added to the log, not to the classification.
 
-    Le cas qui coûte est `phase_rc=2` : le `case` qui suit range un 2 dans
-    TIMED_OUT_PHASES et un 1 dans FAILED_PHASES. Écraser le 2 par un 1 ferait
-    rapporter à la nuit un échec dur à la place du dépassement de budget qui a
-    réellement eu lieu — et l'opérateur chercherait la mauvaise panne.
+    The costly case is `phase_rc=2`: the `case` that follows puts a 2 into
+    TIMED_OUT_PHASES and a 1 into FAILED_PHASES. Overwriting the 2 with a 1 would
+    make the night report a hard failure instead of the budget overrun that
+    actually happened — and the operator would look for the wrong breakage.
     """
     proc, _, final_rc = _run_block(tmp_path, phase_rc=phase_rc, validator_rc=1)
 
@@ -165,7 +165,7 @@ def test_a_failed_phase_keeps_its_own_classification(
 
 
 def test_the_block_ignores_every_other_phase(tmp_path: Path) -> None:
-    """Témoin : le bloc ne doit pas se déclencher sur scan, synth ou promote."""
+    """Witness: the block must not fire on scan, synth or promote."""
     _, uv_calls, final_rc = _run_block(tmp_path, phase_rc=1, validator_rc=1, name="scan")
 
     assert uv_calls.strip() == "", f"le bloc a tourné sur une phase scan : {uv_calls!r}"

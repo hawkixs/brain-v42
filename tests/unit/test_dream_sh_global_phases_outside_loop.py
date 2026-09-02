@@ -1,23 +1,24 @@
-"""Les trois phases globales sont HORS de l'unité par projet — épinglé textuellement.
+"""The three global phases are OUTSIDE the per-project unit — pinned textually.
 
-Spec `2026-08-08-dream-project-pool-design.md` §7 : `extract`, `roadmap` et
-`sweep` n'ont aucune dimension de projet et sortent de la boucle. La mesure qui
-tranche, phase par phase :
+Spec `2026-08-08-dream-project-pool-design.md` §7: `extract`, `roadmap` and
+`sweep` have no project dimension and sit outside the loop. The decisive
+measurement, phase by phase:
 
-- `sweep` — `session_sweep` n'expose que `--wet` et `--older-than-days`. À huit
-  passages, le premier abandonne et les sept suivants écrivent sept lignes
-  `done` sur du vide, gonflant `_clean_dry_streak` de sept nuits fictives.
-- `extract` — `ticket_extract` sélectionne `extraction_status = 'pending'` sans
-  filtre de projet. Le premier passage vide la file, les sept suivants
-  consomment quand même leur `--run-budget-seconds 540`.
-- `roadmap` — `roadmap_curate` fait DÉJÀ sa propre rotation multi-projets, et
-  `day_ordinal` est identique aux huit invocations : la même fenêtre serait
-  curée huit fois, au prix API le plus élevé de la nuit (259,9 s/nuit mesurés).
+- `sweep` — `session_sweep` exposes only `--wet` and `--older-than-days`. Over
+  eight passes, the first abandons and the next seven write seven `done` rows
+  over nothing, inflating `_clean_dry_streak` by seven fictitious nights.
+- `extract` — `ticket_extract` selects `extraction_status = 'pending'` with no
+  project filter. The first pass empties the queue, the next seven consume their
+  `--run-budget-seconds 540` all the same.
+- `roadmap` — `roadmap_curate` ALREADY does its own multi-project rotation, and
+  `day_ordinal` is identical across the eight invocations: the same window would
+  be curated eight times, at the night's highest API cost (259.9 s/night
+  measured).
 
-§7 exige que ce soit une **garantie structurelle, pas une convention** : « une
-convention se perd au premier refactor ; une ancre textuelle échoue
-bruyamment ». D'où ce fichier. Il ne lit pas un commentaire, il vérifie où les
-trois blocs tombent par rapport au corps de la fonction qui sert un projet.
+§7 requires this to be a **structural guarantee, not a convention**: "a convention
+is lost at the first refactor; a textual anchor fails loudly". Hence this file. It
+does not read a comment, it checks where the three blocks fall relative to the
+body of the function that serves one project.
 """
 
 from __future__ import annotations
@@ -27,8 +28,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DREAM_SH = REPO_ROOT / "scripts" / "dream.sh"
 
-# Ancres de découpe : du code réel, pas des commentaires. Un remaniement qui les
-# fait disparaître casse ce test par ValueError, pas en le laissant vert.
+# Extraction anchors: real code, not comments. A rework that makes them disappear
+# breaks this test with a ValueError, not by leaving it green.
 _PROJECT_FN_OPEN = "run_project_phases() {"
 _EXTRACT_ANCHOR = "# --- EXTRACT:"
 _ROADMAP_ANCHOR = "# --- ROADMAP:"
@@ -40,10 +41,10 @@ def _source() -> str:
 
 
 def _project_function_body() -> str:
-    """Corps de `run_project_phases`, de son `{` à son `}` de fermeture.
+    """Body of `run_project_phases`, from its `{` to its closing `}`.
 
-    La fermeture se reconnaît à une accolade en colonne 0 : le script indente
-    tout le corps d'une fonction, donc `\\n}` n'apparaît qu'à la fin.
+    The closing brace is recognized by being in column 0: the script indents a
+    function's whole body, so `\\n}` appears only at the end.
     """
     content = _source()
     start = content.index(_PROJECT_FN_OPEN)
@@ -52,14 +53,14 @@ def _project_function_body() -> str:
 
 
 def test_the_six_agent_phases_live_in_a_per_project_function() -> None:
-    """La boucle de phases est dans une fonction qui reçoit un projet.
+    """The phase loop is inside a function that receives a project.
 
-    Extraire la boucle en fonction n'est pas cosmétique : §9 relève cinq
-    `continue` qui appartiennent à la boucle de phases. Imbriquer une boucle
-    projet AUTOUR d'eux les transformerait en `continue` de la mauvaise boucle
-    — le projet passerait au suivant au lieu de la phase suivante, et la nuit
-    serait verte en n'ayant rien fait. Une frontière de fonction rend cette
-    confusion impossible : le corps n'a qu'une boucle.
+    Extracting the loop into a function is not cosmetic: §9 counts five
+    `continue`s belonging to the phase loop. Nesting a project loop AROUND them
+    would turn them into `continue`s of the wrong loop — the project would move to
+    the next one instead of the next phase, and the night would be green having
+    done nothing. A function boundary makes that confusion impossible: the body
+    has only one loop.
     """
     body = _project_function_body()
 
@@ -69,7 +70,7 @@ def test_the_six_agent_phases_live_in_a_per_project_function() -> None:
 
 
 def test_extract_roadmap_and_sweep_are_outside_that_function() -> None:
-    """Les trois globales tombent APRÈS le corps par projet, pas dedans."""
+    """The three global phases fall AFTER the per-project body, not inside it."""
     content = _source()
     body = _project_function_body()
 
@@ -82,11 +83,10 @@ def test_extract_roadmap_and_sweep_are_outside_that_function() -> None:
 
 
 def test_the_three_global_blocks_run_after_the_project_loop() -> None:
-    """Ordre textuel : la boucle projet se ferme avant la première globale.
+    """Textual order: the project loop closes before the first global phase.
 
-    Vérifier seulement « pas dans la fonction » laisserait passer un appel placé
-    AVANT la boucle, qui tournerait sur un corpus que la nuit n'a pas encore
-    muté.
+    Checking only "not inside the function" would let through a call placed BEFORE
+    the loop, which would run over a corpus the night has not yet mutated.
     """
     content = _source()
     loop_end = content.index("done  # fin de la boucle de projets")
@@ -98,10 +98,10 @@ def test_the_three_global_blocks_run_after_the_project_loop() -> None:
 
 
 def test_the_global_phase_logs_keep_no_project_component() -> None:
-    """§3.2 : les journaux des trois globales ne sont PAS projetés.
+    """§3.2: the three global phases' logs are NOT projected.
 
-    Sept gabarits gagnent une composante de projet, ceux-ci non — les projeter
-    fabriquerait N fichiers vides pour une phase qui ne tourne qu'une fois.
+    Seven templates gain a project component, these do not — projecting them would
+    manufacture N empty files for a phase that runs once.
     """
     content = _source()
 

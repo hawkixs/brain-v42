@@ -111,15 +111,15 @@ def test_claude_rail_is_scoped_rather_than_refused_under_enforcement() -> None:
 
 
 def test_preflight_covers_every_provider_and_every_pool_project() -> None:
-    """Deux boucles imbriquées, et chacune ferme un mode de panne distinct.
+    """Two nested loops, and each closes a distinct failure mode.
 
-    Sur les PROJETS : vérifier le seul premier laisserait une nuit démarrer
-    puis mourir au troisième, deux projets déjà mutés.
+    On PROJECTS: checking only the first would let a night start then die on the
+    third, two projects already mutated.
 
-    Sur les PROVIDERS : c'est ce qui rend la chaîne utile. Le préflight détecte
-    exactement ce qui tue un rail — binaire absent, jeton manquant, abonnement
-    expiré. Le faire échouer la NUIT plutôt que le MAILLON tuerait la nuit
-    précisément le jour où le secours devait servir.
+    On PROVIDERS: that is what makes the chain useful. The preflight detects
+    exactly what kills a rail — missing binary, missing token, expired
+    subscription. Making it fail the NIGHT rather than the LINK would kill the
+    night precisely on the day the fallback was meant to serve.
     """
     content = _content()
 
@@ -131,21 +131,21 @@ def test_preflight_covers_every_provider_and_every_pool_project() -> None:
 
 
 def test_the_night_still_dies_when_no_provider_passes_its_preflight() -> None:
-    """Le fail-closed est conservé : il porte sur l'ENSEMBLE, pas sur le
-    premier maillon. Sans cette garde, retirer les providers un par un
-    finirait par laisser une chaîne vide tourner dans le vide."""
+    """The fail-closed posture is kept: it applies to the WHOLE SET, not to the
+    first link. Without this guard, removing providers one by one would end up
+    letting an empty chain run over nothing."""
     content = _content()
 
     assert "aucun provider de la chaîne ne passe son préflight" in content
 
 
 def test_both_entry_points_canonicalize_known_project_aliases_before_runner_use() -> None:
-    """Les deux rails replient `brain` et `brain_v42`, à des étages différents.
+    """Both rails fold `brain` and `brain_v42`, at different levels.
 
-    `dream.sh` canonicalise chaque entrée du POOL, donc dans la variable de
-    boucle du parseur ; `_promote_smoke.sh` n'a pas de pool et le fait sur sa
-    clé unique. Le contrat commun est le repli des deux alias avant que la clé
-    n'atteigne le runner — pas le nom de la variable qui le porte.
+    `dream.sh` canonicalizes every POOL entry, hence in the parser's loop
+    variable; `_promote_smoke.sh` has no pool and does it on its single key. The
+    shared contract is folding both aliases before the key reaches the runner —
+    not the name of the variable carrying it.
     """
     assert 'brain|brain_v42) _entry="brain-v42"' in _content()
     assert 'brain|brain_v42) PROJECT_KEY="brain-v42"' in PROMOTE_SMOKE.read_text(encoding="utf-8")

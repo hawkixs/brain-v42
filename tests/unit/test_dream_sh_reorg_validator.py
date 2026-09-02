@@ -1,25 +1,25 @@
-"""Les journaux des validateurs REORG et PROMOTE doivent dire ce qui s'est passé.
+"""The REORG and PROMOTE validators' logs must say what happened.
 
-Nuit du 19→20, mesurée : `dream.sh` a imprimé « FAIL reorg — validator flagged
-integrity issues (dream_runs marked partial) » et la ligne `dream_runs` est
-restée `done`. La parenthèse était FAUSSE, et elle l'était sur la seule foi de
-`validator_rc != 0` — un code de retour non nul ne dit rien de ce que le
-validateur a réussi à écrire avant de sortir. Cette nuit-là il n'avait rien
-écrit : son marquage crashait sur une boucle asyncio fermée.
+Night of 19→20, measured: `dream.sh` printed "FAIL reorg — validator flagged
+integrity issues (dream_runs marked partial)" and the `dream_runs` row stayed
+`done`. The parenthesis was FALSE, and it was so on the sole strength of
+`validator_rc != 0` — a non-zero return code says nothing about what the validator
+managed to write before exiting. That night it had written nothing: its marking
+crashed on a closed asyncio loop.
 
-Le correctif du marquage (une seule boucle par validateur) est livré à part.
-Il rend la phrase vraie AUJOURD'HUI — mais la laisser telle quelle garderait une
-affirmation que rien ne vérifie, prête à re-mentir au prochain défaut du chemin
-d'écriture. Le journal doit rapporter ce que `dream.sh` OBSERVE (le validateur a
-rejeté le rapport), pas ce qu'il SUPPOSE (une ligne a été marquée ailleurs).
+The marking fix (a single loop per validator) ships separately. It makes the
+sentence true TODAY — but leaving it as is would keep an assertion nothing checks,
+ready to lie again at the next defect of the write path. The log must report what
+`dream.sh` OBSERVES (the validator rejected the report), not what it ASSUMES (a
+row was marked elsewhere).
 
-`connect` dit déjà la vérité — « validator rejected CONNECT report; see
-validation detail » — et `test_dream_sh_connect_validator.py` interdit
-explicitement chez lui la formule « dream_runs marked partial ». Ce fichier est
-son miroir pour les deux autres validateurs, écrit dans la même forme.
+`connect` already tells the truth — "validator rejected CONNECT report; see
+validation detail" — and `test_dream_sh_connect_validator.py` explicitly forbids
+the "dream_runs marked partial" wording in its own file. This file is its mirror
+for the other two validators, written in the same form.
 
-CE FICHIER TOUCHE AU MOTEUR DE LA NUIT. `scripts/dream.sh` s'exécute depuis le
-dépôt à chaque nuit, sans redémarrage : un changement y est actif dès le merge.
+THIS FILE TOUCHES THE NIGHT'S ENGINE. `scripts/dream.sh` runs from the repository
+every night, with no restart: a change there is active from the merge onwards.
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def test_the_validator_failure_log_claims_nothing_it_did_not_observe(phase: str)
 
 @pytest.mark.parametrize("phase", sorted(_BLOCKS))
 def test_the_validator_still_runs_and_propagates_its_failure(phase: str) -> None:
-    """Le lot ne change QUE du texte : le câblage doit rester intact."""
+    """The batch changes ONLY text: the wiring must stay intact."""
     block = _block(phase)
 
     assert f"scripts.dream.{phase}_validate" in block
@@ -76,7 +76,7 @@ def test_the_validator_still_runs_and_propagates_its_failure(phase: str) -> None
 
 
 def test_connect_remains_the_reference_wording() -> None:
-    """Le témoin : si connect changeait de formule, ce miroir serait faux."""
+    """The witness: if connect changed its wording, this mirror would be false."""
     content = DREAM_SH.read_text(encoding="utf-8")
 
     assert "validator rejected CONNECT report; see validation detail" in content

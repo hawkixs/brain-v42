@@ -1,21 +1,21 @@
-"""dream.sh doit MESURER le « avant » des tags, sinon la garde n'a rien à comparer.
+"""dream.sh must MEASURE the tags' "before", otherwise the guard has nothing to compare.
 
-CE FICHIER TOUCHE AU MOTEUR DE LA NUIT. `scripts/dream.sh` s'exécute depuis le
-dépôt à chaque nuit, sans redémarrage : un changement y est actif dès le merge.
+THIS FILE TOUCHES THE NIGHT'S ENGINE. `scripts/dream.sh` runs from the repository
+every night, with no restart: a change there is active from the merge onwards.
 
-Le validateur REORG exige désormais un instantané des tags pris juste avant la
-phase (`--tags-before-json`). C'est le seul « avant » qui soit observé : le
-contrôle qu'il remplace, `updated_at >= run_date`, était creux parce que
-`DecayFlusher` rafraîchit l'horodatage toutes les 300 s à travers un trigger sans
-clause `WHEN` — et parce que les lectures de REORG lui-même alimentent le flusher.
+The REORG validator now requires a snapshot of the tags taken just before the
+phase (`--tags-before-json`). It is the only "before" that is observed: the check
+it replaces, `updated_at >= run_date`, was hollow because `DecayFlusher` refreshes
+the timestamp every 300 s through a trigger with no `WHEN` clause — and because
+REORG's own reads feed the flusher.
 
-L'instantané est pris APRÈS le killswitch (une phase coupée ne paie pas la
-requête) et AVANT `run_phase_chain`, une seule fois pour les deux tentatives que
-le budget de retry autorise : le « avant » de la nuit est celui d'avant la
-PREMIÈRE écriture, pas d'avant la dernière.
+The snapshot is taken AFTER the killswitch (a phase that is cut does not pay for
+the query) and BEFORE `run_phase_chain`, once for the two attempts the retry
+budget allows: the night's "before" is the one preceding the FIRST write, not the
+last.
 
-Ces tests découpent le bloc réel et l'EXÉCUTENT sous bash avec des stubs, dans la
-forme de test_dream_sh_exit_code.py.
+These tests extract the real block and EXECUTE it under bash with stubs, in the
+form of test_dream_sh_exit_code.py.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ def _run_block(
     name: str = "reorg",
     snapshot_rc: int = 0,
 ) -> tuple[subprocess.CompletedProcess[str], str, str]:
-    """Rend (process, argv `uv` capturés, chemin de l'instantané tel que vu par bash)."""
+    """Return (process, captured `uv` argv, snapshot path as bash sees it)."""
     log_dir = tmp_path / "logs"
     log_dir.mkdir(exist_ok=True)
     uv_calls = tmp_path / "uv_calls.txt"
@@ -81,11 +81,11 @@ def _run_block(
 
 
 def test_the_snapshot_is_taken_for_the_project_of_the_run(tmp_path: Path) -> None:
-    """Un instantané pris sur le mauvais corpus serait pire que pas d'instantané.
+    """A snapshot taken over the wrong corpus would be worse than no snapshot.
 
-    Il ferait comparer chaque entité mutée à un « avant » étranger : des tags
-    qui n'ont pas bougé passeraient pour bougés, et l'inverse. La garde
-    deviendrait un générateur de verdicts arbitraires que rien ne signalerait.
+    It would compare every mutated entity to a foreign "before": tags that have
+    not moved would pass for moved, and vice versa. The guard would become a
+    generator of arbitrary verdicts that nothing would flag.
     """
     _, uv_calls, tags_before = _run_block(tmp_path)
 
@@ -102,11 +102,11 @@ def test_the_snapshot_is_taken_for_the_project_of_the_run(tmp_path: Path) -> Non
 def test_a_failed_snapshot_is_announced_and_does_not_abort_the_night(
     tmp_path: Path,
 ) -> None:
-    """Échouer en silence rendrait le refus du validateur incompréhensible.
+    """Failing silently would make the validator's refusal incomprehensible.
 
-    Le validateur refusera le rapport faute d'instantané lisible — c'est voulu et
-    fail-closed. Mais l'opérateur doit pouvoir remonter du refus à sa cause en une
-    ligne de journal, au lieu de soupçonner le rapport de l'agent.
+    The validator will refuse the report for want of a readable snapshot — that is
+    intended and fail-closed. But the operator must be able to trace the refusal
+    back to its cause in one log line, instead of suspecting the agent's report.
     """
     proc, _, _ = _run_block(tmp_path, snapshot_rc=1)
 
@@ -117,7 +117,7 @@ def test_a_failed_snapshot_is_announced_and_does_not_abort_the_night(
 
 
 def test_the_block_ignores_every_other_phase(tmp_path: Path) -> None:
-    """Témoin : scan, synth et promote ne paient pas la requête."""
+    """Witness: scan, synth and promote do not pay for the query."""
     _, uv_calls, tags_before = _run_block(tmp_path, name="synth")
 
     assert uv_calls.strip() == "", f"un instantané a été pris pour synth : {uv_calls!r}"

@@ -27,8 +27,8 @@ def test_roadmap_wet_flag_only_when_dry_run_false():
 
 
 def test_roadmap_step_has_timeout_and_own_log():
-    """Budget 20m : premier run réel à 597s/600s (2026-07-04) — même
-    archétype que les timeouts synth (bump 10→15 du 2026-05-03)."""
+    """20 m budget: first real run at 597 s/600 s (2026-07-04) — the same
+    archetype as the synth timeouts (the 10→15 bump of 2026-05-03)."""
     content = _content()
     assert "timeout 20m uv run python -m scripts.roadmap_curate" in content
     assert "_roadmap.log" in content

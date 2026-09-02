@@ -1,17 +1,17 @@
-"""Le câblage de `--project-key` dans dream.sh, épinglé par grep — et ses limites.
+"""The wiring of `--project-key` in dream.sh, pinned by grep — and its limits.
 
-Deux propriétés à prouver, et une troisième à PROTÉGER :
+Two properties to prove, and a third to PROTECT:
 
-  - le flag entre dans le tableau PARTAGÉ `parser_args`, donc dans les deux
-    rails (codex par défaut, claude en repli). Le câbler dans une seule branche
-    laisserait l'autre sortir en `argparse` code 2, avalé en `WARN … non-fatal` ;
-  - la sous-commande `record-empty-pool` le reçoit aussi : `promote` est une
-    phase PAR PROJET, et depuis le filtre de maturité de la 041 c'est ce
-    chemin-là qui écrit sa ligne la plupart des nuits ;
-  - les phases GLOBALES n'en reçoivent AUCUN. `test_dream_sh_sweep.py` et
-    `test_dream_sh_extract.py` l'interdisent déjà ; les tests d'ici le redisent
-    depuis l'autre côté, pour qu'un futur lot ne « complète par symétrie » pas
-    trois blocs qui n'ont pas de projet à nommer.
+  - the flag goes into the SHARED `parser_args` array, hence into both rails
+    (codex by default, claude as fallback). Wiring it into a single branch would
+    let the other exit with `argparse` code 2, swallowed as `WARN … non-fatal`;
+  - the `record-empty-pool` subcommand receives it too: `promote` is a PER-PROJECT
+    phase, and since 041's maturity filter it is that path which writes its row
+    most nights;
+  - the GLOBAL phases receive NONE. `test_dream_sh_sweep.py` and
+    `test_dream_sh_extract.py` already forbid it; the tests here say it again from
+    the other side, so that a future batch does not "complete by symmetry" three
+    blocks that have no project to name.
 """
 
 from pathlib import Path
@@ -39,11 +39,11 @@ def parser_block() -> str:
 
 
 def test_the_flag_enters_the_shared_argument_array(parser_block: str) -> None:
-    """Dans `parser_args`, donc avant la bifurcation entre rails.
+    """In `parser_args`, hence before the rails diverge.
 
-    C'est la seule position qui les sert TOUS d'un seul geste. Le tableau est
-    construit une fois et consommé une fois par rail — ils étaient deux, ils
-    sont trois depuis l'arrivée d'agy, et cette position n'a pas eu à bouger.
+    It is the only position that serves them ALL in one gesture. The array is
+    built once and consumed once per rail — there were two, there are three since
+    agy arrived, and this position has not had to move.
     """
     assignment = parser_block.split("local scan_log=", maxsplit=1)[0]
 
@@ -51,12 +51,11 @@ def test_the_flag_enters_the_shared_argument_array(parser_block: str) -> None:
 
 
 def test_every_rail_consumes_the_same_array(parser_block: str) -> None:
-    """Preuve que la position ci-dessus suffit : aucun rail ne se construit ses
-    propres arguments.
+    """Proof that the position above is enough: no rail builds its own arguments.
 
-    Le compte est dérivé des parsers présents, pas figé à un nombre. Un
-    quatrième rail qui se bricolerait ses arguments passerait sous un littéral
-    mis à jour à la main — c'est exactement ce que ce test doit attraper.
+    The count is derived from the parsers present, not frozen at a number. A
+    fourth rail cobbling together its own arguments would slip under a literal
+    updated by hand — which is exactly what this test must catch.
     """
     parsers = ("agy_dream_parser", "codex_dream_parser", "brain_v42.metrics.dream_parser")
     for parser in parsers:
@@ -86,8 +85,8 @@ def test_the_empty_pool_row_is_recorded_for_a_named_project() -> None:
     ids=["sweep", "extract", "roadmap"],
 )
 def test_the_global_phases_receive_no_project_flag(start: str, end: str) -> None:
-    """Une phase globale n'a pas de projet à nommer : sa sentinelle `'*'` vit
-    dans son code Python, pas sur sa ligne de commande."""
+    """A global phase has no project to name: its `'*'` sentinel lives in its
+    Python code, not on its command line."""
     block = _between(_content(), start, end)
 
     assert "--project-key" not in block
