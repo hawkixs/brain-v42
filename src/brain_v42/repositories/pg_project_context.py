@@ -14,6 +14,7 @@ import sqlalchemy as sa
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from brain_v42.db.focus_history import focus_history_select, record_focus_history
 from brain_v42.db.focus_stamp import focus_stamp
 from brain_v42.db.tables import adrs, decisions, learnings, project_contexts, runbooks, snippets
 from brain_v42.models.project_context import (
@@ -82,6 +83,17 @@ class PgProjectContextRepo(BasePgRepository):
                 )
                 result = await session.execute(stmt)
                 row = result.mappings().one()
+                # Revision 0 of a brand-new context. The deferred constraint
+                # trigger sees UPDATEs only, so this line is the ONLY thing
+                # standing between a context's first focus and a hole in the
+                # trail — route (b) of 050, chosen and said out loud.
+                await record_focus_history(
+                    session,
+                    project_key=str(row["project_key"]),
+                    focus_revision=int(row["focus_revision"]),
+                    focus=row["current_focus"],
+                    source="context_upsert",
+                )
                 logger.info("project_context.created", project_key=data.project_key)
                 return ProjectContext.model_validate(dict(row))
 
@@ -145,6 +157,18 @@ class PgProjectContextRepo(BasePgRepository):
                 row = result.mappings().first()
                 if row is None:
                     return None
+                # Same condition as the stamp two dozen lines up, and for the
+                # same reason: renaming a project is not authoring prose. A row
+                # written on every partial update would also collide, the
+                # revision not having moved.
+                if "current_focus" in update_values:
+                    await record_focus_history(
+                        session,
+                        project_key=str(row["project_key"]),
+                        focus_revision=int(row["focus_revision"]),
+                        focus=row["current_focus"],
+                        source="generic_update",
+                    )
                 return ProjectContext.model_validate(dict(row))
 
     async def delete(self, id: UUID) -> bool:  # type: ignore[override]
@@ -289,6 +313,16 @@ class PgProjectContextRepo(BasePgRepository):
                 ).returning(*project_contexts.c)
                 result = await session.execute(stmt)
                 row = result.mappings().one()
+                # BOTH branches. The conflict branch is the overwrite channel B6
+                # names — it rewrites the focus with no CAS, NULL included — so
+                # it is the one that most needs recording.
+                await record_focus_history(
+                    session,
+                    project_key=str(row["project_key"]),
+                    focus_revision=int(row["focus_revision"]),
+                    focus=row["current_focus"],
+                    source="context_upsert",
+                )
                 logger.info("project_context.upserted", project_key=data.project_key)
                 return ProjectContext.model_validate(dict(row))
 
@@ -318,7 +352,28 @@ class PgProjectContextRepo(BasePgRepository):
                 row = result.mappings().first()
                 if row is None:
                     return None
+                await record_focus_history(
+                    session,
+                    project_key=str(row["project_key"]),
+                    focus_revision=int(row["focus_revision"]),
+                    focus=row["current_focus"],
+                    source="focus_tool",
+                )
                 return ProjectContext.model_validate(dict(row))
+
+    async def focus_history(
+        self, project_key: str, *, limit: int = 20, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """One project's focus revisions, newest first — read-only, bounded.
+
+        Returns rows as stored: an erased focus comes back as `None`, which is
+        the whole point of the column being nullable.
+        """
+        async with self.get_session() as session:
+            result = await session.execute(
+                focus_history_select(project_key, limit=limit, offset=offset)
+            )
+            return [dict(row) for row in result.mappings().all()]
 
     async def refresh_counts(self, project_key: str) -> ProjectContext | None:
         """Recompute *_count columns via cross-table COUNT queries.

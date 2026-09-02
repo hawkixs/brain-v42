@@ -233,7 +233,16 @@ def test_migration_026_round_trip(migration_downgrade_fence: Callable[..., None]
     # the SAME agent_name (different pid) — only the composite PK permits that.
     # (`upgrade 025` would be a no-op here since 026 is already ahead.)
     migration_downgrade_fence("025")
-    _run_alembic(["-x", "allow_project_context_trigger_downgrade=yes", "downgrade", "025"])
+    _run_alembic(
+        [
+            "-x",
+            "allow_project_context_trigger_downgrade=yes",
+            "-x",
+            "allow_focus_history_downgrade=yes",
+            "downgrade",
+            "025",
+        ]
+    )
 
     # ── Pre-seed two rows for the same agent_name (dedup test) ───────────────
     _seed_dedup_rows()

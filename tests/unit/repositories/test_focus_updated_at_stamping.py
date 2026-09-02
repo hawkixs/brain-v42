@@ -61,7 +61,17 @@ def _mock_session(*results: Any) -> AsyncMock:
 
 def _row(**overrides: Any) -> dict[str, Any]:
     """The minimum a `ProjectContext` will validate from."""
-    return {"project_key": "brain-v42", "name": "B", "description": "d", **overrides}
+    # `focus_revision` is NOT NULL with a server default, so every RETURNING row
+    # carries it. Its absence here was a fixture that could not have come out of
+    # the database; 050's audit write is simply the first reader to say so.
+    return {
+        "project_key": "brain-v42",
+        "name": "B",
+        "description": "d",
+        "focus_revision": 0,
+        "current_focus": None,
+        **overrides,
+    }
 
 
 def _result(mapping: Any = None) -> MagicMock:
@@ -141,7 +151,11 @@ async def test_partial_update_without_a_focus_leaves_the_stamp_alone() -> None:
 @pytest.mark.asyncio
 async def test_get_or_create_stamps_the_conflict_branch_against_the_stored_row() -> None:
     """On conflict the upsert overwrites `current_focus`, so it must date it."""
-    session = _mock_session(_result())
+    session = _mock_session(
+        _result(),
+        # The focus-history INSERT 050 adds behind every focus write.
+        _result(),
+    )
 
     with _patch_factory(session):
         await PgProjectContextRepo().get_or_create(
@@ -157,7 +171,11 @@ async def test_get_or_create_stamps_the_conflict_branch_against_the_stored_row()
 
 @pytest.mark.asyncio
 async def test_create_dates_a_focus_supplied_at_insert_time() -> None:
-    session = _mock_session(_result())
+    session = _mock_session(
+        _result(),
+        # The focus-history INSERT 050 adds behind every focus write.
+        _result(),
+    )
 
     with _patch_factory(session):
         await PgProjectContextRepo().create(
@@ -175,7 +193,11 @@ async def test_create_dates_a_focus_supplied_at_insert_time() -> None:
 @pytest.mark.asyncio
 async def test_create_without_a_focus_leaves_the_stamp_null() -> None:
     """NULL reads as "no focus was ever written", which is true here."""
-    session = _mock_session(_result())
+    session = _mock_session(
+        _result(),
+        # The focus-history INSERT 050 adds behind every focus write.
+        _result(),
+    )
 
     with _patch_factory(session):
         await PgProjectContextRepo().create(
@@ -202,6 +224,8 @@ async def test_project_focus_batch_stamps_only_on_a_real_change() -> None:
     session = _mock_session(
         _result(context_row),
         _result({"current_focus": "unchanged", "focus_revision": 8}),
+        # The focus-history INSERT 050 adds behind every focus write.
+        _result(),
     )
     context = AsyncMock()
     context.__aenter__ = AsyncMock(return_value=session)
@@ -229,7 +253,11 @@ async def test_session_end_stamps_only_on_a_real_change() -> None:
     Re-posting the previous prose verbatim is the copy-forward this column
     exists to expose, so an identical blob must leave the age untouched.
     """
-    session = _mock_session(_result({"current_focus": "carried", "focus_revision": 8}))
+    session = _mock_session(
+        _result({"current_focus": "carried", "focus_revision": 8}),
+        # The focus-history INSERT 050 adds behind every focus write.
+        _result(),
+    )
 
     await PgBrainSessionRepo()._apply_focus_if_current(
         session,

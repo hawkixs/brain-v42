@@ -18,8 +18,10 @@ from brain_v42.mcp.tools.tool_annotations import (
 )
 from brain_v42.models.brain_session import (
     MAX_CAPTURED_KNOWLEDGE_IDS,
+    MAX_CHECKPOINT_TEXT,
     BrainSessionAbandonResult,
     BrainSessionCaptureResult,
+    BrainSessionCheckpointResult,
     BrainSessionEndResult,
     BrainSessionHeartbeatResult,
     BrainSessionListResult,
@@ -30,7 +32,12 @@ from brain_v42.models.brain_session import (
 if TYPE_CHECKING:
     from brain_v42.services.brain_session_service import BrainSessionService
 
-BriefingLoader = Callable[[str], Awaitable[str]]
+#: `(project_key, session_id)`. The session entered the signature with M-C: the
+#: briefing renders that session's last checkpoints, and a project-scoped loader
+#: could not know which session asked. Passed by BOTH start and resume — a start
+#: that REPLAYS an open session returns a session that may already hold judgment,
+#: and hiding it there would be the one place the reader most expects it.
+BriefingLoader = Callable[[str, UUID], Awaitable[str]]
 CapturedKnowledgeIdsArg = Annotated[
     list[UUID],
     Field(min_length=1, max_length=MAX_CAPTURED_KNOWLEDGE_IDS),
@@ -44,6 +51,27 @@ ClientKeyArg = Annotated[
         description=(
             "Stable identity for one intended session. Reuse it for every retry of that "
             "session; use a distinct stable key for each parallel session."
+        ),
+    ),
+]
+CheckpointSeqArg = Annotated[
+    int,
+    Field(
+        ge=1,
+        description=(
+            "Monotone sequence number supplied by the CALLER. Reuse the same seq to replay "
+            "a checkpoint idempotently; reusing it with different content is refused."
+        ),
+    ),
+]
+CheckpointTextArg = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=MAX_CHECKPOINT_TEXT,
+        description=(
+            "Judgment text, refused rather than truncated past its bound. Write what a "
+            "reader would need to resume without you."
         ),
     ),
 ]
@@ -119,7 +147,7 @@ async def _load_briefing_safely(
 ) -> str:
     """Keep a persisted session observable when the optional briefing fails."""
     try:
-        return await briefing_loader(project_key)
+        return await briefing_loader(project_key, session_id)
     except Exception as exc:
         logger.warning(
             "brain_session_briefing_unavailable",
@@ -135,7 +163,7 @@ def register_session_lifecycle_tools(
     brain_session_svc: BrainSessionService,
     briefing_loader: BriefingLoader,
 ) -> None:
-    """Register the seven explicit Brain session lifecycle tools."""
+    """Register the eight explicit Brain session lifecycle tools."""
 
     @mcp.tool(version="4.0", annotations=_WRITE_ANNOTATIONS)
     async def brain_session_start(
@@ -200,6 +228,41 @@ def register_session_lifecycle_tools(
         return await brain_session_svc.heartbeat(
             session_id=session_id,
             expected_client_key=expected_client_key,
+        )
+
+    @mcp.tool(version="4.0", annotations=_WRITE_ANNOTATIONS)
+    async def brain_session_checkpoint(
+        session_id: UUID,
+        expected_client_key: ExpectedClientKeyArg,
+        seq: CheckpointSeqArg,
+        progress: CheckpointTextArg,
+        next_step: CheckpointTextArg,
+        blocker: CheckpointTextArg | None = None,
+    ) -> BrainSessionCheckpointResult:
+        """Publish one semantic checkpoint of an open session, in a single call.
+
+        An agent tracer is the only session the server opens or closes on
+        its own; no hook and no auto-close may invoke this lifecycle
+        boundary.
+
+        This is NOT a lifecycle command and NOT a presence signal. It writes no
+        heartbeat, touches no focus, attributes no artifact, and opens or closes
+        nothing. Liveness already comes from the observation stamped by every tool
+        call; what a checkpoint records is JUDGMENT — where the work stands, what
+        blocks it, what comes next — published together so a reader can tell a
+        complete snapshot from a partial one.
+
+        Send the same `seq` again to replay a call safely: an identical payload is
+        absorbed and returns `replayed: true`, while the same `seq` carrying
+        different content is refused rather than silently dropped.
+        """
+        return await brain_session_svc.checkpoint(
+            session_id=session_id,
+            expected_client_key=expected_client_key,
+            seq=seq,
+            progress=progress,
+            next_step=next_step,
+            blocker=blocker,
         )
 
     @mcp.tool(version="4.0", annotations=_TERMINAL_ANNOTATIONS)

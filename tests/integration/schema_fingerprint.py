@@ -18,13 +18,21 @@ that lesson repeatedly. What is derived here is a *property* of the migration
 chain rather than a value:
 
     No migration under alembic/versions/ emits ENABLE REPLICA TRIGGER,
-    ENABLE ALWAYS TRIGGER, DISABLE TRIGGER, or touches session_replication_role.
+    ENABLE ALWAYS TRIGGER, DISABLE TRIGGER, or touches session_replication_role,
+    EXCEPT to disable one of the triggers named in
+    ``DELIBERATELY_DISABLED_TRIGGERS``.
 
-Therefore every trigger the chain produces is in origin state, and any trigger
-that is NOT is something else's work. The premise is re-derived from the tree by
+Therefore every trigger the chain produces is in origin state — or is one named
+trigger in the one state its own migration documents — and anything else is
+something else's work. The premise is re-derived from the tree by
 ``migrations_emitting_non_origin_trigger_state`` and pinned by a unit test, so a
 migration that ever needs a non-origin trigger fails loudly instead of quietly
 widening the guard's blind spot.
+
+That exception was earned, not assumed: 050 tripped this guard on 2026-09-02, and
+the guard's own message asks for exactly this — "revisit it before landing that
+migration". What was revisited is narrow: a NAME plus a STATE. `R` or `A` on that
+same name still refuses, and disabling any other trigger still refuses.
 
 **Universal, never existential.** The verdict is "no trigger diverges", not "a
 compliant trigger exists". A single divergence is a refusal, and the message
@@ -48,8 +56,35 @@ _TRIGGER_STATE_NAMES = {
     "A": "ALWAYS — fires even for replication",
 }
 
+#: The chain's ONE deliberate exception, and it is a name plus a state, never a
+#: category. Migration 050 must CREATE its constraint trigger and leave it
+#: silent: between the `upgrade` and the MCP restart the live process still runs
+#: pre-050 code and writes no history row, so an armed trigger would abort every
+#: `brain_session_end` carrying `focus_outcome=applied` — fail-closed, session
+#: left open, no practicable killswitch. Arming it is a dated operator gesture.
+#:
+#: The exception is NOT free, and the cost is deliberately left where the design
+#: put it: `ops/recovery`'s attestation requires `tgenabled = 'O'` and stays RED
+#: while this trigger is off. This guard stops the integration suite from being
+#: collateral damage; it does not absolve the switch.
+DELIBERATELY_DISABLED_TRIGGERS = {
+    "project_contexts_focus_history_required": (
+        "050 — created disabled so it cannot abort session_end during the window "
+        "between the upgrade and the MCP restart; armed by a named operator gesture"
+    ),
+}
+
 _NON_ORIGIN_TRIGGER_DDL = re.compile(
     r"ENABLE\s+(REPLICA|ALWAYS)\s+TRIGGER|DISABLE\s+TRIGGER|session_replication_role",
+    re.IGNORECASE,
+)
+
+#: `DISABLE TRIGGER <named>` — and that verb only. Naming a trigger licenses one
+#: statement, not the trigger: `ENABLE REPLICA TRIGGER <same name>` still offends.
+_PERMITTED_DISABLE_DDL = re.compile(
+    r"DISABLE\s+TRIGGER\s+(?:"
+    + "|".join(re.escape(name) for name in DELIBERATELY_DISABLED_TRIGGERS)
+    + r")\b",
     re.IGNORECASE,
 )
 
@@ -74,6 +109,10 @@ def migrations_emitting_non_origin_trigger_state(versions_dir: Path) -> list[str
         for node in tree.body:
             if isinstance(node, ast.FunctionDef) and node.name == "upgrade":
                 segment = ast.get_source_segment(source, node) or ""
+                # Blank out the permitted statement FIRST, then search. Deleting
+                # it rather than pattern-matching around it keeps the offending
+                # regex untouched: whatever it caught yesterday it still catches.
+                segment = _PERMITTED_DISABLE_DDL.sub("", segment)
                 if _NON_ORIGIN_TRIGGER_DDL.search(segment):
                     offenders.append(path.name)
     return offenders
@@ -160,6 +199,11 @@ def describe_schema_divergence(probe: SchemaProbe) -> str | None:
         name: state
         for name, state in sorted(probe.trigger_states.items())
         if state != ORIGIN_TRIGGER_STATE
+        # `D` on a NAMED trigger is the state its migration ships. Any other
+        # state on that same name is somebody else's work and still refuses —
+        # allowlisting a name rather than a (name, state) pair would let the
+        # 2026-08-22 replica residue back in through the door opened for 050.
+        and not (name in DELIBERATELY_DISABLED_TRIGGERS and state == "D")
     }
     role_diverges = probe.session_replication_role != "origin"
     if not divergent and not role_diverges:

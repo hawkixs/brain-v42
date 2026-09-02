@@ -824,8 +824,20 @@ database trigger** (house culture: 039 pins by SHA256, not by absence of a code
 path), client-supplied monotonic `seq`, `UNIQUE(session_id, seq)` + `ON CONFLICT DO
 NOTHING`: **an exact checkpoint replay is idempotent** — no second row, and the
 heartbeat isn't refreshed a second time (agent retries are the norm, an invariant of
-the dossier). Fail-closed 200/session cap. **Side effect: refreshes
-`last_heartbeat_at`** on a real checkpoint, never on a replay. **The calling policy
+the dossier). Fail-closed 200/session cap. ~~**Side effect: refreshes
+`last_heartbeat_at`** on a real checkpoint, never on a replay.~~
+**AMENDED 2026-09-02 — heartbeat effect REMOVED, see §0bis.4.** This side effect is
+not shipped, and the sentence above is struck rather than deleted so the change
+stays legible. An `agent` session's liveness comes from `last_observed_at`, which
+every tool call moves; the checkpoint is a pure JUDGMENT object and writes no
+heartbeat — not on a real checkpoint, not on a replay. The flag
+`BRAIN_SESSION_CHECKPOINT_HEARTBEAT_EFFECT` is not shipped either: a flag with no
+purpose is debt, not a precaution. The clause above about the heartbeat "not being
+refreshed a second time" on a replay is void for the same reason — there is no first
+refresh. Delivered in commit `37aaabb`; the absence of effect is a TEST
+(`tests/unit/services/test_brain_session_checkpoint.py`), not a comment, because
+until this amendment an implementer reading D4 before §0bis.4 would have wired
+exactly what the spec forbids. **The calling policy
 is a fork, declared, not slipped in**: if every checkpoint remains an explicit user
 command, the covenant stays intact — but adoption then depends on the same human
 discipline that produced **24 stale sessions out of 29** (re-measured on 2026-08-19;

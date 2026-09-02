@@ -132,7 +132,15 @@ async def test_the_downgrade_refuses_to_destroy_a_closure_it_cannot_restore(
         head_before = await conn.scalar(sa.text("SELECT version_num FROM alembic_version"))
 
     result = subprocess.run(
-        [sys.executable, "-m", "alembic", "downgrade", "046"],
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-x",
+            "allow_focus_history_downgrade=yes",
+            "downgrade",
+            "046",
+        ],
         env={**os.environ, "POSTGRES_URL": INTEGRATION_DB_URL},
         cwd=str(_PROJECT_ROOT),
         capture_output=True,

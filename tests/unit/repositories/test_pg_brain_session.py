@@ -205,6 +205,11 @@ def _terminal_router(
             return _result(row=focus_row)
         if _is_update(statement, "brain_sessions"):
             return _result(row=updated_row)
+        if _is_insert(statement, "project_focus_history"):
+            # 050: the applied CAS records the focus it just wrote, in the same
+            # transaction. Routed rather than tolerated — the dispatcher exists
+            # to refuse a statement nobody expected, and this one is expected.
+            return _result()
         if _is_insert(statement, "brain_session_artifacts"):
             return _result(rows=[{"knowledge_id": capture_id} for capture_id in valid_ids])
         if "from brain_session_artifacts" in sql:
@@ -390,6 +395,8 @@ class TestReadOperations:
             sql = _sql(statement)
             if "count(" in sql:
                 return _result(scalar=4)
+            if "from brain_session_checkpoints" in sql:
+                return _result(rows=[])
             if "from brain_session_artifacts" in sql:
                 return _result(rows=[])
             return _result(rows=rows)
@@ -414,6 +421,46 @@ class TestReadOperations:
         assert not _dml(statements)
 
     @pytest.mark.asyncio
+    async def test_list_exposes_the_last_checkpoint_of_each_session(self) -> None:
+        """SPEC-checkpoint §2.4 — `brain_session_list` gains `last_checkpoint_at`.
+
+        On the LIST RESULT and not on `BrainSession`, and that is measured rather
+        than stylistic: a nullable datetime on the session model costs 396 compact
+        bytes across the four schema-deriving tools that embed it, against the 79
+        the output-schema budget has left. `brain_session_list` publishes no output
+        schema at all, so the field is free exactly here.
+
+        A session with no checkpoint is ABSENT from the map rather than mapped to
+        null: "never checkpointed" and "checkpointed, timestamp unknown" are not
+        the same statement, and only one of them is true.
+        """
+        from brain_v42.repositories.pg_brain_session import PgBrainSessionRepo
+
+        rows = [_session_row(client_key="client-a"), _session_row(client_key="client-b")]
+        stamped = rows[0]["id"]
+
+        def router(statement: Any) -> MagicMock:
+            sql = _sql(statement)
+            if "count(" in sql:
+                return _result(scalar=2)
+            if "from brain_session_checkpoints" in sql:
+                assert "max(" in sql, sql
+                return _result(rows=[{"session_id": stamped, "last_checkpoint_at": STARTED_AT}])
+            if "from brain_session_checkpoints" in sql:
+                return _result(rows=[])
+            if "from brain_session_artifacts" in sql:
+                return _result(rows=[])
+            return _result(rows=rows)
+
+        _, statements, _, factory = _make_session(router)
+
+        result = await PgBrainSessionRepo(factory).list("brain-v42", "open", limit=10, offset=0)
+
+        assert result.last_checkpoint_at == {str(stamped): STARTED_AT}
+        assert str(rows[1]["id"]) not in result.last_checkpoint_at
+        assert not _dml(statements)
+
+    @pytest.mark.asyncio
     async def test_list_all_omits_status_filter(self) -> None:
         from brain_v42.repositories.pg_brain_session import PgBrainSessionRepo
 
@@ -430,6 +477,8 @@ class TestReadOperations:
             sql = _sql(statement)
             if "count(" in sql:
                 return _result(scalar=2)
+            if "from brain_session_checkpoints" in sql:
+                return _result(rows=[])
             if "from brain_session_artifacts" in sql:
                 return _result(rows=[])
             return _result(rows=rows)
@@ -534,6 +583,8 @@ class TestReadOperations:
             sql = _sql(statement)
             if "count(" in sql:
                 return _result(scalar=1)
+            if "from brain_session_checkpoints" in sql:
+                return _result(rows=[])
             if "from brain_session_artifacts" in sql:
                 return _result(rows=[])
             return _result(rows=[stale])

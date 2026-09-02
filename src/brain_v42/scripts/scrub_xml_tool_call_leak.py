@@ -25,6 +25,7 @@ import sys
 import sqlalchemy as sa
 
 from brain_v42.db.engine import get_session_factory
+from brain_v42.db.focus_history import record_focus_history
 from brain_v42.db.tables import decisions, learnings, project_contexts
 from brain_v42.maintenance.xml_scrub import scrub_xml_tool_call_leak
 
@@ -89,7 +90,28 @@ async def _scrub_table(
             if "embedding" in table.c:
                 values["embedding"] = None
             upd = sa.update(table).where(table.c.id == row.id).values(**values)
-            await session.execute(upd)
+            # The seventh focus writer, and the only one outside the MCP surface.
+            # It rewrites `current_focus` to strip a leaked tool call — a real
+            # mutation of the prose, so it owes the same audit row as the six
+            # others, and the deferred constraint trigger would refuse its COMMIT
+            # without one. `RETURNING` because the revision is the trigger's to
+            # assign, never this script's to guess.
+            if table is project_contexts and "current_focus" in updates:
+                upd = upd.returning(
+                    project_contexts.c.project_key,
+                    project_contexts.c.focus_revision,
+                    project_contexts.c.current_focus,
+                )
+                scrubbed = (await session.execute(upd)).mappings().one()
+                await record_focus_history(
+                    session,
+                    project_key=str(scrubbed["project_key"]),
+                    focus_revision=int(scrubbed["focus_revision"]),
+                    focus=scrubbed["current_focus"],
+                    source="maintenance_scrub",
+                )
+            else:
+                await session.execute(upd)
 
     if live:
         await session.commit()

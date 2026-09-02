@@ -14,10 +14,12 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from brain_v42.db.focus_history import record_focus_history, render_focus_diff
 from brain_v42.db.focus_stamp import focus_stamp
 from brain_v42.db.tables import (
     adrs,
     brain_session_artifacts,
+    brain_session_checkpoints,
     brain_sessions,
     decisions,
     indexed_plans,
@@ -30,11 +32,16 @@ from brain_v42.models.brain_session import (
     AUTO_STALE_ABANDONMENT_REASON,
     AUTO_STALE_AFTER,
     MAX_CAPTURED_KNOWLEDGE_IDS,
+    MAX_CHECKPOINTS_PER_SESSION,
+    RESUME_CHECKPOINT_LIMIT,
     SESSION_STALE_AFTER,
     BrainSession,
     BrainSessionAbandonResult,
     BrainSessionCaptureConflictError,
     BrainSessionCaptureResult,
+    BrainSessionCheckpoint,
+    BrainSessionCheckpointConflictError,
+    BrainSessionCheckpointResult,
     BrainSessionClientKeyConflictError,
     BrainSessionEndResult,
     BrainSessionFocusOutcome,
@@ -415,8 +422,13 @@ class PgBrainSessionRepo(BasePgRepository):
                 session,
                 [row["id"] for row in rows],
             )
+            last_checkpoints = await self._last_checkpoint_by_session(
+                session,
+                [row["id"] for row in rows],
+            )
 
         return BrainSessionListResult(
+            last_checkpoint_at=last_checkpoints,
             sessions=[
                 self._to_model(
                     row,
@@ -572,6 +584,198 @@ class PgBrainSessionRepo(BasePgRepository):
                 replayed=not missing,
             )
 
+    @staticmethod
+    async def _last_checkpoint_by_session(
+        session: AsyncSession, session_ids: Sequence[UUID]
+    ) -> dict[str, datetime]:
+        """One grouped read for the whole page, never one query per row.
+
+        A session with no checkpoint is simply ABSENT from the result: mapping it
+        to `None` would say "checkpointed, timestamp unknown", which is not what
+        happened.
+        """
+        if not session_ids:
+            return {}
+        stmt = (
+            sa.select(
+                brain_session_checkpoints.c.session_id,
+                sa.func.max(brain_session_checkpoints.c.created_at).label("last_checkpoint_at"),
+            )
+            .where(brain_session_checkpoints.c.session_id.in_(session_ids))
+            .group_by(brain_session_checkpoints.c.session_id)
+        )
+        rows = (await session.execute(stmt)).mappings().all()
+        return {str(row["session_id"]): row["last_checkpoint_at"] for row in rows}
+
+    async def recent_checkpoints(
+        self, session_id: UUID | str
+    ) -> builtins.list[BrainSessionCheckpoint]:
+        """The last `RESUME_CHECKPOINT_LIMIT` checkpoints of a session, newest first.
+
+        Bounded at the QUERY, never in Python: a session may hold up to 200 and a
+        briefing has no reason to carry 195 of them across the wire to drop them.
+
+        `builtins.list` in the annotation, not `list`: this class defines a `list`
+        METHOD, which shadows the builtin everywhere inside the class body.
+
+        No identity guard here, deliberately — this is a READ, reached only from a
+        `resume` that has already checked `expected_client_key` against the same
+        session. Re-checking would need the key threaded through the briefing
+        loader for no gain.
+        """
+        stmt = (
+            sa.select(
+                brain_session_checkpoints.c.session_id,
+                brain_session_checkpoints.c.seq,
+                brain_session_checkpoints.c.progress,
+                brain_session_checkpoints.c.next_step,
+                brain_session_checkpoints.c.blocker,
+                brain_session_checkpoints.c.created_at,
+            )
+            .where(brain_session_checkpoints.c.session_id == session_id)
+            .order_by(brain_session_checkpoints.c.seq.desc())
+            .limit(RESUME_CHECKPOINT_LIMIT)
+        )
+        async with self.get_session() as session:
+            rows = (await session.execute(stmt)).mappings().all()
+        return [BrainSessionCheckpoint(**dict(row)) for row in rows]
+
+    async def checkpoint(
+        self,
+        session_id: UUID | str,
+        expected_client_key: str,
+        *,
+        seq: int,
+        progress: str,
+        next_step: str,
+        blocker: str | None,
+    ) -> BrainSessionCheckpointResult:
+        """Append one semantic checkpoint, idempotently (SPEC-checkpoint §1.1, §2).
+
+        `ON CONFLICT DO NOTHING … RETURNING` returns zero rows for an exact replay
+        AND for a content collision — the same silence for two opposite events. So
+        an empty `RETURNING` is not the answer, it is the question: the stored row
+        is reread and the triple compared. Identical means the retry is absorbed
+        and reported as `replayed`; different is a non-destructive conflict and
+        raises, because `seq` is supplied by the CLIENT and agent retries are the
+        norm (invariant C6), which makes the collision ordinary rather than exotic.
+
+        The ceiling is checked INSIDE the row lock taken on the session, so two
+        concurrent writers cannot both read 199 and both insert. It is counted
+        before the insert and re-derived after, so the number returned is the
+        number stored and never an optimistic guess.
+
+        Writes NOTHING on `brain_sessions` — not `last_heartbeat_at`, not
+        `updated_at`, not the focus. ADR D4 still describes a heartbeat side
+        effect; §0bis.4 is later and dissolves it, and this method is where that
+        resolution is either honoured or quietly undone.
+        """
+        async with self.transaction() as session:
+            row = await self._get_row(session, session_id, for_update=True)
+            if row is None:
+                raise BrainSessionNotFoundError(f"Session {session_id} was not found")
+            model = self._to_model(row)
+            self._assert_identity(model, expected_client_key)
+            if model.status != "open":
+                raise BrainSessionStateError(f"Session {session_id} is {model.status}, not open")
+
+            count_stmt = (
+                sa.select(sa.func.count())
+                .select_from(brain_session_checkpoints)
+                .where(brain_session_checkpoints.c.session_id == model.id)
+            )
+            existing = int((await session.execute(count_stmt)).scalar_one())
+
+            insert_stmt = (
+                pg_insert(brain_session_checkpoints)
+                .values(
+                    session_id=model.id,
+                    seq=seq,
+                    progress=progress,
+                    next_step=next_step,
+                    blocker=blocker,
+                )
+                .on_conflict_do_nothing(constraint="uq_brain_session_checkpoints_session_seq")
+                .returning(brain_session_checkpoints.c.created_at)
+            )
+
+            if existing >= MAX_CHECKPOINTS_PER_SESSION:
+                # Fail-closed, but an exact REPLAY at the ceiling must still be
+                # answerable: it stores nothing, and refusing it would make a
+                # retry fail where the original succeeded.
+                stored = await self._stored_checkpoint(session, model.id, seq)
+                if stored is None:
+                    raise BrainSessionInputError(
+                        f"Session {session_id} already holds "
+                        f"{MAX_CHECKPOINTS_PER_SESSION} checkpoints"
+                    )
+                return self._replayed_checkpoint(
+                    model.id, seq, stored, progress, next_step, blocker, existing
+                )
+
+            created_at = (await session.execute(insert_stmt)).scalar_one_or_none()
+            if created_at is not None:
+                return BrainSessionCheckpointResult(
+                    session_id=model.id,
+                    seq=seq,
+                    created_at=created_at,
+                    replayed=False,
+                    checkpoint_count=existing + 1,
+                )
+
+            stored = await self._stored_checkpoint(session, model.id, seq)
+            if stored is None:  # pragma: no cover — the unique key just refused it
+                raise BrainSessionStateError(
+                    f"Session {session_id} checkpoint {seq} was neither stored nor found"
+                )
+            return self._replayed_checkpoint(
+                model.id, seq, stored, progress, next_step, blocker, existing
+            )
+
+    @staticmethod
+    async def _stored_checkpoint(session: AsyncSession, session_id: UUID, seq: int) -> Any:
+        stmt = sa.select(
+            brain_session_checkpoints.c.created_at,
+            brain_session_checkpoints.c.progress,
+            brain_session_checkpoints.c.next_step,
+            brain_session_checkpoints.c.blocker,
+        ).where(
+            brain_session_checkpoints.c.session_id == session_id,
+            brain_session_checkpoints.c.seq == seq,
+        )
+        return (await session.execute(stmt)).mappings().one_or_none()
+
+    @staticmethod
+    def _replayed_checkpoint(
+        session_id: UUID,
+        seq: int,
+        stored: Any,
+        progress: str,
+        next_step: str,
+        blocker: str | None,
+        count: int,
+    ) -> BrainSessionCheckpointResult:
+        """Same key, same content = replay. Same key, other content = conflict.
+
+        The comparison is the whole payload, never a prefix: two judgments that
+        share an opening sentence are two judgments.
+        """
+        if (stored["progress"], stored["next_step"], stored["blocker"]) != (
+            progress,
+            next_step,
+            blocker,
+        ):
+            raise BrainSessionCheckpointConflictError(
+                f"Session {session_id} already has a checkpoint {seq} with different content"
+            )
+        return BrainSessionCheckpointResult(
+            session_id=session_id,
+            seq=seq,
+            created_at=stored["created_at"],
+            replayed=True,
+            checkpoint_count=count,
+        )
+
     async def heartbeat(
         self,
         session_id: UUID | str,
@@ -724,6 +928,17 @@ class PgBrainSessionRepo(BasePgRepository):
                 ended.ended_at or model.started_at,
             )
 
+            # Computed HERE because this is the only scope holding both sides of
+            # the write. On `conflict` the returned focus IS the stored one, so
+            # before == after and the renderer would say "unchanged" — announcing
+            # a copy-forward for a write that never happened. Empty is the honest
+            # value, and it is the default the budget bought.
+            rendered_diff = (
+                render_focus_diff(focus_before["current_focus"], focus["current_focus"])
+                if focus_outcome is BrainSessionFocusOutcome.APPLIED
+                else ""
+            )
+
             return BrainSessionEndResult(
                 session=ended,
                 replayed=False,
@@ -734,6 +949,7 @@ class PgBrainSessionRepo(BasePgRepository):
                 focus_outcome=focus_outcome,
                 focus_at_end=focus["current_focus"],
                 focus_revision_at_end=focus["focus_revision"],
+                focus_diff=rendered_diff,
             )
 
     async def abandon(
@@ -1154,6 +1370,18 @@ class PgBrainSessionRepo(BasePgRepository):
         row = (await session.execute(stmt)).mappings().one_or_none()
         if row is None:
             raise BrainSessionStateError(f"Project {project_key!r} focus could not be updated")
+        # Only the APPLIED branch reaches here — a `conflict` returned above,
+        # having written nothing. Re-posting the previous prose verbatim still
+        # records, at its new revision: the CAS sets `expected + 1` without
+        # comparing the text, and a copy-forward is exactly what this trail
+        # exists to make visible.
+        await record_focus_history(
+            session,
+            project_key=project_key,
+            focus_revision=int(row["focus_revision"]),
+            focus=row["current_focus"],
+            source="session_end",
+        )
         return dict(row), BrainSessionFocusOutcome.APPLIED
 
     async def _mark_ended(

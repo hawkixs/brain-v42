@@ -33,6 +33,25 @@ AUTO_STALE_ABANDONMENT_REASON = "auto_stale_7d"
 # worst-case latency ≈ 28 h.
 AGENT_INACTIVE_AFTER = timedelta(hours=4)
 
+#: Per-text ceiling of a checkpoint payload (SPEC-checkpoint §2.2). Crossing it
+#: RAISES; it never truncates. `parse_and_validate` forgivingly clips a `topic`
+#: because there a model is producing — here the payload is a JUDGMENT, and a
+#: judgment cut at 2000 characters reads as complete while it is not.
+MAX_CHECKPOINT_TEXT = 2000
+#: Checkpoints per SESSION, not per night (SPEC-checkpoint §2.2). Under automatic
+#: opening a tracer lives at most until the sweep, so 200 judgment notes inside a
+#: single session is already a signal in itself. Fail-closed past it.
+MAX_CHECKPOINTS_PER_SESSION = 200
+#: How many checkpoints a resume briefing renders, newest first.
+#:
+#: SPEC-checkpoint §2.4 proposes 5 and bounds it "to stay under the briefing
+#: ceiling"; the operator settled it there on 2026-09-02. It is rendered in the
+#: briefing TEXT rather than as a structured field, and that is a measurement and
+#: not a taste: the structured list costs 639 compact bytes of output schema
+#: against the 79 the budget had left. `briefing` is already a `str` in the
+#: contract, so the text costs nothing.
+RESUME_CHECKPOINT_LIMIT = 5
+
 
 class BrainSessionStatus(StrEnum):
     """Persistent lifecycle states.
@@ -92,6 +111,19 @@ class BrainSessionClientKeyConflictError(BrainSessionConflictError):
 
 class BrainSessionIdentityConflictError(BrainSessionConflictError):
     """Raised when a session UUID and expected client identity do not match."""
+
+
+class BrainSessionCheckpointConflictError(BrainSessionConflictError):
+    """A `seq` already used by this session, with DIFFERENT content.
+
+    `ON CONFLICT DO NOTHING` returns zero rows for an exact replay and for a
+    content collision alike, and the spec refuses to let the second pass silently
+    (SPEC-checkpoint §1.1, settled by PLAN §4: "the same `seq` with a different
+    payload is a non-destructive conflict, explicitly rejected"). The repository
+    therefore rereads the stored row and compares the triple: identical means
+    `replayed`, different raises this. Since `seq` comes from the CLIENT and agent
+    retries are the norm (invariant C6), this collision is not theoretical.
+    """
 
 
 class BrainSessionCaptureConflictError(BrainSessionConflictError):
@@ -364,6 +396,18 @@ class BrainSessionEndResult(BaseModel):
     #: goes down by actually attributing. A counter one could improve by staying
     #: silent would be the retired receipt under a new name.
     unattributed_in_window: int = Field(..., ge=0)
+    #: What this close DID to the focus, rendered — "+42/-0 chars", "unchanged",
+    #: "first focus", or "" when nothing was written. Visibility before any
+    #: guard (§5.5 graft C); the hard shrink threshold the same proposal carried
+    #: is NOT here, an arbitrary percentage having been disqualified by two
+    #: judges (open question #7).
+    #:
+    #: A STRING, and not by preference. Measured 2026-09-02 against the eight
+    #: lifecycle tools' 79 bytes of output-schema margin: a structured object
+    #: costs 168 bytes, `str | None` costs 95, `str = ""` costs 65. The empty
+    #: default is what removes the null branch, and the null branch is what did
+    #: not fit — so "" is the load-bearing value, not a placeholder.
+    focus_diff: str = ""
 
 
 class BrainSessionCaptureResult(BaseModel):
@@ -377,6 +421,32 @@ class BrainSessionCaptureResult(BaseModel):
     newly_captured_knowledge_ids: list[UUID] = Field(default_factory=list)
     replayed_knowledge_ids: list[UUID] = Field(default_factory=list)
     replayed: bool
+
+
+class BrainSessionCheckpoint(BaseModel):
+    """One append-only semantic checkpoint of a session."""
+
+    session_id: UUID
+    seq: int = Field(..., ge=1)
+    progress: str = Field(..., min_length=1, max_length=MAX_CHECKPOINT_TEXT)
+    next_step: str = Field(..., min_length=1, max_length=MAX_CHECKPOINT_TEXT)
+    blocker: str | None = Field(default=None, min_length=1, max_length=MAX_CHECKPOINT_TEXT)
+    created_at: datetime
+
+
+class BrainSessionCheckpointResult(BaseModel):
+    """Outcome of publishing one checkpoint (SPEC-checkpoint §2).
+
+    `replayed` distinguishes a stored row from an exact retry absorbed by the
+    unique key; `checkpoint_count` is the count AFTER this call, so a caller can
+    read how close it is to the ceiling without a second round trip.
+    """
+
+    session_id: UUID
+    seq: int = Field(..., ge=1)
+    created_at: datetime
+    replayed: bool
+    checkpoint_count: int = Field(..., ge=1, le=MAX_CHECKPOINTS_PER_SESSION)
 
 
 class BrainSessionHeartbeatResult(BaseModel):
@@ -400,6 +470,17 @@ class BrainSessionListResult(BaseModel):
     total: int = Field(..., ge=0)
     limit: int = Field(..., ge=1)
     offset: int = Field(..., ge=0)
+    #: Session id (as a string) -> timestamp of its last checkpoint, for the
+    #: sessions that have one (SPEC-checkpoint §2.4). Here and NOT on
+    #: `BrainSession`, which is measured rather than stylistic: a nullable
+    #: datetime on the session model costs 396 compact bytes across the four
+    #: schema-deriving tools that embed it, and the output-schema budget has 79
+    #: left. `brain_session_list` publishes no output schema, so it is free here.
+    #:
+    #: A session that never checkpointed is ABSENT, never mapped to null:
+    #: "never checkpointed" and "checkpointed, timestamp unknown" are different
+    #: statements and only one of them is true.
+    last_checkpoint_at: dict[str, datetime] = Field(default_factory=dict)
 
 
 class BrainSessionSweepCandidate(BaseModel):

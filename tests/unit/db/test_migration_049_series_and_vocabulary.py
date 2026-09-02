@@ -37,8 +37,16 @@ def test_migration_049_chains_from_048() -> None:
 
 
 def test_the_pin_moves_in_the_same_commit() -> None:
-    """The corridor rule: migration and pin travel together, never apart."""
-    assert '_REQUIRED_ALEMBIC_HEAD = "049"' in PIN.read_text(encoding="utf-8")
+    """The corridor rule: migration and pin travel together, never apart.
+
+    Asserted on 049's OWN review entry rather than on the constant, which now
+    reads 050. Pinning the constant here made this test a second place to bump
+    on every migration — and a test that must be edited to stay true says
+    nothing about 049 once it has been edited. The entry is what proves 049
+    travelled with a review; `test_plan_index_repair_review_block` proves the
+    constant never outruns the entries.
+    """
+    assert "# Bumped to 049 after the same review" in PIN.read_text(encoding="utf-8")
 
 
 def test_both_columns_are_added_idempotently_and_nullable() -> None:
