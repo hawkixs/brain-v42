@@ -34,12 +34,14 @@ def _expected_checks() -> list[dict[str, Any]]:
         [
             name
             for name in METADATA.tables
-            # `brain_session_checkpoints` arrives with 051, long after the 035
-            # this asset describes — see the note in test_recovery_contract.py.
+            # `project_focus_history` arrives with 050 and
+            # `brain_session_checkpoints` with 051, long after the 035 this asset
+            # describes — see the note in test_recovery_contract.py.
             if name
             not in {
                 "brain_session_artifacts",
                 "brain_session_checkpoints",
+                "project_focus_history",
                 "ticket_extraction_attempts",
             }
         ]

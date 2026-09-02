@@ -102,13 +102,43 @@ if TYPE_CHECKING:
 # branches — which is what 049's own docstring says. A provenance written here
 # would name the wrong actor for a row this file never creates.
 #
+# Bumped to 050 after the review the pin requires — and this is the review R1.4
+# names, the one the corridor dossier recorded as NOT DONE (AM5), blocking M-D
+# from being written at all. 050 lands a `project_focus_history` table plus TWO
+# triggers, one of them ON `project_contexts`, which this file UPDATEs. So the
+# question is exact: can `project_contexts_focus_history_required` fire on either
+# of this file's two UPDATEs?
+#
+# It cannot, and the reason is the trigger's `OF current_focus` clause. Measured
+# on this file, both UPDATEs name exactly two columns:
+#
+#   line 349-356  .values(plan_scan_paths=..., updated_at=mutation_timestamp)
+#   line 619-626  .values(plan_scan_paths=..., updated_at=original_updated_at)
+#
+# Neither names `current_focus`. PostgreSQL fires an `UPDATE OF col` trigger only
+# when `col` appears in the statement's SET list — and it does so on MENTION, not
+# on change, which is why the guarantee has to rest on the SET list and not on the
+# values. Both statements are built with an explicit `.values(...)`, so a focus
+# could only enter by someone adding it here. That is what this block is for.
+#
+# The append-only trigger is on `project_focus_history`, a table this file never
+# reads or writes. The table itself is new, so no row of it can pre-exist. The
+# constraint trigger ships DISABLED (`tgenabled = 'D'`) and is armed by an
+# operator gesture after the MCP restart: during the window between `upgrade` and
+# that gesture, the answer above holds for a second, weaker reason too.
+#
+# One consequence worth naming rather than discovering: bumping this constant to
+# 050 makes the repair REFUSE to run against a database still at 049 — which is
+# production, until the operator applies the migration. That is the pin working
+# as designed, not a regression, and it is the same regime 049 went through.
+#
 # The review is written down even when it is short: that is the rule, and a
 # missing review reads exactly like a review that was done. Since ticket
 # 6cc34303 that rule is enforced rather than trusted:
 # `tests/unit/test_plan_index_repair_review_block.py` derives the reviewed set
 # from this block and fails if the constant below outruns it, or if a revision
 # is skipped between the first entry and the head.
-_REQUIRED_ALEMBIC_HEAD = "049"
+_REQUIRED_ALEMBIC_HEAD = "050"
 
 
 class RepairStore:

@@ -1782,7 +1782,7 @@ def test_environment_assignment_parser_preserves_duplicates_and_indentation() ->
     assert assignments == ["GRAPH_PROJECTOR_ENABLED", "GRAPH_PROJECTOR_ENABLED"]
 
 
-def test_repository_head_049_is_documented_without_claiming_a_deployed_head() -> None:
+def test_repository_head_050_is_documented_without_claiming_a_deployed_head() -> None:
     """The repository head is a fact this repository owns. The deployed head is not.
 
     Until 2026-08-04 these docs asserted a production head of `037` while the
@@ -1792,7 +1792,14 @@ def test_repository_head_049_is_documented_without_claiming_a_deployed_head() ->
 
     The head in this test's NAME is deliberate: bumping the repository head cannot
     be done without renaming the guard, which is what stops it from drifting
-    silently. Bumped to 049 on 2026-08-29 — applied to a DISPOSABLE database only
+    silently. Bumped to 050 on 2026-09-02 — M-D, applied to the shared
+    `brain_test` only (chain replayed 049→050, seed proved on two witness
+    contexts including one with a NULL focus, the fail-closed downgrade refused
+    then accepted under its named opt-in, head returned to 049 and back).
+    PRODUCTION UNTOUCHED and not measured here: applying 050 is an operator
+    gesture inside the merge window, and until it happens the plan-index repair
+    refuses to run against production — the pin working as designed. Previously
+    bumped to 049 on 2026-08-29 — applied to a DISPOSABLE database only
     (brain_test_049: full chain 001→049 replayed from scratch, three named
     fail-closed downgrade refusals rehearsed one by one, then downgrade+upgrade
     round-trip). Production untouched and NOT measured by this test; the shared
@@ -1808,7 +1815,7 @@ def test_repository_head_049_is_documented_without_claiming_a_deployed_head() ->
     production was still measured at 041 at that moment, and SCHEMA.md says so
     in the same breath.
     """
-    assert _repository_head() == "049"
+    assert _repository_head() == "050"
     assert "49 revisions (001 → 049)" in SCHEMA
     assert "| 038 |" in SCHEMA
     assert "| 039 |" in SCHEMA

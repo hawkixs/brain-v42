@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from tests.integration.schema_fingerprint import (
+    DELIBERATELY_DISABLED_TRIGGERS,
     MalformedSchemaProbe,
     SchemaProbe,
     describe_schema_divergence,
@@ -55,6 +56,86 @@ def test_no_migration_emits_a_non_origin_trigger_state() -> None:
     offenders = migrations_emitting_non_origin_trigger_state(_VERSIONS)
 
     assert offenders == [], describe_underivable_premise(offenders)
+
+
+# ---------------------------------------------------------------------------
+# The ONE deliberate exception — named, single-state, and still loud elsewhere
+# ---------------------------------------------------------------------------
+
+
+def test_the_exception_is_a_named_singleton_not_a_category() -> None:
+    """An allowlist that grows by habit is the guard rewritten as a suggestion.
+
+    050 needs its constraint trigger to exist and NOT fire: between the upgrade
+    and the MCP restart the live process still runs pre-050 code and writes no
+    history row, so an armed trigger would abort every `brain_session_end` with
+    `focus_outcome=applied` — fail-closed, session left open. The exception is
+    therefore real, and it is exactly one trigger.
+    """
+    assert list(DELIBERATELY_DISABLED_TRIGGERS) == ["project_contexts_focus_history_required"]
+    reason = DELIBERATELY_DISABLED_TRIGGERS["project_contexts_focus_history_required"]
+    assert "050" in reason, "the exception names the revision that owns it"
+
+
+def test_the_named_trigger_disabled_is_not_a_divergence() -> None:
+    """The state 050 ships. Refusing it would block every integration run."""
+    probe = _probe(trigger_states={**_HEALTHY, "project_contexts_focus_history_required": "D"})
+
+    assert describe_schema_divergence(probe) is None
+
+
+def test_the_named_trigger_once_armed_is_not_a_divergence_either() -> None:
+    """Origin is the end state the operator gesture produces. Both are legal, nothing else is."""
+    probe = _probe(trigger_states={**_HEALTHY, "project_contexts_focus_history_required": "O"})
+
+    assert describe_schema_divergence(probe) is None
+
+
+def test_the_named_trigger_in_replica_state_still_refuses() -> None:
+    """The exception is for DISABLED alone — `R` on this trigger is somebody else's work.
+
+    Without this, allowlisting a NAME would have allowlisted every state it can
+    take, which is the residue of 2026-08-22 walking back in through the door
+    opened for 050.
+    """
+    message = describe_schema_divergence(
+        _probe(trigger_states={**_HEALTHY, "project_contexts_focus_history_required": "R"})
+    )
+
+    assert message is not None
+    assert "REPLICA" in message
+
+
+def test_the_premise_scan_allows_only_the_named_trigger_to_be_disabled(
+    tmp_path: Path,
+) -> None:
+    """A migration may disable THE named trigger; disabling any other still offends."""
+    versions = tmp_path / "versions"
+    versions.mkdir()
+    (versions / "050_named.py").write_text(
+        "def upgrade() -> None:\n"
+        "    op.execute('ALTER TABLE project_contexts "
+        "DISABLE TRIGGER project_contexts_focus_history_required')\n"
+    )
+    (versions / "051_unnamed.py").write_text(
+        "def upgrade() -> None:\n"
+        "    op.execute('ALTER TABLE project_contexts DISABLE TRIGGER something_else')\n"
+    )
+
+    assert migrations_emitting_non_origin_trigger_state(versions) == ["051_unnamed.py"]
+
+
+def test_the_named_trigger_does_not_license_replica_ddl(tmp_path: Path) -> None:
+    """Naming a trigger licenses one verb, not the trigger."""
+    versions = tmp_path / "versions"
+    versions.mkdir()
+    (versions / "052_replica.py").write_text(
+        "def upgrade() -> None:\n"
+        "    op.execute('ALTER TABLE project_contexts "
+        "ENABLE REPLICA TRIGGER project_contexts_focus_history_required')\n"
+    )
+
+    assert migrations_emitting_non_origin_trigger_state(versions) == ["052_replica.py"]
 
 
 def test_the_premise_scan_reads_upgrade_only(tmp_path: Path) -> None:
