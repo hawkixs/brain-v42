@@ -1,58 +1,58 @@
-"""Fait traverser les erreurs métier attendues à travers ``mask_error_details``.
+"""Let the expected business errors through ``mask_error_details``.
 
-Le serveur est construit avec ``mask_error_details=True`` : toute exception qui
-s'échappe d'un tool est aplatie en ``Error calling tool 'X'``. C'est le bon
-défaut pour les pannes internes (DSN, chemins, traces), mais il détruit aussi le
-texte des gardes *fail-closed*, qui sont précisément rédigées pour être
-actionnables. Mesuré en production le 2026-08-06 (ticket brain 40ab2ced) :
+The server is built with ``mask_error_details=True``: any exception escaping a
+tool is flattened into ``Error calling tool 'X'``. That is the right default for
+internal failures (DSNs, paths, traces), but it also destroys the text of the
+*fail-closed* guards, which are written precisely to be actionable. Measured in
+production on 2026-08-06 (brain ticket 40ab2ced):
 
     brain_learn(project_key="projet-qui-nexiste-pas", ...)
     serveur : Unknown project 'projet-qui-nexiste-pas' — create it first
               (brain_set_project_context) or check the key (brain_list_projects)
     client  : Error calling tool 'brain_learn'
 
-L'appelant n'apprend ni que c'est la clé le problème, ni laquelle il a passée,
-ni quoi faire — il réessaie donc à l'identique, ou abandonne la capitalisation.
+The caller learns neither that the key is the problem, nor which one they
+passed, nor what to do — so they retry identically, or give up on capitalizing.
 
-``format_error`` (``mcp.tools.formatters``) est le canal déjà sanctionné, mais il
-ne couvre que les échecs qu'un tool attrape *explicitement*. Les gardes comme
-``require_known_project`` lèvent depuis le fond d'un service et s'échappent sans
-être converties ; le lifecycle de session fait de même. Ce module ferme ce trou
-en un seul point, pour tous les tools enregistrés.
+``format_error`` (``mcp.tools.formatters``) is the already sanctioned channel,
+but it covers only the failures a tool catches *explicitly*. Guards such as
+``require_known_project`` raise from deep inside a service and escape without
+being converted; the session lifecycle does the same. This module closes that
+hole at a single point, for every registered tool.
 
-Pourquoi pas un middleware
---------------------------
-MESURÉ, pas supposé : ``FastMCP.call_tool`` applique la chaîne de middlewares
-puis ré-entre dans ``call_tool(run_middleware=False)``, et c'est cette passe
-interne qui porte le ``try/except`` de masquage. Un ``on_call_tool`` est donc
-structurellement AU-DESSUS du masquage : il ne voit jamais l'exception brute,
-seulement le ``ToolError`` générique déjà produit. L'interception doit avoir lieu
-à l'intérieur de ``tool._run``, donc dans la fonction du tool elle-même.
+Why not a middleware
+--------------------
+MEASURED, not assumed: ``FastMCP.call_tool`` applies the middleware chain then
+re-enters ``call_tool(run_middleware=False)``, and it is that internal pass which
+carries the masking ``try/except``. An ``on_call_tool`` is therefore structurally
+ABOVE the masking: it never sees the raw exception, only the generic ``ToolError``
+already produced. Interception must happen inside ``tool._run``, hence inside the
+tool function itself.
 
-``FunctionTool.run`` lit ``self.fn`` à chaque appel et en dérive son type adapter,
-si bien qu'envelopper ``fn`` avec ``functools.wraps`` préserve le schéma d'entrée
-publié (garanti par ``test_wrapping_preserves_tool_input_schema``).
+``FunctionTool.run`` reads ``self.fn`` on every call and derives its type adapter
+from it, so wrapping ``fn`` with ``functools.wraps`` preserves the published input
+schema (guaranteed by ``test_wrapping_preserves_tool_input_schema``).
 
-Choix explicite : LISTE BLANCHE, pas passe-plat
-------------------------------------------------
-Remonter un message d'exception arbitraire divulguerait des chemins, des
-identifiants de connexion ou de la structure interne. Seules traversent les
-familles ci-dessous, retenues parce que leur message est (a) rédigé pour
-l'appelant et (b) dépourvu d'interne. Tout le reste reste masqué — le défaut est
-le refus.
+Explicit choice: ALLOWLIST, not pass-through
+--------------------------------------------
+Surfacing an arbitrary exception message would disclose paths, connection
+identifiers or internal structure. Only the families below pass through, chosen
+because their message is (a) written for the caller and (b) free of internals.
+Everything else stays masked — the default is refusal.
 
-Exclusions délibérées :
+Deliberate exclusions:
 
-- ``PlanScanPathError`` — décrit un refus de scan de système de fichiers.
-- Les erreurs d'ops/admin (``LegacyGraphImportBlocked``, ``RepairSafetyError``,
-  ``AutomationCleanupError``, ``OwnershipLostError``) — jamais sur un chemin de
-  tool LLM, et leur texte décrit l'interne.
+- ``PlanScanPathError`` — describes a filesystem scan refusal.
+- The ops/admin errors (``LegacyGraphImportBlocked``, ``RepairSafetyError``,
+  ``AutomationCleanupError``, ``OwnershipLostError``) — never on an LLM tool
+  path, and their text describes internals.
 
-Hors périmètre car FastMCP les traite déjà : toute sous-classe de ``FastMCPError``
-traverse intacte par construction (branche ``except FastMCPError: raise``). C'est
-le cas de ``DreamProjectAuthorizationError``, qui dérive de ``AuthorizationError``
-et porte volontairement un message générique, la raison précise restant en
-attribut — un refus d'autorisation détaillé serait un oracle d'énumération.
+Out of scope because FastMCP already handles them: every subclass of
+``FastMCPError`` passes through intact by construction (the
+``except FastMCPError: raise`` branch). That is the case for
+``DreamProjectAuthorizationError``, which derives from ``AuthorizationError`` and
+deliberately carries a generic message, the precise reason staying in an
+attribute — a detailed authorization refusal would be an enumeration oracle.
 """
 
 from __future__ import annotations
@@ -73,9 +73,9 @@ from brain_v42.services.proposal_service import ProposalServiceError
 from brain_v42.services.roadmap_service import ProjectFocusError
 from brain_v42.services.ticket_service import TicketError
 
-#: Familles d'exceptions dont le message est destiné à l'appelant.
-#: Ajouter une entrée est une décision de divulgation : vérifier que le texte
-#: ne peut contenir ni chemin, ni DSN, ni détail de schéma.
+#: Exception families whose message is meant for the caller. Adding an entry is
+#: a disclosure decision: check that the text can contain neither a path, nor a
+#: DSN, nor a schema detail.
 SURFACED_BUSINESS_ERRORS: tuple[type[Exception], ...] = (
     TicketError,
     BrainSessionError,
@@ -91,7 +91,7 @@ _SURFACED_MARKER = "__brain_business_errors_surfaced__"
 
 
 def _wrap(fn: Any) -> Any:
-    """Convertir les familles de la liste blanche en ``ToolError`` lisible."""
+    """Convert the allowlisted families into a readable ``ToolError``."""
 
     @functools.wraps(fn)
     async def surfaced(*args: Any, **kwargs: Any) -> Any:
@@ -105,18 +105,18 @@ def _wrap(fn: Any) -> Any:
 
 
 async def surface_business_errors(mcp: FastMCP) -> tuple[str, ...]:
-    """Envelopper tout tool enregistré et rendre les noms effectivement traités.
+    """Wrap every registered tool and return the names actually processed.
 
-    Idempotent : un tool déjà enveloppé est laissé tel quel, si bien qu'un
-    double appel (ou un réenregistrement) ne superpose pas les couches.
+    Idempotent: an already wrapped tool is left as is, so a double call (or a
+    re-registration) does not stack layers.
 
-    ``_list_tools()`` est utilisé plutôt que ``list_tools()`` parce qu'il rend
-    les tools bruts sans passer par les transforms de catalogue — MESURÉ : sous
-    le profil ``compact``, ``list_tools()`` n'exposerait que les passerelles et
-    laisserait la quasi-totalité des tools réels sans conversion.
+    ``_list_tools()`` is used rather than ``list_tools()`` because it returns the
+    raw tools without going through the catalogue transforms — MEASURED: under
+    the ``compact`` profile, ``list_tools()`` would expose only the gateways and
+    leave nearly every real tool unconverted.
 
-    Les tools qui ne sont pas des ``FunctionTool`` n'exposent pas de fonction
-    Python à envelopper et sont ignorés.
+    Tools that are not ``FunctionTool``s expose no Python function to wrap and
+    are ignored.
     """
     wrapped: list[str] = []
     for tool in await mcp._list_tools():

@@ -108,16 +108,16 @@ class BrainSessionService:
         self.repo = repo
 
     def _absorption_connection(self) -> str | None:
-        """La connexion à absorber, ou ``None`` — décidé AVANT de toucher au dépôt.
+        """The connection to absorb, or ``None`` — decided BEFORE touching the repo.
 
-        Le drapeau et la connexion sont lus ici pour qu'un drapeau fermé coûte
-        ZÉRO aller-retour, pas un aller-retour qui ne fait rien. Une capacité
-        livrée fermée qui paierait quand même son prix sur chaque commande est
-        une régression que personne ne verrait.
+        The flag and the connection are read here so that a closed flag costs
+        ZERO round trips, not one round trip that does nothing. A capability
+        shipped closed that still paid its price on every command would be a
+        regression nobody would see.
 
-        ``None`` sans connexion : stdio et mode sans état n'ont pas de clé
-        (projet, connexion). Ce n'est pas un cas dégradé à rattraper, c'est le
-        contrat de l'auto-ouverture.
+        ``None`` without a connection: stdio and stateless mode have no
+        (project, connection) key. That is not a degraded case to compensate
+        for, it is the auto-open contract.
         """
         try:
             if not get_settings().brain_session_derived_capture_enabled:
@@ -130,22 +130,21 @@ class BrainSessionService:
         return (get_current_transport() or "").strip() or None
 
     async def _absorb_derived(self, session_id: UUID, expected_client_key: str) -> None:
-        """Absorber ce que la traçante de cette connexion a recueilli.
+        """Absorb what this connection's tracer collected.
 
-        Ne lève pas pour ses propres refus : l'absorption accompagne une commande
-        explicite, elle ne la remplace pas et ne doit pas pouvoir la faire
-        échouer. **UNE seule exception traverse : la paire d'identité
-        incohérente**, et ce n'est pas un refus d'absorption — c'est une commande
-        mal ciblée, que le dépôt refusera de toute façon juste après, avec la
-        même erreur. La laisser remonter d'ici est ce qui garantit qu'aucune
-        mutation ne la précède.
+        Does not raise for its own refusals: absorption accompanies an explicit
+        command, it does not replace it and must not be able to make it fail.
+        **ONE exception passes through: the inconsistent identity pair**, and
+        that is not a refusal to absorb — it is a mistargeted command, which the
+        repository will refuse just afterwards anyway, with the same error.
+        Letting it surface from here is what guarantees no mutation precedes it.
         """
         connection_id = self._absorption_connection()
         if connection_id is None:
-            # TROISIÈME `0` indiscernable, désormais nommé. Sans cette ligne,
-            # « la capture dérivée est fermée » et « ce transport n'a pas
-            # d'identifiant » se lisaient pareil au journal — c'est-à-dire pas
-            # du tout, puisque ni l'un ni l'autre n'écrivait quoi que ce soit.
+            # THIRD indistinguishable `0`, now named. Without this line,
+            # "derived capture is closed" and "this transport has no
+            # identifier" read the same in the log — that is, not at all, since
+            # neither wrote anything.
             logger.debug(
                 "session_derived_capture.absorption_skipped",
                 session_id=str(session_id),
@@ -155,7 +154,7 @@ class BrainSessionService:
         await self.repo.absorb_derived_capture(session_id, connection_id, expected_client_key)
 
     def _absorption_skip_reason(self) -> str:
-        """Pourquoi aucune absorption n'a été tentée — drapeau, ou transport."""
+        """Why no absorption was attempted — the flag, or the transport."""
         try:
             if not get_settings().brain_session_derived_capture_enabled:
                 return "disabled"
@@ -173,23 +172,23 @@ class BrainSessionService:
             client_key, field_name="client_key", max_length=128
         )
         started = await self.repo.start(canonical_project, normalized_client_key)
-        # Les DEUX branches, neuve et rejeu. La neuve n'absorbe presque jamais
-        # rien — ``started_at`` vient d'être posé, la fenêtre est vide — et
-        # câbler la neuve seule aurait l'air fait sans rien servir.
+        # BOTH branches, fresh and replay. The fresh one almost never absorbs
+        # anything — ``started_at`` was just set, the window is empty — and
+        # wiring the fresh one alone would look done while serving nothing.
         #
-        # `start` est le SEUL des cinq qui ne puisse pas absorber d'abord : sa
-        # cible n'existe pas avant qu'il ne la matérialise. Les quatre autres
-        # reçoivent un `session_id`; lui le RÉSOUT. Exiger de lui l'ordre
-        # « absorber d'abord » forcerait une conception fausse.
+        # `start` is the ONLY one of the five that cannot absorb first: its
+        # target does not exist until it materializes it. The other four receive
+        # a `session_id`; this one RESOLVES it. Demanding an "absorb first"
+        # order from it would force a wrong design.
         #
-        # Il tient donc la même PROMESSE par l'autre bout : absorber, puis
-        # RÉHYDRATER ce qu'il s'apprête à rendre. Sans cette relecture, la
-        # branche de rejeu rendrait le ledger d'AVANT son propre déplacement —
-        # exactement le retard d'un appel mesuré sur `heartbeat` le 2026-08-25.
+        # It therefore keeps the same PROMISE from the other end: absorb, then
+        # REHYDRATE what it is about to return. Without that re-read, the replay
+        # branch would return the ledger from BEFORE its own move — exactly the
+        # one-call lag measured on `heartbeat` on 2026-08-25.
         #
-        # La garde reste résolue avant de toucher au résultat : un drapeau fermé
-        # ne doit imposer aucune forme de résultat à des appelants qui n'ont
-        # rien demandé, ni coûter le moindre aller-retour.
+        # The guard stays resolved before touching the result: a closed flag
+        # must impose no result shape on callers who asked for nothing, nor cost
+        # a single round trip.
         connection_id = self._absorption_connection()
         if connection_id is None:
             return started
@@ -255,10 +254,10 @@ class BrainSessionService:
         identity = _normalize_expected_client_key(expected_client_key)
         _validate_revision(expected_focus_revision)
         reason = _normalize_capture_reason(nothing_to_capture_reason)
-        # AVANT la fermeture, et l'ordre est le point : ``end`` lit le ledger
-        # pour décider comment fermer. Absorber après le rendrait visible trop
-        # tard — la session serait close en ayant conclu qu'elle n'avait rien
-        # produit.
+        # BEFORE the closure, and the order is the point: ``end`` reads the
+        # ledger to decide how to close. Absorbing afterwards would make it
+        # visible too late — the session would be closed having concluded it
+        # produced nothing.
         await self._absorb_derived(session_id, identity)
         return await self.repo.end(
             session_id,

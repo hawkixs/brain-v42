@@ -110,8 +110,8 @@ class BrainService:
         self._decay_calculator = decay_calculator
         self._access_logger = access_logger
         self._decay_floor = decay_floor
-        # §5.5 — défaut FERMÉ dans la signature, pas seulement dans Settings :
-        # un appelant qui oublie le réglage obtient le comportement d'aujourd'hui.
+        # §5.5 — default CLOSED in the signature, not only in Settings: a
+        # caller who forgets the setting gets today's behaviour.
         self._decay_human_signal_enabled = decay_human_signal_enabled
         self._graph = graph
         self._project_context_svc = project_context_svc
@@ -337,27 +337,27 @@ class BrainService:
                             last_accessed_at = parent_last_accessed_at
                         if parent_access_count is not None:
                             access_count = parent_access_count
-                    # LE défaut que le focus appelle « decay inversé » : cette
-                    # ligne passait le compteur TOTAL au multiplicateur, donc ce
-                    # que le dream relit chaque nuit faisait vivre l'artefact. Le
-                    # correctif est la SUBSTITUTION du signal, pas un recalibrage
-                    # des baselines — celles-ci décrivent une distribution, et la
-                    # distribution humaine n'est pas la distribution totale.
+                    # THE defect the focus calls "inverted decay": this line
+                    # passed the TOTAL counter to the multiplier, so what the
+                    # dream re-reads every night kept the artifact alive. The
+                    # fix is SUBSTITUTING the signal, not recalibrating the
+                    # baselines — those describe a distribution, and the human
+                    # distribution is not the total distribution.
                     #
-                    # Les DEUX signaux basculent ensemble : substituer le seul
-                    # compteur ne répare que `freq_factor` et laisse
-                    # `access_factor` piloté par les lectures machine — 1 522
-                    # learnings dans ce cas au 2026-08-22. Les deux poids sont
-                    # PAR TYPE : `freq` vaut 0,2 pour decision/learning/adr et
-                    # 0,3 pour snippet/runbook/plan ; `access` vaut 0,3 partout
-                    # sauf `adr` (0,2), et n'est jamais dominé par l'âge.
+                    # BOTH signals switch together: substituting the counter
+                    # alone repairs only `freq_factor` and leaves
+                    # `access_factor` driven by machine reads — 1,522 learnings
+                    # in that state on 2026-08-22. Both weights are PER TYPE:
+                    # `freq` is 0.2 for decision/learning/adr and 0.3 for
+                    # snippet/runbook/plan; `access` is 0.3 everywhere except
+                    # `adr` (0.2), and is never dominated by age.
                     #
-                    # ET LE SIGNAL HUMAIN SUIT LA MÊME BASCULE PARENT QUE LE
-                    # SIGNAL MACHINE. Un plan est noté sur les compteurs de son
-                    # PARENT — les chunks n'ont pas de colonnes `_human` du
-                    # tout. Lire l'attribut sur le chunk rendait donc 0 et None
-                    # pour TOUT plan, toujours : pas une divergence de valeur,
-                    # une impossibilité structurelle.
+                    # AND THE HUMAN SIGNAL FOLLOWS THE SAME PARENT SWITCH AS THE
+                    # MACHINE SIGNAL. A plan is scored on ITS PARENT's counters
+                    # — chunks have no `_human` columns at all. Reading the
+                    # attribute on the chunk therefore returned 0 and None for
+                    # EVERY plan, always: not a value divergence, a structural
+                    # impossibility.
                     if self._decay_human_signal_enabled:
                         signal_access_count = getattr(entity, "access_count_human", 0) or 0
                         signal_last_accessed = getattr(entity, "last_accessed_at_human", None)

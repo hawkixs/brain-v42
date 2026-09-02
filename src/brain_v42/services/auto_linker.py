@@ -34,8 +34,8 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 # Tables to search across, with their type label and text column.
-# Tuple, pas list : la littéralité déclarée est déjà épinglée par AST, mais une
-# list resterait mutable au runtime sans que rien ne rougisse (ticket c623fa75).
+# Tuple, not list: the declared literalness is already pinned by AST, but a
+# list would stay mutable at runtime with nothing turning red (ticket c623fa75).
 _ENTITY_TABLES = (
     ("decisions", "Decision", "title"),
     ("learnings", "Learning", "topic"),
@@ -71,15 +71,14 @@ class AutoLinker:
         When authorization is present, candidate selection is project-filtered
         and both anchors are revalidated immediately before every edge write.
 
-        Contrat max_links (décision opérateur 2026-08-18, ticket fb62624f) :
-        le plafond borne les liens RÉUSSIS (created + matched). Les erreurs ne
-        consomment pas le plafond — comportement historique de missing_node et
-        write_failed, conservé sciemment — et le nombre de TENTATIVES reste
-        borné de fait par les ``limit = max_links * 2`` candidats sélectionnés.
-        Une entité dont toutes les écritures échouent peut donc rapporter
-        jusqu'à 2×max_links erreurs : pour estimer un nombre d'entités
-        fautives depuis un compte d'erreurs, diviser par 2×max_links, jamais
-        par max_links.
+        max_links contract (operator decision 2026-08-18, ticket fb62624f): the
+        cap bounds SUCCESSFUL links (created + matched). Errors do not consume
+        the cap — the historical behaviour of missing_node and write_failed,
+        kept knowingly — and the number of ATTEMPTS stays bounded in practice by
+        the ``limit = max_links * 2`` candidates selected. An entity whose every
+        write fails can therefore report up to 2×max_links errors: to estimate a
+        number of faulty entities from an error count, divide by 2×max_links,
+        never by max_links.
         """
         result = LinkJobResult()
         if self._graph is None or embedding is None:
@@ -127,20 +126,23 @@ class AutoLinker:
                     confidence=row["similarity"],
                 )
             except UnknownGraphEndpoint:
-                # Ticket 6d2cf2a9 — la cible n'est plus un endpoint graphe valide.
-                # C'est une pathologie de DONNÉES, pas un refus d'autorisation : elle
-                # tombe dans `errors` pour rester comptée en errors=N, sans annuler
-                # les candidats suivants de la même entité. Le catch reste
-                # volontairement étroit — UnknownGraphEndpoint dérive de ValueError,
-                # mais DreamProjectAuthorizationError dérive de AuthorizationError et
-                # doit continuer à propager (cf. graph_helpers, contrat scopé).
+                # Ticket 6d2cf2a9 — the target is no longer a valid graph
+                # endpoint. This is a DATA pathology, not an authorization
+                # refusal: it falls into `errors` so it stays counted as
+                # errors=N, without cancelling the entity's remaining
+                # candidates. The catch stays deliberately narrow —
+                # UnknownGraphEndpoint derives from ValueError, but
+                # DreamProjectAuthorizationError derives from AuthorizationError
+                # and must keep propagating (see graph_helpers, scoped
+                # contract).
                 result.errors.append({**entry_base, "reason": "unknown_endpoint"})
-                # Les deux ancres sont nommées MÊME en mode scopé, à la différence
-                # des branches sœurs. La pathologie est chronique et se répète nuit
-                # après nuit : un WARN sans identifiant est incomptable, et force
-                # l'opérateur à rejouer du SQL pour retrouver les entités fautives.
-                # Ce n'est pas une fuite — un id scopé appartient au projet du scope,
-                # contrairement au contexte d'un refus d'autorisation.
+                # Both anchors are named EVEN in scoped mode, unlike the
+                # sibling branches. The pathology is chronic and repeats night
+                # after night: a WARN without an identifier cannot be counted,
+                # and forces the operator to replay SQL to find the faulty
+                # entities. This is not a leak — a scoped id belongs to the
+                # scope's project, unlike the context of an authorization
+                # refusal.
                 logger.warning(
                     "auto_linker.unknown_graph_endpoint",
                     entity_type=entity_type,
@@ -210,21 +212,23 @@ class AutoLinker:
                 f"1.0 - (embedding <=> {vec_literal}) AS similarity "
                 f"FROM {table} "
                 f"WHERE embedding IS NOT NULL AND id != :entity_id{project_filter} "
-                # Ticket 6d2cf2a9 — même prédicat que pg_graph_ledger._resolve_endpoints,
-                # qui exige lifecycle='active' sur les deux ancres et lève sinon
-                # UnknownGraphEndpoint. Sans ce filtre le sélecteur proposait des cibles
-                # que le résolveur refuse (408 lignes archived porteuses d'un embedding,
-                # 14 projets, mesuré le 2026-08-18) → connect partial quotidien.
-                # `{table}.id` est qualifié à dessein : brain_entities porte SA PROPRE
-                # colonne `id`, donc un `id` nu résoudrait vers la table interne et le
-                # EXISTS serait vrai pour n'importe quelle ligne du ledger.
+                # Ticket 6d2cf2a9 — same predicate as
+                # pg_graph_ledger._resolve_endpoints, which requires
+                # lifecycle='active' on both anchors and otherwise raises
+                # UnknownGraphEndpoint. Without this filter the selector offered
+                # targets the resolver refuses (408 archived rows carrying an
+                # embedding, 14 projects, measured 2026-08-18) → a daily partial
+                # connect. `{table}.id` is qualified on purpose: brain_entities
+                # carries ITS OWN `id` column, so a bare `id` would resolve to
+                # the internal table and the EXISTS would be true for any row of
+                # the ledger.
                 f"AND EXISTS (SELECT 1 FROM brain_entities be "
-                f"WHERE be.source_uuid = {table}.id AND be.lifecycle = 'active')"  # nosec B608 - table et type_label itèrent _ENTITY_TABLES, constante littérale de ce module (aucun appelant ne l'alimente) ; project_filter est l'une des deux chaînes littérales construites juste au-dessus, la valeur project_key partant en bind :project_key ; brain_entities et be.lifecycle sont des littéraux figés de cette expression ; vec_literal ne porte que les nombres d'un vecteur déjà accepté par une colonne pgvector Vector(1536) — exception revue le 2026-08-18, à réexaminer avant le 2026-09-30
+                f"WHERE be.source_uuid = {table}.id AND be.lifecycle = 'active')"  # nosec B608 - table and type_label iterate _ENTITY_TABLES, a literal constant of this module (no caller feeds it); project_filter is one of the two literal strings built just above, the project_key value going out as the :project_key bind; brain_entities and be.lifecycle are frozen literals of this expression; vec_literal carries only the numbers of a vector already accepted by a pgvector Vector(1536) column — exception reviewed on 2026-08-18, to be re-examined before 2026-09-30
             )
 
         query = (
             "SELECT id, entity_type, similarity FROM (\n"
-            + "\nUNION ALL\n".join(unions)  # nosec B608 - unions ne contient que les branches assemblées au-dessus depuis _ENTITY_TABLES ; entity_id et limit partent en binds :entity_id et :limit — exception revue le 2026-08-16, à réexaminer avant le 2026-09-30
+            + "\nUNION ALL\n".join(unions)  # nosec B608 - unions contains only the branches assembled above from _ENTITY_TABLES; entity_id and limit go out as the :entity_id and :limit binds — exception reviewed on 2026-08-16, to be re-examined before 2026-09-30
             + "\n) sub ORDER BY similarity DESC LIMIT :limit"
         )
 

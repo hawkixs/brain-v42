@@ -169,11 +169,11 @@ class ConsolidationJob:
             source_update.values(
                 merged_into=target_id,
                 freshness_status="archived",
-                # 043 : le trigger DATE la transition mais ne peut pas savoir
-                # d'où elle vient, et il remet la source à NULL dès qu'un
-                # écrivain ne la redéclare pas. Sans cette ligne, l'archivage
-                # par fusion — le seul qui soit vraiment irréversible — se
-                # présentait comme « provenance inconnue ».
+                # 043: the trigger STAMPS the transition but cannot know where
+                # it comes from, and it resets the source to NULL as soon as a
+                # writer does not redeclare it. Without this line, archiving by
+                # merge — the only truly irreversible one — presented itself as
+                # "unknown provenance".
                 freshness_source="merge",
             ).returning(table.c.id)
         )

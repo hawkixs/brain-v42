@@ -23,10 +23,10 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-# Les deux familles ne se multiplient pas pareil. `promote` et `reorg` tournent
-# dans la boucle, donc une fois par projet servi. `extract`, `roadmap` et
-# `sweep` n'ont aucune dimension de projet (files et rotations globales) : elles
-# tournent une fois et écrivent la sentinelle dans dream_runs.project_key.
+# The two families do not multiply the same way. `promote` and `reorg` run
+# inside the loop, hence once per project served. `extract`, `roadmap` and
+# `sweep` have no project dimension (global queues and rotations): they run once
+# and write the sentinel into dream_runs.project_key.
 LOOP_PHASES = ("promote", "reorg")
 GLOBAL_PHASES = ("extract", "roadmap", "sweep")
 
@@ -54,19 +54,17 @@ def expected_dream_phases(killswitches_path: Path | None = None) -> set[str]:
 
 
 def expected_dream_phase_pairs(killswitches_path: Path | None = None) -> set[tuple[str, str]]:
-    """Attendus en paires ``(phase, project_key)`` — vide si le pool est inconnu.
+    """Expected as ``(phase, project_key)`` pairs — empty if the pool is unknown.
 
-    `expected_dream_phases` compare des NOMS de phase. À plusieurs projets ce
-    mécanisme se désarme tout seul : qu'un projet saute `promote` et les autres
-    le rendent « observé », donc l'alarme ne sonne plus. Il ne casse pas
-    bruyamment, il devient silencieusement inutile — le pire des deux, et
-    exactement le trou par lequel les crashes PROMOTE des 2026-05-02/05-03 sont
-    passés inaperçus deux jours.
+    `expected_dream_phases` compares phase NAMES. With several projects that
+    mechanism disarms itself: let one project skip `promote` and the others make
+    it "observed", so the alarm no longer rings. It does not break loudly, it
+    becomes silently useless — the worse of the two, and exactly the hole the
+    PROMOTE crashes of 2026-05-02/05-03 slipped through unnoticed for two days.
 
-    Un ensemble VIDE quand le drop-in ne déclare pas de pool. Ce n'est pas une
-    précaution : sans pool déclaré la paire n'est pas calculable, et l'appelant
-    doit retomber sur la comparaison par nom, c'est-à-dire sur le comportement
-    d'aujourd'hui à l'identique.
+    An EMPTY set when the drop-in declares no pool. That is not caution: without
+    a declared pool the pair is not computable, and the caller must fall back on
+    the by-name comparison, that is, on today's behaviour identically.
     """
     from brain_v42.dream_killswitches import parse_project_pool  # noqa: PLC0415
     from brain_v42.dream_run_project_key import GLOBAL_PHASE_PROJECT_KEY  # noqa: PLC0415
@@ -118,9 +116,9 @@ class _DreamCollectorsMixin:
         """
         try:
             async with self._session_factory() as session:
-                # Dernière row PAR PHASE du dernier run_date — un re-run le
-                # même jour (extract fail 06:13 puis done 10:58) ne doit plus
-                # rendre la nuit "partial" (spec 2026-07-04 §7).
+                # Last row PER PHASE of the last run_date — a re-run on the
+                # same day (extract fail 06:13 then done 10:58) must no longer
+                # make the night "partial" (spec 2026-07-04 §7).
                 phases_rows = (
                     await session.execute(
                         text("""
@@ -164,8 +162,8 @@ class _DreamCollectorsMixin:
                         "api_calls": row[9] or 0,
                         "tool_calls": row[10] or 0,
                         "error_message": row[12],
-                        # Phases CLI (extract, roadmap) : model:null, cost:0
-                        # sont légitimes — ne pas « corriger ».
+                        # CLI phases (extract, roadmap): model:null, cost:0 are
+                        # legitimate — do not "fix" them.
                         "dry_run": bool(row[13]),
                     }
                     total_cost += cost
@@ -192,9 +190,9 @@ class _DreamCollectorsMixin:
                     }
                     fail += 1
 
-                # History : status sur l'ensemble dédupliqué (dernière row par
-                # (run_date, phase)), coûts/tokens sur TOUTES les rows — un
-                # re-run failed a réellement coûté de l'argent.
+                # History: status over the deduplicated set (last row per
+                # (run_date, phase)), costs/tokens over ALL rows — a failed
+                # re-run really did cost money.
                 history_rows = (
                     await session.execute(
                         text("""

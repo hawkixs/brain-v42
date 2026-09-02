@@ -100,21 +100,21 @@ class FeatureDedupJob:
                     else:
                         target, source = neighbor, feature
 
-                    # `pinned` marque un engagement explicite de l'opérateur, et
-                    # la source est celle qui DISPARAÎT. Absorber une épinglée
-                    # détruit donc un engagement — c'est arrivé le 2026-08-14 à
-                    # 19:17 sur une feature créée à la main, avec un
-                    # reranker_score de 0,83 obtenu en ne comparant que les NOMS,
-                    # jamais les descriptions qui portent le périmètre.
+                    # `pinned` marks an explicit operator commitment, and the
+                    # source is the one that DISAPPEARS. Absorbing a pinned
+                    # feature therefore destroys a commitment — that happened on
+                    # 2026-08-14 at 19:17 on a hand-created feature, with a
+                    # reranker_score of 0.83 obtained by comparing NAMES only,
+                    # never the descriptions that carry the scope.
                     #
-                    # On refuse la paire au lieu d'échanger les rôles : faire
-                    # absorber par l'épinglée déciderait du survivant sur
-                    # l'épinglage plutôt que sur l'âge, et fusionnerait quand
-                    # même deux périmètres que rien ne prouve identiques. Une
-                    # épinglée en CIBLE reste autorisée, c'est le cas nominal.
+                    # We refuse the pair instead of swapping the roles: having
+                    # the pinned one absorb would decide the survivor on
+                    # pinning rather than on age, and would still merge two
+                    # scopes nothing proves identical. A pinned feature as
+                    # TARGET stays allowed, that is the nominal case.
                     #
-                    # `bool()` et non `is True` : la colonne est nullable, et
-                    # NULL veut dire « pas épinglée », pas « inconnu ».
+                    # `bool()` and not `is True`: the column is nullable, and
+                    # NULL means "not pinned", not "unknown".
                     if bool(source.pinned):
                         logger.info(
                             "feature_dedup.pinned_source_skipped",
@@ -238,36 +238,33 @@ class FeatureDedupJob:
                 else None,
             )
             return False
-        # `find_candidates` filtre déjà les sources épinglées, mais ce filtre vit
-        # dans le chemin de DÉCOUVERTE. Ici est le chemin de MUTATION, et c'est le
-        # seul endroit où l'invariant peut vraiment tenir :
+        # `find_candidates` already filters pinned sources, but that filter
+        # lives on the DISCOVERY path. This is the MUTATION path, and it is the
+        # only place where the invariant can really hold:
         #
-        # - `run_dedup_loop` collecte TOUS les candidats d'un projet, puis les
-        #   fusionne un par un, chacun dans sa propre session et après un
-        #   aller-retour reranker. Un humain qui épingle pendant cette fenêtre
-        #   verrait son geste ignoré, la décision ayant été prise sur un
-        #   instantané d'avant.
-        # - `merge_features` est publique et le docstring du module la documente
-        #   comme appelable directement. Un tel appelant n'hérite d'aucune garde.
+        # - `run_dedup_loop` collects ALL of a project's candidates, then merges
+        #   them one by one, each in its own session and after a reranker round
+        #   trip. A human pinning during that window would see their gesture
+        #   ignored, the decision having been taken on an earlier snapshot.
+        # - `merge_features` is public and the module docstring documents it as
+        #   directly callable. Such a caller inherits no guard.
         #
-        # D'où la lecture sur `source_row`, la ligne relue FOR UPDATE, et JAMAIS
-        # sur l'argument `source` : l'instantané est précisément ce qui peut être
-        # périmé.
+        # Hence the read on `source_row`, the row re-read FOR UPDATE, and NEVER
+        # on the `source` argument: the snapshot is precisely what can be stale.
         #
-        # ON BLOQUE, ON N'INVERSE PAS. Échanger les rôles ferait décider du
-        # survivant par l'épinglage plutôt que par l'âge, et fusionnerait quand
-        # même deux périmètres que rien ne prouve identiques — le score vient du
-        # reranker sur les NOMS seuls. Même choix que `find_candidates`, pour que
-        # les deux chemins ne racontent pas deux histoires. Et un primitif de
-        # mutation qui ferait silencieusement autre chose que ce qu'on lui demande
-        # serait pire ici que dans un filtre.
+        # WE BLOCK, WE DO NOT INVERT. Swapping the roles would decide the
+        # survivor by pinning rather than by age, and would still merge two
+        # scopes nothing proves identical — the score comes from the reranker on
+        # NAMES alone. Same choice as `find_candidates`, so the two paths do not
+        # tell two stories. And a mutation primitive that silently did something
+        # other than what it was asked would be worse here than in a filter.
         #
-        # Les DEUX épinglées est un sous-cas de celui-ci, donc bloqué aussi. Il est
-        # journalisé à part : rien ne dit laquelle des deux intentions doit céder,
-        # c'est un arbitrage humain, pas une règle à écrire dans le code.
+        # BOTH pinned is a sub-case of this one, hence blocked too. It is logged
+        # separately: nothing says which of the two intentions must give way,
+        # that is a human judgement, not a rule to write into the code.
         #
-        # `bool()` et non `is True` : la colonne est nullable (`server_default
-        # false`), et NULL veut dire « pas épinglée », pas « inconnu ».
+        # `bool()` and not `is True`: the column is nullable (`server_default
+        # false`), and NULL means "not pinned", not "unknown".
         if bool(source_row.pinned):
             logger.warning(
                 "feature_dedup.merge_skipped_pinned_source",

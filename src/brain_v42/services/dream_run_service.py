@@ -23,11 +23,11 @@ if TYPE_CHECKING:
 
 
 def _read_killswitch_flags(path: Path | None) -> dict[str, bool]:
-    """Flags enabled/dry depuis le drop-in systemd — source de vérité killswitch.
+    """enabled/dry flags from the systemd drop-in — the killswitch source of truth.
 
-    Rend {} si le fichier est illisible (CI, dev sans drop-in) : l'appelant
-    retombe alors sur la présence de la phase dans dream_runs (comportement
-    historique, graceful degradation).
+    Returns {} if the file is unreadable (CI, dev without the drop-in): the
+    caller then falls back on the phase's presence in dream_runs (historical
+    behaviour, graceful degradation).
     """
     ks_path = path if path is not None else KILLSWITCHES_PATH
     try:
@@ -109,16 +109,16 @@ class DreamRunService:
             phases = {r["phase"]: r for r in rows}
 
             def phase_enabled(name: str) -> bool:
-                # Source de vérité = fichier killswitch ; fallback sur la
-                # présence dans le dernier run si le fichier est illisible.
-                # Découple l'état enabled du pre-flight gate, qui skippe
-                # promote/reorg quand le corpus est inchangé et faisait
-                # afficher « disabled » à tort (learning 6d5ee46b).
+                # Source of truth = the killswitch file; fall back on presence
+                # in the last run if the file is unreadable. Decouples the
+                # enabled state from the pre-flight gate, which skips
+                # promote/reorg when the corpus is unchanged and used to display
+                # "disabled" wrongly (learning 6d5ee46b).
                 return ks.get(name, name in phases)
 
             def phase_dry(name: str, file_default: bool) -> bool:
-                # Mode réel = ce que la phase a fait au dernier run ; si absente
-                # (pre-flight skip), fallback sur le DRY_RUN déclaré du fichier.
+                # Real mode = what the phase did on the last run; if absent
+                # (pre-flight skip), fall back on the file's declared DRY_RUN.
                 if name in phases:
                     return bool(phases[name]["phase_dry_run"])
                 return ks.get(f"{name}_dry", file_default)
@@ -165,12 +165,12 @@ class DreamRunService:
     async def _clean_dry_streak(self, session: AsyncSession, phase: str) -> int:
         # dream.sh emits done|timeout|fail; anything != 'done' = failure.
         #
-        # Une nuit DÉGRADÉE compte comme une remise à zéro bien qu'elle soit
-        # 'done' : elle a été servie par le modèle de SECOURS, donc elle ne
-        # prouve rien sur le modèle prévu. Le prédicat porte sur le PRÉFIXE et
-        # non sur la présence d'un message — `extract` écrit légitimement
-        # « N ticket(s) deferred… » sur des runs 'done', et les compter comme
-        # dégradés mettrait ce compteur à zéro toutes les nuits.
+        # A DEGRADED night counts as a reset even though it is 'done': it was
+        # served by the FALLBACK model, so it proves nothing about the intended
+        # model. The predicate is on the PREFIX and not on the presence of a
+        # message — `extract` legitimately writes "N ticket(s) deferred…" on
+        # 'done' runs, and counting those as degraded would zero this counter
+        # every night.
         t = self._t
         reset_date = (
             await session.execute(
@@ -188,8 +188,8 @@ class DreamRunService:
         model_change_date = await self._last_model_change(session, phase)
         if model_change_date is not None and (reset_date is None or model_change_date > reset_date):
             reset_date = model_change_date
-        # DISTINCT run_date : un re-run manuel le même jour n'est pas une
-        # « nuit » de plus (finding vérification roadmap 2026-07-04).
+        # DISTINCT run_date: a manual re-run on the same day is not one more
+        # "night" (roadmap verification finding, 2026-07-04).
         stmt = (
             sa.select(sa.func.count(sa.func.distinct(t.c.run_date)))
             .select_from(t)
@@ -202,15 +202,15 @@ class DreamRunService:
         return int((await session.execute(stmt)).scalar() or 0)
 
     async def _last_model_change(self, session: AsyncSession, phase: str) -> date | None:
-        """Dernière nuit où la phase a changé de modèle, sinon None.
+        """Last night the phase changed model, otherwise None.
 
-        Les nuits propres d'un AUTRE modèle ne sont pas une preuve pour le
-        modèle courant. Le 2026-08-05, ROADMAP affichait « 22 clean DRY
-        nights » dont dix produites par son modèle de SECOURS après la mort
-        du primaire — et ce compteur servait d'argument pour basculer en WET.
+        Clean nights from ANOTHER model are no evidence for the current model.
+        On 2026-08-05, ROADMAP displayed "22 clean DRY nights", ten of them
+        produced by its FALLBACK model after the primary died — and that counter
+        was being used as an argument to switch to WET.
 
-        Un modèle jamais renseigné (NULL) est une valeur constante comme une
-        autre : il ne déclenche pas de remise à zéro tant qu'il ne change pas.
+        A model that was never recorded (NULL) is a constant value like any
+        other: it triggers no reset for as long as it does not change.
         """
         t = self._t
         rows = (

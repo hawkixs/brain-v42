@@ -20,9 +20,9 @@ if TYPE_CHECKING:
 
 _instrument_logger = logging.getLogger(__name__)
 
-# Alias de compatibilité : la classification vit désormais dans
-# brain_v42.provenance, importée par la couche transport comme par les
-# services. tests/unit/test_metrics_instrument.py importe ce nom.
+# Compatibility alias: classification now lives in brain_v42.provenance,
+# imported by the transport layer as well as by the services.
+# tests/unit/test_metrics_instrument.py imports this name.
 _normalize_agent = normalize_agent
 
 
@@ -34,9 +34,10 @@ def instrument_tool(collector: MetricsCollector, tool_name: str) -> Callable:
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             start = time.monotonic()
             error = False
-            # Le span est ouvert ICI et non dans un middleware : c'est le seul
-            # point où l'exception est encore la vraie, avant le masquage de
-            # `call_tool` (voir l'en-tête de metrics/tool_instrumentation.py).
+            # The span is opened HERE and not in a middleware: it is the only
+            # point where the exception is still the real one, before
+            # `call_tool` masks it (see the header of
+            # metrics/tool_instrumentation.py).
             span = start_tool_span(tool_name)
             failure: BaseException | None = None
             unwrap_cause = False
@@ -44,9 +45,9 @@ def instrument_tool(collector: MetricsCollector, tool_name: str) -> Callable:
                 return await func(*args, **kwargs)
             except AuthorizationError as exc:
                 error = True
-                # Pas de déballage : un refus d'autorisation EST le diagnostic,
-                # et sa cause éventuelle porterait le contexte qu'on refuse de
-                # publier.
+                # No unwrapping: an authorization refusal IS the diagnosis, and
+                # its possible cause would carry the context we refuse to
+                # publish.
                 failure = exc
                 raise
             except Exception as exc:
@@ -63,8 +64,8 @@ def instrument_tool(collector: MetricsCollector, tool_name: str) -> Callable:
                 latency_ms = (time.monotonic() - start) * 1000
                 agent = get_current_actor()
                 collector.record_tool_call(tool_name, latency_ms, error=error, agent=agent)
-                # MÊMES valeurs que le compteur, délibérément : un span qui le
-                # contredirait donnerait deux vérités et en annulerait deux.
+                # The SAME values as the counter, deliberately: a span that
+                # contradicted it would give two truths and cancel both.
                 finish_tool_span(
                     span,
                     actor=agent,

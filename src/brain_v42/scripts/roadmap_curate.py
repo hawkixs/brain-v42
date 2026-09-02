@@ -1,25 +1,25 @@
-"""Roadmap curation — proposition auditée et auto-apply gardé (spec 2026-07-04 §3).
+"""Roadmap curation — audited proposal and guarded auto-apply (spec 2026-07-04 §3).
 
-Batch par projet : features vivantes (statut ∉ done/archived, non mergées)
-+ digest des artifacts récents (titre, type, date — PAS les corps), envoyé
-au LLM (NVIDIA API, JSON strict SANS tools — squelette exact de
-ticket_extract). Quatre ops auditables : merge, archive, status, rename.
+One batch per project: live features (status ∉ done/archived, not merged) plus a
+digest of recent artifacts (title, type, date — NOT the bodies), sent to the LLM
+(NVIDIA API, strict JSON WITHOUT tools — the exact skeleton of ticket_extract).
+Four auditable ops: merge, archive, status, rename.
 
-Garde-fous durs :
-- pinned : seule l'op `status` est proposable ;
-- done/archived : hors batch par construction (intouchables) ;
-- merge intra-projet uniquement, `into` doit être dans le batch ;
-- cap MAX_PROPOSALS_PER_NIGHT proposals/nuit (drop loggé, jamais silencieux).
+Hard guardrails:
+- pinned: only the `status` op can be proposed;
+- done/archived: outside the batch by construction (untouchable);
+- merge within a project only, `into` must be in the batch;
+- cap of MAX_PROPOSALS_PER_NIGHT proposals/night (drop logged, never silent).
 
-Régime agressif (2026-07-04 soir) : --wet applique les QUATRE ops uniquement
-si le modèle ayant produit le batch est dans AUTO_APPLY_MODELS
-(WET_APPLYABLE_OPS = VALID_OPS, merge/rename inclus) ; --apply-ids reste
-l'apply reviewé sans LLM.
+Aggressive regime (evening of 2026-07-04): --wet applies ALL FOUR ops only if the
+model that produced the batch is in AUTO_APPLY_MODELS (WET_APPLYABLE_OPS =
+VALID_OPS, merge/rename included); --apply-ids remains the reviewed apply without
+an LLM.
 
 Usage:
     python -m scripts.roadmap_curate [--limit 10]        # propose (dry)
-    python -m scripts.roadmap_curate --limit 10 --wet    # propose + apply (toutes ops)
-    python -m scripts.roadmap_curate --apply-ids "3,4"   # apply reviewé, sans LLM
+    python -m scripts.roadmap_curate --limit 10 --wet    # propose + apply (all ops)
+    python -m scripts.roadmap_curate --apply-ids "3,4"   # reviewed apply, no LLM
 """
 
 from __future__ import annotations
@@ -56,136 +56,137 @@ _API_KEY_VAR = "BRAIN_NVIDIA_API_KEY"
 _ROADMAP_MODEL_VAR = "BRAIN_NVIDIA_ROADMAP_MODEL"
 _ROADMAP_FALLBACK_MODEL_VAR = "BRAIN_NVIDIA_ROADMAP_FALLBACK_MODEL"
 _ENV_FILE = Path.home() / ".config" / "brain-v42" / "nvidia.env"
-# qwen/qwen3-next-80b-a3b-instruct a atteint son EOL fournisseur le
-# 2026-07-27 (HTTP 410 Gone) et le secours 8B a servi dix nuits en silence.
-# Remplaçant choisi par canary du 2026-08-05 sur le VRAI prompt, 3 batches
-# réels : deepseek-v4-flash 3/3 valides à 16,6 s/batch — plus rapide que le
-# secours 8B lui-même (21,2 s). Écartés : llama-3.1-70b (3/3 mais 117,5 s/batch,
-# soit ~1175 s sur 10 projets, au-delà du budget nuit de 720 s),
-# nemotron-super-49b-v1.5 et nemotron-3-nano-30b (JSON illisible après
-# re-prompt correctif), kimi-k2.6 et nemotron-nano-3-30b (404 malgré leur
-# présence dans /v1/models), minimax-m3 (timeout), mistral-medium-3.5 (timeout).
-# 2026-08-16 : deepseek-v4-flash est mort à son tour (HTTP 410), neuf jours
-# après le canary qui l'avait choisi. Remplaçant retenu sur DEUX mesures, pas
-# une, parce que la première a failli faire choisir le mauvais.
+# qwen/qwen3-next-80b-a3b-instruct reached its provider EOL on 2026-07-27
+# (HTTP 410 Gone) and the 8B fallback served ten nights in silence. Replacement
+# chosen by the 2026-08-05 canary on the REAL prompt, 3 real batches:
+# deepseek-v4-flash 3/3 valid at 16.6 s/batch — faster than the 8B fallback
+# itself (21.2 s). Rejected: llama-3.1-70b (3/3 but 117.5 s/batch, i.e. ~1175 s
+# over 10 projects, beyond the 720 s night budget), nemotron-super-49b-v1.5 and
+# nemotron-3-nano-30b (unreadable JSON after the corrective re-prompt),
+# kimi-k2.6 and nemotron-nano-3-30b (404 despite being listed in /v1/models),
+# minimax-m3 (timeout), mistral-medium-3.5 (timeout).
+# 2026-08-16: deepseek-v4-flash died in turn (HTTP 410), nine days after the
+# canary that chose it. Replacement selected on TWO measurements, not one,
+# because the first nearly picked the wrong model.
 #
-# 1. VITESSE ET FORME (canary apparié, 3 batches réels, régime proposer-only) :
-#    mistral-nemotron 3/3 valides, 12-20 s/batch — 126-204 s sur les dix
-#    projets, contre 720 s de budget nuit. Écartés : deepseek-v4-flash-0731,
-#    le snapshot daté de la famille morte, 3/3 valides mais 69,3 s/batch soit
-#    693 s — 96 % du budget, et QUATRE FOIS plus lent que l'alias qu'il
-#    remplace (16,6 s mesurés le 08-05). Un pin daté n'hérite pas du profil de
-#    son alias. nemotron-3.5-lightning-30b : 2/3 valides.
+# 1. SPEED AND SHAPE (paired canary, 3 real batches, proposer-only regime):
+#    mistral-nemotron 3/3 valid, 12-20 s/batch — 126-204 s over the ten
+#    projects, against a 720 s night budget. Rejected: deepseek-v4-flash-0731,
+#    the dated snapshot of the dead family, 3/3 valid but 69.3 s/batch i.e.
+#    693 s — 96 % of the budget, and FOUR TIMES slower than the alias it
+#    replaces (16.6 s measured on 08-05). A dated pin does not inherit its
+#    alias's profile. nemotron-3.5-lightning-30b: 2/3 valid.
 #
-# 2. QUALITÉ DU CONTENU, qui a renversé le classement. Le triplet mesuré par
-#    le canary — validité, secondes, NOMBRE de propositions — ne classe rien :
-#    sur trois runs des mêmes batches, mistral-nemotron a rendu 31 puis 21
-#    propositions et gpt-oss-20b 29 puis 13. L'écart entre candidats est plus
-#    petit que le bruit d'un seul. Jugement en aveugle du CONTENU (modèles
-#    anonymisés, trois lentilles, accusations réfutées en adverse) :
+# 2. CONTENT QUALITY, which overturned the ranking. The triplet the canary
+#    measures — validity, seconds, NUMBER of proposals — ranks nothing: over
+#    three runs of the same batches, mistral-nemotron returned 31 then 21
+#    proposals and gpt-oss-20b 29 then 13. The gap between candidates is
+#    smaller than the noise of a single one. Blind judgement of the CONTENT
+#    (models anonymized, three lenses, accusations rebutted adversarially):
 #    mistral-nemotron 48/100, gpt-oss-20b 35, llama-3.1-8b 10.
 #
-#    Le secours 8B est donc le PIRE des trois sur le fond alors qu'il est le
-#    plus rapide — recompté à la main : 9 rationales vides, 2 merges vers une
-#    cible qu'il archive dans le même lot, 2 renames vers la chaîne identique,
-#    et sept runs orchestrator fondus dans le plus ANCIEN d'entre eux au motif
-#    que « r202 est une étape de r138 ». Il reste secours et ne devient pas
-#    primaire : voir tests/unit/test_roadmap_model_chain.py.
+#    The 8B fallback is therefore the WORST of the three on substance while
+#    being the fastest — recounted by hand: 9 empty rationales, 2 merges into a
+#    target it archives in the same batch, 2 renames to an identical string,
+#    and seven orchestrator runs folded into the OLDEST of them on the grounds
+#    that "r202 is a step of r138". It stays the fallback and does not become
+#    primary: see tests/unit/test_roadmap_model_chain.py.
 DEFAULT_ROADMAP_MODEL = "mistralai/mistral-nemotron"
-# Secours remplacé le 2026-08-29 : le 8B est mort en 410 le 2026-08-26 (nuits
-# des 27 et 28 en fail, sonde GONE). gpt-oss-20b est jugé en aveugle au-dessus
-# du mort qu'il remplace (35/100 contre 10) et MESURÉ DANS SON RÉGIME EXACT le
-# 2026-08-29, après correction de l'instrument (fenêtres de nuit 60 s, dix
-# batches réels, caps secours FALLBACK_*) : 10/10 portés, 12 propositions,
-# 7,8 s/batch — 78 s projetées pour une nuit intégralement dégradée, budget
-# 720 s. Le profil secours n'est PAS « à caps réduits » : mêmes 3 features,
-# tokens DOUBLÉS (1024 contre 512) — et c'est ce qui le fait tenir : à 512,
-# le raisonnement de gpt-oss est tronqué, le re-prompt correctif double la
-# facture (74,5 s/batch mesurés sous l'ancien instrument) ; à 1024 il rend en
-# un appel. Écartés au même régime : nano-30b (rapide, 9,9 s/batch, mais
-# 5/10 JSON valides — signature nemotron) ; deepseek-v4-flash-0731 (69,3
-# s/batch le 08-16, famille morte deux fois en un mois, contenu jamais jugé).
+# Fallback replaced on 2026-08-29: the 8B died with a 410 on 2026-08-26 (the
+# nights of the 27th and 28th failed, probe GONE). gpt-oss-20b is judged blind
+# above the corpse it replaces (35/100 against 10) and MEASURED IN ITS EXACT
+# REGIME on 2026-08-29, after fixing the instrument (60 s night windows, ten
+# real batches, FALLBACK_* fallback caps): 10/10 carried, 12 proposals,
+# 7.8 s/batch — 78 s projected for a fully degraded night, budget 720 s. The
+# fallback profile is NOT "reduced caps": same 3 features, tokens DOUBLED (1024
+# against 512) — and that is what makes it hold: at 512, gpt-oss's reasoning is
+# truncated, the corrective re-prompt doubles the bill (74.5 s/batch measured
+# under the old instrument); at 1024 it answers in one call. Rejected under the
+# same regime: nano-30b (fast, 9.9 s/batch, but 5/10 valid JSON — the nemotron
+# signature); deepseek-v4-flash-0731 (69.3 s/batch on 08-16, a family dead twice
+# in one month, content never judged).
 DEFAULT_ROADMAP_FALLBACK_MODEL = "openai/gpt-oss-20b"
-# Paire WET remplacée le 2026-08-29 : llama-3.3-70b (canary strict du
-# 2026-07-14) est mort en 410 entre les nuits du 27 et du 28 août — maillon
-# DORMANT côté roadmap, la phase tournant en DRY ; sans extract qui partageait
-# ce modèle, personne ne l'aurait vu mourir. Le secours d'hier devient
-# primaire (nemotron-3-super-120b-a12b : le plus fort des vivants mesurés sur
-# ce prompt — 31 propositions) et gpt-oss-120b prend le poste de secours, sur
-# un poste que test_roadmap_model_chain exige distinct.
+# WET pair replaced on 2026-08-29: llama-3.3-70b (strict canary of 2026-07-14)
+# died with a 410 between the nights of 27 and 28 August — a DORMANT link on the
+# roadmap side, the phase running in DRY; without extract, which shared that
+# model, nobody would have seen it die. Yesterday's fallback becomes the primary
+# (nemotron-3-super-120b-a12b: the strongest of the live models measured on this
+# prompt — 31 proposals) and gpt-oss-120b takes the fallback post, a post
+# test_roadmap_model_chain requires to be distinct.
 #
-# PRÉCONDITION DE RÉARMEMENT, mesurée le 2026-08-29 au régime réel : en WET
-# la voie non-gérée DIVISE la fenêtre par deux dès qu'un secours existe
-# (candidate_timeout_s = llm_timeout_s / 2, soit 30 s à dix projets) — la
-# borne n'est PAS le read-timeout httpx de 180 s. Sous ces 30 s, cette paire
-# telle qu'ordonnée NE PORTE PAS : super-120b 1/10 batches, les 9 autres
-# sauvés par gpt-oss-120b (qui tient 30 s à chaud — sa queue froide de 75 s
-# ne concerne que le premier appel). Ces noms sont donc des maillons VIVANTS
-# et jugés sur le fond nulle part : repasser BRAIN_DREAM_ROADMAP_DRY_RUN à
-# false exige d'abord un canary WET (fenêtres 30 s) et probablement de
-# re-paires ou d'élargir la fenêtre — geste opérateur, pas un simple mot à
-# changer. Le killswitch DRY actuel ne consomme jamais cette paire.
+# REARMING PRECONDITION, measured on 2026-08-29 in the real regime: in WET the
+# unmanaged path HALVES the window as soon as a fallback exists
+# (candidate_timeout_s = llm_timeout_s / 2, i.e. 30 s at ten projects) — the
+# bound is NOT httpx's 180 s read timeout. Under those 30 s, this pair as
+# ordered DOES NOT CARRY: super-120b 1/10 batches, the other 9 rescued by
+# gpt-oss-120b (which holds 30 s warm — its 75 s cold queue concerns only the
+# first call). These names are therefore LIVE links judged on substance nowhere:
+# setting BRAIN_DREAM_ROADMAP_DRY_RUN back to false requires first a WET canary
+# (30 s windows) and probably re-pairing or widening the window — an operator
+# gesture, not a single word to change. The current DRY killswitch never
+# consumes this pair.
 DEFAULT_WET_ROADMAP_MODEL = "nvidia/nemotron-3-super-120b-a12b"
 DEFAULT_WET_ROADMAP_FALLBACK_MODEL = "openai/gpt-oss-120b"
 AUTO_APPLY_MODELS = frozenset({DEFAULT_WET_ROADMAP_MODEL, DEFAULT_WET_ROADMAP_FALLBACK_MODEL})
 PROPOSER_ONLY_MODELS = frozenset({DEFAULT_ROADMAP_MODEL, DEFAULT_ROADMAP_FALLBACK_MODEL})
-# HTTP 410 = le fournisseur a retiré le modèle (EOL). Aucun retry, aucune
-# autre taille de batch ne le réparera : seul un changement de configuration
-# le peut. À distinguer d'un 503 « occupé », qui est transitoire.
+# HTTP 410 = the provider retired the model (EOL). No retry and no other batch
+# size will repair it: only a configuration change can. To be distinguished from
+# a 503 "busy", which is transient.
 HTTP_GONE = 410
 MODEL_GONE_MARKER = "MODÈLE ABSENT CHEZ LE FOURNISSEUR"
 
 VALID_OPS = ("merge", "archive", "status", "rename")
-# 'archived' exclu : l'op `archive` existe pour ça.
+# 'archived' excluded: the `archive` op exists for that.
 PROPOSABLE_STATUSES = ("planned", "research", "design", "building", "deployed", "done")
-# Régime agressif (2026-07-04 soir, décision Armand) : le wet applique les
-# QUATRE ops, merge/rename inclus — la roadmap est peu consommée, le coût
-# d'une curation erronée est faible, et Claude valide les applications au
-# check matinal. Remplace le rollout §4 (« QUE archive/status »).
+# Aggressive regime (evening of 2026-07-04, Armand's decision): wet applies ALL
+# FOUR ops, merge/rename included — the roadmap is lightly consumed, the cost of
+# a wrong curation is low, and Claude validates the applications at the morning
+# check. Replaces the §4 rollout ("archive/status ONLY").
 WET_APPLYABLE_OPS = VALID_OPS
 MAX_FEATURES_PER_PROJECT = 30
 MAX_ARTIFACTS_PER_FEATURE = 10
 MAX_PROPOSALS_PER_NIGHT = 40
-# Le prompt consolidateur produit des réponses longues (batch brain-v42
-# tronqué à 4096 au premier run wet 2026-07-04, char 12160) — 2× de marge.
+# The consolidator prompt produces long answers (the brain-v42 batch truncated
+# at 4096 on the first wet run of 2026-07-04, char 12160) — 2× margin.
 MAX_COMPLETION_TOKENS = 8192
-# Les petits batches issus du shrink n'ont pas besoin de réserver 8k tokens
-# sur le provider gratuit. Paliers simples : 2k pour ≤3 features, 4k pour le
-# batch économique ≤10, 8k uniquement au-delà (historique brain-v42 à 30).
+# The small batches produced by the shrink do not need to reserve 8k tokens on
+# the free provider. Simple tiers: 2k for ≤3 features, 4k for the economy batch
+# ≤10, 8k only beyond that (historically brain-v42 at 30).
 MIN_COMPLETION_TOKENS = 2048
 BALANCED_COMPLETION_TOKENS = 4096
-# Profil borné pour les modèles gratuits gérés par ROADMAP : Qwen 80B MoE
-# reste le modèle principal, mais ne reçoit que le contexte utile à une
-# décision courte. Llama 8B prend le relais sur indisponibilité du premier.
+# Bounded profile for the free models ROADMAP manages: Qwen 80B MoE stays the
+# main model, but receives only the context useful for a short decision.
+# Llama 8B takes over when the first is unavailable.
 BIG_MODEL_FEATURE_CAP = 3
 FALLBACK_FEATURE_CAP = 3
 FALLBACK_RETRY_FEATURE_CAP = 2
 COMPACT_ARTIFACT_CAP = 3
 BIG_MODEL_COMPLETION_TOKENS = 512
 FALLBACK_COMPLETION_TOKENS = 1024
-# Plafond PAR TENTATIVE LLM d'un batch (nuit 2026-07-05 : red a brûlé ~9 min
-# en ReadTimeout×3 sur le même payload avant d'échouer). Couvre le premier
-# ReadTimeout httpx (read=180 s) + le début du retry — au-delà, on rétrécit.
+# Cap PER LLM ATTEMPT on a batch (night of 2026-07-05: red burned ~9 min in
+# ReadTimeout×3 on the same payload before failing). Covers the first httpx
+# ReadTimeout (read=180 s) plus the start of the retry — beyond that, we
+# shrink.
 LLM_ATTEMPT_TIMEOUT_S = 200.0
-# Shrink PROGRESSIF sur timeout LLM. L'ancien ÷2-une-fois (30→15) échouait la
-# phase quand le shrink à 15 timeout aussi (nuits NIM lentes 2026-07-06
-# red-shrik, 2026-07-07 brain-v42). On retente désormais par paliers
-# ÷SHRINK_DIVISOR (30→10→3) jusqu'à un plancher d'1 feature : une nuit lente
-# pose un petit batch au lieu d'échouer, la rotation ressert le reste. Les
-# SHRINK_MAX_RETRIES paliers PARTAGENT une seule fenêtre LLM_ATTEMPT_TIMEOUT_S
-# (LLM_ATTEMPT_TIMEOUT_S / SHRINK_MAX_RETRIES chacun) → total LLM par batch
-# ≈ 2×LLM_ATTEMPT_TIMEOUT_S, IDENTIQUE au worst-case legacy : la marge sous le
-# SIGTERM 20m de dream.sh (cf. NIGHT_BUDGET_S) est préservée.
+# PROGRESSIVE shrink on LLM timeout. The old halve-once (30→15) failed the phase
+# when the shrink to 15 timed out too (slow NIM nights of 2026-07-06 red-shrik,
+# 2026-07-07 brain-v42). We now retry in ÷SHRINK_DIVISOR steps (30→10→3) down to
+# a floor of 1 feature: a slow night lays a small batch instead of failing, and
+# the rotation serves the rest. The SHRINK_MAX_RETRIES steps SHARE a single
+# LLM_ATTEMPT_TIMEOUT_S window (LLM_ATTEMPT_TIMEOUT_S / SHRINK_MAX_RETRIES each)
+# → total LLM per batch ≈ 2×LLM_ATTEMPT_TIMEOUT_S, IDENTICAL to the legacy worst
+# case: the margin under dream.sh's 20 m SIGTERM (cf. NIGHT_BUDGET_S) is
+# preserved.
 SHRINK_DIVISOR = 3
 SHRINK_MAX_RETRIES = 2
 ECONOMIC_FEATURE_CAP = MAX_FEATURES_PER_PROJECT // SHRINK_DIVISOR
-# Juge des merges (gate anti-dump two-tier) : appel court, réponse compacte.
+# Merge judge (two-tier anti-dump gate): short call, compact answer.
 JUDGE_TIMEOUT_S = 90.0
 JUDGE_MAX_TOKENS = 2048
-# Plus AUCUN nouveau batch après ce seuil — fin propre (record_dream_run
-# écrit) bien avant le SIGTERM shell à 20 m ; pire cas résiduel par batch :
-# full + SHRINK_MAX_RETRIES paliers partageant UNE fenêtre LLM_ATTEMPT_TIMEOUT_S
-# = 2×200 s au total + juge 90 s + persist ≈ 8 m ⇒ 12 m + 8 m < 20 m.
+# NO new batch at all after this threshold — a clean end (record_dream_run
+# written) well before the shell SIGTERM at 20 m; residual worst case per batch:
+# full + SHRINK_MAX_RETRIES steps sharing ONE LLM_ATTEMPT_TIMEOUT_S window
+# = 2×200 s in total + judge 90 s + persist ≈ 8 m ⇒ 12 m + 8 m < 20 m.
 NIGHT_BUDGET_S = 720.0
 
 _SYSTEM_PROMPT = (
@@ -262,16 +263,16 @@ class BatchOutcome:
     drafts: list[CurationDraft]
     failed: bool = False
     error: str | None = None
-    # True si la réponse porte sur moins de features que le batch d'origine,
-    # que le shrink ait eu lieu avant ou après la première tentative LLM.
+    # True if the answer covers fewer features than the original batch, whether
+    # the shrink happened before or after the first LLM attempt.
     shrunk: bool = False
-    # Modèle ayant produit la réponse (ou dernier modèle tenté sur échec).
+    # Model that produced the answer (or the last model tried on failure).
     model_used: str | None = None
     fallback_used: bool = False
-    # Panne du modèle PRIMAIRE, conservée même quand le secours réussit.
-    # Sans ce champ, un run entièrement servi par le secours est indiscernable
-    # d'un run nominal (qwen 80B mort le 2026-07-27, découvert le 08-05 après
-    # dix nuits vertes).
+    # Failure of the PRIMARY model, kept even when the fallback succeeds.
+    # Without this field, a run served entirely by the fallback is
+    # indistinguishable from a nominal one (qwen 80B died on 2026-07-27,
+    # discovered on 08-05 after ten green nights).
     primary_error: str | None = None
 
 
@@ -290,7 +291,7 @@ def format_digest(
     created_at: datetime,
     plan_status: str | None,
 ) -> str:
-    """Digest une ligne — titre/type/date, jamais les corps complets."""
+    """Digest one row — title/type/date, never the full bodies."""
     base = f"{created_at.date().isoformat()} [{artifact_type}] {title}"
     if artifact_type == "plan" and plan_status:
         base += f" (plan {plan_status})"
@@ -316,7 +317,7 @@ def _compact_batch(
     feature_cap: int,
     artifact_cap: int,
 ) -> ProjectBatch:
-    """Copie compacte d'un batch, sans muter les cartes chargées depuis la DB."""
+    """Compact copy of a batch, without mutating the cards loaded from the DB."""
     return ProjectBatch(
         project_key=batch.project_key,
         features=[
@@ -412,10 +413,10 @@ def parse_and_validate(content: str, batch: ProjectBatch) -> list[CurationDraft]
                 rationale=str(item.get("rationale", ""))[:120],
             )
         )
-    # Gardes anti-chaîne (prompt agressif 2026-07-04) : une même réponse ne
-    # peut ni fusionner deux fois la même feature, ni fusionner dans une
-    # survivante elle-même fusionnée — appliquer A→B puis B→C échouerait
-    # les artifacts de A sur B archivée (l'apply suit l'ordre des ids).
+    # Anti-chain guards (aggressive prompt 2026-07-04): one answer can neither
+    # merge the same feature twice, nor merge into a survivor that is itself
+    # merged — applying A→B then B→C would strand A's artifacts on an archived B
+    # (the apply follows id order).
     losers: set[UUID] = set()
     for i, draft in enumerate(drafts):
         if draft.op != "merge":
@@ -435,11 +436,11 @@ def parse_and_validate(content: str, batch: ProjectBatch) -> list[CurationDraft]
 
 
 def _parse_proposer_only_response(content: str, batch: ProjectBatch) -> list[CurationDraft]:
-    """Garder uniquement les items sûrs d'une réponse qui ne sera pas appliquée.
+    """Keep only the safe items of an answer that will not be applied.
 
-    Le tableau JSON reste obligatoire. Chaque item est ensuite validé avec le
-    parseur strict ; un item invalide est ignoré sans sacrifier ses voisins.
-    Les chaînes de merges sont filtrées une fois les items valides réunis.
+    The JSON array remains mandatory. Each item is then validated with the
+    strict parser; an invalid item is ignored without sacrificing its
+    neighbours. Merge chains are filtered once the valid items are gathered.
     """
     try:
         data = json.loads(_strip_fences(content))
@@ -471,11 +472,11 @@ def _parse_proposer_only_response(content: str, batch: ProjectBatch) -> list[Cur
 def drop_noops(
     drafts: list[CurationDraft], batch: ProjectBatch
 ) -> tuple[list[CurationDraft], list[CurationDraft]]:
-    """Écarte les proposals sans effet — status identique, rename identique.
+    """Drop proposals with no effect — identical status, identical rename.
 
-    Premier run réel (2026-07-04) : 10/40 proposals étaient des no-ops qui
-    brûlaient le cap. Filtre d'effet post-validation ; on ne raise pas (un
-    raise déclencherait le re-prompt correctif LLM pour un simple no-op).
+    First real run (2026-07-04): 10/40 proposals were no-ops burning the cap. An
+    effect filter after validation; we do not raise (a raise would trigger the
+    corrective LLM re-prompt for a mere no-op).
     """
     by_id = {f.id: f for f in batch.features}
     kept: list[CurationDraft] = []
@@ -530,13 +531,13 @@ ORDER BY fa.feature_id, fa.created_at DESC
 
 
 def rotate_keys(keys: list[str], limit: int, day_ordinal: int) -> list[str]:
-    """Fenêtre glissante déterministe sur la liste (triée) des projets.
+    """Deterministic sliding window over the (sorted) list of projects.
 
-    Avance de `limit` positions par jour → cycle complet en ⌈n/limit⌉
-    nuits, à liste stable ; si elle change entre nuits la couverture
-    reste bornée (l'offset avance quand même chaque jour). Sans
-    rotation, ORDER BY + LIMIT scannait les 10 premiers projets
-    alphabétiques chaque nuit et jamais les 16 autres (2026-07-04).
+    Advances `limit` positions per day → a full cycle in ⌈n/limit⌉ nights, with
+    a stable list; if the list changes between nights, coverage stays bounded
+    (the offset advances every day regardless). Without rotation, ORDER BY +
+    LIMIT scanned the first 10 alphabetical projects every night and never the
+    other 16 (2026-07-04).
     """
     if not keys:
         return []
@@ -546,37 +547,35 @@ def rotate_keys(keys: list[str], limit: int, day_ordinal: int) -> list[str]:
 
 
 def batch_allowance(remaining_cap: int, remaining_batches: int) -> int:
-    """Part équitable du cap restant pour le prochain batch (ceil).
+    """Fair share of the remaining cap for the next batch (ceil).
 
-    Le ceil redistribue les slots non consommés par les batches
-    précédents. Sans fair-share, la troncature globale [:cap] en ordre
-    de batch servait 3 projets sur 26 (finding 2026-07-04).
+    The ceil redistributes the slots the previous batches did not consume.
+    Without fair-share, the global [:cap] truncation in batch order served 3
+    projects out of 26 (finding of 2026-07-04).
     """
     if remaining_batches <= 0 or remaining_cap <= 0:
         return 0
     return -(-remaining_cap // remaining_batches)
 
 
-# Plancher de la fenêtre LLM fair-share : un appel projet normal prend
-# ~35-45s (nuit 2026-07-10 : experteam 42s, mrc-rag 45s) — en dessous de
-# 60s on ne servirait plus personne. Le dépassement de budget que le
-# plancher autorise reste borné par le hard-break de _run (et la marge
-# SIGTERM s'AMÉLIORE : dernier batch ≤ 2×plancher + juge ≪ worst-case
-# legacy 2×LLM_ATTEMPT_TIMEOUT_S).
+# Floor of the fair-share LLM window: a normal project call takes ~35-45 s
+# (night of 2026-07-10: experteam 42 s, mrc-rag 45 s) — below 60 s we would
+# serve nobody. The budget overshoot the floor allows stays bounded by _run's
+# hard break (and the SIGTERM margin IMPROVES: last batch ≤ 2×floor + judge ≪
+# the legacy worst case of 2×LLM_ATTEMPT_TIMEOUT_S).
 MIN_LLM_WINDOW_S = 60.0
 
 
 def batch_llm_window(budget_s: float, elapsed_s: float, remaining_batches: int) -> float:
-    """Fenêtre LLM fair-share du prochain batch (sœur TEMPS de batch_allowance).
+    """Fair-share LLM window for the next batch (the TIME sibling of batch_allowance).
 
-    Nuit 2026-07-10 : le projet red a consommé 383s (fenêtre pleine +
-    paliers de shrink) → budget 720s épuisé au 5e projet, 5 projets
-    reportés à la rotation. Part = budget restant / batches restants ;
-    fenêtre = part/2 car un batch consomme ≈ 2 fenêtres (tentative pleine
-    + paliers de shrink partagés, cf. curate_batch), bornée
-    [MIN_LLM_WINDOW_S, LLM_ATTEMPT_TIMEOUT_S]. Le slack des batches
-    rapides roule vers les suivants (elapsed croît moins vite → parts
-    suivantes plus larges).
+    Night of 2026-07-10: project red consumed 383 s (full window + shrink steps)
+    → the 720 s budget was exhausted at the 5th project, 5 projects deferred to
+    the rotation. Share = remaining budget / remaining batches; window = share/2
+    because a batch consumes ≈ 2 windows (full attempt + shared shrink steps, cf.
+    curate_batch), bounded to [MIN_LLM_WINDOW_S, LLM_ATTEMPT_TIMEOUT_S]. The
+    slack of fast batches rolls into the next ones (elapsed grows more slowly →
+    wider subsequent shares).
     """
     if remaining_batches <= 0:
         return LLM_ATTEMPT_TIMEOUT_S
@@ -585,7 +584,7 @@ def batch_llm_window(budget_s: float, elapsed_s: float, remaining_batches: int) 
 
 
 def _economic_batch_sizes(feature_count: int) -> tuple[int, int]:
-    """Tailles initiale/fallback du mode NVIDIA économique."""
+    """Initial/fallback sizes of the NVIDIA economy mode."""
     if feature_count <= 0:
         return 0, 0
     first_size = min(feature_count, ECONOMIC_FEATURE_CAP)
@@ -595,12 +594,12 @@ def _economic_batch_sizes(feature_count: int) -> tuple[int, int]:
 async def fetch_project_batches(
     session_factory: Any, limit: int, day_ordinal: int | None = None
 ) -> list[ProjectBatch]:
-    """Batchs par projet : features vivantes (cap 30) + digests (cap 10/feature).
+    """Batches per project: live features (cap 30) + digests (cap 10/feature).
 
-    La fenêtre de projets tourne chaque jour (rotate_keys) pour que tous
-    les projets soient couverts en ⌈n/limit⌉ nuits. L'ordre des features
-    tourne aussi : en fenêtre NVIDIA serrée, le pré-shrink ne doit pas servir
-    éternellement les mêmes 10 cartes récentes.
+    The project window rotates each day (rotate_keys) so that every project is
+    covered in ⌈n/limit⌉ nights. The feature order rotates too: under a tight
+    NVIDIA window, the pre-shrink must not serve the same 10 recent cards
+    forever.
     """
     if day_ordinal is None:
         day_ordinal = date.today().toordinal()
@@ -659,7 +658,7 @@ async def fetch_project_batches(
 
 
 def _completion_token_budget(feature_count: int) -> int:
-    """Cap de sortie NVIDIA selon la taille du batch effectivement envoyé."""
+    """NVIDIA output cap according to the size of the batch actually sent."""
     if feature_count <= SHRINK_DIVISOR:
         return MIN_COMPLETION_TOKENS
     if feature_count <= ECONOMIC_FEATURE_CAP:
@@ -676,7 +675,7 @@ async def _curate_llm_attempt(
     max_tokens: int | None = None,
     proposer_only: bool = False,
 ) -> BatchOutcome:
-    """Une tentative LLM complète : appel + re-prompt correctif sur parse error."""
+    """One full LLM attempt: call + corrective re-prompt on a parse error."""
     messages = build_messages(batch)
     completion_cap = max_tokens or _completion_token_budget(len(batch.features))
     content, _usage = await _post_chat(client, model, messages, sleep, max_tokens=completion_cap)
@@ -709,18 +708,18 @@ async def _curate_llm_attempt(
 
 
 def _describe_model_failure(label: str, exc: BaseException) -> str:
-    """Nomme la panne, en séparant le définitif du transitoire.
+    """Name the failure, separating the definitive from the transient.
 
-    Un 410 se lit comme un échec ordinaire dans `_exc_str` ; il mérite un
-    marqueur, parce que la conduite à tenir n'est pas d'attendre la nuit
-    suivante mais de reconfigurer le modèle.
+    A 410 reads like an ordinary failure in `_exc_str`; it deserves a marker,
+    because the right response is not to wait for the next night but to
+    reconfigure the model.
     """
     if isinstance(exc, ModelGoneError):
-        # Depuis le 2026-08-12, `_post_chat` nomme lui-même la fin de vie et
-        # lève AVANT `raise_for_status()` : la branche HTTPStatusError ci-dessous
-        # ne voit donc plus les 410 venus de là. La garder n'est pas de la
-        # superstition — roadmap attrape aussi des HTTPStatusError levées
-        # ailleurs, et un 410 y resterait sinon muet.
+        # Since 2026-08-12, `_post_chat` names the end of life itself and
+        # raises BEFORE `raise_for_status()`: the HTTPStatusError branch below
+        # therefore no longer sees the 410s coming from there. Keeping it is not
+        # superstition — roadmap also catches HTTPStatusErrors raised elsewhere,
+        # and a 410 would otherwise stay silent there.
         return f"{label}: {MODEL_GONE_MARKER} — HTTP {exc.status_code} {exc}"
     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == HTTP_GONE:
         return f"{label}: {MODEL_GONE_MARKER} — HTTP 410 {exc.response.text[:160]}"
@@ -736,7 +735,7 @@ async def _curate_managed_model_chain(
     llm_timeout_s: float,
     disabled_models: set[str] | None,
 ) -> BatchOutcome:
-    """Essayer le gros modèle compact, puis le secours économique si nécessaire."""
+    """Try the large compact model, then the economy fallback if necessary."""
     profiles = [(model, BIG_MODEL_FEATURE_CAP, BIG_MODEL_COMPLETION_TOKENS, False)]
     if model == DEFAULT_ROADMAP_FALLBACK_MODEL:
         profiles[0] = (
@@ -760,9 +759,9 @@ async def _curate_managed_model_chain(
     primary_error: str | None = None
     if model in circuit and has_fallback:
         profiles = [profile for profile in profiles if profile[3]]
-        # Le motif détaillé a été rapporté par le batch qui a ouvert le
-        # circuit ; ici on conserve au moins le fait que le primaire est
-        # écarté, sinon les batches 2..N passent pour du nominal.
+        # The detailed reason was reported by the batch that opened the
+        # circuit; here we keep at least the fact that the primary is set aside,
+        # otherwise batches 2..N pass for nominal.
         primary_error = f"{model}: écarté (circuit ouvert plus tôt dans ce run)"
 
     errors: list[str] = []
@@ -794,7 +793,7 @@ async def _curate_managed_model_chain(
                         proposer_only=True,
                     )
             except NvidiaAuthError:
-                # Une autre taille ou un autre modèle ne réparera jamais la clé.
+                # Another size or another model will never repair the key.
                 raise
             except (
                 TimeoutError,
@@ -845,12 +844,12 @@ def _llm_attempt_schedule(
     *,
     force_economic: bool = False,
 ) -> list[tuple[int, float]]:
-    """Planifier les tailles/délais sans dépasser environ 2× la fenêtre.
+    """Plan the sizes/timeouts without exceeding roughly 2× the window.
 
-    Quand partager la fenêtre entre les retries donnerait moins que le délai
-    viable observé sur NVIDIA, on passe en mode économique : pré-shrink d'un
-    gros batch, puis un seul shrink supplémentaire, chacun avec la fenêtre
-    entière. Sinon on conserve les paliers progressifs historiques.
+    When sharing the window between retries would give less than the viable
+    timeout observed on NVIDIA, we switch to economy mode: pre-shrink a large
+    batch, then a single extra shrink, each with the whole window. Otherwise we
+    keep the historical progressive steps.
     """
     if feature_count <= 0:
         return []
@@ -884,23 +883,23 @@ async def curate_batch(
     disabled_models: set[str] | None = None,
     proposer_only: bool | None = None,
 ) -> BatchOutcome:
-    """Curer un projet avec un plan d'appels borné à environ 2× la fenêtre.
+    """Curate a project with a call plan bounded to roughly 2× the window.
 
-    Fenêtre normale : full puis shrink progressif, les retries partageant une
-    fenêtre. Fenêtre serrée NVIDIA : pré-shrink des gros batches puis deux
-    tentatives maximum avec une fenêtre viable chacune (30→10→3 devient
-    10@60s puis 3@60s). _post_chat reste inchangé pour ne pas affecter EXTRACT
-    ni domain-backfill ; asyncio borne localement chaque tentative ROADMAP.
+    Normal window: full then progressive shrink, the retries sharing one window.
+    Tight NVIDIA window: pre-shrink the large batches then two attempts at most,
+    each with a viable window (30→10→3 becomes 10@60 s then 3@60 s). _post_chat
+    stays unchanged so as not to affect EXTRACT nor domain-backfill; asyncio
+    bounds each ROADMAP attempt locally.
 
-    ``proposer_only`` n'existe que pour le canary, et vaut ``None`` en production —
-    le routage reste alors décidé par l'appartenance à ``PROPOSER_ONLY_MODELS``,
-    inchangé. Il sert à ÉVALUER un candidat dans le régime qu'il aurait une fois
-    adopté comme primaire DRY, cet ensemble étant dérivé de
-    ``DEFAULT_ROADMAP_MODEL`` : sans lui, le canary mesurerait un routage que la
-    production n'appliquera plus le jour de la bascule. Un paramètre explicite
-    plutôt qu'une mutation du global — `check_container_image_pins` interdit
-    d'écrire un attribut de module, et il a raison : un monkeypatch qui fuite
-    laisserait la production routée autrement qu'elle ne l'était.
+    ``proposer_only`` exists only for the canary, and is ``None`` in production —
+    routing then stays decided by membership of ``PROPOSER_ONLY_MODELS``,
+    unchanged. It serves to EVALUATE a candidate in the regime it would have once
+    adopted as the DRY primary, that set being derived from
+    ``DEFAULT_ROADMAP_MODEL``: without it, the canary would measure a routing
+    production will no longer apply on the day of the switch. An explicit
+    parameter rather than a mutation of the global — `check_container_image_pins`
+    forbids writing a module attribute, and it is right: a leaking monkeypatch
+    would leave production routed differently from how it was.
     """
     if not batch.features:
         return BatchOutcome(batch=batch, drafts=[], model_used=model)
@@ -957,8 +956,8 @@ async def curate_batch(
         fallback.fallback_used = True
         return fallback
 
-    # Les modèles explicitement reviewés gardent le chemin full historique,
-    # puis basculent une seule fois vers le fallback configuré.
+    # Explicitly reviewed models keep the historical full path, then switch
+    # once to the configured fallback.
     attempts = _llm_attempt_schedule(len(batch.features), candidate_timeout_s)
     try:
         for size, attempt_timeout in attempts:
@@ -1036,14 +1035,14 @@ async def judge_merges(
     sleep: Any = asyncio.sleep,
     timeout_s: float = JUDGE_TIMEOUT_S,
 ) -> set[int]:
-    """Indices (dans `merges`) à RETENIR — persistés 'proposed', jamais auto-appliqués.
+    """Indices (into `merges`) to HOLD BACK — persisted 'proposed', never auto-applied.
 
-    Gate anti-dump two-tier (nuit 2026-07-05 : 10/23 merges aberrants, pattern
-    « tout déverser dans un survivant »). Mesuré sur les 62 merges appliqués :
-    ni la similarité embedding ni le comptage par cible ne séparent sains et
-    aberrants — le discriminant est sémantique, donc juge LLM. FAIL-CLOSED :
-    erreur transport/parse/timeout ou index absent de la réponse → retenu ;
-    le silence du juge ne vaut jamais validation.
+    Two-tier anti-dump gate (night of 2026-07-05: 10/23 aberrant merges, the
+    "dump everything into one survivor" pattern). Measured over the 62 applied
+    merges: neither embedding similarity nor per-target counting separates sound
+    from aberrant — the discriminant is semantic, hence an LLM judge.
+    FAIL-CLOSED: a transport/parse/timeout error or an index absent from the
+    answer → held back; the judge's silence is never a validation.
     """
     if not merges:
         return set()
@@ -1096,13 +1095,13 @@ async def judge_merges(
 
 
 async def persist_proposals(session_factory: Any, drafts: list[CurationDraft]) -> PersistResult:
-    """INSERT proposals status='proposed', en dédupliquant contre l'existant.
+    """INSERT proposals with status='proposed', deduplicating against existing rows.
 
-    Dedup inter-nuits (finding 2026-07-04) : en dry les features ne bougent
-    pas, chaque nuit re-proposerait les mêmes ops. Une row identique
-    (op + feature_id + payload, égalité JSONB sémantique) suffit à skipper :
-    'proposed' → refresh (l'id est retourné, le wet du run l'applique) ;
-    'rejected' → skip définitif (pas de résurrection en review).
+    Cross-night dedup (finding of 2026-07-04): in dry the features do not move,
+    so every night would re-propose the same ops. An identical row (op +
+    feature_id + payload, semantic JSONB equality) is enough to skip:
+    'proposed' → refresh (the id is returned, the run's wet applies it);
+    'rejected' → definitive skip (no resurrection at review).
     """
     from brain_v42.db.tables import roadmap_curation_proposals  # noqa: PLC0415
 
@@ -1121,8 +1120,8 @@ async def persist_proposals(session_factory: Any, drafts: list[CurationDraft]) -
                         t.c.payload == draft.payload,
                         t.c.status.in_(("proposed", "rejected")),
                     )
-                    # asc : 'proposed' < 'rejected' — si les deux existent,
-                    # le refresh gagne sur le skip définitif.
+                    # asc: 'proposed' < 'rejected' — if both exist, the
+                    # refresh wins over the definitive skip.
                     .order_by(t.c.status)
                     .limit(1)
                 )
@@ -1156,9 +1155,9 @@ async def apply_proposals(
 ) -> int:
     """CLI facade applying reviewed proposals — one transaction per proposal.
 
-    allowed_ops : en wet nocturne, WET_APPLYABLE_OPS ; None (--apply-ids,
-    review humaine) = toutes les ops. Une post-condition en échec rollback
-    la proposal (elle reste 'proposed') et on continue.
+    allowed_ops: in the nightly wet, WET_APPLYABLE_OPS; None (--apply-ids,
+    human review) = every op. A failed post-condition rolls the proposal back
+    (it stays 'proposed') and we continue.
     """
     from brain_v42.services.proposal_service import (  # noqa: PLC0415
         ProposalApplyError,
@@ -1194,10 +1193,10 @@ def _degradation_notice(
     scanned: int,
     primary_errors: list[str],
 ) -> str | None:
-    """Phrase de dégradation quand le run a été servi par le secours, sinon None.
+    """Degradation sentence when the run was served by the fallback, else None.
 
-    Ne parle que si le secours a réellement servi : une alarme qui se
-    déclenche toutes les nuits cesse d'être lue (postmortem Dream 08-04).
+    Speaks only if the fallback actually served: an alarm that fires every night
+    stops being read (Dream postmortem 08-04).
     """
     if not fallback_batches or not scanned:
         return None
@@ -1324,12 +1323,12 @@ def main() -> int:
         default_fallback_model = DEFAULT_ROADMAP_FALLBACK_MODEL
     fallback_model = os.environ.get(_ROADMAP_FALLBACK_MODEL_VAR) or default_fallback_model
     if fallback_model == model:
-        # curate_batch traite un secours égal au primaire comme AUCUN secours
-        # (has_fallback=False), en silence. Le cas n'arrive que par override —
-        # les constantes sont gardées distinctes par test_roadmap_model_chain —
-        # et il mérite un bruit : une chaîne à un maillon qui se croit à deux
-        # est la panne du 2026-08-28 (secours mort découvert au milieu de la
-        # nuit), en pire, parce qu'ici personne ne l'a même configurée.
+        # curate_batch treats a fallback equal to the primary as NO fallback
+        # (has_fallback=False), silently. The case only happens through an
+        # override — the constants are kept distinct by test_roadmap_model_chain
+        # — and it deserves noise: a one-link chain that believes it has two is
+        # the failure of 2026-08-28 (a dead fallback discovered mid-night), only
+        # worse, because here nobody even configured it.
         print(
             f"WARN secours identique au primaire ({model}) : la chaîne roadmap "
             "tourne à UN seul maillon (has_fallback=False)"
@@ -1388,12 +1387,12 @@ async def _run(
         await record_dream_run(sf, "done", dry=False, duration_s=duration, error=None)
         return 0
 
-    # Propose mode (dry ou wet) — persist ET apply incrémentaux batch par
-    # batch (nuit 2026-07-05 : SIGTERM à 20 m en plein batch 7/10, l'apply
-    # terminal n'a jamais tourné → 24 proposals 'proposed' jamais appliquées).
-    # Le budget nuit coupe AVANT le SIGTERM shell : fin propre, row
-    # dream_runs toujours écrite, la rotation resservira les projets restants.
-    # Log de progression flush=True (stdout block-bufferisé sous >>).
+    # Propose mode (dry or wet) — persist AND apply incrementally, batch by
+    # batch (night of 2026-07-05: SIGTERM at 20 m in the middle of batch 7/10,
+    # the terminal apply never ran → 24 'proposed' proposals never applied). The
+    # night budget cuts BEFORE the shell SIGTERM: a clean end, the dream_runs row
+    # always written, and the rotation will serve the remaining projects.
+    # Progress log with flush=True (stdout is block-buffered under >>).
     batches = await fetch_project_batches(sf, args.limit)
     if not batches:
         print("Aucune feature vivante — rien à curer.", flush=True)
@@ -1417,8 +1416,8 @@ async def _run(
     failed = 0
     total = len(batches)
     disabled_models: set[str] = set()
-    # Dégradation silencieuse : un secours qui réussit rendait la panne du
-    # primaire invisible (qwen 80B mort le 2026-07-27, dix nuits vertes).
+    # Silent degradation: a fallback that succeeds made the primary's failure
+    # invisible (qwen 80B died on 2026-07-27, ten green nights).
     fallback_batches = 0
     primary_errors: list[str] = []
     last_model_used: str | None = None
@@ -1442,8 +1441,9 @@ async def _run(
                 )
                 break
             t_batch = time.monotonic()
-            # Fenêtre LLM fair-share : un gros projet ne mange plus la part
-            # des suivants (nuit 2026-07-10 : red 383s → 5 projets reportés).
+            # Fair-share LLM window: a large project no longer eats the share
+            # of the next ones (night of 2026-07-10: red 383 s → 5 projects
+            # deferred).
             outcome = await curate_batch(
                 http_client,
                 model,
@@ -1479,9 +1479,9 @@ async def _run(
             kept, noops = drop_noops(outcome.drafts, batch)
             allowance = batch_allowance(remaining_cap, total - i + 1)
             to_persist, cap_dropped = kept[:allowance], kept[allowance:]
-            # Gate anti-dump two-tier (wet) : les merges recalés par le juge
-            # sont persistés 'proposed' (review du matin) mais JAMAIS
-            # auto-appliqués — fail-closed dans judge_merges.
+            # Two-tier anti-dump gate (wet): the merges the judge holds back
+            # are persisted 'proposed' (for the morning review) but NEVER
+            # auto-applied — fail-closed inside judge_merges.
             held_drafts: list[CurationDraft] = []
             if auto_apply_outcome:
                 assert outcome_model is not None
@@ -1515,7 +1515,7 @@ async def _run(
                     f"(pas de troncature silencieuse)",
                     flush=True,
                 )
-            # Apply PAR BATCH : un SIGTERM ne perd que le batch en vol.
+            # Apply PER BATCH: a SIGTERM loses only the batch in flight.
             if auto_apply_outcome and (res.inserted or res.refreshed):
                 applied_total += await apply_proposals(
                     sf, res.inserted + res.refreshed, allowed_ops=WET_APPLYABLE_OPS
@@ -1554,10 +1554,10 @@ async def _run(
 
     duration = clock() - t0
     status = "fail" if any_failed else "done"
-    # `degraded` voyage dans error_message SANS toucher au statut : le
-    # briefing ne lit que les rows status != 'done' pour son bloc « Last
-    # failure », donc la dégradation reste interrogeable sans déclencher une
-    # alarme sur un comportement qui, lui, n'a rien cassé.
+    # `degraded` travels in error_message WITHOUT touching the status: the
+    # briefing reads only rows with status != 'done' for its "Last failure"
+    # block, so the degradation stays queryable without raising an alarm over
+    # behaviour that broke nothing.
     await record_dream_run(
         sf,
         status=status,

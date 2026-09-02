@@ -600,7 +600,7 @@ class MetricsCollector(_DbCollectorsMixin, _DreamCollectorsMixin, _NightlyCollec
                     row = (
                         await session.execute(
                             text(
-                                f"SELECT COUNT(*), "  # noqa: S608  # nosec B608 - fragment = `table_name`, qui n'itère que `tables_with_embeddings`, les 5 valeurs littérales du dict local `embedding_tables` 36 lignes plus haut ; `collect_db_stats(self)` n'a aucun paramètre, `embedding_dimension` passe par le bind :dim ; exception revue le 2026-08-16, à réexaminer avant le 2026-09-30
+                                f"SELECT COUNT(*), "  # noqa: S608  # nosec B608 - fragment = `table_name`, which iterates only `tables_with_embeddings`, the 5 literal values of the local `embedding_tables` dict 36 lines above; `collect_db_stats(self)` takes no parameter, `embedding_dimension` goes through the :dim bind; exception reviewed on 2026-08-16, to be re-examined before 2026-09-30
                                 f"COUNT(embedding), "
                                 f"COUNT(*) - COUNT(embedding), "
                                 f"COALESCE(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - "
@@ -638,7 +638,7 @@ class MetricsCollector(_DbCollectorsMixin, _DreamCollectorsMixin, _NightlyCollec
                     row_count = (
                         await session.execute(
                             text(
-                                f"SELECT COUNT(*) FROM {table_name} "  # noqa: S608  # nosec B608 - même fragment `table_name` que ci-dessus : la boucle relit `tables_with_embeddings`, dérivé du dict littéral local `embedding_tables` ; la seule valeur variable, `settings.embedding_dimension`, passe par le bind :dim et n'est pas interpolée ; exception revue le 2026-08-16, à réexaminer avant le 2026-09-30
+                                f"SELECT COUNT(*) FROM {table_name} "  # noqa: S608  # nosec B608 - the same `table_name` fragment as above: the loop re-reads `tables_with_embeddings`, derived from the local literal dict `embedding_tables`; the only variable value, `settings.embedding_dimension`, goes through the :dim bind and is not interpolated; exception reviewed on 2026-08-16, to be re-examined before 2026-09-30
                                 f"WHERE embedding IS NOT NULL "
                                 f"AND vector_dims(embedding) != :dim"
                             ),

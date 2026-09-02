@@ -141,17 +141,18 @@ def register_roadmap_tools(
     async def brain_feature_update(feature: str, status: str, project_key: str) -> str:
         """Update a roadmap feature's status (write-back livraison → roadmap).
 
-        `feature` accepte : nom exact, préfixe d'id git-style (≥8 hex, tirets
-        ignorés) ou fragment unique du nom (ILIKE). Ambiguïté → erreur listant
-        les candidats (id + nom).
+        `feature` accepts: exact name, git-style id prefix (≥8 hex, dashes
+        ignored) or a unique fragment of the name (ILIKE). Ambiguity → an error
+        listing the candidates (id + name).
 
-        `status` : planned | research | design | building | deployed | done |
-        archived (une session peut archiver une fausse feature à la main).
+        `status`: planned | research | design | building | deployed | done |
+        archived (a session can archive a spurious feature by hand).
 
-        Side-effects : status_updated_at=now(), pinned=true — même contrat que
-        brain_update_project_focus(feature_status=…), qui reste fonctionnel.
+        Side effects: status_updated_at=now(), pinned=true — the same contract as
+        brain_update_project_focus(feature_status=…), which stays functional.
 
-        Consigne : feature livrée → brain_feature_update(name, 'deployed'|'done').
+        Rule of thumb: feature delivered → brain_feature_update(name,
+        'deployed'|'done').
         """
         project_key = canonicalize_project_key(project_key, strict=False)
         logger.debug(

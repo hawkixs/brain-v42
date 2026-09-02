@@ -35,20 +35,20 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 FocusRevisionArg = Annotated[int, Field(ge=0, strict=True)]
 
-#: La borne de `project_contexts.current_focus`, PARTAGÉE avec `next_focus` de
-#: `brain_session_end` — la même constante, pas un second littéral.
+#: The bound of `project_contexts.current_focus`, SHARED with `brain_session_end`'s
+#: `next_focus` — the same constant, not a second literal.
 #:
-#: Elle est partagée parce que c'est la même COLONNE : `next_focus` DEVIENT
-#: `current_focus` quand le compare-and-swap de la fermeture réussit. Deux
-#: bornes distinctes laissaient l'écrivain non borné mettre le projet dans un
-#: état que l'écrivain borné ne savait plus représenter — une session honnête
-#: devenait alors incapable de fermer (`bfb4cf93`). C'est l'inverse exact du
-#: raisonnement qui garde `SummaryArg` séparé : `summary` n'écrit rien dans
-#: `project_contexts`, donc son plafond n'a aucune raison de suivre celui-ci.
+#: It is shared because it is the same COLUMN: `next_focus` BECOMES
+#: `current_focus` when the closing compare-and-swap succeeds. Two distinct
+#: bounds let the unbounded writer put the project into a state the bounded
+#: writer could no longer represent — an honest session then became unable to
+#: close (`bfb4cf93`). This is the exact opposite of the reasoning that keeps
+#: `SummaryArg` separate: `summary` writes nothing into `project_contexts`, so
+#: its cap has no reason to follow this one.
 #:
-#: Elle compte des CARACTÈRES, comme `maxLength` de Pydantic, jamais des octets :
-#: le focus réel de `brain-v42` faisait 9 977 caractères pour 10 285 OCTETS, donc
-#: une borne en octets serait déjà franchie sur un focus parfaitement légal.
+#: It counts CHARACTERS, like Pydantic's `maxLength`, never bytes: `brain-v42`'s
+#: real focus was 9,977 characters for 10,285 BYTES, so a byte bound would
+#: already be crossed by a perfectly legal focus.
 ProjectFocusArg = Annotated[str, Field(max_length=NEXT_FOCUS_MAX_LENGTH)]
 
 

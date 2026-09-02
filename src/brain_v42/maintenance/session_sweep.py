@@ -1,27 +1,27 @@
-"""Phase Dream `sweep` — tarir les sessions ouvertes sans signe de vie.
+"""Dream `sweep` phase — drain the open sessions that show no sign of life.
 
-Spec : docs/superpowers/specs/2026-08-07-session-lifecycle-sweep-design.md
-M-G : docs/design/refonte-projets-sessions/SPEC-M-G.md §4 (seuil d'éligibilité).
+Spec: docs/superpowers/specs/2026-08-07-session-lifecycle-sweep-design.md
+M-G: docs/design/refonte-projets-sessions/SPEC-M-G.md §4 (eligibility threshold).
 
-Déterministe et sans modèle : aucun appel LLM, aucun réseau. La row
-``dream_runs`` porte donc ``model = NULL`` — forme déjà admise, observée sur
-``extract`` et sur le run ``roadmap`` du 2026-08-05.
+Deterministic and model-free: no LLM call, no network. The ``dream_runs`` row
+therefore carries ``model = NULL`` — an already accepted shape, observed on
+``extract`` and on the ``roadmap`` run of 2026-08-05.
 
-**DEUX règles, UN statement, deux compteurs.** La règle 7 j abandonne les
-sessions sans heartbeat ; la règle 4 h ferme les traçantes ``agent`` inobservées
-en ``closed_inactive``. Les deux issues sont comptées SÉPARÉMENT : ``abandoned``
-porte une raison et jamais de ledger, ``closed_inactive`` porte son ledger et
-aucune raison — les additionner effacerait la distinction que la 046 a coûté une
-migration à créer.
+**TWO rules, ONE statement, two counters.** The 7 d rule abandons sessions with
+no heartbeat; the 4 h rule closes unobserved ``agent`` tracers as
+``closed_inactive``. The two outcomes are counted SEPARATELY: ``abandoned``
+carries a reason and never a ledger, ``closed_inactive`` carries its ledger and
+no reason — adding them would erase the distinction 046 cost a migration to
+create.
 
-Livré DRY : ``--wet`` est le seul chemin qui écrit. Et la règle 4 h est livrée
-FERMÉE par-dessus, derrière ``BRAIN_SESSION_INACTIVE_SWEEP_ENABLED`` : cette
-phase tourne WET toutes les nuits depuis le dépôt, donc merger la règle sans
-drapeau l'armerait dès la nuit suivante.
+Shipped DRY: ``--wet`` is the only path that writes. And the 4 h rule is shipped
+CLOSED on top of that, behind ``BRAIN_SESSION_INACTIVE_SWEEP_ENABLED``: this
+phase runs WET every night from the repository, so merging the rule without a
+flag would arm it from the following night.
 
 Usage:
-    python -m brain_v42.maintenance.session_sweep           # dry (défaut)
-    python -m brain_v42.maintenance.session_sweep --wet     # applique
+    python -m brain_v42.maintenance.session_sweep           # dry (default)
+    python -m brain_v42.maintenance.session_sweep --wet     # applies
 """
 
 from __future__ import annotations
@@ -66,8 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--older-than-days",
         type=_positive_int,
-        # Défaut LU de la constante, jamais recopié : deux exemplaires d'un
-        # même seuil, c'est le défaut de classe du learning 8dc7e042.
+        # Default READ from the constant, never copied: two copies of one
+        # threshold is the class of defect learning 8dc7e042 records.
         default=AUTO_STALE_AFTER.days,
         help=f"seuil en jours (défaut : {AUTO_STALE_AFTER.days}, depuis AUTO_STALE_AFTER)",
     )
@@ -75,16 +75,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def render_report(result: BrainSessionSweepResult) -> str:
-    """Rapport texte du balayage, pour le log daté de la nuit.
+    """Text report of the sweep, for the night's dated log.
 
-    Les deux issues sont nommées SÉPARÉMENT sur l'en-tête et sur chaque ligne.
-    Un journal qui dirait « 17 sessions traitées » laisserait un lecteur pressé
-    conclure « 17 abandons » — et l'écart entre les deux règles est précisément
-    ce qu'on surveille pendant la fenêtre d'observation.
+    The two outcomes are named SEPARATELY in the header and on every line. A log
+    saying "17 sessions processed" would let a hurried reader conclude "17
+    abandonments" — and the gap between the two rules is precisely what the
+    observation window is watching.
 
-    ``inactive_cutoff=off`` dit que la règle 4 h est FERMÉE. Ne pas l'écrire
-    laisserait lire une nuit à zéro fermeture comme « aucune traçante inactive »,
-    alors que la règle n'a même pas été évaluée — un plafond silencieux.
+    ``inactive_cutoff=off`` says the 4 h rule is CLOSED. Leaving it out would let
+    a night with zero closures read as "no inactive tracer", when the rule was
+    not even evaluated — a silent ceiling.
     """
     mode = "DRY" if result.dry_run else "WET"
     cutoff = result.cutoff.isoformat(timespec="seconds")
@@ -116,12 +116,11 @@ def render_report(result: BrainSessionSweepResult) -> str:
 
 
 def _tally(result: BrainSessionSweepResult) -> dict[BrainSessionStatus, int]:
-    """Compter par issue, y compris en DRY.
+    """Count per outcome, in DRY too.
 
-    Les compteurs du RÉSULTAT restent à zéro en DRY — c'est leur contrat, pour
-    qu'aucun journal ne lise « 17 fermées » là où rien n'a été écrit. Le rapport
-    a besoin de l'autre chiffre, celui du dénombrement : il le dérive ici, sous
-    un verbe au conditionnel.
+    The RESULT counters stay at zero in DRY — that is their contract, so no log
+    reads "17 closed" where nothing was written. The report needs the other
+    number, the enumeration: it derives it here, under a conditional verb.
     """
     tally = dict.fromkeys((BrainSessionStatus.ABANDONED, BrainSessionStatus.CLOSED_INACTIVE), 0)
     for candidate in result.candidates:
@@ -130,7 +129,7 @@ def _tally(result: BrainSessionSweepResult) -> dict[BrainSessionStatus, int]:
 
 
 def _stamp(value: Any) -> str:
-    """``NULL`` se lit « jamais observée », jamais « observée il y a longtemps »."""
+    """``NULL`` reads "never observed", never "observed a long time ago"."""
     return "never" if value is None else value.isoformat(timespec="seconds")
 
 
@@ -142,13 +141,13 @@ async def record_dream_run(
     error: str | None,
     closed_inactive_count: int | None = None,
 ) -> None:
-    """INSERT dream_runs pour phase='sweep'. Best-effort — ne lève jamais.
+    """INSERT dream_runs for phase='sweep'. Best-effort — never raises.
 
-    `model` reste NULL : la phase n'appelle aucun modèle. `project_key` reçoit
-    la sentinelle : `sweep` est une phase GLOBALE, elle sort de la boucle et
-    balaie les sessions de tous les projets d'un coup. La sentinelle entre par
-    un paramètre lié, jamais par un flag — `test_dream_sh_sweep.py` épingle
-    `sweep_args` à `["--wet"]` et refuse tout argument de plus.
+    `model` stays NULL: the phase calls no model. `project_key` receives the
+    sentinel: `sweep` is a GLOBAL phase, it sits outside the loop and sweeps
+    every project's sessions at once. The sentinel enters through a bound
+    parameter, never through a flag — `test_dream_sh_sweep.py` pins
+    `sweep_args` to `["--wet"]` and refuses any further argument.
     """
     try:
         async with session_factory() as session:
@@ -169,15 +168,14 @@ async def record_dream_run(
                         "error_message": error,
                         "project_key": GLOBAL_PHASE_PROJECT_KEY,
                         "phase_dry_run": dry,
-                        # NULL — jamais 0 — quand la nuit a échoué avant de
-                        # compter, ou en DRY : « pas évalué » n'est pas « zéro
-                        # fermeture ». La série de la 049 (ticket 24ca3b73) ne
-                        # porte que des nuits où la règle 4 h a réellement
-                        # tourné en WET.
+                        # NULL — never 0 — when the night failed before
+                        # counting, or in DRY: "not evaluated" is not "zero
+                        # closures". The 049 series (ticket 24ca3b73) carries
+                        # only nights where the 4 h rule actually ran in WET.
                         "closed_inactive_count": closed_inactive_count,
                     },
                 )
-    except Exception as exc:  # noqa: BLE001 — la trace ne doit jamais tuer la phase
+    except Exception as exc:  # noqa: BLE001 — the trace must never kill the phase
         print(f"! warning: could not record dream_run: {exc}", file=sys.stderr)
 
 
@@ -194,10 +192,10 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"Config invalide: {exc}", file=sys.stderr)
         return 2
 
-    # `None` ferme la règle des 4 h ET le dit au rapport. Le drapeau est lu ICI,
-    # une fois, et jamais dans le dépôt : le dépôt reçoit un seuil ou rien, donc
-    # un test peut prouver la règle sans monter de configuration, et la décision
-    # d'armement reste à un seul endroit.
+    # `None` closes the 4 h rule AND says so in the report. The flag is read
+    # HERE, once, and never in the repository: the repository receives a
+    # threshold or nothing, so a test can prove the rule without standing up a
+    # configuration, and the arming decision stays in one place.
     close_inactive_after = (
         AGENT_INACTIVE_AFTER if settings.brain_session_inactive_sweep_enabled else None
     )
@@ -209,12 +207,13 @@ async def _run(args: argparse.Namespace) -> int:
         result = await PgBrainSessionRepo(session_factory).sweep_open_sessions(
             older_than=timedelta(days=args.older_than_days),
             close_inactive_after=close_inactive_after,
-            # Dérivé du seuil RÉELLEMENT utilisé, jamais laissé au défaut de
-            # sweep_open_sessions : au seuil par défaut ça reproduit exactement
-            # la constante AUTO_STALE_ABANDONMENT_REASON (épinglé par
-            # test_default_threshold_reason_matches_the_module_constant) ;
-            # à tout autre seuil, la constante mentirait sur ce qui a été
-            # réellement mesuré (finding de revue de la Task 1, adjudiqué).
+            # Derived from the threshold ACTUALLY used, never left to
+            # sweep_open_sessions' default: at the default threshold this
+            # reproduces the AUTO_STALE_ABANDONMENT_REASON constant exactly
+            # (pinned by
+            # test_default_threshold_reason_matches_the_module_constant); at any
+            # other threshold the constant would lie about what was really
+            # measured (Task 1 review finding, adjudicated).
             reason=f"auto_stale_{args.older_than_days}d",
             dry_run=dry,
         )
@@ -233,9 +232,9 @@ async def _run(args: argparse.Namespace) -> int:
         dry=dry,
         duration_s=time.monotonic() - started,
         error=None,
-        # La série de la 049 : NULL en DRY (rien n'a fermé, « pas évalué »
-        # n'est pas « zéro »), le compteur DISTINCT en WET — jamais additionné
-        # aux abandons, qui sont l'événement de sens opposé (ticket 24ca3b73).
+        # The 049 series: NULL in DRY (nothing closed, "not evaluated" is not
+        # "zero"), the DISTINCT counter in WET — never added to abandonments,
+        # which are the event of opposite meaning (ticket 24ca3b73).
         closed_inactive_count=None if dry else result.closed_inactive_count,
     )
     return 0

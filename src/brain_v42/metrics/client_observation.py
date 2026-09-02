@@ -1,8 +1,8 @@
-"""Format de fil des observations d'activité poussées par le processus MCP.
+"""Wire format of the activity observations pushed by the MCP process.
 
-Le middleware de provenance vit dans le serveur MCP (:8765), le registre dans
-le sidecar métriques (:9200). Ce module décrit le peu qui traverse la socket
-loopback entre les deux, avec les mêmes bornes que le récepteur OTLP.
+The provenance middleware lives in the MCP server (:8765), the registry in the
+metrics sidecar (:9200). This module describes the little that crosses the
+loopback socket between the two, with the same bounds as the OTLP receiver.
 """
 
 from __future__ import annotations
@@ -26,10 +26,10 @@ class ClientObservation:
     actor: str
     session_id: str | None
     calls: int
-    # Identifiant de CONNEXION frappé par le serveur, distinct de ``session_id``
-    # qui identifie une conversation d'agent. Le premier ne joint rien côté
-    # OTLP ; le second est la clé de jointure. Un seul champ pour les deux
-    # produirait des lignes annonçant une jointure qu'elles ne feront jamais.
+    # CONNECTION identifier minted by the server, distinct from ``session_id``
+    # which identifies an agent conversation. The first joins nothing on the
+    # OTLP side; the second is the join key. A single field for both would
+    # produce rows announcing a join they will never make.
     transport: str | None = None
 
 
@@ -65,9 +65,10 @@ def decode_observations(payload: bytes) -> tuple[ClientObservation, ...]:
                 actor=normalize_agent(actor),
                 session_id=normalize_session(session if isinstance(session, str) else None),
                 calls=calls,
-                # Illisible vaut « non déclaré », jamais un refus du lot : un
-                # lot porte jusqu'à MAX_OBSERVATIONS mesures, et lever sur une
-                # seule valeur douteuse en jetterait 63 honnêtes avec elle.
+                # Unreadable counts as "not declared", never a refusal of the
+                # batch: a batch carries up to MAX_OBSERVATIONS measurements,
+                # and raising on a single doubtful value would throw 63 honest
+                # ones away with it.
                 transport=normalize_transport(transport if isinstance(transport, str) else None),
             )
         )

@@ -268,32 +268,30 @@ class DreamCapabilityMiddleware(Middleware):
         principal: DreamCapabilityPrincipal,
         tool_name: str,
     ) -> None:
-        """Compter les appels dont les DEUX identités ne concordent pas.
+        """Count the calls whose TWO identities do not agree.
 
-        Chaque appel dream en porte deux, dans des espaces de noms séparés :
-        celle du JETON — `client_id`, vérifiée strictement, la borne de capacité
-        repose dessus — et celle de l'ACTEUR, l'en-tête `X-Brain-Agent` déclaré
-        par le client et confronté à rien.
+        Every dream call carries two, in separate namespaces: the TOKEN's —
+        `client_id`, strictly verified, the capability bound rests on it — and
+        the ACTOR's, the `X-Brain-Agent` header declared by the client and
+        checked against nothing.
 
-        Ce n'est pas un contournement de périmètre : la borne porte sur le
-        jeton et elle tient. C'est un défaut d'ATTRIBUTION, et il est
-        STRUCTUREL — le registre ne frappe que des profils `dream-codex-*`,
-        tandis que la chaîne de repli fait tourner des runners qui annoncent
-        `dream-agy-*` et `dream-claude-*`. Deux rails sur trois divergent à
-        chaque appel, par construction.
+        This is not a scope bypass: the bound is on the token and it holds. It is
+        an ATTRIBUTION defect, and it is STRUCTURAL — the registry only mints
+        `dream-codex-*` profiles, while the fallback chain runs runners that
+        announce `dream-agy-*` and `dream-claude-*`. Two rails out of three
+        diverge on every call, by construction.
 
-        ON NE REFUSE RIEN. Refuser casserait le rail de repli, c'est-à-dire la
-        nuit où le rail principal est déjà tombé. Dériver l'acteur du jeton
-        effacerait « quel rail a réellement tourné », la seule chose qui a permis
-        de mesurer le ratio. Journaliser produit le dénominateur dont les deux
-        autres formes ont besoin, et il n'existe AUCUNE autre source :
-        `access_log.actor` est drainé toutes les 300 s, rien dans journald ne
-        porte l'acteur par appel, et `dream_runs` n'a pas de colonne d'acteur.
+        WE REFUSE NOTHING. Refusing would break the fallback rail, that is, the
+        night on which the main rail has already gone down. Deriving the actor
+        from the token would erase "which rail actually ran", the one thing that
+        made measuring the ratio possible. Logging produces the denominator the
+        other two forms need, and there is NO other source: `access_log.actor` is
+        drained every 300 s, nothing in journald carries the per-call actor, and
+        `dream_runs` has no actor column.
 
-        L'`except` est TOTAL et étroitement scopé, pour la même raison que
-        `ProvenanceMiddleware._report` : un canal d'observation ne peut pas être
-        un point de défaillance de l'opération observée. Au pire, une ligne
-        manque.
+        The `except` is TOTAL and tightly scoped, for the same reason as
+        `ProvenanceMiddleware._report`: an observation channel cannot be a point
+        of failure for the operation it observes. At worst, one line is missing.
         """
         try:
             actor = get_current_actor()

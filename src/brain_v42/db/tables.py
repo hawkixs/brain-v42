@@ -401,9 +401,9 @@ decisions = Table(
         postgresql_with={"m": 16, "ef_construction": 64},
         postgresql_ops={"embedding": "vector_cosine_ops"},
     ),
-    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
-    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
-    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # CHECKs carried by the alembic chain and long absent from here: a
+    # create_all() bench accepted what production refuses (8f59f6b7, widened in
+    # PR 44 — 18 CHECKs on 12 tables). Parity is guarded across every table by
     # tests/integration/db/test_fresh_head_is_the_yardstick.py.
     sa.CheckConstraint(
         "status IN ('active', 'superseded', 'deprecated')",
@@ -470,9 +470,9 @@ learnings = Table(
         postgresql_with={"m": 16, "ef_construction": 64},
         postgresql_ops={"embedding": "vector_cosine_ops"},
     ),
-    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
-    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
-    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # CHECKs carried by the alembic chain and long absent from here: a
+    # create_all() bench accepted what production refuses (8f59f6b7, widened in
+    # PR 44 — 18 CHECKs on 12 tables). Parity is guarded across every table by
     # tests/integration/db/test_fresh_head_is_the_yardstick.py.
     sa.CheckConstraint(
         "confidence IN ('low', 'medium', 'high')",
@@ -549,9 +549,9 @@ snippets = Table(
         postgresql_with={"m": 16, "ef_construction": 64},
         postgresql_ops={"embedding": "vector_cosine_ops"},
     ),
-    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
-    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
-    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # CHECKs carried by the alembic chain and long absent from here: a
+    # create_all() bench accepted what production refuses (8f59f6b7, widened in
+    # PR 44 — 18 CHECKs on 12 tables). Parity is guarded across every table by
     # tests/integration/db/test_fresh_head_is_the_yardstick.py.
     sa.CheckConstraint(
         "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive', 'manual_update', 'plan_reindex')",
@@ -618,9 +618,9 @@ runbooks = Table(
         postgresql_with={"m": 16, "ef_construction": 64},
         postgresql_ops={"embedding": "vector_cosine_ops"},
     ),
-    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
-    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
-    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # CHECKs carried by the alembic chain and long absent from here: a
+    # create_all() bench accepted what production refuses (8f59f6b7, widened in
+    # PR 44 — 18 CHECKs on 12 tables). Parity is guarded across every table by
     # tests/integration/db/test_fresh_head_is_the_yardstick.py.
     sa.CheckConstraint(
         "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive', 'manual_update', 'plan_reindex')",
@@ -693,9 +693,9 @@ adrs = Table(
         postgresql_with={"m": 16, "ef_construction": 64},
         postgresql_ops={"embedding": "vector_cosine_ops"},
     ),
-    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
-    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
-    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # CHECKs carried by the alembic chain and long absent from here: a
+    # create_all() bench accepted what production refuses (8f59f6b7, widened in
+    # PR 44 — 18 CHECKs on 12 tables). Parity is guarded across every table by
     # tests/integration/db/test_fresh_head_is_the_yardstick.py.
     sa.CheckConstraint(
         "status IN ('proposed', 'accepted', 'deprecated', 'superseded')",
@@ -709,7 +709,8 @@ adrs = Table(
 
 # ─── project_contexts ─────────────────────────────────────────────────────────
 # NOTE: No embedding or search_vector columns — per SCHEMA.md spec:
-# "Pas d'embedding ni de search_vector pour ProjectContext (pas de recherche sémantique)"
+# "no embedding and no search_vector for ProjectContext (no semantic search on
+# projects)"
 
 project_contexts = Table(
     "project_contexts",
@@ -765,9 +766,9 @@ project_contexts = Table(
     Index("idx_project_contexts_key", "project_key"),
     Index("idx_project_contexts_languages", "languages", postgresql_using="gin"),
     Index("idx_project_contexts_frameworks", "frameworks", postgresql_using="gin"),
-    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
-    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
-    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # CHECKs carried by the alembic chain and long absent from here: a
+    # create_all() bench accepted what production refuses (8f59f6b7, widened in
+    # PR 44 — 18 CHECKs on 12 tables). Parity is guarded across every table by
     # tests/integration/db/test_fresh_head_is_the_yardstick.py.
     sa.CheckConstraint(
         "project_key ~ '^[a-z0-9]+([:-][a-z0-9]+)*$'",
@@ -984,11 +985,11 @@ brain_session_artifacts = Table(
         nullable=False,
         server_default=sa.text("NOW()"),
     ),
-    # 048. PAR QUELLE CLÉ cette ligne a été attribuée. NULL = écrite avant la
-    # 048, jamais « inconnu par défaut » : aucun backfill, parce que poser
-    # 'explicit' partout mentirait sur ce que `derive_capture` avait déposé.
-    # `derived_window` est le seul mode DÉDUIT — c'est lui qu'un audit cherche,
-    # et c'est pour lui seul que la 048 pose un index partiel.
+    # 048. BY WHICH KEY this row was attributed. NULL = written before 048,
+    # never "unknown by default": no backfill, because stamping 'explicit'
+    # everywhere would lie about what `derive_capture` had deposited.
+    # `derived_window` is the only DERIVED mode — it is what an audit looks
+    # for, and it alone is why 048 installs a partial index.
     Column("attribution_mode", String(24), nullable=True),
     sa.CheckConstraint(
         "knowledge_type IN ('decision', 'learning', 'snippet', 'runbook', "
@@ -1092,9 +1093,9 @@ features = Table(
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     Index("idx_features_project_key", "project_key"),
     Index("idx_features_status", "status"),
-    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
-    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
-    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # CHECKs carried by the alembic chain and long absent from here: a
+    # create_all() bench accepted what production refuses (8f59f6b7, widened in
+    # PR 44 — 18 CHECKs on 12 tables). Parity is guarded across every table by
     # tests/integration/db/test_fresh_head_is_the_yardstick.py.
     sa.CheckConstraint(
         "status IN ('planned', 'research', 'design', 'building', 'deployed', 'done', 'archived')",
@@ -1118,9 +1119,9 @@ feature_artifacts = Table(
     UniqueConstraint("feature_id", "artifact_type", "artifact_id"),
     Index("idx_feature_artifacts_feature_id", "feature_id"),
     Index("idx_feature_artifacts_artifact", "artifact_type", "artifact_id"),
-    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
-    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
-    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # CHECKs carried by the alembic chain and long absent from here: a
+    # create_all() bench accepted what production refuses (8f59f6b7, widened in
+    # PR 44 — 18 CHECKs on 12 tables). Parity is guarded across every table by
     # tests/integration/db/test_fresh_head_is_the_yardstick.py.
     sa.CheckConstraint(
         "artifact_type IN ('learning', 'decision', 'snippet', 'runbook', 'adr', "
@@ -1265,9 +1266,9 @@ indexed_plans = Table(
     # list_plans() in pg_indexed_plan_repo sorts ORDER BY updated_at DESC;
     # this index eliminates the sort on large datasets.
     Index("idx_indexed_plans_updated_at", sa.text("updated_at DESC")),
-    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
-    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
-    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # CHECKs carried by the alembic chain and long absent from here: a
+    # create_all() bench accepted what production refuses (8f59f6b7, widened in
+    # PR 44 — 18 CHECKs on 12 tables). Parity is guarded across every table by
     # tests/integration/db/test_fresh_head_is_the_yardstick.py.
     sa.CheckConstraint(
         "status IN ('draft', 'active', 'archived')",
@@ -1342,9 +1343,9 @@ indexed_plan_chunks = Table(
         postgresql_using="gin",
     ),
     Index("idx_plan_chunks_pk_type", "project_key", "plan_type"),
-    # CHECK portés par la chaîne alembic et longtemps absents d'ici : un banc
-    # create_all() acceptait ce que la prod refuse (8f59f6b7, élargi en PR 44 —
-    # 18 CHECK sur 12 tables). La parité est gardée toutes tables par
+    # CHECKs carried by the alembic chain and long absent from here: a
+    # create_all() bench accepted what production refuses (8f59f6b7, widened in
+    # PR 44 — 18 CHECKs on 12 tables). Parity is guarded across every table by
     # tests/integration/db/test_fresh_head_is_the_yardstick.py.
     sa.CheckConstraint(
         "status IN ('draft', 'active', 'archived')",
@@ -1406,9 +1407,9 @@ dream_runs = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("run_date", sa.Date, nullable=False),
     Column("phase", String(10), nullable=False),
-    # Révision 045. 30 car. refusaient deux des cinq modèles de phase
-    # configurés, dont le secours WET — et l'INSERT best-effort perdait la
-    # LIGNE entière, pas la seule colonne.
+    # Revision 045. 30 chars refused two of the five configured phase models,
+    # including the WET fallback — and the best-effort INSERT lost the whole
+    # ROW, not just the column.
     Column("model", String(120)),
     Column("status", String(10), nullable=False),
     Column("duration_s", sa.Float),
@@ -1426,12 +1427,13 @@ dream_runs = Table(
         nullable=False,
         server_default=sa.text("false"),
     ),
-    # Révision 042. Nullable et sans défaut par conséquence mesurée, pas par
-    # prudence : aucun des six écrivains ne fait remonter son échec (spec §15.3).
-    # NULL = « écrit avant la 042 » ; '*' = phase globale, sans projet à nommer.
+    # Revision 042. Nullable and without a default as a measured consequence,
+    # not out of caution: none of the six writers surfaces its own failure
+    # (spec §15.3). NULL = "written before 042"; '*' = global phase, with no
+    # project to name.
     Column("project_key", String(64), nullable=True),
-    # Révision 049 — nullable, sans défaut : NULL = « écrit avant la 049 »,
-    # ou rail/phase qui ne mesure pas cette dimension. Jamais de backfill.
+    # Revision 049 — nullable, no default: NULL = "written before 049", or a
+    # rail/phase that does not measure this dimension. Never a backfill.
     Column("closed_inactive_count", Integer, nullable=True),
     Column("thinking_tokens", Integer, nullable=True),
     Column(
@@ -1518,8 +1520,8 @@ metrics_timeseries = Table(
 )
 
 # --- Tickets (coordination family — spec 2026-07-04) -----------------------
-# PAS d'embedding, PAS de search_vector, PAS de colonnes decay : les tickets
-# sont du transient adressé, hors famille mémoire (spec §1).
+# NO embedding, NO search_vector, NO decay columns: tickets are addressed
+# transients, outside the memory family (spec §1).
 
 tickets = Table(
     "tickets",
@@ -1694,9 +1696,9 @@ roadmap_curation_proposals = Table(
         server_default=sa.text("NOW()"),
     ),
     Column("applied_at", DateTime(timezone=True), nullable=True),
-    # Provenance d'apply (031) : états antérieurs + artifacts déplacés au
-    # merge — rend la défusion possible (constat 2026-07-05 : irréversible
-    # faute de trace, 86 artifacts commingés sur data-lab-endpoints).
+    # Provenance of apply (031): prior states + artifacts moved at merge —
+    # makes un-merging possible (finding of 2026-07-05: irreversible for lack
+    # of a trace, 86 artifacts commingled on data-lab-endpoints).
     Column("apply_log", JSONB, nullable=True),
     sa.CheckConstraint(
         "op IN ('merge', 'archive', 'status', 'rename')",

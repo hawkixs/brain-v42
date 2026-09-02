@@ -201,12 +201,12 @@ class LearningService:
         If embedding_svc is None, passes embedding=None (no embedding regeneration).
         If learning_id doesn't exist, repo.update() returns None.
 
-        La condition « topic ou insight fourni » n'est pas une optimisation :
-        sans elle, un update ne portant QUE ``freshness_status`` payait un
-        appel d'embedding — désarchiver un learning ÉCHOUAIT GPU à terre quand
-        une décision réussissait, l'inverse exact de cette docstring (mesuré
-        2026-08-23, ticket 5ab70135). Même forme que ``decision_service`` :
-        les quatre autres types ne touchent jamais le GPU pour un statut.
+        The "topic or insight supplied" condition is not an optimization:
+        without it, an update carrying ONLY ``freshness_status`` paid for an
+        embedding call — unarchiving a learning FAILED with the GPU down while a
+        decision succeeded, the exact opposite of this docstring (measured
+        2026-08-23, ticket 5ab70135). Same shape as ``decision_service``: the
+        other four types never touch the GPU for a status.
         """
         embedding: list[float] | None = None
 

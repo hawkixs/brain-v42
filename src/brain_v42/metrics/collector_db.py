@@ -139,7 +139,7 @@ class _DbCollectorsMixin:
                 rows = (
                     await session.execute(
                         text(
-                            "SELECT agent_name, pid, started_at, updated_at, "  # nosec B608 - les 2 seuls fragments sont les constantes importées PROCESS_METRICS_IS_LIVE_SQL et PROCESS_METRICS_FRESH_SQL (metrics/retention.py), figées sur les int littéraux 60 et 3600 ; `collect_process_metrics(self)` n'a aucun paramètre ; exception revue le 2026-08-16, à réexaminer avant le 2026-09-30
+                            "SELECT agent_name, pid, started_at, updated_at, "  # nosec B608 - the only 2 fragments are the imported constants PROCESS_METRICS_IS_LIVE_SQL and PROCESS_METRICS_FRESH_SQL (metrics/retention.py), frozen on the literal ints 60 and 3600; `collect_process_metrics(self)` takes no parameter; exception reviewed on 2026-08-16, to be re-examined before 2026-09-30
                             "tool_stats, embedding_stats, memory_rss_bytes, "
                             f"{PROCESS_METRICS_IS_LIVE_SQL} AS is_live "
                             "FROM process_metrics "
@@ -325,7 +325,7 @@ class _DbCollectorsMixin:
                     pg_count = (
                         await session.execute(
                             text(
-                                f"SELECT COUNT(*) FROM {table} "  # noqa: S608  # nosec B608 - fragment = `table`, clé du dict littéral de module `_PG_LABEL_MAP` (ligne 35) ; `collect_graph_inventory` ne reçoit qu'un `graph_svc` et aucun nom de table ; exception revue le 2026-08-16, à réexaminer avant le 2026-09-30
+                                f"SELECT COUNT(*) FROM {table} "  # noqa: S608  # nosec B608 - fragment = `table`, a key of the module-level literal dict `_PG_LABEL_MAP` (line 35); `collect_graph_inventory` receives only a `graph_svc` and no table name; exception reviewed on 2026-08-16, to be re-examined before 2026-09-30
                                 f"WHERE embedding IS NOT NULL"
                             )
                         )

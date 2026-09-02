@@ -1,24 +1,24 @@
-"""Identité du build : quelle version tourne, et quel schéma elle sait jouer.
+"""Build identity: which version is running, and which schema it can play.
 
-Les deux faits sont MESURÉS à l'exécution, jamais écrits à la main.
+Both facts are MEASURED at runtime, never written by hand.
 
-- La version vient du dist-info du paquet installé, pas de `pyproject.toml`.
-  La production tourne un install éditable : le dist-info est figé au moment
-  du `uv sync`. C'est précisément ce qu'on veut annoncer — ce qui tourne, et
-  non ce que le dépôt prétend décrire. Un écart entre les deux est un signal,
-  pas un bug à masquer.
-- La tête Alembic est dérivée des fichiers de révision LIVRÉS avec le paquet :
-  la révision que personne ne désigne comme parent. Un littéral dans ce module
-  serait la répétition d'une faute documentée du projet — le README a affirmé
-  « la production reste à 037 » pendant trois jours après la bascule en 039.
+- The version comes from the installed package's dist-info, not from
+  `pyproject.toml`. Production runs an editable install: the dist-info is frozen
+  at `uv sync` time. That is precisely what we want to announce — what is
+  running, and not what the repository claims to describe. A gap between the two
+  is a signal, not a bug to mask.
+- The Alembic head is derived from the revision files SHIPPED with the package:
+  the revision nobody names as a parent. A literal in this module would repeat a
+  documented mistake of this project — the README asserted "production stays at
+  037" for three days after the switch to 039.
 
-La lecture des fichiers passe par `ast`, sans exécuter les migrations : les
-importer pour connaître leur numéro coûterait 44 imports et des effets de bord,
-sur un chemin qui sert une sonde de liveness.
+Reading the files goes through `ast`, without executing the migrations:
+importing them to learn their number would cost 44 imports and side effects, on
+a path that serves a liveness probe.
 
-Les deux lectures sont mémoïsées. `/health` est appelée par un watchdog dont
-l'échec REDÉMARRE le serveur : rien de ce qui touche le disque ne doit y être
-payé par requête.
+Both reads are memoized. `/health` is called by a watchdog whose failure
+RESTARTS the server: nothing that touches the disk must be paid for there on
+every request.
 """
 
 from __future__ import annotations
@@ -28,19 +28,19 @@ import importlib.metadata
 from functools import cache
 from pathlib import Path
 
-#: Réponse quand aucune distribution n'est installée (arbre source nu).
+#: The answer when no distribution is installed (a bare source tree).
 DEV_VERSION = "dev"
 
 _DISTRIBUTION_NAME = "brain_v42"
 _REVISION_FIELD = "revision"
 _PARENT_FIELD = "down_revision"
-#: Une migration est un fichier de schéma, pas un corpus. Garde-fou de lecture.
+#: A migration is a schema file, not a corpus. A read guardrail.
 _MAX_REVISION_BYTES = 1024 * 1024
 
 
 @cache
 def package_version() -> str:
-    """Version de la distribution installée, ou `dev` si rien n'est installé."""
+    """Version of the installed distribution, or `dev` if nothing is installed."""
     try:
         return importlib.metadata.version(_DISTRIBUTION_NAME)
     except importlib.metadata.PackageNotFoundError:
@@ -48,7 +48,7 @@ def package_version() -> str:
 
 
 def _string_constants(node: ast.expr | None) -> set[str]:
-    """Les littéraux texte d'une valeur — couvre `None`, une str, un tuple."""
+    """The text literals of a value — covers `None`, a str, and a tuple."""
     if node is None:
         return set()
     return {
@@ -59,7 +59,7 @@ def _string_constants(node: ast.expr | None) -> set[str]:
 
 
 def _declared_fields(source: str) -> tuple[str | None, set[str]]:
-    """Extrait `revision` et les parents déclarés au niveau module."""
+    """Extract `revision` and the parents declared at module level."""
     revision: str | None = None
     parents: set[str] = set()
     for statement in ast.parse(source).body:
@@ -79,11 +79,11 @@ def _declared_fields(source: str) -> tuple[str | None, set[str]]:
 
 
 def head_of_versions(directory: Path) -> str | None:
-    """Tête de la chaîne portée par `directory`, ou None si elle est ambiguë.
+    """Head of the chain carried by `directory`, or None if it is ambiguous.
 
-    La tête est la révision qu'aucune autre ne déclare comme parent. Zéro
-    candidat (répertoire vide, chaîne cyclique) ou plusieurs (chaîne forkée)
-    ne se résument pas : mieux vaut n'annoncer aucun numéro qu'en inventer un.
+    The head is the revision no other declares as a parent. Zero candidates (an
+    empty directory, a cyclic chain) or several (a forked chain) do not reduce to
+    one: better to announce no number than to invent one.
     """
     revisions: set[str] = set()
     parents: set[str] = set()
@@ -103,11 +103,11 @@ def head_of_versions(directory: Path) -> str | None:
 
 
 def _versions_directory() -> Path | None:
-    """Localise les révisions dans les deux dispositions possibles.
+    """Locate the revisions in the two possible layouts.
 
-    Wheel : `force-include` les recopie sous le paquet importable.
-    Arbre source ou install éditable : elles vivent à la racine du dépôt,
-    deux niveaux au-dessus de `src/brain_v42/`.
+    Wheel: `force-include` copies them under the importable package. Source tree
+    or editable install: they live at the repository root, two levels above
+    `src/brain_v42/`.
     """
     package_root = Path(__file__).resolve().parent
     candidates = (
@@ -119,10 +119,10 @@ def _versions_directory() -> Path | None:
 
 @cache
 def shipped_alembic_head() -> str | None:
-    """Tête Alembic embarquée avec CE paquet, ou None si aucune ne l'est.
+    """The Alembic head shipped with THIS package, or None if none is.
 
-    None n'est pas un détail cosmétique : c'est un paquet incapable de migrer
-    sa propre base, et il doit le dire au lieu de se taire.
+    None is not a cosmetic detail: it is a package unable to migrate its own
+    database, and it must say so instead of staying silent.
     """
     directory = _versions_directory()
     return head_of_versions(directory) if directory is not None else None

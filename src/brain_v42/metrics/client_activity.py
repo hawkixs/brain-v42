@@ -48,12 +48,12 @@ _ACTOR_KEY_PREFIX = "actor:"
 _SESSION_KEY_PREFIX = "session-"
 _TRANSPORT_KEY_PREFIX = "transport-"
 
-# Un acteur est déclaré par le client et sert d'ÉTIQUETTE : identifiant de
-# ligne et libellé de panneau, jamais champ de texte. ``normalize_agent`` ne
-# borne que la longueur — même jeu de caractères que le ``model`` de l'OTLP,
-# qui est déjà filtré par ``_MODEL_PATTERN`` côté décodeur. ASCII strict et
-# volontaire : l'étiquette est une identité, et laisser passer l'unicode
-# ouvrirait l'usurpation par homoglyphe ou par inversion bidirectionnelle.
+# An actor is declared by the client and serves as a LABEL: row identifier and
+# panel caption, never a text field. ``normalize_agent`` bounds length only —
+# the same character set as OTLP's ``model``, which the decoder already filters
+# through ``_MODEL_PATTERN``. Strictly ASCII, and deliberately so: the label is
+# an identity, and letting unicode through would open impersonation by
+# homoglyph or by bidirectional override.
 _ACTOR_PATTERN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,63}\Z")
 _REJECTED_ACTOR = "_rejected"
 
@@ -63,19 +63,18 @@ def _local_now() -> datetime:
 
 
 def _project_actor(actor: str) -> str:
-    """Réduire un acteur déclaré à une étiquette projetable, ou à la sentinelle.
+    """Reduce a declared actor to a projectable label, or to the sentinel.
 
-    Tout ce qui sort du jeu autorisé s'effondre sur UN seul seau, plutôt que
-    de produire un pseudonyme par littéral : c'est déjà le choix de
-    ``normalize_agent`` pour ``_unexpanded`` et du décodeur OTLP pour
-    ``unknown``. Un seau unique borne aussi l'arrosage — mille étiquettes
-    hostiles occuperaient sinon mille des 64 places du registre et évinceraient
-    les acteurs légitimes.
+    Anything outside the allowed set collapses onto ONE bucket, rather than
+    producing a pseudonym per literal: that is already ``normalize_agent``'s
+    choice for ``_unexpanded`` and the OTLP decoder's for ``unknown``. A single
+    bucket also bounds flooding — a thousand hostile labels would otherwise
+    occupy a thousand of the registry's 64 slots and evict legitimate actors.
 
-    La sentinelle est un point fixe du filtre, donc l'assainissement est
-    idempotent. Un projet réellement nommé ``_rejected`` s'y confondrait, au
-    même titre qu'un projet nommé ``unknown`` se confond déjà avec l'absence
-    d'acteur : collision assumée, et sans conséquence sur une mesure.
+    The sentinel is a fixed point of the filter, so sanitizing is idempotent. A
+    project genuinely named ``_rejected`` would collide with it, just as a
+    project named ``unknown`` already collides with the absence of an actor:
+    an accepted collision, and one without consequence for a measurement.
     """
     return actor if _ACTOR_PATTERN.fullmatch(actor) else _REJECTED_ACTOR
 
@@ -143,12 +142,12 @@ class ClientActivityRegistry:
     def _session_key(self, identifier: str) -> str:
         """Hash a session identifier into the AGENT-NEUTRAL join key.
 
-        « Session » au sens de la jointure, pas d'un champ unique : le site
-        Codex passe ``record.conversation_id`` et c'est VOULU — pour Codex,
-        ``conversation.id`` EST son identifiant de session (mesuré strictement
-        égal, décision ``4890a475``). Le site Claude et la moitié brain passent
-        un ``session_id`` littéral. L'ancienne formulation (« a SESSION uuid »)
-        laissait croire que le site Codex se trompait de champ (863ff2ca).
+        "Session" in the sense of the join, not of a single field: the Codex
+        site passes ``record.conversation_id`` and that is INTENDED — for Codex,
+        ``conversation.id`` IS its session identifier (measured strictly equal,
+        decision ``4890a475``). The Claude site and the brain half pass a
+        literal ``session_id``. The old wording ("a SESSION uuid") suggested
+        the Codex site had the wrong field (863ff2ca).
 
         The brain side never learns which CLI is calling it: ``X-Brain-Agent``
         carries a project name, not a kind of agent. Salting this key with an
@@ -210,19 +209,19 @@ class ClientActivityRegistry:
         return hmac.new(self._secret, message, hashlib.sha256).digest()
 
     def _claude_fingerprint(self, record: ClaudeRecord, pseudonym: str) -> bytes | None:
-        """Empreinte d'un enregistrement Claude qui déplace un compteur.
+        """Fingerprint of a Claude record that moves a counter.
 
-        Même discipline que le côté Codex, domaine de hachage distinct. Le
-        récepteur borné répond ``503`` avec ``Retry-After: 1`` dès que ses
-        quatre requêtes en vol sont prises — un statut explicitement rejouable,
-        que l'exportateur honore en repoussant le même lot. Le coût étant
-        cumulatif, un rejeu non dédupliqué gonfle la ligne pour toute sa durée
-        de vie : l'erreur ne se résorbe jamais.
+        Same discipline as the Codex side, distinct hashing domain. The bounded
+        receiver answers ``503`` with ``Retry-After: 1`` as soon as its four
+        in-flight requests are taken — an explicitly replayable status, which
+        the exporter honours by re-pushing the same batch. Since the cost is
+        cumulative, an undeduplicated replay inflates the row for its whole
+        lifetime: the error never resolves itself.
 
-        Sans horodatage, pas d'empreinte : rien ne distinguerait alors un rejeu
-        d'un événement neuf, et déduplique à tort perdrait une vraie mesure.
-        Un enregistrement qui ne déplace aucun compteur n'en a pas besoin — il
-        ne fait que rafraîchir ``last_seen`` et le modèle, deux idempotents.
+        No timestamp, no fingerprint: nothing would then distinguish a replay
+        from a fresh event, and deduplicating wrongly would lose a real
+        measurement. A record that moves no counter does not need one — it only
+        refreshes ``last_seen`` and the model, both idempotent.
         """
         if record.timestamp is None:
             return None
@@ -318,36 +317,35 @@ class ClientActivityRegistry:
     def _trim_brain(
         brain: dict[str, _BrainActivity], live_sessions: frozenset[str]
     ) -> dict[str, _BrainActivity]:
-        """Plafonner la moitié brain, les lignes JOINTES d'abord.
+        """Cap the brain half, JOINED rows first.
 
-        Un acteur est déclaré par le client, donc de cardinalité non bornée :
-        cette moitié garde un plafond global, là où la moitié OTLP se répartit
-        en budgets par agent (voir ``_trim_conversations``).
+        An actor is declared by the client, hence of unbounded cardinality: this
+        half keeps a global cap, where the OTLP half splits into per-agent
+        budgets (see ``_trim_conversations``).
 
-        Mais la borne d'UN lot — ``MAX_OBSERVATIONS``, 64 — valait la capacité
-        TOTALE de ce plafond. Un seul POST de 2151 octets renouvelait donc la
-        table entière, et une session jointe des deux côtés (``brain_v42``,
-        7 appels) redevenait ``actor=None``, ``brain_calls=None`` : pas un
-        résidu évincé, une MESURE effacée et remplacée par des null que le
-        panneau rend comme « rien de mesuré ».
+        But the bound of ONE batch — ``MAX_OBSERVATIONS``, 64 — equalled the
+        TOTAL capacity of that cap. A single 2151-byte POST therefore renewed
+        the entire table, and a session joined on both sides (``brain_v42``, 7
+        calls) went back to ``actor=None``, ``brain_calls=None``: not an evicted
+        residual, a MEASUREMENT erased and replaced by nulls the panel renders
+        as "nothing measured".
 
-        L'arbitrage retenu ordonne avant de couper, plutôt que de baisser la
-        borne de lot : ranger d'abord les entrées jointes à une conversation
-        OTLP vivante, puis les plus récentes. Il ne coûte rien au cas NOMINAL —
-        aucun client ne déclare sa session aujourd'hui, donc aucune entrée
-        n'est jointe, le rang s'annule et l'ordre reste « les plus récents
-        gagnent » (e5cda111). Il ne mord que là où le défaut mordait.
+        The chosen resolution orders before it cuts, rather than lowering the
+        batch bound: put the entries joined to a live OTLP conversation first,
+        then the most recent ones. It costs nothing in the NOMINAL case — no
+        client declares its session today, so no entry is joined, the rank
+        cancels out and the order stays "most recent wins" (e5cda111). It bites
+        only where the defect bit.
 
-        Ses contreparties, assumées : entre résidus l'éviction reste
-        destructrice — un lot de 64 acteurs neufs remplace bien 63 résidus plus
-        anciens, chacun porteur de son propre ``brain_calls``. Et une jointure
-        ne survit qu'à des NON-jointes : 65 sessions réellement jointes se
-        disputent toujours 64 places, la plus ancienne partant la première. Le
-        rang protège la ligne que le panneau existe pour montrer, pas toute
-        mesure.
+        Its accepted trade-offs: between residuals, eviction stays destructive —
+        a batch of 64 fresh actors does replace 63 older residuals, each
+        carrying its own ``brain_calls``. And a join survives only NON-joined
+        entries: 65 genuinely joined sessions still compete for 64 slots, the
+        oldest going first. The rank protects the row the panel exists to show,
+        not every measurement.
 
-        Le total reste borné par ``MAX_ACTIVE_CONVERSATIONS`` : un rang ne
-        crée aucun budget supplémentaire, il ne fait que choisir les survivants.
+        The total stays bounded by ``MAX_ACTIVE_CONVERSATIONS``: a rank creates
+        no extra budget, it only chooses the survivors.
         """
         if len(brain) <= MAX_ACTIVE_CONVERSATIONS:
             return brain
@@ -513,23 +511,22 @@ class ClientActivityRegistry:
         The session key is agent-neutral because this side cannot observe an
         agent — see ``_session_key``.
 
-        C'est ici que du texte déclaré par le client entre dans le registre :
-        l'acteur est donc borné à l'entrée par ``_project_actor``, avant même
-        de servir de clé de seau. Assainir plus loin, dans la projection,
-        laisserait deux étiquettes hostiles distinctes produire deux lignes qui
-        se disputeraient un même ``id``.
+        This is where client-declared text enters the registry: the actor is
+        therefore bounded on the way in by ``_project_actor``, before it even
+        serves as a bucket key. Sanitizing later, in the projection, would let
+        two distinct hostile labels produce two rows fighting over one ``id``.
         """
         with self._lock:
             now = self._clock()
             brain = self._prune_brain(dict(self._brain), now)
             for observation in observations:
                 actor = _project_actor(observation.actor)
-                # Trois paliers, du plus informatif au moins informatif. La
-                # session l'emporte parce qu'elle JOINT : la rétrograder sur un
-                # transport ferait perdre à la ligne ses colonnes OTLP au profit
-                # d'un identifiant qui ne se joint à rien. Le transport passe
-                # ensuite parce qu'il sépare des connexions qu'un acteur
-                # confond. Le seau par acteur reste le dernier mot honnête.
+                # Three tiers, from most to least informative. The session
+                # wins because it JOINS: demoting it to a transport would cost
+                # the row its OTLP columns in exchange for an identifier that
+                # joins nothing. The transport comes next because it separates
+                # connections an actor conflates. The per-actor bucket stays the
+                # last honest word.
                 if observation.session_id is not None:
                     key = self._session_key(observation.session_id)
                 elif observation.transport is not None:
@@ -542,11 +539,11 @@ class ClientActivityRegistry:
                     calls=(current.calls if current else 0) + observation.calls,
                     last_seen=now,
                 )
-            # Les clés de session encore jointes à une conversation OTLP
-            # vivante : ce sont les lignes que le panneau existe pour montrer,
-            # et le plafond les range devant les résidus. Le TTL est réappliqué
-            # ici parce que ce chemin ne purge pas la moitié OTLP — une
-            # conversation périmée ne doit protéger personne.
+            # The session keys still joined to a live OTLP conversation: these
+            # are the rows the panel exists to show, and the cap ranks them
+            # ahead of the residuals. The TTL is re-applied here because this
+            # path does not purge the OTLP half — a stale conversation must
+            # protect nobody.
             live_sessions = frozenset(
                 conversation.session_key
                 for conversation in self._conversations.values()
@@ -632,11 +629,10 @@ class ClientActivityRegistry:
         ):
             if key in joined:
                 continue
-            # Trois formes, plus la dérivation binaire d'origine qui n'en
-            # connaissait que deux. ``transport`` doit rester DISTINCT de
-            # ``session`` dans la projection : un consommateur qui lit
-            # ``kind == "session"`` attend des colonnes OTLP, et une ligne de
-            # transport n'en aura jamais.
+            # Three shapes, plus the original binary derivation that knew only
+            # two. ``transport`` must stay DISTINCT from ``session`` in the
+            # projection: a consumer reading ``kind == "session"`` expects OTLP
+            # columns, and a transport row will never have any.
             if key.startswith(_ACTOR_KEY_PREFIX):
                 row_id, kind = f"unattributed:{activity.actor}", "unattributed"
             elif key.startswith(_TRANSPORT_KEY_PREFIX):

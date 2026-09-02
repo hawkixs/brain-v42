@@ -60,10 +60,10 @@ Role = Literal["executor", "requester"]
 
 # (kind, current_status, action) -> (required_role, new_status)
 # executor = author == to_project ; requester = author == from_project.
-# Toute action absente de cette table est illégale. La discussion (reply)
-# n'est PAS une transition : elle est permise quel que soit l'état.
+# Any action absent from this table is illegal. Discussion (reply) is NOT a
+# transition: it is allowed whatever the state.
 TRANSITIONS: dict[tuple[TicketKind, TicketStatus, TicketAction], tuple[Role, TicketStatus]] = {
-    # request — exécutant
+    # request — executor
     (TicketKind.REQUEST, TicketStatus.OPEN, TicketAction.START): (
         "executor",
         TicketStatus.IN_PROGRESS,
@@ -117,17 +117,17 @@ TRANSITIONS: dict[tuple[TicketKind, TicketStatus, TicketAction], tuple[Role, Tic
         "requester",
         TicketStatus.CLOSED,
     ),
-    # fyi — open → acked, cancel possible par l'émetteur
+    # fyi — open → acked, cancel available to the sender
     (TicketKind.FYI, TicketStatus.OPEN, TicketAction.ACK): ("executor", TicketStatus.ACKED),
     (TicketKind.FYI, TicketStatus.OPEN, TicketAction.CANCEL): ("requester", TicketStatus.CLOSED),
 }
 
-# (kind, current_status, action) -> new_status — consultée à la PLACE de TRANSITIONS
-# quand from_project == to_project (self-ticket) : une seule partie, donc pas de
-# champ Role (docs/superpowers/specs/2026-08-03-self-ticket-lifecycle-design.md §4.1).
-# `resolve` ferme directement (le cas courant devient gratuit) ; `resolve_pending`
-# reste disponible pour s'arrêter explicitement à `resolved`. La table est complète,
-# fyi compris : sans (FYI, OPEN, ...), un self-ticket fyi deviendrait intransitionnable.
+# (kind, current_status, action) -> new_status — consulted INSTEAD OF TRANSITIONS
+# when from_project == to_project (self-ticket): a single party, hence no Role
+# field (docs/superpowers/specs/2026-08-03-self-ticket-lifecycle-design.md §4.1).
+# `resolve` closes directly (the common case becomes free); `resolve_pending`
+# stays available to stop explicitly at `resolved`. The table is complete, fyi
+# included: without (FYI, OPEN, ...), an fyi self-ticket would be untransitionable.
 SELF_TRANSITIONS: dict[tuple[TicketKind, TicketStatus, TicketAction], TicketStatus] = {
     # request
     (TicketKind.REQUEST, TicketStatus.OPEN, TicketAction.START): TicketStatus.IN_PROGRESS,
@@ -149,7 +149,7 @@ SELF_TRANSITIONS: dict[tuple[TicketKind, TicketStatus, TicketAction], TicketStat
     (TicketKind.REQUEST, TicketStatus.WONTFIX, TicketAction.CONFIRM): TicketStatus.CLOSED,
     (TicketKind.REQUEST, TicketStatus.WONTFIX, TicketAction.REOPEN): TicketStatus.OPEN,
     (TicketKind.REQUEST, TicketStatus.WONTFIX, TicketAction.CANCEL): TicketStatus.CLOSED,
-    # fyi — identique à TRANSITIONS, champ Role en moins (le comportement ne change pas)
+    # fyi — identical to TRANSITIONS, minus the Role field (behaviour is unchanged)
     (TicketKind.FYI, TicketStatus.OPEN, TicketAction.ACK): TicketStatus.ACKED,
     (TicketKind.FYI, TicketStatus.OPEN, TicketAction.CANCEL): TicketStatus.CLOSED,
 }
@@ -158,11 +158,11 @@ SELF_TRANSITIONS: dict[tuple[TicketKind, TicketStatus, TicketAction], TicketStat
 def allowed_actions(
     kind: TicketKind, status: TicketStatus, *, self_ticket: bool = False
 ) -> list[str]:
-    """Actions légales (triées) depuis un état donné — pour les messages d'erreur et l'UX.
+    """Legal actions (sorted) from a given state — for error messages and UX.
 
-    self_ticket=True consulte SELF_TRANSITIONS (from_project == to_project) : pas de
-    contrôle de rôle, `resolve` ferme directement, `resolve_pending` reste disponible.
-    Défaut False préservé pour la rétrocompatibilité des appelants existants.
+    self_ticket=True consults SELF_TRANSITIONS (from_project == to_project): no role
+    check, `resolve` closes directly, `resolve_pending` stays available. The False
+    default is preserved for backward compatibility with existing callers.
     """
     if self_ticket:
         return sorted(a.value for (k, s, a) in SELF_TRANSITIONS if k == kind and s == status)
@@ -213,12 +213,12 @@ class TicketMessage(BaseModel):
 
 
 class TicketGroups(BaseModel):
-    """Vue groupée par action pour brain_ticket_list / le briefing.
+    """View grouped by action, for brain_ticket_list and the briefing.
 
-    awaiting_requester_confirmation: nous avons livré (resolved/wontfix comme
-    exécutant) et attendons la confirmation du demandeur. Aucune transition
-    légale de notre côté (spec 2026-08-03 §1.2) — pas listé dans le briefing,
-    compté seulement (spec §2.3).
+    awaiting_requester_confirmation: we delivered (resolved/wontfix as the
+    executor) and are waiting for the requester to confirm. No legal transition
+    on our side (spec 2026-08-03 §1.2) — not listed in the briefing, only
+    counted (spec §2.3).
     """
 
     a_traiter: list[Ticket] = Field(default_factory=list)

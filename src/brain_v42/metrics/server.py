@@ -34,14 +34,14 @@ logger = structlog.get_logger(__name__)
 
 _OTLP_READ_CHUNK_BYTES = 64 * 1024
 _OTLP_BODY_READ_TIMEOUT_SECONDS = 5.0
-"""Budget TOTAL de lecture d'un corps, même valeur et même forme que le shim d'embedding.
+"""TOTAL budget for reading a body, same value and same shape as the embedding shim.
 
-Total et non par morceau : ``asyncio.timeout`` est posé à l'EXTÉRIEUR de la boucle, sinon
-un émetteur envoyant un octet toutes les quatre secondes passerait indéfiniment.
+Total and not per chunk: ``asyncio.timeout`` is placed OUTSIDE the loop, otherwise a
+sender pushing one byte every four seconds would pass indefinitely.
 
-Toujours lue dans le corps de la fonction, jamais en valeur par défaut d'argument — une
-valeur par défaut est liée au moment du ``def``, et un test qui la substitue n'aurait alors
-aucun effet tout en semblant mesurer la garde.
+Always read inside the function body, never as an argument default — a default is bound at
+``def`` time, and a test substituting it would then have no effect while appearing to
+measure the guard.
 """
 _OTLP_ERROR_STATUSES = {
     400: (3, "invalid OTLP JSON payload"),
@@ -54,20 +54,20 @@ _OTLP_ERROR_STATUSES = {
 
 
 class NonLoopbackReceiversError(RuntimeError):
-    """Posture ``fail_closed`` : un bind non-loopback refuse de construire l'app.
+    """``fail_closed`` posture: a non-loopback bind refuses to build the app.
 
-    Levée à la CONSTRUCTION et jamais plus tard : un opérateur qui a choisi
-    cette posture préfère un démarrage qui échoue en nommant son réglage à un
-    sidecar qui tourne sans ses receveurs.
+    Raised at CONSTRUCTION and never later: an operator who chose this posture
+    prefers a startup that fails while naming their setting to a sidecar running
+    without its receivers.
     """
 
 
 class _BodyReadTimeout(Exception):
-    """Le corps a cessé d'arriver avant la fin du budget de lecture.
+    """The body stopped arriving before the read budget ran out.
 
-    Type dédié plutôt qu'un ``except TimeoutError`` dans le handler : ``TimeoutError``
-    dérive d'``OSError``, donc un tel except attraperait aussi un délai de socket surgi
-    d'ailleurs et le maquillerait en 408.
+    A dedicated type rather than an ``except TimeoutError`` in the handler:
+    ``TimeoutError`` derives from ``OSError``, so such an except would also catch a socket
+    timeout arising elsewhere and disguise it as a 408.
     """
 
 
@@ -124,14 +124,14 @@ RECEIVER_CLIENT_ACTIVITY = "client_activity"
 
 
 class ReceiverRejectionCounters:
-    """Compteurs par (récepteur, code) des rejets servis — piste (b) de `d5e4bd73`.
+    """Per-(receiver, code) counters of served rejections — track (b) of `d5e4bd73`.
 
-    La leçon du ticket gouverne la forme : « un compteur à zéro sur une source
-    qui ne compte rien est indistinguable d'un vrai zéro ». Les trois
-    récepteurs sont donc présents dès la construction, chacun vide : la
-    PRÉSENCE de la structure dans ``GET /metrics`` prouve que l'instrument est
-    armé, son contenu dit ce qu'il a vu. Aucun identifiant, aucune adresse :
-    les clés appartiennent aux mêmes ensembles clos que l'access log.
+    The ticket's lesson governs the shape: "a zero counter on a source that
+    counts nothing is indistinguishable from a real zero". The three receivers
+    are therefore present from construction, each empty: the PRESENCE of the
+    structure in ``GET /metrics`` proves the instrument is armed, its contents
+    say what it saw. No identifier, no address: the keys belong to the same
+    closed sets as the access log.
     """
 
     def __init__(self) -> None:
@@ -146,7 +146,7 @@ class ReceiverRejectionCounters:
         by_status[status] = by_status.get(status, 0) + 1
 
     def snapshot(self) -> dict[str, dict[str, int]]:
-        """Copie sérialisable, statuts en chaînes — la forme du JSON servi."""
+        """Serializable copy, statuses as strings — the shape of the JSON served."""
         return {
             receiver: {str(status): count for status, count in sorted(by_status.items())}
             for receiver, by_status in self._counts.items()
@@ -154,40 +154,39 @@ class ReceiverRejectionCounters:
 
 
 def _log_receiver_rejection(receiver: str, status: int, reason: str) -> None:
-    """Journalise un rejet servi, sans jamais rien réintroduire ni rien casser.
+    """Log a served rejection, never reintroducing anything and never breaking anything.
 
-    TROIS CONSTANTES ET RIEN D'AUTRE. Ce composant hache les identifiants bruts à la
-    réception, avec un secret par processus : c'est sa raison d'être. Une ligne
-    d'access log qui porterait l'adresse du pair, un en-tête, un identifiant de trace
-    ou un fragment de corps reconstituerait précisément ce que le hachage retire —
-    et elle le ferait en clair, dans le journal, hors de toute rétention. Les trois
-    champs émis appartiennent donc à des ensembles clos et connus d'avance :
-    ``receiver`` est choisi par le SITE D'APPEL (jamais lu dans la requête),
-    ``status`` est une clé de ``_OTLP_ERROR_STATUSES``, et ``reason`` est le message
-    statique que la réponse renvoie déjà au client. Rien ici n'est influençable par
-    l'émetteur.
+    THREE CONSTANTS AND NOTHING ELSE. This component hashes raw identifiers on
+    reception, with a per-process secret: that is its whole purpose. An access log line
+    carrying the peer address, a header, a trace identifier or a body fragment would
+    reconstitute precisely what the hashing removes — and it would do so in clear, in
+    the log, outside any retention. The three emitted fields therefore belong to closed
+    sets known in advance: ``receiver`` is chosen by the CALL SITE (never read from the
+    request), ``status`` is a key of ``_OTLP_ERROR_STATUSES``, and ``reason`` is the
+    static message the response already returns to the client. Nothing here can be
+    influenced by the sender.
 
-    ``suppress`` et non un ``try/except`` bavard : l'observation ne doit jamais
-    devenir la panne de ce qu'elle observe — même règle que l'émetteur côté MCP
-    (ticket ``1c40c36a``). Et surtout pas ici, où le pire moment est exactement celui
-    que l'instrument sert à mesurer : la saturation. L'appel est synchrone et sans
-    point d'attente, donc il n'ajoute ni verrou ni ordonnancement au chemin de rejet.
-    ``Exception`` et non ``BaseException`` : un ``CancelledError`` doit continuer de
-    remonter, sinon on avalerait l'annulation de la requête elle-même.
+    ``suppress`` and not a chatty ``try/except``: observation must never become the
+    failure of what it observes — same rule as the MCP-side emitter (ticket
+    ``1c40c36a``). And least of all here, where the worst moment is exactly the one the
+    instrument exists to measure: saturation. The call is synchronous and has no await
+    point, so it adds neither a lock nor a scheduling step to the rejection path.
+    ``Exception`` and not ``BaseException``: a ``CancelledError`` must keep propagating,
+    otherwise we would swallow the cancellation of the request itself.
     """
     with contextlib.suppress(Exception):
         logger.warning(ACCESS_LOG_EVENT, receiver=receiver, status=status, reason=reason)
 
 
 def _otlp_error(status: int, *, receiver: str, counters: ReceiverRejectionCounters) -> web.Response:
-    """Seul constructeur des réponses de rejet — donc seul endroit où observer.
+    """The only builder of rejection responses — hence the only place to observe.
 
-    ``receiver`` et ``counters`` sont des mots-clés OBLIGATOIRES : un septième code
-    ajouté à la table ne peut pas arriver dans le journal ni dans les compteurs par
-    oubli, parce qu'il ne peut pas être construit sans les nommer. La couverture
-    tient par construction, pas par vigilance. Le comptage vit sous ``suppress``
-    pour la même raison que le journal : l'instrument ne devient jamais la panne
-    de ce qu'il observe — surtout pas sous saturation, qu'il sert à mesurer.
+    ``receiver`` and ``counters`` are MANDATORY keywords: a seventh code added to the
+    table cannot reach the log or the counters by oversight, because it cannot be built
+    without naming them. Coverage holds by construction, not by vigilance. Counting
+    lives under ``suppress`` for the same reason as the log: the instrument never
+    becomes the failure of what it observes — least of all under saturation, which it
+    exists to measure.
     """
     rpc_code, message = _OTLP_ERROR_STATUSES[status]
     with contextlib.suppress(Exception):
@@ -264,8 +263,9 @@ class MetricsServer:
             app.router.add_post("/v1/logs/claude", self._handle_claude_logs)
             app.router.add_post("/v1/client-activity", self._handle_client_activity)
         elif self._nonloopback_posture == "fail_closed":
-            # Posture (1) de eac03668 : l'opérateur a préféré un démarrage qui
-            # échoue en nommant son réglage à un sidecar amputé qui se tait.
+            # Posture (1) of eac03668: the operator preferred a startup that
+            # fails while naming their setting to a crippled sidecar that stays
+            # silent.
             raise NonLoopbackReceiversError(
                 f"metrics bind {self._host!r} is not loopback: the three POST "
                 "receivers cannot be served safely there and "
@@ -274,9 +274,9 @@ class MetricsServer:
                 "(warn) or the historical silence (silent)."
             )
         elif self._nonloopback_posture == "warn":
-            # Posture (2) : même surface que le silence historique, mais le
-            # sacrifice se DIT — une ligne, au démarrage, jamais par requête
-            # (le refus par requête vient du routeur, invisible d'ici).
+            # Posture (2): same surface as the historical silence, but the
+            # sacrifice IS SAID — one line, at startup, never per request (the
+            # per-request refusal comes from the router, invisible from here).
             logger.warning(
                 "metrics_server.receivers_disabled_non_loopback",
                 host=self._host,
@@ -286,8 +286,8 @@ class MetricsServer:
                     "their clients get router 404s that no access log or counter sees"
                 ),
             )
-        # `silent` : le comportement historique, à l'octet près — la posture
-        # par DÉFAUT tant que l'arbitrage opérateur (eac03668) n'est pas rendu.
+        # `silent`: the historical behaviour, to the byte — the DEFAULT posture
+        # until the operator decision (eac03668) is made.
         if self._gitlab_ingestor:
             if not self._webhook_secret:
                 logger.warning(
@@ -332,8 +332,9 @@ class MetricsServer:
                 payload = await _read_bounded_otlp_body(request, max_bytes)
                 apply(payload)
             except _BodyReadTimeout:
-                # Le créneau est rendu par le `finally` ci-dessous : c'est ce qui
-                # empêche quatre corps figés de tuer les trois récepteurs à vie.
+                # The slot is returned by the `finally` below: that is what
+                # stops four frozen bodies from killing the three receivers for
+                # good.
                 return _otlp_error(408, receiver=receiver, counters=self._rejection_counters)
             except CodexTelemetryLimitError:
                 return _otlp_error(413, receiver=receiver, counters=self._rejection_counters)
@@ -400,9 +401,9 @@ class MetricsServer:
         """
         metrics = self._collector.get_metrics()
 
-        # Refus servis par les récepteurs POST — la structure est toujours
-        # présente, trois récepteurs, pour que son zéro soit signifiant
-        # (d5e4bd73 : un zéro sur une source qui ne compte rien ne dit rien).
+        # Rejections served by the POST receivers — the structure is always
+        # present, three receivers, so that its zero means something (d5e4bd73:
+        # a zero on a source that counts nothing says nothing).
         metrics["receiver_rejections"] = self._rejection_counters.snapshot()
 
         # DB stats (async)
@@ -498,8 +499,8 @@ class MetricsServer:
                 dream_metrics["promoted_health"] = promoted_health
             metrics["dream"] = dream_metrics
 
-        # Nightly-ops (killswitches, review roadmap/extract, dernier échec) —
-        # consommé par le panel nightly-ops de red-monitor (ticket de1ad785).
+        # Nightly-ops (killswitches, roadmap/extract review, last failure) —
+        # consumed by red-monitor's nightly-ops panel (ticket de1ad785).
         nightly = await self._collector.collect_nightly_ops()
         if nightly:
             metrics["nightly"] = nightly

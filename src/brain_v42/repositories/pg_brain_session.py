@@ -57,13 +57,13 @@ Row = dict[str, Any]
 
 
 def _observation_columns(reference: datetime) -> dict[str, datetime]:
-    """Les DEUX horloges qu'une observation de traçante déplace, et pas une de plus.
+    """The TWO clocks a tracer observation moves, and not one more.
 
-    Écrit une seule fois parce que les deux écrivains — l'``ON CONFLICT DO
-    UPDATE`` de ``auto_open`` et ``observe`` — doivent bouger EXACTEMENT le même
-    ensemble. Les laisser diverger donnerait à une connexion réidentifiée une
-    horloge de présence différente de celle d'une connexion réobservée, et le
-    balayage lirait deux régimes pour un seul geste.
+    Written once because the two writers — ``auto_open``'s ``ON CONFLICT DO
+    UPDATE`` and ``observe`` — must move EXACTLY the same set. Letting them
+    diverge would give a re-identified connection a presence clock different
+    from a re-observed one, and the sweep would read two regimes for a single
+    gesture.
     """
     return {"last_observed_at": reference, "last_heartbeat_at": reference}
 
@@ -142,50 +142,48 @@ class PgBrainSessionRepo(BasePgRepository):
             )
 
     async def auto_open(self, identity: Any, *, now: datetime | None = None) -> UUID | None:
-        """Ouvrir — ou retrouver ET RÉOBSERVER — LA session `agent` d'une connexion.
+        """Open — or find AND RE-OBSERVE — THE `agent` session of a connection.
 
-        Un seul aller-retour, conflit compris. L'idempotence est portée par
-        l'index UNIQUE **PARTIEL** ``uq_brain_sessions_connection`` de la 046
-        (``WHERE status = 'open'``), pas par le code appelant : deux appels
-        concurrents sur la même connexion produisent un conflit, pas deux
-        sessions, et une session déjà fermée ne bloque pas la suivante. Un
-        index plein aurait brûlé la connexion à vie dès la première
-        auto-fermeture (piège hérité, `SPEC-M-G` §5).
+        A single round trip, conflict included. Idempotence is carried by 046's
+        **PARTIAL** UNIQUE index ``uq_brain_sessions_connection``
+        (``WHERE status = 'open'``), not by the calling code: two concurrent
+        calls on the same connection produce a conflict, not two sessions, and
+        an already closed session does not block the next one. A full index
+        would have burned the connection for life at the first auto-closure
+        (inherited trap, `SPEC-M-G` §5).
 
-        ``ON CONFLICT DO UPDATE`` et non ``DO NOTHING`` : le conflit est le cas
-        « cette connexion a déjà sa session », et c'est **une observation**.
-        L'ancienne forme le suivait d'un ``SELECT`` pour retrouver l'id — deux
-        allers-retours qui ne dataient rien. Ici la même ligne est retrouvée
-        ET réobservée, et le ``RETURNING`` rend l'id des deux branches.
+        ``ON CONFLICT DO UPDATE`` and not ``DO NOTHING``: the conflict is the
+        case "this connection already has its session", and that is **an
+        observation**. The old form followed it with a ``SELECT`` to find the
+        id — two round trips that dated nothing. Here the same row is found AND
+        re-observed, and the ``RETURNING`` yields the id on both branches.
 
-        ``client_key`` reçoit un UUID neuf, et ce n'est pas un détail : la
-        contrainte ``uq_brain_sessions_project_client`` est **pleine**, donc
-        réutiliser une clé stable par connexion ferait échouer la réouverture
-        après une fermeture — le piège de l'index partiel, déplacé d'une
-        colonne. Sur ce chemin la clé cliente ne garde plus rien de toute
-        façon : ``expected_client_key`` en a été retirée (§0ter.3), l'identité
-        étant la connexion.
+        ``client_key`` receives a fresh UUID, and that is not a detail: the
+        ``uq_brain_sessions_project_client`` constraint is **full**, so reusing
+        a key that is stable per connection would make reopening fail after a
+        closure — the partial-index trap, moved one column over. On this path
+        the client key no longer keeps anything anyway: ``expected_client_key``
+        was removed from it (§0ter.3), identity being the connection.
 
-        ``started_at`` est posée EXPLICITEMENT, et seulement sur la branche
-        INSERT. Sans elle la colonne tombait sur le ``DEFAULT now()`` de la
-        base — l'estampille de DÉBUT DE TRANSACTION, donc postérieure au
-        ``reference`` que l'application lit AVANT d'ouvrir la transaction. La
-        ligne naissait avec ``last_heartbeat_at`` daté 1,5 ms avant son propre
-        démarrage, et le contrat DR le comptait : reçu 28/29 mesuré en
-        production le 2026-08-22, sur les deux variantes de l'actif. ``start()``
-        n'a jamais eu le défaut parce qu'il ne pose AUCUNE des deux colonnes :
-        ses horloges viennent du même défaut. C'est l'asymétrie qui coûtait,
-        pas le défaut lui-même.
+        ``started_at`` is set EXPLICITLY, and only on the INSERT branch. Without
+        it the column fell back to the database's ``DEFAULT now()`` — the
+        TRANSACTION START stamp, hence later than the ``reference`` the
+        application reads BEFORE opening the transaction. The row was born with
+        ``last_heartbeat_at`` dated 1.5 ms before its own start, and the DR
+        contract counted it: receipt 28/29 measured in production on 2026-08-22,
+        on both variants of the asset. ``start()`` never had the defect because
+        it sets NEITHER of the two columns: its clocks come from the same
+        default. It was the asymmetry that cost, not the default itself.
 
-        Elle reste hors de ``_observation_columns()``, et c'est le fond du
-        correctif : réobserver n'est pas rouvrir. La glisser dans l'ensemble
-        partagé ferait rajeunir la traçante à chaque appel d'outil, et le
-        balayage des 7 j ne prendrait plus jamais rien.
+        It stays out of ``_observation_columns()``, and that is the heart of the
+        fix: re-observing is not reopening. Slipping it into the shared set
+        would make the tracer young again on every tool call, and the 7 d sweep
+        would never take anything.
 
-        Rend ``None`` quand le projet n'a pas de contexte : le serveur n'en
-        fabrique pas un. Ne lève pas sur ce cas — ``start()`` le fait, parce
-        que là c'est un utilisateur qui a nommé un projet inexistant et qu'il
-        doit l'apprendre ; ici personne n'a rien nommé.
+        Returns ``None`` when the project has no context: the server does not
+        manufacture one. Does not raise in that case — ``start()`` does, because
+        there a user named a project that does not exist and must learn it; here
+        nobody named anything.
         """
         reference = now or datetime.now(UTC)
         async with self.transaction() as session:
@@ -215,13 +213,13 @@ class PgBrainSessionRepo(BasePgRepository):
                     ],
                     index_where=sa.text("status = 'open'"),
                     set_=_observation_columns(reference),
-                    # Garde DURE sur l'ACTION du conflit, symétrique de celle
-                    # d'``observe`` : sans elle, une ligne `operator` qui
-                    # porterait une connexion verrait `last_heartbeat_at`
-                    # re-datée à chaque appel d'outil. Or l'éligibilité 7 jours
-                    # du balayage lit cette colonne SANS filtre de nature — la
-                    # seule exception écrite au covenant deviendrait
-                    # inatteignable, et la ligne un fantôme immortel.
+                    # A HARD guard on the conflict's ACTION, symmetric with
+                    # ``observe``'s: without it, an `operator` row carrying a
+                    # connection would have `last_heartbeat_at` re-dated on
+                    # every tool call. But the sweep's 7-day eligibility reads
+                    # that column WITH NO nature filter — the one written
+                    # exception to the covenant would become unreachable, and
+                    # the row an immortal ghost.
                     where=brain_sessions.c.nature == "agent",
                 )
                 .returning(brain_sessions.c.id)
@@ -230,16 +228,16 @@ class PgBrainSessionRepo(BasePgRepository):
             return UUID(str(inserted)) if inserted is not None else None
 
     async def attributed_knowledge_ids(self, session_id: UUID | str) -> builtins.list[UUID]:
-        """Le ledger de cette session, relu — la SOURCE DE VÉRITÉ, pas l'instantané.
+        """This session's ledger, re-read — the SOURCE OF TRUTH, not the snapshot.
 
-        `brain_sessions.captured_knowledge_ids` est une photo TERMINALE : un seul
-        écrivain, à la fermeture, et la contrainte `open` interdit qu'elle soit
-        remplie avant. Mesuré le 2026-08-25 : sur 44 sessions ouvertes, zéro
-        tableau non vide, et aucune n'en a jamais porté dans toute l'histoire de
-        la table. La lire sur une session vivante rendrait donc toujours `[]`.
+        `brain_sessions.captured_knowledge_ids` is a TERMINAL photograph: one
+        writer, at closing time, and the `open` constraint forbids filling it
+        earlier. Measured on 2026-08-25: across 44 open sessions, zero non-empty
+        arrays, and none has ever carried one in the whole history of the table.
+        Reading it on a live session would therefore always return `[]`.
 
-        Existe pour `start`, seul des cinq à ne pas pouvoir absorber avant de
-        matérialiser : il relit ici ce que son absorption vient de déplacer.
+        Exists for `start`, the only one of the five that cannot absorb before
+        materializing: it re-reads here what its absorption just moved.
         """
         async with self.get_session() as session:
             return await self._load_session_artifact_ids(session, UUID(str(session_id)))
@@ -250,62 +248,60 @@ class PgBrainSessionRepo(BasePgRepository):
         connection_id: str,
         expected_client_key: str,
     ) -> int:
-        """Faire absorber à cette session le ledger de la traçante de sa connexion.
+        """Have this session absorb the ledger of its connection's tracer.
 
-        Le dépôt ne décide rien des BORNES : il ouvre la transaction, retrouve la
-        session cible et délègue à ``absorb_tracer_ledger``, qui les aligne sur
-        celles d'une capture EXPLICITE. Le service a déjà tranché le drapeau et
-        la connexion en amont, pour qu'un drapeau fermé ne coûte pas cet
-        aller-retour.
+        The repository decides nothing about the BOUNDS: it opens the
+        transaction, finds the target session and delegates to
+        ``absorb_tracer_ledger``, which aligns them with those of an EXPLICIT
+        capture. The service has already settled the flag and the connection
+        upstream, so that a closed flag does not cost this round trip.
 
-        **LA GARDE D'IDENTITÉ VIT ICI, DANS LA MÊME TRANSACTION QUE LA MUTATION**,
-        et pas au site d'appel. `CLAUDE.md` est littéral — « le serveur refuse une
-        paire incohérente AVANT TOUTE MUTATION » — et un ordre d'appel ne tient
-        cette promesse que tant que personne ne réordonne : c'est exactement ce
-        qui vient d'arriver en déplaçant l'absorption devant `_assert_identity`,
-        qui vivait dans les commandes du dépôt. Un appel mal ciblé déplaçait
-        alors le ledger d'une traçante dans la session d'autrui, PUIS se faisait
-        refuser — et le ledger étant EXCLUSIF, ce déplacement est IRRÉVERSIBLE,
-        pendant que l'appelant ne voit qu'un refus.
+        **THE IDENTITY GUARD LIVES HERE, IN THE SAME TRANSACTION AS THE
+        MUTATION**, and not at the call site. `CLAUDE.md` is literal — "the
+        server refuses an inconsistent pair BEFORE ANY MUTATION" — and a call
+        order keeps that promise only for as long as nobody reorders: which is
+        exactly what just happened when absorption was moved ahead of
+        `_assert_identity`, which lived in the repository's commands. A
+        mistargeted call then moved a tracer's ledger into someone else's
+        session, THEN got refused — and since the ledger is EXCLUSIVE, that move
+        is IRREVERSIBLE, while the caller sees nothing but a refusal.
 
-        Elle LÈVE, au lieu de rendre ``0`` en silence. Une paire incohérente
-        n'est pas un refus d'absorption parmi d'autres : c'est une commande mal
-        ciblée, que le dépôt s'apprête de toute façon à refuser deux lignes plus
-        loin avec la même exception. La faire remonter d'ici rend la garde
-        infranchissable au lieu de la laisser dépendre d'un ordre.
+        It RAISES, instead of returning ``0`` in silence. An inconsistent pair
+        is not one refusal to absorb among others: it is a mistargeted command,
+        which the repository is about to refuse two lines further down with the
+        same exception anyway. Surfacing it here makes the guard impassable
+        instead of leaving it dependent on an order.
 
-        ⚠ CE QUI PROTÈGE EST LA FRONTIÈRE TRANSACTIONNELLE, PAS LA POSITION DE
-        CETTE LIGNE. Mesuré, deux mutants joués :
+        ⚠ WHAT PROTECTS IS THE TRANSACTIONAL BOUNDARY, NOT THE POSITION OF THIS
+        LINE. Measured, two mutants played:
 
-        - garde déplacée APRÈS ``absorb_tracer_ledger`` mais DANS ce ``async
-          with`` → **11 tests verts**. Mutant ÉQUIVALENT, pas test creux :
-          ``transaction()`` ouvre un ``sess.begin()``, donc l'exception annule le
-          déplacement avec le reste. La position au-dessus est un choix de
-          LISIBILITÉ ;
-        - garde déplacée APRÈS et HORS du ``async with`` → **rouge**. Le
-          déplacement est commité avant le refus, et le banc le voit.
+        - guard moved AFTER ``absorb_tracer_ledger`` but INSIDE this ``async
+          with`` → **11 tests green**. An EQUIVALENT mutant, not a hollow test:
+          ``transaction()`` opens a ``sess.begin()``, so the exception rolls the
+          move back along with the rest. The position above is a READABILITY
+          choice;
+        - guard moved AFTER and OUTSIDE the ``async with`` → **red**. The move
+          is committed before the refusal, and the bench sees it.
 
-        Autrement dit : la sûreté tient à ce qu'aucun COMMIT ne s'intercale entre
-        le déplacement du ledger et le refus. Les deux gestes qui l'écraseraient
-        de façon VISIBLE — sortir l'absorption de la transaction, y glisser un
-        ``commit()`` — sont donc couverts par
+        Put differently: safety rests on no COMMIT interposing between the
+        ledger move and the refusal. The two gestures that would break it
+        VISIBLY — taking absorption out of the transaction, slipping a
+        ``commit()`` into it — are therefore covered by
         ``test_a_mistargeted_absorption_moves_NOTHING_before_it_refuses``.
 
-        CE QUI N'EST SURVEILLÉ PAR AUCUN TEST, et c'est pour lui que ce
-        paragraphe existe : **donner à cette méthode un paramètre ``session``**.
-        ``transaction()`` basculerait sur sa branche ``begin_nested()`` et la
-        portée de l'annulation deviendrait celle de l'APPELANT, pas la nôtre. Le
-        banc ne passe jamais de session — il resterait donc VERT pendant qu'un
-        appelant qui en passe une, et qui avale l'exception, commiterait le
-        déplacement. Elle n'en prend pas aujourd'hui, et c'est ce qui rend la
-        garantie inconditionnelle.
+        WHAT NO TEST WATCHES, and it is why this paragraph exists: **giving this
+        method a ``session`` parameter**. ``transaction()`` would switch to its
+        ``begin_nested()`` branch and the rollback scope would become the
+        CALLER's, not ours. The bench never passes a session — it would
+        therefore stay GREEN while a caller that does pass one, and swallows the
+        exception, commits the move. It takes none today, and that is what makes
+        the guarantee unconditional.
 
-        Un test ne sait pas exprimer « ne me donne pas de session ». Ce
-        commentaire, lui, est là où le refactor se lira. Le coût du trou est
-        rappelé plus haut : le ledger est EXCLUSIF, donc un déplacement mal ciblé
-        est IRRÉVERSIBLE.
+        A test cannot express "do not give me a session". This comment, however,
+        sits where the refactor will be read. The cost of the hole is recalled
+        above: the ledger is EXCLUSIVE, so a mistargeted move is IRREVERSIBLE.
 
-        Rend le nombre de lignes déplacées ; ``0`` couvre tous les autres refus.
+        Returns the number of rows moved; ``0`` covers every other refusal.
         """
         from brain_v42.db.session_derived_capture import (  # noqa: PLC0415
             absorb_tracer_ledger,
@@ -314,8 +310,8 @@ class PgBrainSessionRepo(BasePgRepository):
         async with self.transaction() as session:
             row = await self._get_row(session, session_id)
             if row is None:
-                # Session inconnue : rien à absorber, et surtout pas une erreur
-                # d'identité — c'est la commande qui dira « introuvable ».
+                # Unknown session: nothing to absorb, and above all not an
+                # identity error — the command is what will say "not found".
                 return 0
             self._assert_identity(self._to_model(row), expected_client_key)
             target = SimpleNamespace(
@@ -327,30 +323,30 @@ class PgBrainSessionRepo(BasePgRepository):
             return outcome.total
 
     async def observe(self, session_id: UUID | str, *, now: datetime | None = None) -> bool:
-        """Dater l'observation d'une traçante `agent` ouverte. Rend « encore ouverte ».
+        """Stamp the observation of an open `agent` tracer. Returns "still open".
 
-        C'est l'écrivain que la 046 attendait : sans lui, ``last_observed_at``
-        reste NULL sur toute la table, et la règle des 4 h du balayage ne matche
-        RIEN — M-G serait livrée inerte. La garantie 2 du `§0bis.3` est
-        littérale : la colonne bouge à **chaque** appel d'outil.
+        This is the writer 046 was waiting for: without it, ``last_observed_at``
+        stays NULL across the whole table, and the sweep's 4 h rule matches
+        NOTHING — M-G would ship inert. Guarantee 2 of `§0bis.3` is literal: the
+        column moves on **every** tool call.
 
-        **Le faux-mort, et pourquoi ``last_heartbeat_at`` bouge aussi.** Le
-        balayage 7 j lit ``last_heartbeat_at``. Une traçante dont la connexion
-        vit huit jours n'a jamais rappelé de heartbeat — il n'y a pas
-        d'utilisateur pour le faire — et serait abandonnée en pleine activité.
-        C'est exactement le faux-mort du 2026-08-06. Les deux horloges bougent
-        donc ensemble sur ce chemin, et restent deux colonnes : le 4 h lit
-        l'observation, le 7 j lit la présence, et une traçante inactive depuis
-        plus de sept jours matche encore les DEUX (préséance : `sweep_open_sessions`).
+        **The false corpse, and why ``last_heartbeat_at`` moves too.** The 7 d
+        sweep reads ``last_heartbeat_at``. A tracer whose connection lives eight
+        days has never sent a heartbeat — there is no user to send one — and
+        would be abandoned in full activity. That is exactly the false corpse of
+        2026-08-06. The two clocks therefore move together on this path, and
+        remain two columns: the 4 h reads observation, the 7 d reads presence,
+        and a tracer inactive for more than seven days still matches BOTH
+        (precedence: `sweep_open_sessions`).
 
-        **``updated_at`` ne bouge PAS**, et c'est délibéré : observer n'est pas
-        muter l'état déclaré de la session. Le rafraîchir ferait de la colonne
-        de dernière écriture un signal d'activité, exactement le contrôle creux
-        que `77348350` a coûté ailleurs.
+        **``updated_at`` does NOT move**, and that is deliberate: observing is
+        not mutating the session's declared state. Refreshing it would turn the
+        last-write column into an activity signal, exactly the hollow control
+        `77348350` cost elsewhere.
 
-        Le ``nature = 'agent'`` du prédicat est une garde DURE, pas une
-        redondance : ce chemin ne doit jamais pouvoir dater une session
-        `operator`, même si une mémo empoisonnée lui en présentait l'UUID.
+        The ``nature = 'agent'`` in the predicate is a HARD guard, not a
+        redundancy: this path must never be able to stamp an `operator` session,
+        even if a poisoned memo handed it the UUID.
         """
         reference = now or datetime.now(UTC)
         statement = (
@@ -499,10 +495,10 @@ class PgBrainSessionRepo(BasePgRepository):
             if focus is None:
                 raise BrainSessionNotFoundError(f"Project {model.project_key!r} was not found")
             existing = await self._load_artifact_rows(session, capture_ids)
-            # Ce que la règle d'exclusivité a refusé d'attribuer doit rester
-            # réparable par un humain qui NOMME l'UUID. Sans ce chemin, le
-            # fail-closed devient une perte sèche : l'artefact reste chez le
-            # serveur et plus personne ne peut l'en sortir.
+            # What the exclusivity rule refused to attribute must stay
+            # repairable by a human who NAMES the UUID. Without this path,
+            # fail-closed becomes a dead loss: the artifact stays with the
+            # server and nobody can get it out.
             reclaimable = await self._tracer_held_ids(session, existing, model.id)
             existing_ids = self._owned_capture_ids(existing, model.id, reclaimable)
             if reclaimable:
@@ -531,8 +527,8 @@ class PgBrainSessionRepo(BasePgRepository):
                                 "knowledge_id": knowledge_id,
                                 "session_id": model.id,
                                 "knowledge_type": resolved_types[knowledge_id],
-                                # Un humain a nommé cet UUID. C'est le seul mode
-                                # qui soit une PREUVE et non une déduction.
+                                # A human named this UUID. It is the only mode
+                                # that is a PROOF and not a deduction.
                                 "attribution_mode": "explicit",
                             }
                             for knowledge_id in missing
@@ -618,12 +614,12 @@ class PgBrainSessionRepo(BasePgRepository):
         started_at: datetime,
         ended_at: datetime,
     ) -> int:
-        """Compter ce que la session a produit et que personne n'a attribué.
+        """Count what the session produced and nobody attributed.
 
-        Les mêmes six tables et la même fenêtre qu'une capture explicite, plus
-        une ANTI-JOINTURE sur le ledger. Sans elle, le nombre monterait quand on
-        fait bien — il compterait aussi ce qui a été attribué, et un chiffre qui
-        empire quand on travaille correctement ne serait lu par personne.
+        The same six tables and the same window as an explicit capture, plus an
+        ANTI-JOIN on the ledger. Without it, the number would rise when one does
+        the right thing — it would also count what was attributed, and a figure
+        that worsens as you work properly would be read by nobody.
         """
         produced = sa.union_all(
             *[
@@ -635,12 +631,12 @@ class PgBrainSessionRepo(BasePgRepository):
                 for table, _knowledge_type in CAPTURE_TABLES
             ]
         ).subquery()
-        # L'anti-jointure regarde la NATURE du propriétaire, et pas seulement
-        # l'existence d'une ligne. Une ligne garée dans une traçante `agent` a
-        # bien un propriétaire, mais ce propriétaire est le SERVEUR : la compter
-        # comme attribuée rendait ce reçu muet exactement dans le cas qu'on
-        # répare — mesuré le 2026-08-24, `unattributed_in_window` valait 0 alors
-        # que le seul artefact dérivé n'appartenait à aucun humain.
+        # The anti-join looks at the OWNER'S NATURE, not merely at the
+        # existence of a row. A row parked in an `agent` tracer does have an
+        # owner, but that owner is the SERVER: counting it as attributed made
+        # this receipt silent in exactly the case being repaired — measured on
+        # 2026-08-24, `unattributed_in_window` read 0 while the only derived
+        # artifact belonged to no human.
         owner = brain_sessions.alias("owner")
         attributed_to_a_human = sa.exists(
             sa.select(sa.literal(1))
@@ -808,46 +804,46 @@ class PgBrainSessionRepo(BasePgRepository):
         dry_run: bool = True,
         now: datetime | None = None,
     ) -> BrainSessionSweepResult:
-        """Tarir les sessions ouvertes — DEUX règles, UN statement, une préséance.
+        """Drain the open sessions — TWO rules, ONE statement, one precedence.
 
-        Règle 7 j (toujours active) : toute session ouverte sans heartbeat
-        depuis ``older_than`` part en ``abandoned``, avec sa raison.
+        7 d rule (always active): any open session with no heartbeat since
+        ``older_than`` goes to ``abandoned``, with its reason.
 
-        Règle 4 h (``close_inactive_after``, ``None`` = fermée) : une traçante
-        ``nature = 'agent'`` dont l'OBSERVATION date de plus de ce seuil part en
-        ``closed_inactive``, sans raison et **avec son ledger intact** — c'est
-        toute la raison d'être de la 046. Une session ``operator``, et une
-        session ``nature IS NULL`` d'avant la 046, restent hors d'atteinte : la
-        résolution (d) refuse de juger rétroactivement.
+        4 h rule (``close_inactive_after``, ``None`` = closed): a
+        ``nature = 'agent'`` tracer whose OBSERVATION is older than that
+        threshold goes to ``closed_inactive``, with no reason and **with its
+        ledger intact** — that is the whole point of 046. An ``operator``
+        session, and a pre-046 ``nature IS NULL`` session, stay out of reach:
+        resolution (d) refuses to judge retroactively.
 
-        **PRÉSÉANCE : 7 j PRIME sur 4 h**, et ce n'est pas cosmétique. Une
-        traçante inactive depuis plus de sept jours matche les DEUX prédicats.
-        Le ``CASE`` teste la présence en PREMIER, donc elle part en ``abandoned``
-        avec sa raison, jamais en ``closed_inactive`` muet. La règle est épinglée
-        par un test, pas par ce paragraphe.
+        **PRECEDENCE: 7 d BEATS 4 h**, and that is not cosmetic. A tracer
+        inactive for more than seven days matches BOTH predicates. The ``CASE``
+        tests presence FIRST, so it goes to ``abandoned`` with its reason, never
+        to a silent ``closed_inactive``. The rule is pinned by a test, not by
+        this paragraph.
 
-        **``last_observed_at IS NULL`` n'est JAMAIS pris par la règle des 4 h**
-        (S3, tranché). ``NULL`` veut dire « jamais observée », pas « observée il
-        y a longtemps » : c'est le régime des sessions d'avant l'auto-ouverture,
-        et une comparaison SQL les laisserait déjà sortir — le prédicat explicite
-        est là pour que l'intention se lise, et pour que le test la garde.
+        **``last_observed_at IS NULL`` is NEVER taken by the 4 h rule** (S3,
+        settled). ``NULL`` means "never observed", not "observed a long time
+        ago": that is the regime of pre-auto-open sessions, and a SQL comparison
+        would already let them out — the explicit predicate is there so the
+        intent reads, and so the test guards it.
 
-        **JAMAIS pendant un appel en vol** (garantie 1 du §0bis.3), et la
-        machinerie n'est pas ici : ``observe()`` date la traçante AVANT que
-        l'outil ne tourne, donc un appel en vol porte une observation vieille de
-        quelques millisecondes. La garantie est structurelle et se lit à
-        l'endroit qui la produit ; elle ne tient plus si un seul appel d'outil
-        dépasse ``close_inactive_after``, ce qui n'existe pas au catalogue.
+        **NEVER during an in-flight call** (guarantee 1 of §0bis.3), and the
+        machinery is not here: ``observe()`` stamps the tracer BEFORE the tool
+        runs, so an in-flight call carries an observation a few milliseconds
+        old. The guarantee is structural and reads where it is produced; it no
+        longer holds if a single tool call exceeds ``close_inactive_after``,
+        which does not exist in the catalogue.
 
-        Chemin SERVEUR uniquement : pas de garde ``expected_client_key``, parce
-        qu'aucun client ne demande — c'est le serveur. L'amendement doctrinal du
-        CLAUDE.md borne ce droit à ce seul chemin ; il n'ouvre rien pour l'agent
-        ni pour le client, dont les sept commandes restent explicites.
+        SERVER path only: no ``expected_client_key`` guard, because no client is
+        asking — the server is. The CLAUDE.md doctrinal amendment bounds this
+        right to this path alone; it opens nothing for the agent nor for the
+        client, whose seven commands stay explicit.
 
-        Ne touche ni ``project_contexts`` ni ``brain_session_artifacts`` : le
-        focus et le ledger de capture survivent aux deux issues, comme pour un
-        abandon manuel. Aucun CAS de focus n'est tenté — N fermetures groupées
-        produiraient N−1 ``conflict`` fabriqués (`SPEC-M-G` §3.2).
+        Touches neither ``project_contexts`` nor ``brain_session_artifacts``:
+        the focus and the capture ledger survive both outcomes, as for a manual
+        abandonment. No focus CAS is attempted — N grouped closures would
+        produce N−1 manufactured ``conflict``s (`SPEC-M-G` §3.2).
         """
         normalized_reason = reason.strip()
         if not normalized_reason:
@@ -861,8 +857,9 @@ class PgBrainSessionRepo(BasePgRepository):
         cutoff = reference - older_than
         inactive_cutoff = None if close_inactive_after is None else reference - close_inactive_after
 
-        # Le prédicat de PRÉSENCE, isolé : il sert deux fois — à l'éligibilité et
-        # à la préséance du CASE. Le dupliquer les ferait diverger en silence.
+        # The PRESENCE predicate, isolated: it serves twice — for eligibility
+        # and for the CASE's precedence. Duplicating it would let the two
+        # diverge in silence.
         is_stale = brain_sessions.c.last_heartbeat_at < cutoff
         open_stale = sa.and_(brain_sessions.c.status == "open", is_stale)
 
@@ -883,16 +880,16 @@ class PgBrainSessionRepo(BasePgRepository):
                     ),
                 ),
             )
-            # Le `CASE` teste `is_stale` en PREMIER : c'est ICI que vit la
-            # préséance 7 j > 4 h, dans du SQL exécuté, pas dans un commentaire.
+            # The `CASE` tests `is_stale` FIRST: this is WHERE the 7 d > 4 h
+            # precedence lives, in executed SQL, not in a comment.
             outcome = sa.case(
                 (is_stale, sa.literal(BrainSessionStatus.ABANDONED.value)),
                 else_=sa.literal(BrainSessionStatus.CLOSED_INACTIVE.value),
             )
             status_value = outcome
-            # `closed_inactive` INTERDIT `abandonment_reason` (CHECK de la 046) :
-            # le `CASE` n'est donc pas une commodité, c'est ce qui rend la ligne
-            # acceptable par la base.
+            # `closed_inactive` FORBIDS `abandonment_reason` (046's CHECK): the
+            # `CASE` is therefore not a convenience, it is what makes the row
+            # acceptable to the database.
             reason_value = sa.case((is_stale, sa.literal(normalized_reason)), else_=sa.null())
 
         selection = (
@@ -906,12 +903,12 @@ class PgBrainSessionRepo(BasePgRepository):
         if dry_run:
             statement: Any = sa.select(*selection, outcome.label("outcome")).where(eligible)
         else:
-            # UN SEUL statement. Pas de SELECT puis UPDATE : sous READ
-            # COMMITTED, PostgreSQL réévalue `eligible` sous le verrou de ligne,
-            # donc un heartbeat qui commit pendant le balayage retire sa ligne
-            # de l'update au lieu de perdre la course. C'est la réponse au
-            # faux-mort du 2026-08-06 (session vivante abandonnée à tort), et
-            # elle couvre la règle neuve sans une ligne de plus.
+            # ONE statement. Not a SELECT then an UPDATE: under READ COMMITTED,
+            # PostgreSQL re-evaluates `eligible` under the row lock, so a
+            # heartbeat committing during the sweep pulls its row out of the
+            # update instead of losing the race. That is the answer to the false
+            # corpse of 2026-08-06 (a live session wrongly abandoned), and it
+            # covers the new rule without one more line.
             statement = (
                 brain_sessions.update()
                 .where(eligible)
@@ -921,9 +918,9 @@ class PgBrainSessionRepo(BasePgRepository):
                     ended_at=reference,
                     updated_at=reference,
                 )
-                # `status` APRÈS l'écriture : RETURNING voit la ligne neuve, donc
-                # le rapport lit l'issue réellement persistée, pas une issue
-                # recalculée côté Python qui pourrait diverger du CASE.
+                # `status` AFTER the write: RETURNING sees the new row, so the
+                # report reads the outcome actually persisted, not one
+                # recomputed in Python that could diverge from the CASE.
                 .returning(*selection, brain_sessions.c.status.label("outcome"))
             )
 
@@ -989,15 +986,15 @@ class PgBrainSessionRepo(BasePgRepository):
         return dict(row) if row is not None else None
 
     async def _count_open(self, session: AsyncSession, project_key: str) -> int:
-        """Compter les sessions que le CYCLE EXPLICITE gouverne — jamais les traçantes.
+        """Count the sessions the EXPLICIT CYCLE governs — never the tracers.
 
-        Ce nombre est rendu à chaque `start`/`resume`/`end` comme mesure de
-        concurrence de TRAVAIL. Mesuré le 2026-08-25 (ticket 92fe7f0f) : il a
-        affiché 36 quand la concurrence humaine réelle était 2, les traçantes
-        `agent` ne mourant jamais avec leur transport. Les compter ici les fait
-        passer pour ce qu'elles ne sont pas ; elles restent visibles par
-        `list` et comptées séparément par le balayage. `nature IS NULL`
-        (pré-046) reste compté : ces sessions sont humaines par construction.
+        This number is returned on every `start`/`resume`/`end` as a measure of
+        WORK concurrency. Measured on 2026-08-25 (ticket 92fe7f0f): it showed 36
+        when real human concurrency was 2, `agent` tracers never dying with
+        their transport. Counting them here passes them off as something they
+        are not; they stay visible through `list` and are counted separately by
+        the sweep. `nature IS NULL` (pre-046) is still counted: those sessions
+        are human by construction.
         """
         stmt = (
             sa.select(sa.func.count())
@@ -1063,11 +1060,11 @@ class PgBrainSessionRepo(BasePgRepository):
         existing: Sequence[Row],
         session_id: UUID,
     ) -> frozenset[UUID]:
-        """Parmi ces lignes, celles que détient une traçante `agent` — et elles seules.
+        """Among these rows, those an `agent` tracer holds — and only those.
 
-        La borne est la NATURE du détenteur, jamais son âge ni son statut : une
-        traçante balayée reste le serveur. Un détenteur non-`agent` n'est jamais
-        repris ici, quel que soit l'UUID nommé.
+        The bound is the holder's NATURE, never its age nor its status: a swept
+        tracer is still the server. A non-`agent` holder is never taken over
+        here, whatever UUID is named.
         """
         foreign = {
             artifact["session_id"] for artifact in existing if artifact["session_id"] != session_id
@@ -1283,11 +1280,11 @@ class PgBrainSessionRepo(BasePgRepository):
         session_id: UUID,
         reclaimable: frozenset[UUID] = frozenset(),
     ) -> set[UUID]:
-        """Ce que cette session détient déjà — et ce qu'elle a le droit de reprendre.
+        """What this session already holds — and what it may take back.
 
-        `reclaimable` ne contient QUE des artefacts garés dans une traçante
-        `agent`, c'est-à-dire chez le serveur. Un conflit avec un autre HUMAIN
-        reste une erreur : l'exclusivité du ledger existe pour ça.
+        `reclaimable` contains ONLY artifacts parked in an `agent` tracer, that
+        is, with the server. A conflict with another HUMAN stays an error:
+        ledger exclusivity exists for that.
         """
         conflicts = [
             artifact

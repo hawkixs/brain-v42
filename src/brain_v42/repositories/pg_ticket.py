@@ -90,9 +90,9 @@ class PgTicketRepo(BasePgRepository):
                     .returning(ticket_messages)
                 )
                 row = (await session.execute(stmt)).mappings().one()
-                # Une réponse est de l'activité : bump updated_at du ticket.
-                # Une correction y ajoute le corps, dans le même UPDATE — donc
-                # dans la même transaction que le message qui la relate.
+                # A reply is activity: bump the ticket's updated_at. An
+                # amendment adds the body to it, in the same UPDATE — hence in
+                # the same transaction as the message that reports it.
                 ticket_values: dict[str, Any] = {"updated_at": sa.func.now()}
                 if new_ticket_body is not None:
                     ticket_values["body"] = new_ticket_body
@@ -183,10 +183,10 @@ class PgTicketRepo(BasePgRepository):
                 .mappings()
                 .all()
             )
-            # Miroir d'en_attente : nous avons livré (resolved/wontfix), le
-            # demandeur n'a pas confirmé. L'exclusion self-ticket n'est pas
-            # cosmétique — sans elle, un self-ticket resolved doublerait dans
-            # a_confirmer ET ici (spec 2026-08-03 §2.1).
+            # Mirror of en_attente: we delivered (resolved/wontfix), the
+            # requester has not confirmed. The self-ticket exclusion is not
+            # cosmetic — without it, a resolved self-ticket would appear twice,
+            # in a_confirmer AND here (spec 2026-08-03 §2.1).
             awaiting_requester_confirmation = (
                 (
                     await session.execute(

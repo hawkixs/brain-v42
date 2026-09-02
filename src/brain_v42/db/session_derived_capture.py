@@ -1,23 +1,23 @@
-"""Capture DÉRIVÉE : déposer l'artefact dans la traçante de sa connexion.
+"""DERIVED capture: deposit the artifact into its connection's tracer.
 
-La forme retenue est l'**ABSORPTION**, pas l'adoption. Le serveur ne promeut
-jamais une traçante en session d'utilisateur : il dépose l'artefact dans la
-traçante `agent` de la connexion à la création, et la session de l'utilisateur
-absorbe ce ledger à sa commande suivante (``absorb_tracer_ledger`` plus bas).
+The chosen shape is **ABSORPTION**, not adoption. The server never promotes a
+tracer into a user session: it deposits the artifact into the connection's
+`agent` tracer at creation time, and the user's session absorbs that ledger on
+its next command (``absorb_tracer_ledger`` below).
 
-**Pourquoi l'adoption est interdite.** ``auto_open`` re-date une ligne qui
-entre en conflit sur (projet, connexion). Une ligne `operator` qui porterait une
-connexion serait donc re-datée à chaque appel d'outil ; et comme l'éligibilité
-7 jours du balayage lit ``last_heartbeat_at`` **sans filtre de nature**, la seule
-exception ÉCRITE au covenant deviendrait inatteignable — un fantôme immortel. On
-ne pose jamais ``connection_id`` sur une ligne `operator`.
+**Why adoption is forbidden.** ``auto_open`` re-dates a row that conflicts on
+(project, connection). An `operator` row carrying a connection would therefore
+be re-dated on every tool call; and since the sweep's 7-day eligibility reads
+``last_heartbeat_at`` **with no nature filter**, the one WRITTEN exception to the
+covenant would become unreachable — an immortal ghost. ``connection_id`` is
+never set on an `operator` row.
 
-**Module FEUILLE, et c'est structurel.** ``pg_brain_session`` importe
-``pg_base``; ``pg_base`` appelle ce module. Lui faire importer
-``pg_brain_session`` — ne serait-ce que pour ``CAPTURE_TABLES`` — fermerait le
-cycle. Les deux listes vivent donc séparément, et
-``test_the_table_map_agrees_with_the_repository_capture_tables`` est ce qui les
-empêche de diverger en silence.
+**A LEAF module, and that is structural.** ``pg_brain_session`` imports
+``pg_base``; ``pg_base`` calls this module. Making it import
+``pg_brain_session`` — if only for ``CAPTURE_TABLES`` — would close the cycle.
+The two lists therefore live separately, and
+``test_the_table_map_agrees_with_the_repository_capture_tables`` is what keeps
+them from diverging in silence.
 """
 
 from __future__ import annotations
@@ -50,13 +50,13 @@ logger = structlog.get_logger(__name__)
 
 
 def _capture_cap() -> int:
-    """Le plafond de la capture explicite, importé TARD et pour une raison.
+    """The explicit-capture ceiling, imported LATE and for a reason.
 
-    ``pg_base`` appelle ce module et porte une règle écrite : « Never import
-    from brain_v42.models here — stay at the DB Core dict layer. » Un import de
-    module la contournerait par la bande, en tirant la couche modèle dans le
-    graphe d'import du cœur DB. Le différer garde la règle vraie sans dupliquer
-    la constante, ce qui la ferait dériver.
+    ``pg_base`` calls this module and carries a written rule: "Never import from
+    brain_v42.models here — stay at the DB Core dict layer." A module-level
+    import would sidestep it, pulling the model layer into the DB core's import
+    graph. Deferring it keeps the rule true without duplicating the constant,
+    which would make it drift.
     """
     from brain_v42.models.brain_session import (  # noqa: PLC0415
         MAX_CAPTURED_KNOWLEDGE_IDS,
@@ -65,8 +65,8 @@ def _capture_cap() -> int:
     return MAX_CAPTURED_KNOWLEDGE_IDS
 
 
-#: Les tables dont une création peut être attribuée. Miroir volontaire de
-#: ``pg_brain_session.CAPTURE_TABLES`` : voir le cycle d'import ci-dessus.
+#: The tables whose creations can be attributed. A deliberate mirror of
+#: ``pg_brain_session.CAPTURE_TABLES``: see the import cycle above.
 _CAPTURE_TABLES: Final[tuple[tuple[sa.Table, str], ...]] = (
     (decisions, "decision"),
     (learnings, "learning"),
@@ -76,37 +76,35 @@ _CAPTURE_TABLES: Final[tuple[tuple[sa.Table, str], ...]] = (
     (indexed_plans, "indexed_plan"),
 )
 
-#: Par NOM de table — la seule chose que ``BasePgRepository`` connaisse de la
-#: sienne.
+#: By table NAME — the only thing ``BasePgRepository`` knows about its own.
 CAPTURE_TABLES: Final[Mapping[str, str]] = {
     table.name: knowledge_type for table, knowledge_type in _CAPTURE_TABLES
 }
 
 
-#: Les quatre modes d'attribution, miroir du CHECK de la 048 et de `tables.py`.
-#: Les nommer ici plutôt que de les écrire à la volée est ce qui fait échouer un
-#: mode inventé à l'INSERT plutôt qu'en production, sur une contrainte.
+#: The four attribution modes, mirroring the 048 CHECK and `tables.py`. Naming
+#: them here rather than writing them inline is what makes an invented mode fail
+#: at the INSERT rather than in production, on a constraint.
 EXPLICIT: Final = "explicit"
 DEPOSIT: Final = "derived_deposit"
 BY_CONNECTION: Final = "derived_connection"
 BY_WINDOW: Final = "derived_window"
 
-#: Statuts d'une traçante dont le ledger reste PRENABLE. `closed_inactive` en
-#: fait partie et ce n'est pas de la générosité : le balayage 4 h existe pour
-#: sortir une traçante de `open` EN GARDANT son ledger. S'en tenir à `open`
-#: marcherait aujourd'hui — le balayage est inerte par accident de placement de
-#: drop-in — et redeviendrait muet le jour où quelqu'un corrigera ce placement,
-#: sans qu'aucun test n'échoue.
+#: Statuses of a tracer whose ledger stays TAKEABLE. `closed_inactive` is one
+#: of them, and that is not generosity: the 4 h sweep exists to move a tracer
+#: out of `open` WHILE KEEPING its ledger. Sticking to `open` would work today —
+#: the sweep is inert through a drop-in placement accident — and would go silent
+#: again the day someone fixes that placement, without a single test failing.
 _DONOR_STATUSES: Final = ("open", "closed_inactive")
 
-#: Acteurs dont une traçante n'est JAMAIS absorbée par l'étage fenêtre. Miroir
-#: SQL de `provenance.is_human_actor` — le dream n'est pas un « créateur
-#: inconnu », il est identifié, et le laisser dans le pot commun rendrait le
-#: mode de panne quotidien (le `promote` de 03:00 tombe dans la fenêtre de
-#: n'importe quelle session ouverte la nuit) au lieu de marginal.
+#: Actors whose tracer is NEVER absorbed by the window stage. SQL mirror of
+#: `provenance.is_human_actor` — the dream is not an "unknown creator", it is
+#: identified, and leaving it in the common pool would make the failure mode
+#: daily (the 03:00 `promote` falls inside the window of any session open that
+#: night) instead of marginal.
 #:
-#: IMPORTÉES, jamais redéclarées : un miroir qui recopie ses constantes cesse
-#: d'en être un au premier élargissement d'un seul côté — épinglé par
+#: IMPORTED, never redeclared: a mirror that copies its constants stops being
+#: one the first time a single side is widened — pinned by
 #: `test_the_sql_mirror_shares_the_same_constants`.
 _SYSTEM_ACTOR_PREFIXES: Final = SYSTEM_ACTOR_PREFIXES
 _SYSTEM_ACTOR_NAMES: Final = SYSTEM_ACTOR_NAMES
@@ -115,25 +113,24 @@ _NON_HUMAN_ACTORS: Final = ("unknown", "_unexpanded", "")
 
 @dataclass(frozen=True)
 class AbsorptionOutcome:
-    """Ce que l'absorption a fait, ET par quelle clé — jamais un total nu.
+    """What the absorption did, AND by which key — never a bare total.
 
-    Trois retours `0` étaient jusqu'ici indiscernables : drapeau fermé, aucune
-    connexion, et « rien à absorber ». Un quatrième vient s'y ajouter avec
-    l'étage fenêtre — le REFUS pour ambiguïté — et c'est le seul qui veuille dire
-    « la règle a fonctionné et a dit non ». Les confondre, c'est reproduire
-    exactement le mode de panne de ce chantier : une capacité armée, verte, et
-    muette là où elle échoue.
+    Three `0` returns were indistinguishable until now: flag closed, no
+    connection, and "nothing to absorb". A fourth joins them with the window
+    stage — the REFUSAL for ambiguity — and it is the only one that means "the
+    rule ran and said no". Confusing them reproduces exactly this project's
+    failure mode: a capability armed, green, and silent where it fails.
 
-    `total` est ce que le dépôt rend à l'appelant ; le reste est ce qu'on lit au
-    journal quand on cherche pourquoi rien n'a bougé.
+    `total` is what the repository returns to the caller; the rest is what one
+    reads in the log when looking for why nothing moved.
     """
 
     reason: str
     moved_by_connection: int = 0
     moved_by_window: int = 0
-    #: Artefacts que l'étage fenêtre a refusés parce qu'une AUTRE session
-    #: non-`agent` couvrait leur instant de création. Sans ce compte, un refus
-    #: systématique est indistinguable d'un chemin mort.
+    #: Artifacts the window stage refused because ANOTHER non-`agent` session
+    #: covered their creation instant. Without this count, a systematic refusal
+    #: is indistinguishable from a dead path.
     rivals: int = 0
     moved_ids: tuple[UUID, ...] = field(default_factory=tuple)
     donors: tuple[UUID, ...] = field(default_factory=tuple)
@@ -144,7 +141,7 @@ class AbsorptionOutcome:
 
 
 def _enabled() -> bool:
-    """Drapeau fermé par défaut. Une résolution qui rate vaut « fermé »."""
+    """Flag closed by default. A resolution that fails counts as "closed"."""
     try:
         return bool(get_settings().brain_session_derived_capture_enabled)
     except Exception:
@@ -158,12 +155,12 @@ def _current_connection_id() -> str:
 
 
 def _tracer_query(project_key: str, connection_id: str) -> sa.Select[Any]:
-    """La traçante de cette connexion, et rien d'autre.
+    """This connection's tracer, and nothing else.
 
-    Quatre bornes, aucune décorative. ``nature = 'agent'`` en particulier : sans
-    elle, la dérivation pourrait déposer dans la session d'un humain sans qu'il
-    l'ait demandé, ce qui est précisément ce que l'absorption doit rester seule
-    à faire — et sur commande explicite.
+    Four bounds, none decorative. ``nature = 'agent'`` in particular: without
+    it, derivation could deposit into a human's session without them asking,
+    which is precisely what absorption must remain alone in doing — and on an
+    explicit command.
     """
     return sa.select(brain_sessions.c.id).where(
         brain_sessions.c.project_key == project_key,
@@ -178,30 +175,28 @@ async def derive_capture(
     table_name: str,
     row: Mapping[str, Any],
 ) -> UUID | None:
-    """Déposer l'artefact tout juste créé dans la traçante de sa connexion.
+    """Deposit the freshly created artifact into its connection's tracer.
 
-    Rend l'identifiant déposé, ou ``None`` — et ``None`` n'est jamais une
-    erreur : pas de drapeau, pas de connexion, pas de traçante, table hors
-    périmètre, artefact déjà attribué, ledger plein. Ce sont des refus, pas des
-    pannes, et aucun ne doit se voir depuis l'appel qui crée.
+    Returns the deposited identifier, or ``None`` — and ``None`` is never an
+    error: no flag, no connection, no tracer, table out of scope, artifact
+    already attributed, ledger full. These are refusals, not failures, and none
+    of them must be visible from the call that creates.
 
-    **Elle ne vole jamais** : ``ON CONFLICT DO NOTHING`` porte sur
-    ``knowledge_id``, qui EST la clé primaire du ledger. Un artefact déjà
-    attribué reste où il est, que ce soit à une session explicite ou à une autre
-    traçante.
+    **It never steals**: ``ON CONFLICT DO NOTHING`` is on ``knowledge_id``,
+    which IS the ledger's primary key. An already attributed artifact stays
+    where it is, whether with an explicit session or another tracer.
 
-    **Elle ne casse pas la création qu'elle observe** : tout vit dans un
-    ``begin_nested()`` et toute ``Exception`` est avalée. « Pas » et non
-    « jamais », parce que ``except Exception`` n'attrape pas ``BaseException`` :
-    une ``CancelledError`` reçue pendant le ``ROLLBACK TO SAVEPOINT`` du
-    ``__aexit__`` peut laisser la transaction appelante dans un état
-    indéterminé. La fenêtre est étroite, et l'écrire est moins cher que de
-    laisser croire à une garantie totale.
+    **It does not break the creation it observes**: everything lives inside a
+    ``begin_nested()`` and every ``Exception`` is swallowed. "Does not" and not
+    "never", because ``except Exception`` does not catch ``BaseException``: a
+    ``CancelledError`` received during ``__aexit__``'s ``ROLLBACK TO
+    SAVEPOINT`` can leave the calling transaction in an undetermined state. The
+    window is narrow, and writing it down is cheaper than letting anyone believe
+    in a total guarantee.
 
-    La résolution de la connexion vit DANS le ``try``, et pas au-dessus : son
-    import est différé, donc un ``ImportError`` de ``brain_v42.provenance``
-    remonterait dans l'appel observé — exactement ce que ces gardes prétendent
-    empêcher.
+    Resolving the connection lives INSIDE the ``try``, not above it: its import
+    is deferred, so an ``ImportError`` from ``brain_v42.provenance`` would
+    surface in the observed call — exactly what these guards claim to prevent.
     """
     knowledge_type = CAPTURE_TABLES.get(table_name)
     if knowledge_type is None or not _enabled():
@@ -243,10 +238,10 @@ async def derive_capture(
                 )
             ).scalar_one_or_none()
     except Exception:
-        # ``except`` TOTAL et étroitement scopé, même posture que
-        # l'auto-ouverture : ce chemin accompagne CHAQUE création de
-        # connaissance. Le savepoint a déjà rendu la transaction de création
-        # saine ; ce qui reste à faire est de ne pas propager.
+        # A TOTAL, tightly scoped ``except``, same posture as auto-open: this
+        # path accompanies EVERY knowledge creation. The savepoint has already
+        # made the creating transaction sound; what remains is not to
+        # propagate.
         logger.warning("session_derived_capture.failed", table=table_name, exc_info=True)
         return None
 
@@ -254,14 +249,14 @@ async def derive_capture(
 
 
 def _eligible_ids(project_key: str, started_at: datetime, limit: int) -> sa.CompoundSelect[Any]:
-    """Ce qu'une capture EXPLICITE aurait accepté, et rien de plus.
+    """What an EXPLICIT capture would have accepted, and nothing more.
 
-    ``_validate_captures`` borne une capture demandée à « même projet ET
-    ``created_at >= started_at`` », sur ces six tables. L'absorption porte les
-    MÊMES bornes, et c'est l'invariant du chantier : sans lui, la dérivation
-    attribuerait des artefacts que l'utilisateur n'aurait pas pu capturer
-    lui-même, donc deviendrait un chemin plus permissif que la commande qu'elle
-    remplace. Un passe-droit, pas une commodité.
+    ``_validate_captures`` bounds a requested capture to "same project AND
+    ``created_at >= started_at``", on these six tables. Absorption carries the
+    SAME bounds, and that is this project's invariant: without it, derivation
+    would attribute artifacts the user could not have captured themselves, and
+    so would become a path more permissive than the command it replaces. A
+    special dispensation, not a convenience.
     """
     branches = [
         sa.select(table.c.id).where(
@@ -274,20 +269,19 @@ def _eligible_ids(project_key: str, started_at: datetime, limit: int) -> sa.Comp
 
 
 def _eligible_rows(project_key: str, started_at: datetime) -> sa.CompoundSelect[Any]:
-    """Les mêmes bornes que ``_eligible_ids``, mais l'INSTANT voyage avec l'id.
+    """The same bounds as ``_eligible_ids``, but the INSTANT travels with the id.
 
-    L'étage fenêtre ne juge pas un artefact dans l'absolu : il juge qui couvrait
-    l'instant de sa création. Cet instant doit donc être corrélable ligne à
-    ligne, ce qu'une liste d'identifiants nus ne permet pas.
+    The window stage does not judge an artifact in the abstract: it judges who
+    covered the instant of its creation. That instant must therefore be
+    correlatable row by row, which a list of bare identifiers does not allow.
 
-    **AUCUN ``LIMIT`` ici, et c'est le correctif A1.** La version précédente
-    bornait ce ``UNION ALL`` avant que le filtre de rivalité ne s'applique :
-    Postgres rendait alors un lot ARBITRAIRE (aucun ``ORDER BY``), qui pouvait
-    être entièrement contesté, et les lignes légitimes n'étaient jamais
-    absorbées — en silence, et différemment d'un appel à l'autre. Le plafond
-    n'est pas 100 mais ``100 - occupé``, qui rétrécit à mesure qu'une session
-    accumule : le cas se produisait en fin de session longue, exactement quand
-    l'absorption sert le plus. On borne donc APRÈS avoir filtré.
+    **NO ``LIMIT`` here, and that is fix A1.** The previous version bounded this
+    ``UNION ALL`` before the rivalry filter applied: Postgres then returned an
+    ARBITRARY batch (no ``ORDER BY``), which could be entirely contested, and
+    the legitimate rows were never absorbed — silently, and differently from one
+    call to the next. The ceiling is not 100 but ``100 - taken``, which shrinks
+    as a session accumulates: the case happened at the end of a long session,
+    exactly when absorption is worth the most. So we bound AFTER filtering.
     """
     branches = [
         sa.select(table.c.id.label("id"), table.c.created_at.label("created_at")).where(
@@ -300,14 +294,14 @@ def _eligible_rows(project_key: str, started_at: datetime) -> sa.CompoundSelect[
 
 
 def _window_donors(project_key: str) -> sa.Select[Any]:
-    """Les traçantes du projet dont le ledger est prenable par la fenêtre.
+    """The project's tracers whose ledger the window may take.
 
-    Trois bornes, aucune décorative. ``nature='agent'`` : on ne prend jamais à
-    un humain. Le statut inclut ``closed_inactive``, sinon le correctif
-    redeviendrait muet le jour où le balayage 4 h cessera d'être inerte. Et
-    l'acteur doit être humain : une traçante ouverte par le dream est identifiée
-    comme telle, la laisser dans le pot commun ferait tomber le `promote` de
-    03:00 dans la fenêtre de toute session ouverte cette nuit-là.
+    Three bounds, none decorative. ``nature='agent'``: we never take from a
+    human. The status includes ``closed_inactive``, otherwise the fix would go
+    silent again the day the 4 h sweep stops being inert. And the actor must be
+    human: a tracer opened by the dream is identified as such, and leaving it in
+    the common pool would drop the 03:00 `promote` into the window of every
+    session open that night.
     """
     actor = brain_sessions.c.started_by_actor
     return sa.select(brain_sessions.c.id).where(
@@ -324,18 +318,17 @@ def _window_donors(project_key: str) -> sa.Select[Any]:
 def _covered_by_a_rival(
     project_key: str, target_id: Any, created_at: Any
 ) -> sa.ColumnElement[bool]:
-    """Une AUTRE session non-`agent` couvrait-elle cet instant ?
+    """Did ANOTHER non-`agent` session cover this instant?
 
-    La rivalité est SYMÉTRIQUE : aucune clause de fraîcheur, aucune clause de
-    fratrie. Deux prétendantes valent une abstention — jamais un tirage au sort,
-    et jamais « la plus récente gagne », qui rendrait l'attribution dépendante
-    de l'ordre de fermeture.
+    Rivalry is SYMMETRIC: no recency clause, no sibling clause. Two claimants
+    mean an abstention — never a coin toss, and never "the most recent wins",
+    which would make attribution depend on the order of closing.
 
-    La couverture se juge à l'INSTANT, pas au moment de la commande :
-    ``started_at <= t <= coalesce(ended_at, now())``. Une session close APRÈS
-    l'instant l'a bel et bien couvert et reste donc une rivale ; une session
-    close AVANT ne couvre rien. Juger « ouverte MAINTENANT » ferait rafler la
-    mise par la dernière à fermer.
+    Coverage is judged at the INSTANT, not at command time:
+    ``started_at <= t <= coalesce(ended_at, now())``. A session closed AFTER the
+    instant did cover it and therefore stays a rival; a session closed BEFORE
+    covers nothing. Judging "open NOW" would let the last one to close take
+    everything.
     """
     rival = brain_sessions.alias("rival")
     return sa.exists().where(
@@ -354,41 +347,40 @@ async def absorb_tracer_ledger(
     target: Any,
     connection_id: str,
 ) -> AbsorptionOutcome:
-    """Rendre à ``target`` ce que les traçantes ont recueilli pour elle. DEUX étages.
+    """Give ``target`` what the tracers collected for it. TWO stages.
 
-    C'est l'ABSORPTION : la session de l'utilisateur prend ce qu'une traçante a
-    recueilli, sans que la traçante soit jamais promue.
+    This is ABSORPTION: the user's session takes what a tracer collected,
+    without the tracer ever being promoted.
 
-    **Étage 1 — la connexion courante.** L'appariement EXACT, évalué en premier
-    et inchangé. Quand il répond, il n'y a rien à déduire.
+    **Stage 1 — the current connection.** The EXACT match, evaluated first and
+    unchanged. When it answers, there is nothing to infer.
 
-    **Étage 2 — l'exclusivité temporelle.** Il n'existe que parce que l'étage 1
-    est structurellement insuffisant : ``connection_id`` est le
-    ``Mcp-Session-Id``, un identifiant de TRANSPORT que l'idle timeout de 900 s
-    tue bien avant que l'utilisateur ne ferme sa session — mesuré ~26 fois par
-    jour, contre 3 redémarrages en trois jours. Une session de 16 h face à des
-    transports dont la durée de vie médiane est sous 2 minutes ne peut pas être
-    appariée par la connexion de son seul appel de fermeture.
+    **Stage 2 — temporal exclusivity.** It exists only because stage 1 is
+    structurally insufficient: ``connection_id`` is the ``Mcp-Session-Id``, a
+    TRANSPORT identifier that the 900 s idle timeout kills long before the user
+    closes their session — measured ~26 times a day, against 3 restarts in three
+    days. A 16 h session facing transports whose median lifetime is under 2
+    minutes cannot be matched by the connection of its single closing call.
 
-    L'étage 2 est une DÉDUCTION, pas une preuve, et le code doit le dire : il
-    n'attribue que si ``target`` était, à l'instant de création, la SEULE session
-    non-`agent` du projet qui couvrait cet instant. Sous ambiguïté il refuse —
-    l'artefact reste chez la traçante, visible et non perdu.
+    Stage 2 is a DEDUCTION, not a proof, and the code must say so: it attributes
+    only if ``target`` was, at the creation instant, the ONLY non-`agent`
+    session of the project covering that instant. Under ambiguity it refuses —
+    the artifact stays with the tracer, visible and not lost.
 
-    Le donneur reste `agent` UNIQUEMENT, aux deux étages. Absorber une session
-    `operator` déplacerait le ledger d'un humain vers un autre humain, ce que
-    l'exclusivité du ledger existe pour empêcher.
+    The donor stays `agent` ONLY, at both stages. Absorbing an `operator`
+    session would move a human's ledger to another human, which is what ledger
+    exclusivity exists to prevent.
 
-    Le plafond de 100 de la capture explicite est respecté et DÉCRÉMENTÉ entre
-    les étages : le franchir rendrait ``brain_session_capture`` refusable pour
-    une raison que l'utilisateur n'a pas provoquée.
+    The explicit-capture ceiling of 100 is respected and DECREMENTED between
+    stages: crossing it would make ``brain_session_capture`` refusable for a
+    reason the user did not cause.
     """
     if not _enabled():
         return AbsorptionOutcome(reason="disabled")
     if not connection_id:
-        # `stdio` et le mode sans état n'ont pas de couple (projet, connexion).
-        # Ce n'est pas le même « rien » qu'un drapeau fermé, et les confondre
-        # est exactement ce qui a rendu cette panne muette pendant dix jours.
+        # `stdio` and the stateless mode have no (project, connection) pair.
+        # That is not the same "nothing" as a closed flag, and confusing the two
+        # is exactly what kept this failure silent for ten days.
         return AbsorptionOutcome(reason="no_connection")
 
     moved_connection: list[UUID] = []
@@ -414,10 +406,10 @@ async def absorb_tracer_ledger(
             )
             remaining = _capture_cap() - occupied
             if remaining <= 0:
-                # A2c : ce refus atteint le JOURNAL, pas seulement l'API. La
-                # version précédente sortait d'ici sans rien émettre, alors que
-                # le lot promettait des raisons distinguables « en API comme au
-                # journal ».
+                # A2c: this refusal reaches the LOG, not just the API. The
+                # previous version returned from here emitting nothing, while
+                # the batch promised reasons distinguishable "in the API as in
+                # the log".
                 full = AbsorptionOutcome(reason="ledger_full")
                 _log_absorption(target, connection_id, full)
                 return full
@@ -455,11 +447,11 @@ async def absorb_tracer_ledger(
                     _window_donors(target.project_key)
                 )
 
-                # A1 : on FILTRE, puis on borne. Et on SÉLECTIONNE avant de
-                # mettre à jour, parce que le `RETURNING` d'un UPDATE rend la
-                # NOUVELLE valeur de `session_id` : la donneuse serait perdue
-                # au moment précis où elle compte — l'étage déduit est celui
-                # qu'on voudra défaire (A2b).
+                # A1: FILTER first, then bound. And SELECT before updating,
+                # because an UPDATE's `RETURNING` yields the NEW value of
+                # `session_id`: the donor would be lost at the precise moment it
+                # matters — the inferred stage is the one we will want to undo
+                # (A2b).
                 candidates = (
                     await session.execute(
                         sa.select(
@@ -488,11 +480,11 @@ async def absorb_tracer_ledger(
                         .all()
                     )
 
-                # A2a : compté À CHAQUE PASSAGE de l'étage fenêtre, et non
-                # seulement quand rien n'a bougé. Une absorption qui prend 1
-                # ligne par connexion et en refuse 5 par ambiguïté journalisait
-                # `rivals_blocked=0` — le « total qui masque » que ce lot existe
-                # pour empêcher, réintroduit d'un cran plus bas.
+                # A2a: counted ON EVERY PASS of the window stage, not only when
+                # nothing moved. An absorption taking 1 row by connection and
+                # refusing 5 for ambiguity used to log `rivals_blocked=0` — the
+                # "total that masks", which this batch exists to prevent,
+                # reintroduced one level down.
                 rivals = int(
                     (
                         await session.execute(
@@ -528,12 +520,12 @@ async def absorb_tracer_ledger(
 
 
 def _log_absorption(target: Any, connection_id: str, outcome: AbsorptionOutcome) -> None:
-    """L'observable de production : PAR QUELLE CLÉ, et sur QUELS artefacts.
+    """The production observable: BY WHICH KEY, and on WHICH artifacts.
 
-    Sans les UUID, une mauvaise attribution n'est pas défaisable — on saurait
-    qu'il y en a eu une, jamais laquelle. Sans le compte des rivales, un refus
-    systématique est indistinguable d'un chemin mort, ce qui est le mode de
-    panne que ce lot répare.
+    Without the UUIDs, a bad attribution is not undoable — one would know there
+    had been one, never which. Without the rival count, a systematic refusal is
+    indistinguishable from a dead path, which is the failure mode this batch
+    repairs.
     """
     if outcome.reason in {"disabled", "no_connection"}:
         return

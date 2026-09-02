@@ -1,28 +1,28 @@
 #!/usr/bin/env python
-"""Canary apparié : chaque modèle candidat sur les MÊMES batches réels.
+"""Paired canary: every candidate model on the SAME real batches.
 
-Pourquoi ce script existe, et pourquoi une sonde de vivacité ne suffit pas :
-le 2026-08-11, une sonde à 16 tokens a donné `minimaxai/minimax-m3` vivant en
-2,4 s. Le canary du 2026-08-05, lui, l'avait déjà mesuré en TIMEOUT sur le vrai
-prompt — le commentaire de scripts/roadmap_curate.py:60-67 en garde la trace.
-Un modèle qui répond « ALIVE » à seize tokens peut mourir sur un prompt
-consolidateur de plusieurs milliers.
+Why this script exists, and why a liveness probe is not enough: on 2026-08-11, a
+16-token probe reported `minimaxai/minimax-m3` alive in 2.4 s. The 2026-08-05
+canary had already measured it TIMING OUT on the real prompt — the comment at
+scripts/roadmap_curate.py:60-67 keeps the trace. A model that answers "ALIVE" at
+sixteen tokens can die on a consolidator prompt of several thousand.
 
-Ce script ne PERSISTE RIEN. Il lit les batches par le vrai chemin
-(`fetch_project_batches`) et les cure par le vrai point d'entrée de la nuit,
-`curate_batch`. `persist_proposals` et `apply_proposals` ne sont jamais appelés.
+This script PERSISTS NOTHING. It reads the batches through the real path
+(`fetch_project_batches`) and curates them through the night's real entry point,
+`curate_batch`. `persist_proposals` and `apply_proposals` are never called.
 
-Il a appelé `_curate_llm_attempt` jusqu'au 2026-08-17 — l'étage SOUS celui de la
-nuit. Il lui manquait donc quatre contraintes : la fenêtre
-`batch_llm_window` (60 s à dix batches, contre le read timeout httpx de 180 s),
-le plafond de complétion, le compactage du batch, et le CIRCUIT qui écarte un
-primaire défaillant de tous les batches suivants. C'est ce qui a fait basculer
-la production sur `mistralai/mistral-nemotron` le 2026-08-16 : 3/3 batches
-valides au canary, 10/10 sur le secours dès la première nuit.
+It called `_curate_llm_attempt` until 2026-08-17 — the layer BELOW the night's.
+It was therefore missing four constraints: the `batch_llm_window` window (60 s at
+ten batches, against httpx's 180 s read timeout), the completion cap, batch
+compaction, and the CIRCUIT that removes a failing primary from every subsequent
+batch. That is what switched production to `mistralai/mistral-nemotron` on
+2026-08-16: 3/3 valid batches at the canary, 10/10 on the fallback from the very
+first night.
 
-Le verdict utile n'est donc pas « répond / ne répond pas », ni même la validité
-JSON seule, mais ce que le CANDIDAT a porté lui-même — séparé de ce que le
-secours a sauvé sous son nom. Le budget de nuit est fini : à dix projets, 720 s.
+The useful verdict is therefore not "answers / does not answer", nor even JSON
+validity alone, but what the CANDIDATE carried itself — separated from what the
+fallback rescued under its name. The night budget is finite: at ten projects,
+720 s.
 """
 
 from __future__ import annotations
@@ -53,16 +53,16 @@ from brain_v42.scripts.roadmap_curate import (
     fetch_project_batches,
 )
 
-# `NIGHT_BUDGET_S` est IMPORTÉ, plus recopié. La valeur vivait ici en double
-# (720.0), et deux sources de vérité pour un budget ne peuvent que diverger :
-# le jour où la nuit changerait de budget, le canary continuerait de dériver
-# ses fenêtres de l'ancien sans qu'une seule ligne ne change de couleur.
+# `NIGHT_BUDGET_S` is IMPORTED, no longer copied. The value used to live here in
+# duplicate (720.0), and two sources of truth for one budget can only diverge:
+# the day the night changed budget, the canary would keep deriving its windows
+# from the old one without a single line changing colour.
 
-# Le DÉFAUT de --batches est le --limit que dream.sh passe à la nuit. À 3, le
-# même budget se partageait en fenêtres de 120 s (croissant jusqu'à 200) là où
-# dix batches les bornent à 60 s : le canary du 2026-08-29 a validé sous ce
-# régime doux un secours à 74,5 s/batch qui aurait time-outé chaque tentative
-# de production. Épinglé sur dream.sh par
+# The --batches DEFAULT is the --limit dream.sh passes to the night. At 3, the
+# same budget split into 120 s windows (growing to 200) where ten batches bound
+# them to 60 s: the 2026-08-29 canary validated, under that gentle regime, a
+# fallback at 74.5 s/batch that would have timed out on every production
+# attempt. Pinned against dream.sh by
 # test_canary_roadmap_matches_night_regime.test_the_cli_default_batch_count_is_the_nights.
 DEFAULT_CANARY_BATCHES = 10
 
@@ -73,7 +73,7 @@ async def _sleep(seconds: float) -> None:
 
 @dataclass
 class ModelMeasurement:
-    """Ce qu'un candidat a porté LUI-MÊME, séparé de ce que le secours a sauvé."""
+    """What a candidate carried ITSELF, separated from what the fallback rescued."""
 
     model: str
     durations: list[float] = field(default_factory=list)
@@ -82,7 +82,7 @@ class ModelMeasurement:
     failed: int = 0
     drafts_total: int = 0
     errors: list[str] = field(default_factory=list)
-    # Index 1-based du batch qui a écarté le primaire pour tout le reste du run.
+    # 1-based index of the batch that removed the primary for the rest of the run.
     circuit_opened_at: int | None = None
     outcomes: list[BatchOutcome] = field(default_factory=list)
 
@@ -96,11 +96,10 @@ class ModelMeasurement:
 
     @property
     def verdict(self) -> str:
-        """Le verdict porte sur le CANDIDAT, jamais sur ce que le secours a sauvé.
+        """The verdict is about the CANDIDATE, never about what the fallback rescued.
 
-        C'est toute la correction : un run intégralement servi par le secours
-        rendait « 10/10 valides » et faisait basculer la production sur un
-        modèle mort.
+        That is the whole fix: a run served entirely by the fallback reported
+        "10/10 valid" and switched production onto a dead model.
         """
         if self.carried_by_primary == self.batches and self.batches:
             return "OK"
@@ -118,28 +117,29 @@ async def measure_model(
     clock: Any = time.monotonic,
     as_dry_primary: bool = False,
 ) -> ModelMeasurement:
-    """Mesurer un candidat SOUS les contraintes de la nuit, pas sous les siennes.
+    """Measure a candidate UNDER the night's constraints, not under its own.
 
-    Passe par `curate_batch`, le point d'entrée que la nuit utilise, et non par
-    `_curate_llm_attempt` en dessous : la fenêtre `batch_llm_window`, le plafond
-    de complétion, le compactage du batch et le CIRCUIT viennent alors du même
-    code que la production. `disabled_models` est un seul ensemble partagé par
-    tous les batches — c'est lui qui reproduit « un batch perdu condamne les
-    neuf suivants », le fait que le canary d'origine ne pouvait pas voir.
+    Goes through `curate_batch`, the entry point the night uses, and not through
+    `_curate_llm_attempt` below it: the `batch_llm_window` window, the
+    completion cap, batch compaction and the CIRCUIT then come from the same
+    code as production. `disabled_models` is a single set shared by every batch
+    — it is what reproduces "one lost batch condemns the next nine", the fact
+    the original canary could not see.
 
-    `as_dry_primary` mesure un candidat DANS le régime qu'il aurait une fois
-    adopté : `PROPOSER_ONLY_MODELS` étant dérivé de `DEFAULT_ROADMAP_MODEL`, un
-    candidat y entre le jour de sa bascule et change de routage au même instant.
-    Sans ce drapeau on mesurerait encore un régime que la production n'aura pas.
+    `as_dry_primary` measures a candidate IN the regime it would have once
+    adopted: `PROPOSER_ONLY_MODELS` being derived from `DEFAULT_ROADMAP_MODEL`, a
+    candidate enters it on the day of its switch and changes routing at the same
+    instant. Without this flag we would still be measuring a regime production
+    will not have.
     """
     measurement = ModelMeasurement(model=model)
     circuit: set[str] = set()
     total = len(batches)
-    # Demandé EXPLICITEMENT à curate_batch, jamais par mutation du global
-    # PROPOSER_ONLY_MODELS : un monkeypatch qui fuite laisserait la production
-    # routée autrement qu'elle ne l'était, et `check_container_image_pins`
-    # interdit à bon droit d'écrire un attribut de module. None = routage
-    # nominal, décidé par l'appartenance à l'ensemble, strictement inchangé.
+    # Asked of curate_batch EXPLICITLY, never by mutating the global
+    # PROPOSER_ONLY_MODELS: a leaking monkeypatch would leave production routed
+    # differently from how it was, and `check_container_image_pins` rightly
+    # forbids writing a module attribute. None = nominal routing, decided by set
+    # membership, strictly unchanged.
     proposer_only = True if as_dry_primary else None
     t0 = clock()
 
@@ -158,7 +158,7 @@ async def measure_model(
                 disabled_models=circuit,
                 proposer_only=proposer_only,
             )
-        except Exception as exc:  # noqa: BLE001 — on MESURE l'échec, on ne le masque pas
+        except Exception as exc:  # noqa: BLE001 — we MEASURE the failure, we do not mask it
             measurement.durations.append(clock() - started)
             measurement.failed += 1
             measurement.errors.append(f"{type(exc).__name__}: {str(exc)[:90]}")
@@ -186,20 +186,20 @@ async def measure_model(
 
 
 def _proposals_payload(model: str, outcome: BatchOutcome) -> dict[str, Any]:
-    """Rendre les propositions LISIBLES, sans prétendre les noter.
+    """Make the proposals READABLE, without pretending to score them.
 
-    Le triplet mesuré par ce script — validité JSON, s/batch, NOMBRE de
-    propositions — ne dit rien de ce qui est proposé. Deux modèles peuvent
-    rendre trente propositions chacun, l'un archivant des features vivantes et
-    l'autre voyant les vrais doublons, et le tableau les classerait à égalité.
+    The triplet this script measures — JSON validity, s/batch, NUMBER of
+    proposals — says nothing about what is proposed. Two models can each return
+    thirty proposals, one archiving live features and the other seeing the real
+    duplicates, and the table would rank them equal.
 
-    Un UUID nu ne se juge pas : chaque proposition sort donc avec la feature
-    qu'elle vise — nom, statut, épinglage — et `merge` nomme la feature dans
-    laquelle elle absorberait sa cible. Sans ça, personne ne peut dire si un
-    `archive` est un bon appel ou la destruction d'un engagement.
+    A bare UUID cannot be judged: every proposal therefore comes out with the
+    feature it targets — name, status, pinning — and `merge` names the feature
+    into which it would absorb its target. Without that, nobody can say whether
+    an `archive` is a good call or the destruction of a commitment.
 
-    Aucune notation ici, délibérément : un score rendu par l'étage qui produit
-    les propositions n'aurait aucune valeur d'arbitrage.
+    No scoring here, deliberately: a score returned by the layer that produces
+    the proposals would carry no weight in the decision.
     """
     by_id = {feature.id: feature for feature in outcome.batch.features}
 
@@ -243,11 +243,11 @@ async def main() -> int:
         default=DEFAULT_CANARY_BATCHES,
         help="nombre de batches réels (défaut : le --limit de la nuit, fenêtres identiques)",
     )
-    # `--proposer-only` a été RETIRÉ. Il choisissait le parseur à la main, alors
-    # que `curate_batch` — le point d'entrée de la nuit, désormais utilisé ici —
-    # décide lui-même par appartenance à PROPOSER_ONLY_MODELS. Le garder aurait
-    # permis de mesurer un régime de parsing que la nuit n'applique pas à ce
-    # modèle, c'est-à-dire de reproduire la panne qu'on corrige.
+    # `--proposer-only` was REMOVED. It picked the parser by hand, whereas
+    # `curate_batch` — the night's entry point, now used here — decides for
+    # itself by membership of PROPOSER_ONLY_MODELS. Keeping it would have
+    # allowed measuring a parsing regime the night does not apply to this model,
+    # that is, reproducing the very failure being fixed.
     parser.add_argument(
         "--fallback-model",
         default=DEFAULT_ROADMAP_FALLBACK_MODEL,
@@ -309,9 +309,9 @@ async def main() -> int:
     dumped: list[dict[str, Any]] = []
     try:
         for model in models:
-            # Séquentiel et jamais concurrent : deux candidats en parallèle se
-            # disputeraient la file d'attente du fournisseur et fausseraient
-            # précisément la mesure recherchée.
+            # Sequential and never concurrent: two candidates in parallel would
+            # compete for the provider's queue and skew precisely the
+            # measurement being sought.
             measurement = await measure_model(
                 client,
                 model,
@@ -334,8 +334,8 @@ async def main() -> int:
                 f"{measurement.drafts_total} propositions"
             )
             if measurement.rescued_by_fallback:
-                # La ligne que le canary d'origine ne pouvait pas écrire, faute
-                # de passer par l'étage où le repli existe.
+                # The line the original canary could not write, for want of
+                # going through the layer where the fallback exists.
                 print(
                     f"         └─ {measurement.rescued_by_fallback} batch(es) "
                     f"sauvés par {args.fallback_model} — NON portés par le candidat"
@@ -370,10 +370,10 @@ async def main() -> int:
         drafts = measurement.drafts_total
         projected = mean * 10
         if measurement.circuit_opened_at is not None:
-            # Priorité sur tout le reste : un circuit ouvert veut dire que la
-            # nuit cesserait d'appeler ce modèle après ce batch. Le classer sur
-            # la seule validité laisserait passer un candidat que la production
-            # n'utiliserait plus.
+            # Priority over everything else: an open circuit means the night
+            # would stop calling this model after this batch. Ranking it on
+            # validity alone would let through a candidate production would no
+            # longer use.
             verdict = (
                 f"ÉCARTÉ — circuit ouvert au batch {measurement.circuit_opened_at}, "
                 f"{measurement.rescued_by_fallback} batch(es) servis par le secours"
@@ -383,8 +383,8 @@ async def main() -> int:
         elif projected > NIGHT_BUDGET_S:
             verdict = f"ÉCARTÉ — {projected:.0f} s > budget nuit {NIGHT_BUDGET_S:.0f} s"
         elif drafts == 0:
-            # Valide et stérile : un modèle qui ne propose jamais rien passe
-            # toutes les gardes de forme et ne fait rien du travail attendu.
+            # Valid and sterile: a model that never proposes anything passes
+            # every shape guard and does none of the expected work.
             verdict = "SUSPECT — 0 proposition sur tous les batches"
         elif len(model) > 30:
             verdict = "retenable, mais migration 045 OBLIGATOIRE (>30 car.)"

@@ -43,7 +43,7 @@ class StatusEngine:
         if pinned:
             return current_status
 
-        # Statut hors échelle (archived, legacy) : jamais dégradé/promu par les signaux.
+        # Off-scale status (archived, legacy): never demoted/promoted by signals.
         if current_status not in self.STATUS_ORDER:
             return current_status
 

@@ -48,8 +48,8 @@ class IndexedPlan(TimestampMixin, BaseModel):
     word_count: int
     access_count: int = 0
     last_accessed_at: datetime | None = None
-    # Sixième table suivie par le decay — mêmes colonnes 041/044 que les cinq
-    # types de connaissance, mais hors `DecayMixin`, que ce modèle n'utilise pas.
+    # Sixth table tracked by the decay — same 041/044 columns as the five
+    # knowledge types, but outside `DecayMixin`, which this model does not use.
     access_count_human: int = 0
     last_accessed_at_human: datetime | None = None
     freshness_status: str

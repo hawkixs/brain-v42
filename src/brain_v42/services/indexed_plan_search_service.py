@@ -163,7 +163,7 @@ class IndexedPlanSearchService:
             WHERE {where}
             ORDER BY score DESC
             LIMIT :limit
-        """  # nosec B608 - fragment = `where`, join des seuls littéraux retournés par _build_where (aucune valeur d'appel n'y entre) ; le texte de recherche utilisateur passe par le bind :q, project_key/:pks/:tags idem ; exception revue le 2026-08-16, à réexaminer avant le 2026-09-30
+        """  # nosec B608 - fragment = `where`, a join of the only literals returned by _build_where (no call value enters it); the user's search text goes through the :q bind, project_key/:pks/:tags likewise; exception reviewed on 2026-08-16, to be re-examined before 2026-09-30
 
         return await self._execute_query(sql, params)
 
@@ -206,7 +206,7 @@ class IndexedPlanSearchService:
             WHERE {where}
             ORDER BY c.embedding <=> CAST(:emb AS VECTOR)
             LIMIT :limit
-        """  # nosec B608 - fragment = `where`, join des seuls littéraux retournés par _build_where (aucune valeur d'appel n'y entre) ; l'embedding passe par le bind :emb, project_key/:pks/:tags idem ; exception revue le 2026-08-16, à réexaminer avant le 2026-09-30
+        """  # nosec B608 - fragment = `where`, a join of the only literals returned by _build_where (no call value enters it); the embedding goes through the :emb bind, project_key/:pks/:tags likewise; exception reviewed on 2026-08-16, to be re-examined before 2026-09-30
 
         return await self._execute_query(sql, params)
 

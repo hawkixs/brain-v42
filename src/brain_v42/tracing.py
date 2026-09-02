@@ -1,28 +1,29 @@
-"""Spans OpenTelemetry pour les appels de tool — sur un provider PRIVÉ.
+"""OpenTelemetry spans for tool calls — on a PRIVATE provider.
 
-POURQUOI JAMAIS ``trace.set_tracer_provider()``. Vérifié dans le venv le
-2026-08-12 : FastMCP porte sa propre télémétrie. ``fastmcp/server/telemetry.py``
-(``server_span``, ligne 57) fait, sur échec ::
+WHY NEVER ``trace.set_tracer_provider()``. Verified in the venv on 2026-08-12:
+FastMCP carries its own telemetry. ``fastmcp/server/telemetry.py``
+(``server_span``, line 57) does, on failure ::
 
     span.record_exception(e)                           # args + stacktrace
     span.set_status(Status(StatusCode.ERROR, str(e)))  # message brut
 
-et pose ``enduser.id`` — le principal du bearer de capacité Dream — via
-``get_auth_span_attributes()`` (ligne 85). Son tracer vient de
-``fastmcp/telemetry.py::get_tracer`` (ligne 38), qui appelle
-``otel_get_tracer(INSTRUMENTATION_NAME)`` : il lit le provider **GLOBAL**.
+and sets ``enduser.id`` — the principal of the Dream capability bearer —
+through ``get_auth_span_attributes()`` (line 85). Its tracer comes from
+``fastmcp/telemetry.py::get_tracer`` (line 38), which calls
+``otel_get_tracer(INSTRUMENTATION_NAME)``: it reads the **GLOBAL** provider.
 
-Installer un provider global armerait donc ce bloc. Or ``business_errors.py:101``
-fait ``raise ToolError(str(exc)) from exc`` : ``str(e)`` EST le message métier
-brut, et ``record_exception`` sérialise une stacktrace qui suit ``__cause__``.
-Le secret que ``test_decorator_does_not_log_authorization_failure_context``
-existe pour retenir ressortirait par ce canal. D'où un provider privé, épinglé
-par un test qui lit cette source.
+Installing a global provider would therefore arm that block. But
+``business_errors.py:101`` does ``raise ToolError(str(exc)) from exc``:
+``str(e)`` IS the raw business message, and ``record_exception`` serializes a
+stacktrace that follows ``__cause__``. The secret that
+``test_decorator_does_not_log_authorization_failure_context`` exists to hold back
+would come out through that channel. Hence a private provider, pinned by a test
+that reads this source.
 
-POURQUOI LE SDK N'EST IMPORTÉ QU'À L'INTÉRIEUR DES FONCTIONS. C'est une
-dépendance OPTIONNELLE (extra ``tracing``). Un import au niveau module ferait
-échouer le démarrage du serveur partout où l'extra n'est pas installé —
-c'est-à-dire aujourd'hui en CI et en production.
+WHY THE SDK IS IMPORTED ONLY INSIDE THE FUNCTIONS. It is an OPTIONAL dependency
+(the ``tracing`` extra). A module-level import would make the server fail to
+start everywhere the extra is not installed — which is to say, today, in CI and
+in production.
 """
 
 from __future__ import annotations
@@ -34,56 +35,55 @@ from brain_v42.provenance import UNKNOWN_ACTOR
 
 logger = logging.getLogger(__name__)
 
-#: Plafond de cardinalité sur ``brain.actor``. Même valeur et même raison que
-#: ``MetricsCollector._MAX_AGENTS`` (collector.py:130) : ``X-Brain-Agent`` est
-#: déclaré par le client donc falsifiable, et un attribut de span n'a AUCUN
-#: plafond natif. Un sampler ne remplace pas cette borne — il borne le VOLUME,
-#: pas le nombre de valeurs DISTINCTES. Plafond volontairement indépendant de
-#: celui du collector : réutiliser son état privé coûterait un couplage pire
-#: que la divergence, puisque les deux sont bornés.
+#: Cardinality cap on ``brain.actor``. Same value and same reason as
+#: ``MetricsCollector._MAX_AGENTS`` (collector.py:130): ``X-Brain-Agent`` is
+#: declared by the client hence falsifiable, and a span attribute has NO native
+#: cap. A sampler does not replace this bound — it bounds VOLUME, not the number
+#: of DISTINCT values. A cap deliberately independent of the collector's: reusing
+#: its private state would cost a coupling worse than the divergence, since both
+#: are bounded.
 MAX_TRACED_ACTORS = 32
 OVERFLOW_ACTOR = "_overflow"
 
 _SPAN_OPERATION = "execute_tool"
 
 _tracer: Any | None = None
-#: Le provider privé, gardé pour pouvoir le vider À L'ARRÊT. Sans cette
-#: référence, `shutdown_on_exit=False` ferait perdre en silence tout ce qui
-#: reste dans la file du BatchSpanProcessor — on aurait échangé un arrêt qui
-#: traîne contre des spans qui disparaissent.
+#: The private provider, kept so it can be drained AT SHUTDOWN. Without this
+#: reference, `shutdown_on_exit=False` would silently lose everything left in the
+#: BatchSpanProcessor's queue — we would have traded a shutdown that drags for
+#: spans that disappear.
 _provider: Any | None = None
 _known_actors: set[str] = set()
 
 
 def set_tracer(tracer: Any | None) -> None:
-    """Poser le tracer courant — point d'injection des tests.
+    """Set the current tracer — the tests' injection point.
 
-    Séparé de ``reset_actor_cardinality`` à dessein : un helper qui ferait les
-    deux créerait un couplage caché entre « je change de tracer » et « j'oublie
-    les acteurs vus », deux gestes sans rapport.
+    Separate from ``reset_actor_cardinality`` on purpose: a helper doing both
+    would create a hidden coupling between "I change tracer" and "I forget the
+    actors seen", two unrelated gestures.
     """
     global _tracer
     _tracer = tracer
 
 
 def get_tracer() -> Any | None:
-    """Le tracer courant, ou ``None`` quand le tracing est fermé.
+    """The current tracer, or ``None`` when tracing is closed.
 
-    Rendre ``None`` et non un tracer no-op est le point qui fait que le
-    killswitch COUPE : l'API OTel rend volontiers un no-op, mais on paierait
-    quand même la construction des attributs sur un chemin qui s'exécute à
-    chaque appel de tool.
+    Returning ``None`` rather than a no-op tracer is what makes the killswitch
+    actually CUT: the OTel API happily returns a no-op, but we would still pay
+    for building the attributes on a path that runs on every tool call.
     """
     return _tracer
 
 
 def reset_actor_cardinality() -> None:
-    """Vider le registre des acteurs déjà vus."""
+    """Clear the registry of actors already seen."""
     _known_actors.clear()
 
 
 def bounded_actor(actor: str | None) -> str:
-    """Ramener un acteur dans un nombre borné de seaux."""
+    """Fold an actor into a bounded number of buckets."""
     name = (actor or UNKNOWN_ACTOR).strip() or UNKNOWN_ACTOR
     if name in _known_actors:
         return name
@@ -94,12 +94,12 @@ def bounded_actor(actor: str | None) -> str:
 
 
 def _error_type(exc: BaseException, unwrap: bool) -> str:
-    """Le nom de classe à publier, en déballant le masquage métier.
+    """The class name to publish, unwrapping the business masking.
 
-    ``business_errors._wrap`` relaie toute erreur métier en ``ToolError``.
-    Publier ce nom-là ferait dégénérer ``error.type`` en « ToolError » pour
-    toute panne — précisément le défaut qui avait fait écarter un middleware
-    comme point de mesure.
+    ``business_errors._wrap`` relays every business error as a ``ToolError``.
+    Publishing that name would degenerate ``error.type`` into "ToolError" for
+    every failure — precisely the defect that ruled out a middleware as the
+    measurement point.
     """
     if unwrap and exc.__cause__ is not None:
         return type(exc.__cause__).__name__
@@ -107,13 +107,12 @@ def _error_type(exc: BaseException, unwrap: bool) -> str:
 
 
 def start_tool_span(tool_name: str) -> Any | None:
-    """Ouvrir un span RACINE pour un appel de tool, ou ``None``.
+    """Open a ROOT span for a tool call, or ``None``.
 
-    Le contexte vide est passé EXPLICITEMENT. ``start_span(name)`` sans
-    contexte résout le parent depuis le contexte courant : un client qui
-    propage un ``traceparent`` nous adopterait comme enfant et déciderait de
-    notre échantillonnage. Ce serveur mesure ses propres appels, il n'est pas
-    un maillon de la trace d'un tiers.
+    The empty context is passed EXPLICITLY. ``start_span(name)`` without a
+    context resolves the parent from the current context: a client propagating a
+    ``traceparent`` would adopt us as a child and decide our sampling. This
+    server measures its own calls, it is not a link in a third party's trace.
     """
     tracer = _tracer
     if tracer is None:
@@ -126,8 +125,8 @@ def start_tool_span(tool_name: str) -> Any | None:
         span.set_attribute("gen_ai.tool.name", tool_name)
         return span
     except Exception:
-        # Une sonde ne peut pas faire tomber ce qu'elle observe. Ce chemin
-        # s'exécute à chaque appel de tool dans un process partagé.
+        # A probe cannot bring down what it observes. This path runs on every
+        # tool call in a shared process.
         logger.debug("tracing.start_span_failed", exc_info=True)
         return None
 
@@ -141,15 +140,14 @@ def finish_tool_span(
     exception: BaseException | None = None,
     unwrap: bool = False,
 ) -> None:
-    """Clore le span avec le MÊME verdict que le compteur.
+    """Close the span with the SAME verdict as the counter.
 
-    ``error`` et ``latency_ms`` sont ceux passés à ``record_tool_call`` : un
-    span qui contredirait le compteur donnerait deux vérités et rendrait les
-    deux inutilisables.
+    ``error`` and ``latency_ms`` are those passed to ``record_tool_call``: a span
+    contradicting the counter would give two truths and make both unusable.
 
-    Ce qui n'entre JAMAIS ici : les arguments et le résultat du tool,
-    ``str(exc)``, ``exc.args``, une stacktrace, la clé de projet, l'identifiant
-    de session ou de transport.
+    What NEVER enters here: the tool's arguments and result, ``str(exc)``,
+    ``exc.args``, a stacktrace, the project key, the session or transport
+    identifier.
     """
     if span is None:
         return
@@ -168,17 +166,17 @@ def finish_tool_span(
 
 
 def init_tracing(endpoint: str, *, service_name: str = "brain-v42-mcp") -> bool:
-    """Armer un provider PRIVÉ exportant en OTLP. Rend False si impossible.
+    """Arm a PRIVATE provider exporting over OTLP. Returns False if impossible.
 
-    ``shutdown_on_exit=False`` est explicite : ``TracerProvider.__init__``
-    enregistre sinon ``atexit.register(self.shutdown)`` (vérifié dans le SDK
-    1.44.0, lignes 1316 et 1347), et un exporter injoignable ferait alors
-    traîner l'arrêt du serveur jusqu'à son propre délai. L'arrêt est piloté
-    par l'appelant, borné, pas par ``atexit``.
+    ``shutdown_on_exit=False`` is explicit: otherwise
+    ``TracerProvider.__init__`` registers ``atexit.register(self.shutdown)``
+    (verified in SDK 1.44.0, lines 1316 and 1347), and an unreachable exporter
+    would then drag the server's shutdown out to its own timeout. Shutdown is
+    driven by the caller, bounded, not by ``atexit``.
 
-    Toutes les bornes sont passées, y compris ``export_timeout_millis`` —
-    vérifié actif dans ``BatchSpanProcessor.__init__`` (ligne 169), contre
-    l'hypothèse répandue qu'il serait inerte.
+    Every bound is passed, including ``export_timeout_millis`` — verified active
+    in ``BatchSpanProcessor.__init__`` (line 169), against the widespread
+    assumption that it is inert.
     """
     try:
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # noqa: PLC0415
@@ -188,7 +186,7 @@ def init_tracing(endpoint: str, *, service_name: str = "brain-v42-mcp") -> bool:
         from opentelemetry.sdk.trace import TracerProvider  # noqa: PLC0415
         from opentelemetry.sdk.trace.export import BatchSpanProcessor  # noqa: PLC0415
     except ImportError:
-        # Extra `tracing` non installé : c'est un état NORMAL, pas une panne.
+        # The `tracing` extra is not installed: a NORMAL state, not a failure.
         logger.info("tracing.sdk_absent endpoint=%s", endpoint)
         return False
     try:
@@ -205,8 +203,8 @@ def init_tracing(endpoint: str, *, service_name: str = "brain-v42-mcp") -> bool:
                 export_timeout_millis=2000,
             )
         )
-        # `provider.get_tracer`, JAMAIS `trace.set_tracer_provider` : voir
-        # l'en-tête du module.
+        # `provider.get_tracer`, NEVER `trace.set_tracer_provider`: see the
+        # module header.
         global _provider
         _provider = provider
         set_tracer(provider.get_tracer(__name__))
@@ -217,14 +215,14 @@ def init_tracing(endpoint: str, *, service_name: str = "brain-v42-mcp") -> bool:
 
 
 def shutdown_tracing(timeout_ms: int = 3000) -> None:
-    """Vider la file puis fermer le provider, dans un délai BORNÉ.
+    """Drain the queue then close the provider, within a BOUNDED delay.
 
-    Contrepartie obligatoire de ``shutdown_on_exit=False`` : l'``atexit`` du SDK
-    ayant été désactivé pour qu'un exporter injoignable ne fasse pas traîner
-    l'arrêt, c'est à l'appelant de vider — sinon les spans encore en file
-    disparaissent sans un mot. Découvert par l'e2e, pas par relecture.
+    The mandatory counterpart of ``shutdown_on_exit=False``: the SDK's
+    ``atexit`` having been disabled so an unreachable exporter does not drag out
+    the shutdown, it falls to the caller to drain — otherwise the spans still
+    queued disappear without a word. Found by the e2e, not by re-reading.
 
-    Ne lève jamais : un arrêt ne doit pas échouer à cause de sa télémétrie.
+    Never raises: a shutdown must not fail because of its telemetry.
     """
     global _provider
     provider = _provider

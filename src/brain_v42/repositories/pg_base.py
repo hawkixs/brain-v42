@@ -204,14 +204,15 @@ class BasePgRepository:
             row = result.mappings().one()
             created = dict(row)
             logger.debug("repository.create", table=self.table.name, id=row.get("id"))
-            # Capture DÉRIVÉE, livrée FERMÉE : drapeau clos, ce site coûte un
-            # `dict.get` et rend `None` sans toucher à la session. Il vit APRÈS
-            # la matérialisation de la ligne parce qu'il en a besoin — projet et
-            # identifiant sortent du RETURNING, pas de `data`.
+            # DERIVED capture, shipped CLOSED: with the flag closed, this site
+            # costs one `dict.get` and returns `None` without touching the
+            # session. It lives AFTER the row is materialized because it needs
+            # that — project and identifier come out of the RETURNING, not out
+            # of `data`.
             #
-            # Il ne peut pas faire échouer la création : tout est enveloppé dans
-            # un savepoint et les `Exception` sont avalées côté module. Ce que
-            # cette ligne rend TOUJOURS, c'est `created`.
+            # It cannot fail the creation: everything is wrapped in a savepoint
+            # and `Exception`s are swallowed inside the module. What this line
+            # ALWAYS returns is `created`.
             await derive_capture(sess, self.table.name, created)
             return created
 

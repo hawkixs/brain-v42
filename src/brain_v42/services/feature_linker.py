@@ -208,10 +208,10 @@ class FeatureLinker:
             await session.commit()
 
             if len(rows) == self._max_links:
-                # Le plafond est ATTEINT, donc des candidats ont pu être écartés
-                # — on ne sait pas combien, et on ne le prétend pas. Le taire
-                # rendrait cette page indiscernable d'un projet qui n'avait que
-                # `max_links` features au-dessus du seuil.
+                # The cap is REACHED, so candidates may have been dropped — we
+                # do not know how many, and we do not pretend to. Staying silent
+                # would make this page indistinguishable from a project that had
+                # only `max_links` features above the threshold.
                 logger.warning(
                     "feature_linker.cap_reached",
                     artifact_type=artifact_type,

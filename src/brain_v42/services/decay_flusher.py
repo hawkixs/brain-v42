@@ -36,12 +36,12 @@ ARCHIVED = "archived"
 
 
 def unarchive_is_robot_only(*, old_status: str, new_status: str, human_reads: int) -> bool:
-    """Vrai quand la transition ferait SORTIR de l'archive sans lecture humaine.
+    """True when the transition would move OUT of the archive with no human read.
 
-    Q1. C'est l'ACTEUR qui discrimine, jamais l'opération : l'humain garde le
-    droit de désarchiver, et une seule lecture humaine dans le lot suffit à
-    rouvrir la porte. La garde est volontairement étroite — elle ne dit rien de
-    l'entrée en archive, ni de ``stale -> fresh``.
+    Q1. The ACTOR is what discriminates, never the operation: humans keep the
+    right to unarchive, and a single human read in the batch is enough to reopen
+    the door. The guard is deliberately narrow — it says nothing about entering
+    the archive, nor about ``stale -> fresh``.
     """
     return old_status == ARCHIVED and new_status != ARCHIVED and human_reads <= 0
 
@@ -63,9 +63,9 @@ class DecayFlusher:
         self._decay_calculator = decay_calculator
         self._interval = interval_seconds
         self._collector = collector
-        # Défaut FERMÉ dans la signature, pas seulement dans Settings : un
-        # appelant qui oublie de passer le réglage obtient le comportement
-        # d'aujourd'hui, jamais le nouveau.
+        # Default CLOSED in the signature, not only in Settings: a caller who
+        # forgets to pass the setting gets today's behaviour, never the new
+        # one.
         self._human_signal_enabled = human_signal_enabled
         self._task: asyncio.Task[None] | None = None
 
@@ -206,9 +206,9 @@ class DecayFlusher:
             new_access_count = row["access_count"] + stats["count"]
             new_access_count_human = row["access_count_human"] + stats.get("count_human", 0)
             new_last_accessed = stats["max_accessed"]
-            # `None` = aucune lecture HUMAINE dans ce lot. On garde alors la
-            # valeur existante : un lot machine ne doit pas effacer la dernière
-            # trace humaine, ce serait le signal contaminé dans l'autre sens.
+            # `None` = no HUMAN read in this batch. We then keep the existing
+            # value: a machine batch must not erase the last human trace, that
+            # would be the contaminated signal in the other direction.
             batch_human = stats.get("max_accessed_human")
             new_last_accessed_human = (
                 batch_human if batch_human is not None else row["last_accessed_at_human"]
@@ -220,10 +220,10 @@ class DecayFlusher:
             elif "decided_at" in table.c and row["decided_at"] is not None:
                 is_validated = True
 
-            # §5.5 — le seul changement de ce chantier qu'un humain sentirait
-            # le jour même, donc derrière un réglage, valeurs d'aujourd'hui par
-            # défaut. Fermé, les deux signaux restent les totaux : comportement
-            # inchangé, à l'octet près.
+            # §5.5 — the only change in this project a human would feel the
+            # same day, hence behind a setting, with today's values by default.
+            # Closed, both signals stay the totals: behaviour unchanged, to the
+            # byte.
             if self._human_signal_enabled:
                 signal_last_accessed = new_last_accessed_human
                 signal_access_count = new_access_count_human
@@ -242,23 +242,22 @@ class DecayFlusher:
             new_status = self._decay_calculator.freshness_status(multiplier)
             old_status = row["freshness_status"]
 
-            # Q1 — un ROBOT n'a pas le droit de désarchiver.
+            # Q1 — a ROBOT has no right to unarchive.
             #
-            # `access_factor` pèse 0,3 sur cinq des six types (0,2 pour `adr`)
-            # et une relecture d'il y a une minute le met à 1,0 : une seule
-            # passe du dream suffit à franchir `archive_threshold`. Il n'est
-            # JAMAIS dominé par l'âge — mesuré, `w_access >= w_age` pour les six
-            # types — donc « le plus lourd APRÈS l'âge » sous-estime sa place.
-            # Mesuré le 2026-08-22
-            # sur 7 jours : 27 désarchivages, TOUS à 04h UTC, et les 27 entités
-            # avaient `last_accessed_at_human IS NULL` — jamais lues par un
-            # humain, pas une fois.
+            # `access_factor` weighs 0.3 on five of the six types (0.2 for
+            # `adr`) and a re-read from a minute ago sets it to 1.0: a single
+            # dream pass is enough to cross `archive_threshold`. It is NEVER
+            # dominated by age — measured, `w_access >= w_age` for all six types
+            # — so "the heaviest AFTER age" understates its place. Measured on
+            # 2026-08-22 over 7 days: 27 unarchivings, ALL at 04:00 UTC, and all
+            # 27 entities had `last_accessed_at_human IS NULL` — never read by a
+            # human, not once.
             #
-            # On bloque la DÉCISION, pas l'OBSERVATION : les compteurs ci-dessous
-            # continuent d'être écrits, donc une lecture humaine ultérieure
-            # rouvrira la porte par son propre lot. Et comme on n'écrit alors
-            # PAS `freshness_status`, il n'y a aucune provenance à redéclarer
-            # (043) — la ligne garde la sienne.
+            # We block the DECISION, not the OBSERVATION: the counters below
+            # keep being written, so a later human read will reopen the door
+            # through its own batch. And since we then do NOT write
+            # `freshness_status`, there is no provenance to redeclare (043) —
+            # the row keeps its own.
             if unarchive_is_robot_only(
                 old_status=old_status,
                 new_status=new_status,
@@ -322,11 +321,11 @@ class DecayFlusher:
                     last_accessed_at=sa.bindparam("last_accessed_at"),
                     last_accessed_at_human=sa.bindparam("last_accessed_at_human"),
                     freshness_status=sa.bindparam("freshness_status"),
-                    # Migration 043 : le trigger DATE la transition, mais il ne
-                    # peut pas savoir d'où elle vient. Le flusher, lui, le sait —
-                    # c'est le calcul du score. Sans cette déclaration, le
-                    # trigger remettrait la source à NULL, et la colonne ne
-                    # dirait jamais rien de l'écrivain le plus fréquent.
+                    # Migration 043: the trigger STAMPS the transition, but it
+                    # cannot know where it comes from. The flusher does — it is
+                    # the score computation. Without this declaration, the
+                    # trigger would reset the source to NULL, and the column
+                    # would never say anything about the most frequent writer.
                     freshness_source=sa.literal("score"),
                 )
             )
