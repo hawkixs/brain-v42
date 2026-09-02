@@ -1,15 +1,15 @@
-"""Backends du shim embedding brain-v42.
+"""Backends of the brain-v42 embedding shim.
 
-LlamaEmbedBackend — proxy vers llama.cpp server (/v1/embeddings, shape
-OpenAI). Trie par index, L2-normalise (défensif — llama-server normalise
-/v1/embeddings par défaut mais n'expose PAS de flag --embd-normalize,
-cf. crashloop fix 8280524 ; on ne dépend pas de sa config), borne la
-taille des textes et retente une fois plus court si l'upstream 500
-(dépassement de contexte tokens).
+LlamaEmbedBackend — proxies the llama.cpp server (/v1/embeddings, OpenAI
+shape). Sorts by index, L2-normalises (defensively — llama-server does
+normalise /v1/embeddings by default but exposes NO --embd-normalize flag,
+see crashloop fix 8280524; we do not depend on its config), bounds text
+size and retries once, shorter, when upstream answers 500 (token context
+overrun).
 
-OnnxRerankBackend — cross-encoder ms-marco-MiniLM-L-6-v2 via onnxruntime
-CPU. Lazy-load : onnxruntime/tokenizers/numpy ne sont importés qu'au
-premier appel — absents du venv de dev, présents dans le container.
+OnnxRerankBackend — ms-marco-MiniLM-L-6-v2 cross-encoder via onnxruntime on
+CPU. Lazy-loaded: onnxruntime/tokenizers/numpy are imported on the first call
+only — absent from the dev venv, present in the container.
 """
 
 from __future__ import annotations
@@ -20,17 +20,17 @@ from typing import Any
 
 import httpx
 
-# ~5-7k tokens : garde sous n_ctx=8192 du serveur llama. Le cap client
-# historique est 15000 chars (ADR #7) ; 20000 laisse de la marge aux
-# appels directs hors MCP.
+# ~5-7k tokens: stays under the llama server's n_ctx=8192. The historical
+# client cap is 15000 chars (ADR #7); 20000 leaves room for direct calls
+# made outside MCP.
 MAX_TEXT_CHARS = 20_000
-# Retry après un 500 upstream (texte token-dense qui déborde malgré la
-# garde en chars) : à 8000 chars on est toujours < 4096 tokens.
+# Retry after an upstream 500 (token-dense text overflowing despite the
+# char guard): at 8000 chars we are still under 4096 tokens.
 RETRY_TEXT_CHARS = 8_000
 
 
 class UpstreamError(Exception):
-    """Le serveur llama a répondu 5xx (après retry de troncature)."""
+    """The llama server answered 5xx (after the truncation retry)."""
 
 
 def _l2_normalize(vec: list[float]) -> list[float]:
@@ -98,9 +98,9 @@ class LlamaEmbedBackend:
 class OnnxRerankBackend:
     """Cross-encoder ms-marco-MiniLM-L-6-v2 via onnxruntime (CPU).
 
-    Retourne les logits BRUTS (pas de sigmoid) — parity exacte avec
-    CrossEncoder.predict du service PyTorch legacy (scores observés en
-    prod : -1.37 pertinent / -11.34 non pertinent).
+    Returns the RAW logits (no sigmoid) — exact parity with the legacy
+    PyTorch service's CrossEncoder.predict (scores observed in production:
+    -1.37 relevant / -11.34 not relevant).
     """
 
     def __init__(self, model_path: str, tokenizer_path: str, max_length: int = 512) -> None:
@@ -109,8 +109,8 @@ class OnnxRerankBackend:
         self._max_length = max_length
         self._session = None
         self._tokenizer = None
-        # rerank() tourne dans un worker thread : deux premiers appels
-        # concurrents peuvent croiser le lazy-load sans ce lock.
+        # rerank() runs in a worker thread: two concurrent first calls can
+        # cross the lazy-load without this lock.
         self._lock = threading.Lock()
 
     def _load(self) -> tuple[Any, Any]:

@@ -1,12 +1,12 @@
-"""Entrypoint du shim — wiring env + uvicorn.
+"""Shim entrypoint — env wiring + uvicorn.
 
 Env:
-  LLAMA_URL               URL du serveur llama.cpp (défaut http://embedding-llama:8080)
-  ONNX_DIR                dossier contenant model.onnx + tokenizer.json (défaut /app/onnx)
-  SHIM_BEARER_TOKEN_FILE  secret bearer statique, fichier 0600 (absent = pas d'auth,
-                          contrat actuel inchangé — ticket 530d796a point (a))
-  SHIM_BEARER_MODE        'optional' (défaut : accepte + journalise) | 'required'
-                          (401 — geste opérateur SÉPARÉ, après le ticket client 9ef5c69d)
+  LLAMA_URL               llama.cpp server URL (default http://embedding-llama:8080)
+  ONNX_DIR                directory holding model.onnx + tokenizer.json (default /app/onnx)
+  SHIM_BEARER_TOKEN_FILE  static bearer secret, a 0600 file (absent = no auth,
+                          current contract unchanged — ticket 530d796a point (a))
+  SHIM_BEARER_MODE        'optional' (default: accepts + logs) | 'required'
+                          (401 — a SEPARATE operator gesture, after client ticket 9ef5c69d)
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ from shim_app import bearer_from_env, create_app
 from shim_backends import LlamaEmbedBackend, OnnxRerankBackend
 from starlette.applications import Starlette
 
-# Sans câblage racine, le WARNING du recensement bearer tombe sur
-# logging.lastResort : stderr nu, sans timestamp ni niveau — illisible à côté
-# de l'access log uvicorn. uvicorn configure SES loggers, jamais la racine.
+# Without root wiring, the bearer census WARNING falls through to
+# logging.lastResort: bare stderr, no timestamp and no level — unreadable next
+# to uvicorn's access log. uvicorn configures ITS loggers, never the root.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
