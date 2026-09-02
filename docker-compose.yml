@@ -132,6 +132,17 @@ services:
       - brain-net
     environment:
       - LLAMA_URL=http://embedding-llama:8080
+      # Static bearer in CENSUS mode. `optional` accepts every caller and logs
+      # the ones arriving without a valid token, so the six auto-discord
+      # clients on brain-net keep working while we count them. Arming this to
+      # `required` is a separate operator gesture, not a config tweak.
+      # Only the PATH is wired: the value would otherwise show up verbatim in
+      # `docker inspect .Config.Env`. It is read once at startup, so rotating
+      # the secret requires a container restart.
+      - SHIM_BEARER_TOKEN_FILE=/run/secrets/embedding_shim_bearer
+      - SHIM_BEARER_MODE=optional
+    secrets:
+      - embedding_shim_bearer
     depends_on:
       embedding-llama:
         condition: service_healthy
@@ -207,6 +218,11 @@ services:
 secrets:
   neo4j_auth:
     file: ${BRAIN_NEO4J_AUTH_FILE:-./.secrets/neo4j-auth}
+  # Compose bind-mounts this file as-is: the mode the shim sees is the mode on
+  # the host. The loader refuses anything readable beyond its owner, so the
+  # host file must be 0600 or the container will not start.
+  embedding_shim_bearer:
+    file: ${BRAIN_SHIM_BEARER_FILE:-./.secrets/embedding-shim-bearer}
 
 networks:
   default:
