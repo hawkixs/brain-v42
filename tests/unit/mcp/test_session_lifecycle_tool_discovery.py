@@ -52,7 +52,15 @@ LIGHTWEIGHT_OUTPUT_SCHEMA_TOOLS = frozenset(
 # a tracer") was refused: it did not fit. If a future field exceeds 9_541, we
 # stop — we do NOT loosen OUTPUT_SCHEMA_MINIMUM_SAVINGS, that would be modifying a
 # test to make code pass.
-OUTPUT_SCHEMA_TOTAL = 9462
+# Bumped by 051, MEASURED and not tuned until green: 9462 + 633 = 10_095, the
+# whole increment being the checkpoint's own schema. The margin is UNCHANGED at
+# 10_174 - 10_095 = 79, because an unoptimized tool raises the baseline by exactly
+# what it raises the total. The 79 bytes stay the real constraint: they are what
+# refused `recent_checkpoints` on the resume result, measured at 639 compact bytes
+# on 2026-09-02 — the read surface of SPEC §2.4 goes to the briefing TEXT instead,
+# where it costs nothing, and that is the shape the spec itself describes ("to stay
+# under the briefing ceiling").
+OUTPUT_SCHEMA_TOTAL = 10_095
 # Lowered from 10_000 to 9_500: the floor had been set against a THREE-state
 # machine, and the fourth state costs 600 bytes on its own — only 554 of margin
 # were left. The loosened floor is still a floor: the effective saving is 9_660
@@ -191,7 +199,12 @@ async def test_discovery_contract_keeps_tool_identity_inputs_and_schema_budget()
             registered_names.append(name)
     registered = tuple(registered_names)
     assert registered == tool_names
-    assert len(registered) == 7
+    # EIGHT since the checkpoint landed. It was SEVEN while the tool already
+    # existed, and that is the gap this line closes: the guard iterates over the
+    # fixture's frozen names, so a NEW tool was never measured by the budget at
+    # all — only the growth of an existing one could trip it. A budget blind to
+    # the cheapest way of exceeding it is not a budget.
+    assert len(registered) == 8
 
     output_schemas: dict[str, dict[str, Any] | None] = {}
     final_lengths: dict[str, int] = {}
@@ -214,12 +227,18 @@ async def test_discovery_contract_keeps_tool_identity_inputs_and_schema_budget()
         "brain_session_start": 2639,
         "brain_session_capture": 2816,
         "brain_session_heartbeat": 2493,
+        # 051: the checkpoint enters the budget on BOTH sides at the same 633,
+        # because it carries no optimization to be the baseline OF — its result is
+        # five scalars and there is nothing to strip. Adding the same number to the
+        # baseline and to the total leaves the SAVINGS untouched, which is why the
+        # margin below is still 79 and not 79 minus a new tool.
+        "brain_session_checkpoint": 633,
         "brain_session_end": 3055,
         "brain_session_list": 2640,
         "brain_session_resume": 2777,
         "brain_session_abandon": 2621,
     }
-    assert sum(baseline_lengths.values()) == baseline["output_schema_total"] == 19041
+    assert sum(baseline_lengths.values()) == baseline["output_schema_total"] == 19674
     _assert_output_schema_presence(output_schemas)
     assert sum(final_lengths.values()) == OUTPUT_SCHEMA_TOTAL
     assert sum(final_lengths.values()) <= (
