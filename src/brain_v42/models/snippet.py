@@ -44,9 +44,9 @@ class SnippetUpdate(ProjectKeyCanonicalMixin):
     tags: list[str] | None = None
     metadata: dict | None = None
     freshness_status: Literal["fresh", "stale", "archived"] | None = None
-    #: Posée par le SERVEUR seul — `brain_update` refuse une valeur fournie par
-    #: l'appelant. Le trigger de la 043 l'efface si elle n'est pas redéclarée à
-    #: chaque écriture : une provenance absente se voit, une fausse se croit.
+    #: Written by the SERVER alone — `brain_update` rejects a caller-supplied
+    #: value. The 043 trigger clears it when a write does not redeclare it: a
+    #: missing provenance is visible, a false one is believed.
     freshness_source: (
         Literal["merge", "judgment", "score", "revive", "manual_update", "plan_reindex"] | None
     ) = None

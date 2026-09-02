@@ -13,23 +13,24 @@ from brain_v42.models.project_key import canonicalize_project_key
 
 MAX_CAPTURED_KNOWLEDGE_IDS = 100
 SESSION_STALE_AFTER = timedelta(hours=24)
-# Deux seuils distincts, volontairement côte à côte pour qu'on ne les confonde
-# jamais : SESSION_STALE_AFTER (24 h) est un flag DÉRIVÉ affiché au client, il
-# ne change aucun statut ; AUTO_STALE_AFTER (7 j) est le seuil auquel le
-# SERVEUR abandonne. Le fossé mesuré le 2026-08-07 entre le fantôme le plus
-# récent (10,6 j) et la vivante la plus ancienne (0,4 j) calibre le second.
+# Two distinct thresholds, deliberately side by side so nobody ever confuses
+# them: SESSION_STALE_AFTER (24 h) is a DERIVED flag shown to the client, it
+# changes no status; AUTO_STALE_AFTER (7 d) is the threshold at which the
+# SERVER abandons. The gap measured on 2026-08-07 between the most recent ghost
+# (10.6 d) and the oldest living session (0.4 d) calibrates the second.
 AUTO_STALE_AFTER = timedelta(days=7)
 AUTO_STALE_ABANDONMENT_REASON = "auto_stale_7d"
 
-# TROISIÈME seuil, et le seul qui ne parle pas de la même horloge que les deux
-# autres : SESSION_STALE_AFTER et AUTO_STALE_AFTER lisent `last_heartbeat_at`,
-# la PRÉSENCE déclarée ; celui-ci lit `last_observed_at`, l'OBSERVATION faite par
-# le serveur. Il ne s'applique qu'aux traçantes `agent` (ADR §0ter.5, signé).
+# THIRD threshold, and the only one that does not speak of the same clock as
+# the other two: SESSION_STALE_AFTER and AUTO_STALE_AFTER read
+# `last_heartbeat_at`, declared PRESENCE; this one reads `last_observed_at`, the
+# OBSERVATION the server makes. It applies to `agent` tracers only (ADR §0ter.5,
+# signed).
 #
-# CE N'EST PAS UN DÉLAI DE FERMETURE, et l'annoncer comme tel serait faux : logé
-# dans le balayage nocturne, 4 h est un seuil d'ÉLIGIBILITÉ évalué une fois par
-# nuit. Une traçante devenue inactive juste après un passage vit jusqu'au
-# suivant — latence réelle pire cas ≈ 28 h.
+# THIS IS NOT A CLOSING DELAY, and announcing it as one would be false: lodged
+# in the nightly sweep, 4 h is an ELIGIBILITY threshold evaluated once a night.
+# A tracer that goes inactive just after a pass lives until the next one — real
+# worst-case latency ≈ 28 h.
 AGENT_INACTIVE_AFTER = timedelta(hours=4)
 
 
@@ -151,24 +152,23 @@ class BrainSession(BaseModel):
     focus_outcome: BrainSessionFocusOutcome | None = None
     focus_at_end: str | None = None
     focus_revision_at_end: int | None = Field(default=None, ge=0)
-    # `Literal` et non `BrainSessionNature`, et c'est une décision de BUDGET
-    # mesurée, pas un raccourci : l'enum génère une entrée `$defs` recopiée dans
-    # les quatre schémas de sortie dérivés (total 10170 octets) là où le
-    # `Literal` s'inline (9381). Même contrainte côté client, 789 octets de
-    # moins. `BrainSessionNature` reste la forme employée par le CODE.
+    # `Literal` and not `BrainSessionNature`, and that is a measured BUDGET
+    # decision, not a shortcut: the enum generates a `$defs` entry copied into
+    # the four derived output schemas (10170 bytes total) where the `Literal`
+    # inlines (9381). Same constraint on the client side, 789 bytes less.
+    # `BrainSessionNature` remains the form the CODE uses.
     #
-    # C7 exige que la MACHINE D'ÉTATS bouge avec le CHECK. `nature` en fait
-    # partie : la branche `closed_inactive` de la 046 la contraint à `agent`.
-    # Les quatre autres colonnes de la 046 — `started_by_actor`,
-    # `last_observed_at`, `intent`, `connection_id` — ne sont dans AUCUN CHECK.
-    # Trois ont désormais un écrivain (l'auto-ouverture, et l'observation pour
-    # `last_observed_at`) ; `intent` n'en a toujours aucun. Avoir un écrivain
-    # n'est PAS un titre d'entrée ici : elles n'entrent toujours pas — FastMCP
-    # dérive le schéma de sortie des tools de ce modèle, et les cinq colonnes
-    # portaient le total de 8487 à 11292 octets — au-dessus du plancher
-    # d'économie de 9041 que `test_discovery_contract_keeps_tool_identity_inputs_
-    # and_schema_budget` garantit. Chaque colonne rejoindra ce modèle avec le
-    # commit qui l'utilise, et paiera son schéma à ce moment-là, délibérément.
+    # C7 requires the STATE MACHINE to move with the CHECK. `nature` is part of
+    # it: the `closed_inactive` branch of 046 constrains it to `agent`. The four
+    # other columns of 046 — `started_by_actor`, `last_observed_at`, `intent`,
+    # `connection_id` — are in NO CHECK. Three now have a writer (auto-open, and
+    # observation for `last_observed_at`); `intent` still has none. Having a
+    # writer is NOT a ticket of entry here: they still stay out — FastMCP
+    # derives the tools' output schema from this model, and the five columns
+    # took the total from 8487 to 11292 bytes — above the 9041 saving floor that
+    # `test_discovery_contract_keeps_tool_identity_inputs_and_schema_budget`
+    # guarantees. Each column will join this model with the commit that uses it,
+    # and will pay for its schema then, deliberately.
     nature: Literal["agent", "operator"] | None = None
     started_at: datetime
     last_heartbeat_at: datetime | None = None
@@ -241,18 +241,17 @@ class BrainSession(BaseModel):
             raise ValueError("ended session requires focus_outcome")
         if self.is_stale:
             raise ValueError("terminal session cannot be stale")
-        # Le XOR « ledger non vide XOR raison » a été RETIRÉ avec la 047, et pas
-        # affaibli : il mesurait « le client a-t-il DÉCLARÉ ». La capture
-        # dérivée supprime le seul mode de panne qu'il attrapait
-        # (produit-mais-non-déclaré) et alimenterait désormais son signal côté
-        # SERVEUR. Un contrôle est creux dès que l'objet contrôlé peut
-        # influencer son signal ; celui-ci serait devenu un reçu que le serveur
-        # se délivre à lui-même. Le conserver rendait surtout INFERMABLE toute
-        # session dont le serveur avait rempli le ledger.
+        # The XOR "non-empty ledger XOR reason" was REMOVED with 047, not
+        # weakened: it measured "did the client DECLARE". Derived capture
+        # removes the only failure mode it caught (produced-but-not-declared)
+        # and would now feed its signal from the SERVER side. A control is
+        # hollow as soon as the controlled object can influence its own signal;
+        # this one would have become a receipt the server issues to itself.
+        # Above all, keeping it made every session whose ledger the server had
+        # filled IMPOSSIBLE TO CLOSE.
         #
-        # Ce qui reste est le seul contrôle que le serveur ne peut pas
-        # satisfaire à la place de l'utilisateur : une raison donnée doit dire
-        # quelque chose.
+        # What remains is the only control the server cannot satisfy on the
+        # user's behalf: a reason, once given, must say something.
         reason = self.nothing_to_capture_reason
         if reason is not None and not reason.strip():
             raise ValueError("nothing_to_capture_reason must not be blank")
@@ -356,14 +355,14 @@ class BrainSessionEndResult(BaseModel):
     focus_outcome: BrainSessionFocusOutcome
     focus_at_end: str | None
     focus_revision_at_end: int | None = Field(default=None, ge=0)
-    #: Artefacts du projet créés PENDANT la session et présents dans AUCUN
-    #: ledger. Une MESURE, jamais une porte : elle ne peut pas refuser une
-    #: fermeture. C'est ce qui remplace le XOR — informer au lieu de punir.
+    #: Project artifacts created DURING the session and present in NO ledger.
+    #: A MEASURE, never a gate: it cannot refuse a closure. This is what
+    #: replaces the XOR — inform instead of punish.
     #:
-    #: Non-influençable par construction : une session ne peut pas la faire
-    #: baisser en ne faisant rien. L'inaction ne produit aucun artefact, donc
-    #: aucun orphelin ; le nombre ne descend qu'en attribuant réellement. Un
-    #: compteur qu'on améliorerait en se taisant serait le reçu retiré, renommé.
+    #: Non-influenceable by construction: a session cannot lower it by doing
+    #: nothing. Inaction produces no artifact, hence no orphan; the number only
+    #: goes down by actually attributing. A counter one could improve by staying
+    #: silent would be the retired receipt under a new name.
     unattributed_in_window: int = Field(..., ge=0)
 
 
@@ -404,18 +403,18 @@ class BrainSessionListResult(BaseModel):
 
 
 class BrainSessionSweepCandidate(BaseModel):
-    """Une session ouverte retenue par le balayage, en DRY comme en WET."""
+    """An open session the sweep selected, in DRY as in WET."""
 
     id: UUID
     project_key: str
     client_key: str
     last_heartbeat_at: datetime
-    #: NULL veut dire « jamais observée » — donc hors d'atteinte de la règle des
-    #: 4 h, qui ne prend que ce qu'elle a vu vivre (S3, tranché).
+    #: NULL means "never observed" — hence out of reach of the 4 h rule, which
+    #: only takes what it has seen alive (S3, settled).
     last_observed_at: datetime | None = None
-    #: L'état terminal que CETTE ligne a reçu, ou recevrait. Obligatoire et sans
-    #: défaut : deux règles écrivent dans le même statement, et un rapport qui
-    #: les confondrait rendrait la préséance invérifiable.
+    #: The terminal state THIS row received, or would receive. Mandatory and
+    #: without a default: two rules write in the same statement, and a report
+    #: that confused them would make precedence unverifiable.
     outcome: BrainSessionStatus
 
     @field_validator("outcome")
@@ -427,22 +426,22 @@ class BrainSessionSweepCandidate(BaseModel):
 
 
 class BrainSessionSweepResult(BaseModel):
-    """Résultat d'un balayage serveur, tous projets confondus."""
+    """Result of one server sweep, across all projects."""
 
     candidates: list[BrainSessionSweepCandidate]
     dry_run: bool
-    #: Seuil de PRÉSENCE (7 j), lu sur `last_heartbeat_at`. Toujours actif.
+    #: PRESENCE threshold (7 d), read on `last_heartbeat_at`. Always active.
     cutoff: datetime
-    #: Seuil d'OBSERVATION (4 h), lu sur `last_observed_at`. ``None`` veut dire
-    #: que la règle est fermée — pas qu'aucune session ne l'a atteint.
+    #: OBSERVATION threshold (4 h), read on `last_observed_at`. ``None`` means
+    #: the rule is closed — not that no session reached it.
     inactive_cutoff: datetime | None = None
-    # Toujours 0 en DRY. Redondant avec len(candidates) — délibérément : un
-    # journal doit rendre « 17 auraient été abandonnées » illisible comme
-    # « 17 ont été abandonnées ».
+    # Always 0 in DRY. Redundant with len(candidates) — deliberately: a log
+    # must make "17 would have been abandoned" impossible to read as "17 were
+    # abandoned".
     abandoned_count: int = Field(..., ge=0)
-    #: Compteur DISTINCT, jamais mêlé à `abandoned_count`. Les deux règles
-    #: produisent deux états terminaux différents — `abandoned` porte une raison
-    #: et jamais de ledger, `closed_inactive` porte son ledger et aucune raison.
-    #: Les additionner effacerait la seule distinction que la 046 a coûté une
-    #: migration à créer.
+    #: A DISTINCT counter, never mixed with `abandoned_count`. The two rules
+    #: produce two different terminal states — `abandoned` carries a reason and
+    #: never a ledger, `closed_inactive` carries its ledger and no reason.
+    #: Adding them would erase the one distinction 046 cost a migration to
+    #: create.
     closed_inactive_count: int = Field(default=0, ge=0)
