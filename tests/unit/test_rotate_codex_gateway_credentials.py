@@ -37,13 +37,14 @@ class FakeDatabase:
     def __init__(self, *, revision: str = DEPLOYED_REVISION, missing: tuple[str, ...] = ()) -> None:
         self.passwords = {"brain": OLD_BRAIN, "codex_ro": OLD_CODEX}
         self.rotations: list[tuple[str, str, str, str]] = []
-        # Paramétrable, et c'est le fond du ticket 8285215c : tant qu'elle rendait
-        # "037" en dur face à une constante "037" dans le code, la suite n'avait que
-        # des sondes POSITIVES. Neutraliser la garde laissait 29 tests verts.
+        # Parameterisable, and that is the substance of ticket 8285215c: as long as
+        # it returned a hard-coded "037" facing a "037" constant in the code, the
+        # suite had only POSITIVE probes. Neutralising the guard left 29 tests
+        # green.
         self._revision = revision
-        # Manquants déclarés par le test : "vue" ou "vue.colonne". Paramétrable
-        # pour la même raison que la révision — une valeur figée à () ne
-        # produirait que des sondes positives.
+        # Missing items declared by the test: "view" or "view.column".
+        # Parameterisable for the same reason as the revision — a value frozen at ()
+        # would produce only positive probes.
         self.missing = missing
 
     def probe(self, role: str, password: str) -> bool:
@@ -70,8 +71,8 @@ class FakeDatabase:
         return self.probe("codex_ro", codex_password)
 
     def missing_gateway_contract(self, codex_password: str) -> tuple[str, ...]:
-        # Canary calqué sur revision() : toute confusion old_codex/new_codex
-        # dans _prove_new_generation doit exploser, pas rendre un faux vert.
+        # A canary modelled on revision(): any old_codex/new_codex confusion in
+        # _prove_new_generation must blow up, not return a false green.
         if not self.probe("codex_ro", codex_password):
             raise RuntimeError("contract-secret-canary")
         return self.missing
@@ -885,15 +886,15 @@ def test_main_emits_only_sanitized_json_on_unexpected_failure(
 
 
 # ---------------------------------------------------------------------------
-# Le head déployé est DÉCLARÉ par l'opérateur, jamais codé en dur
+# The deployed head is DECLARED by the operator, never hard-coded
 #
-# Ticket 8285215c. La garde comparait à la constante "037". La production est
-# passée à 038, puis 039, 040, 041… 044 : la procédure de rotation était donc
-# morte, son dry-run échouant au préflight. Une garde qui se périme à chaque
-# migration finit par ne plus garder que contre elle-même.
+# Ticket 8285215c. The guard compared against the "037" constant. Production moved
+# to 038, then 039, 040, 041… 044: the rotation procedure was therefore dead, its
+# dry-run failing at the preflight. A guard that goes stale at every migration ends
+# up guarding only against itself.
 #
-# Elle n'est PAS retirée — elle existe pour garantir que la rotation tourne
-# contre le schéma attendu. Elle cesse seulement de se périmer.
+# It is NOT removed — it exists to guarantee the rotation runs against the expected
+# schema. It merely stops going stale.
 # ---------------------------------------------------------------------------
 
 
@@ -908,18 +909,18 @@ def test_dry_run_succeeds_at_the_head_the_operator_declared(
     )
 
     assert result["status"] == "preflight_ok"
-    # La valeur MESURÉE est rendue, jamais une constante — sinon le contrat de
-    # sortie rejouerait le défaut qu'on corrige.
+    # The MEASURED value is returned, never a constant — otherwise the output
+    # contract would replay the defect being fixed.
     assert result["alembic_revision"] == "044"
 
 
 def test_preflight_refuses_a_head_that_differs_from_the_declared_one(
     config: RotationConfig,
 ) -> None:
-    """La sonde NÉGATIVE du préflight : la garde doit encore mordre.
+    """The preflight's NEGATIVE probe: the guard must still bite.
 
-    Retirer la garde plutôt que la paramétrer aurait rendu ce test vert, d'où son
-    existence : le correctif ne doit pas être un affaiblissement déguisé.
+    Removing the guard rather than parameterising it would have made this test
+    green, hence its existence: the fix must not be a disguised weakening.
     """
     with pytest.raises(RotationError) as excinfo:
         run_rotation(
@@ -930,13 +931,13 @@ def test_preflight_refuses_a_head_that_differs_from_the_declared_one(
         )
 
     message = str(excinfo.value)
-    # Le message nomme les DEUX valeurs : sans le mesuré, l'opérateur ne sait pas
-    # contre quoi il a échoué.
+    # The message names BOTH values: without the measured one, the operator does
+    # not know what they failed against.
     assert "044" in message and "041" in message
 
 
 def test_the_parser_requires_the_operator_to_declare_the_head() -> None:
-    """Fail-closed : pas de défaut, sinon la valeur redevient une constante cachée."""
+    """Fail-closed: no default, otherwise the value becomes a hidden constant again."""
     with pytest.raises(SystemExit) as excinfo:
         parse_args(
             [
@@ -976,13 +977,13 @@ def test_the_parser_refuses_an_empty_or_malformed_head() -> None:
 def test_rollback_still_works_when_the_declared_head_no_longer_matches(
     config: RotationConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """L'échappatoire ne doit JAMAIS dépendre de la garde de révision.
+    """The escape hatch must NEVER depend on the revision guard.
 
-    `--rollback` saute le préflight et n'appelle pas `_prove_new_generation` : c'est
-    délibéré, et c'est la seule voie restée vivante pendant que la constante `037`
-    rendait tout le reste inexécutable. Ajouter un contrôle de révision ici « par
-    cohérence » enfermerait l'opérateur dehors au pire moment — juste après une
-    migration, précisément quand il a besoin de revenir en arrière.
+    `--rollback` skips the preflight and does not call `_prove_new_generation`: that
+    is deliberate, and it is the only route left alive while the `037` constant made
+    everything else unrunnable. Adding a revision check here "for consistency" would
+    lock the operator out at the worst moment — just after a migration, precisely
+    when they need to go back.
     """
     database = FakeDatabase()
     installer = FakePrivilegedInstaller()
@@ -1001,7 +1002,7 @@ def test_rollback_still_works_when_the_declared_head_no_longer_matches(
         gateway_probe=FakeGatewayProbe(),
     )
 
-    # Le schéma a bougé sous les pieds de l'opérateur entre l'apply et le rollback.
+    # The schema moved under the operator's feet between the apply and the rollback.
     database._revision = "045"
 
     result = run_rotation(
@@ -1018,11 +1019,11 @@ def test_rollback_still_works_when_the_declared_head_no_longer_matches(
 def test_preflight_refuses_a_schema_that_lost_a_gateway_view(
     config: RotationConfig,
 ) -> None:
-    """Le head déclaré peut être JUSTE et la passerelle cassée quand même.
+    """The declared head can be RIGHT and the gateway broken all the same.
 
-    `deploy/CODEX_GATEWAY.md` dit pourquoi la révision est vérifiée : parce
-    que ce head « conserve les dix vues requises par la gateway ». C'est un
-    PROXY. Ici on prouve l'invariant lui-même.
+    `deploy/CODEX_GATEWAY.md` says why the revision is checked: because that head
+    "conserve les dix vues requises par la gateway". That is a PROXY. Here we prove
+    the invariant itself.
     """
     database = FakeDatabase(missing=("codex_ticket_v1",))
 
@@ -1036,19 +1037,19 @@ def test_preflight_refuses_a_schema_that_lost_a_gateway_view(
 
     message = str(excinfo.value)
     assert "codex_ticket_v1" in message
-    # Le message nomme les MANQUANTS et EUX SEULS. Sans cette assertion
-    # négative, joindre le contrat complet passerait le test tout en rendant
-    # le diagnostic inutile — c'est exactement le défaut qu'on corrige.
+    # The message names the MISSING items and THEM ALONE. Without this negative
+    # assertion, joining the whole contract would pass the test while making the
+    # diagnosis useless — exactly the defect being fixed.
     assert "codex_feature_v1" not in message
 
 
 def test_preflight_names_a_gateway_column_that_drifted(config: RotationConfig) -> None:
-    """LE vrai apport : une vue présente dont la FORME a bougé.
+    """THE real contribution: a present view whose SHAPE has moved.
 
-    Une vue absente fait déjà échouer le préflight aujourd'hui — par accident,
-    via un `except` générique qui accuse les privilèges. Une migration qui
-    garde `codex_ticket_v1` et renomme `body` en `content` laisse en revanche
-    le préflight vert et casse la passerelle.
+    A missing view already fails the preflight today — by accident, through a
+    generic `except` that blames privileges. A migration that keeps
+    `codex_ticket_v1` and renames `body` to `content`, by contrast, leaves the
+    preflight green and breaks the gateway.
     """
     database = FakeDatabase(missing=("codex_ticket_v1.body",))
 
@@ -1066,10 +1067,10 @@ def test_preflight_names_a_gateway_column_that_drifted(config: RotationConfig) -
 def test_a_broken_contract_is_named_before_the_revision_mismatch(
     config: RotationConfig,
 ) -> None:
-    """Quand les deux gardes mordraient, l'invariant DIRECT parle.
+    """When both guards would bite, the DIRECT invariant speaks.
 
-    Le proxy se tait : entre « la révision a bougé » et « cette vue a
-    disparu », c'est la seconde qui est actionnable.
+    The proxy stays quiet: between "the revision moved" and "that view has
+    disappeared", it is the second that is actionable.
     """
     database = FakeDatabase(revision="999", missing=("codex_ticket_v1",))
 
@@ -1089,11 +1090,10 @@ def test_a_broken_contract_is_named_before_the_revision_mismatch(
 def test_rollback_still_works_when_a_gateway_view_disappeared(
     config: RotationConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """L'échappatoire ne dépend pas plus du contrat que de la révision.
+    """The escape hatch depends no more on the contract than on the revision.
 
-    Jumeau de test_rollback_still_works_when_the_declared_head_no_longer_matches :
-    c'est la même raison, et c'est le pire moment pour enfermer l'opérateur
-    dehors.
+    Twin of test_rollback_still_works_when_the_declared_head_no_longer_matches: it
+    is the same reason, and it is the worst moment to lock the operator out.
     """
     database = FakeDatabase()
     installer = FakePrivilegedInstaller()
@@ -1112,7 +1112,7 @@ def test_rollback_still_works_when_a_gateway_view_disappeared(
         gateway_probe=FakeGatewayProbe(),
     )
 
-    # Une migration a emporté une vue de la gateway entre l'apply et le rollback.
+    # A migration took a gateway view away between the apply and the rollback.
     database.missing = ("codex_dream_run_v1",)
 
     result = run_rotation(
@@ -1127,11 +1127,11 @@ def test_rollback_still_works_when_a_gateway_view_disappeared(
 def test_the_resume_path_refuses_a_broken_gateway_contract(
     config: RotationConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`--resume` ne repasse JAMAIS par le préflight.
+    """`--resume` NEVER goes back through the preflight.
 
-    Sans cette sonde, on peut ne jamais écrire le contrôle dans
-    `_prove_new_generation` sans qu'un seul test bronche — une ligne
-    d'implémentation sans témoin est une promesse, pas un clou.
+    Without this probe, the check can simply never be written into
+    `_prove_new_generation` without a single test flinching — an implementation
+    line with no witness is a promise, not a nail.
     """
     database = FakeDatabase()
     installer = FakePrivilegedInstaller()
@@ -1150,13 +1150,12 @@ def test_the_resume_path_refuses_a_broken_gateway_contract(
         gateway_probe=FakeGatewayProbe(),
     )
 
-    # Le même resume, contrat INTACT, doit passer : c'est ce contraste qui
-    # fait mordre la sonde. Le chemin apply/resume enveloppe toute exception
-    # dans un rollback automatique au message uniforme — la garde de révision
-    # y perd son diagnostic exactement pareil —, donc asserter le NOM ici
-    # tiendrait la nouvelle garde à un standard que l'ancienne ne tient pas.
-    # Le nom est prouvé là où il survit : au préflight, par les trois sondes
-    # ci-dessus.
+    # The same resume, with the contract INTACT, must pass: it is that contrast
+    # that makes the probe bite. The apply/resume path wraps every exception in an
+    # automatic rollback with a uniform message — the revision guard loses its
+    # diagnosis there in exactly the same way — so asserting the NAME here would
+    # hold the new guard to a standard the old one does not meet. The name is proved
+    # where it survives: at the preflight, by the three probes above.
     run_rotation(
         replace(apply_config, resume=True),
         database=database,
@@ -1176,20 +1175,20 @@ def test_the_resume_path_refuses_a_broken_gateway_contract(
 
 
 def test_gateway_contract_arrays_zip_every_declared_column_to_its_view() -> None:
-    """Les deux tableaux parallèles doivent avoir EXACTEMENT la même longueur.
+    """The two parallel arrays must have EXACTLY the same length.
 
-    `unnest($1, $2)` pade le plus court avec NULL. Un désalignement ferait
-    remonter `{NULL}` dans les manquants, et `", ".join(...)` exploserait en
-    TypeError avalée en « credential cutover failed ». Cette sonde est le seul
-    rempart, malgré la trivialité apparente de la fonction.
+    `unnest($1, $2)` pads the shorter one with NULL. A misalignment would surface
+    `{NULL}` among the missing items, and `", ".join(...)` would blow up with a
+    TypeError swallowed as "credential cutover failed". This probe is the only
+    rampart, despite the function's apparent triviality.
     """
     views, columns = rotation._gateway_contract_arrays(rotation._CODEX_GATEWAY_CONTRACT)
 
     assert len(views) == len(columns)
     assert len(views) == sum(len(c) for c in rotation._CODEX_GATEWAY_CONTRACT.values())
     assert set(views) == set(rotation._CODEX_GATEWAY_CONTRACT)
-    # Aucune vue déclarée sans colonne : une entrée vide passerait le contrôle
-    # d'existence sans jamais vérifier la forme.
+    # No view declared without a column: an empty entry would pass the existence
+    # check without ever verifying the shape.
     assert all(rotation._CODEX_GATEWAY_CONTRACT[v] for v in rotation._CODEX_GATEWAY_CONTRACT)
     assert list(zip(views, columns, strict=True))[0] == (
         views[0],
@@ -1198,7 +1197,7 @@ def test_gateway_contract_arrays_zip_every_declared_column_to_its_view() -> None
 
 
 def test_the_views_tuple_is_derived_from_the_contract_not_retyped() -> None:
-    """Une liste recopiée annule la garde — learning 8dc7e042."""
+    """A copied list cancels the guard — learning 8dc7e042."""
     assert rotation._CODEX_GATEWAY_VIEWS == tuple(rotation._CODEX_GATEWAY_CONTRACT)
     assert len(rotation._CODEX_GATEWAY_VIEWS) == 10
 
@@ -1206,14 +1205,14 @@ def test_the_views_tuple_is_derived_from_the_contract_not_retyped() -> None:
 def test_the_contract_proof_binds_every_declared_column_as_codex_ro(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """LA sonde qui empêche la livraison entière d'être inerte.
+    """THE probe that stops the whole delivery from being inert.
 
-    Sans elle, écrire `fetchrow(_GATEWAY_CONTRACT_PROOF, [], [])` rendrait
-    deux tableaux vides — donc jamais aucun manquant, donc un préflight qui
-    passe toujours — pendant que TOUS les autres tests de ce fichier restent
-    verts : ils passent par FakeDatabase et ne touchent jamais le SQL réel.
-    C'est la faute « le paramètre est LIÉ, donc le test survit au retrait du
-    WHERE », qui a eu ce dépôt deux fois.
+    Without it, writing `fetchrow(_GATEWAY_CONTRACT_PROOF, [], [])` would return two
+    empty arrays — hence never any missing item, hence a preflight that always
+    passes — while ALL the other tests in this file stay green: they go through
+    FakeDatabase and never touch the real SQL. This is the "the parameter is BOUND,
+    so the test survives the WHERE being removed" fault, which has caught this
+    repository twice.
     """
     captured: dict[str, Any] = {}
 
@@ -1243,16 +1242,17 @@ def test_the_contract_proof_binds_every_declared_column_as_codex_ro(
 
     assert database.missing_gateway_contract(OLD_CODEX) == ()
 
-    # Le rôle : codex_ro par cohérence avec le reste du préflight. NE PAS y lire
-    # une preuve de lisibilité — mesuré (b3331691) : has_table_privilege('codex_ro',
-    # 'pg_attribute','SELECT') est vrai et to_regclass est exécutable par public,
-    # la requête rend la MÊME réponse exécutée en brain. Seul codex_scope_is_bounded
-    # attrape un REVOKE, et c'est une garde antérieure.
+    # The role: codex_ro for consistency with the rest of the preflight. Do NOT
+    # read a readability proof into it — measured (b3331691):
+    # has_table_privilege('codex_ro','pg_attribute','SELECT') is true and
+    # to_regclass is executable by public, the query returns the SAME answer run as
+    # brain. Only codex_scope_is_bounded catches a REVOKE, and that is an earlier
+    # guard.
     assert captured["role"] == "codex_ro"
     assert captured["password"] == OLD_CODEX
-    # Les ARGUMENTS LIÉS, et pas seulement leur existence — les CINQ : les deux
-    # tableaux parallèles vue/colonne, puis les clauses (b), (c) et (d) du
-    # contrat (barrières et triggers, b3331691).
+    # The BOUND ARGUMENTS, and not merely their existence — all FIVE: the two
+    # parallel view/column arrays, then the contract's clauses (b), (c) and (d)
+    # (barriers and triggers, b3331691).
     expected_views, expected_columns = rotation._gateway_contract_arrays(
         rotation._CODEX_GATEWAY_CONTRACT
     )
@@ -1270,18 +1270,18 @@ def test_the_contract_proof_binds_every_declared_column_as_codex_ro(
 
 
 class TestContractProofCoversAllFourClauses:
-    """b3331691 : la preuve du préflight ne couvrait qu'UNE clause sur quatre.
+    """b3331691: the preflight's proof covered only ONE clause out of four.
 
-    Le contrat faisant autorité (`_CODEX_CONTRACT_READY`, câblé sur `/ready`)
-    en a QUATRE : existence des dix vues, `security_barrier` sur les sept vues
-    scopées, et les deux triggers actifs. Or changer une liste de colonnes
-    impose un DROP+CREATE — précisément le geste que la garde surveille — et
-    un CREATE sans `WITH (security_barrier=true)` rendait `preflight_ok` puis
-    cassait la passerelle APRÈS bascule, en fuyant hors scope au passage.
+    The authoritative contract (`_CODEX_CONTRACT_READY`, wired to `/ready`) has
+    FOUR: existence of the ten views, `security_barrier` on the seven scoped views,
+    and the two active triggers. Yet changing a column list requires a DROP+CREATE —
+    precisely the gesture the guard watches — and a CREATE without
+    `WITH (security_barrier=true)` returned `preflight_ok` then broke the gateway
+    AFTER the cutover, leaking out of scope along the way.
 
-    Le script n'importe RIEN de `brain_v42` (délibéré : il réécrit les .env
-    que `Settings` lit) — la copie est donc inévitable, et c'est CE test qui
-    l'empêche d'en être une : lui peut importer les deux côtés.
+    The script imports NOTHING from `brain_v42` (deliberate: it rewrites the .env
+    files `Settings` reads) — the copy is therefore unavoidable, and it is THIS test
+    that stops it from being one: it can import both sides.
     """
 
     def test_the_script_lists_mirror_the_readiness_authority(self) -> None:
@@ -1304,8 +1304,8 @@ class TestContractProofCoversAllFourClauses:
             assert f"to_regclass('public.{table_name}')" in authority
         assert len(rotation._CODEX_GATEWAY_TRIGGERS) == 2
 
-        # Les PRÉDICATS de la preuve sont ceux de l'autorité, au blanc près :
-        # même sémantique de barrière, même définition d'« actif ».
+        # The proof's PREDICATES are the authority's, up to whitespace: same
+        # barrier semantics, same definition of "active".
         proof = " ".join(rotation._GATEWAY_CONTRACT_PROOF.split())
         assert (
             "'security_barrier=true' = ANY( COALESCE(contract_view.reloptions, ARRAY[]::text[]) )"
@@ -1315,10 +1315,10 @@ class TestContractProofCoversAllFourClauses:
         assert "tgenabled IN ('O', 'A') AND NOT tgisinternal" in authority
 
     def test_the_column_pairs_agree_with_the_canonical_contract(self) -> None:
-        """Les 92 paires cessent d'être une copie : les 9 vues de la 036 sont
-        liées à CONTRACT_COLUMNS (leur source de vérité testée en intégration) ;
-        la 10e (codex_brain_entity_v1, migration 024, jamais modifiée) est
-        épinglée ici même — une vue ajoutée d'un seul côté rougit."""
+        """The 92 pairs stop being a copy: 036's 9 views are bound to
+        CONTRACT_COLUMNS (their source of truth, tested in integration); the 10th
+        (codex_brain_entity_v1, migration 024, never modified) is pinned right here
+        — a view added on one side only reddens."""
         from tests.integration.db.test_codex_contract_views_036 import CONTRACT_COLUMNS
 
         script_contract = {
@@ -1343,8 +1343,8 @@ class TestContractProofCoversAllFourClauses:
     def test_missing_barriers_and_triggers_redden_the_preflight(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Le scénario du ticket : colonnes intactes, barrière absente — la
-        preuve doit nommer le manquant au lieu de rendre preflight_ok."""
+        """The ticket's scenario: columns intact, barrier absent — the proof must
+        name what is missing instead of returning preflight_ok."""
         captured: dict[str, Any] = {}
 
         class _FakeConnection:
@@ -1373,7 +1373,7 @@ class TestContractProofCoversAllFourClauses:
 
         assert "security_barrier:codex_ticket_v1" in missing
         assert "trigger:trg_ticket_participants_immutable ON tickets" in missing
-        # Les nouveaux paramètres sont LIÉS — pas seulement présents dans le SQL.
+        # The new parameters are BOUND — not merely present in the SQL.
         assert list(captured["args"][2]) == list(rotation._CODEX_SCOPED_BARRIER_VIEWS)
         assert list(captured["args"][3]) == [
             name for name, _table in rotation._CODEX_GATEWAY_TRIGGERS
