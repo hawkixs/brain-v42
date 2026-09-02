@@ -17,21 +17,21 @@ DRY_RUN="${DRY_RUN:-false}"
 # There is deliberately no automatic fallback after a phase starts because a
 # WET MCP call may already have committed a mutation.
 BRAIN_DREAM_AGENT_PROVIDER="${BRAIN_DREAM_AGENT_PROVIDER:-codex}"
-# LA CHAÎNE. Liste ORDONNÉE de providers, séparée par des virgules — même
-# contrainte de transport que le pool, et pour la même raison : `Environment=`
-# de systemd découpe sur les blancs non protégés.
+# THE CHAIN. An ORDERED list of providers, comma-separated — the same
+# transport constraint as the pool, and for the same reason: systemd's
+# `Environment=` splits on unquoted whitespace.
 #
-# Par défaut elle vaut le provider unique, donc une nuit qui ne la configure
-# pas se comporte EXACTEMENT comme avant : un provider, aucune bascule. C'est
-# volontaire — la chaîne doit être une option qu'on arme, pas un changement de
-# comportement qu'on subit.
+# By default it equals the single provider, so a night that does not configure
+# it behaves EXACTLY as before: one provider, no switchover. That is
+# deliberate — the chain must be an option you arm, not a change of behaviour
+# you are subjected to.
 BRAIN_DREAM_AGENT_PROVIDERS="${BRAIN_DREAM_AGENT_PROVIDERS:-$BRAIN_DREAM_AGENT_PROVIDER}"
-# Le code qu'un runner rend quand il a échoué ET peut PROUVER qu'aucun appel
-# d'outil Brain n'a abouti. Il vit dans scripts/dream/_agent_capability.py ;
-# tests/unit/test_dream_provider_chain.py tient les deux d'accord.
+# The code a runner returns when it has failed AND can PROVE that no Brain
+# tool call succeeded. It lives in scripts/dream/_agent_capability.py;
+# tests/unit/test_dream_provider_chain.py keeps the two in agreement.
 #
-# Lui seul fait avancer la chaîne. Élargir à `!= 0` rendrait la nuit capable de
-# rejouer une phase ayant déjà écrit — en doublant ses écritures, sans un mot.
+# It alone advances the chain. Widening to `!= 0` would make the night able to
+# replay a phase that had already written — doubling its writes, without a word.
 PROVIDER_FALLBACK_EXIT_CODE=3
 BRAIN_DREAM_CAPABILITY_ENFORCEMENT="${BRAIN_DREAM_CAPABILITY_ENFORCEMENT-false}"
 BRAIN_DREAM_CODEX_FAST_MODEL="${BRAIN_DREAM_CODEX_FAST_MODEL:-gpt-5.6-terra}"
@@ -41,10 +41,10 @@ BRAIN_DREAM_CODEX_DEEP_REASONING="${BRAIN_DREAM_CODEX_DEEP_REASONING:-high}"
 BRAIN_DREAM_CODEX_BIN="${BRAIN_DREAM_CODEX_BIN:-codex}"
 BRAIN_DREAM_CLAUDE_BIN="${BRAIN_DREAM_CLAUDE_BIN:-claude}"
 BRAIN_DREAM_AGY_BIN="${BRAIN_DREAM_AGY_BIN:-agy}"
-# Modèles du maillon Google. GEMINI, délibérément : agy expose aussi
-# claude-sonnet-4-6 et claude-opus-4-6-thinking, et les prendre annulerait
-# l'intérêt du maillon — si Anthropic tombe, ces modèles tombent avec, et la
-# chaîne aurait deux maillons corrélés déguisés en trois.
+# Models of the Google link. GEMINI, deliberately: agy also exposes
+# claude-sonnet-4-6 and claude-opus-4-6-thinking, and taking those would defeat
+# the point of the link — if Anthropic falls, those models fall with it, and the
+# chain would have two correlated links disguised as three.
 BRAIN_DREAM_AGY_FAST_MODEL="${BRAIN_DREAM_AGY_FAST_MODEL:-gemini-3.6-flash-medium}"
 BRAIN_DREAM_AGY_DEEP_MODEL="${BRAIN_DREAM_AGY_DEEP_MODEL:-gemini-3.1-pro-high}"
 # Ship the PROMOTE killswitch CLOSED (false) by default. Flip to true once
@@ -65,25 +65,25 @@ BRAIN_DREAM_REORG_ENABLED="${BRAIN_DREAM_REORG_ENABLED:-false}"
 BRAIN_DREAM_REORG_DRY_RUN="${BRAIN_DREAM_REORG_DRY_RUN:-false}"
 # EXTRACT killswitch — ticket knowledge extraction (proposer-only, spec
 # 2026-07-04). Ship CLOSED; once enabled it starts in DRY (propose-only,
-# review humaine via ticket_extraction_proposals) — même trajectoire de
-# soak que REORG avant tout flip WET.
+# human review through ticket_extraction_proposals) — the same soak
+# trajectory as REORG before any WET flip.
 BRAIN_DREAM_EXTRACT_ENABLED="${BRAIN_DREAM_EXTRACT_ENABLED:-false}"
 BRAIN_DREAM_EXTRACT_DRY_RUN="${BRAIN_DREAM_EXTRACT_DRY_RUN:-true}"
-# ROADMAP killswitch — curation nocturne de la roadmap (spec 2026-07-04).
-# Ship CLOSED ; défauts DRY. Régime agressif depuis le 2026-07-04 soir
-# (décision Armand) : en WET le CLI applique les QUATRE ops (merge/rename
-# inclus, WET_APPLYABLE_OPS = VALID_OPS) et le prompt consolide les features
-# granulaires en gros sujets — Claude valide les applications au check matinal.
+# ROADMAP killswitch — nightly roadmap curation (spec 2026-07-04). Ship
+# CLOSED; DRY by default. Aggressive regime since the evening of 2026-07-04
+# (Armand's decision): in WET the CLI applies ALL FOUR ops (merge/rename
+# included, WET_APPLYABLE_OPS = VALID_OPS) and the prompt consolidates granular
+# features into broad subjects — Claude validates the applies at the morning check.
 BRAIN_DREAM_ROADMAP_ENABLED="${BRAIN_DREAM_ROADMAP_ENABLED:-false}"
 BRAIN_DREAM_ROADMAP_DRY_RUN="${BRAIN_DREAM_ROADMAP_DRY_RUN:-true}"
-# SWEEP killswitch — tarissement des sessions fantômes (spec 2026-08-07).
-# Livré FERMÉ et DRY. Phase déterministe, sans modèle ni réseau : le seuil
-# vit dans brain_v42.models.brain_session.AUTO_STALE_AFTER, jamais ici.
+# SWEEP killswitch — draining the ghost sessions (spec 2026-08-07). Shipped
+# CLOSED and DRY. A deterministic phase, with no model and no network: the
+# threshold lives in brain_v42.models.brain_session.AUTO_STALE_AFTER, never here.
 BRAIN_DREAM_SWEEP_ENABLED="${BRAIN_DREAM_SWEEP_ENABLED:-false}"
 BRAIN_DREAM_SWEEP_DRY_RUN="${BRAIN_DREAM_SWEEP_DRY_RUN:-true}"
-# Allocation de retries pour la NUIT ENTIÈRE, tous projets confondus (§10).
-# Deux, parce que la phase la plus chère (synth) vaut 15 min : 2 × 15 = 30 min
-# de rallonge maximale, contre 43 min PAR PROJET si le retry restait par phase.
+# The retry allocation for the WHOLE NIGHT, all projects together (§10). Two,
+# because the most expensive phase (synth) is worth 15 min: 2 × 15 = 30 min of
+# maximum extension, against 43 min PER PROJECT if retries stayed per phase.
 BRAIN_DREAM_RETRY_BUDGET="${BRAIN_DREAM_RETRY_BUDGET:-2}"
 RETRY_BUDGET_LEFT="$BRAIN_DREAM_RETRY_BUDGET"
 while [[ $# -gt 0 ]]; do
@@ -107,26 +107,26 @@ if [[ $# -eq 0 || -z "${1:-}" ]]; then
   exit 2
 fi
 
-# --- Le pool de projets de la nuit ----------------------------------------
+# --- The night's project pool ----------------------------------------------
 #
-# Le positionnel reste REQUIS. La garde ci-dessus ne se dilue pas parce qu'un
-# pool existe : refuser de deviner vaut toujours.
+# The positional argument stays REQUIRED. The guard above is not diluted just
+# because a pool exists: refusing to guess is still worth it.
 #
-# BRAIN_DREAM_PROJECT_POOL, quand elle est posée, REMPLACE le positionnel. Le
-# sens de priorité n'est pas un goût. `ExecStart=` vit dans le template
-# versionné, que deploy/systemd/install.sh RÉGÉNÈRE ; le drop-in, lui, survit à
-# la régénération — c'est tout l'objet de killswitches.conf et de l'incident du
-# 2026-06-30 qu'il documente. Si le positionnel gagnait, élargir le pool dans le
-# drop-in ne changerait RIEN : la nuit resterait à un projet, verte et muette.
-# C'est le mode de panne que §3.1 de la spec refuse nommément.
+# BRAIN_DREAM_PROJECT_POOL, when set, REPLACES the positional. The direction of
+# precedence is not a matter of taste. `ExecStart=` lives in the versioned
+# template, which deploy/systemd/install.sh REGENERATES; the drop-in, for its
+# part, survives the regeneration — that is the whole point of killswitches.conf
+# and of the 2026-06-30 incident it documents. If the positional won, widening
+# the pool in the drop-in would change NOTHING: the night would stay on one
+# project, green and mute. That is the failure mode spec §3.1 refuses by name.
 #
-# Séparateur VIRGULE, et c'est une contrainte de transport, pas d'esthétique :
-# `Environment=` de systemd découpe sur les blancs NON protégés et traite chaque
-# morceau comme une affectation distincte. `Environment=BRAIN_DREAM_PROJECT_POOL=a b`
-# pose la variable à `a` et jette `b`, sans une erreur au démarrage. Un blanc
-# INTERNE est donc la signature d'un transport cassé, et il fait sortir en 2
-# plus bas plutôt que de fabriquer une clé que canonicalize_project_key
-# rejettera au fond d'une fonction best-effort qui avale son exception.
+# A COMMA separator, and it is a transport constraint, not an aesthetic one:
+# systemd's `Environment=` splits on UNQUOTED whitespace and treats each piece
+# as a separate assignment. `Environment=BRAIN_DREAM_PROJECT_POOL=a b` sets the
+# variable to `a` and throws `b` away, without an error at startup. An INTERNAL
+# blank is therefore the signature of a broken transport, and it exits 2 below
+# rather than manufacturing a key that canonicalize_project_key will reject deep
+# inside a best-effort function that swallows its exception.
 declare -a PROJECT_POOL=()
 POOL_SOURCE="positional argument"
 _pool_raw="$1"
@@ -137,8 +137,8 @@ fi
 
 IFS=',' read -r -a _pool_parts <<< "$_pool_raw"
 for _entry in "${_pool_parts[@]}"; do
-  # Trim des blancs de bord seulement : `a, b` est une écriture humaine
-  # naturelle et sans ambiguïté.
+  # Trim edge whitespace only: `a, b` is a natural, unambiguous human
+  # spelling.
   _entry="${_entry#"${_entry%%[![:space:]]*}"}"
   _entry="${_entry%"${_entry##*[![:space:]]}"}"
   if [[ -z "$_entry" ]]; then
@@ -151,8 +151,8 @@ for _entry in "${_pool_parts[@]}"; do
     exit 2
   fi
   if [[ "$_entry" == */* ]]; then
-    # Une clé de projet entre dans un nom de fichier de journal (§3.2). Un
-    # slash y creuserait un répertoire, ou ferait échouer l'ouverture.
+    # A project key goes into a log file name (§3.2). A slash there would dig
+    # a directory, or make the open fail.
     echo "Slash inside a project key from $POOL_SOURCE: '$_entry'" >&2
     exit 2
   fi
@@ -161,9 +161,9 @@ for _entry in "${_pool_parts[@]}"; do
   esac
   for _seen in ${PROJECT_POOL[@]+"${PROJECT_POOL[@]}"}; do
     if [[ "$_seen" == "$_entry" ]]; then
-      # Servir deux fois le même projet dans une nuit, c'est exactement le
-      # gaspillage que §7 mesure pour les phases globales. Une répétition est
-      # une faute de frappe, pas une intention.
+      # Serving the same project twice in one night is exactly the waste §7
+      # measures for the global phases. A repetition is a typo, not an
+      # intention.
       echo "Duplicate project key in $POOL_SOURCE: '$_entry'" >&2
       exit 2
     fi
@@ -171,18 +171,18 @@ for _entry in "${_pool_parts[@]}"; do
   PROJECT_POOL+=("$_entry")
 done
 
-# §10 : l'allocation de retries est une ressource de NUIT, donc le projet en
-# tête de pool est mieux servi que celui en queue. Sans rotation, c'est toujours
-# le même qui est sacrifié. Même idiome que roadmap_curate.rotate_keys, en
-# service depuis le 2026-07-04. `10#` force la base 10 : `date +%j` rend 001-366
-# et bash lirait 008 comme un octal invalide.
+# §10: the retry allocation is a NIGHT-wide resource, so the project at the
+# head of the pool is better served than the one at the tail. Without rotation
+# it is always the same one sacrificed. Same idiom as roadmap_curate.rotate_keys,
+# in service since 2026-07-04. `10#` forces base 10: `date +%j` returns 001-366
+# and bash would read 008 as an invalid octal.
 if (( ${#PROJECT_POOL[@]} > 1 )); then
   _rotation=$(( 10#$(date +%j) % ${#PROJECT_POOL[@]} ))
   PROJECT_POOL=("${PROJECT_POOL[@]:$_rotation}" "${PROJECT_POOL[@]:0:$_rotation}")
 fi
 
-# Le projet servi à un instant donné. Réaffecté à chaque itération de la boucle
-# de projets : run_phase, les trois validateurs et _render_prompt le lisent tous
+# The project served at a given instant. Reassigned on every iteration of the
+# project loop: run_phase, the three validators and _render_prompt all read it
 # comme un global.
 PROJECT_KEY="${PROJECT_POOL[0]}"
 TIMESTAMP=$(date +%Y-%m-%d)
@@ -195,12 +195,12 @@ case "$BRAIN_DREAM_AGENT_PROVIDER" in
     ;;
 esac
 
-# --- La chaîne de providers ------------------------------------------------
+# --- The provider chain -----------------------------------------------------
 #
-# Validée ENTIÈREMENT ici, avant la première phase. Un maillon inconnu au
-# milieu de la chaîne ne doit pas se découvrir à 4 h du matin, sur la seule
-# nuit où le premier maillon meurt : ce serait précisément le jour où le
-# secours compte, et il ne serait pas là.
+# Validated IN FULL here, before the first phase. An unknown link in the middle
+# of the chain must not be discovered at 4 a.m., on the one night the first link
+# dies: that would be precisely the day the standby matters, and it would not
+# be there.
 declare -a PROVIDER_CHAIN=()
 IFS=',' read -r -a _provider_parts <<< "$BRAIN_DREAM_AGENT_PROVIDERS"
 for _provider in "${_provider_parts[@]}"; do
@@ -229,8 +229,8 @@ if (( ${#PROVIDER_CHAIN[@]} == 0 )); then
   echo "BRAIN_DREAM_AGENT_PROVIDERS is empty" >&2
   exit 2
 fi
-# Le premier maillon est le provider nominal : les préflights, les journaux et
-# le choix de modèle par palier le lisent tous comme un global.
+# The first link is the nominal provider: the preflights, the logs and the
+# per-tier model choice all read it as a global.
 BRAIN_DREAM_AGENT_PROVIDER="${PROVIDER_CHAIN[0]}"
 
 case "$BRAIN_DREAM_CAPABILITY_ENFORCEMENT" in
@@ -240,21 +240,21 @@ case "$BRAIN_DREAM_CAPABILITY_ENFORCEMENT" in
     exit 2
     ;;
 esac
-# Le refus historique de `claude` sous enforcement a été LEVÉ le 2026-08-11,
-# et seulement parce que sa cause a disparu. Ce rail passait par le .mcp.json
-# du dépôt, dont l'Authorization interpole ${MCP_HTTP_TOKEN} — le jeton ADMIN —
-# et par le joker `mcp__brain-v42__*`. Sous enforcement, c'était exactement la
-# combinaison que le pare-feu existe pour interdire : six phases non scopées,
-# des journaux verts, et rien pour le dire. Refuser était le seul fail-closed
-# disponible tant que le rail ne savait pas porter un bearer par phase.
+# The historical refusal of `claude` under enforcement was LIFTED on
+# 2026-08-11, and only because its cause disappeared. That rail went through the
+# repository's .mcp.json, whose Authorization interpolates ${MCP_HTTP_TOKEN} —
+# the ADMIN token — and through the `mcp__brain-v42__*` wildcard. Under
+# enforcement, that was exactly the combination the firewall exists to forbid:
+# six unscoped phases, green logs, and nothing to say so. Refusing was the only
+# fail-closed available while the rail could not carry a per-phase bearer.
 #
-# scripts/dream/claude_runner.py le sait désormais : il rend une configuration
-# MCP par phase (en-tête d'agent dédié, allowlist exacte, sans joker) et donne
-# au processus fils le jeton de (projet, phase) sous le nom que cette
-# configuration référence. Le garde n'a donc plus rien à protéger.
+# scripts/dream/claude_runner.py now can: it renders a per-phase MCP
+# configuration (dedicated agent header, exact allowlist, no wildcard) and gives
+# the child process the (project, phase) token under the name that configuration
+# references. So the guard has nothing left to protect.
 #
-# Ne pas le retirer sans cette contrepartie : le supprimer seul rendrait au
-# rail le jeton admin, en silence et avec la même nuit verte.
+# Do not remove it without that counterpart: deleting it alone would hand the
+# admin token back to the rail, in silence and with the same green night.
 
 mkdir -p "$LOG_DIR"
 
@@ -284,10 +284,10 @@ declare -A PHASE_DEPS=(
   [reorg]="scan synth"
 )
 
-# Les trois phases GLOBALES, nommées pour le seul calcul de `planned_phases`.
-# Les trois blocs restent écrits à la main HORS de la boucle (épinglé par
-# tests/unit/test_dream_sh_global_phases_outside_loop.py) : ce tableau ne les
-# pilote pas, il les compte.
+# The three GLOBAL phases, named for the `planned_phases` computation alone.
+# The three blocks stay hand-written OUTSIDE the loop (pinned by
+# tests/unit/test_dream_sh_global_phases_outside_loop.py): this array does not
+# drive them, it counts them.
 DREAM_GLOBAL_PHASES=(extract roadmap sweep)
 
 # OTEL env vars for Claude Code telemetry
@@ -317,11 +317,11 @@ log() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG_DIR/$TIMESTAMP.log"; }
 run_phase() {
   local name="$1" model_tier="$2" timeout="$3" max_turns="$4"
   local prompt_file="$DREAM_DIR/phase_${name}.md"
-  # §3.2 : ces chemins portent le projet. codex_runner ouvre `events` et
-  # `stderr` en "w" et fait `report_log.write_text("")` — de la TRONCATURE, pas
-  # de l'append. Sans composante de projet, seuls les journaux du DERNIER projet
-  # survivraient au matin, et l'injection de dépendance de la §3.3 relirait le
-  # rapport du projet précédent.
+  # §3.2: these paths carry the project. codex_runner opens `events` and
+  # `stderr` in "w" and calls `report_log.write_text("")` — TRUNCATION, not
+  # append. Without a project component, only the LAST project's logs would
+  # survive till morning, and §3.3's dependency injection would re-read the
+  # previous project's report.
   local raw_log="$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.raw.log"
   local report_log="$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.log"
   local otel_log="$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.otel.log"
@@ -417,10 +417,10 @@ $prompt"
   # separate files. The Claude rollback keeps its historical mixed OTEL path.
   local code=0
   if [[ "$BRAIN_DREAM_AGENT_PROVIDER" == "agy" ]]; then
-    # agy ne prend aucune configuration en ligne de commande : son runner lui
-    # compose un HOME éphémère portant le bearer scopé ET la garde d'outils.
-    # Voir scripts/dream/agy_runner.py — le seul rail dont le bearer touche un
-    # fichier, confiné à un tmpfs et détruit avec le HOME.
+    # agy takes no configuration on the command line: its runner composes an
+    # ephemeral HOME for it, carrying the scoped bearer AND the tool guard. See
+    # scripts/dream/agy_runner.py — the only rail whose bearer touches a file,
+    # confined to a tmpfs and destroyed with the HOME.
     if printf '%s' "$prompt" | uv run python -m scripts.dream.agy_runner \
       --phase "$name" \
       --project-key "$PROJECT_KEY" \
@@ -450,10 +450,10 @@ $prompt"
       code=$?
     fi
   else
-    # Le rail claude passe par son runner isolé depuis le 2026-08-11. Il
-    # remplace le joker `mcp__brain-v42__*` par l'allowlist exacte de la phase
-    # et substitue le bearer de (projet, phase) au jeton admin. Le flux mixte
-    # continue d'atterrir dans $raw_log : otel_split le lit juste après.
+    # The claude rail has gone through its isolated runner since 2026-08-11.
+    # It replaces the `mcp__brain-v42__*` wildcard with the phase's exact
+    # allowlist and substitutes the (project, phase) bearer for the admin token.
+    # The mixed stream still lands in $raw_log: otel_split reads it right after.
     if printf '%s' "$prompt" | uv run python -m scripts.dream.claude_runner \
       --phase "$name" \
       --project-key "$PROJECT_KEY" \
@@ -476,11 +476,11 @@ $prompt"
       phase_rc=2
       log "TIMEOUT $name (>${timeout}m)"
     elif [[ $code -eq $PROVIDER_FALLBACK_EXIT_CODE ]]; then
-      # Échec PROUVÉ sans écriture. C'est un échec pour les métriques comme
-      # pour l'unité — `status` reste `fail` — mais le code doit REMONTER tel
-      # quel jusqu'à run_phase_chain, seul endroit qui sait s'il existe un
-      # maillon suivant. L'écraser en 1 ici, comme le faisait la version
-      # d'origine, rendait la chaîne inerte : elle ne voyait jamais sa
+      # A failure PROVEN to have written nothing. It is a failure for the
+      # metrics as for the unit — `status` stays `fail` — but the code must
+      # REACH run_phase_chain unchanged, the only place that knows whether a
+      # next link exists. Squashing it to 1 here, as the original version did,
+      # made the chain inert: it never saw its
       # condition de bascule.
       status="fail"
       phase_rc=$PROVIDER_FALLBACK_EXIT_CODE
@@ -563,17 +563,17 @@ $prompt"
 }
 
 #
-# Joue une phase sur la CHAÎNE de providers.
+# Runs one phase across the provider CHAIN.
 #
-# Avance au maillon suivant sur le seul code PROVIDER_FALLBACK_EXIT_CODE, qui
-# signifie « échec, et je peux prouver qu'aucun appel d'outil Brain n'a abouti ».
-# Un échec ordinaire (1) et un timeout (2) s'arrêtent là où ils sont tombés :
-# aucun des deux ne prouve que rien n'a été écrit, et rejouer une phase qui a
-# muté la ferait écrire deux fois.
+# It advances to the next link on the single code PROVIDER_FALLBACK_EXIT_CODE,
+# which means "failed, and I can prove no Brain tool call succeeded". An
+# ordinary failure (1) and a timeout (2) stop where they fell: neither proves
+# nothing was written, and replaying a phase that mutated would make it write
+# twice.
 #
-# Codes de retour identiques à run_phase (0 / 1 / 2), pour que tout l'appelant
-# — retry de nuit, validateurs, compteurs — reste inchangé. La chaîne est une
-# couche AU-DESSUS du contrat existant, pas une modification de ce contrat.
+# The return codes are identical to run_phase (0 / 1 / 2), so that every caller
+# — the night's retry, the validators, the counters — stays unchanged. The chain
+# is a layer ABOVE the existing contract, not a change to that contract.
 run_phase_chain() {
   local name="$1" model_tier="$2" timeout="$3" max_turns="$4"
   local nominal_provider="$BRAIN_DREAM_AGENT_PROVIDER"
@@ -583,10 +583,10 @@ run_phase_chain() {
   for provider in "${PROVIDER_CHAIN[@]}"; do
     index=$(( index + 1 ))
     BRAIN_DREAM_AGENT_PROVIDER="$provider"
-    # Surtout PAS de `set +e` / `set -e` ici : un `set -e` posé dans une
-    # fonction survit à son `return`, et l'errexit ainsi restauré ferait sortir
-    # le script sur le `return $rc` final — la nuit s'arrêterait à la première
-    # phase en échec, avant même son résumé. `|| rc=$?` capture le code sans
+    # Above all NO `set +e` / `set -e` here: a `set -e` placed inside a
+    # function survives its `return`, and the errexit thus restored would exit
+    # the script on the final `return $rc` — the night would stop at the first
+    # failed phase, before even its summary. `|| rc=$?` captures the code without
     # toucher au mode du shell.
     rc=0
     run_phase "$name" "$model_tier" "$timeout" "$max_turns" || rc=$?
@@ -596,19 +596,19 @@ run_phase_chain() {
     fi
 
     if (( index < ${#PROVIDER_CHAIN[@]} )); then
-      # Nommer le maillon abandonné ET la preuve qui l'autorise. Une bascule
-      # muette rendrait indiscernables « codex a marché » et « codex est mort,
-      # claude a sauvé la nuit » — or c'est exactement ce qu'il faut voir au
-      # matin pour savoir si un abonnement est encore vivant.
+      # Name the abandoned link AND the proof that authorises it. A mute
+      # switchover would make "codex worked" and "codex died, claude saved the
+      # night" indistinguishable — yet that is exactly what has to be visible in
+      # the morning to know whether a subscription is still alive.
       log "FALLBACK $PROJECT_KEY/$name — $provider a échoué sans aucun appel d'outil Brain abouti, bascule vers ${PROVIDER_CHAIN[$index]}"
-      # Agrégé pour le résumé de fin. Inscrit à la BASCULE, pas au succès du
-      # maillon suivant : ce qu'on veut mesurer est la mort du primaire, qu'un
-      # secours la rattrape ou non. Si plus personne ne rattrape, la phase
-      # rejoint FAILED_PHASES ci-dessous et sera comptée aux deux titres.
+      # Aggregated for the closing summary. Recorded at the SWITCHOVER, not at
+      # the next link's success: what we want to measure is the primary's death,
+      # whether or not a standby catches it. If nobody catches it, the phase
+      # joins FAILED_PHASES below and will be counted on both grounds.
       FALLBACK_PHASES+=("$PROJECT_KEY/$name")
     else
-      # Dernier maillon : plus personne derrière. La phase redevient un échec
-      # ordinaire, pour que l'unité rougisse comme avant.
+      # Last link: nobody left behind it. The phase becomes an ordinary
+      # failure again, so the unit turns red as before.
       log "FALLBACK-END $PROJECT_KEY/$name — $provider était le dernier maillon de la chaîne"
       rc=1
     fi
@@ -631,39 +631,39 @@ if ! flock -n 9; then
   exit 0
 fi
 
-# --- Manifeste de la nuit ---------------------------------------------------
+# --- The night's manifest ---------------------------------------------------
 #
-# ATTENTION À L'ORDRE : ce bloc TRONQUE, il vit donc DERRIÈRE le verrou, jamais
-# devant. Placé plus haut, la deuxième invocation d'une nuit — recouvrement
-# cron, re-déclenchement manuel : le cas même que le verrou existe pour absorber
-# — viderait le manifeste de la nuit VIVANTE puis sortirait en 0. La nuit saine
-# finirait `consistent=false`, escaladerait en rc 2 et poserait une ligne
-# `coverage` mensongère, et ses paires antérieures à la troncature seraient
-# reclassées en `extra`, qui n'escalade jamais : un vrai trou parmi elles
-# deviendrait invisible. Épinglé par test_dream_sh_run_manifest.py.
+# MIND THE ORDER: this block TRUNCATES, so it lives BEHIND the lock, never in
+# front. Placed higher, a night's second invocation — a cron overlap, a manual
+# re-trigger: the very case the lock exists to absorb — would empty the LIVE
+# night's manifest then exit 0. The healthy night would end `consistent=false`,
+# escalate to rc 2 and write a lying `coverage` row, and its pairs from before
+# the truncation would be reclassified as `extra`, which never escalates: a real
+# hole among them would become invisible. Pinned by
+# test_dream_sh_run_manifest.py.
 #
-# Ce que la nuit DÉCLARE — ses attendus, ses skips et leur raison — écrit AU
-# SITE DE CHAQUE DÉCISION et relu au matin par scripts.dream.post_run_alert.
+# What the night DECLARES — expectations, skips and their reason — written AT
+# THE SITE OF EVERY DECISION, read back by scripts.dream.post_run_alert.
 #
-# Ticket 0a9c067e : le comparateur de couverture existe et il a tiré trois nuits
-# de suite, mais son attendu vient du drop-in systemd, qui n'a de clé que pour
-# promote et reorg. La nuit du 2026-08-16 a donc annoncé 20 phases manquantes
-# quand il en manquait 60. L'élargir depuis le drop-in serait un no-op ; la nuit
-# est le seul témoin qui sache ce qu'elle a réellement tenté.
+# Ticket 0a9c067e: the coverage comparator exists and it fired three nights
+# running, but its expectation comes from the systemd drop-in, which has keys
+# only for promote and reorg. The night of 2026-08-16 therefore announced 20
+# missing phases when 60 were missing. Widening it from the drop-in would be a
+# no-op; the night is the only witness that knows what it actually attempted.
 #
-# INCRÉMENTAL, jamais vidé en fin de nuit : une nuit tuée par TimeoutStartSec,
-# un OOM ou un `set -e` non gardé n'atteindrait aucun vidage final, et le rejeu
-# du matin retomberait sur l'attendu du drop-in — c'est-à-dire sur le trou même
-# que ce fichier ferme. L'absence du bloc de clôture devient donc le marqueur
-# d'interruption, et interdit tout verdict vert.
+# INCREMENTAL, never flushed at the end of the night: a night killed by
+# TimeoutStartSec, an OOM or an unguarded `set -e` would reach no final flush,
+# and the morning replay would fall back on the drop-in's expectation — that is,
+# on the very hole this file closes. The absence of the closing block therefore
+# becomes the interruption marker, and forbids any green verdict.
 #
-# BEST-EFFORT INTÉGRAL : `set -euo pipefail` est actif depuis la ligne 2, et un
-# `logs/` en lecture seule ne doit jamais tuer une nuit. Une télémétrie qui
-# échoue ne fait pas tomber la phase qu'elle observe.
+# WHOLLY BEST-EFFORT: `set -euo pipefail` has been active since line 2, and a
+# read-only `logs/` must never kill a night. Telemetry that fails does not bring
+# down the phase it observes.
 #
-# Aucun échappement n'est nécessaire : une clé de projet portant un blanc ou un
-# slash est déjà refusée plus haut, et les noms de phase comme les raisons de
-# skip sont des littéraux d'un ensemble fermé.
+# No escaping is needed: a project key carrying a blank or a slash is already
+# refused above, and the phase names as well as the skip reasons are literals
+# from a closed set.
 MANIFEST_FILE="$LOG_DIR/${TIMESTAMP}_manifest.tsv"
 manifest_put() {
   printf '%s\t%s\t%s\t%s\n' "$1" "${2-}" "${3-}" "${4-}" >> "$MANIFEST_FILE" 2>/dev/null || true
@@ -677,25 +677,25 @@ manifest_put meta planned_phases \
 manifest_put meta started "$(date -Iseconds)"
 
 log "=== Dream started (project=$PROJECT_KEY, provider=$BRAIN_DREAM_AGENT_PROVIDER, dry_run=$DRY_RUN, promote_enabled=$BRAIN_DREAM_PROMOTE_ENABLED, reorg_enabled=$BRAIN_DREAM_REORG_ENABLED, reorg_dry_run=$BRAIN_DREAM_REORG_DRY_RUN) ==="
-# Le pool sur sa propre ligne, et la SOURCE avec lui. Sans la source, une nuit
-# à un projet ne dit pas si le drop-in a été lu ou si systemd a mangé la
-# variable — les deux rendent la même ligne.
+# The pool on its own line, and its SOURCE with it. Without the source, a
+# single-project night does not say whether the drop-in was read or systemd ate
+# the variable — both render the same line.
 log "=== Pool (${#PROJECT_POOL[@]}) from $POOL_SOURCE: ${PROJECT_POOL[*]} ==="
 
-# Préflights, joués sur TOUTE la chaîne — pas seulement sur son premier maillon.
+# Preflights, run across the WHOLE chain — not on its first link alone.
 #
-# C'est le point qui décide si une chaîne sert à quelque chose. Le préflight
-# détecte exactement ce qui tue un rail : binaire absent, jeton manquant,
-# abonnement expiré. Le faire échouer la NUIT plutôt que le MAILLON reviendrait
-# à tuer la nuit précisément le jour où le secours devait servir — la panne que
-# la chaîne existe pour absorber.
+# This is what decides whether a chain is worth anything. The preflight detects
+# exactly what kills a rail: missing binary, missing token, expired
+# subscription. Having it fail the NIGHT rather than the LINK would amount to
+# killing the night on precisely the day the standby was meant to serve — the
+# failure the chain exists to absorb.
 #
-# Un maillon qui ne passe pas son préflight est donc RETIRÉ de la chaîne, et
-# nommé. La nuit ne s'arrête que si TOUS échouent : le fail-closed est conservé,
-# il porte simplement sur l'ensemble au lieu du premier.
+# A link that does not pass its preflight is therefore REMOVED from the chain,
+# and named. The night stops only if ALL of them fail: the fail-closed is kept,
+# it simply bears on the set instead of on the first one.
 #
-# Rien de tout cela n'est un fallback silencieux : chaque retrait est journalisé
-# avec sa raison, et la ligne PROVIDERS finale dit avec quoi la nuit part.
+# None of this is a silent fallback: every removal is logged with its reason,
+# and the final PROVIDERS line says what the night sets off with.
 preflight_provider() {
   local provider="$1"
   local binary runner label
@@ -717,9 +717,9 @@ preflight_provider() {
     log "FAIL $label preflight — MCP_HTTP_TOKEN is not set"
     return 1
   fi
-  # Le préflight de capacités est par PROJET : la politique d'outils dépend de
-  # la clé. Le vérifier sur le seul premier projet laisserait une nuit démarrer
-  # puis échouer au troisième, après deux projets déjà mutés.
+  # The capability preflight is per PROJECT: the tool policy depends on the
+  # key. Checking it on the first project alone would let a night start and then
+  # fail at the third, after two projects had already been mutated.
   if [[ "$BRAIN_DREAM_CAPABILITY_ENFORCEMENT" == "true" ]]; then
     for _preflight_project in "${PROJECT_POOL[@]}"; do
       if ! uv run python -m "$runner" \
@@ -730,25 +730,25 @@ preflight_provider() {
     done
   fi
 
-  # Le rail agy EXIGE l'enforcement. Sa garde d'outils est sondée par son
-  # runner dans --preflight-capabilities ci-dessus ; sans enforcement ce chemin
-  # n'est jamais emprunté, et la phase partirait avec un shell libre et un
-  # bearer admin. Le maillon est donc retiré plutôt que joué sans filet.
+  # The agy rail REQUIRES enforcement. Its tool guard is probed by its runner
+  # inside --preflight-capabilities above; without enforcement that path is
+  # never taken, and the phase would set off with a free shell and an admin
+  # bearer. The link is therefore removed rather than run without a net.
   if [[ "$provider" == "agy" && "$BRAIN_DREAM_CAPABILITY_ENFORCEMENT" != "true" ]]; then
     log "FAIL $label preflight — le rail agy exige BRAIN_DREAM_CAPABILITY_ENFORCEMENT=true"
     return 1
   fi
 
-  # Codex seul expose une sonde d'authentification non interactive. Elle pinne
-  # aussi forced_login_method=chatgpt, pour qu'une clé d'API ambiante ne puisse
-  # pas déplacer ces phases vers la facturation à l'usage sans le dire.
-  # `claude` n'a pas d'équivalent, et en inventer un qui échoue ouvert ne
-  # prouverait rien — l'absence est donc assumée, pas comblée.
+  # Codex alone exposes a non-interactive authentication probe. It also pins
+  # forced_login_method=chatgpt, so that an ambient API key cannot move these
+  # phases onto usage billing without saying so. `claude` has no equivalent, and
+  # inventing one that fails open would prove nothing — the absence is therefore
+  # accepted, not papered over.
   if [[ "$provider" == "codex" ]]; then
-    # Pas de `set +e` / `set -e` ici : un `set -e` posé DANS une fonction
-    # survit à son `return`, et l'errexit ainsi restauré faisait sortir le
-    # script sur le `return 1` au lieu de laisser la chaîne retomber sur le
-    # maillon suivant. Le `|| true` capture le rc sans toucher au mode du shell.
+    # No `set +e` / `set -e` here: a `set -e` placed INSIDE a function
+    # survives its `return`, and the errexit thus restored made the script exit
+    # on the `return 1` instead of letting the chain fall back on the next
+    # link. The `|| true` captures the rc without touching the shell's mode.
     local codex_login_status codex_login_rc=0
     codex_login_status="$("$binary" login status 2>&1)" || codex_login_rc=$?
     if (( codex_login_rc != 0 )) || [[ "$codex_login_status" != *"Logged in using ChatGPT"* ]]; then
@@ -801,26 +801,26 @@ fi
 
 declare -a FAILED_PHASES=()
 declare -a TIMED_OUT_PHASES=()
-# Sous-ensemble de TIMED_OUT_PHASES : les échéances BORNÉES qu'une phase
-# s'impose à elle-même APRÈS avoir enregistré son dream_run terminal. Ce n'est
-# pas une panne, c'est une nuit normale menée jusqu'à sa limite de temps. Elles
-# alertent (compteur FAIL_TOTAL) mais ne rougissent plus l'unité systemd.
-# Fail-closed par construction : un timeout qu'on oublie de classer ici reste
-# compté comme un échec, donc bruyant. Un timeout de garde-fou EXTERNE
-# (`timeout` a tué le process) n'entre JAMAIS ici : l'état de la phase est
-# inconnu.
+# A subset of TIMED_OUT_PHASES: the BOUNDED deadlines a phase imposes on itself
+# AFTER recording its terminal dream_run. That is not a breakdown, it is a
+# normal night carried to its time limit. They alert (the FAIL_TOTAL counter)
+# but no longer redden the systemd unit. Fail-closed by construction: a timeout
+# one forgets to classify here stays counted as a failure, hence noisy. An
+# EXTERNAL guard-rail timeout (`timeout` killed the process) NEVER enters here:
+# the phase's state is
+# unknown.
 declare -a CONTROLLED_TIMEOUT_PHASES=()
 declare -a SKIPPED_PHASES=()
-# Skips SANS ligne dream_runs — le seul compte que la réconciliation doit
-# soustraire : un skip qui ÉCRIT (promote pool vide, record-empty-pool) est
-# déjà dans pairs_written, le soustraire aussi ferait gap=-1 sur une nuit
-# saine (2e fix review PR 47, cri-au-loup par l'autre chemin).
+# Skips WITHOUT a dream_runs row — the only count the reconciliation must
+# subtract: a skip that DOES write (empty promote pool, record-empty-pool) is
+# already in pairs_written, and subtracting it too would give gap=-1 on a
+# healthy night (2nd fix from the PR 47 review, wolf-cry by the other path).
 SKIPPED_UNWRITTEN=0
-# Phases qu'un maillon de secours a rattrapées. Volontairement HORS de
-# FAIL_TOTAL et de la garde de sortie : elles ont réussi. Elles n'existent que
-# pour que le résumé distingue « codex a marché » de « codex est mort, agy a
-# sauvé la nuit » — la distinction que `run_phase_chain` journalise déjà par
-# phase mais que rien n'agrégeait, six nuits durant.
+# Phases a standby link caught. Deliberately OUTSIDE FAIL_TOTAL and outside the
+# exit guard: they succeeded. They exist only so the summary can tell "codex
+# worked" from "codex died, agy saved the night" — the distinction
+# `run_phase_chain` already logs per phase but that nothing aggregated, for six
+# nights running.
 declare -a FALLBACK_PHASES=()
 TOTAL_PHASES=0
 
@@ -843,27 +843,27 @@ else
   log "PREFLIGHT RUN — corpus changed since last run (or check inconclusive)"
 fi
 
-# Sert UN projet : ses six phases agent, dans l'ordre, avec leurs killswitches
-# et leurs validateurs. Extraire ce bloc en fonction n'est pas cosmétique.
+# Serves ONE project: its six agent phases, in order, with their killswitches
+# and their validators. Extracting this block into a function is not cosmetic.
 #
-# §9 relève cinq `continue` qui appartiennent à la boucle de PHASES. Une boucle
-# de projets posée AUTOUR d'eux ne les aurait pas cassés — bash les rattache
-# toujours à la boucle la plus interne — mais elle aurait rendu la lecture
-# ambiguë au point que le prochain remaniement le casse. Une frontière de
-# fonction supprime la question : ce corps n'a qu'une boucle.
+# §9 lists five `continue` statements that belong to the PHASE loop. A project
+# loop placed AROUND them would not have broken them — bash always binds them to
+# the innermost loop — but it would have made the reading ambiguous enough that
+# the next rework breaks it. A function boundary removes the question: this body
+# has exactly one loop.
 #
-# La fonction écrit dans les tableaux de compteurs, qui restent globaux : ils
-# agrègent la nuit entière, tous projets confondus.
+# The function writes into the counter arrays, which stay global: they aggregate
+# the whole night, all projects together.
 run_project_phases() {
-  # Affectation GLOBALE, volontairement pas `local` : run_phase, les trois
-  # validateurs et _render_prompt lisent tous $PROJECT_KEY comme un global.
+  # A GLOBAL assignment, deliberately not `local`: run_phase, the three
+  # validators and _render_prompt all read $PROJECT_KEY as a global.
   PROJECT_KEY="$1"
 
-  # §3.4 — ces deux exports survivent aux itérations. Si un projet saute
-  # PROMOTE (killswitch, pool vide, ou échec de promote_prepare), la valeur du
-  # projet PRÉCÉDENT reste chargée et le projet courant promeut sur le pool
-  # d'un autre. La remise à zéro est en TÊTE d'itération, pas en queue : les
-  # cinq `continue` du corps sauteraient un nettoyage placé à la fin.
+  # §3.4 — these two exports survive across iterations. If a project skips
+  # PROMOTE (killswitch, empty pool, or a promote_prepare failure), the PREVIOUS
+  # project's value stays loaded and the current project promotes on someone
+  # else's pool. The reset sits at the HEAD of the iteration, not at the tail:
+  # the body's five `continue` statements would skip a cleanup placed at the end.
   export PROMOTE_CANDIDATE_POOL_JSON='[]'
   export PROMOTE_RECENT_PROMOTIONS_JSON='[]'
   CANDIDATES_JSON=""
@@ -876,8 +876,8 @@ run_project_phases() {
   for phase_spec in "${PHASES[@]}"; do
     IFS=':' read -r name model_tier timeout max_turns <<< "$phase_spec"
     TOTAL_PHASES=$(( TOTAL_PHASES + 1 ))
-    # Même site, même instant que le compteur : une SEPTIÈME phase ajoutée à
-    # PHASES étend l'attendu toute seule, sans garde à maintenir ailleurs.
+    # Same site, same instant as the counter: a SEVENTH phase added to PHASES
+    # extends the expectation on its own, with no guard to maintain elsewhere.
     manifest_put expected "$name" "$PROJECT_KEY"
 
     # --- Pre-flight: skip the costly Opus phases on a provably-static corpus ---
@@ -939,11 +939,11 @@ run_project_phases() {
           >> "$LOG_DIR/$TIMESTAMP.log" 2>&1
         record_rc=$?
         set -e
-        # La déclaration vit DANS chacune des deux branches, jamais après le
-        # `if` : le push `SKIPPED_PHASES+=` ci-dessous est commun aux deux, donc
-        # « sautée » et « sa ligne est écrite » sont deux faits INDÉPENDANTS.
-        # Une raison unique déclarerait « aucune ligne due » alors que dream.sh
-        # vient d'imprimer que l'écriture a ÉCHOUÉ, et le trou serait muet.
+        # The declaration lives INSIDE each of the two branches, never after
+        # the `if`: the `SKIPPED_PHASES+=` push below is common to both, so
+        # "skipped" and "its row is written" are two INDEPENDENT facts. A single
+        # reason would declare "no row owed" while dream.sh has just printed
+        # that the write FAILED, and the hole would be mute.
         if (( record_rc == 0 )); then
           log "promote — empty-pool dream_runs row recorded (phase observed, not failed)"
           manifest_put skipped promote "$PROJECT_KEY" empty-pool-recorded
@@ -981,16 +981,16 @@ run_project_phases() {
     fi
 
     # --- REORG: pre-phase tags snapshot ------------------------------------
-    # Le validateur d'après-phase compare les tags des entités déclarées mutées
-    # à ceux d'AVANT. C'est le seul « avant » observé : le contrôle qu'il
-    # remplace, `updated_at >= run_date`, était creux — DecayFlusher rafraîchit
-    # l'horodatage toutes les 300 s à travers un trigger sans clause WHEN, et
-    # ce sont les lectures de REORG lui-même qui l'alimentent.
+    # The post-phase validator compares the tags of the entities declared
+    # mutated against those from BEFORE. It is the only observed "before": the
+    # check it replaces, `updated_at >= run_date`, was hollow — DecayFlusher
+    # refreshes the timestamp every 300 s through a trigger with no WHEN clause,
+    # and it is REORG's own reads that feed it.
     #
-    # Pris APRÈS le killswitch (une phase coupée ne paie pas la requête) et
-    # AVANT run_phase_chain, donc une seule fois pour les deux tentatives que le
-    # budget de retry autorise : le « avant » est celui d'avant la PREMIÈRE
-    # écriture, pas d'avant la dernière.
+    # Taken AFTER the killswitch (a phase cut off does not pay for the query)
+    # and BEFORE run_phase_chain, hence once only for the two attempts the retry
+    # budget allows: the "before" is the one from before the FIRST write, not
+    # from before the last.
     if [[ "$name" == "reorg" ]]; then
       REORG_TAGS_BEFORE="$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_reorg_tags_before.json"
       set +e
@@ -999,9 +999,9 @@ run_project_phases() {
       snapshot_rc=$?
       set -e
       if (( snapshot_rc != 0 )); then
-        # Le validateur refusera le rapport faute d'instantané lisible — voulu et
-        # fail-closed. Cette ligne est ce qui permet de remonter du refus à sa
-        # cause, au lieu de soupçonner le rapport de l'agent.
+        # The validator will refuse the report for want of a readable snapshot
+        # — intended and fail-closed. This line is what allows tracing the
+        # refusal back to its cause, instead of suspecting the agent's report.
         log "WARN  reorg — pre-phase tags snapshot failed (rc=$snapshot_rc); the validator will refuse the report"
       fi
     fi
@@ -1020,10 +1020,10 @@ run_project_phases() {
     # downstream hiccuped) would surface as a duplicate-source IntegrityError
     # on retry — ambiguous signal, safer to leave the validator handle it.
     #
-    # §10 — le retry est le SEUL budget qui soit vraiment une ressource de
-    # nuit, et c'est lui qui multiplie par le nombre de projets : +43 min
-    # éligibles PAR PROJET, soit +344 min de plafond à huit. Une allocation
-    # de nuit ramène le pire cas configuré de 803 min à ~489.
+    # §10 — the retry is the ONLY budget that is genuinely a night-wide
+    # resource, and it is the one that multiplies by the number of projects: +43
+    # eligible minutes PER PROJECT, that is +344 minutes of ceiling at eight. A
+    # night-wide allocation brings the configured worst case from 803 min to ~489.
     if (( phase_rc == 1 )) && [[ "$name" != "promote" ]]; then
       if (( RETRY_BUDGET_LEFT > 0 )); then
         RETRY_BUDGET_LEFT=$(( RETRY_BUDGET_LEFT - 1 ))
@@ -1031,8 +1031,8 @@ run_project_phases() {
         run_phase_chain "$name" "$model_tier" "$timeout" "$max_turns"
         phase_rc=$?
       else
-        # Pas un échec silencieux : la phase garde son rc=1 et rougit l'unité
-        # comme avant. Seule la SECONDE chance disparaît, et le journal le dit.
+        # Not a silent failure: the phase keeps its rc=1 and reddens the unit
+        # as before. Only the SECOND chance disappears, and the log says so.
         log "NO-RETRY $PROJECT_KEY/$name — night retry budget exhausted (BRAIN_DREAM_RETRY_BUDGET=$BRAIN_DREAM_RETRY_BUDGET)"
       fi
     fi
@@ -1126,15 +1126,15 @@ asyncio.run(_get())
       reorg_validator_flags=()
       reorg_validator_flags+=(--report-log "$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.log")
       reorg_validator_flags+=(--tags-before-json "$REORG_TAGS_BEFORE")
-      # Le flux d'événements de la phase — ce que l'agent a RÉELLEMENT appelé,
-      # face à ce que son rapport DÉCLARE. Même construction de nom que
-      # run_phase (ligne ~328). Contrôle en avertissement seul pour l'instant.
+      # The phase's event stream — what the agent ACTUALLY called, against what
+      # its report DECLARES. Same name construction as run_phase (line ~328).
+      # A warning-only check for now.
       reorg_validator_flags+=(--events-jsonl "$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.events.jsonl")
-      # Périmètre du run, comme pour promote et connect. Le serveur borne déjà
-      # REORG à son projet, mais brain_list est le seul outil CRUD sans contrôle
-      # de scope PROPRE — sa borne vit dans le middleware seul, et l'enforcement
-      # vaut false par défaut dans le code. Si elle retombe, ceci est le dernier
-      # endroit qui peut encore dire qu'une passe a franchi la frontière.
+      # The run's perimeter, as for promote and connect. The server already
+      # bounds REORG to its project, but brain_list is the only CRUD tool with
+      # no scope check OF ITS OWN — its bound lives in the middleware alone, and
+      # enforcement defaults to false in the code. If that falls away, this is
+      # the last place that can still say a pass crossed the border.
       reorg_validator_flags+=(--project-key "$PROJECT_KEY")
       [[ -n "$REORG_RUN_ID" ]] && reorg_validator_flags+=(--dream-run-id "$REORG_RUN_ID")
       [[ "$reorg_effective_dry_run" == "true" ]] && reorg_validator_flags+=(--dry-run)
@@ -1149,11 +1149,11 @@ asyncio.run(_get())
           log "FAIL reorg — validator rejected REORG report; see validation detail"
           phase_rc=1
         else
-          # La phase est DÉJÀ tombée : le `case` ci-dessous range un 2 dans
-          # TIMED_OUT_PHASES et un 1 dans FAILED_PHASES. Écraser le 2 par un 1
-          # ferait rapporter un échec dur à la place du dépassement de budget
-          # qui a réellement eu lieu, et l'opérateur chercherait la mauvaise
-          # panne. Le verdict s'ajoute donc au journal, pas à la classification.
+          # The phase has ALREADY fallen: the `case` below files a 2 into
+          # TIMED_OUT_PHASES and a 1 into FAILED_PHASES. Overwriting the 2 with
+          # a 1 would report a hard failure in place of the budget overrun that
+          # actually happened, and the operator would hunt the wrong breakdown.
+          # So the verdict adds to the log, not to the classification.
           log "FAIL reorg — validator rejected REORG report; see validation detail (phase already rc=$phase_rc; classification unchanged)"
         fi
       fi
@@ -1175,9 +1175,9 @@ done  # fin de la boucle de projets
 
 
 # --- EXTRACT: ticket knowledge extraction (proposer-only) -----------------
-# Pas une phase claude -p : CLI Python direct (pattern domain_backfill,
-# NVIDIA API JSON strict sans tools). Insère sa propre row dream_runs
-# (phase='extract') pour la visibilité briefing (killswitches + last failure).
+# Not a claude -p phase: a direct Python CLI (the domain_backfill pattern,
+# NVIDIA API strict JSON without tools). Inserts its own dream_runs row
+# (phase='extract') for briefing visibility (killswitches + last failure).
 TOTAL_PHASES=$(( TOTAL_PHASES + 1 ))
 manifest_put expected extract '*'
 if [[ "$BRAIN_DREAM_EXTRACT_ENABLED" != "true" ]]; then
@@ -1223,9 +1223,9 @@ else
   fi
 fi
 
-# --- ROADMAP: curation nocturne de la roadmap (proposer-only) --------------
-# Pas une phase claude -p : CLI Python direct (pattern extract). Insère sa
-# propre row dream_runs (phase='roadmap') pour la visibilité briefing.
+# --- ROADMAP: nightly roadmap curation (proposer-only) ---------------------
+# Not a claude -p phase: a direct Python CLI (the extract pattern). Inserts its
+# own dream_runs row (phase='roadmap') for briefing visibility.
 TOTAL_PHASES=$(( TOTAL_PHASES + 1 ))
 manifest_put expected roadmap '*'
 if [[ "$BRAIN_DREAM_ROADMAP_ENABLED" != "true" ]]; then
@@ -1240,7 +1240,7 @@ else
   fi
   log "roadmap: roadmap_curate starting (dry_run=$BRAIN_DREAM_ROADMAP_DRY_RUN)"
   set +e
-  # 20m : premier run réel (2026-07-04) à 597s/600s — zéro marge sous 10m.
+  # 20m: the first real run (2026-07-04) hit 597s/600s — zero margin under 10m.
   # Pinned par tests/unit/test_dream_sh_roadmap.py.
   timeout 20m uv run python -m scripts.roadmap_curate "${roadmap_args[@]}" \
     >> "$LOG_DIR/${TIMESTAMP}_roadmap.log" 2>&1
@@ -1255,10 +1255,10 @@ else
   fi
 fi
 
-# --- SWEEP: tarissement des sessions fantômes ------------------------------
-# Pas une phase d'agent : CLI Python direct (pattern extract/roadmap). Insère
-# sa propre row dream_runs (phase='sweep', model NULL) pour la visibilité
-# briefing. Le seuil n'est PAS passé en argument : une seule constante.
+# --- SWEEP: draining the ghost sessions -------------------------------------
+# Not an agent phase: a direct Python CLI (the extract/roadmap pattern). Inserts
+# its own dream_runs row (phase='sweep', model NULL) for briefing visibility.
+# The threshold is NOT passed as an argument: one constant only.
 TOTAL_PHASES=$(( TOTAL_PHASES + 1 ))
 manifest_put expected sweep '*'
 if [[ "$BRAIN_DREAM_SWEEP_ENABLED" != "true" ]]; then
@@ -1273,8 +1273,8 @@ else
   fi
   log "sweep: session_sweep starting (dry_run=$BRAIN_DREAM_SWEEP_DRY_RUN)"
   set +e
-  # 5m : une requête indexée, sans appel modèle ni réseau. Un dépassement
-  # signale une base en souffrance, pas une phase lente.
+  # 5m: one indexed query, with no model call and no network. An overrun
+  # signals a database in trouble, not a slow phase.
   timeout 5m uv run python -m brain_v42.maintenance.session_sweep "${sweep_args[@]}" \
     >> "$LOG_DIR/${TIMESTAMP}_sweep.log" 2>&1
   sweep_rc=$?
@@ -1288,20 +1288,20 @@ else
   fi
 fi
 
-# Deux questions distinctes — surtout pas une seule.
-#   FAIL_TOTAL : « faut-il ALERTER ? » Sensibilité inchangée depuis toujours ;
-#                il pilote aussi OK_TOTAL et le résumé.
-#   la garde de sortie plus bas : « faut-il rougir l'unité systemd ? »
-# Les fusionner remettrait le défaut d'origine : soit l'unité rouge toutes les
-# nuits (état sans information), soit l'alerte éteinte avec elle.
+# Two distinct questions — above all not one.
+#   FAIL_TOTAL: "should we ALERT?" Sensitivity unchanged since day one; it also
+#               drives OK_TOTAL and the summary.
+#   the exit guard below: "should the systemd unit turn red?"
+# Merging them would restore the original defect: either the unit red every
+# night (a state carrying no information), or the alert extinguished with it.
 FAIL_TOTAL=$(( ${#FAILED_PHASES[@]} + ${#TIMED_OUT_PHASES[@]} ))
 OK_TOTAL=$(( TOTAL_PHASES - FAIL_TOTAL ))
 
-# Le résumé dit toute la vérité, quel que soit le code de sortie retenu plus
-# bas : on ne cache aucun timeout, on cesse seulement d'en faire un échec
-# d'unité quand l'échéance était bornée (voir 2026-04-09 postmortem : un
-# timeout silencieux non détecté — et 2026-08-07 : une unité rouge en
-# permanence, devenue tout aussi muette).
+# The summary tells the whole truth, whatever exit code is chosen below: no
+# timeout is hidden, we merely stop turning one into a unit failure when the
+# deadline was bounded (see the 2026-04-09 postmortem: an undetected silent
+# timeout — and 2026-08-07: a permanently red unit, become just as
+# mute).
 summary="${OK_TOTAL}/${TOTAL_PHASES} phases OK"
 if (( ${#FAILED_PHASES[@]} > 0 )); then
   summary+=", ${#FAILED_PHASES[@]} failed (${FAILED_PHASES[*]})"
@@ -1312,23 +1312,23 @@ fi
 if (( ${#SKIPPED_PHASES[@]} > 0 )); then
   summary+=", ${#SKIPPED_PHASES[@]} skipped (${SKIPPED_PHASES[*]})"
 fi
-# Une phase repliée est une phase RÉUSSIE — elle n'entre donc ni dans FAIL_TOTAL
-# ni dans la garde de sortie plus bas, et c'est voulu : le secours a fait son
-# travail, rougir l'unité pour ça la rendrait muette. Mais elle doit se VOIR.
-# Du 2026-08-11 au 2026-08-17 les 60 phases codex de chaque nuit échouaient,
-# agy les rattrapait toutes, et la nuit signait « 63/63 phases OK » : six nuits
-# sans rail primaire, sans un seul voyant. FAIL_TOTAL compte des phases quand
-# dream_runs compte des tentatives, et seul le résumé est lu au matin.
+# A phase that fell back is a SUCCESSFUL phase — so it enters neither
+# FAIL_TOTAL nor the exit guard below, and that is intended: the standby did its
+# job, reddening the unit for that would make it mute. But it must be SEEN. From
+# 2026-08-11 to 2026-08-17 all 60 codex phases of every night failed, agy caught
+# them all, and the night signed off "63/63 phases OK": six nights with no
+# primary rail and not a single warning light. FAIL_TOTAL counts phases where
+# dream_runs counts attempts, and only the summary is read in the morning.
 if (( ${#FALLBACK_PHASES[@]} > 0 )); then
   summary+=", ${#FALLBACK_PHASES[@]} repliées sur un secours (${FALLBACK_PHASES[*]})"
 fi
 log "=== Dream finished: $summary ==="
 
-# Le bloc de CLÔTURE, seule partie non incrémentale du manifeste. Son absence
-# est le marqueur d'une nuit interrompue : le lecteur refuse alors tout verdict
-# vert. `total_phases` est le compteur propre de dream.sh, à confronter au
-# `planned_phases` d'en-tête et au nombre d'attendus réellement atteints —
-# trois nombres, trois instants, trois chemins de code.
+# The CLOSING block, the manifest's only non-incremental part. Its absence is
+# the marker of an interrupted night: the reader then refuses any green verdict.
+# `total_phases` is dream.sh's own counter, to be set against the header's
+# `planned_phases` and against the number of expectations actually reached —
+# three numbers, three instants, three code paths.
 manifest_put meta total_phases "$TOTAL_PHASES"
 manifest_put meta ok_total "$OK_TOTAL"
 manifest_put meta fail_total "$FAIL_TOTAL"
@@ -1338,15 +1338,15 @@ manifest_put meta finished "$(date -Iseconds)"
 # read the same failures directly from dream_runs. The helper's failure must
 # NOT mask the Dream failure exit code — it is added to it, never substituted.
 set +e
-# UNE alerte, après la boucle, groupée par projet (§11). Pas une par projet :
-# le rapport ne filtre pas sur la clé, donc N invocations produiraient N blocs
-# IDENTIQUES listant les échecs de tous les projets.
+# ONE alert, after the loop, grouped by project (§11). Not one per project: the
+# report does not filter on the key, so N invocations would produce N IDENTICAL
+# blocks listing every project's failures.
 #
-# La sortie est CAPTURÉE, plus redirigée à l'aveugle. `log()` fait un `tee` vers
-# stdout — donc vers journald — quand cette redirection-ci n'écrivait que dans le
-# fichier daté : le corps de l'alerte n'a jamais atteint `journalctl`, ce qui est
-# la moitié physique du « personne ne la lit » (ticket 0a9c067e). Le rapport est
-# borné en amont (MAX_FETCHED_FAILURES), donc la capture en variable l'est aussi.
+# The output is CAPTURED, no longer redirected blind. `log()` does a `tee` to
+# stdout — hence to journald — where this redirection wrote only into the dated
+# file: the body of the alert never reached `journalctl`, which is the physical
+# half of "nobody reads it" (ticket 0a9c067e). The report is bounded upstream
+# (MAX_FETCHED_FAILURES), so capturing it in a variable is bounded too.
 alert_out="$(uv run python -m scripts.dream.post_run_alert \
   --date "$TIMESTAMP" --manifest "$MANIFEST_FILE" --phases-ok "$OK_TOTAL" \
   --phases-skipped "$SKIPPED_UNWRITTEN" 2>&1)"
@@ -1355,16 +1355,16 @@ set -e
 printf '%s\n' "$alert_out" >> "$LOG_DIR/$TIMESTAMP.log"
 coverage_line="$(printf '%s\n' "$alert_out" | grep -m1 '^COVERAGE ' || true)"
 if [[ -n "$coverage_line" ]]; then
-  # Les deux nombres que le ticket dit que personne ne rapproche, côte à côte
-  # dans journald, TOUTES les nuits — y compris les vertes, sans quoi la ligne
-  # ne serait lue que les jours où il est déjà trop tard.
+  # The two numbers the ticket says nobody reconciles, side by side in
+  # journald, EVERY night — green ones included, without which the line would
+  # be read only on the days it is already too late.
   log "=== dream_runs $coverage_line ==="
 fi
-# La réconciliation phases↔lignes (b95c5742) : OK_TOTAL vient d'être compté par
-# CETTE boucle, pairs_written vient de la base. Un gap>0 est la perte des
-# 15-16/08 — 61 phases OK, 2 lignes, 240 InvalidPasswordError avalées — rendue
-# lisible au matin sans croiser le journal. L'INSERT reste best-effort : rien
-# ici ne rougit l'unité, la ligne EST le correctif.
+# The phases-to-rows reconciliation (b95c5742): OK_TOTAL has just been counted
+# by THIS loop, pairs_written comes from the database. A gap>0 is the loss of
+# 15-16/08 — 61 phases OK, 2 rows, 240 swallowed InvalidPasswordError — made
+# readable in the morning without cross-checking the log. The INSERT stays
+# best-effort: nothing here reddens the unit, the line IS the fix.
 reconciliation_line="$(printf '%s\n' "$alert_out" | grep -m1 '^RECONCILIATION ' || true)"
 if [[ -n "$reconciliation_line" ]]; then
   log "=== dream_runs $reconciliation_line ==="
@@ -1372,11 +1372,11 @@ if [[ -n "$reconciliation_line" ]]; then
     log "WARN  dream_runs réconciliation — écart phases OK ↔ paires écrites non nul (INSERT best-effort perdu ? rejeu ? voir b95c5742)"
   fi
 fi
-# Le repli in-band du lecteur de manifeste (e30a1cec) : le rapporteur ne rend
-# JAMAIS 2 sans manifeste — des paires indécidables ne font pas un rouge — mais
-# ICI le manifeste vient d'être écrit par cette nuit même. S'il est illisible,
-# c'est l'instrument qui est en panne, et ça se grave (ligne dream_runs
-# `coverage`) et se DIT, sans toucher au code de sortie de la nuit.
+# The manifest reader's in-band fallback (e30a1cec): the reporter NEVER returns
+# 2 without a manifest — undecidable pairs do not make a red — but HERE the
+# manifest has just been written by this very night. If it is unreadable, the
+# instrument is the thing that is broken, and that gets engraved (a `coverage`
+# dream_runs row) and SAID, without touching the night's exit code.
 if [[ "$coverage_line" == *"mode=fallback"* ]]; then
   log "FAIL  dream_runs coverage — mode=fallback in-band : la nuit vient d'écrire $MANIFEST_FILE et l'alerte n'a pas pu le lire"
   set +e
@@ -1390,29 +1390,29 @@ if [[ "$coverage_line" == *"mode=fallback"* ]]; then
     log "WARN  coverage — repli in-band NON enregistré (rc=$record_fallback_rc)"
   fi
 fi
-# Le 2 n'est CRU que sur preuve positive : la ligne machine du verdict. Ce code
-# est aussi celui de l'erreur d'usage d'argparse, que `main()` ne peut pas
-# intercepter (`SystemExit` n'est pas une `Exception`), et celui de `uv` comme de
-# l'interpréteur sur une ligne de commande invalide. Le déclencheur n'est pas
-# théorique : au rollback dur du lecteur, dream.sh continue de passer
-# `--manifest` à un post_run_alert qui ne le connaît plus. Sans cette garde,
-# chaque matin imprimerait un FAIL de couverture et poserait une ligne dream_runs
-# `coverage` mensongère — sur un drapeau inconnu, sans le moindre trou. Le
-# renumérotage de l'escalade ne fermerait pas la classe, la preuve positive si.
-# Un rapporteur muet reste ROUGE : `alert_rc` n'est pas remis à zéro et la garde
-# structurelle plus bas sort en 1 (règle 3, « le rapporteur n'est pas parti »).
+# The 2 is BELIEVED only on positive proof: the verdict's machine line. That
+# code is also argparse's usage error, which `main()` cannot intercept
+# (`SystemExit` is not an `Exception`), and it is `uv`'s and the interpreter's
+# on an invalid command line. The trigger is not theoretical: on a hard
+# rollback of the reader, dream.sh keeps passing `--manifest` to a
+# post_run_alert that no longer knows it. Without this guard, every morning
+# would print a coverage FAIL and write a lying `coverage` dream_runs row — over
+# an unknown flag, with not a single hole. Renumbering the escalation would not
+# close the class, positive proof does. A mute reporter stays RED: `alert_rc` is
+# not reset and the structural guard below exits 1 (rule 3, "the reporter did
+# not set off").
 if (( alert_rc == 2 )) && [[ -n "$coverage_line" ]]; then
   log "FAIL  dream_runs coverage — des lignes attendues manquent sans explication"
   coverage_silent="$(printf '%s\n' "$alert_out" | grep -m1 '^COVERAGE_SILENT ' || true)"
-  # T2 — le verdict porté jusqu'à un lecteur qui existe. Cette ligne atteint
-  # « ### Last failure » du briefing de session et /metrics nightly.last_failure
-  # SANS une ligne de code chez eux. T1 seul n'atteint que journald, et la leçon
-  # du ticket est qu'un signal sans lecteur est indiscernable d'un signal absent.
+  # T2 — the verdict carried to a reader that exists. This line reaches the
+  # session briefing's "### Last failure" and /metrics nightly.last_failure
+  # WITHOUT a line of code on their side. T1 alone reaches journald only, and the
+  # ticket's lesson is that a signal without a reader cannot be told from none.
   #
-  # `set +e` est INDISPENSABLE : errexit est actif ici, la garde de sortie vit
-  # une trentaine de lignes plus bas, et ce writer rend 1 sur échec — comme
-  # `record-empty-pool`, dont il est le calque. Sans cet encadrement, dream.sh
-  # sortirait AVANT sa garde structurelle, sans même imprimer le WARN.
+  # `set +e` is INDISPENSABLE: errexit is active here, the exit guard lives
+  # some thirty lines below, and this writer returns 1 on failure — like
+  # `record-empty-pool`, on which it is modelled. Without this bracketing,
+  # dream.sh would exit BEFORE its structural guard, without even printing the WARN.
   set +e
   uv run python -m scripts.dream.record_coverage_gap \
     --date "$TIMESTAMP" --summary "$coverage_line" --detail "$coverage_silent" \
@@ -1422,10 +1422,10 @@ if (( alert_rc == 2 )) && [[ -n "$coverage_line" ]]; then
   if (( record_gap_rc != 0 )); then
     log "WARN  coverage — ligne dream_runs 'coverage' NON enregistrée (rc=$record_gap_rc)"
   fi
-  # Interrupteur de secours, lu par dream.sh SEUL : ce n'est pas une phase, donc
-  # il n'entre pas dans la table des killswitches. Désarmé, il continue
-  # d'imprimer le verdict ET de dire qu'il est désarmé — le détecteur ne peut pas
-  # être éteint en silence.
+  # An emergency switch, read by dream.sh ALONE: it is not a phase, so it does
+  # not belong in the killswitch table. Disarmed, it keeps printing the verdict
+  # AND saying that it is disarmed — the detector cannot be switched off in
+  # silence.
   if [[ "${BRAIN_DREAM_COVERAGE_STRICT:-true}" != "true" ]]; then
     log "WARN  escalade désarmée (BRAIN_DREAM_COVERAGE_STRICT=false) — unité laissée verte"
     alert_rc=0
@@ -1434,30 +1434,30 @@ elif (( alert_rc != 0 )); then
   log "WARN  post_run_alert failed (rc=$alert_rc)"
 fi
 
-# Garde STRUCTURELLE, pas arithmétique. La forme d'origine soustrayait
-# ${#CONTROLLED_TIMEOUT_PHASES[@]} du total : elle n'était fail-closed que tant
-# que CONTROLLED ⊆ TIMED_OUT, invariant qu'aucune garde n'imposait — une phase
-# inscrite par erreur dans FAILED **et** CONTROLLED effaçait son propre échec
-# et le script sortait en 0 après avoir imprimé « 1 failed (synth) ».
-# Ici FAILED_PHASES est interrogé pour lui-même, donc inmasquable.
-#   1. échec dur                      -> rouge
-#   2. timeout NON borné (garde-fou externe, état inconnu) -> rouge
-#   3. rapporteur muet (l'alerte n'est PAS partie) -> rouge : depuis que la
-#      nuit à échéance contrôlée sort en 0, le log est le seul témoin restant.
+# A STRUCTURAL guard, not an arithmetic one. The original form subtracted
+# ${#CONTROLLED_TIMEOUT_PHASES[@]} from the total: it was fail-closed only while
+# CONTROLLED ⊆ TIMED_OUT, an invariant no guard enforced — a phase entered by
+# mistake into FAILED **and** CONTROLLED erased its own failure and the script
+# exited 0 after printing "1 failed (synth)".
+# Here FAILED_PHASES is queried for itself, hence unmaskable.
+#   1. hard failure                   -> red
+#   2. UNBOUNDED timeout (external guard rail, unknown state) -> red
+#   3. mute reporter (the alert did NOT set off) -> red: since a night with a
+#      controlled deadline exits 0, the log is the only witness left.
 if (( ${#FAILED_PHASES[@]} > 0 )) \
   || (( ${#TIMED_OUT_PHASES[@]} > ${#CONTROLLED_TIMEOUT_PHASES[@]} )) \
   || (( alert_rc != 0 )); then
   exit 1
 fi
 
-# Seules des échéances contrôlées : la nuit s'est déroulée comme prévu jusqu'à
-# sa limite de temps. L'alerte est partie, l'unité reste verte — pour qu'un
-# `failed` veuille de nouveau dire quelque chose.
+# Controlled deadlines only: the night unfolded as planned right up to its time
+# limit. The alert set off, the unit stays green — so that a `failed` means
+# something again.
 #
-# Conditionné à FAIL_TOTAL depuis que le cas propre passe par ici : sans cette
-# garde, une nuit SANS la moindre anomalie signerait « anomalies bornées
-# uniquement », ce qui est faux et use la ligne exactement comme une unité
-# rouge en permanence use la couleur.
+# Conditioned on FAIL_TOTAL ever since the clean case comes through here:
+# without this guard, a night WITHOUT a single anomaly would sign off "bounded
+# anomalies only", which is false and wears the line out exactly as a
+# permanently red unit wears the colour out.
 if (( FAIL_TOTAL > 0 )); then
   log "=== Dream exit 0 — anomalies bornées uniquement (échéances contrôlées) ==="
 fi
