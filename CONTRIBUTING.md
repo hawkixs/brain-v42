@@ -51,10 +51,22 @@ pytest --cov=brain_v42 --cov-report=term-missing
 
 # Integration tests — need real services, brought up via docker compose
 docker compose up -d
-export POSTGRES_URL="postgresql+asyncpg://brain:REPLACE_WITH_PASSWORD@localhost:5433/brain"
-BRAIN_ALEMBIC_ALLOW_PROD=1 alembic upgrade head
+# The ONLY variable the integration suite reads. `POSTGRES_URL` is deliberately
+# ignored here, so a shell configured for a live database cannot redirect the
+# suite. Point it at an isolated test database — never at `brain`.
+export BRAIN_V42_TEST_DB_URL="postgresql+asyncpg://brain:REPLACE_WITH_PASSWORD@localhost:5433/brain_test"
 pytest tests/integration -v
 ```
+
+The suite migrates that database itself, under an advisory lock; you do not
+run `alembic` by hand for it. A URL whose database name is `brain` is
+refused outright.
+
+**Without `BRAIN_V42_TEST_DB_URL` the whole suite skips and exits 0** —
+measured on 2026-09-02: `423 skipped in 1.04s`. That is green, and it proves
+nothing. Since ticket `634203e0` the run ends with a summary line naming the
+variable and the number of tests that measured nothing, so the result cannot
+be misread as a pass; CI sets the variable per job and keeps its authority.
 
 Unit tests that would otherwise touch a real database skip themselves
 loudly unless `BRAIN_V42_TEST_DB_URL` points at an isolated test database —

@@ -141,6 +141,46 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
+def format_missing_db_url_summary(skipped: int) -> str | None:
+    """The end-of-session line for a suite that measured nothing, or None.
+
+    Ticket `634203e0`. Without ``BRAIN_V42_TEST_DB_URL`` this suite skips whole
+    and exits 0 — measured on 2026-09-02: `423 skipped in 1.04s`, and nothing
+    said why. A reader sees green and may believe 423 tests were replayed.
+
+    Three facts, because a line missing any of them leaves the reader stuck: the
+    variable to set, HOW MANY tests went unmeasured, and the value to set it to.
+    That last one is not decoration — without it the next keystroke points at the
+    production database, which is what the guard below exists to refuse.
+
+    Returns None when nothing was skipped: printed on every run the line would be
+    scrolled past, and invisible on the day it matters.
+    """
+    if skipped <= 0:
+        return None
+    return (
+        f"BRAIN_V42_TEST_DB_URL is not set — {skipped} integration tests were SKIPPED "
+        f"and measured nothing. Set it to a test database (e.g. .../brain_test) "
+        f"before reading this run as a pass."
+    )
+
+
+def pytest_terminal_summary(terminalreporter: Any) -> None:
+    """Say it, once, at the end — where a reader actually looks.
+
+    The suite already skips loudly test by test, but `-q` collapses those into a
+    row of dots and the final line reads `423 skipped`. This is the only place
+    the reason survives the summary.
+    """
+    if os.environ.get("BRAIN_V42_TEST_DB_URL"):
+        return
+    skipped = len(terminalreporter.stats.get("skipped", []))
+    line = format_missing_db_url_summary(skipped)
+    if line is not None:
+        terminalreporter.write_sep("=", "integration suite not measured", red=True)
+        terminalreporter.write_line(line)
+
+
 # ---------------------------------------------------------------------------
 # Alembic migration (session-scoped, sync)
 # ---------------------------------------------------------------------------
