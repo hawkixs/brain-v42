@@ -56,14 +56,28 @@ async def clean(engine: AsyncEngine) -> AsyncIterator[None]:
 
     async def purge() -> None:
         async with engine.begin() as connection:
+            # The trigger is NAMED, never `USER`. `DISABLE TRIGGER USER` is not the
+            # inverse of `ENABLE TRIGGER USER`: the first switches off whatever is
+            # on, the second switches on EVERYTHING — including a trigger some
+            # other migration deliberately ships disabled, which is exactly the
+            # shape 050 uses for `project_contexts_focus_history_required`. On this
+            # table the wildcard happens to cover one trigger today, so the bug is
+            # latent rather than live; naming it removes the latency instead of
+            # relying on the table never gaining a second trigger.
             await connection.execute(
-                sa.text("ALTER TABLE project_focus_history DISABLE TRIGGER USER")
+                sa.text(
+                    "ALTER TABLE project_focus_history "
+                    "DISABLE TRIGGER project_focus_history_append_only_trigger"
+                )
             )
             await connection.execute(
                 sa.text("DELETE FROM project_focus_history WHERE project_key = :k"), {"k": _KEY}
             )
             await connection.execute(
-                sa.text("ALTER TABLE project_focus_history ENABLE TRIGGER USER")
+                sa.text(
+                    "ALTER TABLE project_focus_history "
+                    "ENABLE TRIGGER project_focus_history_append_only_trigger"
+                )
             )
             await connection.execute(
                 sa.text("DELETE FROM project_contexts WHERE project_key = :k"), {"k": _KEY}
