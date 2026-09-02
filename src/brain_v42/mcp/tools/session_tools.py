@@ -194,7 +194,11 @@ def _section_last_failure(failure: LastFailureRow | None) -> str:
     return (
         f"### Last failure\n"
         f"{failure.phase} on {rd_str} — {err}\n"
-        f"→ drill in: brain_get(decision, …) or journalctl -u brain-v42-dream"
+        # The night's own file, not journald. `brain-v42-dream` is a USER unit,
+        # so the `journalctl -u brain-v42-dream` this line used to name answered
+        # "No entries" — and journald holds 25-32 % fewer lines than the file
+        # anyway (measured over 2026-08-27 → 09-02: 181 vs 252 on the 2nd).
+        f"→ drill in: brain_get(decision, …) or logs/dream/{rd_str}.log"
     )
 
 

@@ -315,6 +315,23 @@ class TestSectionLastFailure:
     def test_omits_when_none(self):
         assert _section_last_failure(None) == ""
 
+    def test_the_drill_in_points_at_the_nights_own_file_not_at_journald(self):
+        """The hint named a command that returns nothing, on a journal that loses a quarter.
+
+        Two defects in one line. `brain-v42-dream` is a USER unit, so
+        `journalctl -u brain-v42-dream` — the hint as it was written — answers
+        "No entries"; only `--user` reaches it. And even then journald is not
+        the record: measured over the seven nights 2026-08-27 → 09-02, it holds
+        25-32 % fewer lines than the file `dream.sh` tees to itself (252 vs 181
+        on 2026-09-02). The night's own log is the complete one.
+        """
+        out = _section_last_failure(
+            LastFailureRow(phase="roadmap", run_date=date(2026, 9, 2), error_message="Boom")
+        )
+
+        assert "logs/dream/2026-09-02.log" in out
+        assert "journalctl" not in out
+
 
 class TestSectionRoadmap:
     def _item(self, **kw):
