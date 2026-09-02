@@ -54,9 +54,14 @@ class PhaseTelemetry:
     cost_usd: float | None = 0.0
     api_calls: int | None = 0
     tool_calls: int = 0
-    #: 049 — NULL = "this rail does not distinguish thinking" (claude/codex
-    #: today). Only agy measures it: 962 thinking for 1554 output on the
-    #: 2026-08-11 run, ~38 % of tokens counted nowhere (ticket 76e11c9f).
+    #: 049 — NULL = "this rail does not distinguish thinking", never "it did
+    #: none". TWO rails measure it, and the second was found by looking rather
+    #: than by remembering: agy reports `thinking_tokens` (962 for 1554 output,
+    #: 2026-08-11, ticket 76e11c9f) and codex reports `reasoning_output_tokens`
+    #: in `turn.completed.usage` (1929 for 3938, 2026-09-02, ticket 42b05302).
+    #: This line claimed until then that codex never distinguished them; it was
+    #: false, and the column stayed NULL on 100 % of the rows because of it.
+    #: Claude, parsed from the OTEL console below, still does not report it.
     thinking_tokens: int | None = None
 
 

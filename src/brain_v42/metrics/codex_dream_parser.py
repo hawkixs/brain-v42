@@ -71,6 +71,19 @@ def parse_codex_jsonl(content: str) -> PhaseTelemetry:
             telemetry.input_tokens += total_input - cached_input
             telemetry.cache_read_tokens += cached_input
             telemetry.output_tokens += _usage_int(usage, "output_tokens")
+            # 049, ticket 42b05302. Measured on the live rail rather than assumed:
+            # `turn.completed.usage` DOES carry `reasoning_output_tokens` — 1929
+            # of 3938 output tokens on the reorg turn of 2026-09-02, 49 % that
+            # were counted nowhere. It is a SUBSET of `output_tokens`, so it is
+            # accumulated apart and never added: summing would double-count here
+            # and make this rail incomparable with agy, which is the comparison
+            # the column exists for. Absent from the stream = NULL ("not
+            # measured"), never 0 ("measured as nothing") — an older codex or a
+            # ChatGPT-authenticated run may not report it.
+            if "reasoning_output_tokens" in usage:
+                telemetry.thinking_tokens = (telemetry.thinking_tokens or 0) + _usage_int(
+                    usage, "reasoning_output_tokens"
+                )
             completed = True
         elif event_type == "item.completed":
             item = event.get("item")

@@ -172,3 +172,81 @@ def test_error_tail_keeps_the_terminal_cause_when_the_report_is_long() -> None:
 
     assert error is not None
     assert error.endswith("terminal cause")
+
+
+#: The usage object of a REAL codex turn, copied from
+#: `logs/dream/2026-09-02_red-shrik_reorg.events.jsonl` — the live rail, the night
+#: of 2026-09-02. Not a fixture invented to match the parser: the ticket said the
+#: field was "NOT verified", and this is the verification.
+_REAL_TURN_USAGE: dict[str, object] = {
+    "input_tokens": 235_532,
+    "cached_input_tokens": 199_936,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 3_938,
+    "reasoning_output_tokens": 1_929,
+}
+
+
+def test_the_live_codex_rail_does_carry_reasoning_tokens() -> None:
+    """Ticket 42b05302, settled by measurement rather than from memory.
+
+    `PhaseTelemetry.thinking_tokens` carried a comment saying the codex OTEL format
+    never distinguishes reasoning tokens from output tokens. Measured on a real
+    stream, that is false: `turn.completed.usage` carries
+    `reasoning_output_tokens`, 1929 of 3938 output tokens — 49 % counted nowhere,
+    on the very rail whose order against agy was settled on a compared cost.
+    """
+    parser = _parser()
+
+    telemetry = parser.parse_codex_jsonl(
+        _jsonl({"type": "turn.completed", "usage": _REAL_TURN_USAGE})
+    )
+
+    assert telemetry.thinking_tokens == 1_929
+
+
+def test_codex_thinking_tokens_are_never_summed_into_output() -> None:
+    """The same rule as the agy rail: measured SEPARATELY, never added.
+
+    `reasoning_output_tokens` is a SUBSET of `output_tokens` on this rail — 1929
+    of 3938 on the measured turn. Adding it would double-count, and would make the
+    two rails incomparable in the direction the 049 column exists to fix.
+    """
+    parser = _parser()
+
+    telemetry = parser.parse_codex_jsonl(
+        _jsonl({"type": "turn.completed", "usage": _REAL_TURN_USAGE})
+    )
+
+    assert telemetry.output_tokens == 3_938, "never inflated by the reasoning tokens"
+
+
+def test_a_codex_turn_without_reasoning_stays_null_not_zero() -> None:
+    """Absent from the stream = "not measured" (NULL), never "measured as nothing".
+
+    A ChatGPT-authenticated run, or an older codex, may not report the field. Zero
+    would claim a turn did no reasoning; NULL says nobody counted.
+    """
+    parser = _parser()
+    usage = {
+        key: value for key, value in _REAL_TURN_USAGE.items() if key != "reasoning_output_tokens"
+    }
+
+    telemetry = parser.parse_codex_jsonl(_jsonl({"type": "turn.completed", "usage": usage}))
+
+    assert telemetry.thinking_tokens is None
+
+
+def test_reasoning_tokens_accumulate_across_turns() -> None:
+    """A phase is several turns; the column is the phase's total, like the others.
+
+    Without this, a multi-turn phase would report only its last turn and read as a
+    cheap one — the same under-count the ticket measured, one layer along.
+    """
+    parser = _parser()
+    turn = {"type": "turn.completed", "usage": _REAL_TURN_USAGE}
+
+    telemetry = parser.parse_codex_jsonl(_jsonl(turn, turn))
+
+    assert telemetry.thinking_tokens == 2 * 1_929
+    assert telemetry.output_tokens == 2 * 3_938
