@@ -1,7 +1,7 @@
-"""Tickets cross-projet : tables tickets + ticket_messages.
+"""Cross-project tickets: the tickets and ticket_messages tables.
 
-Famille coordination (spec 2026-07-04) — pas d'embedding, pas de
-search_vector, pas de decay. Voir
+Coordination family (spec 2026-07-04) — no embedding, no
+search_vector, no decay. See
 docs/superpowers/specs/2026-07-04-cross-project-tickets-design.md.
 
 Revision ID: 028

@@ -1,33 +1,33 @@
-"""Distinguer le métabolisme du dream de l'activité humaine.
+"""Tell the dream's metabolism apart from human activity.
 
 Revision ID: 041
 Revises: 040
 
-`updated_at` confond deux questions : qui a touché la ligne, et si c'est le
-contenu qui a changé. Une écriture de compteur — `decay_flusher` incrémentant
-`access_count` après une simple lecture — la rajeunit exactement comme une
-réécriture humaine. Le cache anti-rejugement de PROMOTE compare un verdict à
-cette date : il meurt donc à chaque lecture, et le même learning a été réévalué
-23 nuits d'affilée pour le même verdict.
+`updated_at` conflates two questions: who touched the row, and whether the
+content changed. A counter write — `decay_flusher` incrementing `access_count`
+after a plain read — rejuvenates it exactly like a human rewrite. PROMOTE's
+anti-rejudgement cache compares a verdict against that date, so it dies on
+every read, and the same learning was re-evaluated 23 nights in a row for the
+very same verdict.
 
-Trois colonnes, aucun backfill. `content_updated_at` NULL et
-`access_count_human` 0 se lisent « jamais mesuré » et se réparent d'eux-mêmes
-au premier vrai signal.
+Three columns, no backfill. A NULL `content_updated_at` and an
+`access_count_human` of 0 read as "never measured" and repair themselves on
+the first real signal.
 
-`content_updated_at` est écrite par TRIGGER, à l'inverse de `focus_updated_at`
-(révision 040) qui l'est par code applicatif. La divergence est délibérée :
-la clause WHEN ... IS DISTINCT FROM donne la sémantique de VALEUR que la 040
-recherchait — recopier le même texte ne rajeunit rien — et le contenu des
-entités a de nombreux écrivains (brain_learn, brain_update, REORG, merges de
-CLEAN, scripts de backfill) là où le focus n'en a qu'un. Une invariante tenue
-par convention sur N écrivains est oubliée par le N+1 ; c'est déjà arrivé ici
-(voir repositories/pg_learning.py). Enfin `content_updated_at` PILOTE une
-garde, quand `focus_updated_at` informe un humain : le niveau de garantie
-exigé n'est pas le même.
+`content_updated_at` is written by a TRIGGER, unlike `focus_updated_at`
+(revision 040) which is written by application code. The divergence is
+deliberate: the WHEN ... IS DISTINCT FROM clause gives the VALUE semantics
+040 was reaching for — rewriting the same text rejuvenates nothing — and
+entity content has many writers (brain_learn, brain_update, REORG, CLEAN
+merges, backfill scripts) where the focus has exactly one. An invariant held
+by convention across N writers is forgotten by writer N+1; it has already
+happened here (see repositories/pg_learning.py). Finally `content_updated_at`
+DRIVES a guard, where `focus_updated_at` informs a human: the level of
+guarantee required is not the same.
 
-La fonction `public.update_updated_at()` n'est PAS modifiée : la révision 039
-l'épingle par SHA256 et par longueur, et la rendre conditionnelle rendrait 039
-non-downgradable.
+The `public.update_updated_at()` function is NOT modified: revision 039 pins
+it by SHA256 and by length, and making it conditional would leave 039
+impossible to downgrade.
 """
 
 import sqlalchemy as sa
@@ -38,8 +38,8 @@ down_revision = "040"
 branch_labels = None
 depends_on = None
 
-# Tables suivies par le decay : toutes reçoivent le compteur humain, car
-# decay_flusher._ENTITY_TABLES les met à jour uniformément.
+# Tables tracked by the decay: all of them get the human counter, because
+# decay_flusher._ENTITY_TABLES updates them uniformly.
 _COUNTER_TABLES = (
     "learnings",
     "decisions",
@@ -49,8 +49,8 @@ _COUNTER_TABLES = (
     "indexed_plans",
 )
 
-# Tables de connaissance : colonnes de contenu par table. `indexed_plans` est
-# absent — ni candidat à la promotion, ni dans le signal préflight.
+# Knowledge tables: content columns, per table. `indexed_plans` is absent —
+# neither a promotion candidate, nor part of the preflight signal.
 _CONTENT_COLUMNS = {
     "learnings": ("topic", "insight"),
     "decisions": ("title", "description", "reasoning", "consequences"),

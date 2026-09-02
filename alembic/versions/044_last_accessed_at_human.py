@@ -1,29 +1,29 @@
-"""044 — la récence humaine, le terme que la 041 avait laissé contaminé.
+"""044 — human recency, the term 041 left contaminated.
 
 Spec `docs/superpowers/specs/2026-08-08-dream-v2-design.md` §5.2.
 
-La 041 a donné `access_count_human` aux six tables suivies par le decay. Elle
-répare `freq_factor`, de poids **0,2**. Elle laisse intact `access_factor`, de
-poids **0,3** — le plus lourd après l'âge — qui lit `last_accessed_at`, sans
-variante humaine.
+041 gave `access_count_human` to the six tables tracked by the decay. It
+repairs `freq_factor`, weight **0.2**. It leaves `access_factor` untouched,
+weight **0.3** — the heaviest after age — which reads `last_accessed_at` with
+no human variant.
 
-Mesuré sur `learnings` au moment de la spec : **1 779 entités** ont une
-`last_accessed_at` non nulle avec `access_count_human = 0`. Leur terme de
-récence est donc piloté par des lectures MACHINE seules. Substituer le seul
-compteur répare 0,2 des 0,5 de poids pilotés par la lecture ; le reste continue
-de faire vivre ce que la machine relit — c'est-à-dire de faire vivre ce que le
-dream vient de lire, ce qui est exactement la boucle qu'on veut couper.
+Measured on `learnings` when the spec was written: **1,779 entities** carry a
+non-null `last_accessed_at` with `access_count_human = 0`. Their recency term
+is therefore driven by MACHINE reads alone. Substituting the counter alone
+repairs 0.2 of the 0.5 of weight driven by reading; the rest keeps alive
+whatever the machine re-reads — that is, keeps alive whatever the dream has
+just read, which is exactly the loop we mean to cut.
 
-L'AGRÉGAT SAIT DÉJÀ. `repositories/pg_access_log.py` groupe par
-`access_log.actor` et teste `is_human_actor` pour remplir `count_human` ; le
-`max_accessed` existe aussi, mais il est replié sur TOUS les acteurs. Un
-`max_accessed_human` est une ligne dans une boucle qui existe. Ce qui manquait,
-c'est la colonne où le ranger — la voici, sur les six mêmes tables.
+THE AGGREGATE ALREADY KNOWS. `repositories/pg_access_log.py` groups by
+`access_log.actor` and tests `is_human_actor` to fill `count_human`; the
+`max_accessed` exists too, but it is folded over ALL actors. A
+`max_accessed_human` is one line inside a loop that already exists. What was
+missing is the column to put it in — here it is, on the same six tables.
 
-Nullable et sans backfill, comme la 041 et la 043 : `NULL` veut dire « aucune
-lecture humaine enregistrée depuis que la colonne existe », jamais « jamais
-lu par un humain ». Un backfill depuis `last_accessed_at` recopierait
-précisément le signal contaminé qu'on sépare.
+Nullable and without backfill, like 041 and 043: `NULL` means "no human read
+recorded since the column existed", never "never read by a human". A backfill
+from `last_accessed_at` would copy over precisely the contaminated signal we
+are separating.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ down_revision = "043"
 branch_labels = None
 depends_on = None
 
-# Mêmes six tables que la 041 et la 043 — l'ensemble suivi par le decay.
+# The same six tables as 041 and 043 — the set tracked by the decay.
 _DECAY_TABLES = (
     "learnings",
     "decisions",

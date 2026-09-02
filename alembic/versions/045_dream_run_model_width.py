@@ -1,26 +1,26 @@
-"""045 — `dream_runs.model` cesse de refuser les modèles qu'on lui configure.
+"""045 — `dream_runs.model` stops refusing the models it is configured with.
 
-Ticket `bcb5e6d8`. La colonne naît `varchar(30)` en 013. Les noms de modèles,
-eux, ont grandi : le fournisseur préfixe désormais l'éditeur et suffixe la date
-du snapshot. Mesuré le 2026-08-16 sur l'inventaire réel :
+Ticket `bcb5e6d8`. The column is born `varchar(30)` in 013. Model names, for
+their part, have grown: the provider now prefixes the publisher and suffixes
+the snapshot date. Measured on 2026-08-16 against the real inventory:
 
-    nvidia/nemotron-3-super-120b-a12b       33 car.  secours WET, DÉJÀ CONFIGURÉ
-    deepseek-ai/deepseek-v4-flash-0731      34 car.  candidat vivant au primaire
-    nvidia/nemotron-3.5-lightning-30b-a3b   37 car.  candidat écarté au canary
+    nvidia/nemotron-3-super-120b-a12b       33 chars  WET fallback, ALREADY SET
+    deepseek-ai/deepseek-v4-flash-0731      34 chars  live primary candidate
+    nvidia/nemotron-3.5-lightning-30b-a3b   37 chars  candidate dropped at canary
 
-Ce qui se perd n'est pas la colonne `model`, c'est la LIGNE entière :
-`StringDataRightTruncation` remonte dans un `except Exception` best-effort qui
-imprime `! warning: could not record dream_run` et continue. Une nuit qui a
-réellement tourné n'aurait aucune trace — le chemin d'échec qui efface la preuve
-du succès.
+What is lost is not the `model` column, it is the WHOLE ROW:
+`StringDataRightTruncation` surfaces inside a best-effort `except Exception`
+that prints `! warning: could not record dream_run` and carries on. A night
+that really ran would leave no trace — the failure path that erases the proof
+of success.
 
-Le défaut n'a pas encore frappé parce que ROADMAP tourne en DRY, dont la chaîne
-est le primaire mort puis `meta/llama-3.1-8b-instruct` (26 car.). Il est armé
-pour le jour de la bascule WET.
+The defect has not struck yet because ROADMAP runs in DRY, whose chain is the
+dead primary then `meta/llama-3.1-8b-instruct` (26 chars). It is armed for the
+day of the WET cutover.
 
-120 et non « la plus longue + marge » : un nombre rond absorbe le prochain nom
-sans redemander une migration. Aucun backfill, aucune donnée touchée — élargir
-un `varchar` est une réécriture de catalogue, pas de lignes.
+120 and not "the longest + margin": a round number absorbs the next name
+without asking for another migration. No backfill, no data touched — widening
+a `varchar` rewrites the catalogue, not the rows.
 """
 
 from __future__ import annotations
@@ -41,19 +41,19 @@ _PREVIOUS_WIDTH = 30
 
 
 def _dream_run_view_sql() -> str:
-    """Relire la définition de la vue DANS la 036, jamais la retaper ici.
+    """Re-read the view definition FROM 036, never retype it here.
 
-    Mesuré en production : `ALTER TABLE dream_runs ALTER COLUMN model` est
-    refusé par Postgres tant que `codex_dream_run_v1` projette cette colonne
-    (`cannot alter type of a column used by a view or rule`). La vue doit donc
-    tomber et revenir — et « revenir » veut dire IDENTIQUE. Recopier son SELECT
-    ferait de cette révision une seconde source de vérité pour un contrat que
-    `test_codex_contract_views_036.py` garde ailleurs : la dérive n'apparaîtrait
-    qu'à la lecture, côté codex.
+    Measured in production: `ALTER TABLE dream_runs ALTER COLUMN model` is
+    refused by Postgres for as long as `codex_dream_run_v1` projects that column
+    (`cannot alter type of a column used by a view or rule`). The view must
+    therefore fall and come back — and "come back" means IDENTICAL. Copying its
+    SELECT would make this revision a second source of truth for a contract that
+    `test_codex_contract_views_036.py` guards elsewhere: the drift would surface
+    only on read, on the codex side.
     """
     source = Path(__file__).with_name("036_codex_contract_views.py")
     spec = importlib.util.spec_from_file_location("_migration_036_views", source)
-    if spec is None or spec.loader is None:  # pragma: no cover — chemin figé
+    if spec is None or spec.loader is None:  # pragma: no cover — frozen path
         raise RuntimeError(f"036 illisible depuis la 045 : {source}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -62,10 +62,10 @@ def _dream_run_view_sql() -> str:
 
 _DREAM_RUN_VIEW_SQL = _dream_run_view_sql()
 
-# Reposer le droit après recréation : un DROP VIEW emporte ses GRANT avec lui,
-# et `codex_ro` perdrait sa lecture en silence — la vue existerait, vide de
-# permissions, ce qui se lit comme une panne côté client et non comme un oubli
-# de migration ici. La 036 pose exactement cette ligne (l.461).
+# Re-install the grant after recreation: a DROP VIEW takes its GRANTs with it,
+# and `codex_ro` would lose its read silently — the view would exist, empty of
+# permissions, which reads as a client-side failure rather than as a migration
+# oversight here. 036 installs exactly this line (l.461).
 _GRANT_SQL = "GRANT SELECT ON codex_dream_run_v1 TO codex_ro"
 
 
@@ -83,11 +83,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Fail-closed : rétrécir ne doit jamais tronquer une mesure déjà écrite.
+    """Fail-closed: narrowing must never truncate a measurement already written.
 
-    Postgres refuserait de lui-même, mais avec une erreur de driver nue. La dire
-    ici nomme la cause et la ligne fautive, au lieu de laisser l'opérateur
-    deviner devant un `value too long for type character varying(30)`.
+    Postgres would refuse on its own, but with a bare driver error. Saying it
+    here names the cause and the offending row, instead of leaving the operator
+    to guess in front of a `value too long for type character varying(30)`.
     """
     offenders = (
         op.get_bind()

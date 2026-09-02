@@ -1,10 +1,10 @@
-"""Roadmap curée — archived, merged_into, roadmap_curation_proposals.
+"""Curated roadmap — archived, merged_into, roadmap_curation_proposals.
 
-Spec 2026-07-04 §1. Pattern 029 (proposer-only, review humaine → apply).
-- features.status : + 'archived' dans le CHECK.
-- features.merged_into : FK self-ref SANS ON DELETE (les features ne sont
-  jamais DELETE — le FK feature_artifacts est ON DELETE CASCADE, supprimer
-  effacerait l'historique de liage). Aucun CHECK ne contraint merged_into
+Spec 2026-07-04 §1. Pattern 029 (proposer-only, human review → apply).
+- features.status: + 'archived' in the CHECK.
+- features.merged_into: a self-referencing FK with NO ON DELETE (features are
+  never DELETEd — the feature_artifacts FK is ON DELETE CASCADE, so deleting
+  would erase the linking history). No CHECK constrains merged_into
   (gotcha postgres-check-vs-on-delete-set-null).
 
 Revision ID: 030
@@ -20,7 +20,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # 1. CHECK statut : + 'archived' (constraint auto-nommée par la 005).
+    # 1. Status CHECK: + 'archived' (constraint auto-named by 005).
     op.execute("ALTER TABLE features DROP CONSTRAINT features_status_check")
     op.execute(
         """
@@ -30,10 +30,10 @@ def upgrade() -> None:
         """
     )
 
-    # 2. merged_into — même pattern que decisions/learnings (007), avec FK.
+    # 2. merged_into — same pattern as decisions/learnings (007), with an FK.
     op.execute("ALTER TABLE features ADD COLUMN merged_into UUID REFERENCES features(id)")
 
-    # 3. Table proposals — miroir de ticket_extraction_proposals (029).
+    # 3. proposals table — mirrors ticket_extraction_proposals (029).
     op.execute(
         """
         CREATE TABLE roadmap_curation_proposals (
@@ -56,8 +56,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Les rows 'archived' violeraient le CHECK restauré → retour à 'research'
-    # (état pré-curation ClusterGuard). Perte d'info assumée en downgrade.
+    # 'archived' rows would violate the restored CHECK → back to 'research'
+    # (the pre-curation ClusterGuard state). Downgrade accepts the info loss.
     op.execute("UPDATE features SET status = 'research' WHERE status = 'archived'")
     op.execute("DROP TABLE IF EXISTS roadmap_curation_proposals;")
     op.execute("ALTER TABLE features DROP COLUMN IF EXISTS merged_into;")

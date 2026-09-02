@@ -1,54 +1,54 @@
-"""043 — dater le STATUT de fraîcheur, et dire d'où la transition vient.
+"""043 — date the freshness STATUS, and say where the transition came from.
 
 Spec `docs/superpowers/specs/2026-08-08-dream-v2-design.md` §4.3 et §6.2.
-Préalable DUR de la purge, pas une préférence d'ordonnancement.
+A HARD precondition of the purge, not a scheduling preference.
 
-Le dépôt a déjà un critère de suppression — `decay_tools.brain_decay_status`,
-affiché à SCAN toutes les nuits — et il est faux sur ses deux termes :
+The repository already has a deletion criterion — `decay_tools.brain_decay_status`,
+printed at SCAN every night — and it is wrong on both of its terms:
 
-- `access_count = 0` est le compteur TOTAL. Un artefact relu par le seul dream
-  sort du critère et devient indéfiniment non-purgeable.
-- `updated_at < cutoff` REDÉMARRE à chaque écriture du flusher de compteurs,
-  parce que `trg_<table>_updated` est présent sur les six tables. Il n'existe
-  donc aujourd'hui AUCUNE horloge honnête pour mesurer un séjour en archive.
+- `access_count = 0` is the TOTAL counter. An artifact re-read by the dream
+  alone leaves the criterion and becomes indefinitely unpurgeable.
+- `updated_at < cutoff` RESTARTS on every write of the counter flusher, because
+  `trg_<table>_updated` is present on all six tables. There is therefore NO
+  honest clock today for measuring a stay in the archive.
 
-AUCUN BACKFILL. `NULL` veut dire « jamais mesuré », jamais « archivé depuis
-toujours ». La distinction décide qui serait supprimé : dater rétroactivement à
-`now()` ferait croire que tout le corpus vient de changer de statut, et dater à
-`updated_at` recopierait précisément l'horloge fausse qu'on remplace.
+NO BACKFILL. `NULL` means "never measured", never "archived forever". The
+distinction decides who would be deleted: dating retroactively to `now()` would
+suggest the whole corpus had just changed status, and dating to `updated_at`
+would copy over precisely the false clock we are replacing.
 
-MÉCANISME 041, PAS 040. La 040 écrit `focus_updated_at` en code applicatif
-parce que le focus n'a QU'UN écrivain. `freshness_status` en a plusieurs, dont
-le jugement REORG qui passe par le tool générique `brain_update` — lequel ne
-sait rien du decay. Stamper en applicatif obligerait à le faire dans
-`brain_update` lui-même, pour une colonne que 99 % de ses appels ne touchent
-pas. C'est donc un trigger conditionnel. C'est le point : l'un des écrivains est
-un prompt.
+041'S MECHANISM, NOT 040'S. 040 writes `focus_updated_at` in application code
+because the focus has exactly ONE writer. `freshness_status` has several,
+including the REORG judgement that goes through the generic `brain_update` tool
+— which knows nothing about the decay. Stamping in application code would mean
+doing it inside `brain_update` itself, for a column 99% of its calls never
+touch. Hence a conditional trigger. That is the point: one of the writers is a
+prompt.
 
-LES DEUX COLONNES NE SE COMPORTENT PAS PAREIL, ET C'EST LE PIÈGE DE CE FICHIER.
-Une version antérieure de cette docstring concluait ici « aucun des quatre
-écrivains n'a à s'en souvenir ». C'est vrai de `freshness_status_updated_at`, et
-FAUX de `freshness_source` :
+THE TWO COLUMNS DO NOT BEHAVE ALIKE, AND THAT IS THIS FILE'S TRAP. An earlier
+version of this docstring concluded here that "none of the four writers has to
+remember it". That is true of `freshness_status_updated_at`, and FALSE of
+`freshness_source`:
 
-- `freshness_status_updated_at` est AUTOMATIQUE. Le trigger la pose à chaque
-  transition ; aucun écrivain n'a rien à faire.
-- `freshness_source` doit être REDÉCLARÉE À CHAQUE ÉCRITURE. Le trigger l'EFFACE
-  quand elle ne l'est pas (voir le corps de la fonction, plus bas) — c'est
-  délibéré, mais ça veut dire qu'un écrivain qui ne la pose pas produit un
-  `NULL`, pas une valeur héritée.
+- `freshness_status_updated_at` is AUTOMATIC. The trigger sets it on every
+  transition; no writer has anything to do.
+- `freshness_source` must be REDECLARED ON EVERY WRITE. The trigger CLEARS it
+  when it is not (see the body of the function, below) — that is deliberate,
+  but it means a writer that does not set it produces a `NULL`, not an
+  inherited value.
 
-La phrase corrigée n'est pas cosmétique : au recensement du 2026-08-22, CINQ
-écrivains sur six ne redéclaraient rien, et l'ancienne formulation est la cause
-racine la plus probable — un écrivain qui la lisait concluait légitimement qu'il
-n'avait rien à déclarer. Trois ont été réparés dans la foulée ; deux restent
-muets à dessein, en attente d'une signature d'opérateur. **Ne pas recopier ces
-nombres : les recompter.**
+The corrected sentence is not cosmetic: at the 2026-08-22 census, FIVE
+writers out of six redeclared nothing, and the old wording is the most
+likely root cause — a writer reading it legitimately concluded it had
+nothing to declare. Three were repaired straight away; two stay silent on
+purpose, awaiting an operator's signature. **Do not copy these numbers
+forward: recount them.**
 
-Le compte de « quatre » était faux lui aussi, et son mode de panne est instructif :
-il faut un recensement à PLUSIEURS MOTIFS (kwarg, clé de dict, SQL brut, et le
-champ sur les modèles `*Update`) pour en trouver six dans `src/`. Le sixième — le
-tool générique `brain_update`, celui qui JUGE — n'est visible d'AUCUN grep sur le
-nom de la colonne, puisqu'il ne la nomme jamais.
+The count of "four" was wrong too, and its failure mode is instructive: it
+takes a MULTI-PATTERN census (kwarg, dict key, raw SQL, and the field on the
+`*Update` models) to find six of them in `src/`. The sixth — the generic
+`brain_update` tool, the one that JUDGES — is visible to NO grep on the column
+name, since it never names it.
 """
 
 from __future__ import annotations
@@ -61,8 +61,8 @@ down_revision = "042"
 branch_labels = None
 depends_on = None
 
-# Les six tables suivies par le decay — même ensemble que
-# `decay_tools._DECAY_ENTITY_TABLES` et que `_COUNTER_TABLES` de la 041.
+# The six tables tracked by the decay — the same set as
+# `decay_tools._DECAY_ENTITY_TABLES` and as 041's `_COUNTER_TABLES`.
 _DECAY_TABLES = (
     "learnings",
     "decisions",
@@ -72,9 +72,9 @@ _DECAY_TABLES = (
     "indexed_plans",
 )
 
-# Vocabulaire fermé des transitions, §4.3. `merge` = CLEAN a fusionné,
-# `judgment` = REORG a tranché, `score` = le decay a calculé, `revive` = un
-# accès humain a ramené l'entité.
+# Closed vocabulary of transitions, §4.3. `merge` = CLEAN merged, `judgment`
+# = REORG ruled, `score` = the decay computed, `revive` = a human access
+# brought the entity back.
 _SOURCES = ("merge", "judgment", "score", "revive")
 
 _CREATE_FUNCTION = """
@@ -110,8 +110,8 @@ def upgrade() -> None:
             sa.Column("freshness_status_updated_at", sa.DateTime(timezone=True), nullable=True),
         )
         op.add_column(table, sa.Column("freshness_source", sa.String(16), nullable=True))
-        # NULL passe la CHECK par construction en SQL, et c'est voulu : la
-        # colonne est « non mesuré » par défaut sur tout le corpus existant.
+        # NULL passes the CHECK by construction in SQL, and that is intended:
+        # the column reads "not measured" by default across the whole corpus.
         allowed = ", ".join(f"'{source}'" for source in _SOURCES)
         op.create_check_constraint(
             f"ck_{table}_freshness_source",
@@ -122,11 +122,11 @@ def upgrade() -> None:
     op.execute(_CREATE_FUNCTION)
 
     for table in _DECAY_TABLES:
-        # `OF freshness_status` restreint le déclenchement, le `WHEN` le
-        # restreint encore : réécrire le MÊME statut ne rajeunit pas l'horloge.
-        # Sans ce prédicat, un traitement idempotent qui repose `archived`
-        # chaque nuit remettrait le séjour à zéro tous les jours, et rien ne
-        # deviendrait jamais purgeable — silencieusement.
+        # `OF freshness_status` narrows the firing, the `WHEN` narrows it
+        # further: rewriting the SAME status does not rejuvenate the clock.
+        # Without that predicate, an idempotent job re-setting `archived` every
+        # night would reset the stay to zero daily, and nothing would ever
+        # become purgeable — silently.
         op.execute(
             f"""
             CREATE TRIGGER trg_{table}_freshness_stamped

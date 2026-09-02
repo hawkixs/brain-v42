@@ -48,7 +48,7 @@ def test_both_columns_are_added_idempotently_and_nullable() -> None:
     text = _text()
     assert "ADD COLUMN IF NOT EXISTS closed_inactive_count INTEGER" in text
     assert "ADD COLUMN IF NOT EXISTS thinking_tokens INTEGER" in text
-    assert "DEFAULT" not in text.upper().replace("SANS DÉFAUT", ""), (
+    assert "DEFAULT" not in text.upper().replace("WITHOUT A DEFAULT", ""), (
         "aucun défaut : NULL est porteur de sens (pré-049 / non mesuré)"
     )
 
