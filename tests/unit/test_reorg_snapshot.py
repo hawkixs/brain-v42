@@ -1,21 +1,21 @@
-"""Instantané des tags AVANT la phase REORG — le seul « avant » qui soit observé.
+"""Snapshot of the tags BEFORE the REORG phase — the only "before" that is observed.
 
-Le validateur ne peut pas prouver qu'une entité a bougé s'il ne connaît que son
-état d'après. `updated_at` semblait tenir ce rôle et ne le tenait pas : le
-`DecayFlusher` émet un `UPDATE` en masse sur `learnings` et `decisions` toutes
-les 300 s, et le trigger `update_updated_at()` de la migration 001 est
-INCONDITIONNEL — il n'a pas de clause `WHEN`. Pire, ce sont les lectures de
-REORG lui-même (`brain_get` avant chaque normalisation) qui alimentent
-l'access_log dont le flusher se sert : la phase fabriquait donc sa propre preuve.
+The validator cannot prove an entity moved if it only knows its after-state.
+`updated_at` seemed to hold that role and did not: the `DecayFlusher` emits a bulk
+`UPDATE` on `learnings` and `decisions` every 300 s, and migration 001's
+`update_updated_at()` trigger is UNCONDITIONAL — it has no `WHEN` clause. Worse,
+it is REORG's own reads (`brain_get` before each normalisation) that feed the
+access_log the flusher uses: the phase therefore manufactured its own evidence.
 
-`content_updated_at` (migration 041) ne peut pas le remplacer non plus : ses
-triggers sont déclarés `BEFORE UPDATE OF topic, insight` sur `learnings` et
-`BEFORE UPDATE OF title, description, reasoning, consequences` sur `decisions`.
-`tags` n'y figure pas, et REORG ne mute QUE des tags — la colonne reste donc
-`NULL` sur exactement les entités qu'on cherche à vérifier.
+`content_updated_at` (migration 041) cannot replace it either: its triggers are
+declared `BEFORE UPDATE OF topic, insight` on `learnings` and
+`BEFORE UPDATE OF title, description, reasoning, consequences` on `decisions`.
+`tags` is not among them, and REORG mutates ONLY tags — so the column stays `NULL`
+on exactly the entities we are trying to verify.
 
-Reste l'instantané : lire les tags du corpus du projet juste avant la phase, et
-comparer après. C'est la seule forme où le « avant » est mesuré et non déduit.
+That leaves the snapshot: read the project corpus's tags just before the phase,
+and compare afterwards. It is the only form where the "before" is measured and not
+deduced.
 """
 
 from __future__ import annotations
@@ -111,11 +111,11 @@ async def _seed_decision(
 async def test_the_snapshot_covers_both_tables_reorg_can_mutate(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """REORG ne touche que `learnings` et `decisions` — l'instantané aussi.
+    """REORG touches only `learnings` and `decisions` — so does the snapshot.
 
-    Manquer une des deux tables donnerait le pire des résultats : un « absent de
-    l'instantané » sur des entités parfaitement légitimes, donc une nuit rouge
-    pour une raison inventée.
+    Missing one of the two tables would give the worst possible result: an "absent
+    from the snapshot" on perfectly legitimate entities, hence a red night for an
+    invented reason.
     """
     pk = make_unit_project_key("rs")
     lid = await _seed_learning(session_factory, pk, ["alpha"])
@@ -131,11 +131,11 @@ async def test_the_snapshot_covers_both_tables_reorg_can_mutate(
 async def test_the_snapshot_stops_at_the_project_boundary(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Le périmètre de l'instantané est celui du run, pas le corpus entier.
+    """The snapshot's scope is the run's, not the whole corpus.
 
-    Un instantané global rendrait « présent dans l'instantané » vrai pour une
-    entité d'un autre projet, et le contrôle de franchissement de frontière
-    perdrait son témoin le plus simple.
+    A global snapshot would make "present in the snapshot" true for an entity of
+    another project, and the boundary-crossing check would lose its simplest
+    witness.
     """
     pk = make_unit_project_key("rs")
     foreign_pk = make_unit_project_key("rs-foreign")
@@ -152,11 +152,11 @@ async def test_the_snapshot_stops_at_the_project_boundary(
 async def test_an_entity_without_tags_is_present_with_an_empty_list(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """`[]` et « absent » doivent rester deux faits distincts.
+    """`[]` and "absent" must stay two distinct facts.
 
-    Les confondre ferait passer pour « créée pendant la phase » une entité qui
-    n'avait simplement aucun tag — et c'est le cas le plus fréquent du corpus
-    que REORG est chargé de normaliser.
+    Confusing them would pass off as "created during the phase" an entity that
+    simply had no tag — and that is the most frequent case in the corpus REORG is
+    charged with normalising.
     """
     pk = make_unit_project_key("rs")
     lid = await _seed_learning(session_factory, pk, [])
@@ -171,11 +171,11 @@ def test_the_cli_writes_json_the_validator_can_read(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Le contrat de transport : un objet JSON id → liste de tags, sur stdout.
+    """The transport contract: a JSON object id → list of tags, on stdout.
 
-    Test SYNCHRONE à dessein : `main` ouvre sa propre boucle avec `asyncio.run`,
-    qui refuse de s'imbriquer dans celle de pytest-asyncio. Un test `async` ici
-    échouerait sur le harnais et ne dirait rien du contrat.
+    A SYNCHRONOUS test by design: `main` opens its own loop with `asyncio.run`,
+    which refuses to nest inside pytest-asyncio's. An `async` test here would fail
+    on the harness and would say nothing about the contract.
     """
     from scripts.dream import reorg_snapshot
 
@@ -204,11 +204,11 @@ def test_the_cli_writes_json_the_validator_can_read(
 
 
 def test_the_cli_requires_a_perimeter() -> None:
-    """Même garde que les trois validateurs : pas d'instantané sans périmètre.
+    """Same guard as the three validators: no snapshot without a scope.
 
-    Un instantané muet sur son projet produirait la panne la plus coûteuse de
-    ce lot : un « avant » pris sur le mauvais corpus, donc des comparaisons
-    fausses que rien ne signalerait.
+    A snapshot mute about its project would produce this batch's most expensive
+    failure: a "before" taken on the wrong corpus, hence false comparisons that
+    nothing would report.
     """
     from scripts.dream import reorg_snapshot
 

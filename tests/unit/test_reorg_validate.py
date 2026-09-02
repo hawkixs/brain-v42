@@ -489,7 +489,7 @@ async def test_validate_wet_archived_entity_passes(
 async def test_a_claimed_update_whose_tags_moved_passes(
     session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
 ) -> None:
-    """Cas nominal : l'instantané dit `alpha`, la base dit `alpha, beta`."""
+    """Nominal case: the snapshot says `alpha`, the database says `alpha, beta`."""
     lid = await _seed_learning(
         session_factory, isolated_pk, freshness_status="fresh", tags=["alpha", "beta"]
     )
@@ -512,11 +512,11 @@ async def test_a_claimed_update_whose_tags_moved_passes(
 async def test_a_claimed_update_whose_tags_did_not_move_is_a_masked_failure(
     session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
 ) -> None:
-    """Panne masquée de la Partie 1 : l'agent déclare 20 normalisations, n'en fait aucune.
+    """A masked Part 1 failure: the agent declares 20 normalisations and does none.
 
-    C'est le défaut que le contrôle `updated_at` prétendait couvrir. Une
-    vérification d'existence seule ne peut pas le voir : chaque id déclaré existe
-    toujours, l'agent l'ayant lu dans ses propres pages `brain_list`.
+    This is the flaw the `updated_at` check claimed to cover. An existence check
+    alone cannot see it: every declared id does exist, the agent having read it
+    from its own `brain_list` pages.
     """
     lid = await _seed_learning(
         session_factory, isolated_pk, freshness_status="fresh", tags=["alpha"]
@@ -541,18 +541,18 @@ async def test_a_claimed_update_whose_tags_did_not_move_is_a_masked_failure(
 async def test_a_fresh_updated_at_can_no_longer_forge_the_proof(
     session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
 ) -> None:
-    """LE témoin de régression : `updated_at` tout neuf, tags immobiles → échec.
+    """THE regression witness: a brand-new `updated_at`, motionless tags → failure.
 
-    L'ancien contrôle exigeait `updated_at >= run_date` et acceptait donc cette
-    entité. Le `DecayFlusher` émet un `UPDATE` en masse sur `learnings` et
-    `decisions` toutes les 300 s, et le trigger `update_updated_at()` de la
-    migration 001 n'a pas de clause `WHEN` : l'horodatage bougeait tout seul.
+    The old check required `updated_at >= run_date` and therefore accepted this
+    entity. The `DecayFlusher` emits a bulk `UPDATE` on `learnings` and `decisions`
+    every 300 s, and migration 001's `update_updated_at()` trigger has no `WHEN`
+    clause: the timestamp moved on its own.
 
-    Le pire est le circuit : les lignes d'access_log qui déclenchent le flusher
-    sont produites par les `brain_get` de REORG lui-même, juste avant chaque
-    normalisation. La phase fabriquait la preuve sur laquelle on la jugeait. Ce
-    test la lui retire — il écrit `updated_at = maintenant` SANS toucher aux
-    tags, exactement ce que fait le flusher, et exige quand même l'échec.
+    The worst part is the circuit: the access_log rows that trigger the flusher are
+    produced by REORG's own `brain_get` calls, just before each normalisation. The
+    phase manufactured the evidence it was judged on. This test takes it away — it
+    writes `updated_at = now` WITHOUT touching the tags, exactly what the flusher
+    does, and still requires the failure.
     """
     from brain_v42.db.tables import learnings
 
@@ -598,14 +598,14 @@ async def test_a_fresh_updated_at_can_no_longer_forge_the_proof(
 async def test_an_entity_absent_from_the_snapshot_is_refused(
     session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
 ) -> None:
-    """Absente de l'instantané = apparue PENDANT la phase, ce que REORG ne fait pas.
+    """Absent from the snapshot = appeared DURING the phase, which REORG does not do.
 
-    L'instantané est pris juste avant la phase, donc tout ce qu'une phase
-    antérieure de la nuit a créé (`synth`, notamment) y figure déjà. Une entité
-    du bon projet, existante, mais absente du « avant » n'a que deux causes : un
-    instantané pris sur le mauvais corpus, ou une création par REORG — que son
-    prompt interdit et que son périmètre de capacité refuse. Les deux méritent un
-    échec, et aucune ne mérite le silence.
+    The snapshot is taken just before the phase, so everything an earlier phase of
+    the night created (`synth`, notably) is already in it. An entity of the right
+    project, existing, but absent from the "before" has only two causes: a snapshot
+    taken on the wrong corpus, or a creation by REORG — which its prompt forbids
+    and its capability scope refuses. Both deserve a failure, and neither deserves
+    silence.
     """
     lid = await _seed_learning(
         session_factory, isolated_pk, freshness_status="fresh", tags=["alpha"]
@@ -724,28 +724,28 @@ async def test_mark_dream_run_partial_with_none_run_id_is_noop(
     await _mark_dream_run_partial(session_factory, None, "n/a")
 
 
-# ────────── Garde de périmètre projet (défense en profondeur) ────────────────
+# ────────── Project scope guard (defence in depth) ───────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_validate_rejects_an_entity_belonging_to_another_project(
     session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
 ) -> None:
-    """Une entité hors du projet du run doit faire échouer la validation.
+    """An entity outside the run's project must fail the validation.
 
-    Le serveur borne déjà REORG au projet, deux fois : le middleware injecte
-    `project_key` dans les arguments de `brain_list` et refuse tout project_key
-    divergent, et les cinq repos portent `AND project_key = :scope` dans le WHERE
-    de l'UPDATE. Cette garde-ci est donc de la DÉFENSE EN PROFONDEUR, et sa
-    justification est mesurée : `brain_list` est le SEUL outil CRUD qui n'appelle
-    jamais `get_dream_project_scope()` lui-même — sa borne vit entièrement dans le
-    middleware — et `brain_dream_capability_enforcement` vaut `False` par défaut
-    dans le code. Si l'enforcement retombe (rollback, transport stdio, killswitch),
-    REORG repagine le corpus entier en silence et plus rien en aval ne le verrait.
-    Le validateur est le dernier endroit qui peut encore le dire.
+    The server already bounds REORG to the project, twice: the middleware injects
+    `project_key` into `brain_list`'s arguments and refuses any divergent
+    project_key, and the five repositories carry `AND project_key = :scope` in the
+    UPDATE's WHERE. This guard is therefore DEFENCE IN DEPTH, and its
+    justification is measured: `brain_list` is the ONLY CRUD tool that never calls
+    `get_dream_project_scope()` itself — its bound lives entirely in the
+    middleware — and `brain_dream_capability_enforcement` defaults to `False` in
+    the code. If enforcement lapses (rollback, stdio transport, killswitch), REORG
+    re-paginates the whole corpus silently and nothing downstream would see it.
+    The validator is the last place that can still say so.
 
-    C'est aussi la parité avec `promote_validate`, qui refuse depuis toujours un
-    ADR ou un runbook créé hors du périmètre du run.
+    It is also parity with `promote_validate`, which has always refused an ADR or a
+    runbook created outside the run's scope.
     """
     foreign_pk = make_unit_project_key("rv-foreign")
     lid = await _seed_learning(session_factory, foreign_pk, freshness_status="archived")
@@ -766,7 +766,7 @@ async def test_validate_rejects_an_entity_belonging_to_another_project(
 async def test_validate_accepts_an_entity_of_the_run_project(
     session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
 ) -> None:
-    """Contre-épreuve : la garde ne rejette pas le cas nominal."""
+    """Counter-proof: the guard does not reject the nominal case."""
     lid = await _seed_learning(session_factory, isolated_pk, freshness_status="archived")
     report = {
         "dry_run": False,
@@ -783,21 +783,21 @@ async def test_validate_accepts_an_entity_of_the_run_project(
 def test_the_cli_refuses_to_run_without_a_perimeter(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Sans `--project-key`, le CLI doit REFUSER, pas valider sans contrôle.
+    """Without `--project-key`, the CLI must REFUSE, not validate without a check.
 
-    Ce test remplace `test_validate_without_a_project_key_keeps_the_legacy_behaviour`,
-    qui épinglait précisément le trou : `default=None` sur le drapeau, et un
-    `_reject_foreign_project` qui revient aussitôt sur `None`. Le validateur
-    imprimait alors « REORG VALIDATE: OK » en n'ayant vérifié AUCUN périmètre —
-    la forme de panne la plus coûteuse, parce qu'elle est verte.
+    This test replaces `test_validate_without_a_project_key_keeps_the_legacy_behaviour`,
+    which pinned precisely the hole: `default=None` on the flag, and a
+    `_reject_foreign_project` that returns immediately on `None`. The validator
+    then printed "REORG VALIDATE: OK" having checked NO scope at all — the most
+    expensive failure shape, because it is green.
 
-    Le silence était le vrai défaut : ni le journal, ni le code de retour, ni la
-    ligne `dream_runs` ne distinguaient « périmètre vérifié » de « périmètre
-    absent ». Un câblage régressé dans dream.sh (le drapeau retiré d'un tableau
-    d'arguments) se serait donc lu comme une nuit propre.
+    The silence was the real flaw: neither the log, nor the return code, nor the
+    `dream_runs` row distinguished "scope checked" from "scope absent". A regressed
+    wiring in dream.sh (the flag dropped from an argument array) would therefore
+    have read as a clean night.
 
-    promote_validate (`required=True`) et connect_validate (« deliberately
-    without a default ») refusent cet argv depuis toujours. C'est la parité.
+    promote_validate (`required=True`) and connect_validate ("deliberately without
+    a default") have always refused this argv. That is the parity.
     """
     from scripts.dream import reorg_validate
 
@@ -832,17 +832,17 @@ def test_the_cli_refuses_to_run_without_a_perimeter(
 
 
 def test_the_perimeter_is_a_required_parameter_like_its_sibling() -> None:
-    """Le défaut `None` disparaît aussi de la SIGNATURE, pas seulement du CLI.
+    """The `None` default disappears from the SIGNATURE too, not just from the CLI.
 
-    Fermer le seul argparse laisserait `validate(..., project_key=None)`
-    atteignable par tout appelant programmatique — et cet appel-là redeviendrait
-    silencieux. `promote_validate.validate` déclare `project_key: str` sans
-    défaut; ce test lit les DEUX signatures et exige la même forme, pour que la
-    parité soit constatée et non affirmée.
+    Closing argparse alone would leave `validate(..., project_key=None)` reachable
+    by any programmatic caller — and that call would become silent again.
+    `promote_validate.validate` declares `project_key: str` with no default; this
+    test reads BOTH signatures and requires the same shape, so that the parity is
+    observed and not asserted.
 
-    `connect_validate` n'entre pas ici : il n'expose aucune fonction `validate`,
-    tout son contrôle vivant dans `main`. Sa parité à lui est vérifiée par le
-    test d'argv ci-dessous, qui est le seul endroit où les trois se comparent.
+    `connect_validate` does not enter here: it exposes no `validate` function, all
+    its checking living in `main`. Its own parity is verified by the argv test
+    below, which is the only place where all three are compared.
     """
     from scripts.dream import promote_validate, reorg_validate
 
@@ -869,14 +869,14 @@ def test_the_perimeter_is_a_required_parameter_like_its_sibling() -> None:
 def test_the_three_validator_clis_all_require_a_perimeter(
     module_name: str, argv_without_perimeter: list[str]
 ) -> None:
-    """Les trois validateurs de la nuit refusent le même argv incomplet.
+    """The night's three validators refuse the same incomplete argv.
 
-    Chaque argv ci-dessus porte TOUS les autres arguments requis du validateur
-    visé : argparse sort en 2 sur le premier manquant, donc ne laisser tomber
-    que `--project-key` prouve que c'est bien LUI qui est exigé, et pas un autre
-    drapeau qui se trouverait manquer. Les chemins de fichiers sont fictifs à
-    dessein — l'analyse d'arguments précède toute ouverture, et un test qui
-    aurait besoin de vrais fichiers pour prouver ça mesurerait autre chose.
+    Each argv above carries ALL the other required arguments of the targeted
+    validator: argparse exits 2 on the first missing one, so dropping only
+    `--project-key` proves that it is indeed THAT flag being required, and not
+    another one that happens to be missing. The file paths are fictitious by
+    design — argument parsing precedes any opening, and a test that needed real
+    files to prove this would be measuring something else.
     """
     import importlib
 
@@ -892,11 +892,11 @@ def test_the_three_validator_clis_all_require_a_perimeter(
 
 
 def test_dream_sh_passes_the_project_key_to_the_reorg_validator() -> None:
-    """Le drapeau doit être CÂBLÉ, pas seulement disponible.
+    """The flag must be WIRED, not merely available.
 
-    promote_validate et connect_validate reçoivent `--project-key "$PROJECT_KEY"`
-    depuis dream.sh. Un validateur qui sait vérifier un périmètre qu'on ne lui
-    passe jamais est une garde qui n'existe pas.
+    promote_validate and connect_validate receive `--project-key "$PROJECT_KEY"`
+    from dream.sh. A validator that knows how to check a scope it is never passed
+    is a guard that does not exist.
     """
     repo_root = pathlib.Path(__file__).parent.parent.parent
     dream_sh = (repo_root / "scripts" / "dream.sh").read_text(encoding="utf-8")

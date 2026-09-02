@@ -1,25 +1,25 @@
-"""Lecture des appels d'outil RÉELLEMENT émis par la phase REORG.
+"""Reading the tool calls REALLY emitted by the REORG phase.
 
-Le rapport de l'agent est une DÉCLARATION. Le flux d'événements est une
-OBSERVATION. Les confronter est la seule façon de voir le fantôme `bccc9115` :
-un id déclaré dans `updated` pour lequel aucun `brain_update` n'a jamais été
-émis. Le cas symétrique — un `brain_update` émis pour un id que le rapport ne
-mentionne pas — est aujourd'hui totalement invisible, et c'est le plus inquiétant
-des deux : une mutation dont personne n'a la trace.
+The agent's report is a DECLARATION. The event stream is an OBSERVATION.
+Confronting them is the only way to see the `bccc9115` ghost: an id declared in
+`updated` for which no `brain_update` was ever emitted. The symmetric case — a
+`brain_update` emitted for an id the report does not mention — is today entirely
+invisible, and it is the more worrying of the two: a mutation nobody has a trace
+of.
 
-DEUX FORMATS, et l'exigence est dure. Le rail vivant est codex
-(`BRAIN_DREAM_AGENT_PROVIDER=codex` par défaut) ; agy est le repli. Un parseur
-mono-format rendrait « 0 écriture observée » sur toute nuit de repli — un faux
-négatif qui a exactement la forme de la bonne nouvelle, et que personne ne
-questionnerait. C'est pour ça que « aucun événement reconnu » doit être un fait
-DISTINCT de « zéro appel », et non le même silence.
+TWO FORMATS, and the requirement is hard. The live rail is codex
+(`BRAIN_DREAM_AGENT_PROVIDER=codex` by default); agy is the fallback. A
+single-format parser would return "0 writes observed" on any fallback night — a
+false negative with exactly the shape of good news, and that nobody would
+question. That is why "no recognised event" must be a fact DISTINCT from "zero
+calls", and not the same silence.
 
-Les deux formes ci-dessous sont MESURÉES sur des flux réels du dépôt, pas
-supposées : `logs/dream/2026-08-20_watchk-claude_reorg.events.jsonl` pour codex,
-`logs/dream/2026-08-13_red-shrik:agent_reorg.events.jsonl` pour agy. La forme agy
-en particulier ne se devine pas — les arguments de l'outil vivent sous
-`tool_info.parameters.Arguments`, alors que le nom vit sous `ToolName` et que
-`tool_name` vaut invariablement `call_mcp_tool`.
+The two shapes below are MEASURED on real streams from the repository, not
+assumed: `logs/dream/2026-08-20_watchk-claude_reorg.events.jsonl` for codex,
+`logs/dream/2026-08-13_red-shrik:agent_reorg.events.jsonl` for agy. The agy shape
+in particular cannot be guessed — the tool's arguments live under
+`tool_info.parameters.Arguments`, while the name lives under `ToolName` and
+`tool_name` is invariably `call_mcp_tool`.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ _DID = "cf988d7c-ffb1-4bd4-8b64-cbaf39c9256e"
 
 
 def _codex_update(entity_id: str, tool: str = "brain_update") -> str:
-    """Forme mesurée sur un flux codex réel (item.completed / mcp_tool_call)."""
+    """Shape measured on a real codex stream (item.completed / mcp_tool_call)."""
     return json.dumps(
         {
             "type": "item.completed",
@@ -55,7 +55,7 @@ def _codex_update(entity_id: str, tool: str = "brain_update") -> str:
 
 
 def _agy_update(entity_id: str, tool: str = "brain_update") -> str:
-    """Forme mesurée sur un flux agy réel (step_update / call_mcp_tool)."""
+    """Shape measured on a real agy stream (step_update / call_mcp_tool)."""
     return json.dumps(
         {
             "event": "step_update",
@@ -87,11 +87,11 @@ def test_codex_updates_are_observed() -> None:
 
 
 def test_agy_updates_are_observed() -> None:
-    """Le repli doit compter autant que le rail vivant.
+    """The fallback must count as much as the live rail.
 
-    C'est LE test qui empêche le faux négatif : sans lui, une nuit de repli
-    rendrait un flux muet, et « aucune écriture non déclarée » se lirait comme
-    une nuit propre alors que rien n'aurait été regardé.
+    This is THE test that prevents the false negative: without it, a fallback
+    night would yield a mute stream, and "no undeclared write" would read as a
+    clean night when nothing had been looked at.
     """
     scan = scan_events("\n".join([_agy_update(_LID), _agy_update(_DID)]))
 
@@ -102,7 +102,7 @@ def test_agy_updates_are_observed() -> None:
 
 
 def test_a_mixed_stream_is_read_in_both_dialects() -> None:
-    """Improbable en production, décisif comme témoin : aucun format n'en exclut l'autre."""
+    """Unlikely in production, decisive as a witness: neither format excludes the other."""
     scan = scan_events("\n".join([_codex_update(_LID), _agy_update(_DID)]))
 
     assert scan.updated_ids == {_LID, _DID}
@@ -111,10 +111,10 @@ def test_a_mixed_stream_is_read_in_both_dialects() -> None:
 
 
 def test_only_brain_update_counts_as_a_mutation() -> None:
-    """`brain_list` et `brain_get` sont l'essentiel du flux — les compter noierait le signal.
+    """`brain_list` and `brain_get` are most of the stream — counting them would drown the signal.
 
-    REORG pagine son corpus entier avant de muter quoi que ce soit : sur le flux
-    du 2026-08-20, 22 `brain_list` et 6 `brain_get` pour 4 `brain_update`.
+    REORG paginates its whole corpus before mutating anything: on the 2026-08-20
+    stream, 22 `brain_list` and 6 `brain_get` for 4 `brain_update`.
     """
     scan = scan_events(
         "\n".join(
@@ -130,7 +130,7 @@ def test_only_brain_update_counts_as_a_mutation() -> None:
 
 
 def test_another_mcp_server_is_not_ours() -> None:
-    """Un `brain_update` d'un autre serveur MCP ne prouve rien sur notre corpus."""
+    """A `brain_update` from another MCP server proves nothing about our corpus."""
     foreign = json.loads(_codex_update(_LID))
     foreign["item"]["server"] = "some-other-server"
     scan = scan_events(json.dumps(foreign))
@@ -139,7 +139,7 @@ def test_another_mcp_server_is_not_ours() -> None:
 
 
 def test_blank_and_malformed_lines_are_skipped_without_crashing() -> None:
-    """Un flux tronqué par un timeout est le cas NORMAL, pas l'exception."""
+    """A stream truncated by a timeout is the NORMAL case, not the exception."""
     scan = scan_events("\n".join(["", "   ", "{ceci n'est pas du JSON", _codex_update(_LID)]))
 
     assert scan.updated_ids == {_LID}
@@ -147,11 +147,10 @@ def test_blank_and_malformed_lines_are_skipped_without_crashing() -> None:
 
 
 def test_an_unreadable_stream_is_not_the_same_fact_as_zero_calls() -> None:
-    """LE piège du lot : « rien reconnu » et « rien appelé » doivent se distinguer.
+    """THE batch's trap: "nothing recognised" and "nothing called" must be distinguished.
 
-    Les deux donnent un ensemble vide. Les confondre transforme une panne de
-    lecture — nouveau format d'agent, fichier vide, flux d'une autre commande —
-    en bonne nouvelle silencieuse.
+    Both give an empty set. Confusing them turns a reading failure — a new agent
+    format, an empty file, a stream from another command — into silent good news.
     """
     scan = scan_events('{"type":"thread.started","thread_id":"x"}\n{"unknown":"shape"}')
 
@@ -160,10 +159,10 @@ def test_an_unreadable_stream_is_not_the_same_fact_as_zero_calls() -> None:
 
 
 def test_an_update_without_an_entity_id_is_counted_but_not_attributed() -> None:
-    """Un appel sans id est observé sans être attribuable — il ne doit rien inventer.
+    """A call with no id is observed without being attributable — it must invent nothing.
 
-    Le compter comme un événement reconnu garde `recognised` honnête ; lui
-    fabriquer un id ferait dire au contrôle de symétrie une chose qu'il n'a pas vue.
+    Counting it as a recognised event keeps `recognised` honest; manufacturing an
+    id for it would make the symmetry check say something it did not see.
     """
     payload = json.loads(_codex_update(_LID))
     del payload["item"]["arguments"]["entity_id"]
@@ -173,7 +172,7 @@ def test_an_update_without_an_entity_id_is_counted_but_not_attributed() -> None:
     assert scan.recognised is True
 
 
-# ────────── Symétrie rapport ↔ appels observés ───────────────────────────────
+# ────────── Symmetry between report and observed calls ───────────────────────
 
 
 def _report(updated: list[str], archived: list[str] | None = None) -> dict:
@@ -186,9 +185,10 @@ def _report(updated: list[str], archived: list[str] | None = None) -> dict:
 
 
 def test_a_declared_id_that_was_never_called_is_named() -> None:
-    """Le fantôme `bccc9115` : déclaré dans `updated`, jamais écrit.
+    """The `bccc9115` ghost: declared in `updated`, never written.
 
-    C'est la seule direction qu'on savait déjà chercher — et encore, à la main.
+    This is the only direction we already knew how to look for — and even then, by
+    hand.
     """
     from scripts.dream.reorg_validate import symmetry_warnings
 
@@ -201,11 +201,11 @@ def test_a_declared_id_that_was_never_called_is_named() -> None:
 
 
 def test_a_call_that_no_report_declared_is_named() -> None:
-    """La direction aujourd'hui INVISIBLE, et la plus inquiétante des deux.
+    """The direction that is INVISIBLE today, and the more worrying of the two.
 
-    Une mutation dont le rapport ne parle pas ne laisse aucune trace lisible :
-    ni le validateur, ni l'alerte, ni le briefing ne la mentionneraient. Elle
-    n'existerait que dans le flux d'événements, que personne ne relit.
+    A mutation the report does not speak of leaves no readable trace: neither the
+    validator, nor the alert, nor the briefing would mention it. It would exist
+    only in the event stream, which nobody reads back.
     """
     from scripts.dream.reorg_validate import symmetry_warnings
 
@@ -217,12 +217,12 @@ def test_a_call_that_no_report_declared_is_named() -> None:
 
 
 def test_an_archived_id_is_declared_too() -> None:
-    """Partie 2 passe aussi par `brain_update` — l'ignorer inventerait des fantômes.
+    """Part 2 also goes through `brain_update` — ignoring it would invent ghosts.
 
-    `phase_reorg.md` §Partie 2 d : archiver, c'est écrire
-    `fields={"freshness_status": "archived"}` avec le même outil. Comparer au seul
-    `updated` dénoncerait chaque archivage comme une mutation non déclarée, et le
-    contrôle crierait toutes les nuits sur son propre fonctionnement nominal.
+    `phase_reorg.md` §Part 2 d: archiving means writing
+    `fields={"freshness_status": "archived"}` with the same tool. Comparing against
+    `updated` alone would denounce every archival as an undeclared mutation, and
+    the check would scream every night about its own nominal operation.
     """
     from scripts.dream.reorg_validate import symmetry_warnings
 
@@ -240,13 +240,13 @@ def test_a_matching_pair_is_silent() -> None:
 
 
 def test_an_unreadable_stream_says_so_instead_of_denouncing_everything() -> None:
-    """LE faux négatif inversé, et son jumeau : ni « tout est faux », ni « tout va bien ».
+    """THE inverted false negative, and its twin: neither "all wrong" nor "all well".
 
-    Sur un flux illisible, `updated_ids` est vide. Le comparer naïvement
-    dénoncerait CHAQUE id déclaré comme un fantôme — une alerte massive, fausse,
-    qu'on apprendrait vite à ignorer. Et taire le problème rendrait « rien
-    d'anormal » indiscernable de « rien n'a été lu ». Le seul avertissement
-    honnête nomme l'incapacité à vérifier.
+    On an unreadable stream, `updated_ids` is empty. Comparing it naively would
+    denounce EVERY declared id as a ghost — a massive, false alert one would
+    quickly learn to ignore. And staying silent would make "nothing abnormal"
+    indistinguishable from "nothing was read". The only honest warning names the
+    inability to verify.
     """
     from scripts.dream.reorg_validate import symmetry_warnings
 
@@ -258,7 +258,7 @@ def test_an_unreadable_stream_says_so_instead_of_denouncing_everything() -> None
     assert _LID not in warnings[0] and _DID not in warnings[0]
 
 
-# ────────── Le CLI : un AVERTISSEMENT, jamais un échec ───────────────────────
+# ────────── The CLI: a WARNING, never a failure ──────────────────────────────
 
 
 def _validator_argv(tmp_path, *, trailer: str, events: str | None) -> list[str]:
@@ -286,11 +286,11 @@ def _empty_trailer() -> str:
 
 
 def test_the_cli_warns_without_failing_the_phase(tmp_path, monkeypatch, capsys) -> None:
-    """Une écriture non déclarée doit se VOIR, et ne doit pas encore faire rougir.
+    """An undeclared write must be VISIBLE, and must not yet redden anything.
 
-    L'escalade en échec attend une semaine d'observation propre. Une garde qui
-    commence par faire échouer des nuits qu'elle n'a jamais mesurées apprend aux
-    opérateurs à la désactiver — et c'est la seule panne dont on ne revient pas.
+    Escalation to failure awaits a week of clean observation. A guard that starts
+    by failing nights it has never measured teaches operators to disable it — and
+    that is the only failure there is no coming back from.
     """
     from unittest.mock import MagicMock
 
@@ -314,10 +314,10 @@ def test_the_cli_warns_without_failing_the_phase(tmp_path, monkeypatch, capsys) 
 
 
 def test_an_absent_event_file_is_announced_once(tmp_path, monkeypatch, capsys) -> None:
-    """Un flux absent (phase morte avant d'écrire) s'annonce, sans crasher ni doubler.
+    """A missing stream (a phase that died before writing) announces itself, without crashing or doubling.
 
-    Deux avertissements pour un seul fait apprennent à survoler les
-    avertissements ; c'est ainsi qu'une alerte cesse d'être lue.
+    Two warnings for a single fact teach people to skim warnings; that is how an
+    alert stops being read.
     """
     from unittest.mock import MagicMock
 
