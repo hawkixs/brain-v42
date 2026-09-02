@@ -129,17 +129,17 @@ jobs:
       - name: Run unit tests
         run: .venv/bin/pytest tests/unit/ -v --tb=short
 
-  # Même topologie que test-unit, et c'est le POINT : sans le service Postgres,
-  # sans BRAIN_V42_TEST_DB_URL et sans le schéma appliqué, `require_test_db_url()`
-  # (tests/conftest.py) fait SAUTER les tests adossés à une base. La couverture
-  # décrivait alors un sous-ensemble du code réellement testé, et rien ne le
-  # disait au lecteur du pourcentage. Mesuré le 2026-08-22 : 60 tests sautés,
-  # 19 instructions et 1 branche jamais comptées.
+  # The same topology as test-unit, and that is the POINT: without the Postgres
+  # service, without BRAIN_V42_TEST_DB_URL and without the schema applied,
+  # `require_test_db_url()` (tests/conftest.py) SKIPS the database-backed tests.
+  # Coverage then described a subset of the code actually tested, and nothing
+  # said so to whoever read the percentage. Measured 2026-08-22: 60 tests
+  # skipped, 19 statements and 1 branch never counted.
   #
-  # Les deux commentaires que cette recette remplace annonçaient « 51 tests » —
-  # le ticket f779092b en annonçait 55, la mesure en trouve 60. Trois nombres,
-  # trois dates : c'est pourquoi le garde-fou plus bas ne compte RIEN et se
-  # contente d'exiger zéro saut de cette cause.
+  # The two comments this recipe replaces announced "51 tests" — ticket
+  # f779092b announced 55, the measurement finds 60. Three numbers, three
+  # dates: which is why the guard below counts NOTHING and merely demands zero
+  # skips from this cause.
   test-coverage:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -175,9 +175,9 @@ jobs:
         run: pip install "uv==$UV_VERSION"
       - name: Install dependencies
         run: uv sync --locked --no-dev --extra dev
-      # Même raison qu'en test-unit : tests/unit/ n'a pas d'équivalent du fixture
-      # run_migrations, et une base pgvector nue ferait ÉCHOUER les tests adossés
-      # à une base sur des relations manquantes au lieu de les faire passer.
+      # Same reason as in test-unit: tests/unit/ has no equivalent of the
+      # run_migrations fixture, and a bare pgvector database would make the
+      # database-backed tests FAIL on missing relations instead of passing.
       - name: Apply the schema to the test database
         run: .venv/bin/alembic upgrade head
       - name: Measure coverage
@@ -185,13 +185,13 @@ jobs:
           .venv/bin/pytest tests/unit/ --cov=brain_v42 --cov-report=term-missing
           --cov-report=xml:coverage.xml --cov-fail-under=60
           --junitxml=coverage-junit.xml
-      # LE TÉMOIN INVERSÉ, et c'est lui le livrable — pas le pourcentage.
-      # Réparer le chiffre seul le laisserait redériver au prochain écart de
-      # recette : un test qui SAUTE ne fait pas rougir un job, donc la CI serait
-      # restée verte sur une couverture partielle, exactement comme avant.
+      # THE INVERTED WITNESS, and it is the deliverable — not the percentage.
+      # Repairing the number alone would let it drift again at the next recipe
+      # gap: a test that SKIPS does not turn a job red, so CI would have stayed
+      # green on partial coverage, exactly as before.
       #
-      # `if: always()` : il doit parler même quand la mesure échoue par ailleurs,
-      # sinon un `--cov-fail-under` rouge masquerait la raison réelle.
+      # `if: always()`: it must speak even when the measurement fails elsewhere,
+      # otherwise a red `--cov-fail-under` would mask the real reason.
       - name: Refuse a coverage measured on a subset
         if: always()
         run: .venv/bin/python scripts/check_coverage_saw_the_db_tests.py coverage-junit.xml
@@ -238,17 +238,17 @@ jobs:
         run: pip install "uv==$UV_VERSION"
       - name: Install dependencies
         run: uv sync --locked --no-dev --extra dev
-      # `-o faulthandler_*` est répété ici alors que `pyproject.toml` le porte
-      # déjà : c'est CE job qui a pendu deux fois, et le rendre explicite le met
-      # sous les yeux de qui lit le log d'un run mort. Au bout de 120 s dans un
-      # test, toutes les piles sont dumpées et le processus sort — au lieu des
-      # trente minutes de silence terminées par `##[error]The operation was
-      # canceled.`, qui ne disent rien de ce qui bloquait.
+      # `-o faulthandler_*` is repeated here even though `pyproject.toml`
+      # already carries it: THIS job is the one that hung twice, and making it
+      # explicit puts it under the eyes of whoever reads a dead run's log. After
+      # 120 s inside a test, every stack is dumped and the process exits —
+      # instead of thirty minutes of silence ended by `##[error]The operation
+      # was canceled.`, which says nothing about what was blocking.
       #
-      # PAS de `timeout --signal=INT` autour de pytest comme filet : uvicorn
-      # CAPTE SIGINT (`Server.serve()` tourne sous `capture_signals()`) et le
-      # transforme en `should_exit`. pytest ne lèverait pas KeyboardInterrupt et
-      # le journal resterait muet — le filet renforcerait la panne.
+      # NO `timeout --signal=INT` around pytest as a net: uvicorn CATCHES
+      # SIGINT (`Server.serve()` runs under `capture_signals()`) and turns it
+      # into `should_exit`. pytest would not raise KeyboardInterrupt and the log
+      # would stay mute — the net would reinforce the failure.
       - name: Run integration tests
         run: >-
           .venv/bin/pytest tests/integration/ -v --tb=short

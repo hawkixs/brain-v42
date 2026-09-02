@@ -4,10 +4,10 @@ services:
     container_name: brain_v42_postgres
     restart: unless-stopped
     ports:
-      # Loopback-only (audit sécu 2026-07-03) : le port était exposé LAN sur
-      # 0.0.0.0 avec creds faibles. Les clients hôte passent par localhost:5433 ;
-      # les containers (red-codex) par le réseau docker brain_v42_default
-      # (brain_v42_postgres:5432). Accès distant → tunnel SSH.
+      # Loopback-only (security audit 2026-07-03): the port was exposed to the
+      # LAN on 0.0.0.0 with weak creds. Host clients go through localhost:5433;
+      # containers (red-codex) through the brain_v42_default docker network
+      # (brain_v42_postgres:5432). Remote access → SSH tunnel.
       - "127.0.0.1:5433:5432"
     environment:
       # Overridable via .env — inject a real password in shared/networked
@@ -32,9 +32,9 @@ services:
   embedding:
     build: ./services/embedding
     container_name: brain_v42_embedding
-    # PyTorch fp16 legacy — remplacé par embedding-llama + embedding-shim
-    # (cutover 2026-07-06, drift VRAM structurel — learning 410eb227).
-    # ROLLBACK : docker compose stop embedding-shim embedding-llama
+    # Legacy PyTorch fp16 — replaced by embedding-llama + embedding-shim
+    # (cutover 2026-07-06, structural VRAM drift — learning 410eb227).
+    # ROLLBACK: docker compose stop embedding-shim embedding-llama
     #            && docker compose --profile legacy up -d embedding
     profiles: ["legacy"]
     restart: unless-stopped
@@ -70,19 +70,19 @@ services:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:c1ddeb6d30932ddd9ddff962cb62dbc5450cd99d8e82c8c20de2fd1f99fde85b
     container_name: brain_v42_embedding_llama
     restart: unless-stopped
-    # --pooling last : config sentence-transformers du modèle (lasttoken).
-    # -ub 1024 : levier VRAM n°1 (2.9 GiB vs 4.7 à ub=4096, latences
-    # identiques — sweep 2026-07-06, learning 906722df). Le chunking
-    # ub < n_tokens est correct pour un embedder causal (Qwen2).
-    # -c 8192 : couvre le cap client 15000 chars (~4-5k tokens).
-    # -np 1 : verrouillé — le KV cache est PAR SLOT ; -np N sur ce GPU
-    # 6 GiB implique de re-mesurer la VRAM (N × ctx 8192).
-    # --cont-batching : explicite pour ne pas dépendre des défauts de
-    # l'image. NB --embd-normalize N'EXISTE PAS sur llama-server (flag
-    # CLI/embedding only — crashloop du 1er cutover) ; le serveur L2-
-    # normalise /v1/embeddings et le shim re-normalise (défense en prof.).
-    # Allocation VRAM statique au démarrage → pas de drift (le fix
-    # durable de l'incident 2026-04-12).
+    # --pooling last: the model's own sentence-transformers config (lasttoken).
+    # -ub 1024: VRAM lever no.1 (2.9 GiB vs 4.7 at ub=4096, latencies
+    # identical — sweep 2026-07-06, learning 906722df). Chunking with
+    # ub < n_tokens is correct for a causal embedder (Qwen2).
+    # -c 8192: covers the 15000-char client cap (~4-5k tokens).
+    # -np 1: locked — the KV cache is PER SLOT; -np N on this 6 GiB GPU
+    # means re-measuring the VRAM (N × ctx 8192).
+    # --cont-batching: explicit, so as not to depend on the image's
+    # defaults. NB --embd-normalize DOES NOT EXIST on llama-server (a
+    # CLI/embedding-only flag — the first cutover's crashloop); the server
+    # L2-normalises /v1/embeddings and the shim re-normalises (defence in depth).
+    # Static VRAM allocation at startup → no drift (the durable fix for
+    # the 2026-04-12 incident).
     command: >
       -m /models/qodo-embed-1.5b-q8_0.gguf
       --embedding --pooling last
@@ -90,18 +90,18 @@ services:
       -np 1 --cont-batching
       --host 0.0.0.0 --port 8080
     environment:
-      # L'image est bâtie sur CUDA 12.8 et embarque une couche forward-compat
-      # (/usr/local/cuda-12.8/compat/libcuda.so.570.124.06) déclarée dans
-      # ld.so.conf.d, qui GAGNE sur la libcuda injectée depuis l'hôte. Une
-      # libcuda compat ne fonctionne qu'avec un driver noyau PLUS ANCIEN
-      # qu'elle : hôte en 535 (< 570) → OK ; hôte passé en 580 (> 570) →
-      # CUDA_ERROR_SYSTEM_DRIVER_MISMATCH. llama-server ne meurt pas, il
-      # tombe en repli CPU silencieux (« no usable GPU found ») — /health
-      # reste 200 et /embed répond juste ~15x plus lentement (incident
-      # 2026-08-10, bascule noyau 6.8.0-124 → -136).
-      # Préfixer le chemin des libs injectées par l'hôte fait gagner la
-      # libcuda du driver réel. On PRÉFIXE, on ne remplace pas : la valeur
-      # d'origine porte le runtime CUDA (libcudart/libcublas) de l'image.
+      # The image is built on CUDA 12.8 and ships a forward-compat layer
+      # (/usr/local/cuda-12.8/compat/libcuda.so.570.124.06) declared in
+      # ld.so.conf.d, which WINS over the libcuda injected from the host. A
+      # compat libcuda only works with a kernel driver OLDER than itself:
+      # host on 535 (< 570) → OK; host moved to 580 (> 570) →
+      # CUDA_ERROR_SYSTEM_DRIVER_MISMATCH. llama-server does not die, it
+      # falls back to CPU silently ("no usable GPU found") — /health stays
+      # 200 and /embed simply answers ~15x slower (incident 2026-08-10,
+      # kernel move 6.8.0-124 → -136).
+      # Prefixing the path of the host-injected libs makes the real driver's
+      # libcuda win. We PREFIX, we do not replace: the original value carries
+      # the image's CUDA runtime (libcudart/libcublas).
       - LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/local/cuda/lib64
     volumes:
       - ${QODO_GGUF_DIR:-./models/qodo-gguf}:/models:ro
@@ -113,8 +113,8 @@ services:
               count: 1
               capabilities: [gpu]
     healthcheck:
-      # curl présent dans l'image (vérifié 2026-07-06). /health de
-      # llama-server retourne 503 tant que le modèle charge, 200 ensuite.
+      # curl is present in the image (verified 2026-07-06). llama-server's
+      # /health returns 503 while the model loads, 200 afterwards.
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:8080/health"]
       interval: 30s
       timeout: 5s
@@ -147,9 +147,9 @@ services:
       embedding-llama:
         condition: service_healthy
     healthcheck:
-      # Healthcheck réel de bout en bout : POST /embed traverse le shim
-      # ET le serveur llama (même philosophie que le healthcheck legacy
-      # post-incident 410eb227 — jamais de /healthz-only false-green).
+      # A real end-to-end healthcheck: POST /embed crosses the shim AND the
+      # llama server (the same philosophy as the legacy healthcheck after
+      # incident 410eb227 — never a /healthz-only false green).
       test: ["CMD", "python3", "-c", "import urllib.request,json; r=urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8003/embed',data=json.dumps({'texts':['healthcheck']}).encode(),headers={'Content-Type':'application/json'}),timeout=15); assert r.read(2)==b'[['"]
       interval: 60s
       timeout: 20s
@@ -162,8 +162,8 @@ services:
     container_name: brain_v42_neo4j
     restart: unless-stopped
     ports:
-      # Loopback-only (audit sécu 2026-07-03) — même raison que postgres.
-      # Browser Neo4j depuis une autre machine → tunnel SSH (7474 + 7687).
+      # Loopback-only (security audit 2026-07-03) — same reason as postgres.
+      # Neo4j browser from another machine → SSH tunnel (7474 + 7687).
       - "127.0.0.1:7687:7687"
       - "127.0.0.1:7474:7474"
     environment:

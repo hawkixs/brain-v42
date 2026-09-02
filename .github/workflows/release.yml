@@ -1,22 +1,22 @@
 # brain_v42 - GitHub Actions, rail de release.
 #
-# Ce rail tourne RUNNER ÉTEINT, et c'est sa raison d'être. Mesuré le 2026-08-14 :
-# 19 runs du rail de livraison, 19 `cancelled`, 0 succès, parce que
-# [self-hosted, Linux, X64, red-ci] est démarré à la demande et que son état
-# `offline` est NORMAL. Une release posée là n'aurait jamais tourné : elle aurait
-# attendu le geste manuel qu'elle est censée remplacer. D'où ubuntu-24.04 hébergé.
+# This rail runs WITH THE RUNNER OFF, and that is its reason to exist. Measured
+# 2026-08-14: 19 runs of the delivery rail, 19 `cancelled`, 0 successes, because
+# [self-hosted, Linux, X64, red-ci] is started on demand and its `offline` state
+# is NORMAL. A release placed there would never have run: it would have waited
+# for the manual gesture it exists to replace. Hence hosted ubuntu-24.04.
 #
-# Il n'attache que deux fichiers : la wheel et le sdist. AUCUNE image. Le registre
-# est privé et à DNS interne (registry.hawkixs.local), donc son adresse ne veut
-# rien dire pour un consommateur de release ; et une image cuirait l'ONNX du
-# reranker, dont NOTICE déclare la licence amont indéterminée. Publier un digest
-# reste l'affaire du rail de livraison, sur son propre runner.
+# It attaches two files only: the wheel and the sdist. NO image. The registry is
+# private and on internal DNS (registry.hawkixs.local), so its address means
+# nothing to a consumer of the release; and an image would bake in the reranker's
+# ONNX, whose upstream licence NOTICE declares undetermined. Publishing a digest
+# stays the delivery rail's business, on its own runner.
 #
-# Aucun secret de dépôt : `GITHUB_TOKEN` est frappé par la plateforme pour ce run
-# seul, et `permissions:` le réduit à l'écriture d'une release.
+# No repository secret: `GITHUB_TOKEN` is minted by the platform for this run
+# alone, and `permissions:` narrows it down to writing a release.
 #
-# Déclenchement : l'opérateur pose le tag, ce rail publie. Un push de branche ne
-# publie rien.
+# Trigger: the operator places the tag, this rail publishes. A branch push
+# publishes nothing.
 
 name: Release
 
@@ -25,12 +25,12 @@ on:
     tags:
       - "v*"
 
-# Le jeton par défaut porte bien plus que ce qu'une release exige.
+# The default token carries far more than a release requires.
 permissions:
   contents: write
 
-# Deux tags poussés coup sur coup publient deux releases distinctes : elles ne
-# s'annulent pas l'une l'autre, elles se suivent.
+# Two tags pushed back to back publish two distinct releases: they do not
+# cancel one another, they follow one another.
 concurrency:
   group: brain-v42-release-${{ github.ref }}
   cancel-in-progress: false
@@ -59,20 +59,21 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --no-dev --extra dev
 
-      # Le contrat est RÉUTILISÉ, pas recopié : ce fichier construit déjà une vraie
-      # wheel et lit sur le disque l'ensemble des révisions attendues. Le réécrire
-      # ici en YAML donnerait deux vérités qui dériveraient sans le dire. Mesuré
-      # avant ce contrat : une wheel de 192 entrées dont ZÉRO alembic, donc un
-      # paquet incapable de migrer sa propre base.
+      # The contract is REUSED, not copied: that file already builds a real
+      # wheel and reads the full set of expected revisions off the disk.
+      # Rewriting it here in YAML would give two truths that drift without
+      # saying so. Measured before this contract: a wheel of 192 entries with
+      # ZERO alembic, hence a package unable to migrate its own database.
       - name: Vérifier que la wheel porte les migrations
         run: .venv/bin/pytest tests/unit/test_wheel_ships_migrations.py -v --tb=short
 
       - name: Construire la wheel et le sdist
         run: uv build --out-dir dist
 
-      # Un seul shell : la garde nomme les artefacts, la publication les attache.
-      # Sans elle, un tag v9.9.9 publierait une wheel 0.2.0 et la release mentirait
-      # sur ce que /health annoncera. `bash -e` interrompt le pas avant `gh`.
+      # One shell: the guard names the artifacts, the publication attaches them.
+      # Without it, a v9.9.9 tag would publish a 0.2.0 wheel and the release
+      # would lie about what /health will announce. `bash -e` stops the step
+      # before `gh`.
       - name: Publier la release avec ses deux artefacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

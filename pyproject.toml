@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "brain_v42"
-# 0.x volontairement : le contrat de version vit dans README.md#versioning, et il
-# refuse de promettre un downgrade sans perte (037 et 039 refusent le leur).
+# 0.x on purpose: the version contract lives in README.md#versioning, and it
+# refuses to promise a lossless downgrade (037 and 039 refuse theirs).
 version = "0.3.0"
 description = "Second Cerveau v42 - Mémoire persistante pour Claude Code via MCP"
 readme = "README.md"
@@ -72,20 +72,20 @@ brain-v42-mint-dream-capability-registry = "brain_v42.scripts.mint_dream_capabil
 brain-v42-domain-backfill = "brain_v42.scripts.domain_backfill:main"
 
 [project.optional-dependencies]
-# Tracing OTel des appels de tool — extra SÉPARÉ, jamais dans `dependencies`.
-# L'exporter OTLP HTTP tire `protobuf` et `googleapis-common-protos` en
-# transitif (mesuré : 8 paquets pour opentelemetry-sdk 1.44.0), ce qui n'a pas
-# à peser sur une installation qui ne trace pas. `brain_v42.tracing` importe le
-# SDK À L'INTÉRIEUR de ses fonctions et rend False quand il manque : l'absence
-# de cet extra est un état NORMAL, pas une panne.
+# OTel tracing of tool calls — a SEPARATE extra, never in `dependencies`.
+# The OTLP HTTP exporter pulls `protobuf` and `googleapis-common-protos`
+# transitively (measured: 8 packages for opentelemetry-sdk 1.44.0), which has
+# no business weighing on an install that does not trace. `brain_v42.tracing`
+# imports the SDK INSIDE its functions and returns False when it is missing:
+# the absence of this extra is a NORMAL state, not a failure.
 tracing = [
     "opentelemetry-sdk>=1.44,<2",
     "opentelemetry-exporter-otlp-proto-http>=1.44,<2",
 ]
 dev = [
-    # Toolchain CI pinnée EXACTE (learning c43ed8b8) : deps non pinnées →
-    # local ≠ CI et main rougit sur upgrade upstream (mypy 1.19.1 local vs
-    # 2.2.0 CI, 2026-07-10). Upgrade = commit explicite, vérifié vert.
+    # EXACTLY pinned CI toolchain (learning c43ed8b8): unpinned deps →
+    # local != CI, and main turns red on an upstream upgrade (mypy 1.19.1
+    # local vs 2.2.0 in CI, 2026-07-10). An upgrade is an explicit, green commit.
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     "pytest-aiohttp==1.1.1",
@@ -111,16 +111,16 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/brain_v42"]
 
-# Les migrations voyagent AVEC le paquet. Mesuré avant ce bloc : la wheel portait
-# 192 entrées dont ZÉRO alembic — le binaire `alembic` était livré par la
-# dépendance, pas les révisions qu'il doit jouer.
+# The migrations travel WITH the package. Measured before this block: the wheel
+# carried 192 entries and ZERO alembic — the `alembic` binary was shipped by the
+# dependency, not the revisions it is meant to run.
 #
-# `force-include` RECOPIE l'arbre dans la distribution sans déplacer les sources :
-# `alembic/` et `alembic.ini` restent à la racine du dépôt, où
-# `tests/unit/test_alembic_env.py` les résout depuis PROJECT_ROOT. La destination
-# est sous `brain_v42/` — donc dans le paquet importable — pour rester atteignable
-# depuis `brain_v42.__file__` après installation, plutôt qu'échouée à la racine de
-# site-packages où rien ne saurait la retrouver.
+# `force-include` COPIES the tree into the distribution without moving the
+# sources: `alembic/` and `alembic.ini` stay at the repository root, where
+# `tests/unit/test_alembic_env.py` resolves them from PROJECT_ROOT. The
+# destination sits under `brain_v42/` — inside the importable package — so it
+# stays reachable from `brain_v42.__file__` after installation, rather than
+# stranded at the root of site-packages where nothing could find it again.
 [tool.hatch.build.targets.wheel.force-include]
 "alembic" = "brain_v42/alembic"
 "alembic.ini" = "brain_v42/alembic.ini"
@@ -130,15 +130,15 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-v --tb=short"
 pythonpath = ["src"]
-# Le filet qui vaut indépendamment de toute cause. Deux fois, la CI a rendu
-# TRENTE MINUTES de silence puis un job tué : un hang ne dit rien, et aucune
-# borne applicative ne couvre l'attente qu'on n'a pas prévue. faulthandler
-# dumpe TOUTES les piles au bout de 120 s dans un test, puis sort — la panne
-# suivante nommera son propre `await`, quelle qu'elle soit.
+# The net that holds whatever the cause. Twice, CI produced THIRTY MINUTES of
+# silence and then a killed job: a hang says nothing, and no application-level
+# bound covers the wait nobody planned for. faulthandler dumps ALL the stacks
+# after 120 s inside a test, then exits — the next hang will name its own
+# `await`, whichever one it turns out to be.
 #
-# 120 s est très au-dessus du réel : la suite d'intégration entière tourne en
-# ~91 s pour 348 tests, et le budget applicatif le plus large d'un seul appel
-# est de 90 s. Ce seuil n'attrape donc que ce qui ne revient pas.
+# 120 s sits far above reality: the whole integration suite runs in ~91 s for
+# 348 tests, and the widest application budget for a single call is 90 s. This
+# threshold therefore catches only what never comes back.
 faulthandler_timeout = 120
 faulthandler_exit_on_timeout = true
 
