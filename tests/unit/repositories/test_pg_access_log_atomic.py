@@ -97,11 +97,11 @@ class TestAggregateInSession:
         result = await repo.aggregate_in_session(session)
 
         assert len(result) == 2
-        # `max_accessed_human` — migration 044. La récence a désormais son
-        # pendant humain, comme le compteur depuis la 041 : sans lui, le terme
-        # de poids 0,3 de la formule de decay restait piloté par les lectures
-        # machine. `None` quand aucun acteur humain n'apparaît dans le lot, et
-        # c'est distinct de « jamais lu » — le flusher garde alors l'existant.
+        # `max_accessed_human` — migration 044. Recency now has its human
+        # counterpart, as the counter has had since 041: without it, the decay
+        # formula's 0.3-weight term stayed driven by machine reads. `None` when
+        # no human actor appears in the batch, and that is distinct from "never
+        # read" — the flusher then keeps the existing value.
         assert result[("decision", entity_id_1)] == {
             "max_accessed": now,
             "max_accessed_human": now,

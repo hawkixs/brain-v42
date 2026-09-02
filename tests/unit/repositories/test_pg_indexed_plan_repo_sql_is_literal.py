@@ -1,13 +1,13 @@
-"""Garde d'invariant du `# nosec B608` de PgIndexedPlanRepo.list_plans.
+"""Invariant guard for PgIndexedPlanRepo.list_plans' `# nosec B608`.
 
-`list_plans` construit sa clause WHERE par f-string : bandit la signale (B608)
-et l'exception posée sur la ligne de fermeture repose sur UN invariant — le seul
-fragment interpolé, ``where``, est le join de fragments TOUS littéraux, écrits
-juste au-dessus dans la même fonction. project_key, plan_type, status, limit et
-offset n'atteignent le SQL que par des binds.
+`list_plans` builds its WHERE clause by f-string: bandit flags it (B608) and the
+exception placed on the closing line rests on ONE invariant — the only
+interpolated fragment, ``where``, is the join of fragments that are ALL literals,
+written just above in the same function. project_key, plan_type, status, limit
+and offset reach the SQL only through binds.
 
-Ces tests échouent si quelqu'un rend un fragment de clause dynamique, moment
-exact où le nosec cesserait d'être justifié.
+These tests fail if anyone makes a clause fragment dynamic, the exact moment the
+nosec would stop being justified.
 """
 
 from __future__ import annotations
@@ -34,10 +34,10 @@ def _list_plans_ast() -> ast.AsyncFunctionDef:
 
 
 def test_list_plans_where_fragments_are_string_literals() -> None:
-    """Chaque fragment de `clauses` doit être un littéral écrit dans le source.
+    """Every fragment of `clauses` must be a literal written in the source.
 
-    Échoue sur `clauses.append(f"{col} = ...")`, une concaténation, un
-    `.format(...)` ou l'append d'un paramètre de la fonction.
+    Fails on `clauses.append(f"{col} = ...")`, a concatenation, a `.format(...)`
+    or appending one of the function's parameters.
     """
     fn = _list_plans_ast()
 

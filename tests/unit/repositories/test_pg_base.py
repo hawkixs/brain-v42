@@ -943,7 +943,7 @@ class TestOptionalSessionFactoryDI:
     """BasePgRepository.__init__ accepts an optional session_factory kwarg.
 
     When provided, get_session() uses it instead of the global get_session_factory().
-    When absent, falls back to the global get_session_factory() — rétro-compatible.
+    When absent, falls back to the global get_session_factory() — backward-compatible.
     """
 
     def test_init_no_args(self):

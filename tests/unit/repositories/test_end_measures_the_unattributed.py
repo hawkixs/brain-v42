@@ -1,15 +1,15 @@
-"""`end` MESURE ce qui est resté hors de tout ledger, au lieu de l'exiger.
+"""`end` MEASURES what stayed outside every ledger, instead of demanding it.
 
-Le XOR demandait à l'utilisateur de DÉCLARER sa diligence. Ce compteur ne
-demande rien : il dit combien d'artefacts du projet, créés pendant la session,
-n'appartiennent à AUCUN ledger. C'est une observation, pas une porte — et c'est
-la différence entre informer et punir.
+The XOR asked the user to DECLARE their diligence. This counter asks nothing: it
+says how many project artifacts, created during the session, belong to NO ledger.
+It is an observation, not a gate — and that is the difference between informing
+and punishing.
 
-La propriété qui le rend non-influençable, et qu'un test dédié épingle :
-**une session ne peut pas le faire baisser en ne faisant rien.** L'inaction
-produit zéro artefact, donc zéro orphelin, donc zéro à afficher ; le compteur ne
-descend qu'en attribuant réellement. Un compteur qu'on améliore en se taisant
-serait exactement le reçu qu'on vient de retirer, sous un autre nom.
+The property that makes it non-influenceable, and that a dedicated test pins:
+**a session cannot lower it by doing nothing.** Inaction produces zero artifacts,
+hence zero orphans, hence zero to display; the counter only goes down by actually
+attributing. A counter one improves by staying silent would be exactly the
+receipt just removed, under another name.
 """
 
 from __future__ import annotations
@@ -62,10 +62,10 @@ async def test_end_reports_what_stayed_out_of_every_ledger() -> None:
 
 @pytest.mark.asyncio
 async def test_a_session_that_did_nothing_cannot_lower_the_count() -> None:
-    """L'inaction ne produit rien à compter — donc zéro, jamais un progrès.
+    """Inaction produces nothing to count — hence zero, never progress.
 
-    C'est ce qui empêche le compteur de devenir un score : on ne l'améliore
-    qu'en attribuant, jamais en se taisant.
+    That is what stops the counter becoming a score: it improves only by
+    attributing, never by staying silent.
     """
     result, _statements = await _end_with(0)
     assert result.unattributed_in_window == 0  # type: ignore[attr-defined]
@@ -73,10 +73,10 @@ async def test_a_session_that_did_nothing_cannot_lower_the_count() -> None:
 
 @pytest.mark.asyncio
 async def test_the_window_and_the_anti_join_are_both_in_the_query() -> None:
-    """Bornes du comptage : le projet, la fenêtre, et « dans AUCUN ledger ».
+    """Bounds of the count: the project, the window, and "in NO ledger".
 
-    Sans l'anti-jointure il compterait tout ce que la session a produit, y
-    compris ce qu'elle a attribué — le chiffre monterait quand on fait bien.
+    Without the anti-join it would count everything the session produced,
+    including what it attributed — the figure would rise when one does well.
     """
     from brain_v42.repositories.pg_brain_session import CAPTURE_TABLES
 
@@ -99,7 +99,7 @@ async def test_the_window_and_the_anti_join_are_both_in_the_query() -> None:
 
 @pytest.mark.asyncio
 async def test_the_counter_never_blocks_the_close() -> None:
-    """Une mesure n'est pas une porte : elle ne peut pas refuser une fermeture."""
+    """A measure is not a gate: it cannot refuse a closure."""
     result, _statements = await _end_with(97, captured_knowledge_ids=[uuid4()])
     assert result.session.status.value == "ended"  # type: ignore[attr-defined]
     assert result.unattributed_in_window == 97  # type: ignore[attr-defined]
@@ -107,16 +107,16 @@ async def test_the_counter_never_blocks_the_close() -> None:
 
 @pytest.mark.asyncio
 async def test_an_artifact_parked_in_a_tracer_counts_as_UNattributed() -> None:
-    """Le reçu MENTAIT exactement dans le cas qu'on répare.
+    """The receipt LIED in exactly the case being repaired.
 
-    Une ligne garée dans une traçante `agent` a bien une ligne de ledger, donc
-    l'anti-jointure la comptait comme attribuée. C'est pour ça que
-    `unattributed_in_window` valait déjà 0 le jour où la promesse n'était pas
-    tenue — mesuré sur la fermeture du 2026-08-24 : le seul artefact dérivé
-    n'apparaissait ni comme attribué à l'utilisateur, ni comme orphelin.
+    A row parked in an `agent` tracer does have a ledger row, so the anti-join
+    counted it as attributed. That is why `unattributed_in_window` already read 0
+    on the day the promise was not kept — measured on the closure of 2026-08-24:
+    the only derived artifact appeared neither as attributed to the user nor as
+    an orphan.
 
-    Un refus de la règle d'exclusivité doit se VOIR. Un lot fail-closed sans
-    visibilité se lit comme un lot cassé.
+    A refusal by the exclusivity rule must be VISIBLE. A fail-closed batch
+    without visibility reads as a broken batch.
     """
     _result, statements = await _end_with(1)
     counts = [
@@ -129,6 +129,6 @@ async def test_an_artifact_parked_in_a_tracer_counts_as_UNattributed() -> None:
         "l'anti-jointure ignore la NATURE du propriétaire : une ligne garée "
         "dans une traçante passe encore pour attribuée"
     )
-    # `agent` voyage en PARAMÈTRE, jamais dans le texte compilé : le chercher
-    # dans le SQL rendrait ce test vert sans avoir rien vu.
+    # `agent` travels as a PARAMETER, never in the compiled text: looking for it
+    # in the SQL would turn this test green having seen nothing.
     assert "agent" in set(_params(counts[-1]).values())

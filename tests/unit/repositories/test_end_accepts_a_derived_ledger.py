@@ -1,19 +1,19 @@
-"""UNE scène, trois rails : fermer une session dont le SERVEUR a rempli le ledger.
+"""ONE scene, three rails: closing a session whose ledger the SERVER filled.
 
-La scène est le réflexe d'un utilisateur qu'on ne veut pas punir : il ferme sa
-session en disant « je n'ai rien produit de durable », alors que la dérivation a
-déjà attribué des artefacts pour lui. Avant ce lot, les trois rails le
-refusaient — répertoire, modèle Pydantic, puis CHECK en base — et la session
-devenait **infermable**. Un drapeau qui rend une session infermable n'est pas
-armable ; c'est ce qui faisait de tout le lot précédent du code mort.
+The scene is the reflex of a user we do not want to punish: they close their
+session saying "I produced nothing durable", while derivation has already
+attributed artifacts on their behalf. Before this batch, all three rails refused
+it — repository, Pydantic model, then the database CHECK — and the session
+became **impossible to close**. A flag that makes a session impossible to close
+cannot be armed; that is what made the whole previous batch dead code.
 
-Le XOR mesurait « le client a-t-il DÉCLARÉ ». La dérivation supprime le seul
-mode de panne qu'il attrapait (produit-mais-non-déclaré) et alimenterait
-désormais son signal côté serveur. **Un contrôle est creux dès que l'objet
-contrôlé peut influencer son signal.** On ne retire donc pas une garde : on
-retire un reçu que le serveur se délivrerait à lui-même.
+The XOR measured "did the client DECLARE". Derivation removes the only failure
+mode it caught (produced-but-not-declared) and would now feed its signal from the
+server side. **A control is hollow as soon as the controlled object can influence
+its own signal.** So we are not removing a guard: we are removing a receipt the
+server would issue to itself.
 
-La porte de remplacement vit dans `test_end_gate_is_judgement_only.py`.
+The replacement gate lives in `test_end_gate_is_judgement_only.py`.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from tests.unit.repositories.test_pg_brain_session import (
 
 @pytest.mark.asyncio
 async def test_end_accepts_a_derived_ledger_alongside_an_explicit_reason() -> None:
-    """Rail 1 — le répertoire. Le ledger est plein SANS que le client l'ait demandé."""
+    """Rail 1 — the repository. The ledger is full WITHOUT the client asking."""
     from brain_v42.repositories.pg_brain_session import PgBrainSessionRepo
 
     opened = _session_row()
@@ -51,9 +51,10 @@ async def test_end_accepts_a_derived_ledger_alongside_an_explicit_reason() -> No
             focus_row={"current_focus": "implement tools", "focus_revision": 8},
             current_focus_row={"current_focus": "old focus", "focus_revision": 7},
             artifact_rows=[{"knowledge_id": derived, "session_id": opened["id"]}],
-            # L'artefact dérivé est dans le projet et dans la fenêtre : c'est
-            # l'invariant de `absorb_tracer_ledger`, qui n'accepte QUE ce qu'une
-            # capture explicite aurait accepté. `end` le revalide, et il passe.
+            # The derived artifact is in the project and in the window: that is
+            # `absorb_tracer_ledger`'s invariant, which accepts ONLY what an
+            # explicit capture would have accepted. `end` revalidates it, and it
+            # passes.
             valid_capture_ids=[derived],
         )
     )
@@ -72,11 +73,12 @@ async def test_end_accepts_a_derived_ledger_alongside_an_explicit_reason() -> No
 
 
 def test_the_model_accepts_an_ended_session_carrying_both() -> None:
-    """Rail 2 — le rail PYDANTIC, celui que le brief d'origine avait oublié.
+    """Rail 2 — the PYDANTIC rail, the one the original brief forgot.
 
-    Il aurait fait échouer le lot APRÈS la migration : la base aurait accepté la
-    ligne, et le modèle aurait refusé de la relire. Une session persistée que
-    son propre modèle ne sait pas charger est pire qu'un refus à l'écriture.
+    It would have failed the batch AFTER the migration: the database would have
+    accepted the row, and the model would have refused to read it back. A
+    persisted session its own model cannot load is worse than a refusal at write
+    time.
     """
     from brain_v42.models.brain_session import BrainSession
 

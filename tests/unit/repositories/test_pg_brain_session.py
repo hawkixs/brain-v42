@@ -197,7 +197,7 @@ def _terminal_router(
     def route(statement: Any) -> MagicMock:
         sql = _sql(statement)
         if "count(" in sql and "brain_session_artifacts" in sql:
-            # Le comptage hors-ledger : il nomme le ledger, pas `brain_sessions`.
+            # The out-of-ledger count: it names the ledger, not `brain_sessions`.
             return _result(scalar=unattributed)
         if "count(" in sql and "brain_sessions" in sql:
             return _result(scalar=remaining_open)
@@ -774,11 +774,11 @@ class TestEnd:
         )
 
         assert result.session.nothing_to_capture_reason == "no durable new knowledge"
-        # Le discriminant a été RESSERRÉ par la 047, pas relâché : `end` mesure
-        # désormais les artefacts hors ledger, et ce comptage traverse les mêmes
-        # six tables. Ce que ce témoin garde est la VALIDATION de capture — la
-        # requête verrouillante, qui ne doit pas tourner quand rien n'est
-        # capturé. Le comptage est une mesure, il n'en est pas une.
+        # The discriminant was TIGHTENED by 047, not loosened: `end` now
+        # measures the out-of-ledger artifacts, and that count crosses the same
+        # six tables. What this witness guards is capture VALIDATION — the
+        # locking query, which must not run when nothing is captured. The count
+        # is a measure; it is not one.
         capture_selects = [
             stmt
             for stmt in statements

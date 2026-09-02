@@ -1,12 +1,12 @@
-"""Le SITE d'appel de la dérivation, épinglé — sans ça un rebase l'emporterait en silence.
+"""Derivation's CALL SITE, pinned — without this a rebase would take it silently.
 
-Avant ce module, `grep -rn derive_capture src/brain_v42/repositories/` rendait 0
-et AUCUN test ne voyait le câblage disparaître : la suite serait restée verte sur
-une capture dérivée qui n'existe plus. Un mécanisme dont la disparition ne fait
-rougir personne n'est pas livré, il est espéré.
+Before this module, `grep -rn derive_capture src/brain_v42/repositories/`
+returned 0 and NO test saw the wiring disappear: the suite would have stayed
+green over a derived capture that no longer exists. A mechanism whose
+disappearance makes nobody red is not delivered, it is hoped for.
 
-Deux propriétés, et la seconde est celle qui coûte : la création qu'on observe
-doit rendre sa ligne QUOI QU'IL ARRIVE dans la dérivation.
+Two properties, and the second is the one that costs: the creation being observed
+must return its row WHATEVER HAPPENS in the derivation.
 """
 
 from __future__ import annotations
@@ -39,12 +39,12 @@ def _repo_and_row() -> tuple[_LearningsRepo, dict[str, Any], list[Any]]:
 async def test_create_derives_once_with_the_table_name_and_the_whole_returning_row(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Une fois, avec le nom de table et la ligne COMPLÈTE du RETURNING.
+    """Once, with the table name and the COMPLETE row from the RETURNING.
 
-    La ligne complète, et pas ``data`` : le projet et l'identifiant sortent du
-    RETURNING, donc passer les valeurs d'entrée dériverait sur un artefact dont
-    l'id n'existe pas encore. L'argument reçu EST la ligne rendue — c'est aussi
-    ce qui prouve que l'appel vient APRÈS sa matérialisation.
+    The complete row, and not ``data``: the project and the identifier come out
+    of the RETURNING, so passing the input values would derive on an artifact
+    whose id does not exist yet. The argument received IS the returned row —
+    which is also what proves the call comes AFTER its materialization.
     """
     import brain_v42.repositories.pg_base as module
 
@@ -69,12 +69,12 @@ async def test_create_derives_once_with_the_table_name_and_the_whole_returning_r
 async def test_create_returns_its_row_even_when_the_connection_lookup_explodes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """La garde qui compte : la vraie dérivation, avec le drapeau OUVERT, qui casse.
+    """The guard that matters: the real derivation, flag OPEN, breaking.
 
-    ``_current_connection_id`` fait un import différé de ``brain_v42.provenance``.
-    Hors du ``try``, un ``ImportError`` y remonterait dans l'appel observé —
-    exactement ce que les gardes prétendent empêcher. Ce test le fait lever pour
-    de vrai et exige quand même la ligne.
+    ``_current_connection_id`` performs a deferred import of
+    ``brain_v42.provenance``. Outside the ``try``, an ``ImportError`` would
+    surface there in the observed call — exactly what the guards claim to
+    prevent. This test makes it raise for real and demands the row anyway.
     """
     from unittest.mock import MagicMock
 
