@@ -141,7 +141,7 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
-def format_missing_db_url_summary(skipped: int) -> str | None:
+def format_missing_db_url_summary(skipped: int, reason: str | None = None) -> str | None:
     """The end-of-session line for a suite that measured nothing, or None.
 
     Ticket `634203e0`. Without ``BRAIN_V42_TEST_DB_URL`` this suite skips whole
@@ -151,18 +151,62 @@ def format_missing_db_url_summary(skipped: int) -> str | None:
     Three facts, because a line missing any of them leaves the reader stuck: the
     variable to set, HOW MANY tests went unmeasured, and the value to set it to.
     That last one is not decoration — without it the next keystroke points at the
-    production database, which is what the guard below exists to refuse.
+    production database, which is what the guard above exists to refuse.
+
+    ``reason`` distinguishes the two ways to measure nothing, because they need
+    different gestures from the reader: unset means "set it", rejected means "the
+    value you already chose was refused, and here is what for". It carries the
+    resolver's own message and NEVER the URL — the DSN holds a password, and this
+    line is printed to a terminal and pasted into reports.
 
     Returns None when nothing was skipped: printed on every run the line would be
     scrolled past, and invisible on the day it matters.
     """
     if skipped <= 0:
         return None
+    cause = (
+        "is not set"
+        if reason is None
+        else f"is set but the suite refused the value it names — {reason}"
+    )
     return (
-        f"BRAIN_V42_TEST_DB_URL is not set — {skipped} integration tests were SKIPPED "
+        f"BRAIN_V42_TEST_DB_URL {cause} — {skipped} integration tests were SKIPPED "
         f"and measured nothing. Set it to a test database (e.g. .../brain_test) "
         f"before reading this run as a pass."
     )
+
+
+def nothing_was_measured(stats: dict[str, Any]) -> bool:
+    """True when a run skipped tests and produced no other outcome at all.
+
+    The condition is "nothing was measured", never "the variable is missing". The
+    first version of this guard returned early whenever the variable held a
+    non-empty value, and that is a test of a KEYSTROKE: a URL pointing at the prod
+    `brain` database is rejected by ``_resolve_integration_db_url`` and lands in
+    this very ``skipped`` bucket. Measured on 2026-09-02 at HEAD 610c24d, both runs
+    print `423 skipped` and exit 0 — one warned, one was silent, and the silent one
+    belonged to whoever had tried to configure the suite and got it wrong.
+
+    ``error`` counts as measurement here, deliberately, though it measured nothing
+    either: an unreachable host yields `422 errors` and a NON-ZERO exit (measured
+    the same day, 63 s of connection retries). That run cannot be misread as a
+    pass, so a banner would only add noise to a screen that is already red. This
+    line exists for the run that looks GREEN and proves nothing.
+    """
+    if not stats.get("skipped"):
+        return False
+    return not any(stats.get(outcome) for outcome in ("passed", "failed", "error"))
+
+
+def _rejection_reason() -> str | None:
+    """Why the configured URL was refused, or None when none was configured."""
+    if not os.environ.get("BRAIN_V42_TEST_DB_URL"):
+        return None
+    try:
+        _resolve_integration_db_url()
+    except ValueError as exc:
+        return str(exc)
+    return None
 
 
 def pytest_terminal_summary(terminalreporter: Any) -> None:
@@ -172,10 +216,10 @@ def pytest_terminal_summary(terminalreporter: Any) -> None:
     row of dots and the final line reads `423 skipped`. This is the only place
     the reason survives the summary.
     """
-    if os.environ.get("BRAIN_V42_TEST_DB_URL"):
+    if not nothing_was_measured(terminalreporter.stats):
         return
     skipped = len(terminalreporter.stats.get("skipped", []))
-    line = format_missing_db_url_summary(skipped)
+    line = format_missing_db_url_summary(skipped, _rejection_reason())
     if line is not None:
         terminalreporter.write_sep("=", "integration suite not measured", red=True)
         terminalreporter.write_line(line)
