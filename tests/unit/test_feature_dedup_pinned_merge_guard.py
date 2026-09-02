@@ -1,33 +1,32 @@
-"""`merge_features` doit refuser d'absorber une feature ÉPINGLÉE.
+"""`merge_features` must refuse to absorb a PINNED feature.
 
-FICHIER FRÈRE : `test_feature_dedup_pinned_guard.py` couvre déjà la même règle
-sur `find_candidates`. Les deux ne font pas doublon — ils gardent deux moments
-différents, et c'est tout le sujet ici.
+SIBLING FILE: `test_feature_dedup_pinned_guard.py` already covers the same rule
+on `find_candidates`. The two are not duplicates — they guard two different
+moments, and that is the whole subject here.
 
-Le ticket `4a6fe67e` visait « le dedup applique oldest-absorbs-newest sans
-garde sur `pinned` ». Ce n'est plus vrai à la lettre : `find_candidates` porte
-cette garde depuis son fichier frère. Mais elle vit dans le chemin de
-DÉCOUVERTE, pas dans le chemin de MUTATION, et `merge_features` — le seul qui
-écrit — ne la portait pas.
+Ticket `4a6fe67e` targeted "the dedup applies oldest-absorbs-newest with no guard
+on `pinned`". That is no longer true to the letter: `find_candidates` carries that
+guard from its sibling file. But it lives in the DISCOVERY path, not in the
+MUTATION path, and `merge_features` — the only one that writes — did not carry it.
 
-Deux façons d'absorber une épinglée subsistent donc :
+Two ways of absorbing a pinned feature therefore remained:
 
-1. TOCTOU. `run_dedup_loop` collecte TOUS les candidats d'un projet, puis les
-   fusionne un par un, chacun dans sa propre session et après un aller-retour
-   reranker. Un humain qui épingle une feature pendant cette fenêtre voit son
-   geste ignoré : la décision a été prise sur un instantané d'avant.
-2. Appel direct. `merge_features` est publique et le docstring du module la
-   documente comme telle. Un appelant qui ne passe pas par `find_candidates`
-   n'hérite d'aucune garde.
+1. TOCTOU. `run_dedup_loop` collects ALL of a project's candidates, then merges
+   them one by one, each in its own session and after a reranker round-trip. A
+   human who pins a feature during that window sees their gesture ignored: the
+   decision was taken on an earlier snapshot.
+2. A direct call. `merge_features` is public and the module's docstring documents
+   it as such. A caller that does not go through `find_candidates` inherits no
+   guard.
 
-La garde doit donc lire `pinned` sur la ligne FOR UPDATE — la seule
-autorité — et non sur l'instantané passé en argument. Le test 4 le prouve :
-instantané non épinglé, ligne autoritaire épinglée, la fusion doit être refusée.
+The guard must therefore read `pinned` on the FOR UPDATE row — the only
+authority — and not on the snapshot passed as an argument. Test 4 proves it: an
+unpinned snapshot, a pinned authoritative row, the merge must be refused.
 
-TÉMOIN NÉGATIF, dans ce fichier et non ailleurs : `test_unpinned_source_still_merges`
-et `test_pinned_target_still_absorbs`. Sans eux, une garde trop large
-désactiverait le dedup et la suite resterait verte — on aurait « protégé » les
-épinglées en cassant la fonctionnalité.
+NEGATIVE WITNESS, in this file and nowhere else: `test_unpinned_source_still_merges`
+and `test_pinned_target_still_absorbs`. Without them, an over-broad guard would
+disable the dedup and the suite would stay green — we would have "protected" the
+pinned features by breaking the functionality.
 """
 
 from __future__ import annotations
@@ -47,12 +46,12 @@ def _row(
     feature_id: uuid.UUID | None = None,
     description: str = "desc",
 ) -> MagicMock:
-    """Ligne de features mockée.
+    """A mocked features row.
 
-    `pinned` est OBLIGATOIRE et sans défaut : l'attribut par défaut d'un
-    MagicMock est truthy, donc une ligne construite sans le poser simulerait
-    une épinglée sans le dire. C'est exactement le piège qui rendrait ce
-    fichier vert pour la mauvaise raison.
+    `pinned` is MANDATORY and has no default: a MagicMock's default attribute is
+    truthy, so a row built without setting it would simulate a pinned feature
+    without saying so. That is exactly the trap that would make this file green for
+    the wrong reason.
     """
     row = MagicMock()
     row.id = feature_id or uuid.uuid4()
@@ -86,25 +85,25 @@ def _job() -> tuple[FeatureDedupJob, AsyncMock]:
 
 
 def _wire_recheck(session: AsyncMock, rows: list[MagicMock]) -> None:
-    """La première exécution est le SELECT … FOR UPDATE ; les suivantes du DML."""
+    """The first execution is the SELECT … FOR UPDATE; the later ones are DML."""
     recheck = MagicMock()
     recheck.fetchall.return_value = rows
     session.execute = AsyncMock(side_effect=[recheck] + [MagicMock() for _ in range(8)])
 
 
 def _wrote_anything(session: AsyncMock) -> bool:
-    """Vrai dès qu'une instruction autre que le SELECT FOR UPDATE est partie."""
+    """True as soon as a statement other than the SELECT FOR UPDATE has left."""
     return session.execute.await_count > 1
 
 
 class TestPinnedSourceIsNeverAbsorbed:
     @pytest.mark.asyncio
     async def test_pinned_source_is_refused(self) -> None:
-        """Le cas du ticket : la NOUVELLE est épinglée, l'ancienne l'absorberait.
+        """The ticket's case: the NEW one is pinned, the older would absorb it.
 
-        `source` est la ligne qui DISPARAÎT (status='archived', merged_into=target).
-        L'épinglage est le geste par lequel un humain dit « n'y touchez pas » :
-        la fusion doit être refusée, pas exécutée.
+        `source` is the row that DISAPPEARS (status='archived', merged_into=target).
+        Pinning is the gesture by which a human says "do not touch this": the merge
+        must be refused, not executed.
         """
         job, session = _job()
         target = _row(name="Ancienne", pinned=False)
@@ -125,10 +124,10 @@ class TestPinnedSourceIsNeverAbsorbed:
 
     @pytest.mark.asyncio
     async def test_both_pinned_is_refused(self) -> None:
-        """Les DEUX épinglées : on bloque, on ne devine pas.
+        """BOTH pinned: we block, we do not guess.
 
-        Cas remonté explicitement plutôt qu'arbitré dans le code : rien ne dit
-        laquelle des deux intentions humaines doit céder.
+        A case surfaced explicitly rather than arbitrated in the code: nothing says
+        which of the two human intentions should give way.
         """
         job, session = _job()
         target = _row(name="Ancienne épinglée", pinned=True)
@@ -144,19 +143,19 @@ class TestPinnedSourceIsNeverAbsorbed:
 
     @pytest.mark.asyncio
     async def test_pinned_read_from_authoritative_row_not_snapshot(self) -> None:
-        """TOCTOU : l'instantané dit « pas épinglée », la base dit « épinglée ».
+        """TOCTOU: the snapshot says "not pinned", the database says "pinned".
 
-        C'est la fenêtre réelle de `run_dedup_loop` — les candidats sont
-        collectés en bloc, puis fusionnés un par un. Une garde qui lirait
-        l'argument passerait ici, et le geste de l'humain serait perdu.
+        This is `run_dedup_loop`'s real window — candidates are collected in bulk,
+        then merged one by one. A guard reading the argument would pass here, and
+        the human's gesture would be lost.
         """
         job, session = _job()
         source_id = uuid.uuid4()
         target = _row(name="Ancienne", pinned=False)
 
-        # Instantané pris AVANT que l'humain n'épingle.
+        # Snapshot taken BEFORE the human pins.
         stale_snapshot = _row(name="Nouvelle", pinned=False, feature_id=source_id)
-        # Ligne autoritaire relue FOR UPDATE, APRÈS l'épinglage.
+        # Authoritative row re-read FOR UPDATE, AFTER the pinning.
         authoritative = _row(name="Nouvelle", pinned=True, feature_id=source_id)
 
         _wire_recheck(session, [target, authoritative])
@@ -171,11 +170,11 @@ class TestPinnedSourceIsNeverAbsorbed:
 
 
 class TestDedupStillWorks:
-    """Témoin négatif — sans lui, une garde trop large passerait pour un succès."""
+    """Negative witness — without it, an over-broad guard would pass for a success."""
 
     @pytest.mark.asyncio
     async def test_unpinned_source_still_merges(self) -> None:
-        """Le cas nominal doit continuer d'être dédupliqué."""
+        """The nominal case must keep being deduplicated."""
         job, session = _job()
         target = _row(name="Ancienne", pinned=False)
         source = _row(name="Nouvelle", pinned=False)
@@ -193,10 +192,10 @@ class TestDedupStillWorks:
 
     @pytest.mark.asyncio
     async def test_pinned_target_still_absorbs(self) -> None:
-        """Une épinglée en CIBLE reste autorisée : elle SURVIT à la fusion.
+        """A pinned feature as TARGET stays allowed: it SURVIVES the merge.
 
-        Interdire ce cas protégerait l'épinglage en empêchant précisément ce
-        qu'il demande — que cette feature-là reste.
+        Forbidding this case would protect the pinning by preventing precisely what
+        it asks for — that this feature stays.
         """
         job, session = _job()
         target = _row(name="Ancienne ÉPINGLÉE", pinned=True)

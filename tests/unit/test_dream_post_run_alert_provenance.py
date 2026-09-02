@@ -1,23 +1,23 @@
-"""Marche 0 de `55a21fb8` : le trou de provenance devient COMPTÉ.
+"""Step 0 of `55a21fb8`: the provenance hole becomes COUNTED.
 
-Le signal existait déjà — `freshness_status_updated_at IS NOT NULL AND
-freshness_source IS NULL` est calculable depuis la migration 043, sans une ligne
-de code. Ce qui manquait était un LECTEUR. Mesuré le 2026-08-22 sur la fenêtre
-réelle (2026-08-10 → 2026-08-22, douze jours) : **3 transitions muettes sur 44**,
-toutes sur `learnings`, toutes vers `archived`, toutes attribuables à REORG par
-recoupement. Personne ne les avait vues parce que personne ne regardait.
+The signal already existed — `freshness_status_updated_at IS NOT NULL AND
+freshness_source IS NULL` has been computable since migration 043, without a line
+of code. What was missing was a READER. Measured on 2026-08-22 over the real
+window (2026-08-10 → 2026-08-22, twelve days): **3 mute transitions out of 44**,
+all on `learnings`, all towards `archived`, all attributable to REORG by
+cross-referencing. Nobody had seen them because nobody was looking.
 
-Deux propriétés que ces tests épinglent, et qui sont le contrat de la marche 0 :
+Two properties these tests pin, and that are step 0's contract:
 
-* **elle ne change AUCUN comportement.** Le compte ne fait jamais escalader la
-  sortie du script. C'est ce qui la rend gratuite, et c'est ce qui permet de la
-  livrer avant le correctif : si la marche 1 échoue partiellement, c'est ce
-  compteur-ci qui le dira, et il faut qu'il soit déjà là et déjà cru.
-* **le chiffre porte sa définition.** « 3 muettes » est une **borne HAUTE**, pas
-  un compte : le trigger de la 043 documente son propre angle mort — deux
-  transitions consécutives de MÊME source ne sont pas distinguables d'une source
-  non redéclarée, donc la seconde retombe à `NULL`. Un compte publié sans cette
-  phrase se lirait comme un nombre d'écrivains fautifs.
+* **it changes NO behaviour.** The count never escalates the script's exit. That
+  is what makes it free, and what allows shipping it before the fix: if step 1
+  partially fails, it is this counter that will say so, and it must already be
+  there and already believed.
+* **the figure carries its definition.** "3 mute" is an **UPPER bound**, not a
+  count: 043's trigger documents its own blind spot — two consecutive transitions
+  from the SAME source are indistinguishable from a source not redeclared, so the
+  second falls back to `NULL`. A count published without that sentence would read
+  as a number of guilty writers.
 """
 
 from __future__ import annotations
@@ -30,10 +30,9 @@ import pytest
 from scripts.dream import post_run_alert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-#: La requête rend cinq colonnes depuis la marche 2 : les deux dernières
-#: RESTREIGNENT les deux premières à la destination `fresh`. Les fixtures de ce
-#: module ne parlent que des totaux, donc elles les laissent à zéro — la
-#: direction a son propre module.
+#: The query returns five columns since step 2: the last two RESTRICT the first
+#: two to the `fresh` destination. This module's fixtures only speak of the
+#: totals, so they leave them at zero — the direction has its own module.
 _ROW_COLUMNS = ("table_name", "night", "standing", "to_fresh_night", "to_fresh_standing")
 
 
@@ -72,7 +71,7 @@ def test_a_mute_night_names_its_tables_and_both_numbers() -> None:
 
 
 def test_the_number_never_ships_without_its_definition() -> None:
-    """Un chiffre nu mentirait : celui-ci est une BORNE HAUTE, et le dit."""
+    """A bare figure would lie: this one is an UPPER BOUND, and says so."""
     joined = " ".join(_report([("learnings", 3, 3)]).block)
 
     assert "borne HAUTE" in joined
@@ -80,10 +79,10 @@ def test_the_number_never_ships_without_its_definition() -> None:
 
 
 def test_a_green_night_still_prints() -> None:
-    """Le silence se lit « rien à signaler » ; zéro écrit se lit « mesuré à zéro ».
+    """Silence reads "nothing to report"; a written zero reads "measured at zero".
 
-    C'est la discipline que le bloc de couverture applique déjà : imprimer même
-    vert, pour que deux nuits soient comparables sans aller lire un journal.
+    This is the discipline the coverage block already applies: print even when
+    green, so that two nights are comparable without going to read a log.
     """
     block = _report([("learnings", 0, 0)]).block
 
@@ -92,7 +91,7 @@ def test_a_green_night_still_prints() -> None:
 
 
 def test_the_machine_line_carries_both_windows() -> None:
-    """La nuit ET le cumul : deux fenêtres, deux nombres, jamais confondues."""
+    """The night AND the cumulative total: two windows, two numbers, never conflated."""
     line = _report([("learnings", 3, 7), ("snippets", 0, 2)]).machine_line
 
     assert "mute_night=3" in line
@@ -101,17 +100,17 @@ def test_the_machine_line_carries_both_windows() -> None:
 
 
 def test_the_count_never_escalates() -> None:
-    """La marche 0 ne change AUCUN comportement — c'est tout son intérêt.
+    """Step 0 changes NO behaviour — that is its whole point.
 
-    Sans ce témoin, une marche 0 qui ferait sortir le script en 2 rendrait la
-    nuit rouge sur une observation, et le prochain la désarmerait.
+    Without this witness, a step 0 that made the script exit 2 would turn the
+    night red on an observation, and the next person would disarm it.
     """
     noisy = _report([("learnings", 99, 999)])
     assert not hasattr(noisy, "escalates"), "le compte de provenance n'a PAS de verdict"
 
-    # Le code de sortie reste piloté par la COUVERTURE seule. Épinglé sur la
-    # source parce que c'est la propriété qu'un futur « tant qu'à faire » ferait
-    # sauter en une ligne, et qu'aucun test de rendu ne la verrait tomber.
+    # The exit code stays driven by COVERAGE alone. Pinned on the source because
+    # it is the property a future "while we are at it" would remove in one line,
+    # and that no rendering test would see fall.
     source = inspect.getsource(post_run_alert.review_and_render)
     return_lines = [line for line in source.splitlines() if line.strip().startswith("return ")]
     assert return_lines == ["    return rendered, night.coverage.escalates"], return_lines
@@ -119,10 +118,10 @@ def test_the_count_never_escalates() -> None:
 
 @pytest.mark.asyncio
 async def test_a_declared_transition_is_not_counted() -> None:
-    """Témoin négatif : ce qui déclare sa provenance ne compte pas comme muet.
+    """Negative witness: what declares its provenance does not count as mute.
 
-    Sans lui, une requête qui compterait TOUTES les transitions rendrait 44 au
-    lieu de 3 et se lirait comme une catastrophe.
+    Without it, a query counting ALL the transitions would return 44 instead of 3
+    and would read as a catastrophe.
     """
     session = AsyncMock(spec=AsyncSession)
     session.execute = AsyncMock(return_value=_result([("learnings", 3, 3), ("decisions", 0, 0)]))
@@ -136,10 +135,10 @@ async def test_a_declared_transition_is_not_counted() -> None:
 
 @pytest.mark.asyncio
 async def test_the_statement_filters_on_both_halves_of_the_signal() -> None:
-    """Le signal est une CONJONCTION, et les deux moitiés doivent y être.
+    """The signal is a CONJUNCTION, and both halves must be there.
 
-    `freshness_source IS NULL` seul compterait aussi les lignes jamais passées
-    par une transition depuis la 043 — soit presque tout le corpus.
+    `freshness_source IS NULL` alone would also count the rows that never went
+    through a transition since 043 — that is, almost the whole corpus.
     """
     session = AsyncMock(spec=AsyncSession)
     session.execute = AsyncMock(return_value=_result([]))
@@ -155,11 +154,11 @@ async def test_the_statement_filters_on_both_halves_of_the_signal() -> None:
 
 @pytest.mark.asyncio
 async def test_the_count_is_actually_PRINTED_not_merely_computed() -> None:
-    """Le témoin qui manquait aux trois lots verts et inertes du 21-22/08.
+    """The witness the three green, inert batches of 21-22/08 lacked.
 
-    Un compteur livré, testé, et jamais câblé se lit exactement comme un
-    compteur qui rend zéro. Ce test suit le chemin VIVANT : `review_night`
-    interroge bien la provenance, et `render_stdout` l'imprime.
+    A counter shipped, tested, and never wired reads exactly like a counter that
+    returns zero. This test follows the LIVE path: `review_night` does query the
+    provenance, and `render_stdout` prints it.
     """
     session = AsyncMock(spec=AsyncSession)
     coverage_rows = MagicMock()
@@ -186,7 +185,7 @@ async def test_the_count_is_actually_PRINTED_not_merely_computed() -> None:
 
 
 def test_an_existing_caller_without_provenance_still_renders() -> None:
-    """La signature reste rétro-compatible : le bloc disparaît, rien ne casse."""
+    """The signature stays backward-compatible: the block disappears, nothing breaks."""
     coverage = post_run_alert.coverage_fallback(expected=1, observed=1, missing=0)
 
     rendered = post_run_alert.render_stdout(None, dt.date(2026, 8, 22), coverage)

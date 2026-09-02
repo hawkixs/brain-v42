@@ -36,10 +36,10 @@ def _make_feature_row(
 ) -> MagicMock:
     """Create a mock DB row resembling a features table row.
 
-    `pinned` DOIT être posé explicitement, jamais laissé à l'attribut par défaut
-    du MagicMock : celui-ci est truthy, et la garde ajoutée à `find_candidates`
-    refuserait alors toute fusion. La suite passerait au vert en ne dédupliquant
-    plus rien — un faux vert que rien n'attraperait.
+    `pinned` MUST be set explicitly, never left to the MagicMock's default
+    attribute: that one is truthy, and the guard added to `find_candidates` would
+    then refuse every merge. The suite would go green by no longer deduplicating
+    anything — a false green nothing would catch.
     """
     row = MagicMock()
     row.id = feature_id or uuid.uuid4()

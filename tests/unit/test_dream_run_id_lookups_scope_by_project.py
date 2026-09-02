@@ -1,23 +1,22 @@
-"""Les trois lookups de `dream_runs.id` filtrent sur le projet.
+"""The three `dream_runs.id` lookups filter on the project.
 
-Spec `2026-08-08-dream-project-pool-design.md` §12, l'argument qui impose la 042
-AVANT la boucle : « Trois lecteurs ÉCRIVENT sur la ligne qu'ils ont mal
-identifiée : promote_validate marque `partial` et backfille
-dream_promotions.dream_run_id, connect_validate marque `partial`, REORG_RUN_ID
-idem. Livrer la boucle d'abord produirait un audit des promotions faux et non
-réparable — l'attribution correcte n'est pas récupérable depuis les lignes une
-fois écrite. »
+Spec `2026-08-08-dream-project-pool-design.md` §12, the argument that mandates 042
+BEFORE the loop: "Three readers WRITE on the row they misidentified:
+promote_validate marks `partial` and backfills dream_promotions.dream_run_id,
+connect_validate marks `partial`, REORG_RUN_ID likewise. Shipping the loop first
+would produce a false and unrepairable promotions audit — the correct attribution
+is not recoverable from the rows once written."
 
-Les trois font `WHERE phase = X AND run_date = Y ORDER BY id DESC LIMIT 1`.
+All three do `WHERE phase = X AND run_date = Y ORDER BY id DESC LIMIT 1`.
 
-À plusieurs projets, ça sélectionne la ligne du DERNIER projet ayant écrit cette
-phase aujourd'hui. Dans la boucle séquentielle actuelle c'est fortuitement le
-bon : chaque projet écrit sa ligne puis relit immédiatement. Mais la correction
-repose alors sur « personne n'écrit entre mon écriture et ma lecture » —
-un invariant que rien n'impose, que la boucle ne déclare pas, et dont la
-violation produit un `partial` posé sur le projet voisin.
+With several projects, that selects the row of the LAST project to have written
+that phase today. In the current sequential loop it is fortuitously the right
+one: each project writes its row then reads it back immediately. But correctness
+then rests on "nobody writes between my write and my read" — an invariant nothing
+enforces, that the loop does not declare, and whose violation produces a
+`partial` laid on the neighbouring project.
 
-La 042 est livrée. Le filtre est disponible. Ces tests l'exigent.
+042 is shipped. The filter is available. These tests require it.
 """
 
 from __future__ import annotations
@@ -49,11 +48,10 @@ def test_connect_run_id_lookup_filters_on_the_project() -> None:
 
 
 def test_the_lookups_still_order_by_id_desc() -> None:
-    """Le filtre s'AJOUTE, il ne remplace pas la désambiguïsation des re-runs.
+    """The filter is ADDED, it does not replace the re-run disambiguation.
 
-    Un projet peut avoir deux lignes le même jour (re-run manuel après une
-    panne). `ORDER BY id DESC LIMIT 1` reste le seul moyen de prendre la
-    dernière.
+    A project may have two rows on the same day (a manual re-run after an
+    outage). `ORDER BY id DESC LIMIT 1` stays the only way to take the last one.
     """
     for statement in (
         _promote_helpers.dream_run_id_statement(dt.date(2026, 8, 10), "red"),
@@ -65,11 +63,11 @@ def test_the_lookups_still_order_by_id_desc() -> None:
 
 
 def test_the_project_key_is_required_on_both_clis() -> None:
-    """Sans défaut, comme les trois écrivains.
+    """No default, like the three writers.
 
-    Un `default="brain-v42"` ici marquerait `partial` sur brain-v42 pendant que
-    la phase de `red` a échoué — le contraire de ce que le validateur croit
-    faire, et sans trace exploitable après coup.
+    A `default="brain-v42"` here would mark `partial` on brain-v42 while it is
+    `red`'s phase that failed — the opposite of what the validator believes it is
+    doing, and with no usable trace afterwards.
     """
     import pytest
 
@@ -81,10 +79,10 @@ def test_the_project_key_is_required_on_both_clis() -> None:
 
 
 def test_the_reorg_lookup_in_dream_sh_filters_on_the_project() -> None:
-    """Le troisième vit en SQLAlchemy inline dans dream.sh, pas dans un module.
+    """The third lives as inline SQLAlchemy in dream.sh, not in a module.
 
-    Il n'a pas de témoin Python possible ailleurs qu'ici : c'est du texte de
-    script. L'ancre échoue bruyamment si la requête est réécrite sans le filtre.
+    It can have no Python witness anywhere but here: it is script text. The anchor
+    fails noisily if the query is rewritten without the filter.
     """
     from pathlib import Path
 
@@ -101,16 +99,16 @@ def test_the_reorg_lookup_in_dream_sh_filters_on_the_project() -> None:
 
 
 def test_the_inline_python_in_dream_sh_still_compiles() -> None:
-    """Le témoin qui manquait, et son absence a coûté un bug.
+    """The witness that was missing, and whose absence cost a bug.
 
-    Ce programme voyage dans `uv run python -c "…"`. Il vit donc en COLONNE 0
-    à l'intérieur d'un script dont tout le reste est indenté — et la mise en
-    fonction de la boucle de phases lui a ajouté deux espaces à chaque ligne.
-    Résultat : `IndentationError`, `REORG_RUN_ID` vide, `--dream-run-id` absent,
-    et le validateur REORG qui perd sa capacité à marquer la ligne `partial`.
+    This program travels inside `uv run python -c "…"`. It therefore lives at
+    COLUMN 0 inside a script whose every other line is indented — and turning the
+    phase loop into a function added two spaces to each of its lines. Result:
+    `IndentationError`, an empty `REORG_RUN_ID`, a missing `--dream-run-id`, and
+    the REORG validator losing its ability to mark the row `partial`.
 
-    Rien ne l'aurait vu. `bash -n` ne voit qu'une chaîne. Aucun test n'exécutait
-    ce programme. La nuit serait restée verte en perdant une garde.
+    Nothing would have seen it. `bash -n` only sees a string. No test executed
+    this program. The night would have stayed green while losing a guard.
     """
     from pathlib import Path
 
@@ -121,8 +119,8 @@ def test_the_inline_python_in_dream_sh_still_compiles() -> None:
     end = source.index('\n" 2>>', start)
     program = source[start:end]
 
-    # Les interpolations shell deviennent des littéraux plausibles : on teste
-    # la FORME du programme, pas la valeur du jour.
+    # The shell interpolations become plausible literals: we test the program's
+    # SHAPE, not the value of the day.
     program = program.replace("$TIMESTAMP", "2026-08-10").replace("$PROJECT_KEY", "brain-v42")
 
     compile(program, "dream.sh:inline", "exec")

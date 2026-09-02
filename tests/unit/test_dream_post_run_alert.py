@@ -15,17 +15,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 @pytest.fixture(autouse=True)
 def _no_host_pool(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Couper la dépendance de ces tests au drop-in systemd de la MACHINE.
+    """Cut these tests' dependency on the MACHINE's systemd drop-in.
 
-    `fetch_failed_runs` appelle `expected_dream_phase_pairs()` sans argument,
-    donc il lit `~/.config/systemd/user/brain-v42-dream.service.d/`. Tant que
-    l'hôte n'avait pas de pool, la fonction rendait un ensemble vide et ces
-    tests restaient verts sans le savoir. Le jour où le pool a été ouvert, deux
-    d'entre eux sont passés au rouge — sur une machine, pas en CI.
+    `fetch_failed_runs` calls `expected_dream_phase_pairs()` with no argument, so
+    it reads `~/.config/systemd/user/brain-v42-dream.service.d/`. As long as the
+    host had no pool, the function returned an empty set and these tests stayed
+    green without knowing it. The day the pool was opened, two of them went red —
+    on one machine, not in CI.
 
-    C'est la pire forme de dépendance : verte là où personne ne regarde, rouge
-    là où le système tourne vraiment. Le défaut par défaut est donc « pas de
-    pool », et un test qui veut le produit cartésien le pose explicitement.
+    That is the worst kind of dependency: green where nobody looks, red where the
+    system really runs. The default is therefore "no pool", and a test that wants
+    the cartesian product sets it explicitly.
     """
     monkeypatch.setattr(post_run_alert, "expected_dream_phase_pairs", set)
 
@@ -125,18 +125,17 @@ async def test_failed_run_report_never_accesses_learnings(
     session.commit.assert_not_awaited()
     for call in session.execute.await_args_list:
         assert "learnings" not in str(call.args[0]).lower()
-    # ── Garde ÉLARGIE, et il faut le dire ────────────────────────────────
-    # Cette ligne interdisait au module de NOMMER `learnings`. La marche 0 de
-    # `55a21fb8` l'oblige à le faire : elle COMPTE les transitions de fraîcheur
-    # sans provenance sur les six tables du decay — 3 sur 44 mesurées le
-    # 2026-08-22, invisibles jusque-là faute de lecteur.
+    # ── Guard WIDENED, and it must be said ───────────────────────────────
+    # This line forbade the module from NAMING `learnings`. Step 0 of `55a21fb8`
+    # forces it to: it COUNTS the freshness transitions with no provenance over
+    # the six decay tables — 3 out of 44 measured on 2026-08-22, invisible until
+    # then for lack of a reader.
     #
-    # L'interdiction de nommer était un garde-fou GROSSIER pour une intention
-    # plus étroite : l'alerte ne doit pas toucher au corpus. Elle est remplacée
-    # par cette intention, qui interdit strictement PLUS que la version
-    # littérale — un `INSERT` dans `dream_runs` passait l'ancienne, il échoue
-    # ici. Le chemin de RAPPORT reste sans corpus : l'assertion ci-dessus, qui
-    # inspecte les requêtes réellement exécutées, n'a pas bougé.
+    # The naming ban was a COARSE guardrail for a narrower intent: the alert must
+    # not touch the corpus. It is replaced by that intent, which forbids strictly
+    # MORE than the literal version — an `INSERT` into `dream_runs` passed the old
+    # one, it fails here. The REPORT path stays corpus-free: the assertion above,
+    # which inspects the queries actually executed, has not moved.
     source = inspect.getsource(post_run_alert)
     for mutation in ("sa.insert", "sa.update", "sa.delete", "session.commit", "session.add"):
         assert mutation not in source, f"l'alerte post-run n'écrit RIEN : {mutation} interdit"
@@ -158,11 +157,11 @@ async def test_failed_run_report_never_accesses_learnings(
         failures_statement.compile(compile_kwargs={"literal_binds": True})
     )
     assert "ORDER BY dream_runs.created_at DESC, dream_runs.id DESC" in rendered_failures_statement
-    # Le plafond de FETCH est en AMONT du groupement par projet : à 21, un projet
-    # bruyant en fin de nuit remplissait les lignes remontées et les projets
-    # calmes n'atteignaient jamais le groupeur — l'ordre étant `created_at DESC`,
-    # ce sont les derniers projets servis qui gagnaient. Ce que ce test protège
-    # reste le même : une requête BORNÉE, jamais un SELECT ouvert.
+    # The FETCH cap sits UPSTREAM of the per-project grouping: at 21, a noisy
+    # project at the end of the night filled the rows returned and the quiet
+    # projects never reached the grouper — the order being `created_at DESC`, the
+    # last projects served were the ones that won. What this test protects stays
+    # the same: a BOUNDED query, never an open SELECT.
     assert f"LIMIT {post_run_alert.MAX_FETCHED_FAILURES}" in rendered_failures_statement
     assert post_run_alert.MAX_FETCHED_FAILURES <= 500, (
         "la requête doit rester bornée : c'est la propriété, pas le nombre"
@@ -170,14 +169,14 @@ async def test_failed_run_report_never_accesses_learnings(
 
 
 def _session_returning(observed: list[dict[str, object]]) -> AsyncMock:
-    """Session mock fidèle au SQL de `fetch_failed_runs`.
+    """A mock session faithful to `fetch_failed_runs`'s SQL.
 
-    Les failures persistées ne sont PAS figées à vide : elles sont dérivées des
-    rows observées par le même filtre `status in FAILED_STATUSES` que la requête
-    réelle. Un harnais qui rendrait toujours `[]` court-circuiterait le statut —
-    `include_missing_expected_phases` n'applique alors plus son filtre et seul
-    l'ensemble des `phase` compte, si bien qu'une row observée devenue échouante
-    ne ferait rougir aucune assertion.
+    The persisted failures are NOT frozen empty: they are derived from the
+    observed rows through the same `status in FAILED_STATUSES` filter as the real
+    query. A harness that always returned `[]` would short-circuit the status —
+    `include_missing_expected_phases` then no longer applies its filter and only
+    the set of `phase` counts, so an observed row turned failing would redden no
+    assertion.
     """
     session = AsyncMock(spec=AsyncSession)
     persisted = [row for row in observed if row.get("status") in post_run_alert.FAILED_STATUSES]
@@ -191,13 +190,13 @@ def _session_returning(observed: list[dict[str, object]]) -> AsyncMock:
 async def test_recorded_empty_pool_promote_row_raises_no_alert(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """La row écrite sur pool vide rend la phase OBSERVÉE : plus de partial de synthèse.
+    """The row written on an empty pool makes the phase OBSERVED: no synthetic partial.
 
-    Le statut vient du writer réel (`_promote_helpers`), pas d'une copie, et le
-    harnais applique le vrai filtre `FAILED_STATUSES` : rendre cette row
-    échouante là-bas fait rougir ici. Le message, lui, n'est pas observable à ce
-    niveau tant que le statut ne l'est pas — il est épinglé chez le writer
-    (`test_empty_pool_row_says_the_pool_was_empty`), pas revendiqué ici.
+    The status comes from the real writer (`_promote_helpers`), not from a copy,
+    and the harness applies the real `FAILED_STATUSES` filter: making that row
+    failing over there reddens here. The message, for its part, is not observable
+    at this level as long as the status is not — it is pinned at the writer
+    (`test_empty_pool_row_says_the_pool_was_empty`), not claimed here.
     """
     from scripts.dream._promote_helpers import EMPTY_POOL_STATUS
 
@@ -213,11 +212,11 @@ async def test_recorded_empty_pool_promote_row_raises_no_alert(
 async def test_observed_promote_row_with_a_failing_status_still_alerts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Garde du harnais : une row OBSERVÉE mais échouante doit encore sonner.
+    """Harness guard: an OBSERVED but failing row must still ring.
 
-    Sans elle, `_session_returning` pourrait retomber à « aucune failure
-    persistée » sans rien faire rougir, et le test du pool vide redeviendrait
-    aveugle au statut — le défaut même que cette révision corrige.
+    Without it, `_session_returning` could fall back to "no persisted failure"
+    without reddening anything, and the empty-pool test would become status-blind
+    again — the very flaw this revision corrects.
     """
     session = _session_returning([{"phase": "promote", "status": "fail"}])
     monkeypatch.setattr(post_run_alert, "expected_dream_phases", lambda: {"promote"})
@@ -232,11 +231,11 @@ async def test_observed_promote_row_with_a_failing_status_still_alerts(
 async def test_expected_promote_that_never_wrote_a_row_still_alerts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Propriété d'observabilité : un promote qui CRASHE n'écrit rien et sonne encore.
+    """Observability property: a promote that CRASHES writes nothing and still rings.
 
-    C'est l'assertion qui interdit la « simplification » consistant à retirer
-    promote des phases attendues — les crashes des 2026-05-02/05-03 sont passés
-    inaperçus deux jours exactement pour cette raison.
+    This is the assertion that forbids the "simplification" of removing promote
+    from the expected phases — the crashes of 2026-05-02/05-03 went unnoticed for
+    two days for exactly that reason.
     """
     session = _session_returning([{"phase": "scan", "status": "done", "error_message": None}])
     monkeypatch.setattr(post_run_alert, "expected_dream_phases", lambda: {"promote", "scan"})
@@ -269,13 +268,13 @@ async def test_run_keeps_operational_report_on_stdout(
     report: str | None,
     expected_first_line: str,
 ) -> None:
-    """Le rapport reste sur stdout — et la ligne machine le SUIT, toujours.
+    """The report stays on stdout — and the machine line FOLLOWS it, always.
 
-    Contrat élargi par le ticket `0a9c067e` : la ligne `COVERAGE …` est la
-    dernière ligne de stdout Y COMPRIS les nuits sans anomalie. C'est tout
-    l'objet du ticket — mettre côte à côte, chaque matin, ce que la nuit dit
-    avoir fait et ce qu'elle a écrit. Un contrat « stdout vaut exactement le
-    rapport » interdirait précisément la ligne qui manquait.
+    Contract widened by ticket `0a9c067e`: the `COVERAGE …` line is the last line
+    of stdout INCLUDING on nights with no anomaly. That is the whole point of the
+    ticket — putting side by side, every morning, what the night says it did and
+    what it wrote. A contract saying "stdout equals exactly the report" would
+    forbid precisely the line that was missing.
     """
     engine = MagicMock()
     engine.dispose = AsyncMock()
@@ -294,8 +293,8 @@ async def test_run_keeps_operational_report_on_stdout(
     monkeypatch.setattr(post_run_alert, "create_async_engine", MagicMock(return_value=engine))
     monkeypatch.setattr(post_run_alert, "async_sessionmaker", MagicMock(return_value=factory))
     monkeypatch.setattr(post_run_alert, "review_night", reporter)
-    # `review_and_render` lit aussi la provenance (marche 0 de `55a21fb8`).
-    # Ce test épingle le PLOMBAGE de `_run`, pas le compte : on le neutralise.
+    # `review_and_render` also reads the provenance (step 0 of `55a21fb8`). This
+    # test pins `_run`'s PLUMBING, not the count: we neutralise it.
     monkeypatch.setattr(
         post_run_alert,
         "fetch_mute_transitions",

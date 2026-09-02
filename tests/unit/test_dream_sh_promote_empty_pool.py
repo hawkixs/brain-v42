@@ -1,11 +1,11 @@
-"""Épingle le câblage du pool vide PROMOTE dans dream.sh (grep, sans exécution).
+"""Pins the PROMOTE empty-pool wiring in dream.sh (grep, no execution).
 
-Trois propriétés, chacune bordée sur son propre bloc pour qu'une phase ajoutée
-plus tard ne puisse pas affaiblir le test en glissant hors de portée :
+Three properties, each bounded on its own block so that a phase added later
+cannot weaken the test by sliding out of scope:
 
-  - le pool VIDE enregistre une row `dream_runs` ;
-  - la RÉCUPÉRATION RATÉE du pool reste un échec et n'enregistre rien ;
-  - le chemin nominal (pool non vide) est intact.
+  - an EMPTY pool records a `dream_runs` row;
+  - a FAILED pool retrieval stays a failure and records nothing;
+  - the nominal path (non-empty pool) is untouched.
 """
 
 from pathlib import Path
@@ -21,7 +21,7 @@ def _content() -> str:
 
 
 def _between(content: str, start: str, end: str) -> str:
-    """Tranche bornée des deux côtés ; échoue fort si un marqueur a bougé."""
+    """A slice bounded on both sides; fails loudly if a marker has moved."""
     assert start in content, f"marqueur de début absent : {start!r}"
     tail = content.split(start, maxsplit=1)[1]
     assert end in tail, f"marqueur de fin absent après {start!r} : {end!r}"
@@ -43,10 +43,10 @@ def test_empty_pool_branch_records_a_dream_runs_row(promote_block: str) -> None:
 
 
 def test_failed_pool_fetch_stays_a_failure_and_records_nothing(promote_block: str) -> None:
-    """Un pool vide n'est PAS une récupération ratée : la distinction doit tenir.
+    """An empty pool is NOT a failed retrieval: the distinction must hold.
 
-    Enregistrer une row `done` sur le chemin d'échec rendrait un crash de
-    promote_prepare invisible — exactement l'incident des 2026-05-02/05-03.
+    Recording a `done` row on the failure path would make a promote_prepare crash
+    invisible — exactly the incident of 2026-05-02/05-03.
     """
     fail_branch = _between(promote_block, "if (( prep_rc != 0 )); then", "pool_size=")
 
@@ -56,7 +56,7 @@ def test_failed_pool_fetch_stays_a_failure_and_records_nothing(promote_block: st
 
 
 def test_nominal_pool_path_is_untouched(promote_block: str) -> None:
-    """Le comportement des nuits à pool non vide ne change pas."""
+    """The behaviour of non-empty-pool nights does not change."""
     marker = "export PROMOTE_CANDIDATE_POOL_JSON"
     assert marker in promote_block
     nominal = promote_block.split(marker, maxsplit=1)[1]
@@ -66,10 +66,10 @@ def test_nominal_pool_path_is_untouched(promote_block: str) -> None:
 
 
 def test_record_failure_cannot_abort_the_night(promote_block: str) -> None:
-    """`set -e` est actif : l'appel doit être désarmé et son rc traduit en WARN.
+    """`set -e` is active: the call must be disarmed and its rc turned into a WARN.
 
-    Une row manquante rallume l'alerte de synthèse — bruyant mais observable.
-    Tuer la nuit entière pour un INSERT raté serait la panne, pas le remède.
+    A missing row re-lights the summary alert — loud but observable. Killing the
+    whole night over a failed INSERT would be the breakage, not the remedy.
     """
     empty_branch = _between(
         promote_block, 'if [[ "$pool_size" -eq 0 ]]; then', "export PROMOTE_CANDIDATE_POOL_JSON"

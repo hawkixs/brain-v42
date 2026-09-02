@@ -1,26 +1,26 @@
-"""Le canary doit mesurer le régime que la NUIT impose, pas un régime à lui.
+"""The canary must measure the regime the NIGHT imposes, not a regime of its own.
 
-Le 2026-08-16 le primaire roadmap a été basculé sur `mistralai/mistral-nemotron`
-sur la foi de deux canaries : 3/3 batches valides, 12,6 à 20,4 s/batch. La
-première nuit réelle l'a réfuté — TimeoutError, circuit ouvert, 10/10 batches
-retombés sur le secours 8B. La preuve ne prédisait pas la production.
+On 2026-08-16 the roadmap primary was switched to `mistralai/mistral-nemotron` on
+the strength of two canaries: 3/3 valid batches, 12.6 to 20.4 s/batch. The first
+real night refuted it — TimeoutError, open circuit, 10/10 batches falling back to
+the 8B fallback. The proof did not predict production.
 
-Le canary appelait `_curate_llm_attempt`, l'étage SOUS celui que la nuit
-utilise. Il manquait donc quatre contraintes à la fois, pas une :
+The canary called `_curate_llm_attempt`, the layer BELOW the one the night uses.
+It was therefore missing four constraints at once, not one:
 
-  1. la borne de temps — la nuit enveloppe chaque tentative dans
-     `asyncio.timeout(batch_llm_window(...))`, soit 60 s à dix batches ;
-     le canary ne laissait courir que le read timeout httpx, 180 s ;
-  2. le plafond de complétion (`BIG_MODEL_COMPLETION_TOKENS`) ;
-  3. le compactage du batch (`_compact_batch`) ;
-  4. le CIRCUIT — un seul échec du primaire l'écarte de tous les batches
-     suivants du run.
+  1. the time bound — the night wraps each attempt in
+     `asyncio.timeout(batch_llm_window(...))`, i.e. 60 s at ten batches; the
+     canary only let the httpx read timeout run, 180 s;
+  2. the completion cap (`BIG_MODEL_COMPLETION_TOKENS`);
+  3. the batch compaction (`_compact_batch`);
+  4. the CIRCUIT — a single primary failure removes it from every subsequent
+     batch of the run.
 
-Le quatrième est celui qui explique « 10/10 sur le secours » : un batch perdu
-condamne les neuf autres. Un canary qui mesure chaque batch isolément ne peut
-structurellement pas l'observer, et un canary qui laisse le secours rattraper
-sans le dire rend un vert pour un primaire mort — la panne exacte de qwen 80B,
-morte le 2026-07-27 et découverte le 08-05 après dix nuits vertes.
+The fourth is the one that explains "10/10 on the fallback": one lost batch
+condemns the other nine. A canary that measures each batch in isolation cannot
+structurally observe it, and a canary that lets the fallback catch up without
+saying so returns a green for a dead primary — the exact failure of qwen 80B,
+dead on 2026-07-27 and discovered on 08-05 after ten green nights.
 """
 
 from __future__ import annotations
@@ -45,16 +45,16 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_the_cli_default_batch_count_is_the_nights() -> None:
-    """Le DÉFAUT CLI doit mesurer le régime de la nuit, pas un régime 2× plus doux.
+    """The CLI DEFAULT must measure the night's regime, not one 2× gentler.
 
-    Mesuré le 2026-08-29 (review PR 42) : `--batches 3` donnait des fenêtres de
-    120 s croissant jusqu'à 200 s, là où la nuit à `--limit 10` borne chaque
-    tentative à 60 s. Le canary a validé sous ce régime un secours à
-    74,5 s/batch qui aurait time-outé toutes ses tentatives en production —
-    la répétition exacte de la panne du 2026-08-17 que cet instrument devait
-    corriger. Le défaut est épinglé sur le `--limit` que dream.sh passe
-    RÉELLEMENT, pas sur un 10 recopié : si la nuit change de largeur, ce test
-    force le canary à suivre.
+    Measured on 2026-08-29 (PR 42 review): `--batches 3` gave windows of 120 s
+    growing up to 200 s, where the night at `--limit 10` bounds each attempt to
+    60 s. Under that regime the canary validated a fallback at 74.5 s/batch that
+    would have timed out every one of its attempts in production — the exact
+    repetition of the 2026-08-17 failure this instrument was meant to fix. The
+    default is pinned on the `--limit` dream.sh ACTUALLY passes, not on a
+    retyped 10: if the night changes width, this test forces the canary to
+    follow.
     """
     from scripts.canary_roadmap_model import DEFAULT_CANARY_BATCHES
 
@@ -81,7 +81,7 @@ def _batches(count: int) -> list[ProjectBatch]:
 
 @pytest.mark.asyncio
 async def test_each_batch_is_bounded_by_the_night_window_not_the_default() -> None:
-    """La fenêtre doit être celle de la nuit, dérivée du budget restant."""
+    """The window must be the night's, derived from the remaining budget."""
     windows: list[float] = []
 
     async def curate(
@@ -113,11 +113,11 @@ async def test_each_batch_is_bounded_by_the_night_window_not_the_default() -> No
         "à dix batches la nuit borne la première tentative à 60 s; le canary "
         f"laissait courir le read timeout httpx, 180 s: {windows[0]}"
     )
-    # Le contrat n'est pas une constante mais la FONCTION de la nuit : la part
-    # d'un batch dépend du budget restant et du nombre de batches restants.
-    # L'horloge est figée dans ce test, donc `elapsed` reste nul et les derniers
-    # batches héritent d'une part large — c'est `batch_llm_window` qui décide,
-    # et c'est exactement ce qu'on veut épingler.
+    # The contract is not a constant but the night's FUNCTION: a batch's share
+    # depends on the remaining budget and the number of remaining batches. The
+    # clock is frozen in this test, so `elapsed` stays null and the last batches
+    # inherit a large share — it is `batch_llm_window` that decides, and that is
+    # exactly what we want to pin.
     assert windows == [batch_llm_window(NIGHT_BUDGET_S, 0.0, 10 - index) for index in range(10)], (
         windows
     )
@@ -126,11 +126,11 @@ async def test_each_batch_is_bounded_by_the_night_window_not_the_default() -> No
 
 @pytest.mark.asyncio
 async def test_a_primary_killed_on_the_first_batch_is_never_blessed_by_its_fallback() -> None:
-    """Le circuit est partagé par tout le run, et le verdict nomme le primaire.
+    """The circuit is shared by the whole run, and the verdict names the primary.
 
-    Le secours peut rendre dix batches parfaitement valides : le candidat mesuré
-    n'en a porté aucun. Un canary qui compte « 10/10 valides » ici est celui qui
-    a fait basculer la production sur un modèle mort.
+    The fallback may return ten perfectly valid batches: the measured candidate
+    carried none of them. A canary that counts "10/10 valid" here is the one that
+    switched production onto a dead model.
     """
 
     async def curate(
@@ -144,8 +144,8 @@ async def test_a_primary_killed_on_the_first_batch_is_never_blessed_by_its_fallb
         disabled_models: set[str],
         proposer_only: bool | None = None,
     ) -> BatchOutcome:
-        # Reproduit curate_batch : le primaire meurt une fois puis reste écarté,
-        # et le secours sert tous les batches suivants.
+        # Reproduces curate_batch: the primary dies once then stays out, and the
+        # fallback serves every subsequent batch.
         if model in disabled_models:
             return BatchOutcome(
                 batch=batch,
@@ -186,7 +186,7 @@ async def test_a_primary_killed_on_the_first_batch_is_never_blessed_by_its_fallb
 
 @pytest.mark.asyncio
 async def test_a_primary_that_carries_every_batch_is_alive() -> None:
-    """Contre-épreuve : sans repli, le verdict reste vivant."""
+    """Counter-proof: without a fallback, the verdict stays alive."""
 
     async def curate(
         client: Any,
@@ -218,13 +218,13 @@ async def test_a_primary_that_carries_every_batch_is_alive() -> None:
 
 @pytest.mark.asyncio
 async def test_a_candidate_is_measured_in_the_regime_it_would_have_once_adopted() -> None:
-    """`PROPOSER_ONLY_MODELS` est DÉRIVÉ de `DEFAULT_ROADMAP_MODEL`.
+    """`PROPOSER_ONLY_MODELS` is DERIVED from `DEFAULT_ROADMAP_MODEL`.
 
-    Un candidat qu'on évalue pour la case de primaire DRY y entrerait donc le
-    jour de son adoption, et changerait de routage au même instant : parseur
-    proposer-only, plafonds et retries du chemin `_curate_managed_model_chain`.
-    Le mesurer hors de cet ensemble, c'est mesurer un régime qu'il n'aura plus —
-    la faute exacte que ce fichier corrige, répétée un cran plus loin.
+    A candidate evaluated for the DRY primary slot would therefore enter it the day
+    it is adopted, and change routing at the same instant: proposer-only parser,
+    caps and retries of the `_curate_managed_model_chain` path. Measuring it
+    outside that set is measuring a regime it will no longer have — the exact
+    mistake this file corrects, repeated one notch further out.
     """
     import scripts.roadmap_curate as rc
 
@@ -260,5 +260,5 @@ async def test_a_candidate_is_measured_in_the_regime_it_would_have_once_adopted(
     assert seen == [True, True], (
         "le candidat doit être routé comme le primaire DRY qu'il deviendrait"
     )
-    # Et le global n'est jamais muté : une mesure ne reroute pas la production.
+    # And the global is never mutated: a measurement does not reroute production.
     assert candidate not in rc.PROPOSER_ONLY_MODELS

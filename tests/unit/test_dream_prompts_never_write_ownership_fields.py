@@ -1,30 +1,30 @@
-"""Un prompt de phase ne doit jamais ordonner une écriture que le serveur refuse.
+"""A phase prompt must never order a write the server refuses.
 
-Depuis l'armement du scope de capacité (2026-08-10), `brain_update` porte
-`reject_update_ownership_fields=True` : tout `fields` contenant un champ de
-propriété — `project_key` en tête — est refusé `ownership_field_forbidden`. Le
-refus se fait PAR NOM, donc il tombe même quand la valeur est le projet du
-bearer lui-même.
+Since the capability scope was armed (2026-08-10), `brain_update` carries
+`reject_update_ownership_fields=True`: any `fields` containing an ownership
+field — `project_key` first among them — is refused `ownership_field_forbidden`.
+The refusal is BY NAME, so it fires even when the value is the bearer's own
+project.
 
-Or `phase_reorg.md` ordonnait
+Yet `phase_reorg.md` ordered
 `brain_update(entity_type, entity_id, fields={tags: ..., project_key: ...})`.
-Mesuré le 2026-08-17 en exécutant la couche d'autorisation :
+Measured on 2026-08-17 by running the authorisation layer:
 
-    {tags}                        -> autorisé
-    {tags, project_key} (même projet) -> REFUSÉ
-    {project_key}                 -> REFUSÉ
-    {freshness_status: archived}  -> autorisé
+    {tags}                        -> allowed
+    {tags, project_key} (same project) -> REFUSED
+    {project_key}                 -> REFUSED
+    {freshness_status: archived}  -> allowed
 
-Autrement dit la Partie 1 de REORG ne pouvait écrire STRICTEMENT RIEN — sa
-normalisation de tags comprise, puisque le prompt joignait toujours
-`project_key` au même appel. Personne ne l'a vu parce que REORG tourne en DRY
-et n'écrit jamais : la panne n'apparaîtrait qu'au passage en WET.
+In other words REORG's Part 1 could write STRICTLY NOTHING — its tag
+normalisation included, since the prompt always attached `project_key` to the
+same call. Nobody saw it because REORG runs in DRY and never writes: the failure
+would only appear on the switch to WET.
 
-`test_dream_prompts_match_phase_allowlists.py` ne pouvait pas l'attraper : il
-compare les NOMS d'outils, et `brain_update` est bien dans l'allowlist de reorg.
-C'est l'ARGUMENT qui est refusé. Ce test ferme cet angle mort, et il dérive sa
-liste interdite de `_OWNERSHIP_FIELDS` pour qu'un champ ajouté à la politique
-serveur soit automatiquement couvert ici.
+`test_dream_prompts_match_phase_allowlists.py` could not catch it: it compares
+tool NAMES, and `brain_update` is indeed in reorg's allowlist. It is the ARGUMENT
+that is refused. This test closes that blind spot, and it derives its forbidden
+list from `_OWNERSHIP_FIELDS` so that a field added to the server policy is
+automatically covered here.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from brain_v42.services.dream_project_scope import _OWNERSHIP_FIELDS
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROMPT_DIR = REPO_ROOT / "scripts" / "dream"
 
-# `fields={...}` tel qu'un prompt l'écrit, accolades non imbriquées.
+# `fields={...}` as a prompt writes it, braces not nested.
 _FIELDS_BLOCK = re.compile(r"fields\s*=\s*\{([^}]*)\}")
 
 
@@ -51,7 +51,7 @@ def _prompts() -> list[Path]:
 
 @pytest.mark.parametrize("prompt_path", _prompts(), ids=lambda p: p.stem)
 def test_no_phase_prompt_instructs_writing_an_ownership_field(prompt_path: Path) -> None:
-    """Aucun `fields={...}` de prompt ne nomme un champ de propriété."""
+    """No prompt `fields={...}` names an ownership field."""
     text = prompt_path.read_text(encoding="utf-8")
 
     offenders: list[tuple[int, str, str]] = []
@@ -59,8 +59,8 @@ def test_no_phase_prompt_instructs_writing_an_ownership_field(prompt_path: Path)
         body = match.group(1)
         line_number = text.count("\n", 0, match.start()) + 1
         for field in sorted(_OWNERSHIP_FIELDS):
-            # Frontières de mot : `project_keys` ne doit pas matcher `project_key`
-            # par préfixe, et inversement.
+            # Word boundaries: `project_keys` must not match `project_key` by
+            # prefix, and vice versa.
             if re.search(rf"(?<![\w-]){re.escape(field)}(?![\w-])", body):
                 offenders.append((line_number, field, body.strip()[:80]))
 
@@ -73,11 +73,11 @@ def test_no_phase_prompt_instructs_writing_an_ownership_field(prompt_path: Path)
 
 
 def test_the_forbidden_set_is_read_from_the_server_policy() -> None:
-    """La liste interdite n'est pas recopiée ici : elle vient de la politique.
+    """The forbidden list is not retyped here: it comes from the policy.
 
-    Un champ de propriété ajouté côté serveur doit resserrer ce test tout seul.
-    Sans cette dépendance, les deux listes divergeraient exactement comme le
-    prompt et la politique ont divergé.
+    An ownership field added on the server side must tighten this test on its own.
+    Without that dependency, the two lists would diverge exactly as the prompt and
+    the policy diverged.
     """
     assert "project_key" in _OWNERSHIP_FIELDS
     assert len(_OWNERSHIP_FIELDS) >= 2

@@ -1,10 +1,10 @@
-"""La row `dream_runs` écrite quand le pool de candidats PROMOTE est vide.
+"""The `dream_runs` row written when the PROMOTE candidate pool is empty.
 
-Depuis la 041 (filtre de maturité sur `access_count_human`, sans backfill), le
-pool peut légitimement être vide. Sans row, la phase attendue devient *absente*
-et l'alerte fabrique un `partial` de synthèse chaque nuit — une fausse alarme
-qui pousse à défaire la 041. La phase doit donc être OBSERVÉE, pas retirée des
-phases attendues.
+Since 041 (maturity filter on `access_count_human`, with no backfill), the pool
+can legitimately be empty. Without a row, the expected phase becomes *absent* and
+the alert manufactures a synthetic `partial` every night — a false alarm that
+pushes towards undoing 041. The phase must therefore be OBSERVED, not removed
+from the expected phases.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ async def _record(
     duration_s: float = 12.5,
     project_key: str = "brain-v42",
 ):
-    """Exécuter le VRAI writer et rendre (session, paramètres compilés)."""
+    """Run the REAL writer and return (session, compiled parameters)."""
     session, factory = _session_and_factory()
     await _promote_helpers._record_empty_pool(
         factory, run_date, duration_s, project_key=project_key
@@ -46,15 +46,15 @@ async def _record(
 async def test_empty_pool_row_targets_the_promote_phase_of_the_run_date(
     run_date: dt.date,
 ) -> None:
-    """DEUX dates distinctes, sinon l'assertion ne prouve rien.
+    """TWO distinct dates, otherwise the assertion proves nothing.
 
-    Avec une seule date — a fortiori celle du défaut de `_record` — l'assertion
-    compare une constante à elle-même et ne distingue pas « l'argument est
-    câblé » de « l'argument est ignoré ». Un `run_date` figé en dur (ou relu via
-    `dt.date.today()` après minuit) écrirait la row sur une autre nuit : la
-    phase promote redeviendrait ABSENTE de `dream_runs` pour la date du run et
-    `include_missing_expected_phases` refabriquerait son `partial` de synthèse
-    chaque nuit — exactement le bug que ce chantier corrige.
+    With a single date — all the more so `_record`'s default — the assertion
+    compares a constant to itself and does not distinguish "the argument is wired"
+    from "the argument is ignored". A hard-coded `run_date` (or one re-read
+    through `dt.date.today()` after midnight) would write the row on another
+    night: the promote phase would become ABSENT from `dream_runs` again for the
+    run's date and `include_missing_expected_phases` would remanufacture its
+    synthetic `partial` every night — exactly the bug this workstream fixes.
     """
     _, params = await _record(run_date=run_date)
 
@@ -63,12 +63,12 @@ async def test_empty_pool_row_targets_the_promote_phase_of_the_run_date(
 
 
 async def test_empty_pool_row_carries_a_non_failing_status() -> None:
-    """Le statut doit sortir de FAILED_STATUSES — la liste réelle, pas une copie.
+    """The status must fall outside FAILED_STATUSES — the real list, not a copy.
 
-    `done` est le seul statut non-échec du système : `collector_dream` et
-    `DreamRunService.last_failure` comptent tout `!= 'done'` comme un échec.
-    Un statut « neutre » inventé (`skipped`, `noop`) remplacerait une fausse
-    alarme par une autre, dans le briefing cette fois.
+    `done` is the system's only non-failure status: `collector_dream` and
+    `DreamRunService.last_failure` count anything `!= 'done'` as a failure. An
+    invented "neutral" status (`skipped`, `noop`) would replace one false alarm
+    with another, in the briefing this time.
     """
     _, params = await _record()
 
@@ -89,11 +89,10 @@ async def test_empty_pool_row_carries_the_measured_duration() -> None:
 
 
 async def test_empty_pool_row_is_not_counted_as_a_clean_dry_night() -> None:
-    """`phase_dry_run` reste faux : aucune répétition à blanc n'a eu lieu.
+    """`phase_dry_run` stays false: no dry rehearsal took place.
 
-    `DreamRunService._clean_dry_streak` compte les nuits `done` + dry comme
-    preuve pour basculer une phase en WET. Une nuit où RIEN n'a tourné n'est
-    pas une preuve.
+    `DreamRunService._clean_dry_streak` counts `done` + dry nights as evidence for
+    switching a phase to WET. A night where NOTHING ran is not evidence.
     """
     _, params = await _record()
 
@@ -101,7 +100,7 @@ async def test_empty_pool_row_is_not_counted_as_a_clean_dry_night() -> None:
 
 
 async def test_empty_pool_row_is_committed() -> None:
-    """Sans commit, la row n'existe pas et l'alerte revient — la feature serait un no-op."""
+    """Without a commit the row does not exist and the alert returns — the feature would be a no-op."""
     session, _ = await _record()
 
     session.commit.assert_awaited_once()
@@ -159,8 +158,8 @@ def test_cli_reports_a_database_failure_as_a_non_zero_return_code(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Une base injoignable rend rc != 0 : dream.sh journalise un WARN et
-    l'absence de row rallume l'alerte — jamais un silence."""
+    """An unreachable database gives rc != 0: dream.sh logs a WARN and the
+    missing row re-lights the alert — never a silence."""
     monkeypatch.setattr(_promote_helpers, "_build_factory", MagicMock(return_value="factory"))
     monkeypatch.setattr(
         _promote_helpers, "_record_empty_pool", AsyncMock(side_effect=RuntimeError("base absente"))

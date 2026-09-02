@@ -45,13 +45,12 @@ def _make_feature_row(
     row.created_at = created_at
     row.status = "research"
     row.merged_into = None
-    # `pinned` DOIT être posé, jamais laissé à l'attribut par défaut du
-    # MagicMock : celui-ci est truthy, donc une ligne construite sans lui
-    # simulerait une feature ÉPINGLÉE sans le dire, et la garde de
-    # `merge_features` refuserait toutes les fusions de ce fichier. Les tests
-    # ci-dessous portent sur d'autres invariants et supposent le cas nominal.
-    # `False` est la valeur réelle : la colonne est `Boolean` avec
-    # `server_default false` (0 ligne NULL mesurée en prod le 2026-08-22).
+    # `pinned` MUST be set, never left to the MagicMock's default attribute: that
+    # one is truthy, so a row built without it would simulate a PINNED feature
+    # without saying so, and `merge_features`'s guard would refuse every merge in
+    # this file. The tests below bear on other invariants and assume the nominal
+    # case. `False` is the real value: the column is `Boolean` with
+    # `server_default false` (0 NULL rows measured in production on 2026-08-22).
     row.pinned = pinned
     return row
 

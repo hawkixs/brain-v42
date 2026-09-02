@@ -685,20 +685,20 @@ async def test_merge_stops_after_ownership_loss_during_reembedding(mock_deps):
 
 
 class TestCreatingSignalsAllowlistIsGuarded:
-    """La liste blanche qui a tari la pollution roadmap n'avait aucun témoin.
+    """The allowlist that dried up the roadmap pollution had no witness.
 
-    Mesuré le 2026-08-11, quinze jours de part et d'autre de la bascule link-only
-    du 2026-08-03 : **9,27 features créées par jour avant, 0,13 après** — une
-    réduction de 71×. La seule création postérieure vient d'un PLAN indexé, donc
-    d'un signal explicitement autorisé, avec ses trois artefacts de type `plan`.
-    Zéro création par artefact de connaissance en huit jours.
+    Measured on 2026-08-11, fifteen days either side of the link-only switch of
+    2026-08-03: **9.27 features created per day before, 0.13 after** — a 71×
+    reduction. The only later creation comes from an indexed PLAN, hence from an
+    explicitly authorised signal, with its three `plan`-typed artifacts. Zero
+    creations from a knowledge artifact in eight days.
 
-    Ce tarissement tient entièrement à `CREATING_SIGNALS`, et le CONTENU de ce
-    frozenset n'était asserté nulle part : les tests voisins s'en servent (« uses
-    a CREATING_SIGNALS type ») sans jamais dire ce qui doit y être ou non. Y
-    remettre `learning` ne casserait aucun test, et les 73 pseudo-features
-    `research` — des learnings et des messages de commit promus en features —
-    recommenceraient à s'accumuler en silence.
+    That drying-up rests entirely on `CREATING_SIGNALS`, and the CONTENT of that
+    frozenset was asserted nowhere: the neighbouring tests use it ("uses a
+    CREATING_SIGNALS type") without ever saying what must or must not be in it.
+    Putting `learning` back would break no test, and the 73 `research`
+    pseudo-features — learnings and commit messages promoted into features — would
+    start piling up again in silence.
     """
 
     KNOWLEDGE_SIGNALS = ("learning", "decision", "snippet", "runbook", "adr")
@@ -714,11 +714,11 @@ class TestCreatingSignalsAllowlistIsGuarded:
         )
 
     def test_the_signals_that_must_still_create_are_named(self) -> None:
-        """Contrôle positif exhaustif.
+        """Exhaustive positive control.
 
-        Sans lui, vider entièrement la liste rendrait l'assertion d'absence vraie
-        pour rien — et casserait au passage l'indexation de plans et l'ingestion
-        GitLab, sans qu'aucun test ne le dise.
+        Without it, emptying the list entirely would make the absence assertion
+        true for nothing — and would break plan indexing and GitLab ingestion along
+        the way, without any test saying so.
         """
         from brain_v42.services.cluster_guard import CREATING_SIGNALS
 
@@ -734,9 +734,9 @@ class TestCreatingSignalsAllowlistIsGuarded:
         )
 
     def test_the_allowlist_is_immutable(self) -> None:
-        """`frozenset` et non `set` : une liste blanche mutable au runtime serait
-        modifiable par n'importe quel appelant, et le tarissement dépendrait de
-        l'ordre des imports."""
+        """`frozenset` and not `set`: an allowlist mutable at runtime would be
+        modifiable by any caller, and the drying-up would depend on the import
+        order."""
         from brain_v42.services.cluster_guard import CREATING_SIGNALS
 
         assert isinstance(CREATING_SIGNALS, frozenset)

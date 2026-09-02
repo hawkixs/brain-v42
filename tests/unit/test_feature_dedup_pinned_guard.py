@@ -1,27 +1,26 @@
-"""Une feature épinglée n'est jamais absorbée par la déduplication.
+"""A pinned feature is never absorbed by the deduplication.
 
-`pinned` est la marque d'un engagement explicite de l'opérateur. Le job de
-dédup, lui, ne l'a jamais lue : `grep -c pinned feature_dedup_job.py` rendait 0
-alors que `_get_all_features` fait un `select(features)` qui charge la colonne.
+`pinned` is the mark of an explicit operator commitment. The dedup job, for its
+part, never read it: `grep -c pinned feature_dedup_job.py` returned 0 while
+`_get_all_features` does a `select(features)` that loads the column.
 
-La règle « le plus ancien absorbe le plus récent » (`find_candidates`, comparaison
-sur `created_at`) est donc appliquée aux engagements comme au reste. Une feature
-épinglée créée explicitement s'est fait manger le 2026-08-14 à 19:17,
-`reranker_score=0.8312975168228149` — et le reranker ne compare que les NOMS,
-jamais les descriptions qui portent le périmètre.
+The "oldest absorbs newest" rule (`find_candidates`, comparison on `created_at`)
+is therefore applied to commitments like everything else. An explicitly created
+pinned feature was eaten on 2026-08-14 at 19:17,
+`reranker_score=0.8312975168228149` — and the reranker only compares NAMES, never
+the descriptions that carry the scope.
 
-CE QUE LA GARDE FAIT, ET CE QU'ELLE NE FAIT PAS. Elle refuse la fusion quand la
-SOURCE est épinglée — la source est celle qui disparaît. Elle ne swappe pas les
-rôles pour faire absorber par l'épinglée : ce serait décider du survivant sur
-l'épinglage plutôt que sur l'âge, et fusionner quand même deux périmètres que
-rien ne prouve identiques. Une épinglée cible qui absorbe une non-épinglée reste
-autorisée, c'est le cas nominal.
+WHAT THE GUARD DOES, AND WHAT IT DOES NOT. It refuses the merge when the SOURCE
+is pinned — the source is the one that disappears. It does not swap the roles to
+have the pinned one absorb: that would decide the survivor on pinning rather than
+on age, and would merge anyway two scopes nothing proves identical. A pinned
+target absorbing an unpinned feature stays allowed, that is the nominal case.
 
-PIÈGE DE TEST À NE PAS REPRODUIRE : les lignes de features sont des `MagicMock`,
-donc `row.pinned` est truthy par défaut si le champ n'est pas posé. Une garde
-écrite sans y penser rendrait TOUTES les fusions impossibles, et la suite
-existante passerait au vert en ne fusionnant plus rien. Les tests ci-dessous
-posent donc `pinned` explicitement des deux côtés.
+A TEST TRAP NOT TO REPRODUCE: the feature rows are `MagicMock`s, so `row.pinned`
+is truthy by default if the field is not set. A guard written without thinking of
+it would make ALL merges impossible, and the existing suite would go green by no
+longer merging anything. The tests below therefore set `pinned` explicitly on both
+sides.
 """
 
 from __future__ import annotations
@@ -73,7 +72,7 @@ def _job(all_features, neighbors_by_id, reranker_score: float = 0.95) -> Feature
 
 @pytest.mark.asyncio
 async def test_a_pinned_feature_is_never_proposed_for_absorption() -> None:
-    """Le cas mesuré le 2026-08-14 : la récente est épinglée, l'ancienne la mange."""
+    """The case measured on 2026-08-14: the recent one is pinned, the older eats it."""
     ancienne = _row(pinned=False, created_at=1000.0, name="Roadmap curation")
     epinglee = _row(pinned=True, created_at=2000.0, name="Roadmap curation v2", similarity=0.93)
 
@@ -85,7 +84,7 @@ async def test_a_pinned_feature_is_never_proposed_for_absorption() -> None:
 
 @pytest.mark.asyncio
 async def test_an_unpinned_feature_is_still_absorbed_normally() -> None:
-    """La garde ne doit pas éteindre la déduplication — sinon elle est indétectable."""
+    """The guard must not switch off the deduplication — otherwise it is undetectable."""
     ancienne = _row(pinned=False, created_at=1000.0, name="Roadmap curation")
     recente = _row(pinned=False, created_at=2000.0, name="Roadmap curation v2", similarity=0.93)
 
@@ -100,7 +99,7 @@ async def test_an_unpinned_feature_is_still_absorbed_normally() -> None:
 
 @pytest.mark.asyncio
 async def test_a_pinned_target_may_still_absorb_an_unpinned_source() -> None:
-    """Cas nominal : l'engagement survit et mange le doublon, c'est l'effet voulu."""
+    """Nominal case: the commitment survives and eats the duplicate, the intended effect."""
     epinglee_ancienne = _row(pinned=True, created_at=1000.0, name="Roadmap curation")
     recente = _row(pinned=False, created_at=2000.0, name="Roadmap curation v2", similarity=0.93)
 
@@ -113,7 +112,7 @@ async def test_a_pinned_target_may_still_absorb_an_unpinned_source() -> None:
 
 @pytest.mark.asyncio
 async def test_two_pinned_features_are_left_alone() -> None:
-    """Deux engagements : la dédup n'a pas à choisir lequel meurt."""
+    """Two commitments: the dedup has no business choosing which one dies."""
     a = _row(pinned=True, created_at=1000.0, name="Roadmap curation")
     b = _row(pinned=True, created_at=2000.0, name="Roadmap curation v2", similarity=0.93)
 
@@ -124,11 +123,11 @@ async def test_two_pinned_features_are_left_alone() -> None:
 
 @pytest.mark.asyncio
 async def test_the_guard_reads_pinned_and_does_not_rely_on_truthiness() -> None:
-    """Une source dont `pinned` vaut None ou 0 doit rester fusionnable.
+    """A source whose `pinned` is None or 0 must stay mergeable.
 
-    Ce test existe parce que la colonne est nullable en base : un `if row.pinned`
-    naïf traiterait `None` comme non-épinglé par chance, mais un `is not False`
-    le traiterait comme épinglé et éteindrait la dédup sur toute ligne héritée.
+    This test exists because the column is nullable in the database: a naive
+    `if row.pinned` would treat `None` as unpinned by luck, but an `is not False`
+    would treat it as pinned and would switch off the dedup on every legacy row.
     """
     ancienne = _row(pinned=False, created_at=1000.0, name="Roadmap curation")
     recente = _row(pinned=False, created_at=2000.0, name="Roadmap curation v2", similarity=0.93)

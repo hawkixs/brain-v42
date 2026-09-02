@@ -1,23 +1,23 @@
-"""La ligne `coverage` : le verdict porté jusqu'à un lecteur qui existe.
+"""The `coverage` row: the verdict carried to a reader that exists.
 
-Ticket `0a9c067e`. Sa leçon centrale est qu'une alerte que personne ne lit est
-indiscernable d'une alerte absente — le comparateur avait raison trois nuits de
-suite et rien ne s'est passé. T1 (code retour + ligne journald) n'atteint que le
-contrôle du matin ; cette ligne-ci atteint DEUX lecteurs existants sans une
-ligne de code chez eux :
+Ticket `0a9c067e`. Its central lesson is that an alert nobody reads is
+indistinguishable from an absent alert — the comparator was right three nights in
+a row and nothing happened. T1 (return code + journald line) only reaches the
+morning check; this row reaches TWO existing readers without a line of code on
+their side:
 
-- `DreamRunService.last_failure` → section « ### Last failure » du briefing de
-  session, lue à chaque ouverture ;
+- `DreamRunService.last_failure` → the "### Last failure" section of the session
+  briefing, read at every opening;
 - `collect_nightly_ops` → `/metrics` `nightly.last_failure`.
 
-Prix assumé et dit : étant la plus récente, elle prend la place « Last failure »
-d'un échec de phase de la même nuit, et `/metrics` `last_run.status` passe à
-`partial` ces nuits-là — ce qui est vrai.
+An accepted and stated price: being the most recent, it takes the "Last failure"
+slot from a phase failure of the same night, and `/metrics` `last_run.status`
+turns `partial` on those nights — which is true.
 
-Le writer est un calque de `_promote_helpers._record_empty_pool` : best-effort,
-n'élève JAMAIS, pose la sentinelle sans jamais la canonicaliser. « Best-effort »
-ne veut pas dire « rend toujours 0 » : son code retour est ce qui rend son propre
-échec observable, exactement comme `record-empty-pool`.
+The writer is a tracing of `_promote_helpers._record_empty_pool`: best-effort,
+NEVER raises, lays down the sentinel without ever canonicalising it.
+"Best-effort" does not mean "always returns 0": its return code is what makes its
+own failure observable, exactly like `record-empty-pool`.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ _SELECT = re.compile(r"SELECT\s+dream_runs", re.IGNORECASE)
 
 
 class _RecordingSession:
-    """Session asynchrone qui n'exécute rien et retient ce qu'on lui donne."""
+    """An async session that executes nothing and remembers what it is given."""
 
     def __init__(self, calls: list[Any], existing_id: int | None) -> None:
         self._calls = calls
@@ -83,16 +83,16 @@ def _mutation(calls: list[Any]) -> tuple[str, dict[str, Any]]:
     return kind, dict(statement.compile().params)
 
 
-# --- La ligne, et ce qu'elle porte ------------------------------------------
+# --- The row, and what it carries -------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_the_coverage_row_carries_the_global_sentinel() -> None:
-    """`coverage` n'a pas de projet : c'est un verdict sur la NUIT entière.
+    """`coverage` has no project: it is a verdict on the WHOLE night.
 
-    La sentinelle ne transite jamais par `canonicalize_project_key`, qui la
-    rejette — sur un writer best-effort l'exception serait avalée et la colonne
-    resterait NULL, en silence, chaque nuit.
+    The sentinel never transits through `canonicalize_project_key`, which rejects
+    it — on a best-effort writer the exception would be swallowed and the column
+    would stay NULL, silently, every night.
     """
     factory, calls, session = _factory()
 
@@ -121,7 +121,7 @@ async def test_the_row_carries_the_verdict_and_the_faulty_pairs() -> None:
 
 
 def test_the_phase_name_fits_the_real_column() -> None:
-    """Lu dans les métadonnées réelles, pas recopié : `varchar(10)`, 8 caractères."""
+    """Read from the real metadata, not retyped: `varchar(10)`, 8 characters."""
     length = dream_runs.c.phase.type.length
 
     assert length is not None
@@ -148,14 +148,14 @@ def _lookup(calls: list[Any]) -> Any:
 
 @pytest.mark.asyncio
 async def test_the_idempotence_key_is_the_NIGHT_not_the_phase_alone() -> None:
-    """La clause WHERE, lue dans le SQL rendu — pas dans la réponse d'un stub.
+    """The WHERE clause, read in the rendered SQL — not in a stub's answer.
 
-    `_RecordingSession` répond la même chose à N'IMPORTE QUELLE requête : le
-    test de rejeu passe donc avec ou sans le filtre `run_date`, mutation
-    exécutée. Or sans ce filtre, `order_by(id desc) limit 1` trouverait la ligne
-    `coverage` de n'importe quelle nuit passée : le writer mettrait à jour le
-    verdict d'HIER et n'écrirait jamais celui d'aujourd'hui — le briefing et
-    /metrics, seuls lecteurs de cette ligne, ne verraient rien bouger.
+    `_RecordingSession` answers the same thing to ANY query: the replay test
+    therefore passes with or without the `run_date` filter, mutation executed. Yet
+    without that filter, `order_by(id desc) limit 1` would find the `coverage` row
+    of any past night: the writer would update YESTERDAY's verdict and would never
+    write today's — the briefing and /metrics, this row's only readers, would see
+    nothing move.
     """
     factory, calls, _ = _factory(existing_id=None)
 
@@ -168,7 +168,7 @@ async def test_the_idempotence_key_is_the_NIGHT_not_the_phase_alone() -> None:
 
 @pytest.mark.asyncio
 async def test_the_lookup_stays_bounded_and_deterministic() -> None:
-    """Une nuit qui porterait deux lignes `coverage` doit converger, pas osciller."""
+    """A night carrying two `coverage` rows must converge, not oscillate."""
     factory, calls, _ = _factory(existing_id=None)
 
     await record_coverage_gap.record_coverage_gap(factory, RUN_DATE, summary=SUMMARY)
@@ -180,7 +180,7 @@ async def test_the_lookup_stays_bounded_and_deterministic() -> None:
 
 @pytest.mark.asyncio
 async def test_a_second_run_the_same_night_updates_instead_of_duplicating() -> None:
-    """Un rejeu manuel du matin ne doit pas empiler des verdicts contradictoires."""
+    """A manual morning replay must not stack contradictory verdicts."""
     factory, calls, _ = _factory(existing_id=4242)
 
     await record_coverage_gap.record_coverage_gap(factory, RUN_DATE, summary=SUMMARY, detail=DETAIL)
@@ -202,16 +202,16 @@ def test_the_writer_never_canonicalizes_the_sentinel() -> None:
     assert "GLOBAL_PHASE_PROJECT_KEY" in source
 
 
-# --- Best-effort : n'élève jamais, mais RAPPORTE ----------------------------
+# --- Best-effort: never raises, but REPORTS ---------------------------------
 
 
 def test_a_dead_database_returns_non_zero_without_raising(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """« Best-effort — n'élève jamais » n'est PAS « rend toujours 0 ».
+    """Best-effort — never raises is NOT the same as always returns 0.
 
-    C'est ce code retour qui rend l'échec du writer observable, exactement comme
-    celui de `record-empty-pool` rend observable la classe D.
+    It is this return code that makes the writer's failure observable, exactly as
+    `record-empty-pool`'s makes class D observable.
     """
     monkeypatch.setattr(
         record_coverage_gap,

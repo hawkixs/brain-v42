@@ -1,18 +1,18 @@
-"""La chaîne DRY de roadmap doit rester une CHAÎNE, et rester proposer-only.
+"""The roadmap DRY chain must stay a CHAIN, and stay proposer-only.
 
-Deux invariants que le choix d'un modèle peut casser sans bruit, et qu'aucun
-test ne gardait quand le primaire DRY est mort en 410 le 2026-08-07.
+Two invariants a model choice can break silently, and that no test guarded when
+the DRY primary died with a 410 on 2026-08-07.
 
-1. PRIMAIRE ET SECOURS DISTINCTS. Poser le secours en primaire — la tentation
-   évidente quand le primaire meurt, puisque le secours tourne déjà — supprime
-   le second maillon. `_curate_managed_model_chain` bascule en plus sur le
-   profil réduit (`FALLBACK_FEATURE_CAP`) dès que le modèle EST le secours :
-   la nuit perdrait sa capacité de repli ET son profil complet, en silence.
+1. PRIMARY AND FALLBACK DISTINCT. Making the fallback the primary — the obvious
+   temptation when the primary dies, since the fallback already runs — removes
+   the second link. `_curate_managed_model_chain` also switches to the reduced
+   profile (`FALLBACK_FEATURE_CAP`) as soon as the model IS the fallback: the
+   night would lose its fallback capacity AND its full profile, silently.
 
-2. L'IDENTITÉ DU MODÈLE EST LA BARRIÈRE D'AUTO-APPLICATION. `AUTO_APPLY_MODELS`
-   et `PROPOSER_ONLY_MODELS` sont dérivés des mêmes constantes. Pointer le
-   primaire DRY vers un modèle WET — également tentant, ils sont vivants et
-   déjà validés — ferait gagner à une nuit DRY le droit d'appliquer.
+2. THE MODEL'S IDENTITY IS THE AUTO-APPLICATION BARRIER. `AUTO_APPLY_MODELS` and
+   `PROPOSER_ONLY_MODELS` are derived from the same constants. Pointing the DRY
+   primary at a WET model — equally tempting, they are alive and already
+   validated — would earn a DRY night the right to apply.
 """
 
 from __future__ import annotations
@@ -36,17 +36,16 @@ def test_the_wet_chain_has_two_distinct_links() -> None:
 
 
 def test_no_model_is_both_proposer_only_and_auto_apply() -> None:
-    """L'intersection est vide, sinon un même nom porte deux droits opposés."""
+    """The intersection is empty, otherwise one name carries two opposite rights."""
     assert not (PROPOSER_ONLY_MODELS & AUTO_APPLY_MODELS)
 
 
 def test_the_dry_primary_is_never_a_wet_model() -> None:
-    """Redondant avec le test ci-dessus par construction — et gardé exprès.
+    """Redundant with the test above by construction — and kept on purpose.
 
-    Les deux frozensets sont dérivés des constantes : si quelqu'un les
-    redéfinit en littéraux, l'intersection pourrait rester vide alors que le
-    primaire DRY vaut déjà un modèle WET. Cette assertion-ci lit les constantes
-    et survivrait à cette réécriture.
+    Both frozensets are derived from the constants: if someone redefines them as
+    literals, the intersection could stay empty while the DRY primary is already a
+    WET model. This assertion reads the constants and would survive that rewrite.
     """
     assert DEFAULT_ROADMAP_MODEL not in {
         DEFAULT_WET_ROADMAP_MODEL,

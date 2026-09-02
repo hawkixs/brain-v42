@@ -1,25 +1,24 @@
-"""`dream.sh` déclare ses attendus et ses skips AU SITE DE LA DÉCISION.
+"""`dream.sh` declares its expectations and its skips AT THE DECISION SITE.
 
-Ces tests n'inspectent pas seulement le texte : ils DÉCOUPENT les blocs réels de
-`scripts/dream.sh` et les exécutent sous bash, comme `test_dream_sh_exit_code.py`.
-Un test qui cherche une chaîne prouve que le texte existe ; celui-ci prouve que
-bash écrit la bonne ligne, dans la bonne branche.
+These tests do not merely inspect the text: they EXTRACT the real blocks of
+`scripts/dream.sh` and run them under bash, like `test_dream_sh_exit_code.py`. A
+test that greps for a string proves the text exists; this one proves bash writes
+the right line, in the right branch.
 
-Deux propriétés structurent le fichier :
+Two properties structure the file:
 
-1. **L'écriture est INCRÉMENTALE.** Un manifeste vidé en fin de nuit n'existe
-   que si la nuit se termine normalement — hypothèse qui saute précisément sur
-   les nuits susceptibles d'avoir perdu des lignes (`TimeoutStartSec=36000`,
-   OOM, redémarrage). L'absence du bloc de clôture devient alors le marqueur
-   d'interruption, ce qui n'a de sens que si tout le reste a déjà été écrit.
-2. **L'écriture est BEST-EFFORT INTÉGRALE.** Un `logs/` en lecture seule ne doit
-   jamais tuer une nuit : la télémétrie qui échoue ne fait pas tomber la phase
-   qu'elle observe.
+1. **Writing is INCREMENTAL.** A manifest flushed at the end of the night only
+   exists if the night ends normally — an assumption that breaks precisely on the
+   nights liable to have lost rows (`TimeoutStartSec=36000`, OOM, restart). The
+   absence of the closing block then becomes the interruption marker, which only
+   makes sense if everything else has already been written.
+2. **Writing is BEST-EFFORT THROUGHOUT.** A read-only `logs/` must never kill a
+   night: telemetry that fails does not bring down the phase it observes.
 
-Et une garde : chaque site qui pousse dans `SKIPPED_PHASES`, `FAILED_PHASES` ou
-`TIMED_OUT_PHASES` doit avoir un `manifest_put` voisin, du bon `kind` et avec la
-MÊME paire. C'est elle qui empêche le détecteur de rétrécir en silence — le
-défaut exact que le ticket `0a9c067e` décrit.
+And one guard: every site that pushes into `SKIPPED_PHASES`, `FAILED_PHASES` or
+`TIMED_OUT_PHASES` must have a neighbouring `manifest_put`, of the right `kind`
+and with the SAME pair. That is what stops the detector shrinking in silence —
+the exact defect ticket `0a9c067e` describes.
 """
 
 from __future__ import annotations
@@ -38,8 +37,8 @@ from scripts.dream import run_manifest as rm
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DREAM_SH = REPO_ROOT / "scripts" / "dream.sh"
 
-# Ancres de découpe : du code réel, jamais des commentaires. Un remaniement qui
-# les fait disparaître casse ces tests par ValueError, pas en les laissant verts.
+# Extraction anchors: real code, never comments. A rework that makes them
+# disappear breaks these tests with a ValueError, not by leaving them green.
 _HEADER_ANCHOR = 'MANIFEST_FILE="$LOG_DIR/'
 _HEADER_END_ANCHOR = "manifest_put meta started"
 _TRUNCATE_ANCHOR = ': > "$MANIFEST_FILE"'
@@ -73,12 +72,12 @@ def _header_block() -> str:
 
 
 def _loop_expected_block() -> str:
-    """Le début du corps de boucle, jusqu'à la déclaration de l'attendu incluse."""
+    """The start of the loop body, up to and including the expectation declaration."""
     return _slice(_LOOP_ANCHOR, _LOOP_END_ANCHOR) + "\ndone"
 
 
 def _empty_pool_block() -> str:
-    """Les deux branches du verdict d'écriture + le push `SKIPPED_PHASES`."""
+    """Both branches of the write verdict + the `SKIPPED_PHASES` push."""
     content = _source()
     start = content.index(_EMPTY_POOL_ANCHOR)
     return _slice(_EMPTY_POOL_ANCHOR, _EMPTY_POOL_END_ANCHOR, from_index=start)
@@ -99,7 +98,7 @@ def _run(script: str) -> subprocess.CompletedProcess[str]:
 
 
 def _stub_manifest_put(out: Path) -> str:
-    """Le vrai `printf` à quatre champs — le parseur Python doit le relire."""
+    """The real four-field `printf` — the Python parser must read it back."""
     return (
         "manifest_put() { "
         f'printf \'%s\\t%s\\t%s\\t%s\\n\' "$1" "${{2-}}" "${{3-}}" "${{4-}}" '
@@ -111,7 +110,7 @@ def _bash_array(values: tuple[str, ...]) -> str:
     return " ".join(shlex.quote(value) for value in values)
 
 
-# --- L'en-tête : trois nombres, écrits AVANT la première phase ---------------
+# --- The header: three numbers, written BEFORE the first phase --------------
 
 
 def _run_header(
@@ -151,11 +150,11 @@ def _run_header(
 
 
 def test_the_header_states_what_the_night_planned_before_running_it(tmp_path: Path) -> None:
-    """`planned_phases` = |PHASES| × |POOL| + |globales|, calculé EN TÊTE.
+    """`planned_phases` = |PHASES| × |POOL| + |globals|, computed AT THE HEAD.
 
-    C'est le premier des trois nombres de l'auto-contrôle. Il est calculé avant
-    la première phase, donc par un chemin de code distinct du compteur
-    `TOTAL_PHASES` et de ce que la nuit atteindra réellement.
+    It is the first of the self-check's three numbers. It is computed before the
+    first phase, hence through a code path distinct from the `TOTAL_PHASES`
+    counter and from what the night will actually reach.
     """
     proc, manifest_path = _run_header(tmp_path)
 
@@ -180,13 +179,13 @@ def test_the_header_states_what_the_night_planned_before_running_it(tmp_path: Pa
 def test_the_header_counts_the_global_phases_it_is_GIVEN(
     tmp_path: Path, global_phases: tuple[str, ...], planned: str
 ) -> None:
-    """Le +3 n'est pas une constante magique : il vient d'un tableau nommé.
+    """The +3 is not a magic constant: it comes from a named array.
 
-    La seule observable qui distingue le tableau d'un littéral `3` est sa
-    VARIATION. Le tableau vit donc hors du bloc découpé, et le harnais le fait
-    bouger : avec `+ 3` en dur, les deux dernières lignes du tableau de
-    paramètres tombent. Le contenu réel du tableau est épinglé par le test
-    suivant, pour que cette liberté du harnais ne devienne pas une fiction.
+    The only observable distinguishing the array from a literal `3` is its
+    VARIATION. The array therefore lives outside the extracted block, and the
+    harness makes it move: with a hardcoded `+ 3`, the parameter table's last two
+    rows fail. The array's real content is pinned by the next test, so this
+    harness freedom does not become a fiction.
     """
     proc, manifest_path = _run_header(
         tmp_path, pool=("red",), phases=("scan:fast:5:30",), global_phases=global_phases
@@ -198,10 +197,10 @@ def test_the_header_counts_the_global_phases_it_is_GIVEN(
 
 
 def test_the_script_really_declares_the_three_global_phases_the_blocks_implement() -> None:
-    """Le harnais fait varier le tableau ; ici on épingle ce que le script pose.
+    """The harness varies the array; here we pin what the script actually sets.
 
-    Sans ce test, un tableau vidé dans `dream.sh` laisserait la paramétrisation
-    ci-dessus verte : elle ne lit jamais la vraie valeur.
+    Without this test, an emptied array in `dream.sh` would leave the
+    parameterization above green: it never reads the real value.
     """
     content = _source()
 
@@ -227,11 +226,11 @@ def test_the_header_truncates_so_a_same_day_rerun_never_doubles(tmp_path: Path) 
 
 
 def test_an_unwritable_log_dir_never_kills_the_night(tmp_path: Path) -> None:
-    """Best-effort INTÉGRAL : la télémétrie qui échoue ne tue pas la nuit.
+    """Best-effort THROUGHOUT: telemetry that fails does not kill the night.
 
-    `set -euo pipefail` est actif dès la ligne 2 du script : une redirection en
-    échec non gardée ferait sortir bash au milieu de l'en-tête, donc avant la
-    première phase.
+    `set -euo pipefail` is active from the script's line 2: an unguarded failing
+    redirection would exit bash in the middle of the header, hence before the
+    first phase.
     """
     log_dir = tmp_path / "readonly"
     log_dir.mkdir()
@@ -246,18 +245,18 @@ def test_an_unwritable_log_dir_never_kills_the_night(tmp_path: Path) -> None:
     assert not manifest_path.exists()
 
 
-# --- Le verrou : la troncature ne précède JAMAIS l'acquisition ---------------
+# --- The lock: truncation NEVER precedes acquisition ------------------------
 
 
 def _lock_then_header_block() -> str:
-    """Du verrou consultatif jusqu'à la fin de l'en-tête, dans l'ORDRE du script.
+    """From the advisory lock to the end of the header, in the script's ORDER.
 
-    L'assertion est le test : `dream.sh` existe en deux versions possibles, et
-    une seule est sûre. Si la troncature vit AVANT le `flock`, la découpe est
-    impossible et cette phrase dit pourquoi — la deuxième invocation d'une nuit
-    (recouvrement cron, re-déclenchement manuel) traverserait `: > $MANIFEST_FILE`
-    et les cinq lignes de méta AVANT de découvrir qu'elle n'a pas le droit de
-    tourner, effaçant les déclarations de la nuit VIVANTE.
+    The assertion is the test: `dream.sh` exists in two possible versions, and
+    only one is safe. If the truncation lives BEFORE the `flock`, the extraction is
+    impossible and this sentence says why — a night's second invocation (cron
+    overlap, manual re-trigger) would go through `: > $MANIFEST_FILE` and the five
+    meta lines BEFORE discovering it is not allowed to run, erasing the LIVE
+    night's declarations.
     """
     content = _source()
     lock = content.index(_LOCK_ANCHOR)
@@ -273,7 +272,7 @@ def _lock_then_header_block() -> str:
 
 @contextmanager
 def _lock_taken(lock_path: Path) -> Iterator[None]:
-    """Un AUTRE processus tient déjà le verrou — flock(2) est par ouverture."""
+    """ANOTHER process already holds the lock — flock(2) is per open file."""
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("w")
     try:
@@ -291,7 +290,7 @@ def _run_lock_then_header(
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(exist_ok=True)
     manifest_path = log_dir / "2026-08-18_manifest.tsv"
-    # Ce que la nuit VIVANTE a déjà déclaré quand la seconde invocation arrive.
+    # What the LIVE night has already declared when the second invocation arrives.
     manifest_path.write_text("expected\tscan\tred\t\n", encoding="utf-8")
 
     harness = "\n".join(
@@ -320,13 +319,13 @@ def _run_lock_then_header(
 def test_a_locked_out_invocation_never_erases_the_running_nights_manifest(
     tmp_path: Path,
 ) -> None:
-    """Le cas que le verrou existe pour absorber, joué jusqu'au fichier.
+    """The case the lock exists to absorb, played through to the file.
 
-    Une nuit systemd tourne et a déjà déclaré ses premières paires ; l'opérateur
-    relance `dream.sh` à la main. La seconde invocation doit sortir en 0 sans
-    avoir touché une seule ligne — sinon la nuit vivante perd ses déclarations,
-    finit `consistent=False`, escalade en rc 2 et pose une ligne `coverage`
-    mensongère sur une nuit sans le moindre défaut.
+    A systemd night is running and has already declared its first pairs; the
+    operator relaunches `dream.sh` by hand. The second invocation must exit 0
+    without touching a single line — otherwise the live night loses its
+    declarations, ends `consistent=False`, escalates to rc 2 and lays down a lying
+    `coverage` row over a night with no defect whatsoever.
     """
     proc, manifest_path = _run_lock_then_header(tmp_path, lock_held=True)
 
@@ -339,7 +338,7 @@ def test_a_locked_out_invocation_never_erases_the_running_nights_manifest(
 def test_the_holder_of_the_lock_still_truncates_and_stamps_its_header(
     tmp_path: Path,
 ) -> None:
-    """L'autre sens de marche : derrière le verrou, la troncature a bien lieu."""
+    """The other direction: behind the lock, the truncation does happen."""
     proc, manifest_path = _run_lock_then_header(tmp_path, lock_held=False)
 
     assert proc.returncode == 0, proc.stderr
@@ -351,15 +350,15 @@ def test_the_holder_of_the_lock_still_truncates_and_stamps_its_header(
     assert manifest.meta["planned_phases"] == "4"
 
 
-# --- La boucle : l'attendu est émis à l'ITÉRATION ----------------------------
+# --- The loop: the expectation is emitted AT THE ITERATION ------------------
 
 
 def test_every_phase_of_every_project_declares_itself_expected(tmp_path: Path) -> None:
-    """18 paires pour 3 projets × 6 phases, émises au même endroit que TOTAL_PHASES++.
+    """18 pairs for 3 projects × 6 phases, emitted at the same place as TOTAL_PHASES++.
 
-    Émettre à l'itération est ce qui rend une SEPTIÈME phase couverte
-    automatiquement : ajouter une entrée à `PHASES` étend l'attendu sans toucher
-    au détecteur. Il n'y a plus de garde à maintenir, donc plus rien à oublier.
+    Emitting at the iteration is what makes a SEVENTH phase covered automatically:
+    adding an entry to `PHASES` extends the expectation without touching the
+    detector. There is no guard left to maintain, hence nothing left to forget.
     """
     out = tmp_path / "manifest.tsv"
     phases = (
@@ -417,7 +416,7 @@ def test_a_seventh_phase_extends_the_expected_set_without_touching_the_detector(
 def test_each_global_phase_declares_itself_expected_under_the_sentinel(
     tmp_path: Path, phase: str
 ) -> None:
-    """Les trois globales portent `*` — la sentinelle traverse le manifeste."""
+    """The three global phases carry `*` — the sentinel crosses the manifest."""
     out = tmp_path / "manifest.tsv"
     harness = "\n".join(
         [
@@ -436,7 +435,7 @@ def test_each_global_phase_declares_itself_expected_under_the_sentinel(
     assert manifest.expected == frozenset({(phase, "*")})
 
 
-# --- Finding 1 exécuté : la raison vit DANS chacune des deux branches --------
+# --- Finding 1 executed: the reason lives IN each of the two branches -------
 
 
 def _run_empty_pool(tmp_path: Path, record_rc: int) -> tuple[rm.RunManifest, list[str]]:
@@ -472,12 +471,12 @@ def test_a_recorded_empty_pool_row_is_declared_recorded(tmp_path: Path) -> None:
 
 
 def test_a_failed_empty_pool_write_is_declared_unrecorded(tmp_path: Path) -> None:
-    """La branche `else` de dream.sh:880 — le WARN qui n'avait aucun lecteur.
+    """The `else` branch of dream.sh:880 — the WARN that had no reader.
 
-    Le push `SKIPPED_PHASES+=` vit HORS du `if`, donc une ligne `manifest_put`
-    placée après le `if` déclarerait « sautée, aucune ligne due » alors que
-    dream.sh vient d'imprimer que l'écriture a ÉCHOUÉ. Ce test échoue si la
-    déclaration sort des deux branches.
+    The `SKIPPED_PHASES+=` push lives OUTSIDE the `if`, so a `manifest_put` placed
+    after the `if` would declare "skipped, no row due" while dream.sh has just
+    printed that the write FAILED. This test fails if the declaration leaves either
+    branch.
     """
     manifest, skipped = _run_empty_pool(tmp_path, record_rc=1)
 
@@ -488,7 +487,7 @@ def test_a_failed_empty_pool_write_is_declared_unrecorded(tmp_path: Path) -> Non
 
 
 def test_the_two_empty_pool_reasons_are_the_ones_the_parser_knows() -> None:
-    """Le vocabulaire du bash et celui du parseur ne peuvent pas dériver."""
+    """The bash vocabulary and the parser's cannot diverge."""
     block = _empty_pool_block()
 
     assert rm.WRITE_RECORDED_SKIP_REASON in block
@@ -497,21 +496,21 @@ def test_the_two_empty_pool_reasons_are_the_ones_the_parser_knows() -> None:
     assert rm.WRITE_RECORDED_SKIP_REASON not in rm.NO_ROW_SKIP_REASONS
 
 
-# --- La garde : aucun site de classement sans sa déclaration -----------------
+# --- The guard: no classification site without its declaration --------------
 
-# Le préfixe optionnel est un bras de `case` (`2)`, `*)`) : sans lui l'ancre de
-# début de ligne laissait dehors les DEUX sites qui classent toutes les phases de
-# boucle, soit 60 des 63 emplacements d'une nuit à dix projets.
+# The optional prefix is a `case` arm (`2)`, `*)`): without it the
+# start-of-line anchor left out the TWO sites that classify every loop phase, i.e.
+# 60 of the 63 slots of a ten-project night.
 _PUSH = re.compile(r'^\s*(?:[^\s)]+\)\s*)?(SKIPPED|FAILED|TIMED_OUT)_PHASES\+=\(\s*"([^"]+)"\s*\)')
-# Le recensement INDÉPENDANT, sans ancre de début de ligne : c'est lui qui
-# mesure ce que la garde ne voit pas. `\b` suffit à écarter
-# `CONTROLLED_TIMEOUT_PHASES` et `FALLBACK_PHASES`, qui ne sont pas des classes.
+# The INDEPENDENT survey, with no start-of-line anchor: it is what measures what
+# the guard does not see. `\b` is enough to exclude `CONTROLLED_TIMEOUT_PHASES`
+# and `FALLBACK_PHASES`, which are not classes.
 _ANY_PUSH = re.compile(r"\b(SKIPPED|FAILED|TIMED_OUT)_PHASES\+=\(")
 _PUT = re.compile(r"^\s*manifest_put\s+(\S+)\s+(\S+)\s+(\S+)")
 _KIND_OF_ARRAY = {"SKIPPED": "skipped", "FAILED": "failed", "TIMED_OUT": "timeout"}
-# Le voisinage est de HUIT lignes, pas de trois, et c'est mesuré : le site du
-# pool vide pousse `SKIPPED_PHASES+=` APRÈS un `if/else` dont les deux branches
-# portent la déclaration. La branche `then` est à cinq lignes du push.
+# The neighbourhood is EIGHT lines, not three, and that is measured: the
+# empty-pool site pushes `SKIPPED_PHASES+=` AFTER an `if/else` whose two branches
+# both carry the declaration. The `then` branch is five lines from the push.
 _NEIGHBOURHOOD = 8
 
 
@@ -546,11 +545,11 @@ def _orphan_sites(lines: list[str]) -> list[str]:
 
 
 def test_every_classification_site_declares_the_same_pair_to_the_manifest() -> None:
-    """La garde qui empêche le détecteur de rétrécir en silence.
+    """The guard that stops the detector shrinking in silence.
 
-    Un site de classement ajouté demain sans sa déclaration casse ce test. Sans
-    elle, l'attendu et le classement dériveraient exactement comme
-    `LOOP_PHASES` a dérivé de la réalité de la nuit : sans un bruit.
+    A classification site added tomorrow without its declaration breaks this test.
+    Without it, the expectation and the classification would diverge exactly as
+    `LOOP_PHASES` diverged from the night's reality: without a sound.
     """
     orphans = _orphan_sites(_source().splitlines())
 
@@ -558,21 +557,20 @@ def test_every_classification_site_declares_the_same_pair_to_the_manifest() -> N
 
 
 def test_the_guard_actually_sees_the_classification_sites() -> None:
-    """Garde du harnais : un test vert sur zéro site ne prouverait rien."""
+    """Harness guard: a test green over zero sites would prove nothing."""
     sites = [line for line in _source().splitlines() if _PUSH.match(line)]
 
     assert len(sites) >= 15, f"seulement {len(sites)} sites de classement trouvés"
 
 
 def test_the_guard_sees_the_case_arms_too_not_just_the_flush_left_sites() -> None:
-    """Le plancher chiffré ne dit RIEN de ceux qui manquent : ceci les nomme.
+    """The numeric floor says NOTHING about the ones missing: this names them.
 
-    Les deux bras de `case` du corps de boucle classent TOUTES les phases de
-    tous les projets du pool — 60 des 63 emplacements d'une nuit à dix. Une
-    ancre de début de ligne les laissait dehors : leurs `manifest_put` pouvaient
-    disparaître sans qu'un seul test bouge, et une phase classée `failed` sans
-    déclaration retombe en `silent`, donc rc 2 et unité rouge sur une nuit dont
-    l'échec était déjà rapporté.
+    The loop body's two `case` arms classify EVERY phase of every project in the
+    pool — 60 of the 63 slots of a ten-project night. A start-of-line anchor left
+    them out: their `manifest_put` could disappear without a single test moving,
+    and a phase classified `failed` without a declaration falls back to `silent`,
+    hence rc 2 and a red unit over a night whose failure was already reported.
     """
     lines = _source().splitlines()
     seen = {index for index, line in enumerate(lines) if _PUSH.match(line)}
@@ -586,7 +584,7 @@ def test_the_guard_sees_the_case_arms_too_not_just_the_flush_left_sites() -> Non
 
 
 def test_the_guard_would_catch_a_case_arm_stripped_of_its_declaration() -> None:
-    """Garde de la garde : elle doit MORDRE sur la mutation qu'elle prétend voir."""
+    """Guard of the guard: it must BITE on the mutation it claims to see."""
     fabricated = [
         '    case "$phase_rc" in',
         "      0) ;;",
@@ -604,7 +602,7 @@ def test_the_guard_would_catch_a_case_arm_stripped_of_its_declaration() -> None:
 
 
 def test_the_closing_block_stamps_the_three_counters_and_the_end() -> None:
-    """Le seul bloc non incrémental — et son absence EST le marqueur d'interruption."""
+    """The only non-incremental block — and its absence IS the interruption marker."""
     content = _source()
     closing = content[content.index('log "=== Dream finished: $summary ==="') :]
 

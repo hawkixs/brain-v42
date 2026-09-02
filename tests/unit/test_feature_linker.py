@@ -226,7 +226,7 @@ async def test_do_link_excludes_archived_and_merged(mock_session_factory):
     assert "status" in where_str and "!=" in where_str
 
 
-# ── Le repli brut n'est ni équivalent au ClusterGuard, ni annoncé, ni borné ──
+# ── The raw fallback is neither equivalent to ClusterGuard, nor announced, nor bounded ──
 
 
 def _row(feature_id: uuid.UUID, sim: float) -> MagicMock:
@@ -237,19 +237,18 @@ def _row(feature_id: uuid.UUID, sim: float) -> MagicMock:
 
 
 class TestTheFallbackPathIsAnnouncedInsteadOfSilent:
-    """`link_artifact` a DEUX chemins, et choisissait le second sans le dire.
+    """`link_artifact` has TWO paths, and chose the second without saying so.
 
-    Le repli SQL brut est pris dès qu'il n'y a pas de ClusterGuard, ou dès que
-    l'appelant ne passe pas de titre. Les deux cas sont des configurations
-    normales — `embedding_backfill` et le rattrapage de backlog construisent un
-    linker SANS guard — donc rien ne distingue « le guard a travaillé » de « le
-    guard a été contourné ». Le seul journal du chemin était en `debug`, c'est-à-dire
-    absent en production.
+    The raw SQL fallback is taken as soon as there is no ClusterGuard, or as soon
+    as the caller passes no title. Both cases are normal configurations —
+    `embedding_backfill` and the backlog catch-up build a linker WITHOUT a guard —
+    so nothing distinguishes "the guard did the work" from "the guard was
+    bypassed". The path's only log was at `debug`, that is, absent in production.
 
-    Ce n'est pas une différence cosmétique entre deux implémentations du même
-    contrat : les deux chemins ne rendent PAS le même résultat (voir la classe
-    suivante). Savoir lequel a tourné est donc la première question à poser
-    devant un lien inattendu.
+    This is not a cosmetic difference between two implementations of the same
+    contract: the two paths do NOT return the same result (see the next class).
+    Knowing which one ran is therefore the first question to ask when faced with an
+    unexpected link.
     """
 
     @pytest.mark.asyncio
@@ -277,11 +276,11 @@ class TestTheFallbackPathIsAnnouncedInsteadOfSilent:
     async def test_a_missing_title_is_named_as_a_distinct_reason(
         self, mock_session_factory
     ) -> None:
-        """Deux causes distinctes, deux raisons distinctes.
+        """Two distinct causes, two distinct reasons.
 
-        Les confondre enverrait chercher une injection de dépendance absente là
-        où c'est l'appelant qui ne transmet pas de titre — deux correctifs
-        totalement différents, dans deux fichiers différents.
+        Confusing them would send someone hunting for a missing dependency
+        injection where it is the caller that does not pass a title — two entirely
+        different fixes, in two different files.
         """
         from structlog.testing import capture_logs
 
@@ -304,11 +303,11 @@ class TestTheFallbackPathIsAnnouncedInsteadOfSilent:
 
     @pytest.mark.asyncio
     async def test_the_guard_path_says_nothing(self, mock_session_factory) -> None:
-        """Témoin négatif : un avertissement à chaque lien ne serait plus un signal.
+        """Negative witness: a warning on every link would no longer be a signal.
 
-        Sans lui, poser le WARN inconditionnellement passerait les deux tests
-        ci-dessus tout en rendant le journal illisible — et un avertissement
-        qu'on voit toujours est un avertissement qu'on ne lit plus.
+        Without it, emitting the WARN unconditionally would pass both tests above
+        while making the log unreadable — and a warning one always sees is a
+        warning one no longer reads.
         """
         from structlog.testing import capture_logs
 
@@ -332,18 +331,17 @@ class TestTheFallbackPathIsAnnouncedInsteadOfSilent:
 
 
 class TestTheFallbackPathIsBounded:
-    """Le repli n'avait AUCUN plafond, là où le chemin guard en a un structurel.
+    """The fallback had NO cap, where the guard path has a structural one.
 
-    `_do_link_via_guard` passe par `ClusterGuard.resolve`, qui rend UNE feature :
-    au plus un lien par artefact. `_do_link` insérait un lien pour CHAQUE feature
-    au-dessus de 0,70, sans `ORDER BY` ni `LIMIT`. Sur un projet dont les features
-    se ressemblent — précisément le corpus que la curation roadmap est censée
-    resserrer — un seul artefact pouvait s'attacher à tout le lot, et l'ordre des
-    liens obtenus n'était même pas déterministe.
+    `_do_link_via_guard` goes through `ClusterGuard.resolve`, which returns ONE
+    feature: at most one link per artifact. `_do_link` inserted a link for EVERY
+    feature above 0.70, with no `ORDER BY` and no `LIMIT`. On a project whose
+    features resemble each other — precisely the corpus the roadmap curation is
+    meant to tighten — a single artifact could attach itself to the whole batch,
+    and the order of the links obtained was not even deterministic.
 
-    Option B (décision opérateur du 2026-08-18, ticket fb62624f) : plafonner et
-    documenter le repli. L'option C ne s'implémente que si une nuit flaky en
-    prouve le besoin.
+    Option B (operator decision of 2026-08-18, ticket fb62624f): cap and document
+    the fallback. Option C is only implemented if a flaky night proves the need.
     """
 
     @staticmethod
@@ -373,11 +371,11 @@ class TestTheFallbackPathIsBounded:
     async def test_the_best_candidates_are_kept_not_arbitrary_ones(
         self, mock_session_factory
     ) -> None:
-        """Un plafond sans tri troque « trop de liens » contre « les mauvais liens ».
+        """A cap without ordering trades "too many links" for "the wrong links".
 
-        Sans `ORDER BY`, PostgreSQL rend les lignes dans l'ordre qui l'arrange, et
-        `LIMIT 3` en garderait trois quelconques. Le plafond doit conserver les
-        trois plus proches, sinon il dégrade le résultat au lieu de le borner.
+        Without `ORDER BY`, PostgreSQL returns rows in whatever order suits it, and
+        `LIMIT 3` would keep three arbitrary ones. The cap must keep the three
+        closest, otherwise it degrades the result instead of bounding it.
         """
         factory, session = mock_session_factory
         linker = FeatureLinker(session_factory=factory, max_links=3)
@@ -394,11 +392,11 @@ class TestTheFallbackPathIsBounded:
 
     @pytest.mark.asyncio
     async def test_reaching_the_cap_is_never_silent(self, mock_session_factory) -> None:
-        """Une troncature muette se lit comme « il n'y avait que trois candidats ».
+        """A mute truncation reads as "there were only three candidates".
 
-        C'est la même règle que le plafond de page de `brain_list`, annoncé pour
-        la même raison : une page tronquée en silence est indiscernable d'un
-        corpus qui s'arrête là.
+        This is the same rule as `brain_list`'s page cap, announced for the same
+        reason: a page truncated in silence is indistinguishable from a corpus that
+        stops there.
         """
         from structlog.testing import capture_logs
 
@@ -424,7 +422,7 @@ class TestTheFallbackPathIsBounded:
 
     @pytest.mark.asyncio
     async def test_staying_below_the_cap_says_nothing(self, mock_session_factory) -> None:
-        """Témoin négatif : l'annonce doit porter sur le plafond ATTEINT."""
+        """Negative witness: the announcement must bear on the cap being REACHED."""
         from structlog.testing import capture_logs
 
         factory, session = mock_session_factory
@@ -445,23 +443,23 @@ class TestTheFallbackPathIsBounded:
 
 
 def test_the_two_paths_do_not_share_a_contract() -> None:
-    """NOMMER la divergence, pour qu'on cesse de lire les deux chemins comme un seul.
+    """NAME the divergence, so that the two paths stop being read as one.
 
-    Le docstring du module dit « the original raw-SQL cosine-similarity path is
-    used for backward compatibility », ce qui laisse entendre une équivalence de
-    comportement. Il n'y en a pas, et les écarts vont dans le sens dangereux :
+    The module's docstring says "the original raw-SQL cosine-similarity path is
+    used for backward compatibility", which suggests a behavioural equivalence.
+    There is none, and the discrepancies go in the dangerous direction:
 
-      | | chemin ClusterGuard | repli SQL brut |
+      | | ClusterGuard path | raw SQL fallback |
       |---|---|---|
-      | liens par artefact | 1 au plus, structurel | jusqu'à `max_links` |
-      | reranker | oui (0,75 lier / 0,50 fusionner) | aucun |
-      | zone grise 0,50–0,70 | arbitrée | ignorée |
-      | mode link-only | respecté | inconnu |
-      | création de feature | possible | jamais |
+      | links per artifact | 1 at most, structural | up to `max_links` |
+      | reranker | yes (0.75 link / 0.50 merge) | none |
+      | grey zone 0.50–0.70 | arbitrated | ignored |
+      | link-only mode | honoured | unknown |
+      | feature creation | possible | never |
 
-    Ce test lit les deux implémentations et exige que la divergence reste
-    DÉCLARÉE dans le module. Un test qui vérifierait l'égalité des deux chemins
-    serait faux ; un module qui la sous-entend est pire, parce qu'il se lit vite.
+    This test reads both implementations and requires that the divergence stay
+    DECLARED in the module. A test verifying the equality of the two paths would be
+    wrong; a module that implies it is worse, because it is read quickly.
     """
     import inspect
 

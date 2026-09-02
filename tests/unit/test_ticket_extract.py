@@ -35,7 +35,7 @@ from structlog.testing import capture_logs
 
 
 async def _no_sleep(_seconds: float) -> None:
-    """Neutralise le backoff : un test ne doit jamais attendre une horloge."""
+    """Neutralize the backoff: a test must never wait on a clock."""
 
 
 def _thread(**kw) -> TicketThread:
@@ -134,17 +134,18 @@ class TestParseAndValidate:
 
 
 class TestTargetProjectCanonicalization:
-    """Le poison pill de la nuit du 19→20 : `brain_v42` refusé, rejoué chaque nuit.
+    """The poison pill of the 19→20 night: `brain_v42` refused, replayed every night.
 
-    Le modèle rend la forme underscore du dépôt (`brain_v42`) là où la clé
-    canonique est `brain-v42`. Le test d'appartenance portait sur la chaîne BRUTE,
-    donc `ResponseParseError` — et comme le ticket reste `pending`, la MÊME erreur
-    se rejoue à chaque nuit. C'est un poison pill, pas un échec ponctuel.
+    The model returns the repository's underscore form (`brain_v42`) where the
+    canonical key is `brain-v42`. The membership test was on the RAW string, hence
+    `ResponseParseError` — and since the ticket stays `pending`, the SAME error
+    replays every night. That is a poison pill, not a one-off failure.
 
-    `_ALIASES` mappe `brain` et `brain_v42` AVANT le test de forme et sans jamais
-    lever : canonicaliser en `strict=False` suffit donc, et c'est le seul mode
-    admissible ici — `strict=True` lèverait un `ValueError` qui échapperait au
-    `except ResponseParseError` de l'appelant et tuerait le re-prompt correctif.
+    `_ALIASES` maps `brain` and `brain_v42` BEFORE the shape test and without ever
+    raising: canonicalizing with `strict=False` is therefore enough, and it is the
+    only admissible mode here — `strict=True` would raise a `ValueError` that would
+    escape the caller's `except ResponseParseError` and kill the corrective
+    re-prompt.
     """
 
     def test_underscore_alias_is_canonicalized_before_the_membership_test(self):
@@ -171,7 +172,7 @@ class TestTargetProjectCanonicalization:
         assert drafts[0].target_project == "red-shrik"
 
     def test_a_non_participant_is_still_rejected_after_canonicalization(self):
-        """La canonicalisation ne doit pas ÉLARGIR ce qui est accepté."""
+        """Canonicalization must not WIDEN what is accepted."""
         content = (
             '[{"target_type": "learning", "target_project": "red-lab", '
             '"payload": {"topic": "t", "insight": "i", "tags": []}, '
@@ -181,11 +182,11 @@ class TestTargetProjectCanonicalization:
             parse_and_validate(content, _thread())
 
     def test_a_malformed_key_raises_the_parse_error_never_a_value_error(self):
-        """`strict=False` : le contrat d'erreur de la fonction ne change pas.
+        """`strict=False`: the function's error contract does not change.
 
-        Si la canonicalisation était faite en `strict=True`, `ValueError` sortirait
-        de `parse_and_validate` sans être un `ResponseParseError` — l'appelant ne
-        l'attraperait pas et le re-prompt correctif ne serait jamais joué.
+        If canonicalization were done with `strict=True`, `ValueError` would leave
+        `parse_and_validate` without being a `ResponseParseError` — the caller
+        would not catch it and the corrective re-prompt would never be played.
         """
         content = (
             '[{"target_type": "learning", "target_project": "Red Lab!", '
@@ -197,8 +198,9 @@ class TestTargetProjectCanonicalization:
 
     @pytest.mark.parametrize("bad", ["null", "42", "{}", "[]"])
     def test_a_non_string_target_project_is_rejected_without_crashing(self, bad: str):
-        """`canonicalize_project_key` appelle `.strip()` : un non-str y lèverait un
-        `AttributeError`, qui n'est pas un `ResponseParseError` et tuerait la nuit."""
+        """`canonicalize_project_key` calls `.strip()`: a non-str would raise an
+        `AttributeError` there, which is not a `ResponseParseError` and would kill
+        the night."""
         content = (
             '[{"target_type": "learning", "target_project": ' + bad + ", "
             '"payload": {"topic": "t", "insight": "i", "tags": []}, '
@@ -500,16 +502,16 @@ class TestApplyProposals:
 
 
 # ---------------------------------------------------------------------------
-# extract_thread — capture d'erreur nommée (incident 2026-07-04 : « failed: »
-# vide, str() des erreurs transport httpx est souvent "" ; le nom de classe
-# doit toujours apparaître dans outcome.error).
+# extract_thread — named error capture (incident 2026-07-04: an empty "failed:",
+# str() of httpx transport errors is often ""; the class name must always appear
+# in outcome.error).
 # ---------------------------------------------------------------------------
 
 
 class TestExtractThreadErrorCapture:
     @pytest.mark.asyncio
     async def test_transport_error_names_exception_type(self) -> None:
-        """Une erreur transport à message vide produit un outcome.error nommé."""
+        """A transport error with an empty message produces a named outcome.error."""
 
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("", request=request)
@@ -521,7 +523,7 @@ class TestExtractThreadErrorCapture:
             outcome = await extract_thread(client, "test-model", _thread())
 
         assert outcome.failed
-        assert outcome.error  # jamais vide
+        assert outcome.error  # never empty
         assert "ConnectError" in outcome.error
 
 
@@ -1128,32 +1130,32 @@ class TestDeferralIsNotATimeout:
 
 
 class TestHardFailureOutranksTimeout:
-    """`3` must mean « rien d'autre qu'une échéance », sinon il ment à dream.sh.
+    """`3` must mean "nothing but a deadline", otherwise it lies to dream.sh.
 
-    Depuis le 2026-08-07 dream.sh traite rc=3 comme une échéance CONTRÔLÉE et
-    sort en 0. Le code de sortie devient donc la seule chose qui distingue une
-    nuit nominale d'une panne — et il rendait 3 dès qu'un ticket avait expiré,
-    même quand d'autres tickets avaient DUREMENT échoué à côté.
+    Since 2026-08-07 dream.sh treats rc=3 as a CONTROLLED deadline and exits 0. The
+    exit code therefore becomes the only thing distinguishing a nominal night from
+    a failure — and it returned 3 as soon as one ticket had expired, even when
+    other tickets had HARD failed alongside.
 
-    Cas mesuré en production (`dream_runs`, 2026-08-02) :
-    `phase=extract, status='timeout'`, et pourtant
-    `error_message='corpus dedup unavailable: corpus embedding backlog …'` —
-    message qui ne peut sortir que de la branche d'échec dur du dédoublonnage.
-    Les deux natures coexistaient, le service d'embedding était en rade, et
-    l'ancienne priorité (`if timed_out: return 3` avant `if any_failed`) aurait
-    rendu cette nuit-là verte. La veille, même cause racine SANS timeout
-    concomitant, avait rendu 1 : la visibilité de la panne dépendait de la
-    présence fortuite d'un timeout.
+    Case measured in production (`dream_runs`, 2026-08-02):
+    `phase=extract, status='timeout'`, and yet
+    `error_message='corpus dedup unavailable: corpus embedding backlog …'` — a
+    message that can only come out of the dedup's hard-failure branch. Both
+    natures coexisted, the embedding service was down, and the old priority
+    (`if timed_out: return 3` before `if any_failed`) would have made that night
+    green. The day before, the same root cause WITHOUT a concurrent timeout had
+    returned 1: the failure's visibility depended on the fortuitous presence of a
+    timeout.
     """
 
     def test_a_hard_failure_beside_a_timeout_does_not_report_three(self) -> None:
-        """La priorité, pas seulement l'existence du compteur."""
+        """The priority, not merely the counter's existence."""
         from scripts.ticket_extract import _exit_code
 
         assert _exit_code(timed_out=1, any_failed=True, hard_failed=1, deferred=0) == 1
 
     def test_a_pure_deadline_keeps_reporting_three(self) -> None:
-        """Sans échec dur, rc=3 garde son sens — c'est ce qui sort en 0."""
+        """Without a hard failure, rc=3 keeps its meaning — that is what exits 0."""
         from scripts.ticket_extract import _exit_code
 
         assert _exit_code(timed_out=2, any_failed=True, hard_failed=0, deferred=0) == 3
@@ -1164,21 +1166,20 @@ class TestHardFailureOutranksTimeout:
         assert _exit_code(timed_out=0, any_failed=True, hard_failed=1, deferred=3) == 1
 
     def test_every_failure_site_feeds_a_discriminating_counter(self) -> None:
-        """Invariant de FORME, complémentaire des deux scénarios ci-dessous.
+        """A SHAPE invariant, complementary to the two scenarios below.
 
-        `any_failed` seul ne discrimine rien : il vaut True aussi bien pour un
-        timeout que pour une panne, et ne devient visible dans le code de
-        sortie que si `timed_out` vaut 0 — autrement dit par accident de
-        calendrier. Une branche d'échec ajoutée demain qui ne parlerait qu'à
-        `any_failed` retomberait donc exactement dans le défaut du 2026-08-02.
+        `any_failed` alone discriminates nothing: it is True for a timeout as much
+        as for a failure, and becomes visible in the exit code only if `timed_out`
+        is 0 — in other words, by accident of calendar. A failure branch added
+        tomorrow that spoke only to `any_failed` would therefore fall straight back
+        into the 2026-08-02 defect.
 
-        Cet AST inspecte les blocs RÉELS de `_run` : tout bloc qui pose
-        `any_failed = True` doit, dans le même bloc, toucher `hard_failed` ou
-        `timed_out`. Il ne prouve PAS que le compteur touché est le bon — c'est
-        le rôle des deux tests de scénario, qui exercent `_run` de bout en
-        bout sur les deux branches réellement observées en production. Il
-        couvre en revanche les branches `persist` et `wet apply`, que ces
-        scénarios n'atteignent pas.
+        This AST inspects `_run`'s REAL blocks: every block that sets
+        `any_failed = True` must, in the same block, touch `hard_failed` or
+        `timed_out`. It does NOT prove the counter touched is the right one — that
+        is the job of the two scenario tests, which exercise `_run` end to end on
+        the two branches actually observed in production. It does, however, cover
+        the `persist` and `wet apply` branches, which those scenarios do not reach.
         """
         import ast  # noqa: PLC0415
         import inspect  # noqa: PLC0415
@@ -1222,8 +1223,8 @@ class TestHardFailureOutranksTimeout:
             "l'horloge, donc rc=3 (unité verte) pourra les masquer"
         )
 
-        # Garde de harnais : sans site détecté, l'assertion ci-dessus serait
-        # vraie sur du vide (le mode d'échec exact du learning 670c74a3).
+        # Harness guard: with no site detected, the assertion above would be true
+        # over nothing (the exact failure mode of learning 670c74a3).
         sites = sum(
             1
             for node in ast.walk(run_node)
@@ -1232,11 +1233,11 @@ class TestHardFailureOutranksTimeout:
             for stmt in getattr(node, field)
             if _sets_any_failed(stmt)
         )
-        # 7e site ajouté le 2026-08-12 et RELU comme ce message l'exige : la
-        # sortie de boucle « plus aucun modèle vivant » (410/404 du primaire ET
-        # du secours). Elle nourrit `hard_failed`, et c'est délibéré — un
-        # modèle retiré chez le fournisseur n'est pas une échéance, et rc=3
-        # laisserait l'unité verte sur une phase qui n'a rien pu extraire.
+        # 7th site added on 2026-08-12 and RE-READ as this message requires: the
+        # "no live model left" loop exit (410/404 on the primary AND the
+        # fallback). It feeds `hard_failed`, and that is deliberate — a model
+        # retired at the provider is not a deadline, and rc=3 would leave the unit
+        # green over a phase that could extract nothing.
         assert sites == 7, (
             f"l'AST n'a trouvé que {sites} site(s) d'échec au lieu des 7 "
             "mesurés : soit l'ancre est cassée et l'assertion ci-dessus est "
@@ -1246,12 +1247,12 @@ class TestHardFailureOutranksTimeout:
 
     @pytest.mark.asyncio
     async def test_a_run_mixing_a_dedup_outage_and_a_deadline_exits_one(self) -> None:
-        """Le CÂBLAGE, pas seulement la fonction pure.
+        """The WIRING, not merely the pure function.
 
-        Un compteur `hard_failed` correct mais jamais incrémenté au site
-        d'appel laisserait passer les trois tests ci-dessus. Ici la nuit du
-        2026-08-02 est rejouée à travers `_run` : un ticket meurt sur un
-        dédoublonnage indisponible (échec DUR), l'autre expire (échéance).
+        A correct `hard_failed` counter that is never incremented at the call site
+        would let the three tests above pass. Here the night of 2026-08-02 is
+        replayed through `_run`: one ticket dies on an unavailable dedup (a HARD
+        failure), the other expires (a deadline).
         """
         failing, expiring = _thread(), _thread()
         draft = _draft(ticket_id=failing.id)
@@ -1287,8 +1288,8 @@ class TestHardFailureOutranksTimeout:
             settings_cls.return_value.embedding_service_url = "http://embedding.test"
             exit_code = await _run(args, "secret", "model", "https://llm.test")
 
-        # Garde de scénario : sans les DEUX natures, l'assertion suivante ne
-        # prouverait rien (un run purement dur rend 1 de toute façon).
+        # Scenario guard: without BOTH natures, the assertion below would prove
+        # nothing (a purely hard run returns 1 anyway).
         assert record.await_args.kwargs["status"] == "timeout", (
             f"le scénario n'a pas produit de timeout concomitant : {record.await_args.kwargs!r}"
         )
@@ -1299,12 +1300,12 @@ class TestHardFailureOutranksTimeout:
 
     @pytest.mark.asyncio
     async def test_a_run_mixing_an_extraction_error_and_a_deadline_exits_one(self) -> None:
-        """La MÊME branche sert les deux natures, discriminées par `is_timeout`.
+        """The SAME branch serves both natures, discriminated by `is_timeout`.
 
-        Un ticket dont l'extraction échoue durement (HTTP 500, parse) et un
-        ticket qui expire passent tous deux par le même `if outcome.failed`.
-        Un compteur câblé au dédoublonnage mais pas ici laisserait passer le
-        test précédent tout en masquant une API en rade.
+        A ticket whose extraction hard-fails (HTTP 500, parse) and a ticket that
+        expires both go through the same `if outcome.failed`. A counter wired into
+        the dedup but not here would let the previous test pass while masking a
+        dead API.
         """
         broken, expiring = _thread(), _thread()
 
@@ -2055,21 +2056,20 @@ class TestWetApplyIsNotStarvedByTheGate:
 
 
 class TestADeadPrimaryModelFallsBack:
-    """Le 2026-08-12, `deepseek-ai/deepseek-v4-pro` est passé 410 Gone.
+    """On 2026-08-12, `deepseek-ai/deepseek-v4-pro` went 410 Gone.
 
-    Les 20 tickets de la nuit ont échoué en 0,907 s sur un budget de 540 s :
-    vingt fois la même erreur définitive, aucun secours, et un rapport qui
-    listait vingt échecs distincts là où il n'y avait qu'une seule cause.
-    `roadmap_curate` avait déjà un primaire ET un secours ; extract n'avait
-    qu'un `DEFAULT_MODEL`, et c'est la seule raison pour laquelle roadmap a
-    survécu à la même panne le même matin.
+    The night's 20 tickets failed in 0.907 s out of a 540 s budget: twenty times
+    the same definitive error, no fallback, and a report listing twenty distinct
+    failures where there was a single cause. `roadmap_curate` already had a primary
+    AND a fallback; extract had only a `DEFAULT_MODEL`, and that is the only reason
+    roadmap survived the same failure the same morning.
     """
 
     @pytest.mark.asyncio
     async def test_extract_thread_surfaces_a_dead_model_instead_of_burying_it(self) -> None:
-        """Enterrer le 410 dans un ThreadOutcome(failed=True) le rend
-        indiscernable d'un ticket mal formé — et la boucle ne peut alors rien
-        décider d'utile."""
+        """Burying the 410 in a ThreadOutcome(failed=True) makes it
+        indistinguishable from a malformed ticket — and the loop can then decide
+        nothing useful."""
         from scripts.domain_backfill import ModelGoneError
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -2132,8 +2132,8 @@ class TestADeadPrimaryModelFallsBack:
 
     @pytest.mark.asyncio
     async def test_a_run_without_any_live_model_fails_loudly(self) -> None:
-        """Si le secours est mort lui aussi, il n'y a plus rien à dégrader :
-        la phase doit échouer BRUYAMMENT, pas rendre un `done` vide."""
+        """If the fallback is dead too, there is nothing left to degrade to: the
+        phase must fail LOUDLY, not return an empty `done`."""
         from scripts.domain_backfill import ModelGoneError
 
         async def extract(client, model, thread, **kw):
@@ -2176,15 +2176,15 @@ class TestADeadPrimaryModelFallsBack:
 
 
 class TestTheTerminalRowNamesItsModel:
-    """`dream_runs.model` d'extract : 53 lignes sur 53 à NULL, mesuré le 19→20.
+    """extract's `dream_runs.model`: 53 rows out of 53 at NULL, measured on 19→20.
 
-    Extract est la SEULE phase qui peut changer de modèle EN COURS DE RUN — la
-    bascule vers le secours est une décision de run, pas de ticket. C'est donc
-    la phase pour laquelle la colonne porte le plus d'information, et la seule
-    où le modèle configuré ne suffit pas à reconstituer ce qui a tourné.
+    Extract is the ONLY phase that can change model MID-RUN — switching to the
+    fallback is a run decision, not a ticket one. It is therefore the phase for
+    which the column carries the most information, and the only one where the
+    configured model is not enough to reconstruct what ran.
 
-    C'est aussi ce que la migration 045 a élargi la colonne pour accueillir : le
-    secours WET configuré fait 33 caractères, contre les 30 d'avant.
+    It is also what migration 045 widened the column to hold: the configured WET
+    fallback is 33 characters, against the previous 30.
     """
 
     @pytest.mark.asyncio
@@ -2220,11 +2220,11 @@ class TestTheTerminalRowNamesItsModel:
 
     @pytest.mark.asyncio
     async def test_a_fallback_switch_is_recorded_as_the_model_that_finished(self) -> None:
-        """Le modèle ÉCRIT est celui qui a fini le run, pas celui qui l'a ouvert.
+        """The model WRITTEN is the one that finished the run, not the one that opened it.
 
-        Écrire le primaire ici rendrait une nuit entièrement servie par le
-        secours indiscernable d'une nuit nominale — le mode de panne exact qui a
-        laissé qwen 80B mort pendant dix nuits vertes.
+        Writing the primary here would make a night served entirely by the
+        fallback indistinguishable from a nominal night — the exact failure mode
+        that left qwen 80B dead through ten green nights.
         """
         from scripts.domain_backfill import ModelGoneError
 
@@ -2271,11 +2271,11 @@ class TestTheTerminalRowNamesItsModel:
 
     @pytest.mark.asyncio
     async def test_a_run_that_never_called_a_model_records_no_model(self) -> None:
-        """Aucun ticket en attente : AUCUN appel modèle, donc la colonne reste NULL.
+        """No pending ticket: NO model call, so the column stays NULL.
 
-        Y écrire le modèle CONFIGURÉ serait un mensonge — la ligne dirait qu'un
-        modèle a tourné quand rien ne l'a appelé. `NULL` veut dire « aucun », et
-        c'est une information, pas un oubli.
+        Writing the CONFIGURED model there would be a lie — the row would say a
+        model ran when nothing called one. `NULL` means "none", and that is
+        information, not an omission.
         """
         args = SimpleNamespace(apply_ids=None, limit=20, wet=False)
         record = AsyncMock()
@@ -2295,17 +2295,17 @@ class TestTheTerminalRowNamesItsModel:
 
 
 class TestTheCorrectiveRepromptCarriesTheError:
-    """Le re-prompt d'extract était AVEUGLE — il redemandait sans dire quoi.
+    """extract's re-prompt was BLIND — it asked again without saying what for.
 
-    `roadmap_curate` transmet l'erreur précise depuis toujours
-    (`_curate_llm_attempt`) ; extract se contentait de l'instruction générique
-    « ta réponse n'était pas un tableau JSON valide ». Un modèle qui a rendu la
-    mauvaise CLÉ DE PROJET relit donc « renvoie du JSON valide » et rend le même
-    JSON, valide, avec la même mauvaise clé. C'est ce qui rend l'échec du 19→20
-    reproductible à l'identique plutôt que rattrapable au second essai.
+    `roadmap_curate` has always passed the precise error through
+    (`_curate_llm_attempt`); extract settled for the generic instruction "your
+    answer was not a valid JSON array". A model that returned the wrong PROJECT
+    KEY therefore re-reads "return valid JSON" and returns the same JSON, valid,
+    with the same wrong key. That is what makes the 19→20 failure reproducible
+    identically rather than recoverable on the second attempt.
 
-    Aucun test n'épinglait le contenu de ce re-prompt, dans aucun des deux
-    modules. Celui-ci le fait pour extract.
+    No test pinned this re-prompt's content, in either module. This one does, for
+    extract.
     """
 
     @pytest.mark.asyncio
@@ -2332,14 +2332,13 @@ class TestTheCorrectiveRepromptCarriesTheError:
         assert mod._REPROMPT_INSTRUCTION in reprompt, "l'instruction générique reste"
         assert "target_project" in reprompt, "l'erreur précise doit voyager"
         assert "red-lab" in reprompt, "le modèle doit lire CE QU'IL a proposé"
-        # Les clés valides voyagent GRATUITEMENT : le message de
-        # `parse_and_validate` les énumère déjà. Sans l'erreur, elles n'ont
-        # jamais atteint le modèle.
+        # The valid keys travel FOR FREE: `parse_and_validate`'s message already
+        # enumerates them. Without the error, they never reached the model.
         assert "red-shrik" in reprompt and "red-data" in reprompt
 
     @pytest.mark.asyncio
     async def test_a_second_failure_still_reports_the_second_error(self) -> None:
-        """Le contrat d'échec ne change pas : c'est la DEUXIÈME erreur qui sort."""
+        """The failure contract does not change: it is the SECOND error that surfaces."""
 
         async def fake_post_chat(client, model, messages, sleep, **kw):
             return ("pas du json", {})
@@ -2353,30 +2352,30 @@ class TestTheCorrectiveRepromptCarriesTheError:
 
 
 class TestThePrimaryModelIsAliveRatherThanRetired:
-    """`deepseek-ai/deepseek-v4-pro` est mort le 2026-08-12 et l'est resté.
+    """`deepseek-ai/deepseek-v4-pro` died on 2026-08-12 and stayed dead.
 
-    MESURÉ le 2026-08-21 avec `scripts/probe_model_liveness.py`, la sonde écrite
-    pour exactement cette question : `deepseek-ai/deepseek-v4-pro` rend **410
-    GONE**, `meta/llama-3.3-70b-instruct` rend **200 ALIVE**. Un 410 n'est pas
-    transitoire — aucun retry ne le réparera jamais.
+    MEASURED on 2026-08-21 with `scripts/probe_model_liveness.py`, the probe
+    written for exactly this question: `deepseek-ai/deepseek-v4-pro` returns **410
+    GONE**, `meta/llama-3.3-70b-instruct` returns **200 ALIVE**. A 410 is not
+    transient — no retry will ever repair it.
 
-    Neuf jours durant, chaque run d'extract a donc payé un aller-retour vers un
-    modèle retiré avant de basculer sur son secours. Le run ABOUTISSAIT — la
-    chaîne de secours livrée après la panne du 12/08 fait son travail — mais il
-    commençait par un appel dont l'issue était connue d'avance.
+    For nine days, every extract run therefore paid a round trip to a retired
+    model before switching to its fallback. The run DID COMPLETE — the fallback
+    chain delivered after the 08-12 failure does its job — but it started with a
+    call whose outcome was known in advance.
 
-    Le commentaire de `DEFAULT_EXTRACT_FALLBACK_MODEL` posait une condition
-    explicite à cette promotion : « PROUVÉ VIVANT, PAS PROUVÉ BON POUR CE PROMPT
-    […] à canaryer avant de le promouvoir primaire ». La condition est REMPLIE, et
-    par la meilleure preuve possible — un run de production sur le vrai prompt.
-    Mesuré en base le 2026-08-21 :
+    `DEFAULT_EXTRACT_FALLBACK_MODEL`'s comment set an explicit condition on this
+    promotion: "PROVEN ALIVE, NOT PROVEN GOOD FOR THIS PROMPT […] to be canaried
+    before promoting it to primary". The condition is MET, and by the best possible
+    proof — a production run on the real prompt. Measured in the database on
+    2026-08-21:
 
         run_date=2026-08-21 phase=extract status=done
         model=meta/llama-3.3-70b-instruct
 
-    C'est la première nuit de l'instrumentation du modèle (commit 6148a9c), et
-    elle nomme le modèle qui a RÉELLEMENT fini le run. Le canary demandé n'est
-    pas une sonde de 16 tokens — c'est la nuit entière.
+    That is the first night of the model instrumentation (commit 6148a9c), and it
+    names the model that ACTUALLY finished the run. The canary asked for is not a
+    16-token probe — it is the whole night.
     """
 
     def test_the_primary_is_not_the_model_measured_gone(self) -> None:
@@ -2393,14 +2392,14 @@ class TestThePrimaryModelIsAliveRatherThanRetired:
         )
 
     def test_the_extract_chain_has_two_distinct_living_links(self) -> None:
-        """Une PROPRIÉTÉ, pas un pin : l'égalité à un littéral recopié du diff
-        ne prouvait que « le commit a copié deux fois la même chaîne » (review
-        PR 42, 2026-08-29). Ce qui se vérifie exécutablement : la chaîne a
-        deux maillons DISTINCTS, et aucun n'est un mort connu. L'historique du
-        choix (canary sans persistance du 2026-08-29 sur le chemin exact de la
-        nuit : super-120b 3/3, 13 drafts, 16,1 s/ticket ; mistral-nemotron
-        3/3, 15 drafts, 25,9 s en secours) vit dans le commentaire des
-        constantes, pas dans une assertion qui le paraphrase.
+        """A PROPERTY, not a pin: equality against a literal copied from the diff
+        only proved "the commit copied the same string twice" (PR 42 review,
+        2026-08-29). What is executably checkable: the chain has two DISTINCT
+        links, and neither is a known corpse. The history of the choice (canary
+        without persistence on 2026-08-29 through the night's exact path:
+        super-120b 3/3, 13 drafts, 16.1 s/ticket; mistral-nemotron 3/3, 15
+        drafts, 25.9 s as fallback) lives in the constants' comment, not in an
+        assertion paraphrasing it.
         """
         from scripts.domain_backfill import DEFAULT_MODEL
         from scripts.ticket_extract import DEFAULT_EXTRACT_FALLBACK_MODEL
@@ -2416,19 +2415,18 @@ class TestThePrimaryModelIsAliveRatherThanRetired:
 
 
 class TestAFallbackIdenticalToThePrimaryIsNotAFallback:
-    """La garde de collision existait, n'était pas testée, et se met à TIRER.
+    """The collision guard existed, was untested, and starts FIRING.
 
-    Promouvoir le secours en primaire rend les deux constantes égales. Le code
-    prévoyait déjà le cas — « un secours identique au primaire n'est pas un
-    secours : il ferait croire à une chaîne là où il n'y a qu'un seul point de
-    panne » — mais rien ne le vérifiait, et jusqu'ici la branche ne s'exécutait
-    jamais. Elle a été le chemin NOMINAL du 2026-08-21 au 2026-08-29.
+    Promoting the fallback to primary makes the two constants equal. The code
+    already anticipated the case — "a fallback identical to the primary is not a
+    fallback: it would suggest a chain where there is a single point of failure" —
+    but nothing checked it, and until then the branch never ran. It was the NOMINAL
+    path from 2026-08-21 to 2026-08-29.
 
-    Depuis le 2026-08-29 la chaîne a retrouvé DEUX maillons distincts, tous
-    deux canaryés sur le vrai prompt d'extraction contre des tickets réels
-    (secours mistral-nemotron : 3/3 valides, 15 drafts, 25,9 s/ticket). La
-    garde d'égalité reste couverte ici par le chemin env : elle doit annuler
-    une collision explicite, jamais la chaîne nominale.
+    Since 2026-08-29 the chain has two distinct links again, both canaried on the
+    real extraction prompt against real tickets (mistral-nemotron fallback: 3/3
+    valid, 15 drafts, 25.9 s/ticket). The equality guard stays covered here through
+    the env path: it must cancel an explicit collision, never the nominal chain.
     """
 
     @staticmethod
@@ -2459,7 +2457,7 @@ class TestAFallbackIdenticalToThePrimaryIsNotAFallback:
     def test_the_default_chain_resolves_two_distinct_links(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Le défaut redevient une vraie chaîne : le secours survit au résolveur."""
+        """The default is a real chain again: the fallback survives the resolver."""
         from scripts.domain_backfill import DEFAULT_MODEL
         from scripts.ticket_extract import DEFAULT_EXTRACT_FALLBACK_MODEL
 
@@ -2484,11 +2482,11 @@ class TestAFallbackIdenticalToThePrimaryIsNotAFallback:
     def test_a_genuinely_distinct_fallback_still_survives(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Témoin négatif : la garde doit annuler par ÉGALITÉ, pas toujours.
+        """Negative witness: the guard must cancel on EQUALITY, not always.
 
-        Sans lui, une garde cassée qui rendrait `None` en toutes circonstances
-        passerait le test ci-dessus, et la chaîne de secours serait morte en
-        silence le jour où on lui redonnerait un second modèle.
+        Without it, a broken guard returning `None` in all circumstances would pass
+        the test above, and the fallback chain would be silently dead the day it
+        was given a second model again.
         """
         resolved = self._resolved_fallback(
             monkeypatch, {"BRAIN_NVIDIA_FALLBACK_MODEL": "mistralai/mistral-nemotron"}

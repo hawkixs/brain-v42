@@ -492,7 +492,7 @@ def test_run_clears_a_stale_report_before_validating_success(
         codex_executable=str(fake_codex),
     )
 
-    # Sorti 0 sans rapport, et sans aucun appel d'outil abouti : rejouable.
+    # Exited 0 with no report, and with no successful tool call: replayable.
     assert return_code == PROVIDER_FALLBACK_EXIT_CODE
     assert report_log.read_text(encoding="utf-8") == ""
 
@@ -561,7 +561,7 @@ def test_run_rejects_completed_turn_without_a_completed_brain_tool_call(
         codex_executable=str(fake_codex),
     )
 
-    # Zéro appel d'outil abouti : la phase est rejouable ailleurs.
+    # Zero successful tool calls: the phase is replayable elsewhere.
     assert return_code == PROVIDER_FALLBACK_EXIT_CODE
     assert "no completed Brain MCP tool call" in stderr_log.read_text(encoding="utf-8")
 
@@ -604,7 +604,7 @@ def test_run_rejects_a_failed_brain_tool_call_with_no_error_payload(
         codex_executable=str(fake_codex),
     )
 
-    # L'appel a ÉCHOUÉ, donc rien n'a été commité — rejouable ailleurs.
+    # The call FAILED, so nothing was committed — replayable elsewhere.
     assert return_code == PROVIDER_FALLBACK_EXIT_CODE
     assert "no completed Brain MCP tool call" in stderr_log.read_text(encoding="utf-8")
 
@@ -643,7 +643,7 @@ def test_run_rejects_missing_usage_and_terminal_events(
         codex_executable=str(fake_codex),
     )
 
-    # Flux terminal ou usage invalide, sans aucun appel abouti.
+    # A terminal stream or invalid usage, with no successful call.
     assert return_code == PROVIDER_FALLBACK_EXIT_CODE
 
 
@@ -675,7 +675,7 @@ def test_enabled_run_sends_only_the_active_phase_token_in_an_allowlisted_child_e
         stderr_log=tmp_path / "scan.stderr.log",
     )
 
-    # Codex n'a jamais démarré (OSError) : rien n'a pu être écrit.
+    # Codex never started (OSError): nothing could have been written.
     assert return_code == PROVIDER_FALLBACK_EXIT_CODE
     kwargs = captured["kwargs"]
     assert isinstance(kwargs, dict)
@@ -780,7 +780,7 @@ def test_enabled_run_canonicalizes_known_aliases_and_preserves_valid_partitions(
         stderr_log=tmp_path / "scan.stderr.log",
     )
 
-    # Codex n'a jamais démarré (OSError) : rien n'a pu être écrit.
+    # Codex never started (OSError): nothing could have been written.
     assert return_code == PROVIDER_FALLBACK_EXIT_CODE
     kwargs = captured.get("kwargs")
     assert isinstance(kwargs, dict), "canonical project scope must reach Popen"
@@ -849,7 +849,7 @@ def test_disabled_run_preserves_popen_environment_inheritance(
         stderr_log=tmp_path / "scan.stderr.log",
     )
 
-    # Codex n'a jamais démarré (OSError) : rien n'a pu être écrit.
+    # Codex never started (OSError): nothing could have been written.
     assert return_code == PROVIDER_FALLBACK_EXIT_CODE
     kwargs = captured["kwargs"]
     assert isinstance(kwargs, dict)

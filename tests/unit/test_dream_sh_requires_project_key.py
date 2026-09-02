@@ -1,23 +1,21 @@
-"""`dream.sh` exige son projet. Aucun défaut, à aucun étage.
+"""`dream.sh` requires its project. No default, at any level.
 
-Le lot des écrivains a posé `--project-key` requis-sans-défaut sur les trois
-CLI qui écrivent `dream_runs`. Cette garde s'arrêtait au binaire Python :
-`dream.sh` portait `PROJECT_KEY="${1:-brain-v42}"`, donc un lancement nu
-satisfaisait le flag requis avec `brain-v42` et étiquetait la nuit d'un autre
-projet — exactement la classe de bug que la décision visait, une couche plus
-haut que là où la garde avait été posée.
+The writers batch made `--project-key` required-without-default on the three CLIs
+that write `dream_runs`. That guard stopped at the Python binary: `dream.sh`
+carried `PROJECT_KEY="${1:-brain-v42}"`, so a bare launch satisfied the required
+flag with `brain-v42` and labelled the night with another project — exactly the
+class of bug the decision targeted, one layer above where the guard had been
+placed.
 
-Le dépôt contenait les deux formes et il fallait choisir la référence :
-`post_run_alert.py` (`default=DEFAULT_PROJECT_KEY`) contre
-`promote_prepare.py` (`required=True`). Tranché par l'opérateur le
-2026-08-09 : `required`. Le lot du pool a ensuite retiré le paramètre de
-`post_run_alert` — il ne filtrait rien, et le projet vit maintenant dans le
-corps groupé du rapport.
+The repository contained both forms and the reference had to be chosen:
+`post_run_alert.py` (`default=DEFAULT_PROJECT_KEY`) against `promote_prepare.py`
+(`required=True`). Settled by the operator on 2026-08-09: `required`. The pool
+batch then removed the parameter from `post_run_alert` — it filtered nothing, and
+the project now lives in the report's grouped body.
 
-Aucune nuit ne change de comportement. L'unité systemd passe la clé
-explicitement (`ExecStart=… scripts/dream.sh brain-v42`) et les six harnais de
-test passent déjà `test-project`. Seul un `bash scripts/dream.sh` nu casse, et
-c'est le but.
+No night changes behaviour. The systemd unit passes the key explicitly
+(`ExecStart=… scripts/dream.sh brain-v42`) and the six test harnesses already pass
+`test-project`. Only a bare `bash scripts/dream.sh` breaks, and that is the point.
 """
 
 from __future__ import annotations
@@ -30,12 +28,12 @@ DREAM_SH = REPO_ROOT / "scripts" / "dream.sh"
 
 
 def _sandbox(tmp_path: Path) -> tuple[Path, dict[str, str]]:
-    """Copie exécutable de dream.sh, hors de la prod à tous les égards.
+    """An executable copy of dream.sh, out of production in every respect.
 
-    `LOG_DIR` vaut `$SCRIPT_DIR/../logs/dream`, donc la copie journalise sous
-    `tmp_path`. `XDG_RUNTIME_DIR` privé, sinon le script sortirait 0 en
-    trouvant le flock de production pris — un test vert pour rien. `uv` et
-    `claude` sont des no-op : aucun appel réseau, aucune écriture en base.
+    `LOG_DIR` is `$SCRIPT_DIR/../logs/dream`, so the copy logs under `tmp_path`. A
+    private `XDG_RUNTIME_DIR`, otherwise the script would exit 0 on finding
+    production's flock taken — a test green for nothing. `uv` and `claude` are
+    no-ops: no network call, no database write.
     """
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir()
@@ -76,12 +74,11 @@ def _run(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_a_bare_invocation_is_a_hard_failure(tmp_path: Path) -> None:
-    """Sans projet, la nuit ne démarre pas — elle ne se rabat sur personne.
+    """Without a project, the night does not start — it falls back on nobody.
 
-    Le mode d'échec que ce test interdit est silencieux par construction : une
-    nuit mal étiquetée produit des lignes `dream_runs` parfaitement valides,
-    et rien dans le corpus ne permet ensuite de savoir qu'elles mentent. Il n'y
-    a pas de backfill possible.
+    The failure mode this test forbids is silent by construction: a mislabelled
+    night produces perfectly valid `dream_runs` rows, and nothing in the corpus
+    afterwards lets anyone know they lie. No backfill is possible.
     """
     proc = _run(tmp_path)
 
@@ -90,8 +87,8 @@ def test_a_bare_invocation_is_a_hard_failure(tmp_path: Path) -> None:
 
 
 def test_no_default_survives_in_the_source() -> None:
-    """La forme, pas seulement l'effet — un défaut réintroduit ailleurs dans le
-    script rendrait le test d'exécution vert sans rétablir la garde."""
+    """The shape, not only the effect — a default reintroduced elsewhere in the
+    script would turn the execution test green without restoring the guard."""
     source = DREAM_SH.read_text(encoding="utf-8")
 
     assert "${1:-brain-v42}" not in source
@@ -99,8 +96,8 @@ def test_no_default_survives_in_the_source() -> None:
 
 
 def test_the_historic_aliases_are_still_normalized(tmp_path: Path) -> None:
-    """`brain` et `brain_v42` restent convertis : la garde ajoute une exigence,
-    elle ne retire pas la normalisation que le reste du dépôt attend."""
+    """`brain` and `brain_v42` are still converted: the guard adds a requirement,
+    it does not remove the normalization the rest of the repository expects."""
     proc = _run(tmp_path, "brain_v42")
 
     logs = sorted((tmp_path / "logs" / "dream").glob("*.log"))

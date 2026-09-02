@@ -1,23 +1,24 @@
-"""La garde d'outils du rail agy — deny par défaut, et fail-closed.
+"""The agy rail's tool guard — deny by default, and fail-closed.
 
-agy n'a AUCUN équivalent du `--tools ""` de claude ni de l'`enabled_tools` de
-codex : mesuré le 2026-08-11, il expose 56 outils dont run_command,
-write_to_file, invoke_subagent et schedule, et `--dangerously-skip-permissions`
-— requis en headless — les auto-approuve tous. Sur un prompt demandant UN appel
-MCP, il a exécuté 12 étapes d'outils et lancé `ps aux`.
+agy has NO equivalent of claude's `--tools ""` nor of codex's `enabled_tools`:
+measured on 2026-08-11, it exposes 56 tools including run_command,
+write_to_file, invoke_subagent and schedule, and
+`--dangerously-skip-permissions` — required in headless mode — auto-approves them
+all. On a prompt asking for ONE MCP call, it executed 12 tool steps and ran
+`ps aux`.
 
-Le seul mécanisme qui le contraint est un hook `PreToolUse` rendant
-`{"decision":"deny"}`. Vérifié : il survit à `--dangerously-skip-permissions`.
+The only mechanism that constrains it is a `PreToolUse` hook returning
+`{"decision":"deny"}`. Verified: it survives `--dangerously-skip-permissions`.
 
-Cette garde est INCONDITIONNELLE. Une version antérieure la conditionnait à une
-variable d'environnement, ce qui en faisait un interrupteur qu'on pouvait
-oublier de poser. Le HOME éphémère du runner rend cette précaution inutile : la
-garde n'est câblée que là, donc elle ne peut pas gêner une session interactive,
-donc elle n'a aucune raison d'avoir un mode permissif.
+This guard is UNCONDITIONAL. An earlier version conditioned it on an environment
+variable, which made it a switch one could forget to set. The runner's ephemeral
+HOME makes that precaution useless: the guard is wired only there, so it cannot
+get in the way of an interactive session, so it has no reason to have a
+permissive mode.
 
-Séparation des rôles, à ne pas confondre :
-- la GARDE protège la MACHINE (shell, fichiers, sous-agents, cron) ;
-- le BEARER scopé protège le CORPUS, et c'est le serveur qui l'applique.
+Separation of roles, not to be confused:
+- the GUARD protects the MACHINE (shell, files, sub-agents, cron);
+- the scoped BEARER protects the CORPUS, and it is the server that enforces it.
 """
 
 from __future__ import annotations
@@ -29,15 +30,15 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARD = REPO_ROOT / "scripts" / "dream" / "agy_tool_guard.sh"
 
-# Ce qu'une phase de dream a besoin d'appeler. `call_mcp_tool` est la passerelle
-# par laquelle agy atteint brain-v42 ; le serveur borne ensuite ce qu'elle peut
-# y faire, par phase, via le bearer.
+# What a dream phase needs to call. `call_mcp_tool` is the gateway through which
+# agy reaches brain-v42; the server then bounds what it can do there, per phase,
+# through the bearer.
 ALLOWED = ("call_mcp_tool", "list_resources", "read_resource", "finish", "send_message")
 
-# Un échantillon de ce qu'agy expose et qu'une phase nocturne ne doit jamais
-# obtenir. La liste n'est pas exhaustive À DESSEIN : la garde est deny par
-# défaut, donc un outil ajouté par une future version d'agy est refusé sans
-# que personne n'ait à mettre cette liste à jour.
+# A sample of what agy exposes and that a nightly phase must never obtain. The
+# list is not exhaustive BY DESIGN: the guard is deny by default, so a tool added
+# by a future version of agy is refused without anyone having to update this
+# list.
 FORBIDDEN = (
     "run_command",
     "write_to_file",
@@ -89,27 +90,27 @@ def test_every_machine_reaching_tool_is_denied() -> None:
 
 
 def test_an_unknown_tool_is_denied_by_default() -> None:
-    """Le point de tout le design : agy expose 56 outils et en gagnera d'autres.
+    """The whole point of the design: agy exposes 56 tools and will gain more.
 
-    Une allowlist se périme en silence dans le bon sens ; une denylist se périme
-    dans le mauvais. Un outil inventé demain doit être refusé sans que personne
-    ne touche cette garde.
+    An allowlist goes stale silently in the right direction; a denylist goes stale
+    in the wrong one. A tool invented tomorrow must be refused without anyone
+    touching this guard.
     """
     assert _decide(_tool_call("tool_that_does_not_exist_yet"))["decision"] == "deny"
 
 
 def test_a_malformed_payload_is_denied_rather_than_allowed() -> None:
-    """Fail-closed. Une garde qui s'ouvre sur une entrée qu'elle ne comprend
-    pas ne garde rien — et le jour où le format du payload changera, elle
-    laisserait tout passer sans un bruit."""
+    """Fail-closed. A guard that opens on an input it does not understand guards
+    nothing — and the day the payload format changes, it would let everything
+    through without a sound."""
     for payload in ("", "   ", "not json at all", "{}", '{"toolCall": {}}', "[]", "null"):
         decision = _decide(payload)
         assert decision["decision"] == "deny", repr(payload)
 
 
 def test_the_decision_is_always_valid_json_on_stdout() -> None:
-    """agy lit stdout comme du JSON. Une garde qui écrit autre chose serait
-    ignorée, et le refus se transformerait en autorisation."""
+    """agy reads stdout as JSON. A guard that writes anything else would be
+    ignored, and the refusal would turn into an authorisation."""
     for payload in ("", "garbage", _tool_call("run_command"), _tool_call("call_mcp_tool")):
         result = subprocess.run(
             ["bash", str(GUARD)], input=payload, capture_output=True, text=True, timeout=30
@@ -119,7 +120,7 @@ def test_the_decision_is_always_valid_json_on_stdout() -> None:
 
 
 def test_the_guard_never_writes_to_stdout_beyond_its_decision() -> None:
-    """Un `echo` de debug oublié casserait le parsing du même coup."""
+    """A forgotten debug `echo` would break the parsing at the same stroke."""
     result = subprocess.run(
         ["bash", str(GUARD)],
         input=_tool_call("call_mcp_tool"),

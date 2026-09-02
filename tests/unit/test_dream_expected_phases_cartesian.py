@@ -1,21 +1,21 @@
-"""L'attendu devient `{phase} × {projet du pool}` — sinon il se désarme seul.
+"""The expectation becomes `{phase} × {pool project}` — otherwise it disarms itself.
 
-Spec `2026-08-08-dream-project-pool-design.md` §6, « la contrainte non
-négociable qui vient avec ».
+Spec `2026-08-08-dream-project-pool-design.md` §6, "the non-negotiable constraint
+that comes with it".
 
-`expected_dream_phases()` transforme « phase armée » en « alarme si absente de
-`dream_runs` ». C'est le mécanisme anti-crash-silencieux du 2026-05-02, quand
-deux crashes de PROMOTE sont passés inaperçus deux jours.
+`expected_dream_phases()` turns "armed phase" into "alarm if absent from
+`dream_runs`". It is the anti-silent-crash mechanism of 2026-05-02, when two
+PROMOTE crashes went unnoticed for two days.
 
-À plusieurs projets, il **se désarme tout seul** : si un seul projet saute
-`promote`, la phase reste « observée » globalement grâce aux autres, et
-l'alarme ne sonne plus. Le mécanisme ne casse pas bruyamment — il devient
-silencieusement inutile, ce qui est le pire des deux.
+With several projects, it **disarms itself**: if a single project skips
+`promote`, the phase stays "observed" globally thanks to the others, and the
+alarm no longer rings. The mechanism does not break noisily — it becomes
+silently useless, which is the worse of the two.
 
-La bascule est conditionnée à la CONNAISSANCE du pool. Tant que le drop-in ne
-porte pas `BRAIN_DREAM_PROJECT_POOL`, la paire n'est pas calculable et le
-comportement d'aujourd'hui est conservé à l'identique : c'est ce qui rend ce
-lot livrable sans qu'une nuit change.
+The switch is conditioned on KNOWING the pool. As long as the drop-in does not
+carry `BRAIN_DREAM_PROJECT_POOL`, the pair is not computable and today's
+behaviour is preserved identically: that is what makes this batch shippable
+without a single night changing.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ Environment=BRAIN_DREAM_REORG_ENABLED=true
 """
 
 
-# --- Le parseur de pool -----------------------------------------------------
+# --- The pool parser --------------------------------------------------------
 
 
 def test_the_pool_is_read_from_the_drop_in_and_split_on_commas() -> None:
@@ -58,23 +58,23 @@ def test_the_pool_is_read_from_the_drop_in_and_split_on_commas() -> None:
 
 
 def test_an_absent_pool_key_yields_an_empty_list() -> None:
-    """Pas « brain-v42 par défaut ».
+    """Not "brain-v42 by default".
 
-    Le parseur ne peut pas connaître le positionnel de `ExecStart=`. Rendre une
-    valeur devinée ferait fabriquer des attentes pour un projet que la nuit n'a
-    peut-être jamais servi — une alarme inventée, exactement ce que le docstring
-    d'`expected_dream_phases` refuse pour un drop-in illisible.
+    The parser cannot know `ExecStart=`'s positional argument. Returning a guessed
+    value would manufacture expectations for a project the night may never have
+    served — an invented alarm, exactly what `expected_dream_phases`'s docstring
+    refuses for an unreadable drop-in.
     """
     assert parse_project_pool(_DROP_IN_WITHOUT_POOL) == []
 
 
 def test_a_quoted_whitespace_value_does_not_silently_become_one_key() -> None:
-    """`Environment="…=a b"` arrive entier, avec son blanc.
+    """`Environment="…=a b"` arrives whole, with its blank.
 
-    Le traiter comme une clé unique fabriquerait un `project_key` que
-    canonicalize_project_key rejette. Ici on rend les deux clés, comme
-    `dream.sh` rendrait la main en exit 2 : dans les deux cas, la forme
-    espace-séparée ne rétrécit pas le pool en silence.
+    Treating it as a single key would manufacture a `project_key` that
+    canonicalize_project_key rejects. Here we return both keys, as `dream.sh`
+    would hand back with exit 2: in both cases, the space-separated form does not
+    shrink the pool silently.
     """
     content = '[Service]\nEnvironment="BRAIN_DREAM_PROJECT_POOL=alpha beta"\n'
 
@@ -82,11 +82,11 @@ def test_a_quoted_whitespace_value_does_not_silently_become_one_key() -> None:
 
 
 def test_the_killswitch_flags_still_parse_next_to_a_list_valued_key() -> None:
-    """La clé de liste ne doit pas empoisonner le `dict[str, bool]` partagé.
+    """The list key must not poison the shared `dict[str, bool]`.
 
-    `parse_killswitches` coerce par `value.lower() == "true"` : une clé de liste
-    qui y entrerait deviendrait `False` et éteindrait une phase dans le
-    briefing de session et dans `/metrics`, sans toucher la nuit.
+    `parse_killswitches` coerces through `value.lower() == "true"`: a list key
+    entering it would become `False` and would switch off a phase in the session
+    briefing and in `/metrics`, without touching the night.
     """
     from brain_v42.dream_killswitches import parse_killswitches
 
@@ -95,17 +95,17 @@ def test_the_killswitch_flags_still_parse_next_to_a_list_valued_key() -> None:
     assert flags == {"promote": True, "reorg": True, "extract": True}
 
 
-# --- Le produit cartésien ---------------------------------------------------
+# --- The cartesian product --------------------------------------------------
 
 
 def test_loop_phases_are_multiplied_by_the_pool_and_globals_are_not(
     tmp_path: Path,
 ) -> None:
-    """`promote`/`reorg` par projet ; `extract`/`roadmap`/`sweep` une fois.
+    """`promote`/`reorg` per project; `extract`/`roadmap`/`sweep` once.
 
-    Les trois globales n'ont pas de dimension de projet — elles écrivent la
-    sentinelle `'*'` dans `dream_runs.project_key`, et l'attendu doit parler la
-    même langue que ce qu'il compare.
+    The three global phases have no project dimension — they write the sentinel
+    `'*'` into `dream_runs.project_key`, and the expectation must speak the same
+    language as what it compares against.
     """
     drop_in = tmp_path / "killswitches.conf"
     drop_in.write_text(_DROP_IN_WITH_POOL, encoding="utf-8")
@@ -124,7 +124,7 @@ def test_loop_phases_are_multiplied_by_the_pool_and_globals_are_not(
 def test_without_a_pool_the_pairs_are_empty_and_the_flat_set_is_unchanged(
     tmp_path: Path,
 ) -> None:
-    """La propriété qui rend le lot livrable sans qu'une nuit change."""
+    """The property that makes the batch shippable without a night changing."""
     drop_in = tmp_path / "killswitches.conf"
     drop_in.write_text(_DROP_IN_WITHOUT_POOL, encoding="utf-8")
 
@@ -133,18 +133,18 @@ def test_without_a_pool_the_pairs_are_empty_and_the_flat_set_is_unchanged(
 
 
 def test_an_unreadable_drop_in_expects_nothing(tmp_path: Path) -> None:
-    """Même posture que `expected_dream_phases` : ne jamais fabriquer d'alarme."""
+    """Same posture as `expected_dream_phases`: never manufacture an alarm."""
     assert expected_dream_phase_pairs(tmp_path / "absent.conf") == set()
 
 
-# --- Le désarmement, qui est tout l'objet du lot ---------------------------
+# --- The disarming, which is the whole point of the batch -------------------
 
 
 def test_one_project_missing_promote_still_alerts_when_the_others_ran_it() -> None:
-    """LE défaut. Sans les paires, cette nuit-là est verte.
+    """THE flaw. Without the pairs, that night is green.
 
-    `red` n'a pas de ligne `promote`. `brain-v42` en a une. Comparé sur les noms
-    de phase seuls, `promote` est « observé » et l'absence de `red` disparaît.
+    `red` has no `promote` row. `brain-v42` has one. Compared on phase names
+    alone, `promote` is "observed" and `red`'s absence disappears.
     """
     rows = [
         {"phase": "promote", "status": "done", "project_key": "brain-v42"},
@@ -181,7 +181,7 @@ def test_a_fully_observed_cartesian_expectation_is_silent() -> None:
 
 
 def test_the_flat_path_survives_untouched_when_no_pairs_are_supplied() -> None:
-    """Régression : sans pool, le comportement d'aujourd'hui, à l'identique."""
+    """Regression: with no pool, today's behaviour, identically."""
     rows = [{"phase": "scan", "status": "done"}]
 
     failed = post_run_alert.include_missing_expected_phases(
@@ -192,11 +192,11 @@ def test_the_flat_path_survives_untouched_when_no_pairs_are_supplied() -> None:
     assert failed[0]["phase"] == "promote"
 
 
-# --- §11 : le rapport se lit, à cinquante lignes comme à cinq --------------
+# --- §11: the report is readable, at fifty lines as at five -----------------
 
 
 def test_the_report_groups_its_lines_by_project() -> None:
-    """Sans groupement, l'échec d'un projet est noyé dans une liste plate."""
+    """Without grouping, one project's failure is drowned in a flat list."""
     failed = [
         {"phase": "synth", "status": "fail", "project_key": "red", "error_message": "boom"},
         {"phase": "scan", "status": "fail", "project_key": "brain-v42", "error_message": "bam"},
@@ -208,16 +208,16 @@ def test_the_report_groups_its_lines_by_project() -> None:
 
     assert "red:" in report
     assert "brain-v42:" in report
-    # La sentinelle se lit comme ce qu'elle est : les phases sans projet.
+    # The sentinel reads as what it is: the phases with no project.
     assert "global:" in report
 
 
 def test_the_per_project_cap_cannot_let_one_project_hide_another() -> None:
-    """`MAX_REPORTED_FAILURES = 20` était dimensionné pour 9 phases par nuit.
+    """`MAX_REPORTED_FAILURES = 20` was sized for 9 phases a night.
 
-    À dix projets la nuit compte 63 phases : un plafond global laisserait le
-    premier projet consommer les vingt lignes et « N additional records
-    omitted » masquerait des projets ENTIERS. Le plafond est donc par projet.
+    At ten projects the night counts 63 phases: a global cap would let the first
+    project consume the twenty lines and "N additional records omitted" would mask
+    WHOLE projects. The cap is therefore per project.
     """
     failed = [
         {

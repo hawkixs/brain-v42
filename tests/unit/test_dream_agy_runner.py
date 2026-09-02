@@ -1,26 +1,26 @@
-"""Le rail agy — HOME éphémère, bearer scopé, garde câblée par invocation.
+"""The agy rail — ephemeral HOME, scoped bearer, guard wired per invocation.
 
-agy ne prend AUCUNE configuration en ligne de commande : ni `--mcp-config`, ni
-allowlist d'outils. Sa doc embarquée (`docs/mcp_servers.md`) ne connaît que deux
-emplacements, globaux tous les deux. Mesuré : un `.agents/hooks.json` au niveau
-projet n'est pas découvert, même en workspace de confiance et dépôt git.
+agy takes NO configuration on the command line: neither `--mcp-config` nor a tool
+allowlist. Its embedded documentation (`docs/mcp_servers.md`) knows only two
+locations, both global. Measured: a project-level `.agents/hooks.json` is not
+discovered, even in a trusted workspace and a git repository.
 
-La seule voie qui donne un contrôle PAR INVOCATION est donc un HOME éphémère —
-vérifié le 2026-08-11 : agy y trouve `.gemini/config/{mcp_config.json,hooks.json}`
-et s'authentifie par les credentials liés depuis le vrai HOME.
+The only path that gives PER-INVOCATION control is therefore an ephemeral HOME —
+verified on 2026-08-11: agy finds `.gemini/config/{mcp_config.json,hooks.json}`
+there and authenticates through the credentials linked from the real HOME.
 
-Ce que ça évite compte autant que ce que ça permet : sans lui, la sécurité du
-rail reposerait sur un fichier global hors dépôt, qu'une édition manuelle ou une
-mise à jour d'agy pourrait retirer en silence — et deux phases concurrentes se
-marcheraient dessus en réécrivant le même mcp_config.
+What it avoids counts as much as what it allows: without it, the rail's security
+would rest on a global file outside the repository, that a manual edit or an agy
+update could silently remove — and two concurrent phases would tread on each
+other by rewriting the same mcp_config.
 
-LE SECRET SUR DISQUE, assumé et borné. L'`Authorization` d'agy est un LITTÉRAL :
-sa doc ne documente aucune interpolation `${VAR}`, contrairement au .mcp.json du
-dépôt. Le bearer de la phase est donc écrit dans un fichier, là où codex et
-claude le passent par l'environnement. Il est confiné à un HOME en 0700 sous
-XDG_RUNTIME_DIR — un tmpfs, donc jamais le disque persistant — et détruit avec
-lui. C'est le seul écart du rail agy, il est nommé ici pour qu'il ne se
-redécouvre pas par accident.
+THE SECRET ON DISK, accepted and bounded. agy's `Authorization` is a LITERAL: its
+documentation documents no `${VAR}` interpolation, unlike the repository's
+.mcp.json. The phase's bearer is therefore written into a file, where codex and
+claude pass it through the environment. It is confined to a 0700 HOME under
+XDG_RUNTIME_DIR — a tmpfs, hence never the persistent disk — and destroyed with
+it. This is the agy rail's only deviation; it is named here so that it is not
+rediscovered by accident.
 """
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ def _enforced_environment(**overrides: str) -> dict[str, str]:
     return environment
 
 
-# --- Le HOME éphémère -------------------------------------------------------
+# --- The ephemeral HOME -----------------------------------------------------
 
 
 def test_the_ephemeral_home_carries_the_phase_scoped_bearer(tmp_path: Path) -> None:
@@ -108,9 +108,9 @@ def test_each_phase_gets_a_different_bearer(tmp_path: Path) -> None:
 
 
 def test_the_mcp_config_declares_only_brain_v42_on_loopback(tmp_path: Path) -> None:
-    """Le mcp_config du vrai HOME déclare aussi red-writer, sur une URL
-    publique. Le copier tel quel donnerait à une phase de dream un accès qu'elle
-    n'a aucune raison d'avoir."""
+    """The real HOME's mcp_config also declares red-writer, on a public URL.
+    Copying it as is would give a dream phase an access it has no reason to
+    have."""
     runner = _runner()
 
     home = runner.build_ephemeral_home(
@@ -143,7 +143,7 @@ def test_the_agent_header_names_the_phase(tmp_path: Path) -> None:
 
 
 def test_the_secret_bearing_file_is_not_world_readable(tmp_path: Path) -> None:
-    """Le seul écart du rail agy : le bearer est écrit, pas passé par l'env."""
+    """The agy rail's only deviation: the bearer is written, not passed by env."""
     runner = _runner()
 
     home = runner.build_ephemeral_home(
@@ -160,10 +160,11 @@ def test_the_secret_bearing_file_is_not_world_readable(tmp_path: Path) -> None:
 
 
 def test_the_hook_points_at_the_versioned_guard(tmp_path: Path) -> None:
-    """La garde doit venir du DÉPÔT, pas d'une copie écrite à côté du secret.
+    """The guard must come from the REPOSITORY, not from a copy written next to
+    the secret.
 
-    Une copie serait modifiable sans revue et divergerait de ses tests ; le
-    chemin absolu vers le fichier versionné garde les deux ensemble.
+    A copy would be editable without review and would diverge from its tests; the
+    absolute path to the versioned file keeps the two together.
     """
     runner = _runner()
 
@@ -183,8 +184,8 @@ def test_the_hook_points_at_the_versioned_guard(tmp_path: Path) -> None:
 
 
 def test_credentials_are_linked_not_copied(tmp_path: Path) -> None:
-    """Dupliquer les jetons OAuth de l'utilisateur en ferait des copies à
-    révoquer une par une. Un lien lit l'original et meurt avec le HOME."""
+    """Duplicating the user's OAuth tokens would make copies to revoke one by
+    one. A link reads the original and dies with the HOME."""
     runner = _runner()
     real_home = tmp_path / "real"
     (real_home / ".gemini" / "antigravity-cli").mkdir(parents=True)
@@ -217,7 +218,7 @@ def test_a_missing_project_profile_fails_closed(tmp_path: Path) -> None:
         )
 
 
-# --- Le prédicat de bascule -------------------------------------------------
+# --- The switch predicate ---------------------------------------------------
 
 
 def _stream_event(**fields: object) -> str:
@@ -276,8 +277,8 @@ def test_an_mcp_step_that_errored_did_not_write(tmp_path: Path) -> None:
 
 
 def test_a_denied_non_mcp_tool_never_counts_as_a_brain_call(tmp_path: Path) -> None:
-    """Un run_command refusé par la garde a bien produit une étape d'outil.
-    La compter bloquerait la bascule sur une phase qui n'a rien écrit."""
+    """A run_command refused by the guard did produce a tool step. Counting it
+    would block the switch on a phase that wrote nothing."""
     runner = _runner()
     events = tmp_path / "events.jsonl"
     events.write_text(
@@ -301,15 +302,15 @@ def test_a_missing_event_stream_does_not_block_the_fallback(tmp_path: Path) -> N
     assert runner.brain_tool_call_completed(tmp_path / "absent.jsonl") is False
 
 
-# --- Le préflight, qui PROUVE que la garde refuse ---------------------------
+# --- The preflight, which PROVES the guard refuses --------------------------
 
 
 def test_the_preflight_proves_the_guard_denies_a_shell_tool() -> None:
-    """Le préflight n'a pas le droit de se contenter de constater le fichier.
+    """The preflight may not settle for noting that the file exists.
 
-    La garde est le seul rempart entre une phase nocturne et un shell. Vérifier
-    sa PRÉSENCE laisserait passer une garde vide, mal nommée, non exécutable ou
-    rendue permissive par une édition — tous des états où le fichier existe.
+    The guard is the only rampart between a nightly phase and a shell. Checking
+    its PRESENCE would let through a guard that is empty, misnamed, non-executable
+    or made permissive by an edit — all states in which the file exists.
     """
     runner = _runner()
 
@@ -335,8 +336,8 @@ def test_the_runner_exposes_a_project_scoped_api() -> None:
 
 
 def test_the_ephemeral_home_defaults_to_a_tmpfs_runtime_dir() -> None:
-    """Le bearer est écrit sur disque : il ne doit pas atterrir sur du
-    persistant. XDG_RUNTIME_DIR est un tmpfs."""
+    """The bearer is written to disk: it must not land on persistent storage.
+    XDG_RUNTIME_DIR is a tmpfs."""
     runner = _runner()
 
     root = runner.ephemeral_root({"XDG_RUNTIME_DIR": "/run/user/1001"})
@@ -346,19 +347,18 @@ def test_the_ephemeral_home_defaults_to_a_tmpfs_runtime_dir() -> None:
     assert fallback is None or str(fallback).startswith(os.environ.get("TMPDIR", "/tmp"))
 
 
-# --- Le prompt : argv, pas stdin --------------------------------------------
+# --- The prompt: argv, not stdin --------------------------------------------
 
 
 def test_the_prompt_travels_as_the_print_argument_not_on_stdin() -> None:
-    """MESURÉ le 2026-08-11 : agy ignore stdin, dans les deux formes.
+    """MEASURED on 2026-08-11: agy ignores stdin, in both forms.
 
-    `--print ""` avec le prompt sur stdin rend une réponse vide, et un prompt
-    en argument PLUS un contexte sur stdin répond sans le contexte. Les deux
-    autres rails passent délibérément par stdin pour éviter ARG_MAX ; agy ne
-    laisse pas le choix.
+    `--print ""` with the prompt on stdin returns an empty answer, and a prompt in
+    an argument PLUS a context on stdin answers without the context. The other two
+    rails deliberately go through stdin to avoid ARG_MAX; agy leaves no choice.
 
-    Le mode de panne si on se trompe est traître : agy répond quand même, par
-    une salutation, et la phase sort en 0 avec un rapport hors sujet.
+    The failure mode if you get it wrong is treacherous: agy answers anyway, with
+    a greeting, and the phase exits 0 with an off-topic report.
     """
     runner = _runner()
 
@@ -370,8 +370,8 @@ def test_the_prompt_travels_as_the_print_argument_not_on_stdin() -> None:
 
 
 def test_an_oversized_prompt_is_refused_with_a_readable_reason() -> None:
-    """Un argument dépasse 128 Kio -> E2BIG, une OSError opaque au fond d'un
-    Popen. Le refuser AVANT, avec sa taille, rend la cause lisible au matin."""
+    """An argument over 128 KiB -> E2BIG, an opaque OSError deep inside a Popen.
+    Refusing it BEFORE, with its size, makes the cause readable in the morning."""
     runner = _runner()
 
     with pytest.raises(ValueError, match="trop long"):
@@ -379,8 +379,8 @@ def test_an_oversized_prompt_is_refused_with_a_readable_reason() -> None:
 
 
 def test_no_secret_travels_through_argv() -> None:
-    """Le prompt est en argv, donc visible dans `ps`. Le BEARER, lui, ne doit
-    jamais l'être : il vit dans le mcp_config du HOME éphémère."""
+    """The prompt is in argv, hence visible in `ps`. The BEARER, by contrast, must
+    never be: it lives in the ephemeral HOME's mcp_config."""
     runner = _runner()
 
     command = runner.build_agy_command(model="gemini-3.6-flash-medium", prompt="AUDIT")
@@ -389,13 +389,13 @@ def test_no_secret_travels_through_argv() -> None:
     assert not any("token" in argument.lower() for argument in command)
 
 
-# --- Le rapport de phase ----------------------------------------------------
+# --- The phase report -------------------------------------------------------
 
 
 def test_the_report_is_extracted_from_the_result_event(tmp_path: Path) -> None:
-    """dream.sh injecte ce rapport dans la phase suivante et le donne à ses
-    validateurs. Le chercher au mauvais endroit produit un rapport VIDE et une
-    chaîne de dépendances cassée — sans erreur, la phase sortant en 0."""
+    """dream.sh injects this report into the next phase and gives it to its
+    validators. Looking for it in the wrong place produces an EMPTY report and a
+    broken dependency chain — with no error, the phase exiting 0."""
     runner = _runner()
     events = tmp_path / "events.jsonl"
     report = tmp_path / "report.log"

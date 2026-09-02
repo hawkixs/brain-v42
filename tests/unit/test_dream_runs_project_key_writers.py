@@ -1,22 +1,22 @@
-"""Les six écrivains de `dream_runs` posent une clé de projet, et laquelle.
+"""The six `dream_runs` writers lay down a project key, and which one.
 
-Ce fichier existe parce que les quatre écrivains « best-effort » n'avaient AUCUN
-témoin lisant le SQL réellement émis : une vingtaine de tests les remplacent par
-un `AsyncMock()` sans jamais asserter leurs arguments, donc une colonne oubliée
-serait restée verte. Chaque test ci-dessous exécute la VRAIE fonction contre une
-session enregistreuse et lit la requête produite — jamais une reconstruction
-indépendante de l'implémentation.
+This file exists because the four "best-effort" writers had NO witness reading
+the SQL actually emitted: some twenty tests replace them with an `AsyncMock()`
+without ever asserting their arguments, so a forgotten column would have stayed
+green. Each test below runs the REAL function against a recording session and
+reads the query produced — never a reconstruction independent of the
+implementation.
 
-Deux clés, et la distinction n'est pas cosmétique (spec §15.3) :
+Two keys, and the distinction is not cosmetic (spec §15.3):
 
-- les phases GLOBALES (`extract`, `roadmap`, `sweep`) et la phase morte
-  `RESONANCE` écrivent la sentinelle, tenue par UNE constante partagée. Elle ne
-  transite jamais par `canonicalize_project_key`, qui la rejette (`_KEBAB`), ni
-  par un flag de ligne de commande, que deux épingles bash interdisent
-  (`test_dream_sh_sweep.py`, `test_dream_sh_extract.py`), ni par la signature
-  des writers, qu'un appel positionnel réel épingle ;
-- les phases PAR PROJET (`promote` via le pool vide, et les six phases du
-  parser) écrivent la vraie clé, reçue en argument.
+- the GLOBAL phases (`extract`, `roadmap`, `sweep`) and the dead `RESONANCE`
+  phase write the sentinel, held by ONE shared constant. It never transits
+  through `canonicalize_project_key`, which rejects it (`_KEBAB`), nor through a
+  command-line flag, which two bash pins forbid (`test_dream_sh_sweep.py`,
+  `test_dream_sh_extract.py`), nor through the writers' signature, which a real
+  positional call pins;
+- the PER-PROJECT phases (`promote` through the empty pool, and the parser's six
+  phases) write the real key, received as an argument.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ _INSERT = re.compile(
 
 
 class _RecordingSession:
-    """Session asynchrone qui n'exécute rien et retient ce qu'on lui donne."""
+    """An async session that executes nothing and remembers what it is given."""
 
     def __init__(self, calls: list[tuple[Any, Any]]) -> None:
         self._calls = calls
@@ -68,11 +68,10 @@ def _recording_factory() -> tuple[Any, list[tuple[Any, Any]]]:
 
 
 def _written_project_key(calls: list[tuple[Any, Any]]) -> Any:
-    """La valeur que l'INSERT `dream_runs` pose réellement en `project_key`.
+    """The value the `dream_runs` INSERT really lays down in `project_key`.
 
-    Lit la colonne dans la requête ET la valeur dans les binds, pour qu'un
-    INSERT désaligné — la bonne valeur dans la mauvaise colonne — ne puisse pas
-    passer pour un succès.
+    Reads the column in the query AND the value in the binds, so that a misaligned
+    INSERT — the right value in the wrong column — cannot pass for a success.
     """
     inserts = [call for call in calls if _INSERT.search(str(call[0]))]
     assert len(inserts) == 1, f"attendu 1 INSERT dream_runs, vu {len(inserts)}"
@@ -97,7 +96,7 @@ def _written_project_key(calls: list[tuple[Any, Any]]) -> Any:
     return bound["project_key"]
 
 
-# --- Les quatre sentinelles globales ---------------------------------------
+# --- The four global sentinels ----------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -135,8 +134,8 @@ async def test_session_sweep_writes_the_global_sentinel() -> None:
 
 @pytest.mark.asyncio
 async def test_cross_project_resonance_writes_the_global_sentinel() -> None:
-    """Mort, non câblé — mais mis en cohérence pour ne pas être le seul faux
-    le jour où quelqu'un le rebranche (décision opérateur du 2026-08-09)."""
+    """Dead, unwired — but made consistent so that it is not the only wrong one
+    the day someone re-wires it (operator decision of 2026-08-09)."""
     from scripts.dream.cross_project_resonance import _insert_run
 
     factory, calls = _recording_factory()
@@ -147,10 +146,10 @@ async def test_cross_project_resonance_writes_the_global_sentinel() -> None:
 
 
 def test_the_four_global_writers_share_one_constant() -> None:
-    """Quatre chaînes SQL indépendantes, une seule vérité.
+    """Four independent SQL strings, one single truth.
 
-    Une sentinelle recopiée quatre fois se désaligne à la première coquille, et
-    la coquille serait silencieuse : ces quatre écrivains avalent leur échec.
+    A sentinel retyped four times drifts apart at the first typo, and the typo
+    would be silent: these four writers swallow their failure.
     """
     import importlib
 
@@ -169,11 +168,11 @@ def test_the_four_global_writers_share_one_constant() -> None:
 
 
 def test_the_sentinel_is_rejected_by_the_central_validator() -> None:
-    """Le fait qui interdit de « valider la clé avant écriture ».
+    """The fact that forbids "validating the key before writing".
 
-    Ce test n'est pas décoratif : il documente pourquoi la sentinelle ne passe
-    par aucun chemin de canonicalisation. Le jour où `_KEBAB` accepterait `*`,
-    il devient rouge et la contrainte se rediscute exprès.
+    This test is not decorative: it documents why the sentinel goes through no
+    canonicalisation path. The day `_KEBAB` accepts `*`, it goes red and the
+    constraint is deliberately re-discussed.
     """
     from brain_v42.models.project_key import canonicalize_project_key
 
@@ -190,11 +189,11 @@ def test_the_sentinel_is_rejected_by_the_central_validator() -> None:
     ],
 )
 def test_the_global_writers_keep_their_signature(module: str, attribute: str) -> None:
-    """La sentinelle entre par le SQL, jamais par la signature.
+    """The sentinel enters through the SQL, never through the signature.
 
-    Un paramètre de plus — même avec défaut — casserait un appel positionnel
-    réel (`test_session_sweep.py`) sans réveiller les ~20 tests qui patchent
-    ces fonctions en aveugle : le pire ratio possible.
+    One more parameter — even with a default — would break a real positional call
+    (`test_session_sweep.py`) without waking the ~20 tests that patch these
+    functions blindly: the worst possible ratio.
     """
     import importlib
     import inspect
@@ -204,16 +203,16 @@ def test_the_global_writers_keep_their_signature(module: str, attribute: str) ->
     assert "project_key" not in signature.parameters
 
 
-# --- Les deux écrivains par projet -----------------------------------------
+# --- The two per-project writers --------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_empty_pool_row_carries_the_real_project_key() -> None:
-    """`promote` est une phase PAR PROJET : elle n'a rien à faire de la sentinelle.
+    """`promote` is a PER-PROJECT phase: it has no use for the sentinel.
 
-    C'est ce site que l'inventaire §14.2 avait oublié tout en rangeant son
-    fichier parmi les lecteurs. Il écrit les lignes `promote` des nuits à pool
-    vide, c'est-à-dire toutes les nuits depuis le 2026-08-08.
+    This is the site the §14.2 inventory forgot while filing its file among the
+    readers. It writes the `promote` rows of empty-pool nights, that is, every
+    night since 2026-08-08.
     """
     from scripts.dream._promote_helpers import _record_empty_pool
 
@@ -227,13 +226,13 @@ async def test_empty_pool_row_carries_the_real_project_key() -> None:
 def test_empty_pool_cli_requires_a_project_key_without_a_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Sans défaut : un `default="brain-v42"` est exactement la classe de bug visée.
+    """No default: a `default="brain-v42"` is exactly the class of bug targeted.
 
-    Le précédent à ne PAS suivre ÉTAIT `post_run_alert.py`
-    (`default=DEFAULT_PROJECT_KEY`) ; celui à suivre est
-    `promote_prepare.py` (`required=True`). Le contre-exemple n'existe plus :
-    le lot du pool a retiré ce paramètre, décoratif depuis toujours, plutôt que
-    de lui donner un `required=True` qu'aucun appelant n'aurait lu.
+    The precedent NOT to follow WAS `post_run_alert.py`
+    (`default=DEFAULT_PROJECT_KEY`); the one to follow is `promote_prepare.py`
+    (`required=True`). The counter-example no longer exists: the pool batch
+    removed that parameter, decorative from the start, rather than giving it a
+    `required=True` no caller would have read.
     """
     from scripts.dream import _promote_helpers
 
@@ -280,16 +279,16 @@ def test_empty_pool_cli_forwards_the_project_key(monkeypatch: pytest.MonkeyPatch
     recorder.assert_awaited_once_with("factory", dt.date(2026, 8, 9), 3.5, project_key="red-shrik")
 
 
-# --- `model` : la colonne, pas seulement l'argument -------------------------
+# --- `model`: the column, not merely the argument ---------------------------
 
 
 @pytest.mark.asyncio
 async def test_ticket_extract_binds_the_model_into_the_insert() -> None:
-    """L'argument doit atteindre la COLONNE, pas mourir dans la signature.
+    """The argument must reach the COLUMN, not die in the signature.
 
-    Mesuré le 19→20 : 53 lignes `extract` sur 53 à `model IS NULL`. Extract est
-    la seule phase qui bascule de modèle en cours de run, donc la seule où le
-    modèle configuré ne permet pas de reconstituer ce qui a tourné.
+    Measured on the 19→20: 53 `extract` rows out of 53 at `model IS NULL`. Extract
+    is the only phase that switches model mid-run, hence the only one where the
+    configured model does not allow reconstructing what actually ran.
     """
     from scripts.ticket_extract import record_dream_run
 

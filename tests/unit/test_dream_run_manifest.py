@@ -1,28 +1,29 @@
-"""Le manifeste de nuit : ce que la nuit DÉCLARE, relu au matin.
+"""The night manifest: what the night DECLARES, read back in the morning.
 
-Ticket `0a9c067e`, recadré par son fil. Le comparateur de fin de nuit existe
-depuis toujours (`post_run_alert.include_missing_expected_phases`) et il a tiré
-trois nuits de suite ; il est simplement SOUS-DIMENSIONNÉ — `LOOP_PHASES` ne
-porte que `promote` et `reorg`, donc la nuit du 2026-08-16 a annoncé 20 phases
-manquantes quand il en manquait 60.
+Ticket `0a9c067e`, reframed by its thread. The end-of-night comparator has always
+existed (`post_run_alert.include_missing_expected_phases`) and it fired three
+nights in a row; it is simply UNDER-SIZED — `LOOP_PHASES` carries only `promote`
+and `reorg`, so the night of 2026-08-16 announced 20 missing phases when 60 were
+missing.
 
-Élargir naïvement l'attendu fabriquerait des faux positifs : une phase sautée
-par le pré-flight ou par un killswitch n'écrit aucune ligne et n'en doit aucune.
-Ce module transporte donc la DÉCLARATION de la nuit — ses attendus, ses skips et
-leur raison — jusqu'au comparateur, et la traduit en une partition close.
+Naively widening the expectation would manufacture false positives: a phase
+skipped by the preflight or by a killswitch writes no row and owes none. This
+module therefore carries the night's DECLARATION — its expectations, its skips
+and their reason — through to the comparator, and translates it into a closed
+partition.
 
-Les quatre classes, et pourquoi la quatrième existe :
+The four classes, and why the fourth exists:
 
-- A `skipped`   — pré-flight / killswitch : personne n'a tenté d'écrire ;
-- B `declared`  — dream.sh l'a classée failed/timeout, l'absence est déjà dite ;
-- C `silent`    — comptée OK, aucune ligne : le trou que le ticket dénonce ;
-- D `writefail` — SAUTÉE mais un writer a tenté sa ligne et a ÉCHOUÉ.
+- A `skipped`   — preflight / killswitch: nobody tried to write;
+- B `declared`  — dream.sh classified it failed/timeout, the absence is already said;
+- C `silent`    — counted OK, no row: the hole the ticket denounces;
+- D `writefail` — SKIPPED but a writer tried its row and FAILED.
 
-D n'est pas une subtilité : `scripts/dream.sh` pousse
-`SKIPPED_PHASES+=("$PROJECT_KEY/promote")` HORS du `if (( record_rc == 0 ))`,
-donc « sautée » et « la ligne est écrite » sont deux faits indépendants.
-Soustraire tous les skips rendrait vert un chemin où une ligne `dream_runs` est
-réellement perdue — une régression sur le comportement d'aujourd'hui.
+D is not a subtlety: `scripts/dream.sh` pushes
+`SKIPPED_PHASES+=("$PROJECT_KEY/promote")` OUTSIDE the `if (( record_rc == 0 ))`,
+so "skipped" and "the row is written" are two independent facts. Subtracting all
+skips would turn green a path where a `dream_runs` row is genuinely lost — a
+regression on today's behaviour.
 """
 
 from __future__ import annotations
@@ -39,11 +40,11 @@ RUN_DATE = dt.date(2026, 8, 18)
 
 
 def _line(*parts: str) -> str:
-    """Une ligne telle que `manifest_put` de dream.sh l'écrit : QUATRE champs.
+    """A line as dream.sh's `manifest_put` writes it: FOUR fields.
 
-    `printf '%s\\t%s\\t%s\\t%s\\n'` pose toujours les quatre séparateurs, donc le
-    parseur doit accepter les champs de queue vides. Un harnais qui écrirait des
-    lignes « propres » à trois champs ne testerait pas le fichier réel.
+    `printf '%s\\t%s\\t%s\\t%s\\n'` always lays down the four separators, so the
+    parser must accept empty trailing fields. A harness writing "clean"
+    three-field lines would not test the real file.
     """
     padded = (*parts, "", "", "")[:4]
     return "\t".join(padded) + "\n"
@@ -73,15 +74,15 @@ def _parse(**kwargs: object) -> rm.RunManifest:
     return rm.parse_run_manifest(_manifest_text(**kwargs))  # type: ignore[arg-type]
 
 
-# --- Le fait du ticket : 60 phases silencieuses, pas 20 ----------------------
+# --- The ticket's fact: 60 silent phases, not 20 ----------------------------
 
 
 def test_a_night_that_wrote_almost_nothing_reports_every_silent_pair() -> None:
-    """Les nuits des 2026-08-15 et 08-16 : 63 phases annoncées, 2 lignes écrites.
+    """The nights of 2026-08-15 and 08-16: 63 phases announced, 2 rows written.
 
-    Le comparateur d'aujourd'hui n'attend que `promote` et `reorg` (plus les
-    globales), donc il en rapportait 20. Sur les attendus DÉCLARÉS par la nuit,
-    le trou fait sa vraie taille.
+    Today's comparator expects only `promote` and `reorg` (plus the global ones),
+    so it reported 20. Against the expectations DECLARED by the night, the hole is
+    its true size.
     """
     projects = tuple(f"p{index}" for index in range(10))
     phases = ("scan", "clean", "connect", "synth", "promote", "reorg")
@@ -98,7 +99,7 @@ def test_a_night_that_wrote_almost_nothing_reports_every_silent_pair() -> None:
     assert verdict.writefail == frozenset()
 
 
-# --- Finding 1 : la classe D, celle qu'une soustraction aveugle effacerait ---
+# --- Finding 1: class D, the one a blind subtraction would erase ------------
 
 
 def test_a_skip_whose_row_write_failed_is_not_subtracted() -> None:
@@ -128,10 +129,10 @@ def test_a_skip_whose_row_was_recorded_and_is_present_is_simply_written() -> Non
 
 
 def test_a_skip_recorded_but_absent_from_the_table_is_silent() -> None:
-    """Le cas cruel : le writer a rendu 0 et la ligne n'est pas en base.
+    """The cruel case: the writer returned 0 and the row is not in the database.
 
-    C'est exactement la régression de DSN du 2026-08-15 vue depuis promote. Le
-    manifeste dit « écrite », la table dit non : c'est un trou, pas un skip.
+    This is exactly the DSN regression of 2026-08-15 seen from promote. The
+    manifest says "written", the table says no: that is a hole, not a skip.
     """
     manifest = _parse(
         expected=(("promote", "red"),),
@@ -145,11 +146,11 @@ def test_a_skip_recorded_but_absent_from_the_table_is_silent() -> None:
 
 
 def test_an_unknown_skip_reason_keeps_the_pair_expected() -> None:
-    """Fail-closed prouvé, pas seulement documenté.
+    """Fail-closed proved, not merely documented.
 
-    Un huitième site de skip ajouté demain avec un vocabulaire neuf rend le
-    détecteur BRUYANT, jamais aveugle. C'est le seul sens de marche acceptable
-    pour un détecteur dont le ticket dit qu'il a rétréci en silence.
+    An eighth skip site added tomorrow with fresh vocabulary makes the detector
+    NOISY, never blind. That is the only acceptable direction of travel for a
+    detector the ticket says shrank silently.
     """
     manifest = _parse(
         expected=(("scan", "red"),),
@@ -165,7 +166,7 @@ def test_the_no_row_reason_table_is_closed_to_two_entries() -> None:
     assert rm.NO_ROW_SKIP_REASONS == frozenset({"preflight", "killswitch"})
 
 
-# --- Anti-faux-positifs : les deux nuits légitimes du fil --------------------
+# --- Anti-false-positives: the thread's two legitimate nights ---------------
 
 
 def test_a_preflight_night_reports_nothing_silent() -> None:
@@ -184,12 +185,12 @@ def test_a_preflight_night_reports_nothing_silent() -> None:
 
 
 def test_a_killswitch_skip_declared_by_the_night_beats_a_later_dropin_edit() -> None:
-    """Le drop-in est relu à l'heure de l'alerte, pas à l'heure de la nuit.
+    """The drop-in is re-read at alert time, not at night time.
 
-    Mesuré le 2026-08-18 : `logs/dream/2026-08-18.log` dit
-    `SKIP sweep (killswitch BRAIN_DREAM_SWEEP_ENABLED=false)` alors que le
-    drop-in vivant porte désormais `=true`. Un rejeu qui lirait le drop-in
-    inventerait une alarme ; la déclaration de la nuit, elle, ne bouge plus.
+    Measured on 2026-08-18: `logs/dream/2026-08-18.log` says
+    `SKIP sweep (killswitch BRAIN_DREAM_SWEEP_ENABLED=false)` while the live
+    drop-in now carries `=true`. A replay reading the drop-in would invent an
+    alarm; the night's declaration, for its part, no longer moves.
     """
     manifest = _parse(
         expected=(("sweep", "*"),),
@@ -221,18 +222,18 @@ def test_a_phase_declared_timed_out_is_declared_too() -> None:
     assert verdict.silent == frozenset()
 
 
-# --- Le faux-vert de la nuit du 19→20 : déclarée failed, ligne pourtant écrite --
+# --- The false green of the 19→20 night: declared failed, row written anyway --
 #
-# `declared` ne regarde `manifest.failed` que sur les paires MANQUANTES. Une paire
-# qui a bien SA ligne `dream_runs` — mais que la nuit a déclarée `failed` — tombait
-# donc dans `written` et nulle part ailleurs : sa déclaration était jetée en
-# silence. La nuit du 19→20 l'a payé, reorg déclaré `failed` et sa ligne restée
-# `done` parce que `_mark_dream_run_partial` avait crashé. Le verdict a annoncé
-# 63/63 en lisant un fichier d'entrée qui disait le contraire.
+# `declared` only looks at `manifest.failed` for MISSING pairs. A pair that does
+# have ITS `dream_runs` row — but that the night declared `failed` — therefore
+# fell into `written` and nowhere else: its declaration was thrown away silently.
+# The 19→20 night paid for it, reorg declared `failed` and its row left `done`
+# because `_mark_dream_run_partial` had crashed. The verdict announced 63/63 while
+# reading an input file that said the opposite.
 #
-# `mismatch` est un RECOUVREMENT de `written`, pas une sixième classe : la
-# partition close des cinq classes reste l'invariant, et `escalates` ne bouge pas.
-# Faire virer la nuit au rouge sur ce signal touche au moteur ; ce n'est pas ici.
+# `mismatch` OVERLAPS `written`, it is not a sixth class: the closed partition of
+# the five classes stays the invariant, and `escalates` does not move. Turning the
+# night red on this signal touches the engine; that is not here.
 
 
 def test_a_pair_written_but_declared_failed_is_reported_as_a_mismatch() -> None:
@@ -256,7 +257,7 @@ def test_a_pair_written_but_declared_timed_out_is_a_mismatch_too() -> None:
 
 
 def test_a_declaration_without_a_row_is_declared_not_mismatch() -> None:
-    """Les deux signaux ne doivent jamais compter la même paire."""
+    """The two signals must never count the same pair."""
     manifest = _parse(
         expected=(("connect", "brain-v42"),),
         failed=(("connect", "brain-v42"),),
@@ -268,7 +269,7 @@ def test_a_declaration_without_a_row_is_declared_not_mismatch() -> None:
 
 
 def test_a_mismatch_reports_but_never_escalates() -> None:
-    """RAPPORT SEULEMENT. Escalader ici ferait virer la nuit au rouge — moteur."""
+    """REPORT ONLY. Escalating here would turn the night red — engine."""
     manifest = _parse(
         expected=(("reorg", "brain-v42"),),
         failed=(("reorg", "brain-v42"),),
@@ -281,7 +282,7 @@ def test_a_mismatch_reports_but_never_escalates() -> None:
 
 
 def test_the_mismatch_overlay_never_breaks_the_closed_partition() -> None:
-    """`mismatch` recouvre `written` ; les cinq classes restent disjointes."""
+    """`mismatch` overlaps `written`; the five classes stay disjoint."""
     rng = random.Random(20260820)
     phases = ("scan", "clean", "connect", "synth", "promote", "reorg")
     projects = ("red", "brain-v42", "red-lab")
@@ -310,7 +311,7 @@ def test_the_mismatch_overlay_never_breaks_the_closed_partition() -> None:
 
 
 def test_the_machine_line_carries_the_mismatch_counter() -> None:
-    """Sans compteur dans la ligne machine, le signal n'atteint pas journald."""
+    """Without a counter in the machine line, the signal does not reach journald."""
     manifest = _parse(
         expected=(("reorg", "brain-v42"), ("scan", "red")),
         failed=(("reorg", "brain-v42"),),
@@ -322,16 +323,16 @@ def test_the_machine_line_carries_the_mismatch_counter() -> None:
     assert line.startswith("COVERAGE mode=manifest ")
 
 
-# --- Finding 2 : la partition ferme, toujours -------------------------------
+# --- Finding 2: the partition closes, always --------------------------------
 
 
 def test_the_five_classes_partition_the_expected_set_on_a_hundred_manifests() -> None:
-    """L'invariant qui rend la ligne machine additionnable.
+    """The invariant that makes the machine line additive.
 
-    La révision 1 de la spec imprimait `expected=23 written=62` : deux nombres
-    côte à côte que rien ne réconcilie, c'est-à-dire le défaut même que le
-    ticket dénonce. Ici `written` est une INTERSECTION et les quatre autres
-    partitionnent `expected − observed`, donc la somme ferme par construction.
+    Revision 1 of the spec printed `expected=23 written=62`: two numbers side by
+    side that nothing reconciles, i.e. the very flaw the ticket denounces. Here
+    `written` is an INTERSECTION and the other four partition
+    `expected − observed`, so the sum closes by construction.
     """
     rng = random.Random(20260818)
     phases = ("scan", "clean", "connect", "synth", "promote", "reorg")
@@ -393,7 +394,7 @@ def test_rows_outside_the_expected_set_are_extra_and_never_escalate() -> None:
     assert verdict.escalates is False
 
 
-# --- Finding 3 : l'auto-contrôle qui porte ----------------------------------
+# --- Finding 3: the self-check that carries ---------------------------------
 
 
 def test_a_lost_expected_record_is_inconsistent() -> None:
@@ -435,7 +436,7 @@ def test_an_unparsable_counter_is_treated_as_inconsistent() -> None:
     assert verdict.consistent is False
 
 
-# --- Finding 6 : un manifeste interrompu n'a jamais le droit d'être vert ----
+# --- Finding 6: an interrupted manifest is never allowed to be green --------
 
 
 def test_a_manifest_without_its_closing_block_is_partial_and_escalates() -> None:
@@ -463,7 +464,7 @@ def test_a_complete_manifest_is_mode_manifest() -> None:
     assert verdict.complete is True
 
 
-# --- Parsing : tolérant en avant, jamais silencieux -------------------------
+# --- Parsing: forward-tolerant, never silent --------------------------------
 
 
 def test_the_sentinel_crosses_the_manifest_untouched() -> None:
@@ -475,15 +476,15 @@ def test_the_sentinel_crosses_the_manifest_untouched() -> None:
 
 
 def test_the_module_never_canonicalizes_a_project_key() -> None:
-    """`canonicalize_project_key` REJETTE la sentinelle (`^[a-z0-9]+([:-][a-z0-9]+)*$`).
+    """`canonicalize_project_key` REJECTS the sentinel (`^[a-z0-9]+([:-][a-z0-9]+)*$`).
 
-    Assertion sur la SOURCE, comme `test_dream_runs_project_key_writers.py` :
-    l'appel lèverait sur les trois phases globales de CHAQUE nuit.
+    An assertion on the SOURCE, like `test_dream_runs_project_key_writers.py`: the
+    call would raise on the three global phases of EVERY night.
 
-    La propriété visée est « ni import, ni appel », pas « le nom n'apparaît
-    nulle part » : interdire le littéral interdirait aussi d'EXPLIQUER le piège
-    en prose, ce qui est exactement ce qui fait revenir un piège. Le module
-    n'importe d'ailleurs rien du tout de `brain_v42`, ce qui est plus fort.
+    The property aimed at is "neither import nor call", not "the name appears
+    nowhere": forbidding the literal would also forbid EXPLAINING the trap in
+    prose, which is exactly what makes a trap come back. The module in fact
+    imports nothing at all from `brain_v42`, which is stronger.
     """
     source = inspect.getsource(rm)
     imports = [
@@ -522,7 +523,7 @@ def test_meta_is_exposed_verbatim() -> None:
     assert manifest.meta["run_date"] == "2026-08-18"
 
 
-# --- Chargement : quatre portes vers le repli, jamais un accord muet --------
+# --- Loading: four doors to the fallback, never a mute agreement ------------
 
 
 def test_a_missing_file_falls_back(tmp_path: Path) -> None:
@@ -560,7 +561,7 @@ def test_an_unreadable_file_falls_back(tmp_path: Path) -> None:
     assert rm.load_run_manifest(directory, run_date=RUN_DATE) is None
 
 
-# --- Ligne machine : deux formes, jamais confondables -----------------------
+# --- Machine line: two shapes, never confusable -----------------------------
 
 
 def test_the_manifest_machine_line_adds_up_to_expected() -> None:
@@ -598,10 +599,10 @@ def test_the_partial_machine_line_names_planned_and_reached() -> None:
 
 
 def test_the_fallback_machine_line_uses_incomparable_field_names() -> None:
-    """23 paires attendues depuis le drop-in contre 62 écrites le 2026-08-18.
+    """23 pairs expected from the drop-in against 62 written on 2026-08-18.
 
-    `observed` n'est pas inclus dans `expected` et `silent` n'est pas calculable :
-    la ligne de repli doit le DIRE, pas poser deux nombres côte à côte.
+    `observed` is not included in `expected` and `silent` is not computable: the
+    fallback line must SAY so, not lay down two numbers side by side.
     """
     line = rm.format_fallback_line(expected=23, observed=62, missing=2)
 
