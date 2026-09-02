@@ -1,4 +1,4 @@
-"""L'émetteur d'activité ne doit ni bloquer ni casser un appel de tool."""
+"""The activity emitter must neither block nor break a tool call."""
 
 from __future__ import annotations
 
@@ -26,16 +26,16 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 @contextlib.contextmanager
 def _production_logging_into(buffer: io.StringIO) -> Iterator[None]:
-    """Configurer structlog comme la production, mais vers un tampon.
+    """Configure structlog like production, but towards a buffer.
 
-    Recopie de ``mcp/server.py::_configure_stdio_logging`` : c'est cette
-    chaîne-là qui rend les exceptions, et son rendu par défaut (rich, quand il
-    est installé) affiche les variables locales de chaque cadre.
+    A copy of ``mcp/server.py::_configure_stdio_logging``: that is the chain that
+    renders exceptions, and its default rendering (rich, when installed) displays
+    each frame's local variables.
 
-    Piège mesuré : ``PrintLoggerFactory(file=...)`` fige le flux à l'appel de
-    ``configure()``. Remplacer ``sys.stderr`` après coup ne capture rien, et un
-    test qui affirmerait « pas d'identifiant dans le journal » passerait au vert
-    sur un journal vide. Le tampon est donc passé à la fabrique elle-même.
+    Measured trap: ``PrintLoggerFactory(file=...)`` freezes the stream at the
+    ``configure()`` call. Replacing ``sys.stderr`` afterwards captures nothing, and
+    a test asserting "no identifier in the log" would go green on an empty log. The
+    buffer is therefore passed to the factory itself.
     """
     saved = structlog.get_config()
     structlog.reset_defaults()
@@ -55,20 +55,19 @@ def _production_logging_into(buffer: io.StringIO) -> Iterator[None]:
 
 
 def _closed_loopback_port() -> int:
-    """Un port de loopback sur lequel personne n'écoute."""
+    """A loopback port nobody is listening on."""
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         return int(probe.getsockname()[1])
 
 
 def _longest_leaked_fragment(log: str, secret: str, minimum: int = 8) -> str:
-    """Le plus long fragment de ``secret`` d'au moins ``minimum`` signes présent.
+    """The longest fragment of ``secret`` of at least ``minimum`` characters present.
 
-    Chercher le secret *entier* ne suffirait pas : le formateur rich tronque
-    chaque variable locale à 80 caractères, si bien que le corps d'observation
-    ne laisse fuir qu'un préfixe de l'UUID de session. Une assertion
-    « l'UUID entier est absent » passerait donc au vert avec quinze signes
-    d'identifiant brut dans journald.
+    Looking for the *whole* secret would not be enough: the rich formatter
+    truncates each local variable at 80 characters, so the observation body only
+    leaks a prefix of the session UUID. An assertion "the whole UUID is absent"
+    would therefore go green with fifteen characters of raw identifier in journald.
     """
     for size in range(len(secret), minimum - 1, -1):
         for start in range(len(secret) - size + 1):
@@ -79,7 +78,7 @@ def _longest_leaked_fragment(log: str, secret: str, minimum: int = 8) -> str:
 
 
 async def _log_of_one_failed_post(buffer: io.StringIO, session_id: str | None) -> str:
-    """Provoquer un vrai échec de POST et rendre le journal produit."""
+    """Provoke a real POST failure and return the log produced."""
     url = f"http://127.0.0.1:{_closed_loopback_port()}/v1/client-activity"
     reporter = ActivityReporter(url=url, timeout=1.0)
     with _production_logging_into(buffer):
@@ -92,12 +91,12 @@ async def _log_of_one_failed_post(buffer: io.StringIO, session_id: str | None) -
 async def _one_answered_post(
     buffer: io.StringIO, status: int, body: str
 ) -> tuple[ActivityReporter, str]:
-    """Émettre une observation à laquelle le récepteur RÉPOND ``status``.
+    """Emit an observation the receiver ANSWERS with ``status``.
 
-    ``httpx`` ne lève pas sur 4xx/5xx : la réponse revient par le chemin
-    nominal, pas par le ``except``. Le double rend donc une vraie
-    ``httpx.Response`` — un ``AsyncMock`` nu rendrait un ``MagicMock`` dont
-    tout attribut est vrai, et ``is_success`` serait vrai pour un 404.
+    ``httpx`` does not raise on 4xx/5xx: the response comes back through the
+    nominal path, not through the ``except``. The double therefore returns a real
+    ``httpx.Response`` — a bare ``AsyncMock`` would return a ``MagicMock`` whose
+    every attribute is truthy, and ``is_success`` would be true for a 404.
     """
     url = "http://127.0.0.1:9200/v1/client-activity"
     reporter = ActivityReporter(url=url)
@@ -115,8 +114,8 @@ async def _one_answered_post(
     return reporter, _ANSI.sub("", buffer.getvalue())
 
 
-# La remise à zéro du global ``_reporter`` est une fixture autouse partagée,
-# dans tests/unit/conftest.py : ce module n'est plus le seul à injecter un
+# Resetting the ``_reporter`` global is a shared autouse fixture, in
+# tests/unit/conftest.py: this module is no longer the only one injecting a
 # double.
 
 
@@ -151,19 +150,19 @@ async def test_transport_failure_is_swallowed() -> None:
     with patch.object(reporter, "_client") as client:
         client.post = AsyncMock(side_effect=OSError("sidecar down"))
         reporter.report("brain-v42", None)
-        await reporter.drain()  # ne doit pas lever
+        await reporter.drain()  # must not raise
     await reporter.close()
 
 
 @pytest.mark.asyncio
 async def test_saturation_coalesces_instead_of_blocking_or_losing() -> None:
-    """Sous saturation, ``report()`` rend la main AUSSITÔT — et ne perd plus rien.
+    """Under saturation, ``report()`` returns IMMEDIATELY — and no longer loses anything.
 
-    Ce test s'appelait ``test_saturation_drops_instead_of_blocking`` et assertait
-    ``reporter.dropped == 10``. Il ÉPINGLAIT donc la perte que le ticket
-    ``1c40c36a`` dénonçait : le corriger faisait forcément rougir la suite.
-    L'assertion de non-blocage — sa vraie raison d'être — est conservée et
-    RENFORCÉE : on vérifie en plus que les dix appels arrivent sur le fil.
+    This test used to be called ``test_saturation_drops_instead_of_blocking`` and
+    asserted ``reporter.dropped == 10``. It therefore PINNED the loss ticket
+    ``1c40c36a`` denounced: fixing it necessarily reddened the suite. The
+    non-blocking assertion — its real reason to exist — is kept and STRENGTHENED:
+    we additionally check that the ten calls reach the wire.
     """
     reporter = ActivityReporter(url="http://127.0.0.1:9200/v1/client-activity", max_in_flight=1)
     release = asyncio.Event()
@@ -176,7 +175,7 @@ async def test_saturation_coalesces_instead_of_blocking_or_losing() -> None:
         reporter.report("brain-v42", None)
         await asyncio.sleep(0)
         for _ in range(10):
-            reporter.report("brain-v42", None)  # doit rendre la main aussitôt
+            reporter.report("brain-v42", None)  # must return immediately
         assert reporter.dropped == 0, "la contre-pression jette encore"
         assert reporter.coalesced == 10, "les dix appels n'ont pas été repliés"
         release.set()
@@ -192,22 +191,21 @@ async def test_saturation_coalesces_instead_of_blocking_or_losing() -> None:
 
 @pytest.mark.asyncio
 async def test_drain_returns_even_if_done_callback_has_not_run_yet() -> None:
-    """Livelock potentiel : sur Python 3.12+, ``asyncio.gather()`` traite les
-    futures déjà ``done()`` de façon eager, et attendre une future déjà
-    terminée ne cède jamais la main à la boucle événementielle. Si une tâche
-    ``_post()`` se termine avant que son ``done_callback``
-    (``self._pending.discard``) n'ait eu son tour — ce qui demande un second
-    tour de boucle — alors ``while self._pending: await asyncio.gather(...)``
-    boucle indéfiniment sans jamais laisser ce callback s'exécuter.
+    """Potential livelock: on Python 3.12+, ``asyncio.gather()`` handles futures
+    that are already ``done()`` eagerly, and awaiting an already-finished future
+    never yields to the event loop. If a ``_post()`` task finishes before its
+    ``done_callback`` (``self._pending.discard``) has had its turn — which requires
+    a second loop iteration — then ``while self._pending: await asyncio.gather(...)``
+    loops forever without ever letting that callback run.
 
-    ``asyncio.wait_for`` avec un délai court : un ``drain()`` qui livelock ne
-    doit pas bloquer la suite entière, juste faire échouer ce test.
+    ``asyncio.wait_for`` with a short delay: a ``drain()`` that livelocks must not
+    block the whole suite, only fail this test.
     """
     reporter = ActivityReporter(url="http://127.0.0.1:9200/v1/client-activity")
     with patch.object(reporter, "_client") as client:
-        client.post = AsyncMock()  # résout instantanément, sans suspension réelle
+        client.post = AsyncMock()  # resolves instantly, with no real suspension
         reporter.report("brain-v42", None)
-        await asyncio.sleep(0)  # laisse _post tourner, mais pas forcément le callback
+        await asyncio.sleep(0)  # lets _post run, but not necessarily the callback
         await asyncio.wait_for(reporter.drain(), timeout=3)
     await reporter.close()
 
@@ -215,13 +213,13 @@ async def test_drain_returns_even_if_done_callback_has_not_run_yet() -> None:
 def test_construction_failure_never_breaks_the_caller(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """get_activity_reporter() ne doit jamais lever.
+    """get_activity_reporter() must never raise.
 
-    En production ``get_settings()`` ne peut pas échouer (POSTGRES_URL est
-    requis au démarrage). Mais l'appelant de ``get_activity_reporter()`` est
-    le middleware de provenance, sur le chemin de TOUT appel de tool — si la
-    résolution de settings ou la construction du client lève pour une autre
-    raison, ça ne doit jamais casser l'appel en cours.
+    In production ``get_settings()`` cannot fail (POSTGRES_URL is required at
+    startup). But ``get_activity_reporter()``'s caller is the provenance
+    middleware, on the path of EVERY tool call — if resolving the settings or
+    building the client raises for another reason, that must never break the call
+    in progress.
     """
     from brain_v42.mcp import activity_reporter
 
@@ -236,12 +234,12 @@ def test_construction_failure_never_breaks_the_caller(
 def test_closed_killswitch_silences_the_emitter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Porte fermée : aucun émetteur, donc aucune émission.
+    """Gate closed: no emitter, hence no emission.
 
-    Épingler le seul défaut dans ``test_config`` ne prouverait rien. Une
-    valeur de configuration n'est une frontière de sûreté que si le point de
-    consommation la lit — c'est le motif du faux témoin (learning a6e1dd1f) :
-    une valeur capturée que personne ne relit.
+    Pinning the default alone in ``test_config`` would prove nothing. A
+    configuration value is a safety boundary only if the consumption point reads
+    it — that is the false witness pattern (learning a6e1dd1f): a value captured
+    that nobody reads back.
     """
     from brain_v42.mcp import activity_reporter
 
@@ -257,10 +255,10 @@ def test_closed_killswitch_silences_the_emitter(
 def test_open_killswitch_builds_the_emitter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Contrôle positif du test précédent.
+    """Positive control for the previous test.
 
-    Sans lui, ``get_activity_reporter() is None`` passerait au vert pour
-    n'importe quelle raison — y compris un émetteur cassé pour de bon.
+    Without it, ``get_activity_reporter() is None`` would go green for any reason
+    at all — including an emitter broken for good.
     """
     from brain_v42.mcp import activity_reporter
 
@@ -277,22 +275,22 @@ def test_open_killswitch_builds_the_emitter(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Le journal de l'émetteur est lui-même une sortie : ce qu'il écrit part dans
-# journald, sur le chemin de TOUT appel de tool.
+# The emitter's log is itself an output: what it writes goes into journald, on
+# the path of EVERY tool call.
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_post_failure_log_carries_no_raw_identifier() -> None:
-    """Un sidecar injoignable ne doit pas recopier l'UUID de session dans journald.
+    """An unreachable sidecar must not copy the session UUID into journald.
 
-    La conception affirme qu'aucun identifiant brut ne quitte le registre ;
-    personne n'avait regardé le journal de l'émetteur. Le déclencheur est le
-    mode NOMINAL d'un feu-et-oubli : sidecar arrêté, redémarrage, timeout.
+    The design asserts that no raw identifier leaves the registry; nobody had
+    looked at the emitter's log. The trigger is the NOMINAL mode of a
+    fire-and-forget: sidecar stopped, restart, timeout.
 
-    L'assertion sur la présence de l'événement est le contrôle positif : sans
-    elle, « pas d'identifiant dans le journal » passerait au vert pour un
-    logger muet, une chaîne mal configurée ou un POST qui n'a jamais échoué.
+    The assertion on the event's presence is the positive control: without it, "no
+    identifier in the log" would go green for a mute logger, a misconfigured chain
+    or a POST that never failed.
     """
     buffer = io.StringIO()
 
@@ -307,11 +305,11 @@ async def test_post_failure_log_carries_no_raw_identifier() -> None:
 
 @pytest.mark.asyncio
 async def test_post_failure_log_stays_within_a_few_lines() -> None:
-    """``_report`` est sur le chemin de tout appel de tool : le journal est borné.
+    """``_report`` is on the path of every tool call: the log is bounded.
 
-    Sidecar absent et porte ouverte au rollout, une trace rendue par rich coûte
-    des centaines de lignes par appel — payées sur le chemin chaud, alors que le
-    module promet qu'un sidecar arrêté « ne doit jamais ralentir » l'appel.
+    With the sidecar absent and the gate open at rollout, a traceback rendered by
+    rich costs hundreds of lines per call — paid on the hot path, while the module
+    promises that a stopped sidecar "must never slow down" the call.
     """
     buffer = io.StringIO()
 
@@ -323,7 +321,7 @@ async def test_post_failure_log_stays_within_a_few_lines() -> None:
 
 @pytest.mark.asyncio
 async def test_post_failure_log_names_the_exception_type() -> None:
-    """Diagnostiquer un sidecar mort demande le type de l'exception, pas la trace."""
+    """Diagnosing a dead sidecar needs the exception type, not the traceback."""
     reporter = ActivityReporter(url="http://127.0.0.1:9200/v1/client-activity")
     buffer = io.StringIO()
 
@@ -344,12 +342,12 @@ async def test_post_failure_log_names_the_exception_type() -> None:
 def test_unavailable_log_carries_no_local_variable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Même défaut sur le second point de journalisation du module.
+    """The same defect on the module's second logging point.
 
-    ``get_activity_reporter()`` est appelé par le middleware de provenance à
-    chaque appel de tool ; tant que la résolution des settings échoue, elle
-    échoue à chaque fois. Les cadres traversés sont ceux de la construction des
-    settings — leurs variables locales portent la configuration, DSN compris.
+    ``get_activity_reporter()`` is called by the provenance middleware at every
+    tool call; as long as resolving the settings fails, it fails every time. The
+    frames traversed are those of the settings construction — their local variables
+    carry the configuration, DSN included.
     """
     from brain_v42.mcp import activity_reporter
 
@@ -357,10 +355,9 @@ def test_unavailable_log_carries_no_local_variable(
         dsn = "postgresql+asyncpg://brain:s3cret-p4ssw0rd@127.0.0.1:5433/brain"  # noqa: F841
         raise RuntimeError("settings unavailable")
 
-    # Remise à zéro explicite du global : un émetteur laissé par un test
-    # précédent court-circuiterait la construction, ``get_settings`` ne serait
-    # jamais appelé, et l'assertion « pas de DSN dans le journal » passerait au
-    # vert sur un journal vide.
+    # Explicit reset of the global: an emitter left behind by a previous test
+    # would short-circuit the construction, ``get_settings`` would never be called,
+    # and the assertion "no DSN in the log" would go green on an empty log.
     activity_reporter.set_activity_reporter(None)
     monkeypatch.setattr(activity_reporter, "get_settings", _boom)
     buffer = io.StringIO()
@@ -377,24 +374,24 @@ def test_unavailable_log_carries_no_local_variable(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Un REFUS du récepteur n'est pas un échec de transport. ``httpx`` ne lève pas
-# sur 4xx/5xx : sans lecture explicite du statut, 404, 403, 413, 415, 400 et 503
-# reviennent tous par le chemin nominal, et la perte n'est ni comptée ni
-# journalisée. Le cas mesuré : ``METRICS_HOST`` non-loopback — valeur que la
-# configuration autorise — n'enregistre pas la route ``/v1/client-activity``,
-# donc chaque POST reçoit 404 et la moitié « brain » du panneau reste vide pour
-# toujours pendant que toute la chaîne MCP se déclare saine.
+# A receiver REFUSAL is not a transport failure. ``httpx`` does not raise on
+# 4xx/5xx: without an explicit status read, 404, 403, 413, 415, 400 and 503 all
+# come back through the nominal path, and the loss is neither counted nor logged.
+# The measured case: a non-loopback ``METRICS_HOST`` — a value the configuration
+# allows — does not register the ``/v1/client-activity`` route, so every POST
+# receives a 404 and the dashboard's "brain" half stays empty forever while the
+# whole MCP chain declares itself healthy.
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_route_absent_404_is_counted_apart_from_local_backpressure() -> None:
-    """Le mode de perte dominant au rollout doit avoir son propre compteur.
+    """The dominant loss mode at rollout must have its own counter.
 
-    ``dropped`` ne compte que la contre-pression LOCALE (créneaux pris). Le
-    confondre avec le refus rendrait « aucun appel » et « toutes les
-    observations refusées » indiscernables — exactement la confusion que la
-    doctrine du dépôt interdit, déplacée dans l'émetteur.
+    ``dropped`` only counts LOCAL back-pressure (slots taken). Conflating it with
+    refusal would make "no call at all" and "every observation refused"
+    indistinguishable — exactly the confusion the repository's doctrine forbids,
+    moved into the emitter.
     """
     buffer = io.StringIO()
 
@@ -408,7 +405,7 @@ async def test_route_absent_404_is_counted_apart_from_local_backpressure() -> No
 
 @pytest.mark.asyncio
 async def test_receiver_saturation_503_is_counted_and_logged() -> None:
-    """Un récepteur saturé refuse aussi par le chemin nominal, pas par le ``except``."""
+    """A saturated receiver also refuses through the nominal path, not the ``except``."""
     buffer = io.StringIO()
 
     reporter, log = await _one_answered_post(buffer, 503, "receiver saturated")
@@ -421,12 +418,11 @@ async def test_receiver_saturation_503_is_counted_and_logged() -> None:
 
 @pytest.mark.asyncio
 async def test_accepted_200_counts_nothing_and_stays_silent() -> None:
-    """Contrôle positif des deux tests précédents.
+    """Positive control for the two previous tests.
 
-    Sans lui, « le compteur a bougé » passerait au vert pour un compteur qui
-    s'incrémente à chaque POST, et « le refus est journalisé » pour un émetteur
-    qui journalise toutes ses émissions — sur le chemin chaud de TOUT appel de
-    tool.
+    Without it, "the counter moved" would go green for a counter incrementing at
+    every POST, and "the refusal is logged" for an emitter that logs all of its
+    emissions — on the hot path of EVERY tool call.
     """
     buffer = io.StringIO()
 
@@ -440,11 +436,11 @@ async def test_accepted_200_counts_nothing_and_stays_silent() -> None:
 
 @pytest.mark.asyncio
 async def test_refusal_log_carries_neither_body_nor_identifier() -> None:
-    """Le statut seul. Le corps du refus est une entrée non maîtrisée.
+    """The status alone. The refusal's body is an untrusted input.
 
-    Même raison qu'au correctif qui a supprimé ``exc_info`` : le journal part
-    dans journald à chaque appel de tool. Un récepteur peut renvoyer la requête
-    en écho — UUID de session compris — et beaucoup de proxys le font.
+    Same reason as in the fix that removed ``exc_info``: the log goes into journald
+    at every tool call. A receiver may echo the request back — session UUID
+    included — and many proxies do.
     """
     buffer = io.StringIO()
     echoed = f'{{"error": "no route", "echo": "SECRET-BODY-MARKER-{FAKE_UUID}"}}'
@@ -463,7 +459,7 @@ FAKE_TRANSPORT = "0f9d2c1b3a4e5f60718293a4b5c6d7e8"
 
 
 class TestTransportOnTheWire:
-    """L'émetteur porte le transport, et l'omet quand il n'y en a pas."""
+    """The emitter carries the transport, and omits it when there is none."""
 
     @staticmethod
     async def _captured_body(**kwargs: Any) -> dict[str, Any]:
@@ -482,13 +478,13 @@ class TestTransportOnTheWire:
 
     @pytest.mark.asyncio
     async def test_transport_key_absent_when_none(self) -> None:
-        """Absent, jamais ``null`` : le décodeur distingue « non déclaré » de « vide »."""
+        """Absent, never ``null``: the decoder distinguishes "not declared" from "empty"."""
         body = await self._captured_body(actor="red-lab", session_id=None, transport=None)
         assert "transport" not in body
 
     @pytest.mark.asyncio
     async def test_transport_defaults_to_absent(self) -> None:
-        """Les appelants existants (2 arguments) restent valides et n'émettent rien."""
+        """The existing callers (2 arguments) stay valid and emit nothing."""
         body = await self._captured_body(actor="red-lab", session_id=None)
         assert "transport" not in body
 
@@ -503,22 +499,22 @@ class TestTransportOnTheWire:
 
 @pytest.mark.asyncio
 async def test_local_backpressure_warns_once_then_stays_silent() -> None:
-    """La contre-pression locale n'était comptée par PERSONNE.
+    """Local back-pressure was counted by NOBODY.
 
-    `dropped` s'incrémentait et `report()` rendait la main, sans une ligne.
-    Mesuré : au-delà de 8 appels concurrents, N-8 observations disparaissent
-    — 12 appels → 4 perdues, 20 → 12. Le panneau sous-compte donc précisément
-    sur les pics qu'il existe pour montrer, et rien ne le dit.
+    `dropped` was incremented and `report()` returned, without a single line.
+    Measured: beyond 8 concurrent calls, N-8 observations disappear — 12 calls → 4
+    lost, 20 → 12. The dashboard therefore under-counts precisely on the peaks it
+    exists to show, and nothing says so.
 
-    UNE seule ligne, à la PREMIÈRE perte. C'est le chemin chaud de TOUT appel
-    de tool : une ligne par perte transformerait une rafale en tempête de
-    journal, et s'apprendrait à être sautée.
+    ONE single line, at the FIRST loss. This is the hot path of EVERY tool call:
+    one line per loss would turn a burst into a log storm, and would teach people
+    to skip it.
 
-    Le déclencheur a changé avec le correctif de ``1c40c36a`` : répéter le MÊME
-    acteur ne perd plus rien, c'est coalescé. La perte résiduelle vit désormais
-    au-delà de la borne du tampon, donc on la provoque avec des acteurs TOUS
-    DISTINCTS. L'assertion, elle, est inchangée — c'est l'escalade qui est
-    protégée ici, pas la façon de la déclencher.
+    The trigger changed with ``1c40c36a``'s fix: repeating the SAME actor no longer
+    loses anything, it is coalesced. The residual loss now lives beyond the
+    buffer's bound, so we provoke it with actors that are ALL DISTINCT. The
+    assertion itself is unchanged — it is the escalation that is protected here,
+    not the way to trigger it.
     """
     reporter = ActivityReporter(url="http://127.0.0.1:9200/v1/client-activity", max_in_flight=1)
     release = asyncio.Event()
@@ -531,9 +527,9 @@ async def test_local_backpressure_warns_once_then_stays_silent() -> None:
         with capture_logs() as logs:
             reporter.report("filler-000", None)
             await asyncio.sleep(0)
-            for i in range(_MAX_BUFFERED):  # sature le tampon, sans perte
+            for i in range(_MAX_BUFFERED):  # saturates the buffer, with no loss
                 reporter.report(f"filler-{i:03d}", None)
-            for i in range(10):  # au-delà : dix pertes, acteurs tous distincts
+            for i in range(10):  # beyond: ten losses, all distinct actors
                 reporter.report(f"overflow-{i:03d}", None)
         release.set()
         await reporter.drain()
@@ -549,10 +545,10 @@ async def test_local_backpressure_warns_once_then_stays_silent() -> None:
 
 @pytest.mark.asyncio
 async def test_a_repeated_refusal_warns_once_per_distinct_status() -> None:
-    """Le cas mesuré est PERMANENT : un 404 par appel de tool, pour toujours.
+    """The measured case is PERMANENT: one 404 per tool call, forever.
 
-    Journaliser chaque refus au même niveau produirait une ligne par appel de
-    tool jusqu'à la fin des temps. La signature — le statut — parle une fois.
+    Logging every refusal at the same level would produce one line per tool call
+    until the end of time. The signature — the status — speaks once.
     """
     reporter = ActivityReporter(url="http://127.0.0.1:9200/v1/client-activity")
 
@@ -571,7 +567,7 @@ async def test_a_repeated_refusal_warns_once_per_distinct_status() -> None:
 
 @pytest.mark.asyncio
 async def test_a_run_that_lost_nothing_closes_silently() -> None:
-    """LE CAS NOMINAL EST MUET. Rien perdu, rien dit — pas même un « 0 »."""
+    """THE NOMINAL CASE IS MUTE. Nothing lost, nothing said — not even a "0"."""
     reporter = ActivityReporter(url="http://127.0.0.1:9200/v1/client-activity")
 
     with patch.object(reporter, "_client") as client:
@@ -587,7 +583,7 @@ async def test_a_run_that_lost_nothing_closes_silently() -> None:
 
 
 def test_a_decade_is_the_first_the_tenth_the_hundredth_and_nothing_between() -> None:
-    """L'escalade doit être exacte : `log10` raterait ou doublerait des bornes."""
+    """The escalation must be exact: `log10` would miss or double some bounds."""
     shouted = [n for n in range(1, 1001) if _is_a_decade(n)]
     assert shouted == [1, 10, 100, 1000]
     assert not _is_a_decade(0)
@@ -595,17 +591,17 @@ def test_a_decade_is_the_first_the_tenth_the_hundredth_and_nothing_between() -> 
 
 @pytest.mark.asyncio
 async def test_the_magnitude_of_the_loss_stays_visible_without_a_line_per_loss() -> None:
-    """Ni une ligne par perte, ni une seule ligne pour toujours.
+    """Neither one line per loss, nor a single line forever.
 
-    `close()` n'est câblé NULLE PART en production — « le client meurt avec
-    le processus » — donc un décompte à la fermeture ne serait jamais rendu.
-    L'ordre de grandeur doit voyager dans les lignes elles-mêmes.
+    `close()` is wired NOWHERE in production — "the client dies with the process" —
+    so a tally at close time would never be returned. The order of magnitude must
+    travel in the lines themselves.
 
-    Le déclencheur a changé avec le correctif de ``1c40c36a`` : répéter le MÊME
-    acteur ne perd plus rien, c'est coalescé. La perte résiduelle vit désormais
-    au-delà de la borne du tampon, donc on la provoque avec des acteurs TOUS
-    DISTINCTS. L'assertion, elle, est inchangée — c'est l'escalade qui est
-    protégée ici, pas la façon de la déclencher.
+    The trigger changed with ``1c40c36a``'s fix: repeating the SAME actor no longer
+    loses anything, it is coalesced. The residual loss now lives beyond the
+    buffer's bound, so we provoke it with actors that are ALL DISTINCT. The
+    assertion itself is unchanged — it is the escalation that is protected here,
+    not the way to trigger it.
     """
     reporter = ActivityReporter(url="http://127.0.0.1:9200/v1/client-activity", max_in_flight=1)
     release = asyncio.Event()
@@ -617,10 +613,10 @@ async def test_the_magnitude_of_the_loss_stays_visible_without_a_line_per_loss()
         client.post = AsyncMock(side_effect=slow_post)
         reporter.report("filler-000", None)
         await asyncio.sleep(0)
-        for i in range(_MAX_BUFFERED):  # sature le tampon, sans perte
+        for i in range(_MAX_BUFFERED):  # saturates the buffer, with no loss
             reporter.report(f"filler-{i:03d}", None)
         with capture_logs() as logs:
-            for i in range(100):  # au-delà : cent pertes, acteurs tous distincts
+            for i in range(100):  # beyond: a hundred losses, all distinct actors
                 reporter.report(f"overflow-{i:03d}", None)
         release.set()
         await reporter.drain()

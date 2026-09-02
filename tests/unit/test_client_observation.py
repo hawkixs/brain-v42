@@ -1,4 +1,4 @@
-"""Décodage borné des observations poussées par le processus MCP."""
+"""Bounded decoding of the observations pushed by the MCP process."""
 
 from __future__ import annotations
 
@@ -25,12 +25,12 @@ def _payload(items: list[dict[str, object]]) -> bytes:
 
 
 def _payload_of_exactly(size: int) -> bytes:
-    """Une charge valide et minimale dont la longueur vaut EXACTEMENT ``size``.
+    """A valid, minimal payload whose length is EXACTLY ``size``.
 
-    Une seule observation, rembourrée par un acteur long : la borne d'octets
-    est ainsi la seule des trois que la charge puisse franchir. Rembourrer en
-    multipliant les observations ferait lever la borne de cardinalité d'abord,
-    et le test passerait au vert en épinglant la mauvaise garde.
+    A single observation, padded with a long actor: the byte bound is thus the only
+    one of the three the payload can cross. Padding by multiplying observations
+    would make the cardinality bound raise first, and the test would go green
+    pinning the wrong guard.
     """
     padding = size - len(_payload([{"actor": "", "calls": 1}]))
     payload = _payload([{"actor": "a" * padding, "calls": 1}])
@@ -58,8 +58,8 @@ class TestDecodeObservations:
         assert observation.actor == "red-lab"
 
     def test_non_uuid_session_is_dropped_not_fatal(self) -> None:
-        # Une session illisible dégrade la ligne en « non attribué ».
-        # Rejeter tout le lot punirait les observations valides du même envoi.
+        # An unreadable session degrades the row into "unattributed". Rejecting the
+        # whole batch would punish the valid observations of the same send.
         observation = decode_observations(
             _payload([{"actor": "codex", "session": "nope", "calls": 1}])
         )[0]
@@ -83,10 +83,10 @@ class TestDecodeObservations:
             decode_observations(_payload(items))
 
     def test_calls_at_the_cap_are_accepted(self) -> None:
-        """Contrôle positif de la borne suivante, et garde d'un décalage d'un.
+        """Positive control for the next bound, and an off-by-one guard.
 
-        Sans lui, un plafond descendu à zéro passerait le test de dépassement
-        sans que rien ne bronche.
+        Without it, a cap lowered to zero would pass the overflow test without
+        anything flinching.
         """
         observation = decode_observations(
             _payload([{"actor": "probe", "calls": MAX_CALLS_PER_OBSERVATION}])
@@ -94,14 +94,14 @@ class TestDecodeObservations:
         assert observation.calls == MAX_CALLS_PER_OBSERVATION
 
     def test_calls_over_the_cap_raises_limit(self) -> None:
-        """``calls`` est un entier déclaré par l'appelant, donc non borné.
+        """``calls`` is an integer declared by the caller, hence unbounded.
 
-        ``record_observations`` l'ADDITIONNE au compteur courant. Un processus
-        local bogué, ou un curl de diagnostic postant
-        ``{"observations":[{"actor":"probe","calls":10**18}]}``, met donc
-        ``brain_calls`` à 10^18 dans ``/api/cockpit`` — et le lot suivant
-        s'ajoute par-dessus, jusqu'à l'expiration du TTL. Rien d'autre en aval
-        ne relit cette valeur : la borne du décodeur est la seule.
+        ``record_observations`` ADDS it to the current counter. A buggy local
+        process, or a diagnostic curl posting
+        ``{"observations":[{"actor":"probe","calls":10**18}]}``, therefore sets
+        ``brain_calls`` to 10^18 in ``/api/cockpit`` — and the next batch adds on
+        top, until the TTL expires. Nothing else downstream reads this value back:
+        the decoder's bound is the only one.
         """
         with pytest.raises(CodexTelemetryLimitError):
             decode_observations(
@@ -109,22 +109,21 @@ class TestDecodeObservations:
             )
 
     def test_payload_at_the_byte_cap_is_accepted(self) -> None:
-        """Contrôle positif de la borne suivante : à la limite, on décode.
+        """Positive control for the next bound: at the limit, we decode.
 
-        Sans lui, « la charge surdimensionnée lève » passerait au vert pour
-        n'importe quelle raison — une charge malformée, un plafond à zéro.
+        Without it, "the oversized payload raises" would go green for any reason at
+        all — a malformed payload, a cap at zero.
         """
         observation = decode_observations(_payload_of_exactly(MAX_OBSERVATION_BYTES))[0]
         assert observation.calls == 1
 
     def test_payload_over_the_byte_cap_raises_limit(self) -> None:
-        """La borne d'octets appartient au DÉCODEUR, pas au seul récepteur HTTP.
+        """The byte bound belongs to the DECODER, not to the HTTP receiver alone.
 
-        Le récepteur borne déjà le corps qu'il lit, ce qui masque cette garde
-        de bout en bout. S'en remettre à lui laisse le module non borné pour
-        lui-même : le prochain appelant — un second récepteur, un script de
-        diagnostic, un test — hériterait d'un décodeur sans plafond. Elle est
-        donc éprouvée ici, au niveau du décodeur.
+        The receiver already bounds the body it reads, which masks this guard
+        end-to-end. Relying on it leaves the module unbounded on its own terms: the
+        next caller — a second receiver, a diagnostic script, a test — would inherit
+        a capless decoder. It is therefore exercised here, at the decoder level.
         """
         with pytest.raises(CodexTelemetryLimitError):
             decode_observations(_payload_of_exactly(MAX_OBSERVATION_BYTES + 1))
@@ -134,12 +133,11 @@ FAKE_TRANSPORT = "0f9d2c1b3a4e5f60718293a4b5c6d7e8"
 
 
 class TestTransportField:
-    """``transport`` traverse le fil sans jamais se confondre avec ``session``.
+    """``transport`` crosses the wire without ever being confused with ``session``.
 
-    Les deux champs vivent dans des espaces de clés disjoints : ``session``
-    promet une jointure avec l'OTLP, ``transport`` identifie une connexion et
-    n'en promet aucune. Les mélanger produirait des lignes qui annoncent une
-    jointure qu'elles ne feront jamais.
+    The two fields live in disjoint key spaces: ``session`` promises a join with
+    the OTLP, ``transport`` identifies a connection and promises none. Mixing them
+    would produce rows announcing a join they will never make.
     """
 
     def test_transport_is_decoded(self) -> None:
@@ -153,10 +151,10 @@ class TestTransportField:
         assert obs.transport is None
 
     def test_malformed_transport_is_dropped_not_raised(self) -> None:
-        """Une valeur illisible vaut « pas de transport », jamais un refus du lot.
+        """An unreadable value means "no transport", never a refusal of the batch.
 
-        Le lot peut porter jusqu'à 64 observations : faire lever une seule
-        valeur douteuse jetterait 63 mesures honnêtes avec elle.
+        The batch can carry up to 64 observations: making a single dubious value
+        raise would throw away 63 honest measurements with it.
         """
         for bad in ("not-hex", FAKE_TRANSPORT.upper(), 12345, None, "a" * 4096):
             (obs,) = decode_observations(
@@ -181,7 +179,7 @@ class TestTransportField:
         assert obs.transport == FAKE_TRANSPORT
 
     def test_transport_in_the_session_field_is_refused(self) -> None:
-        """La forme hex32 n'est pas une session : la poser là ne doit rien joindre."""
+        """The hex32 shape is not a session: putting it there must join nothing."""
         (obs,) = decode_observations(
             _payload([{"actor": "red-lab", "calls": 1, "session": FAKE_TRANSPORT}])
         )

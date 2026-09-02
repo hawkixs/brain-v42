@@ -1,26 +1,25 @@
-"""Une rafale d'appels de tool ne doit plus disparaître (`1c40c36a`).
+"""A burst of tool calls must no longer disappear (`1c40c36a`).
 
-MESURÉ AVANT correctif, le 2026-08-23, avec `max_in_flight=8` :
+MEASURED BEFORE the fix, on 2026-08-23, with `max_in_flight=8`:
 
-    n=  8  émis=8  perdus= 0   (  0,0 %)
-    n=  9  émis=8  perdus= 1   ( 11,1 %)
-    n= 20  émis=8  perdus=12   ( 60,0 %)   <- le chiffre du briefing, confirmé
-    n= 50  émis=8  perdus=42   ( 84,0 %)
+    n=  8  emitted=8  lost= 0   (  0.0 %)
+    n=  9  emitted=8  lost= 1   ( 11.1 %)
+    n= 20  emitted=8  lost=12   ( 60.0 %)   <- the briefing's figure, confirmed
+    n= 50  emitted=8  lost=42   ( 84.0 %)
 
-Définition de la perte : ``report()`` est SYNCHRONE et les tâches qu'il crée ne
-tournent qu'au tour de boucle suivant. Une rafale émise dans le MÊME tour remplit
-``_pending`` jusqu'à ``max_in_flight`` et tout le reste était jeté.
+Definition of the loss: ``report()`` is SYNCHRONOUS and the tasks it creates only
+run on the next loop iteration. A burst emitted in the SAME iteration fills
+``_pending`` up to ``max_in_flight`` and everything else was discarded.
 
-Le correctif ne relève pas la borne — il COALESCE. Le format de fil accepte déjà
-un lot (``MAX_OBSERVATIONS = 64``) et un compteur (``MAX_CALLS_PER_OBSERVATION =
-1 000 000``) ; ``calls=1`` était en dur. Une rafale du même acteur s'effondre donc
-en UNE observation portant ``calls=N``.
+The fix does not raise the bound — it COALESCES. The wire format already accepts a
+batch (``MAX_OBSERVATIONS = 64``) and a counter (``MAX_CALLS_PER_OBSERVATION =
+1 000 000``); ``calls=1`` was hard-coded. A burst from the same actor therefore
+collapses into ONE observation carrying ``calls=N``.
 
-Ce que ces tests verrouillent en plus du correctif : la perte RÉSIDUELLE au-delà
-du tampon reste comptée (sinon on remplace une perte invisible par une perte
-invisible plus rapide), et le lot ne peut pas franchir la borne d'octets du
-récepteur — sans quoi on échangerait la perte d'UNE observation contre un 413 qui
-emporte le lot ENTIER.
+What these tests lock in beyond the fix: the RESIDUAL loss beyond the buffer stays
+counted (otherwise an invisible loss is replaced by a faster invisible loss), and
+the batch cannot cross the receiver's byte bound — without which the loss of ONE
+observation would be traded for a 413 taking away the WHOLE batch.
 """
 
 from __future__ import annotations
@@ -64,7 +63,7 @@ def _total_calls(post: AsyncMock) -> int:
 
 
 async def _burst(reporter: ActivityReporter, n: int, *, actor: Any = None) -> AsyncMock:
-    """Émet n observations dans le MÊME tour de boucle, puis draine."""
+    """Emit n observations in the SAME loop iteration, then drain."""
     with patch.object(reporter, "_client") as client:
         client.post = AsyncMock()
         for i in range(n):
@@ -75,7 +74,7 @@ async def _burst(reporter: ActivityReporter, n: int, *, actor: Any = None) -> As
 
 @pytest.mark.asyncio
 async def test_a_burst_of_twenty_no_longer_loses_twelve_observations() -> None:
-    """Le chiffre du ticket, retourné : 12 perdues sur 20 devient 0 perdue sur 20."""
+    """The ticket's figure, turned around: 12 lost out of 20 becomes 0 lost out of 20."""
     reporter = _reporter()
 
     post = await _burst(reporter, 20, actor="brain-v42")
@@ -87,7 +86,7 @@ async def test_a_burst_of_twenty_no_longer_loses_twelve_observations() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("n", [9, 20, 50, 200])
 async def test_no_burst_size_loses_a_single_call(n: int) -> None:
-    """La borne ne doit pas seulement reculer : elle ne doit plus perdre du tout."""
+    """The bound must not merely move back: it must stop losing anything at all."""
     reporter = _reporter()
 
     post = await _burst(reporter, n, actor="brain-v42")
@@ -98,7 +97,7 @@ async def test_no_burst_size_loses_a_single_call(n: int) -> None:
 
 @pytest.mark.asyncio
 async def test_a_burst_from_one_actor_collapses_into_a_single_observation() -> None:
-    """C'est le levier : `calls` était en dur à 1 alors que le fil accepte un compteur."""
+    """This is the lever: `calls` was hard-coded to 1 while the wire accepts a counter."""
     reporter = _reporter()
 
     post = await _burst(reporter, 40, actor="brain-v42")
@@ -111,7 +110,7 @@ async def test_a_burst_from_one_actor_collapses_into_a_single_observation() -> N
 
 @pytest.mark.asyncio
 async def test_distinct_actors_are_never_merged_together() -> None:
-    """La coalescence agrège par identité, jamais à travers deux acteurs."""
+    """Coalescing aggregates by identity, never across two actors."""
     reporter = _reporter()
 
     post = await _burst(reporter, 30, actor=lambda i: f"agent-{i % 3}")
@@ -124,7 +123,7 @@ async def test_distinct_actors_are_never_merged_together() -> None:
 
 @pytest.mark.asyncio
 async def test_nothing_is_coalesced_below_the_in_flight_limit() -> None:
-    """TÉMOIN NÉGATIF : sans lui, un correctif qui agrège TOUT passerait les tests."""
+    """NEGATIVE WITNESS: without it, a fix aggregating EVERYTHING would pass the tests."""
     reporter = _reporter()
 
     post = await _burst(reporter, 8, actor="brain-v42")
@@ -136,7 +135,7 @@ async def test_nothing_is_coalesced_below_the_in_flight_limit() -> None:
 
 @pytest.mark.asyncio
 async def test_the_residual_loss_beyond_the_buffer_is_counted_and_spoken() -> None:
-    """Une perte qui subsiste doit être COMPTÉE — sinon on l'a juste rendue plus rapide."""
+    """A loss that remains must be COUNTED — otherwise it has only been made faster."""
     reporter = _reporter(max_in_flight=1)
     release = asyncio.Event()
     n = MAX_OBSERVATIONS * 3
@@ -148,7 +147,7 @@ async def test_the_residual_loss_beyond_the_buffer_is_counted_and_spoken() -> No
         client.post = AsyncMock(side_effect=slow_post)
         reporter.report("agent-000", None)
         await asyncio.sleep(0)
-        for i in range(n):  # acteurs TOUS distincts : impossible de coalescer
+        for i in range(n):  # ALL distinct actors: impossible to coalesce
             reporter.report(f"agent-{i:03d}", None)
         assert reporter.dropped > 0, "le tampon n'a pas de borne : il croît sans fin"
         release.set()
@@ -161,8 +160,8 @@ async def test_the_residual_loss_beyond_the_buffer_is_counted_and_spoken() -> No
 
 @pytest.mark.asyncio
 async def test_a_batch_never_exceeds_the_receiver_byte_budget() -> None:
-    """Sans cette borne, on échangerait la perte d'UNE observation contre un 413
-    qui emporte le lot ENTIER — la même famille de problème, en pire."""
+    """Without this bound, the loss of ONE observation would be traded for a 413
+    taking away the WHOLE batch — the same family of problem, but worse."""
     reporter = _reporter(max_in_flight=1)
     release = asyncio.Event()
 
@@ -174,9 +173,9 @@ async def test_a_batch_never_exceeds_the_receiver_byte_budget() -> None:
         reporter.report("x" * 400, None)
         await asyncio.sleep(0)
         for i in range(MAX_OBSERVATIONS * 2):
-            # 400 caractères : MESURÉ nécessaire. À 200, la borne de COMPTE mordait
-            # la première et la borne d'OCTETS restait du code jamais emprunté —
-            # la mutation de contrôle l'a montrée VERTE une fois retirée.
+            # 400 characters: MEASURED as necessary. At 200, the COUNT bound bit
+            # first and the BYTE bound stayed code never taken — the control
+            # mutation showed it GREEN once removed.
             reporter.report(f"{i:03d}" + "y" * 400, None)
         release.set()
         await reporter.drain()
@@ -191,7 +190,7 @@ async def test_a_batch_never_exceeds_the_receiver_byte_budget() -> None:
 
 @pytest.mark.asyncio
 async def test_report_never_raises_even_if_the_coalescing_machinery_explodes() -> None:
-    """L'émetteur ne casse JAMAIS l'appel qu'il observe — y compris le code neuf."""
+    """The emitter NEVER breaks the call it observes — the new code included."""
     reporter = _reporter(max_in_flight=1)
 
     def _explode(*_a: Any, **_k: Any) -> None:
@@ -211,12 +210,12 @@ async def test_report_never_raises_even_if_the_coalescing_machinery_explodes() -
 
 @pytest.mark.asyncio
 async def test_the_buffer_flushes_on_its_own_when_a_slot_frees() -> None:
-    """Sans ce rappel, la coalescence différerait sans borne au lieu de perdre.
+    """Without this callback, coalescing would defer without bound instead of losing.
 
-    `drain()` n'est appelé ni en production ni par un client : `close()` n'est
-    câblé nulle part. Si seul `drain()` vidait le tampon, une rafale suivie d'un
-    silence garderait ses observations en mémoire jusqu'au prochain appel de
-    tool — remplaçant une perte visible par une latence invisible.
+    `drain()` is called neither in production nor by a client: `close()` is wired
+    nowhere. If only `drain()` emptied the buffer, a burst followed by silence would
+    keep its observations in memory until the next tool call — replacing a visible
+    loss with an invisible latency.
     """
     reporter = _reporter(max_in_flight=2)
 
@@ -224,7 +223,7 @@ async def test_the_buffer_flushes_on_its_own_when_a_slot_frees() -> None:
         client.post = AsyncMock()
         for _ in range(20):
             reporter.report("brain-v42", None)
-        # AUCUN drain() : on laisse seulement la boucle tourner.
+        # NO drain() at all: we only let the loop run.
         for _ in range(12):
             await asyncio.sleep(0)
         assert not reporter._buffer, "le tampon ne se vide que sur drain()"
@@ -232,25 +231,24 @@ async def test_the_buffer_flushes_on_its_own_when_a_slot_frees() -> None:
 
 
 def test_the_count_bound_alone_keeps_a_batch_under_the_receiver_limit() -> None:
-    """MESURÉ : en entrée normalisée, la borne d'OCTETS ne peut jamais mordre.
+    """MEASURED: on normalised input, the BYTE bound can never bite.
 
-    Un acteur est plafonné à ``MAX_ACTOR_LENGTH`` (64), une session est un UUID
-    (36) et un transport une chaîne hexadécimale de longueur fixe. Le pire lot
-    possible pèse donc bien moins que la borne du récepteur, et c'est la borne de
-    COMPTE qui borne réellement le lot.
+    An actor is capped at ``MAX_ACTOR_LENGTH`` (64), a session is a UUID (36) and a
+    transport a fixed-length hex string. The worst possible batch therefore weighs
+    far less than the receiver's bound, and it is the COUNT bound that really bounds
+    the batch.
 
-    Ce test est la vraie garde : il rougit si quelqu'un relève
-    ``MAX_ACTOR_LENGTH`` ou ``MAX_OBSERVATIONS`` sans revérifier que le lot tient
-    encore. La borne d'octets de l'émetteur reste, mais comme défense pour un
-    appelant futur qui n'appellerait PAS ``normalize_agent`` — pas comme le
-    chemin de production.
+    This test is the real guard: it reddens if someone raises ``MAX_ACTOR_LENGTH``
+    or ``MAX_OBSERVATIONS`` without re-checking that the batch still fits. The
+    emitter's byte bound stays, but as a defence for a future caller that would NOT
+    call ``normalize_agent`` — not as the production path.
     """
     worst = _observation(
         ("A" * MAX_ACTOR_LENGTH, "00000000-0000-4000-8000-000000000000", "ab" * 16), 1
     )
     cost = len(json.dumps(worst).encode()) + 1
     envelope = len(json.dumps({"observations": []}).encode())
-    # `_MAX_BUFFERED` observations du tampon, PLUS celle qui déclenche l'émission.
+    # `_MAX_BUFFERED` buffered observations, PLUS the one that triggers the flush.
     worst_batch = envelope + cost * (_MAX_BUFFERED + 1)
 
     assert worst_batch <= MAX_OBSERVATION_BYTES, (
