@@ -289,6 +289,6 @@ class PgIndexedPlanRepo:
             WHERE {where}
             ORDER BY updated_at DESC
             LIMIT :limit OFFSET :offset
-        """)  # noqa: S608  # nosec B608 - fragment = `where`, join des seuls littéraux ajoutés à `clauses` 12 lignes plus haut dans cette même fonction ; project_key/plan_type/status/limit/offset n'atteignent le SQL que par les binds :project_key/:plan_type/:status/:limit/:offset ; exception revue le 2026-08-16, à réexaminer avant le 2026-09-30
+        """)  # noqa: S608  # nosec B608 - fragment = `where`, a join of the only literals appended to `clauses` 12 lines above in this same function; project_key/plan_type/status/limit/offset reach the SQL only through the :project_key/:plan_type/:status/:limit/:offset binds; exception reviewed on 2026-08-16, to be re-examined before 2026-09-30
         rows = (await self._session.execute(sql, params)).mappings().all()
         return [IndexedPlan(**dict(row)) for row in rows]

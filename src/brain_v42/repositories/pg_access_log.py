@@ -95,15 +95,14 @@ class PgAccessLogRepo:
             entry["count"] += row["cnt"]
             if is_human_actor(row["actor"]):
                 entry["count_human"] += row["cnt"]
-                # §5.2 — le pendant humain du `max_accessed`. Sans lui, le
-                # terme de récence reste piloté par les lectures MACHINE :
-                # 1 522 learnings dans ce cas au 2026-08-22, 2 060 sur les six
-                # tables. Son poids est PAR TYPE — 0,3 sur cinq types, 0,2 pour
-                # `adr` — et il n'est JAMAIS dominé par l'âge (`w_access >=
-                # w_age` sur les six) : « le plus lourd après l'âge » le
-                # sous-estimait.
-                # `None` veut dire « aucune lecture humaine dans ce lot », pas
-                # « jamais lu » — le flusher ne doit alors rien écraser.
+                # §5.2 — the human counterpart of `max_accessed`. Without it,
+                # the recency term stays driven by MACHINE reads: 1,522
+                # learnings in that state on 2026-08-22, 2,060 across the six
+                # tables. Its weight is PER TYPE — 0.3 on five types, 0.2 for
+                # `adr` — and it is NEVER dominated by age (`w_access >= w_age`
+                # on all six): "the heaviest after age" understated it.
+                # `None` means "no human read in this batch", not "never read"
+                # — the flusher must then overwrite nothing.
                 if (
                     entry["max_accessed_human"] is None
                     or row["max_accessed"] > entry["max_accessed_human"]
