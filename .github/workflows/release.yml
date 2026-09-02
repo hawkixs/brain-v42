@@ -64,17 +64,17 @@ jobs:
       # Rewriting it here in YAML would give two truths that drift without
       # saying so. Measured before this contract: a wheel of 192 entries with
       # ZERO alembic, hence a package unable to migrate its own database.
-      - name: Vérifier que la wheel porte les migrations
+      - name: Verify the wheel ships the migrations
         run: .venv/bin/pytest tests/unit/test_wheel_ships_migrations.py -v --tb=short
 
-      - name: Construire la wheel et le sdist
+      - name: Build the wheel and the sdist
         run: uv build --out-dir dist
 
       # One shell: the guard names the artifacts, the publication attaches them.
       # Without it, a v9.9.9 tag would publish a 0.2.0 wheel and the release
       # would lie about what /health will announce. `bash -e` stops the step
       # before `gh`.
-      - name: Publier la release avec ses deux artefacts
+      - name: Publish the release with both artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
