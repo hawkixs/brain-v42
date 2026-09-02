@@ -1,38 +1,37 @@
-"""Auto-ouverture d'une session traçante `agent`, une par connexion.
+"""Auto-opening of an `agent` tracer session, one per connection.
 
-Forme **signée** (`ae0d0475`, ADR §0ter) et ses quatre propriétés, dans l'ordre
-où elles ont été arbitrées :
+The **signed** shape (`ae0d0475`, ADR §0ter) and its four properties, in the
+order they were settled:
 
-1. **Synchrone et AVANT l'outil.** Le feu-et-oubli n'attribue rien : la capture
-   borne les artefacts par ``created_at >= started_at``, donc la session doit
-   exister au moment où l'appel crée les siens. C'est la différence avec
-   l'émetteur d'activité client (`1c40c36a`), qui n'observe rien qu'il doive
-   précéder.
-2. **Fail-open : l'échec n'est JAMAIS propagé.** Fail-open n'est pas
-   asynchrone — on attend l'ouverture, et on laisse passer l'appel si elle
-   rate. Le prix est écrit une fois pour toutes dans `SPEC-M-G` §6 : les
-   artefacts créés avant une ouverture ratée tombent hors de la fenêtre de
-   capture, et B5 redevient mordante ponctuellement.
-3. **Mémoïsée par connexion.** La mémo est un CHEMIN RAPIDE, jamais l'autorité :
-   celle-ci est l'index UNIQUE PARTIEL ``WHERE status = 'open'`` de la 046, qui
-   rend la réouverture naturelle après une fermeture. Un cache qui trancherait
-   « déjà fait » sans la base mentirait dès la première auto-fermeture.
-4. **Idempotence par la garde de profondeur.** En profil `compact`,
-   ``on_call_tool`` tire deux fois par appel client (mesuré, commit 58329a84) :
-   c'est ``is_outermost_call()``, côté middleware, qui réserve l'ouverture au
-   niveau extérieur. La mémo ne peut pas jouer ce rôle — elle masquerait le
-   second tir au lieu de l'empêcher.
+1. **Synchronous and BEFORE the tool.** Fire-and-forget attributes nothing:
+   capture bounds artifacts by ``created_at >= started_at``, so the session must
+   exist at the moment the call creates its own. That is the difference with the
+   client activity emitter (`1c40c36a`), which observes nothing it must precede.
+2. **Fail-open: failure is NEVER propagated.** Fail-open is not asynchronous —
+   we wait for the opening, and let the call through if it fails. The price is
+   written once and for all in `SPEC-M-G` §6: artifacts created before a failed
+   opening fall outside the capture window, and B5 bites again occasionally.
+3. **Memoized per connection.** The memo is a FAST PATH, never the authority:
+   that is 046's PARTIAL UNIQUE index ``WHERE status = 'open'``, which makes
+   reopening natural after a closure. A cache deciding "already done" without
+   the database would lie from the first auto-closure onwards.
+4. **Idempotence through the depth guard.** Under the `compact` profile,
+   ``on_call_tool`` fires twice per client call (measured, commit 58329a84): it
+   is ``is_outermost_call()``, on the middleware side, that reserves the opening
+   for the outermost level. The memo cannot play that role — it would mask the
+   second firing instead of preventing it.
 
-**Rien du tout en stdio** (§0ter.2, signé). L'auto-ouverture n'existe qu'en
-HTTP, sur la clé ``(projet, connexion)``, parce que ``Mcp-Session-Id`` est le
-seul des trois identifiants que le client ne déclare pas : il est frappé côté
-serveur. Le repli sur ``(projet, acteur)`` a été explicitement ÉCARTÉ — il
-attribuerait sur du déclaratif, là où toute la valeur du modèle est d'attribuer
-sur le seul signal non falsifiable. Ici, l'absence d'identifiant de connexion
-n'est donc pas un cas dégradé à rattraper : c'est le contrat.
+**Nothing at all under stdio** (§0ter.2, signed). Auto-opening exists only over
+HTTP, on the ``(project, connection)`` key, because ``Mcp-Session-Id`` is the
+only one of the three identifiers the client does not declare: it is minted
+server-side. Falling back on ``(project, actor)`` was explicitly REJECTED — it
+would attribute on something declared, where the whole value of the model is
+attributing on the one non-falsifiable signal. Here, the absence of a connection
+identifier is therefore not a degraded case to compensate for: it is the
+contract.
 
-Précondition dure, héritée et non re-signée : ``mcp_http_stateless=False``. En
-mode sans état il n'y a pas d'identifiant de connexion, et cette clé tombe.
+Hard precondition, inherited and not re-signed: ``mcp_http_stateless=False``. In
+stateless mode there is no connection identifier, and this key falls away.
 """
 
 from __future__ import annotations
@@ -57,15 +56,15 @@ from brain_v42.provenance import (
 
 logger = structlog.get_logger(__name__)
 
-#: Largeur de ``brain_sessions.connection_id`` (046). Tronquer plutôt que
-#: laisser PG lever un 22001 : l'identifiant est frappé par le serveur en
-#: ``uuid4().hex`` (32 caractères), donc la troncature est hors d'atteinte en
-#: nominal — elle borne un transport hostile, pas le chemin nominal.
+#: Width of ``brain_sessions.connection_id`` (046). Truncate rather than let PG
+#: raise a 22001: the identifier is minted by the server as ``uuid4().hex`` (32
+#: characters), so truncation is out of reach nominally — it bounds a hostile
+#: transport, not the nominal path.
 MAX_CONNECTION_ID_LENGTH = 64
 
-#: Plafond de la mémo. Une connexion = une entrée ; sans borne, un processus
-#: long-vivant qui voit défiler des connexions ferait croître ce dict sans fin.
-#: Même raisonnement que ``_MAX_UNIDENTIFIED_TRACKED`` dans le middleware.
+#: Cap on the memo. One connection = one entry; without a bound, a long-lived
+#: process watching connections go by would grow this dict without end. Same
+#: reasoning as ``_MAX_UNIDENTIFIED_TRACKED`` in the middleware.
 DEFAULT_MAX_MEMOIZED_CONNECTIONS = 512
 
 _autoopener: SessionAutoOpener | None = None
@@ -73,17 +72,17 @@ _autoopener: SessionAutoOpener | None = None
 
 @dataclass(frozen=True, slots=True)
 class AutoOpenIdentity:
-    """Ce qu'une session auto-ouverte porte, et rien de plus.
+    """What an auto-opened session carries, and nothing more.
 
-    Quatre des cinq colonnes de la 046 voyagent ici et **pas** dans
-    ``BrainSession`` : FastMCP dérive le schéma de sortie des tools de ce
-    modèle-là, et les y faire entrer coûterait le budget de schéma que
+    Four of 046's five columns travel here and **not** in ``BrainSession``:
+    FastMCP derives the tools' output schema from that model, and letting them in
+    would cost the schema budget
     ``test_discovery_contract_keeps_tool_identity_inputs_and_schema_budget``
-    garantit. Seule ``nature`` est au contrat public.
+    guarantees. Only ``nature`` is in the public contract.
 
-    ``intent`` reste ``None`` : c'est le champ humain de triage des fantômes, et
-    ``NULL`` y veut dire « pas mesuré », jamais « vide ». Le serveur ne fabrique
-    pas de jugement (objection C9).
+    ``intent`` stays ``None``: it is the human field for triaging ghosts, and
+    ``NULL`` there means "not measured", never "empty". The server does not
+    manufacture judgement (objection C9).
     """
 
     project_key: str
@@ -93,23 +92,23 @@ class AutoOpenIdentity:
     intent: str | None = None
 
 
-#: Un ouvreur reçoit l'identité résolue et rend l'UUID de la session ouverte
-#: (neuve ou déjà ouverte pour cette connexion), ou ``None`` s'il n'y a rien à
-#: ouvrir — par exemple quand le projet n'a pas de contexte.
+#: An opener receives the resolved identity and returns the UUID of the opened
+#: session (fresh or already open for this connection), or ``None`` when there is
+#: nothing to open — for example when the project has no context.
 SessionOpener = Callable[[AutoOpenIdentity], Awaitable[UUID | None]]
 
-#: Un observateur date une session mémoïsée et rend « elle était encore ouverte ».
-#: Le booléen est ce qui rend la mémo survivante au balayage : ``False`` veut dire
-#: « fermée sous nos pieds », donc mémo à jeter, pas session à perdre.
+#: An observer stamps a memoized session and returns "it was still open". The
+#: boolean is what makes the memo survive the sweep: ``False`` means "closed from
+#: under us", so a memo to discard, not a session to lose.
 SessionObserver = Callable[[UUID], Awaitable[bool]]
 
 
 def resolve_auto_open_identity() -> tuple[AutoOpenIdentity | None, str]:
-    """Résoudre l'identité de la connexion courante, ou dire pourquoi non.
+    """Resolve the current connection's identity, or say why not.
 
-    Rend ``(identité, "")`` ou ``(None, raison)``. Les trois raisons sont
-    disjointes et comptées séparément : les confondre rendrait « stdio » et
-    « client anonyme » indiscernables dans le seul instrument qu'on aura.
+    Returns ``(identity, "")`` or ``(None, reason)``. The three reasons are
+    disjoint and counted separately: conflating them would make "stdio" and
+    "anonymous client" indistinguishable in the only instrument we will have.
     """
     connection = (get_current_transport() or "").strip()
     if not connection:
@@ -122,9 +121,9 @@ def resolve_auto_open_identity() -> tuple[AutoOpenIdentity | None, str]:
     try:
         project_key = canonicalize_project_key(actor)
     except (TypeError, ValueError):
-        # `strict=True` VOULU : le chemin d'écriture. `strict=False` laisserait
-        # passer une clé malformée, qui créerait un projet fantôme invisible du
-        # briefing scopé (learning 7bc821a1).
+        # `strict=True` INTENDED: this is the write path. `strict=False` would
+        # let a malformed key through, which would create a ghost project
+        # invisible to the scoped briefing (learning 7bc821a1).
         return None, "no_project"
 
     return (
@@ -138,7 +137,7 @@ def resolve_auto_open_identity() -> tuple[AutoOpenIdentity | None, str]:
 
 
 class SessionAutoOpener:
-    """Garde une session `agent` ouverte par connexion, sans jamais lever."""
+    """Keeps one open `agent` session per connection, without ever raising."""
 
     def __init__(
         self,
@@ -159,7 +158,7 @@ class SessionAutoOpener:
         self.skipped: defaultdict[str, int] = defaultdict(int)
 
     async def ensure_open(self) -> UUID | None:
-        """Ouvrir ou réobserver. **Ne lève jamais** — c'est tout le contrat."""
+        """Open or re-observe. **Never raises** — that is the whole contract."""
         identity, reason = resolve_auto_open_identity()
         if identity is None:
             self.skipped[reason] += 1
@@ -169,16 +168,16 @@ class SessionAutoOpener:
         if memoized is not None:
             observed = await self._observe(memoized, identity)
             if observed is not False:
-                # ``None`` = l'observation a échoué. On garde la mémo : perdre
-                # une datation coûte une ligne d'horloge, perdre la mémo
-                # coûterait la session de cette connexion.
+                # ``None`` = the observation failed. We keep the memo: losing a
+                # stamp costs one clock line, losing the memo would cost this
+                # connection's session.
                 self._memo.move_to_end(identity.connection_id)
                 self.memoized += 1
                 return memoized
-            # La session a été fermée sous nos pieds — c'est le cas nommé par la
-            # forme signée. Rien à réparer : la clé UNIQUE est PARTIELLE
-            # (``WHERE status = 'open'``), donc la ligne fermée ne bloque pas, et
-            # la réouverture est le chemin normal, pas un rattrapage.
+            # The session was closed from under us — the case the signed shape
+            # names. Nothing to repair: the UNIQUE key is PARTIAL
+            # (``WHERE status = 'open'``), so the closed row does not block, and
+            # reopening is the normal path, not a recovery.
             del self._memo[identity.connection_id]
             self.reopened += 1
 
@@ -203,9 +202,9 @@ class SessionAutoOpener:
             return None
 
         if session_id is None:
-            # Pas d'ouverture possible (contexte de projet absent) : ce n'est
-            # PAS un échec, et surtout pas une mémo — le contexte peut naître
-            # plus tard, et la connexion doit pouvoir en profiter.
+            # No opening possible (project context absent): this is NOT a
+            # failure, and above all not a memo — the context may be born later,
+            # and the connection must be able to benefit from it.
             self.skipped["no_session"] += 1
             return None
 
@@ -214,13 +213,13 @@ class SessionAutoOpener:
         return session_id
 
     async def _observe(self, session_id: UUID, identity: AutoOpenIdentity) -> bool | None:
-        """Dater la session mémoïsée. Rend ``None`` si l'observation a échoué.
+        """Stamp the memoized session. Returns ``None`` if the observation failed.
 
-        Trois issues, et les confondre coûterait cher : ``True`` (encore
-        ouverte), ``False`` (fermée entre-temps, mémo à jeter) et ``None``
-        (l'écriture a raté). Traiter ``None`` comme ``False`` ferait rouvrir une
-        session parfaitement vivante à chaque hoquet de base, et un doublon par
-        hoquet est pire qu'une datation perdue.
+        Three outcomes, and conflating them would cost dearly: ``True`` (still
+        open), ``False`` (closed in the meantime, memo to discard) and ``None``
+        (the write failed). Treating ``None`` as ``False`` would reopen a
+        perfectly live session on every database hiccup, and one duplicate per
+        hiccup is worse than one lost stamp.
         """
         try:
             return await self._observer(session_id)
@@ -238,18 +237,18 @@ class SessionAutoOpener:
         self._memo[connection_id] = session_id
         self._memo.move_to_end(connection_id)
         while len(self._memo) > self._max_connections:
-            # LRU plutôt que refus d'insérer : une entrée évincée coûte un
-            # aller-retour en base, jamais une session perdue — l'index partiel
-            # rend ce chemin idempotent.
+            # LRU rather than refusing to insert: an evicted entry costs one
+            # database round trip, never a lost session — the partial index makes
+            # this path idempotent.
             self._memo.popitem(last=False)
 
 
 def get_session_autoopener() -> SessionAutoOpener | None:
-    """Renvoyer l'ouvreur, ou ``None`` tant que le drapeau est fermé.
+    """Return the opener, or ``None`` while the flag is closed.
 
-    Ne lève jamais : l'appelant est le middleware de provenance, sur le chemin
-    de TOUT appel de tool. Une résolution de settings qui échoue est traitée
-    comme une indisponibilité, pas comme une erreur d'appel.
+    Never raises: the caller is the provenance middleware, on the path of EVERY
+    tool call. A settings resolution that fails is treated as an unavailability,
+    not as a call error.
     """
     global _autoopener
     if _autoopener is None:
@@ -259,24 +258,24 @@ def get_session_autoopener() -> SessionAutoOpener | None:
                 return None
             _autoopener = SessionAutoOpener(*_build_default_writers())
         except Exception as exc:
-            # Type seul : les cadres traversés portent la configuration, DSN
-            # compris.
+            # Type only: the frames traversed carry the configuration, DSN
+            # included.
             logger.debug("session_autoopen.unavailable", error=type(exc).__name__)
             return None
     return _autoopener
 
 
 def reset_session_autoopener() -> None:
-    """Oublier l'ouvreur mémoïsé — point d'entrée des tests, jamais de la prod."""
+    """Forget the memoized opener — a test entry point, never a production one."""
     global _autoopener
     _autoopener = None
 
 
 def _build_default_writers() -> tuple[SessionOpener, SessionObserver]:
-    """Câbler l'ouvreur ET l'observateur de production sur le dépôt de sessions.
+    """Wire the production opener AND observer onto the session repository.
 
-    Les deux sortent du MÊME dépôt, donc du même moteur : un ouvreur qui écrit
-    ailleurs que l'observateur produirait une session que personne ne date.
+    Both come from the SAME repository, hence the same engine: an opener writing
+    somewhere other than the observer would produce a session nobody stamps.
     """
     from brain_v42.db.engine import get_session_factory  # noqa: PLC0415
     from brain_v42.repositories.pg_brain_session import PgBrainSessionRepo  # noqa: PLC0415

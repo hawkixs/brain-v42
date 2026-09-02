@@ -1,20 +1,19 @@
-"""Émetteur d'observations d'activité vers le sidecar métriques.
+"""Emitter of activity observations towards the metrics sidecar.
 
-Feu-et-oubli borné : le registre vit dans un autre processus, et un sidecar
-lent ou arrêté ne doit jamais ralentir ni casser un appel de tool. Sous
-saturation LOCALE — tous les créneaux en vol pris — on préfère perdre une
-observation que faire attendre l'appelant ; cette perte-là, et elle seule, est
-comptée dans ``dropped``.
+Bounded fire-and-forget: the registry lives in another process, and a slow or
+stopped sidecar must never slow down nor break a tool call. Under LOCAL
+saturation — every in-flight slot taken — we prefer losing an observation to
+making the caller wait; that loss, and it alone, is counted in ``dropped``.
 
-Ce n'est ni le seul mode de perte ni le dominant. Le récepteur peut refuser
-l'observation (404 quand la route n'est pas enregistrée, 403, 413, 415, 400,
-503…), et ``httpx`` ne lève pas sur un statut d'erreur : ces refus reviennent
-par le chemin nominal, pas par le ``except``. Ils sont donc lus explicitement,
-comptés à part dans ``refused`` et journalisés avec leur seul statut — jamais
-le corps de la réponse, qui peut renvoyer l'observation en écho.
+It is neither the only loss mode nor the dominant one. The receiver can refuse
+the observation (404 when the route is not registered, 403, 413, 415, 400,
+503…), and ``httpx`` does not raise on an error status: those refusals come back
+through the nominal path, not through the ``except``. They are therefore read
+explicitly, counted separately in ``refused`` and logged with their status alone
+— never the response body, which may echo the observation back.
 
-Aucun rejeu, aucun backoff : le contrat reste feu-et-oubli. Un refus est
-rendu OBSERVABLE, pas rattrapé.
+No replay, no backoff: the contract stays fire-and-forget. A refusal is made
+OBSERVABLE, not recovered from.
 """
 
 from __future__ import annotations
@@ -39,19 +38,18 @@ _reporter: ActivityReporter | None = None
 
 
 def _is_a_decade(count: int) -> bool:
-    """Vrai à la 1re, la 10e, la 100e… occurrence, jamais entre les deux.
+    """True on the 1st, 10th, 100th… occurrence, never in between.
 
-    Sur un compteur strictement croissant d'un en un, la garde ne peut pas
-    sauter une décade.
+    On a counter strictly increasing by one, the guard cannot skip a decade.
 
-    Écrite en entiers plutôt qu'avec ``log10``. MESURÉ, contre la tentation
-    de justifier ce choix trop fort : la variante flottante ne rate AUCUNE
-    puissance de 10 jusqu'à 10^24 — elle produit des faux positifs sur leurs
-    voisins (999999999999999 déclaré décade) à partir de 10^15. Sur un
-    compteur incrémenté d'un par appel de tool, cet écart est hors d'atteinte,
-    et la suite ne l'attrape pas : substituer ``log10`` ici laisse les tests
-    verts. Le choix de l'entier tient donc à ce qu'il est exact et sans
-    import, pas à un bug qu'on aurait constaté.
+    Written in integers rather than with ``log10``. MEASURED, against the
+    temptation to overstate this choice: the floating-point variant misses NO
+    power of 10 up to 10^24 — it produces false positives on their neighbours
+    (999999999999999 declared a decade) from 10^15 on. On a counter incremented
+    by one per tool call, that gap is out of reach, and the suite does not catch
+    it: substituting ``log10`` here leaves the tests green. The integer choice
+    therefore rests on it being exact and import-free, not on a bug anyone
+    observed.
     """
     if count < 1:
         return False
@@ -62,22 +60,22 @@ def _is_a_decade(count: int) -> bool:
 
 _ObservationKey = tuple[str, str | None, str | None]
 
-# Marge sous la borne du RÉCEPTEUR, pas une valeur choisie : l'enveloppe
-# ``{"observations":[…]}``, les virgules, et l'observation immédiate qui
-# s'ajoute au tampon au moment de l'émission doivent tenir dedans.
+# Margin under the RECEIVER's bound, not a chosen value: the
+# ``{"observations":[…]}`` envelope, the commas, and the immediate observation
+# that joins the buffer at emission time must all fit inside it.
 _BATCH_BYTE_BUDGET = MAX_OBSERVATION_BYTES - 1_024
 
-# Le tampon garde une place libre : l'observation qui déclenche l'émission
-# s'ajoute au lot, et le total doit rester sous la borne du décodeur.
+# The buffer keeps one free slot: the observation that triggers the emission
+# joins the batch, and the total must stay under the decoder's bound.
 _MAX_BUFFERED = MAX_OBSERVATIONS - 1
 
 
 def _observation(key: _ObservationKey, calls: int) -> dict[str, object]:
     actor, session_id, transport = key
     observation: dict[str, object] = {"actor": actor, "calls": calls}
-    # Clé ABSENTE plutôt que ``null`` : le décodeur distingue « non déclaré »
-    # de « déclaré vide », et un ``null`` sur le fil ferait croire à une mesure
-    # là où il n'y en a pas.
+    # Key ABSENT rather than ``null``: the decoder distinguishes "not declared"
+    # from "declared empty", and a ``null`` on the wire would suggest a
+    # measurement where there is none.
     if session_id is not None:
         observation["session"] = session_id
     if transport is not None:
@@ -96,43 +94,41 @@ class ActivityReporter:
         self._client = httpx.AsyncClient(timeout=timeout)
         self._max_in_flight = max_in_flight
         self._pending: set[asyncio.Task[None]] = set()
-        # Deux modes de perte, deux compteurs : les confondre rendrait « aucun
-        # appel » et « toutes les observations refusées » indiscernables.
-        self.dropped = 0  # contre-pression locale : créneaux en vol saturés
-        self.refused = 0  # le récepteur a répondu autre chose qu'un 2xx
-        # Ces deux compteurs vivent dans le processus MCP ; le panneau lit le
-        # registre du SIDECAR, un autre processus. Ils n'atteignaient donc
-        # aucun humain. Et ils ne PEUVENT pas voyager par le POST qu'ils
-        # mesurent : sous 404 permanent — le scénario même qui les rend
-        # utiles — ce POST est précisément celui qui est refusé. Le journal
-        # est le seul canal honnête.
+        # Two loss modes, two counters: conflating them would make "no call"
+        # and "every observation refused" indistinguishable.
+        self.dropped = 0  # local back-pressure: in-flight slots saturated
+        self.refused = 0  # the receiver answered something other than a 2xx
+        # These two counters live in the MCP process; the panel reads the
+        # SIDECAR's registry, another process. They therefore reached no human.
+        # And they CANNOT travel through the POST they measure: under a
+        # permanent 404 — the very scenario that makes them useful — that POST
+        # is precisely the one being refused. The log is the only honest
+        # channel.
         #
-        # Une ligne par perte est exclue : c'est le chemin chaud de TOUT appel
-        # de tool, et le refus mesuré est PERMANENT, pas transitoire.
+        # One line per loss is excluded: this is the hot path of EVERY tool
+        # call, and the measured refusal is PERMANENT, not transient.
         #
-        # Mais « une seule ligne, jamais plus » laisserait l'AMPLEUR invisible
-        # — un opérateur ne saurait pas distinguer trois pertes d'un million.
-        # Le décompte ne peut pas non plus n'exister qu'à la fermeture :
-        # `close_activity_reporter` est câblé dans `app_lifecycle` depuis le
-        # lot d5e4bd73, mais un arrêt brutal (kill, OOM) ne le joue pas — un
-        # résumé d'arrêt SEUL serait une mesure qui disparaît avec ses pires
-        # scénarios.
+        # But "one line only, never more" would leave the MAGNITUDE invisible —
+        # an operator could not tell three losses from a million. The count
+        # cannot exist only at shutdown either: `close_activity_reporter` has
+        # been wired into `app_lifecycle` since batch d5e4bd73, but an abrupt
+        # stop (kill, OOM) does not run it — a shutdown summary ALONE would be a
+        # measurement that disappears with its own worst scenarios.
         #
-        # D'où l'escalade par décade : on parle à la 1re, la 10e, la 100e…
-        # perte. Bornée en log10 — quinze lignes pour mille milliards — et
-        # l'ordre de grandeur reste toujours lisible.
+        # Hence the escalation by decade: we speak on the 1st, 10th, 100th…
+        # loss. Bounded in log10 — fifteen lines for a trillion — and the order
+        # of magnitude always stays readable.
         self._warned_refusals: set[int] = set()
-        # Tampon de coalescence. La borne en vol n'est pas relevée : elle
-        # protège le sidecar. Ce qui change, c'est ce qu'on fait DERRIÈRE elle
-        # — agréger au lieu de jeter. Le format de fil portait déjà les deux
-        # leviers nécessaires et aucun n'était utilisé : un lot
-        # (``MAX_OBSERVATIONS``) et un compteur (``MAX_CALLS_PER_OBSERVATION``),
-        # alors que ``calls`` était en dur à 1.
+        # Coalescing buffer. The in-flight bound is not raised: it protects the
+        # sidecar. What changes is what we do BEHIND it — aggregate instead of
+        # discard. The wire format already carried the two necessary levers and
+        # neither was used: a batch (``MAX_OBSERVATIONS``) and a counter
+        # (``MAX_CALLS_PER_OBSERVATION``), while ``calls`` was hardcoded to 1.
         self._buffer: dict[_ObservationKey, int] = {}
         self._buffer_bytes = 0
-        # Troisième compteur, distinct des deux autres : ``coalesced`` mesure ce
-        # qui aurait été PERDU avant ce correctif. Le confondre avec ``dropped``
-        # rendrait le correctif invisible dans ses propres métriques.
+        # Third counter, distinct from the other two: ``coalesced`` measures
+        # what would have been LOST before this fix. Conflating it with
+        # ``dropped`` would make the fix invisible in its own metrics.
         self.coalesced = 0
 
     def report(
@@ -141,16 +137,16 @@ class ActivityReporter:
         session_id: str | None,
         transport: str | None = None,
     ) -> None:
-        """Signaler un appel client. Ne bloque jamais, ne lève jamais.
+        """Report a client call. Never blocks, never raises.
 
-        ``transport`` par défaut à ``None`` pour que les appelants à deux
-        arguments restent valides : le mode sans état ne frappe aucun
-        identifiant de connexion, et cette absence doit rester dicible.
+        ``transport`` defaults to ``None`` so that two-argument callers stay
+        valid: stateless mode mints no connection identifier, and that absence
+        must remain expressible.
         """
         key: _ObservationKey = (actor, session_id, transport)
-        # ``try`` TOTAL : tout ce qui est ajouté ici hérite de la promesse de
-        # l'émetteur — ne jamais casser l'appel observé. Une panne du tampon
-        # dégrade en perte COMPTÉE, jamais en exception remontée à l'appelant.
+        # A TOTAL ``try``: everything added here inherits the emitter's promise
+        # — never break the observed call. A buffer failure degrades into a
+        # COUNTED loss, never into an exception surfaced to the caller.
         try:
             if len(self._pending) < self._max_in_flight:
                 self._emit(self._take_buffer() + [_observation(key, 1)])
@@ -158,7 +154,7 @@ class ActivityReporter:
             if self._coalesce(key):
                 self.coalesced += 1
                 return
-        except Exception:  # noqa: BLE001 - dégradation en perte comptée, jamais en panne
+        except Exception:  # noqa: BLE001 - degrades into a counted loss, never a failure
             logger.debug("activity_reporter.coalesce_failed")
         self._count_drop()
 
@@ -172,11 +168,11 @@ class ActivityReporter:
             )
 
     def _coalesce(self, key: _ObservationKey) -> bool:
-        """Replier une observation dans le tampon. Faux si une borne est atteinte.
+        """Fold an observation into the buffer. False if a bound is reached.
 
-        Les deux bornes sont celles du DÉCODEUR, importées et non recopiées :
-        franchir la borne d'octets ferait refuser le lot ENTIER en ``413``, donc
-        échangerait la perte d'UNE observation contre celle de soixante-trois.
+        Both bounds are the DECODER's, imported and not copied: crossing the
+        byte bound would get the ENTIRE batch refused with a ``413``, thereby
+        trading the loss of ONE observation for that of sixty-three.
         """
         buffered = self._buffer.get(key)
         if buffered is not None:
@@ -203,24 +199,24 @@ class ActivityReporter:
 
     def _emit(self, observations: list[dict[str, object]]) -> None:
         body = json.dumps({"observations": observations})
-        # Référence retenue dans _pending : sans elle, le GC peut ramasser la
-        # tâche avant son exécution (le loop ne détient qu'une weakref).
+        # Reference retained in _pending: without it, the GC can collect the
+        # task before it runs (the loop holds only a weakref).
         task = asyncio.create_task(self._post(body))
         self._pending.add(task)
         task.add_done_callback(self._on_post_done)
 
     def _on_post_done(self, task: asyncio.Task[None]) -> None:
-        """Rendre le créneau, puis vider le tampon s'il reste quelque chose.
+        """Return the slot, then drain the buffer if anything is left.
 
-        C'est ce qui rend la coalescence sûre sans minuterie : le tampon est
-        drainé par l'événement qui libère une place, pas par une horloge. Sans
-        ce rappel, une rafale suivie d'un silence laisserait ses observations
-        dans le tampon jusqu'au prochain appel de tool — reportées, pas perdues,
-        mais invisibles pendant un temps non borné.
+        This is what makes coalescing safe without a timer: the buffer is
+        drained by the event that frees a slot, not by a clock. Without this
+        callback, a burst followed by silence would leave its observations in
+        the buffer until the next tool call — deferred, not lost, but invisible
+        for an unbounded time.
 
-        ``suppress`` : ce rappel tourne dans la boucle, hors de tout appelant.
-        Une exception qui en sortirait irait au gestionnaire d'exceptions de la
-        boucle, où personne ne la lit.
+        ``suppress``: this callback runs in the loop, outside any caller. An
+        exception escaping it would go to the loop's exception handler, where
+        nobody reads it.
         """
         self._pending.discard(task)
         with contextlib.suppress(Exception):
@@ -235,19 +231,20 @@ class ActivityReporter:
                 headers={"Content-Type": "application/json"},
             )
             if not response.is_success:
-                # ``httpx`` ne lève pas sur 4xx/5xx : sans cette lecture, un
-                # refus revient par le chemin nominal et disparaît sans trace.
-                # Le cas mesuré est permanent, pas transitoire : un bind non
-                # loopback du sidecar n'enregistre pas ``/v1/client-activity``,
-                # donc chaque POST reçoit 404, la moitié « brain » du panneau
-                # reste vide pour toujours et toute la chaîne se déclare saine.
-                # Statut seul, jamais ``response.text`` : le corps d'un refus
-                # est une entrée non maîtrisée, et beaucoup de récepteurs y
-                # renvoient la requête en écho — UUID de session compris.
+                # ``httpx`` does not raise on 4xx/5xx: without this read, a
+                # refusal comes back through the nominal path and disappears
+                # without a trace. The measured case is permanent, not
+                # transient: a non-loopback bind of the sidecar does not
+                # register ``/v1/client-activity``, so every POST receives a
+                # 404, the panel's "brain" half stays empty forever and the
+                # whole chain declares itself healthy. Status alone, never
+                # ``response.text``: the body of a refusal is uncontrolled
+                # input, and many receivers echo the request back into it —
+                # session UUID included.
                 self.refused += 1
-                # Une signature INÉDITE parle toujours : un 503 après mille
-                # 404 est un fait neuf, et attendre la décade suivante le
-                # noierait. Sinon, même escalade que la contre-pression.
+                # An UNSEEN signature always speaks: a 503 after a thousand
+                # 404s is a new fact, and waiting for the next decade would
+                # drown it. Otherwise, the same escalation as back-pressure.
                 first_of_its_kind = response.status_code not in self._warned_refusals
                 self._warned_refusals.add(response.status_code)
                 if first_of_its_kind or _is_a_decade(self.refused):
@@ -257,30 +254,29 @@ class ActivityReporter:
                         refused=self.refused,
                     )
         except Exception as exc:
-            # Type seul, jamais ``exc_info``. Le rendu d'exception de la chaîne
-            # de production (rich, via ConsoleRenderer) affiche les variables
-            # locales de chaque cadre : ``body`` y recopie l'observation, UUID
-            # de session compris, et le chemin des cadres nomme le projet. Un
-            # seul POST raté écrivait ainsi 456 lignes — sur le chemin chaud de
-            # TOUT appel de tool, et pour un émetteur qui promet de ne jamais
-            # ralentir l'appelant. Le type suffit à diagnostiquer un sidecar mort.
+            # Type only, never ``exc_info``. The production chain's exception
+            # rendering (rich, via ConsoleRenderer) prints every frame's local
+            # variables: ``body`` copies the observation there, session UUID
+            # included, and the frame path names the project. A single failed
+            # POST wrote 456 lines that way — on the hot path of EVERY tool
+            # call, and for an emitter that promises never to slow the caller
+            # down. The type is enough to diagnose a dead sidecar.
             logger.debug("activity_reporter.post_failed", error=type(exc).__name__)
 
     async def drain(self) -> None:
-        """Attendre les émissions en vol. Réservé aux tests et à l'arrêt.
+        """Wait for in-flight emissions. Reserved for tests and shutdown.
 
-        Retire elle-même les tâches attendues de ``_pending`` plutôt que de
-        compter sur leur ``done_callback`` (``self._pending.discard``) pour
-        le faire. Sur Python 3.12+, ``asyncio.gather()`` traite les futures
-        déjà ``done()`` de façon eager : attendre une tâche déjà terminée ne
-        cède jamais la main à la boucle événementielle, donc si le callback
-        n'a pas encore eu son tour (il demande un second tour de boucle),
-        `while self._pending: await asyncio.gather(...)` boucle indéfiniment
-        sans jamais laisser ce callback s'exécuter — livelock à 100% CPU qui
-        ne rend jamais la main, même à un `asyncio.wait_for` englobant.
+        It removes the awaited tasks from ``_pending`` itself rather than
+        relying on their ``done_callback`` (``self._pending.discard``) to do it.
+        On Python 3.12+, ``asyncio.gather()`` handles already-``done()`` futures
+        eagerly: awaiting an already finished task never yields to the event
+        loop, so if the callback has not had its turn yet (it needs a second
+        loop iteration), `while self._pending: await asyncio.gather(...)` loops
+        indefinitely without ever letting that callback run — a 100 % CPU
+        livelock that never yields, not even to an enclosing `asyncio.wait_for`.
 
-        La boucle continue tant que `_pending` n'est pas vide pour couvrir
-        les émissions lancées pendant l'attente elle-même.
+        The loop continues while `_pending` is non-empty, to cover the emissions
+        started during the wait itself.
         """
         while self._pending or self._buffer:
             if self._buffer and len(self._pending) < self._max_in_flight:
@@ -303,15 +299,15 @@ def set_activity_reporter(reporter: ActivityReporter | None) -> None:
 
 
 async def close_activity_reporter() -> None:
-    """Fermer l'émetteur s'il a été construit — câblé dans ``app_lifecycle``.
+    """Close the emitter if it was built — wired into ``app_lifecycle``.
 
-    Ticket ``d5e4bd73``, second trou : les POST en vol mouraient à l'arrêt sans
-    être comptés. ``close()`` draine le tampon et attend les émissions en vol
-    (bornées par le timeout httpx), donc chaque perte finit dans un compteur au
-    lieu de disparaître avec le processus. L'oubli global est remis à ``None``
-    AVANT la fermeture : un appel de tool tardif reconstruirait un émetteur
-    frais plutôt que de poster sur un client clos. Ne lève jamais — un sidecar
-    mort à l'arrêt ne doit pas faire échouer l'arrêt.
+    Ticket ``d5e4bd73``, second hole: in-flight POSTs died at shutdown without
+    being counted. ``close()`` drains the buffer and waits for the in-flight
+    emissions (bounded by the httpx timeout), so every loss ends up in a counter
+    instead of disappearing with the process. The global memo is reset to
+    ``None`` BEFORE closing: a late tool call would rebuild a fresh emitter
+    rather than post on a closed client. Never raises — a sidecar dead at
+    shutdown must not make the shutdown fail.
     """
     global _reporter
     reporter = _reporter
@@ -323,19 +319,19 @@ async def close_activity_reporter() -> None:
 
 
 def get_activity_reporter() -> ActivityReporter | None:
-    """Renvoyer l'émetteur, construit à la première utilisation.
+    """Return the emitter, built on first use.
 
-    Construction paresseuse plutôt que câblage dans le cycle de vie du serveur :
-    `mcp` est bâti au niveau module (voir le commentaire de `mcp/server.py:170`),
-    et la première émission a lieu dans une boucle déjà tournante. La fermeture,
-    elle, est câblée : `close_activity_reporter` vit dans l'AsyncExitStack de
-    `app_lifecycle`, pour que les émissions en vol à l'arrêt finissent comptées
-    au lieu de mourir avec le processus (d5e4bd73, second trou).
+    Lazy construction rather than wiring into the server lifecycle: `mcp` is
+    built at module level (see the comment at `mcp/server.py:170`), and the first
+    emission happens in an already running loop. Closing, on the other hand, is
+    wired: `close_activity_reporter` lives in `app_lifecycle`'s AsyncExitStack,
+    so that emissions in flight at shutdown end up counted instead of dying with
+    the process (d5e4bd73, second hole).
 
-    Ne lève jamais : l'appelant est le middleware de provenance, sur le
-    chemin de TOUT appel de tool. Une résolution de settings ou une
-    construction de client qui échoue est traitée comme une indisponibilité
-    (renvoie ``None``) plutôt que de casser l'appel en cours.
+    Never raises: the caller is the provenance middleware, on the path of EVERY
+    tool call. A settings resolution or a client construction that fails is
+    treated as an unavailability (returns ``None``) rather than breaking the call
+    in progress.
     """
     global _reporter
     if _reporter is None:
@@ -345,11 +341,11 @@ def get_activity_reporter() -> ActivityReporter | None:
                 return None
             _reporter = ActivityReporter(url=settings.client_activity_url)
         except Exception as exc:
-            # Type seul, même raison qu'en ``_post`` : les cadres traversés ici
-            # sont ceux de la construction des settings, dont les variables
-            # locales portent la configuration (DSN compris). Et l'échec se
-            # répète à chaque appel de tool tant que la résolution échoue,
-            # puisque ``_reporter`` reste ``None``.
+            # Type only, same reason as in ``_post``: the frames traversed here
+            # are those of settings construction, whose local variables carry
+            # the configuration (DSN included). And the failure repeats on every
+            # tool call while the resolution fails, since ``_reporter`` stays
+            # ``None``.
             logger.debug("activity_reporter.unavailable", error=type(exc).__name__)
             return None
     return _reporter

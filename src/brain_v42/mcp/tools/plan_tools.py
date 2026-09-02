@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 _MAX_REPORTED_FAILURES = 20
-"""Plafond de la liste rendue — annoncé, jamais muet (voir la notice ci-dessous)."""
+"""Cap on the returned list — announced, never silent (see the notice below)."""
 
 
 def register_plan_tools(mcp: Any, plan_indexer: PlanIndexer) -> None:
@@ -68,11 +68,11 @@ def register_plan_tools(mcp: Any, plan_indexer: PlanIndexer) -> None:
             lines.append(line)
             failures.extend((pk, failure) for failure in stats.get("failures", []))
 
-        # Nommer les fichiers, pas seulement les compter. Un compteur dit qu'il
-        # manque quelque chose et jamais QUOI : pour répondre à « aucun plan
-        # attendu n'est silencieusement absent ? » l'opérateur devait quitter le
-        # tool et grepper le journal du serveur. Le type d'erreur remonte, la
-        # valeur fautive jamais — même contrat que plan_indexer.file_error.
+        # Name the files, not just count them. A counter says something is
+        # missing and never WHAT: to answer "is no expected plan silently
+        # absent?" the operator had to leave the tool and grep the server log.
+        # The error type surfaces, the offending value never — the same contract
+        # as plan_indexer.file_error.
         if failures:
             lines.append(f"\n### Fichiers non indexés ({len(failures)})\n")
             for pk, failure in failures[:_MAX_REPORTED_FAILURES]:

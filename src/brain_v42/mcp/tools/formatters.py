@@ -29,24 +29,22 @@ from brain_v42.models.snippet import Snippet
 
 
 def format_id(uuid_val: str | UUID) -> str:
-    """Rendre un identifiant d'entité pour un lecteur LLM : l'UUID COMPLET.
+    """Render an entity identifier for an LLM reader: the FULL UUID.
 
-    S'appelait `short_id` jusqu'au 2026-08-11, et ne tronquait déjà plus rien
-    depuis longtemps — sa docstring disait le contraire de son nom, juste en
-    dessous. Une quarantaine de sites l'appelaient en croyant raccourcir.
+    It was called `short_id` until 2026-08-11, and had long since stopped
+    truncating anything — its docstring said the opposite of its name, right
+    below it. Some forty sites called it believing they were shortening.
 
-    Pourquoi complet : un LLM enchaîne les appels d'outils avec l'identifiant
-    qu'on vient de lui rendre (`brain_get`, `brain_ticket_transition`…). Un
-    identifiant tronqué le forcerait à un aller-retour de résolution, ou pire,
-    à en inventer la fin.
+    Why full: an LLM chains tool calls with the identifier it was just handed
+    (`brain_get`, `brain_ticket_transition`…). A truncated identifier would force
+    a resolution round trip, or worse, invent the ending.
 
-    Pourquoi cette fonction existe encore alors qu'elle ne fait que `str()` :
-    c'est le SEUL point où la politique de rendu des identifiants est décidée.
-    L'inliner sur les ~40 sites d'appel dissoudrait la décision là où plus
-    personne ne saurait qu'elle a été prise — et le jour où l'on voudrait
-    revenir à une troncature, il n'y aurait plus d'endroit où le faire.
-    Le nom dit désormais le RÔLE (formater), pas le résultat du jour : si la
-    politique change, il ne redeviendra pas menteur.
+    Why this function still exists when all it does is `str()`: it is the ONLY
+    point where the identifier rendering policy is decided. Inlining it across
+    the ~40 call sites would dissolve the decision where nobody would know it had
+    been taken — and the day we wanted to go back to truncation, there would be
+    no place left to do it. The name now states the ROLE (format), not today's
+    result: if the policy changes, it will not become a lie again.
     """
     return str(uuid_val)
 
@@ -833,22 +831,21 @@ def _format_artifact_summary(artifact_count: dict[str, int]) -> str:
 
 
 LIST_LIMIT_MAX = 100
-"""Plafond serveur des tools de liste, appliqué pour borner le budget de tokens."""
+"""Server cap for the list tools, applied to bound the token budget."""
 
 
 def clamp_list_limit(limit: int, maximum: int = LIST_LIMIT_MAX) -> tuple[int, str]:
-    """Ramener *limit* dans [1, *maximum*] et rendre la notice qui le DIT.
+    """Clamp *limit* into [1, *maximum*] and return the notice that SAYS SO.
 
-    Un plafond appliqué en silence fait mentir le résultat : l'appelant qui demande
-    500 et reçoit 100 lignes ne peut pas distinguer « il n'y en avait que 100 » de
-    « il y en avait 500 ». La règle existe déjà dans ce fichier — voir
-    ``_format_plan_detail``, « no content is silently dropped » — ces chemins ne la
-    suivaient pas.
+    A cap applied silently makes the result lie: the caller who asks for 500 and
+    receives 100 rows cannot tell "there were only 100" from "there were 500".
+    The rule already exists in this file — see ``_format_plan_detail``, "no
+    content is silently dropped" — these paths were not following it.
 
-    La notice est VIDE dans le cas nominal : l'annoncer à chaque appel apprendrait
-    au lecteur à ne plus la lire, ce qui reviendrait à ne rien annoncer du tout.
+    The notice is EMPTY in the nominal case: announcing it on every call would
+    teach the reader to stop reading it, which amounts to announcing nothing.
 
-    Rend ``(valeur_effective, notice)``.
+    Returns ``(effective_value, notice)``.
     """
     if limit > maximum:
         return maximum, (
@@ -879,20 +876,20 @@ def _project_last_activity(project: dict) -> str:
 
 
 _OPEN_FEATURE_STATUSES = ("building", "design", "planned", "research")
-"""Statuts qui décrivent du travail RESTANT.
+"""Statuses that describe REMAINING work.
 
-``done``, ``deployed`` et ``archived`` en sont exclus : ils n'infirment pas une
-phase qui annonce l'achèvement, ils l'appuient. Les compter noierait la ligne sur
-tout projet ancien, où l'historique domine toujours le travail en cours.
+``done``, ``deployed`` and ``archived`` are excluded: they do not contradict a
+phase announcing completion, they support it. Counting them would drown the line
+on any old project, where history always dominates work in progress.
 """
 
 
 def _open_work_counts(features: list[dict]) -> str:
-    """Décompte des features encore ouvertes, dans l'ordre du plus engagé au moins.
+    """Count of features still open, ordered from most to least committed.
 
-    Rend une chaîne VIDE quand il n'y a rien en cours : une ligne « 0 en cours »
-    à chaque projet terminé apprendrait au lecteur à la sauter, donc à la rater
-    le jour où elle contredit la phase déclarée.
+    Returns an EMPTY string when nothing is in progress: a "0 in progress" line
+    on every finished project would teach the reader to skip it, and so to miss
+    it the day it contradicts the declared phase.
     """
     tally = dict.fromkeys(_OPEN_FEATURE_STATUSES, 0)
     for feature in features:
@@ -936,10 +933,10 @@ def format_roadmap(
         lines.append(f"### {p['project_key']}{phase_str}")
         open_counts = _open_work_counts(p.get("features", []))
         if open_counts:
-            # La phase déclarée est du texte libre : rien ne la relie à cette
-            # table, donc rien ne la contredit quand elle vieillit. On ne juge pas
-            # la prose, on met la mesure à côté — même geste que le bloc
-            # « État technique (mesuré) » du briefing, pour la même raison.
+            # The declared phase is free text: nothing links it to this table,
+            # so nothing contradicts it as it ages. We do not judge the prose, we
+            # put the measurement beside it — the same gesture as the briefing's
+            # "Technical state (measured)" block, for the same reason.
             lines.append(f"_en cours : {open_counts}_")
         lines.append("| Feature | Status | Artifacts | Last activity |")
         lines.append("|---------|--------|-----------|---------------|")

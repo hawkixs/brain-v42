@@ -85,14 +85,14 @@ def _dream_promotion_invariant(
     auto_accept: bool,
     dream_run_id: int | None,
 ) -> str | None:
-    """L'invariant du trio dream-only de brain_propose_adr, en UN endroit.
+    """The invariant of brain_propose_adr's dream-only trio, in ONE place.
 
-    Deux gardes dispersées exprimaient source_learning_id ⟺ auto_accept ; le
-    troisième membre, dream_run_id, n'était gardé par RIEN — seul, il tombait
-    dans le chemin standard qui ne le lit jamais et disparaissait en silence
-    (mesuré 2026-08-29, ticket af3b58dd item 2). Un paramètre dream-only
-    orphelin est un refus nommé : l'appelant croyait tracer une promotion que
-    rien n'enregistrait.
+    Two scattered guards expressed source_learning_id ⟺ auto_accept; the third
+    member, dream_run_id, was guarded by NOTHING — on its own it fell into the
+    standard path, which never reads it, and disappeared silently (measured
+    2026-08-29, ticket af3b58dd item 2). An orphan dream-only parameter is a
+    named refusal: the caller believed they were tracing a promotion nothing was
+    recording.
     """
     if source_learning_id is not None and not auto_accept:
         return "source_learning_id requires auto_accept=True (Dream-only path)"
@@ -126,11 +126,10 @@ def register_tools(
     logger.info("brain_v42.tools.register_tools.called")
     list_adrs = _build_adr_list_adapter(adr_svc)
 
-    # Les métriques ne sont plus posées ici. Elles sont appliquées après
-    # enregistrement par brain_v42.metrics.tool_instrumentation, depuis _run_mcp
-    # (ticket c352eaaa) : plus de mutation de mcp.tool, plus de dépendance à
-    # l'ordre de déclaration, et les passerelles du profil compact sont exclues
-    # par construction.
+    # Metrics are no longer installed here. They are applied after registration
+    # by brain_v42.metrics.tool_instrumentation, from _run_mcp (ticket
+    # c352eaaa): no more mutation of mcp.tool, no more dependence on declaration
+    # order, and the compact profile's gateways are excluded by construction.
     register_workflow_guide_tools(mcp)
     register_snippet_tools(
         mcp,
@@ -566,13 +565,13 @@ def register_tools(
     ) -> str:
         """List ADRs with optional filters by project and/or status.
 
-        ALIAS DE CATALOGUE : même comportement que `list_adrs` (crud_tools) —
-        les deux entrées sont construites par `_build_adr_list_adapter`, une
-        seule source depuis 72b048f, gardée par test_brain_adr_list_alias.
-        Conservé parce que le rail dream le NOMME : allowlist de capacités
-        (dream_capabilities), policy de scope (dream_project_scope) et prompt
-        PROMOTE (scripts/dream/phase_promote.md). Le retirer du catalogue est
-        un lot coordonné avec ces trois surfaces, pas un nettoyage local.
+        CATALOGUE ALIAS: same behaviour as `list_adrs` (crud_tools) — both
+        entries are built by `_build_adr_list_adapter`, a single source since
+        72b048f, guarded by test_brain_adr_list_alias. Kept because the dream
+        rail NAMES it: capability allowlist (dream_capabilities), scope policy
+        (dream_project_scope) and the PROMOTE prompt
+        (scripts/dream/phase_promote.md). Removing it from the catalogue is a
+        batch coordinated with those three surfaces, not a local cleanup.
 
         Args:
             project_key: Optional project scope filter.

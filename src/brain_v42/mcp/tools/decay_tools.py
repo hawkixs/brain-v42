@@ -140,9 +140,9 @@ def register_decay_tools(
                 .values(
                     freshness_status="fresh",
                     last_accessed_at=datetime.now(tz=UTC),
-                    # 043, vocabulaire fermé : ramener une entité à `fresh` par
-                    # un geste délibéré EST la définition de `revive`. Sans la
-                    # redéclarer, le trigger la nulle.
+                    # 043, closed vocabulary: bringing an entity back to
+                    # `fresh` by a deliberate gesture IS the definition of
+                    # `revive`. Without redeclaring it, the trigger nulls it.
                     freshness_source="revive",
                 )
                 .returning(table.c.id)

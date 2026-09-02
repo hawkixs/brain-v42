@@ -1,29 +1,29 @@
-"""Middleware de provenance — pose l'acteur courant pour tout appel de tool.
+"""Provenance middleware — sets the current actor for every tool call.
 
-Installé INCONDITIONNELLEMENT. La provenance ne doit pas dépendre de
-l'activation des métriques, qui ne sont posées que si un collecteur existe, et
-une provenance silencieusement muette est pire que pas de provenance.
+Installed UNCONDITIONALLY. Provenance must not depend on whether metrics are
+enabled, which only happens when a collector exists, and a silently mute
+provenance is worse than no provenance.
 
-Ne porte pas les métriques. Depuis le ticket c352eaaa elles ne passent plus par
-un monkey-patch de `mcp.tool` : `brain_v42.metrics.tool_instrumentation`
-enveloppe les tools déjà enregistrés depuis `_run_mcp`. Ce point d'application a
-été retenu CONTRE le middleware que proposait le ticket, pour deux raisons
-mesurées — un middleware est au-dessus du masquage de `call_tool` et ne verrait
-que le `ToolError` générique (le journal `exception_type` dégénérerait), et
-`_list_tools()` exclut les passerelles par construction, là où un middleware
-aurait exigé une liste noire de noms. Ne pas rouvrir « déplacer les métriques
-ici » : la question a été tranchée, pas reportée.
+Does not carry the metrics. Since ticket c352eaaa they no longer go through a
+monkey-patch of `mcp.tool`: `brain_v42.metrics.tool_instrumentation` wraps the
+already registered tools from `_run_mcp`. That application point was chosen
+AGAINST the middleware the ticket proposed, for two measured reasons — a
+middleware sits above `call_tool`'s masking and would see only the generic
+`ToolError` (the `exception_type` log would degenerate), and `_list_tools()`
+excludes the gateways by construction, where a middleware would have required a
+denylist of names. Do not reopen "move the metrics here": the question was
+settled, not deferred.
 
-Re-mesure Q2 du 2026-08-06, qui reste vraie pour CE middleware : en profil
-`compact`, la passerelle `brain_call_tool` ré-entre dans la chaîne
-(`FastMCP.call_tool`, `run_middleware=True` par défaut), donc `on_call_tool` voit
-AUSSI le nom du tool réel — il se déclenche deux fois par appel compact (mesuré,
-commit 58329a84). C'était inoffensif tant que le middleware ne faisait que poser
-l'acteur, le même deux fois de suite. Ça ne l'est plus depuis que `_report`
-existe : compter à tous les niveaux donnerait x2 en `compact`, qui est le profil
-de production, et x1 en profil natif — deux chiffres incomparables. D'où la garde
-de profondeur (`enter_call`/`exit_call`/`is_outermost_call`), qui réserve
-`_report` au seul niveau extérieur.
+Q2 re-measurement of 2026-08-06, which stays true for THIS middleware: under the
+`compact` profile, the `brain_call_tool` gateway re-enters the chain
+(`FastMCP.call_tool`, `run_middleware=True` by default), so `on_call_tool` ALSO
+sees the real tool name — it fires twice per compact call (measured, commit
+58329a84). That was harmless while the middleware only set the actor, the same
+one twice in a row. It stopped being harmless once `_report` existed: counting at
+every level would give x2 under `compact`, which is the production profile, and
+x1 under the native profile — two incomparable numbers. Hence the depth guard
+(`enter_call`/`exit_call`/`is_outermost_call`), which reserves `_report` for the
+outermost level alone.
 """
 
 from __future__ import annotations
@@ -49,19 +49,19 @@ from brain_v42.provenance import (
     set_current_transport,
 )
 
-# ``get_http_headers()`` retire ``mcp-session-id`` de ce qu'il rend : l'en-tête
-# figure en dur dans son ``exclude_headers``. Il faut le redemander nommément,
-# sinon la lecture renvoie ``None`` en silence et le panneau reste anonyme sans
-# qu'aucun test ne s'en aperçoive.
+# ``get_http_headers()`` strips ``mcp-session-id`` from what it returns: the
+# header is hardcoded into its ``exclude_headers``. It must be asked for by name,
+# otherwise the read returns ``None`` silently and the panel stays anonymous
+# without a single test noticing.
 _TRANSPORT_HEADER = "mcp-session-id"
 
-#: Couples (pair, User-Agent) déjà dénoncés. Un client anonyme appelle ici une
-#: fois par minute depuis des semaines : la réponse tient dans la PREMIÈRE
-#: ligne, et journaliser la répétition ne ferait qu'enterrer la découverte.
+#: (peer, User-Agent) pairs already reported. An anonymous client calls here once
+#: a minute for weeks on end: the answer fits in the FIRST line, and logging the
+#: repetition would only bury the discovery.
 _seen_unidentified: set[tuple[str, str]] = set()
-#: Plafond dur sur ce mémo. Le pair est déclaré par le réseau et le User-Agent
-#: par le client : sans borne, un appelant qui varie son User-Agent ferait
-#: croître ce set sans fin dans un processus long-vivant.
+#: Hard cap on this memo. The peer is declared by the network and the User-Agent
+#: by the client: without a bound, a caller varying its User-Agent would grow
+#: this set without end in a long-lived process.
 _MAX_UNIDENTIFIED_TRACKED = 32
 _UNKNOWN_PEER = "?"
 
@@ -70,17 +70,17 @@ logger = structlog.get_logger(__name__)
 
 
 class ProvenanceMiddleware(Middleware):
-    """Pose l'acteur et la session déclarés, et signale l'appel une seule fois."""
+    """Set the declared actor and session, and report the call exactly once."""
 
     async def on_call_tool(self, context: Any, call_next: Any) -> Any:
         headers = get_http_headers(include={_TRANSPORT_HEADER}) or {}
         actor = normalize_agent(headers.get("x-brain-agent"))
         session = normalize_session(headers.get("x-brain-session"))
-        # NE PAS remplacer par ``Context.session_id`` : en mode sans état il
-        # forge un ``uuid4()`` PAR REQUÊTE (mesuré : trois valeurs pour trois
-        # appels d'un même client), et cette forme-là passe ``normalize_session``.
-        # On obtiendrait une ligne de panneau par appel de tool, toutes
-        # présentées comme des sessions distinctes.
+        # DO NOT replace with ``Context.session_id``: in stateless mode it
+        # forges a ``uuid4()`` PER REQUEST (measured: three values for three
+        # calls from one client), and that shape passes ``normalize_session``.
+        # We would get one panel row per tool call, all presented as distinct
+        # sessions.
         transport = normalize_transport(headers.get(_TRANSPORT_HEADER))
         set_current_actor(actor)
         set_current_session(session)
@@ -98,24 +98,24 @@ class ProvenanceMiddleware(Middleware):
             exit_call(token)
 
     async def _auto_open_session(self) -> None:
-        """Ouvrir la session traçante de cette connexion, AVANT l'outil.
+        """Open this connection's tracer session, BEFORE the tool.
 
-        Trois choses tiennent dans ces cinq lignes, et aucune n'est
-        interchangeable :
+        Three things hold in these five lines, and none is interchangeable:
 
-        - **Avant ``call_next``**, pas après, et pas en tâche détachée. La
-          capture borne les artefacts par ``created_at >= started_at`` : une
-          session ouverte après l'outil n'attribuerait rien de ce que l'outil
-          vient de créer. C'est ce qui distingue ce chemin de ``_report``, qui
-          n'observe rien qu'il doive précéder.
-        - **Sous ``is_outermost_call()``**, donc une fois par appel client et
-          non deux en profil ``compact`` (mesuré, commit 58329a84). La mémo de
-          l'ouvreur ne suffirait pas : elle masquerait le second tir au lieu de
-          l'empêcher, et le compteur ``memoized`` mentirait d'un facteur deux.
-        - **``ensure_open`` ne lève jamais**, par contrat. Aucun ``try`` ici
-          serait donc redondant — mais l'absence de garde locale est un choix
-          qui repose entièrement sur ce contrat, tenu par un test de panne
-          injectée avec témoin négatif.
+        - **Before ``call_next``**, not after, and not in a detached task.
+          Capture bounds artifacts by ``created_at >= started_at``: a session
+          opened after the tool would attribute nothing the tool just created.
+          That is what distinguishes this path from ``_report``, which observes
+          nothing it must precede.
+        - **Under ``is_outermost_call()``**, hence once per client call and not
+          twice under the ``compact`` profile (measured, commit 58329a84). The
+          opener's memo would not be enough: it would mask the second firing
+          instead of preventing it, and the ``memoized`` counter would lie by a
+          factor of two.
+        - **``ensure_open`` never raises**, by contract. Any ``try`` here would
+          therefore be redundant — but the absence of a local guard is a choice
+          resting entirely on that contract, held by a fault-injection test with
+          a negative control.
         """
         autoopener = get_session_autoopener()
         if autoopener is None:
@@ -123,18 +123,18 @@ class ProvenanceMiddleware(Middleware):
         await autoopener.ensure_open()
 
     def _name_unidentified_client(self, context: Any) -> None:
-        """Dénoncer une fois un appelant qui ne se déclare pas.
+        """Report once a caller that does not declare itself.
 
-        C'est la seule mesure que le serveur puisse faire LUI-MÊME. Les
-        instruments extérieurs ont tous échoué sur ce trafic (mesuré le
-        2026-08-12) : `ss` échantillonné rate structurellement un appel de
-        4,4 ms, `ss -E` voit l'événement mais plus le processus qui l'a ouvert,
-        et `access_log` était vide. Ici l'information est présente par
-        construction, au moment où la requête arrive.
+        This is the only measurement the server can make ITSELF. The external
+        instruments all failed on this traffic (measured 2026-08-12): sampled
+        `ss` structurally misses a 4.4 ms call, `ss -E` sees the event but no
+        longer the process that opened it, and `access_log` was empty. Here the
+        information is present by construction, at the moment the request
+        arrives.
 
-        Le ``except`` est TOTAL et étroitement scopé, pour la même raison que
-        ``_report`` : ce chemin s'exécute sur chaque appel anonyme d'un process
-        partagé, et une sonde ne peut pas faire tomber ce qu'elle observe.
+        The ``except`` is TOTAL and tightly scoped, for the same reason as
+        ``_report``: this path runs on every anonymous call of a shared process,
+        and a probe cannot bring down what it observes.
         """
         try:
             headers = get_http_headers(include={"user-agent"}) or {}
@@ -158,18 +158,18 @@ class ProvenanceMiddleware(Middleware):
             logger.debug("provenance.unidentified_probe_failed", exc_info=True)
 
     def _report(self, actor: str, session: str | None, transport: str | None = None) -> None:
-        """Signaler l'appel au sidecar métriques, en feu-et-oubli borné.
+        """Report the call to the metrics sidecar, bounded fire-and-forget.
 
-        Le ``except`` est délibérément TOTAL, et il est étroitement scopé à l'émetteur :
-        ce chemin s'exécute à chaque appel de tool, dans un process partagé et
-        long-vivant, et il est armé en production. Une exception qui en sortait
-        remontait jusqu'à ``on_call_tool`` — qui n'a qu'un ``finally`` — et tuait
-        l'appel. Un canal d'OBSERVATION ne peut pas être un point de défaillance de
-        l'opération observée : au pire on perd une ligne de panneau.
+        The ``except`` is deliberately TOTAL, and it is tightly scoped to the
+        emitter: this path runs on every tool call, in a shared and long-lived
+        process, and it is armed in production. An exception escaping it climbed
+        up to ``on_call_tool`` — which has only a ``finally`` — and killed the
+        call. An OBSERVATION channel cannot be a point of failure for the
+        operation it observes: at worst we lose one panel row.
 
-        Le journal est en ``warning`` et non ``debug`` : contrairement au refus du
-        récepteur, qui peut se répéter à chaque appel, une exception ici signale un
-        défaut de l'émetteur lui-même, pas un état du réseau.
+        The log is at ``warning`` and not ``debug``: unlike a refusal from the
+        receiver, which can repeat on every call, an exception here signals a
+        defect in the emitter itself, not a state of the network.
         """
         reporter = get_activity_reporter()
         if reporter is None:

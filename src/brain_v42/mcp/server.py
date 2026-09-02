@@ -184,10 +184,10 @@ async def app_lifecycle(
     graph_ledger_repo = services.get("graph_ledger_repo")
     access_logger = services["access_logger"]
 
-    # Tracing OTel — armé ICI et non dans `_run_mcp`, qui est appelé par six
-    # tests unitaires : ils poseraient un vrai provider et un vrai exporter.
-    # `init_tracing` ne lève jamais et rend False quand l'extra est absent,
-    # ce qui est l'état NORMAL d'une installation qui ne trace pas.
+    # OTel tracing — armed HERE and not in `_run_mcp`, which six unit tests
+    # call: they would install a real provider and a real exporter.
+    # `init_tracing` never raises and returns False when the extra is absent,
+    # which is the NORMAL state of an installation that does not trace.
     tracing_armed = False
     if settings.otel_tracing_enabled:
         tracing_armed = init_tracing(settings.otel_endpoint)
@@ -222,17 +222,17 @@ async def app_lifecycle(
     async with AsyncExitStack() as cleanup:
         cleanup.push_async_callback(dispose_engine)
         cleanup.push_async_callback(close_neo4j_driver, services["neo4j_driver"])
-        # d5e4bd73, second trou : sans cette fermeture, les POST d'activité
-        # en vol mouraient à l'arrêt sans être comptés. LIFO : elle joue
-        # avant dispose_engine, pendant que la boucle sert encore.
+        # d5e4bd73, second hole: without this close, in-flight activity POSTs
+        # died at shutdown without being counted. LIFO: it runs before
+        # dispose_engine, while the loop is still serving.
         cleanup.push_async_callback(close_activity_reporter)
 
         if tracing_armed:
-            # `shutdown_on_exit=False` a désarmé l'atexit du SDK pour qu'un
-            # collecteur injoignable ne fasse pas traîner l'arrêt ; c'est donc
-            # à nous de vider la file, dans un délai borné. Sans ce callback,
-            # les spans en attente disparaissaient sans un mot — trou trouvé
-            # par l'e2e du 2026-08-12, pas par relecture.
+            # `shutdown_on_exit=False` disarmed the SDK's atexit so an
+            # unreachable collector would not drag out the shutdown; it is
+            # therefore up to us to drain the queue, within a bounded delay.
+            # Without this callback, pending spans disappeared without a word —
+            # a hole found by the e2e of 2026-08-12, not by re-reading.
             cleanup.push_async_callback(asyncio.to_thread, shutdown_tracing, 3000)
 
         if graph_outbox_projector is not None:
@@ -286,23 +286,22 @@ async def app_lifecycle(
 
 
 def create_mcp_instance() -> FastMCP:
-    """Construire une instance FastMCP avec son câblage indépendant des services.
+    """Build a FastMCP instance with its service-independent wiring.
 
-    UNE définition pour DEUX consommateurs : le singleton de module ci-dessous
-    (production — ``/health`` s'y ajoute par décorateur) et les bancs
-    d'intégration qui montent leur propre serveur. Sans elle, un banc qui
-    réutilisait le singleton héritait des tools enregistrés par un module de
-    tests collecté avant lui — 20 « Component already exists » mesurés, fermés
-    sur un engine déjà ``dispose()`` (ticket ``83d8785b``) — et l'ordre de
-    collecte pytest devenait signifiant. Le remède n'est PAS un câblage
-    reproduit à la main dans le banc : ``build_server`` a déjà tranché qu'un
-    double est pire qu'aucun test.
+    ONE definition for TWO consumers: the module singleton below (production —
+    ``/health`` is added to it by decorator) and the integration benches that
+    stand up their own server. Without it, a bench reusing the singleton
+    inherited the tools registered by a test module collected before it — 20
+    measured "Component already exists", closed on an already ``dispose()``d
+    engine (ticket ``83d8785b``) — and pytest's collection order became
+    meaningful. The remedy is NOT wiring reproduced by hand in the bench:
+    ``build_server`` has already settled that a double is worse than no test.
     """
     instance = FastMCP("brain", mask_error_details=True)
-    # Provenance : posé ici et non dans register_tools, pour être indépendant de
-    # l'activation des métriques et de l'ordre d'enregistrement des tools.
-    # `apply_tool_catalog_profile` et `maybe_apply_code_mode` retournent le MÊME
-    # objet, donc ce middleware survit aux deux.
+    # Provenance: installed here and not in register_tools, so it is independent
+    # of whether metrics are enabled and of the tool registration order.
+    # `apply_tool_catalog_profile` and `maybe_apply_code_mode` return the SAME
+    # object, so this middleware survives both.
     instance.add_middleware(ProvenanceMiddleware())
     return instance
 
@@ -721,28 +720,28 @@ def _configure_http_security(
 
 
 class SessionIdleTimeoutUnavailableError(RuntimeError):
-    """La forme amont a changé et l'échéance de session ne serait plus posée."""
+    """The upstream shape changed and the session deadline would no longer be set."""
 
 
-# Marqueur porté par la sous-classe injectée : il sert à la RECONNAÎTRE, donc à
-# ne pas l'empiler sur elle-même à la deuxième installation.
+# Marker carried by the injected subclass: it serves to RECOGNIZE it, hence to
+# avoid stacking it on itself at the second installation.
 _IDLE_TIMEOUT_MARKER = "_brain_v42_session_idle_timeout"
 
 
 def _install_session_idle_timeout(seconds: float) -> None:
-    """Poser l'échéance d'inactivité que FastMCP ne transmet pas.
+    """Set the idle deadline FastMCP does not pass through.
 
-    ``StreamableHTTPSessionManager`` accepte ``session_idle_timeout``, mais
-    ``fastmcp.server.http`` le construit sans jamais le passer : le mode avec
-    état garderait donc l'état de toute session dont le client meurt sans
-    ``DELETE``, jusqu'au prochain redémarrage du processus.
+    ``StreamableHTTPSessionManager`` accepts ``session_idle_timeout``, but
+    ``fastmcp.server.http`` constructs it without ever passing it: the stateful
+    mode would therefore keep the state of every session whose client dies
+    without a ``DELETE``, until the next process restart.
 
-    Substitution du symbole dans le module de FastMCP, faute de point
-    d'extension public. Elle est ÉTROITE — une sous-classe qui ne fait que
-    remplir un défaut — et surtout elle est GARDÉE : si le paramètre disparaît
-    en amont, on lève au démarrage plutôt que de tourner sans échéance. Un
-    monkeypatch silencieux qui cesse d'agir est pire que pas de monkeypatch,
-    parce qu'il laisse croire que la borne existe.
+    A symbol substitution inside FastMCP's module, for want of a public
+    extension point. It is NARROW — a subclass that does nothing but fill in a
+    default — and above all it is GUARDED: if the parameter disappears upstream,
+    we raise at startup rather than run with no deadline. A silent monkeypatch
+    that stops acting is worse than no monkeypatch, because it leaves people
+    believing the bound exists.
     """
     from fastmcp.server import http as fastmcp_http
 
@@ -753,18 +752,18 @@ def _install_session_idle_timeout(seconds: float) -> None:
             "stateful sessions would accumulate without expiry"
         )
 
-    # IDEMPOTENCE, et ce n'est pas de la coquetterie : sans elle, deux appels
-    # empilent deux sous-classes, et chaque appel suivant en rajoute une. Le
-    # cas est réel — la production n'appelle qu'une fois, mais la suite de
-    # tests traverse ``_run_mcp`` plusieurs fois dans un même processus.
+    # IDEMPOTENCE, and it is not fussiness: without it, two calls stack two
+    # subclasses, and every subsequent call adds another. The case is real —
+    # production calls once, but the test suite goes through ``_run_mcp``
+    # several times in a single process.
     if getattr(base, _IDLE_TIMEOUT_MARKER, None) is not None:
         setattr(base, _IDLE_TIMEOUT_MARKER, seconds)
         return
 
     class _IdleTimeoutSessionManager(base):  # type: ignore[misc, valid-type]
         def __init__(self, *args: object, **kwargs: object) -> None:
-            # ``setdefault`` : si FastMCP se met un jour à le transmettre, sa
-            # valeur gagne et cette classe devient inerte d'elle-même.
+            # ``setdefault``: if FastMCP ever starts passing it through, its
+            # value wins and this class becomes inert by itself.
             kwargs.setdefault(
                 "session_idle_timeout",
                 getattr(type(self), _IDLE_TIMEOUT_MARKER, seconds),
@@ -772,9 +771,9 @@ def _install_session_idle_timeout(seconds: float) -> None:
             super().__init__(*args, **kwargs)
 
     setattr(_IdleTimeoutSessionManager, _IDLE_TIMEOUT_MARKER, seconds)
-    # mypy refuse l'affectation à un nom de type ; c'est précisément ce qu'on
-    # fait, faute de point d'extension public côté FastMCP. La garde de
-    # signature ci-dessus est ce qui rend la substitution sûre.
+    # mypy refuses assignment to a type name; that is precisely what we are
+    # doing, for want of a public extension point on the FastMCP side. The
+    # signature guard above is what makes the substitution safe.
     fastmcp_http.StreamableHTTPSessionManager = _IdleTimeoutSessionManager  # type: ignore[misc]
     logger.info("brain_v42.server.session_idle_timeout", seconds=seconds)
 

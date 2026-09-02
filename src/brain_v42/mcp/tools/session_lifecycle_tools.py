@@ -60,18 +60,18 @@ ExpectedClientKeyArg = Annotated[
 ]
 SummaryArg = Annotated[str, Field(min_length=1, max_length=10_000)]
 
-#: Le plafond de `next_focus`, extrait pour que le briefing puisse ANNONCER la
-#: marge restante au lieu de la faire découvrir par un refus, au moment de
-#: fermer, après le travail. Deux littéraux dériveraient au premier changement
-#: et le briefing promettrait une marge que la validation ne reconnaîtrait pas.
+#: The cap on `next_focus`, extracted so the briefing can ANNOUNCE the remaining
+#: margin instead of letting it be discovered through a refusal, at closing time,
+#: after the work. Two literals would diverge at the first change and the
+#: briefing would promise a margin validation would not recognize.
 #:
-#: Il compte des CARACTÈRES, pas des octets — c'est ce que `maxLength` de
-#: Pydantic mesure. Le focus de `brain-v42` faisait 9 977 caractères pour 10 285
-#: OCTETS le 2026-08-22 : une borne en octets serait déjà franchie.
+#: It counts CHARACTERS, not bytes — that is what Pydantic's `maxLength`
+#: measures. `brain-v42`'s focus was 9,977 characters for 10,285 BYTES on
+#: 2026-08-22: a byte bound would already be crossed.
 #:
-#: Il n'est PAS partagé avec `SummaryArg`, qui vaut la même chose aujourd'hui :
-#: ce sont deux contrats distincts, et les coupler ferait bouger l'un en
-#: changeant l'autre.
+#: It is NOT shared with `SummaryArg`, which happens to be the same value today:
+#: they are two distinct contracts, and coupling them would move one by changing
+#: the other.
 NEXT_FOCUS_MAX_LENGTH = 10_000
 
 FocusArg = Annotated[
@@ -93,18 +93,18 @@ ReasonArg = Annotated[str, Field(min_length=1, max_length=2_000)]
 FocusRevisionArg = Annotated[int, Field(ge=0, strict=True)]
 ListLimitArg = Annotated[int, Field(ge=1, le=100)]
 ListOffsetArg = Annotated[int, Field(ge=0)]
-#: Les QUATRE statuts persistés de `brain_sessions`, plus DEUX filtres dérivés.
+#: The FOUR persisted statuses of `brain_sessions`, plus TWO derived filters.
 #:
-#: `closed_inactive` a manqué ici pendant toute la vie de la 046 : l'état
-#: existait dans les deux `CHECK`, le balayage savait le poser, le service et le
-#: dépôt savaient le filtrer — seul ce littéral publié l'ignorait. Un état
-#: atteignable en base et indemandable par un client (`24ca3b73`).
+#: `closed_inactive` was missing here for the whole life of 046: the state
+#: existed in both `CHECK`s, the sweep knew how to set it, the service and the
+#: repository knew how to filter it — only this published literal ignored it. A
+#: state reachable in the database and unrequestable by a client (`24ca3b73`).
 #:
-#: `stale` et `all` ne sont PAS des statuts : `stale` est dérivé de
-#: `last_heartbeat_at` sur les sessions ouvertes, `all` est l'absence de filtre.
-#: Cette liste doit donc couvrir `BrainSessionStatus` en entier — c'est ce que
-#: `test_the_filter_covers_every_persisted_status` épingle, en dérivant ses
-#: attentes de l'énumération plutôt qu'en les recopiant ici.
+#: `stale` and `all` are NOT statuses: `stale` is derived from
+#: `last_heartbeat_at` on open sessions, `all` is the absence of a filter. This
+#: list must therefore cover `BrainSessionStatus` in full — that is what
+#: `test_the_filter_covers_every_persisted_status` pins, by deriving its
+#: expectations from the enumeration rather than copying them here.
 SessionStatusFilter = Literal["open", "stale", "ended", "abandoned", "closed_inactive", "all"]
 
 logger = structlog.get_logger(__name__)

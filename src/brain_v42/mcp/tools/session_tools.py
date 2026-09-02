@@ -29,15 +29,15 @@ _TICKETS_CAP = 5
 
 
 def _section_tickets(groups: Any | None) -> str:
-    """### Tickets — actionnable en tête de briefing (spec tickets §5).
+    """### Tickets — the actionable ones at the top of the briefing (tickets spec §5).
 
-    N'affiche que l'actionnable : à traiter (je suis destinataire) et
-    à confirmer (mes requests resolved/wontfix). Cap _TICKETS_CAP au total.
+    Shows only the actionable: to handle (I am the recipient) and to confirm (my
+    resolved/wontfix requests). Capped at _TICKETS_CAP in total.
 
-    awaiting_requester_confirmation (spec 2026-08-03 §2.3) n'est jamais
-    listé — aucune transition légale de notre côté — mais son compte
-    apparaît dans l'en-tête dès qu'il est non vide, et seul lui peut
-    déclencher le rendu de la section quand les deux autres sont vides.
+    awaiting_requester_confirmation (spec 2026-08-03 §2.3) is never listed — no
+    legal transition on our side — but its count appears in the header as soon
+    as it is non-empty, and it alone can trigger rendering the section when the
+    other two are empty.
     """
     if groups is None:
         return ""
@@ -75,14 +75,14 @@ def _section_tickets(groups: Any | None) -> str:
     if silenced > 0:
         noun = "ticket tu" if silenced == 1 else "tickets tus"
         lines.append(f"→ {silenced} {noun} par le cap (brain_ticket_list pour le reste)")
-        # La convention de titre (« REVUE 2026-09-03 — … ») devient opérante
-        # AU-DELÀ du cap (ticket 259cfbe5). Mesuré le 2026-08-29 : la seule
-        # échéance datée du carnet était au rang 49/62, invisible — le tri par
-        # récence punit précisément les tickets qu'on ne touche pas pendant que
-        # leur date approche. Une DATE est falsifiable et s'auto-périme : la
-        # revoir (toucher le ticket) le remonte dans la récence et éteint cette
-        # ligne. Aucun rang posé à la main, aucune colonne : l'arbitrage de la
-        # migration deadline (lot C12) reste entier.
+        # The title convention ("REVUE 2026-09-03 — …") becomes operative
+        # BEYOND the cap (ticket 259cfbe5). Measured on 2026-08-29: the only
+        # dated deadline in the book sat at rank 49/62, invisible — sorting by
+        # recency punishes precisely the tickets nobody touches while their date
+        # approaches. A DATE is falsifiable and expires by itself: reviewing it
+        # (touching the ticket) lifts it back up the recency order and turns this
+        # line off. No hand-placed rank, no column: the deadline migration
+        # decision (batch C12) stays entirely open.
         silenced_tickets = [*a_traiter[len(shown_traiter) :], *a_confirmer[len(shown_confirmer) :]]
         for due, hidden in _dated(silenced_tickets)[:2]:
             gap = (due - datetime.now(UTC).date()).days
@@ -97,7 +97,7 @@ _TITLE_DATE = re.compile(r"20\d{2}-\d{2}-\d{2}")
 
 
 def _dated(tickets: list[Any]) -> list[tuple[date, Any]]:
-    """Les tickets dont le TITRE porte une date ISO valide, la plus proche d'abord."""
+    """The tickets whose TITLE carries a valid ISO date, nearest first."""
     found: list[tuple[date, Any]] = []
     for candidate in tickets:
         match = _TITLE_DATE.search(candidate.title)
@@ -267,29 +267,29 @@ def _format_focus_age(written_at: datetime, now: datetime) -> str:
 
 
 def _focus_margin_line(focus_length: int, focus_octets: int | None = None) -> str:
-    """Ce qu'il reste avant que `brain_session_end` refuse de fermer.
+    """What is left before `brain_session_end` refuses to close.
 
-    `next_focus` est OBLIGATOIRE et plafonné ; il REMPLACE `current_focus` quand
-    le compare-and-swap réussit. L'autre écrivain de la même colonne,
-    `brain_update_project_focus`, n'a aucune borne : le projet peut donc arriver
-    dans un état que la fermeture ne sait pas réécrire. Le 2026-08-22, la
-    révision 217 a porté 12 157 caractères pendant seize heures, et sa fermeture
-    en a retiré 3 635 — 30 % du focus — en une écriture.
+    `next_focus` is MANDATORY and capped; it REPLACES `current_focus` when the
+    compare-and-swap succeeds. The other writer of the same column,
+    `brain_update_project_focus`, has no bound: the project can therefore reach a
+    state the closure cannot rewrite. On 2026-08-22, revision 217 carried 12,157
+    characters for sixteen hours, and its closure removed 3,635 of them — 30 % of
+    the focus — in one write.
 
-    Sous le plafond, la ligne est un nombre. À marge nulle ou négative, elle
-    cesse d'en être un : c'est le seul moment où quelqu'un en a besoin, et une
-    marge négative écrite nue se lirait comme un détail de comptage. Les deux
-    issues sont donc nommées — compresser, donc perdre du texte choisi par
-    l'auteur sans diff ni trace, ou être refusé.
+    Under the cap, the line is a number. At zero or negative margin it stops
+    being one: that is the only moment anyone needs it, and a negative margin
+    written bare would read as a counting detail. Both outcomes are therefore
+    named — compress, and so lose text the author chose, with no diff and no
+    trace, or be refused.
     """
     margin = NEXT_FOCUS_MAX_LENGTH - focus_length
     head = f"- Focus : {focus_length} / {NEXT_FOCUS_MAX_LENGTH} caractères"
     if margin > 0:
-        # Le sujet « lequel des deux on compte » rouvert le 2026-08-29 : la
-        # borne compte des CARACTÈRES, et le même focus a fait 9 977 caractères
-        # pour 10 285 octets — une borne en octets serait déjà franchie. Les
-        # deux nombres sur la ligne NOMINALE seulement : les branches bruyantes
-        # restent pures, exactement là où la décision d'origine l'argumentait.
+        # The "which of the two do we count" question, reopened on 2026-08-29:
+        # the bound counts CHARACTERS, and the same focus was 9,977 characters
+        # for 10,285 bytes — a byte bound would already be crossed. Both numbers
+        # on the NOMINAL line only: the noisy branches stay pure, exactly where
+        # the original decision argued for it.
         if focus_octets is not None:
             return f"{head} (marge {margin} ; {focus_octets} octets)"
         return f"{head} (marge {margin})"

@@ -36,9 +36,9 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 _CURATION_STATUSES = frozenset({"proposed", "applied", "rejected"})
-#: Plafond du lot de REJETS. Le rejet est le chemin confortable — les
-#: propositions lues sont des dégradations de titre — mais un lot illimité
-#: rendrait le résultat illisible et le timeout probable.
+#: Cap on the REJECT batch. Rejecting is the comfortable path — the proposals
+#: read are title degradations — but an unbounded batch would make the result
+#: unreadable and a timeout likely.
 _CURATION_REJECT_MAX = 50
 _CURATION_PAYLOAD_MAX = 200
 
@@ -70,10 +70,10 @@ _CLUSTER_MEMBERS_PER_CLUSTER_MAX = 30
 
 
 def _proposal_service_factory(session_factory: Any) -> Any:
-    """Construire le service de propositions — indirection pour les tests.
+    """Build the proposal service — an indirection for the tests.
 
-    Import différé : `proposal_service` tire la couche services entière, que
-    ce module feuille n'a pas besoin de charger à l'import du catalogue.
+    Deferred import: `proposal_service` pulls in the whole services layer, which
+    this leaf module has no need to load when the catalogue is imported.
     """
     from brain_v42.services.proposal_service import ProposalService  # noqa: PLC0415
 
@@ -175,15 +175,16 @@ def register_dream_tools(
                     sa.and_(
                         table.c.id.in_(list(unlinked_uuid_set)),
                         table.c.embedding.is_not(None),
-                        # Ticket 6d2cf2a9 — le résolveur exige `active` sur les DEUX
-                        # ancres. Le filtre de _find_similar ne couvre que la CIBLE ;
-                        # find_unlinked_nodes rend aussi des SOURCES archived (mesuré
-                        # le 2026-08-18 : brain-v42, 82 non liées actives ET 21
-                        # archived). Une source archived fait lever le résolveur pour
-                        # CHACUN de ses candidats, ne peut jamais gagner d'arête, donc
-                        # revient à chaque nuit : connect reste partial à perpétuité.
-                        # Même prédicat que list_active_classification_orphans, la
-                        # liste de sources de STEP_B, qui filtre déjà au ledger.
+                        # Ticket 6d2cf2a9 — the resolver requires `active` on
+                        # BOTH anchors. _find_similar's filter covers only the
+                        # TARGET; find_unlinked_nodes also returns archived
+                        # SOURCES (measured 2026-08-18: brain-v42, 82 unlinked
+                        # active AND 21 archived). An archived source makes the
+                        # resolver raise for EACH of its candidates, can never
+                        # win an edge, and so comes back every night: connect
+                        # stays partial in perpetuity. Same predicate as
+                        # list_active_classification_orphans, STEP_B's source
+                        # list, which already filters at the ledger.
                         sa.exists().where(
                             sa.and_(
                                 brain_entities.c.source_uuid == table.c.id,
@@ -216,12 +217,12 @@ def register_dream_tools(
                         authorization=scope,
                     )
                 except UnknownGraphEndpoint:
-                    # Ticket 6d2cf2a9 — symétrie avec la branche non-scopée, mais
-                    # NARROW à dessein. La branche scopée reste hors du wrapper de
-                    # dégradation pour qu'un refus d'autorisation propage (contrat
-                    # graph_helpers) ; seule la pathologie de données est absorbée,
-                    # et elle reste COMPTÉE : un connect sur données sales doit
-                    # continuer à sortir partial, pas vert.
+                    # Ticket 6d2cf2a9 — symmetric with the unscoped branch, but
+                    # NARROW on purpose. The scoped branch stays outside the
+                    # degradation wrapper so an authorization refusal propagates
+                    # (graph_helpers contract); only the data pathology is
+                    # absorbed, and it stays COUNTED: a connect over dirty data
+                    # must keep coming out partial, not green.
                     aggregate.errors.append(
                         {
                             "id": entity_uuid,
@@ -555,15 +556,15 @@ def register_dream_tools(
                     project_key=scope.project_key,
                 )
         except UnknownGraphEndpoint:
-            # Ticket fb62624f — miroir du traitement STEP_A (auto_linker) :
-            # `_resolve_named_target` exige `lifecycle='active'` sur les deux
-            # ancres. Une entité archivée ENTRE le listing des orphelins et
-            # l'assignation lèverait ici, s'échapperait du tool et serait
-            # réduite par `mask_error_details` à un message opaque. Le catch
-            # reste volontairement étroit : `DreamProjectAuthorizationError`
-            # dérive d'`AuthorizationError` et doit continuer à propager.
-            # Le WARN nomme l'entité et le domaine — un refus incomptable
-            # forcerait l'opérateur à rejouer du SQL pour retrouver la ligne.
+            # Ticket fb62624f — mirror of the STEP_A treatment (auto_linker):
+            # `_resolve_named_target` requires `lifecycle='active'` on both
+            # anchors. An entity archived BETWEEN the orphan listing and the
+            # assignment would raise here, escape the tool and be reduced by
+            # `mask_error_details` to an opaque message. The catch stays
+            # deliberately narrow: `DreamProjectAuthorizationError` derives from
+            # `AuthorizationError` and must keep propagating. The WARN names the
+            # entity and the domain — an uncountable refusal would force the
+            # operator to replay SQL to find the row.
             logger.warning(
                 "mcp.brain_assign_domain.unknown_graph_endpoint",
                 entity_id=entity_id,
@@ -641,7 +642,7 @@ def register_dream_tools(
 
         header = f"## Curation proposals — {project_key} [{status}]"
         if not rows:
-            # Une sortie vide serait indiscernable d'une panne de lecture.
+            # An empty output would be indistinguishable from a read failure.
             return f"{header}\n\nAucune proposition à ce statut."
 
         lines = [header, ""]
@@ -662,7 +663,7 @@ def register_dream_tools(
     async def _curation_ownership(
         proposal_ids: list[int],
     ) -> dict[int, dict[str, Any]]:
-        """(statut, projet, feature) de chaque id — la jointure EST le scope."""
+        """(status, project, feature) for each id — the join IS the scope."""
         async with session_factory() as session:
             rows = (
                 (
@@ -682,9 +683,9 @@ def register_dream_tools(
             )
         return {int(row["id"]): dict(row) for row in rows}
 
-    # Terminal, pas additive : un rejet ne ressuscite jamais (le dedup nocturne
-    # skippe les doublons de lignes rejected) — destructiveHint=True ; et
-    # idempotent : re-rejeter rend « déjà rejected », aucune mutation neuve.
+    # Terminal, not additive: a rejection never resurrects (the nightly dedup
+    # skips duplicates of rejected rows) — destructiveHint=True; and idempotent:
+    # re-rejecting returns "already rejected", with no new mutation.
     @mcp.tool(version="1.0", annotations=_TERMINAL_ANNOTATIONS)
     async def brain_reject_curation_proposals(
         project_key: str,
@@ -754,8 +755,8 @@ def register_dream_tools(
         )
         return "\n".join([header, "", *lines])
 
-    # Destructif non idempotent : un merge ARCHIVE la feature perdante, un
-    # rename écrase un titre — la famille de brain_feature_update.
+    # Destructive and non-idempotent: a merge ARCHIVES the losing feature, a
+    # rename overwrites a title — the brain_feature_update family.
     @mcp.tool(version="1.0", annotations=_DESTRUCTIVE_ANNOTATIONS)
     async def brain_apply_curation_proposal(
         project_key: str,
@@ -763,19 +764,19 @@ def register_dream_tools(
     ) -> str:
         """Apply ONE proposed roadmap curation — deliberately SINGULAR.
 
-        One integer, never a list : the cost lives in the signature, not in a
+        One integer, never a list: the cost lives in the signature, not in a
         guideline. The proposals read so far are title degradations, and an
-        « apply all » surface would be a trap (ticket 2547b4a2, fil du
-        2026-08-11). L'appelant relit la proposition (via
-        brain_list_curation_proposals) puis l'applique une par une ; le rejet
-        en lot vit dans brain_reject_curation_proposals.
+        "apply all" surface would be a trap (ticket 2547b4a2, thread of
+        2026-08-11). The caller re-reads the proposal (through
+        brain_list_curation_proposals) then applies them one by one; batch
+        rejection lives in brain_reject_curation_proposals.
 
-        Toutes les ops sont applicables ici (allowed_ops=None) : c'est la
-        review HUMAINE, pas le wet nocturne qui se borne à WET_APPLYABLE_OPS.
+        Every op is applicable here (allowed_ops=None): this is the HUMAN review,
+        not the nightly wet, which restricts itself to WET_APPLYABLE_OPS.
 
         Args:
-            project_key: Required — la jointure sur features est le scope.
-            proposal_id: L'unique proposition à appliquer.
+            project_key: Required — the join on features is the scope.
+            proposal_id: The single proposal to apply.
         """
         project_key = canonicalize_project_key(project_key, strict=False)
         if not project_key:

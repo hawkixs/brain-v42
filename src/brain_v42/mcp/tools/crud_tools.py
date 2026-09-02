@@ -161,16 +161,16 @@ def _format_plan_list(plans: list[IndexedPlan]) -> str:
     return "\n".join(lines)
 
 
-#: La provenance qu'un écrivain DREAM pose sur une transition de fraîcheur.
-#: `judgment` appartient au vocabulaire fermé du `CHECK` de la 043 — quatre
-#: valeurs — et n'avait AUCUN écrivain : réservée, inutilisée, et elle décrit
-#: exactement ce que fait REORG, seule phase à qui le serveur accorde une
-#: écriture. Aucune migration n'est donc nécessaire. Exercée pour la première
-#: fois le 2026-08-22 contre `brain_test` : acceptée, date posée, transaction
-#: annulée ; une valeur hors vocabulaire refusée par la même contrainte.
+#: The provenance a DREAM writer stamps on a freshness transition. `judgment`
+#: belongs to the closed vocabulary of 043's `CHECK` — four values — and had NO
+#: writer: reserved, unused, and it describes exactly what REORG does, the only
+#: phase the server grants a write to. No migration is therefore needed.
+#: Exercised for the first time on 2026-08-22 against `brain_test`: accepted,
+#: date stamped, transaction rolled back; a value outside the vocabulary refused
+#: by the same constraint.
 DREAM_FRESHNESS_SOURCE = "judgment"
 
-#: Le champ que le SERVEUR pose et que l'appelant ne peut pas forger.
+#: The field the SERVER sets and the caller cannot forge.
 _SERVER_ONLY_UPDATE_FIELDS = frozenset({"freshness_source"})
 
 
@@ -371,10 +371,10 @@ def register_crud_tools(
         update_cls = _update_models[entity_type]
         forged = _SERVER_ONLY_UPDATE_FIELDS.intersection(fields)
         if forged:
-            # Fail-closed AVANT toute écriture : une provenance forgée signerait
-            # une transition du nom d'un autre. La 043 le dit dans son propre
-            # corps — « une provenance fausse, qui se croit, au lieu d'une
-            # provenance absente, qui se voit ».
+            # Fail-closed BEFORE any write: a forged provenance would sign a
+            # transition in someone else's name. 043 says it in its own body —
+            # "a false provenance, which is believed, instead of a missing
+            # provenance, which is seen".
             return format_error(f"server-controlled field(s) refused: {', '.join(sorted(forged))}")
         try:
             update_data = update_cls(**fields)
@@ -389,19 +389,19 @@ def register_crud_tools(
 
         svc = _services[entity_type]
         scope = get_dream_project_scope()
-        # Le MÊME prédicat que le dépôt : `model_dump(exclude_none=True)` est
-        # exactement ce que `repo.update` transforme en colonnes. Tester le
-        # modèle typé `BaseModel` demanderait un `getattr` non vérifié ; tester
-        # le `fields` brut estamperait aussi un `freshness_status: None`, qui
-        # n'écrit rien. Ici, estampiller et écrire sont vrais ensemble.
+        # The SAME predicate as the repository: `model_dump(exclude_none=True)`
+        # is exactly what `repo.update` turns into columns. Testing the typed
+        # `BaseModel` would require an unchecked `getattr`; testing the raw
+        # `fields` would also stamp a `freshness_status: None`, which writes
+        # nothing. Here, stamping and writing are true together.
         if scope is not None and "freshness_status" in update_data.model_dump(exclude_none=True):
-            # Une écriture DREAM de `freshness_status` déclare sa provenance.
-            # Bornée à CE champ : estampiller une écriture qui ne touche pas au
-            # statut décrirait une transition qui n'a pas eu lieu. Et bornée au
-            # scope : hors dream la transition reste muette, DONC comptée par
-            # `post_run_alert.fetch_mute_transitions` — c'est ce qui permet de
-            # voir la prochaine source non recensée au lieu de la confondre
-            # avec REORG.
+            # A DREAM write of `freshness_status` declares its provenance.
+            # Bounded to THIS field: stamping a write that does not touch the
+            # status would describe a transition that did not happen. And
+            # bounded to the scope: outside the dream the transition stays
+            # silent, HENCE counted by `post_run_alert.fetch_mute_transitions` —
+            # which is what makes the next unrecorded source visible instead of
+            # conflating it with REORG.
             update_data = update_data.model_copy(
                 update={"freshness_source": DREAM_FRESHNESS_SOURCE}
             )
@@ -502,8 +502,8 @@ def register_crud_tools(
 
         project_key = canonicalize_project_key(project_key, strict=False)
 
-        # Plafond serveur pour borner le budget de tokens — ANNONCÉ, jamais muet :
-        # une page tronquée en silence est indiscernable d'un corpus qui s'arrête là.
+        # Server cap to bound the token budget — ANNOUNCED, never silent: a page
+        # truncated silently is indistinguishable from a corpus that ends there.
         limit, limit_notice = clamp_list_limit(limit)
 
         if entity_type == "decision":
