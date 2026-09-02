@@ -1,7 +1,7 @@
 ---
-title: "Disaster recovery vérifiable — handoff de session B2"
+title: "Verifiable disaster recovery — B2 session handoff"
 status: completed
-summary: "Checkpoint historique B2 livré ; ne pas reprendre ses chemins ou son head 035 sur la production courante."
+summary: "Historical checkpoint B2 delivered; do not resume its paths or its 035 head on the current production."
 tags:
   - disaster-recovery
   - red-backup
@@ -10,121 +10,121 @@ tags:
   - sol-ultra
 ---
 
-# Disaster recovery vérifiable — handoff de session B2
+# Verifiable disaster recovery — B2 session handoff
 
-> **Clôture historique — 24 juillet 2026.** B2 a été livré; ne pas reprendre les instructions de
-> ce handoff. La décision Brain `3d3d72e4-acb7-49fe-aabb-1618e648e627` a adopté l'option A au
-> head 035 alors déployé. La production est désormais au head 037 : toute nouvelle preuve doit
-> restaurer le head exactement déployé, et aucun downgrade n'est autorisé pour suivre ce document.
+> **Historical closure — July 24, 2026.** B2 has been delivered; do not resume the instructions in
+> this handoff. Brain decision `3d3d72e4-acb7-49fe-aabb-1618e648e627` adopted option A at
+> head 035 then deployed. Production is now at head 037: any new proof must
+> restore the exact deployed head, and no downgrade is authorized to follow this document.
 
-> Ce checkpoint ne constitue plus un point de reprise. Les sources canoniques restent la
-> [roadmap Sol Ultra](2026-07-11-sol-ultra-audit-roadmap-plan.md) et le
-> [plan d'implémentation DR](2026-07-11-disaster-recovery-verified-implementation-plan.md).
-> Reprendre le chantier courant depuis ces sources et le ticket DR-v3, pas depuis les branches ou
-> worktrees historiques ci-dessous.
+> This checkpoint is no longer a resume point. The canonical sources remain the
+> [Sol Ultra roadmap](2026-07-11-sol-ultra-audit-roadmap-plan.md) and the
+> [DR implementation plan](2026-07-11-disaster-recovery-verified-implementation-plan.md).
+> Resume the current effort from these sources and the DR-v3 ticket, not from the branches or
+> historical worktrees below.
 
-## État à reprendre
+## State to resume
 
-| Dépôt | Branche et checkpoint | État vérifié |
+| Repo | Branch and checkpoint | Verified state |
 |---|---|---|
-| `brain_v42` | `codex/disaster-recovery-verified`; checkpoint de code parent `39acc7df15eaf0a5a89fe983fabf8384a7ef8c26` | le commit contenant ce handoff est le cinquième commit local devant `origin/main`; aucun upstream |
-| `red-backup` isolé | `/tmp/red-backup-dr1`; `codex/disaster-recovery-verified` à `a6517bfdd62e2703e001adda0cf67ccc0fb0d2c2` | propre; dix commits devant `origin/main` |
-| `red-backup` principal | `/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-backup`; `main` à `5328089796d4f795afd9a51445a6748c5cab320c` | propre et identique à `origin/main` |
+| `brain_v42` | `codex/disaster-recovery-verified`; parent code checkpoint `39acc7df15eaf0a5a89fe983fabf8384a7ef8c26` | the commit containing this handoff is the fifth local commit ahead of `origin/main`; no upstream |
+| isolated `red-backup` | `/tmp/red-backup-dr1`; `codex/disaster-recovery-verified` at `a6517bfdd62e2703e001adda0cf67ccc0fb0d2c2` | clean; ten commits ahead of `origin/main` |
+| main `red-backup` | `/home/hawixs/hawkixs_infra/git_repo/ReD_v1/projects/red-backup`; `main` at `5328089796d4f795afd9a51445a6748c5cab320c` | clean and identical to `origin/main` |
 
-Les quatre commits Brain antérieurs au handoff, créés localement, sont `46ca070`, `0846fbd`,
-`8e3ff0f` et `39acc7d`.
-Les dix commits `red-backup`, de l'ancien au récent, sont `984ce8b`, `5ba1c75`,
-`19eb7d7`, `0b84ffe`, `8bc6366`, `712dbbc`, `2c021aa`, `573bf58`, `0edf3b6` et
+The four Brain commits preceding the handoff, created locally, are `46ca070`, `0846fbd`,
+`8e3ff0f` and `39acc7d`.
+The ten `red-backup` commits, oldest to most recent, are `984ce8b`, `5ba1c75`,
+`19eb7d7`, `0b84ffe`, `8bc6366`, `712dbbc`, `2c021aa`, `573bf58`, `0edf3b6` and
 `a6517bf`.
 
-B1 fournit les modèles et vérifications fail-closed, la rétention non destructive, la
-publication atomique des artefacts, le streaming DB, les producteurs V2 dormants,
-l'autorité DR immuable et la publication exacte d'un reçu à sept targets suivi de
-`.complete`. Le gate de clôture rapporte **932 tests passés, 2 ignorés et trois warnings
-`AsyncMock` connus**, avec Ruff sur les fichiers Python modifiés, `git diff --check` et trois
-reviews de code indépendantes `SHIP`. Le format-check n'est pas vert sur l'ensemble des
-fichiers Python déjà modifiés. Aucun rapport JUnit ou git note ne persiste ces résultats : la
-session B2 doit rejouer tous les gates et ne pas inférer le format depuis ce checkpoint.
+B1 delivers the fail-closed models and checks, non-destructive retention, the
+atomic publication of artifacts, DB streaming, the dormant V2 producers, the
+immutable DR authority and the exact publication of a receipt to seven targets followed by
+`.complete`. The closure gate reports **932 tests passed, 2 skipped and three known
+`AsyncMock` warnings**, with Ruff on the modified Python files, `git diff --check` and three
+independent `SHIP` code reviews. The format-check is not green across all
+already-modified Python files. No JUnit report or git note persists these results: the
+B2 session must replay all gates and not infer the format from this checkpoint.
 
-Le pipeline reste dormant à ce checkpoint : `runner.py`, `config/backup.yaml` et
-`deploy/systemd/*` sont identiques à `origin/main`; le CLI ne charge pas
-`RecoveryAuthorityV1`; `run_all()` utilise les producteurs legacy ; les fonctions
-`load_dr_v1_authority()` et `publish_completed_run_v2()` n'ont pas d'appelant de production.
-`verify_run()` ne compare pas encore `receipt.policy_sha256`. Aucun déploiement n'est reflété
-par les repos ou unit files visibles. Le bus systemd et `crontab -l` étant interdits dans le
-sandbox, le runtime et le cron live n'ont pas été revalidés par la passe de clôture.
+The pipeline remains dormant at this checkpoint: `runner.py`, `config/backup.yaml` and
+`deploy/systemd/*` are identical to `origin/main`; the CLI does not load
+`RecoveryAuthorityV1`; `run_all()` uses the legacy producers; the
+`load_dr_v1_authority()` and `publish_completed_run_v2()` functions have no production caller.
+`verify_run()` does not yet compare `receipt.policy_sha256`. No deployment is reflected
+by the repos or unit files visible. Since the systemd bus and `crontab -l` are forbidden in
+the sandbox, the live runtime and cron were not revalidated by the closure pass.
 
-## B2 — prochaine tranche obligatoire
+## B2 — mandatory next slice
 
-**Interdiction d'activation :** ne pas raccorder le runner ou le CLI avant que
-`verify_run()` authentifie l'autorité exacte, notamment `policy_id` et `policy_sha256`, avant
-d'ouvrir les manifestes de targets.
+**Activation ban:** do not wire up the runner or the CLI before
+`verify_run()` authenticates the exact authority, notably `policy_id` and `policy_sha256`, before
+opening target manifests.
 
-Ordre d'implémentation :
+Implementation order:
 
-1. déplacer la validation commune de `RecoveryAuthorityV1` dans `recovery_profile.py`, tout
-   en gardant une enveloppe d'erreur publique propre au writer ;
-2. faire accepter l'autorité immuable à `verify_run()` et comparer exactement le policy ID
-   et son SHA au reçu ; un run historique sans reçu reste `completeness=unknown`, tandis
-   qu'un reçu antérieur au policy SHA est invalide ;
-3. faire accepter `authority` comme argument nommé à `run_all()` et exécuter exactement les
-   sept producteurs V2 autorisés ; continuer après les erreurs ordinaires de target, mais ne
-   jamais capturer une annulation ou un signal de contrôle ;
-4. publier le reçu puis `.complete` seulement après sept succès ; définir `all_success=True`
-   uniquement après le marker durable et enregistrer séparément une erreur de run ;
-5. charger l'autorité dans le CLI avant `run` et `verify-run`; tout échec de complétion doit
-   sortir 1, interdire la rétention et suivre le chemin d'alerte rouge ;
-6. durcir ensuite le template systemd et ses tests avec `UMask=0077`, accès SSH explicite en
-   lecture seule à travers `ProtectHome=tmpfs`, et un timeout global adapté (cible actuelle :
-   `TimeoutStartSec=5400`) ; ne rien installer ;
-7. rejouer les failure injections, la suite complète et les reviews pattern-auto avant tout
-   changement opérationnel.
+1. move `RecoveryAuthorityV1`'s common validation into `recovery_profile.py`, while
+   keeping a clean writer-specific public error envelope;
+2. make `verify_run()` accept the immutable authority and exactly compare the policy ID
+   and its SHA against the receipt; a historical run without a receipt stays
+   `completeness=unknown`, while a receipt predating the policy SHA is invalid;
+3. make `run_all()` accept `authority` as a named argument and run exactly the
+   seven authorized V2 producers; keep going after ordinary target errors, but never
+   catch a cancellation or a control signal;
+4. publish the receipt then `.complete` only after seven successes; set `all_success=True`
+   only after the durable marker and record a run error separately;
+5. load the authority in the CLI before `run` and `verify-run`; any completion failure must
+   exit 1, forbid retention and follow the red-alert path;
+6. then harden the systemd template and its tests with `UMask=0077`, explicit read-only
+   SSH access through `ProtectHome=tmpfs`, and a suitable global timeout (current
+   target: `TimeoutStartSec=5400`); install nothing;
+7. replay the failure injections, the full suite and the pattern-auto reviews before any
+   operational change.
 
-Definition of done B2 : un run ne peut être vert qu'avec l'autorité exacte, sept manifests
-V2 valides, un reçu canonique et son marker durable. Les erreurs ordinaires sont enregistrées
-sans faux vert ; `KeyboardInterrupt`, `SystemExit` et l'annulation se propagent sans marker.
-Le CLI échoue sans lancer la rétention sur toute complétion incertaine. Les anciens runs sans
-reçu restent lisibles mais non attestés.
+Definition of done for B2: a run can only go green with the exact authority, seven valid V2
+manifests, a canonical receipt and its durable marker. Ordinary errors are recorded
+without a false green; `KeyboardInterrupt`, `SystemExit` and cancellation propagate without a marker.
+The CLI fails without launching retention on any uncertain completion. Old runs without a
+receipt remain readable but unattested.
 
-Blast radius GitNexus enregistré avant B2 : `verify_run` est **HIGH** avec 20 appelants
-directs, `run_all` **MEDIUM** avec 12 appelants et `_validate_authority` **MEDIUM**. Avertir
-avant de modifier `verify_run`, puis refaire `gitnexus_impact` sur chaque symbole. L'index
-`red-backup` est frais à `a6517bf` (5 014 nœuds, 10 491 relations, 267 flows). L'index Brain
-a été rafraîchi au parent `39acc7d` (15 347 nœuds, 31 724 relations, 300 flows) ; il sera donc
-techniquement derrière le commit documentaire de handoff. Le réindexer avant toute nouvelle
-édition de symbole Brain.
+GitNexus blast radius recorded before B2: `verify_run` is **HIGH** with 20 direct
+callers, `run_all` **MEDIUM** with 12 callers and `_validate_authority` **MEDIUM**. Warn
+before modifying `verify_run`, then rerun `gitnexus_impact` on each symbol. The
+`red-backup` index is fresh at `a6517bf` (5,014 nodes, 10,491 relations, 267 flows). The
+Brain index was refreshed at the parent `39acc7d` (15,347 nodes, 31,724 relations, 300 flows); it will therefore be
+technically behind the documentary handoff commit. Reindex it before any new
+Brain symbol edit.
 
-## Invariants à préserver
+## Invariants to preserve
 
-Ces changements utilisateur Brain sont hors scope. Ne pas les éditer, formatter ou stager :
+These Brain user changes are out of scope. Do not edit, format or stage them:
 
-| Fichier | SHA-256 attendu |
+| File | Expected SHA-256 |
 |---|---|
 | `AGENTS.md` | `02a2831a24a28f4de44403a425c94aec4342da604de7b6566566f93fc90f0a21` |
 | `CLAUDE.md` | `b92280a56a73c5ecc2f52b9b7b3e3d5a1540174536ae7ff767de84a8909c1a60` |
 | `uv.lock` | `3728131a4dfe368004d424e29fd30068987e40dead36d95af6aa7478f78331c2` |
 
-Le SHA-256 de leur diff Git agrégé est
+The SHA-256 of their aggregated Git diff is
 `8bf616c19812ea0095a53c4831275e3579be0d9f116a1b2e01c2a0b42bdbc4a3`.
-Travailler exclusivement dans `/tmp/red-backup-dr1`, jamais dans le checkout principal.
-Ne pas pousser, merger, installer systemd, modifier le cron, activer cleanup/prune, toucher à
-Neo4j live ni écrire vers une destination off-site sans nouvelle autorité opérateur.
+Work exclusively in `/tmp/red-backup-dr1`, never in the main checkout.
+Do not push, merge, install systemd, modify cron, enable cleanup/prune, touch live
+Neo4j, nor write to an off-site destination without new operator authority.
 
-Dettes P2 acceptées : `run_receipt_v2.py` reste trop grand ; des helpers privés et le loader
-legacy sont fortement couplés ; une failure injection a identifié une micro-fenêtre
-d'acquisition pouvant laisser un FD/temporaire privé sans créer de faux commit. Une erreur de
-fermeture combinée à un signal de contrôle peut aussi être convertie en échec fail-closed.
-Un callback privé arbitraire ajouté après le detach validé reste aussi hors du contrat de code
-de confiance. Ces dettes ne bloquent pas B2 tant que les invariants « aucun faux reçu, aucun
-faux marker » restent prouvés.
+Accepted P2 debts: `run_receipt_v2.py` remains too large; private helpers and the legacy
+loader are strongly coupled; a failure injection identified a micro-window
+during acquisition that could leave a private FD/temp file without creating a false commit. A close
+error combined with a control signal can also be turned into a fail-closed failure.
+An arbitrary private callback added after the validated detach also remains outside the trusted
+code contract. These debts do not block B2 as long as the invariants "no false receipt, no
+false marker" remain proven.
 
-DR1 restera `building` après B2. Le restore PostgreSQL réellement isolé n'est pas encore
-implémenté ; `restore_sandbox.py`, `restore_checks.py`, `restore_report.py` et `restore-drill`
-sont absents. À ce checkpoint restaient aussi ouverts : preuve option A, copie chiffrée hors
-domaine de panne, scheduling/alerting et permissions historiques. La preuve courante exige le
-head exactement déployé (`037` actuellement), pas le head 035 de ce handoff.
+DR1 will remain `building` after B2. The truly isolated PostgreSQL restore is not yet
+implemented; `restore_sandbox.py`, `restore_checks.py`, `restore_report.py` and `restore-drill`
+are absent. Also still open at this checkpoint were: option A proof, encrypted copy outside the
+failure domain, scheduling/alerting and historical permissions. The current proof requires the
+exact deployed head (`037` currently), not the 035 head of this handoff.
 
-## Bootstrap de la nouvelle session
+## New session bootstrap
 
 ```bash
 cd /home/hawixs/hawkixs_infra/git_repo/brain_v42
@@ -145,12 +145,12 @@ git -C /tmp/red-backup-dr1 rev-parse HEAD
 git -C /tmp/red-backup-dr1 rev-list --left-right --count origin/main...HEAD
 ```
 
-Les sorties attendues sont cinq commits Brain devant `origin/main`, `HEAD^` à `39acc7d`, un
-worktree isolé propre, `0 10` pour la divergence `red-backup` et les quatre hashes utilisateur
-exacts. Si le répertoire `/tmp/red-backup-dr1` a disparu, vérifier d'abord que la branche
-locale pointe toujours sur `a6517bf`, retirer uniquement son enregistrement de worktree devenu
-stale, puis recréer un worktree depuis cette branche — jamais depuis `origin/main`.
+Expected outputs are five Brain commits ahead of `origin/main`, `HEAD^` at `39acc7d`, a
+clean isolated worktree, `0 10` for the `red-backup` divergence and the four exact user
+hashes. If the `/tmp/red-backup-dr1` directory has disappeared, first check that the
+local branch still points to `a6517bf`, remove only its stale worktree
+registration, then recreate a worktree from that branch — never from `origin/main`.
 
-Avant toute édition de symbole : lire `AGENTS.md`, rafraîchir l'index s'il est stale et lancer
-`gitnexus_impact`. Avant commit : suite complète, Ruff/format/diff-check,
-`gitnexus_detect_changes`, review finale et staging explicite des seuls fichiers B2.
+Before any symbol edit: read `AGENTS.md`, refresh the index if stale and run
+`gitnexus_impact`. Before commit: full suite, Ruff/format/diff-check,
+`gitnexus_detect_changes`, final review and explicit staging of only the B2 files.

@@ -2,43 +2,43 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Remplacer le serving embedding PyTorch fp16 (drift VRAM structurel, 4.9/6 GiB) par llama.cpp GGUF Q8_0 (allocation statique, 2.9 GiB, 2× plus rapide) + shim Starlette conservant le contrat legacy port 8003 + reranker ONNX CPU, validé par le gold bench v1 contre une baseline PyTorch re-mesurée, avec rollback en une commande.
+**Goal:** Replace PyTorch fp16 embedding serving (structural VRAM drift, 4.9/6 GiB) with llama.cpp GGUF Q8_0 (static allocation, 2.9 GiB, 2x faster) + a Starlette shim preserving the legacy port 8003 contract + a CPU ONNX reranker, validated by gold bench v1 against a freshly re-measured PyTorch baseline, with one-command rollback.
 
-**Architecture:** Deux nouveaux services compose : `embedding-llama` (image `ghcr.io/ggml-org/llama.cpp:server-cuda`, GGUF Q8_0 bind-mounté, `--embedding --pooling last`, API OpenAI `/v1/embeddings`, réseau interne) et `embedding-shim` (Starlette + uvicorn, publie 8003, traduit le contrat legacy `/embed` `/embed/query` `/embed/single` vers llama, exécute `/rerank` localement via onnxruntime CPU sur ms-marco-MiniLM-L-6-v2 pré-exporté par Xenova). Le service legacy `embedding` (PyTorch) passe sous `profiles: ["legacy"]` — rollback instantané. Les clients (`GPUEmbeddingService`, `RerankerClient`, MCP, metrics sidecar) ne changent PAS : même URL `http://localhost:8003`, mêmes shapes de réponse.
+**Architecture:** Two new compose services: `embedding-llama` (image `ghcr.io/ggml-org/llama.cpp:server-cuda`, bind-mounted GGUF Q8_0, `--embedding --pooling last`, OpenAI API `/v1/embeddings`, internal network) and `embedding-shim` (Starlette + uvicorn, publishes 8003, translates the legacy contract `/embed` `/embed/query` `/embed/single` to llama, runs `/rerank` locally via onnxruntime CPU on ms-marco-MiniLM-L-6-v2 pre-exported by Xenova). The legacy `embedding` service (PyTorch) moves under `profiles: ["legacy"]` — instant rollback. The clients (`GPUEmbeddingService`, `RerankerClient`, MCP, metrics sidecar) do NOT change: same URL `http://localhost:8003`, same response shapes.
 
-**Tech Stack:** Starlette (dep directe du repo — PAS FastAPI), httpx, anyio, uvicorn, onnxruntime + tokenizers (container uniquement, lazy-imports), llama.cpp server-cuda, gold bench v1 existant (`bench/embedding_v1/`).
+**Tech Stack:** Starlette (direct repo dep — NOT FastAPI), httpx, anyio, uvicorn, onnxruntime + tokenizers (container only, lazy-imports), llama.cpp server-cuda, existing gold bench v1 (`bench/embedding_v1/`).
 
 ## Global Constraints
 
-- ruff `==0.15.18` : `ruff check src/ tests/ scripts/` ET `ruff format --check src/ tests/ scripts/` doivent passer (le CI lance les deux ; `services/` n'est PAS linté par le CI mais on écrit propre quand même).
-- `mypy src/` doit rester clean (le shim vit dans `services/`, hors scope mypy — ne rien ajouter dans `src/`).
-- `pytest tests/unit/ ` 100% vert ; coverage CI ≥ 60% (le shim testé via `tests/unit/test_embedding_shim.py` compte dans le run mais pas dans `--cov=brain_v42`).
-- AUCUNE nouvelle dépendance dans `pyproject.toml` : les tests du shim n'utilisent que starlette/httpx/anyio/pytest (déjà présents). `onnxruntime`/`tokenizers`/`numpy` sont lazy-importés (container only) — le test qui exerce le chemin numpy utilise `pytest.importorskip`.
-- Contrat API legacy à préserver À L'IDENTIQUE (source de vérité : `services/embedding/main.py` v2.0.0) :
-  - `POST /embed {"texts": [...]}` → `[[float,...],...]` brut (liste vide → `[]`)
-  - `POST /embed/query` et `POST /embed/single` : body JSON `{"text": "..."}` prioritaire, `?text=` legacy accepté, ni l'un ni l'autre → 400 ; réponse `[float,...]` brut
-  - `POST /rerank {"query": str, "candidates": [...]}` → `{"scores": [float,...]}` — **logits bruts** (pas de sigmoid ; parity avec `CrossEncoder.predict`, vérifié en prod : scores -1.37/-11.34)
-  - `GET /healthz` → `{"status":"ok"}` (200) ; `GET /health` → `{"status":"ok","model":...}` (compat `RerankerClient.is_available`) ; `GET /` → info JSON
-- Vecteurs L2-normalisés côté serveur (les clients n'en font pas).
-- llama.cpp : `--pooling last` OBLIGATOIRE (config sentence-transformers du modèle : `pooling_mode_lasttoken: true`), `-ub 1024` (levier VRAM n°1, sweep 2026-07-06 : 2841 MiB vs 4683 à ub=4096, latences identiques ; le chunking ub<n_tokens est correct pour un embedder CAUSAL Qwen2), `-c 8192` (couvre le cap client 15000 chars ≈ 4-5k tokens).
-- GGUF canonique : `/home/hawixs/models/qodo-gguf/qodo-embed-1.5b-q8_0.gguf` (1.6 GiB, produit le 2026-07-06, cosine 0.9998 vs PyTorch).
-- Gates de validation (vs baseline PyTorch re-mesurée le jour même, même harnais) : ΔMRR_self ≥ −0.01, Δrecall@10_self ≥ −0.005, ΔMRR_cross ≥ −0.01, Pearson rerank ≥ 0.995. FAIL → rollback, pas de forçage.
-- Commits atomiques Conventional Commits ; jamais de commit sur main (branche `feat/embedding-gguf-cutover`).
-- Le cutover (Task 6) est une opération prod : exécutée INLINE par le coordinateur (pas par un subagent), avec le rollback affiché avant d'agir.
+- ruff `==0.15.18`: `ruff check src/ tests/ scripts/` AND `ruff format --check src/ tests/ scripts/` must pass (CI runs both; `services/` is NOT linted by CI but we write clean code anyway).
+- `mypy src/` must stay clean (the shim lives in `services/`, outside mypy scope — add nothing to `src/`).
+- `pytest tests/unit/ ` 100% green; CI coverage ≥ 60% (the shim, tested via `tests/unit/test_embedding_shim.py`, counts toward the run but not toward `--cov=brain_v42`).
+- NO new dependency in `pyproject.toml`: the shim tests use only starlette/httpx/anyio/pytest (already present). `onnxruntime`/`tokenizers`/`numpy` are lazy-imported (container only) — the test exercising the numpy path uses `pytest.importorskip`.
+- Legacy API contract to preserve IDENTICALLY (source of truth: `services/embedding/main.py` v2.0.0):
+  - `POST /embed {"texts": [...]}` → raw `[[float,...],...]` (empty list → `[]`)
+  - `POST /embed/query` and `POST /embed/single`: JSON body `{"text": "..."}` takes priority, legacy `?text=` accepted, neither → 400; raw `[float,...]` response
+  - `POST /rerank {"query": str, "candidates": [...]}` → `{"scores": [float,...]}` — **raw logits** (no sigmoid; parity with `CrossEncoder.predict`, verified in production: scores -1.37/-11.34)
+  - `GET /healthz` → `{"status":"ok"}` (200); `GET /health` → `{"status":"ok","model":...}` (compat `RerankerClient.is_available`); `GET /` → info JSON
+- Vectors L2-normalized server-side (clients do not do this).
+- llama.cpp: `--pooling last` REQUIRED (model's sentence-transformers config: `pooling_mode_lasttoken: true`), `-ub 1024` (VRAM lever #1, sweep 2026-07-06: 2841 MiB vs 4683 at ub=4096, identical latencies; ub<n_tokens chunking is correct for a CAUSAL Qwen2 embedder), `-c 8192` (covers the client cap of 15000 chars ≈ 4-5k tokens).
+- Canonical GGUF: `/home/hawixs/models/qodo-gguf/qodo-embed-1.5b-q8_0.gguf` (1.6 GiB, produced 2026-07-06, cosine 0.9998 vs PyTorch).
+- Validation gates (vs PyTorch baseline re-measured the same day, same harness): ΔMRR_self ≥ −0.01, Δrecall@10_self ≥ −0.005, ΔMRR_cross ≥ −0.01, Pearson rerank ≥ 0.995. FAIL → rollback, no forcing through.
+- Atomic Conventional Commits; never commit to main (branch `feat/embedding-gguf-cutover`).
+- The cutover (Task 6) is a production operation: executed INLINE by the coordinator (not by a subagent), with the rollback shown before acting.
 
 ## File Structure
 
-| Fichier | Rôle |
+| File | Role |
 |---|---|
-| `services/embedding_shim/shim_backends.py` | Créer — `LlamaEmbedBackend` (proxy /v1/embeddings, tri par index, L2-norm, garde de troncature + retry), `OnnxRerankBackend` (cross-encoder onnxruntime CPU, lazy-load), `UpstreamError` |
-| `services/embedding_shim/shim_app.py` | Créer — factory Starlette `create_app(embed_backend, rerank_backend)`, 7 routes legacy |
-| `services/embedding_shim/main.py` | Créer — wiring env (`LLAMA_URL`, `ONNX_DIR`) + entrypoint uvicorn |
-| `services/embedding_shim/Dockerfile` | Créer — python:3.12-slim + deps + download ONNX Xenova au build |
-| `tests/unit/test_embedding_shim.py` | Créer — tests TDD backends + app (fakes + MockTransport) |
-| `docker-compose.yml` | Modifier — `embedding` → `profiles: ["legacy"]` ; ajouter `embedding-llama` + `embedding-shim` |
-| `scripts/embedding_cutover_check.py` | Créer — bench self/cross/rerank-parity vs baseline, gates PASS/FAIL |
-| `scripts/embedding_gguf_build.sh` | Créer — reproductibilité de la conversion GGUF (download → convert F16 → quantize Q8_0) |
-| `bench/embedding_v1/.gitignore` | Modifier — ignorer `cutover/` (artefacts de runs) |
+| `services/embedding_shim/shim_backends.py` | Create — `LlamaEmbedBackend` (proxy /v1/embeddings, sort by index, L2-norm, truncation guard + retry), `OnnxRerankBackend` (onnxruntime CPU cross-encoder, lazy-load), `UpstreamError` |
+| `services/embedding_shim/shim_app.py` | Create — Starlette factory `create_app(embed_backend, rerank_backend)`, 7 legacy routes |
+| `services/embedding_shim/main.py` | Create — env wiring (`LLAMA_URL`, `ONNX_DIR`) + uvicorn entrypoint |
+| `services/embedding_shim/Dockerfile` | Create — python:3.12-slim + deps + download ONNX Xenova at build time |
+| `tests/unit/test_embedding_shim.py` | Create — TDD tests for backends + app (fakes + MockTransport) |
+| `docker-compose.yml` | Modify — `embedding` → `profiles: ["legacy"]`; add `embedding-llama` + `embedding-shim` |
+| `scripts/embedding_cutover_check.py` | Create — self/cross/rerank-parity bench vs baseline, PASS/FAIL gates |
+| `scripts/embedding_gguf_build.sh` | Create — reproducibility of the GGUF conversion (download → convert F16 → quantize Q8_0) |
+| `bench/embedding_v1/.gitignore` | Modify — ignore `cutover/` (run artifacts) |
 
 ---
 
@@ -49,17 +49,17 @@
 - Test: `tests/unit/test_embedding_shim.py`
 
 **Interfaces:**
-- Produces: `LlamaEmbedBackend(base_url: str, timeout: float = 60.0, transport: httpx.AsyncBaseTransport | None = None)` avec `async embed(texts: list[str]) -> list[list[float]]`, `async healthy() -> bool`, `async close() -> None` ; exception `UpstreamError` ; constantes `MAX_TEXT_CHARS = 20_000`, `RETRY_TEXT_CHARS = 8_000`. Consommé par Task 3 (app) et Task 4 (container).
+- Produces: `LlamaEmbedBackend(base_url: str, timeout: float = 60.0, transport: httpx.AsyncBaseTransport | None = None)` with `async embed(texts: list[str]) -> list[list[float]]`, `async healthy() -> bool`, `async close() -> None`; exception `UpstreamError`; constants `MAX_TEXT_CHARS = 20_000`, `RETRY_TEXT_CHARS = 8_000`. Consumed by Task 3 (app) and Task 4 (container).
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
-Créer `tests/unit/test_embedding_shim.py` :
+Create `tests/unit/test_embedding_shim.py`:
 
 ```python
-"""Tests du shim embedding (services/embedding_shim/) — backends + app.
+"""Embedding shim tests (services/embedding_shim/) — backends + app.
 
-Le shim n'est pas un package installé : on l'importe via sys.path.
-Contrat de référence : services/embedding/main.py v2.0.0 (PyTorch legacy).
+The shim is not an installed package: it is imported via sys.path.
+Reference contract: services/embedding/main.py v2.0.0 (PyTorch legacy).
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ from shim_backends import (  # noqa: E402
 
 
 def _openai_payload(vecs_by_index: dict[int, list[float]]) -> dict:
-    """Réponse /v1/embeddings au format OpenAI (index volontairement mélangés)."""
+    """Response from /v1/embeddings in OpenAI format (indices intentionally shuffled)."""
     return {
         "data": [
             {"object": "embedding", "index": i, "embedding": v}
@@ -104,14 +104,14 @@ async def test_embed_sorts_by_index_and_normalizes():
         body = json.loads(request.content)
         assert request.url.path == "/v1/embeddings"
         assert body["input"] == ["aaa", "bbb"]
-        # Réponse dans le désordre + vecteurs non normalisés
+        # Response out of order + non-normalized vectors
         return httpx.Response(
             200, json=_openai_payload({1: [0.0, 2.0], 0: [3.0, 4.0]})
         )
 
     vecs = await _make_backend(handler).embed(["aaa", "bbb"])
     assert len(vecs) == 2
-    # index 0 en premier, L2-normalisé : [3,4] → [0.6, 0.8]
+    # index 0 first, L2-normalized: [3,4] → [0.6, 0.8]
     assert vecs[0] == pytest.approx([0.6, 0.8])
     assert vecs[1] == pytest.approx([0.0, 1.0])
     for v in vecs:
@@ -144,7 +144,7 @@ async def test_embed_retries_shorter_on_upstream_500():
         body = json.loads(request.content)
         calls.append(len(body["input"][0]))
         if len(calls) == 1:
-            # ex. "input is larger than the max context size"
+            # e.g. "input is larger than the max context size"
             return httpx.Response(500, json={"error": "context overflow"})
         return httpx.Response(200, json=_openai_payload({0: [1.0, 0.0]}))
 
@@ -173,26 +173,26 @@ async def test_healthy_true_false():
     assert await _make_backend(down).healthy() is False
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_embedding_shim.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'shim_backends'`
 
-- [ ] **Step 3: Implémentation minimale**
+- [ ] **Step 3: Minimal implementation**
 
-Créer `services/embedding_shim/shim_backends.py` :
+Create `services/embedding_shim/shim_backends.py`:
 
 ```python
-"""Backends du shim embedding brain-v42.
+"""Backends for the brain-v42 embedding shim.
 
-LlamaEmbedBackend — proxy vers llama.cpp server (/v1/embeddings, shape
-OpenAI). Trie par index, L2-normalise (défensif — llama normalise déjà
-avec --embd-normalize par défaut), borne la taille des textes et retente
-une fois plus court si l'upstream 500 (dépassement de contexte tokens).
+LlamaEmbedBackend — proxy to the llama.cpp server (/v1/embeddings, OpenAI
+shape). Sorts by index, L2-normalizes (defensive — llama already normalizes
+with --embd-normalize by default), bounds text size, and retries once
+shorter if the upstream returns 500 (token context overflow).
 
-OnnxRerankBackend — cross-encoder ms-marco-MiniLM-L-6-v2 via onnxruntime
-CPU (Task 2). Lazy-load : onnxruntime/tokenizers/numpy ne sont importés
-qu'au premier appel — absents du venv de dev, présents dans le container.
+OnnxRerankBackend — ms-marco-MiniLM-L-6-v2 cross-encoder via onnxruntime
+CPU (Task 2). Lazy-load: onnxruntime/tokenizers/numpy are only imported
+on first call — absent from the dev venv, present in the container.
 """
 
 from __future__ import annotations
@@ -202,17 +202,17 @@ import threading
 
 import httpx
 
-# ~5-7k tokens : garde sous n_ctx=8192 du serveur llama. Le cap client
-# historique est 15000 chars (ADR #7) ; 20000 laisse de la marge aux
-# appels directs hors MCP.
+# ~5-7k tokens: stays under the llama server's n_ctx=8192. The historical
+# client cap is 15000 chars (ADR #7); 20000 leaves headroom for direct
+# calls outside MCP.
 MAX_TEXT_CHARS = 20_000
-# Retry après un 500 upstream (texte token-dense qui déborde malgré la
-# garde en chars) : à 8000 chars on est toujours < 4096 tokens.
+# Retry after an upstream 500 (token-dense text that overflows despite
+# the char guard): at 8000 chars we're always < 4096 tokens.
 RETRY_TEXT_CHARS = 8_000
 
 
 class UpstreamError(Exception):
-    """Le serveur llama a répondu 5xx (après retry de troncature)."""
+    """The llama server responded 5xx (after the truncation retry)."""
 
 
 def _l2_normalize(vec: list[float]) -> list[float]:
@@ -223,7 +223,7 @@ def _l2_normalize(vec: list[float]) -> list[float]:
 
 
 class LlamaEmbedBackend:
-    """Client async du /v1/embeddings de llama.cpp server."""
+    """Async client for the llama.cpp server's /v1/embeddings."""
 
     def __init__(
         self,
@@ -277,7 +277,7 @@ class LlamaEmbedBackend:
             self._client = None
 ```
 
-- [ ] **Step 4: Vérifier que ça passe**
+- [ ] **Step 4: Verify it passes**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_embedding_shim.py -v`
 Expected: 6 PASS
@@ -294,24 +294,24 @@ git commit -m "feat(shim): LlamaEmbedBackend — proxy /v1/embeddings llama.cpp 
 
 ---
 
-### Task 2: OnnxRerankBackend (cross-encoder CPU)
+### Task 2: OnnxRerankBackend (CPU cross-encoder)
 
 **Files:**
 - Modify: `services/embedding_shim/shim_backends.py` (append)
 - Test: `tests/unit/test_embedding_shim.py` (append)
 
 **Interfaces:**
-- Produces: `OnnxRerankBackend(model_path: str, tokenizer_path: str, max_length: int = 512)` avec `rerank(query: str, candidates: list[str]) -> list[float]` (SYNC — l'app l'exécute via `anyio.to_thread.run_sync`). Consommé par Task 3.
+- Produces: `OnnxRerankBackend(model_path: str, tokenizer_path: str, max_length: int = 512)` with `rerank(query: str, candidates: list[str]) -> list[float]` (SYNC — the app runs it via `anyio.to_thread.run_sync`). Consumed by Task 3.
 
-- [ ] **Step 1: Tests qui échouent** (append à `tests/unit/test_embedding_shim.py`)
+- [ ] **Step 1: Failing tests** (append to `tests/unit/test_embedding_shim.py`)
 
 ```python
 from shim_backends import OnnxRerankBackend  # noqa: E402
 
 
 def test_rerank_empty_candidates_short_circuits(tmp_path):
-    # Chemins volontairement inexistants : si le lazy-load se déclenche
-    # sur candidates=[], le test explose — c'est le comportement testé.
+    # Paths intentionally nonexistent: if lazy-load fires on
+    # candidates=[], the test blows up — that's the behavior under test.
     backend = OnnxRerankBackend(
         str(tmp_path / "nope.onnx"), str(tmp_path / "nope.json")
     )
@@ -327,7 +327,7 @@ def test_rerank_builds_pairs_and_returns_raw_logits():
 
     class FakeSession:
         def get_inputs(self):
-            # export Xenova : token_type_ids présent
+            # Xenova export: token_type_ids present
             return [
                 FakeInput("input_ids"),
                 FakeInput("attention_mask"),
@@ -366,20 +366,20 @@ def test_rerank_builds_pairs_and_returns_raw_logits():
     assert tok.batches == [[("q", "cand a"), ("q", "cand b")]]
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_embedding_shim.py -v -k rerank`
 Expected: FAIL — `ImportError: cannot import name 'OnnxRerankBackend'`
 
-- [ ] **Step 3: Implémentation** (append à `shim_backends.py`)
+- [ ] **Step 3: Implementation** (append to `shim_backends.py`)
 
 ```python
 class OnnxRerankBackend:
-    """Cross-encoder ms-marco-MiniLM-L-6-v2 via onnxruntime (CPU).
+    """ms-marco-MiniLM-L-6-v2 cross-encoder via onnxruntime (CPU).
 
-    Retourne les logits BRUTS (pas de sigmoid) — parity exacte avec
-    CrossEncoder.predict du service PyTorch legacy (scores observés en
-    prod : -1.37 pertinent / -11.34 non pertinent).
+    Returns RAW logits (no sigmoid) — exact parity with
+    CrossEncoder.predict from the legacy PyTorch service (scores observed
+    in production: -1.37 relevant / -11.34 not relevant).
     """
 
     def __init__(
@@ -390,8 +390,8 @@ class OnnxRerankBackend:
         self._max_length = max_length
         self._session = None
         self._tokenizer = None
-        # rerank() tourne dans le threadpool anyio : deux premiers appels
-        # concurrents peuvent croiser le lazy-load sans ce lock.
+        # rerank() runs in the anyio threadpool: two concurrent first
+        # calls could race the lazy-load without this lock.
         self._lock = threading.Lock()
 
     def _load(self):
@@ -432,10 +432,10 @@ class OnnxRerankBackend:
         return [float(x) for x in logits.reshape(-1)]
 ```
 
-- [ ] **Step 4: Vérifier que ça passe**
+- [ ] **Step 4: Verify it passes**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_embedding_shim.py -v`
-Expected: 8 PASS (ou 7 PASS + 1 SKIP si numpy absent du venv)
+Expected: 8 PASS (or 7 PASS + 1 SKIP if numpy is absent from the venv)
 
 - [ ] **Step 5: Gates + commit**
 
@@ -447,7 +447,7 @@ git add -u && git commit -m "feat(shim): OnnxRerankBackend — cross-encoder onn
 
 ---
 
-### Task 3: App Starlette (contrat legacy) + wiring
+### Task 3: Starlette app (legacy contract) + wiring
 
 **Files:**
 - Create: `services/embedding_shim/shim_app.py`
@@ -456,9 +456,9 @@ git add -u && git commit -m "feat(shim): OnnxRerankBackend — cross-encoder onn
 
 **Interfaces:**
 - Consumes: `LlamaEmbedBackend.embed/healthy` (Task 1), `OnnxRerankBackend.rerank` (Task 2).
-- Produces: `create_app(embed_backend, rerank_backend) -> Starlette` ; `main.py` expose `app` module-level pour `uvicorn main:app` (Task 4). Env : `LLAMA_URL` (défaut `http://embedding-llama:8080`), `ONNX_DIR` (défaut `/app/onnx`).
+- Produces: `create_app(embed_backend, rerank_backend) -> Starlette`; `main.py` exposes `app` at module level for `uvicorn main:app` (Task 4). Env: `LLAMA_URL` (default `http://embedding-llama:8080`), `ONNX_DIR` (default `/app/onnx`).
 
-- [ ] **Step 1: Tests qui échouent** (append à `tests/unit/test_embedding_shim.py`)
+- [ ] **Step 1: Failing tests** (append to `tests/unit/test_embedding_shim.py`)
 
 ```python
 from starlette.testclient import TestClient  # noqa: E402
@@ -592,30 +592,30 @@ def test_app_info():
     assert "runtime" in body
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_embedding_shim.py -v -k app`
 Expected: FAIL — `ModuleNotFoundError: No module named 'shim_app'`
 
-- [ ] **Step 3: Implémentation**
+- [ ] **Step 3: Implementation**
 
-Créer `services/embedding_shim/shim_app.py` :
+Create `services/embedding_shim/shim_app.py`:
 
 ```python
-"""App Starlette du shim — contrat legacy embedding brain-v42 (port 8003).
+"""Shim Starlette app — brain-v42 legacy embedding contract (port 8003).
 
-Parity exacte avec services/embedding/main.py v2.0.0 (PyTorch) :
+Exact parity with services/embedding/main.py v2.0.0 (PyTorch):
   POST /embed         {"texts": [...]}          -> [[float,...],...]
   POST /embed/query   {"text": "..."} | ?text=  -> [float,...]
-  POST /embed/single  idem /embed/query         -> [float,...]
+  POST /embed/single  same as /embed/query      -> [float,...]
   POST /rerank        {"query","candidates"}    -> {"scores": [...]}
-  GET  /              -> info modèles/runtime
-  GET  /healthz       -> 200 si upstream llama healthy, sinon 503
+  GET  /              -> models/runtime info
+  GET  /healthz       -> 200 if upstream llama healthy, else 503
   GET  /health        -> 200 (compat RerankerClient.is_available)
 
-Différence assumée : /healthz sonde l'upstream (l'ancien /healthz ne
-touchait jamais le GPU — c'est le bug du false-green de l'incident
-2026-04-12, learning 410eb227 ; ici on corrige).
+Deliberate difference: /healthz probes the upstream (the old /healthz
+never touched the GPU — that's the false-green bug from the 2026-04-12
+incident, learning 410eb227; we fix it here).
 """
 
 from __future__ import annotations
@@ -635,7 +635,7 @@ RUNTIME = "llama.cpp-gguf-q8_0+onnx-cpu"
 async def _json_or_none(request: Request) -> dict | None:
     try:
         payload = await request.json()
-    except Exception:  # body vide/non-JSON = cas legacy (?text=)
+    except Exception:  # empty/non-JSON body = legacy case (?text=)
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -720,14 +720,14 @@ def create_app(embed_backend, rerank_backend) -> Starlette:
     )
 ```
 
-Créer `services/embedding_shim/main.py` :
+Create `services/embedding_shim/main.py`:
 
 ```python
-"""Entrypoint du shim — wiring env + uvicorn.
+"""Shim entrypoint — env wiring + uvicorn.
 
 Env:
-  LLAMA_URL  URL du serveur llama.cpp (défaut http://embedding-llama:8080)
-  ONNX_DIR   dossier contenant model.onnx + tokenizer.json (défaut /app/onnx)
+  LLAMA_URL  llama.cpp server URL (default http://embedding-llama:8080)
+  ONNX_DIR   directory holding model.onnx + tokenizer.json (default /app/onnx)
 """
 
 from __future__ import annotations
@@ -757,10 +757,10 @@ if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8003, workers=1)
 ```
 
-- [ ] **Step 4: Vérifier que ça passe**
+- [ ] **Step 4: Verify it passes**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_embedding_shim.py -v`
-Expected: 23 PASS (ou 22 + 1 SKIP numpy)
+Expected: 23 PASS (or 22 + 1 SKIP numpy)
 
 - [ ] **Step 5: Gates + commit**
 
@@ -774,34 +774,34 @@ git commit -m "feat(shim): app Starlette contrat legacy 8003 + wiring env"
 
 ---
 
-### Task 4: Dockerfile shim + services compose + script de reproductibilité GGUF
+### Task 4: Shim Dockerfile + compose services + GGUF reproducibility script
 
 **Files:**
 - Create: `services/embedding_shim/Dockerfile`
 - Create: `scripts/embedding_gguf_build.sh`
-- Modify: `docker-compose.yml` (service `embedding` lignes 32-62 ; ajouter 2 services)
+- Modify: `docker-compose.yml` (service `embedding` lines 32-62; add 2 services)
 
 **Interfaces:**
 - Consumes: `main:app` (Task 3), GGUF `/home/hawixs/models/qodo-gguf/qodo-embed-1.5b-q8_0.gguf`.
-- Produces: services compose `embedding-llama` (interne, `http://embedding-llama:8080`) et `embedding-shim` (host `8003:8003`) ; profil `legacy` pour l'ancien service. Consommé par Tasks 5-6.
+- Produces: compose services `embedding-llama` (internal, `http://embedding-llama:8080`) and `embedding-shim` (host `8003:8003`); `legacy` profile for the old service. Consumed by Tasks 5-6.
 
 - [ ] **Step 1: Dockerfile**
 
-Créer `services/embedding_shim/Dockerfile` :
+Create `services/embedding_shim/Dockerfile`:
 
 ```dockerfile
 # ============================================================
 # Dockerfile — Brain v42 Embedding Shim
 #
-# Traduit le contrat legacy (:8003 /embed /embed/query /rerank)
-# vers llama.cpp server (/v1/embeddings) + exécute le reranker
-# cross-encoder en ONNX CPU (pas de PyTorch : image ~600 MB au
-# lieu de ~8 GB, RAM ~300 MB au lieu de 12.8 GB).
+# Translates the legacy contract (:8003 /embed /embed/query /rerank)
+# to the llama.cpp server (/v1/embeddings) + runs the cross-encoder
+# reranker in ONNX CPU (no PyTorch: image ~600 MB instead of
+# ~8 GB, RAM ~300 MB instead of 12.8 GB).
 #
-# L'ONNX pré-exporté vient de Xenova/ms-marco-MiniLM-L-6-v2
-# (même modèle que cross-encoder/ms-marco-MiniLM-L-6-v2) — la
-# parity des scores est validée par scripts/embedding_cutover_check.py
-# (gate Pearson >= 0.995 vs le service PyTorch).
+# The pre-exported ONNX comes from Xenova/ms-marco-MiniLM-L-6-v2
+# (same model as cross-encoder/ms-marco-MiniLM-L-6-v2) — score
+# parity is validated by scripts/embedding_cutover_check.py
+# (Pearson gate >= 0.995 vs the PyTorch service).
 # ============================================================
 
 FROM python:3.12-slim
@@ -818,7 +818,7 @@ RUN pip install --no-cache-dir \
     numpy \
     huggingface_hub
 
-# Modèle ONNX + tokenizer téléchargés au build (démarrage sans réseau).
+# ONNX model + tokenizer downloaded at build time (network-free startup).
 RUN python -c "\
 from huggingface_hub import hf_hub_download; \
 p1 = hf_hub_download('Xenova/ms-marco-MiniLM-L-6-v2', 'onnx/model.onnx'); \
@@ -835,14 +835,14 @@ EXPOSE 8003
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8003", "--workers", "1"]
 ```
 
-- [ ] **Step 2: Script de reproductibilité GGUF**
+- [ ] **Step 2: GGUF reproducibility script**
 
-Créer `scripts/embedding_gguf_build.sh` (chmod +x) :
+Create `scripts/embedding_gguf_build.sh` (chmod +x):
 
 ```bash
 #!/usr/bin/env bash
-# Reproduit le GGUF Q8_0 de Qodo-Embed-1-1.5B (produit initialement le
-# 2026-07-06). Sortie : $OUT_DIR/qodo-embed-1.5b-{f16,q8_0}.gguf
+# Reproduces the Q8_0 GGUF for Qodo-Embed-1-1.5B (originally produced
+# 2026-07-06). Output: $OUT_DIR/qodo-embed-1.5b-{f16,q8_0}.gguf
 #
 # Usage: scripts/embedding_gguf_build.sh [OUT_DIR]
 set -euo pipefail
@@ -875,43 +875,43 @@ ls -lh "$OUT_DIR"/*.gguf
 echo "✓ done"
 ```
 
-- [ ] **Step 3: Compose — legacy en profile + 2 nouveaux services**
+- [ ] **Step 3: Compose — legacy under a profile + 2 new services**
 
-Dans `docker-compose.yml`, modifier le service `embedding` (ajouter `profiles` juste sous `container_name`) :
+In `docker-compose.yml`, modify the `embedding` service (add `profiles` right under `container_name`):
 
 ```yaml
   embedding:
     build: ./services/embedding
     container_name: brain_v42_embedding
-    # PyTorch fp16 legacy — remplacé par embedding-llama + embedding-shim
-    # (cutover 2026-07-06, drift VRAM structurel — learning 410eb227).
-    # ROLLBACK : docker compose stop embedding-shim embedding-llama
-    #            && docker compose --profile legacy up -d embedding
+    # Legacy PyTorch fp16 — replaced by embedding-llama + embedding-shim
+    # (cutover 2026-07-06, structural VRAM drift — learning 410eb227).
+    # ROLLBACK: docker compose stop embedding-shim embedding-llama
+    #           && docker compose --profile legacy up -d embedding
     profiles: ["legacy"]
     restart: unless-stopped
 ```
 
-(le reste du service `embedding` est inchangé)
+(the rest of the `embedding` service is unchanged)
 
-Ajouter après le service `embedding` :
+Add after the `embedding` service:
 
 ```yaml
   embedding-llama:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
     container_name: brain_v42_embedding_llama
     restart: unless-stopped
-    # --pooling last : config sentence-transformers du modèle (lasttoken).
-    # -ub 1024 : levier VRAM n°1 (2.9 GiB vs 4.7 à ub=4096, latences
-    # identiques — sweep 2026-07-06, learning 906722df). Le chunking
-    # ub < n_tokens est correct pour un embedder causal (Qwen2).
-    # -c 8192 : couvre le cap client 15000 chars (~4-5k tokens).
-    # -np 1 : verrouillé — le KV cache est PAR SLOT ; -np N sur ce GPU
-    # 6 GiB implique de re-mesurer la VRAM (N × ctx 8192).
-    # --cont-batching + --embd-normalize 2 (L2) : explicites pour ne pas
-    # dépendre des défauts de l'image (le shim re-normalise aussi,
-    # défense en profondeur).
-    # Allocation VRAM statique au démarrage → pas de drift (le fix
-    # durable de l'incident 2026-04-12).
+    # --pooling last: the model's sentence-transformers config (lasttoken).
+    # -ub 1024: VRAM lever #1 (2.9 GiB vs 4.7 at ub=4096, identical
+    # latencies — sweep 2026-07-06, learning 906722df). ub < n_tokens
+    # chunking is correct for a causal embedder (Qwen2).
+    # -c 8192: covers the client cap of 15000 chars (~4-5k tokens).
+    # -np 1: locked in — the KV cache is PER SLOT; -np N on this 6 GiB
+    # GPU means re-measuring VRAM (N × ctx 8192).
+    # --cont-batching + --embd-normalize 2 (L2): explicit so we don't
+    # depend on the image's defaults (the shim also re-normalizes,
+    # defense in depth).
+    # Static VRAM allocation at startup → no drift (the durable fix
+    # for the 2026-04-12 incident).
     command: >
       -m /models/qodo-embed-1.5b-q8_0.gguf
       --embedding --pooling last
@@ -928,8 +928,8 @@ Ajouter après le service `embedding` :
               count: 1
               capabilities: [gpu]
     healthcheck:
-      # curl présent dans l'image (vérifié 2026-07-06). /health de
-      # llama-server retourne 503 tant que le modèle charge, 200 ensuite.
+      # curl present in the image (verified 2026-07-06). llama-server's
+      # /health returns 503 while the model loads, 200 afterward.
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:8080/health"]
       interval: 30s
       timeout: 5s
@@ -951,9 +951,9 @@ Ajouter après le service `embedding` :
       embedding-llama:
         condition: service_healthy
     healthcheck:
-      # Healthcheck réel de bout en bout : POST /embed traverse le shim
-      # ET le serveur llama (même philosophie que le healthcheck legacy
-      # post-incident 410eb227 — jamais de /healthz-only false-green).
+      # Real end-to-end healthcheck: POST /embed traverses the shim
+      # AND the llama server (same philosophy as the post-incident
+      # 410eb227 legacy healthcheck — never a /healthz-only false-green).
       test: ["CMD", "python3", "-c", "import urllib.request,json; r=urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8003/embed',data=json.dumps({'texts':['healthcheck']}).encode(),headers={'Content-Type':'application/json'}),timeout=15); assert r.read(2)==b'[['"]
       interval: 60s
       timeout: 20s
@@ -961,26 +961,26 @@ Ajouter après le service `embedding` :
       start_period: 60s
 ```
 
-Note : `embedding-llama` reste sur le réseau `default` uniquement (pas de port host) ; `embedding-shim` rejoint `hawkixs-infra` comme le legacy (parity pour les consommateurs inter-containers).
+Note: `embedding-llama` stays on the `default` network only (no host port); `embedding-shim` joins `hawkixs-infra` like the legacy service (parity for inter-container consumers).
 
-- [ ] **Step 4: Vérifications statiques + droits GGUF**
+- [ ] **Step 4: Static checks + GGUF permissions**
 
 ```bash
 sudo chown -R hawixs:hawixs /home/hawixs/models/qodo-gguf 2>/dev/null || chown -R hawixs:hawixs /home/hawixs/models/qodo-gguf || true
-ls -lh /home/hawixs/models/qodo-gguf/qodo-embed-1.5b-q8_0.gguf   # doit exister, 1.6G
+ls -lh /home/hawixs/models/qodo-gguf/qodo-embed-1.5b-q8_0.gguf   # must exist, 1.6G
 docker compose config embedding-llama embedding-shim > /dev/null && echo "compose OK"
 docker compose --profile legacy config embedding > /dev/null && echo "profile legacy OK"
 ```
 
 Expected: `compose OK` + `profile legacy OK`
 
-- [ ] **Step 5: Build de l'image shim (pas de démarrage)**
+- [ ] **Step 5: Build the shim image (no startup)**
 
 ```bash
 docker compose build embedding-shim
 ```
 
-Expected: build vert, download ONNX ~90 MB au build.
+Expected: green build, ONNX download ~90 MB at build time.
 
 - [ ] **Step 6: Commit**
 
@@ -992,47 +992,47 @@ git commit -m "feat(deploy): embedding-llama (GGUF Q8) + embedding-shim, PyTorch
 
 ---
 
-### Task 5: Script de validation cutover + baseline PyTorch
+### Task 5: Cutover validation script + PyTorch baseline
 
 **Files:**
 - Create: `scripts/embedding_cutover_check.py`
-- Modify: `bench/embedding_v1/.gitignore` (ajouter la ligne `cutover/`)
+- Modify: `bench/embedding_v1/.gitignore` (add the `cutover/` line)
 
 **Interfaces:**
 - Consumes: `bench/embedding_v1/gen_gold.py` (QUERIES, SAMPLE_SIZES, SEED), `bench/embedding_v1/run_bench.py` (`load_corpus`, `compute_metrics`, `cosine_rank_all`, `QueryResult`, `_norm`), gold `bench/embedding_v1/gold_v1.jsonl`, PG `localhost:5433`.
-- Produces: CLI `python scripts/embedding_cutover_check.py --url URL --output FILE [--baseline FILE] [--limit-queries N]` — exit 0 si gates PASS (ou pas de baseline), exit 1 si FAIL. JSON de sortie : `{url, self: {...métriques}, cross: {...}, rerank_scores: [...], n_gold_kept, n_cross_corpus}`.
+- Produces: CLI `python scripts/embedding_cutover_check.py --url URL --output FILE [--baseline FILE] [--limit-queries N]` — exit 0 if gates PASS (or no baseline), exit 1 if FAIL. Output JSON: `{url, self: {...metrics}, cross: {...}, rerank_scores: [...], n_gold_kept, n_cross_corpus}`.
 
-- [ ] **Step 1: Écrire le script**
+- [ ] **Step 1: Write the script**
 
-Créer `scripts/embedding_cutover_check.py` :
+Create `scripts/embedding_cutover_check.py`:
 
 ```python
-"""Validation du cutover embedding — gold bench v1 contre une baseline.
+"""Embedding cutover validation — gold bench v1 against a baseline.
 
-Trois mesures sur l'endpoint cible (contrat natif /embed, /rerank) :
+Three measurements against the target endpoint (native /embed, /rerank contract):
 
-  self   — corpus ET queries embeddés par la cible (qualité du modèle
-           servi, harnais identique à bench/embedding_v1/run_bench.py).
-  cross  — corpus = vecteurs STOCKÉS en PG (embeddés par le PyTorch
-           fp16 historique), queries embeddées par la cible. C'est le
-           scénario réel post-cutover : requêtes GGUF contre un corpus
-           fp16 non ré-embeddé.
-  rerank — scores /rerank sur des paires déterministes (parity ONNX vs
-           CrossEncoder PyTorch).
+  self   — corpus AND queries embedded by the target (quality of the
+           served model, same harness as bench/embedding_v1/run_bench.py).
+  cross  — corpus = vectors STORED in PG (embedded by the historical
+           PyTorch fp16), queries embedded by the target. This is the
+           real post-cutover scenario: GGUF queries against a corpus
+           that hasn't been re-embedded in fp16.
+  rerank — /rerank scores on deterministic pairs (parity ONNX vs
+           PyTorch CrossEncoder).
 
-Usage :
-  # baseline (PyTorch encore en prod)
+Usage:
+  # baseline (PyTorch still in prod)
   python scripts/embedding_cutover_check.py \
       --url http://localhost:8003 \
       --output bench/embedding_v1/cutover/baseline_pytorch.json
 
-  # post-cutover (shim en place) + gates
+  # post-cutover (shim in place) + gates
   python scripts/embedding_cutover_check.py \
       --url http://localhost:8003 \
       --output bench/embedding_v1/cutover/candidate_gguf.json \
       --baseline bench/embedding_v1/cutover/baseline_pytorch.json
 
-Gates (candidate vs baseline) : dMRR_self >= -0.01,
+Gates (candidate vs baseline): dMRR_self >= -0.01,
 drecall@10_self >= -0.005, dMRR_cross >= -0.01, pearson_rerank >= 0.995.
 """
 
@@ -1062,8 +1062,8 @@ from run_bench import (  # noqa: E402
 
 GOLD_PATH = BENCH / "gold_v1.jsonl"
 
-# etype (gen_gold) -> table PG. Les tables sans colonne embedding sont
-# exclues du mode cross à l'exécution (log explicite, pas de cap silencieux).
+# etype (gen_gold) -> PG table. Tables without an embedding column are
+# excluded from cross mode at run time (explicit log, no silent cap).
 TABLES = {
     "learning": "learnings",
     "feature": "features",
@@ -1077,9 +1077,9 @@ TABLES = {
 
 RERANK_PAIRS = 20
 EMBED_BATCH = 16
-# En dessous de ce nombre de queries gold résolvables en mode cross, le
-# gate dMRR_cross n'est pas statistiquement significatif → exit 2 (ni
-# PASS ni FAIL : échantillon insuffisant, à investiguer avant cutover).
+# Below this number of resolvable gold queries in cross mode, the
+# dMRR_cross gate isn't statistically significant → exit 2 (neither
+# PASS nor FAIL: sample too small, investigate before cutover).
 MIN_CROSS_GOLD = 100
 
 GATES = {
@@ -1121,7 +1121,7 @@ def load_gold() -> list[dict]:
 async def load_stored_vectors(
     ids_by_type: dict[str, list[str]],
 ) -> dict[str, list[float]]:
-    """Vecteurs PG stockés (fp16 historique) pour les ids du corpus."""
+    """PG vectors stored (historical fp16) for the corpus ids."""
     conn = await asyncpg.connect(PG_DSN)
     stored: dict[str, list[float]] = {}
     try:
@@ -1130,7 +1130,7 @@ async def load_stored_vectors(
             try:
                 rows = await conn.fetch(
                     f"SELECT id::text AS id, embedding::text AS emb "
-                    f"FROM {table} "  # table depuis le dict fermé TABLES
+                    f"FROM {table} "  # table from the closed TABLES dict
                     f"WHERE id::text = ANY($1) AND embedding IS NOT NULL",
                     ids,
                 )
@@ -1171,7 +1171,7 @@ def evaluate(
 def build_rerank_pairs(
     gold: list[dict], corpus: list[tuple[str, str, str]]
 ) -> list[tuple[str, list[str]]]:
-    """Paires déterministes : (query, [texte gold, distracteur fixe])."""
+    """Deterministic pairs: (query, [gold text, fixed distractor])."""
     if not corpus:
         return []
     text_by_id = {cid: text for _etype, cid, text in corpus}
@@ -1315,24 +1315,24 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-- [ ] **Step 2: Gitignore des artefacts**
+- [ ] **Step 2: Gitignore the artifacts**
 
-Ajouter à `bench/embedding_v1/.gitignore` la ligne :
+Add the following line to `bench/embedding_v1/.gitignore`:
 
 ```
 cutover/
 ```
 
-- [ ] **Step 3: Gates lint**
+- [ ] **Step 3: Lint gates**
 
 ```bash
 .venv/bin/ruff check scripts/embedding_cutover_check.py
 .venv/bin/ruff format scripts/embedding_cutover_check.py
 ```
 
-Expected: clean (corriger les éventuels imports/format, PAS les gates du CI).
+Expected: clean (fix any imports/formatting, NOT the CI gates).
 
-- [ ] **Step 4: Smoke rapide du script (20 queries, prod PyTorch up)**
+- [ ] **Step 4: Quick smoke test of the script (20 queries, PyTorch prod up)**
 
 ```bash
 .venv/bin/python scripts/embedding_cutover_check.py \
@@ -1341,9 +1341,9 @@ Expected: clean (corriger les éventuels imports/format, PAS les gates du CI).
   --limit-queries 20
 ```
 
-Expected: exit 0, métriques self/cross affichées non nulles, 40 scores rerank.
+Expected: exit 0, self/cross metrics displayed non-null, 40 rerank scores.
 
-- [ ] **Step 5: Baseline complète PyTorch (~915 queries, ~5-10 min)**
+- [ ] **Step 5: Full PyTorch baseline (~915 queries, ~5-10 min)**
 
 ```bash
 .venv/bin/python scripts/embedding_cutover_check.py \
@@ -1351,7 +1351,7 @@ Expected: exit 0, métriques self/cross affichées non nulles, 40 scores rerank.
   --output bench/embedding_v1/cutover/baseline_pytorch.json
 ```
 
-Expected: exit 0. Noter `self.mrr` (attendu ≈ 0.88-0.93, cohérent report_v1) et `cross.mrr` (≈ self : mêmes vecteurs fp16 des deux côtés).
+Expected: exit 0. Note `self.mrr` (expected ≈ 0.88-0.93, consistent with report_v1) and `cross.mrr` (≈ self: same fp16 vectors on both sides).
 
 - [ ] **Step 6: Commit**
 
@@ -1362,22 +1362,22 @@ git commit -m "feat(bench): script cutover_check — self/cross/rerank-parity + 
 
 ---
 
-### Task 6: Cutover prod + validation + (rollback si FAIL) — INLINE, pas de subagent
+### Task 6: Production cutover + validation + (rollback if FAIL) — INLINE, no subagent
 
-**Files:** aucun changement de code — opérations docker/validation.
+**Files:** no code changes — docker/validation operations.
 
 **Interfaces:**
-- Consumes: images/services de Task 4, baseline de Task 5.
-- Produces: stack GGUF en prod sur :8003, `candidate_gguf.json`, verdict gates.
+- Consumes: images/services from Task 4, baseline from Task 5.
+- Produces: GGUF stack in production on :8003, `candidate_gguf.json`, gate verdict.
 
-**ROLLBACK (à garder sous les yeux pendant toute la task) :**
+**ROLLBACK (keep this in view for the whole task):**
 ```bash
 docker compose stop embedding-shim embedding-llama
 docker compose --profile legacy up -d embedding
-curl -s http://localhost:8003/healthz   # → {"status":"ok"} en ~25s
+curl -s http://localhost:8003/healthz   # → {"status":"ok"} in ~25s
 ```
 
-- [ ] **Step 1: Prévol**
+- [ ] **Step 1: Preflight**
 
 ```bash
 docker ps --filter name=brain_v42_embedding --format '{{.Names}} {{.Status}}'  # legacy healthy
@@ -1385,21 +1385,21 @@ ls -lh /home/hawixs/models/qodo-gguf/qodo-embed-1.5b-q8_0.gguf
 test -s bench/embedding_v1/cutover/baseline_pytorch.json && echo baseline-ok
 ```
 
-- [ ] **Step 2: Bascule**
+- [ ] **Step 2: Cutover**
 
 ```bash
-docker compose stop embedding          # stoppe le PyTorch (libère la VRAM)
+docker compose stop embedding          # stop PyTorch (frees the VRAM)
 docker compose up -d embedding-llama embedding-shim
-# attendre le healthy (llama ~10s de load, shim démarre après)
+# wait for healthy (llama ~10s to load, shim starts after)
 for i in $(seq 1 30); do
   curl -s -m 3 http://localhost:8003/healthz | grep -q ok && break; sleep 3
 done
 curl -s http://localhost:8003/ | python3 -m json.tool   # runtime = llama.cpp-gguf...
 ```
 
-Expected: `/healthz` 200 en <90s, info `runtime: llama.cpp-gguf-q8_0+onnx-cpu`.
+Expected: `/healthz` 200 in <90s, info `runtime: llama.cpp-gguf-q8_0+onnx-cpu`.
 
-- [ ] **Step 3: Smoke contrat**
+- [ ] **Step 3: Contract smoke test**
 
 ```bash
 curl -s -X POST http://localhost:8003/embed -H 'Content-Type: application/json' \
@@ -1413,9 +1413,9 @@ curl -s -X POST http://localhost:8003/rerank -H 'Content-Type: application/json'
   | python3 -c "import json,sys; s=json.load(sys.stdin)['scores']; assert s[0]>s[1]; print('rerank ok', s)"
 ```
 
-Expected: 4× ok. Si un smoke échoue → ROLLBACK immédiat + rapport.
+Expected: 4× ok. If a smoke test fails → immediate ROLLBACK + report.
 
-- [ ] **Step 4: Validation complète + gates**
+- [ ] **Step 4: Full validation + gates**
 
 ```bash
 .venv/bin/python scripts/embedding_cutover_check.py \
@@ -1425,52 +1425,52 @@ Expected: 4× ok. Si un smoke échoue → ROLLBACK immédiat + rapport.
 echo "exit=$?"
 ```
 
-Expected: `VERDICT: PASS`, exit 0. Si FAIL → ROLLBACK + rapport des deltas (ne PAS forcer).
+Expected: `VERDICT: PASS`, exit 0. If FAIL → ROLLBACK + report the deltas (do NOT force through).
 
-- [ ] **Step 5: Vérification écosystème**
+- [ ] **Step 5: Ecosystem check**
 
 ```bash
-nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader  # ~2.9-3.2 GiB used attendu
+nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader  # ~2.9-3.2 GiB used expected
 docker ps --filter name=brain_v42_embedding --format '{{.Names}} {{.Status}}'
-curl -s http://127.0.0.1:8765/health   # MCP HTTP intact (aucun restart requis — URL inchangée)
+curl -s http://127.0.0.1:8765/health   # MCP HTTP intact (no restart required — URL unchanged)
 ```
 
-Puis via MCP : `brain_search(query="cutover gguf", project_key="brain-v42")` → résultats avec scores (pas de préfixe `degraded`) ; et une écriture réelle (`brain_learn` de la Task 7 fait office de test write).
+Then via MCP: `brain_search(query="cutover gguf", project_key="brain-v42")` → results with scores (no `degraded` prefix); and a real write (`brain_learn` from Task 7 serves as the write test).
 
 ---
 
-### Task 7: Runbook + persistance brain + docs
+### Task 7: Runbook + brain persistence + docs
 
 **Files:**
-- Modify: `CLAUDE.md` (section Architecture, ligne « GPU embedding service »)
+- Modify: `CLAUDE.md` (Architecture section, "GPU embedding service" line)
 
 **Interfaces:**
-- Consumes: résultats Task 6.
+- Consumes: results from Task 6.
 
-- [ ] **Step 1: CLAUDE.md** — remplacer la ligne architecture :
+- [ ] **Step 1: CLAUDE.md** — replace the architecture line:
 
 ```markdown
-- GPU embedding service (Qodo-Embed-1-1.5B GGUF Q8_0 via llama.cpp + shim Starlette :8003, reranker ONNX CPU — VRAM statique ~3 GiB, cutover 2026-07-06)
+- GPU embedding service (Qodo-Embed-1-1.5B GGUF Q8_0 via llama.cpp + Starlette shim :8003, ONNX CPU reranker — static VRAM ~3 GiB, cutover 2026-07-06)
 ```
 
-- [ ] **Step 2: Brain** (MCP, exécuté par le coordinateur) :
-  - `brain_log_decision` : cutover PyTorch→GGUF (contexte drift VRAM, gates mesurés, alternatives : rester PyTorch + restart hebdo / F16 / re-embed corpus), lié à f0faecfe + 906722df + 410eb227. Documenter explicitement le CHANGEMENT DE SÉMANTIQUE : la voie `503 {"error":"gpu_busy"}` du lazy-supervisor dev-pc n'existe plus — `EmbeddingUnavailable(kind="gpu_busy")` et le long-backoff 5/10/20s du client deviennent du dead code inoffensif, et `gpu_busy_errors` du metrics sidecar restera à 0 (pas un bug).
-  - `brain_create_runbook` : « Opérer le stack embedding GGUF (démarrage, healthcheck, rollback legacy, re-build GGUF) » — étapes : prévol, bascule, smoke, validation, rollback, reproductibilité (`scripts/embedding_gguf_build.sh`). Inclure : (a) pendant le `start_period` 60s de llama au boot machine, `/healthz` du shim rend 503 → `healthcheck() = False` intermittents côté client/metrics = bruit ATTENDU, pas une panne ; (b) fenêtre rollback : si `scripts/regen_embeddings.py` tourne (il lit EMBEDDING_SERVICE_URL, défaut localhost:8003), l'interrompre AVANT la bascule dans un sens ou dans l'autre.
-  - `brain_update_project_focus` : cutover livré + verdict gates + VRAM finale + prochaine étape (red-llm peut revenir ; handoff 296dd28f à trancher).
+- [ ] **Step 2: Brain** (MCP, executed by the coordinator):
+  - `brain_log_decision`: PyTorch→GGUF cutover (context: VRAM drift, measured gates, alternatives: stay on PyTorch + weekly restart / F16 / re-embed the corpus), linked to f0faecfe + 906722df + 410eb227. Explicitly document the SEMANTIC CHANGE: the dev-pc lazy-supervisor's `503 {"error":"gpu_busy"}` path no longer exists — `EmbeddingUnavailable(kind="gpu_busy")` and the client's 5/10/20s long-backoff become harmless dead code, and the metrics sidecar's `gpu_busy_errors` will stay at 0 (not a bug).
+  - `brain_create_runbook`: "Operate the GGUF embedding stack (startup, healthcheck, legacy rollback, GGUF rebuild)" — steps: preflight, cutover, smoke, validation, rollback, reproducibility (`scripts/embedding_gguf_build.sh`). Include: (a) during llama's 60s `start_period` at machine boot, the shim's `/healthz` returns 503 → intermittent `healthcheck() = False` on the client/metrics side is EXPECTED noise, not an outage; (b) rollback window: if `scripts/regen_embeddings.py` is running (it reads EMBEDDING_SERVICE_URL, default localhost:8003), interrupt it BEFORE the cutover in either direction.
+  - `brain_update_project_focus`: cutover delivered + gate verdict + final VRAM + next step (red-llm can come back; handoff 296dd28f to be settled).
 
 - [ ] **Step 3: Commit + gitnexus**
 
 ```bash
 git add CLAUDE.md docs/superpowers/plans/2026-07-06-embedding-gguf-cutover.md
 git commit -m "docs: architecture GGUF + plan cutover embedding"
-npx gitnexus analyze --embeddings   # reindex post-merge (peut tourner en fond)
+npx gitnexus analyze --embeddings   # reindex post-merge (can run in the background)
 ```
 
 ---
 
-## Self-Review (fait à l'écriture)
+## Self-Review (done at write time)
 
-1. **Couverture spec** : contrat legacy 7 routes ✓ (Tasks 1-3), serving GGUF ✓ (Task 4), reranker ONNX ✓ (Tasks 2+4), validation gold + gates ✓ (Tasks 5-6), rollback une commande ✓ (Task 4 comment + Task 6 header), reproductibilité GGUF ✓ (Task 4), docs/brain ✓ (Task 7).
-2. **Placeholders** : aucun TBD/TODO ; tout le code est complet.
-3. **Cohérence de types** : `LlamaEmbedBackend.embed(list[str]) -> list[list[float]]` consommé tel quel par `shim_app` ; `OnnxRerankBackend.rerank` sync exécuté via `anyio.to_thread.run_sync` ; `main:app` module-level pour le CMD uvicorn du Dockerfile ; noms de fichiers `shim_app.py`/`shim_backends.py` cohérents entre tests, Dockerfile COPY et imports.
-4. **Points de vigilance connus** (pour les reviewers) : (a) le corpus gold est tronqué à 2000 chars — la divergence long-texte 0.989 est surtout couverte par le mode cross ; (b) l'ONNX Xenova est une conversion tierce — le gate Pearson ≥ 0.995 la valide contre le PyTorch vivant ; (c) `/healthz` change de sémantique (sonde l'upstream) — c'est voulu, documenté dans le docstring de `shim_app.py`.
+1. **Spec coverage**: legacy contract 7 routes ✓ (Tasks 1-3), GGUF serving ✓ (Task 4), ONNX reranker ✓ (Tasks 2+4), gold validation + gates ✓ (Tasks 5-6), one-command rollback ✓ (Task 4 comment + Task 6 header), GGUF reproducibility ✓ (Task 4), docs/brain ✓ (Task 7).
+2. **Placeholders**: no TBD/TODO; all code is complete.
+3. **Type consistency**: `LlamaEmbedBackend.embed(list[str]) -> list[list[float]]` consumed as-is by `shim_app`; `OnnxRerankBackend.rerank` sync run via `anyio.to_thread.run_sync`; `main:app` module-level for the Dockerfile's uvicorn CMD; file names `shim_app.py`/`shim_backends.py` consistent across tests, Dockerfile COPY, and imports.
+4. **Known watch points** (for reviewers): (a) the gold corpus is truncated to 2000 chars — the 0.989 long-text divergence is mostly covered by cross mode; (b) the Xenova ONNX is a third-party conversion — the Pearson ≥ 0.995 gate validates it against the live PyTorch; (c) `/healthz` changes semantics (probes the upstream) — this is intentional, documented in `shim_app.py`'s docstring.

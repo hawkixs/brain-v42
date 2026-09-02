@@ -1,62 +1,63 @@
-# Roadmap curée — purge, cureur nocturne, surfaçage sessions
+# Curated roadmap — purge, nightly curator, session surfacing
 
-**Date** : 2026-07-04
-**Statut** : spec validée (brainstorm session 2026-07-04)
-**Décisions liées** : `532b9401` (produit : red-monitor observe / red-codex travaille, pas de merge), `a91dc271` (webhook GitLab décommissionné), `3ed36af1` (résolution préfixe id — réutilisée par le write-back)
+**Date**: 2026-07-04
+**Status**: spec validated (brainstorm session 2026-07-04)
+**Related decisions**: `532b9401` (product: red-monitor observes / red-codex works, no merge), `a91dc271` (GitLab webhook decommissioned), `3ed36af1` (id prefix resolution — reused by the write-back)
 
-## 1. Contexte & diagnostic
+## 1. Context & diagnosis
 
-Roadmap V2 (mars 2026) a un pipeline d'écriture qui marche — 652 features,
-3 417 `feature_artifacts`, FeatureLinker + ClusterGuard lient chaque artifact
-inséré, dernier liage le jour de cette spec — et une exploitation morte :
+Roadmap V2 (March 2026) has a write pipeline that works — 652 features,
+3,417 `feature_artifacts`, FeatureLinker + ClusterGuard link every artifact
+inserted, last link on the day of this spec — and dead exploitation:
 
-- `brain_get_roadmap` jamais appelé ; seul surfaçage = 2 features pinned
-  stale (101 j) dans le briefing (« In-flight »).
-- 500 features en `research` : ClusterGuard crée une feature par cluster
-  d'artifacts non matchés, personne ne cure. Les ~40 vraies features
-  (deployed/done/building) sont noyées.
-- Statuts figés depuis juin : le StatusEngine mappe les types de signaux
-  vers les statuts, et les seuls signaux au-dessus de `design` étaient les
-  events GitLab (`mr_opened`→building, `mr_merged`/`pipeline_success`→
-  deployed). Le webhook est mort le 2026-06-24 (secret perdu) et a été
-  décommissionné le 2026-07-04 — l'échelle n'a plus de barreaux hauts.
-- Bruit : project_keys fantômes (`red` 117 features, `refondrre` 36).
+- `brain_get_roadmap` never called; only surfacing = 2 pinned features
+  stale (101 d) in the briefing ("In-flight").
+- 500 features in `research`: ClusterGuard creates a feature per cluster
+  of unmatched artifacts, nobody curates. The ~40 real features
+  (deployed/done/building) are drowned out.
+- Statuses frozen since June: the StatusEngine maps signal types
+  to statuses, and the only signals above `design` were the
+  GitLab events (`mr_opened`→building, `mr_merged`/`pipeline_success`→
+  deployed). The webhook died on 2026-06-24 (lost secret) and was
+  decommissioned on 2026-07-04 — the ladder has no high rungs left.
+- Noise: ghost project_keys (`red` 117 features, `refondrre` 36).
 
-## 2. Décisions de cadrage (validées en brainstorm)
+## 2. Scoping decisions (validated in brainstorm)
 
-1. **Modèle émergent assumé + curation forte** : ClusterGuard continue de
-   créer ; un cureur nocturne nettoie en continu. (Rejeté : hybride
-   candidates/promotion ; déclaratif pur.)
-2. **Stock initial** : purge mécanique sans LLM, puis LLM sur l'ambigu
-   restant. (Rejeté : tout-LLM ; reset total.)
-3. **Opérations du cureur** : merge doublons, archive mortes, transitions
-   de statut, rename titres — les quatre, proposer-only.
-4. **Sessions** : section briefing enrichie (remplace In-flight) +
-   write-back par tool dédié. (Non retenus : get_roadmap seul ; « focus
-   reste roi » explicite — le focus reste de fait la source du contexte
-   narratif, la roadmap devient la vue structurée des features.)
-5. **Architecture cureur** : pattern extract/backfill (CLI + killswitch +
-   table proposals + review `--apply-ids`). (Rejeté : phase `claude -p` ;
-   StatusEngine++ mécanique seul — preuve empirique contre : la mécanique
-   existait et la roadmap a pourri quand même.)
-6. **Produit** : la roadmap vit dans brain ; red-monitor l'affiche,
-   red-codex la travaillera. Aucun chantier front dans cette spec.
+1. **Emergent model assumed + strong curation**: ClusterGuard keeps
+   creating; a nightly curator cleans up continuously. (Rejected: hybrid
+   candidates/promotion; pure declarative.)
+2. **Initial stock**: mechanical purge without LLM, then LLM on the
+   remaining ambiguity. (Rejected: all-LLM; full reset.)
+3. **Curator operations**: merge duplicates, archive dead ones, status
+   transitions, rename titles — all four, proposer-only.
+4. **Sessions**: enriched briefing section (replaces In-flight) +
+   write-back via a dedicated tool. (Not retained: get_roadmap alone;
+   explicit "focus stays king" — the focus does remain de facto the
+   source of narrative context, the roadmap becomes the structured view
+   of features.)
+5. **Curator architecture**: extract/backfill pattern (CLI + killswitch +
+   proposals table + review `--apply-ids`). (Rejected: `claude -p` phase;
+   mechanical StatusEngine++ alone — empirical evidence against: the
+   mechanical version existed and the roadmap rotted anyway.)
+6. **Product**: the roadmap lives in brain; red-monitor displays it,
+   red-codex will work it. No frontend work in this spec.
 
-## 3. §1 — Données : migration 030
+## 3. §1 — Data: migration 030
 
-- `features.status` : ajouter `archived` au CHECK
-  (`features_status_check`, actuellement planned/research/design/building/
+- `features.status`: add `archived` to the CHECK
+  (`features_status_check`, currently planned/research/design/building/
   deployed/done).
-- `features.merged_into uuid NULL REFERENCES features(id)` — même pattern
-  que decisions/learnings. Un merge re-pointe les `feature_artifacts` du
-  perdant vers le survivant PUIS marque le perdant `merged_into=<survivant>`
-  + `status='archived'`. Jamais de DELETE : le FK `feature_artifacts` est
-  ON DELETE CASCADE, supprimer effacerait l'historique de liage.
-  Attention au gotcha CHECK vs ON DELETE SET NULL (skill
-  `postgres-check-vs-on-delete-set-null`) : aucun CHECK ne doit contraindre
+- `features.merged_into uuid NULL REFERENCES features(id)` — same pattern
+  as decisions/learnings. A merge re-points the loser's `feature_artifacts`
+  to the survivor THEN marks the loser `merged_into=<survivor>`
+  + `status='archived'`. Never a DELETE: the `feature_artifacts` FK is
+  ON DELETE CASCADE, deleting would erase the linking history.
+  Watch out for the CHECK vs ON DELETE SET NULL gotcha (skill
+  `postgres-check-vs-on-delete-set-null`): no CHECK must constrain
   `merged_into`.
-- Table `roadmap_curation_proposals` — miroir de
-  `ticket_extraction_proposals` :
+- Table `roadmap_curation_proposals` — mirror of
+  `ticket_extraction_proposals`:
 
   ```
   id                bigserial PK
@@ -71,182 +72,183 @@ inséré, dernier liage le jour de cette spec — et une exploitation morte :
   applied_at        timestamptz
   ```
 
-  Index : `(status)`, `(feature_id)`.
+  Index: `(status)`, `(feature_id)`.
 
-## 4. §2 — Purge mécanique : `scripts/roadmap_purge.py`
+## 4. §2 — Mechanical purge: `scripts/roadmap_purge.py`
 
-One-shot, SQL pur, `--dry` par défaut, rapport par projet. Règles :
+One-shot, pure SQL, `--dry` by default, per-project report. Rules:
 
-1. `project_key` absent de `project_contexts` ET hors groupe `red`
-   (réutiliser `get_keys_by_group`, parité vue codex) → `archived`.
-   Le cas `red` (117 features) est vérifié à l'exécution : si `red` est
-   une vraie clé legacy, la règle l'épargne et on tranche à la review.
-2. Features à 0 artifact → `archived`.
-3. Features à 1 artifact, aucun artifact lié créé depuis 60 j
-   (max(`feature_artifacts.created_at`) — PAS `status_updated_at`), statut
-   non terminal (ni deployed, ni done, ni archived) → `archived`.
-4. `pinned=true` : jamais touchée par la purge.
+1. `project_key` missing from `project_contexts` AND outside the `red`
+   group (reuse `get_keys_by_group`, parity with the codex view) → `archived`.
+   The `red` case (117 features) is checked at execution time: if `red` is
+   a genuine legacy key, the rule spares it and it gets decided at review.
+2. Features with 0 artifacts → `archived`.
+3. Features with 1 artifact, no linked artifact created in the last 60 d
+   (max(`feature_artifacts.created_at`) — NOT `status_updated_at`), status
+   non-terminal (neither deployed, nor done, nor archived) → `archived`.
+4. `pinned=true`: never touched by the purge.
 
-Sortie attendue : ~100-150 features vivantes restantes pour le cureur.
-Réversibilité : tout est `archived`, un UPDATE inverse suffit.
+Expected output: ~100-150 live features remaining for the curator.
+Reversibility: everything is `archived`, a reverse UPDATE suffices.
 
-## 5. §3 — Cureur LLM : `scripts/roadmap_curate.py`
+## 5. §3 — LLM curator: `scripts/roadmap_curate.py`
 
-Squelette exact de `ticket_extract.py` : `_post_chat` partagé de
-`domain_backfill` (retry timeouts inclus, `_exc_str`), NVIDIA API JSON
-strict sans tools, `--limit`, `--dry` par défaut / `--wet`, `--apply-ids`,
-row `dream_runs` phase=`roadmap`.
+Exact skeleton of `ticket_extract.py`: `_post_chat` shared from
+`domain_backfill` (retry timeouts included, `_exc_str`), strict NVIDIA API
+JSON with no tools, `--limit`, `--dry` by default / `--wet`, `--apply-ids`,
+`dream_runs` row phase=`roadmap`.
 
-- **Batch par projet** : le prompt reçoit les features vivantes d'UN projet
-  (statut non terminal, non archived, non merged) + par feature un digest
-  des artifacts récents : titre, type, date — PAS les corps complets.
-  Budget borné : cap ~30 features/projet/nuit, artifacts cap 10/feature
-  (les plus récents).
-- **Ops proposées** : les 4, format JSON array
-  `[{op, feature_id, payload, rationale}]`, validation stricte à la
-  `parse_and_validate` (op inconnu rejeté, feature_id hors batch rejeté,
-  merge cross-projet rejeté).
-- **Garde-fous** :
-  - feature `pinned` : seule l'op `status` est proposable ;
-  - features `done`/`archived` : intouchables ;
-  - merge intra-projet uniquement, `into` doit être dans le batch ;
-  - cap global N=40 proposals/nuit (log du drop si dépassé — pas de
-    troncature silencieuse).
-- **Apply (`--apply-ids`)** : transaction unique par proposal,
-  post-conditions positives vérifiées après chaque op (relire la row et
-  vérifier l'état attendu — pattern learnings F-09), `Result.mappings()`
-  (gotcha mypy scripts/ : tests avec `MagicMock(spec=AsyncSession)`).
-  `--wet` (propose+apply même run) existe mais N'EST JAMAIS utilisé par la
+- **Batch per project**: the prompt receives the live features of ONE
+  project (non-terminal status, not archived, not merged) + per feature a
+  digest of recent artifacts: title, type, date — NOT the full bodies.
+  Bounded budget: cap ~30 features/project/night, artifacts cap 10/feature
+  (the most recent).
+- **Proposed ops**: all 4, JSON array format
+  `[{op, feature_id, payload, rationale}]`, strict validation in the style
+  of `parse_and_validate` (unknown op rejected, feature_id outside the
+  batch rejected, cross-project merge rejected).
+- **Guardrails**:
+  - `pinned` feature: only the `status` op is proposable;
+  - `done`/`archived` features: untouchable;
+  - intra-project merge only, `into` must be in the batch;
+  - global cap N=40 proposals/night (drop logged if exceeded — no
+    silent truncation).
+- **Apply (`--apply-ids`)**: single transaction per proposal,
+  positive post-conditions checked after each op (re-read the row and
+  verify the expected state — learnings F-09 pattern), `Result.mappings()`
+  (mypy scripts/ gotcha: tests with `MagicMock(spec=AsyncSession)`).
+  `--wet` (propose+apply in the same run) exists but is NEVER used by the
   nightly.
 
-## 6. §4 — Step dream + killswitches
+## 6. §4 — Dream step + killswitches
 
-Bloc `dream.sh` à l'identique du step extract :
+`dream.sh` block identical to the extract step:
 
-- `BRAIN_DREAM_ROADMAP_ENABLED=false` (défaut) +
+- `BRAIN_DREAM_ROADMAP_ENABLED=false` (default) +
   `BRAIN_DREAM_ROADMAP_DRY_RUN=true` — drop-in
-  `killswitches.conf` (jamais dans l'unit : incident 2026-06-30).
+  `killswitches.conf` (never in the unit: incident 2026-06-30).
 - `timeout 10m`, log `${TIMESTAMP}_roadmap.log`, `SKIP roadmap
-  (killswitch…)` loggé quand fermé, `FAIL roadmap (rc=…)` sinon.
-- Ligne killswitch ROADMAP dans le briefing session_start (pattern
-  KillswitchState existant, testé dans test_session_tools).
-- Rollout : ≥2 nuits dry propres → review des proposals au matin
-  (`--apply-ids` des bonnes) → quand le taux d'acceptation est stable et
-  haut, envisager wet nocturne pour `archive`/`status` seulement (merge et
-  rename restent à review indéfiniment).
+  (killswitch…)` logged when closed, `FAIL roadmap (rc=…)` otherwise.
+- ROADMAP killswitch line in the session_start briefing (existing
+  KillswitchState pattern, tested in test_session_tools).
+- Rollout: ≥2 clean dry nights → review the proposals in the morning
+  (`--apply-ids` the good ones) → once the acceptance rate is stable and
+  high, consider nightly wet for `archive`/`status` only (merge and
+  rename stay under review indefinitely).
 
-## 7. §5 — Briefing : section « Roadmap » (remplace « In-flight »)
+## 7. §5 — Briefing: "Roadmap" section (replaces "In-flight")
 
-- Features **vivantes** du projet : statut ∉ {done, archived} ∧
-  merged_into IS NULL, triées par dernière activité artifact desc, cap 5.
-- Format : `- <nom> [<statut>] — <N> artifacts, dernier il y a <X>j`.
-- `pinned` en tête de liste (mais soumis au même critère de vie).
-- La section « Stale-pinned » existante est conservée telle quelle
-  (alerte séparée).
-- Dégradation gracieuse : erreur → section omise + warning structlog
-  (contrat §9 du briefing).
+- **Live** features of the project: status ∉ {done, archived} ∧
+  merged_into IS NULL, sorted by last artifact activity desc, cap 5.
+- Format: `- <name> [<status>] — <N> artifacts, last one <X>d ago`.
+- `pinned` at the top of the list (but subject to the same liveness
+  criterion).
+- The existing "Stale-pinned" section is kept as is (separate alert).
+- Graceful degradation: error → section omitted + structlog warning
+  (briefing contract §9).
 
-## 8. §6 — Write-back : tool `brain_feature_update`
+## 8. §6 — Write-back: `brain_feature_update` tool
 
-Nouveau tool MCP (surface 41→42) :
+New MCP tool (surface 41→42):
 
 ```
 brain_feature_update(feature: str, status: str, project_key: str) -> str
 ```
 
-- `feature` accepte : nom exact → préfixe d'id (≥8 hex,
-  `resolve_entity_id` réutilisé, passthrough FeatureService/repo à créer
-  sur le pattern resolve_id_prefix) → ILIKE unique sur le nom.
-  Ambiguïté → erreur listant les candidats (id + nom). Aucun match →
-  erreur explicite.
-- `status` : valeurs du CHECK uniquement (dont `archived` — une session
-  peut archiver une fausse feature à la main).
-- Side-effects : `status_updated_at=now()`, `pinned=true` (même
-  comportement que le chemin update_feature_statuses actuel).
-- L'ancien chemin `brain_update_project_focus(feature_status=…)` reste
-  fonctionnel (rétro-compat) mais la doc pointe vers le nouveau tool.
-- CLAUDE.md projet : ajouter la consigne « feature livrée →
-  `brain_feature_update(name, 'deployed'|'done') »`.
+- `feature` accepts: exact name → id prefix (≥8 hex,
+  `resolve_entity_id` reused, FeatureService/repo passthrough to create
+  on the resolve_id_prefix pattern) → unique ILIKE on the name.
+  Ambiguity → error listing the candidates (id + name). No match →
+  explicit error.
+- `status`: CHECK values only (including `archived` — a session can
+  archive a bogus feature by hand).
+- Side-effects: `status_updated_at=now()`, `pinned=true` (same behavior
+  as the current update_feature_statuses path).
+- The old `brain_update_project_focus(feature_status=…)` path stays
+  functional (backward compat) but the docs point to the new tool.
+- Project CLAUDE.md: add the instruction "feature shipped →
+  `brain_feature_update(name, 'deployed'|'done')`".
 
-## 9. §7 — Sidecar dream metrics à jour (consommé par red-monitor)
+## 9. §7 — Dream metrics sidecar up to date (consumed by red-monitor)
 
-Constaté le 2026-07-04 sur le /metrics live, deux défauts dans
-`collector_dream.py` :
+Observed on 2026-07-04 on the live /metrics, two defects in
+`collector_dream.py`:
 
-1. **Agrégat pollué par les re-runs** : la requête prend TOUTES les rows de
-   `dream_runs` du dernier `run_date` (L46-53). Un run rejoué le même jour
-   (ex. extract fail 06:13 puis done 10:58) donne `phases_fail:1,
-   status:"partial"` alors que chaque phase a fini done. Fix :
-   `DISTINCT ON (phase) … ORDER BY phase, id DESC` — dernière row par
-   phase ; `phases_ok`/`phases_fail`/`status` calculés sur l'ensemble
-   dédupliqué.
-2. **Pas de flag dry/wet par phase** : `dream_runs.phase_dry_run` existe
-   mais n'est pas exposé. Ajouter `"dry_run": bool` dans chaque entrée de
-   `phases` — red-monitor peut badger wet/dry. Une phase absente du jour =
-   killswitch fermé (le SKIP ne crée pas de row) : le front peut déduire
-   « off » par diff avec les phases vues dans `history`.
+1. **Aggregate polluted by re-runs**: the query takes ALL the rows of
+   `dream_runs` for the latest `run_date` (L46-53). A run replayed on the
+   same day (e.g. extract fail 06:13 then done 10:58) gives
+   `phases_fail:1, status:"partial"` even though each phase ended done.
+   Fix: `DISTINCT ON (phase) … ORDER BY phase, id DESC` — last row per
+   phase; `phases_ok`/`phases_fail`/`status` computed on the deduplicated
+   set.
+2. **No dry/wet flag per phase**: `dream_runs.phase_dry_run` exists but
+   is not exposed. Add `"dry_run": bool` to each `phases` entry —
+   red-monitor can badge wet/dry. A phase absent for the day = closed
+   killswitch (SKIP does not create a row): the frontend can infer
+   "off" by diffing against the phases seen in `history`.
 
-Contraintes :
+Constraints:
 
-- **Contrat additif uniquement** : /metrics est consommé par red-monitor —
-  nouvelles clés OK, aucun rename/suppression (réflexe contrats red-triad,
-  synthèse `f32168ae`).
-- **Restart `brain-metrics` obligatoire** après déploiement : le sidecar
-  n'est dans aucune boucle de deploy (learning `f13144b3`).
-- Les phases CLI (extract, roadmap) ont légitimement `cost:0`.
-  **Amendé le 2026-08-05** : `model:null` ne vaut plus pour `roadmap`, qui
-  renseigne désormais le modèle réellement utilisé. Laisser cette colonne
-  nulle a masqué dix nuits servies par le modèle de secours après l'EOL du
-  primaire (ticket `911bb6f5`). `extract` reste à `model:null`.
+- **Additive contract only**: /metrics is consumed by red-monitor — new
+  keys OK, no rename/removal (red-triad contracts reflex, synthesis
+  `f32168ae`).
+- **`brain-metrics` restart mandatory** after deployment: the sidecar is
+  in no deploy loop (learning `f13144b3`).
+- The CLI phases (extract, roadmap) legitimately have `cost:0`.
+  **Amended on 2026-08-05**: `model:null` no longer holds for `roadmap`,
+  which now records the model actually used. Leaving this column null
+  hid ten nights served by the fallback model after the primary's EOL
+  (ticket `911bb6f5`). `extract` stays at `model:null`.
 
-## 10. §8 — Successeur du signal GitLab
+## 10. §8 — GitLab signal successor
 
-- **v1 (incluse)** : le cureur lit le CONTENU des artifacts — une decision
-  « livré X », un runbook « déployer X », un plan status=done → propose
-  `status: deployed`/`done`. Plus riche que l'ancien mapping par type
-  d'event.
-- **v2 (différée, hors scope)** : step nightly `gitlab_poll` — PULL de
-  l'API GitLab (commits/MRs/pipelines par projet, token read-only) ingéré
-  en `gitlab_events`. Zéro port exposé, zéro secret webhook : le pull
-  répare ce qui a tué le push. À spécifier séparément si le besoin de
-  corrélation commit↔feature revient.
+- **v1 (included)**: the curator reads the CONTENT of artifacts — a
+  decision "shipped X", a runbook "deploy X", a plan status=done →
+  proposes `status: deployed`/`done`. Richer than the old mapping by
+  event type.
+- **v2 (deferred, out of scope)**: nightly `gitlab_poll` step — PULL
+  from the GitLab API (commits/MRs/pipelines per project, read-only
+  token) ingested into `gitlab_events`. Zero exposed port, zero webhook
+  secret: the pull fixes what killed the push. To be specified
+  separately if the need for commit↔feature correlation returns.
 
-## 11. Non-goals & risques
+## 11. Non-goals & risks
 
-- **Non-goals v1** : ClusterGuard/FeatureLinker inchangés (l'écriture
-  marche) ; aucun chantier front (red-monitor lit la même donnée en mieux
-  via ses contrats existants ; red-codex plus tard) ; pas de gitlab_poll.
-- **Risque Watchk** : chevauchement conceptuel (Watchk = features
-  déclaratives manuelles, projet 6). Position : brain roadmap = émergent/
-  auto-lié, Watchk = suivi déclaratif. À re-trancher si le doublon devient
-  douloureux — hors scope ici.
-- **Risque qualité cureur** : la roadmap dépend du jugement nocturne. Mitigé
-  par : proposer-only + review, garde-fous durs, caps, et le précédent
-  domain_backfill (36/36 acceptés).
-- **Coût NVIDIA** : ~8 projets vivants × 1 appel/nuit, latence queue
-  variable (retry en place). Borné par les caps.
+- **Non-goals v1**: ClusterGuard/FeatureLinker unchanged (the write path
+  works); no frontend work (red-monitor reads the same data, better, via
+  its existing contracts; red-codex later); no gitlab_poll.
+- **Watchk risk**: conceptual overlap (Watchk = manual declarative
+  features, project 6). Position: brain roadmap = emergent/auto-linked,
+  Watchk = declarative tracking. To be re-settled if the duplication
+  becomes painful — out of scope here.
+- **Curator quality risk**: the roadmap depends on nightly judgment.
+  Mitigated by: proposer-only + review, hard guardrails, caps, and the
+  domain_backfill precedent (36/36 accepted).
+- **NVIDIA cost**: ~8 live projects × 1 call/night, variable queue
+  latency (retry in place). Bounded by the caps.
 
-## 12. Critères de succès
+## 12. Success criteria
 
-1. Purge : features vivantes ≤ 150, zéro project_key fantôme non arbitré.
-2. Après 1 semaine de curation : statuts `deployed`/`done` reflètent les
-   livraisons réelles de la semaine (vérifiable contre les focus).
-3. Le briefing montre des features vivantes avec activité < 7 j (fini le
-   « planned — updated 101d ago »).
-4. Au moins un `brain_feature_update` réussi par session de livraison.
-5. Sidecar : une nuit avec re-run d'une phase s'affiche `done` (pas
-   `partial`), et chaque phase porte son flag `dry_run`.
-6. Gates habituels : pytest vert, ruff, mypy src/, coverage ≥ 60 %.
+1. Purge: live features ≤ 150, zero unarbitrated ghost project_key.
+2. After 1 week of curation: `deployed`/`done` statuses reflect the
+   actual deliveries of the week (verifiable against the focuses).
+3. The briefing shows live features with activity < 7 d (no more
+   "planned — updated 101d ago").
+4. At least one successful `brain_feature_update` per delivery session.
+5. Sidecar: a night with a phase re-run displays `done` (not
+   `partial`), and each phase carries its `dry_run` flag.
+6. Usual gates: pytest green, ruff, mypy src/, coverage ≥ 60%.
 
-## 13. Découpage TDD (indicatif pour le plan)
+## 13. TDD breakdown (indicative, for the plan)
 
-1. Migration 030 + tests schéma (pattern test_schema_indexes_027).
-2. `roadmap_purge.py` + tests règles (mocked session, pas de vraie DB).
-3. `roadmap_curate.py` propose + parse_and_validate + garde-fous.
+1. Migration 030 + schema tests (test_schema_indexes_027 pattern).
+2. `roadmap_purge.py` + rule tests (mocked session, no real DB).
+3. `roadmap_curate.py` propose + parse_and_validate + guardrails.
 4. Apply + post-conditions.
-5. Step dream.sh + test_dream_sh_roadmap (pattern test_dream_sh_extract).
-6. Section briefing (test_session_tools).
-7. `brain_feature_update` + resolver (test tools, pattern préfixe id).
-8. collector_dream : dédup DISTINCT ON + dry_run par phase
-   (tests/unit/metrics/, contrat additif) + restart brain-metrics au deploy.
-9. Docs : CLAUDE.md consigne, MCP_TOOLS, .env exemple killswitches.
+5. dream.sh step + test_dream_sh_roadmap (test_dream_sh_extract pattern).
+6. Briefing section (test_session_tools).
+7. `brain_feature_update` + resolver (tool tests, id prefix pattern).
+8. collector_dream: DISTINCT ON dedup + dry_run per phase
+   (tests/unit/metrics/, additive contract) + brain-metrics restart on
+   deploy.
+9. Docs: CLAUDE.md instruction, MCP_TOOLS, .env killswitches example.

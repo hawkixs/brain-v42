@@ -1,63 +1,63 @@
-# Runtime automation systemd — runbook opérateur
+# Runtime automation systemd — operator runbook
 
-Ce dépôt livre `brain-v42-automation.service` **dormante**. L'installateur génère et
-vérifie l'unité, mais ne l'active et ne la démarre jamais. Les commandes ci-dessous sont
-destinées à un opérateur sur l'hôte cible; leur présence dans le dépôt ne signifie pas
-qu'un cutover a eu lieu.
+This repo ships `brain-v42-automation.service` **dormant**. The installer renders and
+verifies the unit but never enables or starts it. The commands below are
+meant for an operator on the target host; their presence in the repo does not mean
+a cutover has taken place.
 
-La topologie cible sépare les responsabilités:
+The target topology separates responsibilities:
 
-- `brain-metrics.service` sur `127.0.0.1:9200` garde `/metrics` et `/api/cockpit`;
-- `brain-v42-automation.service` sur `127.0.0.1:9201` porte `/health`, le webhook GitLab
-  et la boucle de déduplication;
-- une lease advisory PostgreSQL garantit au plus un propriétaire automation. Cette lease
-  n'est pas un fencing token: un travail déjà entré en base au moment d'une coupure réseau
-  ne peut pas être interrompu rétroactivement;
-- le hook GitLab externe reste une décision séparée. Aucun bloc ne le repointe.
+- `brain-metrics.service` on `127.0.0.1:9200` keeps `/metrics` and `/api/cockpit`;
+- `brain-v42-automation.service` on `127.0.0.1:9201` carries `/health`, the GitLab webhook
+  and the dedup loop;
+- a PostgreSQL advisory lease guarantees at most one automation owner. This lease
+  is not a fencing token: work already committed to the database at the moment of a network
+  outage cannot be interrupted retroactively;
+- the external GitLab hook remains a separate decision. No block repoints it.
 
-`GET :9201/health` prouve uniquement la **liveness** du processus HTTP. Ce signal n'est
-pas une readiness PostgreSQL, GPU, reranker ou scheduler. Après la séparation, les
-événements automation ne sont plus dans l'agrégat in-process `cockpit.recent`; leur trace
-opérationnelle autoritaire passe dans le journal de l'unité automation.
+`GET :9201/health` only proves the **liveness** of the HTTP process. This signal is
+not a PostgreSQL, GPU, reranker or scheduler readiness check. After the split, automation
+events are no longer in the in-process aggregate `cockpit.recent`; their authoritative
+operational trace moves to the automation unit's journal.
 
-Exécuter chaque section depuis la racine du dépôt. Ne passer à la suivante que si la
-précédente sort avec le code `0`.
+Run each section from the repo root. Only move on to the next one if the
+previous one exits with code `0`.
 
-## Modes de rendu
+## Render modes
 
-- `install.sh --check-only` rend et vérifie toutes les unités gérées (la liste vit dans `MANAGED_UNIT_FILES`) dans un répertoire privé sous
-  `/tmp`, puis le supprime. Il n'inspecte ni ne crée le répertoire systemd utilisateur et
-  n'appelle pas `systemctl`.
-- `install.sh --render-dir /chemin/absolu/neuf` produit les mêmes fichiers vérifiés dans
-  une nouvelle cible privée hors de systemd. Le parent doit appartenir à l'utilisateur, avoir
-  `u+wx`, ne pas être inscriptible par groupe/autres et ne contenir aucun composant symlinké.
-- `install.sh --dry-run` est un mode historique : il n'appelle pas `systemctl`, mais **publie les
-  unités gérées dans le répertoire systemd utilisateur**. Ne pas l'utiliser comme préflight sans
-  effet de bord ni comme rollout global. Les chemins live `install` et `--dry-run` imposent un
-  umask `077`, ramènent le répertoire final à `0700`, publient les unités en `0600` et refusent
-  un propriétaire ou un ancêtre permettant le remplacement par un autre UID.
+- `install.sh --check-only` renders and verifies all managed units (the list lives in `MANAGED_UNIT_FILES`) in a private directory under
+  `/tmp`, then removes it. It neither inspects nor creates the user systemd directory and
+  does not call `systemctl`.
+- `install.sh --render-dir /new/absolute/path` produces the same verified files in
+  a new private target outside systemd. The parent must be owned by the user, have
+  `u+wx`, not be group/other writable and contain no symlinked component.
+- `install.sh --dry-run` is a legacy mode: it does not call `systemctl`, but **publishes the
+  managed units into the user systemd directory**. Do not use it as a side-effect-free
+  preflight nor as a global rollout. The live `install` and `--dry-run` paths enforce a
+  `077` umask, bring the final directory back to `0700`, publish units as `0600` and refuse
+  an owner or an ancestor that would allow replacement by another UID.
 
-Les deux modes isolés exécutent les preflights avec le HOME/XDG hôte, puis un seul
-`systemd-analyze verify` sur tous les artefacts rendus dans un HOME/XDG vide et privé. Ils échouent
-fermés si le verifier manque ou refuse une unité.
+Both isolated modes run the preflights with the host HOME/XDG, then a single
+`systemd-analyze verify` over all artifacts rendered in an empty, private HOME/XDG. They fail
+closed if the verifier is missing or rejects a unit.
 
-En cas d'échec après publication `--render-dir`, le cleanup remet d'abord la cible dans son
-staging privé et ne la supprime que si l'identité du rendu correspond encore. Un remplacement
-concurrent est restauré ou laissé dans un staging signalé pour récupération. Cette défense vise
-les erreurs et les autres UID ; un processus hostile partageant le même UID reste dans la même
-frontière de confiance et nécessiterait un helper `dirfd` dédié.
+On failure after `--render-dir` publication, cleanup first moves the target back into its
+private staging and only removes it if the render's identity still matches. A concurrent
+replacement is restored or left in a flagged staging for recovery. This defense targets
+mistakes and other UIDs; a hostile process sharing the same UID stays within the same
+trust boundary and would need a dedicated `dirfd` helper.
 
 ## Preflight
 
-Ce bloc vérifie d'abord toutes les unités gérées sans publication, produit un artefact inspectable hors
-de systemd, sauvegarde le fragment automation et ses drop-ins, puis publie **uniquement** le
-fragment automation par renommage atomique. Il recharge ensuite le manager avant inspection et
-installe une sonde bornée de lease. La sonde ne montre aucune variable sensible : elle affiche
-uniquement `owners` et `waiters`.
+This block first verifies all managed units without publishing, produces an artifact inspectable outside
+of systemd, backs up the automation fragment and its drop-ins, then publishes **only** the
+automation fragment via atomic rename. It then reloads the manager before inspection and
+installs a bounded lease probe. The probe shows no sensitive variable: it displays
+only `owners` and `waiters`.
 
-La sauvegarde et la publication du fragment sont des mutations opérateur. Ne pas exécuter ce
-bloc sans fenêtre autorisée et rollback connu bon. Les unités Dream, graph et MCP rendues dans
-l'artefact ne sont pas publiées par ce runbook.
+Backing up and publishing the fragment are operator mutations. Do not run this
+block without an authorized window and a known-good rollback. The Dream, graph and MCP units rendered into
+the artifact are not published by this runbook.
 
 ### Render path terminology
 
@@ -209,16 +209,16 @@ esac
 ```
 <!-- runbook:preflight:end -->
 
-Le résultat attendu avant cutover est le flag effectif legacy `true`, lu sans afficher les
-autres variables du processus, puis une lease `owners=1 waiters=0` détenue par metrics.
-Le port TCP `9201` doit être libre même si aucun serveur HTTP ne répond. Tout autre résultat
-interdit de continuer.
+The expected result before cutover is the effective legacy flag `true`, read without displaying
+other process variables, then a lease `owners=1 waiters=0` held by metrics.
+TCP port `9201` must be free even if no HTTP server responds. Any other result
+forbids continuing.
 
 ## Cutover
 
-Le drop-in porte une seconde `EnvironmentFile=` chargée après le `.env` de l'unité metrics.
-Le fichier dédié est privé (`0600`) et devient la source autoritaire du flag. On arrête
-metrics avant de démarrer automation: aucun dual-run n'est toléré.
+The drop-in carries a second `EnvironmentFile=` loaded after the metrics unit's `.env`.
+The dedicated file is private (`0600`) and becomes the authoritative source for the flag. We stop
+metrics before starting automation: no dual-run is tolerated.
 
 <!-- runbook:cutover:start -->
 ```bash
@@ -283,15 +283,15 @@ EXPECTED_AUTOMATION_LEASES=1 "$LEASE_PROBE"
 ```
 <!-- runbook:cutover:end -->
 
-La preuve autoritaire du flag est la lecture filtrée de
-`/proc/$MainPID/environ` après démarrage. `systemctl show -p Environment` ne suffit pas:
-il peut afficher une configuration déclarée sans prouver l'environnement du processus.
+The authoritative proof of the flag is the filtered read of
+`/proc/$MainPID/environ` after startup. `systemctl show -p Environment` is not enough:
+it can display a declared configuration without proving the process's actual environment.
 
-## Abort immédiat
+## Immediate abort
 
-Exécuter ce bloc au premier échec du cutover. La vérification `owners=0 waiters=0` précède
-strictement l'écriture du flag `true` et le redémarrage metrics. Avec `set -e`, une lease
-encore détenue arrête le bloc avant ces mutations.
+Run this block at the first cutover failure. The `owners=0 waiters=0` check strictly precedes
+writing the `true` flag and restarting metrics. With `set -e`, a lease
+still held stops the block before these mutations.
 
 <!-- runbook:abort:start -->
 ```bash
@@ -336,8 +336,8 @@ EXPECTED_AUTOMATION_LEASES=1 "$LEASE_PROBE"
 
 ## Smoke tests
 
-Ce bloc est une matrice fail-fast. Il prouve la surface réduite de `:9201`, la surface
-metrics intacte sur `:9200`, la disparition du webhook legacy et l'unicité de la lease.
+This block is a fail-fast matrix. It proves the reduced surface of `:9201`, the
+metrics surface intact on `:9200`, the disappearance of the legacy webhook and the uniqueness of the lease.
 
 <!-- runbook:smoke:start -->
 ```bash
@@ -367,15 +367,15 @@ EXPECTED_AUTOMATION_LEASES=1 "$LEASE_PROBE"
 ```
 <!-- runbook:smoke:end -->
 
-Ne repointer le hook GitLab vers `:9201` qu'après une décision opérateur séparée. Ne faire
-`systemctl --user enable brain-v42-automation.service` qu'après le soak convenu.
+Only repoint the GitLab hook to `:9201` after a separate operator decision. Only run
+`systemctl --user enable brain-v42-automation.service` after the agreed soak.
 
 ## Diagnostics
 
-Un bind rouge se diagnostique sans démarrer une seconde instance. Un **lease conflict** au
-démarrage signifie qu'un propriétaire est encore actif: ne jamais forcer ni contourner la
-lease. Un webhook authentifié qui répond `503` avec `ownership_lost` confirme la perte de
-propriété fail-closed; consulter le journal avant toute décision de redémarrage.
+A red bind is diagnosed without starting a second instance. A **lease conflict** at
+startup means an owner is still active: never force nor bypass the
+lease. An authenticated webhook that answers `503` with `ownership_lost` confirms the fail-closed
+loss of ownership; consult the journal before any restart decision.
 
 ```bash
 set -euo pipefail
@@ -390,14 +390,14 @@ curl --silent --show-error --connect-timeout 2 --max-time 5 \
 EXPECTED_AUTOMATION_LEASES=1 "$LEASE_PROBE"
 ```
 
-La sortie du journal remplace la visibilité in-process perdue de `cockpit.recent` pour les
-événements automation; `/metrics` et `/api/cockpit` restent servis par metrics sur `:9200`.
+The journal output replaces the lost in-process visibility of `cockpit.recent` for
+automation events; `/metrics` and `/api/cockpit` remain served by metrics on `:9200`.
 
 ## Rollback
 
-Prérequis externe obligatoire: désactiver le hook GitLab hors de ce dépôt, sans le
-repointer. Exporter `HOOK_DISABLED_CONFIRMED=yes` seulement après confirmation. Le rollback
-ne réactive le hook qu'après un vert complet et une nouvelle décision séparée.
+Mandatory external prerequisite: disable the GitLab hook outside this repo, without
+repointing it. Export `HOOK_DISABLED_CONFIRMED=yes` only after confirmation. The rollback
+only re-enables the hook after a full green and a new, separate decision.
 
 <!-- runbook:rollback:start -->
 ```bash
@@ -444,5 +444,5 @@ EXPECTED_AUTOMATION_LEASES=1 "$LEASE_PROBE"
 ```
 <!-- runbook:rollback:end -->
 
-Conserver le template, le drop-in et le fichier d'environnement pendant tout le soak. Leur
-suppression est une opération de nettoyage ultérieure, jamais une étape du rollback urgent.
+Keep the template, the drop-in and the environment file for the whole soak. Their
+removal is a later cleanup operation, never a step of the urgent rollback.

@@ -1,216 +1,219 @@
-# SPEC — Le pool de brouillons non signés (migration M-E, signature S8)
+# SPEC — The pool of unsigned drafts (migration M-E, signature S8)
 
-> **Statut : PROPOSITION SOUMISE À SIGNATURE.** Le `§0bis.5` répond **Q6 = acceptée** —
-> *« les brouillons non signés SURVIVENT à l'auto-fermeture de leur session, dans un pool
-> en attente de signature, hors session »* — puis liste ce qui **reste à spécifier** :
-> *« la FK vers `brain_sessions` et son `ON DELETE`, la durée de vie du pool, son plafond,
-> et le tool de signature hors session ne sont **pas** spécifiés »*. Ce document les
-> **PROPOSE**.
+> **Status: PROPOSAL SUBMITTED FOR SIGN-OFF.** `§0bis.5` answers **Q6 = accepted** —
+> *"unsigned drafts SURVIVE their session's auto-close, in a pool
+> awaiting signature, outside any session"* — then lists what **remains to be specified**:
+> *"the FK to `brain_sessions` and its `ON DELETE`, the pool's lifetime, its cap,
+> and the out-of-session signing tool are **not** specified"*. This document
+> **PROPOSES** them.
 >
-> **Dernier gate documentaire de la Phase 0.** Avec `SPEC-checkpoint.md` et `SPEC-M-G.md`,
-> il porte le 6ᵉ contenu à complétion.
+> **Last documentation gate of Phase 0.** Along with `SPEC-checkpoint.md` and `SPEC-M-G.md`,
+> it brings the 6th piece of content to completion.
 >
-> **Sources qui font foi** : ADR `§0bis.5` (Q6), `§0bis.2` (clé de connexion), `§0ter`
-> (signatures du 2026-08-20), PLAN `§4.4` et `§8` (ligne M-E), décision `fc8651ad`,
-> dossier `SEQUENCEMENT-2026-08-20-couloir-du-pin.md` (S6 : M-E en tête **séparée**).
-> *Écrit le 2026-08-20. Aucune ligne de migration — S2-S5 ne sont pas signées.*
+> **Authoritative sources**: ADR `§0bis.5` (Q6), `§0bis.2` (connection key), `§0ter`
+> (2026-08-20 signatures), PLAN `§4.4` and `§8` (M-E line), decision `fc8651ad`,
+> the `SEQUENCEMENT-2026-08-20-couloir-du-pin.md` folder (S6: M-E as a **separate** head).
+> *Written on 2026-08-20. No migration line yet — S2-S5 are not signed.*
 
 ---
 
-## 0. Le malentendu à dissiper d'abord : survivre à quoi ?
+## 0. The misunderstanding to clear up first: survive what?
 
-Le `§0bis.5` dit qu'un brouillon doit *« pouvoir survivre à la session qui l'a observé »*.
-Lu vite, on entend « survivre à la SUPPRESSION de la ligne de session », et on part
-chercher un `ON DELETE` malin. **C'est le mauvais problème.**
+`§0bis.5` says a draft must *"be able to survive the session that observed it"*.
+Read quickly, this sounds like "survive the DELETION of the session row", and you go
+looking for a clever `ON DELETE`. **That is the wrong problem.**
 
-Une session ne se **supprime** pas dans ce système : elle se **termine**. `ended`,
-`abandoned`, et bientôt `closed_inactive` (M-G) sont des **états**, pas des effacements —
-la ligne `brain_sessions` reste. **La fermeture ne touche donc aucune clé étrangère**, et
-l'exigence de survie du `§0bis.5` est satisfaite **sans un octet de FK** : le brouillon
-reste, sa session aussi, seul le `status` de la session a changé.
+A session is never **deleted** in this system: it **ends**. `ended`,
+`abandoned`, and soon `closed_inactive` (M-G) are **states**, not erasures —
+the `brain_sessions` row stays. **Closing therefore touches no foreign key**, and
+the survival requirement of `§0bis.5` is satisfied **without a single byte of FK**: the draft
+stays, its session too, only the session's `status` has changed.
 
-Ce que la FK gouverne est un cas **différent et rare** : quelqu'un exécute un `DELETE`
-sur `brain_sessions`. Cela n'arrive ni au rituel, ni au sweep, ni à l'auto-fermeture.
+What the FK governs is a **different and rare** case: someone runs a `DELETE`
+on `brain_sessions`. That happens neither in the ritual, nor in the sweep, nor in auto-close.
 
-**Conséquence sur la conduite de la spec** : la question du `ON DELETE` est réelle mais
-**petite**, et elle ne doit pas être traitée comme le cœur du sujet. Le cœur, c'est **qui
-signe, quand, et ce qui arrive si personne ne signe jamais**.
-
----
-
-## 1. PROPOSITION 1 — la FK et son `ON DELETE` : `RESTRICT`
-
-**Retenu : `session_id … REFERENCES brain_sessions(id) ON DELETE RESTRICT`.**
-
-### 1.1 `SET NULL` est structurellement impossible ici — et c'est une bonne nouvelle
-
-Le dossier de séquencement rappelle le piège maison `CHECK` + `ON DELETE SET NULL`
-(skill `postgres-check-vs-on-delete-set-null`) : un `CHECK` n'est **pas** deferrable en
-PostgreSQL, donc une cascade `SET NULL` qui viole un `CHECK` fait échouer le `DELETE` du
-parent, sans recours.
-
-**Ce piège ne peut pas mordre sur cette table**, et pour une raison plus forte qu'une
-précaution : le PLAN `§4.4` fixe la **PK `(session_id, knowledge_id)`**. Une colonne de
-clé primaire est `NOT NULL` par définition — `ON DELETE SET NULL` serait **rejeté par
-Postgres à la déclaration**, pas au premier `DELETE`. L'erreur est impossible à commettre
-en silence.
-
-*(À dire explicitement dans la migration, en commentaire : sans cette note, le prochain
-lecteur qui voudra « faire survivre le brouillon à la suppression de sa session »
-essaiera `SET NULL`, se heurtera à la PK, et sera tenté de casser la PK pour y arriver —
-détruisant au passage la propriété que la PK porte, §1.3.)*
-
-### 1.2 `RESTRICT` plutôt que `CASCADE`
-
-`CASCADE` détruirait les brouillons non signés d'une session supprimée — c'est-à-dire
-exactement ce que le `§0bis.5` a écarté (« jeter les brouillons non signés reviendrait à
-détruire précisément ce que la nature agent produit »). `RESTRICT` refuse la suppression
-tant que des brouillons existent.
-
-**Coût assumé, et il faut le nommer** : une session ayant des brouillons non résolus
-devient **non supprimable** tant qu'ils ne sont pas signés ou rejetés. C'est cohérent avec
-le downgrade fail-closed déjà prévu pour M-E (« fail-closed si des lignes `staged` non
-résolues existent »), et c'est la même posture que `SPEC-checkpoint.md` retient pour les
-checkpoints. **Deux tables qui rendent leur session indélébile, c'est une propriété du
-système, pas un accident** — elle mérite d'être écrite une fois, ici.
-
-### 1.3 La PK ne bouge pas, et pourquoi
-
-`(session_id, knowledge_id)` — **pas** de PK sur `knowledge_id` seul. Un brouillon est une
-**hypothèse** : deux sessions peuvent observer le même artefact sans que l'une prive
-l'autre. **Seule la promotion dans `brain_session_artifacts`** (PK `knowledge_id`) confère
-l'exclusivité. Cette asymétrie est le mécanisme entier : le pool est permissif, le ledger
-est exclusif.
+**Consequence for how the spec is driven**: the `ON DELETE` question is real but
+**small**, and must not be treated as the heart of the matter. The heart is **who
+signs, when, and what happens if no one ever signs**.
 
 ---
 
-## 2. PROPOSITION 2 — la durée de vie : AUCUNE expiration automatique
+## 1. PROPOSAL 1 — the FK and its `ON DELETE`: `RESTRICT`
 
-**Retenu : un brouillon `staged` ne périme JAMAIS tout seul.**
+**Adopted: `session_id … REFERENCES brain_sessions(id) ON DELETE RESTRICT`.**
 
-C'est le choix qui demande le plus de justification, parce qu'il produit une table qui ne
-se vide pas d'elle-même.
+### 1.1 `SET NULL` is structurally impossible here — and that is good news
 
-| Option | Pourquoi écartée |
+The sequencing folder recalls the in-house `CHECK` + `ON DELETE SET NULL` trap
+(skill `postgres-check-vs-on-delete-set-null`): a `CHECK` is **not** deferrable in
+PostgreSQL, so a `SET NULL` cascade that violates a `CHECK` makes the parent's `DELETE`
+fail, with no recourse.
+
+**This trap cannot bite on this table**, and for a reason stronger than mere
+precaution: PLAN `§4.4` fixes the **PK as `(session_id, knowledge_id)`**. A primary-key
+column is `NOT NULL` by definition — `ON DELETE SET NULL` would be **rejected by
+Postgres at declaration time**, not on the first `DELETE`. The mistake is impossible to
+make silently.
+
+*(To be stated explicitly in the migration, as a comment: without this note, the next
+reader who wants to "make the draft survive its session's deletion"
+will try `SET NULL`, hit the PK, and be tempted to break the PK to get there —
+destroying, in the process, the very property the PK carries, §1.3.)*
+
+### 1.2 `RESTRICT` rather than `CASCADE`
+
+`CASCADE` would destroy the unsigned drafts of a deleted session — which is
+exactly what `§0bis.5` ruled out ("discarding unsigned drafts would amount to
+destroying precisely what agent nature produces"). `RESTRICT` refuses deletion
+as long as drafts exist.
+
+**An accepted cost, and it needs to be named**: a session with unresolved drafts
+becomes **undeletable** until they are signed or rejected. This is consistent with
+the fail-closed downgrade already planned for M-E ("fail-closed if unresolved `staged`
+rows exist"), and it is the same stance `SPEC-checkpoint.md` takes for
+checkpoints. **Two tables that make their session indelible is a property of
+the system, not an accident** — it deserves to be written down once, here.
+
+### 1.3 The PK does not move, and why
+
+`(session_id, knowledge_id)` — **not** a PK on `knowledge_id` alone. A draft is an
+**hypothesis**: two sessions can observe the same artifact without either one depriving
+the other. **Only promotion into `brain_session_artifacts`** (PK `knowledge_id`) confers
+exclusivity. This asymmetry is the whole mechanism: the pool is permissive, the ledger
+is exclusive.
+
+---
+
+## 2. PROPOSAL 2 — lifetime: NO automatic expiration
+
+**Adopted: a `staged` draft NEVER expires on its own.**
+
+This is the choice that needs the most justification, because it produces a table that
+does not empty itself.
+
+| Option | Why ruled out |
 |---|---|
-| Expiration à N jours (purge) | **Détruit du savoir non signé sans geste humain** — l'inverse exact de Q6, et sous l'axe « traçabilité du savoir » qui commande l'ordre du plan |
-| Expiration → `dismissed` automatique | Même destruction, avec une trace. Mais `dismissed` est un **jugement** (« je n'en veux pas ») ; le serveur le fabriquerait — objection C9, celle qui a tué la route (2) de Q15 |
-| Rattachement automatique à la session suivante du même projet | Attribue sans geste humain. C'est **E3**, le changement de covenant plein que le `§0bis.5` refuse |
-| **Aucune expiration** | Rien n'est détruit, rien n'est attribué. Le pool grossit — c'est un coût **visible et mesurable**, pas une perte silencieuse |
+| Expiration after N days (purge) | **Destroys unsigned knowledge with no human action** — the exact opposite of Q6, and along the "knowledge traceability" axis that governs the plan's ordering |
+| Expiration → automatic `dismissed` | Same destruction, with a trace. But `dismissed` is a **judgment** ("I don't want it"); the server would be manufacturing it — objection C9, the one that killed route (2) of Q15 |
+| Automatic reattachment to the next session of the same project | Attributes with no human action. This is **E3**, the full covenant change that `§0bis.5` rejects |
+| **No expiration** | Nothing is destroyed, nothing is attributed. The pool grows — a **visible and measurable** cost, not a silent loss |
 
-**Le coût est réel et se gère par la mesure, pas par une horloge.** Proposition : exposer
-`staged_pool_size` et `staged_pool_oldest_age` en métriques process. Un pool qui gonfle
-est un signal que personne ne signe — **une information sur l'usage**, pas un incident de
-stockage. La réponse à « le pool est gros » est un geste opérateur, jamais un `DELETE`
-programmé.
+**The cost is real and is managed by measurement, not by a clock.** Proposal: expose
+`staged_pool_size` and `staged_pool_oldest_age` as process metrics. A growing pool
+is a signal that no one is signing — **information about usage**, not a storage
+incident. The response to "the pool is big" is an operator action, never a scheduled
+`DELETE`.
 
-> **À SIGNER** : accepte-t-on une table qui ne se purge pas ? *Recommandation : oui.
-> `brain_session_artifacts` et `brain_session_checkpoints` ne se purgent pas non plus, et
-> le volume attendu (voir §3) est très inférieur au corpus, mesuré à 4 405 entités le
+> **TO SIGN**: do we accept a table that never gets purged? *Recommendation: yes.
+> `brain_session_artifacts` and `brain_session_checkpoints` are not purged either, and
+> the expected volume (see §3) is far below the corpus, measured at 4,405 entities on
 > 2026-08-20.*
 
 ---
 
-## 3. PROPOSITION 3 — les plafonds : DEUX, pas un
+## 3. PROPOSAL 3 — caps: TWO, not one
 
-Le PLAN `§4.4` fixe déjà **500 par session**, avec un compteur
-`staged_capture_skipped{overflow}` en métriques process. **Ce plafond est conservé** et
-n'est pas rediscuté.
+PLAN `§4.4` already fixes **500 per session**, with a
+`staged_capture_skipped{overflow}` process metric counter. **This cap is kept**
+and is not up for debate again.
 
-**Il ne suffit pas**, et c'est l'apport de cette spec : 500/session borne ce qu'**une**
-session peut produire, pas ce que le **pool** peut accumuler. Sous l'ouverture automatique,
-les sessions traçantes naissent seules et se ferment seules ; rien ne borne leur nombre.
+**It is not enough**, and that is what this spec adds: 500/session bounds what **one**
+session can produce, not what the **pool** can accumulate. Under automatic opening,
+tracer sessions are born on their own and close on their own; nothing bounds their count.
 
-**Proposition : un second plafond, sur le pool entier**, `BRAIN_SESSION_STAGED_POOL_MAX`,
-proposé à **5 000** lignes `staged` — dix sessions pleines.
+**Proposal: a second cap, on the whole pool**, `BRAIN_SESSION_STAGED_POOL_MAX`,
+proposed at **5,000** `staged` rows — ten full sessions.
 
-**Au dépassement : on cesse d'observer, on ne jette rien.** Exactement la posture du
-plafond par session — le nouvel écrivain est refusé, l'existant est intact. Un pool plein
-dégrade l'observation ; il ne détruit pas ce qui est déjà observé.
+**On overflow: stop observing, discard nothing.** The exact same stance as the
+per-session cap — the new writer is refused, the existing rows stay intact. A full pool
+degrades observation; it does not destroy what has already been observed.
 
-> **À SIGNER** : la valeur 5 000, et le principe même d'un second plafond.
-> ⚠️ **Ne pas répéter l'erreur du seuil des traçantes** : si ce plafond est évalué dans le
-> balayage nocturne plutôt qu'à l'écriture, c'est un **seuil d'éligibilité**, pas une
-> borne — et le pool peut dépasser entre deux passages. *Recommandation : l'évaluer à
-> l'écriture, où la borne est vraie au sens strict.*
+> **TO SIGN**: the value 5,000, and the very principle of a second cap.
+> ⚠️ **Do not repeat the tracer-threshold mistake**: if this cap is evaluated in the
+> nightly sweep rather than at write time, it is an **eligibility threshold**, not a
+> bound — and the pool can overshoot between two passes. *Recommendation: evaluate it
+> at write time, where the bound is true in the strict sense.*
 
 ---
 
-## 4. PROPOSITION 4 — le tool de signature hors session
+## 4. PROPOSAL 4 — the out-of-session signing tool
 
 ```
 brain_staged_capture_sign(
     project_key: str,
-    knowledge_ids: list[UUID],       # 1..100, uniques
+    knowledge_ids: list[UUID],       # 1..100, unique
     target_session_id: UUID | None = None,
 ) -> StagedSignResult
 ```
 
-**Il n'appartient PAS au cycle de vie de session**, et c'est sa propriété la plus
-importante : il s'appelle **hors session**, sur un pool qui a survécu à la fermeture de
-celle qui l'a observé. Il ne porte donc **pas** `expected_client_key` — il n'adresse
-aucune session vivante.
+**It does NOT belong to the session lifecycle**, and that is its most important
+property: it is called **outside a session**, on a pool that survived the closing of
+the one that observed it. It therefore carries **no** `expected_client_key` — it
+addresses no live session.
 
-**Ce qu'il fait** : passe des brouillons de `staged` à `promoted`, et écrit les lignes
-correspondantes dans `brain_session_artifacts` — où la PK `knowledge_id` **impose
-l'exclusivité**. Un artefact déjà attribué à une autre session est **refusé**, pas
-réattribué : la réattribution est **Q8/M-F**, une autre tête, une autre décision.
+**What it does**: moves drafts from `staged` to `promoted`, and writes the
+corresponding rows into `brain_session_artifacts` — where the `knowledge_id` PK
+**enforces exclusivity**. An artifact already attributed to another session is
+**refused**, not reattributed: reattribution is **Q8/M-F**, a different head, a
+different decision.
 
-**Le pendant obligatoire** : `brain_staged_capture_dismiss(...)`, même forme, `staged` →
-`dismissed`. Sans lui, un brouillon qu'on ne veut pas garder n'a **aucune sortie** — il
-resterait `staged` pour toujours et bloquerait la suppression de sa session (§1.2). Les
-trois valeurs du CHECK `∈ {staged, promoted, dismissed}` doivent chacune être atteignables
-par un geste ; une valeur inatteignable est un défaut de conception, pas une réserve.
+**The mandatory counterpart**: `brain_staged_capture_dismiss(...)`, same shape, `staged` →
+`dismissed`. Without it, a draft no one wants to keep has **no way out** — it
+would stay `staged` forever and would block deletion of its session (§1.2). The
+three values of the CHECK `∈ {staged, promoted, dismissed}` must each be reachable
+by some action; an unreachable value is a design flaw, not a reserve.
 
-> **À SIGNER, et c'est la vraie question produit** : `target_session_id` — un brouillon
-> promu s'attribue-t-il **à la session qui l'a observé** (paternité, cohérent avec Q2 =
-> `from_project`) ou **à la session courante de l'opérateur qui signe** (le signataire) ?
-> *Recommandation : à la session qui l'a OBSERVÉ, `target_session_id` omis par défaut.*
-> C'est l'analogie exacte de Q2 : la capture répond à « qu'a **produit** cette session ».
-> Signer n'est pas produire.
+> **TO SIGN, and this is the real product question**: `target_session_id` — is a
+> promoted draft attributed **to the session that observed it** (authorship, consistent
+> with Q2 = `from_project`) or **to the signing operator's current session** (the
+> signer)? *Recommendation: to the session that OBSERVED it, `target_session_id`
+> omitted by default.* This is the exact analogy of Q2: capture answers "what did
+> this session **produce**". Signing is not producing.
 >
-> **Le covenant passe alors à NEUF ou DIX commandes**, pas huit. `SPEC-checkpoint.md` §4
-> annonce huit (les sept + le checkpoint) ; `sign` et `dismiss` en ajoutent deux. **Les
-> trois specs doivent s'accorder sur ce compte avant la première livraison** — le test
-> d'ancrage `test_session_covenant_docstrings_anchor.py` porte le nombre en toutes
-> lettres, et il rougira une fois par tool ajouté. *Ce n'est pas un détail de
-> comptage : c'est la surface du contrat que lit un agent.*
+> **The covenant then moves to NINE or TEN commands**, not eight. `SPEC-checkpoint.md`
+> §4 announces eight (the seven plus the checkpoint); `sign` and `dismiss` add two.
+> **The three specs must agree on this count before the first delivery** — the anchor
+> test `test_session_covenant_docstrings_anchor.py` spells the number out in full,
+> and it will go red the moment a tool is added. *This is not a counting detail:
+> it is the contract surface an agent reads.*
 
 ---
 
-## 5. Ce que M-E casse, et ce qu'elle ne casse pas
+## 5. What M-E breaks, and what it does not
 
-- **Attestation** : table NEUVE ⇒ `table_set` change dans les **deux** assets v4. Sous la
-  signature **S1** (contrat v5 à `alembic_head` **dérivé**), c'est désormais **le seul**
-  coût d'attestation de cette tête — la révision ne compte plus.
-- **Aucun index sur `brain_sessions`**, donc `expected_session_indexes` ne bouge pas.
-- **Tête SÉPARÉE de M-C**, par la signature **S6** : le regroupement n'est légitime que si
-  les downgrades peuvent échouer indépendamment, et **S9 ne l'a pas démontré**. Les deux
-  downgrades sont fail-closed sur des lignes non résolues ; groupés, l'échec de l'un
-  bloquerait le rollback de l'autre.
-- **`WRITE_MODELS_BY_TABLE`** (`test_model_column_width_contract.py`) : si M-E livre un
-  modèle Pydantic écrivain, il doit y être **inscrit**. Vérifié le 2026-08-20 : la table y
-  porte **12 entrées** et `brain_sessions` **n'y est pas** — un modèle non inscrit n'est
-  pas audité, et sa garde est silencieuse. La checklist de la 046 porte déjà ce trou
-  (`SEQUENCEMENT §3.2`) ; **M-E ne doit pas le rouvrir pour sa propre table.**
-
----
-
-## 6. Ce qui reste NON SPÉCIFIÉ
-
-1. **Les quatre propositions ci-dessus** — aucune n'est signée.
-2. **Le compte du covenant** (§4) — huit, neuf ou dix, à accorder entre les trois specs.
-3. **L'écrivain de brouillons lui-même** reste gated derrière
-   `BRAIN_SESSION_STAGED_CAPTURE_ENABLED`, livré **fermé**. Cette spec décrit le pool et
-   sa sortie, **pas** la politique d'observation.
-4. **Un site périmé, repéré et non corrigé ici** : PLAN `§4.4` décrit encore l'écrivain
-   comme liant par **`(project_key, started_by_actor)` avec la règle « exactement un »**.
-   C'est faux depuis le `§0bis.2` — sur la connexion, **la liaison est exacte**, et le
-   `§0bis.5` note lui-même que « Q6 perd son principal risque d'implémentation ». Amender
-   le PLAN sur ce point demande le même geste que pour D1/D4 : un encadré, une signature.
+- **Attestation**: a NEW table ⇒ `table_set` changes in **both** v4 assets. Under
+  signature **S1** (v5 contract at a **derived** `alembic_head`), this is now **the
+  only** attestation cost of this head — the revision no longer matters.
+- **No index on `brain_sessions`**, so `expected_session_indexes` does not move.
+- **A head SEPARATE from M-C**, per signature **S6**: grouping is only legitimate if
+  the downgrades can fail independently, and **S9 has not demonstrated that**. Both
+  downgrades are fail-closed on unresolved rows; grouped, one's failure would block
+  the other's rollback.
+- **`WRITE_MODELS_BY_TABLE`** (`test_model_column_width_contract.py`): if M-E ships a
+  writer Pydantic model, it must be **registered** there. Verified on 2026-08-20: the
+  table carries **12 entries** there and `brain_sessions` **is not among them** — an
+  unregistered model is not audited, and its guard is silent. The 046 checklist already
+  carries this gap (`SEQUENCEMENT §3.2`); **M-E must not reopen it for its own table.**
 
 ---
 
-*Écrit le 2026-08-20 en Phase 0 — ZÉRO mutation. Aucune migration ne sera écrite avant
-que S2-S5 soient signées et que le rang de M-E dans le couloir soit atteint (S6 : après
-046 et 047, en tête séparée de M-C).*
+## 6. What remains UNSPECIFIED
+
+1. **The four proposals above** — none is signed.
+2. **The covenant count** (§4) — eight, nine, or ten, to be reconciled between the
+   three specs.
+3. **The draft writer itself** stays gated behind
+   `BRAIN_SESSION_STAGED_CAPTURE_ENABLED`, shipped **closed**. This spec describes
+   the pool and its exit, **not** the observation policy.
+4. **A stale site, spotted and not fixed here**: PLAN `§4.4` still describes the
+   writer as keying by **`(project_key, started_by_actor)` under an "exactly one"
+   rule**. That has been false since `§0bis.2` — on the connection, **the binding
+   is exact**, and `§0bis.5` itself notes that "Q6 loses its main implementation
+   risk". Amending the PLAN on this point takes the same action as for D1/D4: a
+   boxed note, a signature.
+
+---
+
+*Written on 2026-08-20 in Phase 0 — ZERO mutation. No migration will be written before
+S2-S5 are signed and M-E's rank in the corridor is reached (S6: after
+046 and 047, as a head separate from M-C).*

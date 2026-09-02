@@ -131,7 +131,7 @@ All 13 tools return the same `✗ Invalid UUID: <value>` message on invalid inpu
 | `brain_search_decisions` | `brain_search(types=["decision"])` |
 | `brain_search_runbooks` | `brain_search(types=["runbook"])` |
 | `brain_what_do_i_know_about` | `brain_search(group_by_type=True)` |
-| `brain_get_project_context` | Aucun équivalent read-only exact. Utiliser `brain_list_projects` pour un aperçu, ou `brain_session_resume(session_id, expected_client_key)` après une reprise explicitement demandée. Réserver `brain_session_start` à une ouverture explicite. |
+| `brain_get_project_context` | No exact read-only equivalent. Use `brain_list_projects` for an overview, or `brain_session_resume(session_id, expected_client_key)` after an explicitly requested resume. Reserve `brain_session_start` for an explicit start. |
 
 ---
 
@@ -226,11 +226,11 @@ brain_list_adrs(project_key=None, status=None, limit=20, offset=0)
 Filter ADRs by project and status in {proposed, accepted, deprecated, superseded}.
 **Limit**: clamped server-side to [1, 100].
 
-Alias de compatibilité temporaire : pendant cette fenêtre de migration,
-préférer `brain_list(entity_type="adr")`. Les deux noms partagent le même
-adaptateur de liste ADR et excluent les éléments archivés (`include_archived=False`).
-Un retrait éventuel de `brain_list_adrs` exige un ticket ultérieur fondé sur une
-preuve d'usage et une décision explicite ; cet alias reste enregistré jusque-là.
+Temporary compatibility alias: during this migration window,
+prefer `brain_list(entity_type="adr")`. Both names share the same
+ADR list adapter and exclude archived items (`include_archived=False`).
+Any eventual removal of `brain_list_adrs` requires a later ticket grounded in
+usage evidence and an explicit decision; this alias stays registered until then.
 
 ---
 
@@ -461,36 +461,36 @@ The project cut is by **recency, not input order**: rows arrive ordered by `proj
 brain_feature_create(name: str, description: str, project_key: str,
                      status: str = "planned", pinned: bool = True) -> str
 ```
-Crée explicitement une feature dans un `project_context` existant. Inspecter d'abord
-`brain_get_roadmap(project_key=...)` : ce chemin contourne `ClusterGuard` et ne déduplique pas
-sémantiquement. `name` et `description` sont trimés, doivent être non vides et sont limités
-respectivement à 200 et 10 000 caractères.
-`project_key` est trimé, limité à 50 caractères et doit contenir des segments alphanumériques
-minuscules séparés par `-` ou `:`; les alias `brain` et `brain_v42` sont canonisés en `brain-v42`.
+Explicitly creates a feature in an existing `project_context`. Inspect
+`brain_get_roadmap(project_key=...)` first: this path bypasses `ClusterGuard` and does not
+deduplicate semantically. `name` and `description` are trimmed, must be non-empty, and are
+capped at 200 and 10,000 characters respectively.
+`project_key` is trimmed, capped at 50 characters, and must contain lowercase alphanumeric
+segments separated by `-` or `:`; the aliases `brain` and `brain_v42` are canonicalized to `brain-v42`.
 
-`status` accepte `planned | research | design | building | deployed | done` et vaut `planned`
-par défaut; `archived` est refusé à la création. `pinned` vaut `true` par défaut et peut être
-passé à `false`. Un nom déjà présent dans le même projet, après trim et comparaison exacte
-insensible à la casse, est refusé. Une validation invalide, un projet absent, un doublon ou
-un embedding indisponible, non numérique, non fini ou de dimension différente de
-`EMBEDDING_DIMENSION` (1536 par défaut) renvoie `✗ ...` sans créer de feature. La portée de
-l'unicité et le choix des deux writers sont documentés dans la
-[décision de création explicite](superpowers/specs/2026-07-23-explicit-roadmap-feature-creation-design.md).
+`status` accepts `planned | research | design | building | deployed | done` and defaults to
+`planned`; `archived` is refused on creation. `pinned` defaults to `true` and can be
+passed as `false`. A name already present in the same project, after trim and exact
+case-insensitive comparison, is refused. Invalid validation, a missing project, a duplicate, or
+an embedding that is unavailable, non-numeric, non-finite, or of a dimension different from
+`EMBEDDING_DIMENSION` (1536 by default) returns `✗ ...` without creating a feature. The scope of
+uniqueness and the choice of the two writers are documented in the
+[explicit creation decision](superpowers/specs/2026-07-23-explicit-roadmap-feature-creation-design.md).
 
-**Exemple** : `brain_feature_create("Recherche hybride", "Ajouter FTS + vecteurs.", "brain-v42")`
+**Example**: `brain_feature_create("Hybrid search", "Add FTS + vectors.", "brain-v42")`
 
 ### brain_feature_update
 
-Write-back session → roadmap : met à jour le statut d'une feature (spec 2026-07-04 §6).
+Write-back session → roadmap: updates a feature's status (spec 2026-07-04 §6).
 
-**Signature** : `brain_feature_update(feature: str, status: str, project_key: str) -> str`
+**Signature**: `brain_feature_update(feature: str, status: str, project_key: str) -> str`
 
-- `feature` : nom exact → préfixe d'id git-style (≥8 hex, tirets ignorés) → fragment unique du nom (ILIKE). Ambiguïté → erreur listant les candidats (id + nom).
-- `status` : `planned | research | design | building | deployed | done | archived`.
-- Side-effects : `status_updated_at=now()`, `pinned=true`.
-- `brain_update_project_focus(..., expected_focus_revision=..., feature_status=...)` sert aux mutations composites atomiques; `brain_feature_update` sert à une mise à jour autonome.
+- `feature`: exact name → git-style id prefix (≥8 hex, dashes ignored) → unique name fragment (ILIKE). Ambiguity → error listing the candidates (id + name).
+- `status`: `planned | research | design | building | deployed | done | archived`.
+- Side-effects: `status_updated_at=now()`, `pinned=true`.
+- `brain_update_project_focus(..., expected_focus_revision=..., feature_status=...)` is for atomic composite mutations; `brain_feature_update` is for a standalone update.
 
-**Exemple** : `brain_feature_update("Recherche hybride", "deployed", "brain-v42")`
+**Example**: `brain_feature_update("Hybrid search", "deployed", "brain-v42")`
 
 ---
 
@@ -581,7 +581,7 @@ brain_backfill_links_batch(entity_type=None, limit=50,
 ```
 Find entities in Neo4j with zero `RELATED_TO` edges, fetch their PG embeddings, and call `AutoLinker` to create missing semantic links. Used by the CONNECT phase of the nightly dream orchestrator.
 
-**Contrat `max_links`** (décision opérateur 2026-08-18, ticket fb62624f) : le plafond borne les liens **réussis** (`created` + `matched`). Les erreurs ne le consomment pas ; les tentatives sont bornées de fait par les `2×max_links` candidats sélectionnés, donc une entité dont toutes les écritures échouent peut rapporter jusqu'à `2×max_links` erreurs. Pour estimer un nombre d'entités fautives depuis `errors`, diviser par `2×max_links`, jamais par `max_links`.
+**`max_links` contract** (operator decision 2026-08-18, ticket fb62624f): the cap bounds **successful** links (`created` + `matched`). Errors do not consume it; attempts are in fact bounded by the `2×max_links` selected candidates, so an entity whose writes all fail can report up to `2×max_links` errors. To estimate a number of faulty entities from `errors`, divide by `2×max_links`, never by `max_links`.
 
 ### brain_get_clusters
 ```
@@ -657,76 +657,76 @@ Write a `BELONGS_TO_DOMAIN` edge from an entity to a Domain node. Called by the 
 
 ---
 
-## Tickets (coordination adressée) — 5 tools (`ticket_tools.py`)
+## Tickets (addressed coordination) — 5 tools (`ticket_tools.py`)
 
-Famille **coordination** — orthogonale à la famille mémoire. Les tickets sont adressés (un émetteur `from_project`, un destinataire `to_project`), stateful (machine à états), et **exclus** de `brain_search`, embeddings, decay, classification domaines et sync Neo4j.
+**Coordination** family — orthogonal to the memory family. Tickets are addressed (a sender `from_project`, a recipient `to_project`), stateful (state machine), and **excluded** from `brain_search`, embeddings, decay, domain classification, and Neo4j sync.
 
-> Note: ces 5 tools ne participent PAS à `brain_search` / embeddings — famille coordination, pas mémoire.
+> Note: these 5 tools do NOT participate in `brain_search` / embeddings — coordination family, not memory.
 
-| Tool | Signature | Rôle |
+| Tool | Signature | Role |
 |------|-----------|------|
-| `brain_ticket_create` | `(from_project, to_project, kind, title, body, extraction=None)` | Ouvre un ticket adressé. `kind` in `{'request', 'fyi'}`. Les deux projets doivent exister (`brain_set_project_context`). |
-| `brain_ticket_reply` | `(ticket_id, author_project, body)` | Poste un message dans le fil — tout statut, participants uniquement. |
-| `brain_ticket_transition` | `(ticket_id, author_project, action, message=None)` | Change le statut via la machine à états. `message` optionnel est ajouté au fil. |
-| `brain_ticket_list` | `(project_key)` | Liste les tickets groupés par action requise : à traiter / à confirmer / en attente. |
-| `brain_ticket_get` | `(ticket_id)` | Vue complète : header, body, fil de messages, actions possibles. |
+| `brain_ticket_create` | `(from_project, to_project, kind, title, body, extraction=None)` | Opens an addressed ticket. `kind` in `{'request', 'fyi'}`. Both projects must exist (`brain_set_project_context`). |
+| `brain_ticket_reply` | `(ticket_id, author_project, body)` | Posts a message to the thread — any status, participants only. |
+| `brain_ticket_transition` | `(ticket_id, author_project, action, message=None)` | Changes the status via the state machine. Optional `message` is appended to the thread. |
+| `brain_ticket_list` | `(project_key)` | Lists tickets grouped by required action: to handle / to confirm / waiting. |
+| `brain_ticket_get` | `(ticket_id)` | Full view: header, body, message thread, possible actions. |
 
-`from_project == to_project` est valide : le projet assume alors les rôles demandeur et
-exécutant. Un `request` de ce type sert de note-to-self et réapparaît dans son briefing.
+`from_project == to_project` is valid: the project then assumes both the requester and
+executor roles. A `request` of this kind serves as a note-to-self and reappears in its briefing.
 
-### Actions `brain_ticket_transition` par rôle
+### `brain_ticket_transition` actions by role
 
-| Action | Rôle requis | Transitions |
+| Action | Required role | Transitions |
 |--------|-------------|-------------|
 | `start` | executor (`to_project`) | `open → in_progress` |
 | `resolve` | executor | `open → resolved`, `in_progress → resolved` |
 | `wontfix` | executor | `open → wontfix`, `in_progress → wontfix` |
-| `ack` | executor | `open → acked` (fyi uniquement) |
+| `ack` | executor | `open → acked` (fyi only) |
 | `confirm` | requester (`from_project`) | `resolved → closed`, `wontfix → closed` |
 | `reopen` | requester | `resolved → open`, `wontfix → open` |
 | `cancel` | requester | `open/in_progress/resolved/wontfix → closed` |
 
-Statuts terminaux : `closed`, `acked` — aucune transition possible depuis ces statuts. La discussion (`brain_ticket_reply`) reste autorisée quel que soit le statut.
+Terminal statuses: `closed`, `acked` — no transition is possible from these statuses. Discussion (`brain_ticket_reply`) remains allowed regardless of status.
 
-### Exemple — cycle request complet (create → resolve → confirm)
+### Example — full request cycle (create → resolve → confirm)
 
 ```
-# 1. red-shrik ouvre une demande vers red-data
+# 1. red-shrik opens a request to red-data
 brain_ticket_create(from_project="red-shrik", to_project="red-data",
                     kind="request", title="Exposer /api/signals en ndjson",
                     body="Besoin d'un stream ndjson pour le dashboard.")
-# → ticket #a1b2c3 créé, status=open
+# → ticket #a1b2c3 created, status=open
 
-# 2. red-data prend en charge
+# 2. red-data takes charge
 brain_ticket_transition(ticket_id="<uuid>", author_project="red-data",
                         action="resolve", message="Déployé en v2.4.1")
 # → status=resolved
 
-# 3. red-shrik confirme (→ closed, extraction_status=pending)
+# 3. red-shrik confirms (→ closed, extraction_status=pending)
 brain_ticket_transition(ticket_id="<uuid>", author_project="red-shrik",
                         action="confirm", message="Validé en staging")
 # → status=closed · extraction_status=pending
 ```
 
-### Exemple — fyi (create → ack)
+### Example — fyi (create → ack)
 
 ```
-# red-data notifie red-shrik d'un breaking change
+# red-data notifies red-shrik of a breaking change
 brain_ticket_create(from_project="red-data", to_project="red-shrik",
                     kind="fyi", title="Breaking: champ 'price' renommé 'close'",
                     body="Déployé en v3.0 — mettre à jour les consommateurs.")
-# → ticket créé, status=open
+# → ticket created, status=open
 
-# red-shrik accuse réception (→ acked, extraction_status=pending)
+# red-shrik acknowledges receipt (→ acked, extraction_status=pending)
 brain_ticket_transition(ticket_id="<uuid>", author_project="red-shrik", action="ack")
 # → status=acked · extraction_status=pending
 ```
 
-À la clôture (`closed` ou `acked`), `extraction_status` passe à `pending` — le job nocturne `scripts/ticket_extract.py` (step EXTRACT de `dream.sh`) propose des learnings/decisions extraits du fil dans `ticket_extraction_proposals`, reviewables puis applicables manuellement ou en WET run.
+On closure (`closed` or `acked`), `extraction_status` moves to `pending` — the nightly job `scripts/ticket_extract.py` (EXTRACT step of `dream.sh`) proposes learnings/decisions extracted from the thread into `ticket_extraction_proposals`, reviewable then applicable manually or in a WET run.
 
-Avant l'INSERT, une gate vectorielle exacte et limitée au projet cible élimine les doublons `>= 0,85` contre les learnings/décisions actifs et entre drafts du même run. Elle est fail-closed : ligne active avec embedding absent ou non comparable (norme `<= 1e-6`), nouveau vecteur invalide ou lecture corpus impossible → aucun draft du run n'est persisté et les tickets restent `pending`. Le seuil n'est pas encore calibré ; EXTRACT reste en DRY pendant le soak.
+Before the INSERT, an exact vector gate scoped to the target project eliminates duplicates `>= 0.85` against active learnings/decisions and among drafts of the same run. It is fail-closed: an active row with a missing or non-comparable embedding (norm `<= 1e-6`), an invalid new vector, or an unreadable corpus → no draft of the run is persisted and the tickets stay `pending`. The threshold is not yet calibrated; EXTRACT stays in DRY during the soak.
 
-`--apply-ids` est un override opérateur pour des proposals déjà relues : il ne rejoue pas la gate corpus automatique.
+`--apply-ids` is an operator override for proposals already reviewed: it does not replay the automatic corpus gate.
 
 ---
 

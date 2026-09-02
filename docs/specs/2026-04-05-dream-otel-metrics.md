@@ -53,13 +53,13 @@ No retention — ~260 rows/year, keep all for cost trend analysis.
 
 CLI: `python -m brain_v42.metrics.dream_parser --phase scan --model sonnet --date 2000-01-01 --status done --duration 42 --project-key example-project otel.log`
 
-> **Cette ligne ÉCRIT une row en base.** La date et la clé de projet sont
-> délibérément impossibles. Le 2026-08-09, un agent de revue en lecture seule a
-> recopié cet exemple — alors daté `2026-04-05`, donc plausible — et a inséré une
-> vraie ligne dans `dream_runs` de production ; elle a faussé le `max(created_at)`
-> de `dream_preflight` au point de manquer faire sauter les phases chères de la
-> nuit suivante. Une date impossible rend la même erreur visible d'un coup d'œil.
-> `--project-key` est requis et sans défaut depuis le lot du 2026-08-09.
+> **This line WRITES a row to the database.** The date and the project key are
+> deliberately impossible. On 2026-08-09, a read-only review agent
+> copied this example — dated `2026-04-05` at the time, hence plausible — and inserted a
+> real row into production `dream_runs`; it skewed `dream_preflight`'s
+> `max(created_at)` to the point of nearly skipping the expensive phases of the
+> following night. An impossible date makes the same mistake visible at a glance.
+> `--project-key` has been required, with no default, since the 2026-08-09 batch.
 
 - Regex parse `api_request` events → sum tokens, cost, count api_calls
 - Regex parse `tool_result` events → count tool_calls

@@ -2,19 +2,19 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Couvrir `ProjectGroupTicketService` et masquer tout ticket sans participant dans le groupe, même si l'acteur fourni appartient au groupe.
+**Goal:** Cover `ProjectGroupTicketService` and hide any ticket with no participant in the group, even if the supplied actor belongs to the group.
 
-**Architecture:** Conserver `TicketService` comme propriétaire des règles métier. Renforcer uniquement le fence de groupe : verrouiller l'union des lignes de registre utiles, puis prouver séparément qu'un participant et, le cas échéant, l'acteur appartiennent au groupe. Les tests utilisent SQLite async avec les vraies requêtes SQL du fence et un double minimal pour le service canonique.
+**Architecture:** Keep `TicketService` as the owner of business rules. Strengthen only the group fence: lock the union of the useful registry rows, then separately prove that a participant and, where applicable, the actor belong to the group. The tests use async SQLite with the fence's real SQL queries and a minimal double for the canonical service.
 
 **Tech Stack:** Python 3.12+, pytest 9.1.1, pytest-asyncio 1.4.0, SQLAlchemy 2 async, aiosqlite.
 
 ## Global Constraints
 
-- Suivre RED → GREEN → REFACTOR et conserver la preuve de l'échec attendu.
-- Modifier seulement `ProjectGroupTicketService._lock_participants_scope` dans le code de production.
-- Préserver le verrou de registre pendant l'appel au service canonique.
-- Masquer les tickets hors groupe avec `TicketNotFoundError`.
-- Ne lancer ni mutation PostgreSQL live, ni déploiement, ni merge, ni push.
+- Follow RED → GREEN → REFACTOR and keep proof of the expected failure.
+- Modify only `ProjectGroupTicketService._lock_participants_scope` in production code.
+- Preserve the registry lock during the call to the canonical service.
+- Hide out-of-group tickets with `TicketNotFoundError`.
+- Do not run any live PostgreSQL mutation, deployment, merge, or push.
 
 ---
 

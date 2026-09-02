@@ -680,7 +680,7 @@ class TestAutomationRunbookContract:
         for heading in (
             "## Preflight",
             "## Cutover",
-            "## Abort immédiat",
+            "## Immediate abort",
             "## Smoke tests",
             "## Rollback",
         ):
@@ -768,8 +768,8 @@ class TestAutomationRunbookContract:
         assert "cockpit.recent" in architecture
         assert "non-fencing" in architecture
         assert "127.0.0.1:9201" in architecture
-        assert "Les validations précommit utilisent uniquement" in plan
-        assert "Le runbook décrit des commandes opérateur hôte" in plan
+        assert "The precommit validations only use temporary fixtures" in plan
+        assert "The runbook describes host operator commands" in plan
         assert "EnvironmentFile=%h/.config/brain-v42/automation-owner.env" in plan
 
     def test_architecture_draws_three_sibling_runtime_boxes(self) -> None:

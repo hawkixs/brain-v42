@@ -1,221 +1,216 @@
-# Cycle de vie des sessions — tarir les sessions fantômes
+# Session lifecycle — draining ghost sessions
 
-**Date** : 2026-08-07
-**Statut** : design validé par l'opérateur, plan d'implémentation à écrire
-**Ticket brain** : `2bd14b24-ccfe-4372-adf2-245b00304402` (idée, ouvert par red-shrik)
-**Tickets voisins** : `7ffe0e8a` (auto-heartbeat), `2dfbb83d` (identité), `d04dc588` (checkpoint)
-**Périmètre** : `brain_v42` seul, tous projets confondus
+**Date**: 2026-08-07
+**Status**: design validated by the operator, implementation plan to be written
+**Brain ticket**: `2bd14b24-ccfe-4372-adf2-245b00304402` (idea, opened by red-shrik)
+**Neighboring tickets**: `7ffe0e8a` (auto-heartbeat), `2dfbb83d` (identity), `d04dc588` (checkpoint)
+**Scope**: `brain_v42` alone, across all projects
 
-## Le problème, mesuré
+## The problem, measured
 
-Relevé le 2026-08-06 sur la production, pas supposé :
+Recorded on 2026-08-06 on production, not assumed:
 
 ```
-21 sessions status='open'   ·   17 STALE   ·   4 actives le jour même
+21 sessions status='open'   ·   17 STALE   ·   4 active the same day
 ```
 
-Les 17 mortes s'étalent du 2026-07-13 au 2026-07-27, soit **10 à 24 jours**.
-Leurs `client_key` disent d'où elles viennent : `codex-factory-28aeb338-*`,
+The 17 dead ones span 2026-07-13 to 2026-07-27, i.e. **10 to 24 days**. Their
+`client_key` say where they come from: `codex-factory-28aeb338-*`,
 `codex-github-migration-20260719-*`, `red-session-orchestrator-plan-*`,
-`auto-discord-worktree-*`. Une par agent dispatché, aucune refermée.
+`auto-discord-worktree-*`. One per dispatched agent, none closed.
 
-Elles couvrent **neuf projets** — auto-discord, red-lab, red-arena, red-codex,
-red-story, red-watcher, red-viewer, red-monitor, claude-dev-pc. Ce n'est pas un
-défaut de brain-v42, c'est un régime de tout l'écosystème.
+They span **nine projects** — auto-discord, red-lab, red-arena, red-codex,
+red-story, red-watcher, red-viewer, red-monitor, claude-dev-pc. This isn't a defect
+of brain-v42, it's a regime of the whole ecosystem.
 
-Le ticket d'origine rapportait 39 sessions nettoyées à la main la veille.
-**17 s'étaient déjà réaccumulées.** Sans mécanisme, le ménage manuel est une
-tâche perpétuelle.
+The original ticket reported 39 sessions manually cleaned up the day before. **17
+had already re-accumulated.** Without a mechanism, manual cleanup is a perpetual
+chore.
 
-### Les deux mensonges de `last_heartbeat_at`
+### The two lies of `last_heartbeat_at`
 
-Le même jour, le signal s'est trompé dans les deux sens :
+On the same day, the signal lied in both directions:
 
-- **Faux-mort** — la purge a abandonné une session VIVANTE (`9b6f7e18`, en plein
-  chantier) parce que le heartbeat ne bouge que sur commande explicite.
-- **Faux-vivant** — 17 sessions mortes depuis des semaines paraissent ouvertes,
-  parce que **rien ne les ferme**.
+- **False-dead** — the purge would have abandoned a LIVE session (`9b6f7e18`,
+  mid-work) because the heartbeat only moves on explicit command.
+- **False-alive** — 17 sessions dead for weeks look open, because **nothing closes
+  them**.
 
-Ces deux modes ont des causes distinctes. Le faux-mort vient du heartbeat
-déclaratif ; le faux-vivant vient de l'absence d'état terminal automatique. Les
-17 étaient correctement détectées `stale` — elles restaient simplement `open`.
+These two modes have distinct causes. The false-dead comes from the declarative
+heartbeat; the false-alive comes from the absence of an automatic terminal state.
+The 17 were correctly detected as `stale` — they simply stayed `open`.
 
-### Ce qu'une garde technique ne peut pas faire
+### What a technical guard can't do
 
-`is_human_actor` a été évaluée comme garde d'ouverture, et écartée sur mesure :
+`is_human_actor` was evaluated as an opening guard, and ruled out on the evidence:
 
-| Acteur observé | Classé |
+| Observed actor | Classified |
 |---|---|
-| `brain-v42`, `red-shrik`, `codex` | humain |
+| `brain-v42`, `red-shrik`, `codex` | human |
 | `dream-codex-*` | machine |
-| `${PWD}` non expansé | `_unexpanded` → machine |
+| `${PWD}` unexpanded | `_unexpanded` → machine |
 
-Elle sépare Dream du reste — ce pour quoi elle a été écrite — mais **pas un
-opérateur d'un agent**, ni un parent de son subagent : un subagent hérite de la
-config MCP de son parent, donc du même `X-Brain-Agent`. Une garde « seuls les
-humains ouvrent une session » refuserait Codex et laisserait passer tous les
-subagents Claude.
+It separates Dream from the rest — what it was written for — but **not an operator
+from an agent**, nor a parent from its subagent: a subagent inherits its parent's
+MCP config, hence the same `X-Brain-Agent`. A guard of "only humans open a session"
+would refuse Codex and let every Claude subagent through.
 
-Les trois schémas d'identité coexistants confirment qu'aucun ne désigne une
-session :
+The three coexisting identity schemas confirm that none of them designates a
+session:
 
 ```
-.mcp.json (projet)       X-Brain-Agent = "brain-v42"    une clé de projet
-~/.codex/config.toml     X-Brain-Agent = "codex"        une identité de client
-~/.claude.json (global)  X-Brain-Agent = "${PWD}"       un gabarit, expansion non prouvée
+.mcp.json (project)      X-Brain-Agent = "brain-v42"    a project key
+~/.codex/config.toml     X-Brain-Agent = "codex"         a client identity
+~/.claude.json (global)  X-Brain-Agent = "${PWD}"        a template, expansion unproven
 ```
 
-## Décisions
+## Decisions
 
-### D1 — Une session est une unité de travail, pas un acteur
+### D1 — A session is a unit of work, not an actor
 
-Une session appartient à l'acteur qui a la durée de vie **et** le mandat de la
-fermer. Les subagents n'en ouvrent aucune ; leur traçabilité passe par la
-provenance par artefact, qui existe et fonctionne.
+A session belongs to the actor that has both the lifetime **and** the mandate to
+close it. Subagents open none; their traceability goes through per-artifact
+provenance, which exists and works.
 
-Fondement retenu par l'opérateur : **si un subagent consulte le brain, c'est
-pour l'opérateur.** L'activité d'un subagent EST le travail de l'opérateur.
+Foundation adopted by the operator: **if a subagent consults the brain, it is for
+the operator.** A subagent's activity IS the operator's work.
 
-Cette formulation change la nature du problème d'attribution. Ce qui ressemblait
-à une ambiguïté irréductible — subagent indistinguable de son parent — devient
-la sémantique correcte : attribuer au couple *(projet, acteur)* désigne la
-session de l'opérateur, et c'est le résultat voulu.
+This framing changes the nature of the attribution problem. What looked like an
+irreducible ambiguity — a subagent indistinguishable from its parent — becomes the
+correct semantics: attributing to the pair *(project, actor)* designates the
+operator's session, and that is the intended result.
 
-D1 n'est **pas applicable techniquement**, et ce n'est pas un oubli. C'est une
-doctrine. Comme elle touche neuf projets, elle relève d'un ticket écosystème
-distinct, hors de cette spec.
+D1 is **not technically enforceable**, and that isn't an oversight. It's a doctrine.
+Since it touches nine projects, it belongs to a separate ecosystem ticket, out of
+scope for this spec.
 
-### D2 — L'état terminal d'une session morte est `abandoned`, jamais `ended`
+### D2 — The terminal state of a dead session is `abandoned`, never `ended`
 
-`abandon` est déjà la sémantique exacte : il ne touche pas au focus, ne réclame
-pas de summary, et conserve les captures et leur exclusivité.
+`abandon` is already the exact semantics: it doesn't touch the focus, doesn't
+require a summary, and preserves captures and their exclusivity.
 
-Une session que personne n'a fermée n'a précisément **aucun jugement à
-préserver**. L'auto-abandon nomme honnêtement ce qui s'est passé, là où un
-résumé dérivé par le serveur ferait passer de l'état mesurable recopié pour du
-jugement — ce que la doctrine du focus interdit explicitement.
+A session nobody closed has, precisely, **no judgment to preserve**. Auto-abandon
+honestly names what happened, whereas a server-derived summary would pass off
+recopied measurable state as judgment — which the focus doctrine explicitly forbids.
 
-### D3 — Pas de dépendance à l'auto-heartbeat
+### D3 — No dependency on auto-heartbeat
 
-Le ticket d'origine ordonnait « `7ffe0e8a` d'abord », au motif qu'il faut une
-staleness digne de confiance avant de fermer dessus. La mesure rend cette
-dépendance inutile :
+The original ticket mandated "`7ffe0e8a` first", on the grounds that staleness needs
+to be trustworthy before closing on it. The measurement makes this dependency
+unnecessary:
 
-| Population | Âge |
+| Population | Age |
 |---|---|
-| Fantôme le plus récent | 10 jours |
-| Session vivante la plus ancienne | 0 jour |
+| Most recent ghost | 10 days |
+| Oldest live session | 0 days |
 
-**Un fossé de dix jours sépare les deux populations.** Un seuil à 7 jours
-appliqué au `last_heartbeat_at` tel qu'il fonctionne aujourd'hui — explicite
-seulement — attrape les 17 fantômes et épargne les 4 vivantes, avec de la marge
-des deux côtés.
+**A ten-day gap separates the two populations.** A 7-day threshold applied to
+`last_heartbeat_at` as it works today — explicit only — catches the 17 ghosts and
+spares the 4 live ones, with margin on both sides.
 
-Prix assumé : un chantier dépassant 7 jours doit appeler `brain_session_heartbeat`
-une fois. C'est un coût réel mais borné, contre une dépendance à une brique
-d'identité dont le seul porteur connu (`X-Brain-Session`) est mesuré non
-fonctionnel.
+Accepted cost: a chantier running past 7 days must call `brain_session_heartbeat`
+once. That's a real but bounded cost, against a dependency on an identity brick
+whose only known carrier (`X-Brain-Session`) is measured non-functional.
 
-### D4 — Le balayage est une phase Dream, en DRY d'abord
+### D4 — The sweep is a Dream phase, DRY first
 
-Dream fournit déjà l'ordonnancement nocturne, l'idiome de killswitch, et la
-trace consultable dans `dream_runs`. Surtout, il fournit l'idiome **DRY/WET**
-éprouvé par les phases `reorg`, `extract` et `roadmap`.
+Dream already provides nightly scheduling, the killswitch idiom, and a traceable
+record in `dream_runs`. Above all, it provides the **DRY/WET** idiom proven by the
+`reorg`, `extract` and `roadmap` phases.
 
-Particularité assumée : cette phase est **déterministe et n'appelle aucun
-modèle**. `dream_runs.model` sera `NULL` — forme déjà admise, observée sur
-`extract` et sur le run `roadmap` du 2026-08-05.
+Accepted particularity: this phase is **deterministic and calls no model**.
+`dream_runs.model` will be `NULL` — a shape already admitted, observed on `extract`
+and on the 2026-08-05 `roadmap` run.
 
-## Mécanisme
+## Mechanism
 
-| Élément | Valeur |
+| Element | Value |
 |---|---|
 | Killswitches | `BRAIN_DREAM_SWEEP_ENABLED`, `BRAIN_DREAM_SWEEP_DRY_RUN` |
-| Prédicat | `status = 'open' AND last_heartbeat_at < now() - interval '7 days'` |
-| Action | transition vers `abandoned` |
+| Predicate | `status = 'open' AND last_heartbeat_at < now() - interval '7 days'` |
+| Action | transition to `abandoned` |
 | `abandonment_reason` | `auto_stale_7d` |
-| Portée | tous les projets |
-| Trace | une ligne `dream_runs`, phase `sweep`, `model` NULL |
+| Scope | all projects |
+| Trace | one `dream_runs` row, phase `sweep`, `model` NULL |
 
-Le `abandonment_reason` distinctif n'est pas décoratif : il garde l'abandon
-automatique et l'abandon manuel **distinguables à jamais**, donc auditables
-séparément. Un abandon manuel porte la raison écrite par l'opérateur ; celui-ci
-porte une constante reconnaissable.
+The distinctive `abandonment_reason` isn't decorative: it keeps automatic
+abandonment and manual abandonment **distinguishable forever**, hence separately
+auditable. A manual abandon carries the reason the operator wrote; this one carries
+a recognizable constant.
 
-En mode DRY, la phase journalise exactement ce qu'elle **aurait** abandonné et
-n'écrit **rien** dans `brain_sessions`.
+In DRY mode, the phase logs exactly what it **would have** abandoned and writes
+**nothing** to `brain_sessions`.
 
-## Sûreté et déploiement
+## Safety and rollout
 
-1. **DRY plusieurs nuits.** Lire ce que la phase aurait abandonné et vérifier
-   qu'elle ne vise que des fantômes.
-2. **Re-mesurer le fossé avant le flip WET.** Ne jamais recopier les chiffres de
-   cette spec : ils datent du 2026-08-06 et se périment. La requête de mesure
-   fait partie de la procédure, pas de la documentation.
-3. **Irréversibilité.** `brain_session_resume` exige `status='open'` : un abandon
-   est terminal. Trois atténuations — seuil généreux, DRY préalable, et
-   conservation des captures garantie par le contrat existant.
-4. **Pas d'`unabandon`.** Tant que le DRY n'a produit aucun faux positif,
-   construire une annulation serait résoudre un problème non observé.
+1. **DRY for several nights.** Read what the phase would have abandoned and verify
+   it targets only ghosts.
+2. **Re-measure the gap before the WET flip.** Never copy this spec's numbers: they
+   date from 2026-08-06 and go stale. The measurement query is part of the
+   procedure, not the documentation.
+3. **Irreversibility.** `brain_session_resume` requires `status='open'`: an abandon
+   is terminal. Three mitigations — a generous threshold, a prior DRY period, and
+   capture preservation guaranteed by the existing contract.
+4. **No `unabandon`.** As long as DRY has produced no false positives, building an
+   undo would be solving a problem that hasn't been observed.
 
-## Amendement doctrinal
+## Doctrinal amendment
 
-Le `CLAUDE.md` porte aujourd'hui une interdiction catégorique :
+`CLAUDE.md` today carries a categorical prohibition:
 
-> Aucun hook, auto-close, livraison de travail ou fin de réponse ne ferme une
-> session.
+> No hook, auto-close, work delivery or end of response closes a session.
 
-Cette spec la contredirait si elle n'était pas amendée explicitement. L'intention
-d'origine visait **l'agent et le client** : empêcher qu'un process ferme une
-session vivante et détruise le rituel de fin, seul moment où du jugement non
-dérivable est écrit.
+This spec would contradict it unless explicitly amended. The original intent
+targeted **the agent and the client**: preventing a process from closing a live
+session and destroying the closing ritual, the sole moment where non-derivable
+judgment is written.
 
-L'amendement doit donc être étroit et énoncé, pas glissé :
+The amendment must therefore be narrow and stated, not slipped in:
 
-- l'interdiction reste entière pour l'agent et le client — `start`, `resume`,
-  `end` et `abandon` restent des commandes explicites de l'opérateur ;
-- le **serveur** peut abandonner une session sans signe de vie depuis 7 jours ;
-- cet abandon automatique ne produit ni summary ni `next_focus`, et ne touche
-  jamais le focus du projet.
+- the prohibition remains complete for the agent and the client — `start`, `resume`,
+  `end` and `abandon` remain explicit operator commands;
+- the **server** may abandon a session with no sign of life for 7 days;
+- this automatic abandon produces neither a summary nor a `next_focus`, and never
+  touches the project's focus.
 
 ## Tests
 
-- **Unitaire, frontière du prédicat** : à N−1 jour la session n'est pas touchée,
-  à N+1 elle est abandonnée. La frontière exacte, pas un cas au milieu.
-- **Unitaire, DRY n'écrit rien** : en mode DRY, aucune ligne `brain_sessions`
-  n'est modifiée, alors que la phase rapporte des candidats.
-- **Intégration, invariants préservés** : le sweep n'altère ni `current_focus`,
-  ni `focus_revision`, ni `attributed_knowledge_ids`.
-- **Intégration, distinction d'origine** : un abandon automatique porte
-  `abandonment_reason = 'auto_stale_7d'`, un abandon manuel garde le sien.
+- **Unit, predicate boundary**: at N−1 day the session is not touched, at N+1 it is
+  abandoned. The exact boundary, not a middle case.
+- **Unit, DRY writes nothing**: in DRY mode, no `brain_sessions` row is modified,
+  even though the phase reports candidates.
+- **Integration, invariants preserved**: the sweep alters neither `current_focus`,
+  nor `focus_revision`, nor `attributed_knowledge_ids`.
+- **Integration, origin distinction**: an automatic abandon carries
+  `abandonment_reason = 'auto_stale_7d'`, a manual abandon keeps its own.
 
-## Hors périmètre
+## Out of scope
 
-Explicitement, et chacun pour une raison :
+Explicitly, and each for a reason:
 
-- **Auto-heartbeat (`7ffe0e8a`)** — non nécessaire ici (D3). Noter cependant que
-  le principe de D1 le débloque conceptuellement : l'attribution par
-  *(projet, acteur)* suffit, `X-Brain-Session` n'a jamais été indispensable.
-  `is_human_actor` y retrouve un rôle utile — exclure les écritures de Dream de
-  toute attribution automatique, ce que le ticket exige.
-- **Identité de session (`2dfbb83d`)** — mesurée non fonctionnelle, et rendue
-  non bloquante par D3.
-- **Checkpoint sémantique (`d04dc588`)** — jugé BLOCKED par son propre audit,
-  spec distincte requise.
-- **Doctrine « les subagents n'ouvrent pas de session »** — touche neuf projets,
-  donc ticket écosystème séparé.
-- **Nettoyage manuel des 17 fantômes** — le DRY les listera, le flip WET les
-  traitera. C'est la meilleure démonstration du mécanisme, et s'en priver
-  rendrait le succès invérifiable.
+- **Auto-heartbeat (`7ffe0e8a`)** — not needed here (D3). Note however that D1's
+  principle unblocks it conceptually: attribution by *(project, actor)* is
+  sufficient, `X-Brain-Session` was never indispensable. `is_human_actor` regains a
+  useful role there — excluding Dream's writes from any automatic attribution, which
+  the ticket requires.
+- **Session identity (`2dfbb83d`)** — measured non-functional, and made non-blocking
+  by D3.
+- **Semantic checkpoint (`d04dc588`)** — judged BLOCKED by its own audit, a separate
+  spec is required.
+- **Doctrine "subagents don't open sessions"** — touches nine projects, hence a
+  separate ecosystem ticket.
+- **Manual cleanup of the 17 ghosts** — DRY will list them, the WET flip will
+  process them. That's the best demonstration of the mechanism, and skipping it
+  would make success unverifiable.
 
-## Limites connues
+## Known limits
 
-- D1 n'est pas applicable techniquement et ne le sera pas avec les briques
-  actuelles. Une dérive future est possible sans qu'aucune garde ne crie ; seul
-  le comptage des sessions ouvertes la révélera.
-- Le seuil de 7 jours est calibré sur une seule mesure. Un changement de régime
-  de travail — chantiers plus longs, sessions volontairement persistantes —
-  invaliderait la marge et exigerait de re-mesurer.
-- `last_heartbeat_at` reste déclaratif jusqu'à `7ffe0e8a`. Une session vivante
-  mais silencieuse plus de 7 jours sera abandonnée à tort ; c'est le compromis
-  accepté en D3, atténué par le fait que l'abandon conserve les captures.
+- D1 is not technically enforceable and won't be with the current bricks. A future
+  drift is possible without any guard raising an alarm; only the count of open
+  sessions will reveal it.
+- The 7-day threshold is calibrated on a single measurement. A change in work regime
+  — longer chantiers, deliberately persistent sessions — would invalidate the margin
+  and require re-measuring.
+- `last_heartbeat_at` stays declarative until `7ffe0e8a`. A session that is alive
+  but silent for more than 7 days will be wrongly abandoned; that's the compromise
+  accepted in D3, mitigated by the fact that abandonment preserves captures.

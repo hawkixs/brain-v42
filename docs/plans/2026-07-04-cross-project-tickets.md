@@ -1,10 +1,10 @@
-# Tickets Cross-Projet — Implementation Plan
+# Cross-Project Tickets — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Canal de coordination inter-projets dans brain-v42 : tickets adressés (request/fyi) avec fil de messages, machine à états, 5 tools MCP, section briefing, et job dream d'extraction de connaissance proposer-only.
+**Goal:** Cross-project coordination channel in brain-v42: addressed tickets (request/fyi) with a message thread, a state machine, 5 MCP tools, a briefing section, and a proposer-only dream knowledge-extraction job.
 
-**Architecture:** Nouvelle famille "coordination" orthogonale à la famille mémoire — 3 tables PG (`tickets`, `ticket_messages`, `ticket_extraction_proposals`), **hors** embeddings/search/decay/graph. Repository + Service (machine à états pure en table de transitions), tools MCP closures FastMCP, section briefing avec graceful-degrade, script `scripts/ticket_extract.py` (pattern NVIDIA/deepseek de `domain_backfill.py`) câblé dans `dream.sh` derrière killswitch `BRAIN_DREAM_EXTRACT_*`.
+**Architecture:** New "coordination" family orthogonal to the memory family — 3 PG tables (`tickets`, `ticket_messages`, `ticket_extraction_proposals`), **outside** embeddings/search/decay/graph. Repository + Service (pure state machine as a transition table), FastMCP closure MCP tools, briefing section with graceful degrade, `scripts/ticket_extract.py` script (NVIDIA/deepseek pattern from `domain_backfill.py`) wired into `dream.sh` behind the `BRAIN_DREAM_EXTRACT_*` killswitch.
 
 **Tech Stack:** Python 3.12+, SQLAlchemy 2.0 Core async, Alembic (raw SQL `op.execute`), Pydantic 2, FastMCP, structlog, httpx (NVIDIA API), pytest + pytest-asyncio.
 
@@ -12,60 +12,60 @@
 
 ## Global Constraints
 
-- `project_key` canonique kebab-case — TOUJOURS passer par `canonicalize_project_key` (write path strict). Le brain project_key est `brain-v42` (tiret).
-- Les tickets sont **exclus** de : `brain_search`, embeddings, decay, classification domaines, sync Neo4j. Aucun code de cette feature ne touche ces sous-systèmes (sauf l'apply de l'extraction qui crée des learnings/decisions **via les services existants**).
-- Tools MCP : retour **toujours `str`** (`format_confirmation`/`format_error`), jamais d'exception brute.
-- Logging : structlog uniquement, jamais `print` (sauf CLI scripts où `print` vers stdout est le pattern existant de `domain_backfill.py`).
-- Type hints partout ; I/O en async.
-- Vert AVANT commit : `pytest tests/unit -q`, `ruff check src/ tests/ scripts/`, `ruff format --check src/ tests/ scripts/`, `mypy src/`.
-- Conventional Commits ; un commit par tâche.
-- Coverage globale ≥ 60 % (gate CI).
-- Tests DB-backed : gate par `require_test_db_url()` (skip si `BRAIN_V42_TEST_DB_URL` absent) — jamais de fallback sur la prod.
+- `project_key` canonical kebab-case — ALWAYS go through `canonicalize_project_key` (strict write path). The brain project_key is `brain-v42` (hyphen).
+- Tickets are **excluded** from: `brain_search`, embeddings, decay, domain classification, Neo4j sync. No code in this feature touches these subsystems (except the extraction apply, which creates learnings/decisions **via the existing services**).
+- MCP tools: **always return `str`** (`format_confirmation`/`format_error`), never a raw exception.
+- Logging: structlog only, never `print` (except CLI scripts, where `print` to stdout is the existing pattern from `domain_backfill.py`).
+- Type hints everywhere; async I/O.
+- Green BEFORE commit: `pytest tests/unit -q`, `ruff check src/ tests/ scripts/`, `ruff format --check src/ tests/ scripts/`, `mypy src/`.
+- Conventional Commits; one commit per task.
+- Overall coverage ≥ 60% (CI gate).
+- DB-backed tests: gated by `require_test_db_url()` (skip if `BRAIN_V42_TEST_DB_URL` is absent) — never a fallback to prod.
 
 ## File Structure
 
-| Fichier | Responsabilité | Tâche |
+| File | Responsibility | Task |
 |---|---|---|
-| `src/brain_v42/models/ticket.py` (create) | Enums, modèles Pydantic, table de transitions (machine à états pure) | 1 |
-| `src/brain_v42/db/tables.py` (modify) | Tables Core `tickets`, `ticket_messages`, `ticket_extraction_proposals` | 1, 5 |
-| `alembic/versions/028_tickets.py` (create) | Migration tickets + ticket_messages | 1 |
-| `src/brain_v42/models/__init__.py` (modify) | Exports des nouveaux modèles | 1 |
-| `src/brain_v42/repositories/pg_ticket.py` (create) | Accès PG tickets/messages (CRUD + requêtes groupées) | 2 |
-| `src/brain_v42/services/ticket_service.py` (create) | Règles métier : validation projets, machine à états, side-effects | 2 |
-| `src/brain_v42/mcp/tools/ticket_tools.py` (create) | 5 tools MCP + formatters locaux | 3 |
+| `src/brain_v42/models/ticket.py` (create) | Enums, Pydantic models, transition table (pure state machine) | 1 |
+| `src/brain_v42/db/tables.py` (modify) | Core tables `tickets`, `ticket_messages`, `ticket_extraction_proposals` | 1, 5 |
+| `alembic/versions/028_tickets.py` (create) | Migration for tickets + ticket_messages | 1 |
+| `src/brain_v42/models/__init__.py` (modify) | Exports of the new models | 1 |
+| `src/brain_v42/repositories/pg_ticket.py` (create) | PG access for tickets/messages (CRUD + grouped queries) | 2 |
+| `src/brain_v42/services/ticket_service.py` (create) | Business rules: project validation, state machine, side-effects | 2 |
+| `src/brain_v42/mcp/tools/ticket_tools.py` (create) | 5 MCP tools + local formatters | 3 |
 | `src/brain_v42/mcp/server.py` (modify) | build_services + registration | 3, 4 |
-| `src/brain_v42/mcp/tools/session_tools.py` (modify) | Section briefing `### Tickets` | 4 |
-| `alembic/versions/029_ticket_extraction_proposals.py` (create) | Migration proposals | 5 |
-| `scripts/ticket_extract.py` (create) | Extraction proposer-only : fetch → LLM → proposals → apply | 5 |
-| `scripts/dream.sh` (modify) | Killswitch EXTRACT + step extract post-phases | 6 |
-| `src/brain_v42/services/dream_run_service.py` (modify) | `KillswitchState` + champs extract | 6 |
+| `src/brain_v42/mcp/tools/session_tools.py` (modify) | `### Tickets` briefing section | 4 |
+| `alembic/versions/029_ticket_extraction_proposals.py` (create) | Proposals migration | 5 |
+| `scripts/ticket_extract.py` (create) | Proposer-only extraction: fetch → LLM → proposals → apply | 5 |
+| `scripts/dream.sh` (modify) | EXTRACT killswitch + post-phases extract step | 6 |
+| `src/brain_v42/services/dream_run_service.py` (modify) | `KillswitchState` + extract fields | 6 |
 | `docs/MCP_TOOLS.md`, `docs/SCHEMA.md`, `CLAUDE.md` (modify) | Documentation | 7 |
 
 ---
 
-### Task 1: Modèles Pydantic + tables + migration 028
+### Task 1: Pydantic models + tables + migration 028
 
 **Files:**
 - Create: `src/brain_v42/models/ticket.py`
-- Modify: `src/brain_v42/db/tables.py` (ajouter 2 tables à la fin, avant tout `__all__` éventuel)
+- Modify: `src/brain_v42/db/tables.py` (add 2 tables at the end, before any eventual `__all__`)
 - Create: `alembic/versions/028_tickets.py`
 - Modify: `src/brain_v42/models/__init__.py` (exports)
-- Modify: `tests/unit/models/test_models.py` (la liste `expected_classes` pin les exports — l'étendre)
+- Modify: `tests/unit/models/test_models.py` (the `expected_classes` list pins the exports — extend it)
 - Test: `tests/unit/models/test_ticket_models.py`
 
 **Interfaces:**
 - Consumes: `brain_v42.models.base.TimestampMixin`, `brain_v42.models.project_key.canonicalize_project_key`
-- Produces (utilisés par les tâches 2-5) :
+- Produces (used by tasks 2-5):
   - `TicketKind` (StrEnum: `request`/`fyi`), `TicketStatus` (StrEnum: `open`/`in_progress`/`resolved`/`wontfix`/`closed`/`acked`), `TicketAction` (StrEnum: `start`/`resolve`/`wontfix`/`confirm`/`reopen`/`ack`/`cancel`), `ExtractionStatus` (StrEnum: `pending`/`proposed`/`skipped`/`done`)
   - `TERMINAL_STATUSES: frozenset[TicketStatus]`
-  - `TRANSITIONS: dict[tuple[TicketKind, TicketStatus, TicketAction], tuple[Role, TicketStatus]]` avec `Role = Literal["executor", "requester"]`
+  - `TRANSITIONS: dict[tuple[TicketKind, TicketStatus, TicketAction], tuple[Role, TicketStatus]]` with `Role = Literal["executor", "requester"]`
   - `allowed_actions(kind: TicketKind, status: TicketStatus) -> list[str]`
   - `TicketCreate(kind, title, body, from_project, to_project)`, `Ticket` (id, status, extraction_status, resolved_at, closed_at, + timestamps), `TicketMessage(id, ticket_id, author_project, body, status_to, created_at)`, `TicketGroups(a_traiter, a_confirmer, en_attente)`
-  - Tables Core : `brain_v42.db.tables.tickets`, `brain_v42.db.tables.ticket_messages`
+  - Core tables: `brain_v42.db.tables.tickets`, `brain_v42.db.tables.ticket_messages`
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
-`tests/unit/models/test_ticket_models.py` :
+`tests/unit/models/test_ticket_models.py`:
 
 ```python
 """Unit tests for ticket models and the pure transition table."""
@@ -170,10 +170,10 @@ class TestTransitionTable:
         assert TRANSITIONS[(kind, status, action)] == (role, new_status)
 
     def test_exactly_15_legal_transitions(self):
-        # Pin la surface complète : les 15 légales sont énumérées ci-dessus et
-        # ce count garantit qu'AUCUNE autre combinaison (kind × status × action,
-        # 84 au total) n'est légale — la matrice illégale est couverte par
-        # construction (spec §8), les cas ci-dessous ne sont que documentaires.
+        # Pin the full surface: the 15 legal ones are enumerated above and
+        # this count guarantees that NO other combination (kind × status ×
+        # action, 84 total) is legal — the illegal matrix is covered by
+        # construction (spec §8), the cases below are documentary only.
         assert len(TRANSITIONS) == 15
 
     @pytest.mark.parametrize(
@@ -181,8 +181,8 @@ class TestTransitionTable:
         [
             (TicketKind.REQUEST, TicketStatus.CLOSED, TicketAction.REOPEN),  # terminal
             (TicketKind.REQUEST, TicketStatus.OPEN, TicketAction.ACK),  # ack = fyi only
-            (TicketKind.REQUEST, TicketStatus.OPEN, TicketAction.CONFIRM),  # rien à confirmer
-            (TicketKind.FYI, TicketStatus.OPEN, TicketAction.RESOLVE),  # fyi ne se résout pas
+            (TicketKind.REQUEST, TicketStatus.OPEN, TicketAction.CONFIRM),  # nothing to confirm
+            (TicketKind.FYI, TicketStatus.OPEN, TicketAction.RESOLVE),  # fyi doesn't resolve
             (TicketKind.FYI, TicketStatus.ACKED, TicketAction.ACK),  # terminal
             (TicketKind.FYI, TicketStatus.OPEN, TicketAction.START),
         ],
@@ -204,12 +204,12 @@ class TestExtractionStatus:
         assert {e.value for e in ExtractionStatus} == {"pending", "proposed", "skipped", "done"}
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `pytest tests/unit/models/test_ticket_models.py -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'brain_v42.models.ticket'`
 
-- [ ] **Step 3: Implémenter `src/brain_v42/models/ticket.py`**
+- [ ] **Step 3: Implement `src/brain_v42/models/ticket.py`**
 
 ```python
 """Pydantic models for cross-project tickets (coordination family).
@@ -275,18 +275,18 @@ Role = Literal["executor", "requester"]
 
 # (kind, current_status, action) -> (required_role, new_status)
 # executor = author == to_project ; requester = author == from_project.
-# Toute action absente de cette table est illégale. La discussion (reply)
-# n'est PAS une transition : elle est permise quel que soit l'état.
+# Any action absent from this table is illegal. Discussion (reply)
+# is NOT a transition: it is allowed regardless of state.
 TRANSITIONS: dict[
     tuple[TicketKind, TicketStatus, TicketAction], tuple[Role, TicketStatus]
 ] = {
-    # request — exécutant
+    # request — executor
     (TicketKind.REQUEST, TicketStatus.OPEN, TicketAction.START): ("executor", TicketStatus.IN_PROGRESS),
     (TicketKind.REQUEST, TicketStatus.OPEN, TicketAction.RESOLVE): ("executor", TicketStatus.RESOLVED),
     (TicketKind.REQUEST, TicketStatus.OPEN, TicketAction.WONTFIX): ("executor", TicketStatus.WONTFIX),
     (TicketKind.REQUEST, TicketStatus.IN_PROGRESS, TicketAction.RESOLVE): ("executor", TicketStatus.RESOLVED),
     (TicketKind.REQUEST, TicketStatus.IN_PROGRESS, TicketAction.WONTFIX): ("executor", TicketStatus.WONTFIX),
-    # request — demandeur (boucle de confirmation complète)
+    # request — requester (full confirmation loop)
     (TicketKind.REQUEST, TicketStatus.RESOLVED, TicketAction.CONFIRM): ("requester", TicketStatus.CLOSED),
     (TicketKind.REQUEST, TicketStatus.WONTFIX, TicketAction.CONFIRM): ("requester", TicketStatus.CLOSED),
     (TicketKind.REQUEST, TicketStatus.RESOLVED, TicketAction.REOPEN): ("requester", TicketStatus.OPEN),
@@ -295,7 +295,7 @@ TRANSITIONS: dict[
     (TicketKind.REQUEST, TicketStatus.IN_PROGRESS, TicketAction.CANCEL): ("requester", TicketStatus.CLOSED),
     (TicketKind.REQUEST, TicketStatus.RESOLVED, TicketAction.CANCEL): ("requester", TicketStatus.CLOSED),
     (TicketKind.REQUEST, TicketStatus.WONTFIX, TicketAction.CANCEL): ("requester", TicketStatus.CLOSED),
-    # fyi — open → acked, cancel possible par l'émetteur
+    # fyi — open → acked, cancel possible by the issuer
     (TicketKind.FYI, TicketStatus.OPEN, TicketAction.ACK): ("executor", TicketStatus.ACKED),
     (TicketKind.FYI, TicketStatus.OPEN, TicketAction.CANCEL): ("requester", TicketStatus.CLOSED),
 }
@@ -357,12 +357,12 @@ class TicketGroups(BaseModel):
     en_attente: list[Ticket] = Field(default_factory=list)
 ```
 
-- [ ] **Step 4: Ajouter les 2 tables dans `src/brain_v42/db/tables.py`** (à la fin du fichier, style Core existant)
+- [ ] **Step 4: Add the 2 tables in `src/brain_v42/db/tables.py`** (at the end of the file, existing Core style)
 
 ```python
 # --- Tickets (coordination family — spec 2026-07-04) -----------------------
-# PAS d'embedding, PAS de search_vector, PAS de colonnes decay : les tickets
-# sont du transient adressé, hors famille mémoire (spec §1).
+# NO embedding, NO search_vector, NO decay columns: tickets are addressed
+# transient data, outside the memory family (spec §1).
 
 tickets = Table(
     "tickets",
@@ -441,7 +441,7 @@ ticket_messages = Table(
 )
 ```
 
-- [ ] **Step 5: Créer `alembic/versions/028_tickets.py`** (pattern raw-SQL de `016_dream_promotions.py` ; head actuelle = `027`)
+- [ ] **Step 5: Create `alembic/versions/028_tickets.py`** (raw-SQL pattern from `016_dream_promotions.py`; current head = `027`)
 
 ```python
 """Tickets cross-projet : tables tickets + ticket_messages.
@@ -522,7 +522,7 @@ def downgrade() -> None:
     op.execute("DROP TABLE IF EXISTS tickets;")
 ```
 
-- [ ] **Step 6: Exports** — dans `src/brain_v42/models/__init__.py`, ajouter (en respectant l'ordre alphabétique existant des imports et de `__all__`) :
+- [ ] **Step 6: Exports** — in `src/brain_v42/models/__init__.py`, add (respecting the existing alphabetical order of imports and `__all__`):
 
 ```python
 from brain_v42.models.ticket import (
@@ -536,9 +536,9 @@ from brain_v42.models.ticket import (
 )
 ```
 
-et les 7 noms dans `__all__`. Puis dans `tests/unit/models/test_models.py`, étendre **les deux listes** qui pinnent les exports : `expected_classes` dans `test_all_classes_importable_from_models` (~ligne 564) ET la liste de `test_all_classes_in_dunder_all` (~ligne 596) — les 7 mêmes noms dans chacune.
+and the 7 names in `__all__`. Then in `tests/unit/models/test_models.py`, extend **both lists** that pin the exports: `expected_classes` in `test_all_classes_importable_from_models` (~line 564) AND the list in `test_all_classes_in_dunder_all` (~line 596) — the same 7 names in each.
 
-- [ ] **Step 7: Vérifier vert**
+- [ ] **Step 7: Verify green**
 
 Run: `pytest tests/unit/models/ -q && ruff check src/brain_v42/models/ src/brain_v42/db/ alembic/versions/028_tickets.py && ruff format --check src/ tests/ && mypy src/`
 Expected: PASS / clean
@@ -562,12 +562,12 @@ git commit -m "feat(tickets): modèles + machine à états + tables + migration 
 
 **Interfaces:**
 - Consumes: Task 1 (`Ticket*` models, `TRANSITIONS`, `TERMINAL_STATUSES`, `allowed_actions`), `BasePgRepository` (`get_session`, `_session_factory`), `PgProjectContextRepo.get_by_key(project_key) -> ProjectContext | None`, `canonicalize_project_key`
-- Produces (utilisés par les tâches 3-5) :
-  - `PgTicketRepo(session_factory)` : `create(TicketCreate) -> Ticket` ; `get_by_id(UUID) -> Ticket | None` ; `get_messages(UUID) -> list[TicketMessage]` ; `add_message(ticket_id: UUID, author_project: str, body: str, status_to: TicketStatus | None = None) -> TicketMessage` ; `apply_transition(ticket_id: UUID, new_status: TicketStatus, *, resolved_at, closed_at, extraction_status) -> Ticket` ; `list_grouped(project_key: str) -> TicketGroups`
-  - `TicketService(repo, project_context_repo)` : `create(TicketCreate) -> Ticket` ; `reply(ticket_id: UUID, author_project: str, body: str) -> TicketMessage` ; `transition(ticket_id: UUID, author_project: str, action: str, message: str | None = None) -> Ticket` ; `get_with_thread(ticket_id: UUID) -> tuple[Ticket, list[TicketMessage]] | None` ; `list_grouped(project_key: str) -> TicketGroups`
-  - Exceptions : `TicketError(Exception)` base ; `UnknownProjectError`, `TicketNotFoundError`, `NotAllowedError`, `IllegalTransitionError`
+- Produces (used by tasks 3-5):
+  - `PgTicketRepo(session_factory)`: `create(TicketCreate) -> Ticket` ; `get_by_id(UUID) -> Ticket | None` ; `get_messages(UUID) -> list[TicketMessage]` ; `add_message(ticket_id: UUID, author_project: str, body: str, status_to: TicketStatus | None = None) -> TicketMessage` ; `apply_transition(ticket_id: UUID, new_status: TicketStatus, *, resolved_at, closed_at, extraction_status) -> Ticket` ; `list_grouped(project_key: str) -> TicketGroups`
+  - `TicketService(repo, project_context_repo)`: `create(TicketCreate) -> Ticket` ; `reply(ticket_id: UUID, author_project: str, body: str) -> TicketMessage` ; `transition(ticket_id: UUID, author_project: str, action: str, message: str | None = None) -> Ticket` ; `get_with_thread(ticket_id: UUID) -> tuple[Ticket, list[TicketMessage]] | None` ; `list_grouped(project_key: str) -> TicketGroups`
+  - Exceptions: `TicketError(Exception)` base; `UnknownProjectError`, `TicketNotFoundError`, `NotAllowedError`, `IllegalTransitionError`
 
-- [ ] **Step 1: Tests unitaires du service (repo mocké)** — `tests/unit/services/test_ticket_service.py`
+- [ ] **Step 1: Unit tests for the service (mocked repo)** — `tests/unit/services/test_ticket_service.py`
 
 ```python
 """Unit tests for TicketService — state machine enforcement with mocked repo."""
@@ -593,8 +593,8 @@ from brain_v42.services.ticket_service import (
     UnknownProjectError,
 )
 
-# PAS de pytestmark : pyproject a asyncio_mode = "auto", les unit tests du
-# repo écrivent des `async def test_*` nus (cf. tests/unit existants).
+# NO pytestmark: pyproject has asyncio_mode = "auto", the repo's unit
+# tests write bare `async def test_*` (cf. existing tests/unit).
 
 FROM, TO = "red-shrik", "red-data"
 
@@ -611,7 +611,7 @@ def _svc(ticket=None, known_projects=(FROM, TO)):
     repo.get_by_id = AsyncMock(return_value=ticket)
     repo.create = AsyncMock(side_effect=lambda data: _ticket(kind=data.kind))
     repo.add_message = AsyncMock()
-    # apply_transition renvoie le ticket muté (echo simplifié pour les tests)
+    # apply_transition returns the mutated ticket (simplified echo for tests)
     async def _apply(ticket_id, new_status, *, resolved_at, closed_at, extraction_status):
         return _ticket(
             kind=ticket.kind if ticket else TicketKind.REQUEST,
@@ -741,18 +741,18 @@ class TestReply:
             await svc.reply(uuid4(), "red-lab", "hello")
 
     async def test_reply_allowed_in_terminal_state(self):
-        # Le statut contraint les transitions, pas la discussion (spec §3).
+        # Status constrains transitions, not the discussion (spec §3).
         svc, repo, _ = _svc(ticket=_ticket(status=TicketStatus.CLOSED))
         await svc.reply(uuid4(), FROM, "post-mortem")
         repo.add_message.assert_awaited_once()
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `pytest tests/unit/services/test_ticket_service.py -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'brain_v42.services.ticket_service'`
 
-- [ ] **Step 3: Implémenter `src/brain_v42/repositories/pg_ticket.py`**
+- [ ] **Step 3: Implement `src/brain_v42/repositories/pg_ticket.py`**
 
 ```python
 """PostgreSQL repository for tickets + ticket_messages (coordination family)."""
@@ -837,7 +837,7 @@ class PgTicketRepo(BasePgRepository):
                     .returning(ticket_messages)
                 )
                 row = (await session.execute(stmt)).mappings().one()
-                # Une réponse est de l'activité : bump updated_at du ticket.
+                # A reply is activity: bump the ticket's updated_at.
                 await session.execute(
                     tickets.update()
                     .where(tickets.c.id == ticket_id)
@@ -906,10 +906,10 @@ class PgTicketRepo(BasePgRepository):
             )
 ```
 
-Note : pour un self-ticket (`from == to`), un ticket `open` apparaît à la fois
-dans `a_traiter` et `en_attente` — comportement voulu (note-to-self visible).
+Note: for a self-ticket (`from == to`), an `open` ticket appears both
+in `a_traiter` and in `en_attente` — intended behavior (visible note-to-self).
 
-- [ ] **Step 4: Implémenter `src/brain_v42/services/ticket_service.py`**
+- [ ] **Step 4: Implement `src/brain_v42/services/ticket_service.py`**
 
 ```python
 """Business rules for cross-project tickets.
@@ -979,8 +979,8 @@ class TicketService:
         self._ctx_repo = project_context_repo
 
     async def create(self, data: TicketCreate) -> Ticket:
-        # Refus si projet inconnu — leçon du drift brain_v42/brain-v42 :
-        # aucune création de projet fantôme par typo (spec §2).
+        # Refuse if project unknown — lesson from the brain_v42/brain-v42
+        # drift: no phantom project creation via typo (spec §2).
         for key in (data.from_project, data.to_project):
             if await self._ctx_repo.get_by_key(key) is None:
                 raise UnknownProjectError(
@@ -1088,14 +1088,14 @@ class TicketService:
         return ticket
 ```
 
-- [ ] **Step 5: Vérifier vert unit**
+- [ ] **Step 5: Verify unit green**
 
 Run: `pytest tests/unit/services/test_ticket_service.py tests/unit/models/ -q`
 Expected: PASS
 
-- [ ] **Step 6: Test d'intégration DB (round-trip complet, spec §8)** — `tests/integration/db/test_tickets_roundtrip.py`
+- [ ] **Step 6: DB integration test (full round-trip, spec §8)** — `tests/integration/db/test_tickets_roundtrip.py`
 
-Pattern de `tests/integration/db/test_migration_026.py` : `_run_alembic(["upgrade", "head"])` en module-setup, puis engine async sur `BRAIN_V42_TEST_DB_URL` (skip via `require_test_db_url()` du conftest racine). Contenu :
+Pattern from `tests/integration/db/test_migration_026.py`: `_run_alembic(["upgrade", "head"])` in module-setup, then an async engine on `BRAIN_V42_TEST_DB_URL` (skip via the root conftest's `require_test_db_url()`). Content:
 
 ```python
 """Integration round-trip: create → reply → resolve → confirm → extraction_status.
@@ -1193,9 +1193,9 @@ async def test_full_request_lifecycle_roundtrip():
         await engine.dispose()
 ```
 
-Run: `pytest tests/integration/db/test_tickets_roundtrip.py -q` (PASS si `BRAIN_V42_TEST_DB_URL` défini, sinon SKIP — les deux acceptables ici).
+Run: `pytest tests/integration/db/test_tickets_roundtrip.py -q` (PASS if `BRAIN_V42_TEST_DB_URL` is set, otherwise SKIP — both acceptable here).
 
-- [ ] **Step 7: Vérifier vert + commit**
+- [ ] **Step 7: Verify green + commit**
 
 Run: `pytest tests/unit -q && ruff check src/ tests/ && ruff format --check src/ tests/ && mypy src/`
 
@@ -1206,16 +1206,16 @@ git commit -m "feat(tickets): repository + TicketService (machine à états, val
 
 ---
 
-### Task 3: 5 tools MCP + wiring server
+### Task 3: 5 MCP tools + server wiring
 
 **Files:**
 - Create: `src/brain_v42/mcp/tools/ticket_tools.py`
-- Modify: `src/brain_v42/mcp/server.py` — `build_services()` (ajout `ticket_svc` au dict) + bloc `__main__` (registration)
+- Modify: `src/brain_v42/mcp/server.py` — `build_services()` (add `ticket_svc` to the dict) + `__main__` block (registration)
 - Test: `tests/unit/mcp/test_ticket_tools.py`
 
 **Interfaces:**
-- Consumes: Task 2 (`TicketService`, exceptions), Task 1 (modèles), `format_confirmation`/`format_error`/`short_id` de `formatters.py`, `parse_uuid` de `parsing.py`
-- Produces: `register_ticket_tools(mcp: Any, ticket_svc: TicketService) -> None` exposant `brain_ticket_create`, `brain_ticket_reply`, `brain_ticket_transition`, `brain_ticket_list`, `brain_ticket_get` (tous retournent `str`). `build_services()["ticket_svc"]`.
+- Consumes: Task 2 (`TicketService`, exceptions), Task 1 (models), `format_confirmation`/`format_error`/`short_id` from `formatters.py`, `parse_uuid` from `parsing.py`
+- Produces: `register_ticket_tools(mcp: Any, ticket_svc: TicketService) -> None` exposing `brain_ticket_create`, `brain_ticket_reply`, `brain_ticket_transition`, `brain_ticket_list`, `brain_ticket_get` (all return `str`). `build_services()["ticket_svc"]`.
 
 - [ ] **Step 1: Tests** — `tests/unit/mcp/test_ticket_tools.py`
 
@@ -1239,7 +1239,7 @@ from brain_v42.models.ticket import (
 )
 from brain_v42.services.ticket_service import IllegalTransitionError, UnknownProjectError
 
-# asyncio_mode = "auto" — pas de pytestmark (style unit tests du repo).
+# asyncio_mode = "auto" — no pytestmark (repo's unit-test style).
 
 FROM, TO = "red-shrik", "red-data"
 
@@ -1395,12 +1395,12 @@ class TestListAndGet:
         assert result.startswith("✗")
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `pytest tests/unit/mcp/test_ticket_tools.py -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'brain_v42.mcp.tools.ticket_tools'`
 
-- [ ] **Step 3: Implémenter `src/brain_v42/mcp/tools/ticket_tools.py`**
+- [ ] **Step 3: Implement `src/brain_v42/mcp/tools/ticket_tools.py`**
 
 ```python
 """MCP tools for cross-project tickets: brain_ticket_create / reply /
@@ -1446,7 +1446,7 @@ def _age_days(dt: datetime) -> str:
 
 
 def _ticket_line(t: Ticket, *, direction: str) -> str:
-    # direction: "in" (je suis destinataire) / "out" (je suis émetteur)
+    # direction: "in" (I'm the recipient) / "out" (I'm the issuer)
     arrow = "⬅️" if direction == "in" else "➡️"
     peer = t.from_project if direction == "in" else t.to_project
     prep = "de" if direction == "in" else "vers"
@@ -1630,7 +1630,7 @@ def register_ticket_tools(
 
 - [ ] **Step 4: Wiring `src/brain_v42/mcp/server.py`**
 
-Dans `build_services()` (après la construction de `project_context_svc`, vers la fin, avant le `return`) :
+In `build_services()` (after building `project_context_svc`, near the end, before the `return`):
 
 ```python
     # Tickets (coordination family — spec 2026-07-04)
@@ -1644,10 +1644,10 @@ Dans `build_services()` (après la construction de `project_context_svc`, vers l
     )
 ```
 
-et ajouter `"ticket_svc": ticket_svc,` au dict retourné.
-> Si les imports du haut de fichier sont le style dominant pour les repos/services dans `build_services()`, mettre ces imports en tête de module comme les autres (suivre le style constaté — les `# noqa: PLC0415` ne sont utilisés que dans le bloc `__main__`).
+and add `"ticket_svc": ticket_svc,` to the returned dict.
+> If top-of-file imports are the dominant style for repos/services in `build_services()`, put these imports at the top of the module like the others (follow the observed style — `# noqa: PLC0415` is only used in the `__main__` block).
 
-Dans le bloc `__main__`, après la registration des dream tools :
+In the `__main__` block, after the dream tools registration:
 
 ```python
     # Ticket tools (coordination cross-projet)
@@ -1656,7 +1656,7 @@ Dans le bloc `__main__`, après la registration des dream tools :
     register_ticket_tools(mcp, ticket_svc=services["ticket_svc"])
 ```
 
-- [ ] **Step 5: Vérifier vert + commit**
+- [ ] **Step 5: Verify green + commit**
 
 Run: `pytest tests/unit -q && ruff check src/ tests/ && ruff format --check src/ tests/ && mypy src/`
 
@@ -1667,18 +1667,18 @@ git commit -m "feat(tickets): 5 tools MCP brain_ticket_* + wiring server"
 
 ---
 
-### Task 4: Section briefing `### Tickets` dans brain_session_start
+### Task 4: `### Tickets` briefing section in brain_session_start
 
 **Files:**
 - Modify: `src/brain_v42/mcp/tools/session_tools.py`
-- Modify: `src/brain_v42/mcp/server.py` (passer `ticket_svc` à `register_session_tools`)
-- Test: `tests/unit/mcp/test_session_tools.py` (ajouter une classe de tests)
+- Modify: `src/brain_v42/mcp/server.py` (pass `ticket_svc` to `register_session_tools`)
+- Test: `tests/unit/mcp/test_session_tools.py` (add a test class)
 
 **Interfaces:**
 - Consumes: Task 2 (`TicketService.list_grouped`), Task 1 (`TicketGroups`)
-- Produces: `register_session_tools(..., ticket_svc: Any | None = None)` (keyword, défaut None — rétro-compatible avec tous les appels existants) ; `_section_tickets(groups: Any | None) -> str`
+- Produces: `register_session_tools(..., ticket_svc: Any | None = None)` (keyword, default None — backward-compatible with all existing calls); `_section_tickets(groups: Any | None) -> str`
 
-- [ ] **Step 1: Tests (ajouter à `tests/unit/mcp/test_session_tools.py`)**
+- [ ] **Step 1: Tests (add to `tests/unit/mcp/test_session_tools.py`)**
 
 ```python
 class TestTicketsSection:
@@ -1764,15 +1764,15 @@ class TestTicketsSection:
         assert "### Tickets" not in result
 ```
 
-> Adapter `_KILLSWITCHES_OK` / la construction des mocks au style réel du fichier de test existant (réutiliser les helpers/fixtures déjà présents plutôt que dupliquer — ce squelette montre le comportement attendu, pas la lettre).
-> **Style local assumé** : `test_session_tools.py` utilise déjà `@pytest.mark.asyncio` sur ses méthodes (lignes 305+). Bien que `asyncio_mode="auto"` les rende inertes, **garder les décorateurs ici** pour matcher le fichier environnant — c'est le seul fichier de test du plan où on les conserve (partout ailleurs en unit : `async def` nus).
+> Adapt `_KILLSWITCHES_OK` / the mock construction to the actual style of the existing test file (reuse the helpers/fixtures already present rather than duplicating — this skeleton shows the expected behavior, not the letter).
+> **Assumed local style**: `test_session_tools.py` already uses `@pytest.mark.asyncio` on its methods (lines 305+). Although `asyncio_mode="auto"` makes them inert, **keep the decorators here** to match the surrounding file — it's the only test file in the plan where they're kept (everywhere else in unit: bare `async def`).
 
-- [ ] **Step 2: Vérifier l'échec** — `pytest tests/unit/mcp/test_session_tools.py -q` → FAIL (`register_session_tools` ne connaît pas `ticket_svc`)
+- [ ] **Step 2: Verify the failure** — `pytest tests/unit/mcp/test_session_tools.py -q` → FAIL (`register_session_tools` doesn't know `ticket_svc`)
 
-- [ ] **Step 3: Implémenter dans `session_tools.py`**
+- [ ] **Step 3: Implement in `session_tools.py`**
 
-1. Signature : ajouter `ticket_svc: Any | None = None` (keyword-only, après `cross_project_svc`).
-2. Helper de section (placer près des autres `_section_*`) :
+1. Signature: add `ticket_svc: Any | None = None` (keyword-only, after `cross_project_svc`).
+2. Section helper (place near the other `_section_*`):
 
 ```python
 _TICKETS_CAP = 5
@@ -1810,9 +1810,9 @@ def _section_tickets(groups: Any | None) -> str:
     return "\n".join(lines)
 ```
 
-(Imports à compléter en tête de fichier s'ils n'y sont pas déjà : `from datetime import UTC, datetime` et `from brain_v42.mcp.tools.formatters import short_id` — `short_id` est exporté par `formatters.py:30`.)
+(Imports to complete at the top of the file if not already there: `from datetime import UTC, datetime` and `from brain_v42.mcp.tools.formatters import short_id` — `short_id` is exported by `formatters.py:30`.)
 
-3. Dans `brain_session_start`, après le bloc `cross_block` (même pattern env-free, guarded) :
+3. In `brain_session_start`, after the `cross_block` block (same env-free, guarded pattern):
 
 ```python
         ticket_groups = None
@@ -1823,11 +1823,11 @@ def _section_tickets(groups: Any | None) -> str:
                 logger.warning("brain_session_start_tickets_failed", error=str(exc))
 ```
 
-4. `_format_session_briefing` : paramètre keyword `ticket_groups: Any | None = None`, et insérer `_section_tickets(ticket_groups)` dans `sections` **entre** `_section_last_failure(...)` et `_section_in_flight(...)` (section haute, spec §5).
+4. `_format_session_briefing`: keyword parameter `ticket_groups: Any | None = None`, and insert `_section_tickets(ticket_groups)` in `sections` **between** `_section_last_failure(...)` and `_section_in_flight(...)` (high-up section, spec §5).
 
-5. `server.py` : ajouter `ticket_svc=services["ticket_svc"],` à l'appel `register_session_tools(...)`.
+5. `server.py`: add `ticket_svc=services["ticket_svc"],` to the `register_session_tools(...)` call.
 
-- [ ] **Step 4: Vérifier vert + commit**
+- [ ] **Step 4: Verify green + commit**
 
 Run: `pytest tests/unit/mcp/ -q && ruff check src/ tests/ && ruff format --check src/ tests/ && mypy src/`
 
@@ -1838,27 +1838,27 @@ git commit -m "feat(tickets): section Tickets dans le briefing brain_session_sta
 
 ---
 
-### Task 5: Extraction proposer-only — migration 029 + `scripts/ticket_extract.py`
+### Task 5: Proposer-only extraction — migration 029 + `scripts/ticket_extract.py`
 
 **Files:**
-- Modify: `src/brain_v42/db/tables.py` (table `ticket_extraction_proposals`)
+- Modify: `src/brain_v42/db/tables.py` (`ticket_extraction_proposals` table)
 - Create: `alembic/versions/029_ticket_extraction_proposals.py`
 - Create: `scripts/ticket_extract.py`
 - Test: `tests/unit/test_ticket_extract.py`
 
 **Interfaces:**
-- Consumes: `scripts/domain_backfill.py` — réutiliser `load_env_file`, `_post_chat`, `_strip_fences`, `ResponseParseError`, `DEFAULT_BASE_URL`, `DEFAULT_MODEL` (vérifier les noms exacts dans le fichier ; si un helper n'existe pas sous ce nom, copier son équivalent ≤15 lignes en local plutôt que refactorer domain_backfill). `LearningService.create(data: LearningCreate) -> Learning`, `DecisionService.create(data: DecisionCreate) -> Decision`, `GPUEmbeddingService(base_url=...)`, `get_session_factory`, `get_settings`.
-- Produces: CLI `python -m scripts.ticket_extract [--limit N] [--wet] [--apply-ids "1,2"]` ; fonctions pures `build_messages(thread)`, `parse_and_validate(content, thread)`, `render_thread(thread)` ; table `ticket_extraction_proposals`.
+- Consumes: `scripts/domain_backfill.py` — reuse `load_env_file`, `_post_chat`, `_strip_fences`, `ResponseParseError`, `DEFAULT_BASE_URL`, `DEFAULT_MODEL` (check the exact names in the file; if a helper doesn't exist under this name, copy its ≤15-line equivalent locally rather than refactoring domain_backfill). `LearningService.create(data: LearningCreate) -> Learning`, `DecisionService.create(data: DecisionCreate) -> Decision`, `GPUEmbeddingService(base_url=...)`, `get_session_factory`, `get_settings`.
+- Produces: CLI `python -m scripts.ticket_extract [--limit N] [--wet] [--apply-ids "1,2"]` ; pure functions `build_messages(thread)`, `parse_and_validate(content, thread)`, `render_thread(thread)` ; `ticket_extraction_proposals` table.
 
-**Comportement (spec §6):**
-- **propose** (défaut, dry) : scanne `tickets.extraction_status='pending'` (states terminaux), 1 appel LLM par ticket (fil complet), propose 0..n entités {learning|decision} avec `target_project ∈ {from, to}` + rationale → INSERT `ticket_extraction_proposals` (status `proposed`) + ticket → `proposed` (ou `skipped` si 0). Récapitulatif imprimé sur stdout (ids des proposals pour la review).
-- **--wet** : propose puis applique **uniquement les proposals créées par ce run** (jamais les anciennes en attente de review humaine).
-- **--apply-ids "1,2"** : pas de LLM ; applique des proposals `proposed` reviewées à la main. Incompatible avec `--wet`.
-- **apply** : learning → `LearningCreate(topic, insight, tags, project_key=target_project, source=f"ticket:{ticket_id}", source_type="automated", confidence="medium")` (leçon 6dfb9064 : confidence jamais reprise du LLM) ; decision → `DecisionCreate(title, description, reasoning, tags, project_key=target_project, metadata={"source": f"ticket:{ticket_id}", "source_type": "automated"})`. Proposal → `applied` + `applied_entity_id` + `applied_at` ; quand un ticket n'a plus aucune proposal `proposed`, ticket → `done`.
-- Embeddings best-effort : `GPUEmbeddingService` sondé par un `embed("ping")` au démarrage de l'apply ; en échec → services construits avec `embedding_svc=None` (entités créées sans vecteur ; FTS/`search_vector` reste fonctionnel, hint stdout vers `scripts.regen_embeddings`). Graph : services construits avec `graph=None` (le script ne parle pas à Neo4j ; hint stdout vers `scripts.reconcile_graph`).
-- Fin de run : INSERT `dream_runs` (`phase='extract'`, `status='done'|'fail'`, `run_date=date.today()`, `phase_dry_run = not wet_mode`, `duration_s`, `error_message`) — best-effort try/except pour que l'échec du reporting ne masque pas le résultat.
+**Behavior (spec §6):**
+- **propose** (default, dry): scans `tickets.extraction_status='pending'` (terminal states), 1 LLM call per ticket (full thread), proposes 0..n {learning|decision} entities with `target_project ∈ {from, to}` + rationale → INSERT into `ticket_extraction_proposals` (status `proposed`) + ticket → `proposed` (or `skipped` if 0). Summary printed to stdout (proposal ids for review).
+- **--wet**: proposes then applies **only the proposals created by this run** (never old ones awaiting human review).
+- **--apply-ids "1,2"**: no LLM; applies `proposed` proposals reviewed by hand. Incompatible with `--wet`.
+- **apply**: learning → `LearningCreate(topic, insight, tags, project_key=target_project, source=f"ticket:{ticket_id}", source_type="automated", confidence="medium")` (lesson 6dfb9064: confidence never taken from the LLM); decision → `DecisionCreate(title, description, reasoning, tags, project_key=target_project, metadata={"source": f"ticket:{ticket_id}", "source_type": "automated"})`. Proposal → `applied` + `applied_entity_id` + `applied_at` ; once a ticket has no `proposed` proposal left, ticket → `done`.
+- Best-effort embeddings: `GPUEmbeddingService` probed with an `embed("ping")` at apply startup; on failure → services built with `embedding_svc=None` (entities created without a vector; FTS/`search_vector` stays functional, stdout hint toward `scripts.regen_embeddings`). Graph: services built with `graph=None` (the script does not talk to Neo4j; stdout hint toward `scripts.reconcile_graph`).
+- End of run: INSERT into `dream_runs` (`phase='extract'`, `status='done'|'fail'`, `run_date=date.today()`, `phase_dry_run = not wet_mode`, `duration_s`, `error_message`) — best-effort try/except so a reporting failure doesn't mask the result.
 
-- [ ] **Step 1: Migration + table.** `alembic/versions/029_ticket_extraction_proposals.py` (head `028`) :
+- [ ] **Step 1: Migration + table.** `alembic/versions/029_ticket_extraction_proposals.py` (head `028`):
 
 ```python
 """Proposals d'extraction de connaissance depuis les tickets terminaux.
@@ -1906,9 +1906,9 @@ def downgrade() -> None:
     op.execute("DROP TABLE IF EXISTS ticket_extraction_proposals;")
 ```
 
-Et la table Core correspondante dans `db/tables.py` (mêmes colonnes, `sa.BigInteger` PK autoincrement, FKs `ondelete="SET NULL"`, mêmes CHECK/Index — copier le style de `dream_promotions`).
+And the corresponding Core table in `db/tables.py` (same columns, `sa.BigInteger` autoincrement PK, FKs `ondelete="SET NULL"`, same CHECK/Index — copy the `dream_promotions` style).
 
-- [ ] **Step 2: Tests des fonctions pures** — `tests/unit/test_ticket_extract.py`
+- [ ] **Step 2: Tests for the pure functions** — `tests/unit/test_ticket_extract.py`
 
 ```python
 """Unit tests for scripts.ticket_extract pure functions (no DB, no network)."""
@@ -2019,11 +2019,11 @@ class TestParseAndValidate:
         assert len(drafts[0].payload["topic"]) == 200
 ```
 
-- [ ] **Step 3: Vérifier l'échec** — `pytest tests/unit/test_ticket_extract.py -q` → FAIL (module absent)
+- [ ] **Step 3: Verify the failure** — `pytest tests/unit/test_ticket_extract.py -q` → FAIL (module missing)
 
-- [ ] **Step 4: Implémenter `scripts/ticket_extract.py`**
+- [ ] **Step 4: Implement `scripts/ticket_extract.py`**
 
-Squelette complet (le corps LLM/retry reprend le pattern exact de `classify_batch` dans `domain_backfill.py` — corrective re-prompt une fois, échec → outcome failed) :
+Full skeleton (the LLM/retry body reuses the exact pattern of `classify_batch` in `domain_backfill.py` — one corrective re-prompt, failure → outcome failed):
 
 ```python
 """Ticket knowledge extraction — proposer-only dream step (spec §6).
@@ -2179,12 +2179,12 @@ def parse_and_validate(content: str, thread: TicketThread) -> list[ProposalDraft
     return drafts
 ```
 
-Puis (dans le même fichier) les parties I/O — suivre le style async + `session_factory` de `domain_backfill.py` :
+Then (in the same file) the I/O parts — follow the async + `session_factory` style of `domain_backfill.py`:
 
-- `async def fetch_pending_threads(session_factory, limit) -> list[TicketThread]` — SELECT `tickets` WHERE `extraction_status='pending'` ORDER BY `closed_at ASC` LIMIT n, puis SELECT des messages par ticket (`ORDER BY created_at`).
-- `async def extract_thread(client, model, thread, sleep=asyncio.sleep)` — `_post_chat` + `parse_and_validate` ; sur `ResponseParseError`, un re-prompt correctif (`_REPROMPT_INSTRUCTION`) puis re-parse ; échec final → outcome `failed=True` (le ticket RESTE `pending`, retenté la nuit suivante).
-- `async def persist_proposals(session_factory, thread, drafts) -> list[int]` — dans une transaction : INSERT chaque draft dans `ticket_extraction_proposals` (RETURNING id) ; UPDATE ticket `extraction_status = 'proposed' if drafts else 'skipped'`.
-- `async def apply_proposals(session_factory, proposal_ids) -> tuple[int, int]` — construit les services une fois :
+- `async def fetch_pending_threads(session_factory, limit) -> list[TicketThread]` — SELECT `tickets` WHERE `extraction_status='pending'` ORDER BY `closed_at ASC` LIMIT n, then SELECT the messages per ticket (`ORDER BY created_at`).
+- `async def extract_thread(client, model, thread, sleep=asyncio.sleep)` — `_post_chat` + `parse_and_validate` ; on `ResponseParseError`, one corrective re-prompt (`_REPROMPT_INSTRUCTION`) then re-parse; final failure → outcome `failed=True` (the ticket STAYS `pending`, retried the following night).
+- `async def persist_proposals(session_factory, thread, drafts) -> list[int]` — inside a transaction: INSERT each draft into `ticket_extraction_proposals` (RETURNING id) ; UPDATE ticket `extraction_status = 'proposed' if drafts else 'skipped'`.
+- `async def apply_proposals(session_factory, proposal_ids) -> tuple[int, int]` — builds the services once:
 
 ```python
 async def _build_apply_services() -> tuple[Any, Any]:
@@ -2211,13 +2211,13 @@ async def _build_apply_services() -> tuple[Any, Any]:
     return learning_svc, decision_svc
 ```
 
-> Vérifier les chemins d'import réels (`brain_v42.config.get_settings`, `brain_v42.db.session.get_session_factory`, module de `GPUEmbeddingService`) en lisant `server.py` — reprendre exactement ses imports. Si `DecisionService.__init__` prend `repo=` vs `pg_repo=`, matcher la vraie signature (cf. `build_services()`).
+> Check the real import paths (`brain_v42.config.get_settings`, `brain_v42.db.session.get_session_factory`, `GPUEmbeddingService` module) by reading `server.py` — reuse its imports exactly. If `DecisionService.__init__` takes `repo=` vs `pg_repo=`, match the real signature (cf. `build_services()`).
 
-  puis pour chaque proposal `proposed` : create l'entité (mapping du **Comportement** ci-dessus), UPDATE proposal → `applied`, `applied_entity_id`, `applied_at=NOW()` ; enfin pour chaque ticket touché sans proposal `proposed` restante → `extraction_status='done'`. Print un hint `scripts.reconcile_graph` si ≥1 entité créée (graph=None dans ce contexte).
-- `async def record_dream_run(status: str, dry: bool, duration_s: float, error: str | None)` — INSERT `dream_runs` via `sa.text(...)`, best-effort (`try/except` + print warning).
-- `def main() -> int` — argparse (`--limit` défaut 20 avec garde ≥1, `--wet` flag, `--apply-ids` str, `--model`, `--base-url` ; refuser `--wet` + `--apply-ids` ensemble) ; charge `_ENV_FILE` via `load_env_file` ; clé absente → exit 2 avec message. Orchestration : propose → (si `--wet`) apply des ids du run → récap stdout (`N tickets scannés, P proposals, S skipped, F failed`) → `record_dream_run` → exit 0 (ou 1 si ≥1 batch failed).
+  then for each `proposed` proposal: create the entity (mapping from **Behavior** above), UPDATE proposal → `applied`, `applied_entity_id`, `applied_at=NOW()` ; finally for each touched ticket with no `proposed` proposal left → `extraction_status='done'`. Print a `scripts.reconcile_graph` hint if ≥1 entity was created (graph=None in this context).
+- `async def record_dream_run(status: str, dry: bool, duration_s: float, error: str | None)` — INSERT into `dream_runs` via `sa.text(...)`, best-effort (`try/except` + print warning).
+- `def main() -> int` — argparse (`--limit` default 20 with a ≥1 guard, `--wet` flag, `--apply-ids` str, `--model`, `--base-url` ; refuse `--wet` + `--apply-ids` together) ; loads `_ENV_FILE` via `load_env_file` ; missing key → exit 2 with a message. Orchestration: propose → (if `--wet`) apply the run's ids → stdout recap (`N tickets scanned, P proposals, S skipped, F failed`) → `record_dream_run` → exit 0 (or 1 if ≥1 batch failed).
 
-- [ ] **Step 5: Vérifier vert + commit**
+- [ ] **Step 5: Verify green + commit**
 
 Run: `pytest tests/unit -q && ruff check src/ tests/ scripts/ && ruff format --check src/ tests/ scripts/ && mypy src/`
 
@@ -2228,20 +2228,20 @@ git commit -m "feat(tickets): extraction proposer-only — migration 029 + scrip
 
 ---
 
-### Task 6: dream.sh + killswitch EXTRACT + affichage briefing
+### Task 6: dream.sh + EXTRACT killswitch + briefing display
 
 **Files:**
-- Modify: `scripts/dream.sh` (env defaults vers la ligne 33 ; step extract APRÈS la boucle `for phase_spec` — repérer le `done` de la boucle, insérer avant le bloc de résumé final)
+- Modify: `scripts/dream.sh` (env defaults around line 33 ; extract step AFTER the `for phase_spec` loop — find the loop's `done`, insert before the final summary block)
 - Modify: `src/brain_v42/services/dream_run_service.py` (`KillswitchState` + `killswitch_state()`)
-- Modify: `src/brain_v42/mcp/tools/session_tools.py` (`_section_killswitches` : ligne EXTRACT)
-- Test: `tests/unit/test_dream_sh_extract.py` (pins grep-style, pattern de `test_dream_sh_phase_timeouts.py`)
-- Test: étendre `tests/unit/mcp/test_session_tools.py` (ligne EXTRACT) et les tests existants de `killswitch_state` s'il y en a (chercher `killswitch_state` dans `tests/`)
+- Modify: `src/brain_v42/mcp/tools/session_tools.py` (`_section_killswitches`: EXTRACT line)
+- Test: `tests/unit/test_dream_sh_extract.py` (grep-style pins, pattern from `test_dream_sh_phase_timeouts.py`)
+- Test: extend `tests/unit/mcp/test_session_tools.py` (EXTRACT line) and the existing `killswitch_state` tests if any (search for `killswitch_state` in `tests/`)
 
 **Interfaces:**
-- Consumes: Task 5 (CLI `scripts.ticket_extract`), conventions dream.sh (`log()`, `LOG_DIR`, `TIMESTAMP`, `FAILED_PHASES`, `uv run python -m`)
-- Produces: env killswitches `BRAIN_DREAM_EXTRACT_ENABLED` (défaut `false`) / `BRAIN_DREAM_EXTRACT_DRY_RUN` (défaut `true`) ; `KillswitchState.extract_enabled: bool = False`, `extract_dry: bool = True`, `extract_clean_dry_nights: int = 0`
+- Consumes: Task 5 (CLI `scripts.ticket_extract`), dream.sh conventions (`log()`, `LOG_DIR`, `TIMESTAMP`, `FAILED_PHASES`, `uv run python -m`)
+- Produces: env killswitches `BRAIN_DREAM_EXTRACT_ENABLED` (default `false`) / `BRAIN_DREAM_EXTRACT_DRY_RUN` (default `true`) ; `KillswitchState.extract_enabled: bool = False`, `extract_dry: bool = True`, `extract_clean_dry_nights: int = 0`
 
-- [ ] **Step 1: Test pins dream.sh** — `tests/unit/test_dream_sh_extract.py`
+- [ ] **Step 1: dream.sh test pins** — `tests/unit/test_dream_sh_extract.py`
 
 ```python
 """Pin the EXTRACT killswitch wiring in dream.sh (grep-style, no execution)."""
@@ -2269,32 +2269,32 @@ def test_extract_step_invokes_cli_module():
 
 def test_extract_wet_flag_only_when_dry_run_false():
     content = _content()
-    # Le flag --wet doit être conditionné au sous-flag DRY_RUN, jamais inconditionnel.
+    # The --wet flag must be conditioned on the DRY_RUN sub-flag, never unconditional.
     assert 'if [[ "$BRAIN_DREAM_EXTRACT_DRY_RUN" != "true" ]]' in content
 ```
 
-- [ ] **Step 2: Vérifier l'échec** — `pytest tests/unit/test_dream_sh_extract.py -q` → FAIL
+- [ ] **Step 2: Verify the failure** — `pytest tests/unit/test_dream_sh_extract.py -q` → FAIL
 
-- [ ] **Step 3: Modifier `scripts/dream.sh`**
+- [ ] **Step 3: Modify `scripts/dream.sh`**
 
-Vers la ligne 33 (après `BRAIN_DREAM_REORG_DRY_RUN=...`) :
+Around line 33 (after `BRAIN_DREAM_REORG_DRY_RUN=...`):
 
 ```bash
 # EXTRACT killswitch — ticket knowledge extraction (proposer-only, spec
 # 2026-07-04). Ship CLOSED; once enabled it starts in DRY (propose-only,
-# review humaine via ticket_extraction_proposals) — même trajectoire de
-# soak que REORG avant tout flip WET.
+# human review via ticket_extraction_proposals) — same soak trajectory
+# as REORG before any flip to WET.
 BRAIN_DREAM_EXTRACT_ENABLED="${BRAIN_DREAM_EXTRACT_ENABLED:-false}"
 BRAIN_DREAM_EXTRACT_DRY_RUN="${BRAIN_DREAM_EXTRACT_DRY_RUN:-true}"
 ```
 
-Après le `done` de la boucle `for phase_spec` et **impérativement AVANT la ligne `FAIL_TOTAL=$(( ... ))`** (~ligne 481 — sinon un échec extract n'incrémente pas `FAIL_TOTAL` et le script sort en `exit 0` silencieux ; c'est le compteur qui déclenche le résumé d'échec et `post_run_alert`) :
+After the `done` of the `for phase_spec` loop and **critically BEFORE the `FAIL_TOTAL=$(( ... ))` line** (~line 481 — otherwise an extract failure doesn't increment `FAIL_TOTAL` and the script exits with a silent `exit 0` ; it's this counter that triggers the failure summary and `post_run_alert`):
 
 ```bash
 # --- EXTRACT: ticket knowledge extraction (proposer-only) -----------------
-# Pas une phase claude -p : CLI Python direct (pattern domain_backfill,
-# NVIDIA API JSON strict sans tools). Insère sa propre row dream_runs
-# (phase='extract') pour la visibilité briefing (killswitches + last failure).
+# Not a claude -p phase: direct Python CLI (domain_backfill pattern,
+# NVIDIA API strict JSON without tools). Inserts its own dream_runs row
+# (phase='extract') for briefing visibility (killswitches + last failure).
 if [[ "$BRAIN_DREAM_EXTRACT_ENABLED" != "true" ]]; then
   log "SKIP extract (killswitch BRAIN_DREAM_EXTRACT_ENABLED=$BRAIN_DREAM_EXTRACT_ENABLED)"
 else
@@ -2317,9 +2317,9 @@ else
 fi
 ```
 
-- [ ] **Step 4: `KillswitchState` + `killswitch_state()`** dans `dream_run_service.py`
+- [ ] **Step 4: `KillswitchState` + `killswitch_state()`** in `dream_run_service.py`
 
-Ajouter à la dataclass (avec défauts → rétro-compatible avec tous les constructeurs existants, y compris le fallback de session_tools) :
+Add to the dataclass (with defaults → backward-compatible with all existing constructors, including session_tools's fallback):
 
 ```python
     extract_enabled: bool = False
@@ -2327,7 +2327,7 @@ Ajouter à la dataclass (avec défauts → rétro-compatible avec tous les const
     extract_clean_dry_nights: int = 0
 ```
 
-Dans `killswitch_state()`, après le calcul reorg (mêmes patterns : présence de la phase dans la dernière run_date + `phase_dry_run` + `_clean_dry_streak(session, "extract")`) :
+In `killswitch_state()`, after the reorg computation (same patterns: presence of the phase in the last run_date + `phase_dry_run` + `_clean_dry_streak(session, "extract")`):
 
 ```python
             extract_enabled = "extract" in phases
@@ -2335,9 +2335,9 @@ Dans `killswitch_state()`, après le calcul reorg (mêmes patterns : présence d
             extract_streak = await self._clean_dry_streak(session, "extract")
 ```
 
-et passer les 3 champs au `KillswitchState(...)` final (le early-return "no activity" garde ses défauts).
+and pass the 3 fields to the final `KillswitchState(...)` (the "no activity" early-return keeps its defaults).
 
-- [ ] **Step 5: Ligne EXTRACT dans `_section_killswitches`** (session_tools.py, après la ligne REORG) :
+- [ ] **Step 5: EXTRACT line in `_section_killswitches`** (session_tools.py, after the REORG line):
 
 ```python
     lines.append(
@@ -2345,12 +2345,12 @@ et passer les 3 champs au `KillswitchState(...)` final (le early-return "no acti
     )
 ```
 
-Ajouter un test dans `test_session_tools.py` : un briefing avec `extract_enabled=True, extract_dry=True, extract_clean_dry_nights=2` doit contenir `"EXTRACT: enabled (dry · 2 clean DRY nights)"` ; et adapter les assertions existantes si elles pinnent le bloc killswitches entier.
+Add a test in `test_session_tools.py`: a briefing with `extract_enabled=True, extract_dry=True, extract_clean_dry_nights=2` must contain `"EXTRACT: enabled (dry · 2 clean DRY nights)"` ; and adapt the existing assertions if they pin the whole killswitches block.
 
-- [ ] **Step 6: Vérifier vert + commit**
+- [ ] **Step 6: Verify green + commit**
 
 Run: `pytest tests/unit -q && ruff check src/ tests/ scripts/ && ruff format --check src/ tests/ scripts/ && mypy src/ && bash -n scripts/dream.sh`
-Expected: tout PASS, `bash -n` silencieux (syntaxe ok)
+Expected: all PASS, `bash -n` silent (syntax ok)
 
 ```bash
 git add scripts/dream.sh src/brain_v42/services/dream_run_service.py src/brain_v42/mcp/tools/session_tools.py tests/unit/test_dream_sh_extract.py tests/unit/mcp/test_session_tools.py
@@ -2362,9 +2362,9 @@ git commit -m "feat(tickets): step extract dans dream.sh + killswitch EXTRACT (d
 ### Task 7: Documentation
 
 **Files:**
-- Modify: `docs/MCP_TOOLS.md` — section "Tickets (coordination cross-projet)" : les 5 tools, signatures, exemple de cycle request complet + fyi
-- Modify: `docs/SCHEMA.md` — les 3 tables (colonnes, CHECK, indexes) + note "famille coordination : hors embeddings/search/decay/graph"
-- Modify: `CLAUDE.md` — dans le bloc env de Configuration, ajouter :
+- Modify: `docs/MCP_TOOLS.md` — "Tickets (cross-project coordination)" section: the 5 tools, signatures, example of a full request cycle + fyi
+- Modify: `docs/SCHEMA.md` — the 3 tables (columns, CHECK, indexes) + note "coordination family: outside embeddings/search/decay/graph"
+- Modify: `CLAUDE.md` — in the Configuration env block, add:
 
 ```bash
 # Tickets — extraction nocturne (dream, proposer-only)
@@ -2372,10 +2372,10 @@ BRAIN_DREAM_EXTRACT_ENABLED=false
 BRAIN_DREAM_EXTRACT_DRY_RUN=true
 ```
 
-**Interfaces:** — (docs uniquement, aucun code)
+**Interfaces:** — (docs only, no code)
 
-- [ ] **Step 1: Rédiger les 3 fichiers** en suivant le format des sections existantes de chaque doc (tableaux pour MCP_TOOLS, DDL commenté pour SCHEMA).
-- [ ] **Step 2: Vérifier** — `ruff format --check src/ tests/ scripts/` (inchangé) et relire que les noms de tools/colonnes matchent le code livré.
+- [ ] **Step 1: Write the 3 files** following the format of each doc's existing sections (tables for MCP_TOOLS, commented DDL for SCHEMA).
+- [ ] **Step 2: Verify** — `ruff format --check src/ tests/ scripts/` (unchanged) and re-read to check tool/column names match the shipped code.
 - [ ] **Step 3: Commit**
 
 ```bash
@@ -2385,11 +2385,11 @@ git commit -m "docs(tickets): surface MCP + schéma + env EXTRACT"
 
 ---
 
-## Vérification finale (post-Task 7, avant merge)
+## Final verification (post-Task 7, before merge)
 
-1. `pytest tests/unit -q` — 100 % vert
-2. `pytest --cov=brain_v42 --cov-report=term-missing` — coverage ≥ 60 %
+1. `pytest tests/unit -q` — 100% green
+2. `pytest --cov=brain_v42 --cov-report=term-missing` — coverage ≥ 60%
 3. `ruff check src/ tests/ scripts/ && ruff format --check src/ tests/ scripts/ && mypy src/`
 4. `bash -n scripts/dream.sh`
-5. Si `BRAIN_V42_TEST_DB_URL` dispo : `pytest tests/integration/db/test_tickets_roundtrip.py -q`
-6. Smoke manuel (optionnel, DB dev) : `alembic upgrade head` puis un cycle create→resolve→confirm via les tools.
+5. If `BRAIN_V42_TEST_DB_URL` is available: `pytest tests/integration/db/test_tickets_roundtrip.py -q`
+6. Manual smoke test (optional, dev DB): `alembic upgrade head` then a create→resolve→confirm cycle via the tools.

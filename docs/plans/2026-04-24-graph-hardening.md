@@ -289,13 +289,13 @@ Checklist:
 - [ ] `ruff check`
 - [ ] Commit: `feat(dream): brain_backfill_links_batch reports 4 buckets + freshness ratio`
 
-#### Task A5 — ~~Prometheus counter `brain_graph_links_total{bucket="..."}`~~ **REJETÉ**
+#### Task A5 — ~~Prometheus counter `brain_graph_links_total{bucket="..."}`~~ **REJECTED**
 
-**Statut**: fermé sans implémentation (decision `010f4f92-8c76-4195-81ca-052676e64514`, 2026-04-24).
+**Status**: closed without implementation (decision `010f4f92-8c76-4195-81ca-052676e64514`, 2026-04-24).
 
-**Raison**: spec initiale désalignée avec la stack réelle. Le codebase n'utilise pas `prometheus_client` — observabilité via `MetricsCollector` custom + `InstrumentedGraphService` + `TimeseriesFlusher` → PG `metrics_timeseries`. Les 4 buckets AutoLinker sont déjà visibles dans `logs/dream/*_connect.log` et dans le return string de `brain_backfill_links_batch` (validé live Night 4 2026-04-24 : `STEP_A: created=104 matched=4 skipped=156 errors=0 freshness=0.96`).
+**Reason**: initial spec misaligned with the actual stack. The codebase does not use `prometheus_client` — observability goes through custom `MetricsCollector` + `InstrumentedGraphService` + `TimeseriesFlusher` → PG `metrics_timeseries`. The 4 AutoLinker buckets are already visible in `logs/dream/*_connect.log` and in the return string of `brain_backfill_links_batch` (validated live Night 4 2026-04-24: `STEP_A: created=104 matched=4 skipped=156 errors=0 freshness=0.96`).
 
-**Extension future si besoin dashboard**: ajouter `MetricsCollector.record_graph_link_bucket(bucket: str, count: int)` + call en fin de `AutoLinker.auto_link`. Pas Prometheus.
+**Future extension if a dashboard is needed**: add `MetricsCollector.record_graph_link_bucket(bucket: str, count: int)` + call at the end of `AutoLinker.auto_link`. Not Prometheus.
 
 #### Task A6 — Update CONNECT phase prompt
 

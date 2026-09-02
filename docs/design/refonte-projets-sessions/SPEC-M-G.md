@@ -1,308 +1,308 @@
-# SPEC — M-G : l'état terminal des sessions `agent`
+# SPEC — M-G: the terminal state of `agent` sessions
 
-> **Statut : PROPOSITION SOUMISE À SIGNATURE.** Le `§0.4` de l'ADR répond **Q15 = route (3)**
-> — un nouvel état terminal — puis écrit noir sur blanc : *« Le **nom** de l'état, sa
-> branche exacte, et le sort de `captured_knowledge_ids`, `abandonment_reason` et
-> `focus_outcome` dans cette branche **ne sont pas spécifiés ici** »*. **Ce document les
-> PROPOSE. Il ne les tranche pas.** Chaque proposition porte son alternative et son coût.
+> **Status: PROPOSAL SUBMITTED FOR SIGN-OFF.** The ADR's `§0.4` answers **Q15 = route (3)**
+> — a new terminal state — then writes in black and white: *"The **name** of the state, its
+> exact branch, and the fate of `captured_knowledge_ids`, `abandonment_reason` and
+> `focus_outcome` on that branch **are not specified here**"*. **This document PROPOSES
+> them. It does not settle them.** Every proposal carries its alternative and its cost.
 >
-> **Débloquée par le `§0ter.1`** (M-A + M-G en une seule tête) : cette spec attendait
-> cette réponse et rien d'autre.
+> **Unblocked by `§0ter.1`** (M-A + M-G in a single head): this spec was waiting for
+> that answer and nothing else.
 >
-> **Sources qui font foi** : ADR `§0.4` (Q15), `§0ter` (signatures du 2026-08-20),
-> `§0bis.1` (natures), `§0bis.3` amendé (seuil), `§5.2`/`§5.3` (attestation, couloir du
-> pin), PLAN `§8` (ligne M-G). **Le CHECK cité ci-dessous a été relu dans
-> `alembic/versions/037_session_lifecycle_v4.py` le 2026-08-20**, pas recopié depuis l'ADR.
+> **Authoritative sources**: ADR `§0.4` (Q15), `§0ter` (signatures of 2026-08-20),
+> `§0bis.1` (natures), amended `§0bis.3` (threshold), `§5.2`/`§5.3` (attestation, the pin
+> lane), PLAN `§8` (M-G line). **The CHECK quoted below was reread from
+> `alembic/versions/037_session_lifecycle_v4.py` on 2026-08-20**, not copied from the ADR.
 
 ---
 
-## 1. Le problème, relu à la source
+## 1. The problem, reread at the source
 
-`brain_sessions_terminal_state_valid` (037, `_TERMINAL_STATE_V4`) est une disjonction de
-**trois** branches — `open`, `ended`, `abandoned` — et **aucune** n'accueille une session
-fermée sans rituel :
+`brain_sessions_terminal_state_valid` (037, `_TERMINAL_STATE_V4`) is a disjunction of
+**three** branches — `open`, `ended`, `abandoned` — and **none** of them accommodates a session
+closed without ritual:
 
-| Branche | Ce qu'elle EXIGE, et qui bloque |
+| Branch | What it REQUIRES, and what it blocks |
 |---|---|
-| `ended` | `summary` **et** `next_focus` non vides, `focus_outcome NOT NULL`, **et** (`captured_knowledge_ids > 0` **XOR** `nothing_to_capture_reason` non vide) |
-| `abandoned` | `summary IS NULL`, `next_focus IS NULL`, **`cardinality(captured_knowledge_ids) = 0`**, `abandonment_reason` non vide |
+| `ended` | `summary` **and** `next_focus` non-empty, `focus_outcome NOT NULL`, **and** (`captured_knowledge_ids > 0` **XOR** `nothing_to_capture_reason` non-empty) |
+| `abandoned` | `summary IS NULL`, `next_focus IS NULL`, **`cardinality(captured_knowledge_ids) = 0`**, `abandonment_reason` non-empty |
 
-**Le point qui tue la route (1)**, et qu'il faut voir dans le SQL pour le croire :
-`abandoned` **force le ledger terminal à zéro capture**. Une session `agent` qui a fait
-son travail et attribué des artefacts déclarerait donc, dans son instantané terminal,
-n'avoir rien capturé — sur le chemin de capture principal, et sous l'axe « traçabilité du
-savoir » que l'opérateur a précisément choisi. Le ledger réel survit dans
-`brain_session_artifacts`, mais l'instantané ment.
+**The point that kills route (1)**, and one that must be seen in the SQL to be believed:
+`abandoned` **forces the terminal ledger to zero captures**. An `agent` session that did
+its work and attributed artifacts would therefore declare, in its terminal snapshot,
+that it captured nothing — on the main capture path, and under the very "knowledge
+traceability" axis the operator chose. The real ledger survives in
+`brain_session_artifacts`, but the snapshot lies.
 
-**Le point qui tue la route (2)** : `ended` exige un `summary` **et** un `next_focus`. Les
-synthétiser côté serveur, c'est recopier de l'état mesurable dans le seul canal de
-jugement non dérivable — objection C9, doctrine `FocusArg`.
+**The point that kills route (2)**: `ended` requires both a `summary` **and** a `next_focus`.
+Synthesizing them server-side means copying measurable state into the one
+channel of judgment that cannot be derived — objection C9, the `FocusArg` doctrine.
 
-D'où la route (3), et cette spec.
+Hence route (3), and this spec.
 
 ---
 
-## 2. PROPOSITION 1 — le nom de l'état : `closed_inactive`
+## 2. PROPOSAL 1 — the state's name: `closed_inactive`
 
-**Retenu : `closed_inactive`.**
+**Adopted: `closed_inactive`.**
 
-| Candidat | Pourquoi écarté |
+| Candidate | Why rejected |
 |---|---|
-| `expired` | Suggère une péremption du contenu, pas de la session. Le savoir capturé, lui, n'expire pas |
-| `auto_ended` | « ended » y est un préfixe : un `LIKE 'ended%'` ou une lecture pressée les confond, et la distinction avec le rituel est **tout** l'objet de cet état |
-| `timed_out` | Dit un délai. Le `§0ter.5` vient précisément d'établir que 4 h est un seuil d'**éligibilité**, pas un délai — le nom re-mentirait |
-| `swept` | Décrit le **mécanisme** (le sweep), pas l'**état**. Le mécanisme peut changer ; l'état non |
-| **`closed_inactive`** | Dit la cause (inactivité observée) et le résultat (fermée), sans promettre de délai ni se confondre avec `ended` |
+| `expired` | Suggests the content lapsed, not the session. The captured knowledge itself does not expire |
+| `auto_ended` | "ended" as a prefix here: a `LIKE 'ended%'` or a hurried read would conflate them, and the distinction from the ritual is **the entire** point of this state |
+| `timed_out` | Implies a deadline. `§0ter.5` just established that 4 h is an **eligibility** threshold, not a deadline — the name would be lying again |
+| `swept` | Describes the **mechanism** (the sweep), not the **state**. The mechanism can change; the state should not |
+| **`closed_inactive`** | States the cause (observed inactivity) and the outcome (closed), without promising a deadline or blending into `ended` |
 
-**Coût assumé** : c'est un quatrième vocabulaire dans une machine qui en a trois. Tout
-lecteur de `status` doit apprendre qu'il existe **deux** façons d'être terminé
-proprement — `ended` (rituel) et `closed_inactive` (sans rituel) — plus une d'être
-terminé sans l'être vraiment (`abandoned`).
+**Accepted cost**: this is a fourth vocabulary in a machine that already had three. Every
+reader of `status` must now learn that there are **two** ways to be properly
+terminated — `ended` (ritual) and `closed_inactive` (without ritual) — plus one way to be
+terminated without really being so (`abandoned`).
 
 ---
 
-## 3. PROPOSITION 2 — la branche exacte du CHECK
+## 3. PROPOSAL 2 — the exact CHECK branch
 
 ```sql
 OR (
     status = 'closed_inactive'
     AND ended_at IS NOT NULL
-    AND nature = 'agent'                     -- ⬅ voir §3.1 : la garde qui compte
-    AND summary IS NULL                      -- pas de rituel : rien à résumer
-    AND next_focus IS NULL                   -- ⬅ voir §3.2
-    AND abandonment_reason IS NULL           -- ce n'est PAS un abandon
-    AND end_expected_focus_revision IS NULL  -- aucun CAS tenté
-    AND focus_outcome IS NULL                -- ⬅ voir §3.3
+    AND nature = 'agent'                     -- ⬅ see §3.1: the guard that matters
+    AND summary IS NULL                      -- no ritual: nothing to summarize
+    AND next_focus IS NULL                   -- ⬅ see §3.2
+    AND abandonment_reason IS NULL           -- this is NOT an abandonment
+    AND end_expected_focus_revision IS NULL  -- no CAS attempted
+    AND focus_outcome IS NULL                -- ⬅ see §3.3
     AND focus_at_end IS NULL
     AND focus_revision_at_end IS NULL
-    AND nothing_to_capture_reason IS NULL    -- ⬅ voir §3.4
-    -- captured_knowledge_ids : AUCUNE contrainte. C'est le point entier.
+    AND nothing_to_capture_reason IS NULL    -- ⬅ see §3.4
+    -- captured_knowledge_ids: NO constraint. That's the entire point.
 )
 ```
 
-### 3.1 `nature = 'agent'` dans le CHECK — proposé, et discutable
+### 3.1 `nature = 'agent'` in the CHECK — proposed, and debatable
 
-**Pour** : rend impossible en base qu'une session `operator` (donc *claimed*) atteigne cet
-état. La garantie du `§0bis.3` — *« une session claimed n'est JAMAIS fermée par
-inactivité »* — cesse d'être une promesse applicative pour devenir une contrainte.
+**For**: makes it impossible in the database for an `operator` session (hence *claimed*) to reach this
+state. The `§0bis.3` guarantee — *"a claimed session is NEVER closed by
+inactivity"* — stops being an application-level promise and becomes a database constraint.
 
-**Contre, et il est sérieux** : la résolution ratifiée (d) laisse `nature IS NULL` au
-régime du sweep 7 j. Les sessions **antérieures à M-A** n'ont pas de nature. Si un jour on
-voulait fermer une session `NULL` dans cet état, le CHECK l'interdirait — et le
-contournement serait un backfill de `nature`, c'est-à-dire de changer les règles
-rétroactivement, ce que (d) refuse.
+**Against, and a serious one**: the ratified resolution (d) leaves `nature IS NULL` under the
+7-day sweep regime. Sessions **predating M-A** have no nature. If one day
+someone wanted to close a `NULL` session into this state, the CHECK would forbid it — and
+the workaround would be a backfill of `nature`, i.e. changing the rules
+retroactively, which (d) rules out.
 
-> **À SIGNER** : `nature = 'agent'` (garantie dure, moins souple) **ou** aucune contrainte
-> de nature (souple, garantie applicative seulement) ? *Recommandation : la garantie dure.
-> Le cas « fermer une session NULL en closed_inactive » n'existe pas au catalogue, et un
-> CHECK se relâche plus facilement qu'il ne se resserre.*
+> **TO SIGN**: `nature = 'agent'` (hard guarantee, less flexible) **or** no nature
+> constraint (flexible, application-level guarantee only)? *Recommendation: the hard guarantee.
+> The case "close a NULL session into closed_inactive" isn't on the catalog, and a
+> CHECK is loosened more easily than it's tightened.*
 
-### 3.2 `next_focus IS NULL` — et pourquoi c'est une bonne nouvelle
+### 3.2 `next_focus IS NULL` — and why it's good news
 
-Le `§0.4` posait la question sans la fermer : *« une session agent terminée dans ce nouvel
-état applique-t-elle un `next_focus` ? Si non, elle ne fait pas de CAS, et **c'est une
-bonne nouvelle** »*.
+`§0.4` asked the question without closing it: *"does an agent session ended in this new
+state apply a `next_focus`? If not, it performs no CAS, and **that's good
+news**"*.
 
-**Proposition : NON.** Elle n'écrit pas de `next_focus` et ne tente aucun CAS. Autrement,
-chaque auto-fermeture bumperait `focus_revision` et produirait des
-`focus_outcome = 'conflict'` **systématiques** sur les sessions opérateur concurrentes —
-un bruit fabriqué par le serveur, sur le seul canal de jugement.
+**Proposal: NO.** It writes no `next_focus` and attempts no CAS. Otherwise,
+every auto-close would bump `focus_revision` and produce
+**systematic** `focus_outcome = 'conflict'` on concurrent operator sessions —
+noise manufactured by the server, on the one channel of judgment.
 
-**Renforcé par le contexte du sweep** : la fermeture est **groupée**, une fois par nuit
-(§0ter.4). N sessions fermées en un statement, chacune tentant un CAS, produiraient N−1
-conflits par construction. C'est un argument de plus, indépendant du premier.
+**Reinforced by the sweep's context**: the closing is **batched**, once a night
+(§0ter.4). N sessions closed in one statement, each attempting a CAS, would produce N−1
+conflicts by construction. That's an additional argument, independent of the first.
 
-### 3.3 `focus_outcome IS NULL` — conséquence, pas choix
+### 3.3 `focus_outcome IS NULL` — a consequence, not a choice
 
-Découle de §3.2 : pas de CAS tenté ⇒ aucun résultat de CAS à déclarer. `NULL` veut dire
-« aucune tentative », ce qui est exactement le fait.
+Follows from §3.2: no CAS attempted ⇒ no CAS result to declare. `NULL` means
+"no attempt", which is exactly the fact.
 
-*Alternative écartée : une troisième valeur `not_attempted`. Elle ajouterait un vocabulaire
-pour dire ce que `NULL` dit déjà, et obligerait à toucher l'énumération Pydantic de
-`focus_outcome` en plus de celle de `status` — deux rails au lieu d'un.*
+*Alternative rejected: a third value, `not_attempted`. It would add vocabulary
+to say what `NULL` already says, and would force touching the Pydantic enum of
+`focus_outcome` in addition to that of `status` — two rails instead of one.*
 
-### 3.4 `captured_knowledge_ids` LIBRE, `nothing_to_capture_reason` INTERDIT
+### 3.4 `captured_knowledge_ids` FREE, `nothing_to_capture_reason` FORBIDDEN
 
-**C'est la raison d'être de toute la migration.** Une session `agent` auto-fermée garde son
-ledger **tel quel** : zéro, un ou cent artefacts, sans contrainte et sans justification.
+**This is the entire point of the migration.** An auto-closed `agent` session keeps its
+ledger **as is**: zero, one or a hundred artifacts, with no constraint and no justification.
 
-`nothing_to_capture_reason` est **interdit** (`IS NULL`) et ce n'est pas un détail : sur la
-branche `ended`, il est la **contrepartie fail-closed** d'un ledger vide — l'opérateur doit
-*dire pourquoi* il n'a rien capturé. C'est un **jugement**. Un serveur qui le remplirait
-pour une session agent fabriquerait du jugement, exactement l'objection C9 qui a tué la
-route (2). Le laisser `NULL` sur un ledger vide dit la vérité : *personne n'a été
-interrogé.*
+`nothing_to_capture_reason` is **forbidden** (`IS NULL`) and this isn't a detail: on the
+`ended` branch it is the **fail-closed counterpart** to an empty ledger — the operator must
+*say why* they captured nothing. That's a **judgment call**. A server that filled it
+in for an agent session would manufacture judgment, exactly the objection C9 that killed
+route (2). Leaving it `NULL` on an empty ledger states the truth: *nobody was
+asked.*
 
-**Conséquence à assumer** : une session agent à ledger vide devient **indiscernable** d'une
-session agent qui n'avait rien à capturer. B3 ne se mesure donc pas sur cet état. C'est le
-prix de ne pas fabriquer de jugement, et il doit être écrit dans les critères de sortie
-plutôt que découvert en les mesurant.
+**Consequence to accept**: an agent session with an empty ledger becomes **indistinguishable** from
+an agent session that had nothing to capture. B3 is therefore not measured on this state. That's the
+price of not manufacturing judgment, and it must be written into the exit criteria
+rather than discovered while measuring them.
 
 ---
 
-## 4. PROPOSITION 3 — le déclencheur
+## 4. PROPOSAL 3 — the trigger
 
-**Le sweep nocturne, un seul statement, seuil d'éligibilité 4 h** (`§0ter.4` et `§0ter.5`).
+**The nightly sweep, a single statement, 4 h eligibility threshold** (`§0ter.4` and `§0ter.5`).
 
-- **Éligible** : `status = 'open'` **ET** `nature = 'agent'` **ET**
+- **Eligible**: `status = 'open'` **AND** `nature = 'agent'` **AND**
   `last_observed_at < now() - interval '4 hours'`.
-- **Jamais** : une session `claimed` (⇒ `nature = 'operator'`), quel que soit son âge —
-  seul le sweep 7 j existant peut la prendre.
-- **Jamais** pendant un appel en vol. `provenance.py` tient déjà la profondeur d'appel
-  (`enter_call` / `exit_call` / `is_outermost_call`) : le « coupé au milieu » littéral est
-  gratuit à interdire.
-- **`nature IS NULL`** : hors périmètre, reste au régime sweep 7 j (résolution (d)).
+- **Never**: a `claimed` session (⇒ `nature = 'operator'`), regardless of age —
+  only the existing 7-day sweep can take it.
+- **Never** mid-call. `provenance.py` already tracks call
+  depth (`enter_call` / `exit_call` / `is_outermost_call`): forbidding the literal "cut mid-way"
+  case is free.
+- **`nature IS NULL`**: out of scope, stays under the 7-day sweep regime (resolution (d)).
 
-**Ce que ce n'est PAS, et qu'il ne faut jamais annoncer autrement** : 4 h n'est **pas** un
-délai de fermeture. Une traçante devenue inactive juste après un passage vit jusqu'au
-suivant — **latence réelle pire cas ≈ 28 h**.
+**What this is NOT, and must never be announced otherwise**: 4 h is **not** a
+closing deadline. A trace session that goes inactive right after a pass lives until the
+next one — **worst-case real latency ≈ 28 h**.
 
-> **PROPOSITION — un seul statement, partagé avec Q5.** Le `§0ter.5` acte que Q5 (seuils du
-> sweep) et le seuil 4 h se répondent **ensemble**. Deux passes nocturnes concurrentes sur
-> `brain_sessions` pour deux règles qui décrivent le même geste seraient une machinerie
-> gratuite. Le statement existant est déjà **UN** `UPDATE … RETURNING` (épinglé
-> textuellement par `test_pg_brain_session_sweep.py`) : M-G doit **étendre ce statement**,
-> pas en ajouter un.
+> **PROPOSAL — a single statement, shared with Q5.** `§0ter.5` establishes that Q5 (sweep
+> thresholds) and the 4 h threshold answer each other **together**. Two concurrent nightly passes on
+> `brain_sessions` for two rules describing the same gesture would be needless
+> machinery. The existing statement is already **ONE** `UPDATE … RETURNING` (textually
+> pinned by `test_pg_brain_session_sweep.py`): M-G must **extend this statement**,
+> not add another.
 >
-> **Garde à reconduire explicitement** : le test « un seul statement » existe précisément
-> pour interdire la fenêtre `SELECT`-puis-`UPDATE`. L'étendre ne doit pas la rouvrir.
+> **Guard to reaffirm explicitly**: the "single statement" test exists precisely
+> to forbid the `SELECT`-then-`UPDATE` window. Extending it must not reopen it.
 
 ---
 
-## 5. Ce que la tête unique M-A+M-G emporte
+## 5. What the single M-A+M-G head carries
 
-Signé au `§0ter.1`. **Une tête**, donc **un** rendez-vous, **un** bump de
-`_REQUIRED_ALEMBIC_HEAD` avec son test **dans le même commit**, et pas de fenêtre où des
-sessions `agent` naissent sans état terminal atteignable.
+Signed off at `§0ter.1`. **One head**, hence **one** rendezvous, **one** bump of
+`_REQUIRED_ALEMBIC_HEAD` with its test **in the same commit**, and no window where
+`agent` sessions are born without a reachable terminal state.
 
-**Cinq objets bougent ensemble. Aucun ne peut être différé :**
+**Five objects move together. None can be deferred:**
 
-1. **Le CHECK** `brain_sessions_terminal_state_valid` — quatrième branche.
-2. **Le rail Pydantic (C7)** — `BrainSessionStatus` (`models/brain_session.py:27-29`)
-   gagne `CLOSED_INACTIVE = "closed_inactive"`. **Avec le CHECK, jamais après.**
-3. **Les DEUX assets `ops/recovery/` v4** — `brain-v42-v4.sql` **et**
-   `brain-v42-v4-pgrestore.sql`, tenus en parité de CTE. Deux empreintes bougent :
-   - l'**empreinte du CHECK terminal** (`md5` de la définition de contrainte) ;
-   - **`expected_session_indexes`** (`v4.sql:404`, contrôlée `:665` et `:687`), liste
-     **fermée** que l'index UNIQUE partiel de connexion apporté par **M-A** casse
-     — quatrième mécanisme de casse d'attestation (`§5.2 (ii)`).
-   *C'est la raison la plus concrète de la tête unique : une seule régénération pour deux
-   causes de casse qui, séparées, en demanderaient deux.*
-4. **Le downgrade `037→036`**, déjà fail-closed, doit **apprendre le nouvel état** : refuser
-   s'il existe des lignes `closed_inactive`, sans quoi il perd des sessions terminales
-   silencieusement.
-5. **Le covenant réécrit par nature** (`§0ter` (d)) — la phrase change dans les docstrings
-   des tools de cycle de vie, et `test_session_covenant_docstrings_anchor.py` **rougit**.
-   C'est le geste Red qui ouvre la livraison, pas un dégât.
+1. **The CHECK** `brain_sessions_terminal_state_valid` — fourth branch.
+2. **The Pydantic rail (C7)** — `BrainSessionStatus` (`models/brain_session.py:27-29`)
+   gains `CLOSED_INACTIVE = "closed_inactive"`. **With the CHECK, never after.**
+3. **BOTH `ops/recovery/` v4 assets** — `brain-v42-v4.sql` **and**
+   `brain-v42-v4-pgrestore.sql`, kept in CTE parity. Two fingerprints move:
+   - the **terminal CHECK fingerprint** (`md5` of the constraint definition);
+   - **`expected_session_indexes`** (`v4.sql:404`, checked at `:665` and `:687`), a
+     **closed** list that the partial UNIQUE connection index brought by **M-A** breaks
+     — the fourth attestation-breaking mechanism (`§5.2 (ii)`).
+   *This is the most concrete reason for the single head: one regeneration for two
+   causes of breakage which, apart, would demand two.*
+4. **The `037→036` downgrade**, already fail-closed, must **learn the new state**: refuse
+   if `closed_inactive` rows exist, otherwise it silently loses terminal
+   sessions.
+5. **The covenant rewritten by nature** (`§0ter` (d)) — the sentence changes in the docstrings
+   of the lifecycle tools, and `test_session_covenant_docstrings_anchor.py` **turns red**.
+   That's the Red step that opens the delivery, not a casualty.
 
-> **Piège d'index, hérité et à ne pas redécouvrir.** L'index UNIQUE sur la colonne de
-> connexion (M-A) **doit être PARTIEL** — `WHERE status = 'open'`. Un unique plein, sur le
-> modèle de `uq_brain_sessions_project_client`, **brûlerait la connexion à vie** dès la
-> première auto-fermeture, et détruirait la propriété « être coupé coûte un découpage, pas
-> une perte ». **Sous M-G, ce piège s'aggrave** : `closed_inactive` fait précisément sortir
-> des lignes de `status = 'open'` en masse, toutes les nuits.
-
----
-
-## 6. Le prix du fail-open, écrit ici parce que c'est ici qu'on le paie
-
-Ratifié au `§0ter.4` : l'auto-ouverture est **fail-open**. Si l'ouverture échoue et que
-l'appel passe quand même, **les artefacts créés avant l'ouverture réussie tombent hors de
-la fenêtre `created_at >= started_at`** de la capture.
-
-**B5 redevient donc mordante, ponctuellement.** Ce n'est pas un effet de bord découvert
-après coup : c'est le coût accepté de ne pas faire tomber tout le serveur MCP sur un hoquet
-de base — même posture que l'émetteur d'activité client (`1c40c36a`), dont l'échec ne peut
-pas casser l'appel qu'il observe.
-
-**Interaction avec §3.4, et elle est désagréable** : une session dont l'ouverture a
-fail-open ET qui se ferme en `closed_inactive` présente un ledger vide **sans
-`nothing_to_capture_reason`** — indiscernable d'une session qui n'avait rien à capturer.
-La perte est donc **silencieuse par construction**.
-
-> **PROPOSITION — la rendre bruyante sans fabriquer de jugement.** Compter les
-> fail-open dans une métrique dédiée (l'émetteur d'activité client sait déjà le faire) et
-> refuser de lire B3 sur une fenêtre où ce compteur est non nul. On ne répare pas la
-> fenêtre — on refuse de mesurer une couverture qu'on sait fausse. *Non signé.*
+> **Index trap, inherited and not to be rediscovered.** The UNIQUE index on the connection
+> column (M-A) **must be PARTIAL** — `WHERE status = 'open'`. A plain unique, on the
+> pattern of `uq_brain_sessions_project_client`, **would burn the connection for life**
+> at the very first auto-close, destroying the "being cut costs a reconnect, not
+> a loss" property. **Under M-G, this trap gets worse**: `closed_inactive` moves
+> rows out of `status = 'open'` precisely, in bulk, every single night.
 
 ---
 
-## 7. Critères de sortie — mesurables, et ce qu'ils NE prouvent pas
+## 6. The price of fail-open, written here because this is where it's paid
 
-| Critère | `proves` | `does_not_prove` |
+Ratified at `§0ter.4`: auto-open is **fail-open**. If opening fails and
+the call proceeds anyway, **artifacts created before the successful open fall outside
+the capture's `created_at >= started_at`** window.
+
+**B5 becomes sharp again, occasionally.** This is not a side effect discovered
+after the fact: it's the accepted cost of not taking down the whole MCP server over a
+database hiccup — same stance as the client activity emitter (`1c40c36a`), whose failure cannot
+break the call it observes.
+
+**Interaction with §3.4, and it's unpleasant**: a session whose opening fail-opened AND
+which closes as `closed_inactive` presents an empty ledger **without
+`nothing_to_capture_reason`** — indistinguishable from a session that had nothing to capture.
+The loss is therefore **silent by construction**.
+
+> **PROPOSAL — make it noisy without manufacturing judgment.** Count
+> fail-opens in a dedicated metric (the client activity emitter already knows how) and
+> refuse to read B3 over a window where that counter is nonzero. This doesn't fix the
+> window — it refuses to measure a coverage known to be false. *Unsigned.*
+
+---
+
+## 7. Exit criteria — measurable, and what they DO NOT prove
+
+| Criterion | `proves` | `does_not_prove` |
 |---|---|---|
-| `alembic current` = nouvelle tête, pin bumpé dans le même commit | La tête est passée sans fenêtre à deux têtes | Rien sur le comportement |
-| Les DEUX assets v4 verts après régénération | Empreinte du CHECK **et** liste d'index d'accord avec la base | Rien sur les autres tables |
-| Downgrade refusé fail-closed avec ≥ 1 ligne `closed_inactive` | Le rollback ne perd pas de session terminale | Ne prouve pas qu'il réussit sans ces lignes — à tester aussi |
-| Une nuit : N sessions `agent` inactives > 4 h passées `closed_inactive`, **0** `operator` prise, **0** ledger vidé | Le périmètre et la préservation | **Ne prouve rien sur les sessions actives** : il faut aussi montrer qu'une session ayant observé un appel dans les 4 h **n'est pas** prise |
-| `focus_revision` du projet **inchangée** après la passe | Aucun CAS induit, aucun `conflict` fabriqué | — |
+| `alembic current` = new head, pin bumped in the same commit | The head advanced without a two-head window | Nothing about behavior |
+| BOTH v4 assets green after regeneration | CHECK fingerprint **and** index list agree with the database | Nothing about other tables |
+| Downgrade refused fail-closed with ≥ 1 `closed_inactive` row | The rollback doesn't lose a terminal session | Doesn't prove it succeeds without those rows — must also be tested |
+| One night: N `agent` sessions inactive > 4 h moved to `closed_inactive`, **0** `operator` taken, **0** ledger emptied | Scope and preservation | **Proves nothing about active sessions**: must also show that a session that observed a call within 4 h **is not** taken |
+| Project's `focus_revision` **unchanged** after the pass | No CAS induced, no manufactured `conflict` | — |
 
 ---
 
-## 8. Ce qui reste NON SPÉCIFIÉ
+## 8. What remains UNSPECIFIED
 
-1. **`nature = 'agent'` dans le CHECK** (§3.1) — les deux options ont un coût réel.
-2. **La métrique de fail-open** (§6) — proposée, non signée.
-3. **La colonne `last_observed_at`** est supposée livrée par **M-A**. Si M-A la nomme
-   autrement, §4 suit ce nom. *Cette spec ne nomme pas les colonnes de M-A.*
-4. **Le seuil de Q5** — répondu **avec** le 4 h, dans le même statement.
-5. **La formulation exacte de la phrase-covenant par nature** — le `§0ter` (d) dit
-   « réécrite », pas « comment ». Elle doit être écrite avant la livraison, avec la mise à
-   jour du test d'ancrage.
-6. **LE RANG DE LA TÊTE DANS LE COULOIR DU PIN.** Le PLAN `§8` porte encore, en toutes
-   lettres, `M-G | **à séquencer — non tranché**`. Le `§0ter.1` dit **avec quoi** elle part
-   (M-A), pas **quand** — et le couloir interdit deux têtes en vol, donc l'ordre est une
-   contrainte, pas une préférence. D'autres candidates existent au même couloir : la
-   « neuf colonnes » de `c60d023d`, `G7 NOT NULL`, le compteur de sweep. **Un dossier de
-   séquencement des candidates 046+ est en cours et doit être soumis et signé avant qu'une
-   seule ligne de migration soit écrite.** Cette spec décrit le CONTENU de M-G ; elle ne
-   revendique aucun rang.
+1. **`nature = 'agent'` in the CHECK** (§3.1) — both options carry a real cost.
+2. **The fail-open metric** (§6) — proposed, unsigned.
+3. **The `last_observed_at` column** is assumed delivered by **M-A**. If M-A names it
+   differently, §4 follows that name. *This spec does not name M-A's columns.*
+4. **The Q5 threshold** — answered **together with** the 4 h, in the same statement.
+5. **The exact wording of the covenant sentence by nature** — `§0ter` (d) says
+   "rewritten", not "how". It must be written before delivery, along with an
+   update to the anchor test.
+6. **THE HEAD'S RANK IN THE PIN LANE.** PLAN `§8` still carries, in plain
+   letters, `M-G | **to be sequenced — undecided**`. `§0ter.1` says **with what** it ships
+   (M-A), not **when** — and the lane forbids two heads in flight, so the order is a
+   constraint, not a preference. Other candidates exist in the same lane: the
+   "nine columns" of `c60d023d`, `G7 NOT NULL`, the sweep counter. **A sequencing
+   dossier for candidates 046+ is underway and must be submitted and signed before a
+   single line of migration is written.** This spec describes the CONTENT of M-G; it
+   claims no rank.
 
-   > **AMENDÉ le 2026-08-20 — le dossier existe et son ORDRE est signé.**
-   > `SEQUENCEMENT-2026-08-20-couloir-du-pin.md`, décision `9d22bc6a`. **S6** place M-G en
-   > **`046 = M-A + M-G`, première tête du couloir**, sur 8 rendez-vous (Ordre B, 048
-   > dégroupé). Le rang n'est donc plus ouvert.
+   > **AMENDED on 2026-08-20 — the dossier exists and its ORDER is signed.**
+   > `SEQUENCEMENT-2026-08-20-couloir-du-pin.md`, decision `9d22bc6a`. **S6** places M-G at
+   > **`046 = M-A + M-G`, first head of the lane**, across 8 rendezvous (Order B, 048
+   > split out). The rank is therefore no longer open.
    >
-   > **Mais l'autorisation d'écrire ne l'est pas non plus.** S2 (colonne de connexion),
-   > S3 (nature en base), **S4 (CHECK dur ou souple — c'est le §3.1 de cette spec)** et
-   > S5 (cette spec en entier) restent **NON SIGNÉES**. L'exigence de ce point 6 tient
-   > donc telle quelle : aucune ligne de migration.
+   > **But the authorization to write is not, either.** S2 (connection column),
+   > S3 (nature in the database), **S4 (hard or soft CHECK — this is §3.1 of this spec)** and
+   > S5 (this spec in full) remain **UNSIGNED**. The requirement of this point 6 therefore
+   > stands as is: no line of migration.
    >
-   > **Fait mesuré qui valide le §2** : `brain_sessions.status` est `varchar(20)` et
-   > `closed_inactive` fait **15** caractères — **il entre**, sans élargissement de
-   > colonne (mesuré le 2026-08-20, `information_schema.columns`). Un nom plus long aurait
-   > ajouté un `ALTER TYPE` à la tête la plus surveillée du couloir.
+   > **Measured fact validating §2**: `brain_sessions.status` is `varchar(20)` and
+   > `closed_inactive` is **15** characters long — **it fits**, without widening the
+   > column (measured on 2026-08-20, `information_schema.columns`). A longer name would
+   > have added an `ALTER TYPE` to the most watched head of the lane.
    >
-   > **Second fait mesuré, qui décharge M-G d'un risque** : **ZÉRO vue** ne dépend de
-   > `brain_sessions` — vérifié par deux angles (`view_column_usage` et
-   > `pg_depend`/`pg_rewrite`). Contrairement à la 045, aucune vue à faire tomber et
-   > revenir autour du changement de contrainte.
+   > **Second measured fact, which relieves M-G of a risk**: **ZERO views** depend on
+   > `brain_sessions` — verified from two angles (`view_column_usage` and
+   > `pg_depend`/`pg_rewrite`). Unlike 045, no view needs to be dropped and
+   > recreated around the constraint change.
 
-   > **AMENDÉ À NOUVEAU — décision `1b742dc7` (2026-08-25), qui amende S6 de `9d22bc6a`.**
-   > **La 048 est attribuée à `attribution_mode`** (réparation de la capture dérivée,
-   > `alembic/versions/048_attribution_mode.py`). **M-C, M-E, M-D, le trio `ADD COLUMN` et la
-   > suite glissent d'un cran : le couloir compte 9 rendez-vous au lieu de 8.** Le rang de M-G
-   > n'est pas déplacé — elle reste `046 = M-A + M-G`, première tête.
+   > **AMENDED AGAIN — decision `1b742dc7` (2026-08-25), which amends S6 from `9d22bc6a`.**
+   > **048 is assigned to `attribution_mode`** (repair of derived capture,
+   > `alembic/versions/048_attribution_mode.py`). **M-C, M-E, M-D, the `ADD COLUMN` trio and the
+   > rest shift by one slot: the lane now counts 9 rendezvous instead of 8.** M-G's rank
+   > does not move — it remains `046 = M-A + M-G`, first head.
    >
-   > **L'amendement DÉPLACE DES NUMÉROS, il ne relâche AUCUNE GARDE** : M-C et M-E restent des
-   > têtes **séparées** tant que S9 n'a pas **démontré l'indépendance de leurs downgrades** —
-   > pas « tant que S9 n'a pas conclu », qui serait satisfait par une conclusion négative et
-   > lèverait la séparation ; M-D reste **isolée**, la règle « jamais deux têtes en vol »
-   > tient, le critère **(c)** sur les downgrades indépendants tient. L'insertion
-   > ne coûte qu'une renumérotation documentaire parce que **S1** a fait passer le contrat DR en
-   > v5 unique à `alembic_head` **DÉRIVÉ** — une tête de plus ne réécrit plus `_expected_v4()`.
+   > **The amendment SHIFTS NUMBERS, it RELEASES NO GUARD WHATSOEVER**: M-C and M-E remain
+   > **separate** heads as long as S9 has not **demonstrated the independence of their downgrades** —
+   > not "as long as S9 has not concluded", which a negative conclusion would satisfy and
+   > would lift the separation; M-D remains **isolated**, the "never two heads in flight" rule
+   > holds, criterion **(c)** on independent downgrades holds. The insertion
+   > only costs a documentation renumbering because **S1** moved the DR contract to a
+   > single v5 **DERIVED** from `alembic_head` — one more head no longer rewrites `_expected_v4()`.
    >
-   > Le détail rang par rang vit dans `SEQUENCEMENT-2026-08-20-couloir-du-pin.md`, bloc
-   > d'amendement en tête ; **ne pas recopier ces numéros ici** — une seconde source de vérité
-   > ne divergerait qu'à la lecture. Ce qui les rendra faux : une tête consommée par un candidat
-   > hors dossier, ou une insertion signée.
-7. **Le nom de la colonne d'inactivité** — cette spec écrit `last_observed_at` parce que
-   c'est le nom employé par D5 et le `§0bis.4`. Si **M-A** la livre sous un autre nom, le
-   `§4` suit ce nom sans discuter : M-A fait foi sur ses propres colonnes.
-   *(Redite volontaire du point 3 : c'est l'endroit où un implémenteur regardera.)*
+   > The rank-by-rank detail lives in `SEQUENCEMENT-2026-08-20-couloir-du-pin.md`, amendment
+   > block at the top; **do not copy these numbers here** — a second source of truth
+   > would only drift on reading. What would make them false: a head consumed by a candidate
+   > outside the dossier, or a signed insertion.
+7. **The name of the inactivity column** — this spec writes `last_observed_at` because
+   that's the name used by D5 and `§0bis.4`. If **M-A** delivers it under a different name,
+   `§4` follows that name without argument: M-A is authoritative on its own columns.
+   *(Deliberate repeat of point 3: this is where an implementer will look.)*
 
 ---
 
-*Écrit le 2026-08-20 en Phase 0 — ZÉRO mutation. Aucune migration n'est écrite ici, et
-aucune ne doit l'être avant que le dossier de séquencement du couloir du pin (candidates
-046+) soit soumis et signé.*
+*Written on 2026-08-20 in Phase 0 — ZERO mutations. No migration is written here, and
+none should be until the pin lane sequencing dossier (candidates
+046+) is submitted and signed.*

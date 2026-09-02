@@ -1,55 +1,55 @@
-# Récupération contrôlée d’EXTRACT Dream
+# Controlled EXTRACT Dream recovery
 
-## Portée
+## Scope
 
-Ce runbook prépare la récupération des embeddings manquants et le canary Dream. Il ne doit pas être exécuté dans cette tâche.
+This runbook prepares the recovery of missing embeddings and the Dream canary. It must not be run within this task.
 
-## Propriétaire et cadence
+## Owner and cadence
 
-Brain operations possède `brain-v42-embedding-backfill.service`. Le timer prévu s’exécute chaque jour à 04:30 avec un lot maximal de 100 entités, par groupes de 20. Le service n’est pas installé ni activé par ce changement.
+Brain operations owns `brain-v42-embedding-backfill.service`. The planned timer runs every day at 04:30 with a maximum batch of 100 entities, in groups of 20. The service is neither installed nor enabled by this change.
 
-## Cause et stratégie de récupération
+## Cause and recovery strategy
 
-La barrière de déduplication EXTRACT refuse tout learning ou decision actif dont
-l’embedding est absent ou de norme inférieure ou égale à `1e-6` : un tel vecteur
-n’est pas comparable en cosinus. Historiquement, le worker de backfill ne
-sélectionnait et ne remplaçait que les valeurs `NULL`. Une valeur de norme nulle
-restait donc définitivement dans le corpus actif et faisait échouer chaque EXTRACT.
+The EXTRACT deduplication barrier refuses any active learning or decision whose
+embedding is missing or has a norm less than or equal to `1e-6`: such a vector
+is not comparable by cosine. Historically, the backfill worker only
+selected and replaced `NULL` values. A zero-norm value therefore
+stayed permanently in the active corpus and made every EXTRACT fail.
 
-Le backfill et ses métriques sélectionnent maintenant la même définition de
-non-comparabilité que la barrière Dream, et son compare-and-set remplace aussi
-un vecteur de norme nulle uniquement si `updated_at` est inchangé. La barrière
-reste fail-closed : si la réparation ne produit pas un corpus comparable,
-EXTRACT persiste une tentative `failed` avec une cause expurgée et ne crée ni
-n’applique de proposition.
+The backfill and its metrics now select the same definition of
+non-comparability as the Dream barrier, and its compare-and-set also replaces
+a zero-norm vector only if `updated_at` is unchanged. The barrier
+stays fail-closed: if the repair does not produce a comparable corpus,
+EXTRACT persists a `failed` attempt with a redacted cause and neither
+creates nor applies a proposal.
 
-Dans une fenêtre opérateur, contrôler le backlog sur une base isolée puis le
-résorber par lots bornés ; le second passage doit stocker zéro embedding. Le
-CLI lit `POSTGRES_URL` (et non `BRAIN_V42_TEST_DB_URL`). La séquence gardée
-ci-dessous est le seul chemin qui autorise `--execute` : elle lie le snapshot,
-valide une restauration isolée, puis lance le worker.
+Within an operator window, check the backlog on an isolated database then work it
+down in bounded batches; the second pass must store zero embeddings. The
+CLI reads `POSTGRES_URL` (not `BRAIN_V42_TEST_DB_URL`). The sequence kept
+below is the only path that authorizes `--execute`: it binds the snapshot,
+validates an isolated restore, then launches the worker.
 
-## Snapshot et rollback des écritures de backfill
+## Snapshot and rollback of backfill writes
 
-Le backfill remplace `embedding` et `updated_at` en place. Il ne possède ni
-journal des anciennes valeurs ni identifiant de lot persistant ; les métriques
-`embedding_backfill.*` sont agrégées. Sans snapshot antérieur, un rollback
-granulaire par learning ou decision est donc impossible. Ne pas prétendre
-reconstituer un ancien vecteur depuis le rapport du worker.
+The backfill replaces `embedding` and `updated_at` in place. It has neither a
+log of old values nor a persistent batch identifier; the
+`embedding_backfill.*` metrics are aggregated. Without a prior snapshot, a
+granular rollback per learning or decision is therefore impossible. Do not claim
+to reconstruct an old vector from the worker's report.
 
-Avant toute exécution `--execute`, identifier explicitement le scope
-(`project_key`, types, `limit`, date/heure) et réserver une base de
-restauration vide. Les URI ne doivent jamais être affichées. La garde canonise
-les identités avec `sqlalchemy.engine.make_url`, comme le résolveur Alembic :
-elle refuse tous les paramètres d’URI, qui pourraient redéfinir l’hôte, le
-port ou la base effectivement ouverte. Elle compare ensuite exactement
-`hôte/port/nom_de_base` de `POSTGRES_URL` et `BACKFILL_PGURL`.
+Before any `--execute` run, explicitly identify the scope
+(`project_key`, types, `limit`, date/time) and reserve an empty restore
+database. URIs must never be displayed. The guard canonicalizes the
+identities with `sqlalchemy.engine.make_url`, like the Alembic resolver:
+it rejects all URI parameters, which could redefine the host, the
+port or the effectively opened database. It then compares exactly
+the `host/port/database name` of `POSTGRES_URL` and `BACKFILL_PGURL`.
 
-`BACKFILL_RESTORE_PGURL` reste explicite, mais la garde vérifie qu’il vise
-exactement `BACKFILL_RESTORE_DB`, qu’il est distinct de la base opérée, et que
-son hôte/port est le même que l’URI d’administration passée à `createdb`. Le
-restore validé est donc un prérequis bloquant de `--execute`, non une étape
-facultative.
+`BACKFILL_RESTORE_PGURL` remains explicit, but the guard checks that it targets
+exactly `BACKFILL_RESTORE_DB`, that it is distinct from the operated database, and that
+its host/port is the same as the admin URI passed to `createdb`. The
+validated restore is therefore a blocking prerequisite of `--execute`, not an
+optional step.
 
 <!-- backfill-recovery-guard:start -->
 ```bash
@@ -62,8 +62,8 @@ set -euo pipefail
 : "${BACKFILL_RESTORE_ADMIN_PGURL:?URI libpq d’administration requise}"
 : "${BACKFILL_RESTORE_PGURL:?URI libpq de restauration requise}"
 
-# Ne journalise ni URI ni secret. Toute divergence sort avant pg_dump, pg_restore
-# et le worker. make_url rejette aussi les paramètres qui pourraient modifier la cible.
+# Logs neither URI nor secret. Any mismatch exits before pg_dump, pg_restore
+# and the worker. make_url also rejects parameters that could change the target.
 "${BACKFILL_PYTHON:-python}" - \
   "$POSTGRES_URL" "$BACKFILL_PGURL" "$BACKFILL_RESTORE_ADMIN_PGURL" \
   "$BACKFILL_RESTORE_PGURL" "$BACKFILL_RESTORE_DB" <<'PY'
@@ -108,8 +108,8 @@ pg_dump --format=custom --no-owner --file \
 pg_restore --list "$BACKFILL_SNAPSHOT_DIR/brain-pre-backfill.dump" >/dev/null
 sha256sum "$BACKFILL_SNAPSHOT_DIR/brain-pre-backfill.dump"
 
-# createdb échoue si le nom existe déjà : il ne peut donc pas restaurer par erreur
-# dans une base préexistante. Le contrôle SQL confirme la base isolée avant le worker.
+# createdb fails if the name already exists: it therefore cannot mistakenly restore
+# into a pre-existing database. The SQL check confirms the isolated database before the worker.
 createdb --maintenance-db="$BACKFILL_RESTORE_ADMIN_PGURL" -- "$BACKFILL_RESTORE_DB"
 pg_restore --no-owner --dbname="$BACKFILL_RESTORE_PGURL" \
   "$BACKFILL_SNAPSHOT_DIR/brain-pre-backfill.dump"
@@ -122,24 +122,24 @@ psql "$BACKFILL_RESTORE_PGURL" -v ON_ERROR_STOP=1 -v restore_db="$BACKFILL_RESTO
 ```
 <!-- backfill-recovery-guard:end -->
 
-Le reçu de hash, le scope, l’égalité d’identité et le restore isolé sont les
-prérequis de l’exécution. Au moindre échec du worker, de validation ou
-d’ambiguïté sur la cible, arrêter le canary et ne pas relancer `--execute` : la
-barrière Dream reste fail-closed.
+The hash receipt, the scope, the identity equality and the isolated restore are the
+prerequisites for execution. On the slightest failure of the worker, of validation
+or of ambiguity about the target, stop the canary and do not rerun `--execute`: the
+Dream barrier stays fail-closed.
 
-Une restitution de la base opérée exige une procédure de récupération base
-entière approuvée, writers arrêtés et le snapshot validé ci-dessus. Utiliser la
-base isolée restaurée comme preuve avant de préparer une base de remplacement
-selon la procédure DR approuvée ; ne jamais lancer `pg_restore` in-place sur la
-base opérée. Il n’existe pas de rollback granulaire par learning/decision, de
-commande sûre de restauration sélective native pour ce worker, ni de moyen de
-retrouver les anciens vecteurs sans le snapshot. Sans ces prérequis, s’arrêter
-plutôt que d’écraser des écritures concurrentes.
+Restoring the operated database requires an approved full-database recovery
+procedure, writers stopped and the snapshot validated above. Use the
+restored isolated database as proof before preparing a replacement database
+per the approved DR procedure; never run `pg_restore` in place on the
+operated database. There is no granular rollback per learning/decision, no
+safe native selective restore command for this worker, and no way to
+recover old vectors without the snapshot. Without these prerequisites, stop
+rather than overwrite concurrent writes.
 
-## Canary Dream
+## Dream canary
 
-Après l’application de la migration 038, exécuter deux fois EXTRACT en DRY avec
-une seule fenêtre :
+After applying migration 038, run EXTRACT twice in DRY with
+a single window:
 
 ```bash
 POSTGRES_URL=<url-asyncpg-base-isolee> \
@@ -147,11 +147,11 @@ POSTGRES_URL=<url-asyncpg-base-isolee> \
   python -m scripts.ticket_extract --limit 1
 ```
 
-Vérifier, pour chacun des deux passages, une ligne `dream_runs` terminale sans
-erreur, une tentative par ticket, aucune proposition appliquée (`--wet` absent)
-et un backlog learning/decision comparable nul. Augmenter seulement le nombre
-de tickets après deux canaries propres.
+Verify, for each of the two passes, a terminal `dream_runs` line with no
+error, one attempt per ticket, no applied proposal (`--wet` absent)
+and a comparable learning/decision backlog of zero. Only increase the number
+of tickets after two clean canaries.
 
-## Arrêt
+## Stop
 
-Arrêter le canary si le backfill renvoie une erreur, si un `dream_run` terminal manque, ou si une tentative contient une cause non expurgée. Ne pas activer le timer sans validation opérateur.
+Stop the canary if the backfill returns an error, if a terminal `dream_run` is missing, or if an attempt contains an unredacted cause. Do not enable the timer without operator validation.

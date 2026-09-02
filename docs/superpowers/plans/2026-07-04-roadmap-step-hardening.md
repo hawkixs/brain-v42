@@ -2,85 +2,86 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> Révision 2 (post-critique 3 juges) : flush stdout sous redirection (HIGH),
-> refresh des doublons pour que le flip WET ne soit pas inerte (HIGH),
-> dedup étendu aux `rejected` (MEDIUM ×2), tests RED de la boucle `_run`
-> et du câblage rotation (MEDIUM ×2), lignes >100 chars corrigées (HIGH CI),
-> accents dans les messages de commit, index [i/N] aussi sur les batches failed.
+> Revision 2 (post-review by 3 judges): stdout flush under redirection (HIGH),
+> refresh of duplicates so the WET flip isn't inert (HIGH), dedup extended to
+> `rejected` (MEDIUM x2), RED tests for the `_run` loop and the rotation
+> wiring (MEDIUM x2), lines >100 chars fixed (HIGH CI), accents in commit
+> messages, index [i/N] also on failed batches.
 
-**Goal:** Durcir le step roadmap du dream (proposer-only) suite aux 6 findings de la
-vérification du premier run dry (2026-07-04) : run à 597s/600s de budget, famine du
-cap alphabétique (3/26 projets servis, 16 jamais scannés), 25 % de proposals no-op,
-password PG en clair dans le log, doublons inter-nuits garantis, streak comptant les
-rows au lieu des nuits.
+**Goal:** Harden the dream's roadmap step (proposer-only) following the 6 findings
+from the verification of the first dry run (2026-07-04): run at 597s/600s of budget,
+starvation from the alphabetical cap (3/26 projects served, 16 never scanned), 25%
+no-op proposals, PG password in cleartext in the log, guaranteed inter-night
+duplicates, streak counting rows instead of nights.
 
-**Architecture:** Le CLI `scripts/roadmap_curate.py` garde sa forme (batch par projet,
-un appel LLM par projet, proposer-only). On y ajoute trois fonctions pures testables
-(`drop_noops`, `rotate_keys`, `batch_allowance`) et on restructure la boucle propose
-de `_run` en **persist incrémental** : chaque batch est validé/filtré/persisté dès
-son retour LLM, avec une ligne de progression flushée par batch — un timeout ne perd
-plus que le batch en cours, et le log reste diagnosticable. Le dedup inter-nuits
-retourne les ids des doublons `proposed` (refresh) pour que le futur wet nocturne
-applique aussi ce qui s'est accumulé en dry. Deux fixes ponctuels hors CLI :
-`_clean_dry_streak` (DISTINCT run_date) et le log d'init engine (password masqué).
-Le budget shell passe 10m→20m.
+**Architecture:** The `scripts/roadmap_curate.py` CLI keeps its shape (batch per
+project, one LLM call per project, proposer-only). We add three pure, testable
+functions (`drop_noops`, `rotate_keys`, `batch_allowance`) and restructure the
+propose loop of `_run` into **incremental persist**: each batch is
+validated/filtered/persisted as soon as it comes back from the LLM, with a
+progress line flushed per batch — a timeout now only loses the batch in
+progress, and the log stays diagnosable. The inter-night dedup returns the ids
+of `proposed` duplicates (refresh) so that the future nightly wet run also
+applies what has accumulated in dry. Two one-off fixes outside the CLI:
+`_clean_dry_streak` (DISTINCT run_date) and the engine-init log (masked
+password). The shell budget goes from 10m to 20m.
 
-**Tech Stack:** Python 3.12+ (venv local = uv py3.14), SQLAlchemy 2.0 async (mode
-`sa.text` + Table core dans scripts/), pytest + pytest-asyncio, structlog, bash
-(dream.sh), ruff + mypy.
+**Tech Stack:** Python 3.12+ (local venv = uv py3.14), SQLAlchemy 2.0 async
+(`sa.text` mode + Table core in scripts/), pytest + pytest-asyncio, structlog,
+bash (dream.sh), ruff + mypy.
 
 ## Global Constraints
 
-- **TDD obligatoire** : chaque étape de code suit Red → Green (test qui échoue AVANT l'implémentation). JAMAIS modifier un test existant pour faire passer du code — sauf changement de spec explicite (Task 7 : pin du timeout, précédent synth ≥15m).
-- **Commits atomiques Conventional Commits**, messages en français AVEC accents, comme l'historique (`dédup`, `hermétique`…).
-- **Vert avant chaque commit** : `env -u VIRTUAL_ENV uv run pytest tests/unit -q` + `env -u VIRTUAL_ENV uv run ruff check src/ tests/ scripts/` + `env -u VIRTUAL_ENV uv run ruff format --check src/ tests/ scripts/` + `env -u VIRTUAL_ENV uv run mypy src/`. Line-length ruff = 100 — passer `ruff format` sur les fichiers touchés avant le commit.
-- **`env -u VIRTUAL_ENV`** systématique devant `uv run` : le shell peut hériter d'un VIRTUAL_ENV d'un autre projet (incident 2026-07-04 — uv sync du mauvais venv). Ne JAMAIS utiliser `uv run --active`.
-- **mypy ne couvre PAS `scripts/`** (config projet) : dans les tests de scripts, suivre les conventions existantes de `tests/unit/test_roadmap_curate_apply.py` (`MagicMock(spec=AsyncSession)`, factories `@asynccontextmanager`).
-- **Deux jumeaux `persist_proposals`** existent : `scripts/ticket_extract.py` ET `scripts/roadmap_curate.py` (squelette copié). Ce plan ne touche QUE celui de `roadmap_curate.py`. Ne pas éditer `ticket_extract.py`.
-- **Tests pins à ne pas casser** : `tests/unit/test_dream_sh_roadmap.py` (mis à jour en Task 7 seulement), `tests/unit/test_dream_sh_phase_timeouts.py` (intouché — il ne pin que la PHASES array claude, pas le step roadmap).
-- Blast radius (GitNexus, vérifié) : `persist_proposals` (roadmap) → `_run` + tests apply ; `_clean_dry_streak` → `killswitch_state` → briefing (golden tests d'intégration `tests/integration/test_session_start_briefing.py` — ne pas les casser ; ils tournent seulement si la DB de test est up).
-- Ne PAS committer `AGENTS.md` / `CLAUDE.md` s'ils apparaissent modifiés (hors périmètre).
+- **TDD mandatory**: each code step follows Red → Green (a test that fails BEFORE the implementation). NEVER modify an existing test to make code pass — except for an explicit spec change (Task 7: pinning the timeout, synth precedent >=15m).
+- **Atomic commits, Conventional Commits**, messages in French WITH accents, as in the history (`dédup`, `hermétique`…).
+- **Green before every commit**: `env -u VIRTUAL_ENV uv run pytest tests/unit -q` + `env -u VIRTUAL_ENV uv run ruff check src/ tests/ scripts/` + `env -u VIRTUAL_ENV uv run ruff format --check src/ tests/ scripts/` + `env -u VIRTUAL_ENV uv run mypy src/`. ruff line-length = 100 — run `ruff format` on touched files before committing.
+- **`env -u VIRTUAL_ENV`** systematically in front of `uv run`: the shell can inherit a VIRTUAL_ENV from another project (incident 2026-07-04 — uv sync of the wrong venv). NEVER use `uv run --active`.
+- **mypy does NOT cover `scripts/`** (project config): in script tests, follow the existing conventions of `tests/unit/test_roadmap_curate_apply.py` (`MagicMock(spec=AsyncSession)`, `@asynccontextmanager` factories).
+- **Two `persist_proposals` twins** exist: `scripts/ticket_extract.py` AND `scripts/roadmap_curate.py` (copied skeleton). This plan touches ONLY the one in `roadmap_curate.py`. Do not edit `ticket_extract.py`.
+- **Test pins not to break**: `tests/unit/test_dream_sh_roadmap.py` (updated only in Task 7), `tests/unit/test_dream_sh_phase_timeouts.py` (untouched — it only pins the claude PHASES array, not the roadmap step).
+- Blast radius (GitNexus, verified): `persist_proposals` (roadmap) → `_run` + apply tests; `_clean_dry_streak` → `killswitch_state` → briefing (golden integration tests `tests/integration/test_session_start_briefing.py` — do not break them; they only run if the test DB is up).
+- Do NOT commit `AGENTS.md` / `CLAUDE.md` if they appear modified (out of scope).
 
 ## File Structure
 
-| Fichier | Rôle dans ce chantier |
+| File | Role in this project |
 |---|---|
-| `src/brain_v42/services/dream_run_service.py` | Task 1 — streak DISTINCT run_date (méthode `_clean_dry_streak`, lignes ~118-137) |
-| `tests/unit/services/test_dream_run_service.py` | Task 1 — nouveau test streak même-date |
-| `src/brain_v42/db/engine.py` | Task 2 — masquage password ligne 48 |
-| `tests/unit/db/test_engine.py` | Task 2 — test capture_logs |
-| `scripts/roadmap_curate.py` | Tasks 3-6 — `drop_noops`, `PersistResult` + dedup, `rotate_keys`, `batch_allowance`, boucle `_run` incrémentale |
-| `tests/unit/test_roadmap_curate.py` | Tasks 3, 5, 6 — tests fonctions pures + câblage rotation + boucle `_run` |
-| `tests/unit/test_roadmap_curate_apply.py` | Task 4 — tests dedup persist (fichier des tests « apply/persist ») |
-| `scripts/dream.sh` | Task 7 — `timeout 10m` → `timeout 20m` (ligne ~535) |
-| `tests/unit/test_dream_sh_roadmap.py` | Task 7 — pin mis à jour |
+| `src/brain_v42/services/dream_run_service.py` | Task 1 — streak DISTINCT run_date (`_clean_dry_streak` method, lines ~118-137) |
+| `tests/unit/services/test_dream_run_service.py` | Task 1 — new same-day streak test |
+| `src/brain_v42/db/engine.py` | Task 2 — password masking, line 48 |
+| `tests/unit/db/test_engine.py` | Task 2 — capture_logs test |
+| `scripts/roadmap_curate.py` | Tasks 3-6 — `drop_noops`, `PersistResult` + dedup, `rotate_keys`, `batch_allowance`, incremental `_run` loop |
+| `tests/unit/test_roadmap_curate.py` | Tasks 3, 5, 6 — pure function tests + rotation wiring + `_run` loop |
+| `tests/unit/test_roadmap_curate_apply.py` | Task 4 — dedup persist tests ("apply/persist" test file) |
+| `scripts/dream.sh` | Task 7 — `timeout 10m` → `timeout 20m` (line ~535) |
+| `tests/unit/test_dream_sh_roadmap.py` | Task 7 — updated pin |
 
-Ordre d'exécution : 1 → 2 → 3 → 4 → 5 → 6 → 7. Les tasks 1 et 2 sont
-indépendantes de tout. Les tasks 3-4 livrent des briques branchées a minima ;
-la task 6 restructure la boucle en s'appuyant sur 3+4+5. La task 7 est du shell pur.
+Execution order: 1 → 2 → 3 → 4 → 5 → 6 → 7. Tasks 1 and 2 are independent of
+everything. Tasks 3-4 deliver bricks wired in minimally; task 6 restructures
+the loop building on 3+4+5. Task 7 is pure shell.
 
 ---
 
-### Task 1: Streak clean-dry — compter les nuits distinctes
+### Task 1: Clean-dry streak — count distinct nights
 
-Le streak compte aujourd'hui les **rows** `done+dry` ; un run manuel le même jour
-que la nightly compte donc comme une « nuit » de plus. Critère de flip WET faussé.
-Fix : `COUNT(DISTINCT run_date)`.
+Today the streak counts `done+dry` **rows**; a manual run on the same day as
+the nightly one therefore counts as one more "night". Skewed WET flip
+criterion. Fix: `COUNT(DISTINCT run_date)`.
 
 **Files:**
-- Modify: `src/brain_v42/services/dream_run_service.py:128-137` (méthode `DreamRunService._clean_dry_streak`)
-- Test: `tests/unit/services/test_dream_run_service.py` (classe `TestKillswitchState`)
+- Modify: `src/brain_v42/services/dream_run_service.py:128-137` (method `DreamRunService._clean_dry_streak`)
+- Test: `tests/unit/services/test_dream_run_service.py` (class `TestKillswitchState`)
 
 **Interfaces:**
-- Consumes: rien (task feuille).
-- Produces: `_clean_dry_streak` garde sa signature `(self, session, phase: str) -> int` — seule la sémantique du COUNT change (nuits distinctes).
+- Consumes: nothing (leaf task).
+- Produces: `_clean_dry_streak` keeps its signature `(self, session, phase: str) -> int` — only the semantics of the COUNT change (distinct nights).
 
-- [ ] **Step 1: Écrire le test qui échoue**
+- [ ] **Step 1: Write the failing test**
 
-Dans `tests/unit/services/test_dream_run_service.py`, ajouter à la classe
-`TestKillswitchState` (après `test_roadmap_enabled_dry_with_streak`, ligne ~180),
-en réutilisant le helper `_insert_run` du module (kwargs : `run_date`, `phase`,
-`status`, `phase_dry_run`) :
+In `tests/unit/services/test_dream_run_service.py`, add to the
+`TestKillswitchState` class (after `test_roadmap_enabled_dry_with_streak`, line ~180),
+reusing the module's `_insert_run` helper (kwargs: `run_date`, `phase`,
+`status`, `phase_dry_run`):
 
 ```python
     @pytest.mark.asyncio
@@ -96,15 +97,15 @@ en réutilisant le helper `_insert_run` du module (kwargs : `run_date`, `phase`,
         assert state.roadmap_clean_dry_nights == 1
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `env -u VIRTUAL_ENV uv run pytest tests/unit/services/test_dream_run_service.py::TestKillswitchState::test_streak_counts_distinct_nights_not_rows -v`
-Expected: FAIL — `assert 2 == 1` (le COUNT actuel compte les deux rows).
+Expected: FAIL — `assert 2 == 1` (the current COUNT counts both rows).
 
-- [ ] **Step 3: Implémentation minimale**
+- [ ] **Step 3: Minimal implementation**
 
-Dans `src/brain_v42/services/dream_run_service.py`, méthode `_clean_dry_streak`,
-remplacer :
+In `src/brain_v42/services/dream_run_service.py`, method `_clean_dry_streak`,
+replace:
 
 ```python
         stmt = (
@@ -116,11 +117,11 @@ remplacer :
         )
 ```
 
-par :
+with:
 
 ```python
-        # DISTINCT run_date : un re-run manuel le même jour n'est pas une
-        # « nuit » de plus (finding vérification roadmap 2026-07-04).
+        # DISTINCT run_date: a manual re-run on the same day is not one
+        # more "night" (finding, roadmap verification, 2026-07-04).
         stmt = (
             sa.select(sa.func.count(sa.func.distinct(t.c.run_date)))
             .select_from(t)
@@ -130,10 +131,10 @@ par :
         )
 ```
 
-- [ ] **Step 4: Vérifier le vert (test neuf + non-régression du module)**
+- [ ] **Step 4: Verify green (new test + module non-regression)**
 
 Run: `env -u VIRTUAL_ENV uv run pytest tests/unit/services/test_dream_run_service.py -v`
-Expected: PASS partout (les tests existants insèrent 1 row/date → inchangés).
+Expected: PASS everywhere (existing tests insert 1 row/date → unchanged).
 
 - [ ] **Step 5: Gates + commit**
 
@@ -147,24 +148,24 @@ git commit -m "fix(dream): streak clean-dry compte les nuits distinctes, pas les
 
 ---
 
-### Task 2: Masquer le password PG dans le log d'init engine
+### Task 2: Mask the PG password in the engine-init log
 
-`engine.py:48` logge `settings.postgres_url` brut → `postgresql+asyncpg://brain:brain@…`
-atterrit dans `logs/dream/*_roadmap.log` (et partout ailleurs). Fix : logger l'URL
-rendue par SQLAlchemy avec `hide_password=True`.
+`engine.py:48` logs the raw `settings.postgres_url` → `postgresql+asyncpg://brain:brain@…`
+ends up in `logs/dream/*_roadmap.log` (and everywhere else). Fix: log the URL
+rendered by SQLAlchemy with `hide_password=True`.
 
 **Files:**
 - Modify: `src/brain_v42/db/engine.py:48`
 - Test: `tests/unit/db/test_engine.py`
 
 **Interfaces:**
-- Consumes: rien.
-- Produces: rien (changement de contenu de log uniquement).
+- Consumes: nothing.
+- Produces: nothing (log content change only).
 
-- [ ] **Step 1: Écrire le test qui échoue**
+- [ ] **Step 1: Write the failing test**
 
-Dans `tests/unit/db/test_engine.py` (les fixtures autouse `reset_engine_singletons`
-et `mock_settings` s'appliquent déjà), ajouter en fin de fichier :
+In `tests/unit/db/test_engine.py` (the autouse fixtures `reset_engine_singletons`
+and `mock_settings` already apply), add at the end of the file:
 
 ```python
 def test_engine_log_masks_password(mock_settings):
@@ -183,20 +184,20 @@ def test_engine_log_masks_password(mock_settings):
     assert "***" in created[0]["url"]
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `env -u VIRTUAL_ENV uv run pytest tests/unit/db/test_engine.py::test_engine_log_masks_password -v`
 Expected: FAIL — `assert 's3cret' not in 'postgresql+asyncpg://brain:s3cret@…'`.
 
-- [ ] **Step 3: Implémentation minimale**
+- [ ] **Step 3: Minimal implementation**
 
-Dans `src/brain_v42/db/engine.py`, remplacer la ligne 48 :
+In `src/brain_v42/db/engine.py`, replace line 48:
 
 ```python
         logger.info("SQLAlchemy async engine created", url=settings.postgres_url)
 ```
 
-par :
+with:
 
 ```python
         logger.info(
@@ -205,13 +206,13 @@ par :
         )
 ```
 
-(`AsyncEngine.url` est un `sqlalchemy.URL` ; `render_as_string(hide_password=True)`
-rend `postgresql+asyncpg://brain:***@localhost:5433/brain`.)
+(`AsyncEngine.url` is a `sqlalchemy.URL`; `render_as_string(hide_password=True)`
+renders `postgresql+asyncpg://brain:***@localhost:5433/brain`.)
 
-- [ ] **Step 4: Vérifier le vert**
+- [ ] **Step 4: Verify green**
 
 Run: `env -u VIRTUAL_ENV uv run pytest tests/unit/db/test_engine.py -v`
-Expected: PASS partout.
+Expected: PASS everywhere.
 
 - [ ] **Step 5: Gates + commit**
 
@@ -225,28 +226,28 @@ git commit -m "fix(db): masquer le password PG dans le log d'init engine"
 
 ---
 
-### Task 3: `drop_noops` — écarter les proposals sans effet
+### Task 3: `drop_noops` — discard proposals without effect
 
-Premier run réel : 8 proposals `status` deployed→deployed + 2 `rename` identiques au
-nom courant = 25 % du cap brûlé. `parse_and_validate` valide la *forme* ; on ajoute un
-filtre *d'effet* appliqué après validation, par batch, avec log du drop (jamais
-silencieux). On ne lève PAS d'erreur (une erreur déclencherait le re-prompt correctif
-LLM — gaspillage pour un no-op).
+First real run: 8 `status` deployed→deployed proposals + 2 `rename` proposals
+identical to the current name = 25% of the cap burned. `parse_and_validate`
+validates the *shape*; we add an *effect* filter applied after validation, per
+batch, with a log of the drop (never silent). We do NOT raise an error (an
+error would trigger the LLM's corrective re-prompt — a waste for a no-op).
 
 **Files:**
-- Modify: `scripts/roadmap_curate.py` (nouvelle fonction après `parse_and_validate`, ligne ~221 ; branchement dans la boucle d'agrégation de `_run`, lignes ~676-688)
-- Test: `tests/unit/test_roadmap_curate.py` (nouvelle classe `TestDropNoops`)
+- Modify: `scripts/roadmap_curate.py` (new function after `parse_and_validate`, line ~221; wired into the `_run` aggregation loop, lines ~676-688)
+- Test: `tests/unit/test_roadmap_curate.py` (new class `TestDropNoops`)
 
 **Interfaces:**
-- Consumes: `CurationDraft`, `ProjectBatch`, `FeatureCard` (dataclasses existantes du module).
-- Produces: `drop_noops(drafts: list[CurationDraft], batch: ProjectBatch) -> tuple[list[CurationDraft], list[CurationDraft]]` — retourne `(kept, dropped)`. La Task 6 rebranche cet appel dans la boucle incrémentale.
+- Consumes: `CurationDraft`, `ProjectBatch`, `FeatureCard` (existing module dataclasses).
+- Produces: `drop_noops(drafts: list[CurationDraft], batch: ProjectBatch) -> tuple[list[CurationDraft], list[CurationDraft]]` — returns `(kept, dropped)`. Task 6 rewires this call into the incremental loop.
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
-Dans `tests/unit/test_roadmap_curate.py`, ajouter la classe (compléter l'import
-top-level `from scripts.roadmap_curate import …` avec `drop_noops` — et
-`CurationDraft`, `FeatureCard`, `ProjectBatch`, `from uuid import UUID` s'ils
-manquent) :
+In `tests/unit/test_roadmap_curate.py`, add the class (complete the top-level
+import `from scripts.roadmap_curate import …` with `drop_noops` — and
+`CurationDraft`, `FeatureCard`, `ProjectBatch`, `from uuid import UUID` if they
+are missing):
 
 ```python
 class TestDropNoops:
@@ -305,15 +306,15 @@ class TestDropNoops:
         assert len(kept) == 2 and dropped == []
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `env -u VIRTUAL_ENV uv run pytest tests/unit/test_roadmap_curate.py::TestDropNoops -v`
 Expected: FAIL — `ImportError: cannot import name 'drop_noops'`.
 
-- [ ] **Step 3: Implémentation minimale**
+- [ ] **Step 3: Minimal implementation**
 
-Dans `scripts/roadmap_curate.py`, juste après la fin de `parse_and_validate`
-(après la ligne `return drafts`, ~221) :
+In `scripts/roadmap_curate.py`, right after the end of `parse_and_validate`
+(after the `return drafts` line, ~221):
 
 ```python
 def drop_noops(
@@ -340,15 +341,15 @@ def drop_noops(
     return kept, dropped
 ```
 
-- [ ] **Step 4: Vérifier le vert**
+- [ ] **Step 4: Verify green**
 
 Run: `env -u VIRTUAL_ENV uv run pytest tests/unit/test_roadmap_curate.py -v`
-Expected: PASS partout.
+Expected: PASS everywhere.
 
-- [ ] **Step 5: Brancher dans `_run` (boucle d'agrégation actuelle)**
+- [ ] **Step 5: Wire into `_run` (current aggregation loop)**
 
-Dans `scripts/roadmap_curate.py`, boucle `for outcome in outcomes:` (~ligne 679),
-remplacer :
+In `scripts/roadmap_curate.py`, loop `for outcome in outcomes:` (~line 679),
+replace:
 
 ```python
         if not outcome.drafts:
@@ -356,7 +357,7 @@ remplacer :
         all_drafts.extend(outcome.drafts)
 ```
 
-par :
+with:
 
 ```python
         kept, noops = drop_noops(outcome.drafts, outcome.batch)
@@ -367,10 +368,10 @@ par :
         all_drafts.extend(kept)
 ```
 
-- [ ] **Step 6: Re-vérifier le vert complet**
+- [ ] **Step 6: Re-verify full green**
 
 Run: `env -u VIRTUAL_ENV uv run pytest tests/unit -q`
-Expected: PASS (aucun test existant ne pin le comportement no-op).
+Expected: PASS (no existing test pins the no-op behavior).
 
 - [ ] **Step 7: Gates + commit**
 
@@ -384,30 +385,31 @@ git commit -m "feat(roadmap): drop des proposals no-op (status/rename sans effet
 
 ---
 
-### Task 4: Dedup inter-nuits dans `persist_proposals` (roadmap)
+### Task 4: Inter-night dedup in `persist_proposals` (roadmap)
 
-En dry, les features ne bougent pas → chaque nuit ré-insère ~40 proposals quasi
-identiques. Fix : avant chaque INSERT, chercher une row identique
-(op + feature_id + payload, égalité JSONB sémantique) en statut `proposed` OU
-`rejected` :
+In dry mode, features don't move → every night re-inserts ~40 near-identical
+proposals. Fix: before each INSERT, look for an identical row
+(op + feature_id + payload, semantic JSONB equality) with status `proposed` OR
+`rejected`:
 
-- doublon `proposed` → skip l'INSERT mais **retourner son id** (« refreshed ») —
-  sans ça, le futur flip WET serait inerte : le wet n'applique que les ids du run,
-  et le dedup empêcherait les proposals accumulées en dry d'y figurer ;
-- doublon `rejected` → skip définitif (une proposal rejetée en review ne doit pas
-  ressusciter à chaque cycle de rotation), compté pour le log.
+- `proposed` duplicate → skip the INSERT but **return its id** ("refreshed") —
+  without this, the future WET flip would be inert: wet only applies the run's
+  ids, and dedup would prevent proposals accumulated in dry from showing up
+  there;
+- `rejected` duplicate → skip for good (a proposal rejected in review must not
+  resurrect on every rotation cycle), counted for the log.
 
-Le retour devient un `PersistResult` (dataclass, style du module).
+The return value becomes a `PersistResult` (dataclass, module style).
 
-⚠️ **Uniquement `scripts/roadmap_curate.py`** — ne pas toucher le jumeau de
+⚠️ **`scripts/roadmap_curate.py` ONLY** — do not touch the twin in
 `scripts/ticket_extract.py`.
 
 **Files:**
-- Modify: `scripts/roadmap_curate.py:351-373` (fonction `persist_proposals` + nouvelle dataclass `PersistResult`) + call site dans `_run` (~ligne 699) + bloc wet (~ligne 708)
-- Test: `tests/unit/test_roadmap_curate_apply.py` (classe `TestPersistProposals`)
+- Modify: `scripts/roadmap_curate.py:351-373` (function `persist_proposals` + new dataclass `PersistResult`) + call site in `_run` (~line 699) + wet block (~line 708)
+- Test: `tests/unit/test_roadmap_curate_apply.py` (class `TestPersistProposals`)
 
 **Interfaces:**
-- Consumes: `CurationDraft`, table `roadmap_curation_proposals` (import function-local existant).
+- Consumes: `CurationDraft`, table `roadmap_curation_proposals` (existing function-local import).
 - Produces:
   ```python
   @dataclass
@@ -416,18 +418,18 @@ Le retour devient un `PersistResult` (dataclass, style du module).
       refreshed: list[int]       # ids des doublons 'proposed' re-proposés ce run
       rejected_skipped: int      # doublons 'rejected' écartés
   ```
-  `persist_proposals(session_factory, drafts) -> PersistResult`. La Task 6 s'appuie
-  sur ce retour ; le wet applique `inserted + refreshed`.
+  `persist_proposals(session_factory, drafts) -> PersistResult`. Task 6 builds on
+  this return value; wet applies `inserted + refreshed`.
 
-- [ ] **Step 1: Adapter le test existant + écrire les tests dedup (RED)**
+- [ ] **Step 1: Adapt the existing test + write dedup tests (RED)**
 
-Dans `tests/unit/test_roadmap_curate_apply.py` : ajouter `CurationDraft` et
-`PersistResult` à l'import top-level existant
-(`from scripts.roadmap_curate import apply_proposals, persist_proposals`), puis
-dans la classe `TestPersistProposals` :
+In `tests/unit/test_roadmap_curate_apply.py`: add `CurationDraft` and
+`PersistResult` to the existing top-level import
+(`from scripts.roadmap_curate import apply_proposals, persist_proposals`), then
+in the `TestPersistProposals` class:
 
-1. Adapter le test existant au nouveau retour (changement de spec assumé,
-   même commit que l'implémentation) :
+1. Adapt the existing test to the new return value (spec change accepted,
+   same commit as the implementation):
 
 ```python
     @pytest.mark.asyncio
@@ -438,9 +440,9 @@ dans la classe `TestPersistProposals` :
         factory.assert_not_called()
 ```
 
-2. Ajouter (en réutilisant les helpers du module `_session_with` et le style
-   `MagicMock(spec=AsyncSession)` ; les résultats du SELECT dedup exposent
-   `.first()`) :
+2. Add (reusing the module's `_session_with` helpers and the
+   `MagicMock(spec=AsyncSession)` style; the dedup SELECT results expose
+   `.first()`):
 
 ```python
     @pytest.mark.asyncio
@@ -477,20 +479,20 @@ dans la classe `TestPersistProposals` :
         assert session.execute.await_count == 2  # SELECT + INSERT
 ```
 
-(Vérifier la forme exacte de `_session_with` / `_scalar_one` en tête du fichier —
-`_scalar_one(7)` doit fournir `.scalar_one()` ; si le helper diffère, construire le
-mock inline dans le même style.)
+(Check the exact shape of `_session_with` / `_scalar_one` at the top of the
+file — `_scalar_one(7)` must provide `.scalar_one()`; if the helper differs,
+build the mock inline in the same style.)
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `env -u VIRTUAL_ENV uv run pytest "tests/unit/test_roadmap_curate_apply.py::TestPersistProposals" -v`
 Expected: FAIL — `ImportError: cannot import name 'PersistResult'`.
 
-- [ ] **Step 3: Implémentation**
+- [ ] **Step 3: Implementation**
 
-Dans `scripts/roadmap_curate.py` :
+In `scripts/roadmap_curate.py`:
 
-1. Dataclass, à placer avec les autres (`BatchOutcome`, ~ligne 118) :
+1. Dataclass, placed with the others (`BatchOutcome`, ~line 118):
 
 ```python
 @dataclass
@@ -502,7 +504,7 @@ class PersistResult:
     rejected_skipped: int = 0
 ```
 
-2. Remplacer `persist_proposals` en entier :
+2. Replace `persist_proposals` entirely:
 
 ```python
 async def persist_proposals(session_factory: Any, drafts: list[CurationDraft]) -> PersistResult:
@@ -531,8 +533,8 @@ async def persist_proposals(session_factory: Any, drafts: list[CurationDraft]) -
                         t.c.payload == draft.payload,
                         t.c.status.in_(("proposed", "rejected")),
                     )
-                    # asc : 'proposed' < 'rejected' — si les deux existent,
-                    # le refresh gagne sur le skip définitif.
+                    # asc: 'proposed' < 'rejected' — if both exist,
+                    # the refresh wins over the permanent skip.
                     .order_by(t.c.status)
                     .limit(1)
                 )
@@ -559,13 +561,13 @@ async def persist_proposals(session_factory: Any, drafts: list[CurationDraft]) -
     return result
 ```
 
-3. Adapter le call site dans `_run` (~ligne 699) — remplacer :
+3. Adapt the call site in `_run` (~line 699) — replace:
 
 ```python
     proposal_ids = await persist_proposals(sf, all_drafts)
 ```
 
-par :
+with:
 
 ```python
     res = await persist_proposals(sf, all_drafts)
@@ -576,11 +578,11 @@ par :
         print(f"~ {res.rejected_skipped} déjà rejetées — non ré-insérées")
 ```
 
-4. Adapter le bloc wet (~ligne 708) — le wet applique insérées + rafraîchies :
+4. Adapt the wet block (~line 708) — wet applies inserted + refreshed:
 
 ```python
-    # --wet: apply du run (insérées + rafraîchies — sans les rafraîchies, le
-    # dedup rendrait le flip WET inerte). Restreint aux ops sûres.
+    # --wet: apply the run (inserted + refreshed — without the refreshed, the
+    # dedup would make the WET flip inert). Restricted to safe ops.
     if args.wet and (proposal_ids or res.refreshed):
         applied = await apply_proposals(
             sf, proposal_ids + res.refreshed, allowed_ops=WET_APPLYABLE_OPS
@@ -588,10 +590,10 @@ par :
         print(f"wet: {applied} appliqués (ops {WET_APPLYABLE_OPS})")
 ```
 
-- [ ] **Step 4: Vérifier le vert**
+- [ ] **Step 4: Verify green**
 
 Run: `env -u VIRTUAL_ENV uv run pytest tests/unit/test_roadmap_curate_apply.py tests/unit/test_roadmap_curate.py -v`
-Expected: PASS partout.
+Expected: PASS everywhere.
 
 - [ ] **Step 5: Gates + commit**
 
@@ -606,26 +608,26 @@ git commit -m "feat(roadmap): dédup inter-nuits — refresh des proposed, skip 
 
 ---
 
-### Task 5: Rotation déterministe des projets scannés
+### Task 5: Deterministic rotation of scanned projects
 
-`_KEYS_SQL` fait `ORDER BY project_key LIMIT 10` : les 10 premiers projets
-alphabétiques sont scannés chaque nuit, les 16 autres jamais. Fix : fenêtre
-glissante déterministe par jour — on récupère TOUTES les clés, on tourne de
-`limit` positions par jour (`toordinal()`), cycle complet en ⌈n/limit⌉ nuits.
+`_KEYS_SQL` does `ORDER BY project_key LIMIT 10`: the 10 alphabetically first
+projects are scanned every night, the other 16 never. Fix: a deterministic
+sliding window per day — fetch ALL keys, rotate by `limit` positions per day
+(`toordinal()`), full cycle in ⌈n/limit⌉ nights.
 
 **Files:**
-- Modify: `scripts/roadmap_curate.py` (`_KEYS_SQL` ~ligne 226, `fetch_project_batches` ~ligne 265, nouvelle fonction `rotate_keys`)
+- Modify: `scripts/roadmap_curate.py` (`_KEYS_SQL` ~line 226, `fetch_project_batches` ~line 265, new function `rotate_keys`)
 - Test: `tests/unit/test_roadmap_curate.py` (classes `TestRotateKeys` + `TestFetchRotationWiring`)
 
 **Interfaces:**
-- Consumes: rien.
-- Produces: `rotate_keys(keys: list[str], limit: int, day_ordinal: int) -> list[str]` ; `fetch_project_batches(session_factory, limit, day_ordinal: int | None = None)` — signature étendue, rétro-compatible (None → `date.today().toordinal()`).
+- Consumes: nothing.
+- Produces: `rotate_keys(keys: list[str], limit: int, day_ordinal: int) -> list[str]`; `fetch_project_batches(session_factory, limit, day_ordinal: int | None = None)` — extended, backward-compatible signature (None → `date.today().toordinal()`).
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
-Dans `tests/unit/test_roadmap_curate.py` (compléter l'import top-level avec
-`rotate_keys` et `fetch_project_batches` ; il faut aussi `AsyncMock`, `MagicMock`,
-`asynccontextmanager`, `AsyncSession` — vérifier ce que le fichier importe déjà) :
+In `tests/unit/test_roadmap_curate.py` (complete the top-level import with
+`rotate_keys` and `fetch_project_batches`; also need `AsyncMock`, `MagicMock`,
+`asynccontextmanager`, `AsyncSession` — check what the file already imports):
 
 ```python
 class TestRotateKeys:
@@ -677,21 +679,21 @@ class TestFetchRotationWiring:
 
         batches = await fetch_project_batches(factory, limit=2, day_ordinal=1)
         assert batches == []  # features vides → batchs skippés
-        # offset = (1*2) % 3 = 2 → fenêtre rotée = ['c', 'a']
+        # offset = (1*2) % 3 = 2 → rotated window = ['c', 'a']
         feature_calls = session.execute.await_args_list[1:]
         assert [call.args[1]["pk"] for call in feature_calls] == ["c", "a"]
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `env -u VIRTUAL_ENV uv run pytest tests/unit/test_roadmap_curate.py::TestRotateKeys tests/unit/test_roadmap_curate.py::TestFetchRotationWiring -v`
 Expected: FAIL — `ImportError: cannot import name 'rotate_keys'`.
 
-- [ ] **Step 3: Implémentation**
+- [ ] **Step 3: Implementation**
 
-Dans `scripts/roadmap_curate.py` :
+In `scripts/roadmap_curate.py`:
 
-1. `_KEYS_SQL` perd sa LIMIT (remplacer la constante entière) :
+1. `_KEYS_SQL` loses its LIMIT (replace the entire constant):
 
 ```python
 _KEYS_SQL = """
@@ -701,7 +703,7 @@ ORDER BY project_key
 """
 ```
 
-2. Nouvelle fonction pure juste au-dessus de `fetch_project_batches` :
+2. New pure function right above `fetch_project_batches`:
 
 ```python
 def rotate_keys(keys: list[str], limit: int, day_ordinal: int) -> list[str]:
@@ -720,8 +722,8 @@ def rotate_keys(keys: list[str], limit: int, day_ordinal: int) -> list[str]:
     return rotated[:limit]
 ```
 
-3. `fetch_project_batches` — nouvelle signature et sélection des clés
-(remplacer la signature et la ligne `keys = …`) :
+3. `fetch_project_batches` — new signature and key selection
+(replace the signature and the `keys = …` line):
 
 ```python
 async def fetch_project_batches(
@@ -739,13 +741,13 @@ async def fetch_project_batches(
         keys = rotate_keys(all_keys, limit, day_ordinal)
 ```
 
-(le reste du corps — boucle `for pk in keys:` — est inchangé ; le paramètre
-`{"lim": limit}` de l'ancien execute disparaît avec la LIMIT).
+(the rest of the body — the `for pk in keys:` loop — is unchanged; the
+`{"lim": limit}` parameter of the old execute disappears along with the LIMIT).
 
-- [ ] **Step 4: Vérifier le vert**
+- [ ] **Step 4: Verify green**
 
 Run: `env -u VIRTUAL_ENV uv run pytest tests/unit/test_roadmap_curate.py tests/unit/test_roadmap_curate_apply.py -v`
-Expected: PASS partout.
+Expected: PASS everywhere.
 
 - [ ] **Step 5: Gates + commit**
 
@@ -760,29 +762,29 @@ git commit -m "feat(roadmap): rotation déterministe des projets scannés par nu
 
 ---
 
-### Task 6: Fair-share du cap + persist incrémental + progression par batch
+### Task 6: Fair-share of the cap + incremental persist + per-batch progress
 
-Le cœur du durcissement. Aujourd'hui : tous les appels LLM d'abord, troncature
-globale `[:40]` en ordre alphabétique (3/26 projets servis), persist unique à la
-fin (un timeout perd TOUT), zéro log de progression (un timeout laisse un log
-vide). Après : une seule boucle — chaque batch est curé, filtré (no-ops), plafonné
-à sa part équitable du cap restant, persisté (dedup), loggé avec timing **et
-`flush=True`** (stdout est block-bufferisé sous la redirection `>>` de dream.sh —
-sans flush, un SIGTERM du timeout perdrait toutes les lignes de progression, le
-finding resterait raté pile dans le cas visé). Le cap épuisé interrompt la boucle
-(plus d'appels LLM inutiles).
+The core of the hardening. Today: all LLM calls happen first, global
+alphabetical-order truncation `[:40]` (3/26 projects served), a single persist
+at the end (a timeout loses EVERYTHING), zero progress log (a timeout leaves an
+empty log). After: a single loop — each batch is curated, filtered (no-ops),
+capped at its fair share of the remaining cap, persisted (dedup), logged with
+timing **and `flush=True`** (stdout is block-buffered under dream.sh's `>>`
+redirection — without flush, a timeout SIGTERM would lose every progress line,
+and the finding would go unnoticed in exactly the case it targets). An
+exhausted cap breaks the loop (no more useless LLM calls).
 
 **Files:**
-- Modify: `scripts/roadmap_curate.py` — nouvelle fonction `batch_allowance` + restructuration du bloc propose de `_run` (lignes ~652-717)
+- Modify: `scripts/roadmap_curate.py` — new function `batch_allowance` + restructuring of the `_run` propose block (lines ~652-717)
 - Test: `tests/unit/test_roadmap_curate.py` (classes `TestBatchAllowance` + `TestRunProposeLoop`)
 
 **Interfaces:**
 - Consumes: `drop_noops` (Task 3), `persist_proposals -> PersistResult` (Task 4), `fetch_project_batches(sf, limit, day_ordinal)` (Task 5), `curate_batch`, `record_dream_run`, `MAX_PROPOSALS_PER_NIGHT`.
-- Produces: `batch_allowance(remaining_cap: int, remaining_batches: int) -> int` ; format de log par batch `[i/N] <project>: …` flushé (le morning-check lira ces lignes — les batches failed gardent leur index `! [i/N] … failed:`).
+- Produces: `batch_allowance(remaining_cap: int, remaining_batches: int) -> int`; per-batch log format `[i/N] <project>: …` flushed (the morning-check will read these lines — failed batches keep their index `! [i/N] … failed:`).
 
-- [ ] **Step 1: Écrire les tests qui échouent (fonction pure)**
+- [ ] **Step 1: Write the failing tests (pure function)**
 
-Dans `tests/unit/test_roadmap_curate.py` (ajouter `batch_allowance` à l'import) :
+In `tests/unit/test_roadmap_curate.py` (add `batch_allowance` to the import):
 
 ```python
 class TestBatchAllowance:
@@ -802,14 +804,14 @@ class TestBatchAllowance:
         assert batch_allowance(10, 0) == 0
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `env -u VIRTUAL_ENV uv run pytest tests/unit/test_roadmap_curate.py::TestBatchAllowance -v`
 Expected: FAIL — `ImportError: cannot import name 'batch_allowance'`.
 
-- [ ] **Step 3: Implémenter `batch_allowance`**
+- [ ] **Step 3: Implement `batch_allowance`**
 
-Dans `scripts/roadmap_curate.py`, sous `rotate_keys` :
+In `scripts/roadmap_curate.py`, under `rotate_keys`:
 
 ```python
 def batch_allowance(remaining_cap: int, remaining_batches: int) -> int:
@@ -826,12 +828,12 @@ def batch_allowance(remaining_cap: int, remaining_batches: int) -> int:
 
 Run: `env -u VIRTUAL_ENV uv run pytest tests/unit/test_roadmap_curate.py::TestBatchAllowance -v` → PASS.
 
-- [ ] **Step 4: Écrire les tests RED de la boucle `_run`**
+- [ ] **Step 4: Write the RED tests for the `_run` loop**
 
-Toujours dans `tests/unit/test_roadmap_curate.py` — la boucle restructurée est le
-cœur du chantier, elle a ses propres tests (collaborateurs monkeypatchés ; les
-imports `Settings`/`get_session_factory` de `_run` sont function-local, on
-monkeypatche donc leurs modules d'origine). Ajouter :
+Still in `tests/unit/test_roadmap_curate.py` — the restructured loop is the
+core of this project, it has its own tests (monkeypatched collaborators; the
+`Settings`/`get_session_factory` imports of `_run` are function-local, so we
+monkeypatch their origin modules). Add:
 
 ```python
 class TestRunProposeLoop:
@@ -904,29 +906,29 @@ class TestRunProposeLoop:
         assert "épuisé" in capsys.readouterr().out
 ```
 
-Compléter les imports du fichier : `from types import SimpleNamespace`,
+Complete the file's imports: `from types import SimpleNamespace`,
 `from unittest.mock import AsyncMock, MagicMock`, `from uuid import UUID, uuid4`,
-et `BatchOutcome` + `PersistResult` dans l'import `from scripts.roadmap_curate
-import …` (selon l'existant).
+and `BatchOutcome` + `PersistResult` in the `from scripts.roadmap_curate
+import …` import (following the existing style).
 
 Run: `env -u VIRTUAL_ENV uv run pytest tests/unit/test_roadmap_curate.py::TestRunProposeLoop -v`
-Expected: FAIL — l'ancien `_run` persiste une seule fois (`await_count == 1`) et
-n'émet aucune ligne `[i/N]`.
+Expected: FAIL — the old `_run` persists only once (`await_count == 1`) and
+emits no `[i/N]` line.
 
-- [ ] **Step 5: Restructurer le bloc propose de `_run`**
+- [ ] **Step 5: Restructure the `_run` propose block**
 
-Dans `scripts/roadmap_curate.py`, remplacer TOUT le bloc depuis
-`# Propose mode (dry ou wet).` jusqu'à `return 1 if any_failed else 0` (fin de
-`_run`) par :
+In `scripts/roadmap_curate.py`, replace the ENTIRE block from
+`# Propose mode (dry ou wet).` through `return 1 if any_failed else 0` (end of
+`_run`) with:
 
 ```python
-    # Propose mode (dry ou wet) — persist incrémental batch par batch :
-    # un timeout shell ne perd que le batch en cours, et le log de
-    # progression par batch (flush=True : stdout est block-bufferisé
-    # sous la redirection >> de dream.sh) rend la nuit diagnosticable
-    # (finding 2026-07-04 : 597s/600s, persist unique final, log vide).
-    # NB : un SIGTERM en plein batch laisse la nuit sans row dream_runs
-    # (record_dream_run est en fin de run) — mitigé par le budget 20m.
+    # Propose mode (dry or wet) — incremental persist batch by batch:
+    # a shell timeout only loses the batch in progress, and the
+    # per-batch progress log (flush=True: stdout is block-buffered
+    # under dream.sh's >> redirection) keeps the night diagnosable
+    # (finding 2026-07-04: 597s/600s, single final persist, empty log).
+    # NB: a SIGTERM mid-batch leaves the night without a dream_runs row
+    # (record_dream_run runs at the end) — mitigated by the 20m budget.
     batches = await fetch_project_batches(sf, args.limit)
     if not batches:
         print("Aucune feature vivante — rien à curer.", flush=True)
@@ -1004,8 +1006,8 @@ Dans `scripts/roadmap_curate.py`, remplacer TOUT le bloc depuis
     if refreshed_ids:
         print(f"déjà proposées (refresh): {refreshed_ids}", flush=True)
 
-    # --wet: apply du run (insérées + rafraîchies — sans les rafraîchies, le
-    # dedup rendrait le flip WET inerte). Restreint aux ops sûres. JAMAIS
+    # --wet: apply the run (inserted + refreshed — without the refreshed, the
+    # dedup would make the WET flip inert). Restricted to safe ops. NEVER
     # merge/rename.
     if args.wet and (all_ids or refreshed_ids):
         applied = await apply_proposals(sf, all_ids + refreshed_ids, allowed_ops=WET_APPLYABLE_OPS)
@@ -1019,27 +1021,27 @@ Dans `scripts/roadmap_curate.py`, remplacer TOUT le bloc depuis
     return 1 if any_failed else 0
 ```
 
-Notes d'implémentation :
-- Le bloc wet de la Task 4 (variables `res`/`proposal_ids`) disparaît avec cette
-  restructuration — c'est attendu (double-touch géré : chaque commit reste vert).
-- La ligne résumé finale garde EXACTEMENT sa forme (`N projets scannés, …`) — le
-  morning-check et d'éventuels greps s'y attendent.
-- Trade-off assumé : la part de cap est appliquée AVANT le dedup — un batch plein
-  de doublons persiste moins que sa part et le reliquat se redistribue via
-  `remaining_cap` (le ceil de `batch_allowance` s'en charge).
-- `skipped` compte les projets sans proposal persistée NI rafraîchie — sémantique
-  du résumé « sans proposition » préservée.
+Implementation notes:
+- The Task 4 wet block (variables `res`/`proposal_ids`) disappears with this
+  restructuring — that's expected (double-touch handled: each commit stays green).
+- The final summary line keeps EXACTLY its shape (`N projets scannés, …`) —
+  the morning-check and any greps expect it.
+- Accepted trade-off: the cap share is applied BEFORE the dedup — a batch full
+  of duplicates persists less than its share and the remainder is
+  redistributed via `remaining_cap` (the ceil in `batch_allowance` handles it).
+- `skipped` counts projects with neither a persisted NOR a refreshed proposal —
+  the "no proposal" summary semantics are preserved.
 
-- [ ] **Step 6: Vérifier le vert complet**
+- [ ] **Step 6: Verify full green**
 
 Run: `env -u VIRTUAL_ENV uv run pytest tests/unit -q`
-Expected: PASS — dont `TestRunProposeLoop` (RED au Step 4, GREEN maintenant).
+Expected: PASS — including `TestRunProposeLoop` (RED at Step 4, GREEN now).
 
-- [ ] **Step 7: Smoke test à blanc du CLI (sans LLM, sans DB)**
+- [ ] **Step 7: Blank smoke test of the CLI (no LLM, no DB)**
 
 Run: `env -u VIRTUAL_ENV uv run python -m scripts.roadmap_curate --limit 0 2>&1 | tail -1`
 Expected: `roadmap_curate: error: argument --limit: doit être >= 1 (reçu : 0)` —
-le module s'importe et parse (pas de SyntaxError/NameError introduits).
+the module imports and parses (no SyntaxError/NameError introduced).
 
 - [ ] **Step 8: Gates + commit**
 
@@ -1054,25 +1056,25 @@ git commit -m "feat(roadmap): fair-share du cap + persist incrémental + progres
 
 ---
 
-### Task 7: Budget shell roadmap 10m → 20m
+### Task 7: Roadmap shell budget 10m → 20m
 
-Premier run réel : 597s pour 10 projets sous `timeout 10m` — 3 s de marge. Même
-archétype que les timeouts synth (bump 10→15 le 2026-05-03). Le persist incrémental
-(Task 6) rend le timeout non catastrophique, mais le budget doit quand même laisser
-de la marge : 20m = ~100 % de headroom sur l'observé. Changement de spec pin :
-test d'abord (RED), puis dream.sh (GREEN).
+First real run: 597s for 10 projects under `timeout 10m` — 3s of margin. Same
+archetype as the synth timeouts (bump 10→15 on 2026-05-03). Incremental persist
+(Task 6) makes the timeout non-catastrophic, but the budget still needs
+margin: 20m = ~100% headroom over the observed value. Pinned spec change:
+test first (RED), then dream.sh (GREEN).
 
 **Files:**
-- Modify: `tests/unit/test_dream_sh_roadmap.py` (fonction `test_roadmap_step_has_timeout_and_own_log`)
-- Modify: `scripts/dream.sh` (~ligne 535)
+- Modify: `tests/unit/test_dream_sh_roadmap.py` (function `test_roadmap_step_has_timeout_and_own_log`)
+- Modify: `scripts/dream.sh` (~line 535)
 
 **Interfaces:**
-- Consumes: rien.
-- Produces: rien (config shell).
+- Consumes: nothing.
+- Produces: nothing (shell config).
 
-- [ ] **Step 1: Mettre à jour le pin (RED)**
+- [ ] **Step 1: Update the pin (RED)**
 
-Dans `tests/unit/test_dream_sh_roadmap.py`, remplacer :
+In `tests/unit/test_dream_sh_roadmap.py`, replace:
 
 ```python
 def test_roadmap_step_has_timeout_and_own_log():
@@ -1081,7 +1083,7 @@ def test_roadmap_step_has_timeout_and_own_log():
     assert "_roadmap.log" in content
 ```
 
-par :
+with:
 
 ```python
 def test_roadmap_step_has_timeout_and_own_log():
@@ -1092,33 +1094,33 @@ def test_roadmap_step_has_timeout_and_own_log():
     assert "_roadmap.log" in content
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `env -u VIRTUAL_ENV uv run pytest tests/unit/test_dream_sh_roadmap.py -v`
-Expected: FAIL — `test_roadmap_step_has_timeout_and_own_log` (dream.sh contient encore `timeout 10m`).
+Expected: FAIL — `test_roadmap_step_has_timeout_and_own_log` (dream.sh still contains `timeout 10m`).
 
-- [ ] **Step 3: Bump dans dream.sh (GREEN)**
+- [ ] **Step 3: Bump in dream.sh (GREEN)**
 
-Dans `scripts/dream.sh` (~ligne 535), remplacer :
+In `scripts/dream.sh` (~line 535), replace:
 
 ```bash
   timeout 10m uv run python -m scripts.roadmap_curate "${roadmap_args[@]}" \
     >> "$LOG_DIR/${TIMESTAMP}_roadmap.log" 2>&1
 ```
 
-par :
+with:
 
 ```bash
-  # 20m : premier run réel (2026-07-04) à 597s/600s — zéro marge sous 10m.
-  # Pinned par tests/unit/test_dream_sh_roadmap.py.
+  # 20m: first real run (2026-07-04) at 597s/600s — zero margin under 10m.
+  # Pinned by tests/unit/test_dream_sh_roadmap.py.
   timeout 20m uv run python -m scripts.roadmap_curate "${roadmap_args[@]}" \
     >> "$LOG_DIR/${TIMESTAMP}_roadmap.log" 2>&1
 ```
 
-- [ ] **Step 4: Vérifier le vert (pins dream.sh complets)**
+- [ ] **Step 4: Verify green (complete dream.sh pins)**
 
 Run: `env -u VIRTUAL_ENV uv run pytest tests/unit/test_dream_sh_roadmap.py tests/unit/test_dream_sh_phase_timeouts.py -v`
-Expected: PASS partout.
+Expected: PASS everywhere.
 
 - [ ] **Step 5: Gates + commit**
 
@@ -1133,7 +1135,7 @@ git commit -m "fix(dream): budget roadmap 10m→20m — premier run réel à 597
 
 ---
 
-## Gate final (avant merge)
+## Final gate (before merge)
 
 ```bash
 env -u VIRTUAL_ENV uv run pytest tests/unit -q
@@ -1143,6 +1145,6 @@ env -u VIRTUAL_ENV uv run mypy src/
 bash -n scripts/dream.sh
 ```
 
-Puis review finale whole-branch (`git diff main..HEAD`) sur le modèle le plus
-capable — les reviews par-task ne voient pas les interactions inter-étages
-(learning SDD 2026-07-04).
+Then a final whole-branch review (`git diff main..HEAD`) on the most capable
+model — per-task reviews don't see the interactions across steps
+(SDD learning 2026-07-04).

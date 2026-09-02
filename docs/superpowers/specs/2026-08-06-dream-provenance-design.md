@@ -1,135 +1,135 @@
-# Provenance du corpus — distinguer le métabolisme du dream de l'activité humaine
+# Corpus provenance — telling dream metabolism apart from human activity
 
-**Date** : 2026-08-06
-**Statut** : design validé, plan d'implémentation à écrire
-**Périmètre** : chantier A d'un lot de quatre (voir « Hors périmètre »)
+**Date**: 2026-08-06
+**Status**: design validated, implementation plan to be written
+**Scope**: workstream A of a batch of four (see "Out of scope")
 
-## Le problème, mesuré
+## The problem, measured
 
-Trois défaillances observées en production le 2026-08-06 :
+Three failures observed in production on 2026-08-06:
 
-1. **PROMOTE tourne en boucle depuis 23 nuits.** Le learning `1d1037e8`
-   (« brain-v42 architecture overview ») est évalué chaque nuit depuis le
-   2026-07-07 et rend le même verdict `classification_uncertain`. 22 lignes dans
-   `dream_promotions`. Sur l'ensemble des rapports PROMOTE : 64
-   `classification_uncertain` contre 18 promotions réelles.
+1. **PROMOTE has been looping for 23 nights.** Learning `1d1037e8`
+   ("brain-v42 architecture overview") has been evaluated every night since
+   2026-07-07 and returns the same verdict, `classification_uncertain`. 22 lines in
+   `dream_promotions`. Across all PROMOTE reports: 64
+   `classification_uncertain` against 18 actual promotions.
 
-2. **Le gate préflight ne se déclenche plus.** Construit pour épargner ~40 % des
-   nuits de phases deep, il a rendu **48 RUN pour 2 SKIP**. Dernier SKIP le
+2. **The preflight gate no longer fires.** Built to spare ~40% of
+   deep-phase nights, it has returned **48 RUN for 2 SKIP**. Last SKIP on
    2026-07-09.
 
-3. **`access_count` est contaminé.** Le filtre de maturité de PROMOTE
-   sélectionne sur `access_count >= 3`, et le dream incrémente lui-même ce
-   compteur en paginant le corpus chaque nuit (REORG : 63 à 106 tool calls).
+3. **`access_count` is contaminated.** PROMOTE's maturity filter
+   selects on `access_count >= 3`, and the dream itself increments this
+   counter by paginating the corpus every night (REORG: 63 to 106 tool calls).
 
-### Cause racine unique
+### Single root cause
 
-`promote_prepare.py` porte un cache anti-rejugement qui exclut un learning déjà
-jugé incertain sur sa version courante, via `u.created_at >= l.updated_at`. Ce
-cache ne peut structurellement pas tenir :
+`promote_prepare.py` carries an anti-rejudgment cache that excludes a learning already
+judged uncertain on its current version, via `u.created_at >= l.updated_at`. This
+cache cannot structurally hold:
 
 ```
 verdict PROMOTE       2026-08-06 04:06:13 UTC
-learnings.updated_at  2026-08-06 04:08:51 UTC   ← postérieur, donc réadmis
+learnings.updated_at  2026-08-06 04:08:51 UTC   ← later, so readmitted
 ```
 
-`trg_learnings_updated` est un `BEFORE UPDATE` **inconditionnel**, et
-`decay_flusher` écrit `UPDATE learnings SET access_count=…, last_accessed_at=…`,
-une écriture de compteur pur. **Lire une entité suffit donc à rajeunir son
-`updated_at`** et à invalider le verdict rendu deux minutes plus tôt.
+`trg_learnings_updated` is an **unconditional** `BEFORE UPDATE`, and
+`decay_flusher` writes `UPDATE learnings SET access_count=…, last_accessed_at=…`,
+a pure counter write. **Merely reading an entity is therefore enough to refresh its
+`updated_at`** and invalidate the verdict returned two minutes earlier.
 
-Le dépôt connaît déjà ce défaut et l'a contourné à un seul endroit —
-`repositories/pg_learning.py:8` : *« validate() stays local: it must update
-validated_at WITHOUT bumping updated_at »*. La migration 040 a résolu le même
-problème pour `project_contexts` avec `focus_updated_at`. Le concept est acquis,
-il n'a jamais été posé au niveau du schéma des entités.
+The repo already knows about this defect and has worked around it in exactly one place —
+`repositories/pg_learning.py:8`: *"validate() stays local: it must update
+validated_at WITHOUT bumping updated_at"*. Migration 040 solved the same
+problem for `project_contexts` with `focus_updated_at`. The concept is understood,
+it has just never been laid down at the entity schema level.
 
-## Modèle : deux axes orthogonaux
+## Model: two orthogonal axes
 
-Le système doit répondre à deux questions distinctes, que `updated_at` confond :
+The system must answer two distinct questions, which `updated_at` conflates:
 
-- « **Qui** a touché cette ligne ? » → axe *acteur*
-- « Est-ce le **contenu** qui a changé, ou seulement un compteur ? » → axe
-  *nature de l'écriture*
+- "**Who** touched this row?" → *actor* axis
+- "Did the **content** change, or only a counter?" → *nature of the write*
+  axis
 
-| Consommateur | Question réelle | Axe |
+| Consumer | Real question | Axis |
 |---|---|---|
-| Cache anti-rejugement PROMOTE | le contenu a-t-il changé depuis mon verdict ? | nature |
-| Filtre de maturité PROMOTE | des **humains** lisent-ils ce learning ? | acteur |
-| Gate préflight | le corpus a-t-il bougé pour une raison **autre que moi** ? | acteur |
+| PROMOTE anti-rejudgment cache | has the content changed since my verdict? | nature |
+| PROMOTE maturity filter | are **humans** reading this learning? | actor |
+| Preflight gate | has the corpus moved for a reason **other than me**? | actor |
 
-## Terrain existant
+## Existing ground
 
-L'identité de l'appelant **arrive déjà au serveur** et n'est simplement jamais
-écrite :
+The caller's identity **already reaches the server** and simply goes
+unwritten:
 
-- `scripts/dream/codex_runner.py:262` envoie `X-Brain-Agent: dream-codex-<phase>`.
-- Les sessions Claude Code interactives envoient `${PWD}`.
-- `metrics/instrument.py:_normalize_agent()` normalise déjà ces valeurs
-  (`/home/u/git/red-lab` → `red-lab`, `${…}` non expansé → `_unexpanded`,
-  vide → `unknown`).
+- `scripts/dream/codex_runner.py:262` sends `X-Brain-Agent: dream-codex-<phase>`.
+- Interactive Claude Code sessions send `${PWD}`.
+- `metrics/instrument.py:_normalize_agent()` already normalizes these values
+  (`/home/u/git/red-lab` → `red-lab`, unexpanded `${…}` → `_unexpanded`,
+  empty → `unknown`).
 
-Ce signal ne sert qu'au collecteur de métriques. `access_log` n'a pas de colonne
-acteur ; `decay_flusher` incrémente `access_count` sans savoir qui a lu.
+This signal serves only the metrics collector today. `access_log` has no actor
+column; `decay_flusher` increments `access_count` without knowing who read it.
 
-**La provenance n'est pas à construire, elle est à brancher.**
+**Provenance doesn't need to be built, it needs to be wired in.**
 
-Réserve : le header est déclaré par le client, donc falsifiable
-(`metrics/collector.py:100` le dit et plafonne la cardinalité). Même posture que
-le `client_key` de session : *déclarée, pas prouvée*. Signal d'hygiène, pas
-frontière de sécurité.
+Caveat: the header is client-declared, hence forgeable
+(`metrics/collector.py:100` says so and caps cardinality). Same stance as
+session's `client_key`: *declared, not proven*. A hygiene signal, not a
+security boundary.
 
-## §1 — Middleware : remplacer le monkey-patch
+## §1 — Middleware: replacing the monkey-patch
 
-`brain_tools.py:106-122` réassigne `mcp.tool` pour envelopper les tools de
-métriques. Trois défauts :
+`brain_tools.py:106-122` reassigns `mcp.tool` to wrap the metrics
+tools. Three flaws:
 
-- conditionné à `metrics_collector is not None` — métriques désactivées, plus
-  aucun tool instrumenté ;
-- dépendant de l'ordre : seuls les tools déclarés après la ligne 122 sont
-  couverts ;
-- mutation d'une méthode d'objet tiers, fragile en montée de version.
+- gated on `metrics_collector is not None` — with metrics disabled, no
+  tool is instrumented anymore;
+- order-dependent: only tools declared after line 122 are
+  covered;
+- mutation of a third-party object's method, fragile across version bumps.
 
-FastMCP 3.4.2 (installé) expose le point d'extension prévu :
-`FastMCP.add_middleware()` avec un hook `on_call_tool`. Un **middleware unique**
-porte les deux préoccupations :
+FastMCP 3.4.2 (installed) exposes the intended extension point:
+`FastMCP.add_middleware()` with an `on_call_tool` hook. A **single middleware**
+carries both concerns:
 
 ```
 on_call_tool:
-    poser le ContextVar acteur      ← inconditionnel, toujours
-    si collecteur actif : mesurer   ← conditionnel, à l'intérieur
+    set the actor ContextVar      ← unconditional, always
+    if collector active: measure  ← conditional, inside
 ```
 
-Le couplage aux métriques disparaît par construction, la dépendance à l'ordre
-aussi, et on retire un monkey-patch au lieu d'en ajouter un second.
+The coupling to metrics disappears by construction, so does the
+order dependency, and one monkey-patch is removed instead of adding a second.
 
-Contraintes : préserver exactement la capture d'`AuthorizationError` et la
-mesure de latence de `instrument_tool`. Ne pas toucher `instrument_embedding`
-ni `instrument_reranker`, qui ne sont pas des tools.
+Constraints: preserve exactly the `AuthorizationError` capture and the
+latency measurement of `instrument_tool`. Do not touch `instrument_embedding`
+or `instrument_reranker`, which are not tools.
 
-**Première tâche du plan** : prouver que `get_http_headers()` est joignable
-depuis `on_call_tool`. Si ce n'est pas le cas, la lecture du header reste où
-elle est et le middleware ne fait que propager la valeur.
+**First task of the plan**: prove that `get_http_headers()` is reachable
+from `on_call_tool`. If it isn't, the header read stays where
+it is and the middleware only propagates the value.
 
-Étape **détachable** : elle ne touche à aucun schéma. Si elle dérape, on la
-retire sans perdre le reste du chantier.
+**Detachable** step: it touches no schema. If it goes sideways, it can be
+removed without losing the rest of the workstream.
 
 ## §2 — Migration 041
 
-Aucun backfill. `0` et `NULL` signifient « jamais mesuré », discipline héritée
-de la 040.
+No backfill. `0` and `NULL` mean "never measured", a discipline inherited
+from 040.
 
-**a)** `access_log.actor VARCHAR(64) NOT NULL DEFAULT 'unknown'`, alimenté par
+**a)** `access_log.actor VARCHAR(64) NOT NULL DEFAULT 'unknown'`, fed by
 `_normalize_agent()`.
 
-**b)** `access_count_human INTEGER NOT NULL DEFAULT 0` sur `learnings`,
-`decisions`, `snippets`, `runbooks`, `adrs`. `access_count` reste le total et ne
-change pas de sémantique : aucun consommateur existant ne casse.
+**b)** `access_count_human INTEGER NOT NULL DEFAULT 0` on `learnings`,
+`decisions`, `snippets`, `runbooks`, `adrs`. `access_count` remains the total and its
+semantics don't change: no existing consumer breaks.
 
-**c)** `content_updated_at TIMESTAMPTZ NULL` sur les cinq mêmes tables. La
-migration crée une fonction `stamp_content_updated_at()` et **un trigger par
-table** (cinq au total), chacun **conditionnel sur le changement de valeur** et
-portant la liste de colonnes propre à sa table. Exemple pour `learnings` :
+**c)** `content_updated_at TIMESTAMPTZ NULL` on the same five tables. The
+migration creates a `stamp_content_updated_at()` function and **one trigger per
+table** (five in total), each **conditional on value change** and
+carrying the column list specific to its table. Example for `learnings`:
 
 ```sql
 CREATE TRIGGER trg_learnings_content_updated
@@ -140,9 +140,9 @@ CREATE TRIGGER trg_learnings_content_updated
   EXECUTE FUNCTION stamp_content_updated_at();
 ```
 
-Colonnes de contenu par table (mesurées) :
+Content columns per table (measured):
 
-| Table | Colonnes de contenu |
+| Table | Content columns |
 |---|---|
 | `learnings` | `topic, insight` |
 | `decisions` | `title, description, reasoning, consequences` |
@@ -150,163 +150,163 @@ Colonnes de contenu par table (mesurées) :
 | `runbooks` | `title, description, trigger, steps` |
 | `adrs` | `title, context, decision, consequences` |
 
-`tags`, `project_key`, `freshness_status` et les compteurs sont **hors** de cet
-ensemble : REORG qui normalise un tag ne rajeunit pas le contenu. Comportement
-voulu.
+`tags`, `project_key`, `freshness_status` and the counters are **outside** this
+set: REORG normalizing a tag doesn't refresh the content. Intended
+behavior.
 
-### Divergence assumée d'avec la migration 040
+### Assumed divergence from migration 040
 
-La 040 écrit `focus_updated_at` depuis le code applicatif, « jamais par un
-trigger ». Ce design fait l'inverse, pour trois raisons :
+040 writes `focus_updated_at` from application code, "never by a
+trigger". This design does the opposite, for three reasons:
 
-1. La clause `WHEN … IS DISTINCT FROM` donne exactement la sémantique de valeur
-   que la 040 cherchait : réécrire le même texte ne rajeunit rien, un recopiage
-   reste visible. C'était l'argument contre le trigger ; il tombe.
-2. Le focus a **un** écrivain. Le contenu des entités en a beaucoup :
-   `brain_learn`, `brain_update`, REORG, les merges de CLEAN, les scripts de
-   backfill. Une discipline applicative sur N écrivains sera oubliée par le
-   N+1 — c'est littéralement ce qui s'est produit ici.
-3. Un trigger se vérifie en une requête ; une discipline applicative se vérifie
-   en relisant tout le code.
+1. The `WHEN … IS DISTINCT FROM` clause gives exactly the value semantics
+   040 was after: rewriting the same text refreshes nothing, a copy-over
+   stays visible. That was the argument against the trigger; it falls away.
+2. The focus has **one** writer. Entity content has many:
+   `brain_learn`, `brain_update`, REORG, CLEAN merges, the
+   backfill scripts. An application-level discipline over N writers will be
+   forgotten by writer N+1 — which is literally what happened here.
+3. A trigger is verified with one query; an application-level discipline is
+   verified by rereading all the code.
 
-## §3 — Classification de l'acteur
+## §3 — Actor classification
 
-Fonction pure unique, `brain_v42/provenance.py : is_human_actor(actor) -> bool`,
-couverte par un test unitaire énumérant les cas :
+Single pure function, `brain_v42/provenance.py : is_human_actor(actor) -> bool`,
+covered by a unit test enumerating the cases:
 
-| Acteur | Humain ? | Motif |
+| Actor | Human? | Reason |
 |---|---|---|
-| `dream-codex-<phase>` | non | le dream se déclare |
-| `unknown` | non | fail-closed : un appelant non identifié ne débloque rien |
-| `_unexpanded` | non | session démon sans `PWD` |
-| tout le reste | oui | session interactive → basename du `PWD` |
+| `dream-codex-<phase>` | no | the dream declares itself |
+| `unknown` | no | fail-closed: an unidentified caller unlocks nothing |
+| `_unexpanded` | no | daemon session without `PWD` |
+| everything else | yes | interactive session → basename of `PWD` |
 
-## §4 — Chemin de la donnée et agrégation
+## §4 — Data path and aggregation
 
-### Où l'acteur est lu — piège à éviter
+### Where the actor is read — a trap to avoid
 
-L'acteur doit être lu **au moment de la mise en file**, dans
-`AccessLogger.log_access()`, et stocké dans l'événement mis en queue :
+The actor must be read **at enqueue time**, in
+`AccessLogger.log_access()`, and stored in the queued event:
 
 ```
-middleware on_call_tool   → pose le ContextVar (contexte de requête)
-log_access()              → LIT le ContextVar, l'attache à l'événement   ← ici
-_flush_batch()            → insère l'événement, ContextVar hors de portée
+middleware on_call_tool   → sets the ContextVar (request context)
+log_access()              → READS the ContextVar, attaches it to the event   ← here
+_flush_batch()            → inserts the event, ContextVar out of scope
 ```
 
-`_flush_batch()` s'exécute dans une tâche de fond (`_run_loop`, toutes les 5 s),
-**hors du contexte de requête** : y lire le ContextVar rendrait `unknown` pour
-tout le monde. Les 6 sites d'appel de `log_access` restent inchangés — seule
-l'implémentation de la méthode évolue.
+`_flush_batch()` runs in a background task (`_run_loop`, every 5 s),
+**outside the request context**: reading the ContextVar there would yield `unknown` for
+everyone. The 6 call sites of `log_access` stay unchanged — only
+the method's implementation changes.
 
-### Agrégation
+### Aggregation
 
-`decay_flusher` agrège aujourd'hui `access_log` par
-`(entity_type, entity_id)` → `count` + `max(accessed_at)`. Il agrège désormais
-aussi `count_human`, et écrit les deux compteurs :
+`decay_flusher` today aggregates `access_log` by
+`(entity_type, entity_id)` → `count` + `max(accessed_at)`. It now also
+aggregates `count_human`, and writes both counters:
 
-- `access_count += count` (inchangé)
+- `access_count += count` (unchanged)
 - `access_count_human += count_human`
 
-## §5 — Recâblage des trois consommateurs
+## §5 — Rewiring the three consumers
 
-### a) Cache anti-rejugement — `promote_prepare.py`
+### a) Anti-rejudgment cache — `promote_prepare.py`
 
 ```sql
 u.created_at >= COALESCE(l.content_updated_at, l.created_at)
 ```
 
-Le repli sur `created_at` — **pas** sur `updated_at` — est le point délicat.
-Sans backfill, `content_updated_at` est `NULL` partout ; un repli sur
-`updated_at` reproduirait le bug à l'identique. `created_at` dit la seule chose
-qu'on sache : *le contenu n'a jamais été observé changer, il a donc l'âge de la
-ligne.* C'est un fait mesuré, pas une valeur fabriquée.
+The fallback to `created_at` — **not** to `updated_at` — is the delicate point.
+Without backfill, `content_updated_at` is `NULL` everywhere; a fallback to
+`updated_at` would reproduce the bug identically. `created_at` states the one thing
+that's known: *the content has never been observed to change, so it has the age of the
+row.* That's a measured fact, not a fabricated value.
 
-Effet immédiat : verdict du 2026-08-06 ≥ `created_at` du 2026-03-23, donc
-`1d1037e8` sort du pool dès la première nuit.
+Immediate effect: 2026-08-06 verdict ≥ `created_at` of 2026-03-23, so
+`1d1037e8` exits the pool on the very first night.
 
-**Angle mort assumé** : une ligne dont le contenu a réellement changé *avant* la
-migration mais *après* son dernier verdict sera exclue à tort. Elle se corrige
-d'elle-même à la première édition suivante.
+**Assumed blind spot**: a row whose content actually changed *before* the
+migration but *after* its last verdict will be wrongly excluded. It self-corrects
+on the next edit.
 
-### b) Filtre de maturité — `promote_prepare.py`
+### b) Maturity filter — `promote_prepare.py`
 
-`l.access_count >= 3` devient `l.access_count_human >= 3`.
+`l.access_count >= 3` becomes `l.access_count_human >= 3`.
 
-**Conséquence à annoncer** : le pool de PROMOTE sera vide pendant un moment, le
-temps que des lectures humaines s'accumulent depuis zéro. Ce n'est pas une
-régression mais le résultat correct — on ignore qui a lu quoi avant la
-migration. Rien n'est perdu : PROMOTE ne produit rien depuis 23 nuits. Le
-chantier C remplacera de toute façon cette porte par le verdict de revue.
+**Consequence to announce**: PROMOTE's pool will be empty for a while, the
+time it takes for human reads to accumulate from zero. This is not a
+regression but the correct outcome — who read what before the
+migration is unknown. Nothing is lost: PROMOTE has produced nothing for 23 nights. Anyway,
+workstream C will replace this gate with the review verdict.
 
-### c) Gate préflight — `scripts/dream/dream_preflight.py`
+### c) Preflight gate — `scripts/dream/dream_preflight.py`
 
-Deux changements :
+Two changes:
 
 1. `greatest(created_at, updated_at)` → `greatest(created_at, content_updated_at)`,
-   ce qui élimine le bruit des écritures de compteur ;
-2. exclure les entités taguées `dream:generated` du signal de mutation. Sans
-   cela, SYNTH garantit en créant 3 insights que la nuit suivante synthétisera
-   par-dessus sa propre production — l'echo-drift au niveau de l'ordonnanceur.
-   Vérifié : les cinq tables portent une colonne `tags`.
+   which eliminates counter-write noise;
+2. exclude entities tagged `dream:generated` from the mutation signal. Without
+   this, SYNTH guarantees by creating 3 insights that the following night will synthesize
+   on top of its own output — scheduler-level echo-drift.
+   Verified: all five tables carry a `tags` column.
 
-Le caractère fail-safe du gate est conservé : toute erreur ou incertitude imprime
+The gate's fail-safe nature is preserved: any error or uncertainty prints
 `RUN`.
 
-## §6 — Rollout et vérification
+## §6 — Rollout and verification
 
-TDD strict (exigence CLAUDE.md) : test rouge d'abord à chaque étape.
+Strict TDD (CLAUDE.md requirement): red test first at each step.
 
-Trois étapes indépendantes, dans cet ordre :
+Three independent steps, in this order:
 
-1. **Middleware** — aucun schéma touché, détachable.
-2. **Migration 041** — colonnes et triggers, aucun backfill.
-3. **Recâblage** des trois consommateurs.
+1. **Middleware** — no schema touched, detachable.
+2. **Migration 041** — columns and triggers, no backfill.
+3. **Rewiring** of the three consumers.
 
-### Critères d'acceptation
+### Acceptance criteria
 
-| Ce qu'on prouve | Comment |
+| What is proven | How |
 |---|---|
-| L'acteur arrive | `select actor, count(*) from access_log group by 1` après une nuit → `dream-codex-*` présent |
-| La boucle s'arrête | `1d1037e8` absent de la sortie de `promote_prepare` |
-| Le contenu ne bouge plus pour rien | après une nuit de REORG, `content_updated_at` inchangé sur les lignes dont seuls les tags ont bougé |
-| Le gate revit | taux de SKIP sur 2 semaines, contre la ligne de base **2/50** |
+| The actor arrives | `select actor, count(*) from access_log group by 1` after one night → `dream-codex-*` present |
+| The loop stops | `1d1037e8` absent from `promote_prepare`'s output |
+| Content no longer moves for nothing | after a night of REORG, `content_updated_at` unchanged on rows where only tags moved |
+| The gate lives again | SKIP rate over 2 weeks, against the baseline **2/50** |
 
-### Garde-fous
+### Guardrails
 
-- **Aucun killswitch ni variable d'environnement du dream n'est modifié.** Le
-  pipeline garde sa configuration exacte, pour ne pas confondre l'effet de ce
-  changement avec autre chose.
-- La 041 ne fait aucun backfill : son downgrade est une simple perte de
-  colonnes, sans arbitrage fail-closed à concevoir.
+- **No dream killswitch or environment variable is modified.** The
+  pipeline keeps its exact configuration, so as not to confuse the effect of this
+  change with something else.
+- 041 does no backfill: its downgrade is a plain loss of
+  columns, with no fail-closed arbitration to design.
 
-## Limites assumées
+## Assumed limits
 
-- **`access_log` est purgée après agrégation.** Si la règle de classification
-  humain/système change plus tard, `access_count_human` ne pourra pas être
-  recalculé. C'est le prix de la dénormalisation, accepté en connaissance de
-  cause ; le journal durable fait l'objet d'un ticket de report.
-- **Le header `X-Brain-Agent` est déclaré par le client.** La provenance est un
-  signal d'hygiène, pas une frontière de sécurité.
-- **Aucun backfill** : les entités existantes démarrent à
-  `access_count_human = 0` et `content_updated_at = NULL`.
+- **`access_log` is purged after aggregation.** If the human/system
+  classification rule changes later, `access_count_human` cannot be
+  recomputed. That's the price of denormalization, accepted knowingly;
+  the durable log is the subject of a deferred ticket.
+- **The `X-Brain-Agent` header is client-declared.** Provenance is a
+  hygiene signal, not a security boundary.
+- **No backfill**: existing entities start at
+  `access_count_human = 0` and `content_updated_at = NULL`.
 
-## Hors périmètre
+## Out of scope
 
-Chantiers du même lot, à spécifier séparément :
+Workstreams from the same batch, to be specified separately:
 
-- **B** — surface de revue pour les 86 insights SYNTH : table de verdicts à trois
-  états (garder / rejeter / promouvoir), tool dédié, section `### À revoir` dans
-  le briefing.
-- **C** — porte de PROMOTE : le verdict de revue remplace le filtre d'origine
-  d'ADR #4. Le garde-fou anti-echo-drift n'est pas levé mais remplacé par une
-  version qui mesure ce qu'il visait — l'endossement humain plutôt que
-  l'origine.
-- **D** — routage projet de SYNTH : retirer le `project_key="brain-v42"` codé en
-  dur dans `phase_synth.md`. Les 86 insights sont tous sous `brain-v42` alors que
-  plusieurs portent sur d'autres projets ; la garde du commit `87389e6d` rejette
-  déjà les clés inconnues. Prérequis des sessions de revue par projet.
+- **B** — review surface for the 86 SYNTH insights: a three-state verdict
+  table (keep / reject / promote), a dedicated tool, a `### To review` section
+  in the briefing.
+- **C** — PROMOTE's gate: the review verdict replaces ADR #4's original
+  filter. The anti-echo-drift guardrail isn't lifted but replaced with a
+  version that measures what it was aiming for — human endorsement rather
+  than origin.
+- **D** — SYNTH project routing: remove the hardcoded `project_key="brain-v42"` in
+  `phase_synth.md`. All 86 insights sit under `brain-v42` even though
+  several concern other projects; the `87389e6d` commit's guard already
+  rejects unknown keys. Prerequisite for per-project review sessions.
 
-Ticket de report à ouvrir : **journal d'accès durable** (rétention d'`access_log`
-avec acteur, compteurs dérivés à la demande), pour mesurer l'usage réel du
-corpus — notamment « ces insights, un humain les a-t-il lus ? ».
+Deferred ticket to open: **durable access log** (`access_log` retention
+with actor, counters derived on demand), to measure actual corpus
+usage — in particular "has a human ever read these insights?".

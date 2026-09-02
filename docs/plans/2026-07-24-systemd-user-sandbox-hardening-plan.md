@@ -1,55 +1,55 @@
-# Sandboxing des unités systemd utilisateur — plan d'implémentation
+# Sandboxing systemd user units — implementation plan
 
-**Date :** 2026-07-24
-**Ticket Brain :** `1460c46c-0386-44b9-bbed-9ce45c3c5483`
-**Branche :** `feat/systemd-sandbox-hardening`
-**Statut :** code-ready, trois revues finales SHIP, non déployé
-**Déploiement :** interdit dans ce lot
+**Date:** 2026-07-24
+**Brain ticket:** `1460c46c-0386-44b9-bbed-9ce45c3c5483`
+**Branch:** `feat/systemd-sandbox-hardening`
+**Status:** code-ready, three final SHIP reviews, not deployed
+**Deployment:** forbidden in this batch
 
-## Objectif
+## Objective
 
-Réduire la surface d'exploitation des unités systemd utilisateur gérées par brain-v42 sans
-casser leurs contrats applicatifs. Le lot doit aussi retirer deux fausses assurances : le profil
-filesystem actuel d'automation n'est pas effectif sous systemd 249 sans `PrivateUsers=true`, et
-`install.sh --dry-run` publie malgré son nom des unités dans le répertoire systemd utilisateur.
+Reduce the exploitation surface of the systemd user units managed by brain-v42 without
+breaking their application contracts. The batch must also remove two false assurances: automation's
+current filesystem profile is not effective under systemd 249 without `PrivateUsers=true`, and
+`install.sh --dry-run`, despite its name, publishes units into the user systemd directory.
 
-La livraison attendue est **code-ready uniquement** : templates, rendu isolé, tests, documentation
-et runbooks. Aucun fichier sous `~/.config/systemd`, `daemon-reload`, enable, start, stop, restart,
-timer ou secret live ne sera modifié.
+The expected delivery is **code-ready only**: templates, isolated rendering, tests, documentation
+and runbooks. No file under `~/.config/systemd`, `daemon-reload`, enable, start, stop, restart,
+timer, or live secret will be modified.
 
-## Faits établis
+## Established facts
 
-- L'hôte utilise systemd 249 et les unités concernées sont des services `--user`.
-- Le manuel local précise que les protections nécessitant un namespace de montage, dont
-  `ProtectSystem`, `ProtectHome`, `PrivateTmp` et `ReadWritePaths`, ne deviennent utilisables dans
-  une unité user qu'avec `PrivateUsers=true`.
-- Le noyau autorise les user namespaces et leur imbrication, mais cela ne prouve pas la
-  compatibilité d'un vrai run Codex/Claude sous Dream.
-- Le runtime observé charge :
-  - MCP HTTP actif sans sandbox ;
-  - Dream inactif entre deux runs, sans sandbox ;
-  - graph-recon inactif et jamais prouvé, sans sandbox ;
-  - automation inactive avec des directives filesystem configurées mais sans `PrivateUsers`.
-- MCP HTTP écoute en loopback et sort vers PostgreSQL, Neo4j et les services embedding/reranking.
-  Il lit des chemins de plans dynamiques et peut écrire des sections `CLAUDE.md` configurées ;
-  ce dernier comportement ne doit pas être cassé silencieusement par ce lot.
-- Graph-recon n'écrit pas sur le filesystem : il lit le dépôt et `.env`, puis écrit uniquement
-  dans PostgreSQL/Neo4j. Son login shell est inutile car l'interpréteur est absolu et `Settings`
-  charge `.env` depuis le `WorkingDirectory`.
-- Le gestionnaire user ne fournit pas `network-online.target`. Dream et graph-recon conservent
-  pourtant `After/Wants=network-online.target` : cette relation n'ordonne rien. Dream possède déjà
-  un preflight MCP explicite ; graph-recon doit échouer normalement si ses bases sont indisponibles.
-- Dream écrit sous `logs/dream`, utilise le runtime temporaire, lance `uv`, Python, Codex et un
-  rollback Claude, et dépend de caches/authentifications sous HOME. Son sandbox enfant peut créer
-  des namespaces, utiliser Landlock et seccomp.
-- Le watchdog lance `curl` puis `systemctl --user restart`; il reste une unité exécutable et doit
-  recevoir au moins un profil réduit compatible avec le bus utilisateur.
+- The host runs systemd 249 and the units concerned are `--user` services.
+- The local manual specifies that protections requiring a mount namespace, including
+  `ProtectSystem`, `ProtectHome`, `PrivateTmp` and `ReadWritePaths`, only become usable in
+  a user unit with `PrivateUsers=true`.
+- The kernel allows user namespaces and their nesting, but this does not prove the
+  compatibility of a real Codex/Claude run under Dream.
+- The observed runtime loads:
+  - MCP HTTP active without a sandbox;
+  - Dream inactive between two runs, without a sandbox;
+  - graph-recon inactive and never proven, without a sandbox;
+  - automation inactive with filesystem directives configured but without `PrivateUsers`.
+- MCP HTTP listens on loopback and reaches out to PostgreSQL, Neo4j and the embedding/reranking
+  services. It reads dynamic plan paths and can write configured `CLAUDE.md` sections;
+  this latter behavior must not be silently broken by this batch.
+- Graph-recon does not write to the filesystem: it reads the repo and `.env`, then writes only
+  to PostgreSQL/Neo4j. Its login shell is unnecessary because the interpreter is absolute and `Settings`
+  loads `.env` from `WorkingDirectory`.
+- The user manager does not provide `network-online.target`. Dream and graph-recon nonetheless
+  keep `After/Wants=network-online.target`: this relation orders nothing. Dream already has
+  an explicit MCP preflight; graph-recon must fail normally if its databases are unavailable.
+- Dream writes under `logs/dream`, uses the temporary runtime, launches `uv`, Python, Codex and a
+  Claude rollback, and depends on caches/authentications under HOME. Its child sandbox can create
+  namespaces, use Landlock and seccomp.
+- The watchdog launches `curl` then `systemctl --user restart`; it remains an executable unit and must
+  receive at least a reduced profile compatible with the user bus.
 
-## Décisions de profil
+## Profile decisions
 
-### Baseline forte d'intégrité : automation et graph-recon
+### Strong integrity baseline: automation and graph-recon
 
-Ces services Python n'ont pas de sous-processus sandboxé ni d'écriture filesystem légitime :
+These Python services have no sandboxed subprocess and no legitimate filesystem write:
 
 ```ini
 UMask=0077
@@ -74,26 +74,26 @@ RestrictSUIDSGID=true
 SystemCallArchitectures=native
 ```
 
-Graph-recon passe en `ExecStart` Python direct. Aucun `ReadWritePaths` n'est ajouté : les sorties
-restent dans journald. `ProtectHome=read-only` protège l'intégrité, pas la confidentialité : les
-clés SSH, credentials d'agents et autres dépôts du même utilisateur restent lisibles et le réseau
-autorisé peut les exfiltrer. Un futur profil `ProtectHome=tmpfs` avec binds minimaux doit d'abord
-résoudre le véritable interpréteur ciblé par le symlink `.venv/bin/python`.
+Graph-recon switches to a direct Python `ExecStart`. No `ReadWritePaths` is added: outputs
+stay in journald. `ProtectHome=read-only` protects integrity, not confidentiality: the
+same user's SSH keys, agent credentials and other repos remain readable, and the allowed
+network can exfiltrate them. A future `ProtectHome=tmpfs` profile with minimal binds must first
+resolve the actual interpreter targeted by the `.venv/bin/python` symlink.
 
-### Baseline forte compatible écriture HOME : MCP HTTP
+### Strong baseline compatible with HOME writes: MCP HTTP
 
-MCP reçoit la même baseline, mais `ProtectSystem=full` remplace `strict` et `ProtectHome` est omis.
-Il ajoute `ReadOnlyPaths=__REPO_ROOT__/.env %h/.config/brain-v42` pour empêcher la modification des
-configurations et credentials Brain. Ce choix conserve les écritures `CLAUDE.md` configurées et
-les chemins projet dynamiques. Il rend `/usr`, `/boot`, `/efi`, `/etc`, `.env` et la configuration
-Brain read-only, isole `/tmp` et les devices, retire les capacités et borne les familles de sockets,
-mais **ne confine pas le reste de HOME**. Le bornage serveur des racines de scan et d'écriture reste
-le reliquat SEC1c ; la documentation ne présentera pas ce profil comme une protection de
-confidentialité des secrets utilisateur.
+MCP receives the same baseline, but `ProtectSystem=full` replaces `strict` and `ProtectHome` is omitted.
+It adds `ReadOnlyPaths=__REPO_ROOT__/.env %h/.config/brain-v42` to prevent modification of the
+Brain configurations and credentials. This choice preserves the configured `CLAUDE.md` writes and
+the dynamic project paths. It makes `/usr`, `/boot`, `/efi`, `/etc`, `.env` and the Brain
+configuration read-only, isolates `/tmp` and the devices, strips capabilities and bounds the socket
+families, but **does not confine the rest of HOME**. The server-side bounding of the scan and write
+roots remains the SEC1c residual; the documentation will not present this profile as protecting
+the confidentiality of user secrets.
 
-### Candidat réduit non déployable avant canary : Dream et watchdog
+### Reduced candidate, not deployable before canary: Dream and watchdog
 
-Ces unités reçoivent uniquement les restrictions qui ne nécessitent pas de namespace de montage :
+These units receive only the restrictions that do not require a mount namespace:
 
 ```ini
 UMask=0077
@@ -104,126 +104,126 @@ RestrictSUIDSGID=true
 SystemCallArchitectures=native
 ```
 
-Dream ne reçoit pas encore `PrivateUsers`, `PrivateTmp`, `ProtectSystem`, `ProtectHome`,
-`RestrictNamespaces`, `MemoryDenyWriteExecute`, `CapabilityBoundingSet` vide ou filtre
-`SystemCallFilter` ni `RestrictAddressFamilies`. Ces directives exigent un canary réel Codex
-**et** Claude et/ou risquent de casser le sandbox imbriqué, Node/libuv, les caches, le token refresh
-ou le lock partagé. Le watchdog ajoute, lui, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6` :
-curl loopback et le bus `systemctl --user` n'ont besoin d'aucune autre famille.
+Dream does not yet receive `PrivateUsers`, `PrivateTmp`, `ProtectSystem`, `ProtectHome`,
+`RestrictNamespaces`, `MemoryDenyWriteExecute`, an empty `CapabilityBoundingSet`, a
+`SystemCallFilter` filter, or `RestrictAddressFamilies`. These directives require a real Codex
+**and** Claude canary and/or risk breaking the nested sandbox, Node/libuv, the caches, token refresh,
+or the shared lock. The watchdog, for its part, adds `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`:
+loopback curl and the `systemctl --user` bus need no other family.
 
-### Filtres différés
+### Deferred filters
 
-`SystemCallFilter=@system-service`, `SystemCallFilter=~@mount ...` et
-`RestrictNamespaces=true` ne sont pas ajoutés dans ce lot. `systemd-analyze verify` ne peut pas
-prouver leur compatibilité avec asyncpg, Neo4j, uv, Codex ou Claude. Ils ne pourront être activés
-qu'après un trace/canary réel et un rollback connu bon.
+`SystemCallFilter=@system-service`, `SystemCallFilter=~@mount ...` and
+`RestrictNamespaces=true` are not added in this batch. `systemd-analyze verify` cannot
+prove their compatibility with asyncpg, Neo4j, uv, Codex, or Claude. They can only be enabled
+after a real trace/canary and a known-good rollback.
 
-## Rendu et vérification sans publication live
+## Rendering and verification without live publication
 
-Ajouter `install.sh --check-only` avec les invariants suivants :
+Add `install.sh --check-only` with the following invariants:
 
-- incompatible avec `--dry-run` et `--uninstall` ;
-- rend les huit fichiers gérés dans un `mktemp` borné sous `/tmp` ;
-- exécute d'abord les preflights host-aware sans afficher leurs valeurs, puis lance séparément le
-  verifier **une seule fois sur les huit fichiers** avec `HOME` et les XDG temporaires vides, un
-  `SYSTEMD_UNIT_PATH` limité au staging et aux cinq répertoires d'unités vendor, ainsi que
-  `--generators=no --man=no` ;
-- ne crée pas `USER_UNIT_DIR`, n'inspecte pas les unités live, ne publie aucun fichier et
-  n'appelle jamais `systemctl` ;
-- nettoie son répertoire temporaire par un chemin explicitement validé ;
-- journalise explicitement `check-only: no managed units changed`.
+- incompatible with `--dry-run` and `--uninstall`;
+- renders the eight managed files in a bounded `mktemp` under `/tmp`;
+- first runs the host-aware preflights without printing their values, then separately launches the
+  verifier **exactly once on the eight files** with empty `HOME` and temporary XDG values, a
+  `SYSTEMD_UNIT_PATH` limited to the staging area and the five vendor unit directories, as well as
+  `--generators=no --man=no`;
+- does not create `USER_UNIT_DIR`, does not inspect live units, does not publish any file, and
+  never calls `systemctl`;
+- cleans up its temporary directory through an explicitly validated path;
+- explicitly logs `check-only: no managed units changed`.
 
-Ajouter aussi `install.sh --render-dir /chemin/absolu/neuf` :
+Also add `install.sh --render-dir /absolute/new/path`:
 
-- incompatible avec les trois autres modes ;
-- exige un parent existant, répertoire, possédé par l'utilisateur ; résout ce parent avec
-  `realpath -e`, exige `u+wx`, refuse `g+w`/`o+w`, tout composant symlinké ainsi qu'une cible
-  canonique sous `USER_UNIT_DIR`, et refuse une cible relative, existante ou symlinkée ; chaque
-  conteneur ancêtre doit appartenir à l'UID racine effectif ou à l'utilisateur courant, avec
-  sémantique sticky sûre lorsqu'il est inscriptible ;
-- applique le même rendu, les mêmes preflights host-aware et la même vérification hermétique ;
-- crée un staging privé frère, exige exactement huit fichiers réguliers sans placeholder, puis
-  publie par un unique `mv -T --no-clobber` vers la cible finale mode `0700` ; l'identité
-  `device:inode` du parent, du staging et du rendu est gardée et revalidée ;
-- sur échec ou signal, supprime uniquement une cible qui porte encore l'identité du rendu ; une
-  cible remplacée concurrentement est préservée et signalée, et le staging est nettoyé seulement
-  s'il conserve sa propre identité ;
-- publie ainsi **dans ce répertoire de sortie seulement**, sans lire ou écrire une unité live et
-  sans `systemctl` ;
-- fournit ainsi un artefact inspectable dont l'opérateur peut installer un seul basename exact.
+- incompatible with the three other modes;
+- requires an existing parent, a directory, owned by the user; resolves that parent with
+  `realpath -e`, requires `u+wx`, refuses `g+w`/`o+w`, any symlinked component, as well as a
+  canonical target under `USER_UNIT_DIR`, and refuses a relative, existing, or symlinked target;
+  every ancestor container must belong to the effective root UID or the current user, with
+  safe sticky semantics when it is writable;
+- applies the same rendering, the same host-aware preflights, and the same hermetic verification;
+- creates a sibling private staging area, requires exactly eight regular files with no placeholder,
+  then publishes via a single `mv -T --no-clobber` to the final target with mode `0700`; the
+  `device:inode` identity of the parent, the staging area, and the rendering is kept and revalidated;
+- on failure or signal, removes only a target that still carries the rendering's identity; a
+  concurrently replaced target is preserved and flagged, and the staging area is cleaned up only
+  if it still holds its own identity;
+- publishes this way **into this output directory only**, without reading or writing a live unit and
+  without `systemctl`;
+- thereby provides an inspectable artifact whose operator can install exactly one exact basename.
 
-Les deux modes échouent fermés si `systemd-analyze` est absent ou si un seul fichier ne passe pas
-`verify` : retour non nul, staging nettoyé et aucun `--render-dir` publié.
+Both modes fail closed if `systemd-analyze` is absent or if a single file fails
+`verify`: nonzero return, staging cleaned up, and no `--render-dir` published.
 
-Le cleanup ne fait jamais de `stat` puis `rm -rf` sur la cible publique : il la remet d'abord par
-renommage atomique dans le slot privé du staging, vérifie son identité, et restaure tout
-remplacement concurrent. Le parent privé et le sticky bit de `/tmp` protègent contre les autres
-UID. Ce contrat Bash ne revendique pas une isolation contre un processus hostile du **même UID**,
-qui peut encore courir les opérations path-based ; cette frontière exigerait un helper fondé sur
-des `dirfd`, `renameat2(RENAME_NOREPLACE)` et `unlinkat`.
+The cleanup never does a `stat` followed by `rm -rf` on the public target: it first moves it back by
+atomic rename into the staging area's private slot, verifies its identity, and restores any
+concurrent replacement. The private parent and `/tmp`'s sticky bit protect against other
+UIDs. This Bash contract does not claim isolation against a hostile process of the **same UID**,
+which can still race the path-based operations; that boundary would require a helper built on
+`dirfd`, `renameat2(RENAME_NOREPLACE)`, and `unlinkat`.
 
-Le comportement historique de `--dry-run` reste compatible : rendu et publication atomique dans
-`USER_UNIT_DIR`, sans `systemctl`. Les runbooks doivent cesser de le décrire comme sans effet de
-bord et utiliser `--check-only` pour une vérification éphémère ou `--render-dir` pour préparer un
-artefact de rollout hors du répertoire systemd.
+The historical behavior of `--dry-run` remains compatible: rendering and atomic publication into
+`USER_UNIT_DIR`, without `systemctl`. The runbooks must stop describing it as side-effect-free
+and use `--check-only` for an ephemeral verification or `--render-dir` to prepare a
+rollout artifact outside the systemd directory.
 
-Un sélecteur de publication live reste hors de ce lot. La fenêtre opérateur devra sauvegarder les
-fragments/drop-ins, produire un `--render-dir`, puis copier atomiquement un seul basename validé et
-canarier graph, MCP et Dream séparément. L'installation normale et `--dry-run` ne doivent pas être
-utilisés comme rollout global aveugle.
+A live-publication selector remains out of this batch. The operator window will need to back up the
+fragments/drop-ins, produce a `--render-dir`, then atomically copy a single validated basename and
+canary graph, MCP, and Dream separately. Normal installation and `--dry-run` must not be
+used as a blind global rollout.
 
-## Cycle TDD
+## TDD cycle
 
-### RED 1 — cohérence des namespaces user
+### RED 1 — user namespace consistency
 
-Créer un contrat central des templates `.service.tmpl` qui échoue si une unité contient une
-directive de namespace/montage (`PrivateTmp`, `PrivateDevices`, `PrivateMounts`, `ProtectSystem`,
+Create a central contract for the `.service.tmpl` templates that fails if a unit contains a
+namespace/mount directive (`PrivateTmp`, `PrivateDevices`, `PrivateMounts`, `ProtectSystem`,
 `ProtectHome`, `ProtectClock`, `ProtectControlGroups`, `ProtectKernelLogs`,
 `ProtectKernelModules`, `ProtectKernelTunables`, `ProtectProc`, `ProcSubset`, `ReadWritePaths`,
 `ReadOnlyPaths`, `InaccessiblePaths`, `BindPaths`, `BindReadOnlyPaths`, `TemporaryFileSystem`,
 `NoExecPaths`, `ExecPaths`, `PrivateNetwork`, `PrivateIPC`, `ProtectHostname`, `RootDirectory`,
-`RootImage`, `MountAPIVFS`, `MountImages`, `ExtensionImages`) sans `PrivateUsers=true`. Le test
-doit échouer sur automation.
+`RootImage`, `MountAPIVFS`, `MountImages`, `ExtensionImages`) without `PrivateUsers=true`. The test
+must fail on automation.
 
-### RED 2 — profils exacts par unité
+### RED 2 — exact profiles per unit
 
-Tester les quatre services principaux et le watchdog :
+Test the four main services and the watchdog:
 
-- occurrence unique de chaque directive ;
-- aucune valeur `false` ou override contradictoire ;
-- baseline d'intégrité exacte pour automation/graph ;
-- baseline `ProtectSystem=full` sans `ProtectHome` et avec config Brain read-only pour MCP ;
-- baseline réduite exacte et absence explicite des directives différées pour Dream/watchdog ;
-- familles réseau limitées à `AF_UNIX AF_INET AF_INET6` pour les profils forts et le watchdog,
-  mais différées explicitement pour Dream ;
-- graph-recon utilise l'interpréteur absolu sans `/bin/bash -lc` ; Dream et graph-recon ne
-  revendiquent plus le `network-online.target` système absent du user manager.
+- single occurrence of each directive;
+- no `false` value or contradictory override;
+- exact integrity baseline for automation/graph;
+- `ProtectSystem=full` baseline without `ProtectHome` and with the Brain config read-only for MCP;
+- exact reduced baseline and explicit absence of the deferred directives for Dream/watchdog;
+- network families limited to `AF_UNIX AF_INET AF_INET6` for the strong profiles and the watchdog,
+  but explicitly deferred for Dream;
+- graph-recon uses the absolute interpreter without `/bin/bash -lc`; Dream and graph-recon no longer
+  claim the `network-online.target` system target absent from the user manager.
 
-### RED 3 — vrai check-only et render-dir isolé
+### RED 3 — real check-only and isolated render-dir
 
-Étendre les tests de l'installateur avec un faux HOME/XDG et des wrappers hostiles :
+Extend the installer tests with a fake HOME/XDG and hostile wrappers:
 
-- `returncode == 0`, message exact de succès et aucun `systemctl` appelé ;
-- `USER_UNIT_DIR` reste absent et une sentinelle hostile n'est ni lue ni scannée ;
-- les huit basenames exacts existent au moment du verify, sans placeholder, puis le staging du
-  check-only est supprimé ;
-- le wrapper du verifier reçoit les `HOME`/XDG temporaires, le chemin systemd isolé et les options
-  sans générateur/man ; une valeur-secret sentinelle de fixture est absente de stdout/stderr sur
-  les succès comme sur toutes les erreurs ;
-- les combinaisons de flags sont refusées avant mutation ;
-- succès, erreur de rendu, erreur de verify, `INT` et `TERM` nettoient le staging sans toucher les
-  unités existantes ; l'absence de `systemd-analyze` échoue non-zéro avant toute publication ;
-- `--render-dir` refuse aussi un parent symlinké vers `USER_UNIT_DIR`, rend dans un staging frère
-  puis renomme atomiquement ; la cible finale reste absente après erreur, `INT` ou `TERM`, et le
-  succès conserve exactement les huit artefacts validés ;
-- le chemin `--dry-run` historique reste couvert séparément.
+- `returncode == 0`, exact success message, and no `systemctl` called;
+- `USER_UNIT_DIR` remains absent and a hostile sentinel is neither read nor scanned;
+- the eight exact basenames exist at verify time, with no placeholder, then the check-only
+  staging area is removed;
+- the verifier's wrapper receives the temporary `HOME`/XDG, the isolated systemd path, and the
+  no-generator/no-man options; a fixture secret-sentinel value is absent from stdout/stderr on
+  both success and every error;
+- flag combinations are rejected before any mutation;
+- success, render error, verify error, `INT`, and `TERM` clean up the staging area without touching
+  existing units; the absence of `systemd-analyze` fails nonzero before any publication;
+- `--render-dir` also refuses a parent symlinked to `USER_UNIT_DIR`, renders into a sibling staging
+  area then atomically renames; the final target remains absent after an error, `INT`, or `TERM`,
+  and success preserves exactly the eight validated artifacts;
+- the historical `--dry-run` path remains covered separately.
 
-### GREEN minimal
+### Minimal GREEN
 
-Modifier uniquement les cinq templates, `install.sh`, les tests contractuels et les runbooks.
-Ne modifier ni le code applicatif MCP/Dream, ni les secrets, ni les unités live.
+Modify only the five templates, `install.sh`, the contract tests, and the runbooks.
+Do not modify the MCP/Dream application code, the secrets, or the live units.
 
-## Fichiers attendus
+## Expected files
 
 - `deploy/systemd/brain-mcp-http.service.tmpl`
 - `deploy/systemd/brain-mcp-http-watchdog.service.tmpl`
@@ -233,12 +233,12 @@ Ne modifier ni le code applicatif MCP/Dream, ni les secrets, ni les unités live
 - `deploy/systemd/install.sh`
 - `deploy/systemd/README.md`
 - `deploy/systemd/MCP_HTTP_RUNBOOK.md`
-- `tests/unit/deploy/test_systemd_sandbox_profiles.py` (nouveau)
-- tests installateur existants au strict nécessaire
+- `tests/unit/deploy/test_systemd_sandbox_profiles.py` (new)
+- existing installer tests to the strict necessary
 - `tests/integration/test_dream_systemd_install.sh`
-- roadmap et ce plan pour la preuve finale
+- roadmap and this plan for the final proof
 
-## Gates avant fusion
+## Gates before merge
 
 ```bash
 pytest -q \
@@ -257,68 +257,68 @@ pytest -q
 git diff --check
 ```
 
-Le smoke shell doit appeler `--check-only` dans sa fixture HOME/XDG et vérifier les huit artefacts
-avec le vrai parseur systemd. Le verifier peut effectuer des lectures système read-only ; la
-garantie est l'absence de lookup HOME/XDG local, de mutation lifecycle et de tout `systemctl`.
+The smoke shell script must call `--check-only` in its HOME/XDG fixture and verify the eight artifacts
+with the real systemd parser. The verifier may perform read-only system reads; the
+guarantee is the absence of local HOME/XDG lookup, lifecycle mutation, and any `systemctl`.
 
-## Preuve runtime différée
+## Deferred runtime proof
 
-Le ticket reste `in_progress` après fusion tant qu'une fenêtre opérateur n'a pas prouvé, unité par
-unité :
+The ticket stays `in_progress` after merge until an operator window has proven, unit by
+unit:
 
-1. backup persistant du fragment et des drop-ins connus bons ;
-2. depuis le checkout canonique de production au SHA validé, rendu `--check-only`, puis
-   `--render-dir` ; copie d'un seul basename via fichier `.new` et
-   `mv` atomique dans `USER_UNIT_DIR`, `systemctl --user daemon-reload`, sans activation globale
-   des timers ;
-3. propriétés déclarées par le manager via `systemctl --user show` et score heuristique
-   `systemd-analyze security` ; ces deux lectures ne sont jamais présentées comme une preuve
-   d'enforcement sur le processus ;
-4. preuve d'enforcement sans secret : pour les profils forts, probe transient portant les
-   directives exactes du fragment rendu, écriture autorisée dans une fixture et hors périmètre
-   refusée ; pour les profils forts et le watchdog, famille de socket exotique refusée. Sur tout
-   processus persistant redémarré, vérifier aussi `NoNewPrivs: 1` dans `/proc/$PID/status` et les
-   montages attendus en lecture seule dans `/proc/$PID/mountinfo`. Dream consigne ces protections
-   comme résiduelles jusqu'à son canary dédié ;
-5. graph-recon en rapport sans `--fix` avant tout run mutateur ;
-6. MCP : neutraliser d'abord le watchdog, capturer l'ancien `MainPID`, publier le fragment,
-   `daemon-reload`, puis `restart` ; exiger un nouveau `MainPID` non nul et différent avant toute
-   validation. Vérifier ensuite les preuves d'enforcement du point 4, le health, les appels
-   authentifiés lecture et écriture, DB/Neo4j/embedding et l'écriture d'un `CLAUDE.md` de fixture
-   sauvegardé/restauré. Tout échec déclenche le rollback immédiat avant de réarmer le watchdog ;
-7. Dream ne démarre pas son unité complète : `dream.sh --dry-run` conserve des chemins mutants.
-   Canarier directement `codex_runner`, puis le chemin Claude séparé, sous une unité transient au
-   même profil et avec des outils MCP lecture seule. Le canary complet reste bloqué jusqu'à un
-   vrai mode applicatif sans scrub `--live`, WET EXTRACT/ROADMAP ni alerte ; automation est validée
-   selon son contrat de lease/cutover ;
-8. rollback adapté : MCP restaure/reload/restart puis health ; Dream/graph restaurent avant le
-   prochain timer sans relancer le oneshot ; automation respecte la lease ; watchdog est restauré
-   puis probé sans provoquer de restart. Ne jamais utiliser `install.sh --uninstall`.
+1. persistent backup of the fragment and the known-good drop-ins;
+2. from the canonical production checkout at the validated SHA, `--check-only` rendering, then
+   `--render-dir`; copy of a single basename via a `.new` file and an
+   atomic `mv` into `USER_UNIT_DIR`, `systemctl --user daemon-reload`, without global activation
+   of the timers;
+3. properties declared by the manager via `systemctl --user show` and heuristic score
+   `systemd-analyze security`; these two readings are never presented as proof
+   of enforcement on the process;
+4. proof of enforcement without a secret: for the strong profiles, a transient probe carrying the
+   exact directives of the rendered fragment, write allowed in a fixture and refused
+   out of scope; for the strong profiles and the watchdog, an exotic socket family refused. On any
+   restarted persistent process, also check `NoNewPrivs: 1` in `/proc/$PID/status` and the
+   expected read-only mounts in `/proc/$PID/mountinfo`. Dream logs these protections
+   as residual until its dedicated canary;
+5. graph-recon in report mode without `--fix` before any mutating run;
+6. MCP: first neutralize the watchdog, capture the old `MainPID`, publish the fragment,
+   `daemon-reload`, then `restart`; require a new, nonzero, and different `MainPID` before any
+   validation. Then check the point-4 enforcement proofs, health, the authenticated read and
+   write calls, DB/Neo4j/embedding, and the write of a backed-up/restored fixture `CLAUDE.md`.
+   Any failure triggers an immediate rollback before rearming the watchdog;
+7. Dream does not start its full unit: `dream.sh --dry-run` retains mutating paths.
+   Directly canary `codex_runner`, then the separate Claude path, under a transient unit with the
+   same profile and with read-only MCP tools. The full canary remains blocked until a
+   real application mode without `--live` scrub, WET EXTRACT/ROADMAP, or alert; automation is validated
+   against its lease/cutover contract;
+8. matching rollback: MCP restores/reloads/restarts then health; Dream/graph restore before the
+   next timer without relaunching the oneshot; automation respects the lease; the watchdog is restored
+   then probed without triggering a restart. Never use `install.sh --uninstall`.
 
-## Critère de sortie code-ready
+## Code-ready exit criteria
 
-- Les profils versionnés sont exacts, différenciés et ne revendiquent pas plus que leurs garanties.
-- Toute protection filesystem d'une unité user exige `PrivateUsers=true` par test.
-- `--check-only` ne publie rien ; `--render-dir` ne sort que des artefacts vérifiés hors systemd.
-- Les gates complètes et trois revues indépendantes concluent `SHIP` sans finding P0–P3.
-- Le ticket Brain reçoit les commits, tests et limites ; il reste ouvert jusqu'à preuve runtime.
+- The versioned profiles are exact, differentiated, and do not claim more than their guarantees.
+- Every filesystem protection of a user unit requires `PrivateUsers=true`, enforced by test.
+- `--check-only` publishes nothing; `--render-dir` only outputs verified artifacts outside systemd.
+- The full gates and three independent reviews conclude `SHIP` with no P0–P3 finding.
+- The Brain ticket receives the commits, tests, and limitations; it stays open until runtime proof.
 
-## Preuve code-ready du 24 juillet 2026
+## Code-ready proof from July 24, 2026
 
-- Commits du lot : plan `dea89c9`, contrats RED `4c1a650`, implémentation GREEN `0e29044` ;
-  le commit documentaire final porte les runbooks, l'architecture et la roadmap.
-- RED initial : 56 contrats, 35 échecs attendus et 21 succès ; cinq régressions supplémentaires
-  ont ensuite été ajoutées depuis les findings de revue (symlink live, permissions/ancêtres,
-  cleanup, remplacement concurrent et échec de sortie après publication).
-- GREEN final : 61/61 contrats profils + installateur, 228/228 tests deploy et smoke systemd 249
-  avec 29 checks verts ; seule la probe du manager user est ignorée faute de bus disponible.
-- Gates dépôt dans l'environnement CI Python 3.12.12 : Ruff sur 600 fichiers, Mypy sur 162
-  fichiers, 6 114 tests passés et 298 ignorés ; syntaxe Bash, ShellCheck et `git diff --check`
-  verts.
-- Trois revues indépendantes (profils, sécurité/TOCTOU et qualité/compatibilité) concluent
-  `SHIP`, sans finding P0, P1, P2 ou P3.
-- Aucun fragment live, drop-in, secret, timer, manager systemd, service, base ou conteneur n'a été
-  modifié. Le ticket reste `in_progress` jusqu'aux canaries et preuves d'enforcement opérateur.
-- Diagnostic de maintenance séparé : Python 3.14 accepte le JSON imbriqué utilisé par un contrat
-  SEC2 là où Python 3.12 le rejette par récursion. La CI 3.12 reste verte ; cette compatibilité ne
-  doit pas être corrigée dans le lot systemd.
+- Batch commits: plan `dea89c9`, RED contracts `4c1a650`, GREEN implementation `0e29044`;
+  the final documentation commit carries the runbooks, the architecture, and the roadmap.
+- Initial RED: 56 contracts, 35 expected failures and 21 passes; five additional regressions
+  were then added from the review findings (live symlink, permissions/ancestry,
+  cleanup, concurrent replacement, and exit failure after publication).
+- Final GREEN: 61/61 profile + installer contracts, 228/228 deploy tests and systemd 249 smoke
+  with 29 green checks; only the user manager probe is skipped for lack of an available bus.
+- Repo gates in the CI Python 3.12.12 environment: Ruff over 600 files, Mypy over 162
+  files, 6,114 tests passed and 298 skipped; Bash syntax, ShellCheck, and `git diff --check`
+  green.
+- Three independent reviews (profiles, security/TOCTOU, and quality/compatibility) conclude
+  `SHIP`, with no P0, P1, P2, or P3 finding.
+- No live fragment, drop-in, secret, timer, systemd manager, service, database, or container was
+  modified. The ticket stays `in_progress` until the canaries and operator enforcement proofs.
+- Separate maintenance diagnostic: Python 3.14 accepts the nested JSON used by a SEC2
+  contract where Python 3.12 rejects it by recursion. CI 3.12 stays green; this compatibility
+  must not be fixed within the systemd batch.

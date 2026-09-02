@@ -95,6 +95,18 @@ git archive HEAD -o /tmp/brain-v42-clean.tar && \
   gitleaks dir /tmp/brain-v42-clean --no-banner --redact --exit-code 1
 ```
 
+## Language
+
+**Everything published to this repository is written in English.** That covers
+commit messages (subject and body), branch names, pull request titles and
+descriptions, issues, review comments, release notes and tag messages, and any
+new file added to the tree — docs, code comments, test names, CI workflows.
+
+The maintainer's working language is not English, and part of the history and
+of `docs/` predates this rule; those files are left coherent in their original
+language until a deliberate translation pass, rather than drifting into a
+mix of both. New content does not get that grandfather clause.
+
 ## Commit conventions
 
 Conventional Commits, in English: `feat(scope): ...`, `fix(scope): ...`,

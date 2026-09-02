@@ -1,119 +1,119 @@
-# Images conteneur verrouillées
+# Locked container images
 
-Ce runbook maintient les images distantes exécutées par le dépôt sous la forme
-`tag@sha256:<digest>`. Le tag garde la version lisible; le digest empêche qu'un registre
-remplace silencieusement le contenu exécuté.
+This runbook maintains the remote images run by the repository in the form
+`tag@sha256:<digest>`. The tag keeps the human-readable version; the digest prevents a
+registry from silently replacing the executed content.
 
-## Menace couverte
+## Threat covered
 
-Un tag de registre est mutable. Sans digest, deux exécutions du même commit peuvent tirer des
-octets différents après une publication amont. Le catalogue
-[`config/container-images.lock.yml`](../config/container-images.lock.yml) conserve les
-références exactes et leur preuve de résolution. Le gate
-[`scripts/check_container_image_pins.py`](../scripts/check_container_image_pins.py) découvre les
-consommateurs opérationnels et exige une bijection avec ce catalogue.
+A registry tag is mutable. Without a digest, two runs of the same commit can pull different
+bytes after an upstream publish. The catalog
+[`config/container-images.lock.yml`](../config/container-images.lock.yml) keeps the
+exact references and their resolution proof. The gate
+[`scripts/check_container_image_pins.py`](../scripts/check_container_image_pins.py) discovers the
+operational consumers and requires a bijection with this catalog.
 
-Le verrouillage ne prouve ni l'innocuité de l'image, ni sa signature, ni sa disponibilité future.
-Il rend toute rotation explicite, testable et réversible.
+Locking proves neither the image's harmlessness, nor its signature, nor its future availability.
+It makes any rotation explicit, testable and reversible.
 
-## Périmètre du gate
+## Gate scope
 
-Le gate parcourt les fichiers opérationnels à la racine et sous `deploy/`, `ops/`, `scripts/`
-et `services/`; il ignore `.claude/`, `.git/`, `bench/`, `docs/` et `tests/`. Il contrôle les
-`Dockerfile*` et `Containerfile*`, les fichiers Compose/stack YAML, les scripts shell reconnus
-par suffixe ou shebang, les images et commandes exécutables de GitLab CI, ainsi que les modules
-Python et scripts à shebang Python de `scripts/` et `services/`.
+The gate scans the operational files at the root and under `deploy/`, `ops/`, `scripts/`
+and `services/`; it ignores `.claude/`, `.git/`, `bench/`, `docs/` and `tests/`. It checks
+`Dockerfile*` and `Containerfile*`, Compose/stack YAML files, shell scripts recognized
+by suffix or shebang, GitLab CI executable images and commands, as well as Python
+modules and Python-shebang scripts under `scripts/` and `services/`.
 
-Le contrat est fail-closed. Chaque image distante doit se résoudre statiquement vers une
-référence exacte `tag@digest`. Chaque chemin qui participe à la provenance d'une image, à un
-contexte de build ou à l'exécution d'un autre script doit être prouvé interne au dépôt. Les
-commandes Compose en shell exigent des fichiers `-f` explicites; les contextes Compose et
-Dockerfiles doivent être littéraux. Les dépendances shell exécutables passent par un
-`SCRIPT_DIR` canonique; `/etc/os-release` reste la seule source de données externe explicitement
-modélisée.
+The contract is fail-closed. Every remote image must resolve statically to an exact
+`tag@digest` reference. Every path that participates in an image's provenance, in a
+build context or in the execution of another script must be proven internal to the repository. Shell
+Compose commands require explicit `-f` files; Compose contexts and
+Dockerfiles must be literal. Executable shell dependencies go through a
+canonical `SCRIPT_DIR`; `/etc/os-release` remains the only external data source explicitly
+modeled.
 
-En shell et dans les commandes CI, le gate analyse aussi les interpréteurs et payloads inline,
-les fonctions, alias et scripts transitifs. En Python, l'image de `containers.run` doit être
-littérale; le gate suit ou rejette les appels Docker directs ou indirects via SDK, API de
-processus, callbacks, `functools.partial`, wrappers, décorateurs, factories, fonctions d'ordre
-supérieur, réflexion, imports locaux et mutations de payload.
+In shell and in CI commands, the gate also analyzes inline interpreters and payloads,
+functions, aliases and transitive scripts. In Python, the image in `containers.run` must be
+literal; the gate follows or rejects direct or indirect Docker calls via SDK, process
+API, callbacks, `functools.partial`, wrappers, decorators, factories, higher-order
+functions, reflection, local imports and payload mutations.
 
-Toute nouvelle syntaxe d'exécution doit recevoir un test adversarial et un modèle explicite
-avant son adoption. Un rejet conservateur signale une forme non prise en charge; il ne doit pas
-être contourné par une exception ad hoc.
+Any new execution syntax must receive an adversarial test and an explicit model
+before adoption. A conservative rejection signals an unsupported form; it must not
+be worked around with an ad hoc exception.
 
-## Inventaire opérationnel
+## Operational inventory
 
-Le fichier lock reste la source de vérité pour les digests, media types, plateformes et dates de
-résolution. Cet inventaire nomme les huit références suivies sans recopier ces métadonnées.
-(`docker-27-cli` a quitté le lock avec le rail GitLab, son seul consommateur.)
+The lock file remains the source of truth for digests, media types, platforms and resolution
+dates. This inventory names the eight tracked references without copying that metadata.
+(`docker-27-cli` left the lock along with the GitLab rail, its only consumer.)
 
-| Entrée du lock | Tag lisible | Consommateurs |
+| Lock entry | Readable tag | Consumers |
 |---|---|---|
-| `python-3-12-slim` | `python:3.12-slim` | Dockerfile racine, build GGUF, shim et supervisor |
-| `python-3-11-slim` | `python:3.11-slim` | service embedding legacy |
-| `pgvector-pg16` | `pgvector/pgvector:pg16` | service CI et Compose principal |
-| `llama-server-cuda` | `ghcr.io/ggml-org/llama.cpp:server-cuda` | Compose principal |
-| `pytorch-2-7-1-cuda12-8-cudnn9-runtime` | `pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime` | service Qodo |
-| `nvidia-cuda-12-4-1-base-ubuntu22-04` | `nvidia/cuda:12.4.1-base-ubuntu22.04` | probe dev-pc et supervisor |
-| `llama-full` | `ghcr.io/ggml-org/llama.cpp:full` | build GGUF |
-| `neo4j-5-26-21` | `neo4j:5.26.21` | Compose principal |
+| `python-3-12-slim` | `python:3.12-slim` | root Dockerfile, GGUF build, shim and supervisor |
+| `python-3-11-slim` | `python:3.11-slim` | legacy embedding service |
+| `pgvector-pg16` | `pgvector/pgvector:pg16` | CI service and main Compose |
+| `llama-server-cuda` | `ghcr.io/ggml-org/llama.cpp:server-cuda` | main Compose |
+| `pytorch-2-7-1-cuda12-8-cudnn9-runtime` | `pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime` | Qodo service |
+| `nvidia-cuda-12-4-1-base-ubuntu22-04` | `nvidia/cuda:12.4.1-base-ubuntu22.04` | dev-pc probe and supervisor |
+| `llama-full` | `ghcr.io/ggml-org/llama.cpp:full` | GGUF build |
+| `neo4j-5-26-21` | `neo4j:5.26.21` | main Compose |
 
-Deux images sont locales et ne possèdent donc aucun digest de registre :
+Two images are local and therefore carry no registry digest:
 
-| Image locale | Contexte de build |
+| Local image | Build context |
 |---|---|
 | `brain-embedding-supervisor:local` | `services/embedding_supervisor` |
 | `brain-embedding-qodo:local` | `services/embedding_qodo` |
 
-Le fichier [`deploy/dev-pc/docker-compose.yml`](../deploy/dev-pc/docker-compose.yml) doit garder
-pour chacune un bloc `build:` et `pull_policy: build`. Le gate refuse une exception locale sans
-ces deux propriétés.
+The file [`deploy/dev-pc/docker-compose.yml`](../deploy/dev-pc/docker-compose.yml) must keep
+a `build:` block and `pull_policy: build` for each of them. The gate refuses a local exception without
+these two properties.
 
-Le tag `brain-v42-ci-smoke:${CI_COMMIT_SHA}` n'est pas une troisième entrée locale du lock. Le job
-`build:docker` le crée une seule fois depuis le contexte littéral `.`, puis l'exécute
-immédiatement avec `docker run --pull=never`. Il ne doit être ni tiré, ni retagué, ni chargé,
-ni poussé, ni sauvegardé.
+The tag `brain-v42-ci-smoke:${CI_COMMIT_SHA}` is not a third local lock entry. The
+`build:docker` job creates it once from the literal context `.`, then runs it
+immediately with `docker run --pull=never`. It must be neither pulled, nor retagged, nor loaded,
+nor pushed, nor saved.
 
-## Cadence, responsabilité et sources
+## Cadence, ownership and sources
 
-Le dépôt impose une revue des neuf références au moins tous les 30 jours. À chaque revue, la
-personne qui la conduit ouvre ou met à jour une issue de maintenance, s'y nomme responsable et
-indique `reviewed_at` ainsi qu'une `next_review_due` située au plus 30 jours plus tard. Cette
-attribution dans l'issue constitue le contrat de propriété; elle ne suppose aucun rôle
-organisationnel externe au dépôt.
+The repository requires a review of the nine references at least every 30 days. At each review, the
+person conducting it opens or updates a maintenance issue, names themselves as owner in it and
+records `reviewed_at` as well as a `next_review_due` set at most 30 days later. This
+attribution in the issue constitutes the ownership contract; it does not assume any
+organizational role external to the repository.
 
-Tout advisory pertinent déclenche immédiatement une revue, sans attendre `next_review_due`. La
-personne qui le détecte ouvre l'issue, gèle la publication ou le déploiement de l'image concernée
-et consigne la décision avant reprise.
+Any relevant advisory triggers an immediate review, without waiting for `next_review_due`. The
+person who detects it opens the issue, freezes the publication or deployment of the affected image
+and records the decision before resuming.
 
-Chaque revue relit le manifeste dans le registre canonique indiqué par le lock et consulte les
-sources amont pertinentes :
+Each review rereads the manifest in the canonical registry indicated by the lock and consults the
+relevant upstream sources:
 
-| Entrées | Registre | Publications et advisories |
+| Entries | Registry | Publications and advisories |
 |---|---|---|
 | Python 3.11/3.12 | Docker Hub | [Docker Official Images](https://github.com/docker-library/official-images), [Python Security](https://www.python.org/dev/security/) |
 | Docker CLI | Docker Hub | [Docker security announcements](https://docs.docker.com/security/security-announcements/), [Docker Official Images](https://github.com/docker-library/official-images) |
-| pgvector | Docker Hub | [releases pgvector](https://github.com/pgvector/pgvector/releases), [security pgvector](https://github.com/pgvector/pgvector/security) |
-| llama.cpp | GHCR | [releases llama.cpp](https://github.com/ggml-org/llama.cpp/releases), [security llama.cpp](https://github.com/ggml-org/llama.cpp/security) |
-| PyTorch | Docker Hub | [releases PyTorch](https://github.com/pytorch/pytorch/releases), [security PyTorch](https://github.com/pytorch/pytorch/security) |
+| pgvector | Docker Hub | [pgvector releases](https://github.com/pgvector/pgvector/releases), [pgvector security](https://github.com/pgvector/pgvector/security) |
+| llama.cpp | GHCR | [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases), [llama.cpp security](https://github.com/ggml-org/llama.cpp/security) |
+| PyTorch | Docker Hub | [PyTorch releases](https://github.com/pytorch/pytorch/releases), [PyTorch security](https://github.com/pytorch/pytorch/security) |
 | NVIDIA CUDA | Docker Hub | [NVIDIA Product Security](https://www.nvidia.com/en-us/security/) |
-| Neo4j | Docker Hub | [Neo4j Security](https://neo4j.com/security/), [image officielle Neo4j](https://hub.docker.com/_/neo4j/) |
+| Neo4j | Docker Hub | [Neo4j Security](https://neo4j.com/security/), [official Neo4j image](https://hub.docker.com/_/neo4j/) |
 
-L'issue conserve une preuve assainie : responsable, dates, sources consultées, entrées
-affectées, digests avant/après, plateforme, commandes et sorties utiles, résultat CI Lint,
-tests et revue. Une revue sans rotation conserve la même preuve et planifie l'échéance suivante.
-Le lock porte en plus la preuve de résolution de chaque digest modifié.
+The issue keeps sanitized proof: owner, dates, sources consulted, affected
+entries, before/after digests, platform, useful commands and outputs, CI Lint result,
+tests and review. A review without rotation keeps the same proof and schedules the next
+deadline. The lock additionally carries the resolution proof for each changed digest.
 
-## Rotation manuelle
+## Manual rotation
 
-Déclencher une rotation après un advisory pertinent ou une revue planifiée. Une rotation traite
-ensemble le catalogue et tous ses consommateurs.
+Trigger a rotation after a relevant advisory or a scheduled review. A rotation treats
+the catalog and all its consumers together.
 
-1. Ouvrir une branche depuis un `main` propre. Ne tirer ni exécuter l'image pendant la phase de
-   résolution.
-2. Lire le manifeste du tag auprès du registre, puis relire la référence exacte candidate. Saisir
-   les deux valeurs explicitement; ne pas les construire depuis un fichier d'environnement.
+1. Open a branch from a clean `main`. Do not pull or run the image during the
+   resolution phase.
+2. Read the tag's manifest from the registry, then reread the exact candidate reference. Enter
+   both values explicitly; do not build them from an environment file.
 
    ```bash
    TAG='python:3.12-slim'
@@ -125,19 +125,19 @@ ensemble le catalogue et tous ses consommateurs.
    docker buildx imagetools inspect --raw "$EXACT"
    ```
 
-   Pour un manifeste mono-architecture, vérifier aussi son descripteur :
+   For a single-architecture manifest, also check its descriptor:
 
    ```bash
    docker manifest inspect --verbose "$EXACT"
    ```
 
-3. Confirmer que le tag et `tag@digest` résolvent le digest candidat et que leur index ou
-   descripteur contient `linux/amd64`. Relever dans le lock le registre canonique, le media type,
-   les plateformes observées, `resolved_at` et la commande de résolution. Un tag qui bouge entre
-   ces lectures impose de recommencer la résolution.
-4. Modifier dans le même commit l'entrée du lock et chaque consommateur listé. Conserver le tag
-   lisible devant `@sha256:`. Ne laisser aucun ancien digest dans un consommateur.
-5. Exécuter le gate hors ligne et les contrôles ciblés :
+3. Confirm that the tag and `tag@digest` resolve to the candidate digest and that their index or
+   descriptor contains `linux/amd64`. Record in the lock the canonical registry, the media type,
+   the observed platforms, `resolved_at` and the resolution command. A tag that moves between
+   these reads requires restarting the resolution.
+4. Modify the lock entry and every listed consumer in the same commit. Keep the readable tag
+   in front of `@sha256:`. Leave no old digest in a consumer.
+5. Run the gate offline and the targeted checks:
 
    ```bash
    uv sync --locked --no-dev --extra dev
@@ -155,7 +155,7 @@ ensemble le catalogue et tous ses consommateurs.
    docker compose -f deploy/dev-pc/docker-compose.yml config --images
    ```
 
-6. Relire les huit références exactes auprès des registres, puis exécuter les gates de branche :
+6. Reread the eight exact references from the registries, then run the branch gates:
 
    ```bash
    uv run ruff check .
@@ -167,24 +167,24 @@ ensemble le catalogue et tous ses consommateurs.
    git diff --check main...HEAD
    ```
 
-7. Faire revoir le diff complet. Le reviewer doit confirmer l'inventaire, les consommateurs, la
-   preuve `linux/amd64`, les frontières du lot et l'absence de constat P0 à P3.
+7. Have the full diff reviewed. The reviewer must confirm the inventory, the consumers, the
+   `linux/amd64` proof, the batch boundaries and the absence of a P0 to P3 finding.
 
-## Retour arrière
+## Rollback
 
-Revertir le commit complet de rotation, jamais le lock ou un consommateur seul. Vérifier que les
-anciennes références exactes restent disponibles, puis relancer le gate et les tests ciblés. Si
-un ancien digest n'est plus servi, sélectionner un nouveau digest vérifié au lieu de revenir à un
-tag flottant.
+Revert the entire rotation commit, never the lock or a single consumer alone. Verify that the
+old exact references remain available, then rerun the gate and the targeted tests. If
+an old digest is no longer served, select a new verified digest instead of reverting to a
+floating tag.
 
-## Frontières
+## Boundaries
 
-Ce contrat ne verrouille pas :
+This contract does not lock:
 
-- les modèles GGUF ou Hugging Face, leurs révisions et leurs checksums;
-- les dépendances Python propres aux services et les paquets système des images;
-- le daemon Docker ou BuildKit du runner, ni son helper GitLab;
-- les tags de publication produits par la CI;
-- les caches `*-latest`, qui accélèrent le build sans devenir des images exécutées.
+- GGUF or Hugging Face models, their revisions and their checksums;
+- Python dependencies specific to the services and the system packages of the images;
+- the runner's Docker daemon or BuildKit, nor its GitLab helper;
+- publication tags produced by CI;
+- the `*-latest` caches, which speed up the build without becoming executed images.
 
-L'audit de dépendances, le SBOM et la SAST restent des sous-lots OPS1 distincts.
+Dependency auditing, the SBOM and SAST remain separate OPS1 sub-batches.

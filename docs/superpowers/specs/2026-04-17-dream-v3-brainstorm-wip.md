@@ -10,7 +10,7 @@
 2. **B (méta-synthèse)** — next
 3. **C (cross-domain linking)** — last
 
-## Décisions prises pour Spec A (actionabilité)
+## Decisions taken for Spec A (actionability)
 
 | # | Décision | Choix |
 |---|----------|-------|
@@ -18,12 +18,12 @@
 | 2 | Targets | ADR + Runbook seulement (v1) |
 | 3 | UI | red-monitor dashboard SolidJS (nouveau service block) |
 | 4 | Briefing Claude | `brain_session_start` pointer only ("X pending → red-monitor") |
-| 5 | Accept/reject | red-monitor écrit directement dans PG brain-v42 (brain DSN exists) |
+| 5 | Accept/reject | red-monitor writes straight into PG brain-v42 (brain DSN exists) |
 | 6 | Matérialisation | J+1, prochain cycle dream 3am |
-| 7 | Data model | Nouvelle table `dream_proposals` (operational data, pas knowledge) |
+| 7 | Data model | New table `dream_proposals` (operational data, not knowledge) |
 | 8 | Pipeline | Nouvelle phase PROMOTE entre SYNTH et REORG (Opus, max_turns 50) |
 | 9 | Nouveaux tools | brain_list_mature_insights, brain_create_proposal, brain_list_accepted_proposals, brain_materialize_proposal |
-| 10 | Guardrails | Max 3 proposals/run, max 5 matérialisations/run, jamais cross-project_key |
+| 10 | Guardrails | Max 3 proposals/run, max 5 materializations/run, never cross-project_key |
 | 11 | Cross-repo | Touche brain-v42 + red-monitor |
 
 ## Table `dream_proposals`
@@ -47,7 +47,7 @@ CREATE TABLE dream_proposals (
 - Position : SCAN → CLEAN → CONNECT → SYNTH → **PROMOTE** → REORG
 - Model : Opus, max_turns 50, timeout 10m
 - Étape (a) : matérialise proposals acceptées (status='accepted', materialized_entity_id IS NULL) via brain_propose_adr / brain_create_runbook existants
-- Étape (b) : promeut insights mûrs (>7j, pas déjà promus) en nouvelles proposals
+- Step (b): promotes mature insights (>7d, not already promoted) into new proposals
 
 ## Sections de design restantes
 

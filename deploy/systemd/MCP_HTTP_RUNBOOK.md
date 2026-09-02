@@ -1,22 +1,22 @@
-# MCP HTTP systemd — runbook opérateur
+# MCP HTTP systemd — operator runbook
 
-Ce runbook couvre le service partagé `brain-mcp-http.service` et son watchdog. Le chemin
-d'installation normal génère et valide les unités sans modifier leur état. Leur démarrage,
-leur activation au boot et leur arrêt restent des décisions opérateur.
+This runbook covers the shared service `brain-mcp-http.service` and its watchdog. The normal
+installation path generates and validates the units without changing their state. Starting
+them, enabling them at boot, and stopping them remain operator decisions.
 
-The production systemd contract is fixed to `127.0.0.1:8765`, comme le client `.mcp.json`
-versionné.
-Un override `Settings.mcp_http_port` reste possible pour le développement hors de ce chemin,
-mais l'installateur et le service de production refusent toute autre valeur afin que serveur,
-clients, healthchecks et watchdog ne puissent pas diverger.
+The production systemd contract is fixed to `127.0.0.1:8765`, like the versioned `.mcp.json`
+client.
+An override of `Settings.mcp_http_port` remains possible for development outside this path,
+but the installer and the production service refuse any other value so that server,
+clients, healthchecks, and watchdog cannot diverge.
 
-> **Portée destructive de la désinstallation.** `deploy/systemd/install.sh --uninstall`
-> arrête, désactive et supprime **toutes** les unités gérées par le script : MCP HTTP,
-> watchdog, Dream, graph-recon et automation. Ne pas l'utiliser comme simple rollback MCP.
-> La combinaison `--dry-run --uninstall` est rejetée sans effet de bord.
+> **Destructive scope of the uninstall.** `deploy/systemd/install.sh --uninstall`
+> stops, disables, and removes **all** units managed by the script: MCP HTTP,
+> watchdog, Dream, graph-recon, and automation. Do not use it as a simple MCP rollback.
+> The combination `--dry-run --uninstall` is rejected with no side effect.
 
-Les commandes ci-dessous s'exécutent depuis la racine du checkout destiné à la production.
-Ne jamais copier une valeur de secret dans un journal ou une preuve partagée.
+The commands below run from the root of the checkout intended for production.
+Never copy a secret value into a log or a shared piece of evidence.
 
 ### Render path terminology
 
@@ -27,13 +27,13 @@ For example, `/state/systemd-render.ABC123` is `render_parent` and
 `/state/systemd-render.ABC123/units` is `render_dir`. The installer checks the parent ancestry
 for canonical, user-owned, non-replaceable path components before creating the child.
 
-## Upgrade d'une unité existante
+## Upgrading an existing unit
 
-Les anciennes installations pouvaient conserver `MCP_HTTP_TOKEN` dans le `.env` du checkout.
-Le nouveau preflight bloque **avant toute régénération** tant que cette duplication existe :
-le prochain restart ne peut donc pas basculer silencieusement vers une configuration invalide.
+Older installations could keep `MCP_HTTP_TOKEN` in the checkout's `.env`.
+The new preflight blocks **before any regeneration** as long as this duplication exists:
+the next restart therefore cannot silently switch to an invalid configuration.
 
-Avant `install.sh`, vérifier la situation sans afficher la valeur :
+Before `install.sh`, check the situation without printing the value:
 
 ```bash
 set -euo pipefail
@@ -48,22 +48,22 @@ if grep -Eqi '^[[:space:]]*(export[[:space:]]+)?MCP_HTTP_(TOKEN|DREAM_TOKENS)[[:
 fi
 ```
 
-Si la gate signale une migration, sauvegarder `.env` dans un emplacement privé `0700/0600`,
-confirmer en privé que `mcp-token.env` porte le bearer courant, puis retirer **uniquement** les
-affectations `MCP_HTTP_TOKEN`/`MCP_HTTP_DREAM_TOKENS` du `.env` avec un éditeur local. Ne pas
-mettre la valeur dans l'historique shell, un diff ou un ticket. Relancer ensuite le bloc ci-dessus
-et le preflight complet. Ce dépôt ne migre ni ne supprime automatiquement le secret de l'hôte.
+If the gate signals a migration, back up `.env` to a private `0700/0600` location,
+privately confirm that `mcp-token.env` carries the current bearer, then remove **only** the
+`MCP_HTTP_TOKEN`/`MCP_HTTP_DREAM_TOKENS` assignments from `.env` with a local editor. Do not
+put the value in shell history, a diff, or a ticket. Then rerun the block above
+and the full preflight. This repository neither migrates nor automatically removes the host's secret.
 
 ## Preflight
 
-Vérifier d'abord le checkout, les fichiers privés et les huit unités sans toucher au répertoire
-systemd live avec `--check-only`. `--render-dir` produit ensuite un artefact privé hors systemd.
-Le bloc sauvegarde et publie uniquement les trois fragments MCP après neutralisation explicite du
-watchdog, puis recharge le manager. Cette neutralisation est la première mutation de lifecycle ;
-le watchdog ne sera réactivé qu'après le go/no-go.
+First check the checkout, the private files, and the eight units without touching the
+live systemd directory, with `--check-only`. `--render-dir` then produces a private artifact
+outside of systemd. The block backs up and publishes only the three MCP fragments after
+explicit neutralization of the watchdog, then reloads the manager. This neutralization is the
+first lifecycle mutation; the watchdog will only be reactivated after the go/no-go.
 
-Ne pas remplacer cette séquence par `--dry-run` : ce mode historique écrit les huit unités gérées
-dans `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user`, même s'il n'appelle pas `systemctl`.
+Do not replace this sequence with `--dry-run`: this legacy mode writes the eight managed
+units to `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user`, even though it does not call `systemctl`.
 
 ```bash
 set -euo pipefail
@@ -137,12 +137,12 @@ systemctl --user show brain-mcp-http-watchdog.timer \
   -p LoadState -p ActiveState -p SubState -p UnitFileState -p FragmentPath -p DropInPaths
 ```
 
-### Préflight de fichiers hors systemd
+### Preflight of files outside systemd
 
-Ce préflight est exécutable depuis le shell opérateur : il atteste uniquement le checkout, le
-flag partagé et le fichier privé. Il ne charge, ne source et n'affiche aucune valeur privée. Ne
-pas lui ajouter `--require-effective-private` : cette option exige l'environnement finalement
-construit par systemd, absent du shell opérateur.
+This preflight is executable from the operator shell: it attests only the checkout, the
+shared flag, and the private file. It does not load, source, or print any private value. Do
+not add `--require-effective-private` to it: that option requires the environment ultimately
+built by systemd, which is absent from the operator shell.
 
 ```bash
 set -euo pipefail
@@ -152,22 +152,22 @@ repo_root="$(pwd)"
   --private "$HOME/.config/brain-v42/graph-projector.env"
 ```
 
-Le preflight MCP atteste `.env` et `mcp-token.env` par `lstat` : fichiers réguliers sans
-symlink, propriétaire identique au service, mode `0600`, taille bornée et exactement un
-`MCP_HTTP_TOKEN` non vide. Au démarrage systemd, il compare aussi les valeurs effectives du
-bearer administrateur, du registre Dream et de son flag d'activation sans jamais afficher un
-secret. Le fichier privé est réservé à `MCP_HTTP_TOKEN`, `MCP_HTTP_DREAM_TOKENS` et
-`BRAIN_DREAM_CAPABILITY_ENFORCEMENT` ; toute autre affectation, casse concurrente ou syntaxe
-`export` est rejetée. Le preflight du projecteur accepte l'absence du fichier privé uniquement si
-`GRAPH_LEDGER_WRITE_ENABLED` est effectivement fermé. Avec le ledger actif, il exige un fichier
-régulier, non symlink, possédé par l'utilisateur du service, en mode `0600`, avec exactement les
-quatre clés `GRAPH_PROJECTOR_*` attendues et un mot de passe non-placeholder.
+The MCP preflight attests `.env` and `mcp-token.env` via `lstat`: regular files with no
+symlink, owner identical to the service, mode `0600`, bounded size, and exactly one non-empty
+`MCP_HTTP_TOKEN`. At systemd startup, it also compares the effective values of the admin
+bearer, the Dream registry, and its activation flag without ever printing a secret. The private
+file is reserved for `MCP_HTTP_TOKEN`, `MCP_HTTP_DREAM_TOKENS`, and
+`BRAIN_DREAM_CAPABILITY_ENFORCEMENT`; any other assignment, concurrent casing, or `export`
+syntax is rejected. The projector preflight accepts the absence of the private file only if
+`GRAPH_LEDGER_WRITE_ENABLED` is effectively off. With the ledger active, it requires a regular
+file, not a symlink, owned by the service user, in mode `0600`, with exactly the four expected
+`GRAPH_PROJECTOR_*` keys and a non-placeholder password.
 
-Avant le canary, le processus client doit recevoir le même bearer via son gestionnaire de
-secrets : `.mcp.json` développe `${MCP_HTTP_TOKEN}` dans l'en-tête `Authorization`. Ne pas
-réintroduire ce secret dans `.env` et ne pas `source` le fichier systemd depuis Bash : les deux
-grammaires diffèrent. Depuis l'environnement privé qui lancera ou relancera le client, vérifier
-la concordance sans afficher la valeur :
+Before the canary, the client process must receive the same bearer via its secrets
+manager: `.mcp.json` expands `${MCP_HTTP_TOKEN}` in the `Authorization` header. Do not
+reintroduce this secret into `.env` and do not `source` the systemd file from Bash: the two
+grammars differ. From the private environment that will launch or relaunch the client, verify
+the match without printing the value:
 
 ```bash
 set -euo pipefail
@@ -181,8 +181,8 @@ test -n "${MCP_HTTP_TOKEN:-}"
 
 ## First activation or host migration
 
-Garder le watchdog désactivé pendant le canary : son rôle est de redémarrer le service sur un
-échec de `/health`, ce qui masquerait un défaut de configuration répété.
+Keep the watchdog disabled during the canary: its role is to restart the service on a
+`/health` failure, which would mask a repeated configuration defect.
 
 ```bash
 set -euo pipefail
@@ -191,12 +191,12 @@ systemctl --user stop brain-mcp-http-watchdog.service
 systemctl --user disable --no-reload brain-mcp-http-watchdog.timer
 ```
 
-### Attestation effective par systemd
+### Effective attestation by systemd
 
-Après `daemon-reload`, le redémarrage est l'attestation effective : systemd charge ses
-`EnvironmentFile` puis exécute l'`ExecStartPre` qui conserve
-`--require-effective-private`. Ne pas reproduire ce contrôle dans le shell et ne jamais
-`source` le fichier privé ; un échec ici bloque le démarrage sans imprimer les secrets.
+After `daemon-reload`, the restart is the effective attestation: systemd loads its
+`EnvironmentFile` then runs the `ExecStartPre` that keeps
+`--require-effective-private`. Do not reproduce this check in the shell and never
+`source` the private file; a failure here blocks startup without printing secrets.
 
 ```bash
 set -euo pipefail
@@ -210,7 +210,7 @@ if [[ -n "$old_pid" && "$old_pid" != 0 ]]; then
 fi
 ```
 
-Poursuivre immédiatement le canary :
+Immediately continue with the canary:
 
 ```bash
 set -euo pipefail
@@ -229,21 +229,21 @@ fi
 journalctl --user -u brain-mcp-http.service --since '-10 min' --no-pager
 ```
 
-Après le healthcheck, exécuter depuis un client de production un appel Brain **en lecture seule**
-et vérifier son identité dans les métriques. Pour une migration d'hôte, conserver l'ancien hôte
-disponible jusqu'à cette preuve et basculer les clients un par un. Ne pas activer le watchdog tant
-que les appels et les journaux ne sont pas stables.
+After the healthcheck, run a **read-only** Brain call from a production client
+and verify its identity in the metrics. For a host migration, keep the old host
+available until this proof and switch clients over one by one. Do not enable the watchdog until
+calls and logs are stable.
 
-Le go/no-go opérateur rend ensuite le serveur et le watchdog persistants :
+The operator go/no-go then makes the server and the watchdog persistent:
 
 ```bash
 systemctl --user enable brain-mcp-http.service
 systemctl --user enable --now brain-mcp-http-watchdog.timer
 ```
 
-Le linger de l'utilisateur est un prérequis séparé pour survivre à une déconnexion. Le vérifier
-avec `loginctl show-user "$(id -u)" -p Linger`; toute modification de linger requiert les droits
-administrateur de l'hôte et n'est pas effectuée par l'installateur.
+User linger is a separate prerequisite for surviving a disconnection. Check it
+with `loginctl show-user "$(id -u)" -p Linger`; any linger change requires host
+administrator rights and is not performed by the installer.
 
 ## Validation
 
@@ -259,14 +259,14 @@ journalctl --user -u brain-mcp-http.service \
   -u brain-mcp-http-watchdog.service --since '-30 min' --no-pager
 ```
 
-`/health` est exempté d'authentification et prouve la liveness du serveur ainsi qu'un checkout
-PostgreSQL borné. Il ne remplace ni un appel MCP réel, ni les contrôles GPU/reranker, ni la preuve
-de portée du client.
+`/health` is exempt from authentication and proves server liveness as well as a bounded
+PostgreSQL checkout. It replaces neither a real MCP call, nor GPU/reranker checks, nor
+proof of client scope.
 
 ## Rollback
 
-Toujours neutraliser le timer avant le serveur, puis conserver les fichiers privés pour un
-diagnostic hors journal.
+Always neutralize the timer before the server, then keep the private files for
+off-log diagnostics.
 
 ```bash
 set -euo pipefail
@@ -276,21 +276,21 @@ systemctl --user disable --no-reload brain-mcp-http-watchdog.timer
 systemctl --user disable --now brain-mcp-http.service
 ```
 
-Lors d'une régression de version, exécuter `--check-only` depuis un checkout connu bon, produire
-un nouveau `--render-dir`, puis restaurer uniquement les trois basenames MCP depuis
-`$backup_dir` créé au preflight, après neutralisation du watchdog. Une atomicité multi-fichiers
-n'existe pas : la garantie fournie ci-dessous est compensatoire et fail-closed. Les trois
-remplacements et les trois snapshots de l'état courant sont préparés avant toute mutation ; si un
-remplacement échoue, les unités déjà remplacées sont restaurées en ordre inverse et la commande
-échoue non-zéro. Si la compensation échoue aussi, elle laisse les snapshots dans le répertoire de
-stage pour récupération manuelle et échoue non-zéro, sans continuer vers `daemon-reload`.
+On a version regression, run `--check-only` from a known-good checkout, produce
+a new `--render-dir`, then restore only the three MCP basenames from
+`$backup_dir` created at preflight, after neutralizing the watchdog. Multi-file
+atomicity does not exist: the guarantee provided below is compensatory and fail-closed. The three
+replacements and the three snapshots of the current state are prepared before any mutation; if a
+replacement fails, the units already replaced are restored in reverse order and the command
+fails non-zero. If the compensation also fails, it leaves the snapshots in the staging
+directory for manual recovery and fails non-zero, without proceeding to `daemon-reload`.
 
-### Rollback compensatoire des unités
+### Compensatory rollback of units
 
-Cette commande s'exécute dans le même shell que le preflight. Elle échoue avant mutation si une
-sauvegarde ou une unité courante manque. Elle ne touche ni aux `EnvironmentFile`, ni aux fichiers
-privés, ni aux credentials Neo4j. Après un succès, recharger le manager puis reprendre le
-préflight de fichiers, l'attestation systemd et le canary.
+This command runs in the same shell as the preflight. It fails before mutation if a
+backup or a current unit is missing. It touches neither the `EnvironmentFile`, nor the
+private files, nor the Neo4j credentials. After success, reload the manager then resume the
+file preflight, the systemd attestation, and the canary.
 
 ```bash
 set -euo pipefail
@@ -341,18 +341,18 @@ trap - ERR
 rm -rf -- "$rollback_stage_dir"
 ```
 
-Sur une migration, repointer les clients vers l'ancien hôte seulement s'il est encore validé.
+On a migration, repoint clients to the old host only if it is still validated.
 
 ## Full uninstall
 
-Cette commande n'est appropriée que si l'opérateur veut retirer toute la pile systemd gérée par
-ce script. Elle arrête d'abord les timers/watchdogs, désactive les services, supprime leurs unités
-et recharge le manager :
+This command is appropriate only if the operator wants to remove the entire systemd stack
+managed by this script. It first stops the timers/watchdogs, disables the services, removes their
+units, and reloads the manager:
 
 ```bash
 deploy/systemd/install.sh --uninstall
 ```
 
-Après exécution, les fichiers de configuration et secrets ne sont pas supprimés. Les unités
-gérées, en revanche, doivent toutes être absentes de
+After execution, configuration files and secrets are not removed. The managed
+units, however, must all be absent from
 `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user`.

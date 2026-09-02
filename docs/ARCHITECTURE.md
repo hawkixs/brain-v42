@@ -636,9 +636,9 @@ BRAIN_CODE_MODE=false                                                 # experime
 BRAIN_DREAM_CAPABILITY_ENFORCEMENT=false                              # dormant by default
 ```
 
-`MCP_HTTP_TOKEN` et `MCP_HTTP_DREAM_TOKENS` n'appartiennent jamais au `.env` partagé. Le
-transport HTTP direct de développement peut omettre le bearer ; le chemin systemd de production
-exige un `MCP_HTTP_TOKEN` non vide dans `~/.config/brain-v42/mcp-token.env` en mode `0600`.
+`MCP_HTTP_TOKEN` and `MCP_HTTP_DREAM_TOKENS` never belong in the shared `.env`. Direct
+development HTTP transport may omit the bearer; the production systemd path requires a
+non-empty `MCP_HTTP_TOKEN` in `~/.config/brain-v42/mcp-token.env` in mode `0600`.
 
 The default `compact` profile always exposes `brain_session_start`,
 `brain_session_capture`, `brain_session_heartbeat`, `brain_session_end`,

@@ -1,45 +1,45 @@
-# Roadmap curée — Implementation Plan
+# Curated Roadmap — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Curer la roadmap émergente (652 features, 500 en `research`) : purge mécanique du stock, cureur LLM nocturne proposer-only, surfaçage briefing, write-back par tool MCP dédié, sidecar dream metrics fiabilisé.
+**Goal:** Curate the emerging roadmap (652 features, 500 in `research`): mechanical stock purge, nightly proposer-only LLM curator, briefing surfacing, write-back via a dedicated MCP tool, hardened dream metrics sidecar.
 
-**Architecture:** Pattern extract/backfill éprouvé — CLI Python (`scripts/roadmap_curate.py`, squelette exact de `ticket_extract.py`), table d'audit `roadmap_curation_proposals` (miroir 029), step `dream.sh` killswitché, review humaine via `--apply-ids`. Le briefing remplace « In-flight » par une section « Roadmap » vivante ; `brain_feature_update` (tool 42) ferme la boucle session→roadmap.
+**Architecture:** Proven extract/backfill pattern — Python CLI (`scripts/roadmap_curate.py`, exact skeleton of `ticket_extract.py`), audit table `roadmap_curation_proposals` (mirrors 029), killswitched `dream.sh` step, human review via `--apply-ids`. The briefing replaces "In-flight" with a live "Roadmap" section; `brain_feature_update` (tool 42) closes the session→roadmap loop.
 
-**Tech Stack:** Python 3.12+, SQLAlchemy 2.0 async (Core + `sa.text`), Alembic, FastMCP, httpx (NVIDIA API JSON strict sans tools), pytest-asyncio, bash (dream.sh).
+**Tech Stack:** Python 3.12+, SQLAlchemy 2.0 async (Core + `sa.text`), Alembic, FastMCP, httpx (NVIDIA API strict JSON without tools), pytest-asyncio, bash (dream.sh).
 
 **Spec source:** `docs/superpowers/specs/2026-07-04-roadmap-curation-design.md`
 
 ## Global Constraints
 
-- `project_key` brain = `brain-v42` (tiret) pour tout appel `brain_*`.
-- Coverage ≥ 60 % ; gates par task : `uv run pytest tests/unit`, `uv run ruff check src/ tests/ scripts/`, `uv run ruff format --check src/ tests/ scripts/`, `uv run mypy src/` — le CI lance `ruff format --check`, `ruff check` seul ne suffit PAS.
-- Conventional Commits, commit dès qu'une unité est verte (règle projet).
-- GitNexus : `gitnexus_impact({target, direction: "upstream"})` avant de modifier tout symbole existant ; `gitnexus_detect_changes()` avant chaque commit.
-- Jamais de DELETE sur `features` (FK `feature_artifacts` ON DELETE CASCADE effacerait l'historique de liage). Un merge archive le perdant via `merged_into`.
-- Aucun CHECK ne doit contraindre `merged_into` (gotcha skill `postgres-check-vs-on-delete-set-null`).
-- `Result.mappings()` s'appelle sur le **Result**, pas sur la session (gotcha mypy scripts/) ; tests avec `MagicMock(spec=AsyncSession)` pour l'attraper.
-- Killswitches nocturnes : env vars dans dream.sh + drop-in systemd `killswitches.conf` — JAMAIS dans l'unit (incident 2026-06-30). Pas de champ `Settings` pour ces flags.
-- Contrat `/metrics` additif uniquement : nouvelles clés OK, aucun rename/suppression (consommé par red-monitor).
-- `str(exc)` httpx transport souvent vide → toujours `_exc_str` (learning 7144c5ae).
-- Statuts features (CHECK post-030) : `planned, research, design, building, deployed, done, archived`.
-- La nightly n'applique JAMAIS merge/rename : le wet nocturne (futur) est restreint à `archive`/`status` (`WET_APPLYABLE_OPS`).
+- Brain `project_key` = `brain-v42` (hyphen) for every `brain_*` call.
+- Coverage ≥ 60%; gates per task: `uv run pytest tests/unit`, `uv run ruff check src/ tests/ scripts/`, `uv run ruff format --check src/ tests/ scripts/`, `uv run mypy src/` — CI runs `ruff format --check`, `ruff check` alone is NOT enough.
+- Conventional Commits, commit as soon as a unit is green (project rule).
+- GitNexus: `gitnexus_impact({target, direction: "upstream"})` before modifying any existing symbol; `gitnexus_detect_changes()` before every commit.
+- Never DELETE on `features` (the `feature_artifacts` FK ON DELETE CASCADE would erase the linking history). A merge archives the loser via `merged_into`.
+- No CHECK may constrain `merged_into` (gotcha skill `postgres-check-vs-on-delete-set-null`).
+- `Result.mappings()` is called on the **Result**, not on the session (mypy gotcha in scripts/); tests use `MagicMock(spec=AsyncSession)` to catch it.
+- Nightly killswitches: env vars in dream.sh + systemd drop-in `killswitches.conf` — NEVER in the unit (incident 2026-06-30). No `Settings` field for these flags.
+- `/metrics` contract is additive only: new keys OK, no rename/removal (consumed by red-monitor).
+- httpx transport `str(exc)` is often empty → always `_exc_str` (learning 7144c5ae).
+- Feature statuses (CHECK post-030): `planned, research, design, building, deployed, done, archived`.
+- The nightly run NEVER applies merge/rename: the (future) nightly wet mode is restricted to `archive`/`status` (`WET_APPLYABLE_OPS`).
 
 ---
 
-### Task 1: Migration 030 + déclarations tables.py
+### Task 1: Migration 030 + tables.py declarations
 
 **Files:**
 - Create: `alembic/versions/030_roadmap_curation.py`
-- Modify: `src/brain_v42/db/tables.py` (features + nouvelle table + `__all__`)
+- Modify: `src/brain_v42/db/tables.py` (features + new table + `__all__`)
 - Test: `tests/unit/db/test_schema_roadmap_030.py`
 
 **Interfaces:**
-- Produces: colonne `features.merged_into` (UUID NULL, FK self-ref), statut `archived` dans le CHECK, table `roadmap_curation_proposals` importable via `from brain_v42.db.tables import roadmap_curation_proposals` (colonnes : `id` bigint PK, `op` varchar(10), `feature_id` UUID FK CASCADE, `payload` JSONB, `rationale` text, `status` varchar(10) default `'proposed'`, `created_at`, `applied_at`).
+- Produces: `features.merged_into` column (UUID NULL, self-ref FK), `archived` status in the CHECK, `roadmap_curation_proposals` table importable via `from brain_v42.db.tables import roadmap_curation_proposals` (columns: `id` bigint PK, `op` varchar(10), `feature_id` UUID FK CASCADE, `payload` JSONB, `rationale` text, `status` varchar(10) default `'proposed'`, `created_at`, `applied_at`).
 
 - [ ] **Step 1: Write the failing tests**
 
-Créer `tests/unit/db/test_schema_roadmap_030.py` (pattern `test_schema_indexes_027.py` — pur Python, pas de DB) :
+Create `tests/unit/db/test_schema_roadmap_030.py` (pattern `test_schema_indexes_027.py` — pure Python, no DB):
 
 ```python
 """Unit tests for migration 030 — roadmap curée (spec 2026-07-04).
@@ -80,7 +80,7 @@ class TestFeaturesMergedInto:
         assert len(fks) == 1
         assert fks[0].column.table.name == "features"
         assert fks[0].column.name == "id"
-        # Jamais de DELETE sur features → pas d'ON DELETE sur ce FK.
+        # Never DELETE on features → no ON DELETE on this FK.
         assert fks[0].ondelete is None
 
 
@@ -216,7 +216,7 @@ Expected: FAIL — `KeyError: 'merged_into'`, `ImportError: cannot import name '
 
 - [ ] **Step 3: Write the migration**
 
-Créer `alembic/versions/030_roadmap_curation.py` :
+Create `alembic/versions/030_roadmap_curation.py`:
 
 ```python
 """Roadmap curée — archived, merged_into, roadmap_curation_proposals.
@@ -241,7 +241,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # 1. CHECK statut : + 'archived' (constraint auto-nommée par la 005).
+    # 1. status CHECK: + 'archived' (constraint auto-named by 005).
     op.execute("ALTER TABLE features DROP CONSTRAINT features_status_check")
     op.execute(
         """
@@ -251,7 +251,7 @@ def upgrade() -> None:
         """
     )
 
-    # 2. merged_into — même pattern que decisions/learnings (007), avec FK.
+    # 2. merged_into — same pattern as decisions/learnings (007), with FK.
     op.execute("ALTER TABLE features ADD COLUMN merged_into UUID REFERENCES features(id)")
 
     # 3. Table proposals — miroir de ticket_extraction_proposals (029).
@@ -279,8 +279,8 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute("DROP TABLE IF EXISTS roadmap_curation_proposals;")
     op.execute("ALTER TABLE features DROP COLUMN IF EXISTS merged_into;")
-    # Les rows 'archived' violeraient le CHECK restauré → retour à 'research'
-    # (état pré-curation ClusterGuard). Perte d'info assumée en downgrade.
+    # 'archived' rows would violate the restored CHECK → back to 'research'
+    # (pre-curation ClusterGuard state). Info loss accepted on downgrade.
     op.execute("UPDATE features SET status = 'research' WHERE status = 'archived'")
     op.execute("ALTER TABLE features DROP CONSTRAINT features_status_check")
     op.execute(
@@ -293,9 +293,9 @@ def downgrade() -> None:
 
 - [ ] **Step 4: Update tables.py declarations**
 
-Dans `src/brain_v42/db/tables.py` :
+In `src/brain_v42/db/tables.py`:
 
-(a) Dans la définition `features = Table(...)` (≈ligne 432), ajouter après la colonne `pinned` :
+(a) In the `features = Table(...)` definition (≈line 432), add after the `pinned` column:
 
 ```python
     Column(
@@ -306,12 +306,12 @@ Dans `src/brain_v42/db/tables.py` :
     ),
 ```
 
-(b) Après le bloc `ticket_extraction_proposals` (≈ligne 930), ajouter :
+(b) After the `ticket_extraction_proposals` block (≈line 930), add:
 
 ```python
-# ─── roadmap_curation_proposals (roadmap curée — spec 2026-07-04 §1) ─────────
-# Pattern 029 : table d'audit proposer-only, review humaine → apply via
-# scripts/roadmap_curate.py --apply-ids. Pas d'embedding, pas de decay.
+# ─── roadmap_curation_proposals (curated roadmap — spec 2026-07-04 §1) ─────────
+# Pattern 029: proposer-only audit table, human review → apply via
+# scripts/roadmap_curate.py --apply-ids. No embedding, no decay.
 
 roadmap_curation_proposals = Table(
     "roadmap_curation_proposals",
@@ -347,12 +347,12 @@ roadmap_curation_proposals = Table(
 )
 ```
 
-(c) Ajouter `"roadmap_curation_proposals",` dans `__all__` (après `"ticket_extraction_proposals",`).
+(c) Add `"roadmap_curation_proposals",` to `__all__` (after `"ticket_extraction_proposals",`).
 
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/db/test_schema_roadmap_030.py tests/unit/db/ -v`
-Expected: PASS (y compris les tests 027 existants — le count minimal de tables est un `>=`).
+Expected: PASS (including the existing 027 tests — the minimal table count is a `>=`).
 
 - [ ] **Step 6: Gates + commit**
 
@@ -364,19 +364,19 @@ git commit -m "feat(db): migration 030 — archived, merged_into, roadmap_curati
 
 ---
 
-### Task 2: Purge mécanique — `scripts/roadmap_purge.py`
+### Task 2: Mechanical purge — `scripts/roadmap_purge.py`
 
 **Files:**
 - Create: `scripts/roadmap_purge.py`
 - Test: `tests/unit/test_roadmap_purge.py`
 
 **Interfaces:**
-- Consumes: `PgProjectContextRepo(session_factory).get_keys_by_group("red") -> list[str]` ; tables `features`/`feature_artifacts`.
-- Produces: CLI `python -m scripts.roadmap_purge [--wet]` ; fonctions pures `classify_feature(feature: dict, known_keys: set[str], now: datetime) -> str | None` (retourne `"R1"|"R2"|"R3"|None`) et `build_report(classified: list[tuple[dict, str]]) -> str`.
+- Consumes: `PgProjectContextRepo(session_factory).get_keys_by_group("red") -> list[str]`; tables `features`/`feature_artifacts`.
+- Produces: CLI `python -m scripts.roadmap_purge [--wet]`; pure functions `classify_feature(feature: dict, known_keys: set[str], now: datetime) -> str | None` (returns `"R1"|"R2"|"R3"|None`) and `build_report(classified: list[tuple[dict, str]]) -> str`.
 
 - [ ] **Step 1: Write the failing tests**
 
-Créer `tests/unit/test_roadmap_purge.py` :
+Create `tests/unit/test_roadmap_purge.py`:
 
 ```python
 """Unit tests for scripts.roadmap_purge — règles pures + apply mocké."""
@@ -425,7 +425,7 @@ class TestClassifyFeature:
         assert classify_feature(f, _KNOWN, _NOW) == "R1"
 
     def test_r1_spares_key_in_red_group(self):
-        # 'red' est dans known_keys (via get_keys_by_group) → épargné.
+        # 'red' is in known_keys (via get_keys_by_group) → spared.
         f = _feature(project_key="red", artifact_count=5)
         assert classify_feature(f, _KNOWN, _NOW) is None
 
@@ -526,7 +526,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'scripts.roadmap_purge'
 
 - [ ] **Step 3: Write the implementation**
 
-Créer `scripts/roadmap_purge.py` :
+Create `scripts/roadmap_purge.py`:
 
 ```python
 """Purge mécanique du stock roadmap — one-shot, SQL pur, sans LLM (spec §2).
@@ -718,19 +718,19 @@ git commit -m "feat(roadmap): purge mécanique du stock — scripts/roadmap_purg
 
 ---
 
-### Task 3: Cureur LLM — propose (`scripts/roadmap_curate.py`, partie 1)
+### Task 3: LLM curator — propose (`scripts/roadmap_curate.py`, part 1)
 
 **Files:**
 - Create: `scripts/roadmap_curate.py`
 - Test: `tests/unit/test_roadmap_curate.py`
 
 **Interfaces:**
-- Consumes: `from scripts.domain_backfill import DEFAULT_BASE_URL, DEFAULT_MODEL, ResponseParseError, _exc_str, _post_chat, _strip_fences, load_env_file` (signatures identiques à l'usage dans `ticket_extract.py`).
-- Produces (utilisés par Task 4) : dataclasses `FeatureCard(id, name, status, pinned, artifacts: list[str])`, `ProjectBatch(project_key, features: list[FeatureCard])`, `CurationDraft(op: str, feature_id: UUID, payload: dict, rationale: str)`, `BatchOutcome(batch, drafts, failed, error)` ; fonctions `render_batch`, `build_messages`, `format_digest`, `parse_and_validate(content, batch) -> list[CurationDraft]`, `fetch_project_batches(session_factory, limit) -> list[ProjectBatch]`, `curate_batch(client, model, batch, sleep) -> BatchOutcome` ; constantes `VALID_OPS`, `PROPOSABLE_STATUSES`, `WET_APPLYABLE_OPS`, `MAX_FEATURES_PER_PROJECT=30`, `MAX_ARTIFACTS_PER_FEATURE=10`, `MAX_PROPOSALS_PER_NIGHT=40`.
+- Consumes: `from scripts.domain_backfill import DEFAULT_BASE_URL, DEFAULT_MODEL, ResponseParseError, _exc_str, _post_chat, _strip_fences, load_env_file` (signatures identical to the usage in `ticket_extract.py`).
+- Produces (used by Task 4): dataclasses `FeatureCard(id, name, status, pinned, artifacts: list[str])`, `ProjectBatch(project_key, features: list[FeatureCard])`, `CurationDraft(op: str, feature_id: UUID, payload: dict, rationale: str)`, `BatchOutcome(batch, drafts, failed, error)`; functions `render_batch`, `build_messages`, `format_digest`, `parse_and_validate(content, batch) -> list[CurationDraft]`, `fetch_project_batches(session_factory, limit) -> list[ProjectBatch]`, `curate_batch(client, model, batch, sleep) -> BatchOutcome`; constants `VALID_OPS`, `PROPOSABLE_STATUSES`, `WET_APPLYABLE_OPS`, `MAX_FEATURES_PER_PROJECT=30`, `MAX_ARTIFACTS_PER_FEATURE=10`, `MAX_PROPOSALS_PER_NIGHT=40`.
 
 - [ ] **Step 1: Write the failing tests**
 
-Créer `tests/unit/test_roadmap_curate.py` :
+Create `tests/unit/test_roadmap_curate.py`:
 
 ```python
 """Unit tests for scripts.roadmap_curate pure functions (no DB, no network)."""
@@ -918,9 +918,9 @@ class TestCurateBatchErrorCapture:
 Run: `uv run pytest tests/unit/test_roadmap_curate.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'scripts.roadmap_curate'`.
 
-- [ ] **Step 3: Write the implementation (partie propose)**
+- [ ] **Step 3: Write the implementation (propose part)**
 
-Créer `scripts/roadmap_curate.py` :
+Create `scripts/roadmap_curate.py`:
 
 ```python
 """Roadmap curation — proposer-only dream step (spec 2026-07-04 §3).
@@ -975,10 +975,10 @@ _ENV_FILE = Path.home() / ".config" / "brain-v42" / "nvidia.env"
 _API_KEY_VAR = "BRAIN_NVIDIA_API_KEY"
 
 VALID_OPS = ("merge", "archive", "status", "rename")
-# 'archived' exclu : l'op `archive` existe pour ça.
+# 'archived' excluded: the `archive` op exists for that.
 PROPOSABLE_STATUSES = ("planned", "research", "design", "building", "deployed", "done")
-# Le wet nocturne (rollout §4) n'applique que archive/status — merge et
-# rename restent à review indéfiniment.
+# The nightly wet mode (rollout §4) applies only archive/status — merge and
+# rename remain under review indefinitely.
 WET_APPLYABLE_OPS = ("archive", "status")
 MAX_FEATURES_PER_PROJECT = 30
 MAX_ARTIFACTS_PER_FEATURE = 10
@@ -1275,7 +1275,7 @@ async def curate_batch(
     return BatchOutcome(batch=batch, drafts=drafts)
 ```
 
-(Le CLI `main`/`_run`, `persist_proposals`, `apply_proposals` et `record_dream_run` arrivent en Task 4 — le module est importable dès maintenant.)
+(The CLI `main`/`_run`, `persist_proposals`, `apply_proposals` and `record_dream_run` arrive in Task 4 — the module is importable from now on.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1292,19 +1292,19 @@ git commit -m "feat(roadmap): cureur LLM — propose, parse_and_validate, garde-
 
 ---
 
-### Task 4: Cureur — apply, post-conditions, CLI (`roadmap_curate.py`, partie 2)
+### Task 4: Curator — apply, post-conditions, CLI (`roadmap_curate.py`, part 2)
 
 **Files:**
 - Modify: `scripts/roadmap_curate.py` (append)
 - Test: `tests/unit/test_roadmap_curate_apply.py`
 
 **Interfaces:**
-- Consumes: Task 3 (`CurationDraft`, `WET_APPLYABLE_OPS`, …) ; table `roadmap_curation_proposals` (Task 1).
-- Produces: `persist_proposals(session_factory, drafts) -> list[int]` ; `apply_proposals(session_factory, proposal_ids, allowed_ops=None) -> int` ; `record_dream_run(session_factory, status, dry, duration_s, error) -> None` (phase=`roadmap`) ; `PostConditionError(RuntimeError)` ; CLI `main() -> int` avec `--limit/--wet/--apply-ids/--model/--base-url`.
+- Consumes: Task 3 (`CurationDraft`, `WET_APPLYABLE_OPS`, …); table `roadmap_curation_proposals` (Task 1).
+- Produces: `persist_proposals(session_factory, drafts) -> list[int]`; `apply_proposals(session_factory, proposal_ids, allowed_ops=None) -> int`; `record_dream_run(session_factory, status, dry, duration_s, error) -> None` (phase=`roadmap`); `PostConditionError(RuntimeError)`; CLI `main() -> int` with `--limit/--wet/--apply-ids/--model/--base-url`.
 
 - [ ] **Step 1: Write the failing tests**
 
-Créer `tests/unit/test_roadmap_curate_apply.py` :
+Create `tests/unit/test_roadmap_curate_apply.py`:
 
 ```python
 """Unit tests for scripts.roadmap_curate apply path (mocked session, no DB)."""
@@ -1475,7 +1475,7 @@ class TestAllowedOps:
         factory, _ = _session_with(
             [
                 _mappings_all(rows),
-                # seul archive (id 3) est appliqué :
+                # only archive (id 3) is applied:
                 MagicMock(),
                 _mappings_one({"status": "archived"}),
                 MagicMock(),
@@ -1500,7 +1500,7 @@ Expected: FAIL — `ImportError: cannot import name 'apply_proposals'`.
 
 - [ ] **Step 3: Write the implementation**
 
-Ajouter à la fin de `scripts/roadmap_curate.py` :
+Add to the end of `scripts/roadmap_curate.py`:
 
 ```python
 class PostConditionError(RuntimeError):
@@ -1537,7 +1537,7 @@ async def _apply_one(session: Any, row: Any) -> None:
     op, fid, payload = row["op"], row["feature_id"], row["payload"]
     if op == "merge":
         into = UUID(str(payload["into"]))
-        # 1. Re-pointer les artifacts du perdant (sauf doublons déjà liés).
+        # 1. Re-point the loser's artifacts (except duplicates already linked).
         await session.execute(
             sa.text(
                 """
@@ -1553,12 +1553,12 @@ async def _apply_one(session: Any, row: Any) -> None:
             ),
             {"into": into, "loser": fid},
         )
-        # 2. Purger les LIENS restants (doublons) — jamais les features.
+        # 2. Purge the remaining LINKS (duplicates) — never the features.
         await session.execute(
             sa.text("DELETE FROM feature_artifacts WHERE feature_id = :loser"),
             {"loser": fid},
         )
-        # 3. Marquer le perdant.
+        # 3. Mark the loser.
         await session.execute(
             sa.text(
                 "UPDATE features SET merged_into = :into, status = 'archived', "
@@ -1797,7 +1797,7 @@ async def _run(args: Any, api_key: str, model: str, base_url: str) -> int:
     any_failed = False
     error_msg: str | None = None
 
-    # --apply-ids mode: no LLM, apply reviewé (toutes ops).
+    # --apply-ids mode: no LLM, reviewed apply (all ops).
     if args.apply_ids is not None:
         try:
             ids = [int(x.strip()) for x in args.apply_ids.split(",") if x.strip()]
@@ -1851,7 +1851,7 @@ async def _run(args: Any, api_key: str, model: str, base_url: str) -> int:
             skipped += 1
         all_drafts.extend(outcome.drafts)
 
-    # Cap global — drop loggé, jamais silencieux (spec §3).
+    # Global cap — drop logged, never silent (spec §3).
     if len(all_drafts) > MAX_PROPOSALS_PER_NIGHT:
         dropped = len(all_drafts) - MAX_PROPOSALS_PER_NIGHT
         print(
@@ -1868,7 +1868,7 @@ async def _run(args: Any, api_key: str, model: str, base_url: str) -> int:
     if proposal_ids:
         print(f"proposal ids: {proposal_ids}")
 
-    # --wet: apply du run, restreint aux ops sûres. JAMAIS merge/rename.
+    # --wet: apply of the run, restricted to safe ops. NEVER merge/rename.
     if args.wet and proposal_ids:
         applied = await apply_proposals(sf, proposal_ids, allowed_ops=WET_APPLYABLE_OPS)
         print(f"wet: {applied} appliqués (ops {WET_APPLYABLE_OPS})")
@@ -1903,20 +1903,20 @@ git commit -m "feat(roadmap): cureur — apply avec post-conditions positives + 
 ### Task 5: Step dream.sh + killswitch ROADMAP (briefing)
 
 **Files:**
-- Modify: `scripts/dream.sh` (défauts env ≈ligne 39 ; bloc après EXTRACT ≈ligne 512)
+- Modify: `scripts/dream.sh` (env defaults ≈line 39; block after EXTRACT ≈line 512)
 - Modify: `src/brain_v42/services/dream_run_service.py` (KillswitchState + killswitch_state)
 - Modify: `src/brain_v42/mcp/tools/session_tools.py` (`_section_killswitches`)
 - Test: `tests/unit/test_dream_sh_roadmap.py`, `tests/unit/services/test_dream_run_service.py` (append), `tests/unit/mcp/test_session_tools.py` (append)
 
 **Interfaces:**
-- Consumes: `scripts.roadmap_curate` CLI (Task 4) ; `_clean_dry_streak(session, "roadmap")` existant.
-- Produces: env vars `BRAIN_DREAM_ROADMAP_ENABLED` (défaut `false`) / `BRAIN_DREAM_ROADMAP_DRY_RUN` (défaut `true`) ; `KillswitchState.roadmap_enabled: bool = False`, `roadmap_dry: bool = True`, `roadmap_clean_dry_nights: int = 0` ; ligne `- ROADMAP: …` dans le briefing.
+- Consumes: `scripts.roadmap_curate` CLI (Task 4); existing `_clean_dry_streak(session, "roadmap")`.
+- Produces: env vars `BRAIN_DREAM_ROADMAP_ENABLED` (default `false`) / `BRAIN_DREAM_ROADMAP_DRY_RUN` (default `true`); `KillswitchState.roadmap_enabled: bool = False`, `roadmap_dry: bool = True`, `roadmap_clean_dry_nights: int = 0`; `- ROADMAP: …` line in the briefing.
 
-**⚠ Avant modification :** `gitnexus_impact({target: "killswitch_state", direction: "upstream"})` et `gitnexus_impact({target: "_section_killswitches", direction: "upstream"})` — rapporter le blast radius.
+**⚠ Before modifying:** `gitnexus_impact({target: "killswitch_state", direction: "upstream"})` and `gitnexus_impact({target: "_section_killswitches", direction: "upstream"})` — report the blast radius.
 
 - [ ] **Step 1: Write the failing tests**
 
-Créer `tests/unit/test_dream_sh_roadmap.py` (miroir exact de `test_dream_sh_extract.py`) :
+Create `tests/unit/test_dream_sh_roadmap.py` (exact mirror of `test_dream_sh_extract.py`):
 
 ```python
 """Pin the ROADMAP killswitch wiring in dream.sh (grep-style, no execution)."""
@@ -1953,7 +1953,7 @@ def test_roadmap_step_has_timeout_and_own_log():
     assert "_roadmap.log" in content
 ```
 
-Ajouter à `tests/unit/services/test_dream_run_service.py`, dans `class TestKillswitchState` :
+Add to `tests/unit/services/test_dream_run_service.py`, inside `class TestKillswitchState`:
 
 ```python
     @pytest.mark.asyncio
@@ -1979,7 +1979,7 @@ Ajouter à `tests/unit/services/test_dream_run_service.py`, dans `class TestKill
         assert state.roadmap_clean_dry_nights == 0
 ```
 
-Ajouter à `tests/unit/mcp/test_session_tools.py`, dans `class TestSectionKillswitches` (mêmes kwargs que les tests extract existants — voir `test_extract_enabled_dry_with_streak` ligne ≈175 pour le gabarit de construction du `KillswitchState`) :
+Add to `tests/unit/mcp/test_session_tools.py`, inside `class TestSectionKillswitches` (same kwargs as the existing extract tests — see `test_extract_enabled_dry_with_streak` line ≈175 for the `KillswitchState` construction template):
 
 ```python
     def test_roadmap_enabled_dry_with_streak(self):
@@ -2012,33 +2012,33 @@ Ajouter à `tests/unit/mcp/test_session_tools.py`, dans `class TestSectionKillsw
         assert "- ROADMAP: disabled" in out
 ```
 
-(Import `date` déjà présent en tête du fichier.)
+(`date` import already present at the top of the file.)
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/unit/test_dream_sh_roadmap.py tests/unit/services/test_dream_run_service.py tests/unit/mcp/test_session_tools.py -v`
-Expected: FAIL — dream.sh sans bloc roadmap ; `TypeError: unexpected keyword argument 'roadmap_enabled'` ; `- ROADMAP:` absent.
+Expected: FAIL — dream.sh without a roadmap block; `TypeError: unexpected keyword argument 'roadmap_enabled'`; `- ROADMAP:` missing.
 
 - [ ] **Step 3: Implement — dream.sh**
 
-Dans `scripts/dream.sh`, après les lignes EXTRACT (≈39), ajouter :
+In `scripts/dream.sh`, after the EXTRACT lines (≈39), add:
 
 ```bash
-# ROADMAP killswitch — curation nocturne de la roadmap (proposer-only, spec
-# 2026-07-04). Ship CLOSED ; une fois ouvert il démarre en DRY (propose-only,
-# review humaine via roadmap_curation_proposals) — même trajectoire de soak
-# que EXTRACT. Le wet nocturne n'appliquera QUE archive/status (le CLI
-# restreint via WET_APPLYABLE_OPS) ; merge/rename restent à review.
+# ROADMAP killswitch — nightly roadmap curation (proposer-only, spec
+# 2026-07-04). Ships CLOSED; once opened it starts in DRY (propose-only,
+# human review via roadmap_curation_proposals) — same soak trajectory
+# as EXTRACT. The nightly wet mode will apply ONLY archive/status (the CLI
+# restricts via WET_APPLYABLE_OPS); merge/rename remain under review.
 BRAIN_DREAM_ROADMAP_ENABLED="${BRAIN_DREAM_ROADMAP_ENABLED:-false}"
 BRAIN_DREAM_ROADMAP_DRY_RUN="${BRAIN_DREAM_ROADMAP_DRY_RUN:-true}"
 ```
 
-Après le bloc EXTRACT complet (juste avant `FAIL_TOTAL=` ≈ligne 514), ajouter :
+After the complete EXTRACT block (just before `FAIL_TOTAL=` ≈line 514), add:
 
 ```bash
-# --- ROADMAP: curation nocturne de la roadmap (proposer-only) --------------
-# Pas une phase claude -p : CLI Python direct (pattern extract). Insère sa
-# propre row dream_runs (phase='roadmap') pour la visibilité briefing.
+# --- ROADMAP: nightly roadmap curation (proposer-only) --------------
+# Not a claude -p phase: direct Python CLI (extract pattern). Inserts its
+# own dream_runs row (phase='roadmap') for briefing visibility.
 TOTAL_PHASES=$(( TOTAL_PHASES + 1 ))
 if [[ "$BRAIN_DREAM_ROADMAP_ENABLED" != "true" ]]; then
   log "SKIP roadmap (killswitch BRAIN_DREAM_ROADMAP_ENABLED=$BRAIN_DREAM_ROADMAP_ENABLED)"
@@ -2065,9 +2065,9 @@ fi
 
 - [ ] **Step 4: Implement — KillswitchState + section**
 
-Dans `src/brain_v42/services/dream_run_service.py` :
+In `src/brain_v42/services/dream_run_service.py`:
 
-(a) `KillswitchState` — ajouter après `extract_clean_dry_nights` :
+(a) `KillswitchState` — add after `extract_clean_dry_nights`:
 
 ```python
     roadmap_enabled: bool = False
@@ -2075,7 +2075,7 @@ Dans `src/brain_v42/services/dream_run_service.py` :
     roadmap_clean_dry_nights: int = 0
 ```
 
-(b) `killswitch_state()` — après le bloc extract (≈ligne 93), ajouter :
+(b) `killswitch_state()` — after the extract block (≈line 93), add:
 
 ```python
             roadmap_enabled = "roadmap" in phases
@@ -2083,7 +2083,7 @@ Dans `src/brain_v42/services/dream_run_service.py` :
             roadmap_streak = await self._clean_dry_streak(session, "roadmap")
 ```
 
-et compléter le constructeur de retour :
+and complete the return constructor:
 
 ```python
             extract_clean_dry_nights=extract_streak,
@@ -2093,7 +2093,7 @@ et compléter le constructeur de retour :
         )
 ```
 
-Dans `src/brain_v42/mcp/tools/session_tools.py`, `_section_killswitches` — après la ligne EXTRACT :
+In `src/brain_v42/mcp/tools/session_tools.py`, `_section_killswitches` — after the EXTRACT line:
 
 ```python
     lines.append(
@@ -2104,7 +2104,7 @@ Dans `src/brain_v42/mcp/tools/session_tools.py`, `_section_killswitches` — apr
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/test_dream_sh_roadmap.py tests/unit/services/test_dream_run_service.py tests/unit/mcp/test_session_tools.py tests/unit/test_dream_sh_extract.py tests/unit/test_dream_sh_phase_timeouts.py -v`
-Expected: PASS (les pins extract/timeouts existants restent verts).
+Expected: PASS (the existing extract/timeouts pins stay green).
 
 - [ ] **Step 6: Bash syntax check + gates + commit**
 
@@ -2117,22 +2117,22 @@ git commit -m "feat(dream): step roadmap killswitché + ligne ROADMAP au briefin
 
 ---
 
-### Task 6: Briefing — section « Roadmap » (remplace « In-flight »)
+### Task 6: Briefing — "Roadmap" section (replaces "In-flight")
 
 **Files:**
 - Modify: `src/brain_v42/services/feature_service.py` (+`RoadmapAliveFeature`, +`roadmap_alive`, −`in_flight`)
-- Modify: `src/brain_v42/mcp/tools/session_tools.py` (`_section_roadmap` remplace `_section_in_flight`)
-- Test: `tests/unit/mcp/test_session_tools.py` (modif), `tests/unit/services/test_feature_service_roadmap.py` (create)
+- Modify: `src/brain_v42/mcp/tools/session_tools.py` (`_section_roadmap` replaces `_section_in_flight`)
+- Test: `tests/unit/mcp/test_session_tools.py` (modify), `tests/unit/services/test_feature_service_roadmap.py` (create)
 
 **Interfaces:**
-- Consumes: colonne `merged_into` (Task 1).
-- Produces: `RoadmapAliveFeature(name: str, status: str, pinned: bool, artifact_count: int, last_artifact_at: datetime | None)` (frozen dataclass) ; `FeatureService.roadmap_alive(project_key: str, limit: int = 5) -> list[RoadmapAliveFeature]` ; `_section_roadmap(items) -> str` avec format `- <nom> [<statut>] — <N> artifacts, dernier il y a <X>j`.
+- Consumes: `merged_into` column (Task 1).
+- Produces: `RoadmapAliveFeature(name: str, status: str, pinned: bool, artifact_count: int, last_artifact_at: datetime | None)` (frozen dataclass); `FeatureService.roadmap_alive(project_key: str, limit: int = 5) -> list[RoadmapAliveFeature]`; `_section_roadmap(items) -> str` with format `- <nom> [<statut>] — <N> artifacts, dernier il y a <X>j`.
 
-**⚠ Avant modification :** `gitnexus_impact({target: "in_flight", direction: "upstream"})` — vérifier que `brain_session_start` est le seul appelant avant suppression ; sinon STOP et rapporter.
+**⚠ Before modifying:** `gitnexus_impact({target: "in_flight", direction: "upstream"})` — verify that `brain_session_start` is the only caller before removal; otherwise STOP and report.
 
 - [ ] **Step 1: Write the failing tests**
 
-Créer `tests/unit/services/test_feature_service_roadmap.py` :
+Create `tests/unit/services/test_feature_service_roadmap.py`:
 
 ```python
 """Tests for FeatureService.roadmap_alive (mocked session — SQL is PG-only)."""
@@ -2217,11 +2217,11 @@ class TestRoadmapAlive:
         assert not hasattr(FeatureService, "in_flight")
 ```
 
-Dans `tests/unit/mcp/test_session_tools.py` :
+In `tests/unit/mcp/test_session_tools.py`:
 
-(a) Remplacer l'import `_section_in_flight` par `_section_roadmap` dans le bloc d'import en tête.
+(a) Replace the `_section_in_flight` import with `_section_roadmap` in the import block at the top.
 
-(b) Remplacer la classe `TestSectionInFlight` (≈ligne 215) par :
+(b) Replace the `TestSectionInFlight` class (≈line 215) with:
 
 ```python
 class TestSectionRoadmap:
@@ -2258,7 +2258,7 @@ class TestSectionRoadmap:
         assert "f4" in out and "f5" not in out
 ```
 
-(c) Dans `test_calls_all_services` (≈ligne 335) : remplacer `mock_feature_svc.in_flight = AsyncMock(return_value=[])` par `mock_feature_svc.roadmap_alive = AsyncMock(return_value=[])` et l'assertion `mock_feature_svc.in_flight.assert_called_once()` par `mock_feature_svc.roadmap_alive.assert_called_once()`. Balayer le reste du fichier : toute autre occurrence de `in_flight` sur un mock feature_svc (p.ex. dans `test_partial_failure_returns_degraded_briefing`, `test_killswitch_crash_renders_unavailable_not_no_activity`, `TestCrossProjectInTool`) passe à `roadmap_alive`.
+(c) In `test_calls_all_services` (≈line 335): replace `mock_feature_svc.in_flight = AsyncMock(return_value=[])` with `mock_feature_svc.roadmap_alive = AsyncMock(return_value=[])` and the assertion `mock_feature_svc.in_flight.assert_called_once()` with `mock_feature_svc.roadmap_alive.assert_called_once()`. Sweep the rest of the file: every other occurrence of `in_flight` on a mock feature_svc (e.g. in `test_partial_failure_returns_degraded_briefing`, `test_killswitch_crash_renders_unavailable_not_no_activity`, `TestCrossProjectInTool`) moves to `roadmap_alive`.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -2267,11 +2267,11 @@ Expected: FAIL — `ImportError: cannot import name 'RoadmapAliveFeature'`, `Imp
 
 - [ ] **Step 3: Implement — FeatureService**
 
-Dans `src/brain_v42/services/feature_service.py` :
+In `src/brain_v42/services/feature_service.py`:
 
-(a) Ajouter aux imports : `from dataclasses import dataclass` et `import sqlalchemy as sa` (déjà présent).
+(a) Add to the imports: `from dataclasses import dataclass` and `import sqlalchemy as sa` (already present).
 
-(b) Ajouter au niveau module (avant la classe) :
+(b) Add at module level (before the class):
 
 ```python
 _ROADMAP_ALIVE_SQL = """
@@ -2303,7 +2303,7 @@ class RoadmapAliveFeature:
     last_artifact_at: datetime | None
 ```
 
-(c) SUPPRIMER la méthode `in_flight` (impact vérifié au préalable) et ajouter à la place :
+(c) REMOVE the `in_flight` method (impact verified beforehand) and add instead:
 
 ```python
     async def roadmap_alive(
@@ -2339,13 +2339,13 @@ class RoadmapAliveFeature:
         ]
 ```
 
-(d) Mettre à jour le docstring module (les deux queries : roadmap_alive + stale_pinned).
+(d) Update the module docstring (both queries: roadmap_alive + stale_pinned).
 
 - [ ] **Step 4: Implement — session_tools**
 
-Dans `src/brain_v42/mcp/tools/session_tools.py` :
+In `src/brain_v42/mcp/tools/session_tools.py`:
 
-(a) Remplacer `_section_in_flight` (≈ligne 124) par :
+(a) Replace `_section_in_flight` (≈line 124) with:
 
 ```python
 def _section_roadmap(items: list[Any]) -> str:
@@ -2363,16 +2363,16 @@ def _section_roadmap(items: list[Any]) -> str:
     return "\n".join(lines)
 ```
 
-(b) Dans `_format_session_briefing` : renommer le paramètre `in_flight` en `roadmap_items` et remplacer `_section_in_flight(in_flight)` par `_section_roadmap(roadmap_items)` dans la liste `sections` (même position — avant Stale-pinned).
+(b) In `_format_session_briefing`: rename the `in_flight` parameter to `roadmap_items` and replace `_section_in_flight(in_flight)` with `_section_roadmap(roadmap_items)` in the `sections` list (same position — before Stale-pinned).
 
-(c) Dans `brain_session_start` : remplacer `feature_svc.in_flight(project_key=project_key, limit=5)` par `feature_svc.roadmap_alive(project_key=project_key, limit=5)` dans le `asyncio.gather`, et renommer la variable locale `in_flight` en `roadmap_items` (unpacking + `roadmap_items = roadmap_items or []` + passage à `_format_session_briefing`).
+(c) In `brain_session_start`: replace `feature_svc.in_flight(project_key=project_key, limit=5)` with `feature_svc.roadmap_alive(project_key=project_key, limit=5)` in the `asyncio.gather`, and rename the local variable `in_flight` to `roadmap_items` (unpacking + `roadmap_items = roadmap_items or []` + passing to `_format_session_briefing`).
 
-(d) Mettre à jour le docstring du tool : « in-flight features » → « roadmap (features vivantes) ».
+(d) Update the tool docstring: "in-flight features" → "roadmap (features vivantes)".
 
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/services/test_feature_service_roadmap.py tests/unit/mcp/test_session_tools.py -v`
-Expected: PASS. Si d'anciens tests FeatureService cassent sur `in_flight` (chercher `grep -rn "in_flight" tests/`), les migrer vers `roadmap_alive` ou les supprimer s'ils ne testaient que la méthode retirée.
+Expected: PASS. If old FeatureService tests break on `in_flight` (search with `grep -rn "in_flight" tests/`), migrate them to `roadmap_alive` or remove them if they only tested the removed method.
 
 - [ ] **Step 6: Gates + commit**
 
@@ -2389,18 +2389,18 @@ git commit -m "feat(briefing): section Roadmap vivante — remplace In-flight"
 **Files:**
 - Modify: `src/brain_v42/services/feature_service.py` (+resolve_id_prefix, +resolve_feature, +update_status, +VALID_FEATURE_STATUSES)
 - Modify: `src/brain_v42/mcp/tools/roadmap_tools.py` (+brain_feature_update, +param feature_svc)
-- Modify: `src/brain_v42/mcp/server.py` (wiring feature_svc partagé + docstring 41→42)
+- Modify: `src/brain_v42/mcp/server.py` (wire shared feature_svc + docstring 41→42)
 - Test: `tests/unit/services/test_feature_service_resolve.py`, `tests/unit/mcp/tools/test_feature_update_tool.py`
 
 **Interfaces:**
-- Consumes: `parse_uuid`, `normalize_uuid_prefix`, `resolve_entity_id` de `brain_v42.mcp.tools.parsing` ; `format_error`, `short_id` de `brain_v42.mcp.tools.formatters` ; `canonicalize_project_key`.
-- Produces: `VALID_FEATURE_STATUSES = ("planned", "research", "design", "building", "deployed", "done", "archived")` ; `FeatureService.resolve_id_prefix(prefix_hex: str, *, limit: int = 6) -> list[UUID]` ; `FeatureService.resolve_feature(project_key: str, feature: str) -> Feature | str` (str = message d'erreur) ; `FeatureService.update_status(feature_id: UUID, status: str) -> Feature | None` ; tool MCP `brain_feature_update(feature: str, status: str, project_key: str) -> str`.
+- Consumes: `parse_uuid`, `normalize_uuid_prefix`, `resolve_entity_id` from `brain_v42.mcp.tools.parsing`; `format_error`, `short_id` from `brain_v42.mcp.tools.formatters`; `canonicalize_project_key`.
+- Produces: `VALID_FEATURE_STATUSES = ("planned", "research", "design", "building", "deployed", "done", "archived")`; `FeatureService.resolve_id_prefix(prefix_hex: str, *, limit: int = 6) -> list[UUID]`; `FeatureService.resolve_feature(project_key: str, feature: str) -> Feature | str` (str = error message); `FeatureService.update_status(feature_id: UUID, status: str) -> Feature | None`; MCP tool `brain_feature_update(feature: str, status: str, project_key: str) -> str`.
 
-**⚠ Avant modification :** `gitnexus_impact({target: "register_roadmap_tools", direction: "upstream"})` (signature étendue → adapter les call sites, dont les tests existants `test_roadmap_tools.py`).
+**⚠ Before modifying:** `gitnexus_impact({target: "register_roadmap_tools", direction: "upstream"})` (extended signature → adapt the call sites, including the existing tests `test_roadmap_tools.py`).
 
 - [ ] **Step 1: Write the failing service tests**
 
-Créer `tests/unit/services/test_feature_service_resolve.py` :
+Create `tests/unit/services/test_feature_service_resolve.py`:
 
 ```python
 """Tests for FeatureService.resolve_feature / update_status (mocked sessions)."""
@@ -2575,7 +2575,7 @@ class TestUpdateStatus:
         assert updated is not None
         assert updated.status == "deployed"
         assert updated.pinned is True
-        # Le statement UPDATE porte bien status + pinned + status_updated_at.
+        # The UPDATE statement does carry status + pinned + status_updated_at.
         stmt = session.execute.call_args[0][0]
         compiled = str(stmt)
         assert "status" in compiled and "pinned" in compiled
@@ -2591,7 +2591,7 @@ class TestUpdateStatus:
 
 - [ ] **Step 2: Write the failing tool tests**
 
-Créer `tests/unit/mcp/tools/test_feature_update_tool.py` :
+Create `tests/unit/mcp/tools/test_feature_update_tool.py`:
 
 ```python
 """Tests for brain_feature_update MCP tool (surface 42)."""
@@ -2696,9 +2696,9 @@ Expected: FAIL — `ImportError: cannot import name 'VALID_FEATURE_STATUSES'`, `
 
 - [ ] **Step 4: Implement — FeatureService resolve/update**
 
-Dans `src/brain_v42/services/feature_service.py` :
+In `src/brain_v42/services/feature_service.py`:
 
-(a) Imports supplémentaires :
+(a) Additional imports:
 
 ```python
 import uuid as uuid_mod
@@ -2706,17 +2706,17 @@ import uuid as uuid_mod
 from brain_v42.mcp.tools.parsing import normalize_uuid_prefix, parse_uuid, resolve_entity_id
 ```
 
-(b) Constante module :
+(b) Module constant:
 
 ```python
-# Valeurs du CHECK features_status_check (migration 030) — 'archived' inclus :
-# une session peut archiver une fausse feature à la main.
+# Values from the features_status_check CHECK (migration 030) — 'archived' included:
+# a session can manually archive a bogus feature.
 VALID_FEATURE_STATUSES = (
     "planned", "research", "design", "building", "deployed", "done", "archived",
 )
 ```
 
-(c) Méthodes (dans la classe) :
+(c) Methods (inside the class):
 
 ```python
     async def resolve_id_prefix(
@@ -2768,7 +2768,7 @@ VALID_FEATURE_STATUSES = (
                 f"Use an id prefix."
             )
 
-        # Branche id : UUID complet ou préfixe git-style (≥8 hex).
+        # id branch: full UUID or git-style prefix (≥8 hex).
         if parse_uuid(feature) is not None or normalize_uuid_prefix(feature) is not None:
             resolved = await resolve_entity_id(feature, self.resolve_id_prefix, label="feature")
             if isinstance(resolved, str):
@@ -2788,7 +2788,7 @@ VALID_FEATURE_STATUSES = (
                 )
             return Feature.model_validate(dict(row))
 
-        # ILIKE unique scopé projet.
+        # Unique ILIKE scoped to the project.
         async with self._sf() as session:
             fuzzy = (
                 (
@@ -2832,19 +2832,19 @@ VALID_FEATURE_STATUSES = (
         return Feature.model_validate(dict(row)) if row else None
 ```
 
-Note import circulaire : `feature_service` importe depuis `brain_v42.mcp.tools.parsing`, qui n'importe rien de `services` — pas de cycle. Si mypy/ruff signalent un cycle malgré tout, déplacer l'import parsing dans les corps de méthodes avec `# noqa: PLC0415`.
+Circular import note: `feature_service` imports from `brain_v42.mcp.tools.parsing`, which imports nothing from `services` — no cycle. If mypy/ruff flag a cycle anyway, move the parsing import into the method bodies with `# noqa: PLC0415`.
 
 - [ ] **Step 5: Implement — tool + wiring**
 
-Dans `src/brain_v42/mcp/tools/roadmap_tools.py` — **Edits ciblés, ne PAS réécrire le fichier** (le corps de `brain_get_roadmap` reste strictement intact) :
+In `src/brain_v42/mcp/tools/roadmap_tools.py` — **Targeted edits, do NOT rewrite the file** (the body of `brain_get_roadmap` stays strictly intact):
 
-(a) Docstring module (ligne 1) →
+(a) Module docstring (line 1) →
 
 ```python
 """MCP tools: brain_get_roadmap + brain_feature_update (roadmap curée §6)."""
 ```
 
-(b) Remplacer le bloc d'imports existant (`from brain_v42.mcp.tools.formatters import format_roadmap` et le `if TYPE_CHECKING:`) par :
+(b) Replace the existing import block (`from brain_v42.mcp.tools.formatters import format_roadmap` and the `if TYPE_CHECKING:`) with:
 
 ```python
 from brain_v42.mcp.tools.formatters import format_error, format_roadmap, short_id
@@ -2856,9 +2856,9 @@ if TYPE_CHECKING:
     from brain_v42.services.roadmap_service import RoadmapService
 ```
 
-(l'import `canonicalize_project_key` existe déjà — ne pas le dupliquer.)
+(the `canonicalize_project_key` import already exists — do not duplicate it.)
 
-(c) Étendre la signature + docstring de la fonction de registre :
+(c) Extend the signature + docstring of the register function:
 
 ```python
 def register_roadmap_tools(
@@ -2869,7 +2869,7 @@ def register_roadmap_tools(
     """Register brain_get_roadmap + brain_feature_update on mcp."""
 ```
 
-(d) Ajouter le nouveau tool APRÈS la fonction `brain_get_roadmap` (même niveau d'indentation, toujours dans `register_roadmap_tools`) :
+(d) Add the new tool AFTER the `brain_get_roadmap` function (same indentation level, still inside `register_roadmap_tools`):
 
 ```python
     @mcp.tool(version="1.0")
@@ -2911,11 +2911,11 @@ def register_roadmap_tools(
         )
 ```
 
-Dans `src/brain_v42/mcp/server.py` :
+In `src/brain_v42/mcp/server.py`:
 
-(a) Docstring ligne 12 : `41 brain_* tools` → `42 brain_* tools`.
+(a) Docstring line 12: `41 brain_* tools` → `42 brain_* tools`.
 
-(b) ≈lignes 585-617 — construire UNE instance partagée et la passer aux deux registres :
+(b) ≈lines 585-617 — build ONE shared instance and pass it to both registries:
 
 ```python
     from brain_v42.services.feature_service import FeatureService  # noqa: PLC0415
@@ -2923,7 +2923,7 @@ Dans `src/brain_v42/mcp/server.py` :
     feature_svc = FeatureService(_session_factory)
 ```
 
-puis `feature_svc=feature_svc` dans `register_session_tools(...)` (à la place du `FeatureService(_session_factory)` inline) et :
+then `feature_svc=feature_svc` in `register_session_tools(...)` (instead of the inline `FeatureService(_session_factory)`) and:
 
 ```python
     register_roadmap_tools(
@@ -2931,9 +2931,9 @@ puis `feature_svc=feature_svc` dans `register_session_tools(...)` (à la place d
     )
 ```
 
-(c) Adapter les call sites de tests existants : dans `tests/unit/mcp/tools/test_roadmap_tools.py`, chaque `register_roadmap_tools(mcp, roadmap_svc=…)` reçoit en plus `feature_svc=MagicMock()`.
+(c) Adapt the existing test call sites: in `tests/unit/mcp/tools/test_roadmap_tools.py`, every `register_roadmap_tools(mcp, roadmap_svc=…)` additionally receives `feature_svc=MagicMock()`.
 
-(d) Si un test de comptage de tools existe (`grep -rn "41" tests/unit/mcp/ tests/unit/test_*.py` — p.ex. `test_toolsux_audit.py` ou `test_server.py`), le passer à 42.
+(d) If a tool-count test exists (`grep -rn "41" tests/unit/mcp/ tests/unit/test_*.py` — e.g. `test_toolsux_audit.py` or `test_server.py`), bump it to 42.
 
 - [ ] **Step 6: Run tests to verify they pass**
 
@@ -2950,24 +2950,24 @@ git commit -m "feat(mcp): brain_feature_update — write-back statut feature (to
 
 ---
 
-### Task 8: Sidecar dream metrics — dédup re-runs + dry_run par phase
+### Task 8: Dream metrics sidecar — dedup re-runs + per-phase dry_run
 
 **Files:**
 - Modify: `src/brain_v42/metrics/collector_dream.py` (`collect_dream_metrics` uniquement)
-- Test: `tests/unit/metrics/test_dream_metrics.py` (modif rows + nouveaux tests)
+- Test: `tests/unit/metrics/test_dream_metrics.py` (modify rows + new tests)
 
 **Interfaces:**
-- Produces (contrat additif /metrics, consommé par red-monitor) : chaque entrée de `last_run.phases.<phase>` gagne `"dry_run": bool` ; aucune clé renommée/supprimée. `last_run` calculé sur la DERNIÈRE row par phase (`DISTINCT ON (phase) … ORDER BY phase, id DESC`) ; `history[].status` calculé sur l'ensemble dédupliqué par (run_date, phase) ; `history[].cost_usd`/`tokens` restent la somme de TOUTES les rows (l'argent d'un re-run failed a bien été dépensé).
+- Produces (additive `/metrics` contract, consumed by red-monitor): every `last_run.phases.<phase>` entry gains `"dry_run": bool`; no key renamed/removed. `last_run` computed on the LATEST row per phase (`DISTINCT ON (phase) … ORDER BY phase, id DESC`); `history[].status` computed on the set deduplicated by (run_date, phase); `history[].cost_usd`/`tokens` remain the sum of ALL rows (the money for a failed re-run really was spent).
 
-**⚠ Avant modification :** `gitnexus_impact({target: "collect_dream_metrics", direction: "upstream"})`.
+**⚠ Before modifying:** `gitnexus_impact({target: "collect_dream_metrics", direction: "upstream"})`.
 
 - [ ] **Step 1: Update existing test rows + write the failing tests**
 
-Dans `tests/unit/metrics/test_dream_metrics.py` :
+In `tests/unit/metrics/test_dream_metrics.py`:
 
-(a) Le SELECT last-run passe de 13 à 14 colonnes (`phase_dry_run` en index 13). Ajouter un 14ᵉ élément (`False` par défaut) à CHAQUE tuple de row existant du fichier (le commentaire d'en-tête des colonnes gagne `, phase_dry_run`).
+(a) The last-run SELECT goes from 13 to 14 columns (`phase_dry_run` at index 13). Add a 14th element (`False` by default) to EVERY existing row tuple in the file (the column header comment gains `, phase_dry_run`).
 
-(b) Ajouter les nouveaux tests :
+(b) Add the new tests:
 
 ```python
 class TestDreamMetricsRoadmapSpec7:
@@ -2989,7 +2989,7 @@ class TestDreamMetricsRoadmapSpec7:
         """La requête last-run prend la DERNIÈRE row par phase (id DESC)."""
         collector = _make_collector_with_dream_data([])
         await collector.collect_dream_metrics()
-        # premier execute = requête last-run
+        # first execute = last-run query
         sql = str(collector._session_factory.return_value.execute.call_args_list[0][0][0])
         assert "DISTINCT ON (phase)" in sql
         assert "ORDER BY phase, id DESC" in sql
@@ -3003,7 +3003,7 @@ class TestDreamMetricsRoadmapSpec7:
         await collector.collect_dream_metrics()
         sql = str(collector._session_factory.return_value.execute.call_args_list[1][0][0])
         assert "DISTINCT ON (run_date, phase)" in sql
-        # le coût agrège dream_runs complet (pas le sous-ensemble dédupliqué)
+        # the cost aggregates the full dream_runs (not the deduplicated subset)
         assert "SUM(dr.cost_usd)" in sql
 
     @pytest.mark.asyncio
@@ -3022,18 +3022,18 @@ class TestDreamMetricsRoadmapSpec7:
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/unit/metrics/test_dream_metrics.py -v`
-Expected: FAIL — `KeyError: 'dry_run'`, assertions `DISTINCT ON` absentes. (Les tests existants mis à jour passent encore : l'index 11/12 n'a pas bougé.)
+Expected: FAIL — `KeyError: 'dry_run'`, `DISTINCT ON` assertions missing. (The existing updated tests still pass: index 11/12 hasn't moved.)
 
 - [ ] **Step 3: Implement**
 
-Dans `src/brain_v42/metrics/collector_dream.py`, `collect_dream_metrics` :
+In `src/brain_v42/metrics/collector_dream.py`, `collect_dream_metrics`:
 
-(a) Remplacer la requête last-run (≈L44-55) par :
+(a) Replace the last-run query (≈L44-55) with:
 
 ```python
-                # Dernière row PAR PHASE du dernier run_date — un re-run le
-                # même jour (extract fail 06:13 puis done 10:58) ne doit plus
-                # rendre la nuit "partial" (spec 2026-07-04 §7).
+                # Latest row PER PHASE of the latest run_date — a re-run the
+                # same day (extract fail 06:13 then done 10:58) should no longer
+                # make the night "partial" (spec 2026-07-04 §7).
                 phases_rows = (
                     await session.execute(
                         text("""
@@ -3051,20 +3051,20 @@ Dans `src/brain_v42/metrics/collector_dream.py`, `collect_dream_metrics` :
                 ).all()
 ```
 
-(b) Dans la boucle `for row in phases_rows:`, ajouter au dict de phase (après `"error_message": row[12],`) :
+(b) In the `for row in phases_rows:` loop, add to the phase dict (after `"error_message": row[12],`):
 
 ```python
-                        # Phases CLI (extract, roadmap) : model:null, cost:0
-                        # sont légitimes — ne pas "corriger".
+                        # CLI phases (extract, roadmap): model:null, cost:0
+                        # are legitimate — do not "fix" them.
                         "dry_run": bool(row[13]),
 ```
 
-(c) Remplacer la requête history (≈L97-110) par :
+(c) Replace the history query (≈L97-110) with:
 
 ```python
-                # History : status sur l'ensemble dédupliqué (dernière row par
-                # (run_date, phase)), coûts/tokens sur TOUTES les rows — un
-                # re-run failed a réellement coûté de l'argent.
+                # History: status on the deduplicated set (latest row per
+                # (run_date, phase)), costs/tokens on ALL rows — a
+                # failed re-run really did cost money.
                 history_rows = (
                     await session.execute(
                         text("""
@@ -3095,12 +3095,12 @@ Dans `src/brain_v42/metrics/collector_dream.py`, `collect_dream_metrics` :
                 ).all()
 ```
 
-(d) Mettre à jour le docstring de la méthode : mention dédup DISTINCT ON + dry_run + contrat additif. Rien d'autre ne change (`phases_ok`/`phases_fail`/`status`/totaux se calculent déjà sur `phases_rows`, désormais dédupliqués).
+(d) Update the method docstring: mention the DISTINCT ON dedup + dry_run + additive contract. Nothing else changes (`phases_ok`/`phases_fail`/`status`/totals already compute on `phases_rows`, now deduplicated).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/unit/metrics/ -v`
-Expected: PASS (fichier complet, y compris promote_outcome).
+Expected: PASS (full file, including promote_outcome).
 
 - [ ] **Step 5: Gates + commit**
 
@@ -3115,24 +3115,24 @@ git commit -m "fix(metrics): sidecar dream — dédup re-runs par phase + flag d
 ### Task 9: Docs — CLAUDE.md, MCP_TOOLS.md
 
 **Files:**
-- Modify: `CLAUDE.md` (consigne feature livrée + .env killswitches)
-- Modify: `docs/MCP_TOOLS.md` (+brain_feature_update, compte 41→42)
+- Modify: `CLAUDE.md` (delivered-feature instruction + .env killswitches)
+- Modify: `docs/MCP_TOOLS.md` (+brain_feature_update, count 41→42)
 
-- [ ] **Step 1: CLAUDE.md — consigne + .env**
+- [ ] **Step 1: CLAUDE.md — instruction + .env**
 
-(a) Dans la section « Second Cerveau (Mémoire Persistante) » → « Règles d'utilisation », ajouter :
+(a) In the "Second Cerveau (Mémoire Persistante)" section → "Règles d'utilisation", add:
 
 ```markdown
 6. **FEATURE livrée** -> `brain_feature_update(feature, 'deployed'|'done', project_key)` — le write-back roadmap remplace le passage par `brain_update_project_focus(feature_status=…)` (qui reste fonctionnel)
 ```
 
-(b) Dans le tableau « Tools disponibles », ajouter la ligne :
+(b) In the "Tools disponibles" table, add the line:
 
 ```markdown
 | `brain_feature_update` | Mettre à jour le statut d'une feature roadmap (nom, préfixe d'id ou fragment unique) |
 ```
 
-(c) Dans « Configuration » → bloc `.env`, après les lignes extract :
+(c) In "Configuration" → the `.env` block, after the extract lines:
 
 ```bash
 # Roadmap — curation nocturne (dream, proposer-only)
@@ -3142,7 +3142,7 @@ BRAIN_DREAM_ROADMAP_DRY_RUN=true
 
 - [ ] **Step 2: MCP_TOOLS.md**
 
-Lire la structure de `docs/MCP_TOOLS.md`, mettre à jour le compte de tools (41→42 partout où il apparaît) et insérer, à côté de `brain_get_roadmap` :
+Read the structure of `docs/MCP_TOOLS.md`, update the tool count (41→42 everywhere it appears) and insert, next to `brain_get_roadmap`:
 
 ```markdown
 ### brain_feature_update
@@ -3170,33 +3170,33 @@ git commit -m "docs(roadmap): consigne brain_feature_update + killswitches roadm
 
 ---
 
-### Task 10: Déploiement & rollout (ops — hors CI, à exécuter sur le PC serveur)
+### Task 10: Deployment & rollout (ops — outside CI, to run on PC Serveur)
 
-Checklist opérationnelle, dans l'ordre. Aucun code — chaque étape se vérifie avant la suivante.
+Operational checklist, in order. No code — each step is verified before the next.
 
-- [ ] **Step 1: Migration** — `git pull` dans le checkout serveur puis `uv run alembic upgrade head` ; vérifier : `SELECT conname FROM pg_constraint WHERE conname = 'features_status_check';` et `\d roadmap_curation_proposals` (psql port 5433).
-- [ ] **Step 2: Redémarrer le MCP** (nouveau tool 42) : `sudo systemctl restart brain-v42-mcp` (vérifier le nom exact : `systemctl list-units | grep brain`) ; contrôler que `brain_feature_update` apparaît dans la liste des tools d'une session fraîche.
-- [ ] **Step 3: Redémarrer le sidecar metrics** — OBLIGATOIRE, il n'est dans aucune boucle de deploy (learning `f13144b3`) : `sudo systemctl restart brain-metrics` puis `curl -s http://127.0.0.1:9200/metrics | jq '.dream.last_run.phases'` → chaque phase porte `dry_run`; une nuit avec re-run s'affiche `done`, pas `partial` (critère §12.5).
-- [ ] **Step 4: Purge du stock** — `uv run python -m scripts.roadmap_purge` (dry) → lire le rapport par projet ; **trancher le cas `red` (117 features)** : si `red` sort en R1 c'est une clé fantôme (purge OK), si épargné par le groupe c'est une clé legacy (décision à logger via `brain_log_decision`) ; puis `--wet` ; vérifier critère §12.1 : `SELECT COUNT(*) FROM features WHERE status NOT IN ('done','archived') AND merged_into IS NULL;` ≤ 150.
-- [ ] **Step 5: Ouvrir le killswitch ROADMAP (dry)** — drop-in systemd UNIQUEMENT (incident 2026-06-30, jamais dans l'unit) : éditer `/etc/systemd/system/brain-v42-dream.service.d/killswitches.conf`, ajouter `Environment="BRAIN_DREAM_ROADMAP_ENABLED=true"` et `Environment="BRAIN_DREAM_ROADMAP_DRY_RUN=true"`, puis `sudo systemctl daemon-reload`. Vérifier au matin suivant : briefing → ligne `ROADMAP: enabled (dry · …)`, log `${TIMESTAMP}_roadmap.log` présent.
-- [ ] **Step 6: Rollout** — ≥2 nuits dry propres → review des proposals au matin : `SELECT id, op, feature_id, payload, rationale FROM roadmap_curation_proposals WHERE status='proposed' ORDER BY id;` → `uv run python -m scripts.roadmap_curate --apply-ids "…"` des bonnes, `UPDATE roadmap_curation_proposals SET status='rejected' WHERE id IN (…);` des mauvaises. Quand le taux d'acceptation est stable et haut : envisager `BRAIN_DREAM_ROADMAP_DRY_RUN=false` (le wet nocturne n'applique QUE archive/status — déjà garanti par `WET_APPLYABLE_OPS`).
-- [ ] **Step 7: Boucle brain** — `brain_update_project_focus` : nouvel état ; premier vrai `brain_feature_update` sur une feature livrée (critère §12.4).
+- [ ] **Step 1: Migration** — `git pull` in the server checkout then `uv run alembic upgrade head`; verify: `SELECT conname FROM pg_constraint WHERE conname = 'features_status_check';` and `\d roadmap_curation_proposals` (psql port 5433).
+- [ ] **Step 2: Restart the MCP** (new tool 42): `sudo systemctl restart brain-v42-mcp` (check the exact name: `systemctl list-units | grep brain`); confirm that `brain_feature_update` appears in the tool list of a fresh session.
+- [ ] **Step 3: Restart the metrics sidecar** — MANDATORY, it is in no deploy loop (learning `f13144b3`): `sudo systemctl restart brain-metrics` then `curl -s http://127.0.0.1:9200/metrics | jq '.dream.last_run.phases'` → every phase carries `dry_run`; a night with a re-run shows `done`, not `partial` (criterion §12.5).
+- [ ] **Step 4: Purge the stock** — `uv run python -m scripts.roadmap_purge` (dry) → read the per-project report; **decide the `red` case (117 features)**: if `red` comes out as R1 it's a ghost key (purge OK), if spared by the group it's a legacy key (decision to log via `brain_log_decision`); then `--wet`; verify criterion §12.1: `SELECT COUNT(*) FROM features WHERE status NOT IN ('done','archived') AND merged_into IS NULL;` ≤ 150.
+- [ ] **Step 5: Open the ROADMAP killswitch (dry)** — systemd drop-in ONLY (incident 2026-06-30, never in the unit): edit `/etc/systemd/system/brain-v42-dream.service.d/killswitches.conf`, add `Environment="BRAIN_DREAM_ROADMAP_ENABLED=true"` and `Environment="BRAIN_DREAM_ROADMAP_DRY_RUN=true"`, then `sudo systemctl daemon-reload`. Verify the next morning: briefing → `ROADMAP: enabled (dry · …)` line, log `${TIMESTAMP}_roadmap.log` present.
+- [ ] **Step 6: Rollout** — ≥2 clean dry nights → review the proposals in the morning: `SELECT id, op, feature_id, payload, rationale FROM roadmap_curation_proposals WHERE status='proposed' ORDER BY id;` → `uv run python -m scripts.roadmap_curate --apply-ids "…"` for the good ones, `UPDATE roadmap_curation_proposals SET status='rejected' WHERE id IN (…);` for the bad ones. When the acceptance rate is stable and high: consider `BRAIN_DREAM_ROADMAP_DRY_RUN=false` (the nightly wet mode applies ONLY archive/status — already guaranteed by `WET_APPLYABLE_OPS`).
+- [ ] **Step 7: Brain loop** — `brain_update_project_focus`: new state; first real `brain_feature_update` on a delivered feature (criterion §12.4).
 
 ---
 
-## Couverture spec → tasks
+## Spec → tasks coverage
 
 | Spec § | Task |
 |--------|------|
 | §1 migration 030 | 1 |
-| §2 purge mécanique | 2 (+10.4 run réel) |
-| §3 cureur propose + garde-fous | 3 |
+| §2 mechanical purge | 2 (+10.4 real run) |
+| §3 curator propose + guardrails | 3 |
 | §3 apply + post-conditions | 4 |
-| §4 step dream + killswitches + ligne briefing | 5 (+10.5-6 rollout) |
-| §5 briefing section Roadmap | 6 |
+| §4 dream step + killswitches + briefing line | 5 (+10.5-6 rollout) |
+| §5 Roadmap briefing section | 6 |
 | §6 brain_feature_update | 7 |
-| §7 sidecar dédup + dry_run + restart | 8 (+10.3 restart) |
-| §8 successeur GitLab v1 (contenu artifacts dans le prompt) | 3 (digest + prompt status) — v2 hors scope |
-| §9 non-goals | aucun task ClusterGuard/front/gitlab_poll ✓ |
-| §12 critères de succès | 10 (vérifications live) |
-| §13 découpage TDD | tasks 1-9 = blocs 1-9 |
+| §7 sidecar dedup + dry_run + restart | 8 (+10.3 restart) |
+| §8 GitLab v1 successor (artifact content in the prompt) | 3 (digest + prompt status) — v2 out of scope |
+| §9 non-goals | no ClusterGuard/front/gitlab_poll task ✓ |
+| §12 success criteria | 10 (live checks) |
+| §13 TDD breakdown | tasks 1-9 = blocks 1-9 |

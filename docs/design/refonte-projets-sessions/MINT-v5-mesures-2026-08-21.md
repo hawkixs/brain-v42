@@ -1,134 +1,134 @@
-# Mint v5 — les mesures, figées
+# Mint v5 — the measurements, frozen
 
-> **Statut : MESURES PRISES, ASSETS NON ÉCRITS.** Ce document existe pour que
-> l'écriture des assets v5 soit mécanique et vérifiable, plutôt que refaite de
-> mémoire. Toutes les valeurs ci-dessous sont **mesurées le 2026-08-21**, avec
-> les expressions exactes du contrat v4 — pas recalculées à la main.
+> **Status: MEASUREMENTS TAKEN, ASSETS NOT WRITTEN.** This document exists so
+> that writing the v5 assets is mechanical and verifiable, rather than redone
+> from memory. All values below are **measured on 2026-08-21**, with the exact
+> expressions from the v4 contract — not recomputed by hand.
 >
-> Doctrine : **S1** (décision `9d22bc6a`) — `alembic_head` **DÉRIVÉ**, un seul
-> mint pour tout le couloir. Périmètre : **v5 MINIMAL** (décision `567f6298`) —
-> 25 checks, mécanismes de la 046 ; le contrôle du trigger 041 part en ticket de
-> suite (`23962510`).
+> Doctrine: **S1** (decision `9d22bc6a`) — `alembic_head` **DERIVED**, a single
+> mint for the whole lane. Scope: **v5 MINIMAL** (decision `567f6298`) —
+> 25 checks, 046's mechanisms; the 041 trigger check moves to a follow-up ticket
+> (`23962510`).
 
-## 0. La source du mint, et pourquoi ce n'est pas la production
+## 0. The mint's source, and why it isn't production
 
-La prod est à **`045`**. Les assets v5 doivent décrire l'**après-046**. Le mint se
-frappe donc contre **`brain_test`**, qui est à `046`.
+Prod is at **`045`**. The v5 assets must describe the **post-046** state. The mint
+is therefore struck against **`brain_test`**, which is at `046`.
 
-**Et cette source a été VALIDÉE, pas supposée.** Un miroir divergent ferait entrer
-sa divergence dans l'attestation :
+**And this source has been VALIDATED, not assumed.** A diverging mirror would let
+its divergence leak into the attestation:
 
 ```
-prod : 129 index    brain_test : 130 index
-diff → une seule ligne : + public.brain_sessions.uq_brain_sessions_connection
-tables → IDENTIQUES (32 des deux côtés)
+prod: 129 indexes    brain_test: 130 indexes
+diff → a single line: + public.brain_sessions.uq_brain_sessions_connection
+tables → IDENTICAL (32 on both sides)
 ```
 
-Un écart, exactement celui de la 046. C'est la seule preuve qui autorise à minter
-ailleurs que sur la prod.
+One gap, exactly the one from 046. This is the only evidence that authorizes
+minting somewhere other than prod.
 
-## 1. Reçu de référence AVANT le mint
+## 1. Reference receipt BEFORE the mint
 
-`22/25` mesuré le 2026-08-20 sur la prod à `045` (fil `eb067b57`). Trois échecs,
-**tous bénins**, tous tracés à une migration postérieure au mint de v4 (figé à `039`) :
+`22/25` measured on 2026-08-20 against prod at `045` (thread `eb067b57`). Three
+failures, **all benign**, all traced to a migration postdating the v4 mint (frozen at `039`):
 
-| Échec | Cause |
+| Failure | Cause |
 |---|---|
-| `alembic_head` 039 ≠ 045 | six révisions de retard — **c'est S1 qui le supprime** |
+| `alembic_head` 039 ≠ 045 | six revisions behind — **this is what S1 removes** |
 | `catalog_counts.indexes` 128 ≠ 129 | `idx_dream_runs_date_project`, migration **042** |
-| `view_column_mismatches` = 1 | `codex_dream_run_v1`, colonne `model` élargie par la **045** |
+| `view_column_mismatches` = 1 | `codex_dream_run_v1`, `model` column widened by **045** |
 
-La 046 en ajoute deux : l'index de connexion (129 → **130**) et l'empreinte de
-colonnes de `brain_sessions` (+5 colonnes).
+046 adds two more: the connection index (129 → **130**) and the column
+fingerprint of `brain_sessions` (+5 columns).
 
-**Ne pas recopier ce 22/25 : le rejouer.** Il changera à chaque tête.
+**Do not copy this 22/25 forward: replay it.** It will change with every head.
 
-## 2. Les valeurs mesurées — `brain_sessions`
+## 2. The measured values — `brain_sessions`
 
-Expressions reprises **littéralement** du contrat v4 :
-- index : `md5(pg_get_indexdef(indexrelid))`
-- contraintes : `md5(regexp_replace(lower(pg_get_constraintdef(oid, TRUE)), '[[:space:]]+', ' ', 'g'))`
+Expressions taken **literally** from the v4 contract:
+- indexes: `md5(pg_get_indexdef(indexrelid))`
+- constraints: `md5(regexp_replace(lower(pg_get_constraintdef(oid, TRUE)), '[[:space:]]+', ' ', 'g'))`
 
-### `expected_session_indexes` — liste FERMÉE, 3 → 4 entrées
+### `expected_session_indexes` — CLOSED list, 3 → 4 entries
 
-| index | md5 | état |
+| index | md5 | state |
 |---|---|---|
-| `brain_sessions_pkey` | `6763cd8159ef6f0131abbfedfea044bc` | inchangé |
-| `idx_brain_sessions_project_status_started` | `daf2b70c6799177168837efedcb0dbe8` | inchangé |
-| `uq_brain_sessions_project_client` | `28c33a3d73bf9f0c64d322978b7118a4` | inchangé |
-| **`uq_brain_sessions_connection`** | **`62b298d247237eddf60cb4ba28693af4`** | **NEUF** |
+| `brain_sessions_pkey` | `6763cd8159ef6f0131abbfedfea044bc` | unchanged |
+| `idx_brain_sessions_project_status_started` | `daf2b70c6799177168837efedcb0dbe8` | unchanged |
+| `uq_brain_sessions_project_client` | `28c33a3d73bf9f0c64d322978b7118a4` | unchanged |
+| **`uq_brain_sessions_connection`** | **`62b298d247237eddf60cb4ba28693af4`** | **NEW** |
 
-⚠️ Cette liste est contrôlée **DEUX FOIS** (`v4.sql:665` absent-ou-md5-divergent,
-`:687` présent-hors-liste). Une entrée oubliée casse dans les deux sens.
+⚠️ This list is checked **TWICE** (`v4.sql:665` absent-or-md5-diverging,
+`:687` present-outside-the-list). One forgotten entry breaks it both ways.
 
-### `expected_session_constraints` — 8 → 9 entrées
+### `expected_session_constraints` — 8 → 9 entries
 
-| contrainte | v4 | v5 |
+| constraint | v4 | v5 |
 |---|---|---|
 | `brain_sessions_status_valid` | `4f21eff965e8da6178bb2d1030fc03f8` | **`f5065acef0a32bfc97e66f6d802b9585`** |
 | `brain_sessions_terminal_state_valid` | `9abfd0c69ce694043e32e1935d17ff4f` | **`aab51404804e113ec2c452ba0bc21aa8`** |
 | **`brain_sessions_nature_valid`** | — | **`b3899128eb71e5e3023e994b0f1e26db`** (`'c'`, `NULL::text`) |
 
-Inchangées : `capture_ids_valid` `1a8756bd34b4ea7e8d835643d0fa7ceb`,
+Unchanged: `capture_ids_valid` `1a8756bd34b4ea7e8d835643d0fa7ceb`,
 `client_key_nonblank` `8ec1e8c3738bbe2178e04689dd038e0d`,
 `focus_outcome_valid` `8d97a41480c2c3b6ec5a87bf0e64fb03`,
 `pkey` `cc3552dbb61b18accca876af5296eb1f`,
 `project_key_fkey` `b863ba166c02670d9dad0a56f9582d59` (`'f'`, `'r'`),
 `uq_brain_sessions_project_client` `153c25b1acb665316ea262444b4d0d79`.
 
-### `expected_session_constraint_fragments` — un QUATRIÈME littéral de statut
+### `expected_session_constraint_fragments` — a FOURTH status literal
 
-La définition observée, normalisée, est désormais :
+The observed definition, normalized, is now:
 
 ```
 check (status::text = any (array['open'::character varying, 'ended'::character varying,
 'abandoned'::character varying, 'closed_inactive'::character varying]::text[]))
 ```
 
-Le bloc code en dur les littéraux de statut : il en faut **quatre**.
+The code block hardcodes the status literals: it now needs **four**.
 
 ### `catalog_counts`
 
-`indexes` : **128 → 130**. `foreign_keys` : **26**, inchangé. `table_set` :
-**inchangé**, aucune table neuve (32 avec `alembic_version`).
+`indexes`: **128 → 130**. `foreign_keys`: **26**, unchanged. `table_set`:
+**unchanged**, no new table (32 with `alembic_version`).
 
-## 3. Ce qui reste à ÉCRIRE, et le piège à ne pas déclencher
+## 3. What remains to be WRITTEN, and the trap not to trigger
 
-1. **`alembic_head` devient DÉRIVÉ** (S1) — c'est la seule partie de CONCEPTION.
-   Le check v4 est `{"kind": "alembic_head_equals", "revision": "039"}` et son CTE
-   vit en `v4.sql:1766-1791`. L'invariant devient « une seule tête, cohérente avec
-   le dépôt », gabarit `test_alembic_env.py:254-259` (« Le head est DÉRIVÉ, pas
-   épinglé »). La révision exacte reste prouvée par `_REQUIRED_ALEMBIC_HEAD`.
+1. **`alembic_head` becomes DERIVED** (S1) — this is the only DESIGN part. The
+   v4 check is `{"kind": "alembic_head_equals", "revision": "039"}` and its CTE
+   lives at `v4.sql:1766-1791`. The invariant becomes "a single head, consistent
+   with the repository", template `test_alembic_env.py:254-259` ("The head is
+   DERIVED, not pinned"). The exact revision remains proven by `_REQUIRED_ALEMBIC_HEAD`.
 
-2. ⚠️ **JAMAIS DE `sed` GLOBAL SUR « 039 ».** `v4.sql` en porte **sept**
-   occurrences, et **cinq nomment l'invariant installé PAR la 039** —
-   `recovery_039_observation` (l. 1766, 1964, 1966) et
-   `project_context_updated_at_039` (l. 1962). **Seules deux** sont le pin de tête
-   (l. 1789, 1791). Un remplacement global corromprait l'asset **en silence**.
+2. ⚠️ **NEVER A GLOBAL `sed` ON "039".** `v4.sql` carries **seven**
+   occurrences, and **five name the invariant installed BY 039** —
+   `recovery_039_observation` (lines 1766, 1964, 1966) and
+   `project_context_updated_at_039` (line 1962). **Only two** are the head pin
+   (lines 1789, 1791). A global replacement would corrupt the asset **silently**.
 
-3. **Le troisième asset : `brain-v42-v4.json`.** Nommé **zéro fois** dans les cinq
-   documents de conception. Sa régénération **n'est pas une édition** :
-   `test_v4_json_is_the_exact_v3_delta` le dérive de `v3.json` et assert l'octet —
-   il faut écrire `_expected_v5()` sur le même gabarit, en partant de `v4.json`.
+3. **The third asset: `brain-v42-v4.json`.** Named **zero times** in the five
+   design documents. Its regeneration **is not an edit**:
+   `test_v4_json_is_the_exact_v3_delta` derives it from `v3.json` and asserts the
+   byte — `_expected_v5()` must be written on the same template, from `v4.json`.
 
-4. **Parité de CTE** entre `v5.sql` et `v5-pgrestore.sql` : écart autorisé =
-   exactement `{observed_artifact_constraints, observed_session_constraints}`
+4. **CTE parity** between `v5.sql` and `v5-pgrestore.sql`: allowed gap =
+   exactly `{observed_artifact_constraints, observed_session_constraints}`
    (`test_recovery_contract_v4_pgrestore.py:29-33`).
 
-5. **Les deux portes du runbook** (`PLAN_INDEX_REPAIR_RUNBOOK.md`) : il annonce
-   `24/25` et exige `25/25` comme porte d'autorisation avant `repair` — deux
-   endroits, et le document se contredit déjà.
+5. **The runbook's two gates** (`PLAN_INDEX_REPAIR_RUNBOOK.md`): it announces
+   `24/25` and requires `25/25` as an authorization gate before `repair` — two
+   places, and the document already contradicts itself.
 
-6. **`chmod 0600`** sur les assets v5 dès leur création (runbook l. 45). Fait pour
-   `brain-v42-v4.sql` le 2026-08-20 ; les 11 assets sont uniformes aujourd'hui.
+6. **`chmod 0600`** on the v5 assets as soon as they're created (runbook line 45).
+   Done for `brain-v42-v4.sql` on 2026-08-20; the 11 assets are uniform today.
 
-## 4. Ce que ce mint NE fait pas
+## 4. What this mint does NOT do
 
-Le contrôle du trigger `content_updated_at_041` (~270 lignes de SQL catalogue)
-reste **hors périmètre** — ticket de suite `23962510`. Le contrat v5 garde donc
-**25 checks**, pas 26.
+The `content_updated_at_041` trigger check (~270 lines of catalog SQL) stays
+**out of scope** — follow-up ticket `23962510`. The v5 contract therefore keeps
+**25 checks**, not 26.
 
 ---
 
-*Mesures prises le 2026-08-21 entre 06:05 et 06:20, en lecture seule, contre
-`brain_test` à la tête `046`. Aucune écriture, aucune migration jouée sur `brain`.*
+*Measurements taken on 2026-08-21 between 06:05 and 06:20, read-only, against
+`brain_test` at head `046`. No write, no migration run against `brain`.*

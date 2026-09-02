@@ -1,10 +1,10 @@
-# Provenance du corpus — Plan d'implémentation
+# Corpus Provenance — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Distinguer le métabolisme du dream de l'activité humaine, pour que le cache anti-rejugement de PROMOTE, son filtre de maturité et le gate préflight cessent de s'auto-invalider.
+**Goal:** Distinguish the dream's metabolism from human activity, so that PROMOTE's anti-rejudging cache, its maturity filter and the preflight gate stop invalidating themselves.
 
-**Architecture:** Un middleware FastMCP pose l'identité de l'appelant (`X-Brain-Agent`, déjà envoyée) dans un `ContextVar` lu à la mise en file des accès. La migration 041 ajoute `access_log.actor`, un compteur `access_count_human` et une date `content_updated_at` alimentée par des triggers conditionnels sur le changement de valeur. Trois consommateurs basculent sur ces signaux.
+**Architecture:** A FastMCP middleware sets the caller's identity (`X-Brain-Agent`, already sent) into a `ContextVar` read when access is enqueued. Migration 041 adds `access_log.actor`, an `access_count_human` counter and a `content_updated_at` date fed by conditional triggers on value change. Three consumers switch to these signals.
 
 **Tech Stack:** Python 3.12, FastMCP 3.4.2, SQLAlchemy 2.0 async, Alembic, PostgreSQL 16, pytest / pytest-asyncio.
 
@@ -12,60 +12,60 @@
 
 ## Global Constraints
 
-- **TDD strict, non négociable** (CLAUDE.md) : test rouge d'abord, jamais d'implémentation avant un test qui échoue. Ne jamais modifier un test pour faire passer le code.
-- **NE PAS modifier `public.update_updated_at()`.** La migration 039 l'épingle par SHA256 `83ca0f7a3230405dae8b4f4e692b4983869b58e4225b6e60bbf96db3f6ae9a59` et par longueur `96` octets ; son downgrade le vérifie. Rendre ce trigger conditionnel casserait la 039. Créer une fonction **séparée**.
-- **Aucun backfill.** `content_updated_at` reste `NULL` et `access_count_human` reste `0` sur l'existant : « jamais mesuré ».
-- **Ne toucher à aucun killswitch ni variable d'environnement du dream.** `BRAIN_DREAM_*` reste tel quel.
-- **Ne pas toucher** `instrument_embedding`, `InstrumentedEmbeddingService`, `InstrumentedReranker`, `InstrumentedGraphService` : ce ne sont pas des tools.
-- Vert avant chaque commit : `pytest tests/unit`, `ruff check src/ tests/`, `ruff format --check src/ tests/`, `mypy src/`.
-- Clé projet brain : toujours `brain-v42`.
+- **Strict TDD, non-negotiable** (CLAUDE.md): red test first, never implementation before a failing test. Never modify a test to make code pass.
+- **DO NOT modify `public.update_updated_at()`.** Migration 039 pins it by SHA256 `83ca0f7a3230405dae8b4f4e692b4983869b58e4225b6e60bbf96db3f6ae9a59` and by length `96` bytes; its downgrade verifies it. Making this trigger conditional would break 039. Create a **separate** function.
+- **No backfill.** `content_updated_at` stays `NULL` and `access_count_human` stays `0` on existing rows: "never measured".
+- **Do not touch any dream killswitch or environment variable.** `BRAIN_DREAM_*` stays as is.
+- **Do not touch** `instrument_embedding`, `InstrumentedEmbeddingService`, `InstrumentedReranker`, `InstrumentedGraphService`: these are not tools.
+- Green before each commit: `pytest tests/unit`, `ruff check src/ tests/`, `ruff format --check src/ tests/`, `mypy src/`.
+- Brain project key: always `brain-v42`.
 
 ## File Structure
 
-| Fichier | Responsabilité |
+| File | Responsibility |
 |---|---|
-| `src/brain_v42/provenance.py` | **Créé.** ContextVar de l'acteur, `normalize_agent()`, `is_human_actor()`. Aucune dépendance MCP ni DB. |
-| `src/brain_v42/mcp/provenance_middleware.py` | **Créé.** `ProvenanceMiddleware` — pose l'acteur sur `on_call_tool`. |
-| `src/brain_v42/metrics/instrument.py` | **Modifié.** `_normalize_agent` déménage vers `provenance.py` ; `instrument_tool` lit le ContextVar. |
-| `src/brain_v42/mcp/server.py` | **Modifié.** Installe le middleware inconditionnellement. |
-| `src/brain_v42/db/tables.py` | **Modifié.** Colonnes `actor`, `access_count_human`, `content_updated_at`. |
-| `alembic/versions/041_corpus_provenance.py` | **Créé.** Colonnes + fonction + 5 triggers. |
-| `src/brain_v42/services/access_logger.py` | **Modifié.** `log_access` capture l'acteur à la mise en file. |
-| `src/brain_v42/repositories/pg_access_log.py` | **Modifié.** Agrégation avec `count_human`. |
-| `src/brain_v42/services/decay_flusher.py` | **Modifié.** Écrit `access_count_human`. |
-| `scripts/dream/promote_prepare.py` | **Modifié.** Cache + maturité. |
-| `scripts/dream/dream_preflight.py` | **Modifié.** Signal de mutation. |
+| `src/brain_v42/provenance.py` | **Created.** Actor ContextVar, `normalize_agent()`, `is_human_actor()`. No MCP or DB dependency. |
+| `src/brain_v42/mcp/provenance_middleware.py` | **Created.** `ProvenanceMiddleware` — sets the actor on `on_call_tool`. |
+| `src/brain_v42/metrics/instrument.py` | **Modified.** `_normalize_agent` moves to `provenance.py`; `instrument_tool` reads the ContextVar. |
+| `src/brain_v42/mcp/server.py` | **Modified.** Installs the middleware unconditionally. |
+| `src/brain_v42/db/tables.py` | **Modified.** Columns `actor`, `access_count_human`, `content_updated_at`. |
+| `alembic/versions/041_corpus_provenance.py` | **Created.** Columns + function + 5 triggers. |
+| `src/brain_v42/services/access_logger.py` | **Modified.** `log_access` captures the actor at enqueue time. |
+| `src/brain_v42/repositories/pg_access_log.py` | **Modified.** Aggregation with `count_human`. |
+| `src/brain_v42/services/decay_flusher.py` | **Modified.** Writes `access_count_human`. |
+| `scripts/dream/promote_prepare.py` | **Modified.** Cache + maturity. |
+| `scripts/dream/dream_preflight.py` | **Modified.** Mutation signal. |
 
-**Correction à la spec, à appliquer :** `decay_flusher._ENTITY_TABLES` contient **six** tables (`decisions, learnings, snippets, runbooks, adrs, indexed_plans`). `access_count_human` doit donc exister sur les six, sinon `_update_entities_batch` échouera sur les plans. `content_updated_at` reste sur les **cinq** tables de connaissance : `indexed_plans` n'est ni candidat à la promotion ni dans le signal préflight.
+**Spec correction, to apply:** `decay_flusher._ENTITY_TABLES` contains **six** tables (`decisions, learnings, snippets, runbooks, adrs, indexed_plans`). `access_count_human` must therefore exist on all six, otherwise `_update_entities_batch` will fail on plans. `content_updated_at` stays on the **five** knowledge tables: `indexed_plans` is neither a promotion candidate nor part of the preflight signal.
 
 ---
 
-### Task 1: Spike — mesurer ce qu'on ne sait pas encore
+### Task 1: Spike — measure what we don't yet know
 
-**Résultats mesurés (2026-08-06) :**
+**Measured results (2026-08-06):**
 
-- **Q1 — OUI.** `get_http_headers()` est joignable depuis `on_call_tool` en HTTP réel
-  (via `_serve_loopback` + `_mcp_client`). Le header `X-Brain-Agent` envoyé est vu
-  intact par le middleware. → Task 3 lit le header dans le middleware (chemin
-  nominal, pas de variante fail-closed à écrire).
-- **Q2 — non mesurée empiriquement par ce spike ; réponse assumée = passerelle
-  seule, cohérente avec `tool_catalog.py`, à vérifier en Task 3.** Le code de spike
-  du plan (Step 3) enregistre `inner_tool` directement sur un `FastMCP` nu et
-  l'appelle par son nom réel via `client.call_tool("inner_tool", ...)` — sans
-  jamais appliquer `apply_tool_catalog_profile(mcp, "compact")` ni passer par
-  `brain_call_tool`. Le nom vu par le middleware (`['inner_tool']`) est donc
-  trivialement celui du seul tool enregistré ; ce run ne prouve rien sur le
-  comportement de la passerelle `brain_call_tool` en profil `compact` — il n'y a
-  simplement pas de passerelle dans ce montage. La réponse « seulement la
-  passerelle » reste celle déjà écrite dans le plan (ligne 151, *« Réponse
-  attendue »*) et par la lecture de `tool_catalog.py` (`_RequestAwareBM25SearchTransform`
-  n'expose que les 7 tools lifecycle + `brain_find_tool`/`brain_call_tool`), mais
-  n'est pas confirmée par une mesure directe ici. Conséquence pratique : ceci ne
-  bloque rien dans ce plan (la note du plan le dit déjà) ; le suivi optionnel
-  « retirer le monkey-patch » reste à vérifier avec un montage qui active
-  effectivement le catalogue `compact`, pas avec ce spike.
+- **Q1 — YES.** `get_http_headers()` is reachable from `on_call_tool` in real HTTP
+  (via `_serve_loopback` + `_mcp_client`). The `X-Brain-Agent` header sent is seen
+  intact by the middleware. → Task 3 reads the header in the middleware (nominal
+  path, no fail-closed variant to write).
+- **Q2 — not empirically measured by this spike; assumed answer = gateway
+  only, consistent with `tool_catalog.py`, to verify in Task 3.** The spike code
+  in the plan (Step 3) registers `inner_tool` directly on a bare `FastMCP` and
+  calls it by its real name via `client.call_tool("inner_tool", ...)` — without
+  ever applying `apply_tool_catalog_profile(mcp, "compact")` or going through
+  `brain_call_tool`. The name seen by the middleware (`['inner_tool']`) is thus
+  trivially that of the only registered tool; this run proves nothing about the
+  behavior of the `brain_call_tool` gateway in `compact` profile — there simply
+  is no gateway in this setup. The "gateway only" answer remains the one
+  already written in the plan (line 151, *"Expected answer"*) and by reading
+  `tool_catalog.py` (`_RequestAwareBM25SearchTransform` only exposes the 7
+  lifecycle tools + `brain_find_tool`/`brain_call_tool`), but is not confirmed
+  by a direct measurement here. Practical consequence: this blocks nothing in
+  this plan (the plan's note already says so); the optional follow-up "remove
+  the monkey-patch" still needs to be verified with a setup that actually
+  activates the `compact` catalog, not with this spike.
 
-**Sortie brute :**
+**Raw output:**
 
 ```
 tests/unit/mcp/test_spike_middleware_context.py::test_spike_headers_and_granularity SPIKE headers_reachable(in-memory): True
@@ -78,19 +78,21 @@ PASSED
 ======================== 2 passed, 2 warnings in 2.27s =========================
 ```
 
-**Divergence par rapport au plan :** le Step 2 attend `headers_reachable` à `False`
-en transport mémoire (« forcément None »). La mesure donne `True` : en transport
-in-memory, `get_http_headers()` de FastMCP 3.4.2 ne retourne pas `None` mais un
-dict vide (`{} is not None` → `True`), donc `headers_reachable` vaut `True` alors
-qu'aucune requête HTTP n'a eu lieu. Sans conséquence : le plan indique déjà que
-seule la mesure HTTP (Step 3) compte, et celle-ci confirme Q1 sans ambiguïté
-(`headers_is_none: False`, `agent seen: dream-codex-scan`).
+**Divergence from the plan:** Step 2 expects `headers_reachable` to be `False`
+in memory transport ("necessarily None"). The measurement gives `True`: in
+in-memory transport, FastMCP 3.4.2's `get_http_headers()` does not return
+`None` but an empty dict (`{} is not None` → `True`), so `headers_reachable`
+is `True` even though no HTTP request took place. Without consequence: the
+plan already states that only the HTTP measurement (Step 3) counts, and that
+one confirms Q1 unambiguously (`headers_is_none: False`, `agent seen:
+dream-codex-scan`).
 
-**Re-mesure Q2 (2026-08-06, catalogue compact réel) — le middleware voit LES DEUX
-noms.** Spike jetable `tests/unit/mcp/test_spike_q2_compact_gateway.py` : `FastMCP`
-nu + `inner_tool` + `apply_tool_catalog_profile(mcp, "compact")` + middleware
-espion, appel via `client.call_tool("brain_call_tool", {"name": "inner_tool", ...})`
-en transport mémoire. Sortie brute :
+**Q2 re-measurement (2026-08-06, real compact catalog) — the middleware sees
+BOTH names.** Throwaway spike `tests/unit/mcp/test_spike_q2_compact_gateway.py`:
+bare `FastMCP`
++ `inner_tool` + `apply_tool_catalog_profile(mcp, "compact")` + spy
+middleware, call via `client.call_tool("brain_call_tool", {"name": "inner_tool", ...})`
+in memory transport. Raw output:
 
 ```
 SPIKE Q2 catalog exposé      : ['brain_call_tool', 'brain_find_tool']
@@ -98,32 +100,32 @@ SPIKE Q2 résultat passerelle : 2
 SPIKE Q2 noms vus par on_call_tool : ['brain_call_tool', 'inner_tool']
 ```
 
-La réponse assumée (« passerelle seule ») était **fausse** : la passerelle de
-`BaseSearchTransform` exécute l'appel interne via
-`await ctx.fastmcp.call_tool(name, arguments)` sans désactiver `run_middleware`
-(défaut `True`, fastmcp 3.4.2), donc la chaîne `on_call_tool` est ré-entrée avec
-le nom du tool réel. Le dispatch est côté serveur, indépendant du transport : la
-mesure mémoire suffit pour Q2 (contrairement à Q1, qui portait sur les headers
-HTTP). Conséquences :
+The assumed answer ("gateway only") was **false**: `BaseSearchTransform`'s
+gateway executes the internal call via
+`await ctx.fastmcp.call_tool(name, arguments)` without disabling
+`run_middleware` (default `True`, fastmcp 3.4.2), so the `on_call_tool` chain
+is re-entered with the real tool name. The dispatch is server-side,
+independent of the transport: the in-memory measurement suffices for Q2
+(unlike Q1, which was about HTTP headers). Consequences:
 
-- le suivi optionnel « retirer le monkey-patch » est **viable** — ticket brain
-  `c352eaaa-3e3a-4e57-92c4-986b6d87512f`, learning correctif
-  `310a9953` (réfute `b77dba43`) ;
-- un middleware de métriques devra **ignorer les noms de passerelle**
-  (`brain_call_tool`, `brain_find_tool`) sous peine de double comptage ;
-- `ProvenanceMiddleware` se déclenche deux fois par appel compact (passerelle
-  puis tool interne) — inoffensif, il pose deux fois le même acteur.
+- the optional follow-up "remove the monkey-patch" is **viable** — brain
+  ticket `c352eaaa-3e3a-4e57-92c4-986b6d87512f`, corrective learning
+  `310a9953` (refutes `b77dba43`);
+- a metrics middleware will need to **ignore gateway names**
+  (`brain_call_tool`, `brain_find_tool`) or double-count;
+- `ProvenanceMiddleware` fires twice per compact call (gateway then internal
+  tool) — harmless, it sets the same actor twice.
 
-Deux hypothèses non vérifiées conditionnent la suite. Ce spike les mesure et **ne livre aucun code de production**. Son résultat est écrit dans le plan.
+Two unverified hypotheses drive the rest of this plan. This spike measures them and **ships no production code**. Its result is written into the plan.
 
 **Files:**
-- Create (jetable) : `tests/unit/mcp/test_spike_middleware_context.py`
+- Create (throwaway): `tests/unit/mcp/test_spike_middleware_context.py`
 
 **Interfaces:**
-- Consomme : rien.
-- Produit : deux réponses booléennes, consignées en fin de tâche.
+- Consumes: nothing.
+- Produces: two boolean answers, recorded at the end of the task.
 
-- [ ] **Step 1: Écrire le spike**
+- [ ] **Step 1: Write the spike**
 
 ```python
 """SPIKE JETABLE — à supprimer en fin de Task 1. Ne rien importer d'ici."""
@@ -161,16 +163,16 @@ async def test_spike_headers_and_granularity() -> None:
     print("SPIKE tool names seen by middleware:", observed.get("names"))
 ```
 
-- [ ] **Step 2: Lancer le spike**
+- [ ] **Step 2: Run the spike**
 
 Run: `uv run pytest tests/unit/mcp/test_spike_middleware_context.py -v -s`
-Attendu : le test PASSE et imprime deux lignes `SPIKE …`. En transport mémoire `headers_reachable` sera `False` — c'est normal, il n'y a pas de requête HTTP.
+Expected: the test PASSES and prints two `SPIKE …` lines. In memory transport `headers_reachable` will be `False` — that's normal, there is no HTTP request.
 
-- [ ] **Step 3: Mesurer en HTTP réel**
+- [ ] **Step 3: Measure over real HTTP**
 
-C'est la mesure qui compte : le transport mémoire n'a pas de headers. `tests/unit/mcp/test_dream_capability_http.py` fournit deux helpers réutilisables — `_serve_loopback(app)` (asynccontextmanager, ligne 366, rend une `base_url`) et `_mcp_client(base_url, token, headers=...)`. Les importer plutôt que les réécrire.
+This is the measurement that counts: memory transport has no headers. `tests/unit/mcp/test_dream_capability_http.py` provides two reusable helpers — `_serve_loopback(app)` (asynccontextmanager, line 366, yields a `base_url`) and `_mcp_client(base_url, token, headers=...)`. Import them rather than rewriting them.
 
-Ajouter au spike :
+Add to the spike:
 
 ```python
 from tests.unit.mcp.test_dream_capability_http import _mcp_client, _serve_loopback
@@ -207,22 +209,22 @@ async def test_spike_headers_over_real_http() -> None:
     print("SPIKE Q2 tool names     :", http_observed.get("names"))
 ```
 
-Si la signature de `_mcp_client` n'accepte pas `token=None`, passer le token attendu par le harnais — le spike ne teste pas l'autorisation.
+If `_mcp_client`'s signature doesn't accept `token=None`, pass the token expected by the harness — the spike doesn't test authorization.
 
 Run: `uv run pytest tests/unit/mcp/test_spike_middleware_context.py -v -s`
-Attendu : trois lignes `SPIKE …`. Q1 est répondue par `agent seen == "dream-codex-scan"`.
+Expected: three `SPIKE …` lines. Q1 is answered by `agent seen == "dream-codex-scan"`.
 
-- [ ] **Step 4: Consigner les deux réponses**
+- [ ] **Step 4: Record the two answers**
 
-Écrire les réponses en tête de ce plan, sous ce titre de tâche :
+Write the answers at the top of this plan, under this task title:
 
-- **Q1 — `get_http_headers()` est-il joignable depuis `on_call_tool` en HTTP ?**
-  - **OUI** → Task 3 lit le header dans le middleware (chemin nominal).
-  - **NON** → Task 3 ne lit rien : le middleware appelle `set_current_actor(normalize_agent(...))` depuis la valeur que `instrument_tool` lit déjà. Adapter Task 3 Step 3 en conséquence et le noter ici.
-- **Q2 — le middleware voit-il le nom du tool interne, ou seulement la passerelle ?**
-  - Réponse attendue : seulement la passerelle en profil `compact`. Cette réponse **ne bloque rien dans ce plan** : elle décide seulement si le suivi optionnel « retirer le monkey-patch » est viable. La consigner et passer.
+- **Q1 — Is `get_http_headers()` reachable from `on_call_tool` over HTTP?**
+  - **YES** → Task 3 reads the header in the middleware (nominal path).
+  - **NO** → Task 3 reads nothing: the middleware calls `set_current_actor(normalize_agent(...))` from the value `instrument_tool` already reads. Adapt Task 3 Step 3 accordingly and note it here.
+- **Q2 — Does the middleware see the internal tool's name, or only the gateway's?**
+  - Expected answer: gateway only in `compact` profile. This answer **blocks nothing in this plan**: it only decides whether the optional follow-up "remove the monkey-patch" is viable. Record it and move on.
 
-- [ ] **Step 5: Supprimer le spike, ne rien committer d'autre que la consignation**
+- [ ] **Step 5: Delete the spike, commit nothing but the recording**
 
 ```bash
 rm tests/unit/mcp/test_spike_middleware_context.py
@@ -232,22 +234,22 @@ git commit -m "docs(dream): consigner les mesures du spike middleware de provena
 
 ---
 
-### Task 2: Module `provenance` — ContextVar et classification
+### Task 2: `provenance` module — ContextVar and classification
 
 **Files:**
 - Create: `src/brain_v42/provenance.py`
 - Test: `tests/unit/test_provenance.py`
 
 **Interfaces:**
-- Consomme : rien (module feuille, aucune dépendance MCP ni DB).
-- Produit :
+- Consumes: nothing (leaf module, no MCP or DB dependency).
+- Produces:
   - `normalize_agent(value: str | None) -> str`
   - `set_current_actor(actor: str) -> None`
   - `get_current_actor() -> str`
   - `is_human_actor(actor: str | None) -> bool`
-  - `UNKNOWN_ACTOR: str` (vaut `"unknown"`)
+  - `UNKNOWN_ACTOR: str` (equals `"unknown"`)
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
 ```python
 """Tests de la couche de provenance — classification et contexte d'acteur."""
@@ -337,12 +339,12 @@ class TestCurrentActor:
         assert sorted(seen) == ["dream-codex-scan", "red-lab"]
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `uv run pytest tests/unit/test_provenance.py -v`
-Attendu : FAIL — `ModuleNotFoundError: No module named 'brain_v42.provenance'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'brain_v42.provenance'`
 
-- [ ] **Step 3: Écrire l'implémentation minimale**
+- [ ] **Step 3: Write the minimal implementation**
 
 ```python
 """Provenance du corpus — qui a touché quelle entité.
@@ -363,8 +365,8 @@ from contextvars import ContextVar
 UNKNOWN_ACTOR = "unknown"
 UNEXPANDED_ACTOR = "_unexpanded"
 
-# Préfixes des acteurs système qui se déclarent. Un acteur absent de cette
-# liste et non sentinelle est traité comme humain.
+# System actor prefixes that self-declare. An actor absent from this list
+# and not a sentinel is treated as human.
 _SYSTEM_ACTOR_PREFIXES = ("dream-codex-",)
 _NON_HUMAN = frozenset({UNKNOWN_ACTOR, UNEXPANDED_ACTOR, ""})
 
@@ -415,12 +417,12 @@ def is_human_actor(actor: str | None) -> bool:
     return not value.startswith(_SYSTEM_ACTOR_PREFIXES)
 ```
 
-- [ ] **Step 4: Vérifier le passage**
+- [ ] **Step 4: Verify the pass**
 
 Run: `uv run pytest tests/unit/test_provenance.py -v`
-Attendu : PASS, 14 tests.
+Expected: PASS, 14 tests.
 
-- [ ] **Step 5: Vert et commit**
+- [ ] **Step 5: Green and commit**
 
 ```bash
 uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ && uv run mypy src/
@@ -430,21 +432,21 @@ git commit -m "feat(provenance): classifier l'acteur d'un appel et le porter en 
 
 ---
 
-### Task 3: Middleware de provenance
+### Task 3: Provenance middleware
 
 **Files:**
 - Create: `src/brain_v42/mcp/provenance_middleware.py`
-- Modify: `src/brain_v42/mcp/server.py` (près de `mcp = FastMCP(...)`, ligne 255)
-- Modify: `src/brain_v42/metrics/instrument.py` (`_normalize_agent` et `instrument_tool`)
+- Modify: `src/brain_v42/mcp/server.py` (near `mcp = FastMCP(...)`, line 255)
+- Modify: `src/brain_v42/metrics/instrument.py` (`_normalize_agent` and `instrument_tool`)
 - Test: `tests/unit/mcp/test_provenance_middleware.py`
 
 **Interfaces:**
-- Consomme : `set_current_actor`, `normalize_agent`, `get_current_actor` (Task 2).
-- Produit : `ProvenanceMiddleware` (classe sans argument de constructeur).
+- Consumes: `set_current_actor`, `normalize_agent`, `get_current_actor` (Task 2).
+- Produces: `ProvenanceMiddleware` (class with no constructor argument).
 
-**Note de portée :** ce middleware **ne prend pas en charge les métriques**. `instrument_tool` et son monkey-patch restent en place — en profil `compact` ils sont les seuls à voir le nom du tool réel derrière la passerelle `brain_call_tool` (Task 1, Q2). Seule la lecture du header est mutualisée.
+**Scope note:** this middleware **does not carry the metrics**. `instrument_tool` and its monkey-patch stay in place — in `compact` profile they are the only ones to see the real tool name behind the `brain_call_tool` gateway (Task 1, Q2). Only the header read is shared.
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
 ```python
 """Tests du middleware de provenance — pose de l'acteur sur on_call_tool."""
@@ -543,14 +545,14 @@ class TestProvenanceMiddleware:
             await ProvenanceMiddleware().on_call_tool(_context(), call_next)
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `uv run pytest tests/unit/mcp/test_provenance_middleware.py -v`
-Attendu : FAIL — `ModuleNotFoundError: No module named 'brain_v42.mcp.provenance_middleware'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'brain_v42.mcp.provenance_middleware'`
 
-- [ ] **Step 3: Écrire le middleware**
+- [ ] **Step 3: Write the middleware**
 
-Si Task 1 Q1 a répondu **NON**, remplacer le corps de `on_call_tool` par la variante consignée en Task 1 Step 4 et adapter les tests de Step 1 en conséquence.
+If Task 1 Q1 answered **NO**, replace the body of `on_call_tool` with the variant recorded in Task 1 Step 4 and adapt the Step 1 tests accordingly.
 
 ```python
 """Middleware de provenance — pose l'acteur courant pour tout appel de tool.
@@ -584,51 +586,51 @@ class ProvenanceMiddleware(Middleware):
         return await call_next(context)
 ```
 
-- [ ] **Step 4: Vérifier le passage**
+- [ ] **Step 4: Verify the pass**
 
 Run: `uv run pytest tests/unit/mcp/test_provenance_middleware.py -v`
-Attendu : PASS, 5 tests.
+Expected: PASS, 5 tests.
 
-- [ ] **Step 5: Installer le middleware inconditionnellement**
+- [ ] **Step 5: Install the middleware unconditionally**
 
-Dans `src/brain_v42/mcp/server.py`, juste après `mcp = FastMCP("brain", mask_error_details=True)` (ligne 255) :
+In `src/brain_v42/mcp/server.py`, right after `mcp = FastMCP("brain", mask_error_details=True)` (line 255):
 
 ```python
 from brain_v42.mcp.provenance_middleware import ProvenanceMiddleware
 
 mcp = FastMCP("brain", mask_error_details=True)
-# Provenance : posé ici et non dans register_tools, pour être indépendant de
-# l'activation des métriques et de l'ordre d'enregistrement des tools.
-# `apply_tool_catalog_profile` et `maybe_apply_code_mode` retournent le MÊME
-# objet, donc ce middleware survit aux deux.
+# Provenance: set here rather than in register_tools, to be independent of
+# metrics activation and of tool registration order.
+# `apply_tool_catalog_profile` and `maybe_apply_code_mode` return the SAME
+# object, so this middleware survives both.
 mcp.add_middleware(ProvenanceMiddleware())
 ```
 
-- [ ] **Step 6: Faire lire le ContextVar par `instrument_tool`**
+- [ ] **Step 6: Make `instrument_tool` read the ContextVar**
 
-Un seul point de lecture du header. Dans `src/brain_v42/metrics/instrument.py` :
+A single point of header reading. In `src/brain_v42/metrics/instrument.py`:
 
-1. Supprimer la fonction `_normalize_agent` (lignes 24-46) et l'import `from fastmcp.server.dependencies import get_http_headers`.
-2. Ajouter `from brain_v42.provenance import get_current_actor, normalize_agent`.
-3. Ajouter l'alias de compatibilité `_normalize_agent = normalize_agent` — `tests/unit/test_metrics_instrument.py` l'importe.
-4. Dans `instrument_tool`, remplacer la ligne du bloc `finally` :
+1. Remove the `_normalize_agent` function (lines 24-46) and the import `from fastmcp.server.dependencies import get_http_headers`.
+2. Add `from brain_v42.provenance import get_current_actor, normalize_agent`.
+3. Add the compatibility alias `_normalize_agent = normalize_agent` — `tests/unit/test_metrics_instrument.py` imports it.
+4. In `instrument_tool`, replace the line in the `finally` block:
 
 ```python
-# avant
+# before
 agent = _normalize_agent((get_http_headers() or {}).get("x-brain-agent"))
-# après
+# after
 agent = get_current_actor()
 ```
 
-- [ ] **Step 7: Vérifier la non-régression des métriques**
+- [ ] **Step 7: Verify no metrics regression**
 
 Run: `uv run pytest tests/unit/test_metrics_instrument.py tests/unit/metrics/ -v`
-Attendu : PASS. Le test `test_decorator_records_successful_call` attend `agent="unknown"` hors contexte HTTP — la valeur par défaut du ContextVar est `UNKNOWN_ACTOR`, donc il passe sans modification.
+Expected: PASS. The test `test_decorator_records_successful_call` expects `agent="unknown"` outside an HTTP context — the ContextVar's default value is `UNKNOWN_ACTOR`, so it passes unmodified.
 
 Run: `uv run pytest tests/integration/metrics/test_agent_attribution.py -v`
-Attendu : PASS. Ce test envoie de vrais headers en HTTP ; il valide bout en bout que le middleware alimente bien le ContextVar. **S'il échoue, ne pas modifier le test** — c'est le signal que le middleware n'est pas installé sur le serveur de test ou que Q1 valait NON.
+Expected: PASS. This test sends real headers over HTTP; it validates end-to-end that the middleware does feed the ContextVar. **If it fails, do not modify the test** — it's the signal that the middleware isn't installed on the test server or that Q1 was NO.
 
-- [ ] **Step 8: Vert et commit**
+- [ ] **Step 8: Green and commit**
 
 ```bash
 uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ && uv run mypy src/
@@ -640,7 +642,7 @@ git commit -m "feat(provenance): poser l'acteur de l'appelant via un middleware 
 
 ---
 
-### Task 4: Migration 041 — colonnes, fonction, triggers
+### Task 4: Migration 041 — columns, function, triggers
 
 **Files:**
 - Create: `alembic/versions/041_corpus_provenance.py`
@@ -648,10 +650,10 @@ git commit -m "feat(provenance): poser l'acteur de l'appelant via un middleware 
 - Test: `tests/integration/db/test_migration_041_provenance.py`
 
 **Interfaces:**
-- Consomme : rien.
-- Produit : `access_log.actor`, `access_count_human` sur 6 tables, `content_updated_at` sur 5 tables, fonction `public.stamp_content_updated_at()`, 5 triggers `trg_<table>_content_updated`.
+- Consumes: nothing.
+- Produces: `access_log.actor`, `access_count_human` on 6 tables, `content_updated_at` on 5 tables, function `public.stamp_content_updated_at()`, 5 `trg_<table>_content_updated` triggers.
 
-- [ ] **Step 1: Écrire les tests d'intégration qui échouent**
+- [ ] **Step 1: Write the failing integration tests**
 
 ```python
 """Migration 041 — la date de contenu ne bouge que sur un changement de valeur."""
@@ -791,14 +793,14 @@ class TestMigrationShape:
         assert found == 1
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `uv run pytest tests/integration/db/test_migration_041_provenance.py -v`
-Attendu : FAIL — `UndefinedColumn: column "content_updated_at" does not exist`
+Expected: FAIL — `UndefinedColumn: column "content_updated_at" does not exist`
 
-⚠️ Lancer depuis un worktree propre ou avec un `.env` de test : le `.env` du tronc est la config de PRODUCTION et fuit dans les tests d'intégration via pydantic-settings (learning `54fdfddc`).
+Warning: run from a clean worktree or with a test `.env`: the trunk's `.env` is the PRODUCTION config and leaks into integration tests via pydantic-settings (learning `54fdfddc`).
 
-- [ ] **Step 3: Écrire la migration**
+- [ ] **Step 3: Write the migration**
 
 ```python
 """Distinguer le métabolisme du dream de l'activité humaine.
@@ -841,8 +843,8 @@ down_revision = "040"
 branch_labels = None
 depends_on = None
 
-# Tables suivies par le decay : toutes reçoivent le compteur humain, car
-# decay_flusher._ENTITY_TABLES les met à jour uniformément.
+# Tables tracked by decay: all receive the human counter, because
+# decay_flusher._ENTITY_TABLES updates them uniformly.
 _COUNTER_TABLES = (
     "learnings",
     "decisions",
@@ -852,8 +854,8 @@ _COUNTER_TABLES = (
     "indexed_plans",
 )
 
-# Tables de connaissance : colonnes de contenu par table. `indexed_plans` est
-# absent — ni candidat à la promotion, ni dans le signal préflight.
+# Knowledge tables: content columns per table. `indexed_plans` is absent —
+# neither a promotion candidate, nor part of the preflight signal.
 _CONTENT_COLUMNS = {
     "learnings": ("topic", "insight"),
     "decisions": ("title", "description", "reasoning", "consequences"),
@@ -932,39 +934,39 @@ def downgrade() -> None:
     op.drop_column("access_log", "actor")
 ```
 
-- [ ] **Step 4: Déclarer les colonnes dans `tables.py`**
+- [ ] **Step 4: Declare the columns in `tables.py`**
 
-Dans `src/brain_v42/db/tables.py`, ajouter à la définition `access_log` (ligne 984) :
+In `src/brain_v42/db/tables.py`, add to the `access_log` definition (line 984):
 
 ```python
     Column("actor", String(64), nullable=False, server_default=sa.text("'unknown'")),
 ```
 
-Puis, sur chacune des tables `learnings`, `decisions`, `snippets`, `runbooks`, `adrs`, `indexed_plans` :
+Then, on each of the tables `learnings`, `decisions`, `snippets`, `runbooks`, `adrs`, `indexed_plans`:
 
 ```python
     Column("access_count_human", sa.Integer, nullable=False, server_default=sa.text("0")),
 ```
 
-Et sur les cinq tables de connaissance seulement (pas `indexed_plans`) :
+And on the five knowledge tables only (not `indexed_plans`):
 
 ```python
     Column("content_updated_at", DateTime(timezone=True), nullable=True),
 ```
 
-- [ ] **Step 5: Appliquer et vérifier**
+- [ ] **Step 5: Apply and verify**
 
 ```bash
 uv run alembic upgrade head
 docker exec brain_v42_postgres psql -U brain -d brain -Atc \
   "select version_num from alembic_version;"
 ```
-Attendu : `041`
+Expected: `041`
 
 Run: `uv run pytest tests/integration/db/test_migration_041_provenance.py -v`
-Attendu : PASS, 12 tests (4 sur le trigger, 2 sur la forme, 6 paramétrés sur `access_count_human`).
+Expected: PASS, 12 tests (4 on the trigger, 2 on shape, 6 parametrized on `access_count_human`).
 
-- [ ] **Step 6: Vérifier que le downgrade est propre**
+- [ ] **Step 6: Verify the downgrade is clean**
 
 ```bash
 uv run alembic downgrade 040
@@ -972,9 +974,9 @@ docker exec brain_v42_postgres psql -U brain -d brain -Atc \
   "select count(*) from pg_proc where proname='stamp_content_updated_at';"
 uv run alembic upgrade head
 ```
-Attendu : `0` après le downgrade, et l'upgrade repasse sans erreur.
+Expected: `0` after the downgrade, and the upgrade goes back through without error.
 
-- [ ] **Step 7: Vert et commit**
+- [ ] **Step 7: Green and commit**
 
 ```bash
 uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ && uv run mypy src/
@@ -985,19 +987,19 @@ git commit -m "feat(db): dater le contenu et compter les lectures humaines (041)
 
 ---
 
-### Task 5: Capturer l'acteur à la mise en file
+### Task 5: Capture the actor at enqueue time
 
 **Files:**
 - Modify: `src/brain_v42/services/access_logger.py`
 - Test: `tests/unit/services/test_access_logger_actor.py`
 
 **Interfaces:**
-- Consomme : `get_current_actor` (Task 2), colonne `access_log.actor` (Task 4).
-- Produit : chaque dict d'événement mis en file porte désormais la clé `actor`.
+- Consumes: `get_current_actor` (Task 2), column `access_log.actor` (Task 4).
+- Produces: every enqueued event dict now carries the `actor` key.
 
-**Le piège de cette tâche :** `_flush_batch()` tourne dans une tâche de fond (`_run_loop`, toutes les 5 s), **hors du contexte de requête**. Y lire le ContextVar rendrait `unknown` pour tout le monde. L'acteur doit être lu dans `log_access()`, au moment de la mise en file.
+**The trap in this task:** `_flush_batch()` runs in a background task (`_run_loop`, every 5 s), **outside the request context**. Reading the ContextVar there would yield `unknown` for everyone. The actor must be read in `log_access()`, at enqueue time.
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
 ```python
 """L'acteur doit être capturé à la mise en file, pas au flush."""
@@ -1044,20 +1046,20 @@ class TestAccessLoggerActor:
         assert event["actor"] == UNKNOWN_ACTOR
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `uv run pytest tests/unit/services/test_access_logger_actor.py -v`
-Attendu : FAIL — `KeyError: 'actor'`
+Expected: FAIL — `KeyError: 'actor'`
 
-- [ ] **Step 3: Écrire l'implémentation minimale**
+- [ ] **Step 3: Write the minimal implementation**
 
-Dans `src/brain_v42/services/access_logger.py`, ajouter l'import :
+In `src/brain_v42/services/access_logger.py`, add the import:
 
 ```python
 from brain_v42.provenance import get_current_actor
 ```
 
-Puis, dans `log_access`, remplacer le dict mis en file :
+Then, in `log_access`, replace the enqueued dict:
 
 ```python
     def log_access(self, entity_type: str, entity_id: UUID, access_type: str) -> None:
@@ -1083,14 +1085,14 @@ Puis, dans `log_access`, remplacer le dict mis en file :
             )
 ```
 
-`_flush_batch` n'a pas besoin de changer : il fait `sa.insert(access_log)` avec les dicts tels quels, et la clé `actor` correspond désormais à une colonne existante.
+`_flush_batch` doesn't need to change: it does `sa.insert(access_log)` with the dicts as-is, and the `actor` key now maps to an existing column.
 
-- [ ] **Step 4: Vérifier le passage**
+- [ ] **Step 4: Verify the pass**
 
 Run: `uv run pytest tests/unit/services/test_access_logger_actor.py tests/unit/services/test_access_logger.py -v`
-Attendu : PASS. Si un test existant construit un événement attendu sans `actor`, **ne pas le modifier pour le faire passer** — vérifier d'abord qu'il ne décrit pas un comportement qu'on casse.
+Expected: PASS. If an existing test builds an expected event without `actor`, **do not modify it to make it pass** — first check that it doesn't describe a behavior you'd be breaking.
 
-- [ ] **Step 5: Vert et commit**
+- [ ] **Step 5: Green and commit**
 
 ```bash
 uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ && uv run mypy src/
@@ -1100,20 +1102,20 @@ git commit -m "feat(provenance): figer l'acteur d'un accès au moment de la mise
 
 ---
 
-### Task 6: Agréger les lectures humaines
+### Task 6: Aggregate human reads
 
 **Files:**
-- Modify: `src/brain_v42/repositories/pg_access_log.py` (`aggregate_in_session`, lignes 33-95)
-- Modify: `src/brain_v42/services/decay_flusher.py` (`_update_entities_batch`, lignes 148-250)
+- Modify: `src/brain_v42/repositories/pg_access_log.py` (`aggregate_in_session`, lines 33-95)
+- Modify: `src/brain_v42/services/decay_flusher.py` (`_update_entities_batch`, lines 148-250)
 - Test: `tests/unit/repositories/test_pg_access_log_actor.py`
 
 **Interfaces:**
-- Consomme : `is_human_actor` (Task 2), `access_log.actor` (Task 4), clé `actor` (Task 5).
-- Produit : `aggregate_in_session` retourne désormais `{"max_accessed": datetime, "count": int, "count_human": int}` pour chaque `(entity_type, entity_id)`.
+- Consumes: `is_human_actor` (Task 2), `access_log.actor` (Task 4), `actor` key (Task 5).
+- Produces: `aggregate_in_session` now returns `{"max_accessed": datetime, "count": int, "count_human": int}` for each `(entity_type, entity_id)`.
 
-**Note :** ne PAS toucher `aggregate_and_flush` (déprécié, plus appelé en production — `tests/unit/services/test_decay_flusher_atomic.py:96` prouve qu'il ne doit pas l'être).
+**Note:** do NOT touch `aggregate_and_flush` (deprecated, no longer called in production — `tests/unit/services/test_decay_flusher_atomic.py:96` proves it must not be).
 
-- [ ] **Step 1: Écrire le test qui échoue**
+- [ ] **Step 1: Write the failing test**
 
 ```python
 """L'agrégation sépare les lectures humaines des lectures du dream."""
@@ -1172,16 +1174,16 @@ class TestAggregateByActor:
         assert stats["count_human"] == 0
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `uv run pytest tests/unit/repositories/test_pg_access_log_actor.py -v`
-Attendu : FAIL — `KeyError: 'count_human'`
+Expected: FAIL — `KeyError: 'count_human'`
 
-- [ ] **Step 3: Agréger par acteur**
+- [ ] **Step 3: Aggregate by actor**
 
-Dans `pg_access_log.py`, l'agrégation ne peut pas classifier en SQL sans dupliquer la règle Python. On groupe donc aussi par `actor` et on classifie côté Python — une seule source de vérité pour `is_human_actor`.
+In `pg_access_log.py`, the aggregation can't classify in SQL without duplicating the Python rule. So we also group by `actor` and classify on the Python side — a single source of truth for `is_human_actor`.
 
-Remplacer les étapes 2 et 3 de `aggregate_in_session` :
+Replace steps 2 and 3 of `aggregate_in_session`:
 
 ```python
         # 2. Aggregate only snapshotted rows, split by actor so the
@@ -1218,46 +1220,46 @@ Remplacer les étapes 2 et 3 de `aggregate_in_session` :
                 entry["max_accessed"] = row["max_accessed"]
 ```
 
-Ajouter l'import en tête de fichier :
+Add the import at the top of the file:
 
 ```python
 from brain_v42.provenance import is_human_actor
 ```
 
-- [ ] **Step 4: Écrire le compteur humain**
+- [ ] **Step 4: Write the human counter**
 
-Dans `decay_flusher.py`, méthode `_update_entities_batch` :
+In `decay_flusher.py`, `_update_entities_batch` method:
 
-1. Ajouter la colonne à la sélection (après `table.c.access_count`) :
+1. Add the column to the selection (after `table.c.access_count`):
 
 ```python
             table.c.access_count_human,
 ```
 
-2. Dans la boucle, après `new_access_count = row["access_count"] + stats["count"]` :
+2. In the loop, after `new_access_count = row["access_count"] + stats["count"]`:
 
 ```python
             new_access_count_human = row["access_count_human"] + stats.get("count_human", 0)
 ```
 
-3. Dans `params` :
+3. In `params`:
 
 ```python
                 "access_count_human": new_access_count_human,
 ```
 
-4. Dans les deux `sa.update(...).values(...)` (`upd_same` et `upd_changed`), ajouter :
+4. In both `sa.update(...).values(...)` (`upd_same` and `upd_changed`), add:
 
 ```python
                     access_count_human=sa.bindparam("access_count_human"),
 ```
 
-- [ ] **Step 5: Vérifier le passage**
+- [ ] **Step 5: Verify the pass**
 
 Run: `uv run pytest tests/unit/repositories/test_pg_access_log_actor.py tests/unit/services/test_decay_flusher.py tests/unit/services/test_decay_flusher_atomic.py -v`
-Attendu : PASS.
+Expected: PASS.
 
-- [ ] **Step 6: Vert et commit**
+- [ ] **Step 6: Green and commit**
 
 ```bash
 uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ && uv run mypy src/
@@ -1269,17 +1271,17 @@ git commit -m "feat(provenance): agréger les lectures humaines séparément du 
 
 ---
 
-### Task 7: Recâbler PROMOTE
+### Task 7: Rewire PROMOTE
 
 **Files:**
-- Modify: `scripts/dream/promote_prepare.py` (`_CANDIDATE_SQL`, lignes 29-68)
+- Modify: `scripts/dream/promote_prepare.py` (`_CANDIDATE_SQL`, lines 29-68)
 - Test: `tests/integration/dream/test_promote_prepare_provenance.py`
 
 **Interfaces:**
-- Consomme : `content_updated_at`, `access_count_human` (Task 4), alimentés par Task 6.
-- Produit : `fetch_candidates()` conserve exactement sa signature et sa forme de retour.
+- Consumes: `content_updated_at`, `access_count_human` (Task 4), fed by Task 6.
+- Produces: `fetch_candidates()` keeps exactly its signature and return shape.
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
 ```python
 """Le pool de PROMOTE cesse de réadmettre un verdict encore valide."""
@@ -1321,7 +1323,7 @@ class TestTerminalCache:
             ),
             {"id": lid},
         )
-        # Une lecture postérieure au verdict — ce qui cassait le cache.
+        # A read after the verdict — this is what broke the cache.
         await db_session.execute(
             sa.text("UPDATE learnings SET access_count = access_count + 1 WHERE id = :id"),
             {"id": lid},
@@ -1402,58 +1404,59 @@ class TestMaturityGate:
         assert str(lid) in {c["id"] for c in candidates}
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `uv run pytest tests/integration/dream/test_promote_prepare_provenance.py -v`
-Attendu : FAIL — le premier test échoue (le candidat est réadmis), le troisième aussi (`access_count` suffit encore).
+Expected: FAIL — the first test fails (the candidate is readmitted), so does the third (`access_count` still suffices).
 
-- [ ] **Step 3: Modifier la requête**
+- [ ] **Step 3: Modify the query**
 
-Dans `scripts/dream/promote_prepare.py`, deux changements dans `_CANDIDATE_SQL` :
+In `scripts/dream/promote_prepare.py`, two changes in `_CANDIDATE_SQL`:
 
-1. Remplacer `AND l.access_count >= 3` par :
+1. Replace `AND l.access_count >= 3` with:
 
 ```sql
       AND l.access_count_human >= 3
 ```
 
-2. Remplacer la ligne `AND u.created_at >= l.updated_at` par :
+2. Replace the line `AND u.created_at >= l.updated_at` with:
 
 ```sql
             AND u.created_at >= COALESCE(l.content_updated_at, l.created_at)
 ```
 
-Et remplacer le commentaire du bloc « Terminal-unpromotable cache » par :
+And replace the "Terminal-unpromotable cache" block comment with:
 
 ```sql
       -- Terminal-unpromotable cache: skip a learning already judged
-      -- classification_uncertain on its CURRENT version. La comparaison porte
-      -- sur content_updated_at, PAS sur updated_at : ce dernier bouge à chaque
-      -- écriture de compteur, donc une simple lecture par une phase ultérieure
-      -- du dream invalidait le verdict rendu deux minutes plus tôt (observé :
-      -- un learning réévalué 23 nuits d'affilée). Le repli sur created_at est
-      -- délibéré — sans backfill, content_updated_at est NULL, et se replier
-      -- sur updated_at reproduirait le défaut à l'identique.
+      -- classification_uncertain on its CURRENT version. The comparison is
+      -- against content_updated_at, NOT updated_at: the latter moves on
+      -- every counter write, so a mere read by a later dream phase used to
+      -- invalidate the verdict rendered two minutes earlier (observed: a
+      -- learning re-evaluated 23 nights in a row). The fallback to
+      -- created_at is deliberate — without backfill, content_updated_at is
+      -- NULL, and falling back to updated_at would reproduce the defect
+      -- identically.
 ```
 
-Laisser `AND NOT (l.confidence = 'low' AND l.access_count < 5)` inchangé : ce garde-fou parle du volume total, pas de maturité humaine.
+Leave `AND NOT (l.confidence = 'low' AND l.access_count < 5)` unchanged: this guardrail is about total volume, not human maturity.
 
-- [ ] **Step 4: Vérifier le passage**
+- [ ] **Step 4: Verify the pass**
 
 Run: `uv run pytest tests/integration/dream/test_promote_prepare_provenance.py -v`
-Attendu : PASS, 4 tests.
+Expected: PASS, 4 tests.
 
-- [ ] **Step 5: Prouver que la boucle de production s'arrête**
+- [ ] **Step 5: Prove the production loop stops**
 
 ```bash
 uv run python -m scripts.dream.promote_prepare --project-key brain-v42 --limit 10 \
   | jq -r '.[].id'
 ```
-Attendu : `1d1037e8-acb1-4cb7-b0b5-9ccd3b97c0c0` **absent** de la sortie. C'est le critère d'acceptation n°2 de la spec.
+Expected: `1d1037e8-acb1-4cb7-b0b5-9ccd3b97c0c0` **absent** from the output. This is acceptance criterion #2 of the spec.
 
-Le pool sera probablement **vide** : `access_count_human` vaut 0 partout, sans backfill. C'est le comportement conçu, pas une régression — le noter et passer.
+The pool will probably be **empty**: `access_count_human` is 0 everywhere, with no backfill. That's the designed behavior, not a regression — note it and move on.
 
-- [ ] **Step 6: Vert et commit**
+- [ ] **Step 6: Green and commit**
 
 ```bash
 uv run ruff check src/ tests/ scripts/ && uv run ruff format --check src/ tests/ scripts/ && uv run mypy src/
@@ -1463,17 +1466,17 @@ git commit -m "fix(dream): fonder le cache de PROMOTE sur la date du contenu, pa
 
 ---
 
-### Task 8: Recâbler le gate préflight
+### Task 8: Rewire the preflight gate
 
 **Files:**
-- Modify: `scripts/dream/dream_preflight.py` (`_ENTITY_TABLES` et `_fetch_signals`, lignes 37-74)
+- Modify: `scripts/dream/dream_preflight.py` (`_ENTITY_TABLES` and `_fetch_signals`, lines 37-74)
 - Test: `tests/unit/dream/test_dream_preflight_provenance.py`
 
 **Interfaces:**
-- Consomme : `content_updated_at` (Task 4).
-- Produit : `should_skip_opus_phases()` conserve exactement sa signature.
+- Consumes: `content_updated_at` (Task 4).
+- Produces: `should_skip_opus_phases()` keeps exactly its signature.
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
 ```python
 """Le signal de mutation ignore le bruit de compteur et la production du dream."""
@@ -1500,14 +1503,14 @@ class TestMutationSignal:
             assert f"FROM {table}" in _mutation_sql()
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2: Verify the failure**
 
 Run: `uv run pytest tests/unit/dream/test_dream_preflight_provenance.py -v`
-Attendu : FAIL — `ImportError: cannot import name '_mutation_sql'`
+Expected: FAIL — `ImportError: cannot import name '_mutation_sql'`
 
-- [ ] **Step 3: Extraire et corriger la requête**
+- [ ] **Step 3: Extract and fix the query**
 
-Dans `scripts/dream/dream_preflight.py`, ajouter la fonction après `_ENTITY_TABLES` :
+In `scripts/dream/dream_preflight.py`, add the function after `_ENTITY_TABLES`:
 
 ```python
 def _mutation_sql() -> str:
@@ -1535,7 +1538,7 @@ def _mutation_sql() -> str:
     )
 ```
 
-Puis, dans `_fetch_signals`, remplacer la construction de `union` :
+Then, in `_fetch_signals`, replace the construction of `union`:
 
 ```python
         latest_mutation: datetime | None = await conn.fetchval(
@@ -1543,21 +1546,21 @@ Puis, dans `_fetch_signals`, remplacer la construction de `union` :
         )
 ```
 
-et supprimer la ligne `union = " UNION ALL ".join(...)` qu'elle remplace.
+and delete the line `union = " UNION ALL ".join(...)` that it replaces.
 
-- [ ] **Step 4: Vérifier le passage**
+- [ ] **Step 4: Verify the pass**
 
 Run: `uv run pytest tests/unit/dream/test_dream_preflight_provenance.py -v`
-Attendu : PASS, 3 tests.
+Expected: PASS, 3 tests.
 
-- [ ] **Step 5: Vérifier que le gate reste fail-safe**
+- [ ] **Step 5: Verify the gate stays fail-safe**
 
 ```bash
 uv run python -m scripts.dream.dream_preflight --date "$(date +%F)"
 ```
-Attendu : une ligne commençant par `RUN` ou `SKIP:`. Toute erreur doit imprimer `RUN (preflight error: …)` — la propriété fail-safe ne doit pas avoir bougé.
+Expected: a line starting with `RUN` or `SKIP:`. Any error must print `RUN (preflight error: …)` — the fail-safe property must not have moved.
 
-- [ ] **Step 6: Vert et commit**
+- [ ] **Step 6: Green and commit**
 
 ```bash
 uv run ruff check src/ tests/ scripts/ && uv run ruff format --check src/ tests/ scripts/ && uv run mypy src/
@@ -1568,22 +1571,22 @@ git commit -m "fix(dream): exclure le bruit de compteur et la sortie du dream du
 
 ---
 
-## Vérification après la première nuit
+## Verification after the first night
 
-À faire au check matinal suivant le déploiement, **sans rien modifier** :
+To do at the morning check following the deployment, **without modifying anything**:
 
-| Critère (spec §6) | Commande | Attendu |
+| Criterion (spec §6) | Command | Expected |
 |---|---|---|
-| L'acteur arrive | `docker exec brain_v42_postgres psql -U brain -d brain -c "select actor, count(*) from access_log group by 1 order by 2 desc;"` | `dream-codex-*` présent. Table souvent vide (purgée au flush) — interroger pendant le run du dream, ou lire `access_count_human` sur les entités. |
-| La boucle s'arrête | `uv run python -m scripts.dream.promote_prepare --project-key brain-v42 --limit 10 \| jq -r '.[].id'` | `1d1037e8…` absent |
-| Le contenu ne bouge plus pour rien | `docker exec brain_v42_postgres psql -U brain -d brain -c "select count(*) from learnings where content_updated_at >= current_date;"` | `0` après une nuit de REORG qui n'a normalisé que des tags |
-| Le gate revit | `docker exec brain_v42_postgres psql -U brain -d brain -c "select run_date, phase, status from dream_runs where run_date >= current_date - 14 and phase='synth';"` + `grep PREFLIGHT logs/dream/*.log` | Taux de SKIP sur 2 semaines, contre la ligne de base **2/50** |
+| The actor arrives | `docker exec brain_v42_postgres psql -U brain -d brain -c "select actor, count(*) from access_log group by 1 order by 2 desc;"` | `dream-codex-*` present. Table often empty (purged at flush) — query during a dream run, or read `access_count_human` on the entities. |
+| The loop stops | `uv run python -m scripts.dream.promote_prepare --project-key brain-v42 --limit 10 \| jq -r '.[].id'` | `1d1037e8…` absent |
+| Content no longer moves for nothing | `docker exec brain_v42_postgres psql -U brain -d brain -c "select count(*) from learnings where content_updated_at >= current_date;"` | `0` after a night of REORG that only normalized tags |
+| The gate comes back to life | `docker exec brain_v42_postgres psql -U brain -d brain -c "select run_date, phase, status from dream_runs where run_date >= current_date - 14 and phase='synth';"` + `grep PREFLIGHT logs/dream/*.log` | SKIP rate over 2 weeks, against the baseline **2/50** |
 
-## Suivi optionnel — retirer le monkey-patch
+## Optional follow-up — remove the monkey-patch
 
-**Tranché le 2026-08-06 par la re-mesure Q2 (catalogue compact réel) : `on_call_tool` voit `['brain_call_tool', 'inner_tool']` — le nom du tool réel est visible derrière la passerelle. Le retrait est VIABLE.** Ticket brain `c352eaaa-3e3a-4e57-92c4-986b6d87512f`. Contraintes : ignorer les noms de passerelle (`brain_call_tool`, `brain_find_tool`) pour éviter le double comptage, préserver la capture d'`AuthorizationError` et la mesure de latence d'`instrument_tool`, ne pas toucher `instrument_embedding`/`instrument_reranker`. À faire après T5–T8 ; coordonner avec le panneau live workload de red-monitor (ticket `2dfbb83d`), consommateur des métriques par tool.
+**Settled on 2026-08-06 by the Q2 re-measurement (real compact catalog): `on_call_tool` sees `['brain_call_tool', 'inner_tool']` — the real tool name is visible behind the gateway. Removal is VIABLE.** Brain ticket `c352eaaa-3e3a-4e57-92c4-986b6d87512f`. Constraints: ignore gateway names (`brain_call_tool`, `brain_find_tool`) to avoid double counting, preserve `instrument_tool`'s `AuthorizationError` capture and latency measurement, don't touch `instrument_embedding`/`instrument_reranker`. To do after T5–T8; coordinate with red-monitor's live workload panel (ticket `2dfbb83d`), a consumer of per-tool metrics.
 
-## Tickets à ouvrir dans le brain
+## Tickets to open in the brain
 
-- **Journal d'accès durable** : conserver `access_log` avec l'acteur (rétention plutôt que purge à l'agrégation) et dériver les compteurs à la demande, pour mesurer l'usage réel du corpus. Sans lui, `access_count_human` ne pourra pas être recalculé si la règle `is_human_actor` change.
-- **Chantiers B, C, D** (hors périmètre de ce plan) : surface de revue des insights SYNTH, porte de PROMOTE fondée sur le verdict, routage projet de SYNTH.
+- **Durable access log**: keep `access_log` with the actor (retention rather than purge on aggregation) and derive counters on demand, to measure real corpus usage. Without it, `access_count_human` cannot be recomputed if the `is_human_actor` rule changes.
+- **Workstreams B, C, D** (out of scope for this plan): SYNTH insight review surface, PROMOTE gate grounded in the verdict, SYNTH project routing.

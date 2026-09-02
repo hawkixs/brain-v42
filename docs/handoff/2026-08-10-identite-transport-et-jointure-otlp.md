@@ -1,54 +1,54 @@
-# Passation — 2026-08-10, soirée
+# Handoff — 2026-08-10, evening
 
-Écrit parce que le client MCP de la session émettrice est mort à la bascule (voir
-§1). Le brain, lui, a bien tout reçu : ce fichier ne remplace pas la mémoire, il
-donne les identifiants pour aller la lire et l'état de ce qui était en cours.
+Written because the MCP client of the emitting session died during the cutover (see
+§1). The brain, itself, did receive everything: this file does not replace memory, it
+gives the identifiers to go read it and the state of what was in progress.
 
 ---
 
-## 0. À faire en premier, dans l'ordre
+## 0. To do first, in order
 
-1. **Reconnecter le MCP brain** (`/mcp`, ou nouvelle session). Une connexion
-   neuve fonctionne — mesuré : `tools/list` → 9 outils.
-2. **Relire le brain** plutôt que ce fichier pour le détail : les entrées ci-dessous
-   sont plus complètes et portent leurs mesures.
-3. **La session brain `8f2dc148-73ac-403c-bb6d-fb61aa6a83fc` est restée OUVERTE.**
+1. **Reconnect the brain MCP** (`/mcp`, or new session). A fresh connection
+   works — measured: `tools/list` → 9 tools.
+2. **Reread the brain** rather than this file for detail: the entries below
+   are more complete and carry their measurements.
+3. **The brain session `8f2dc148-73ac-403c-bb6d-fb61aa6a83fc` remained OPEN.**
    `client_key = brain-v42-session-2026-08-10`, `started_focus_revision = 200`.
-   Elle vit en base, la bascule ne l'a pas touchée. La fermer ou la reprendre est
-   une commande explicite de l'utilisateur — ne rien faire sans elle.
+   It lives in the database, the cutover did not touch it. Closing or resuming it is
+   an explicit command from the user — do nothing without it.
 
 ---
 
-## 1. Ce qui a été livré, et qui tourne
+## 1. What was delivered, and is running
 
-**Commit `8ed57969`** — `feat(provenance): identité de transport`. Déployé et vérifié
-en production le 2026-08-10 vers 21:15.
+**Commit `8ed57969`** — `feat(provenance): transport identity`. Deployed and verified
+in production on 2026-08-10 around 21:15.
 
-Le problème résolu : le panneau brain agrégeait par acteur, or l'acteur est le
-basename du `cwd` (`X-Brain-Agent: ${PWD}`). Les quatre moteurs Claude mesurés ce
-jour tournent dans le même répertoire et s'effondraient en **une seule ligne**.
+The problem solved: the brain panel aggregated by actor, but the actor is the
+basename of `cwd` (`X-Brain-Agent: ${PWD}`). The four Claude engines measured that
+day run in the same directory and collapsed into **a single line**.
 
-Ce qui change : le serveur frappe un `Mcp-Session-Id` (`stateless_http=False`), le
-middleware le lit, il traverse le fil dans un champ **distinct** de `session`, et le
-registre en fait une ligne `kind="transport"`.
+What changes: the server mints an `Mcp-Session-Id` (`stateless_http=False`), the
+middleware reads it, it travels across the wire in a field **distinct** from `session`, and
+the registry turns it into a `kind="transport"` line.
 
-Contrôles passés sur la production vivante :
+Checks passed on live production:
 
-| Contrôle | Résultat |
+| Check | Result |
 |---|---|
-| Le serveur frappe un sid | 32 hex (`uuid4().hex`) |
-| Sid inventé | **404** |
-| `tools/list` sans sid | **400** |
-| Sans bearer | **401** |
-| Échéance d'inactivité | `session_idle_timeout seconds=900.0` |
-| `Terminating session: None` | **1732 avant → 0 après** |
-| Jeton dream | 200, sid frappé |
-| Deux connexions d'un acteur | **2 lignes** `transport-…`, 2 et 4 appels |
+| The server mints a sid | 32 hex (`uuid4().hex`) |
+| Made-up sid | **404** |
+| `tools/list` without sid | **400** |
+| Without bearer | **401** |
+| Inactivity deadline | `session_idle_timeout seconds=900.0` |
+| `Terminating session: None` | **1732 before → 0 after** |
+| Dream token | 200, sid minted |
+| Two connections from one actor | **2 lines** `transport-…`, 2 and 4 calls |
 
-Suite complète : 7416 passés, mypy Success, ruff clean.
-`test_container_image_pins` échoue — **pré-existant**, vérifié par stash.
+Full suite: 7416 passed, mypy Success, ruff clean.
+`test_container_image_pins` fails — **pre-existing**, verified by stash.
 
-### Rollback, si jamais
+### Rollback, just in case
 
 ```bash
 mkdir -p ~/.config/systemd/user/brain-mcp-http.service.d
@@ -57,140 +57,140 @@ printf '[Service]\nEnvironment=MCP_HTTP_STATELESS=true\n' \
 systemctl --user daemon-reload && systemctl --user restart brain-mcp-http
 ```
 
-Le commit reste ; seul le réglage décide. Aucune migration, aucune écriture
-persistante n'est engagée par ce chantier.
+The commit stays; only the setting decides. No migration, no persistent write
+is engaged by this piece of work.
 
 ---
 
-## 2. Rotation des jetons dream — faite
+## 2. Dream token rotation — done
 
-60 profils refrappés après une fuite en transcript (5 fichiers, tous `0600`, tous
-sous `wf_6370847b-70e`). Registre `0d8b13378932` → `738d1e8ff170`, zéro jeton
-recyclé. Prouvé par quatre sondes dont **deux négatives** (ancien jeton → 401).
+60 profiles re-minted after a leak in transcript (5 files, all `0600`, all
+under `wf_6370847b-70e`). Registry `0d8b13378932` → `738d1e8ff170`, zero token
+recycled. Proven by four probes including **two negative** (old token → 401).
 
-- Sauvegarde : `~/.config/brain-v42/mcp-token.env.bak-20260810-203428`
-- Runbook complet : brain `da84204f`
-- `MCP_HTTP_TOKEN` (admin) **n'a pas été tourné** — voir ticket `842d1bb4`.
-
----
-
-## 3. Ce qui vient ensuite — la jointure OTLP
-
-**La conception est tranchée et prouvée. Il reste à l'écrire.**
-
-Chaîne établie en direct le 2026-08-10 : l'attribut OTLP `conversation.id` de Codex
-**est** son `session_id`, identique au `session_meta.session_id` du rollout et au nom
-du fichier. Mesuré sur `019fecfb-2ecc-7a71-b26d-0aeefb5230b8`.
-
-Et 37 `client_key` de sessions brain portent déjà l'UUID d'une vraie session Codex.
-La clé de jointure existe donc **des deux côtés** ; personne ne les avait reliées.
-
-### Ce qu'il faut écrire
-
-Un **paramètre explicite** `agent_conversation_id` sur `brain_session_start`,
-validé comme UUID canonique, persisté (migration 045), et reporté au sidecar pour
-que `_session_key()` calcule la même clé agent-neutre que le côté OTLP.
-
-### Ce qu'il ne faut SURTOUT PAS faire
-
-Gratter l'UUID dans `client_key` au regex. Chiffre qui tranche : **114** `client_key`
-portent un UUID canonique, **37 seulement** correspondent à une session Codex. Les
-**78 autres** sont des UUID `red-mission`, `red-worker`, etc. Le grattage produirait
-78 jointures fausses et silencieuses.
-
-### Deux propriétés à respecter dans la conception
-
-- La relation est **N sessions brain → 1 conversation** (mesuré : 3 `client_key`
-  distinctes sur `019fec5a-…`). Ne pas la supposer injective.
-- Un seul `codex exec` émet **DEUX** `conversation.id`, dont un seul persiste. Il
-  restera des lignes OTLP fantômes non joignables — c'est le régime, pas un bug.
-
-### Ce que la jointure apporte que le transport n'apporte pas
-
-Le transport **sépare** les lignes ; il ne les **nomme** pas. Un `transport-0ae…f9e5`
-n'est rattachable à aucun pid, aucune tâche, aucun onglet. La session brain, elle,
-porte un projet, une `client_key` et un focus. Les deux sont complémentaires.
+- Backup: `~/.config/brain-v42/mcp-token.env.bak-20260810-203428`
+- Full runbook: brain `da84204f`
+- `MCP_HTTP_TOKEN` (admin) **was not rotated** — see ticket `842d1bb4`.
 
 ---
 
-## 4. Les entrées brain à relire
+## 3. What comes next — the OTLP join
 
-| Type | Sujet | id |
+**The design is settled and proven. It remains to be written.**
+
+Chain established live on 2026-08-10: Codex's OTLP attribute `conversation.id`
+**is** its `session_id`, identical to the rollout's `session_meta.session_id` and to the
+file name. Measured on `019fecfb-2ecc-7a71-b26d-0aeefb5230b8`.
+
+And 37 brain session `client_key` already carry the UUID of a real Codex session.
+The join key therefore exists on **both sides**; nobody had linked them.
+
+### What needs to be written
+
+An **explicit parameter** `agent_conversation_id` on `brain_session_start`,
+validated as a canonical UUID, persisted (migration 045), and reported to the sidecar so
+that `_session_key()` computes the same agent-neutral key as the OTLP side.
+
+### What must ABSOLUTELY NOT be done
+
+Scraping the UUID out of `client_key` with a regex. The number that settles it: **114**
+`client_key` carry a canonical UUID, **only 37** correspond to a Codex session. The
+**other 78** are `red-mission`, `red-worker`, etc. UUIDs. Scraping would produce
+78 false and silent joins.
+
+### Two properties to respect in the design
+
+- The relation is **N brain sessions → 1 conversation** (measured: 3 distinct
+  `client_key` on `019fec5a-…`). Do not assume it is injective.
+- A single `codex exec` emits **TWO** `conversation.id`, of which only one persists. There
+  will remain unjoinable ghost OTLP lines — that's the regime, not a bug.
+
+### What the join brings that transport doesn't
+
+Transport **separates** the lines; it does not **name** them. A `transport-0ae…f9e5`
+cannot be tied back to any pid, any task, any tab. The brain session, on the other hand,
+carries a project, a `client_key` and a focus. The two are complementary.
+
+---
+
+## 4. Brain entries to reread
+
+| Type | Subject | id |
 |---|---|---|
-| Décision | Voie de jointure : paramètre explicite, pas grattage | `4890a475` |
-| Décision | Rotation des jetons dream, admin conservé | `ac75678e` |
-| Learning | `conversation.id` OTLP == session_id Codex (chaîne prouvée) | `3747bb5e` |
-| Learning | Le hook `SessionStart` ne peut pas déclarer la session (réfuté) | `06332ea4` |
-| Learning | `access_log` est une file de ~5 min, pas un journal | `1de79d26` |
-| Learning | Fenêtre 60 s des métriques : 2 appelants sur 3 invisibles | `5bd39821` |
-| Learning | Deux unités systemd + bascule casse les connexions vivantes | `896d1e35` |
-| Runbook | Tourner le registre dream sans casser la nuit (10 étapes) | `da84204f` |
+| Decision | Join path: explicit parameter, not scraping | `4890a475` |
+| Decision | Dream token rotation, admin kept | `ac75678e` |
+| Learning | OTLP `conversation.id` == Codex session_id (proven chain) | `3747bb5e` |
+| Learning | The `SessionStart` hook cannot declare the session (refuted) | `06332ea4` |
+| Learning | `access_log` is a ~5 min queue, not a log | `1de79d26` |
+| Learning | Metrics 60 s window: 2 callers out of 3 invisible | `5bd39821` |
+| Learning | Two systemd units + cutover breaks live connections | `896d1e35` |
+| Runbook | Rotating the dream registry without breaking the night (10 steps) | `da84204f` |
 
-### Tickets ouverts
+### Open tickets
 
-- **`40dbfeb1` → red-monitor** : séparer les deux sources en trois tableaux, re-trier
-  globalement, renommer `brain_calls` en « tentatives », étiqueter les seaux.
-  **L'utilisateur lance cette session lui-même** — lui donner le contexte, ne pas
-  démarrer sans lui.
-- `842d1bb4` → brain-v42 : `MCP_HTTP_TOKEN` en clair dans 13 transcripts, 4 projets.
-- `d2a669c6` → brain-v42 : `collector_db.py:137`, fenêtre 60 s contre purge 1 h.
-  **Une constante**, et le panneau passe de 1 agent à 3-4.
-
----
-
-## 5. Les pièges qui ont coûté du temps ce soir
-
-1. **La chaîne traverse DEUX unités systemd.** Le format de fil et le registre vivent
-   dans `brain-metrics.service`, pas dans `brain-mcp-http.service`. Redémarrer le MCP
-   seul laisse le sidecar décoder avec l'ancien schéma — et comme son décodeur ignore
-   les clés inconnues **par conception**, il jette le champ en silence. Symptôme : une
-   ligne `unattributed calls=6` au lieu de deux lignes `transport` à 2 et 4. Réflexe :
-   comparer l'âge des **deux** processus à celui du commit.
-
-2. **Basculer en mode avec état casse les connexions déjà établies**, et le client ne
-   s'en remet pas. Un client connecté avant reçoit `400 Missing session ID` puis
-   `-32602`. L'étude avait mesuré une récupération sur **404** ; ce chemin-là est un
-   **400**, et il ne déclenche pas la même reprise. Prévoir la reconnexion.
-
-3. **Un pseudonyme d'affichage n'est pas une clé de jointure.** J'ai comparé
-   `codex-8f05…` (38 car., pseudonyme HMAC) au plafond de 36 de `normalize_session` et
-   j'en ai tiré une conclusion fausse. La vraie clé est le HMAC du UUID.
-
-4. **Le registre de capacités a des clés PLATES** `"projet:phase"`, et certains projets
-   contiennent eux-mêmes un `:` (`red-shrik:agent`). Un `split(':')` naïf rend un faux
-   verdict « matrice incomplète ». Utiliser `rpartition(':')`.
-
-5. **Substituer un symbole dans un module tiers fuit entre les tests.** Mon injection
-   de `session_idle_timeout` faisait échouer cinq tests qui passaient isolément. D'où
-   `tests/unit/mcp/conftest.py` et l'idempotence de l'installation.
+- **`40dbfeb1` → red-monitor**: split the two sources into three tables, re-sort
+  globally, rename `brain_calls` to "attempts", label the buckets.
+  **The user launches this session himself** — give him the context, do not
+  start without him.
+- `842d1bb4` → brain-v42: `MCP_HTTP_TOKEN` in clear text in 13 transcripts, 4 projects.
+- `d2a669c6` → brain-v42: `collector_db.py:137`, 60 s window against 1 h purge.
+  **One constant**, and the panel goes from 1 agent to 3-4.
 
 ---
 
-## 6. Ce qui reste NON MESURÉ
+## 5. Pitfalls that cost time tonight
 
-1. **Une phase dream réelle de bout en bout sous mode avec état.** J'ai prouvé qu'un
-   bearer dream obtient un sid ; pas qu'une phase complète va au bout. C'était déjà
-   l'inconnue n°1 de l'étude, elle le reste. L'utilisateur a accepté le risque
-   (« au pire on la rejoue en manuel »).
-2. Le nombre de sessions par invocation Claude Code — 1 ou 2 ? Deux lentilles se
-   contredisent. Facteur 2 sur le nombre de lignes du panneau.
-3. Le comportement de moteurs **interactifs** sur plusieurs heures : combien de
-   reconnexions par jour ? Décide si le panneau montre 4 lignes ou 12.
-4. Le coût mémoire par session sur le vrai catalogue de production (~142 kB estimé,
-   mesuré sur un FastMCP nu à 55 kB). À surveiller : la prod grossissait déjà de
-   ~16 MB/h **avant** ce chantier, en mode sans état.
-5. `len(_server_instances)` n'est **pas** exposé dans `/metrics` : l'efficacité du TTL
-   de 900 s n'est donc pas observable en production. À livrer avant de faire confiance
-   à l'échéance.
+1. **The chain crosses TWO systemd units.** The wire format and the registry live
+   in `brain-metrics.service`, not in `brain-mcp-http.service`. Restarting the MCP
+   alone leaves the sidecar decoding with the old schema — and since its decoder ignores
+   unknown keys **by design**, it silently drops the field. Symptom: one
+   `unattributed calls=6` line instead of two `transport` lines at 2 and 4. Reflex:
+   compare the age of **both** processes to that of the commit.
+
+2. **Switching to stateful mode breaks already established connections**, and the client
+   does not recover from it. A client connected beforehand receives `400 Missing session ID`
+   then `-32602`. The study had measured a recovery on **404**; this path is a
+   **400**, and it does not trigger the same recovery. Plan for the reconnection.
+
+3. **A display pseudonym is not a join key.** I compared
+   `codex-8f05…` (38 char., HMAC pseudonym) to `normalize_session`'s cap of 36 and
+   drew a false conclusion from it. The real key is the HMAC of the UUID.
+
+4. **The capability registry has FLAT keys** `"project:phase"`, and some projects
+   themselves contain a `:` (`red-shrik:agent`). A naive `split(':')` renders a false
+   "incomplete matrix" verdict. Use `rpartition(':')`.
+
+5. **Substituting a symbol in a third-party module leaks between tests.** My injection
+   of `session_idle_timeout` made five tests fail that passed in isolation. Hence
+   `tests/unit/mcp/conftest.py` and installation idempotence.
 
 ---
 
-## 7. Contexte de la nuit du 2026-08-11
+## 6. What remains UNMEASURED
 
-Première nuit à **dix projets** avec le scope serveur armé, départ **06:01**. Le
-registre a été refrappé ce soir, donc les phases prendront les nouveaux jetons au
-démarrage (elles lisent l'`EnvironmentFile`). REORG est en **DRY**.
+1. **A real end-to-end dream phase under stateful mode.** I proved that a
+   dream bearer obtains a sid; not that a full phase goes all the way. It was already
+   unknown #1 of the study, and it remains so. The user accepted the risk
+   ("worst case we replay it manually").
+2. The number of sessions per Claude Code invocation — 1 or 2? Two lenses
+   contradict each other. Factor of 2 on the panel's line count.
+3. The behavior of **interactive** engines over several hours: how many
+   reconnections per day? Decides whether the panel shows 4 lines or 12.
+4. The memory cost per session on the real production catalog (~142 kB estimated,
+   measured on a bare FastMCP at 55 kB). To watch: prod was already growing by
+   ~16 MB/h **before** this work, in stateless mode.
+5. `len(_server_instances)` is **not** exposed in `/metrics`: the effectiveness of the 900 s
+   TTL is therefore not observable in production. To ship before trusting
+   the deadline.
 
-Le contrôle du matin est le **nombre d'insights par projet**, pas la couleur de
-l'unité — une phase peut « réussir » sur du vide si le scope lui cache tout. Lire le
-contenu du rapport, groupé par projet.
+---
+
+## 7. Context of the night of 2026-08-11
+
+First night with **ten projects** with the server scope armed, start **06:01**. The
+registry was re-minted tonight, so phases will pick up the new tokens at
+startup (they read the `EnvironmentFile`). REORG is in **DRY**.
+
+The morning check is the **number of insights per project**, not the unit's
+color — a phase can "succeed" on emptiness if the scope hides everything from it. Read the
+report content, grouped by project.

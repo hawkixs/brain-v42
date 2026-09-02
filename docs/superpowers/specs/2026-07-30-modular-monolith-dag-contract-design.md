@@ -1,36 +1,36 @@
-# Monolithe modulaire à DAG prouvé — contrat de couches
+# Modular monolith with a proven DAG — layer contract
 
-**Date** : 2026-07-30
-**Statut** : proposé
-**Contexte** : discussion théorie/archi — « le projet devient gros, faut-il passer en
-microservices pour donner une session par service à des agents moins chargés ? »
+**Date**: 2026-07-30
+**Status**: proposed
+**Context**: theory/architecture discussion — "the project is getting big, should we move
+to microservices to give a session per service to less-loaded agents?"
 
-## Problème
+## Problem
 
-La crainte exprimée est réelle et documentée : le contexte est le goulot des agents de
-code. La recherche sur le *context rot* montre une dégradation de précision sur les
-18 modèles frontier testés dès que l'input grandit, avec un contexte effectif très
-inférieur à la limite annoncée.
+The concern raised is real and documented: context is the bottleneck of code
+agents. Research on *context rot* shows a precision degradation on the
+18 frontier models tested as soon as the input grows, with an effective context far
+below the announced limit.
 
-Le remède envisagé — découper `brain_v42` en microservices pour obtenir une session
-d'agent par service — repose sur une implication fausse :
+The envisioned remedy — splitting `brain_v42` into microservices to get one agent
+session per service — rests on a false implication:
 
-> frontière de déploiement ⇒ frontière de contexte
+> deployment boundary ⇒ context boundary
 
-Ce sont deux axes indépendants. L'isolation de contexte s'obtient par subagent, scoping
-et retrieval, à coût nul. Le microservice résout un problème d'organisation (déploiement
-indépendant, équipes indépendantes, scaling indépendant) au prix de contrats versionnés,
-de migrations distribuées et de la perte des changements atomiques.
+These are two independent axes. Context isolation is obtained via subagent, scoping
+and retrieval, at zero cost. The microservice solves an organizational problem (independent
+deployment, independent teams, independent scaling) at the price of versioned contracts,
+distributed migrations and the loss of atomic changes.
 
-La mesure du dépôt le confirme, et aggrave le diagnostic.
+The repo's measurement confirms it, and worsens the diagnosis.
 
-## Constat mesuré
+## Measured finding
 
-Graphe des dépendances entre modules de premier niveau de `src/brain_v42`, construit par
-AST sous Python 3.12 :
+Dependency graph between top-level modules of `src/brain_v42`, built by
+AST under Python 3.12:
 
 ```
-_root, models              feuilles
+_root, models              leaves
 db          -> _root
 repositories-> db, models
 services    -> db, models, repositories, mcp*, metrics*
@@ -39,86 +39,86 @@ metrics     -> _root, db, services, automation
 mcp         -> _root, db, models, repositories, services, metrics
 ```
 
-Une composante fortement connexe : `automation ↔ mcp ↔ metrics ↔ services`, soit
-27k des 39k lignes du paquet.
+One strongly connected component: `automation ↔ mcp ↔ metrics ↔ services`, i.e.
+27k of the package's 39k lines.
 
-Les arêtes marquées `*` la refermaient et provenaient de **trois sites d'import** :
+The edges marked `*` closed it and came from **three import sites**:
 
-| Site | Cible | Symboles |
+| Site | Target | Symbols |
 |---|---|---|
 | `services/brain_service.py` | `mcp.dream_project_authorization` | `DreamProjectAuthorizationError`, `get_dream_project_scope` |
 | `services/dream_run_service.py` | `metrics.collector_nightly` | `KILLSWITCHES_PATH`, `parse_killswitches` |
 | `services/feature_service.py` | `mcp.tools.parsing` | `normalize_uuid_prefix`, `parse_uuid`, `resolve_entity_id` |
 
-Les trois avaient la même nature : une primitive de bas niveau (politique d'autorisation,
-parsing de configuration, parsing d'UUID) garée dans un module de haut niveau. Aucune
-n'est un couplage architectural intentionnel.
+All three had the same nature: a low-level primitive (authorization policy, configuration
+parsing, UUID parsing) parked in a high-level module. None
+is an intentional architectural coupling.
 
-Le retrait de ces trois arêtes rend le graphe entièrement acyclique — vérifié par test.
+Removing these three edges makes the graph fully acyclic — verified by test.
 
-**Conséquence pour la question initiale** : découper aujourd'hui aurait transformé ce
-cycle en quatre services s'appelant en boucle par HTTP, soit un *distributed monolith*.
-Un cycle est un défaut de conception ; aucune topologie de déploiement ne le répare.
+**Consequence for the original question**: splitting today would have turned this
+cycle into four services calling each other in a loop over HTTP, i.e. a *distributed monolith*.
+A cycle is a design flaw; no deployment topology fixes it.
 
-## Décision
+## Decision
 
-Rester en monolithe modulaire et rendre l'acyclicité **prouvée en CI** plutôt
-qu'espérée. La propriété visée n'est pas « être découpé » mais « rester découpable » :
-tant que le graphe est un DAG, l'extraction d'un service reste mécanique. C'est une
-option préservée à coût nul, pas une architecture choisie d'avance.
+Stay a modular monolith and make acyclicity **proven in CI** rather
+than hoped for. The targeted property is not "being split" but "staying splittable":
+as long as the graph is a DAG, extracting a service remains mechanical. It is an
+option preserved at zero cost, not an architecture chosen in advance.
 
-L'incertitude est assumée : la crainte est anticipée, pas vécue. Sous incertitude, on ne
-choisit pas l'architecture, on garde le choix disponible.
+Uncertainty is embraced: the concern is anticipated, not experienced. Under uncertainty, you don't
+choose the architecture, you keep the choice available.
 
-## Conception
+## Design
 
-### Composant 1 — `scripts/check_module_layering.py`
+### Component 1 — `scripts/check_module_layering.py`
 
-Suit la convention des préflights existants (`check_mcp_http_port.py`,
-`check_container_image_pins.py`) : erreur dédiée, fonctions `validate_*` pures,
-`main() -> int` renvoyant `2`, aucune dépendance nouvelle (stdlib `ast`).
+Follows the convention of existing preflights (`check_mcp_http_port.py`,
+`check_container_image_pins.py`): dedicated error, pure `validate_*` functions,
+`main() -> int` returning `2`, no new dependency (stdlib `ast`).
 
-- `build_module_graph(package_root)` — résout `brain_v42.X` vers un sous-paquet réel ou
-  vers `_root` si `X` est un module fichier ; gère les imports relatifs de tout niveau ;
-  ignore self-imports et tiers.
-- `find_cycles(graph)` — Tarjan à pile explicite, renvoie les SCC de taille > 1.
-- `validate_module_layering(package_root)` — échoue à la moindre SCC de taille supérieure
-  à un : aucune baseline ni exception n'est admise.
+- `build_module_graph(package_root)` — resolves `brain_v42.X` to a real sub-package or
+  to `_root` if `X` is a file module; handles relative imports of any level;
+  ignores self-imports and third parties.
+- `find_cycles(graph)` — Tarjan with an explicit stack, returns the SCCs of size > 1.
+- `validate_module_layering(package_root)` — fails on the slightest SCC of size greater
+  than one: no baseline or exception is admitted.
 
-### Composant 2 — `tests/unit/test_module_layering.py`
+### Component 2 — `tests/unit/test_module_layering.py`
 
-Les tests sur paquets synthétiques (`tmp_path`) couvrent résolution paquet/module/relative,
-fail-closed sur source illisible, détection de cycle et code retour `2`. Le test contre le
-paquet réel exige directement un graphe sans SCC. Le checker ne prétend pas calculer un
-ensemble minimal d'arêtes : il vérifie seulement l'invariant utile, le DAG.
+The tests on synthetic packages (`tmp_path`) cover package/module/relative resolution,
+fail-closed on unreadable source, cycle detection and return code `2`. The test against the
+real package directly requires a graph with no SCC. The checker does not claim to compute a
+minimal set of edges: it only verifies the useful invariant, the DAG.
 
-### Ce qui n'est pas fait ici
+### What is not done here
 
-La phase GREEN déplace les primitives vers les couches inférieures, avec des shims qui
-préservent les identités publiques. Les symboles partagés (`parse_uuid`,
-`resolve_entity_id`) exigent une analyse d'impact GitNexus préalable.
+The GREEN phase moves the primitives to the lower layers, with shims that
+preserve the public identities. The shared symbols (`parse_uuid`,
+`resolve_entity_id`) require a prior GitNexus impact analysis.
 
-## Suite proposée
+## Proposed follow-up
 
-1. **GREEN réalisé** — les killswitches et UUID sont à la racine, le scope Dream est sous
-   `services`, et les anciens chemins sont des shims d'identité.
-2. Le contrat est « zéro cycle » : baseline, heuristique et `xfail` ont été retirés après
-   la preuve du DAG.
-3. `check_module_layering.py` est câblé dans `test:unit`, avant pytest.
-4. Hors périmètre de ce contrat mais dans le même diagnostic : `CLAUDE.md` scopés par
-   module, et découpe des quatre fichiers de plus de 1000 lignes (`db/tables.py` 1510,
+1. **GREEN done** — the killswitches and UUID are at the root, the Dream scope is under
+   `services`, and the old paths are identity shims.
+2. The contract is "zero cycles": baseline, heuristic and `xfail` were removed after
+   the DAG's proof.
+3. `check_module_layering.py` is wired into `test:unit`, before pytest.
+4. Out of scope for this contract but in the same diagnosis: `CLAUDE.md` scoped by
+   module, and splitting the four files over 1000 lines (`db/tables.py` 1510,
    `repositories/pg_graph_ledger.py` 1488, `services/brain_graph_projection.py` 1400,
-   `services/graph_service.py` 947) — la vraie friction agent d'aujourd'hui.
+   `services/graph_service.py` 947) — today's real agent friction.
 
-## Critères de sortie vers un vrai service
+## Exit criteria toward a real service
 
-Extraire un module seulement si l'un devient vrai :
+Extract a module only if one of these becomes true:
 
-- contrainte runtime divergente (motif réel de l'extraction d'`embedding`) ;
-- frontière de sécurité (motif réel de `codex_gateway`) ;
-- cadence ou criticité de déploiement réellement divergente ;
-- besoin de scaling indépendant démontré.
+- divergent runtime constraint (the real reason for the `embedding` extraction);
+- security boundary (the real reason for `codex_gateway`);
+- genuinely divergent deployment cadence or criticality;
+- demonstrated need for independent scaling.
 
-« L'agent a trop de contexte » n'est pas un critère. Un changement qui touche
-systématiquement trois modules ou plus signale de mauvaises frontières, pas un besoin de
+"The agent has too much context" is not a criterion. A change that systematically touches
+three or more modules signals bad boundaries, not a need for
 services.

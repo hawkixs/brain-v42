@@ -134,7 +134,7 @@ git commit -m "feat(tickets): TicketCreate porte extraction_status optionnel (op
 
 ```python
     async def test_terminal_transition_preserves_preset_skipped(self):
-        # Opt-out : un ticket créé 'skipped' ne doit PAS repasser 'pending' en se fermant.
+        # Opt-out: a ticket created 'skipped' must NOT flip back to 'pending' on closing.
         svc, repo, _ = _svc(
             ticket=_ticket(
                 status=TicketStatus.RESOLVED, extraction_status=ExtractionStatus.SKIPPED
@@ -168,7 +168,7 @@ Expected: FAIL — the two asserts get `ExtractionStatus.PENDING` (current code 
 ```python
         if new_status in TERMINAL_STATUSES:
             closed_at = now
-            # Respecte un opt-out posé à la création : ne pas écraser 'skipped'.
+            # Respect an opt-out set at creation: do not overwrite 'skipped'.
             if ticket.extraction_status is not ExtractionStatus.SKIPPED:
                 extraction = ExtractionStatus.PENDING
 ```

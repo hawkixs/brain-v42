@@ -1,667 +1,683 @@
-# PLAN Phases 0→4 — Refonte PROJETS + SESSIONS par accrétion instrumentée
+# PLAN Phases 0→4 — Redesign of PROJECTS + SESSIONS by instrumented accretion
 
-- **Date** : 2026-08-18
-- **Statut : CIBLE À PROPOSER — RIEN NE DÉMARRE SANS LE CADRAGE EXPLICITE DE
-  L'OPÉRATEUR** (ticket d'ancrage `d30cf6e5` : « NE PAS DÉMARRER sans cadrage explicite
-  de l'opérateur »). Aucune ligne de code n'existe, aucune migration n'est écrite. Ce
-  plan est l'exécution proposée de l'ADR jumelle
-  `docs/design/refonte-projets-sessions/ADR-refonte-projets-sessions.md` (statut
-  PROPOSED) ; il se lit seul.
-- **Origine** : synthèse de trois propositions d'architectes jugées par un panel de
-  trois lentilles — base = proposition B (majoritaire), faiblesses relevées par les
-  juges corrigées, greffes de A et C intégrées. Rien ici n'est neuf sans preuve
-  (ticket, learning, code vérifié le 2026-08-18) ou juge derrière.
-- **CADRAGE OPÉRATEUR DU 2026-08-19 — cinq réponses acquises, ce plan en est modifié.**
-  La source unique est l'**ADR jumelle, §0**. Résumé opposable : Q10 = la liste B couvre,
-  mais l'ordre vient désormais de l'axe **« traçabilité du savoir »** ; Q12 = **piste
-  (a)**, deux natures de session ; Q1 = dérivée de Q12 ; Q15 (neuve) = **nouvel état
-  terminal**, migration **M-G** sur le CHECK 037 ; séquencement = **P0 → P1 → P2 → P4.4
-  → P3**, et **Q6 promue en critère de sortie de Phase 0**. Restent bloquantes pour la
-  Phase 0 : **Q2, Q3, Q6, Q14**.
-- **SESSION 2 DU MÊME JOUR — LA PHASE 0 EST DÉBLOQUÉE.** Source unique : **ADR §0bis**.
-  `start` devient **AUTOMATIQUE**, sur la clé **`(projet, connexion)`** — ce qui **inverse
-  le défaut de nature** (désormais `agent` ; un geste unique et rétroactif, le *claim*,
-  promeut en `operator`). **Q9 réglée par la mesure : les subagents HÉRITENT**, sans tag,
-  et le **corollaire de Q1 se dissout** (« exactement un » devient vrai par construction).
-  **Q2 = `from_project`** ; **Q14 = (a) élargir `knowledge_sources`** ; **Q3 = stockage de
-  la proposition + forme du payload du ticket**, ses sous-décisions (a) et (b) étant
-  **dissoutes** ; **Q6 = acceptée**, brouillons non signés survivants dans un pool en
-  attente. **Timeout : une session `operator` n'est JAMAIS fermée par inactivité** ; les
-  traçantes le sont à **4 h SIGNÉES** (2026-08-20) — comme **seuil d'ÉLIGIBILITÉ** au
-  balayage nocturne, jamais comme délai de fermeture : latence réelle pire cas ≈ 28 h.
-  *AMENDÉ le 2026-08-20 — ADR §0ter fait foi (décision `c5160259`).* Restent ouvertes, sans
-  bloquer : Q4, Q5, Q7, Q8, Q11, Q13.
-
----
-
-## 0. Contexte minimal pour lecture autonome
-
-brain-v42 : serveur MCP « second cerveau » (Python 3.12, FastMCP 3, SQLAlchemy 2
-async, PostgreSQL 16 + pgvector, Neo4j en index de relations). Lifecycle sessions v4
-(migrations 032+037) : sept commandes explicites, machine d'états double rail
-(CHECK SQL + Pydantic), CAS de focus non bloquant, ledger d'attribution exclusif
-(PK `knowledge_id`), replays idempotents. **Covenant** : `start`/`list`/`resume`/
-`capture`/`heartbeat`/`end`/`abandon` sont des commandes explicites de l'utilisateur ;
-seule exception serveur, le sweep `auto_stale_7d` — **armé en DRY depuis le
-2026-08-18, par décision opérateur** (mesuré ce jour dans le drop-in systemd
-`killswitches.conf` : `BRAIN_DREAM_SWEEP_ENABLED=true`, `BRAIN_DREAM_SWEEP_DRY_RUN=true`,
-18 fantômes balayables mesurés ce jour-là ; le WET n'a jamais été armé). **Ce « 18 »
-est déjà périmé** : re-mesuré le 2026-08-19, **29 sessions `open` dont 21 balayables
->7 j** (sur 467 lignes) — daté, périssable, à rejouer avant toute décision d'armement,
-jamais à recopier. Une version antérieure
-de ce plan écrivait « jamais armé » — recopie d'un état du 2026-08-16, contre sa
-propre règle R3, corrigée. Toute proposition qui fait ouvrir/fermer une session par un
-agent, un hook ou un client est un changement de covenant à trancher par l'opérateur.
-**Réponse opérateur déjà établie** (`2bd14b24`, 2026-08-06) : une session sert à la
-traçabilité du savoir et le cycle de vie doit devenir « automatique, pas déclaratif ».
-**La piste est désormais CHOISIE — ce paragraphe disait « aucune choisie » et c'était
-vrai jusqu'au 2026-08-18 inclus.** Cadrage du 2026-08-19, Q12 : **piste (a), deux
-natures de session** — agent traçante auto-fermée sans rituel, opérateur avec rituel
-(ADR §0.1 et D11). Ce plan n'est donc plus « un transitoire compatible avec les trois
-pistes » : il a une cible. Deux conséquences qu'il porte mal encore, et qu'il faut lire
-avant de l'exécuter — le covenant est **amendé** pour la nature agent (C1), et la
-machine d'états 037 est **étendue** par la migration M-G (Q15, ADR §0.4), alors que tout
-le reste du plan est écrit sous l'hypothèse inverse.
-
-**Douleurs prouvées** (détail et preuves dans le DOSSIER et l'ADR) : B1 fantômes
-subagents (39 d'un coup, critique) ; B2 heartbeat menteur dans les deux sens
-(critique) ; B3 capture à 18 %/attribution à 34 % (haute) ; B4 tickets non capturables
-+ lot fail-closed en bloc ; B5 fenêtre de capture rigide ; B6 focus sans garde de
-contenu ; B7 aucun checkpoint ; B8 `X-Brain-Session` mort (contrainte — **RE-MESURÉE ET CONFIRMÉE le
-2026-08-19 sur Claude Code 2.1.234**, verdict inchangé :
-`docs/upstream/2026-08-19-b8-session-join-rejeu.md`. Ce passage annonçait un re-jeu
-« programmé » ; il est **fait**) ; B9
-`client_key` libre ; B10 drift fantôme (fermée, à ne jamais régresser) ; **B11
-sous-projets colon — 86 artefacts sans aucun run nocturne, et 533 sans consolidation
-croisée** (le « 479 hors consolidation » de la spec `dbb7c5ce` datait du 2026-08-08 et a
-été re-mesuré : deux des six clés colon sont au pool dream depuis le 2026-08-10, soit
-84 % de cette masse) ; B12 système projets sans doc ; B13
-erreur de capture indifférenciée (ids listés, une seule raison agrégée — vérifié) ;
-B14 acteur non persisté sur la session (vérifié). La cartographie douleur → phase →
-mesure est au §6.
-
-**Ordre de priorité — fixé par l'opérateur le 2026-08-19, il ne vient plus de la
-gravité.** L'axe retenu est la **traçabilité du savoir** : **B3, B4, B5 en tête**. La
-cotation « critique / haute / moyenne » ci-dessus reste la cotation *de gravité* et
-garde sa valeur descriptive, mais elle **ne commande plus le séquencement**. C'est ce
-qui déplace la Phase 4.4 juste après la Phase 2 et fait descendre la Phase 3 (voir le
-bandeau d'en-tête et l'ADR §0.3).
-
-**Principe directeur** : chaque objet est un FAIT observé par le serveur ou un JUGEMENT
-déclaré par l'humain, jamais les deux. Le serveur observe et prépare ; l'opérateur
-signe.
+- **Date**: 2026-08-18
+- **Status: TARGET TO BE PROPOSED — NOTHING STARTS WITHOUT THE OPERATOR'S EXPLICIT
+  FRAMING** (anchor ticket `d30cf6e5`: "DO NOT START without the operator's explicit
+  framing"). No line of code exists, no migration is written. This plan is the
+  proposed execution of the twin ADR
+  `docs/design/refonte-projets-sessions/ADR-refonte-projets-sessions.md` (status
+  PROPOSED); it can be read on its own.
+- **Origin**: synthesis of three architect proposals judged by a panel of three
+  lenses — baseline = proposal B (majority), weaknesses raised by the judges fixed,
+  grafts from A and C integrated. Nothing here is new without evidence (ticket,
+  learning, code verified on 2026-08-18) or a judge behind it.
+- **OPERATOR FRAMING OF 2026-08-19 — five answers obtained, this plan is amended by
+  them.** The single source is the **twin ADR, §0**. Binding summary: Q10 = list B
+  covers, but the order now comes from the **"knowledge traceability"** axis; Q12 =
+  **track (a)**, two session natures; Q1 = derived from Q12; Q15 (new) = **new
+  terminal state**, migration **M-G** on the 037 CHECK; sequencing = **P0 → P1 → P2 →
+  P4.4 → P3**, and **Q6 promoted to a Phase 0 exit criterion**. Still blocking for
+  Phase 0: **Q2, Q3, Q6, Q14**.
+- **SESSION 2 OF THE SAME DAY — PHASE 0 IS UNBLOCKED.** Single source: **ADR §0bis**.
+  `start` becomes **AUTOMATIC**, on the key **`(project, connection)`** — which
+  **inverts the default nature** (now `agent`; a single, retroactive gesture, the
+  *claim*, promotes to `operator`). **Q9 settled by measurement: subagents INHERIT**,
+  without a tag, and **Q1's corollary dissolves** ("exactly one" becomes true by
+  construction). **Q2 = `from_project`**; **Q14 = (a) widen `knowledge_sources`**;
+  **Q3 = storage of the proposal + shape of the ticket payload**, its sub-decisions
+  (a) and (b) being **dissolved**; **Q6 = accepted**, unsigned drafts survive in a
+  pending pool. **Timeout: an `operator` session is NEVER closed by inactivity**;
+  tracing sessions are, at **4 SIGNED hours** (2026-08-20) — as an **ELIGIBILITY**
+  threshold for the nightly sweep, never as a closing delay: worst-case real latency
+  ≈ 28 h. *AMENDED on 2026-08-20 — ADR §0ter is authoritative (decision `c5160259`).*
+  Still open, without blocking: Q4, Q5, Q7, Q8, Q11, Q13.
 
 ---
 
-## 1. Règles transverses (non négociables)
+## 0. Minimal context for a self-contained read
 
-**R1 — Pin Alembic (contrainte DURE, ticket `c60d023d`).**
+brain-v42: "second brain" MCP server (Python 3.12, FastMCP 3, SQLAlchemy 2 async,
+PostgreSQL 16 + pgvector, Neo4j as a relationship index). Sessions lifecycle v4
+(migrations 032+037): seven explicit commands, dual-rail state machine (SQL CHECK +
+Pydantic), non-blocking focus CAS, exclusive attribution ledger (PK `knowledge_id`),
+idempotent replays. **Covenant**: `start`/`list`/`resume`/`capture`/`heartbeat`/
+`end`/`abandon` are explicit user commands; the sole server-side exception is the
+`auto_stale_7d` sweep — **armed in DRY since 2026-08-18, by operator decision**
+(measured that day in the systemd drop-in `killswitches.conf`:
+`BRAIN_DREAM_SWEEP_ENABLED=true`, `BRAIN_DREAM_SWEEP_DRY_RUN=true`, 18 sweepable
+ghosts measured that day; WET has never been armed). **This "18" is already
+stale**: re-measured on 2026-08-19, **29 `open` sessions, 21 of them sweepable
+>7 d** (out of 467 rows) — dated, perishable, to be replayed before any arming
+decision, never to be copied. An earlier version
+of this plan wrote "never armed" — a copy-forward of a 2026-08-16 state, against its
+own rule R3, corrected. Any proposal that has an agent, a hook or a client open/close
+a session is a covenant change to be settled by the operator.
+**Operator answer already established** (`2bd14b24`, 2026-08-06): a session serves
+knowledge traceability, and the lifecycle must become "automatic, not declarative."
+**The track is now CHOSEN — this paragraph used to say "none chosen," and that was
+true up through 2026-08-18 inclusive.** Framing of 2026-08-19, Q12: **track (a), two
+session natures** — tracing agent auto-closed with no ritual, operator with ritual
+(ADR §0.1 and D11). This plan is therefore no longer "a transitional state
+compatible with all three tracks": it has a target. Two consequences it still
+handles poorly, and that must be read before executing it — the covenant is
+**amended** for the agent nature (C1), and the 037 state machine is **extended** by
+migration M-G (Q15, ADR §0.4), while the rest of the plan is still written under the
+opposite assumption.
+
+**Proven pains** (detail and evidence in the DOSSIER and the ADR): B1 subagent
+ghosts (39 at once, critical); B2 lying heartbeat in both directions
+(critical); B3 capture at 18%/attribution at 34% (high); B4 uncapturable tickets
++ batch fail-closed as a block; B5 rigid capture window; B6 focus with no content
+guard; B7 no checkpoint; B8 dead `X-Brain-Session` (constraint — **RE-MEASURED AND
+CONFIRMED on 2026-08-19 on Claude Code 2.1.234**, verdict unchanged:
+`docs/upstream/2026-08-19-b8-session-join-rejeu.md`. This passage used to announce a
+"planned" replay; it is **done**); B9
+free-form `client_key`; B10 ghost drift (closed, never to regress); **B11
+colon sub-projects — 86 artifacts with no nightly run at all, and 533 with no
+cross-consolidation** (the "479 outside consolidation" from spec `dbb7c5ce` dated
+from 2026-08-08 and has been re-measured: two of the six colon keys have been in the
+dream pool since 2026-08-10, i.e. 84% of that mass); B12 undocumented project
+system; B13
+undifferentiated capture error (ids listed, one aggregated reason — verified); B14
+actor not persisted on the session (verified). The pain → phase → measurement map is
+in §6.
+
+**Priority order — fixed by the operator on 2026-08-19, it no longer comes from
+severity.** The chosen axis is **knowledge traceability**: **B3, B4, B5 first**. The
+"critical / high / medium" scoring above remains the *severity* scoring and keeps its
+descriptive value, but it **no longer drives sequencing**. That is what moves
+Phase 4.4 right after Phase 2 and pushes Phase 3 down (see the header banner and ADR
+§0.3).
+
+**Guiding principle**: every object is a FACT observed by the server or a JUDGMENT
+declared by the human, never both. The server observes and prepares; the operator
+signs.
+
+---
+
+## 1. Cross-cutting rules (non-negotiable)
+
+**R1 — Alembic pin (HARD constraint, ticket `c60d023d`).**
 `_REQUIRED_ALEMBIC_HEAD = "045"` (`src/brain_v42/maintenance/plan_index_repair_store.py:63`,
-gardé par `tests/unit/test_plan_index_repair_head_pin.py`) fait fail-closed le
-plan-index repair en production au moindre écart. Donc :
-1. Chaque migration de ce plan est livrée dans **LE MÊME COMMIT** que le lot ci-dessous.
-   **Troisième version de cette recette : les deux premières se déclaraient « le
-   couplage complet » et ne l'étaient pas.** Inventaire refait grep en main, gardes
-   nommées une à une :
-   - bump du pin + son test (`tests/unit/test_plan_index_repair_head_pin.py`) ;
-   - **README** et **MCP_TOOLS** : chaîne `migration {head}`
-     (`test_documentation_contract.py:1816,1819`) ;
-   - **ARCHITECTURE** : chaîne **différente**, `migrations 001–{head} defined`, tiret
-     cadratin compris (même test, l.1815). Suivre l'ancienne recette à la lettre sur
-     ARCHITECTURE rendait le test rouge ;
-   - **CLAUDE.md** : à mettre à jour (contrat de travail), mais **il ne peut être dans
-     AUCUN commit de ce dépôt** — `git check-ignore -v CLAUDE.md` → `.gitignore:74`,
-     absent de `git ls-files`, et le test garde son assertion derrière `if CLAUDE:`
-     (l.25-32 : « CLAUDE.md is tracked only in the private archive »). En CI la clause
-     est muette ;
-   - **SCHEMA.md** : compte de tables (M-C…M-F en ajoutent chacune une, « 32 tables
-     public » et le compte de révisions bougent) **et** la phrase « La cible du dépôt
-     est {head}. », doublement épinglée par
-     `tests/unit/test_recovery_contract_v4.py:437-446` — doublon que le dépôt
-     documente lui-même comme « facile à manquer quand on inventorie les gardes » ;
-   - **`docs/OPERATIONS.md:118`** (« The repository migration target is 045. ») —
-     absent de toutes les listes antérieures ;
-   - `tests/unit/test_recovery_contract.py:279` : `assert script.get_heads() == ["045"]`,
-     littéral **dans un test nommé pour la révision 031**. Rouge à **chaque** bump ;
-   - `tests/unit/test_recovery_contract.py:292` et `…_v2.py:33-39` : le `table_set` gelé
-     est re-dérivé de `METADATA.tables` moins un ensemble d'exclusion codé en dur.
-     **M-C, M-D, M-E et M-F ajoutent chacune une table** ⇒ quatre bumps sur six font
-     rougir ces deux tests, qui ne parlent ni de pin ni de sessions ;
-   - **régénération de `ops/recovery/` (point 5)** pour M-A, M-B et M-D — et **des DEUX
-     assets v4, pas d'un seul** : `brain-v42-v4.sql` ET `brain-v42-v4-pgrestore.sql`
-     (voir point 5, « quatrième mécanisme » et « deux assets ») ;
-   - le **renommage du test-garde head-nommé** (`test_repository_head_045_is_documented_…`).
-   (« La même série de commits » reste refusée — fenêtre de désynchronisation.)
-2. **Jamais deux têtes en vol** (mergées mais non appliquées) simultanément — celles
-   de ce plan entre elles, ET vis-à-vis de la 046 (point 6).
-3. Rollout de chaque tête : appliquer → **mesurer** `select version_num from
-   alembic_version` (jamais recopier — cette doc a déjà menti trois jours puis dix
-   jours sur ce chiffre) → redémarrer le serveur MCP → canary.
-   **Exception nommée, M-D** : entre l'`upgrade` et le redémarrage, le processus vivant
-   exécute encore le code pré-M-D, qui n'écrit aucune ligne d'historique. Le constraint
-   trigger différé ferait donc avorter au COMMIT **tout `brain_session_end` en
-   `focus_outcome=applied`** — fail-closed, session laissée ouverte —, et M-D n'a ni
-   killswitch ni downgrade praticable. La migration crée donc le trigger **désactivé**
-   (`ALTER TABLE … DISABLE TRIGGER`) ; le runbook l'active **après** le redémarrage MCP,
-   en un geste opérateur nommé, canary compris. Sans cette exception, la fenêtre
-   d'indisponibilité est imposée par la règle du plan elle-même. **Prix à annoncer** :
-   toute la fenêtre désactivée est une fenêtre d'attestation `ops/recovery/` **rouge**
-   (point 5 — elle exige `tgenabled = 'O'`), donc courte, datée, et la régénération des
-   assets se pose dans le geste d'activation, pas dans celui de l'upgrade.
-4. **La revue que le pin exige vaut pour NOS têtes.** Message d'échec de
-   `test_plan_index_repair_head_pin.py:45-52` : « review what {head} changes on the
+guarded by `tests/unit/test_plan_index_repair_head_pin.py`) makes the plan-index
+repair fail-closed in production at the smallest drift. So:
+1. Every migration in this plan ships in **THE SAME COMMIT** as the batch below.
+   **Third version of this recipe: the first two claimed to be "the full coupling"
+   and were not.** Inventory redone by hand with grep, guards named one by one:
+   - pin bump + its test (`tests/unit/test_plan_index_repair_head_pin.py`);
+   - **README** and **MCP_TOOLS**: the `migration {head}` string
+     (`test_documentation_contract.py:1816,1819`);
+   - **ARCHITECTURE**: a **different** string, `migrations 001–{head} defined`, em
+     dash included (same test, l.1815). Following the old recipe to the letter on
+     ARCHITECTURE made the test red;
+   - **CLAUDE.md**: to be updated (work contract), but **it cannot be in ANY commit
+     of this repo** — `git check-ignore -v CLAUDE.md` → `.gitignore:74`, absent from
+     `git ls-files`, and the test keeps its assertion behind `if CLAUDE:`
+     (l.25-32: "CLAUDE.md is tracked only in the private archive"). In CI the clause
+     is mute;
+   - **SCHEMA.md**: table count (M-C…M-F each add one, "32 tables
+     public" and the revision count move) **and** the sentence "The repository
+     target is {head}.", doubly pinned by
+     `tests/unit/test_recovery_contract_v4.py:437-446` — a duplicate the repo itself
+     documents as "easy to miss when inventorying guards";
+   - **`docs/OPERATIONS.md:118`** ("The repository migration target is 045.") —
+     absent from all earlier lists;
+   - `tests/unit/test_recovery_contract.py:279`: `assert script.get_heads() == ["045"]`,
+     a literal **in a test named for revision 031**. Red on **every** bump;
+   - `tests/unit/test_recovery_contract.py:292` and `…_v2.py:33-39`: the frozen
+     `table_set` is re-derived from `METADATA.tables` minus a hard-coded exclusion
+     set. **M-C, M-D, M-E and M-F each add a table** ⇒ four bumps out of six turn
+     these two tests red, and they mention neither the pin nor sessions;
+   - **regenerating `ops/recovery/` (item 5)** for M-A, M-B and M-D — and **BOTH v4
+     assets, not just one**: `brain-v42-v4.sql` AND `brain-v42-v4-pgrestore.sql`
+     (see item 5, "fourth mechanism" and "two assets");
+   - the **renaming of the head-named guard test** (`test_repository_head_045_is_documented_…`).
+   ("The same series of commits" remains refused — desynchronization window.)
+2. **Never two heads in flight** (merged but not applied) at once — either within
+   this plan's own heads, AND against 046 (item 6).
+3. Rollout of each head: apply → **measure** `select version_num from
+   alembic_version` (never copy forward — this doc has already lied for three days
+   then ten days about this number) → restart the MCP server → canary.
+   **Named exception, M-D**: between the `upgrade` and the restart, the live process
+   still runs the pre-M-D code, which writes no history row. The deferred constraint
+   trigger would then abort at COMMIT **any `brain_session_end` with
+   `focus_outcome=applied`** — fail-closed, session left open —, and M-D has neither
+   a killswitch nor a practicable downgrade. The migration therefore creates the
+   trigger **disabled** (`ALTER TABLE … DISABLE TRIGGER`); the runbook activates it
+   **after** the MCP restart, as a named operator gesture, canary included. Without
+   this exception, the unavailability window would be imposed by the plan's own rule.
+   **Cost to announce**: the entire disabled window is a **red** `ops/recovery/`
+   attestation window (item 5 — it requires `tgenabled = 'O'`), hence short, dated,
+   and asset regeneration falls within the activation gesture, not the upgrade one.
+4. **The review the pin requires applies to OUR heads.** Failure message from
+   `test_plan_index_repair_head_pin.py:45-52`: "review what {head} changes on the
    tables the repair writes (**indexed_plans, indexed_plan_chunks, project_contexts**) —
-   new triggers, new constraints or new NOT NULL columns … ». **M-D pose un constraint
-   trigger sur `project_contexts`.** Son commit porte la revue écrite, au format du
-   docstring du pin, montrant que le trigger est scopé `UPDATE OF current_focus` et donc
-   inerte pour les `UPDATE plan_scan_paths` du repair
-   (`plan_index_repair_store.py:294-308` et `:560-584`).
-5. **L'attestation de récupération `ops/recovery/` casse sur trois des six têtes —
-   par QUATRE mécanismes, et sur DEUX assets.** Elle n'était nommée nulle part dans ce
-   plan ; deux passes plus tard elle l'est, mais deux fois trop court. Le runbook exige
-   d'elle « all statuses are pass » et « exactly 25 unique checks »
+   new triggers, new constraints or new NOT NULL columns …". **M-D adds a constraint
+   trigger on `project_contexts`.** Its commit carries the written review, in the
+   pin's docstring format, showing the trigger is scoped to `UPDATE OF current_focus`
+   and therefore inert for the repair's `UPDATE plan_scan_paths`
+   (`plan_index_repair_store.py:294-308` and `:560-584`).
+5. **The `ops/recovery/` recovery attestation breaks on three of the six heads —
+   through FOUR mechanisms, and across TWO assets.** It wasn't named anywhere in this
+   plan; two passes later it is, but still by half. The runbook requires of it "all
+   statuses are pass" and "exactly 25 unique checks"
    (`tests/unit/test_recovery_contract_v4.py:480-486`).
 
-   **DEUX assets v4, pas un — l'inventaire ne nommait que `brain-v42-v4.sql`.** Constat
-   du 2026-08-19 : `ops/recovery/` contient aussi **`brain-v42-v4-pgrestore.sql`**, la
-   variante destinée à une base **restaurée par `pg_restore`** (celle des preuves
-   isolées : `docs/PLAN_INDEX_REPAIR_RUNBOOK.md:62,122-123`). Ce document, l'ADR et le
-   DOSSIER la nommaient **zéro fois** — mesuré : `grep -c pgrestore` rendait `0/0/0` sur
-   les trois. Elle n'est pourtant ni morte ni décorative :
-   - `tests/integration/db/test_recovery_contract_v4_execution.py:106` est **paramétré
-     sur les deux** (`@pytest.mark.parametrize("asset", ["brain-v42-v4.sql",
-     "brain-v42-v4-pgrestore.sql"])`) et les exécute contre une base réelle, en
-     transaction READ ONLY, en vérifiant les 25 checks et l'absence de mutation ;
-   - `tests/unit/test_recovery_contract_v4_pgrestore.py:29-33` impose la **parité des
-     CTE** : l'écart autorisé est exactement `{observed_artifact_constraints,
-     observed_session_constraints}`, et `not (_cte_names(live) - _cte_names(pgrestore))`
-     interdit qu'un CTE existe côté live sans exister côté pgrestore ;
-   - `tests/unit/test_recovery_contract_v4.py:273-279` exige que le runbook distingue les
-     portes pgrestore et live.
-   Et elle porte **les mêmes structures** que M-A/M-B/M-D cassent : mesuré le 2026-08-19,
-   `brain-v42-v4-pgrestore.sql` donne 12 lignes portant `expected_runtime_user_triggers`,
-   `observed_column_fingerprints`, `expected_artifact_constraints` ou `knowledge_sources`
-   (15 en comptant `expected_session_indexes`), aux mêmes emplacements logiques que la
-   variante live. **Conséquence directe** : suivre R1.1, R1.5 et le §8 à la lettre
-   régénérerait **un** des **deux** assets v4, et la parité des CTE ferait rougir
-   `test_recovery_contract_v4_pgrestore.py` au premier CTE ajouté côté live. Partout où
-   ces documents écrivent « régénérer `ops/recovery/` », lire **les deux assets v4**.
-   C'est la **quatrième** itération du même défaut dans ce dossier — inventaire de gardes
-   déclaré complet et incomplet (pin seul, puis pin + quatre documents, puis
-   `ops/recovery/` oubliée, maintenant la moitié d'`ops/recovery/`) : le mode de panne
-   n'est pas l'oubli d'une garde, c'est la **confiance dans l'exhaustivité** d'une liste
-   qu'on n'a pas re-grepée.
+   **TWO v4 assets, not one — the inventory only named `brain-v42-v4.sql`.** Finding
+   from 2026-08-19: `ops/recovery/` also contains **`brain-v42-v4-pgrestore.sql`**,
+   the variant meant for a database **restored via `pg_restore`** (the one used for
+   isolated evidence: `docs/PLAN_INDEX_REPAIR_RUNBOOK.md:62,122-123`). This document,
+   the ADR and the DOSSIER named it **zero times** — measured: `grep -c pgrestore`
+   returned `0/0/0` across all three. Yet it is neither dead nor decorative:
+   - `tests/integration/db/test_recovery_contract_v4_execution.py:106` is
+     **parametrized over both** (`@pytest.mark.parametrize("asset", ["brain-v42-v4.sql",
+     "brain-v42-v4-pgrestore.sql"])`) and runs them against a real database, in a
+     READ ONLY transaction, checking all 25 checks and the absence of mutation;
+   - `tests/unit/test_recovery_contract_v4_pgrestore.py:29-33` enforces **CTE
+     parity**: the allowed gap is exactly `{observed_artifact_constraints,
+     observed_session_constraints}`, and `not (_cte_names(live) - _cte_names(pgrestore))`
+     forbids a CTE existing on the live side without existing on the pgrestore side;
+   - `tests/unit/test_recovery_contract_v4.py:273-279` requires the runbook to
+     distinguish the pgrestore and live gates.
+   And it carries **the same structures** that M-A/M-B/M-D break: measured on
+   2026-08-19, `brain-v42-v4-pgrestore.sql` has 12 lines carrying
+   `expected_runtime_user_triggers`, `observed_column_fingerprints`,
+   `expected_artifact_constraints` or `knowledge_sources`
+   (15 counting `expected_session_indexes`), at the same logical locations as the
+   live variant. **Direct consequence**: following R1.1, R1.5 and §8 to the letter
+   would regenerate **one** of the **two** v4 assets, and CTE parity would turn
+   `test_recovery_contract_v4_pgrestore.py` red at the first CTE added on the live
+   side. Wherever these documents write "regenerate `ops/recovery/`", read **both v4
+   assets**. This is the **fourth** iteration of the same defect in this dossier —
+   a guard inventory declared complete and incomplete (pin alone, then pin plus four
+   documents, then `ops/recovery/` forgotten, now half of `ops/recovery/`): the
+   failure mode is not forgetting a guard, it is **trusting the completeness** of a
+   list that hasn't been re-grepped.
 
-   Les mécanismes, tête par tête :
-   - **M-A** : `observed_column_fingerprints` md5-e la liste ordonnée complète des
-     colonnes de `brain_sessions` ⇒ `session_column_mismatches > 0` ; md5 également
-     épinglé en unitaire (`…_v3.py:170`, `"bf4c2a47…"`) ;
-   - **M-B** : `expected_artifact_constraints` code en dur le CHECK à **sept** valeurs
-     ⇒ `artifact_constraint_mismatches > 0` ;
-   - **M-D** : `expected_runtime_user_triggers` est une liste **fermée de treize triggers
-     sur cinq tables**, dont **sept sur `project_contexts`** (`v4.sql:533-548`, relue le
-     2026-08-19 ; les sept sont identiques en production) et `runtime_trigger_mismatches`
-     compte les triggers **inattendus** sur `expected_runtime_trigger_tables`, qui
-     contient `project_contexts` ⇒ tout trigger ajouté fait échouer le contrôle.
-     **Collision avec R1.3, vue le 2026-08-19** : R1.3 fait naître ce trigger
-     **désactivé**, or la jointure des triggers attendus porte
-     `AND observed_user_trigger.tgenabled = 'O'` (`v4.sql:913-918`) — un trigger
-     *attendu mais éteint* compte comme mismatch exactement comme un trigger absent.
-     Hors liste il est inattendu, dans la liste il est éteint : **aucun ordre de
-     régénération ne rend l'attestation verte tant que le trigger est volontairement
-     désactivé.** Donc : régénération séquencée **avec le geste d'activation** et non
-     avec l'`alembic upgrade` ; fenêtre désactivée = fenêtre d'attestation rouge, courte,
-     datée et annoncée ; et le « DISABLE TRIGGER en guise d'interrupteur » évoqué au
-     Rollback de cette phase rouvre cette fenêtre rouge à chaque usage — ce n'est pas un
-     killswitch gratuit.
-   - **M-A (bis) — `expected_session_indexes`, le QUATRIÈME mécanisme, non recensé
-     jusqu'ici.** Ces documents n'en recensaient que trois (colonnes, CHECK d'artefacts,
-     triggers) ; il en existe un de plus, et il vise précisément `brain_sessions`.
-     `ops/recovery/brain-v42-v4.sql:404-412` fige la liste **FERMÉE** des index de
-     `brain_sessions` — trois entrées `(index_name, definition_md5)` :
+   The mechanisms, head by head:
+   - **M-A**: `observed_column_fingerprints` md5's the full ordered column list of
+     `brain_sessions` ⇒ `session_column_mismatches > 0`; the md5 is also
+     pinned in a unit test (`…_v3.py:170`, `"bf4c2a47…"`);
+   - **M-B**: `expected_artifact_constraints` hard-codes the CHECK at **seven**
+     values ⇒ `artifact_constraint_mismatches > 0`;
+   - **M-D**: `expected_runtime_user_triggers` is a **closed list of thirteen
+     triggers across five tables**, of which **seven on `project_contexts`**
+     (`v4.sql:533-548`, reread on 2026-08-19; the seven are identical in
+     production) and `runtime_trigger_mismatches` counts **unexpected** triggers on
+     `expected_runtime_trigger_tables`, which contains `project_contexts` ⇒ any
+     added trigger fails the check.
+     **Collision with R1.3, seen on 2026-08-19**: R1.3 has this trigger born
+     **disabled**, yet the expected-trigger join carries
+     `AND observed_user_trigger.tgenabled = 'O'` (`v4.sql:913-918`) — a trigger
+     *expected but switched off* counts as a mismatch exactly like a missing one.
+     Off the list it is unexpected, on the list it is switched off: **no
+     regeneration order makes the attestation green while the trigger is
+     deliberately disabled.** Therefore: regeneration sequenced **with the
+     activation gesture** and not with the `alembic upgrade`; disabled window =
+     red attestation window, short, dated and announced; and the "DISABLE TRIGGER
+     as a makeshift switch" mentioned in this phase's Rollback reopens this red
+     window on every use — this is not a free killswitch.
+   - **M-A (bis) — `expected_session_indexes`, the FOURTH mechanism, uncounted so
+     far.** These documents only counted three (columns, artifact CHECK, triggers);
+     there is one more, and it targets `brain_sessions` precisely.
+     `ops/recovery/brain-v42-v4.sql:404-412` freezes the **CLOSED** list of
+     `brain_sessions` indexes — three `(index_name, definition_md5)` entries:
      `brain_sessions_pkey`, `idx_brain_sessions_project_status_started`,
-     `uq_brain_sessions_project_client`. Elle est contrôlée **deux fois** dans
-     `session_constraint_mismatches` : `:665` compte les index attendus absents ou dont
-     `md5(pg_get_indexdef(...))` a bougé, et `:687` compte les index **présents sur la
-     table et absents de la liste**. Un index ajouté sur `brain_sessions` fait donc
-     `session_constraint_mismatches > 0`, attendu à 0 comme les trois autres compteurs.
-     Doublé côté unitaire par `SESSION_INDEX_DEFINITION_MD5`
-     (`tests/unit/test_recovery_contract_v3.py:164-168`) et
-     `test_v3_pins_the_exact_session_index_set` (`:488`) — et les trois md5 sont
-     littéralement présents dans **quatre** assets (`v3`, `v3-pgrestore`, `v4`,
-     `v4-pgrestore`, mesuré le 2026-08-19). **Ce mécanisme ne se déclenche que si une
-     tête ajoute un index** ; il est donc dormant tant que M-A se limite à trois colonnes
-     nullable — et c'est exactement pour cela qu'il faut le recenser AVANT d'instruire la
-     décision d'index de §3.3/§3.6, pas après.
-   Les **quatre** compteurs sont attendus à **0** : sans régénération, le check
-   `brain_runtime_032_036_037` passe en `fail` **dès la première tête et le reste** — et
-   la régénération porte sur les **deux** assets v4 (live et pgrestore), pas sur un seul.
-   **Et « trois des six têtes » n'est vrai que sous une hypothèse qu'il faut écrire** :
-   celle où aucune tête de ce plan n'ajoute d'index sur `brain_sessions`. Si la décision
-   d'index de §3.3/§3.6 (émetteur D5 sur `started_by_actor`) est prise, deux issues :
-   l'index voyage **dans M-A**, et alors le compte de têtes ne bouge pas mais M-A casse
-   **deux** structures au lieu d'une (colonnes *et* index) — la colonne « Attestation »
-   du §8 doit le dire ; ou il est différé dans **sa propre tête**, et alors c'est
-   **quatre têtes sur sept**, dans un couloir qui en interdit deux en vol (R1.2). Ne pas
-   trancher revient à laisser le §8 mentir sur le périmètre de régénération.
-   **Et une part ne se répare pas en régénérant** : `knowledge_sources` (v4.sql:1083-1090)
-   est l'UNION des **six** tables de capture — pas les tickets — et
-   `artifact_source_matches` exige `source.project_key = session.project_key`. Le premier
-   artefact `'ticket'` et la première capture `pk → pk:child` produisent des
-   `artifact_source_mismatches` **permanents**, qu'aucune purge de canary ne rattrape.
-   Ce sont deux **critères de sortie de phase** de ce plan qui rendraient la preuve de
-   restauration fausse : **Q14 tranche avant M-B.**
-6. **La 046 (dimension embedding) est en projet sur ce couloir, pas écrite** :
-   `ls alembic/versions/` s'arrête à `045_dream_run_model_width.py` (vérifié). Le ticket
-   `c60d023d` la qualifie de « non urgent » et énumère un travail non planifié (révision
-   terminale convergente, NO-OP DDL, passe 1 fail-closed, killswitch, reconstruction
-   HNSW, harnais de test inexistant). **Le gate « M-A ne merge pas tant que la 046 n'est
-   pas appliquée » est LEVÉ** : il mettait six têtes en otage d'un ticket non urgent et
-   non écrit, alors que le risque qu'il invoquait (deux heads en un rendez-vous) est
-   déjà couvert par le point 2, qui vaut dans les **deux** ordres. Les têtes de ce plan
-   restent notées M-A…M-F, numéros **relatifs** : celle des deux séries qui arrive la
-   première prend le numéro suivant, l'autre attend son application mesurée.
-   Récapitulatif au §8.
+     `uq_brain_sessions_project_client`. It is checked **twice** in
+     `session_constraint_mismatches`: `:665` counts expected indexes that are
+     missing or whose `md5(pg_get_indexdef(...))` has moved, and `:687` counts
+     indexes **present on the table and absent from the list**. An index added on
+     `brain_sessions` therefore makes `session_constraint_mismatches > 0`, expected
+     to be 0 like the three other counters. Doubled on the unit side by
+     `SESSION_INDEX_DEFINITION_MD5`
+     (`tests/unit/test_recovery_contract_v3.py:164-168`) and
+     `test_v3_pins_the_exact_session_index_set` (`:488`) — and the three md5s are
+     literally present in **four** assets (`v3`, `v3-pgrestore`, `v4`,
+     `v4-pgrestore`, measured on 2026-08-19). **This mechanism only fires if a head
+     adds an index**; it is therefore dormant as long as M-A limits itself to three
+     nullable columns — and that is exactly why it must be counted BEFORE briefing
+     the index decision of §3.3/§3.6, not after.
+   The **four** counters are expected at **0**: without regeneration, the
+   `brain_runtime_032_036_037` check goes `fail` **from the first head onward and
+   stays there** — and the regeneration covers **both** v4 assets (live and
+   pgrestore), not just one.
+   **And "three of the six heads" is only true under an assumption that must be
+   written down**: the one where no head in this plan adds an index on
+   `brain_sessions`. If the index decision from §3.3/§3.6 (emitter D5 on
+   `started_by_actor`) is taken, two outcomes: the index travels **inside M-A**, and
+   then the head count doesn't move but M-A breaks **two** structures instead of one
+   (columns *and* index) — the "Attestation" column in §8 must say so; or it is
+   deferred into **its own head**, and then it is **four heads out of seven**, in a
+   lane that forbids two in flight (R1.2). Not deciding amounts to letting §8 lie
+   about the regeneration scope.
+   **And part of it does not get fixed by regenerating**: `knowledge_sources`
+   (v4.sql:1083-1090) is the UNION of the **six** capture tables — not tickets —
+   and `artifact_source_matches` requires `source.project_key = session.project_key`.
+   The first `'ticket'` artifact and the first `pk → pk:child` capture produce
+   **permanent** `artifact_source_mismatches`, which no canary purge catches up on.
+   These are two of this plan's **phase exit criteria** that would render the
+   restoration proof false: **Q14 settles this before M-B.**
+6. **046 (embedding dimension) is planned on this lane, not written**:
+   `ls alembic/versions/` stops at `045_dream_run_model_width.py` (verified). Ticket
+   `c60d023d` calls it "not urgent" and lists unplanned work (convergent terminal
+   revision, NO-OP DDL, fail-closed pass 1, killswitch, HNSW rebuild, nonexistent
+   test harness). **The "M-A does not merge until 046 is applied" gate is LIFTED**:
+   it held six heads hostage to a ticket that is not urgent and not written, while the
+   risk it invoked (two heads meeting at once) is already covered by item 2, which
+   holds in **both** orders. This plan's heads remain labeled M-A…M-F, **relative**
+   numbers: whichever of the two series arrives first takes the next number, the
+   other waits for its measured application.
+   Summary in §8.
 
-**R2 — TDD strict** (CLAUDE.md) : chaque incrément suit Red (test qui échoue pour la
-bonne raison) → Green (minimum) → Refactor → commit atomique Conventional Commits.
-Coverage ≥ 60 %. Vert avant commit : `pytest tests/unit`, `ruff check`,
+**R2 — Strict TDD** (CLAUDE.md): every increment follows Red (test that fails for the
+right reason) → Green (minimum) → Refactor → atomic Conventional Commits commit.
+Coverage ≥ 60%. Green before commit: `pytest tests/unit`, `ruff check`,
 `ruff format --check`, `mypy src/`.
 
-**R3 — Killswitches** : tout comportement runtime nouveau naît derrière son propre
-flag, livré **fermé**, avec un test prouvant le fermé-par-défaut, et son état
-production est **mesuré** (drop-in inspecté, processus inspecté — leçon du
-client-activity mesuré « ARMED » alors que le défaut code est `false`). Récapitulatif
-au §8.
+**R3 — Killswitches**: every new runtime behavior is born behind its own flag,
+shipped **closed**, with a test proving closed-by-default, and its production state
+is **measured** (drop-in inspected, process inspected — the lesson of client-activity
+measured "ARMED" while the code default is `false`). Summary in §8.
 
-**Correction — R3 tranchait d'avance la sous-question qu'il prétendait laisser
-ouverte.** Une version antérieure écrivait : « un tool explicite nouveau (checkpoint)
-n'a pas de killswitch — c'est une commande utilisateur, gated par décision d'opérateur ».
-C'est poser comme ACQUISE la branche que Q3(a) déclare OUVERTE, et s'en servir pour
-justifier l'absence de flag. Or l'artefact livré est **identique sous les deux
-réponses** : rien à armer, rien à désarmer, et rien côté serveur ne distingue un appel
-d'agent d'un appel d'humain (B8 : `X-Brain-Session` est mort ; `X-Brain-Agent` est un
-projet, déclaré par le client). Comme le checkpoint **rafraîchit `last_heartbeat_at`**,
-seul signal du sweep vivant (`pg_brain_session.py:520-522`, prédicat heartbeat-seul,
-sweep armé DRY mesuré dans le drop-in), un agent qui checkpointe seul maintient sa
-session vivante indéfiniment — le faux-vivant que `2bd14b24` condamne — **sans violer
-une seule contrainte livrée**, et rend le critère 4.3 « zéro abandon d'une session à
-checkpoint récent » auto-satisfiable par ses propres écritures. **Règle corrigée** : le
-tool lui-même n'a pas de flag (c'est bien une commande), mais **son effet heartbeat en
-a un** — `BRAIN_SESSION_CHECKPOINT_HEARTBEAT_EFFECT`, livré **fermé** (§8bis), à moins
-que Q3(a)/(b) ne retire l'effet du contrat. Livrer l'effet sans l'un des deux, c'est
-armer un changement de covenant par omission.
+**Correction — R3 pre-decided the sub-question it claimed to leave open.** An earlier
+version wrote: "a new explicit tool (checkpoint) has no killswitch — it's a user
+command, gated by operator decision." That treats as SETTLED the branch that Q3(a)
+declares OPEN, and uses it to justify the absence of a flag. But the shipped artifact
+is **identical under both answers**: nothing to arm, nothing to disarm, and nothing
+server-side distinguishes an agent call from a human call (B8: `X-Brain-Session` is
+dead; `X-Brain-Agent` is a project, declared by the client). Because the checkpoint
+**refreshes `last_heartbeat_at`**, the only signal the live sweep uses
+(`pg_brain_session.py:520-522`, heartbeat-only predicate, sweep armed DRY measured in
+the drop-in), an agent that checkpoints alone keeps its session alive indefinitely —
+the false-alive that `2bd14b24` condemns — **without violating a single shipped
+constraint**, and makes criterion 4.3 "zero abandonment of a session with a recent
+checkpoint" self-satisfiable by its own writes. **Corrected rule**: the tool itself
+has no flag (it is indeed a command), but **its heartbeat effect does have one** —
+`BRAIN_SESSION_CHECKPOINT_HEARTBEAT_EFFECT`, shipped **closed** (§8bis), unless
+Q3(a)/(b) removes the effect from the contract. Shipping the effect without either of
+the two is arming a covenant change by omission.
 
-**R4 — Largeur acteur** : toute colonne acteur nouvelle est `VARCHAR(64)`, alignée sur
-`MAX_ACTOR_LENGTH = 64` (`src/brain_v42/provenance.py:23`) et `access_log.actor`
-`String(64)` — correctif du panel, aucune des trois propositions ne l'avait vérifié.
+**R4 — Actor width**: every new actor column is `VARCHAR(64)`, aligned with
+`MAX_ACTOR_LENGTH = 64` (`src/brain_v42/provenance.py:23`) and `access_log.actor`
+`String(64)` — panel fix; none of the three proposals had verified it.
 
-**R5 — Liaison d'identité** : toute liaison session↔activité passe par
-`(project_key, started_by_actor)`. **Jamais par `access_log` seul** : cette table n'a
-pas de colonne projet (vérifié `src/brain_v42/db/tables.py` — `entity_type,
-entity_id, access_type, accessed_at, actor`). Règle d'ambiguïté : 0 ou ≥2 sessions
-candidates ⇒ zéro écriture + compteur. Le serveur ne devine jamais.
+**R5 — Identity linking**: every session↔activity link goes through
+`(project_key, started_by_actor)`. **Never through `access_log` alone**: this table
+has no project column (verified `src/brain_v42/db/tables.py` — `entity_type,
+entity_id, access_type, accessed_at, actor`). Ambiguity rule: 0 or ≥2 candidate
+sessions ⇒ zero write + counter. The server never guesses.
 
-**R6 — Chiffres périssables** : toute mesure citée ici (18 %, 34 %, 39 fantômes, masse
-colon…) est datée et périssable ; la Phase 0 les re-mesure toutes ; on ne recopie
-jamais, on rejoue le script. **Et un chiffre exact peut porter une inférence fausse** :
-les « 10/59 contextes à focus NULL » étaient justes et ne prouvaient pas ce qu'on leur
-faisait dire (§5.1) ; les « 479 artefacts hors consolidation » étaient justes le
-2026-08-08 et périmés dix jours plus tard (§6, 4.6). Re-mesurer inclut donc **relire ce
-que la mesure dit**, pas seulement rejouer la requête.
+**R6 — Perishable numbers**: every measurement quoted here (18%, 34%, 39 ghosts,
+colon mass…) is dated and perishable; Phase 0 re-measures all of them; never copied
+forward, always replayed via the script. **And an exact number can carry a false
+inference**: the "10/59 contexts with NULL focus" were correct and did not prove what
+they were made to say (§5.1); the "479 artifacts outside consolidation" were correct
+on 2026-08-08 and stale ten days later (§6, 4.6). Re-measuring therefore includes
+**rereading what the measurement says**, not just replaying the query.
 
 ---
 
-## 2. Phase 0 — Mesurer, ancrer, documenter, soumettre (ZÉRO mutation)
+## 2. Phase 0 — Measure, anchor, document, submit (ZERO mutation)
 
-Aucune migration, aucun changement de comportement, aucun flag.
+No migration, no behavior change, no flag.
 
-### Contenu
+### Content
 
-1. **Baseline scriptée et datée** — requêtes SQL read-only versionnées dans
-   `docs/design/refonte-projets-sessions/` + un script rejouable qui produit un
-   snapshot JSON daté :
-   - sessions `open` / stale >24 h / >7 j ; distribution des `client_key` ;
-   - taux de capture (sessions fermées capturantes / fermées) et d'attribution
-     (artefacts attribués / créés) depuis 30 j — recalcul des 52/291 et 226/661 ;
-   - masse par clé colon — **re-mesurée le 2026-08-18, et le remède a bougé** : 533
-     artefacts sur six clés, dont `red-shrik:agent` (312) et `red-lab:architect` (135)
-     **déjà dans le pool dream depuis le 2026-08-10** (drop-in lu). Reste 86 artefacts
-     sur quatre clés `red-lab:*` sans aucun run. Le « 479 / 20,2 % » de la spec
-     `dbb7c5ce` datait du 2026-08-08 et ne doit plus être cité tel quel ;
-   - **état du focus, ce qui est mesurable et ce qui ne l'est pas.** Mesurable
-     aujourd'hui : le compte de contextes à focus NULL **avec leur `focus_revision` et
-     leur `focus_updated_at`** — c'est cette ventilation, et elle seule, qui distingue
-     « jamais écrit » d'« effacé » (mesure du 2026-08-18 : 10/59 NULL, **tous** à
-     révision 0 et jamais datés ⇒ zéro effacement observé) ; plus la distribution des
-     `focus_revision` et l'âge des `focus_updated_at`. **NON mesurable, et c'est la
-     correction** : une version antérieure annonçait « les écritures de `current_focus`
-     **par écrivain** sur 30 j » comme livrable de baseline et critère de sortie.
-     Aucune source ne peut la produire — `project_contexts` ne garde qu'un compteur
-     sans auteur (`focus_revision`), un dernier changement écrasé (`focus_updated_at`)
-     et `updated_at` ; il n'existe aucune table d'historique (`project_focus_history`
-     est précisément ce que la Phase 3 crée) ; `access_log` n'enregistre que des
-     lectures et est **purgé à chaque flush** (mesuré à 0 ligne) ; les logs structlog
-     ne portent que `project_context.upserted`/`created`, sans site ni rétention. Cette
-     ventilation devient donc un **résultat de la Phase 3**, pas son préalable ;
-   - part des appels HTTP portant un `X-Brain-Agent` normalisable (dimensionne
-     `started_by_actor` et la règle « exactement un ») ;
-   - **coût du statement de l'émetteur D5 sur le chemin chaud** — mesure **ajoutée** le
-     2026-08-19, parce que la décision d'index de §3.3 en dépend et que rien ne la
-     produisait. `EXPLAIN (ANALYZE, BUFFERS)` du statement de §3.6 — filtre
-     `(status, project_key, started_by_actor)` **plus** la sous-requête corrélée de
-     comptage — joué contre `brain_sessions` en production (lecture seule ;
-     `started_by_actor` n'existant pas encore, se substituer une colonne de même
-     sélectivité, ou mesurer le squelette `status = 'open' AND project_key = :pk` et
-     déclarer l'extrapolation). À publier avec la cardinalité du jour : 467 lignes,
-     29 `open` le 2026-08-19, et les **trois** index réels de la table
+1. **Scripted, dated baseline** — read-only SQL queries versioned under
+   `docs/design/refonte-projets-sessions/` + a replayable script that produces a
+   dated JSON snapshot:
+   - `open` sessions / stale >24 h / >7 d; `client_key` distribution;
+   - capture rate (closed capturing sessions / closed) and attribution rate
+     (attributed artifacts / created) over the last 30 d — recompute of the 52/291
+     and 226/661;
+   - mass per colon key — **re-measured on 2026-08-18, and the remedy has moved**:
+     533 artifacts across six keys, of which `red-shrik:agent` (312) and
+     `red-lab:architect` (135) are **already in the dream pool since 2026-08-10**
+     (drop-in read). 86 artifacts remain across four `red-lab:*` keys with no run
+     at all. The "479 / 20.2%" from spec `dbb7c5ce` dated from 2026-08-08 and must
+     no longer be quoted as-is;
+   - **focus state, what is measurable and what is not.** Measurable
+     today: the count of contexts with a NULL focus **along with their
+     `focus_revision` and `focus_updated_at`** — this breakdown, and only this
+     breakdown, distinguishes "never written" from "erased" (measurement from
+     2026-08-18: 10/59 NULL, **all** at revision 0 and never dated ⇒ zero observed
+     erasure); plus the `focus_revision` distribution and `focus_updated_at` age.
+     **NOT measurable, and this is the correction**: an earlier version announced
+     "`current_focus` writes **per writer** over 30 d" as a baseline deliverable and
+     exit criterion. No source can produce it — `project_contexts` only keeps an
+     unauthored counter (`focus_revision`), an overwritten last change
+     (`focus_updated_at`) and `updated_at`; there is no history table
+     (`project_focus_history` is precisely what Phase 3 creates); `access_log`
+     records only reads and is **purged on every flush** (measured at 0 rows); the
+     structlog logs only carry `project_context.upserted`/`created`, with no site or
+     retention. This breakdown therefore becomes a **result of Phase 3**, not its
+     prerequisite;
+   - share of HTTP calls carrying a normalizable `X-Brain-Agent` (sizes
+     `started_by_actor` and the "exactly one" rule);
+   - **cost of the D5 emitter statement on the hot path** — measurement **added** on
+     2026-08-19, because the index decision in §3.3 depends on it and nothing
+     produced it. `EXPLAIN (ANALYZE, BUFFERS)` of the §3.6 statement — filter
+     `(status, project_key, started_by_actor)` **plus** the correlated counting
+     subquery — run against `brain_sessions` in production (read-only;
+     `started_by_actor` not existing yet, substitute a column of equal
+     selectivity, or measure the `status = 'open' AND project_key = :pk` skeleton
+     and state the extrapolation). To be published with the day's cardinality:
+     467 rows, 29 `open` on 2026-08-19, and the table's **three** real indexes
      (`brain_sessions_pkey`, `uq_brain_sessions_project_client`,
-     `idx_brain_sessions_project_status_started`), dont **aucun** ne couvre l'acteur.
-     Critère : la conclusion — index nécessaire ou non — est **écrite**, et si elle est
-     « oui » elle voyage dans M-A (R1.2) en sachant qu'elle casse
-     `expected_session_indexes` (R1.5, quatrième mécanisme).
-     ✅ **MESURÉ ET CONCLU le 2026-08-19** (`baseline/README.md`), et **la question a
-     changé d'objet** : sous la clé `(projet, connexion)` du cadrage (ADR §0bis.2),
-     l'émetteur D5 ne filtre plus sur l'acteur — `started_by_actor` sort du chemin chaud
-     et **n'a pas besoin d'index**. Une question neuve la remplace : **la colonne de
-     connexion, elle, DOIT être indexée** — l'`EXPLAIN` montre qu'une égalité non couverte
-     force un Seq Scan de toute la table (63 buffers contre 2), sur le chemin le plus chaud
-     qui soit. Forme retenue : **index UNIQUE**, pour que « exactement un par construction »
-     soit imposé par la base et non seulement affirmé par le design. Détail mesuré : la
-     sous-requête corrélée de comptage consommait **27 des 36 buffers** du plan et
-     **disparaît** sous la clé de connexion ;
-   - **la population que l'observation toucherait, calculée SANS écrire** — remplace
-     l'instrument `access_log` retiré (§3.5) : pour chaque couple
-     `(project_key, acteur)` observé sur une fenêtre glissante, le nombre de sessions
-     `open` correspondantes (0 / 1 / ≥2). C'est la seule mesure honnête disponible pour
-     instruire **Q1** avant tout armement, et elle exerce le résolveur de projet par
-     tool que la Phase 1 doit livrer.
-     **Cette phase ne part PAS de zéro — un ordre de grandeur existe déjà et n'était
-     cité nulle part** (constat du 2026-08-19). Le ticket `7ffe0e8a` porte, sous
-     « Mesure du 2026-08-16 (périssable) », la ligne « **Simultanées : `auto-discord` 6,
-     `red-arena` 3, `claude-dev-pc`/`red-lab` 2** » : c'est déjà une mesure **partielle**
-     de la population « ≥2 sessions ouvertes », celle que R5/N2 érigent en critère et que
-     4.1 met en tête de ses mesures de sortie. Partielle en deux sens, à dire tous les
-     deux : elle compte par **projet**, non par couple `(projet, acteur)` — donc c'est un
-     **plafond**, l'ambiguïté réelle étant plus petite dès que deux acteurs distincts se
-     partagent un projet —, et `started_by_actor` n'existant pas encore, **elle ne peut
-     pas être raffinée rétroactivement** : la ventilation par acteur ne commencera qu'avec
-     M-A. Re-mesurée le 2026-08-19, la même requête rend `auto-discord` 8, `brain-v42` 4,
-     `red-arena` 4, puis `datalake-v1`, `red-gift`, `claude-dev-pc`, `red-lab` à 2 — soit
-     **24 des 29 sessions `open` dans un projet qui en porte au moins deux**. Autrement
-     dit, sous la règle « exactement un », la non-observation n'est pas un cas de bord :
-     c'est, au plafond, la majorité du parc. Chiffres datés et **périssables** — la
-     Phase 0 les rejoue, elle ne les recopie pas ;
-   - seuil de cardinalité attendu des futures tables (checkpoints, staged) pour fixer
-     les plafonds de sortie des phases suivantes.
-2. **Tests d'ancrage** (pin du comportement actuel, pour que le chantier ne régresse
-   rien sans le voir) :
-   - canonicalisation stricte/tolérante + alias (protège B10) ;
-   - `_validate_captures` : all-or-nothing, fenêtre exacte (projet strict,
-     `created_at >= started_at`), **forme actuelle du message d'erreur épinglée** — on
-     la changera en Phase 1 en changeant d'abord le test (Red) ;
-   - CAS de `end` : `applied` et `conflict`, fermeture garantie dans les deux cas ;
-   - sweep UN statement (épinglage textuel, sur le modèle de
-     `test_dream_sh_global_phases_outside_loop.py`) ;
-   - replays idempotents des quatre chemins (start, capture exacte, end persisté,
-     abandon même reason) ;
-   - phrase-covenant présente dans les sept docstrings — test écrit pour être
-     étendu : la livraison du checkpoint (Phase 2) porte l'énumération à HUIT, et
-     docstring du 8e tool, CLAUDE.md et ce test bougent dans le même commit que le
-     tool ;
-   - fermé-par-défaut des flags sweep existants re-prouvé.
-3. **`docs/PROJECTS_SYSTEM.md`** (ferme B12) : le système projets de bout en bout — les
-   quatre briques reliées (format, trois tables — `project_contexts` vient de la **001**,
-   `projects`/`project_aliases` de la **033**, qui n'ajoute à la première que
-   l'immuabilité et les alias par triggers —, convention colon, spec dream), la table
-   des trois surfaces, et le **recensement du prédicat colon**. Ce recensement a été
-   sous-compté **deux fois** : « l'unique exception » d'une première version, puis
-   « trois exemplaires `src/` + deux vues » de la deuxième. Compte re-vérifié le
-   2026-08-18, **cinq exemplaires `src/`** :
-   `db/project_group_scope.py:24-26` ;
-   `services/project_group_ticket_service.py:129-137` (copie SQL) **et `:164-167`
-   (seconde copie, en Python, dans la même méthode `_lock_participants_scope`)** ;
-   `services/proposal_service.py:377-383` ;
-   **`repositories/pg_project_context.py:202-213`** (`get_keys_by_group`, variante
-   `split_part`, invisible à un grep sur `not_like("%:%")`).
-   Côté base : **sept vues vivantes** (mesuré :
+     `idx_brain_sessions_project_status_started`), **none** of which covers the
+     actor. Criterion: the conclusion — index needed or not — is **written down**,
+     and if it is "yes" it travels into M-A (R1.2) knowing it breaks
+     `expected_session_indexes` (R1.5, fourth mechanism).
+     ✅ **MEASURED AND CONCLUDED on 2026-08-19** (`baseline/README.md`), and **the
+     question changed subject**: under the framing's `(project, connection)` key
+     (ADR §0bis.2), the D5 emitter no longer filters on the actor —
+     `started_by_actor` leaves the hot path and **needs no index**. A new question
+     replaces it: **the connection column, on the other hand, MUST be indexed** —
+     the `EXPLAIN` shows an uncovered equality forces a full-table Seq Scan
+     (63 buffers vs 2), on the hottest path there is. Chosen shape: a **UNIQUE
+     index**, so that "exactly one by construction" is enforced by the database and
+     not merely asserted by the design. Measured detail: the correlated counting
+     subquery consumed **27 of the plan's 36 buffers** and **disappears** under the
+     connection key;
+   - **the population that observation would touch, computed WITHOUT writing** —
+     replaces the removed `access_log` instrument (§3.5): for each observed
+     `(project_key, actor)` pair over a sliding window, the count of corresponding
+     `open` sessions (0 / 1 / ≥2). This is the only honest measurement available to
+     inform **Q1** before any arming, and it exercises the per-tool project resolver
+     that Phase 1 must deliver.
+     **This phase does NOT start from zero — an order of magnitude already exists
+     and was cited nowhere** (finding from 2026-08-19). Ticket `7ffe0e8a` carries,
+     under "Measurement from 2026-08-16 (perishable)," the line "**Simultaneous:
+     `auto-discord` 6, `red-arena` 3, `claude-dev-pc`/`red-lab` 2**": that is already
+     a **partial** measurement of the "≥2 open sessions" population, the one R5/N2
+     make a criterion and that 4.1 puts first among its exit measurements. Partial
+     in two senses, both worth stating: it counts by **project**, not by
+     `(project, actor)` pair — so it is a **ceiling**, real ambiguity being smaller
+     as soon as two distinct actors share a project —, and since `started_by_actor`
+     does not exist yet, **it cannot be refined retroactively**: per-actor breakdown
+     will only start with M-A. Re-measured on 2026-08-19, the same query returns
+     `auto-discord` 8, `brain-v42` 4, `red-arena` 4, then `datalake-v1`, `red-gift`,
+     `claude-dev-pc`, `red-lab` at 2 — i.e. **24 of the 29 `open` sessions in a
+     project that carries at least two**. In other words, under the "exactly one"
+     rule, non-observation is not an edge case: at the ceiling, it is the majority
+     of the fleet. Dated and **perishable** figures — Phase 0 replays them, it does
+     not copy them;
+   - expected cardinality threshold of future tables (checkpoints, staged) to set
+     the exit ceilings for the following phases.
+2. **Anchor tests** (pinning current behavior, so the effort does not regress
+   anything unnoticed):
+   - strict/tolerant canonicalization + aliases (protects B10);
+   - `_validate_captures`: all-or-nothing, exact window (strict project,
+     `created_at >= started_at`), **current error message shape pinned** — it will
+     be changed in Phase 1 by changing the test first (Red);
+   - `end` CAS: `applied` and `conflict`, closure guaranteed in both cases;
+   - sweep as ONE statement (textual pin, on the model of
+     `test_dream_sh_global_phases_outside_loop.py`);
+   - idempotent replays of the four paths (start, exact capture, persisted end,
+     abandon same reason);
+   - covenant sentence present in the seven docstrings — test written to be
+     extended: shipping the checkpoint (Phase 2) brings the enumeration to EIGHT,
+     and the 8th tool's docstring, CLAUDE.md and this test move in the same commit
+     as the tool;
+   - closed-by-default of existing sweep flags re-proven.
+3. **`docs/PROJECTS_SYSTEM.md`** (closes B12): the projects system end to end — the
+   four connected bricks (format, three tables — `project_contexts` comes from
+   **001**, `projects`/`project_aliases` from **033**, which only adds immutability
+   and trigger-based aliases to the first —, colon convention, dream spec), the
+   three-surface table, and the **census of the colon predicate**. This census was
+   undercounted **twice**: "the sole exception" in a first version, then "three
+   `src/` copies + two views" in the second. Count re-verified on 2026-08-18,
+   **five `src/` copies**:
+   `db/project_group_scope.py:24-26`;
+   `services/project_group_ticket_service.py:129-137` (SQL copy) **and `:164-167`
+   (a second copy, in Python, in the same `_lock_participants_scope` method)**;
+   `services/proposal_service.py:377-383`;
+   **`repositories/pg_project_context.py:202-213`** (`get_keys_by_group`, a
+   `split_part` variant, invisible to a grep on `not_like("%:%")`).
+   On the database side: **seven live views** (measured:
    `codex_brain_entity_v1`, `codex_feature_artifact_v1`, `codex_feature_v1`,
    `codex_roadmap_curation_proposal_v1`, `codex_ticket_extraction_proposal_v1`,
-   `codex_ticket_message_v1`, `codex_ticket_v1`), toutes issues de la **036** — deux
-   corps de CTE recopiés (`_RED_KEYS_CTE:23-45`, `_BRAIN_RED_KEYS_CTE:205-227`), en
-   `split_part(…) <> project_key AND split_part(…) IN red_base`. La 024 n'est pas un
-   second objet vivant : la 036 remplace sa vue par `CREATE OR REPLACE`.
-   **Trois formulations distinctes du même prédicat**, donc — la doc les nomme toutes.
-   **Organisé par la grille fait/jugement** (greffe A via le panel). Dépôt public :
-   aucune adresse réseau privée, aucun chemin hors dépôt, aucun secret.
-4. **Spec checkpoint séparée** (`docs/design/refonte-projets-sessions/SPEC-checkpoint.md`)
-   — livrable **ajouté**, exigé par l'audit du ticket `d04dc588` (« le plus petit lot
-   admissible reste documentaire : 1. spec checkpoint séparée ; 2. décision produit
-   explicite ; 3. contrat CAS/replay/heartbeat/end, migration/rollback, bornes de
-   payload et tests de concurrence ; 4. approbation avant code »). Aucune phase ne le
-   livrait. Elle doit trancher explicitement les **deux** divergences d'avec le MVP du
-   ticket (stockage append-only vs snapshot+CAS ; et **forme du payload** —
-   `progress` + `blocker|null` + `next_step` publiés ensemble « en un appel » contre
-   `kind` mutuellement exclusifs + `note` unique), et le sort de l'effet heartbeat
-   (Q3(a)/(b)). Sans elle, M-C n'est pas écrivable.
-5. **Soumission à l'opérateur** : la liste B1–B14 pour confirmation/priorisation/
-   complétion (« pas mal de choses qui ne me plaisent pas » n'est pas détaillé — il
-   peut exister des irritants non ticketés), plus les questions ouvertes du §9 avec
-   mention des tranches qu'elles bloquent.
-6. **Re-jeu du spike B8 sur la version courante de Claude Code** — étape **ajoutée** le
-   2026-08-19, parce que B8 est cotée « Haute (contrainte) » sur une mesure périmée et
-   qu'aucune phase ne la rejouait. `docs/upstream/2026-08-06-claude-otlp-session-join.md`
-   porte en tête « **Version mesurée : Claude Code 2.1.220** » ; `claude --version` rend
-   **2.1.234** le 2026-08-19. Le spike lui-même conclut « Re-mesurer à chaque montée de
-   version de Claude Code plutôt que de reprendre cette conclusion sur parole », et ses
-   deux relais (`2bd14b24`, `7ffe0e8a`) répètent la consigne mot pour mot. **Ce que
-   B8 dimensionne, et donc ce qui pend à ce fil** : D1 (`started_by_actor` comme identité
-   de repli), D5 (`skipped{no_actor}` en stdio), D8 (liaison des brouillons), R5 et N2
-   (règle « exactement un »), le résidu nommé de D6, et le **critère de sortie n° 1 de la
-   Phase 4.1**.
-   **Méthode** : rejouer le protocole du spike, pas une lecture de code — deux récepteurs
-   jetables en loopback, `claude -p` avec `--mcp-config` dédié et `--strict-mcp-config`,
-   et la question 1 seule (« `${CLAUDE_CODE_SESSION_ID}` s'expanse-t-il utilement dans un
-   en-tête MCP ? »). Le volet OTLP du spike n'est pas rejoué ici : il n'entre dans aucune
-   décision de ce plan.
-   **Critère** : le résultat est écrit, daté et **versionné avec la version mesurée en
-   tête**, quel qu'il soit. Deux issues, deux conséquences déclarées d'avance :
-   *(a) inchangé* — `X-Brain-Session` toujours mort, B8 cesse d'être « cotée sur mesure
-   périmée » et l'accrétion continue telle quelle ; *(b) changé* — un client sait
-   désormais déclarer sa session, ce qui **n'invalide aucun livrable** (le repli
-   `(projet, acteur)` reste correct) mais rouvre une option écartée par contrainte, à
-   verser à Q1 et Q9 avant tout armement. Le risque est asymétrique dans ce sens-là, et
-   c'est pourquoi la re-mesure est une étape de Phase 0 et non un gate.
-   **À ajouter à la baseline du point 1** : la part des appels HTTP portant un
-   `X-Brain-Session` **normalisable** (`provenance.normalize_session` → non-`None`),
-   à côté de la part portant un `X-Brain-Agent` normalisable. Aujourd'hui la baseline
-   mesure l'acteur et jamais la session — l'angle mort qui a laissé le spike vieillir de
-   quatorze versions sans que rien ne le signale.
+   `codex_ticket_message_v1`, `codex_ticket_v1`), all coming from **036** — two
+   copied CTE bodies (`_RED_KEYS_CTE:23-45`, `_BRAIN_RED_KEYS_CTE:205-227`), as
+   `split_part(…) <> project_key AND split_part(…) IN red_base`. 024 is not a
+   second live object: 036 replaces its view with `CREATE OR REPLACE`.
+   **Three distinct formulations of the same predicate**, then — the doc names them
+   all. **Organized by the fact/judgment grid** (graft A via the panel). Public
+   repo: no private network address, no path outside the repo, no secret.
+4. **Separate checkpoint spec** (`docs/design/refonte-projets-sessions/SPEC-checkpoint.md`)
+   — deliverable **added**, required by the audit of ticket `d04dc588` ("the
+   smallest admissible batch remains documentary: 1. separate checkpoint spec;
+   2. explicit product decision; 3. CAS/replay/heartbeat/end contract,
+   migration/rollback, payload bounds and concurrency tests; 4. approval before
+   code"). No phase delivered it. It must explicitly settle the **two** divergences
+   from the ticket's MVP (append-only storage vs snapshot+CAS; and **payload
+   shape** — `progress` + `blocker|null` + `next_step` published together "in one
+   call" versus mutually exclusive `kind` + a single `note`), and the fate of the
+   heartbeat effect (Q3(a)/(b)). Without it, M-C cannot be written.
+5. **Submission to the operator**: list B1–B14 for confirmation/prioritization/
+   completion ("quite a few things I'm not happy with" is not itemized — there may
+   be un-ticketed irritants), plus the open questions from §9 with a note of which
+   tranches they block.
+6. **Replay of the B8 spike on the current Claude Code version** — step **added**
+   on 2026-08-19, because B8 is scored "High (constraint)" on a stale measurement
+   and no phase replayed it. `docs/upstream/2026-08-06-claude-otlp-session-join.md`
+   is headed "**Measured version: Claude Code 2.1.220**"; `claude --version`
+   returns **2.1.234** on 2026-08-19. The spike itself concludes "Re-measure at
+   every Claude Code version bump rather than taking this conclusion on faith,"
+   and its two relays (`2bd14b24`, `7ffe0e8a`) repeat the instruction word for
+   word. **What B8 sizes, and thus what hangs on this thread**: D1
+   (`started_by_actor` as a fallback identity), D5 (`skipped{no_actor}` over
+   stdio), D8 (draft linking), R5 and N2 ("exactly one" rule), the named residue of
+   D6, and **Phase 4.1's exit criterion #1**.
+   **Method**: replay the spike's protocol, not a code read — two disposable
+   loopback receivers, `claude -p` with a dedicated `--mcp-config` and
+   `--strict-mcp-config`, and question 1 alone ("Does `${CLAUDE_CODE_SESSION_ID}`
+   expand usefully in an MCP header?"). The spike's OTLP arm is not replayed here:
+   it feeds into no decision in this plan.
+   **Criterion**: the result is written, dated and **versioned with the measured
+   version up front**, whatever it turns out to be. Two outcomes, two consequences
+   declared in advance:
+   *(a) unchanged* — `X-Brain-Session` still dead, B8 stops being "scored on a
+   stale measurement" and accretion continues as-is; *(b) changed* — a client can
+   now declare its session, which **invalidates no deliverable** (the
+   `(project, actor)` fallback stays correct) but reopens an option ruled out by
+   constraint, to be filed against Q1 and Q9 before any arming. The risk is
+   asymmetric in that direction, and that is why the re-measurement is a Phase 0
+   step and not a gate.
+   **To add to item 1's baseline**: the share of HTTP calls carrying a
+   normalizable `X-Brain-Session` (`provenance.normalize_session` → non-`None`),
+   next to the share carrying a normalizable `X-Brain-Agent`. Today the baseline
+   measures the actor and never the session — the blind spot that let the spike age
+   fourteen versions without anything flagging it.
 
-### Critères de sortie (mesurables)
-- ✅ **SATISFAIT le 2026-08-19** — baseline livrée sous
-  `docs/design/refonte-projets-sessions/baseline/` : `queries.sql` (12 mesures, **un
-  seul statement** donc un instantané cohérent, chacune portant `proves` et
-  `does_not_prove`), `explain.sql`, `snapshot.py` (rejouable en une commande) et le
-  premier `snapshot-20260819T191613Z.json`. **Lecture seule imposée par le moteur**
-  (`BEGIN READ ONLY`), prouvée dans les deux sens. La ventilation des écritures de focus
-  par écrivain en reste explicitement exclue — elle sort de la Phase 3.
-  **Trois résultats à ne pas manquer** : l'attribution 30 j est à **30,4 %** contre 34 %
-  au 2026-08-16 — **B3 se dégrade, elle ne stagne pas** ; `client_key` rend **465
-  distinctes pour 469 sessions** (ratio 1,01), ce qui chiffre B9 ; et les 10 contextes à
-  focus NULL sont **tous** « jamais écrit », zéro effacement, ce qui confirme la prémisse
-  de Q13.
-- ✅ **SATISFAIT le 2026-08-19** — recensement d'abord, écriture ensuite. **Cinq des
-  sept items étaient DÉJÀ épinglés** et n'ont pas été redoublés : canonicalisation
-  (`test_project_key_canonical.py`, 20 tests), sweep en UN statement
-  (`test_pg_brain_session_sweep.py:74`), fermé-par-défaut des flags
-  (`test_dream_sh_sweep.py`), CAS `applied`/`conflict`
-  (`test_brain_sessions_lifecycle.py`) et **les quatre replays idempotents**
+### Exit criteria (measurable)
+- ✅ **SATISFIED on 2026-08-19** — baseline delivered under
+  `docs/design/refonte-projets-sessions/baseline/`: `queries.sql` (12 measurements,
+  **a single statement** hence a consistent snapshot, each carrying `proves` and
+  `does_not_prove`), `explain.sql`, `snapshot.py` (replayable in one command) and
+  the first `snapshot-20260819T191613Z.json`. **Read-only enforced by the engine**
+  (`BEGIN READ ONLY`), proven both ways. The per-writer focus-write breakdown
+  remains explicitly excluded — it belongs to Phase 3.
+  **Three results not to miss**: 30-day attribution is at **30.4%** versus 34% on
+  2026-08-16 — **B3 is degrading, not stagnating**; `client_key` yields **465
+  distinct values for 469 sessions** (ratio 1.01), which quantifies B9; and the 10
+  contexts with NULL focus are **all** "never written," zero erasure, confirming
+  Q13's premise.
+- ✅ **SATISFIED on 2026-08-19** — census first, writing second. **Five of the
+  seven items were ALREADY pinned** and were not duplicated: canonicalization
+  (`test_project_key_canonical.py`, 20 tests), sweep as ONE statement
+  (`test_pg_brain_session_sweep.py:74`), closed-by-default flags
+  (`test_dream_sh_sweep.py`), `applied`/`conflict` CAS
+  (`test_brain_sessions_lifecycle.py`) and **the four idempotent replays**
   (`test_start_replays_same_project_client_key`, `test_capture_exact_retry_is_idempotent`,
   `test_end_exact_terminal_retry_is_idempotent_and_read_only`,
   `test_abandon_exact_retry_is_idempotent_and_read_only`).
-  **Deux trous réels, comblés** (commit `0207209`, branche
-  `test/phase0-session-anchors`) : la **phrase-covenant dans les sept docstrings**, qui
-  n'avait **aucune** couverture — elle pouvait disparaître des sept sans qu'une suite ne
-  rougisse — et la **forme actuelle de l'erreur de `_validate_captures`**, c'est-à-dire
-  B13, épinglée pour que la Phase 1 la casse en Red d'abord.
-  Le test des docstrings épingle **aussi** le nombre écrit en toutes lettres dans la
-  docstring d'enregistrement : le checkpoint le portera à « eight », dans le même commit
-  que le tool — friction voulue.
-  **Les deux sont prouvés PAR MUTATION DE CONTRÔLE**, jamais par leur seule couleur :
-  retirer la phrase d'un docstring, faire mentir le compte, retirer la borne
-  `created_at >= started_at` de la fenêtre de capture, et remplacer la raison agrégée par
-  des motifs par id — cette dernière mutation **simule l'arrivée de D2 et fait tomber
-  exactement les deux tests conçus pour tomber en premier**. Sources restaurées bit à bit
-  après chaque essai (`git diff src/` vide). Suite complète : **7985 passés, 55 skippés**,
-  ruff + format + mypy propres.
-- ✅ **SATISFAIT le 2026-08-19** — `docs/PROJECTS_SYSTEM.md` écrite et commitée
-  (`e04df96`, branche `test/phase0-session-anchors`). Organisée par la grille
-  FAIT/JUGEMENT comme exigé. **Le recensement du prédicat colon a été REFAIT, pas
-  recopié** — et il a bien fallu : il avait été faux trois fois, la troisième par un
-  grep de correction cherchant `":" in ` qui manquait la copie écrite `":" not in`.
-  Compte vérifié : **cinq exemplaires `src/`, sept vues, trois formulations**, soit
-  douze objets, dont deux dans la même méthode et un dans un module qui importe déjà le
-  helper partagé sans l'utiliser (`proposal_service.py:17` contre `:377-383`, vérifié).
-  **Dérive neuve, non gardée, nommée dans le document** : la regex de la clé existe en
-  **dix-sept endroits sur seize fichiers**, dont **cinq assets `ops/recovery/`**, et
-  aucun test ne relie `_KEBAB` au CHECK SQL — le test de la 033 épingle un littéral
-  réécrit dans le test. L'élargir casserait la cohérence code/base ET la preuve de
-  restauration sans qu'aucune suite ne rougisse. Contrôle dépôt public passé (aucune
-  adresse privée, aucun chemin hors dépôt, aucun secret).
-- `SPEC-checkpoint.md` relue et soumise avec Q3.
-- ✅ **SATISFAIT le 2026-08-19** — spike B8 rejoué sur **Claude Code 2.1.234**, résultat
-  écrit, daté et versionné avec la version mesurée en tête :
-  `docs/upstream/2026-08-19-b8-session-join-rejeu.md`. **Issue (a) : verdict INCHANGÉ**,
-  rien n'est invalidé, l'accrétion continue telle quelle. Les deux cas ont été joués — le
-  faux positif du spike d'origine (environnement parent intact ⇒ identifiant du PARENT
-  reçu et **accepté** par `normalize_session`) se reproduit à l'identique, et reste donc
-  un piège actif pour toute tentative future. Joué **en premier** de la Phase 0, parce que
-  Q9 et la clé `(projet, connexion)` reposaient sur cette prémisse ; elles sont confirmées
-  par la mesure. La consigne « re-mesurer à chaque montée de version » n'est pas levée :
-  elle est honorée, et reconduite.
-> ✅ **CE CRITÈRE EST SATISFAIT depuis la session 2 du cadrage, 2026-08-19 (ADR §0bis).**
-> Q2 = `from_project` ; Q3 = stockage de la proposition + forme du payload du ticket ;
-> Q6 = acceptée avec pool de brouillons en attente ; Q14 = (a) élargir ; Q10 acquise plus
-> tôt le même jour. **Les critères NON satisfaits qui restent** : le snapshot baseline, la
-> suite d'ancrage, le re-jeu du spike B8, la spec checkpoint, et **la spec de M-G**.
+  **Two real gaps, filled** (commit `0207209`, branch
+  `test/phase0-session-anchors`): the **covenant sentence across the seven
+  docstrings**, which had **no** coverage at all — it could disappear from all
+  seven without a single suite turning red — and the **current shape of the
+  `_validate_captures` error**, i.e. B13, pinned so Phase 1 breaks it in Red first.
+  The docstring test **also** pins the number spelled out in the enrollment
+  docstring: the checkpoint will bring it to "eight," in the same commit as the
+  tool — deliberate friction.
+  **Both are proven BY MUTATION TESTING**, never by color alone: removing the
+  sentence from a docstring, making the count lie, removing the
+  `created_at >= started_at` bound from the capture window, and replacing the
+  aggregated reason with per-id reasons — this last mutation **simulates D2's
+  arrival and trips exactly the two tests designed to trip first**. Sources
+  restored bit for bit after each attempt (`git diff src/` empty). Full suite:
+  **7985 passed, 55 skipped**, ruff + format + mypy clean.
+- ✅ **SATISFIED on 2026-08-19** — `docs/PROJECTS_SYSTEM.md` written and committed
+  (`e04df96`, branch `test/phase0-session-anchors`). Organized by the FACT/JUDGMENT
+  grid as required. **The colon-predicate census was REDONE, not copied
+  forward** — and it had to be: it had been wrong three times, the third time
+  through a fix-up grep looking for `":" in ` that missed the written copy
+  `":" not in`. Verified count: **five `src/` copies, seven views, three
+  formulations**, i.e. twelve objects, two of them in the same method and one in a
+  module that already imports the shared helper without using it
+  (`proposal_service.py:17` versus `:377-383`, verified). **New drift, unguarded,
+  named in the document**: the key regex exists in **seventeen places across
+  sixteen files**, including **five `ops/recovery/` assets**, and no test links
+  `_KEBAB` to the SQL CHECK — the 033 test pins a literal rewritten in the test.
+  Widening it would break code/database consistency AND the restoration proof
+  without a single suite turning red. Public-repo check passed (no private
+  address, no path outside the repo, no secret).
+- `SPEC-checkpoint.md` reviewed and submitted with Q3.
+- ✅ **SATISFIED on 2026-08-19** — B8 spike replayed on **Claude Code 2.1.234**,
+  result written, dated and versioned with the measured version up front:
+  `docs/upstream/2026-08-19-b8-session-join-rejeu.md`. **Outcome (a): verdict
+  UNCHANGED**, nothing is invalidated, accretion continues as-is. Both cases were
+  played out — the original spike's false positive (intact parent environment ⇒
+  the PARENT's identifier received and **accepted** by `normalize_session`)
+  reproduces identically, and thus remains an active trap for any future attempt.
+  Played **first** in Phase 0, because Q9 and the `(project, connection)` key
+  rested on this premise; they are confirmed by the measurement. The instruction
+  "re-measure at every Claude Code version bump" is not lifted: it is honored, and
+  reaffirmed.
+> ✅ **THIS CRITERION IS SATISFIED since framing session 2, 2026-08-19 (ADR §0bis).**
+> Q2 = `from_project`; Q3 = storage of the proposal + shape of the ticket payload;
+> Q6 = accepted with a pending draft pool; Q14 = (a) widen; Q10 settled earlier the
+> same day. **The criteria that remain UNSATISFIED**: the baseline snapshot, the
+> anchor suite, the B8 spike replay, the checkpoint spec, and **the M-G spec**.
 
-- Réponses opérateur obtenues au minimum sur : Q2 (prédicat tickets — bloque M-B),
-  Q3 (checkpoint — bloque M-C), **Q14 (ce que l'attestation de récupération doit
-  apprendre — bloque M-B)**, **Q6 (staged captures — PROMUE ici le 2026-08-19, parce que
-  l'axe « traçabilité du savoir » remonte la Phase 4.4 juste après la Phase 2)**, et
-  Q10 — **cette dernière est ACQUISE depuis le 2026-08-19** (la liste couvre ; l'ordre
-  change, ADR §0).
-- **Spécification de M-G écrite et soumise** (nouveau critère, cadrage du 2026-08-19) :
-  Q15 = route (3) engage un nouvel état terminal dans le CHECK 037. Le nom de l'état, sa
-  branche exacte, le sort de `captured_knowledge_ids` / `abandonment_reason` /
-  `focus_outcome`, le déclencheur de l'auto-fermeture et le sort du `next_focus` **ne
-  sont spécifiés nulle part**. Tant que ce critère n'est pas atteint, la nature `agent`
-  de D11 n'a pas d'état terminal et ne peut pas être livrée.
+- Operator answers obtained at minimum on: Q2 (ticket predicate — blocks M-B),
+  Q3 (checkpoint — blocks M-C), **Q14 (what the recovery attestation must learn —
+  blocks M-B)**, **Q6 (staged captures — PROMOTED here on 2026-08-19, because the
+  "knowledge traceability" axis moves Phase 4.4 right after Phase 2)**, and
+  Q10 — **the latter is SETTLED since 2026-08-19** (the list covers; the order
+  changes, ADR §0).
+- **M-G specification written and submitted** (new criterion, framing of
+  2026-08-19): Q15 = route (3) commits to a new terminal state in the 037 CHECK.
+  The state's name, its exact branch, the fate of `captured_knowledge_ids` /
+  `abandonment_reason` / `focus_outcome`, the auto-close trigger and the fate of
+  `next_focus` **are specified nowhere**. Until this criterion is met, D11's
+  `agent` nature has no terminal state and cannot ship.
 
 ### Rollback / killswitch
-Sans objet : rien de mutant.
+Not applicable: nothing mutates.
 
 ---
 
-## 3. Phase 1 — Voir sans toucher (migration M-A)
+## 3. Phase 1 — See without touching (migration M-A)
 
-### Contenu
+### Content
 
-1. **Erreur de capture énumérée** (ferme B13) : `BrainSessionInputError` porte
+1. **Enumerated capture error** (closes B13): `BrainSessionInputError` carries
    `rejections: [{id, reason}]`, `reason ∈ {not_found, wrong_project,
    created_before_session, ambiguous_type, attributed_elsewhere, unsupported_type}`,
-   **plus `capturable_subset`** (greffe C retenue par le panel) : les ids qui
-   passeraient. Aucun changement de sémantique — mêmes lots acceptés/refusés qu'avant,
-   prouvé par les tests d'ancrage Phase 0 (mis à jour en Red d'abord pour la forme du
-   message). Le lot reste all-or-nothing.
-2. **Suggestions de capture** (lecture pure, jamais bloquant) :
+   **plus `capturable_subset`** (graft C adopted by the panel): the ids that would
+   have passed. No semantic change — same batches accepted/rejected as before,
+   proven by the Phase 0 anchor tests (updated in Red first for the message shape).
+   The batch stays all-or-nothing.
+2. **Capture suggestions** (pure read, never blocking):
    `project_uncaptured_since_start`
-   (≤20, best-effort, calculé après clôture réussie) dans le résultat de `end` ;
-   `project_uncaptured_since_start_count` dans `resume` — **noms alignés le 2026-08-19**
-   sur le prédicat spécifié plus bas ; la version antérieure spécifiait le prédicat puis
-   annonçait « le champ porte son nom exact » tout en gardant `uncaptured_candidates` /
-   `uncaptured_candidate_count` deux lignes plus haut, contradiction dans le même item.
-   L'erreur XOR « ledger vide sans raison »
-   mentionne le compte de candidats. Rôle assumé : ce sont les instruments de mesure du
-   dossier E3 (leur usage réel est lui-même mesuré en soak — réponse à la réserve du
-   juge simplicité).
-   **Prédicat de « candidat », spécifié — il manquait, et l'instrument entier en
-   dépend.** Un candidat est un artefact des six `CAPTURE_TABLES` tel que :
-   `project_key = session.project_key` **et** `created_at >= session.started_at`
-   (mêmes bornes que `_validate_captures`, pour qu'une suggestion soit toujours
-   capturable), **et** non déjà présent dans `brain_session_artifacts` (PK
-   `knowledge_id` — l'exclusivité rend le test trivial). **La liaison par acteur est
-   volontairement ABSENTE du prédicat**, et il faut le dire au lieu de le laisser
-   deviner : la règle R5 la rendrait vide exactement pour les deux populations que
-   l'instrument doit éclairer — les sessions stdio à `started_by_actor` NULL (B8) et le
-   régime fantôme B1 (≥2 sessions ouvertes du même porteur). Conséquence assumée et
-   **écrite dans le champ rendu** : ce sont les artefacts créés **dans le projet depuis
-   `started_at`**, pas « le travail de cette session ». Ils peuvent appartenir à une
-   session sœur. Le champ porte donc son nom exact — `project_uncaptured_since_start`,
-   repris tel quel en tête d'item et dans l'ADR (D8) — et la mesure E3 s'en sert comme
-   **plafond**, jamais comme numérateur.
-3. **Migration M-A** : trois colonnes nullable sur `brain_sessions`, hors CHECK 037,
-   sans backfill (`NULL` = « avant », doctrine 040/041) :
-   - `started_by_actor VARCHAR(64)` (R4 — ferme B14) ;
-   - `last_observed_at TIMESTAMPTZ` (écrite uniquement sous le flag du point 6) ;
-   - `intent VARCHAR(500)` (greffe C : le champ humain de triage des fantômes).
-   **Décision d'INDEX à instruire, pas à trancher ici — le mot « index » était absent de
-   ce plan et de l'ADR** (constat du 2026-08-19). `started_by_actor` est créé **sans
-   index**, et c'est la colonne sur laquelle l'émetteur du point 6 filtre à **chaque
-   appel outermost de tool**, deux fois dans le même statement (le `WHERE` et la
-   sous-requête corrélée de comptage). Les index réels de `brain_sessions`, mesurés le
-   2026-08-19 (`pg_indexes`), sont exactement trois — `brain_sessions_pkey` sur `id`,
-   `uq_brain_sessions_project_client (project_key, client_key)`,
-   `idx_brain_sessions_project_status_started (project_key, status, started_at DESC)` :
-   **aucun ne couvre l'acteur**. Le troisième couvre `(project_key, status)` et laisse
-   l'égalité sur l'acteur en filtre résiduel, ce qui à la cardinalité mesurée (467 lignes,
-   29 `open`) est très probablement gratuit — *probablement* n'est pas *mesuré*, et c'est
-   un chemin chaud.
-   **Ce qui est décidé ici** : rien. **Ce qui est exigé** : (a) la Phase 0 mesure le coût
-   réel du statement de l'émetteur sur la table de production (voir §2, baseline), (b) le
-   commit de M-A porte la conclusion écrite — index ou pas —, (c) **si un index est
-   ajouté, il casse `expected_session_indexes`**, la liste FERMÉE des index de
-   `brain_sessions` (`ops/recovery/brain-v42-v4.sql:404-412`, contrôlée `:665` et `:687`,
-   doublée par `SESSION_INDEX_DEFINITION_MD5` en `test_recovery_contract_v3.py:164-168`
-   et `:488`) : c'est le **quatrième** mécanisme de casse d'attestation recensé en R1.5,
-   et il vaut sur les **deux** assets v4. (d) Le différer dans une tête à lui coûterait un
-   rendez-vous de production de plus dans un couloir qui interdit deux têtes en vol
-   (R1.2) : si index il doit y avoir, il voyage **dans M-A**.
-4. **`start` enrichi** : persiste `started_by_actor` (best-effort, NULL si stdio sans
-   header — on dégrade sans attribuer, règle `7ffe0e8a`) ; accepte `intent` optionnel ;
-   le résultat gagne `open_sessions_same_carrier` (greffe C : « l'opérateur voit ses
-   propres fantômes au moment où il en créerait un de plus »).
-5. **`list` enrichi** : filtre `client_key_prefix` ; affichage d'`intent` ; convention
-   `client_key` documentée (recommandée, jamais imposée — une contrainte serveur
-   casserait tous les clients pour un problème de tri).
-   **La « présence à la lecture » est RETIRÉE de cette phase.** Une version antérieure
-   la livrait en paramètre opt-in `with_observed_activity`, calculant un
-   `last_knowledge_activity_at` par jointure d'`access_log` (`actor = started_by_actor`,
-   `accessed_at >= started_at`, **lookback plafonné à 7 j**) vers les six tables de
-   connaissance, et la présentait comme « la liveness honnête disponible AVANT tout
-   armement, et la mesure de comparaison pour trancher la question n° 1 ». La correction
-   du premier passage n'avait vu que la colonne projet absente. **Trois faits vérifiés
-   la condamnent :**
-   - `access_log` **n'est pas un journal, c'est un tampon vidé en continu** —
-     `repositories/pg_access_log.py:38-113` agrège puis exécute
-     `sa.delete(access_log).where(id <= max_id)` **dans la même transaction** ;
-     l'appelant est `DecayFlusher`, `interval_seconds=300` par défaut (`config.py:379`).
-     Un lookback de 7 j sur une table qui retient au mieux ~5 minutes ne rend rien ;
-   - l'agrégation **replie l'acteur en compteurs** : la colonne `actor` ne survit pas au
-     flush, donc `actor = started_by_actor` n'a plus rien à joindre ;
-   - les seuls écrivains sont des **lectures** (`search_hit`, `get_by_id`, `use`,
-     `execute`), jamais des créations.
-   **Mesure, 2026-08-18** : `select count(*) from access_log;` → **0 ligne**, quand
-   `select max(last_accessed_at), count(*) filter (where access_count>0) from learnings;`
-   → `2026-08-18 20:11:06+00 | 2209` — le cycle écrit-agrège-purge tourne bien, et
-   l'instrument déclaré pour instruire **Q1** mesurait structurellement zéro. Ce qui le
-   remplace est en Phase 0 : la population `(projet, acteur)` × sessions ouvertes
-   (0 / 1 / ≥2), calculée **sans écrire**, qui mesure exactement ce que l'armement
-   toucherait.
-6. **Émetteur d'observation dans le middleware, livré FERMÉ**
-   (`BRAIN_SESSION_OBSERVED_ACTIVITY_ENABLED=false`). Spécification exigée par le
-   panel — UN statement, règle « exactement un » :
+   (≤20, best-effort, computed after a successful close) in the `end` result;
+   `project_uncaptured_since_start_count` in `resume` — **names aligned on
+   2026-08-19** with the predicate specified below; the earlier version specified
+   the predicate then announced "the field carries its exact name" while still
+   keeping `uncaptured_candidates` / `uncaptured_candidate_count` two lines above,
+   a contradiction within the same item. The "empty ledger with no reason" XOR
+   error mentions the candidate count. Assumed role: these are the measurement
+   instruments for dossier E3 (their actual usage is itself measured in soak — an
+   answer to the simplicity judge's reservation).
+   **"Candidate" predicate, specified — it was missing, and the whole instrument
+   depends on it.** A candidate is an artifact from the six `CAPTURE_TABLES` such
+   that: `project_key = session.project_key` **and**
+   `created_at >= session.started_at` (same bounds as `_validate_captures`, so a
+   suggestion is always capturable), **and** not already present in
+   `brain_session_artifacts` (PK `knowledge_id` — exclusivity makes the test
+   trivial). **The actor link is deliberately ABSENT from the predicate**, and this
+   must be stated rather than left to be guessed: rule R5 would make it empty
+   exactly for the two populations the instrument is meant to shed light on — stdio
+   sessions with `started_by_actor` NULL (B8) and the B1 ghost regime (≥2 open
+   sessions for the same carrier). Assumed consequence, **written into the rendered
+   field**: these are artifacts created **in the project since `started_at`**, not
+   "this session's work." They may belong to a sibling session. The field
+   therefore carries its exact name — `project_uncaptured_since_start`, reused
+   verbatim at the top of the item and in the ADR (D8) — and the E3 measurement
+   uses it as a **ceiling**, never as a numerator.
+3. **Migration M-A**: three nullable columns on `brain_sessions`, outside CHECK
+   037, with no backfill (`NULL` = "before," doctrine 040/041):
+   - `started_by_actor VARCHAR(64)` (R4 — closes B14);
+   - `last_observed_at TIMESTAMPTZ` (written only under item 6's flag);
+   - `intent VARCHAR(500)` (graft C: the human field for triaging ghosts).
+   **INDEX decision to be briefed, not decided here — the word "index" was absent
+   from this plan and the ADR** (finding from 2026-08-19). `started_by_actor` is
+   created **with no index**, and it is the column item 6's emitter filters on for
+   **every outermost tool call**, twice in the same statement (the `WHERE` and the
+   correlated counting subquery). The real indexes on `brain_sessions`, measured
+   on 2026-08-19 (`pg_indexes`), are exactly three — `brain_sessions_pkey` on
+   `id`, `uq_brain_sessions_project_client (project_key, client_key)`,
+   `idx_brain_sessions_project_status_started (project_key, status, started_at DESC)`:
+   **none covers the actor**. The third covers `(project_key, status)` and leaves
+   the actor equality as a residual filter, which at the measured cardinality
+   (467 rows, 29 `open`) is very likely free — *likely* is not *measured*, and this
+   is a hot path.
+   **What is decided here**: nothing. **What is required**: (a) Phase 0 measures
+   the real cost of the emitter statement against the production table (see §2,
+   baseline), (b) M-A's commit carries the written conclusion — index or not —,
+   (c) **if an index is added, it breaks `expected_session_indexes`**, the CLOSED
+   list of `brain_sessions` indexes (`ops/recovery/brain-v42-v4.sql:404-412`,
+   checked at `:665` and `:687`, doubled by `SESSION_INDEX_DEFINITION_MD5` in
+   `test_recovery_contract_v3.py:164-168` and `:488`): this is the **fourth**
+   attestation-breaking mechanism catalogued in R1.5, and it holds across **both**
+   v4 assets. (d) Deferring it into its own head would cost one more production
+   rendezvous in a lane that forbids two heads in flight (R1.2): if an index there
+   must be, it travels **inside M-A**.
+4. **Enriched `start`**: persists `started_by_actor` (best-effort, NULL if stdio
+   with no header — we degrade without attributing, rule `7ffe0e8a`); accepts an
+   optional `intent`; the result gains `open_sessions_same_carrier` (graft C: "the
+   operator sees their own ghosts at the moment they would create one more").
+5. **Enriched `list`**: `client_key_prefix` filter; `intent` display; documented
+   `client_key` convention (recommended, never enforced — a server-side constraint
+   would break every client over a sorting issue).
+   **"Presence on read" is REMOVED from this phase.** An earlier version shipped it
+   as an opt-in `with_observed_activity` parameter, computing a
+   `last_knowledge_activity_at` by joining `access_log` (`actor = started_by_actor`,
+   `accessed_at >= started_at`, **lookback capped at 7 d**) against the six
+   knowledge tables, and presented it as "the honest liveness signal available
+   BEFORE any arming, and the comparison measurement to settle question #1." The
+   first pass's correction had only spotted the missing project column. **Three
+   verified facts condemn it:**
+   - `access_log` **is not a log, it's a continuously drained buffer** —
+     `repositories/pg_access_log.py:38-113` aggregates then runs
+     `sa.delete(access_log).where(id <= max_id)` **in the same transaction**; the
+     caller is `DecayFlusher`, `interval_seconds=300` by default (`config.py:379`).
+     A 7-day lookback on a table that retains at best ~5 minutes returns nothing;
+   - the aggregation **folds the actor into counters**: the `actor` column does not
+     survive the flush, so `actor = started_by_actor` has nothing left to join;
+   - the only writers are **reads** (`search_hit`, `get_by_id`, `use`, `execute`),
+     never creations.
+   **Measurement, 2026-08-18**: `select count(*) from access_log;` → **0 rows**,
+   while `select max(last_accessed_at), count(*) filter (where access_count>0) from
+   learnings;` → `2026-08-18 20:11:06+00 | 2209` — the write-aggregate-purge cycle
+   runs fine, and the instrument declared to inform **Q1** was structurally
+   measuring zero. What replaces it is in Phase 0: the `(project, actor)` ×
+   open-sessions population (0 / 1 / ≥2), computed **without writing**, which
+   measures exactly what arming would touch.
+6. **Observation emitter in the middleware, shipped CLOSED**
+   (`BRAIN_SESSION_OBSERVED_ACTIVITY_ENABLED=false`). Specification required by
+   the panel — ONE statement, "exactly one" rule:
 
    ```sql
    UPDATE brain_sessions
@@ -675,592 +691,619 @@ Sans objet : rien de mutant.
               AND s2.started_by_actor = :actor) = 1
    ```
 
-   Émis sur l'appel outermost d'un tool portant un `project_key` résoluble et un
-   acteur normalisé.
-   **Chemin chaud, et son coût n'est pas mesuré.** Ce statement — filtre sur
-   `(status, project_key, started_by_actor)` **plus** une sous-requête corrélée de
-   comptage sur les trois mêmes colonnes — s'exécute à **chaque** appel outermost de
-   tool, exactement là où le client-activity a déjà montré qu'un écrivain par appel n'est
-   pas gratuit (`1c40c36a`, burst loss au-delà de 8 appels concurrents, tracké et non
-   fermé). Or `started_by_actor` naît **sans index** et aucun des trois index de
-   `brain_sessions` ne le couvre (mesuré, §3.3). La décision d'index est instruite en
-   §3.3 et **mesurée en Phase 0** ; elle n'est pas tranchée ici, et elle n'est pas
-   gratuite non plus — voir la casse d'attestation `expected_session_indexes` (R1.5).
-   **Correction de prémisse — le middleware NE voit PAS le projet.** Une version
-   antérieure écrivait « le middleware voit déjà les deux, y compris derrière
-   `brain_call_tool` » ; c'est vrai de l'acteur, faux du projet.
-   `src/brain_v42/mcp/provenance_middleware.py:74-96` est intégral et ne lit que des
-   **en-têtes** : `get_http_headers(include={'mcp-session-id'})`,
-   `normalize_agent(x-brain-agent)` (l.76), `normalize_session(x-brain-session)` (l.77),
-   `normalize_transport(...)` (l.83), trois ContextVars, la garde de ré-entrance,
-   `call_next`. Il n'inspecte **jamais** `context.message.arguments`
-   (`grep -rn '\.arguments' src/brain_v42/mcp/` → seulement
-   `dream_capabilities.py:250,258`). Le seul code du dépôt qui résout un projet depuis
-   les arguments d'un tool est `services/dream_project_scope.py`, et il le fait par une
-   **table de politiques PAR TOOL** (`PROJECT_TOOL_POLICIES:83-120` :
-   `project_key`/`project_keys`/`owner_project_key`, `inject_project_key`, références
-   typées à résoudre en base) — preuve que c'est un travail par tool, pas une donnée
-   disponible.
-   **Livrable ajouté à cette phase, sans lequel l'émetteur n'a aucun `:pk` à poser** :
-   un **résolveur de projet par tool**, qui réutilise `PROJECT_TOOL_POLICIES` (une seule
-   table — même doctrine de consolidation que le prédicat colon) ou déclare pourquoi il
-   en pose une seconde. Les tools hors table ne sont **pas** observés et comptent
-   `skipped{no_project}` : le serveur ne devine pas un projet. Le même résolveur sert
-   l'écrivain staged de la Phase 4.4, qui reposait sur la même prémisse.
-   `rowcount = 0` ⇒ aucune écriture ; une requête de comptage
-   best-effort distingue alors `ambiguous` de `no_match` pour le compteur. Compteurs :
+   Emitted on the outermost call of a tool carrying a resolvable `project_key` and
+   a normalized actor.
+   **Hot path, and its cost is not measured.** This statement — a filter on
+   `(status, project_key, started_by_actor)` **plus** a correlated counting
+   subquery over the same three columns — runs on **every** outermost tool call,
+   exactly where client-activity has already shown that one writer per call is not
+   free (`1c40c36a`, burst loss beyond 8 concurrent calls, tracked and not closed).
+   Yet `started_by_actor` is born **with no index** and none of the three
+   `brain_sessions` indexes cover it (measured, §3.3). The index decision is
+   briefed in §3.3 and **measured in Phase 0**; it is not settled here, and it is
+   not free either — see the `expected_session_indexes` attestation breakage
+   (R1.5).
+   **Premise correction — the middleware does NOT see the project.** An earlier
+   version wrote "the middleware already sees both, including behind
+   `brain_call_tool`"; that is true for the actor, false for the project.
+   `src/brain_v42/mcp/provenance_middleware.py:74-96` is complete and reads only
+   **headers**: `get_http_headers(include={'mcp-session-id'})`,
+   `normalize_agent(x-brain-agent)` (l.76), `normalize_session(x-brain-session)`
+   (l.77), `normalize_transport(...)` (l.83), three ContextVars, the
+   re-entrance guard, `call_next`. It **never** inspects
+   `context.message.arguments`
+   (`grep -rn '\.arguments' src/brain_v42/mcp/` → only
+   `dream_capabilities.py:250,258`). The only code in the repo that resolves a
+   project from a tool's arguments is `services/dream_project_scope.py`, and it
+   does so via a **PER-TOOL policy table** (`PROJECT_TOOL_POLICIES:83-120`:
+   `project_key`/`project_keys`/`owner_project_key`, `inject_project_key`, typed
+   references to resolve in the database) — proof that this is per-tool work, not
+   an already-available datum.
+   **Deliverable added to this phase, without which the emitter has no `:pk` to
+   set**: a **per-tool project resolver**, which reuses `PROJECT_TOOL_POLICIES`
+   (a single table — same consolidation doctrine as the colon predicate) or states
+   why it needs a second one. Tools outside the table are **not** observed and
+   count as `skipped{no_project}`: the server never guesses a project. The same
+   resolver serves the Phase 4.4 staged writer, which rested on the same premise.
+   `rowcount = 0` ⇒ no write; a best-effort counting query then distinguishes
+   `ambiguous` from `no_match` for the counter. Counters:
    `observed_activity_written` / `observed_activity_skipped{ambiguous, no_actor,
-   no_project}`. Enveloppe sur le modèle prouvé du client-activity (ticket
-   `1c40c36a`) : un échec d'observation ne casse **jamais** l'appel observé — prouvé
-   par **test de panne injectée** (greffe A : critère de sortie, pas seulement
-   compteurs).
+   no_project}`. Envelope modeled on the proven client-activity pattern (ticket
+   `1c40c36a`): an observation failure **never** breaks the call it observes —
+   proven by an **injected-failure test** (graft A: an exit criterion, not just
+   counters).
 
-### Critères de sortie (mesurables)
-- Ancrage Phase 0 vert (hors tests volontairement passés en Red puis adaptés pour la
-  forme d'erreur).
-- Canary : un lot mélangé refusé rend une raison **par id** + le sous-ensemble
-  capturable ; `resume` montre un compte de candidats sur une session de test ; `start`
-  avec `intent` l'affiche dans `list` ; `start` sur un projet où le même porteur a déjà
-  une session ouverte rend l'avertissement.
-- `started_by_actor` renseigné sur les nouvelles sessions HTTP (part mesurée vs
-  baseline Phase 0).
-- Killswitch mesuré **fermé** en production : drop-in inspecté, environnement du
-  processus inspecté (R3).
-- Test de panne injectée vert : l'échec simulé de l'émetteur laisse l'appel de tool
-  intact.
-- **Le canary ci-dessus consomme la fenêtre de rollback de M-A** — « `start` avec
-  `intent` l'affiche dans `list` » écrit un `intent` non NULL, et le downgrade de M-A
-  est fail-closed dès qu'un `intent` non NULL existe. Une version antérieure n'écrivait
-  cette règle qu'en Phase 2 : le canary de sortie refermait donc **définitivement** la
-  fenêtre de rollback de la tête dont M-C, M-D et tout le couloir linéaire dépendent.
-  Donc, comme en Phase 2 : canary sur **sessions jetables**, **purge documentée des
-  `intent` de canary** après validation, puis **downgrade à blanc sur base de staging**
-  prouvant la fenêtre encore ouverte — avant de déclarer la phase sortie.
-- Pin : M-A appliquée, `alembic current` mesuré à la nouvelle head, pin bumpé dans le
-  même commit, **`ops/recovery/` régénérée — les DEUX assets v4, `brain-v42-v4.sql` et
-  `brain-v42-v4-pgrestore.sql`** (M-A change l'empreinte de colonnes de
-  `brain_sessions`, R1.5 ; et `expected_session_indexes` en plus si l'index de §3.3 est
-  retenu), plan-index repair re-prouvé fonctionnel.
+### Exit criteria (measurable)
+- Phase 0 anchors green (excluding tests deliberately turned Red then adapted for
+  the error shape).
+- Canary: a rejected mixed batch returns a reason **per id** + the capturable
+  subset; `resume` shows a candidate count on a test session; `start` with
+  `intent` shows it in `list`; `start` on a project where the same carrier already
+  has an open session returns the warning.
+- `started_by_actor` populated on new HTTP sessions (share measured against the
+  Phase 0 baseline).
+- Killswitch measured **closed** in production: drop-in inspected, process
+  environment inspected (R3).
+- Injected-failure test green: the emitter's simulated failure leaves the tool
+  call intact.
+- **The canary above consumes M-A's rollback window** — "`start` with `intent`
+  shows it in `list`" writes a non-NULL `intent`, and M-A's downgrade is
+  fail-closed as soon as a non-NULL `intent` exists. An earlier version only wrote
+  this rule in Phase 2: the exit canary would therefore **permanently** close the
+  rollback window of the head that M-C, M-D and the entire linear lane depend on.
+  So, as in Phase 2: canary on **throwaway sessions**, **documented purge of the
+  canary `intent`s** after validation, then a **blank downgrade on a staging
+  database** proving the window is still open — before declaring the phase exited.
+- Pin: M-A applied, `alembic current` measured at the new head, pin bumped in the
+  same commit, **`ops/recovery/` regenerated — BOTH v4 assets, `brain-v42-v4.sql`
+  and `brain-v42-v4-pgrestore.sql`** (M-A changes the `brain_sessions` column
+  fingerprint, R1.5; plus `expected_session_indexes` if §3.3's index is chosen),
+  plan-index repair re-proven functional.
 
 ### Rollback
-Downgrade M-A = drop de trois colonnes nullable — aucune perte d'état lifecycle, mais
-**une perte de jugement nommée** : `intent` est une ligne humaine déclarée (grille
-fait/jugement, N7). Même doctrine que M-C (« c'est du jugement, on ne le jette pas en
-silence ») : downgrade **fail-closed si au moins un `intent` non NULL existe**, la
-purge explicite des intents étant alors un geste opérateur de runbook — et, comme la
-039 le montre (`-x allow_project_context_trigger_downgrade=yes`), cette garde **peut**
-recevoir un opt-in nommé plutôt qu'une purge destructrice ; le choix se fait à
-l'écriture de la migration, pas ici.
-`started_by_actor` et `last_observed_at` sont des faits observés, re-mesurables,
-jetables sans garde. Revert des commits code. Killswitch : l'émetteur (point 6) — seul
-comportement runtime nouveau de la phase.
+M-A downgrade = drop three nullable columns — no lifecycle-state loss, but
+**a named judgment loss**: `intent` is a declared human line (fact/judgment grid,
+N7). Same doctrine as M-C ("it's judgment, we don't throw it away silently"):
+downgrade **fail-closed if at least one non-NULL `intent` exists**, explicit
+purging of intents then being a runbook operator gesture — and, as 039 shows
+(`-x allow_project_context_trigger_downgrade=yes`), this guard **can** take a
+named opt-in instead of a destructive purge; the choice is made when the
+migration is written, not here.
+`started_by_actor` and `last_observed_at` are observed facts, re-measurable,
+disposable with no guard. Revert of the code commits. Killswitch: the emitter
+(item 6) — the phase's only new runtime behavior.
 
 ---
 
-## 4. Phase 2 — Capturer juste + le geste checkpoint (migrations M-B, M-C)
+## 4. Phase 2 — Capturing right + the checkpoint gesture (migrations M-B, M-C)
 
-### Contenu
+### Content
 
-1. **Migration M-B — tickets capturables** (ferme B4 avec la Phase 1) : CHECK
-   `brain_session_artifacts_type_valid` élargi à `'ticket'` (l'énumération actuelle —
-   vérifiée — est `decision, learning, snippet, runbook, adr, indexed_plan, legacy`).
-   `CAPTURE_TABLES`/validation gagnent un prédicat dédié :
+1. **Migration M-B — capturable tickets** (closes B4 together with Phase 1): CHECK
+   `brain_session_artifacts_type_valid` widened to `'ticket'` (the current
+   enumeration — verified — is `decision, learning, snippet, runbook, adr,
+   indexed_plan, legacy`). `CAPTURE_TABLES`/validation gain a dedicated predicate:
    `tickets.from_project == session.project_key AND tickets.created_at >=
-   session.started_at` (`from_project` = paternité — gated Q2, veto sans coût avant
-   M-B ; la table `tickets` n'a pas de `project_key`, vérifié). Ledger, exclusivité PK,
-   idempotence, all-or-nothing : inchangés. Downgrade fail-closed si des lignes
-   `'ticket'` existent (gabarit 037).
-2. **Prédicat sous-arbre PARTAGÉ** (greffe A, brique de B5/B11) : un module unique
-   généralisant `project_group_scope` (`base NOT LIKE '%:%' AND key LIKE base || ':%'`,
-   vérifié) — **une seule implémentation**, ce qui est un travail de CONSOLIDATION,
-   pas une simple création.
-   **Périmètre corrigé : il en visait deux et en ratait deux.** Une version antérieure
-   annonçait « trois exemplaires `src/` » et « les deux copies inline sont résorbées
-   dans cette phase ». Recompté le 2026-08-18, ils sont **cinq** — et l'un des deux
-   manquants vit dans la fonction même que cette phase prétendait nettoyer :
-   1. `db/project_group_scope.py:24-26` — la référence, à généraliser ;
-   2. `services/project_group_ticket_service.py:129-137` — copie SQL inline, **résorbée
-      dans cette phase** ;
-   3. `services/proposal_service.py:377-383` — copie SQL inline alors que le module
-      importe déjà `project_group_scope`, **résorbée dans cette phase** ;
-   4. `services/project_group_ticket_service.py:164-167` — **seconde copie, en Python**
-      (`project_key == base_key or (":" not in base_key and
-      project_key.startswith(f"{base_key}:"))`), dans la même méthode
-      `_lock_participants_scope` que la n° 2. **Résorbée** : le module partagé doit
-      donc exposer **deux formes** — un prédicat SQL et un prédicat Python — sur une
-      seule définition, sinon la consolidation se contente de déplacer la divergence ;
-   5. `repositories/pg_project_context.py:202-213` (`get_keys_by_group`) — même
-      sémantique en variante `split_part`, invisible à un grep sur `not_like("%:%")`.
-      **Résorbée** si l'équivalence des deux formulations est prouvée en Red ; sinon
-      recensée comme troisième formulation, avec le motif écrit.
-   Red : test d'équivalence des **cinq** prédicats sur un jeu de clés partagé (dont
-   `pk`, `pk:child`, `pk:child:grand`, une clé sans colon, une clé dont le préfixe
-   n'est pas une base du groupe). Green : import du module partagé.
-   Côté base, ce ne sont pas « deux vues des migrations 024 et 036 » mais **sept vues
-   vivantes, toutes issues de la 036** (mesuré), nées de **deux corps de CTE recopiés**
-   en `split_part(…) <> project_key AND split_part(…) IN red_base` — troisième
-   formulation. Elles restent en place (une migration appliquée ne se réécrit pas) mais
-   sont recensées dans `docs/PROJECTS_SYSTEM.md` comme exemplaires de frontière, à
-   régénérer depuis le prédicat partagé à leur prochaine révision. Usages futurs
-   (capture famille maintenant, lectures `include_descendants` en Phase 4.6 si Q4 le
-   décide) : jamais de second exemplaire ad hoc.
-3. **Capture famille, flag fermé** (`BRAIN_SESSION_CAPTURE_SUBPARTITIONS=false`) : à
-   l'armement (geste opérateur, après Q4), une session sur `pk` peut capturer un
-   artefact de `pk:child` — sens parent→enfant uniquement, via le prédicat partagé.
-4. **Migration M-C — checkpoints** (ferme B7 ; **conditionnelle à Q3**, l'approbation
-   produit que `d04dc588` exige) : table `brain_session_checkpoints` — `id UUID PK`,
-   `session_id FK → brain_sessions ON DELETE RESTRICT`, `seq INT` **fourni par le
-   client** + `UNIQUE(session_id, seq)`, **`progress TEXT NOT NULL`, `blocker TEXT`
-   (nullable), `next_step TEXT NOT NULL`** (≤2 000 chacun côté app), `created_at` ;
-   **append-only garanti par trigger en base** (UPDATE/DELETE refusés — culture
-   maison, greffe du panel) ; plafond 200/session fail-closed avec message explicite.
-   **Idempotence de replay — les retries d'agents sont la norme (invariant du
-   dossier)** : `ON CONFLICT (session_id, seq) DO NOTHING` — le replay exact
-   n'appende pas de seconde ligne ; un même `seq` avec un payload
-   différent est un conflit non destructif, rejeté explicitement.
+   session.started_at` (`from_project` = authorship — gated by Q2, a free veto
+   before M-B; the `tickets` table has no `project_key`, verified). Ledger, PK
+   exclusivity, idempotence, all-or-nothing: unchanged. Downgrade fail-closed if
+   `'ticket'` rows exist (037 template).
+2. **SHARED subtree predicate** (graft A, a B5/B11 brick): a single module
+   generalizing `project_group_scope` (`base NOT LIKE '%:%' AND key LIKE base ||
+   ':%'`, verified) — **one implementation only**, which is a CONSOLIDATION job,
+   not a plain creation.
+   **Scope corrected: it targeted two and missed two.** An earlier version
+   announced "three `src/` copies" and "the two inline copies are absorbed in this
+   phase." Recounted on 2026-08-18, there are **five** — and one of the two missing
+   ones lives inside the very function this phase claimed to be cleaning up:
+   1. `db/project_group_scope.py:24-26` — the reference, to be generalized;
+   2. `services/project_group_ticket_service.py:129-137` — inline SQL copy,
+      **absorbed in this phase**;
+   3. `services/proposal_service.py:377-383` — inline SQL copy even though the
+      module already imports `project_group_scope`, **absorbed in this phase**;
+   4. `services/project_group_ticket_service.py:164-167` — **a second copy, in
+      Python** (`project_key == base_key or (":" not in base_key and
+      project_key.startswith(f"{base_key}:"))`), in the same
+      `_lock_participants_scope` method as #2. **Absorbed**: the shared module must
+      therefore expose **two forms** — a SQL predicate and a Python predicate — from
+      a single definition, otherwise the consolidation merely relocates the
+      divergence;
+   5. `repositories/pg_project_context.py:202-213` (`get_keys_by_group`) — the same
+      semantics in a `split_part` variant, invisible to a grep on
+      `not_like("%:%")`. **Absorbed** if the equivalence of the two formulations is
+      proven in Red; otherwise catalogued as a third formulation, with the reason
+      written down.
+   Red: an equivalence test for the **five** predicates over a shared key set
+   (including `pk`, `pk:child`, `pk:child:grand`, a key with no colon, a key whose
+   prefix is not a base of the group). Green: import of the shared module.
+   On the database side, these are not "two views from migrations 024 and 036" but
+   **seven live views, all coming from 036** (measured), born of **two copied CTE
+   bodies** as `split_part(…) <> project_key AND split_part(…) IN red_base` — a
+   third formulation. They stay in place (an applied migration is not rewritten)
+   but are catalogued in `docs/PROJECTS_SYSTEM.md` as boundary specimens, to be
+   regenerated from the shared predicate at their next revision. Future uses
+   (family capture now, `include_descendants` reads in Phase 4.6 if Q4 decides so):
+   never a second ad hoc copy.
+3. **Family capture, closed flag** (`BRAIN_SESSION_CAPTURE_SUBPARTITIONS=false`): on
+   arming (operator gesture, after Q4), a session on `pk` can capture an artifact
+   from `pk:child` — parent→child direction only, via the shared predicate.
+4. **Migration M-C — checkpoints** (closes B7; **conditional on Q3**, the product
+   approval that `d04dc588` requires): table `brain_session_checkpoints` —
+   `id UUID PK`, `session_id FK → brain_sessions ON DELETE RESTRICT`, `seq INT`
+   **supplied by the client** + `UNIQUE(session_id, seq)`, **`progress TEXT NOT
+   NULL`, `blocker TEXT` (nullable), `next_step TEXT NOT NULL`** (≤2,000 each on
+   the app side), `created_at`; **append-only enforced by a database trigger**
+   (UPDATE/DELETE refused — house culture, panel graft); a fail-closed 200/session
+   cap with an explicit message.
+   **Replay idempotence — agent retries are the norm (a dossier invariant)**:
+   `ON CONFLICT (session_id, seq) DO NOTHING` — an exact replay does not append a
+   second row; the same `seq` with a different payload is a non-destructive
+   conflict, explicitly rejected.
 
-   > **AMENDÉ le 2026-08-20 — ADR §0bis.4 fait foi, `SPEC-checkpoint.md` en dérive.**
-   > Deux corrections de propagation, aucune décision neuve :
-   > **(i)** ce paragraphe portait `kind VARCHAR(20)` CHECK ∈ {progress, blocker,
-   > next_step, handoff} + `note TEXT` — **la forme ABANDONNÉE**. La forme signée publie
-   > `progress` + `blocker|null` + `next_step` **ENSEMBLE, en un appel** (divergence (d)
-   > reprise du ticket `d04dc588` : trois `kind` exclusifs permettent d'émettre un
-   > `progress` sans jamais de `next_step`, et le lecteur de fraîcheur ne peut alors pas
-   > savoir si l'instantané est complet). `handoff` disparaît comme nature.
-   > **(ii)** la mention « **ne rafraîchit pas le heartbeat une seconde fois** (refresh
-   > conditionné à `rowcount = 1`) » supposait un effet heartbeat que le §0bis.4 a
-   > **dissous** : le checkpoint n'écrit ni ne touche `last_heartbeat_at`, jamais.
-   > Le stockage append-only `UNIQUE(session_id, seq)`, lui, est **maintenu**.
-   **DEUX divergences d'avec le MVP de `d04dc588`, pas une** — la version antérieure
-   n'en déclarait qu'une et affirmait par ailleurs reprendre la doctrine « telle
-   quelle » (§7, ligne B7) :
-   - **stockage** : append-only + `(session_id, seq)` là où le ticket recommande un
-     snapshot sur `brain_sessions` + CAS `expected_checkpoint_revision`. Motif :
-     l'append-only garde l'histoire des notes (c'est du jugement) et réobtient les
-     propriétés P0 (replay sans double effet, conflit non destructif) par la clé ;
-   - **forme du payload** (relue dans le ticket) : son contrat est
+   > **AMENDED on 2026-08-20 — ADR §0bis.4 is authoritative, `SPEC-checkpoint.md`
+   > derives from it.** Two propagation fixes, no new decision:
+   > **(i)** this paragraph used to carry `kind VARCHAR(20)` CHECK ∈ {progress,
+   > blocker, next_step, handoff} + `note TEXT` — **the ABANDONED shape**. The
+   > signed shape publishes `progress` + `blocker|null` + `next_step` **TOGETHER,
+   > in one call** (divergence (d) taken from ticket `d04dc588`: three mutually
+   > exclusive `kind` values allow emitting a `progress` without ever a
+   > `next_step`, and the freshness reader then cannot tell whether the snapshot is
+   > complete). `handoff` disappears as a nature.
+   > **(ii)** the note "**does not refresh the heartbeat a second time** (refresh
+   > conditioned on `rowcount = 1`)" assumed a heartbeat effect that §0bis.4 has
+   > **dissolved**: the checkpoint neither writes nor touches `last_heartbeat_at`,
+   > ever. The append-only storage, `UNIQUE(session_id, seq)`, is **kept**.
+   **TWO divergences from `d04dc588`'s MVP, not one** — the earlier version
+   declared only one and elsewhere claimed to keep the doctrine "as is" (§7,
+   line B7):
+   - **storage**: append-only + `(session_id, seq)` where the ticket recommends a
+     snapshot on `brain_sessions` + CAS `expected_checkpoint_revision`. Reason:
+     append-only keeps the history of notes (that's judgment) and regains the P0
+     properties (replay with no double effect, non-destructive conflict) through
+     the key;
+   - **payload shape** (reread in the ticket): its contract is
      `brain_session_checkpoint(session_id, expected_client_key,
-     expected_checkpoint_revision, progress, blocker|null, next_step)`, réponse bornée
-     distinguant *activity, milestone, blockage, freshness, focus_context*, critère
-     « **un appel** ». Le `kind ∈ {progress, blocker, next_step, handoff}` + `note`
-     unique transforme trois champs **publiés ensemble** en trois natures **mutuellement
-     exclusives** : publier progrès + blocage + prochaine étape demanderait trois
-     appels, trois `seq`, trois rafraîchissements de heartbeat, et ferait sauter le
-     critère « un appel ». **Q3(d) tranche ; la spec checkpoint de la Phase 0 l'écrit
-     avant tout code.**
-   Downgrade fail-closed si des checkpoints existent (c'est du jugement, on ne le jette
-   pas en silence).
-5. **Tool `brain_session_checkpoint(...)`** — signature arrêtée par la spec Phase 0
-   selon Q3(d) : garde d'identité avant mutation, et **rafraîchit `last_heartbeat_at`
-   en effet de bord** (checkpoint réel seulement, jamais un replay) — le geste « je note
-   où j'en suis » remplace le geste vide « je pinge ». **Politique d'appel : fourche
-   déclarée, tranchée dans Q3** — soit chaque checkpoint reste une commande explicite
-   de l'utilisateur (covenant intact, mais l'adoption dépend de la même discipline
-   humaine qui a produit **24 sessions stale sur 29** (re-mesuré le 2026-08-19 ; ce
-   passage citait « 21 sur 23 », mesure du 2026-08-16, et « 21 » désigne aujourd'hui les
-   balayables >7 j, pas les stale), et « le checkpoint date le
-   vivant » ne vaut que s'il est appelé), soit un agent peut checkpointer spontanément
-   en longue session autonome — mutation de session hors commande explicite, donc
-   **changement de covenant**, jamais armé sans décision opérateur.
-   **Et cette fourche a désormais un mécanisme** (R3 corrigée) : rien côté serveur ne
-   distingue un appel d'agent d'un appel d'humain, l'artefact livré est identique sous
-   les deux réponses, et l'effet heartbeat suffit à un agent pour maintenir sa session
-   vivante indéfiniment — le faux-vivant de B2, qui rendrait le critère 4.3
-   auto-satisfiable. Donc : **l'effet heartbeat naît derrière
-   `BRAIN_SESSION_CHECKPOINT_HEARTBEAT_EFFECT=false`** (§8bis), à moins que Q3(a)/(b) ne
-   le retire du contrat — **retrait qui serait une TROISIÈME divergence d'avec
-   `d04dc588`** (« Checkpoint réel rafraîchit heartbeat atomiquement ; replay non »,
-   relu le 2026-08-19), à déclarer avec les deux autres. Le tool, lui, n'a pas de flag —
-   c'est bien une commande.
-   La livraison
-   porte le covenant à **huit** commandes : phrase-covenant dans la docstring du 8e
-   tool, énumération CLAUDE.md et test d'ancrage Phase 0 étendus dans le même commit.
-   `list` gagne `last_checkpoint_at` ; `resume` rend les checkpoints récents. Doctrine
-   `d04dc588` : la fraîcheur affichée dérive de l'âge du dernier checkpoint (ou du
-   heartbeat) ; la dérive du focus est exposée séparément et n'est jamais cause de
-   péremption. `heartbeat` reste inchangé et documenté « préférer checkpoint » —
-   jamais transformé en no-op (mentir à une commande explicite du covenant serait une
-   rupture de contrat, motif de rejet de la proposition A par le panel).
+     expected_checkpoint_revision, progress, blocker|null, next_step)`, a bounded
+     response distinguishing *activity, milestone, blockage, freshness,
+     focus_context*, criterion "**one call**." The `kind ∈ {progress, blocker,
+     next_step, handoff}` + single `note` turns three fields **published together**
+     into three **mutually exclusive** natures: publishing progress + blockage +
+     next step would require three calls, three `seq`s, three heartbeat refreshes,
+     and would break the "one call" criterion. **Q3(d) settles it; the Phase 0
+     checkpoint spec writes it down before any code.**
+   Downgrade fail-closed if checkpoints exist (it's judgment, we don't throw it
+   away silently).
+5. **Tool `brain_session_checkpoint(...)`** — signature settled by the Phase 0 spec
+   per Q3(d): identity guard before mutation, and **refreshes
+   `last_heartbeat_at` as a side effect** (real checkpoint only, never a replay) —
+   the gesture "I note where I stand" replaces the empty gesture "I ping."
+   **Calling policy: a declared fork, settled in Q3** — either each checkpoint
+   remains an explicit user command (covenant intact, but adoption depends on the
+   same human discipline that produced **24 stale sessions out of 29** (re-measured
+   on 2026-08-19; this passage used to cite "21 out of 23," a 2026-08-16
+   measurement, and "21" now denotes the sweepable-past-7-days count, not the stale
+   one), and "checkpoint dates the living" only holds if it is called), or an
+   agent may checkpoint spontaneously during a long autonomous session — a session
+   mutation outside an explicit command, hence a **covenant change**, never armed
+   without an operator decision.
+   **And this fork now has a mechanism** (R3 corrected): nothing server-side
+   distinguishes an agent call from a human call, the shipped artifact is
+   **identical under both answers**, and the heartbeat effect alone lets an agent
+   keep its session alive indefinitely — B2's false-alive, which would make
+   criterion 4.3 self-satisfiable. Therefore: **the heartbeat effect is born behind
+   `BRAIN_SESSION_CHECKPOINT_HEARTBEAT_EFFECT=false`** (§8bis), unless Q3(a)/(b)
+   removes the effect from the contract — **a removal that would be a THIRD
+   divergence from `d04dc588`** ("Real checkpoint refreshes heartbeat atomically;
+   replay does not," reread on 2026-08-19), to be declared along with the other
+   two. The tool itself has no flag — it is indeed a command.
+   Shipping it
+   brings the covenant to **eight** commands: covenant sentence in the 8th tool's
+   docstring, CLAUDE.md enumeration and Phase 0 anchor test extended in the same
+   commit. `list` gains `last_checkpoint_at`; `resume` returns recent checkpoints.
+   Doctrine `d04dc588`: displayed freshness derives from the age of the last
+   checkpoint (or heartbeat); focus drift is exposed separately and is never a
+   cause of staleness. `heartbeat` stays unchanged and documented "prefer
+   checkpoint" — never turned into a no-op (lying to an explicit covenant command
+   would be a contract breach, the panel's ground for rejecting proposal A).
 
-### Critères de sortie (mesurables)
-- Canary : capture d'un lot `[learning, ticket]` réussit ; un ticket d'un autre
-  `from_project` est rejeté avec `reason=wrong_project` ; flag famille **mesuré
-  fermé** et, flag fermé, le rejet parent→enfant rend `wrong_project` comme avant
-  (ancrage) ; flag armé sur un projet de test, la capture `pk` → `pk:child` passe.
-- **Ces deux canaries rendent l'attestation de récupération FAUSSE, et pas seulement
-  pour la durée du canary.** `ops/recovery/brain-v42-v4.sql:1083-1090` définit
-  `knowledge_sources` comme l'UNION des **six** tables de capture — les tickets n'y sont
-  pas — et `artifact_source_matches` (l.1091-1107) joint avec
+### Exit criteria (measurable)
+- Canary: capturing a `[learning, ticket]` batch succeeds; a ticket from a
+  different `from_project` is rejected with `reason=wrong_project`; family flag
+  **measured closed** and, flag closed, the parent→child rejection returns
+  `wrong_project` as before (anchor); flag armed on a test project, the
+  `pk` → `pk:child` capture passes.
+- **These two canaries make the recovery attestation FALSE, and not just for the
+  canary's duration.** `ops/recovery/brain-v42-v4.sql:1083-1090` defines
+  `knowledge_sources` as the UNION of the **six** capture tables — tickets are not
+  among them — and `artifact_source_matches` (l.1091-1107) joins with
   `source_record.project_key = session_record.project_key`.
-  `artifact_source_mismatches` (l.1109-1113) compte `source_matches <> 1`, attendu à
-  **0**. Donc : (a) le premier artefact `knowledge_type='ticket'` n'a aucune ligne
-  source ⇒ mismatch **permanent** ; (b) la capture `pk → pk:child` viole l'égalité de
-  projet ⇒ mismatch **permanent**. Contrairement aux empreintes de schéma, **cela ne se
-  répare pas en régénérant un asset** : il faut décider si l'attestation apprend les
-  tickets et le prédicat sous-arbre. **Q14 est donc un préalable de M-B, pas un
-  post-traitement** — sans réponse, cette phase transforme une preuve de restauration
-  verte en preuve rouge définitive.
-- Si Q3 approuvée : un cycle réel `start → checkpoints → end` sur brain-v42 ; `list`
-  montre `intent` + `last_checkpoint_at` ; **`last_heartbeat_at` reste INCHANGÉ après un
-  checkpoint (test d'ABSENCE d'effet)** ; le replay exact d'un checkpoint n'appende pas
-  (test) ; UPDATE/DELETE sur un checkpoint refusés par le
-  trigger (test) ; le 201e checkpoint est refusé avec message explicite (test).
+  `artifact_source_mismatches` (l.1109-1113) counts `source_matches <> 1`,
+  expected to be **0**. So: (a) the first `knowledge_type='ticket'` artifact has no
+  source row ⇒ **permanent** mismatch; (b) the `pk → pk:child` capture violates the
+  project equality ⇒ **permanent** mismatch. Unlike schema fingerprints, **this is
+  not fixed by regenerating an asset**: it must be decided whether the attestation
+  learns about tickets and the subtree predicate. **Q14 is therefore a
+  prerequisite of M-B, not a post-processing step** — without an answer, this
+  phase turns a green restoration proof into a permanently red one.
+- If Q3 is approved: a real `start → checkpoints → end` cycle on brain-v42; `list`
+  shows `intent` + `last_checkpoint_at`; **`last_heartbeat_at` stays UNCHANGED
+  after a checkpoint (ABSENCE-of-effect test)**; an exact checkpoint replay does
+  not append (test); UPDATE/DELETE on a checkpoint refused by the trigger (test);
+  the 201st checkpoint is refused with an explicit message (test).
 
-  > **AMENDÉ le 2026-08-20 — ADR §0bis.4 fait foi.** Ce critère exigeait « **un
-  > checkpoint rafraîchit `last_heartbeat_at` (test)** ». C'est désormais un test à **NE
-  > PAS écrire** : l'effet heartbeat est dissous, et le test qui le vérifierait câblerait
-  > le comportement que la spec interdit. Il est **retourné** en test d'absence d'effet —
-  > c'est lui qui tombera en premier si quelqu'un recâble le heartbeat.
-- **Les canaries ci-dessus consomment la fenêtre de rollback de M-B/M-C** (leurs
-  downgrades sont fail-closed dès qu'une ligne existe — et ce sont ces canaries qui
-  créent les premières lignes). Donc : canaries exécutées sur des **sessions
-  jetables**, et **purge documentée des lignes de canary** (artifacts `'ticket'` et
-  checkpoints des sessions de canary) exécutée après validation, suivie d'un
-  **downgrade à blanc sur base de staging** prouvant la fenêtre encore ouverte —
-  avant de déclarer la phase sortie.
-- Pin : M-B (puis M-C) appliquées l'une après l'autre — jamais deux en vol —,
-  `alembic current` mesuré, pin bumpé même commit à chaque fois.
+  > **AMENDED on 2026-08-20 — ADR §0bis.4 is authoritative.** This criterion used
+  > to require "**a checkpoint refreshes `last_heartbeat_at` (test)**." That is now
+  > a test **NOT to write**: the heartbeat effect is dissolved, and a test
+  > verifying it would wire in the behavior the spec forbids. It is **flipped**
+  > into an absence-of-effect test — the one that will fail first if anyone
+  > re-wires the heartbeat.
+- **The canaries above consume M-B/M-C's rollback window** (their downgrades are
+  fail-closed as soon as a row exists — and these are the canaries that create the
+  first rows). So: canaries run on **throwaway sessions**, and a **documented
+  purge of the canary rows** (`'ticket'` artifacts and checkpoints from canary
+  sessions) run after validation, followed by a **blank downgrade on a staging
+  database** proving the window is still open — before declaring the phase exited.
+- Pin: M-B (then M-C) applied one after the other — never two in flight —,
+  `alembic current` measured, pin bumped in the same commit each time.
 
 ### Rollback
-- Flag famille fermé = comportement Phase 1 à l'identique.
-- Downgrade M-B possible tant qu'aucun ticket capturé ; les tickets de canary sont
-  purgés par la procédure des critères de sortie, donc la fenêtre reste ouverte après
-  validation (ensuite fail-closed sur les premières captures réelles, voulu).
-- Downgrade M-C fail-closed si des checkpoints existent (voulu) — même purge de
-  canary.
-- **Le rollback est séquentiel** (chaîne Alembic linéaire à tête unique — test du
-  pin) : revenir sur M-A après M-B/M-C exige de downgrader dans l'ordre inverse.
-  « Rollbackable » se lit « réversible depuis la tête courante », jamais « sautable ».
-- Killswitch : `BRAIN_SESSION_CAPTURE_SUBPARTITIONS` (le checkpoint, commande
-  explicite, n'a pas de flag runtime — R3).
+- Family flag closed = Phase 1 behavior unchanged.
+- M-B downgrade possible as long as no ticket has been captured; canary tickets
+  are purged by the exit-criteria procedure, so the window stays open after
+  validation (afterwards fail-closed on the first real captures, as intended).
+- M-C downgrade fail-closed if checkpoints exist (intended) — same canary purge.
+- **Rollback is sequential** (linear single-head Alembic chain — pin test):
+  reverting M-A after M-B/M-C requires downgrading in reverse order.
+  "Rollbackable" reads as "reversible from the current head," never "skippable."
+- Killswitch: `BRAIN_SESSION_CAPTURE_SUBPARTITIONS` (the checkpoint, an explicit
+  command, has no runtime flag — R3).
 
 ---
 
-## 5. Phase 3 — La mémoire du focus (migration M-D)
+## 5. Phase 3 — The memory of focus (migration M-D)
 
-### Contenu
+### Content
 
-1. **Recensement préalable — les écrivains du focus (prémisse corrigée DEUX fois).**
-   Une première version affirmait « deux seuls sites d'écriture » ; la deuxième a
-   corrigé en « six sites, dont un seul bumpe `focus_revision`, l'upsert écrasant sans
-   bump ni CAS ». **Le second énoncé est faux aussi**, et c'est la migration 032 qui le
-   dit.
-   - **Ce qui existe déjà, mesuré le 2026-08-18 en production (head `045`, lecture
-     seule)** : `alembic/versions/032_brain_sessions.py:19-34` crée
-     `increment_project_focus_revision()` — « `IF NEW.current_focus IS DISTINCT FROM
-     OLD.current_focus THEN NEW.focus_revision := OLD.focus_revision + 1` » — et le
-     trigger `project_contexts_focus_revision_trigger BEFORE UPDATE OF current_focus ON
-     project_contexts FOR EACH ROW`. `pg_get_triggerdef` le rend toujours en place.
-     **Aucun écrivain ne peut donc changer le texte du focus sans bump** : un
-     `INSERT … ON CONFLICT DO UPDATE` déclenche les triggers BEFORE UPDATE, et la
-     branche ON CONFLICT de `pg_project_context.get_or_create:281-290` met bien
-     `current_focus` dans son SET. Contrôle croisé :
-     `grep -c focus_revision src/brain_v42/repositories/pg_project_context.py` = **0**,
-     idem sur `scripts/scrub_xml_tool_call_leak.py`.
-   - **Les six sites, exactement** (docstring de `src/brain_v42/db/focus_stamp.py`) : le
-     CAS `applied` de `session_end` (`pg_brain_session.py:713-714`, qui pose
-     `focus_revision=expected_revision + 1` **explicitement** — le CHECK 037 l'exige),
-     `brain_update_project_focus` (`roadmap_service.py`, `focus_revision + 1`
-     explicitement), `pg_project_context.update`, `update_focus`, `create`, et l'upsert
-     du tool MCP vivant `brain_set_project_context`. Plus un écrivain hors MCP :
-     `scripts/scrub_xml_tool_call_leak.py` (`_PROJECT_CONTEXT_COLS = ("current_focus",)`)
-     — **six PLUS le scrub, soit sept**.
-   - **L'énoncé exact — corrigé une TROISIÈME fois le 2026-08-19.** La deuxième
-     réparation écrivait « deux sites bumpent explicitement ; les cinq autres reçoivent
-     le bump du trigger dès que le texte change ; et `brain_update_project_focus` est le
-     **seul** à bumper même quand le texte ne change pas ». Deux erreurs :
-     - **les DEUX sites explicites bumpent sur texte inchangé.**
-       `_apply_focus_if_current` (`pg_brain_session.py:713-714`) pose
-       `focus_revision=expected_revision + 1` **sans comparer le texte**, et le CHECK 037
-       l'exige (`applied` ⇒ `focus_revision_at_end = end_expected_focus_revision + 1`).
-       Le commentaire du code nomme le cas : « Re-posting the previous prose verbatim is
-       the copy-forward this column exists to expose ». C'est le régime **normal** d'une
-       fin de session, pas un cas de bord de `roadmap_service` ;
-     - **le trigger ne voit que les UPDATE.** `create` et la branche INSERT de
-       `get_or_create` (`pg_project_context.py:51-71`, `:273-275`) écrivent
-       `current_focus` à la naissance de la ligne : pas de trigger, `focus_revision = 0`
-       par défaut de colonne (mesuré).
-     Énoncé juste : **deux sites posent la révision eux-mêmes, texte changé ou non ;
-     quatre reçoivent le bump du trigger sur UPDATE quand le texte change ; les deux
-     chemins d'INSERT n'ont ni trigger ni révision à incrémenter.** Conséquence directe
-     pour le point 3 (le chemin partagé) et pour la garde en base du point 2.
-   - **Ce que l'upsert fait vraiment** : il réécrit `current_focus` — **y compris à NULL
-     quand l'argument est omis**, vérifié — **sans CAS**. C'est un vrai canal
-     d'écrasement, et c'est le fond de B6. Mais il **bumpe** (trigger 032) et il **date**
-     (`focus_updated_at = focus_stamp(excluded.current_focus)`, sous `IS DISTINCT FROM`,
-     donc un focus qui part vers NULL compte). Il n'est pas muet : il est **non
-     récupérable**, faute d'historique. C'est cela, et cela seul, que M-D répare.
-   - **La preuve chiffrée invoquée était mal lue.** « 10 des 59 `project_contexts` ont
-     `current_focus IS NULL` — le canal d'écrasement mord déjà » : le nombre est exact
-     (re-mesuré : `10/59`), la conclusion non. Les **dix** lignes sont à
-     `focus_revision = 0` **et** `focus_updated_at IS NULL` (`perso`, `red-backup`,
-     `red-cli`, `red-shrik:agent`, `red-daemon`, `red-llm`, `red-tsdb`,
-     `red-lab:developer{,-gemini,-opus}`) : focus **jamais écrit**, pas effacé — et un
-     écrasement depuis la 040 aurait daté la colonne. **Zéro contexte de production porte
-     la signature d'un effacement** (NULL avec révision > 0). Le canal existe dans le
-     code ; la production ne montre pas qu'il ait mordu. Ce plan n'a donc aucun chiffre
-     à verser au dossier de Q13, et le dit.
-2. **Migration M-D — `project_focus_history`** (ferme B6 en récupérabilité) :
-   - `project_key VARCHAR(50) NOT NULL` (sans FK, comme les tables de connaissance —
-     le drop d'un contexte ne doit pas emporter l'audit), `focus_revision BIGINT NOT
-     NULL`, **`focus TEXT NULL`** — un focus effacé (NULL) est précisément
-     l'écrasement destructeur que l'audit doit enregistrer ; et un `NOT NULL` ferait
-     avorter `alembic upgrade` en production au seed (`NotNullViolation` sur les 10
-     focus NULL mesurés), défaut invisible en CI dont la base est vide au moment du
-     seed —, `actor VARCHAR(64) NULL` (R4 — corrigé du VARCHAR(128) des
-     propositions), `source VARCHAR(20) NOT NULL` CHECK ∈ {session_end, focus_tool,
-     context_upsert, generic_update, maintenance_scrub, migration_seed} — l'enum
-     couvre les écrivains réels —, `created_at`.
-   - PK `(project_key, focus_revision)` — la monotonie du CAS généralisé la rend
-     naturelle ; insert `ON CONFLICT DO NOTHING` rend les replays idempotents.
-   - **Append-only garanti par trigger** (UPDATE/DELETE refusés — greffe du panel,
-     l'audit devient une contrainte, pas une convention).
-   - **Le « trigger-garde » d'une version antérieure est RETIRÉ.** Il devait « refuser
-     un UPDATE où `current_focus IS DISTINCT FROM` l'ancien sans
-     `focus_revision = old + 1` » : c'est **mot pour mot** ce que fait la 032, en posant
-     la valeur au lieu de la refuser. Pire, il cohabiterait mal — PostgreSQL déclenche
-     les triggers BEFORE ROW dans l'**ordre alphabétique** de leur nom, que le plan ne
-     fixait pas. Nommé avant `project_contexts_focus_revision_trigger` (p. ex.
-     `…_focus_history_guard`), il verrait `NEW.focus_revision` non encore incrémenté et
-     **rejetterait toute écriture de focus des quatre écrivains qui écrivent par UPDATE
-     sans poser la révision eux-mêmes** (`update`, `update_focus`, l'upsert, le scrub —
-     `create` écrit par INSERT et échappe aussi bien au garde qu'au trigger) — `brain_set_project_context` fail-closed en production à
-     chaque changement de focus. Nommé après, il est trivialement satisfait : code mort.
-   - **Ce qui reste, et qui est le vrai livrable en base** : un **constraint trigger
-     différé** (`AFTER UPDATE OF current_focus ON project_contexts … DEFERRABLE
-     INITIALLY DEFERRED`) qui, en fin de transaction, exige la ligne d'historique à
-     `NEW.focus_revision`. Il n'a pas de jumeau, ne dépend d'aucun ordre alphabétique, et
-     attrape l'écrivain qui contourne le chemin partagé. **La clause `OF current_focus`
-     est obligatoire** : sans elle il se déclencherait sur tout UPDATE de
-     `project_contexts`, y compris ceux du plan-index repair
-     (`plan_index_repair_store.py:294-308` et `:560-584`, qui n'écrivent que
-     `plan_scan_paths`/`updated_at`) et les ferait échouer — c'est exactement la revue
-     que le message du pin exige (R1.4).
-   - **Ce que ce trigger ne peut PAS voir — trou nommé le 2026-08-19 :** les INSERT.
-     `pg_project_context.create` et la branche INSERT de `get_or_create` persistent un
-     `current_focus` à la naissance de la ligne (`focus_revision = 0`, défaut de
-     colonne). Pour tout `project_context` créé **après** M-D, la révision 0 est donc un
-     focus écrit qu'aucune garde en base n'oblige à s'historiser — le seed ne couvre que
-     les 59 contextes existant à l'upgrade. **Trois voies, à trancher à l'écriture de
-     M-D, pas à découvrir en production** : (a) `AFTER INSERT OR UPDATE OF
-     current_focus` — la seule qui tient N1 en base, au prix d'une ligne d'historique à
-     chaque création de projet, focus NULL compris ; (b) rester sur UPDATE et faire
-     porter la révision 0 par le seul chemin applicatif partagé, en écrivant que la garde
-     dure ne commence qu'à la révision 1 ; (c) interdire à `create`/`get_or_create`
-     d'écrire un focus non NULL à la naissance. **Ne pas choisir, c'est choisir (b) sans
-     le dire**, et livrer un N1 faux pour tout projet neuf.
-   - **Créé DÉSACTIVÉ, activé après le redémarrage MCP** (R1.3) : entre l'`upgrade` et
-     le redémarrage, le processus vivant exécute encore le code pré-M-D, qui n'écrit
-     aucune ligne d'historique ; le trigger ferait avorter au COMMIT **tout
-     `brain_session_end` en `focus_outcome=applied`**, fail-closed, session laissée
-     ouverte, sans killswitch ni downgrade praticable.
-   - **Seed à l'upgrade** : une ligne par `project_context` avec le focus courant —
-     **NULL compris** — et sa révision, `source='migration_seed'` : l'ancrage couvre
-     les 59 contextes, l'enum n'est plus orpheline.
-   - **Où tester le seed — la promesse d'une version antérieure n'était pas tenable.**
-     Elle annonçait « testé contre une base NON vide contenant des focus NULL (test
-     d'intégration dédié) » en citant `c60d023d` § « OÙ TESTER ». Cette section dit
-     l'inverse de ce qu'on lui faisait dire : elle conclut que prouver un tel upgrade
-     « demande `tests/integration` **ET UNE SECONDE BASE** —
-     `tests/integration/conftest.py` lance `alembic upgrade head` UNE FOIS par session
-     avec l'env par défaut » (vérifié : `_run_alembic_upgrade` est un subprocess appelé
-     par une fixture `scope="session", autouse=True`). Le plan promettait donc un test
-     sans fournir ni la seconde base ni la fixture, et se fermait la seule voie
-     in-session (downgrade puis re-upgrade) en rendant ce downgrade fail-closed. **Deux
-     voies, à choisir explicitement à l'écriture de M-D** : (a) refactorer le seed en
-     **planificateur pur** (une fonction qui rend les lignes à insérer à partir d'un
-     jeu de contextes), testable en unitaire y compris sur des focus NULL — c'est la
-     voie recommandée par le ticket ; ou (b) livrer la fixture de seconde base
-     d'intégration, qui n'existe pas et qui est un chantier en soi.
-   - Downgrade : **fail-closed si des lignes autres que le seed existent** — mais
-     **avec opt-in nommé**, pas avec une purge destructrice. Une version antérieure
-     écrivait « fail-closed inconditionnel … un downgrade Alembic n'a pas de paramètre
-     de confirmation ». **C'est faux, et ce dépôt implémente le contraire** dans la
-     migration que ce plan cite trois lignes plus haut comme gabarit :
+1. **Preliminary census — the focus writers (premise corrected TWICE).**
+   A first version claimed "only two writing sites"; the second corrected it to
+   "six sites, of which only one bumps `focus_revision`, the upsert overwriting
+   with no bump and no CAS." **The second statement is false too**, and migration
+   032 is what says so.
+   - **What already exists, measured on 2026-08-18 in production (head `045`,
+     read-only)**: `alembic/versions/032_brain_sessions.py:19-34` creates
+     `increment_project_focus_revision()` — "`IF NEW.current_focus IS DISTINCT FROM
+     OLD.current_focus THEN NEW.focus_revision := OLD.focus_revision + 1`" — and the
+     trigger `project_contexts_focus_revision_trigger BEFORE UPDATE OF current_focus
+     ON project_contexts FOR EACH ROW`. `pg_get_triggerdef` shows it is still in
+     place. **No writer can therefore change the focus text without a bump**: an
+     `INSERT … ON CONFLICT DO UPDATE` fires the BEFORE UPDATE triggers, and the ON
+     CONFLICT branch of `pg_project_context.get_or_create:281-290` does put
+     `current_focus` in its SET. Cross-check:
+     `grep -c focus_revision src/brain_v42/repositories/pg_project_context.py` =
+     **0**, same for `scripts/scrub_xml_tool_call_leak.py`.
+   - **The six sites, exactly** (docstring of `src/brain_v42/db/focus_stamp.py`):
+     the `applied` CAS of `session_end` (`pg_brain_session.py:713-714`, which sets
+     `focus_revision=expected_revision + 1` **explicitly** — the 037 CHECK requires
+     it), `brain_update_project_focus` (`roadmap_service.py`, `focus_revision + 1`
+     explicitly), `pg_project_context.update`, `update_focus`, `create`, and the
+     live `brain_set_project_context` MCP tool's upsert. Plus one non-MCP writer:
+     `scripts/scrub_xml_tool_call_leak.py` (`_PROJECT_CONTEXT_COLS =
+     ("current_focus",)`) — **six PLUS the scrub, i.e. seven**.
+   - **The exact statement — corrected a THIRD time on 2026-08-19.** The second fix
+     wrote "two sites bump explicitly; the other five receive the trigger's bump
+     the moment the text changes; and `brain_update_project_focus` is the **only**
+     one that bumps even when the text does not change." Two errors:
+     - **BOTH explicit sites bump on unchanged text.**
+       `_apply_focus_if_current` (`pg_brain_session.py:713-714`) sets
+       `focus_revision=expected_revision + 1` **without comparing the text**, and
+       the 037 CHECK requires it (`applied` ⇒
+       `focus_revision_at_end = end_expected_focus_revision + 1`). The code
+       comment names the case: "Re-posting the previous prose verbatim is the
+       copy-forward this column exists to expose." That is the **normal** regime
+       of a session close, not an edge case of `roadmap_service`;
+     - **the trigger only sees UPDATE.** `create` and the INSERT branch of
+       `get_or_create` (`pg_project_context.py:51-71`, `:273-275`) write
+       `current_focus` at row birth: no trigger, `focus_revision = 0` by column
+       default (measured).
+     Correct statement: **two sites set the revision themselves, whether the text
+     changed or not; four receive the trigger's bump on UPDATE when the text
+     changes; the two INSERT paths have neither a trigger nor a revision to
+     increment.** Direct consequence for item 3 (the shared path) and for the
+     database guard in item 2.
+   - **What the upsert actually does**: it rewrites `current_focus` — **including
+     to NULL when the argument is omitted**, verified — **with no CAS**. This is a
+     real overwrite channel, and it is the core of B6. But it **does bump** (032
+     trigger) and it **does date** (`focus_updated_at =
+     focus_stamp(excluded.current_focus)`, under `IS DISTINCT FROM`, so a focus
+     that moves to NULL counts). It is not silent: it is **unrecoverable**, for
+     lack of history. That, and only that, is what M-D fixes.
+   - **The cited figure was misread.** "10 of the 59 `project_contexts` have
+     `current_focus IS NULL` — the overwrite channel is already biting": the
+     number is exact (re-measured: `10/59`), the conclusion is not. The **ten**
+     rows are at `focus_revision = 0` **and** `focus_updated_at IS NULL` (`perso`,
+     `red-backup`, `red-cli`, `red-shrik:agent`, `red-daemon`, `red-llm`,
+     `red-tsdb`, `red-lab:developer{,-gemini,-opus}`): focus **never written**, not
+     erased — and an overwrite since 040 would have dated the column. **Zero
+     production context bears the signature of an erasure** (NULL with a revision
+     > 0). The channel exists in the code; production shows no evidence it has
+     bitten. This plan therefore has no figure to add to Q13's file, and says so.
+2. **Migration M-D — `project_focus_history`** (closes B6 for recoverability):
+   - `project_key VARCHAR(50) NOT NULL` (no FK, like the knowledge tables — dropping
+     a context must not take the audit trail down with it), `focus_revision BIGINT
+     NOT NULL`, **`focus TEXT NULL`** — an erased focus (NULL) is precisely the
+     destructive overwrite the audit trail must record; and a `NOT NULL` would abort
+     `alembic upgrade` in production at seed time (`NotNullViolation` on the 10
+     measured NULL focuses), a defect invisible in CI whose database is empty at
+     seed time —, `actor VARCHAR(64) NULL` (R4 — corrected from the proposals'
+     VARCHAR(128)), `source VARCHAR(20) NOT NULL` CHECK ∈ {session_end, focus_tool,
+     context_upsert, generic_update, maintenance_scrub, migration_seed} — the enum
+     covers the real writers —, `created_at`.
+   - PK `(project_key, focus_revision)` — the generalized CAS's monotonicity makes
+     it natural; `ON CONFLICT DO NOTHING` inserts make replays idempotent.
+   - **Append-only enforced by trigger** (UPDATE/DELETE refused — panel graft, the
+     audit trail becomes a constraint, not a convention).
+   - **An earlier version's "guard trigger" is REMOVED.** It was meant to "refuse
+     an UPDATE where `current_focus IS DISTINCT FROM` the old value without
+     `focus_revision = old + 1`": that is **verbatim** what 032 does, by setting
+     the value instead of refusing it. Worse, it would coexist poorly — PostgreSQL
+     fires BEFORE ROW triggers in the **alphabetical order** of their name, which
+     the plan did not fix. Named before
+     `project_contexts_focus_revision_trigger` (e.g. `…_focus_history_guard`), it
+     would see `NEW.focus_revision` not yet incremented and **reject every focus
+     write from the four writers that write via UPDATE without setting the
+     revision themselves** (`update`, `update_focus`, the upsert, the scrub —
+     `create` writes via INSERT and escapes both the guard and the trigger) —
+     `brain_set_project_context` fail-closed in production on every focus change.
+     Named after, it is trivially satisfied: dead code.
+   - **What remains, and is the real deliverable in the database**: a **deferred
+     constraint trigger** (`AFTER UPDATE OF current_focus ON project_contexts …
+     DEFERRABLE INITIALLY DEFERRED`) that, at end of transaction, requires the
+     history row for `NEW.focus_revision`. It has no twin, depends on no
+     alphabetical ordering, and catches any writer that bypasses the shared path.
+     **The `OF current_focus` clause is mandatory**: without it, it would fire on
+     every UPDATE of `project_contexts`, including the plan-index repair's
+     (`plan_index_repair_store.py:294-308` and `:560-584`, which only write
+     `plan_scan_paths`/`updated_at`) and would make them fail — exactly the review
+     the pin's message requires (R1.4).
+   - **What this trigger CANNOT see — gap named on 2026-08-19:** INSERTs.
+     `pg_project_context.create` and the INSERT branch of `get_or_create` persist a
+     `current_focus` at row birth (`focus_revision = 0`, column default). For every
+     `project_context` created **after** M-D, revision 0 is thus a written focus
+     that no database guard forces to be historicized — the seed only covers the
+     59 contexts existing at upgrade time. **Three routes, to be settled when M-D
+     is written, not discovered in production**: (a) `AFTER INSERT OR UPDATE OF
+     current_focus` — the only one that holds N1 in the database, at the cost of a
+     history row on every project creation, NULL focus included; (b) stay on
+     UPDATE and let revision 0 be carried solely by the shared application path,
+     writing down that the hard guard only starts at revision 1; (c) forbid
+     `create`/`get_or_create` from writing a non-NULL focus at birth. **Not
+     choosing is choosing (b) without saying so**, and shipping a false N1 for
+     every new project.
+   - **Created DISABLED, activated after the MCP restart** (R1.3): between the
+     `upgrade` and the restart, the live process still runs the pre-M-D code,
+     which writes no history row; the trigger would abort at COMMIT **every
+     `brain_session_end` with `focus_outcome=applied`**, fail-closed, session left
+     open, with no practicable killswitch or downgrade.
+   - **Seed at upgrade**: one row per `project_context` with the current focus —
+     **NULL included** — and its revision, `source='migration_seed'`: the anchor
+     covers all 59 contexts, the enum is no longer orphaned.
+   - **Where to test the seed — an earlier version's promise did not hold up.** It
+     announced "tested against a NON-empty database containing NULL focuses
+     (dedicated integration test)" citing `c60d023d` §"WHERE TO TEST." That section
+     says the opposite of what it was made to say: it concludes that proving such
+     an upgrade "requires `tests/integration` **AND A SECOND DATABASE** —
+     `tests/integration/conftest.py` runs `alembic upgrade head` ONCE per session
+     with the default env" (verified: `_run_alembic_upgrade` is a subprocess called
+     by a `scope="session", autouse=True` fixture). The plan therefore promised a
+     test without supplying either the second database or the fixture, and closed
+     off the only in-session route (downgrade then re-upgrade) by making that
+     downgrade fail-closed. **Two routes, to be chosen explicitly when M-D is
+     written**: (a) refactor the seed into a **pure planner** (a function that
+     returns the rows to insert from a set of contexts), unit-testable including
+     on NULL focuses — the route the ticket recommends; or (b) ship the
+     second-integration-database fixture, which does not exist and is a project of
+     its own.
+   - Downgrade: **fail-closed if rows other than the seed exist** — but **with a
+     named opt-in**, not a destructive purge. An earlier version wrote
+     "unconditionally fail-closed … an Alembic downgrade has no confirmation
+     parameter." **That is false, and this repo implements the opposite** in the
+     migration this plan cites three lines above as a template:
      `alembic/versions/039_project_context_timestamp_cas.py:17,337-339` —
      `_DOWNGRADE_OPT_IN = "allow_project_context_trigger_downgrade"`,
      `context.get_x_argument(as_dictionary=True)`, `raise RuntimeError(
-     "project_context_trigger_downgrade_opt_in_required")` si l'argument n'est pas
-     `"yes"`. Soit littéralement
-     `alembic -x allow_focus_history_downgrade=yes downgrade …`. La correction du
-     premier passage avait remplacé une promesse floue par une impossibilité fausse, et
-     le coût était réel : elle concluait qu'il faut **détruire l'audit** pour pouvoir
-     revenir en arrière. M-D reprend le mécanisme de la 039 : l'audit reste, le geste
-     est nommé.
-3. **Écriture transactionnelle par UN chemin partagé, aux SIX sites** (même doctrine
-   de consolidation que le prédicat colon en Phase 2) : une fonction unique insère la
-   ligne d'historique dans la même transaction que CHAQUE écriture persistée de
-   `current_focus` — les six sites plus le scrub y passent. **Elle n'ajoute aucun bump
-   de son cru** et lit la révision **après** l'écriture (`RETURNING focus_revision`) pour
-   historiser sur cette valeur. **Motif corrigé le 2026-08-19** : la version antérieure
-   justifiait par « la 032 le fait déjà, et un second incrément applicatif poserait
-   `OLD+2` ». Le `OLD+2` n'existe pas — le trigger **assigne**
-   (`NEW.focus_revision := OLD.focus_revision + 1`), il n'ajoute pas : la valeur du
-   statement est écrasée, pas cumulée. **La preuve est la source plpgsql, et elle
-   seule** (`alembic/versions/032_brain_sessions.py:19-34` : une affectation, pas un
-   cumul). *Corroboration retirée le 2026-08-19* : « la production avance d'un cran
-   (CAS 209→210), pas de deux » était mal attribuée — ce CAS est un `brain_session_end`
-   (DOSSIER §B6, deux sessions parallèles sur le snapshot rev 209), pas une écriture de
-   `roadmap_service`, et rien ne dit que le TEXTE du focus ait changé, seule condition
-   qui fasse parler le trigger. **Donc les deux bumps explicites doivent
-   RESTER** : les retirer casserait `end` (trigger muet sur texte inchangé, CHECK 037 qui
-   exige quand même `expected + 1`) et le jeton CAS d'un lot blockers-only. Le
-   `RETURNING` est la bonne règle parce qu'il est vrai dans les deux régimes — pas parce
-   qu'un double incrément menacerait. Un échec d'insert fait échouer l'écriture de focus
-   entière — fail-closed assumé et testé (« un audit qui peut se taire ne prouve
-   rien »). Un CAS `conflict` n'écrit pas de ligne. **Réserve de clé à instruire — re-dimensionnée le
-   2026-08-19** : la version antérieure ne l'attribuait qu'à
-   `brain_update_project_focus` (jeton CAS d'un lot blockers-only) et la traitait comme
-   un cas de bord. **`brain_session_end` produit le même effet, et c'est son régime
-   normal** : le CAS pose `expected + 1` sans comparer le texte, donc toute session qui
-   referme en recopiant la prose précédente ajoute une ligne d'historique de focus
-   identique. La PK `(project_key, focus_revision)` reste unique — ce n'est pas une
-   collision —, mais le volume de doublons de contenu est celui des fins de session, pas
-   celui d'un lot blockers-only occasionnel. À rendre lisible dans le tool de lecture
-   (marquer « focus inchangé » plutôt que filtrer), et à prendre en compte dans le
-   dimensionnement de `brain_focus_history`.
-   **Changement de comportement induit, soumis (Q13, veto sans coût avant M-D)** :
-   `brain_set_project_context` avec `current_focus` **omis cesse d'effacer** le focus
-   (omis ≠ effacement explicite) ; un effacement explicite reste possible, versionné et
-   audité. **À trancher sur le raisonnement, pas sur un chiffre** — la production n'en
-   montre aucune victime (point 1).
-4. **Tool lecture seule `brain_focus_history(project_key, limit≤50, offset)`** :
+     "project_context_trigger_downgrade_opt_in_required")` if the argument is not
+     `"yes"`. That is, literally,
+     `alembic -x allow_focus_history_downgrade=yes downgrade …`. The first pass's
+     correction had replaced a vague promise with a false impossibility, and the
+     cost was real: it concluded the audit trail must be **destroyed** to allow
+     rolling back. M-D reuses 039's mechanism: the audit trail stays, the gesture
+     is named.
+3. **Transactional write through ONE shared path, at the SIX sites** (same
+   consolidation doctrine as the colon predicate in Phase 2): a single function
+   inserts the history row within the same transaction as EACH persisted write of
+   `current_focus` — the six sites plus the scrub go through it. **It adds no
+   bump of its own** and reads the revision **after** the write
+   (`RETURNING focus_revision`) to historicize on that value. **Reason corrected
+   on 2026-08-19**: the earlier version justified this by "032 already does it,
+   and a second application-side increment would set `OLD+2`." `OLD+2` does not
+   exist — the trigger **assigns**
+   (`NEW.focus_revision := OLD.focus_revision + 1`), it does not add: the
+   statement's value is overwritten, not accumulated. **The proof is the plpgsql
+   source, and it alone** (`alembic/versions/032_brain_sessions.py:19-34`: an
+   assignment, not an accumulation). *Corroboration withdrawn on 2026-08-19*:
+   "production advances by one notch (CAS 209→210), not two" was misattributed —
+   this CAS is a `brain_session_end` (DOSSIER §B6, two parallel sessions on the
+   rev-209 snapshot), not a `roadmap_service` write, and nothing says the focus
+   TEXT changed, the only condition that makes the trigger speak. **So the two
+   explicit bumps must STAY**: removing them would break `end` (trigger silent on
+   unchanged text, 037 CHECK still requiring `expected + 1`) and the CAS token of
+   a blockers-only batch. `RETURNING` is the right rule because it holds true
+   under both regimes — not because a double increment would threaten anything.
+   An insert failure fails the entire focus write — fail-closed by design and
+   tested ("an audit that can stay silent proves nothing"). A `conflict` CAS
+   writes no row. **Key reservation to be briefed — resized on 2026-08-19**: the
+   earlier version attributed it only to `brain_update_project_focus` (CAS token
+   of a blockers-only batch) and treated it as an edge case.
+   **`brain_session_end` produces the same effect, and it is its normal regime**:
+   the CAS sets `expected + 1` without comparing the text, so any session that
+   closes by re-posting the previous prose adds an identical focus-history row.
+   The PK `(project_key, focus_revision)` stays unique — this is not a collision —,
+   but the volume of content duplicates is that of session closes, not that of an
+   occasional blockers-only batch. To be made readable in the reading tool
+   (marking "focus unchanged" rather than filtering), and to be accounted for
+   when sizing `brain_focus_history`.
+   **Induced behavior change, submitted (Q13, a free veto before M-D)**:
+   `brain_set_project_context` with `current_focus` **omitted stops erasing** the
+   focus (omitted ≠ explicit erasure); an explicit erasure remains possible,
+   versioned and audited. **To be settled on reasoning, not on a figure** —
+   production shows no victim of it (item 1).
+4. **Read-only tool `brain_focus_history(project_key, limit≤50, offset)`**:
    revision, focus, actor, source, created_at.
-5. **`focus_diff` dans le résultat de `end`** (greffe C) : caractères ajoutés/retirés
-   vs le focus de base du CAS — la visibilité avant tout garde. Le garde dur de
-   rétrécissement (seuil ~60 % proposé par C) n'est **pas** livré : seuil arbitraire
-   disqualifié par deux juges ; il reste la question ouverte n° 7.
-6. **Runbook de récupération d'un focus écrasé** (procédure en étapes) + un drill
-   exécuté une fois.
+5. **`focus_diff` in the `end` result** (graft C): characters added/removed versus
+   the CAS's base focus — visibility before any guard. The hard shrink guard
+   (~60% threshold proposed by C) is **not** shipped: an arbitrary threshold
+   disqualified by two judges; it remains open question #7.
+6. **Runbook for recovering an overwritten focus** (a step-by-step procedure) + a
+   drill run once.
 
-### Critères de sortie (mesurables)
-- **Toute mutation persistée de `current_focus` laisse sa ligne d'historique** —
-  vérifié par le **constraint trigger différé** (test : un UPDATE direct de
-  `current_focus` sans ligne d'historique **avorte au COMMIT**, pas à l'instruction) et
-  par un canary sur CHAQUE écrivain, dont `brain_set_project_context` (l'upsert
-  historise, y compris un effacement explicite). **Le bump de `focus_revision` n'est
-  PAS un critère de sortie de cette phase** : il est acquis depuis la 032 et vérifié en
-  production ; l'ancrer ici reviendrait à tester Postgres.
-  La jointure `focus_revision` ↔ historique n'est pas non plus le critère : elle serait
-  verte à 100 % sur une base qui n'a jamais reçu d'écriture après M-D. Le critère
-  honnête est le trigger différé, plus le canary par écrivain.
-  **Le canary par écrivain inclut les deux chemins d'INSERT** (`create`, branche INSERT
-  de `get_or_create`) : ils échappent au trigger différé (§5.2), donc ils sont le seul
-  endroit où le critère mesure le chemin applicatif **seul**. Un projet neuf créé avec un
-  focus non NULL doit produire sa ligne de révision 0 — ou, si la voie (b) est retenue,
-  le critère l'exclut explicitement au lieu de l'oublier.
-- Un conflit CAS n'écrit pas de ligne (test) ; le replay d'un `end` persisté n'écrit
-  pas de seconde ligne (test) ; UPDATE/DELETE refusés par trigger (test) ; **le seed est
-  exercé sur des contextes à focus NULL** — par le planificateur pur en unitaire, ou par
-  la fixture de seconde base si elle est livrée (§5.2, « où tester »).
-- `end` rend un `focus_diff` correct sur canary.
-- Drill de récupération exécuté et documenté.
-- **Les canaries par écrivain consomment la fenêtre de rollback de M-D** (chacun écrit
-  une ligne hors seed) : sessions et projets jetables, purge documentée, downgrade à
-  blanc sur staging avant de déclarer la phase sortie — **ou** usage de l'opt-in nommé
-  `-x allow_focus_history_downgrade=yes`, qui rend la purge inutile.
-- Pin : M-D appliquée, mesurée, pin bumpé même commit, **revue du plan-index repair
-  écrite** (R1.4) et **`ops/recovery/` régénérée — les DEUX assets v4** (R1.5 : M-D
-  ajoute un trigger sur `project_contexts`, table de la liste fermée
-  `expected_runtime_user_triggers` ; `brain-v42-v4-pgrestore.sql` porte la même liste et
-  la parité des CTE est testée, `test_recovery_contract_v4_pgrestore.py:29-33`).
+### Exit criteria (measurable)
+- **Every persisted mutation of `current_focus` leaves its history row** —
+  verified by the **deferred constraint trigger** (test: a direct UPDATE of
+  `current_focus` with no history row **aborts at COMMIT**, not at the
+  statement) and by a canary on EACH writer, including
+  `brain_set_project_context` (the upsert historicizes, including an explicit
+  erasure). **The `focus_revision` bump is NOT an exit criterion of this phase**:
+  it has held since 032 and is verified in production; anchoring it here would
+  amount to testing Postgres.
+  The `focus_revision` ↔ history join is not the criterion either: it would be
+  100% green on a database that never received a write after M-D. The honest
+  criterion is the deferred trigger, plus the per-writer canary.
+  **The per-writer canary includes both INSERT paths** (`create`, `get_or_create`'s
+  INSERT branch): they escape the deferred trigger (§5.2), so they are the only
+  place where the criterion measures the application path **alone**. A new
+  project created with a non-NULL focus must produce its revision-0 row — or, if
+  route (b) is chosen, the criterion explicitly excludes it instead of forgetting
+  it.
+- A CAS conflict writes no row (test); replaying a persisted `end` writes no
+  second row (test); UPDATE/DELETE refused by the trigger (test); **the seed is
+  exercised on contexts with a NULL focus** — via the pure planner in a unit
+  test, or via the second-database fixture if it ships (§5.2, "where to test").
+- `end` returns a correct `focus_diff` on canary.
+- Recovery drill run and documented.
+- **The per-writer canaries consume M-D's rollback window** (each writes a row
+  outside the seed): throwaway sessions and projects, documented purge, blank
+  downgrade on staging before declaring the phase exited — **or** use of the
+  named opt-in `-x allow_focus_history_downgrade=yes`, which makes the purge
+  unnecessary.
+- Pin: M-D applied, measured, pin bumped in the same commit, **plan-index repair
+  review written** (R1.4) and **`ops/recovery/` regenerated — BOTH v4 assets**
+  (R1.5: M-D adds a trigger on `project_contexts`, a table on the closed
+  `expected_runtime_user_triggers` list; `brain-v42-v4-pgrestore.sql` carries the
+  same list and CTE parity is tested,
+  `test_recovery_contract_v4_pgrestore.py:29-33`).
 
 ### Rollback
-Downgrade M-D fail-closed hors seed, **avec opt-in nommé** (gabarit 039,
-`-x allow_focus_history_downgrade=yes`) ; le chemin d'écriture partagé et ses six sites
-livrés dans le même commit, revert atomique. Killswitch : non requis pour l'écriture
-d'audit, purement additive dans des transactions existantes (R3 documente l'exception) —
-**mais le constraint trigger, lui, est livré DÉSACTIVÉ et activé par geste opérateur
-après le redémarrage MCP** (§5.2), ce qui lui tient lieu d'interrupteur pendant la
-fenêtre de bascule. **Interrupteur payant, pas gratuit** (2026-08-19) : tant qu'il est
-éteint, l'attestation `ops/recovery/` est rouge (`tgenabled = 'O'` exigé, R1.5). Le
-réutiliser en urgence est légitime ; le faire sans le dater ne l'est pas.
+M-D downgrade fail-closed outside the seed, **with a named opt-in** (039 template,
+`-x allow_focus_history_downgrade=yes`); the shared write path and its six sites
+ship in the same commit, atomic revert. Killswitch: not required for the audit
+write, purely additive within existing transactions (R3 documents the exception) —
+**but the constraint trigger itself ships DISABLED and is activated by an
+operator gesture after the MCP restart** (§5.2), which serves as its switch
+during the cutover window. **A switch that costs something, not a free one**
+(2026-08-19): as long as it is off, the `ops/recovery/` attestation is red
+(`tgenabled = 'O'` required, R1.5). Reusing it in an emergency is legitimate;
+doing so without dating it is not.
 
 ---
 
-## 6. Phase 4 — Armements et lot gated (gestes opérateur, dans cet ordre)
+## 6. Phase 4 — Arming and gated batch (operator gestures, in this order)
 
-> **ORDRE MODIFIÉ PAR LE CADRAGE DU 2026-08-19 — lire ceci avant le reste de la
-> section.** L'axe de priorité choisi par l'opérateur est la **traçabilité du savoir**
-> (B3, B4, B5 en tête). Or **4.4 fermait la douleur n° 1 en avant-dernier**, derrière Q6
-> *plus* un soak de 14 jours. Nouvel ordre global : **P0 → P1 → P2 → 4.4 → P3**, puis
-> 4.1, 4.2-3, 4.5 et 4.6 dans l'ordre ci-dessous.
+> **ORDER MODIFIED BY THE 2026-08-19 FRAMING — read this before the rest of this
+> section.** The priority axis chosen by the operator is **knowledge
+> traceability** (B3, B4, B5 first). Yet **4.4 closed pain #1 second-to-last**,
+> behind Q6 *plus* a 14-day soak. New global order: **P0 → P1 → P2 → 4.4 → P3**,
+> then 4.1, 4.2-3, 4.5 and 4.6 in the order below.
 >
-> Deux dépendances qui survivent au reséquencement et qu'on ne peut pas contourner :
-> **(i)** 4.4 dépend durement de la Phase 1 — l'écrivain staged y prend le résolveur de
-> projet par tool et `started_by_actor` (§3.6) ; remonter 4.4 avant P1 la priverait de
-> son `project_key`. **(ii)** 4.1 arme D5, qui devient **portant** pour la nature
-> `agent` (Q12 = (a), ADR §0.2) : sous cette réponse, 4.1 n'est plus un armement de
-> confort et son rang mérite d'être réexaminé — **ce plan ne l'a pas fait**, et la
-> section 4.1 ci-dessous est encore écrite comme si D5 était optionnel.
+> Two dependencies survive the resequencing and cannot be worked around:
+> **(i)** 4.4 depends hard on Phase 1 — the staged writer takes the per-tool
+> project resolver and `started_by_actor` from there (§3.6); moving 4.4 ahead of
+> P1 would deprive it of its `project_key`. **(ii)** 4.1 arms D5, which becomes
+> **load-bearing** for the `agent` nature (Q12 = (a), ADR §0.2): under this
+> answer, 4.1 is no longer a comfort-level arming and its rank deserves
+> re-examination — **this plan has not done so**, and section 4.1 below is still
+> written as if D5 were optional.
 >
-> **Le corps des sous-sections n'a PAS été renuméroté** : les titres « 4.1 » à « 4.6 »
-> gardent leurs noms d'origine pour que les renvois des trois documents restent
-> valides. Seul l'ordre d'exécution change.
+> **The body of the subsections has NOT been renumbered**: the titles "4.1"
+> through "4.6" keep their original names so cross-references across the three
+> documents remain valid. Only the execution order changes.
 
-Rien ici n'est livré armé par ce plan. La phase est une **séquence de décisions
-d'opérateur**, chacune avec mesure avant/après. Un armement préexiste, hors de ce
-plan : le sweep DRY, armé par l'opérateur le 2026-08-18 (mesuré — voir §0 et 4.2).
+Nothing here ships armed by this plan. The phase is a **sequence of operator
+decisions**, each with a before/after measurement. One arming pre-exists, outside
+this plan: the DRY sweep, armed by the operator on 2026-08-18 (measured — see §0
+and 4.2).
 
-**Correction — « réversible par un fichier (drop-in/env) » était faux pour la moitié de
-cette phase**, et un opérateur qui lisait cette promesse avant d'armer 4.4 découvrait un
-rendez-vous de production. Trois gestes ne sont **pas** des fichiers :
-- **4.2** change le prédicat SQL du sweep (`GREATEST(...)`) — c'est un déploiement de
-  code, et il n'apparaît dans le contenu livré d'aucune des phases 1 à 3 ; il est donc
-  **rattaché explicitement à 4.2** et suit R2 (Red/Green) plus un redémarrage MCP ;
-- **4.4** livre **M-E**, tête Alembic, downgrade fail-closed sur les `staged` non
-  résolus ;
-- **4.5** livre **M-F**, tête Alembic, garde non-vide.
-Les trois sont dans le couloir du pin (§8) et suivent R1 intégralement. Ce qui reste
-réversible en un fichier : 4.1, l'armement WET de 4.3, les flags de 4.4 et 4.6 **une
-fois leur tête posée**.
+**Correction — "reversible via a file (drop-in/env)" was false for half of this
+phase**, and an operator reading that promise before arming 4.4 would discover a
+production rendezvous. Three gestures are **not** files:
+- **4.2** changes the sweep's SQL predicate (`GREATEST(...)`) — this is a code
+  deployment, and it appears in no phase-1-through-3 delivered content; it is
+  therefore **explicitly attached to 4.2** and follows R2 (Red/Green) plus an MCP
+  restart;
+- **4.4** ships **M-E**, an Alembic head, downgrade fail-closed on unresolved
+  `staged` rows;
+- **4.5** ships **M-F**, an Alembic head, a non-empty guard.
+All three sit in the pin's lane (§8) and fully follow R1. What remains reversible
+in one file: 4.1, the WET arming of 4.3, the flags of 4.4 and 4.6 **once their
+head has landed**.
 
-### 4.1 — Armer l'observation (`BRAIN_SESSION_OBSERVED_ACTIVITY_ENABLED=true`) — bloqué par Q1
-- Armement par drop-in systemd documenté en runbook. Soak ≥ 14 j.
-- **Mesures de sortie, publiées — l'ordre a été corrigé : le critère annoncé en premier
-  ne pouvait pas échouer.** Une version antérieure mettait en tête « **zéro faux-mort
-  potentiel parmi les sessions OBSERVÉES** — aucune session avec `last_observed_at`
-  récent ne serait candidate au sweep », et en reléguait la seule mesure informative en
-  second. Or avec le prédicat de 4.2
-  (`GREATEST(last_heartbeat_at, COALESCE(last_observed_at, last_heartbeat_at)) < cutoff`),
-  `last_observed_at` récent ⇒ `GREATEST(...) > cutoff` ⇒ non-candidate, **par
-  construction**, quels que soient les 14 jours de soak. C'est ce que l'ADR §4 appelle
-  une « impossibilité de prédicat » : une propriété du design, pas un résultat de
-  mesure — et c'est la même classe de défaut que le §5 avait su nommer pour B6
-  (« critère trivialement satisfiable »), sur le critère qui déverrouille l'armement WET.
-  Ordre corrigé :
-  1. **compte de sessions ouvertes sous ambiguïté ET candidates au sweep** — le
-     faux-mort résiduel, celui que l'observation ne couvre PAS : sous ambiguïté (≥2
-     sessions ouvertes du même porteur, régime fantôme B1, règle R5), AUCUNE session du
-     couple n'est observée, y compris la vivante activement travaillée ; idem stdio sans
-     header (`skipped{no_actor}`, B8). **C'est ce nombre qui peut échouer, donc c'est
-     lui le critère** ; et il ne part pas d'une page blanche — son **plafond** est déjà
-     mesuré, par projet (`7ffe0e8a` au 2026-08-16 ; re-mesuré le 2026-08-19 : 24 des
-     29 sessions `open` dans un projet qui en porte au moins deux, cf. §2 baseline),
-     ce qui donne l'ordre de grandeur à comparer une fois la ventilation par acteur
-     disponible ;
-  2. ratio `skipped{ambiguous}` et `skipped{no_project}` (si hauts : retour à
-     l'opérateur — question n° 1 corollaire, et couverture du résolveur par tool —
-     plutôt qu'élargir en silence) ;
-  3. ratio `observed_activity_written/skipped`, comparé à la population calculée sans
-     écriture en Phase 0 : **c'est la vérification que l'émetteur observe bien ce que la
-     baseline avait prédit**, la seule chose que le soak apprend vraiment ;
-  4. compte de sessions `observed_only` (observation récente, ni heartbeat ni checkpoint
-     depuis 7 j) — la borne mesurée du résidu « session oubliée sous un acteur actif »
-     relevé par le panel, et `list` les expose pour triage humain ;
-  5. la propriété « zéro session observée candidate au sweep » est **vérifiée comme
-     invariant en test**, pas publiée comme résultat de soak.
+### 4.1 — Arm observation (`BRAIN_SESSION_OBSERVED_ACTIVITY_ENABLED=true`) — blocked by Q1
+- Arming via a documented systemd drop-in, per the runbook. Soak ≥ 14 d.
+- **Exit measurements, published — the order has been corrected: the criterion
+  announced first could not fail.** An earlier version put first "**zero
+  potential false-dead among OBSERVED sessions** — no session with a recent
+  `last_observed_at` would be a sweep candidate," and relegated the only
+  informative measurement to second place. But with 4.2's predicate
+  (`GREATEST(last_heartbeat_at, COALESCE(last_observed_at, last_heartbeat_at)) <
+  cutoff`), a recent `last_observed_at` ⇒ `GREATEST(...) > cutoff` ⇒
+  non-candidate, **by construction**, regardless of the 14-day soak. This is what
+  ADR §4 calls a "predicate impossibility": a design property, not a measurement
+  result — and it is the same class of defect §5 had already named for B6 ("a
+  trivially satisfiable criterion"), on the very criterion that unlocks the WET
+  arming. Corrected order:
+  1. **count of open sessions under ambiguity AND candidate for the sweep** — the
+     residual false-dead, the one observation does NOT cover: under ambiguity
+     (≥2 open sessions for the same carrier, B1 ghost regime, rule R5), NO session
+     of the pair is observed, including the one actively being worked on; same for
+     stdio with no header (`skipped{no_actor}`, B8). **This is the number that can
+     fail, so this is the criterion**; and it does not start from a blank page —
+     its **ceiling** is already measured, by project (`7ffe0e8a` on 2026-08-16;
+     re-measured on 2026-08-19: 24 of the 29 `open` sessions in a project that
+     carries at least two, cf. §2 baseline), which gives the order of magnitude to
+     compare once the per-actor breakdown is available;
+  2. `skipped{ambiguous}` and `skipped{no_project}` ratios (if high: back to the
+     operator — corollary question #1, and per-tool resolver coverage — rather
+     than widening silently);
+  3. `observed_activity_written/skipped` ratio, compared against the population
+     computed without writing in Phase 0: **this is the verification that the
+     emitter observes what the baseline had predicted**, the only thing the soak
+     really teaches;
+  4. count of `observed_only` sessions (recent observation, neither heartbeat nor
+     checkpoint for 7 d) — the measured bound of the "session forgotten under an
+     active actor" residue the panel raised, and `list` exposes them for human
+     triage;
+  5. the "zero observed session candidate for the sweep" property is **verified
+     as a test invariant**, not published as a soak result.
 
-### 4.2 — Sweep dry : prédicat enrichi (le DRY est DÉJÀ armé) — bloqué par Q5
-- **État mesuré le 2026-08-18** : le dry est armé depuis le 2026-08-18 par décision
-  opérateur (drop-in `killswitches.conf`, sur le prédicat heartbeat-seul actuel —
-  `pg_brain_session.py`, vérifié). Cette étape n'arme donc pas le dry : elle
-  **enrichit le prédicat** que le dry déjà armé évalue. Une version antérieure la
-  présentait comme une bascule future « bloqué par Q5 » — recopie d'un état du
-  2026-08-16, corrigée ; ce qui reste bloqué par Q5, c'est l'enrichissement du
-  prédicat et la suite (4.3).
-- Prédicat enrichi, **toujours UN statement** (invariant C12, test d'ancrage
-  reconduit) :
+### 4.2 — Sweep dry: enriched predicate (DRY is ALREADY armed) — blocked by Q5
+- **State measured on 2026-08-18**: the dry has been armed since 2026-08-18 by
+  operator decision (drop-in `killswitches.conf`, on the current heartbeat-only
+  predicate — `pg_brain_session.py`, verified). This step therefore does not arm
+  the dry: it **enriches the predicate** the already-armed dry evaluates. An
+  earlier version presented it as a future switch "blocked by Q5" — a
+  copy-forward of a 2026-08-16 state, corrected; what remains blocked by Q5 is
+  the predicate enrichment and the follow-on (4.3).
+- Enriched predicate, **still ONE statement** (invariant C12, anchor test
+  carried forward):
 
   ```sql
   ... WHERE status = 'open'
@@ -1268,355 +1311,364 @@ fois leur tête posée**.
                      COALESCE(last_observed_at, last_heartbeat_at)) < :cutoff
   ```
 
-  Le checkpoint (Phase 2) rafraîchissant `last_heartbeat_at`, ce prédicat encode **les
-  trois signaux — heartbeat, checkpoint, observation — dans deux colonnes et un seul
-  statement**, réévalué sous verrou de ligne. **Mais la règle « les trois signaux,
-  pas un seul » n'est PAS une propriété intrinsèque du prédicat** : elle dépend de
-  deux armements indépendamment refusables. Si Q1=non ou observation non armée (4.1),
-  et/ou Q3=non (pas de checkpoint), `GREATEST(...)` dégénère en heartbeat seul — le
-  mode que l'ADR §3.3 écarte parce que `2bd14b24` a condamné ce signal. La dépendance
-  est déclarée ici et verrouillée en 4.3. Changement monotone sûr : ne peut
-  qu'abandonner *moins* de sessions.
-- ≥ 7 j de listes de candidats revues par l'opérateur.
+  Since the checkpoint (Phase 2) refreshes `last_heartbeat_at`, this predicate
+  encodes **the three signals — heartbeat, checkpoint, observation — into two
+  columns and one single statement**, re-evaluated under a row lock. **But the
+  rule "the three signals, not just one" is NOT an intrinsic property of the
+  predicate**: it depends on two independently refusable armings. If Q1=no or
+  observation is not armed (4.1), and/or Q3=no (no checkpoint), `GREATEST(...)`
+  degenerates into heartbeat alone — the mode ADR §3.3 rules out because
+  `2bd14b24` condemned that signal. The dependency is declared here and locked
+  down in 4.3. Safe monotone change: it can only abandon *fewer* sessions.
+- ≥ 7 d of candidate lists reviewed by the operator.
 
-### 4.3 — Sweep wet (`DRY_RUN=false`) — précondition trois-signaux DURE
-- **Précondition d'armement, fail-closed** : le WET n'est armable que si les trois
-  signaux existent réellement — **Q1=oui ET 4.1 armé + soaké, ET Q3=oui ET checkpoint
-  livré**. À défaut, le prédicat dégénère en heartbeat seul (la configuration
-  condamnée par `2bd14b24`) : armer quand même redevient une **décision opérateur
-  nouvelle, prise en nommant explicitement le mode dégradé heartbeat-seul** — jamais
-  un enchaînement par défaut de 4.2. Q5 seul ne suffit pas ; une version antérieure
-  laissait ce chemin dégradé armable sans le déclarer.
-- Critères : le stock de fantômes > 7 j (**21 balayables re-mesurés le 2026-08-19**,
-  pour 29 sessions `open` sur 467 lignes — contre 18 le 2026-08-18 ; daté, périssable,
-  à re-mesurer avant chaque décision d'armement) tend vers zéro sans ménage manuel ; **zéro abandon d'une session à
-  activité observée ou checkpoint récent** — et le résidu nommé en 4.1 (sessions sous
-  ambiguïté ou sans acteur, jamais observées) est publié avec chaque liste
-  d'abandons ; le compte d'abandons manuels mensuels tend vers zéro (mesure de
-  fermeture du régime B1).
+### 4.3 — Sweep wet (`DRY_RUN=false`) — HARD three-signal precondition
+- **Arming precondition, fail-closed**: WET can only be armed if the three
+  signals genuinely exist — **Q1=yes AND 4.1 armed + soaked, AND Q3=yes AND the
+  checkpoint shipped**. Failing that, the predicate degenerates into heartbeat
+  alone (the configuration `2bd14b24` condemns): arming anyway becomes a **new
+  operator decision, taken by explicitly naming the degraded heartbeat-only
+  mode** — never a default follow-through from 4.2. Q5 alone is not enough; an
+  earlier version left this degraded path armable without declaring it.
+- Criteria: the >7-day ghost stock (**21 sweepable, re-measured on 2026-08-19**,
+  out of 29 `open` sessions among 467 rows — versus 18 on 2026-08-18; dated,
+  perishable, to be re-measured before every arming decision) trends to zero
+  with no manual cleanup; **zero abandonment of a session with recent observed
+  activity or a recent checkpoint** — and the residue named in 4.1 (sessions
+  under ambiguity or with no actor, never observed) is published with every
+  abandonment list; the monthly manual-abandonment count trends to zero (closing
+  measurement for the B1 regime).
 
-### 4.4 — Capture préparée (migration M-E + `BRAIN_SESSION_STAGED_CAPTURE_ENABLED`) — bloqué par Q6 (amendement de covenant, soumis explicitement)
+### 4.4 — Prepared capture (migration M-E + `BRAIN_SESSION_STAGED_CAPTURE_ENABLED`) — blocked by Q6 (covenant amendment, explicitly submitted)
 
-> **REMONTÉE JUSTE APRÈS LA PHASE 2 par le cadrage du 2026-08-19.** C'est la tranche
-> qui ferme **B3**, promue douleur n° 1 par l'axe « traçabilité du savoir ». Deux
-> conséquences : **Q6 devient un critère de sortie de Phase 0** (elle ne gate plus une
-> tranche de fin de plan), et son **soak de 14 jours démarre bien plus tôt** — c'est le
-> gain principal du reséquencement, puisque ce soak était le chemin critique de la
-> fermeture de B3. Prérequis dur inchangé : la **Phase 1** (résolveur de projet par tool
-> et `started_by_actor`).
-- **Migration M-E** : table `brain_session_staged_captures` — PK
-  `(session_id, knowledge_id)` (un brouillon est une hypothèse : **pas** de PK sur
-  `knowledge_id` seul ; seule la promotion dans `brain_session_artifacts`, PK
-  `knowledge_id`, confère l'exclusivité), `knowledge_type`, `observed_at`,
-  `source='provenance'`, `status` CHECK ∈ {staged, promoted, dismissed}. Downgrade
-  fail-closed si des lignes `staged` non résolues existent.
-> **AMENDÉ le 2026-08-20 — §0bis.2 et §0bis.5 font foi.** La puce ci-dessous décrit la
-> liaison de l'écrivain par **`(project_key, started_by_actor)` avec la règle « exactement
-> un » (R5)**. C'est **PÉRIMÉ** : la clé est `(projet, CONNEXION)`, et sur la connexion
-> **la liaison est EXACTE** — il n'y a plus de règle d'ambiguïté à appliquer. Le §0bis.5
-> le dit lui-même : *« Q6 perd son principal risque d'implémentation avant même d'être
-> armée »*, la population des 24 `open` ambiguës sur 29 cessant de le concerner.
+> **MOVED UP RIGHT AFTER PHASE 2 by the 2026-08-19 framing.** This is the tranche
+> that closes **B3**, promoted to pain #1 by the "knowledge traceability" axis.
+> Two consequences: **Q6 becomes a Phase 0 exit criterion** (it no longer gates
+> an end-of-plan tranche), and its **14-day soak starts much earlier** — this is
+> the main gain from the resequencing, since this soak was the critical path for
+> closing B3. Unchanged hard prerequisite: **Phase 1** (per-tool project
+> resolver and `started_by_actor`).
+- **Migration M-E**: table `brain_session_staged_captures` — PK
+  `(session_id, knowledge_id)` (a draft is a hypothesis: **no** PK on
+  `knowledge_id` alone; only promotion into `brain_session_artifacts`, PK
+  `knowledge_id`, confers exclusivity), `knowledge_type`, `observed_at`,
+  `source='provenance'`, `status` CHECK ∈ {staged, promoted, dismissed}.
+  Downgrade fail-closed if unresolved `staged` rows exist.
+> **AMENDED on 2026-08-20 — §0bis.2 and §0bis.5 are authoritative.** The bullet
+> below describes the writer's linkage via
+> **`(project_key, started_by_actor)` with the "exactly one" rule (R5)**. This is
+> **STALE**: the key is `(project, CONNECTION)`, and on the connection **the
+> linkage is EXACT** — there is no more ambiguity rule to apply. §0bis.5 says so
+> itself: *"Q6 loses its main implementation risk before it is even armed,"* the
+> population of 24 ambiguous `open` sessions out of 29 ceasing to concern it.
 >
-> **CE QUI RESTE VRAI dans la puce, et qui compte** : « jamais `access_log` » (cette table
-> est un tampon purgé, mesuré à 0 ligne) ; la consommation du **résolveur de projet par
-> tool** livré en Phase 1 — sans lui l'écrivain n'a pas de `project_key`, le middleware ne
-> lisant que des en-têtes ; le **plafond 500/session** et son compteur
-> `staged_capture_skipped{overflow}` en métriques process ; et l'enveloppe `1c40c36a`
-> (l'échec de l'observateur ne peut pas casser l'appel qu'il observe).
+> **WHAT STAYS TRUE in the bullet, and what matters**: "never `access_log`" (this
+> table is a purged buffer, measured at 0 rows); consuming the **per-tool project
+> resolver** shipped in Phase 1 — without it the writer has no `project_key`, the
+> middleware only reading headers; the **500/session cap** and its
+> `staged_capture_skipped{overflow}` process-metric counter; and the `1c40c36a`
+> envelope (an observer failure cannot break the call it observes).
 >
-> Voir `SPEC-pool-brouillons.md`, qui propose le second plafond que 500/session ne donne
-> pas : sous l'ouverture automatique, rien ne borne le NOMBRE de sessions.
+> See `SPEC-pool-brouillons.md`, which proposes the second cap that 500/session
+> does not give: under automatic opening, nothing bounds the NUMBER of sessions.
 
-- Écrivain middleware derrière le flag, **liaison `(project_key, started_by_actor)`
-  avec la même règle « exactement un » (R5) — jamais `access_log`** (correctif du
-  panel sur la greffe C ; et cette table est un tampon purgé, cf. §3.5). **Il consomme
-  le résolveur de projet par tool livré en Phase 1** — sans lui il n'a pas de
-  `project_key`, le middleware ne lisant que des en-têtes (§3.6). Plafond 500/session :
-  au-delà on cesse d'observer et le
-  compteur métrique `staged_capture_skipped{overflow}` compte (emplacement du compteur
-  spécifié : métriques process, comme les compteurs d'observation — réponse à la
-  question du panel « où vit le compteur ? »). Enveloppe `1c40c36a` + test de panne
-  injectée, comme en Phase 1.
-- **Promotion uniquement par commande explicite** : `capture` ou
-  `end(capture_staged=true)`, qui repasse par `_validate_captures` **avant**
-  l'évaluation du XOR ledger/raison. Un rejet est journalisé `dismissed`, pas
-  supprimé. Le serveur prépare, l'opérateur signe.
-- Sortie (soak 14 j armé sur brain-v42 seul) : taux d'attribution ≥ 2× la baseline
-  Phase 0 sur le projet pilote ; zéro échec de tool causé par l'écrivain ; ratios
-  staged/promoted/dismissed publiés.
-- **Horizon documenté, jamais livré ici** (greffe A retenue par deux juges) : si la
-  promotion signée plafonne, l'attribution à la création (même transaction que
-  l'artefact, `method='auto_provenance'`) est la fermeture totale de B3 — changement
-  de covenant plein (E3), à trancher par l'opérateur sur le dossier chiffré que
-  produisent 4.1–4.4 (candidats non capturés, `dismissed`, ambiguïtés).
+- Middleware writer behind the flag, **`(project_key, started_by_actor)` linkage
+  with the same "exactly one" rule (R5) — never `access_log`** (panel fix on
+  graft C; and this table is a purged buffer, cf. §3.5). **It consumes the
+  per-tool project resolver shipped in Phase 1** — without it it has no
+  `project_key`, the middleware only reading headers (§3.6). 500/session cap:
+  beyond that we stop observing and the `staged_capture_skipped{overflow}`
+  metric counter counts it (counter location specified: process metrics, like
+  the observation counters — answer to the panel's question "where does the
+  counter live?"). `1c40c36a` envelope + injected-failure test, as in Phase 1.
+- **Promotion only via an explicit command**: `capture` or
+  `end(capture_staged=true)`, which goes back through `_validate_captures`
+  **before** the ledger/reason XOR is evaluated. A rejection is logged as
+  `dismissed`, not deleted. The server prepares, the operator signs.
+- Exit (14-day soak armed on brain-v42 alone): attribution rate ≥ 2× the Phase 0
+  baseline on the pilot project; zero tool failure caused by the writer;
+  staged/promoted/dismissed ratios published.
+- **Documented horizon, never shipped here** (graft A, endorsed by two judges):
+  if signed promotion plateaus, creation-time attribution (same transaction as
+  the artifact, `method='auto_provenance'`) is B3's full closure — a full
+  covenant change (E3), to be settled by the operator on the quantified dossier
+  4.1–4.4 produces (uncaptured candidates, `dismissed`, ambiguities).
 
-### 4.5 — Réattribution explicite (migration M-F) — bloqué par Q8
-- Table `brain_session_attribution_moves` : `knowledge_id`, `from_session_id`,
+### 4.5 — Explicit reattribution (migration M-F) — blocked by Q8
+- Table `brain_session_attribution_moves`: `knowledge_id`, `from_session_id`,
   `to_session_id`, `reason TEXT NOT NULL`, `moved_by VARCHAR(64) NOT NULL`,
-  `moved_at` — **sans FK piégée** (le panel a rejeté chez A la combinaison CHECK
-  propriétaire × `ON DELETE SET NULL`). L'exclusivité devient « un seul propriétaire
-  courant », l'histoire intégralement journalisée ; débloque les artefacts verrouillés
-  par les fantômes balayés. Geste opérateur (script de maintenance ou tool — modalité
-  incluse dans Q8), jamais silencieux.
+  `moved_at` — **with no trap FK** (the panel rejected proposal A's combination
+  of an owner CHECK × `ON DELETE SET NULL`). Exclusivity becomes "a single
+  current owner," the history fully logged; unlocks artifacts locked by swept
+  ghosts. Operator gesture (maintenance script or tool — modality included in
+  Q8), never silent.
 
-### 4.6 — Lectures famille (`include_descendants`) — bloqué par Q4
-- Paramètre opt-in sur briefing/search scopés, via **le** prédicat partagé de Phase 2
-  (jamais un second exemplaire), derrière son flag propre
-  `BRAIN_READ_INCLUDE_DESCENDANTS_ENABLED=false` — ajouté au §8bis, dont une version
-  antérieure l'omettait alors que le récapitulatif se veut exhaustif (R3). Brique de
-  fermeture de B11 sans gonfler le pool dream.
-- **Interaction avec le scope capability dream, spécifiée — le périmètre est ARMÉ en
-  production depuis le 2026-08-10** : sous un bearer `(projet, phase)`,
-  `brain_service` force `project_key = scope.project_key` en **égalité stricte**
-  (`services/brain_service.py`, vérifié ; propriété mesurée au cutover : 751/2760
-  learnings sous scope `red`). Honorer `include_descendants` sous scope ferait lire
-  `pk:*` à un bearer scopé sur `pk` — l'élargissement d'un périmètre de sécurité
-  armé. Règle : **sous scope dream, le paramètre est REFUSÉ fail-closed** (erreur
-  explicite — jamais ignoré en silence, ce qui cacherait la sémantique). Élargir un
-  bearer aux sous-partitions serait une décision de sécurité opérateur distincte,
-  hors de ce plan, avec sa propre matrice de registre.
-- **Chiffré pour que personne ne le découvre une nuit — et au présent, pas au
-  conditionnel.** Une version antérieure écrivait « **si** E5 conduisait plutôt à
-  ajouter des clés colon au pool dream… » : c'est **déjà fait, en partie, depuis le
-  2026-08-10**. Drop-in `killswitches.conf` lu le 2026-08-18 :
-  `BRAIN_DREAM_PROJECT_POOL=…,red-shrik:agent,…,red-lab:architect,…` — deux des six clés
-  colon sont des membres à part entière du pool, soit 447 des 533 artefacts colon
-  re-mesurés (84 %). Le remède « ajouter les six clés » de la spec `dbb7c5ce` est donc
-  **2/6 exécuté**, et le pool est **au plafond de dix**. Conséquence pour les quatre
-  clés restantes (86 artefacts) : les entrer exige de relever `_MAX_POOL`
-  (`tests/unit/test_dream_systemd_timeout_covers_the_pool.py:41`) **et**
-  `TimeoutStartSec` ensemble — le test échoue si on n'en change qu'un — plus la matrice
-  complète du registre `MCP_HTTP_DREAM_TOKENS` (six phases × projet ; préflight
-  fail-closed : sans elle **la nuit entière** échoue). Ce n'est pas une hypothèse
-  d'avenir, c'est le coût du prochain cran.
-- La colonne `parent_key` + CHECK (design de la proposition A) reste l'option
-  documentée pour E5 : **prédicat d'abord, colonne éventuelle après preuve d'usage**
-  (doctrine du panel).
+### 4.6 — Family reads (`include_descendants`) — blocked by Q4
+- Opt-in parameter on scoped briefing/search, via **the** shared predicate from
+  Phase 2 (never a second copy), behind its own flag
+  `BRAIN_READ_INCLUDE_DESCENDANTS_ENABLED=false` — added to §8bis, which an
+  earlier version omitted even though the recap claims to be exhaustive (R3).
+  Closing brick for B11 without inflating the dream pool.
+- **Interaction with the dream capability scope, specified — the scope has been
+  ARMED in production since 2026-08-10**: under a `(project, phase)` bearer,
+  `brain_service` forces `project_key = scope.project_key` under **strict
+  equality** (`services/brain_service.py`, verified; property measured at
+  cutover: 751/2760 learnings under `red` scope). Honoring
+  `include_descendants` under scope would let a bearer scoped to `pk` read
+  `pk:*` — widening an armed security perimeter. Rule: **under dream scope, the
+  parameter is REFUSED fail-closed** (an explicit error — never silently
+  ignored, which would hide the semantics). Widening a bearer to
+  sub-partitions would be a separate operator security decision, outside this
+  plan, with its own registry matrix.
+- **Quantified so no one discovers it one night — and in the present tense, not
+  the conditional.** An earlier version wrote "**if** E5 led instead to adding
+  colon keys to the dream pool…": that is **already done, in part, since
+  2026-08-10**. Drop-in `killswitches.conf` read on 2026-08-18:
+  `BRAIN_DREAM_PROJECT_POOL=…,red-shrik:agent,…,red-lab:architect,…` — two of
+  the six colon keys are full pool members, i.e. 447 of the 533 re-measured
+  colon artifacts (84%). Spec `dbb7c5ce`'s "add the six keys" remedy is
+  therefore **2/6 done**, and the pool is **at the ceiling of ten**.
+  Consequence for the four remaining keys (86 artifacts): entering them requires
+  raising `_MAX_POOL`
+  (`tests/unit/test_dream_systemd_timeout_covers_the_pool.py:41`) **and**
+  `TimeoutStartSec` together — the test fails if only one is changed — plus the
+  full `MCP_HTTP_DREAM_TOKENS` registry matrix (six phases × project; fail-closed
+  preflight: without it, **the whole night** fails). This is not a hypothesis
+  about the future, it is the cost of the next notch.
+- The `parent_key` column + CHECK (proposal A's design) remains the documented
+  option for E5: **predicate first, column only after proof of usage** (panel
+  doctrine).
 
-### Rollback global de la phase
-Les gestes **de flag** (4.1, WET de 4.3, flags de 4.4 et 4.6) sont des drop-in/env
-réversibles en un fichier ; l'ordre inverse les désarme proprement. Les **trois autres**
-ne le sont pas et suivent R1 : le prédicat enrichi de 4.2 est un déploiement de code
-(revert de commit + redémarrage MCP) ; M-E et M-F sont des têtes Alembic à downgrade
-fail-closed, donc rollback séquentiel depuis la tête courante, jamais sautable. Elles ne
-sont écrites que si leurs questions sont tranchées en leur faveur.
+### Phase-wide rollback
+The **flag** gestures (4.1, 4.3's WET, the flags of 4.4 and 4.6) are drop-in/env
+gestures reversible in a single file; the reverse order disarms them cleanly.
+The **other three** are not, and follow R1: 4.2's enriched predicate is a code
+deployment (commit revert + MCP restart); M-E and M-F are Alembic heads with
+fail-closed downgrades, hence sequential rollback from the current head, never
+skippable. They are written only if their questions are settled in their favor.
 
 ---
 
-## 7. Cartographie douleur → phase → mesure de fermeture
+## 7. Pain → phase → closure measurement map
 
-| Douleur | Se ferme en | Comment on le MESURE |
+| Pain | Closes in | How we MEASURE it |
 |---|---|---|
-| **B1** fantômes subagents (critique) | Triage : P1 (`intent`, `open_sessions_same_carrier`, `started_by_actor`). Régime : P4.2-3 (sweep armé). **Résidu conditionné à Q9** (subagents) **et Q12** (cycle de vie automatique, réponse établie `2bd14b24`) — assumé | Stock de sessions > 7 j → 0 sans ménage manuel ; abandons manuels/mois → 0 ; part de sessions neuves avec `intent` et `started_by_actor` renseignés |
-| **B2** heartbeat menteur (critique) | Faux-mort : P4.1-2 (observation + prédicat GREATEST, monotone sûr) — **pour les sessions observées seulement** : sous ambiguïté R5 ou stdio sans header, pas d'observation — résidu nommé en 4.1, défendu par checkpoint/heartbeat seuls. Faux-vivant : P2 (checkpoint date le vivant **s'il est appelé** — politique d'appel dans Q3, effet heartbeat derrière son flag) + P4.3 (trois signaux, précondition dure) | **Compte « ambiguë ET candidate au sweep »** (le seul qui puisse échouer) ; `skipped{ambiguous, no_actor, no_project}` ; comparaison à la population prédite en P0 ; `observed_only` publié ; zéro abandon erroné en wet. « Zéro session observée candidate au sweep » est un **invariant testé**, pas une mesure de soak (§6, 4.1) |
-| **B3** capture 18 %/34 % (haute) | P1 (suggestions, instrument) → P4.4 (staged signé, ≥ 2× baseline) → fermeture totale = décision E3 (horizon documenté) | Taux de capture et d'attribution vs baseline P0, par phase ; ratios staged/promoted/dismissed |
-| **B4** tickets + lot en bloc | P1 (erreur énumérée) + P2 (M-B, prédicat `from_project`) | Canary : lot `[learning, ticket]` passe ; mauvais `from_project` rejeté `wrong_project` |
-| **B5** fenêtre rigide | **Partiellement** : P2 ne relaxe que l'axe PROJET (flag famille parent→enfant, prédicat partagé — armement Q4). **Résidu assumé, non traité par ce plan** : l'axe TEMPOREL (`created_at >= started_at`) reste intact — un artefact créé avant le `start` demeure incapturable (vécu `d30cf6e5`) ; le relâcher toucherait la sémantique de provenance du ledger et n'est instruit par aucune phase ni question — à soumettre si la douleur persiste | Canary flag armé : capture `pk` → `pk:child` passe ; flag fermé : ancrage inchangé ; résidu temporel visible dans l'erreur `created_before_session` (P1) |
-| **B6** focus sans garde (haute) | P3 (audit append-only + constraint trigger différé + `focus_diff` + runbook). Prévention dure = Q7 | **Constraint trigger différé vert** (un UPDATE de `current_focus` sans ligne d'historique avorte au COMMIT) + canary sur CHAQUE écrivain, **y compris les deux chemins d'INSERT que le trigger ne voit pas** (`create`, branche INSERT de `get_or_create` — §5.2) ; drill de récupération réussi ; `focus_diff` rendu sur canary. **PAS la jointure focus↔historique** : elle serait verte à 100 % sur une base sans écriture post-M-D — critère trivialement satisfiable, que le §5 disqualifie et qu'une version antérieure de cette ligne réinstallait six sections plus loin |
-| **B7** aucun checkpoint | P2 (M-C + tool, gated Q3, doctrine de fraîcheur `d04dc588` reprise — **avec DEUX divergences déclarées, stockage ET forme du payload**, cf. §4.4 et Q3(c)(d) ; la spec checkpoint séparée que l'audit du ticket exige est livrée en P0) | Cycle réel start→checkpoints→end ; `list` montre `last_checkpoint_at` ; fraîcheur affichée dérivée de l'âge du checkpoint |
-| **B8** X-Brain-Session mort (contrainte) — **cotée sur une mesure périmée** : spike mesuré sur Claude Code 2.1.220, `claude --version` = 2.1.234 le 2026-08-19 | **P0 d'abord : re-jeu du spike** (§2, contenu n° 6) — c'est la contrainte qui dimensionne D1, D5, D8, R5, N2, le résidu de D6 et le critère n° 1 de 4.1. Puis assumée dès P1. **AMENDÉ 2026-08-20** : l'identité N'EST PLUS `(projet, started_by_actor)` mais `(projet, CONNEXION)` (ADR §0bis.2), et stdio ne dégrade plus « sans attribuer » — il n'ouvre **AUCUNE** session automatique (ADR §0ter.2), le cycle explicite y restant inchangé | Spike rejoué, résultat daté avec sa version en tête ; **part des appels portant un `X-Brain-Session` normalisable** (mesure absente de la baseline jusqu'ici) ; part de sessions neuves avec `started_by_actor` non NULL vs baseline ; compteur `skipped{no_actor}` |
-| **B9** `client_key` libre | P1 (`intent` + convention documentée + `client_key_prefix`) | Part de sessions neuves avec `intent` ; triage des fantômes démontré dans `list` |
-| **B10** drift fantôme (fermée) | P0 (tests d'ancrage — ne jamais régresser) | Ancrage canonicalisation vert en CI, en continu |
-| **B11** sous-projets : **86 artefacts sans run, 533 sans consolidation croisée** (moyenne — revue à la baisse, cf. §0) | **Déjà 2/6 fermée hors de ce plan** : `red-shrik:agent` et `red-lab:architect` sont au pool dream depuis le 2026-08-10 (447/533 artefacts, 84 %). Reste : P2 (prédicat partagé + capture famille), P4.6 (`include_descendants`, refusé sous scope dream) pour la consolidation **croisée** ; les 4 clés hors pool exigent `_MAX_POOL` + `TimeoutStartSec` + matrice de registre. Décision de fond = **Q4** (un renvoi antérieur vers Q5 était erroné — Q5 est le sweep) | Masse colon **re-mesurée** en P0 (pas recopiée de `dbb7c5ce`) ; part de cette masse couverte par un run nocturne ; après armement éventuel : le briefing du parent compte les artefacts des enfants |
-| **B12** pas de doc projets | P0 (`docs/PROJECTS_SYSTEM.md`, grille fait/jugement) | Doc relue/livrée ; les quatre briques y sont reliées et le prédicat colon y est recensé **au complet — cinq exemplaires `src/` + sept vues issues de la 036, en trois formulations** (« l'exception unique » d'une version antérieure de cette ligne est la formulation que le §2 déclare fausse ; ne pas la réinstaller comme mesure de fermeture) |
-| **B13** erreur indifférenciée | P1 (rejections par id + `capturable_subset`) | Canary : chaque id rejeté porte sa raison ; test d'ancrage de la nouvelle forme |
-| **B14** acteur non persisté | P1 (M-A, `started_by_actor VARCHAR(64)`) | Colonne renseignée sur les nouvelles sessions HTTP, part mesurée |
+| **B1** subagent ghosts (critical) | Triage: P1 (`intent`, `open_sessions_same_carrier`, `started_by_actor`). Regime: P4.2-3 (armed sweep). **Residue conditional on Q9** (subagents) **and Q12** (automatic lifecycle, answer established by `2bd14b24`) — assumed | Stock of sessions >7 d → 0 with no manual cleanup; manual abandonments/month → 0; share of new sessions with `intent` and `started_by_actor` populated |
+| **B2** lying heartbeat (critical) | False-dead: P4.1-2 (observation + GREATEST predicate, safe monotone) — **for observed sessions only**: under R5 ambiguity or stdio with no header, no observation — residue named in 4.1, defended by checkpoint/heartbeat alone. False-alive: P2 (checkpoint dates the living **if it is called** — calling policy in Q3, heartbeat effect behind its flag) + P4.3 (three signals, hard precondition) | **"Ambiguous AND sweep-candidate" count** (the only one that can fail); `skipped{ambiguous, no_actor, no_project}`; comparison against the population predicted in P0; `observed_only` published; zero erroneous abandonment in wet. "Zero observed session candidate for the sweep" is a **tested invariant**, not a soak measurement (§6, 4.1) |
+| **B3** capture 18%/34% (high) | P1 (suggestions, instrument) → P4.4 (signed staged, ≥ 2× baseline) → full closure = E3 decision (documented horizon) | Capture and attribution rate vs. P0 baseline, per phase; staged/promoted/dismissed ratios |
+| **B4** tickets + all-or-nothing batch | P1 (enumerated error) + P2 (M-B, `from_project` predicate) | Canary: `[learning, ticket]` batch passes; wrong `from_project` rejected as `wrong_project` |
+| **B5** rigid window | **Partially**: P2 only relaxes the PROJECT axis (parent→child family flag, shared predicate — Q4 arming). **Assumed residue, not addressed by this plan**: the TEMPORAL axis (`created_at >= started_at`) remains intact — an artifact created before `start` stays uncapturable (lived experience `d30cf6e5`); relaxing it would touch the ledger's provenance semantics and is briefed by no phase or question — to be submitted if the pain persists | Canary flag armed: `pk` → `pk:child` capture passes; flag closed: anchor unchanged; temporal residue visible in the `created_before_session` error (P1) |
+| **B6** focus with no guard (high) | P3 (append-only audit + deferred constraint trigger + `focus_diff` + runbook). Hard prevention = Q7 | **Deferred constraint trigger green** (an UPDATE of `current_focus` with no history row aborts at COMMIT) + canary on EVERY writer, **including the two INSERT paths the trigger cannot see** (`create`, `get_or_create`'s INSERT branch — §5.2); recovery drill succeeded; `focus_diff` returned on canary. **NOT the focus↔history join**: it would be 100% green on a database with no post-M-D write — a trivially satisfiable criterion, which §5 disqualifies and which an earlier version of this line reinstalled six sections later |
+| **B7** no checkpoint | P2 (M-C + tool, gated by Q3, `d04dc588` freshness doctrine reused — **with TWO declared divergences, storage AND payload shape**, cf. §4.4 and Q3(c)(d); the separate checkpoint spec the ticket's audit requires ships in P0) | Real start→checkpoints→end cycle; `list` shows `last_checkpoint_at`; displayed freshness derived from checkpoint age |
+| **B8** dead X-Brain-Session (constraint) — **scored on a stale measurement**: spike measured on Claude Code 2.1.220, `claude --version` = 2.1.234 on 2026-08-19 | **P0 first: spike replay** (§2, content #6) — this is the constraint that sizes D1, D5, D8, R5, N2, D6's residue and 4.1's exit criterion #1. Then assumed from P1 on. **AMENDED 2026-08-20**: identity is NO LONGER `(project, started_by_actor)` but `(project, CONNECTION)` (ADR §0bis.2), and stdio no longer degrades "without attributing" — it opens **NO** automatic session at all (ADR §0ter.2), the explicit cycle there staying unchanged | Spike replayed, result dated with its version up front; **share of calls carrying a normalizable `X-Brain-Session`** (a measurement absent from the baseline until now); share of new sessions with a non-NULL `started_by_actor` vs. baseline; `skipped{no_actor}` counter |
+| **B9** free-form `client_key` | P1 (`intent` + documented convention + `client_key_prefix`) | Share of new sessions with `intent`; ghost triage demonstrated in `list` |
+| **B10** ghost drift (closed) | P0 (anchor tests — never to regress) | Canonicalization anchor green in CI, continuously |
+| **B11** sub-projects: **86 artifacts with no run, 533 with no cross-consolidation** (average — revised downward, cf. §0) | **Already 2/6 closed outside this plan**: `red-shrik:agent` and `red-lab:architect` have been in the dream pool since 2026-08-10 (447/533 artifacts, 84%). Remaining: P2 (shared predicate + family capture), P4.6 (`include_descendants`, refused under dream scope) for **cross** consolidation; the 4 keys outside the pool require `_MAX_POOL` + `TimeoutStartSec` + registry matrix. Underlying decision = **Q4** (an earlier reference to Q5 was wrong — Q5 is the sweep) | Colon mass **re-measured** in P0 (not copied from `dbb7c5ce`); share of this mass covered by a nightly run; after any arming: the parent's briefing counts the children's artifacts |
+| **B12** no projects doc | P0 (`docs/PROJECTS_SYSTEM.md`, fact/judgment grid) | Doc reviewed/delivered; the four bricks are linked in it and the colon predicate is catalogued there **in full — five `src/` copies + seven views from 036, in three formulations** ("the sole exception" from an earlier version of this line is the formulation §2 declares false; do not reinstall it as a closure measurement) |
+| **B13** undifferentiated error | P1 (per-id rejections + `capturable_subset`) | Canary: each rejected id carries its reason; anchor test for the new shape |
+| **B14** actor not persisted | P1 (M-A, `started_by_actor VARCHAR(64)`) | Column populated on new HTTP sessions, share measured |
 
 ---
 
-## 8. Récapitulatif migrations (couloir du pin — R1)
+## 8. Migration recap (pin's lane — R1)
 
-| Tête | Phase | Contenu | Downgrade | Attestation `ops/recovery/` | Conditionnelle ? |
+| Head | Phase | Content | Downgrade | `ops/recovery/` attestation | Conditional? |
 |---|---|---|---|---|---|
-| (046) | — | Dimension embedding, **en projet, pas écrite** (`alembic/versions/` s'arrête à 045) — hors de ce plan ; ordre libre, jamais en vol en même temps (R1.2/R1.6) | — | à sa charge | — |
-| M-A | 1 | **4** colonnes nullable `brain_sessions` (`started_by_actor` 64, `last_observed_at`, `intent` 500, **`nature`** — cadrage 2026-08-19) **+ la colonne de CONNEXION et son index UNIQUE**. ✅ **Décision d'index MESURÉE ET CONCLUE le 2026-08-19** (`baseline/README.md`), et elle a changé d'objet : **pas d'index sur `started_by_actor`** (il sort du chemin chaud sous la clé `(projet, connexion)`), mais **index UNIQUE sur la connexion**, obligatoire — une égalité non couverte force un Seq Scan complet sur chaque appel outermost | Fail-closed si un `intent` non NULL (jugement) — purge de canary **ou** opt-in `-x` nommé | **empreinte colonnes `brain_sessions` à régénérer** (+ `COLUMN_DEFINITION_MD5` unitaire) ; **si un index est ajouté, `expected_session_indexes` (liste FERMÉE, `v4.sql:404-412`, contrôlée `:665` et `:687`) casse AUSSI** — plus `SESSION_INDEX_DEFINITION_MD5` (`test_recovery_contract_v3.py:164-168,488`) | Non |
-| M-B | 2 | CHECK artifacts + `'ticket'` (8e valeur) | Fail-closed si lignes `ticket` (canaries purgées, §4) | **`expected_artifact_constraints` à régénérer** ; et `knowledge_sources` ne connaît pas les tickets ⇒ **Q14 avant** | Q2 (prédicat), **Q14** |
-| M-C | 2 | `brain_session_checkpoints` (trigger append-only, replay idempotent `(session_id, seq)`) | Fail-closed si lignes (canaries purgées, §4) | `table_set` (nouvelle table) | **Q3** |
-| M-D | 3 | `project_focus_history` (`focus` NULLABLE, trigger append-only + **constraint trigger différé** `AFTER UPDATE OF current_focus` sur `project_contexts`, **créé désactivé**, seed NULL compris, six écrivains + scrub consolidés ; **pas de trigger-garde de révision — la 032 le fait déjà** ; **portée INSERT à trancher à l'écriture** — `create`/`get_or_create` échappent à `AFTER UPDATE`, §5.2) | Fail-closed hors seed **avec opt-in nommé** (gabarit 039, `-x allow_focus_history_downgrade=yes`) | **`expected_runtime_user_triggers` (13 triggers / 5 tables, fermée) + `table_set` à régénérer — régénération posée AVEC l'activation du trigger, la fenêtre désactivée étant rouge (`tgenabled='O'`)** | Non (Q13 module l'upsert) |
-| M-E | 4.4 | `brain_session_staged_captures` | Fail-closed si `staged` non résolus | `table_set` | **Q6** |
-| M-F | 4.5 | `brain_session_attribution_moves` | Garde non-vide | `table_set` | **Q8** |
-| **M-G** | **UNE TÊTE AVEC M-A** (signé 2026-08-20, ADR §0ter.1) — *rang dans le couloir toujours à séquencer* | **Nouvelle branche terminale de `brain_sessions_terminal_state_valid` pour l'auto-fermeture des sessions de nature `agent`** (cadrage 2026-08-19, Q15 = route (3) ; ADR §0.4 et D11). **La seule tête de ce plan qui touche le NOYAU** — toutes les autres travaillent en périphérie. Branche exacte non spécifiée ; **double rail Pydantic à faire bouger avec le CHECK** (C7) | Fail-closed si des lignes portent le nouvel état ; **le downgrade 037→036 doit apprendre cet état**, sans quoi il perd des sessions terminales sans le dire | **Empreinte du CHECK terminal de `brain_sessions` à régénérer, sur les DEUX assets v4.** C'est l'objet le plus surveillé de l'attestation | **Q15 répondue ; le CONTENU reste à spécifier (critère de sortie de Phase 0)** |
+| (046) | — | Embedding dimension, **planned, not written** (`alembic/versions/` stops at 045) — outside this plan; free ordering, never in flight at the same time (R1.2/R1.6) | — | its own responsibility | — |
+| M-A | 1 | **4** nullable columns on `brain_sessions` (`started_by_actor` 64, `last_observed_at`, `intent` 500, **`nature`** — 2026-08-19 framing) **+ the CONNECTION column and its UNIQUE index**. ✅ **Index decision MEASURED AND CONCLUDED on 2026-08-19** (`baseline/README.md`), and it changed subject: **no index on `started_by_actor`** (it leaves the hot path under the `(project, connection)` key), but a **UNIQUE index on the connection**, mandatory — an uncovered equality forces a full Seq Scan on every outermost call | Fail-closed if a non-NULL `intent` exists (judgment) — canary purge **or** named `-x` opt-in | **`brain_sessions` column fingerprint to regenerate** (+ unit `COLUMN_DEFINITION_MD5`); **if an index is added, `expected_session_indexes` (CLOSED list, `v4.sql:404-412`, checked at `:665` and `:687`) breaks TOO** — plus `SESSION_INDEX_DEFINITION_MD5` (`test_recovery_contract_v3.py:164-168,488`) | No |
+| M-B | 2 | Artifacts CHECK + `'ticket'` (8th value) | Fail-closed if `ticket` rows exist (canaries purged, §4) | **`expected_artifact_constraints` to regenerate**; and `knowledge_sources` does not know about tickets ⇒ **Q14 first** | Q2 (predicate), **Q14** |
+| M-C | 2 | `brain_session_checkpoints` (append-only trigger, idempotent replay `(session_id, seq)`) | Fail-closed if rows exist (canaries purged, §4) | `table_set` (new table) | **Q3** |
+| M-D | 3 | `project_focus_history` (`focus` NULLABLE, append-only trigger + **deferred constraint trigger** `AFTER UPDATE OF current_focus` on `project_contexts`, **created disabled**, seed including NULL, six writers + scrub consolidated; **no revision guard trigger — 032 already does it**; **INSERT scope to be settled at write time** — `create`/`get_or_create` escape `AFTER UPDATE`, §5.2) | Fail-closed outside the seed **with a named opt-in** (039 template, `-x allow_focus_history_downgrade=yes`) | **`expected_runtime_user_triggers` (13 triggers / 5 tables, closed) + `table_set` to regenerate — regeneration timed WITH the trigger activation, the disabled window being red (`tgenabled='O'`)** | No (Q13 modulates the upsert) |
+| M-E | 4.4 | `brain_session_staged_captures` | Fail-closed if unresolved `staged` rows exist | `table_set` | **Q6** |
+| M-F | 4.5 | `brain_session_attribution_moves` | Non-empty guard | `table_set` | **Q8** |
+| **M-G** | **ONE HEAD WITH M-A** (signed 2026-08-20, ADR §0ter.1) — *rank in the lane still to be sequenced* | **New terminal branch of `brain_sessions_terminal_state_valid` for auto-closing `agent`-nature sessions** (2026-08-19 framing, Q15 = route (3); ADR §0.4 and D11). **The only head in this plan that touches the CORE** — all others work at the periphery. Exact branch unspecified; **dual Pydantic rail to move in lockstep with the CHECK** (C7) | Fail-closed if rows carry the new state; **the 037→036 downgrade must learn this state**, or else it silently loses terminal sessions | **`brain_sessions` terminal-CHECK fingerprint to regenerate, on BOTH v4 assets.** This is the most closely watched object in the attestation | **Q15 answered; the CONTENT still to be specified (Phase 0 exit criterion)** |
 
-**Lecture de la colonne « Attestation » — quatre avertissements** (deux à l'origine, deux ajoutés par le cadrage du 2026-08-19)**.** (1) « Régénérer
-`ops/recovery/` » veut dire **les deux assets v4** : `brain-v42-v4.sql` **et**
-`brain-v42-v4-pgrestore.sql`. Cette seconde variante n'était nommée nulle part dans les
-trois documents (`grep -c pgrestore` = 0/0/0 le 2026-08-19) alors qu'elle est vivante et
-testée — `tests/integration/db/test_recovery_contract_v4_execution.py:106` exécute **les
-deux** contre une base réelle, et
-`tests/unit/test_recovery_contract_v4_pgrestore.py:29-33` impose la **parité des CTE**
-(écart autorisé : `{observed_artifact_constraints, observed_session_constraints}`, et
-aucun CTE côté live qui n'existe côté pgrestore). Régénérer un seul asset laisse la
-preuve de restauration à moitié fausse et fait rougir la parité au premier CTE ajouté.
-(2) Le tableau suppose qu'**aucune tête n'ajoute d'index sur `brain_sessions`** ; si la
-décision d'index de M-A est prise, voir R1.5 (« trois des six têtes » devient « trois
-têtes, deux structures » ou « quatre têtes sur sept »). ~~**(3) Les comptes de têtes de ce
-tableau et de R1.5 datent d'avant M-G et n'ont pas été recalculés** — M-G est une
-septième tête du couloir (huitième avec la 046), et elle touche l'empreinte la plus
-surveillée. Recompter fait partie de la spécification de M-G, critère de sortie de la
-Phase 0.~~
+**Reading the "Attestation" column — four warnings** (two originally, two added by
+the 2026-08-19 framing). (1) "Regenerate
+`ops/recovery/`" means **both v4 assets**: `brain-v42-v4.sql` **and**
+`brain-v42-v4-pgrestore.sql`. This second variant was named nowhere in the three
+documents (`grep -c pgrestore` = 0/0/0 on 2026-08-19) even though it is alive and
+tested — `tests/integration/db/test_recovery_contract_v4_execution.py:106` runs
+**both** against a real database, and
+`tests/unit/test_recovery_contract_v4_pgrestore.py:29-33` enforces **CTE
+parity** (allowed gap: `{observed_artifact_constraints,
+observed_session_constraints}`, and no live-side CTE that doesn't exist on the
+pgrestore side). Regenerating only one asset leaves the restoration proof half
+false and turns parity red at the first CTE added.
+(2) The table assumes **no head adds an index on `brain_sessions`**; if M-A's
+index decision is taken, see R1.5 ("three of the six heads" becomes "three
+heads, two structures" or "four heads out of seven"). ~~**(3) The head counts in
+this table and in R1.5 predate M-G and have not been recalculated** — M-G is a
+seventh head in the lane (eighth counting 046), and it touches the most closely
+watched fingerprint. Recounting is part of M-G's specification, a Phase 0 exit
+criterion.~~
 
-> **AMENDÉ le 2026-08-20 — RECOMPTÉ, et la note (3) est doublement périmée.**
-> Source : `SEQUENCEMENT-2026-08-20-couloir-du-pin.md`, décision `9d22bc6a` (S6).
+> **AMENDED on 2026-08-20 — RECOUNTED, and note (3) is doubly stale.**
+> Source: `SEQUENCEMENT-2026-08-20-couloir-du-pin.md`, decision `9d22bc6a` (S6).
 >
-> **(i) M-G n'est PAS une septième tête.** Elle ne consomme aucun rendez-vous propre :
-> elle part **dans la 046, avec M-A** (ADR §0ter.1, signé). Le couloir compte
-> **12 candidats en file** et **4 hors file**, pour **8 rendez-vous** sous l'Ordre B
-> signé : `046 = M-A+M-G` → `047 = M-B` → M-C et M-E **séparées** (tant que S9 n'a pas
-> démontré l'indépendance de leurs downgrades) → `049 = M-D` **isolée** → `050` = trio
-> `ADD COLUMN` nullable → `051`/`052`. Le recomptage réclamé par cette note est **fait**,
-> et il ne vivait pas dans la spec de M-G mais dans un dossier à lui.
+> **(i) M-G is NOT a seventh head.** It consumes no rendezvous of its own: it
+> ships **inside 046, with M-A** (ADR §0ter.1, signed). The lane counts
+> **12 candidates in queue** and **4 outside the queue**, for **8 rendezvous**
+> under the signed Order B: `046 = M-A+M-G` → `047 = M-B` → M-C and M-E
+> **separate** (until S9 has demonstrated their downgrades' independence) →
+> `049 = M-D` **isolated** → `050` = a trio of nullable `ADD COLUMN` → `051`/`052`.
+> The recount this note demanded is **done**, and it did not live in M-G's spec
+> but in a dossier of its own.
 >
-> **(ii) La prémisse de la note (2) est tombée aussi.** Elle suppose « qu'aucune tête
-> n'ajoute d'index sur `brain_sessions` ». **La décision d'index de M-A est prise**
-> (`c3d09355`) : un index **UNIQUE PARTIEL** (`WHERE status = 'open'`) sur la colonne de
-> connexion. Il casse donc `expected_session_indexes`, la liste FERMÉE des deux assets v4
-> — quatrième mécanisme de casse d'attestation.
+> **(ii) Note (2)'s premise fell too.** It assumes "no head adds an index on
+> `brain_sessions`." **M-A's index decision is taken** (`c3d09355`): a **PARTIAL
+> UNIQUE index** (`WHERE status = 'open'`) on the connection column. It therefore
+> breaks `expected_session_indexes`, the CLOSED list in both v4 assets — the
+> fourth attestation-breaking mechanism.
 >
-> **(iii) Et le cadre entier de ces notes a changé.** Le dossier §0.1 mesure que
-> **l'attestation est DÉJÀ rouge en production** avant toute nouvelle tête —
-> `alembic_head` **039 ≠ 045** et `indexes` **128 ≠ 129**. Donc « quelles têtes coûtent une
-> régénération d'assets » n'est plus la bonne question : **elles la coûtent toutes**.
-> C'est ce qui a produit la signature **S1** — contrat DR **v5 unique à head DÉRIVÉ**, un
-> seul mint pour tout le couloir au lieu de 7-12. **(4) M-A gagne une quatrième colonne**, `nature` (ADR D1 et D11, cadrage du
-2026-08-19) : la ligne M-A ci-dessus en annonce trois et n'a pas été réécrite, faute de
-spécification de sa contrainte et de son défaut en base.
+> **(iii) And the whole frame of these notes has changed.** Dossier §0.1 measures
+> that **the attestation is ALREADY red in production** before any new head —
+> `alembic_head` **039 ≠ 045** and `indexes` **128 ≠ 129**. So "which heads cost a
+> regeneration of assets" is no longer the right question: **they all cost
+> one.** This is what produced signature **S1** — a **single v5 DR contract at a
+> DERIVED head**, one mint for the whole lane instead of 7-12. **(4) M-A gains a fourth column**, `nature` (ADR D1 and D11,
+2026-08-19 framing): the M-A row above announces three and has not been
+rewritten, for lack of a specification of its constraint and its database
+default.
 
-Chaque tête, **dans le même commit** (R1.1 complet) : migration + bump
-`_REQUIRED_ALEMBIC_HEAD` + test du pin + README/MCP_TOOLS (`migration {head}`) +
-ARCHITECTURE (`migrations 001–{head} defined`) + SCHEMA.md (tables, révisions, « La
-cible du dépôt est {head}. ») + `docs/OPERATIONS.md:118` +
-`test_recovery_contract.py:279` + les deux `table_set` gelés (`…py:292`, `…_v2.py:33-39`)
-+ régénération de `ops/recovery/` — **`brain-v42-v4.sql` ET `brain-v42-v4-pgrestore.sql`** —
-quand la colonne « Attestation » l'indique + renommage
-du test-garde head-nommé. CLAUDE.md est mis à jour **hors commit** (gitignoré).
-Jamais deux têtes du couloir en vol — 046 comprise, dans l'ordre qui se présente ;
-production mesurée avant la tranche suivante ; redémarrage MCP + canary après chaque
-application ; **pour M-D, activation du constraint trigger APRÈS le redémarrage**
-(R1.3) ; purge de canary — ou opt-in de downgrade — rejouée là où le downgrade est
-fail-closed (§3, §4, §5).
+Every head, **in the same commit** (full R1.1): migration + bump
+`_REQUIRED_ALEMBIC_HEAD` + pin test + README/MCP_TOOLS (`migration {head}`) +
+ARCHITECTURE (`migrations 001–{head} defined`) + SCHEMA.md (tables, revisions,
+"The repository target is {head}.") + `docs/OPERATIONS.md:118` +
+`test_recovery_contract.py:279` + both frozen `table_set`s (`…py:292`,
+`…_v2.py:33-39`) + regeneration of `ops/recovery/` — **`brain-v42-v4.sql` AND
+`brain-v42-v4-pgrestore.sql`** — when the "Attestation" column indicates it +
+renaming of the head-named guard test. CLAUDE.md is updated **outside the
+commit** (gitignored). Never two lane heads in flight — 046 included, in
+whatever order comes up; production measured before the next tranche; MCP
+restart + canary after every application; **for M-D, activate the constraint
+trigger AFTER the restart** (R1.3); canary purge — or downgrade opt-in —
+replayed wherever the downgrade is fail-closed (§3, §4, §5).
 
-## 8bis. Récapitulatif killswitches (R3)
+## 8bis. Killswitch recap (R3)
 
-| Flag | Né en | Ce qu'il arme | Défaut |
+| Flag | Born in | What it arms | Default |
 |---|---|---|---|
-| `BRAIN_SESSION_OBSERVED_ACTIVITY_ENABLED` | P1 | Émetteur `last_observed_at` (UN statement, « exactement un ») | `false` |
-| `BRAIN_SESSION_CAPTURE_SUBPARTITIONS` | P2 | Capture parent→enfant via le prédicat partagé | `false` |
-| ~~`BRAIN_SESSION_CHECKPOINT_HEARTBEAT_EFFECT`~~ | ~~P2~~ | ❌ **SUPPRIMÉ — n'a plus d'objet depuis le cadrage du 2026-08-19 (ADR §0bis.4).** Ce flag n'existait que pour rendre armable la fourche Q3(a), dont le danger était : « un agent qui checkpointe seul garde sa session vivante indéfiniment ». Sous Q12 = (a) + ouverture automatique, la vivacité d'une session agent vient de `last_observed_at`, qui bouge à CHAQUE appel d'outil — le checkpoint cesse d'être spécial, et une session `operator` n'est jamais fermée par inactivité. Il n'y a plus rien à armer | — |
-| **`BRAIN_SESSION_IDLE_CLOSE_SECONDS`** | **(nouveau, cadrage 2026-08-19)** | **Seuil d'inactivité observée qui auto-ferme une session de nature `agent`. 4 h SIGNÉES le 2026-08-20** — seuil d'**ÉLIGIBILITÉ** au sweep nocturne, PAS un délai (latence pire cas ≈ 28 h ; ADR §0ter.5).** Réglage PROPRE — surtout pas `MCP_HTTP_SESSION_IDLE_SECONDS` (900 s), qui gouverne un objet réseau et n'a pas à piloter un objet de connaissance. **Ne touche JAMAIS une session `operator`** | à spécifier |
-| `BRAIN_SESSION_STAGED_CAPTURE_ENABLED` | P4.4 | Écrivain de brouillons staged | `false` |
-| `BRAIN_DREAM_SWEEP_ENABLED` / `BRAIN_DREAM_SWEEP_DRY_RUN` | existants | Sweep 7 j (prédicat enrichi P4.2) | `false` / `true` (code) — **production mesurée 2026-08-18 : `true` / `true`, DRY armé par décision opérateur** |
-| `BRAIN_READ_INCLUDE_DESCENDANTS_ENABLED` | P4.6 | Lectures famille `include_descendants` (REFUSÉ fail-closed sous scope dream) | `false` |
+| `BRAIN_SESSION_OBSERVED_ACTIVITY_ENABLED` | P1 | `last_observed_at` emitter (ONE statement, "exactly one") | `false` |
+| `BRAIN_SESSION_CAPTURE_SUBPARTITIONS` | P2 | Parent→child capture via the shared predicate | `false` |
+| ~~`BRAIN_SESSION_CHECKPOINT_HEARTBEAT_EFFECT`~~ | ~~P2~~ | ❌ **REMOVED — no longer has a purpose since the 2026-08-19 framing (ADR §0bis.4).** This flag only existed to make fork Q3(a) armable, whose danger was: "an agent that checkpoints alone keeps its session alive indefinitely." Under Q12 = (a) + automatic opening, an agent session's liveness comes from `last_observed_at`, which moves on EVERY tool call — the checkpoint stops being special, and an `operator` session is never closed by inactivity. There is nothing left to arm | — |
+| **`BRAIN_SESSION_IDLE_CLOSE_SECONDS`** | **(new, 2026-08-19 framing)** | **Observed-inactivity threshold that auto-closes an `agent`-nature session. 4 SIGNED hours as of 2026-08-20** — an **ELIGIBILITY** threshold for the nightly sweep, NOT a delay (worst-case latency ≈ 28 h; ADR §0ter.5). Its OWN setting — definitely not `MCP_HTTP_SESSION_IDLE_SECONDS` (900 s), which governs a network object and has no business driving a knowledge object. **NEVER touches an `operator` session** | to be specified |
+| `BRAIN_SESSION_STAGED_CAPTURE_ENABLED` | P4.4 | Staged-draft writer | `false` |
+| `BRAIN_DREAM_SWEEP_ENABLED` / `BRAIN_DREAM_SWEEP_DRY_RUN` | existing | 7-day sweep (enriched predicate P4.2) | `false` / `true` (code) — **production measured 2026-08-18: `true` / `true`, DRY armed by operator decision** |
+| `BRAIN_READ_INCLUDE_DESCENDANTS_ENABLED` | P4.6 | `include_descendants` family reads (REFUSED fail-closed under dream scope) | `false` |
 
-Chacun : test fermé-par-défaut obligatoire, armement par runbook, état production
-mesuré (drop-in + processus) — jamais présumé.
+Each: mandatory closed-by-default test, arming via runbook, production state
+measured (drop-in + process) — never assumed.
 
 ---
 
-## 9. Questions ouvertes bloquantes (détail dans l'ADR jumelle, §6)
+## 9. Blocking open questions (detail in the twin ADR, §6)
 
-> **Cadrage du 2026-08-19 — quatre lignes de ce tableau ont changé d'état.** Q1, Q10 et
-> Q12 sont **répondues** ; Q6 reste ouverte mais **bloque désormais la Phase 0** ; **Q15
-> est neuve**. La source unique de ces réponses est l'**ADR §0**, pas ce tableau.
-> **Encore ouvertes et bloquantes pour sortir la Phase 0 : Q2, Q3, Q6, Q14.**
+> **2026-08-19 framing — four rows of this table changed state.** Q1, Q10 and
+> Q12 are **answered**; Q6 remains open but **now blocks Phase 0**; **Q15 is
+> new**. The single source for these answers is **ADR §0**, not this table.
+> **Still open and blocking for Phase 0 exit: Q2, Q3, Q6, Q14.**
 
-| # | Question | Bloque |
+| # | Question | Blocks |
 |---|---|---|
-| Q1 | ✅ **RÉPONDUE (dérivée de Q12, 2026-08-19)** — pour la nature `agent`, `last_observed_at` **est** le signal de vivacité, par construction ; pour la nature `operator`, D5 reste de l'observation pure (ADR §0.2). **Corollaire encore OUVERT** : « exactement un » vs « toutes », sur 24 des 29 sessions `open` (mesuré 2026-08-19) | Le corollaire bloque toujours 4.1. **D5 cesse d'être optionnel** : il porte la moitié agent du modèle |
-| Q2 | ✅ **RÉPONDUE (2026-08-19, session 2) : `from_project`**, la paternité — la capture répond à « qu'a PRODUIT cette session ». Mesuré : 231 tickets, **187 self** (question sans objet) et **44 cross-projet** (où elle tranche). All-or-nothing **confirmé**, non contesté | M-B débloquée, avec Q14 |
-| Q3 | ✅ **RÉPONDUE (2026-08-19, session 2), après DISSOLUTION de ses deux sous-décisions piégées.** (a) et (b) n'ont plus d'objet : la vivacité d'une session agent vient de `last_observed_at`, donc le checkpoint cesse d'être spécial, et une session `operator` n'est jamais fermée par inactivité ⇒ `BRAIN_SESSION_CHECKPOINT_HEARTBEAT_EFFECT` disparaît. Restait : **(c) stockage = la PROPOSITION** (append-only `(session_id, seq)`, replay idempotent — les retries d'agents sont la norme, C6) et **(d) forme = LE TICKET** (`progress` + `blocker\|null` + `next_step` en UN appel ; trois `kind` exclusifs laisseraient un instantané à moitié vide sans que le lecteur puisse le savoir). Divergence (d) **abandonnée**, (c) **maintenue**. ADR §0bis.4 | M-C débloquée. La **spec checkpoint séparée** reste due en P0 |
-| ~~Q3 (texte d'origine)~~ | approbation produit (`d04dc588`) + (a) **cercle des appelants** (commande explicite seule, ou agent autonome = changement de covenant) + (b) **effet heartbeat et son mécanisme d'armement** (retiré du contrat, ou derrière `BRAIN_SESSION_CHECKPOINT_HEARTBEAT_EFFECT` livré fermé — sans l'un des deux, (a) est tranchée par omission ; **et « retirer » n'est pas l'option neutre** : le ticket exige « Checkpoint réel rafraîchit heartbeat atomiquement ; replay non », donc le retrait est une **troisième** divergence d'avec son MVP) + (c) **divergence de STOCKAGE** (append-only + `(session_id, seq)` vs snapshot + CAS du ticket) + (d) **divergence de FORME DU PAYLOAD**, non déclarée jusqu'ici : `progress` + `blocker\|null` + `next_step` publiés ensemble « en un appel » contre `kind` mutuellement exclusifs + `note` unique | M-C (Phase 2) ; la **spec checkpoint séparée** est livrée en P0 dans tous les cas |
-| Q4 | Armer capture famille ? Livrer `include_descendants` (refusé sous scope dream — élargir un bearer = décision de sécurité distincte) ? Direction E5 (hiérarchie vs platitude) ? **Reformulée sur l'état mesuré** : `red-shrik:agent` et `red-lab:architect` sont **déjà au pool** depuis le 2026-08-10 (84 % de la masse colon) — reste à trancher (a) accepte-t-on que le parent ne voie jamais l'enfant, ou veut-on `include_descendants` ? (b) entre-t-on les 4 clés `red-lab:*` restantes (86 artefacts), au prix de `_MAX_POOL` + `TimeoutStartSec` + matrice de registre ? (c) une **fusion** `red-shrik:agent` → `red-shrik` relève de Q11, pas d'ici | P2 armement, P4.6 |
-| Q5 | Ordre/seuils du sweep (7 j ? durée du dry — DÉJÀ armé, mesuré 2026-08-18 ?) — le WET exige en sus la précondition trois-signaux de 4.3 | Phase 4.2-3 |
-| Q6 | ✅ **RÉPONDUE (2026-08-19, session 2) : ACCEPTÉE**, et les brouillons non signés d'une traçante **SURVIVENT** dans un pool en attente de signature, hors session. Écartées : l'auto-promotion à l'auto-fermeture (ce serait **E3 pour toute la moitié agent** — covenant plein) et l'abandon des brouillons (détruire ce que la nature agent produit). **Sa fragilité technique disparaît** : la liaison `(project_key, started_by_actor)` + « exactement un » devient exacte sur la connexion. ADR §0bis.5 | M-E débloquée. **Ce que le pool ajoute à M-E reste à spécifier** : FK et `ON DELETE`, durée de vie, plafond, tool de signature hors session |
-| Q7 | Garde dur de contenu du focus, ou audit + `focus_diff` suffisent ? | (optionnel, post-P3) |
-| Q8 | Droit de réattribution journalisée, ou orphelinage = prix de la preuve ? | M-F (Phase 4.5) |
-| Q9 | ✅ **RÉGLÉE (2026-08-19, session 2) PAR LA MESURE : HÉRITAGE.** Les subagents héritent de la session du porteur, sans tag, parce qu'ils partagent sa connexion. **Aucun des trois en-têtes ne les distingue** — `X-Brain-Agent` porte le PROJET, `X-Brain-Session` est mort (B8), `Mcp-Session-Id` porte la CONNEXION — et aucun ne le fera : la config des en-têtes est par serveur MCP, pas par subagent. ADR §0bis.2 | B1 résiduel fermé par l'auto-fermeture, pas par le tag |
-| Q10 | ✅ **RÉPONDUE (2026-08-19)** : la liste **couvre** — aucun B15. Mais la **priorité est rejetée** : l'ordre vient de l'axe **« traçabilité du savoir »** (B3, B4, B5 en tête), plus de la gravité dérivée | Débloquée. **Emporte le reséquencement P0 → P1 → P2 → P4.4 → P3** et la promotion de Q6 |
-| Q11 | Renommage/fusion de projets : chantier séparé souhaité ? | (hors plan) |
-| Q12 | ✅ **RÉPONDUE (2026-08-19) : piste (a) — deux natures de session.** Agent traçante auto-fermée sans rituel, opérateur avec rituel. La nature est **déclarée** au `start` (B8 ne bloque donc pas), **défaut `operator` forcé par C2**. Voir ADR §0.1 et D11 | Débloquée, mais **amende C1** et **ouvre Q15**. Ce plan n'est plus « compatible avec les trois pistes » : il a une cible |
-| Q13 | `brain_set_project_context` : `current_focus` omis cesse-t-il d'effacer le focus (omis ≠ effacement explicite) ? **Question reformulée : sa motivation chiffrée était fausse.** Les 10/59 contextes NULL sont **tous** à `focus_revision = 0` et `focus_updated_at IS NULL` ⇒ jamais écrits, pas effacés ; **zéro effacement mesuré en production**. Le canal existe dans le code, il n'a pas été observé en train de mordre. À trancher sur le raisonnement : défaut à corriger avant qu'il morde, ou sémantique d'upsert assumée qu'il vaut mieux ne pas changer sous les clients existants ? | M-D (Phase 3) |
-| **Q15** | ✅ **RÉPONDUE (2026-08-19) : route (3) — nouvel état terminal.** *Question NEUVE, posée par aucune version antérieure.* Le CHECK `brain_sessions_terminal_state_valid` interdit `ended` sans `summary` **et** `next_focus` non vides, et impose `captured_knowledge_ids = {}` à `abandoned` (`037_session_lifecycle_v4.py:14-91`) : une session agent auto-fermée **sans rituel** n'a aucun état terminal disponible. Routes écartées : (1) `abandoned` — l'instantané terminal déclarerait zéro capture sur le chemin de capture principal ; (2) résumé synthétisé — c'est la piste (c) par la porte de derrière, objection C9 | **Migration M-G sur le noyau** (§8). Amende **C7**. **Son CONTENU reste à spécifier — critère de sortie de Phase 0** |
-| Q14 | ✅ **RÉPONDUE (2026-08-19, session 2) : voie (a) — ÉLARGIR.** `knowledge_sources` s'ouvre aux tickets et son prédicat de projet au sous-arbre ; l'attestation reste verte ET continue de prouver ce qu'elle prétend. (b) « documenter le trou » écartée parce qu'elle creuse un trou dans la preuve de RESTAURATION, donc dans l'histoire DR, déjà un blocker ouvert. **Travail sur les DEUX assets v4**, pas un | M-B débloquée |
-| ~~Q14 (texte d'origine)~~ | **Ce que l'attestation de récupération doit apprendre.** `ops/recovery/brain-v42-v4.sql` définit la légitimité d'un artefact capturé par l'UNION des **six** tables de connaissance et par `source.project_key = session.project_key`. Les tickets capturables (M-B) et la capture `pk → pk:child` produiraient des `artifact_source_mismatches` **permanents** — attestation rouge, alors que son runbook exige « all statuses are pass ». (a) élargir `knowledge_sources` aux tickets et son prédicat au sous-arbre, (b) restreindre le contrôle aux six types en documentant le trou, ou (c) renoncer à l'un des élargissements ? | **M-B (Phase 2)**, et le flag famille |
+| Q1 | ✅ **ANSWERED (derived from Q12, 2026-08-19)** — for the `agent` nature, `last_observed_at` **is** the liveness signal, by construction; for the `operator` nature, D5 remains pure observation (ADR §0.2). **Corollary still OPEN**: "exactly one" vs. "all," over 24 of the 29 `open` sessions (measured 2026-08-19) | The corollary still blocks 4.1. **D5 stops being optional**: it carries the agent half of the model |
+| Q2 | ✅ **ANSWERED (2026-08-19, session 2): `from_project`**, authorship — capture answers "what did this session PRODUCE." Measured: 231 tickets, **187 self** (question moot) and **44 cross-project** (where it settles it). All-or-nothing **confirmed**, uncontested | M-B unblocked, along with Q14 |
+| Q3 | ✅ **ANSWERED (2026-08-19, session 2), after DISSOLVING its two trapped sub-decisions.** (a) and (b) no longer apply: an agent session's liveness comes from `last_observed_at`, so the checkpoint stops being special, and an `operator` session is never closed by inactivity ⇒ `BRAIN_SESSION_CHECKPOINT_HEARTBEAT_EFFECT` disappears. What remained: **(c) storage = the PROPOSAL** (append-only `(session_id, seq)`, idempotent replay — agent retries are the norm, C6) and **(d) shape = THE TICKET** (`progress` + `blocker\|null` + `next_step` in ONE call; three mutually exclusive `kind` values would leave a half-empty snapshot with no way for the reader to know it). Divergence (d) **abandoned**, (c) **kept**. ADR §0bis.4 | M-C unblocked. The **separate checkpoint spec** is still due in P0 |
+| ~~Q3 (original text)~~ | product approval (`d04dc588`) + (a) **circle of callers** (explicit command only, or an autonomous agent = covenant change) + (b) **heartbeat effect and its arming mechanism** (removed from the contract, or behind `BRAIN_SESSION_CHECKPOINT_HEARTBEAT_EFFECT` shipped closed — without one of the two, (a) is settled by omission; **and "removing" is not the neutral option**: the ticket requires "Real checkpoint refreshes heartbeat atomically; replay does not," so removal is a **third** divergence from its MVP) + (c) **STORAGE divergence** (append-only + `(session_id, seq)` vs. the ticket's snapshot + CAS) + (d) **PAYLOAD SHAPE divergence**, undeclared until now: `progress` + `blocker\|null` + `next_step` published together "in one call" versus mutually exclusive `kind` + a single `note` | M-C (Phase 2); the **separate checkpoint spec** ships in P0 in every case |
+| Q4 | Arm family capture? Ship `include_descendants` (refused under dream scope — widening a bearer = a separate security decision)? E5 direction (hierarchy vs. flatness)? **Reformulated on the measured state**: `red-shrik:agent` and `red-lab:architect` are **already in the pool** since 2026-08-10 (84% of the colon mass) — still to settle: (a) do we accept that the parent never sees the child, or do we want `include_descendants`? (b) do we bring in the 4 remaining `red-lab:*` keys (86 artifacts), at the cost of `_MAX_POOL` + `TimeoutStartSec` + registry matrix? (c) a **merge** of `red-shrik:agent` → `red-shrik` is a Q11 matter, not this one | P2 arming, P4.6 |
+| Q5 | Sweep order/thresholds (7 d? dry duration — ALREADY armed, measured 2026-08-18?) — WET additionally requires 4.3's three-signal precondition | Phase 4.2-3 |
+| Q6 | ✅ **ANSWERED (2026-08-19, session 2): ACCEPTED**, and a tracing session's unsigned drafts **SURVIVE** in a pending-signature pool, outside the session. Ruled out: auto-promotion at auto-close (that would be **E3 for the entire agent half** — full covenant) and abandoning the drafts (destroying what the agent nature produces). **Its technical fragility disappears**: the `(project_key, started_by_actor)` + "exactly one" linkage becomes exact on the connection. ADR §0bis.5 | M-E unblocked. **What the pool adds to M-E remains to be specified**: FK and `ON DELETE`, lifetime, cap, out-of-session signing tool |
+| Q7 | Hard focus-content guard, or do the audit trail + `focus_diff` suffice? | (optional, post-P3) |
+| Q8 | Logged reattribution right, or is orphaning the price of the proof? | M-F (Phase 4.5) |
+| Q9 | ✅ **SETTLED (2026-08-19, session 2) BY MEASUREMENT: INHERITANCE.** Subagents inherit the carrier's session, with no tag, because they share its connection. **None of the three headers distinguishes them** — `X-Brain-Agent` carries the PROJECT, `X-Brain-Session` is dead (B8), `Mcp-Session-Id` carries the CONNECTION — and none ever will: header configuration is per MCP server, not per subagent. ADR §0bis.2 | Residual B1 closed by auto-close, not by the tag |
+| Q10 | ✅ **ANSWERED (2026-08-19)**: the list **covers** — no B15. But the **priority is rejected**: the order comes from the **"knowledge traceability"** axis (B3, B4, B5 first), no longer from derived severity | Unblocked. **Drives the P0 → P1 → P2 → P4.4 → P3 resequencing** and Q6's promotion |
+| Q11 | Project rename/merge: a separate project desired? | (out of plan) |
+| Q12 | ✅ **ANSWERED (2026-08-19): track (a) — two session natures.** Tracing agent auto-closed with no ritual, operator with ritual. The nature is **declared** at `start` (so B8 does not block), **default `operator` forced by C2**. See ADR §0.1 and D11 | Unblocked, but **amends C1** and **opens Q15**. This plan is no longer "compatible with all three tracks": it has a target |
+| Q13 | `brain_set_project_context`: does an omitted `current_focus` stop erasing the focus (omitted ≠ explicit erasure)? **Question reformulated: its quantified motivation was false.** The 10/59 NULL contexts are **all** at `focus_revision = 0` and `focus_updated_at IS NULL` ⇒ never written, not erased; **zero erasure measured in production**. The channel exists in the code, it has not been observed biting. To be settled on reasoning: a default to fix before it bites, or an assumed upsert semantics best left unchanged under existing clients? | M-D (Phase 3) |
+| **Q15** | ✅ **ANSWERED (2026-08-19): route (3) — new terminal state.** *NEW question, raised by no earlier version.* The CHECK `brain_sessions_terminal_state_valid` forbids `ended` without a non-empty `summary` **and** `next_focus`, and requires `captured_knowledge_ids = {}` for `abandoned` (`037_session_lifecycle_v4.py:14-91`): an agent session auto-closed **with no ritual** has no terminal state available. Routes ruled out: (1) `abandoned` — the terminal snapshot would declare zero captures on the main capture path; (2) synthesized summary — that is track (c) through the back door, objection C9 | **Migration M-G on the core** (§8). Amends **C7**. **Its CONTENT is still to be specified — Phase 0 exit criterion** |
+| Q14 | ✅ **ANSWERED (2026-08-19, session 2): route (a) — WIDEN.** `knowledge_sources` opens up to tickets and its project predicate to the subtree; the attestation stays green AND keeps proving what it claims. (b) "document the gap" ruled out because it digs a hole in the RESTORATION proof, hence in the DR story, already an open blocker. **Work on BOTH v4 assets**, not one | M-B unblocked |
+| ~~Q14 (original text)~~ | **What the recovery attestation must learn.** `ops/recovery/brain-v42-v4.sql` defines a captured artifact's legitimacy as the UNION of the **six** knowledge tables and by `source.project_key = session.project_key`. Capturable tickets (M-B) and the `pk → pk:child` capture would produce **permanent** `artifact_source_mismatches` — a red attestation, while its runbook requires "all statuses are pass." (a) widen `knowledge_sources` to tickets and its predicate to the subtree, (b) restrict the check to the six types and document the gap, or (c) give up one of the two widenings? | **M-B (Phase 2)**, and the family flag |
 
 ---
 
-*Sources et vérifications identiques à l'ADR jumelle (code au 2026-08-18 ; tickets
-`d30cf6e5`, `2bd14b24` — dont la réponse opérateur établie —, `d04dc588` (contrat relu
-mot pour mot : `expected_checkpoint_revision, progress, blocker|null, next_step`,
-critère « un appel »), `7ffe0e8a`, `c60d023d` ; spike
-`docs/upstream/2026-08-06-claude-otlp-session-join.md` — verdict « JOINTURE
-IMPOSSIBLE » ; le ticket `2dfbb83d` est fermé LIVRÉ, pas négatif ; spec `dbb7c5ce`
-(chiffres du 2026-08-08, **re-mesurés ici**) ; learnings `7bc821a1`, `367e27ae`,
-`1c40c36a` ; jugements du panel — non archivés dans le dépôt, à traiter comme contexte
-de rédaction, pas comme preuves).
-**Mesures production du 2026-08-18, lecture seule** : head `045` ;
-`10/59 project_contexts` à `current_focus IS NULL`, **tous à `focus_revision = 0` et
-`focus_updated_at IS NULL`** ; les **sept** triggers utilisateur de `project_contexts`,
-dont `project_contexts_focus_revision_trigger` (032) ; `access_log` à **0 ligne** ;
-**sept** vues `public` contenant `split_part` ; masse colon `red-shrik:agent` 312 /
-`red-lab:architect` 135 / quatre `red-lab:*` restantes 86 (`red-shrik` parent : 245) ;
-drop-in `killswitches.conf` — sweep `ENABLED=true` / `DRY_RUN=true`, pool à dix incluant
-deux clés colon.
-**Vérifications code ajoutées à cette passe** : `alembic/versions/032_brain_sessions.py:19-34`
-et `001_initial.py:244-247` ; `036_codex_contract_views.py:23-45,205-227,230` ;
-`039_project_context_timestamp_cas.py:17,337-339` (opt-in `-x` de downgrade) ;
-`repositories/pg_access_log.py:38-113` + `services/decay_flusher.py` + `config.py:379` ;
-`mcp/provenance_middleware.py:74-96` et `services/dream_project_scope.py:83-120` ;
-`repositories/pg_project_context.py:202-213,281-290` ;
-`services/project_group_ticket_service.py:129-137,164-167` ;
-`repositories/pg_brain_session.py:520-522,713-714` ; `services/roadmap_service.py` ;
+*Sources and verifications identical to the twin ADR (code as of 2026-08-18; tickets
+`d30cf6e5`, `2bd14b24` — including the established operator answer —, `d04dc588`
+(contract reread word for word: `expected_checkpoint_revision, progress,
+blocker|null, next_step`, "one call" criterion), `7ffe0e8a`, `c60d023d`; spike
+`docs/upstream/2026-08-06-claude-otlp-session-join.md` — verdict "JOIN
+IMPOSSIBLE"; ticket `2dfbb83d` is closed as SHIPPED, not negative; spec `dbb7c5ce`
+(figures from 2026-08-08, **re-measured here**); learnings `7bc821a1`, `367e27ae`,
+`1c40c36a`; panel judgments — not archived in the repo, to be treated as drafting
+context, not as evidence).
+**Production measurements from 2026-08-18, read-only**: head `045`;
+`10/59 project_contexts` with `current_focus IS NULL`, **all at `focus_revision = 0`
+and `focus_updated_at IS NULL`**; the **seven** user triggers on `project_contexts`,
+including `project_contexts_focus_revision_trigger` (032); `access_log` at **0
+rows**; **seven** `public` views containing `split_part`; colon mass
+`red-shrik:agent` 312 / `red-lab:architect` 135 / four remaining `red-lab:*` 86
+(`red-shrik` parent: 245); drop-in `killswitches.conf` — sweep `ENABLED=true` /
+`DRY_RUN=true`, pool at ten including two colon keys.
+**Code verifications added in this pass**: `alembic/versions/032_brain_sessions.py:19-34`
+and `001_initial.py:244-247`; `036_codex_contract_views.py:23-45,205-227,230`;
+`039_project_context_timestamp_cas.py:17,337-339` (downgrade `-x` opt-in);
+`repositories/pg_access_log.py:38-113` + `services/decay_flusher.py` + `config.py:379`;
+`mcp/provenance_middleware.py:74-96` and `services/dream_project_scope.py:83-120`;
+`repositories/pg_project_context.py:202-213,281-290`;
+`services/project_group_ticket_service.py:129-137,164-167`;
+`repositories/pg_brain_session.py:520-522,713-714`; `services/roadmap_service.py`;
 `ops/recovery/brain-v42-v4.sql` (352-380, **404-412**, 437-470, 533-557, **665, 687**,
-895-945, 1083-1113, 1135-1180) **et `ops/recovery/brain-v42-v4-pgrestore.sql`** ;
+895-945, 1083-1113, 1135-1180) **and `ops/recovery/brain-v42-v4-pgrestore.sql`**;
 `tests/unit/test_recovery_contract{,_v2,_v3,_v4}.py`,
 `tests/unit/test_recovery_contract_v4_pgrestore.py:29-33`,
 `tests/unit/test_recovery_contract_v3.py:164-168,488`,
-`tests/integration/db/test_recovery_contract_v4_execution.py:106` ;
-`tests/unit/test_documentation_contract.py:25-32,1815-1819` ;
-`tests/unit/test_plan_index_repair_head_pin.py:45-52` ; `tests/integration/conftest.py:129-155` ;
-`docs/OPERATIONS.md:118`. Répertoire migrations vérifié : `alembic/versions/`, head
-versionnée 045, **aucune 046**. Aucun commit, aucune écriture brain, aucune écriture DB,
-aucun fichier touché hors `docs/design/refonte-projets-sessions/`.*
+`tests/integration/db/test_recovery_contract_v4_execution.py:106`;
+`tests/unit/test_documentation_contract.py:25-32,1815-1819`;
+`tests/unit/test_plan_index_repair_head_pin.py:45-52`; `tests/integration/conftest.py:129-155`;
+`docs/OPERATIONS.md:118`. Migrations directory verified: `alembic/versions/`, versioned
+head 045, **no 046**. No commit, no brain write, no DB write,
+no file touched outside `docs/design/refonte-projets-sessions/`.*
 
-**Passe du 2026-08-19 — ce qu'elle a changé, et pourquoi.** Deux des quatre corrections
-portent sur des affirmations **introduites par la réparation précédente** : une prémisse
-fausse peut survivre à sa propre correction, et c'est le mode de panne de ce dossier.
+**2026-08-19 pass — what it changed, and why.** Two of the four corrections
+address statements **introduced by the previous fix**: a false premise can
+survive its own correction, and that is this dossier's failure mode.
 
-| Ce qui était écrit | Ce qui est vrai | Où |
+| What was written | What is true | Where |
 |---|---|---|
-| « `brain_update_project_focus` est le **seul** à bumper sur texte inchangé » | Le CAS de `end` (`pg_brain_session.py:713-714`) le fait aussi, sans comparer le texte, et le CHECK 037 l'exige : régime normal d'une fin de session | §5.1 |
-| « un second incrément applicatif poserait `OLD+2` » | Le trigger 032 **assigne** (`NEW.focus_revision := OLD.focus_revision + 1`), il n'ajoute pas ⇒ les deux bumps explicites doivent **rester** | §5.3 |
-| Le constraint trigger « attrape l'écrivain qui contourne le chemin partagé » | `AFTER UPDATE` ne voit pas les INSERT : `create` et la branche INSERT de `get_or_create` écrivent un focus à `focus_revision = 0` hors de sa portée — trou nommé, trois voies, N1 borné | §5.2, critères de sortie |
-| Trigger « créé désactivé » + « `ops/recovery/` régénérée » (deux corrections indépendantes) | `v4.sql:913-918` exige `tgenabled = 'O'` : hors liste il est inattendu, dans la liste il est éteint — **aucune régénération ne rend l'attestation verte pendant la fenêtre désactivée** | R1.3, R1.5, §5 Rollback |
+| "`brain_update_project_focus` is the **only** one that bumps on unchanged text" | The `end` CAS (`pg_brain_session.py:713-714`) does too, without comparing the text, and the 037 CHECK requires it: the normal regime of a session close | §5.1 |
+| "a second application-side increment would set `OLD+2`" | The 032 trigger **assigns** (`NEW.focus_revision := OLD.focus_revision + 1`), it does not add ⇒ the two explicit bumps must **stay** | §5.3 |
+| The constraint trigger "catches the writer that bypasses the shared path" | `AFTER UPDATE` does not see INSERTs: `create` and `get_or_create`'s INSERT branch write a focus at `focus_revision = 0` outside its scope — a named gap, three routes, N1 bounded | §5.2, exit criteria |
+| Trigger "created disabled" + "`ops/recovery/` regenerated" (two independent corrections) | `v4.sql:913-918` requires `tgenabled = 'O'`: off the list it is unexpected, on the list it is switched off — **no regeneration makes the attestation green during the disabled window** | R1.3, R1.5, §5 Rollback |
 
-*Plus : `d04dc588` relu — retirer l'effet heartbeat serait une **troisième** divergence
-(Q3(b)) ; champs de suggestion renommés `project_uncaptured_since_start(_count)`, la
-version antérieure spécifiant le prédicat puis gardant l'ancien nom deux lignes plus
-haut ; `expected_runtime_user_triggers` précisée à **treize** triggers sur cinq tables,
-dont sept sur `project_contexts`. Mesures du 2026-08-19, lecture seule, inchangées
-depuis la veille : head `045` ; `10/59` focus NULL tous à révision 0 et jamais datés ;
-`access_log` 0 ligne ; sept vues `split_part` ; masse colon 312/135/64/15/5/2 = 533
-contre `red-shrik` 245 ; drop-in sweep `true`/`true`, pool à dix.*
+*Plus: `d04dc588` reread — removing the heartbeat effect would be a **third**
+divergence (Q3(b)); suggestion fields renamed to
+`project_uncaptured_since_start(_count)`, the earlier version specifying the
+predicate then keeping the old name two lines above;
+`expected_runtime_user_triggers` clarified to **thirteen** triggers across five
+tables, seven of them on `project_contexts`. Measurements from 2026-08-19,
+read-only, unchanged since the day before: head `045`; `10/59` NULL focuses all
+at revision 0 and never dated; `access_log` 0 rows; seven `split_part` views;
+colon mass 312/135/64/15/5/2 = 533 against `red-shrik` 245; sweep drop-in
+`true`/`true`, pool at ten.*
 
-**Passe de pliage des résidus, 2026-08-19 (seconde passe du jour).** Six corrections,
-dont trois majeures. Aucune n'ajoute de contenu neuf au plan : chacune répare un
-inventaire ou une cotation que le plan croyait complets.
+**Residue-folding pass, 2026-08-19 (second pass of the day).** Six corrections,
+three of them major. None adds new content to the plan: each fixes an inventory
+or a score the plan believed complete.
 
-| Ce qui manquait ou était faux | Ce qui est vrai | Où |
+| What was missing or false | What is true | Where |
 |---|---|---|
-| « régénérer `ops/recovery/` » lu comme **un** asset | **Deux** assets v4 : `brain-v42-v4-pgrestore.sql` porte les mêmes structures (12 lignes des quatre tokens, 15 avec les index, mesuré), est exécutée contre une base réelle (`…v4_execution.py:106`, `parametrize` sur les deux) et tenue en **parité de CTE** (`…v4_pgrestore.py:29-33`). `grep -c pgrestore` sur les trois documents rendait **0/0/0** | R1.1, R1.5, §3 et §5 critères, §8 |
-| « L'attestation casse par **trois** mécanismes » | **Quatre** : `expected_session_indexes` (`v4.sql:404-412`, contrôlée `:665`/`:687`, doublée par `SESSION_INDEX_DEFINITION_MD5`, `test_recovery_contract_v3.py:164-168,488`) fige la liste **FERMÉE** des index de `brain_sessions` | R1.5 |
-| « trois des six têtes », énoncé sans condition | Vrai **seulement si** aucune tête n'ajoute d'index sur `brain_sessions`. Sinon : trois têtes / deux structures pour M-A, ou **quatre têtes sur sept** | R1.5, §8 |
-| Le mot « index » absent du plan | `started_by_actor` naît **sans index**, et l'émetteur D5 filtre dessus **deux fois par appel outermost**. Index mesurés le 2026-08-19 : `brain_sessions_pkey`, `uq_brain_sessions_project_client`, `idx_brain_sessions_project_status_started` — aucun ne couvre l'acteur. Décision **instruite, non tranchée** ; coût **mesuré en Phase 0** | §3.3, §3.6, §2 (baseline), §8 |
-| B8 « Haute (contrainte) » sans date | **Cotée sur une mesure périmée** : spike mesuré sur Claude Code **2.1.220**, `claude --version` = **2.1.234** le 2026-08-19. Re-jeu du spike = **étape de Phase 0** (§2 contenu n° 6) avec critère, et la baseline mesure désormais la part d'appels portant un `X-Brain-Session` normalisable | §0, §2, §7 |
-| Population d'ambiguïté présentée comme à découvrir en P0 | Mesure **partielle** déjà dans `7ffe0e8a` (2026-08-16 : `auto-discord` 6, `red-arena` 3, `claude-dev-pc`/`red-lab` 2), plafond par projet et non par couple ; re-mesurée le 2026-08-19 : **24 des 29 `open`** dans un projet à ≥2 | §2 (baseline) |
-| « la production avance d'un cran (CAS 209→210) » | **Corroboration retirée** — ce CAS est un `brain_session_end` (DOSSIER §B6), pas `roadmap_service`, et rien ne dit que le TEXTE du focus ait changé. Preuve = source plpgsql seule (`032_brain_sessions.py:19-34`) | §5.3 |
-| « 18 balayables » sans caveat | **29 `open` / 21 balayables >7 j / 24 stale >24 h** sur 467 lignes, mesurés le 2026-08-19 | §0, §6 (4.3) |
+| "regenerate `ops/recovery/`" read as **one** asset | **Two** v4 assets: `brain-v42-v4-pgrestore.sql` carries the same structures (12 lines with the four tokens, 15 with the indexes, measured), is run against a real database (`…v4_execution.py:106`, `parametrize` over both) and held to **CTE parity** (`…v4_pgrestore.py:29-33`). `grep -c pgrestore` across the three documents returned **0/0/0** | R1.1, R1.5, §3 and §5 criteria, §8 |
+| "The attestation breaks via **three** mechanisms" | **Four**: `expected_session_indexes` (`v4.sql:404-412`, checked at `:665`/`:687`, doubled by `SESSION_INDEX_DEFINITION_MD5`, `test_recovery_contract_v3.py:164-168,488`) freezes the **CLOSED** list of `brain_sessions` indexes | R1.5 |
+| "three of the six heads," stated unconditionally | True **only if** no head adds an index on `brain_sessions`. Otherwise: three heads / two structures for M-A, or **four heads out of seven** | R1.5, §8 |
+| The word "index" absent from the plan | `started_by_actor` is born **with no index**, and the D5 emitter filters on it **twice per outermost call**. Indexes measured on 2026-08-19: `brain_sessions_pkey`, `uq_brain_sessions_project_client`, `idx_brain_sessions_project_status_started` — none covers the actor. Decision **briefed, not settled**; cost **measured in Phase 0** | §3.3, §3.6, §2 (baseline), §8 |
+| B8 "High (constraint)" with no date | **Scored on a stale measurement**: spike measured on Claude Code **2.1.220**, `claude --version` = **2.1.234** on 2026-08-19. Spike replay = **a Phase 0 step** (§2 content #6) with a criterion, and the baseline now measures the share of calls carrying a normalizable `X-Brain-Session` | §0, §2, §7 |
+| Ambiguity population presented as still to discover in P0 | **Partial** measurement already in `7ffe0e8a` (2026-08-16: `auto-discord` 6, `red-arena` 3, `claude-dev-pc`/`red-lab` 2), a ceiling by project, not by pair; re-measured on 2026-08-19: **24 of the 29 `open`** sessions in a project with ≥2 | §2 (baseline) |
+| "production advances by one notch (CAS 209→210)" | **Corroboration withdrawn** — this CAS is a `brain_session_end` (DOSSIER §B6), not `roadmap_service`, and nothing says the focus TEXT changed. Proof = plpgsql source alone (`032_brain_sessions.py:19-34`) | §5.3 |
+| "18 sweepable" with no caveat | **29 `open` / 21 sweepable >7 d / 24 stale >24 h** out of 467 rows, measured on 2026-08-19 | §0, §6 (4.3) |
 
-*Mesures de cette passe, lecture seule, datées et **périssables** : head `045` ;
-`brain_sessions` 467 lignes, 29 `open`, 21 >7 j, 24 >24 h ; trois index sur
-`brain_sessions`, aucun sur un acteur ; sessions `open` par projet ≥2 → `auto-discord` 8,
-`brain-v42` 4, `red-arena` 4, quatre projets à 2 ; `claude --version` = 2.1.234 ;
-`grep -c pgrestore` = 0/0/0 sur les trois documents avant la passe. Aucun commit, aucune
-écriture brain, aucune écriture DB, aucun fichier touché hors
-`docs/design/refonte-projets-sessions/`.*
+*Measurements from this pass, read-only, dated and **perishable**: head `045`;
+`brain_sessions` 467 rows, 29 `open`, 21 >7 d, 24 >24 h; three indexes on
+`brain_sessions`, none on an actor; `open` sessions per project ≥2 →
+`auto-discord` 8, `brain-v42` 4, `red-arena` 4, four projects at 2;
+`claude --version` = 2.1.234; `grep -c pgrestore` = 0/0/0 across the three
+documents before the pass. No commit, no brain write, no DB write, no file
+touched outside `docs/design/refonte-projets-sessions/`.*

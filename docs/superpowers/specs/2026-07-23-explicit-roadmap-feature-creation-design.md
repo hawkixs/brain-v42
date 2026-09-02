@@ -1,70 +1,69 @@
-# Création explicite de features roadmap
+# Explicit creation of roadmap features
 
-**Date** : 2026-07-23
+**Date**: 2026-07-23
 
-**Statut** : décision implémentée
+**Status**: decision implemented
 
-**Décision Brain liée** : `1e9b1929`
+**Related Brain decision**: `1e9b1929`
 
-**Supersède partiellement** : `2026-07-04-roadmap-curation-design.md` §2.1 et §11,
-uniquement sur l'exclusivité de ClusterGuard comme writer de `features`.
+**Partially supersedes**: `2026-07-04-roadmap-curation-design.md` §2.1 and §11,
+only on ClusterGuard's exclusivity as the writer of `features`.
 
-## Contexte
+## Context
 
-La roadmap était alimentée uniquement par ClusterGuard à partir d'un signal déjà
-capturé. Ce modèle reste adapté aux features émergentes, mais ne permet pas à un
-agent ou à un opérateur de déclarer une intention de travail avant la création
-d'un artefact. Fabriquer un faux signal pour obtenir cette ligne brouillerait la
-provenance et rendrait le résultat dépendant d'une décision sémantique implicite.
+The roadmap was fed exclusively by ClusterGuard from an already captured
+signal. This model remains suited to emergent features, but does not let an
+agent or an operator declare an intent to work before an artifact is
+created. Fabricating a fake signal to obtain this line would blur
+provenance and make the result dependent on an implicit semantic decision.
 
-## Décision
+## Decision
 
-Ajouter `brain_feature_create` comme second chemin d'écriture volontaire :
+Add `brain_feature_create` as a second, deliberate write path:
 
-- ClusterGuard reste le writer des signaux et conserve sa déduplication
-  sémantique ;
-- `brain_feature_create` crée exactement la feature demandée, sans invoquer
-  ClusterGuard ;
-- la création exige un `project_context` existant, des champs validés et un
-  embedding exploitable ;
-- un doublon exact de nom, après trim et normalisation de casse dans le même
-  projet, est rejeté ;
-- toute erreur contrôlée est fail-closed et ne persiste aucune feature.
+- ClusterGuard remains the writer of signals and keeps its semantic
+  deduplication;
+- `brain_feature_create` creates exactly the requested feature, without invoking
+  ClusterGuard;
+- creation requires an existing `project_context`, validated fields and a
+  usable embedding;
+- an exact name duplicate, after trimming and case normalization within the same
+  project, is rejected;
+- any controlled error is fail-closed and persists no feature.
 
-La feature explicite est `pinned` par défaut pour rester visible dans la roadmap.
-Le statut initial peut être l'un des statuts vivants, mais jamais `archived`.
+The explicit feature is `pinned` by default to stay visible in the roadmap.
+The initial status can be any of the live statuses, but never `archived`.
 
-## Concurrence et portée de l'unicité
+## Concurrency and scope of uniqueness
 
-Le service verrouille la ligne `project_contexts` du projet, revalide le projet et
-le nom dans la même transaction, puis insère. Deux créations **explicites**
-concurrentes du même nom donnent donc un succès et un conflit.
+The service locks the project's `project_contexts` row, revalidates the project and
+the name in the same transaction, then inserts. Two concurrent **explicit**
+creations of the same name therefore yield one success and one conflict.
 
-Cette garantie n'est pas globale : ClusterGuard ne prend pas ce verrou et la
-table ne porte pas de contrainte unique sur `(project_key, lower(trim(name)))`.
-Une course entre une création explicite et un signal ClusterGuard peut encore
-produire deux lignes. La documentation et les réponses du tool ne doivent donc
-pas promettre une unicité inter-writers.
+This guarantee is not global: ClusterGuard does not take this lock, and
+the table carries no unique constraint on `(project_key, lower(trim(name)))`.
+A race between an explicit creation and a ClusterGuard signal can still
+produce two rows. The documentation and the tool's responses must
+therefore not promise cross-writer uniqueness.
 
-Une contrainte SQL fonctionnelle n'est pas ajoutée dans ce lot : elle exigerait
-d'abord un audit et une remédiation des doublons historiques, et elle pourrait
-rejeter des features sémantiquement distinctes partageant un titre court. Un
-protocole de verrou commun aux deux writers reste une amélioration de stabilité à
-évaluer séparément.
+A functional SQL constraint is not added in this lot: it would first require an
+audit and remediation of historical duplicates, and it could reject
+semantically distinct features sharing a short title. A lock protocol shared
+across both writers remains a stability improvement to evaluate separately.
 
-## Alternatives écartées
+## Alternatives discarded
 
-1. **Continuer sans création explicite** : ne couvre pas le travail planifié avant
-   artefact et pousse à falsifier un signal.
-2. **Faire passer la demande par ClusterGuard** : le résultat pourrait être un
-   lien ou un merge alors que l'appelant demande une création déterministe.
-3. **Ajouter immédiatement une unicité SQL** : migration risquée sans inventaire
-   des doublons et contrat produit sur les titres identiques.
+1. **Continue without explicit creation**: does not cover work planned before an
+   artifact and pushes toward falsifying a signal.
+2. **Route the request through ClusterGuard**: the result could be a
+   link or a merge when the caller requests a deterministic creation.
+3. **Add SQL uniqueness immediately**: risky migration without an inventory
+   of duplicates and no product contract on identical titles.
 
-## Vérification
+## Verification
 
-- validation du payload et du schéma MCP ;
-- échec avant embedding pour projet absent ou doublon exact existant ;
-- échec avant écriture pour embedding indisponible ou invalide ;
-- test PostgreSQL de deux créations explicites concurrentes ;
-- suites unitaires et d'intégration complètes, Ruff et mypy avant livraison.
+- payload and MCP schema validation;
+- failure before embedding for a missing project or an existing exact duplicate;
+- failure before write for an unavailable or invalid embedding;
+- PostgreSQL test of two concurrent explicit creations;
+- full unit and integration suites, Ruff and mypy before delivery.

@@ -1,14 +1,14 @@
-# Déclaration — ce qu'une restauration change, et ne change pas, dans une recherche sémantique
+# Declaration — what a restore changes, and doesn't change, in a semantic search
 
-**Mesuré le 2026-08-23 sur les embeddings RÉELS de la production `brain-v42`.**
-Ticket `cfd26e9d`. Cette page est une DÉCLARATION, pas une procédure de réparation :
-elle sert à décider, après un restore, si un écart observé est du bruit ou une panne.
+**Measured on 2026-08-23 on the REAL embeddings of `brain-v42` production.** Ticket
+`cfd26e9d`. This page is a DECLARATION, not a repair procedure: it serves to decide,
+after a restore, whether an observed gap is noise or a failure.
 
 ---
 
-## 0. À lire avant tout : aujourd'hui, la question ne se pose pas
+## 0. Read before anything else: today, the question doesn't arise
 
-**Aucun des 9 index HNSW n'est emprunté par la production.** Mesuré le 2026-08-23 :
+**None of the 9 HNSW indexes are used by production.** Measured on 2026-08-23:
 
 ```
 select s.relname, s.indexrelname, s.idx_scan
@@ -19,151 +19,151 @@ where a.amname = 'hnsw'
 order by s.idx_scan desc;
 ```
 
-→ `idx_scan = 0` sur les neuf, après 12 j 21 h d'uptime. Sur la MÊME table au MÊME
-instant, `learnings_pkey` compte 894 194 parcours et l'index FTS GIN 5 071 : le compteur
-fonctionne, l'index HNSW n'est simplement jamais atteint.
+→ `idx_scan = 0` on all nine, after 12d 21h of uptime. On the SAME table at the SAME
+instant, `learnings_pkey` counts 894,194 scans and the FTS GIN index 5,071: the counter
+works, the HNSW index is simply never reached.
 
-Le planificateur préfère un `Seq Scan` + tri exact : sur `learnings`, 620 contre 1 827
-pour le parcours HNSW forcé. Une seule table, `indexed_plan_chunks`, choisit HNSW sur une
-requête nue — mais sa vraie requête de production porte une jointure obligatoire vers
-`indexed_plans` et deux filtres de statut, et retombe sur `Hash Join` + deux `Seq Scan`.
+The planner prefers a `Seq Scan` + exact sort: on `learnings`, 620 against 1,827 for a
+forced HNSW scan. A single table, `indexed_plan_chunks`, picks HNSW on a bare query —
+but its actual production query carries a mandatory join to `indexed_plans` and two
+status filters, and falls back to `Hash Join` + two `Seq Scan`.
 
-**Conséquence** : la recherche sémantique de `brain-v42` est aujourd'hui un KNN EXACT par
-force brute. Le non-déterminisme de reconstruction HNSW **n'a aucun effet sur les résultats
-rendus à un humain.** Le churn décrit plus bas est CONDITIONNEL — il n'existe que si l'index
-redevient emprunté.
+**Consequence**: `brain-v42`'s semantic search is today an EXACT brute-force KNN. HNSW
+rebuild non-determinism **has no effect on results shown to a human.** The churn
+described below is CONDITIONAL — it only exists if the index becomes used again.
 
-### Quand cette déclaration cessera d'être vraie
+### When this declaration will stop being true
 
-Le basculement est piloté par le nombre de PAGES, donc par la taille du corpus. Mesuré par
-insertions successives sur une copie jetable de la production :
+The switchover is driven by the number of PAGES, hence by corpus size. Measured through
+successive inserts on a disposable copy of production:
 
-| `learnings` | relpages | plan choisi |
+| `learnings` | relpages | plan chosen |
 |---|---|---|
-| 3 167 (aujourd'hui) | 512 | `Seq Scan` |
-| 5 567 | 863 | `Seq Scan` |
-| **5 967** | **924** | **`Index Scan using idx_learnings_embedding`** |
+| 3,167 (today) | 512 | `Seq Scan` |
+| 5,567 | 863 | `Seq Scan` |
+| **5,967** | **924** | **`Index Scan using idx_learnings_embedding`** |
 
-**Seuil : ~5 800 lignes sur `learnings`, contre 3 167 aujourd'hui** — environ 82 % de marge.
-À 13,4 lignes/jour (rythme mesuré sur 90 jours) cela fait ~6,5 mois ; au rythme d'août
-(606/mois) ~4,5 mois. **Le déclencheur est le COMPTE DE LIGNES, pas la date.**
+**Threshold: ~5,800 rows on `learnings`, against 3,167 today** — about 82% margin. At
+13.4 rows/day (rate measured over 90 days) that's ~6.5 months; at August's rate
+(606/month) ~4.5 months. **The trigger is the ROW COUNT, not the date.**
 
-> **Contrôle à refaire avant de se fier à cette page** : rejouer la requête `idx_scan`
-> ci-dessus. Si un seul des neuf compteurs est non nul, la section 0 est périmée et les
-> sections 1–3 deviennent le régime courant.
+> **Check to redo before trusting this page**: replay the `idx_scan` query above. If a
+  single one of the nine counters is non-zero, section 0 is stale and sections 1–3
+  become the current regime.
 
 ---
 
-## 1. Ce qu'une restauration ne change JAMAIS
+## 1. What a restore NEVER changes
 
-`pg_dump` ne transporte **aucun graphe** : le TOC de l'archive porte 9 entrées `INDEX` et
-zéro octet de graphe HNSW. Les neuf index sont **reconstruits** à la restauration.
+`pg_dump` carries **no graph at all**: the archive's TOC holds 9 `INDEX` entries and
+zero bytes of HNSW graph. The nine indexes are **rebuilt** on restore.
 
-Malgré cela, sur le chemin EXACT — celui que la production emprunte :
+Despite this, on the EXACT path — the one production uses:
 
-| Comparaison | recouvrement top-10 | même ENSEMBLE | même ORDRE |
+| Comparison | top-10 overlap | same SET | same ORDER |
 |---|---|---|---|
 | restore A vs restore B | **10,000 / 10** | 1544/1544 | 1544/1544 |
 | production vs restore | 9,997 / 10 | 1540/1544 | 1518/1544 |
 
-Les 26 requêtes qui diffèrent entre production et restore diffèrent **à 100 % par
-départage d'égalités** : la séquence des 10 distances est identique au chiffre près
-(`max |Δd| = 0.000e+00`). Deux lignes à distance rigoureusement égale sortent dans l'ordre
-du tas, et un tas fraîchement restauré est compacté autrement qu'un tas vieux de huit mois.
+The 26 queries that differ between production and restore differ **100% by
+tie-breaking**: the sequence of the 10 distances is identical down to the digit (`max
+|Δd| = 0.000e+00`). Two rows at a strictly equal distance come out in heap order, and a
+freshly restored heap is compacted differently from an eight-month-old one.
 
-> **Aucune perte sémantique. Zéro.** Un ordre qui bouge entre deux lignes à égalité parfaite
-> n'est pas une dégradation.
+> **No semantic loss. Zero.** An order that shifts between two perfectly tied rows is
+  not a degradation.
 
 ---
 
-## 2. Le churn CONDITIONNEL, si l'index redevient emprunté
+## 2. The CONDITIONAL churn, if the index becomes used again
 
-Mesuré en forçant le parcours d'index (`set enable_seqscan = off`), sur les embeddings réels,
-**n = 1 544 requêtes**, top-k = 10, corpus = les 9 tables (7 555 vecteurs au total).
+Measured by forcing an index scan (`set enable_seqscan = off`), on real embeddings, **n
+= 1,544 queries**, top-k = 10, corpus = the 9 tables (7,555 vectors total).
 
-### 2.1 Le bruit de reconstruction — sept mesures indépendantes
+### 2.1 Rebuild noise — seven independent measurements
 
-| Reconstruction | recouvrement | même ENSEMBLE |
+| Reconstruction | overlap | same SET |
 |---|---|---|
-| `reindex` passe 1 | 9,847 | 96,6 % |
-| `reindex` passe 2 | 9,901 | 96,9 % |
-| `reindex` passe 3 | 9,814 | 96,2 % |
-| `reindex`, `max_parallel_maintenance_workers=0` | 9,842 | 96,4 % |
-| `reindex`, `max_parallel_maintenance_workers=2` | 9,869 | 96,8 % |
-| `drop` + `create` | 9,836 | 96,6 % |
-| **restore A vs restore B** | **9,866** | **96,8 %** |
+| `reindex` pass 1 | 9,847 | 96.6% |
+| `reindex` pass 2 | 9,901 | 96.9% |
+| `reindex` pass 3 | 9,814 | 96.2% |
+| `reindex`, `max_parallel_maintenance_workers=0` | 9,842 | 96.4% |
+| `reindex`, `max_parallel_maintenance_workers=2` | 9,869 | 96.8% |
+| `drop` + `create` | 9,836 | 96.6% |
+| **restore A vs restore B** | **9,866** | **96.8%** |
 
-**BANDE DE BRUIT : 9,81 – 9,90 de recouvrement, 96,2 – 96,9 % de requêtes au top-10 identique.**
+**NOISE BAND: 9.81 – 9.90 overlap, 96.2 – 96.9% of queries identical at top-10.**
 
-Deux restaurations indépendantes du MÊME dump tombent à 9,866 — **à l'intérieur** de la bande.
-Une restauration n'ajoute donc **rien** au bruit d'une simple reconstruction.
+Two independent restores of the SAME dump land at 9.866 — **inside** the band. A restore
+therefore adds **nothing** to the noise of a plain rebuild.
 
-Désactiver la construction parallèle ne corrige rien (9,842 contre 9,869) : le régime
-séquentiel est marginalement le plus instable des deux.
+Disabling parallel build fixes nothing (9.842 against 9.869): the sequential regime is
+marginally the more unstable of the two.
 
-### 2.2 Ce n'est pas le graphe qui bouge, ce sont les égalités
+### 2.2 It's not the graph that moves, it's the ties
 
-En comparant les DISTANCES et non les identifiants :
+Comparing DISTANCES rather than identifiers:
 
-| Comparaison | requêtes qui diffèrent | dont pur départage d'égalité | dont churn réel | `max abs delta d` |
+| Comparison | queries that differ | of which pure tie-breaking | of which real churn | `max abs delta d` |
 |---|---|---|---|---|
-| reconstruction vs restore | 69 / 1544 (4,5 %) | **84,1 %** | 15,9 % | 6,7e-03 |
-| production vive vs restore | 227 / 1544 (14,7 %) | 63,0 % | 37,0 % | 3,0e-01 |
+| rebuild vs restore | 69 / 1544 (4.5%) | **84.1%** | 15.9% | 6.7e-03 |
+| live production vs restore | 227 / 1544 (14.7%) | 63.0% | 37.0% | 3.0e-01 |
 
-Les tables riches en doublons churnent le plus, et ce churn est **entièrement fictif** :
+The tables richest in duplicates churn the most, and this churn is **entirely
+fictitious**:
 
-| table | vecteurs distincts | churn de reconstruction | dont égalités |
+| table | distinct vectors | rebuild churn | of which ties |
 |---|---|---|---|
-| `gitlab_events` | 166 / 239 (69,5 %) | 8,85 / 10 — le pire | **100 %** |
-| `indexed_plans` | 180 / 199 (90,5 %) | ensemble stable, ordre non | **100 %** |
-| `learnings` | 3 061 / 3 167 (96,7 %) | 10,00 / 10 | — |
-| `snippets`, `runbooks`, `adrs` | 100 % | 10,00 / 10 | — |
+| `gitlab_events` | 166 / 239 (69.5%) | 8.85 / 10 — the worst | **100%** |
+| `indexed_plans` | 180 / 199 (90.5%) | stable set, order not | **100%** |
+| `learnings` | 3,061 / 3,167 (96.7%) | 10.00 / 10 | — |
+| `snippets`, `runbooks`, `adrs` | 100% | 10.00 / 10 | — |
 
-`gitlab_events` a la pire apparence et la distance moyenne la plus stable de tout le corpus
-(0,198894 sur les trois états, au chiffre près). Son « churn » est le brassage de titres
-identiques — « Merge branch… » — vectorisés à l'identique.
+`gitlab_events` has the worst-looking numbers and the most stable average distance in
+the whole corpus (0.198894 across the three states, down to the digit). Its "churn" is
+the shuffling of identical titles — "Merge branch…" — vectorized identically.
 
-### 2.3 Un cas qui SORT de la bande, et ce n'est pas la restauration
+### 2.3 A case that DOES fall outside the band, and it isn't the restore
 
-| Comparaison | recouvrement | même ENSEMBLE |
+| Comparison | overlap | same SET |
 |---|---|---|
-| **production vive vs restore** | **9,70 – 9,73** | **90,2 %** |
+| **live production vs restore** | **9.70 – 9.73** | **90.2%** |
 
-L'index de production est maintenu **incrémentalement** depuis des mois ; un restore le
-**reconstruit en masse**. Ce sont deux graphes différents, et l'écart est réel — 37 % des
-divergences déplacent une vraie distance, jusqu'à 0,30. C'est le chiffre qu'un opérateur
-constaterait, et il est **plus grand** que l'écart entre deux restaurations.
+Production's index is maintained **incrementally** over months; a restore **rebuilds it
+in bulk**. These are two different graphs, and the gap is real — 37% of the divergences
+shift a genuine distance, by up to 0.30. This is the figure an operator would observe,
+and it's **bigger** than the gap between two restores.
 
 ---
 
-## 3. Distinguer le bruit d'une vraie dégradation
+## 3. Telling noise apart from a real degradation
 
-### La règle
+### The rule
 
-> **Ne comparez JAMAIS des listes d'identifiants.** Jusqu'à 15 % des requêtes rendent des
-> identifiants différents sans qu'aucune distance n'ait bougé.
-> **Comparez le NOMBRE de lignes rendues, puis la DISTANCE MOYENNE du top-10.**
+> **NEVER compare lists of identifiers.** Up to 15% of queries return different
+  identifiers with no distance having moved at all. **Compare the NUMBER of rows
+  returned, then the AVERAGE DISTANCE of the top-10.**
 
-### Les trois signaux, avec leurs bandes mesurées
+### The three signals, with their measured bands
 
-| Signal | Sain (mesuré) | En panne (mesuré) |
+| Signal | Healthy (measured) | Broken (measured) |
 |---|---|---|
-| lignes rendues par requête | **10,000** | 1,095 (`ef_search` effondré) |
-| distance moyenne du top-10 | **0,31017 – 0,31027** | 0,31670 (`m=4`, `ef_construction=8`) |
-| rappel vs KNN exact | **0,974 – 0,979** | 0,820 |
+| rows returned per query | **10.000** | 1.095 (`ef_search` collapsed) |
+| top-10 average distance | **0.31017 – 0.31027** | 0.31670 (`m=4`, `ef_construction=8`) |
+| recall vs exact KNN | **0.974 – 0.979** | 0.820 |
 
-La distance moyenne bouge de 1,0e-04 sur toute la bande saine et de **6,5e-03 sur une vraie
-dégradation : le signal vaut ~60 fois le bruit.** Le nombre de lignes rendues attrape à lui
-seul l'effondrement d'`ef_search`, que la distance moyenne ne montrerait pas.
+The average distance moves by 1.0e-04 across the whole healthy band and by **6.5e-03 on
+a real degradation: the signal is worth ~60 times the noise.** Row count alone catches
+the `ef_search` collapse, which the average distance wouldn't show.
 
-### La sonde opérateur
+### The operator probe
 
-À jouer sur la base restaurée, puis sur une référence. Aucune écriture.
+To run against the restored database, then against a reference. No writes.
 
 ```sql
--- Remplacer <TABLE> et coller un vecteur de requête réel (1536 flottants).
--- Jouer DEUX fois : tel quel (chemin nominal), puis avec `set enable_seqscan = off`
--- (chemin HNSW forcé). Comparer les deux sorties.
+-- Replace <TABLE> and paste a real query vector (1536 floats).
+-- Run TWICE: as-is (nominal path), then with `set enable_seqscan = off`
+-- (forced HNSW path). Compare the two outputs.
 set extra_float_digits = 3;
 select count(*)              as lignes_rendues,   -- attendu : 10
        round(avg(d)::numeric, 6) as distance_moyenne
@@ -176,57 +176,58 @@ from (
 ) s;
 ```
 
-### Lecture
+### Reading it
 
-1. `lignes_rendues < 10` → **panne**. L'index rend moins de candidats que demandé.
-2. `distance_moyenne` **supérieure de plus de 1 %** à la référence → **panne**
-   (une vraie dégradation `m=4` donne +2,1 % ; le bruit de reconstruction donne +0,03 %).
-3. `distance_moyenne` dans ±0,1 % et 10 lignes rendues → **bruit de reconstruction**, même si
-   la moitié des identifiants ont changé. Ne cherchez pas de corruption.
-4. Comparaison décisive quand aucune référence n'est disponible : rejouer la MÊME requête
-   avec `set enable_indexscan = off` (KNN exact, déterministe) et comparer la distance
-   moyenne. **L'écart exact↔HNSW est le rappel** ; c'est la seule mesure absolue.
+1. `lignes_rendues < 10` → **failure**. The index returns fewer candidates than
+   requested.
+2. `distance_moyenne` **more than 1% above** the reference → **failure** (a real `m=4`
+   degradation gives +2.1%; rebuild noise gives +0.03%).
+3. `distance_moyenne` within ±0.1% and 10 rows returned → **rebuild noise**, even if
+   half the identifiers changed. Don't go looking for corruption.
+4. Decisive comparison when no reference is available: replay the SAME query with `set
+   enable_indexscan = off` (exact KNN, deterministic) and compare the average distance.
+   **The exact↔HNSW gap is the recall**; it's the only absolute measure.
 
-### Contrôle de la sonde, joué dans les deux sens
+### Probe control, run in both directions
 
-La sonde a été cassée puis réparée, pour prouver qu'elle réagit :
+The probe was broken then repaired, to prove it reacts:
 
-| État | distance moyenne | lignes | rappel | recouvrement d'identifiants |
+| State | average distance | rows | recall | identifier overlap |
 |---|---|---|---|---|
-| restore sain | 0,310173 | 10,000 | 0,9742 | référence |
-| **cassé** `m=4, ef_construction=8` | **0,316698** | 10,000 | **0,8196** | **8,222 / 45,9 %** |
-| **réparé** `m=16, ef_construction=64` | **0,310172** | 10,000 | **0,9727** | **9,836 / 96,6 %** |
+| healthy restore | 0.310173 | 10.000 | 0.9742 | reference |
+| **broken** `m=4, ef_construction=8` | **0.316698** | 10.000 | **0.8196** | **8.222 / 45.9%** |
+| **repaired** `m=16, ef_construction=64` | **0.310172** | 10.000 | **0.9727** | **9.836 / 96.6%** |
 
-Casser → la sonde sort de la bande. Réparer → elle y revient.
-
----
-
-## 4. Pourquoi le chiffre synthétique ne devait pas être publié
-
-Une mesure antérieure sur vecteurs **synthétiques uniformes** annonçait un bruit de
-reconstruction de **8,60 / 10, 4 requêtes sur 20 inchangées (20 %)**.
-
-Sur embeddings réels, le bruit est de **9,87 / 10 et 96,8 % de requêtes inchangées.**
-
-Et surtout — un index **réellement dégradé** (`m=4`) mesure **8,222 / 10 et 40,9 %
-d'identifiants inchangés.**
-
-> **Le chiffre synthétique était PIRE qu'une panne réelle.** Publié comme « normal après un
-> restore », il aurait rendu invisible exactement la dégradation qu'il fallait voir. C'est le
-> second mode de panne — la vraie dégradation couverte par le bruit déclaré — et il était à
-> deux dixièmes de point d'être gravé dans ce runbook.
+Break it → the probe leaves the band. Repair it → it comes back.
 
 ---
 
-## 5. Voisin constaté, non traité ici
+## 4. Why the synthetic figure should never have been published
 
-La production porte `extversion = '0.8.2'`, mais son `vector.so` a le md5
-`5cfaddef0e7c4931811a3384466259c3`, **identique au binaire de l'image `0.8.4-pg16`** et
-différent de celui de `0.8.2-pg16` (`5c971952ab066b12175bad518d32de79`). L'image ne porte
-qu'UN `vector.so`, qu'UN script d'extension, et `pg_available_extension_versions` n'y rend
-que `0.8.4`.
+An earlier measurement on **uniform synthetic vectors** claimed rebuild noise of **8.60
+/ 10, 4 queries out of 20 unchanged (20%)**.
 
-**Une base restaurée depuis cette image déclare `extversion = '0.8.4'`.** Un contrôle de
-contrat qui compare l'étiquette d'extension source à celle de la cible **échouera donc sur une
-restauration parfaitement saine**. Constaté au passage ; le contrat DR n'est pas modifié ici
+On real embeddings, the noise is **9.87 / 10 and 96.8% of queries unchanged.**
+
+And above all — an index that is **actually degraded** (`m=4`) measures **8.222 / 10 and
+40.9% of identifiers unchanged.**
+
+> **The synthetic figure was WORSE than a real failure.** Published as "normal after a
+  restore", it would have made invisible exactly the degradation it was meant to catch.
+  That's the second failure mode — a real degradation hidden by declared noise — and it
+  was two-tenths of a point away from being carved into this runbook.
+
+---
+
+## 5. A neighboring finding, not addressed here
+
+Production carries `extversion = '0.8.2'`, but its `vector.so` has md5
+`5cfaddef0e7c4931811a3384466259c3`, **identical to the `0.8.4-pg16` image binary** and
+different from `0.8.2-pg16`'s (`5c971952ab066b12175bad518d32de79`). The image carries
+only ONE `vector.so`, only ONE extension script, and `pg_available_extension_versions`
+reports only `0.8.4` there.
+
+**A database restored from this image declares `extversion = '0.8.4'`.** A contract
+check comparing the source extension label to the target's **will therefore fail on a
+perfectly healthy restore**. Noted in passing; the DR contract is not modified here
 (ticket `2ed0d4e0`).

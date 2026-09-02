@@ -2,35 +2,35 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rendre chaque ticket du backlog accessible depuis `brain_ticket_list`, signaler chaque coupe et remplacer l'ordre par âge croissant par un ordre d'activité documenté.
+**Goal:** Make every ticket in the backlog reachable from `brain_ticket_list`, flag every truncation, and replace the ascending-age order with a documented activity order.
 
-**Architecture:** Le dépôt garde la sélection complète des trois catégories et applique un ordre déterministe commun à tous ses consommateurs. Le tool MCP page ensuite chaque catégorie en mémoire, conserve les totaux et produit une notice navigable. Cette séparation évite une migration et préserve `TicketGroups` ainsi que le briefing de session.
+**Architecture:** The repository keeps the full selection of the three categories and applies a deterministic order common to all its consumers. The MCP tool then paginates each category in memory, keeps the totals, and produces a navigable notice. This separation avoids a migration and preserves `TicketGroups` as well as the session briefing.
 
 **Tech Stack:** Python 3.12+, FastMCP 3.x, SQLAlchemy 2 async, Pydantic 2, pytest, Ruff, mypy.
 
 ## Global Constraints
 
-- Suivre RED–GREEN–REFACTOR ; aucun code de production avant un test qui échoue pour la raison attendue.
-- Utiliser la venv ignorée du worktree en Python 3.12.12 et invoquer chaque outil par `.venv/bin/python -m ...`.
-- Exécuter l'impact GitNexus upstream avant de modifier chaque symbole existant.
-- Ne muter aucun ticket frère, ne lancer aucune requête SQL directe et ne déployer aucun changement.
-- Conserver les catégories « À traiter », « À confirmer » et « En attente de l'autre côté ».
-- Borner `limit` à `[1, 100]`, normaliser `offset` à `>= 0` et garder les valeurs par défaut `limit=10`, `offset=0`.
-- Ordonner par `updated_at DESC`, `created_at DESC`, puis `id ASC`.
+- Follow RED-GREEN-REFACTOR; no production code before a test that fails for the expected reason.
+- Use the worktree's ignored venv on Python 3.12.12 and invoke every tool via `.venv/bin/python -m ...`.
+- Run the GitNexus upstream impact before modifying each existing symbol.
+- Do not mutate any sibling ticket, do not run any direct SQL query, and do not deploy any change.
+- Keep the "À traiter", "À confirmer", and "En attente de l'autre côté" categories.
+- Bound `limit` to `[1, 100]`, normalize `offset` to `>= 0`, and keep the defaults `limit=10`, `offset=0`.
+- Order by `updated_at DESC`, `created_at DESC`, then `id ASC`.
 
 ---
 
-### Task 1: Pagination et notices MCP
+### Task 1: MCP Pagination and Notices
 
 **Files:**
 - Modify: `tests/unit/mcp/test_ticket_tools.py`
 - Modify: `src/brain_v42/mcp/tools/ticket_tools.py`
 
 **Interfaces:**
-- Consumes: `TicketGroups` complet renvoyé par `TicketService.list_grouped(project_key)`.
-- Produces: `brain_ticket_list(project_key: str, limit: int = 10, offset: int = 0) -> str` et `_format_groups(groups, project_key, limit, offset) -> str`.
+- Consumes: the complete `TicketGroups` returned by `TicketService.list_grouped(project_key)`.
+- Produces: `brain_ticket_list(project_key: str, limit: int = 10, offset: int = 0) -> str` and `_format_groups(groups, project_key, limit, offset) -> str`.
 
-- [ ] **Step 1: Ajouter le test RED de notice par défaut**
+- [ ] **Step 1: Add the RED test for the default-page notice**
 
 ```python
 async def test_list_default_page_reports_exact_omission_and_next_call(self):
@@ -46,13 +46,13 @@ async def test_list_default_page_reports_exact_omission_and_next_call(self):
     assert "limit=10, offset=10" in result
 ```
 
-- [ ] **Step 2: Exécuter le test et vérifier l'échec attendu**
+- [ ] **Step 2: Run the test and verify the expected failure**
 
 Run: `.venv/bin/python -m pytest tests/unit/mcp/test_ticket_tools.py::TestListAndGet::test_list_default_page_reports_exact_omission_and_next_call -q`
 
-Expected: FAIL, car le rendu actuel coupe à 10 sans notice.
+Expected: FAIL, because the current rendering truncates at 10 with no notice.
 
-- [ ] **Step 3: Ajouter le test RED d'accès aux pages ultérieures**
+- [ ] **Step 3: Add the RED test for reaching later pages**
 
 ```python
 async def test_list_offset_reaches_later_tickets_in_every_category(self):
@@ -72,13 +72,13 @@ async def test_list_offset_reaches_later_tickets_in_every_category(self):
     assert result.count("10 avant") == 2
 ```
 
-- [ ] **Step 4: Exécuter le test et vérifier l'échec attendu**
+- [ ] **Step 4: Run the test and verify the expected failure**
 
 Run: `.venv/bin/python -m pytest tests/unit/mcp/test_ticket_tools.py::TestListAndGet::test_list_offset_reaches_later_tickets_in_every_category -q`
 
-Expected: FAIL avec un argument `limit` inattendu, car le contrat MCP n'expose aucune pagination.
+Expected: FAIL with an unexpected `limit` argument, because the MCP contract exposes no pagination.
 
-- [ ] **Step 5: Implémenter la page et la notice minimales**
+- [ ] **Step 5: Implement the minimal page and notice**
 
 ```python
 _LIST_DEFAULT_LIMIT = 10
@@ -113,25 +113,25 @@ def _format_group_page(
         lines.append(notice + ")")
 ```
 
-Mettre `brain_ticket_list` en version `1.1`, borner `limit`, normaliser `offset`, passer les paramètres à `_format_groups` et documenter la pagination par catégorie.
+Bump `brain_ticket_list` to version `1.1`, bound `limit`, normalize `offset`, pass the parameters to `_format_groups`, and document per-category pagination.
 
-- [ ] **Step 6: Exécuter les tests MCP ciblés**
+- [ ] **Step 6: Run the targeted MCP tests**
 
 Run: `.venv/bin/python -m pytest tests/unit/mcp/test_ticket_tools.py -q`
 
 Expected: PASS.
 
-### Task 2: Ordre d'activité déterministe
+### Task 2: Deterministic Activity Order
 
 **Files:**
 - Modify: `tests/unit/repositories/test_pg_ticket.py`
 - Modify: `src/brain_v42/repositories/pg_ticket.py`
 
 **Interfaces:**
-- Consumes: table SQLAlchemy `tickets` avec `updated_at`, `created_at` et `id`.
-- Produces: trois listes `TicketGroups` dans le même ordre récent et stable.
+- Consumes: the SQLAlchemy `tickets` table with `updated_at`, `created_at`, and `id`.
+- Produces: three `TicketGroups` lists in the same recent, stable order.
 
-- [ ] **Step 1: Ajouter le test RED des trois requêtes**
+- [ ] **Step 1: Add the RED test for the three queries**
 
 ```python
 class TestListGrouped:
@@ -148,15 +148,15 @@ class TestListGrouped:
             assert "ORDER BY tickets.updated_at DESC, tickets.created_at DESC, tickets.id ASC" in sql
 ```
 
-- [ ] **Step 2: Exécuter le test et vérifier l'échec attendu**
+- [ ] **Step 2: Run the test and verify the expected failure**
 
 Run: `.venv/bin/python -m pytest tests/unit/repositories/test_pg_ticket.py::TestListGrouped::test_each_category_orders_recent_activity_first_with_stable_ties -q`
 
-Expected: FAIL, car les requêtes utilisent seulement `tickets.created_at ASC`.
+Expected: FAIL, because the queries only use `tickets.created_at ASC`.
 
-- [ ] **Step 3: Implémenter l'ordre minimal**
+- [ ] **Step 3: Implement the minimal order**
 
-Remplacer l'ordre existant par :
+Replace the existing order with:
 
 ```python
 .order_by(
@@ -166,32 +166,32 @@ Remplacer l'ordre existant par :
 )
 ```
 
-- [ ] **Step 4: Exécuter les suites ciblées**
+- [ ] **Step 4: Run the targeted suites**
 
 Run: `.venv/bin/python -m pytest tests/unit/mcp/test_ticket_tools.py tests/unit/repositories/test_pg_ticket.py tests/unit/services/test_ticket_service.py -q`
 
 Expected: PASS.
 
-### Task 3: Inventaire et livraison contrôlée
+### Task 3: Inventory and Controlled Delivery
 
 **Files:**
 - Modify only if a defect is found by verification: files already listed in Tasks 1 and 2.
 
 **Interfaces:**
-- Consumes: tools Brain de lecture `brain_ticket_list` et `brain_ticket_get`.
-- Produces: inventaire final des parents partiels, tickets sortants et tickets sans enfant ; commit local ; verdicts `red-reviewer` et `red-tester` sur un HEAD commun.
+- Consumes: the read-only Brain tools `brain_ticket_list` and `brain_ticket_get`.
+- Produces: a final inventory of partial parents, outgoing tickets, and childless tickets; a local commit; `red-reviewer` and `red-tester` verdicts on a common HEAD.
 
-- [ ] **Step 1: Inventorier sans mutation**
+- [ ] **Step 1: Take inventory without mutation**
 
-Lire les tickets cités par le ticket fe1c8c33 et consigner pour chacun son statut, son propriétaire, son résidu ou son blocage. Ne lancer ni `brain_ticket_reply` ni `brain_ticket_transition`.
+Read the tickets referenced by ticket fe1c8c33 and record, for each, its status, owner, residual work, or blocker. Do not run `brain_ticket_reply` or `brain_ticket_transition`.
 
-- [ ] **Step 2: Vérifier le périmètre GitNexus**
+- [ ] **Step 2: Verify the GitNexus scope**
 
 Run: `gitnexus_detect_changes(scope="all", worktree="/home/hawixs/.codex/worktrees/3aeb/brain_v42")`
 
-Expected: seuls `brain_ticket_list`, `_format_groups`, le nouveau helper de rendu, `PgTicketRepo.list_grouped` et leurs tests sont affectés.
+Expected: only `brain_ticket_list`, `_format_groups`, the new rendering helper, `PgTicketRepo.list_grouped`, and their tests are affected.
 
-- [ ] **Step 3: Exécuter les contrôles complets**
+- [ ] **Step 3: Run the full checks**
 
 ```bash
 .venv/bin/python -m pytest tests/unit -q
@@ -200,9 +200,9 @@ Expected: seuls `brain_ticket_list`, `_format_groups`, le nouveau helper de rend
 .venv/bin/python -m mypy src/
 ```
 
-Expected: quatre commandes à code retour 0.
+Expected: four commands with exit code 0.
 
-- [ ] **Step 4: Committer le périmètre du ticket**
+- [ ] **Step 4: Commit the ticket's scope**
 
 ```bash
 git add docs/superpowers/specs/2026-07-30-ticket-list-pagination-design.md \
@@ -214,6 +214,6 @@ git add docs/superpowers/specs/2026-07-30-ticket-list-pagination-design.md \
 git commit -m "fix(tickets): expose complete paginated backlog"
 ```
 
-- [ ] **Step 5: Obtenir deux verdicts frais sur le HEAD final**
+- [ ] **Step 5: Get two fresh verdicts on the final HEAD**
 
-Lancer `red-reviewer` et `red-tester` sur le même SHA. Corriger chaque constat actionnable en RED–GREEN–REFACTOR, committer, puis relancer les deux rôles sur le nouveau SHA jusqu'à deux verdicts positifs frais.
+Run `red-reviewer` and `red-tester` on the same SHA. Fix every actionable finding using RED-GREEN-REFACTOR, commit, then rerun both roles on the new SHA until two fresh positive verdicts are obtained.

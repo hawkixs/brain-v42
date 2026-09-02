@@ -1,74 +1,74 @@
 # Spec C MVP β — Cross-Project Briefing & Resonance Detection
 
-**Date** : 2026-05-01 (v2 post-multi-judge critique)
-**Status** : Implemented 2026-06-12 (plan: docs/plans/2026-06-12-spec-c-cross-project-resonance.md) — killswitch closed, rollout pending
-**Branch** : `feat/dream-cross-project-resonance-and-briefing`
-**Killswitch** : `BRAIN_DREAM_CROSS_PROJECT_ENABLED=false` (closed by default)
+**Date**: 2026-05-01 (v2 post-multi-judge critique)
+**Status**: Implemented 2026-06-12 (plan: docs/plans/2026-06-12-spec-c-cross-project-resonance.md) — killswitch closed, rollout pending
+**Branch**: `feat/dream-cross-project-resonance-and-briefing`
+**Killswitch**: `BRAIN_DREAM_CROSS_PROJECT_ENABLED=false` (closed by default)
 
 ## Context
 
-Le brain MCP (brain-v42) accumule de la connaissance per-project. Aujourd'hui, le Layer-2 domain registry (9 closed domains : infra, ml, backend, memory, tooling, data, ops, frontend, security) est opérationnel et déjà global au niveau Neo4j (`Domain {name}` n'est pas keyé sur `project_key`). Les repos PG acceptent déjà `project_keys: list[str]` pour multi-project filtering. Mais l'utilisateur (humain ou Claude) n'a aucune surface qui exploite cette topologie cross-project.
+The brain MCP (brain-v42) accumulates knowledge per-project. Today, the Layer-2 domain registry (9 closed domains: infra, ml, backend, memory, tooling, data, ops, frontend, security) is operational and already global at the Neo4j level (`Domain {name}` is not keyed on `project_key`). The PG repos already accept `project_keys: list[str]` for multi-project filtering. But the user (human or Claude) has no surface that exploits this cross-project topology.
 
-Spec C précédente (full) couvrait 4 angles. Ce MVP β scope deux angles seulement, choisis pour leurs bénéfices primaires :
-- **Knowledge transfer** : surfacer les insights pertinents d'autres projets quand on travaille sur le projet courant
-- **Resonance detection** (drift OR convergence candidates) : détecter les paires de décisions cross-project intra-domaine à haut cosinus, l'algorithme ne tranche pas le verdict (humain interprète)
+The previous Spec C (full) covered 4 angles. This MVP β scopes only two angles, chosen for their primary benefits:
+- **Knowledge transfer**: surface relevant insights from other projects when working on the current project
+- **Resonance detection** (drift OR convergence candidates): detect cross-project, intra-domain decision pairs at high cosine, the algorithm does not settle the verdict (human interprets)
 
 ## Goals & Non-Goals
 
 ### Goals (MVP)
-1. Enrichir `brain_session_start` avec une section "Cross-project insights" listant top-N entités d'autres projets dans les domaines actifs du projet courant.
-2. Ajouter un script `scripts/dream/cross_project_resonance.py` qui produit un rapport markdown nightly DRY_RUN-able des paires de décisions cross-project à cosine >= seuil.
-3. Killswitch fermé par défaut. Aucune écriture sans flag explicite + env var.
-4. Aucun nouveau tool MCP. Aucun changement de schéma DB ni Neo4j.
-5. Suite de tests existante (1837) reste verte. Nouveau code couvert TDD.
+1. Enrich `brain_session_start` with a "Cross-project insights" section listing the top-N entities from other projects in the current project's active domains.
+2. Add a script `scripts/dream/cross_project_resonance.py` that produces a nightly, DRY_RUN-able markdown report of cross-project decision pairs at cosine >= threshold.
+3. Killswitch closed by default. No write without an explicit flag + env var.
+4. No new MCP tool. No DB or Neo4j schema change.
+5. Existing test suite (1837) stays green. New code covered by TDD.
 
 ### Non-Goals
-- Pas de modif `brain_search` runtime (option α/δ — réservé pour itération future si MVP fonctionne).
-- Pas de tool MCP `brain_search_cross_project` ni équivalent (constraint utilisateur).
-- Pas d'écriture brain_learn automatique : DRY_RUN par défaut, mode WET nécessite review humaine sur ≥ 5 nuits.
-- Pas de cross-project warning inline dans `brain_log_decision` (γ/δ futurs).
-- Pas d'intégration cron (manuel d'abord, cron en follow-up séparé).
-- Pas d'integration tests pour MVP (unit suffit).
+- No `brain_search` runtime change (option α/δ — reserved for a future iteration if the MVP works).
+- No `brain_search_cross_project` MCP tool nor equivalent (user constraint).
+- No automatic brain_learn write: DRY_RUN by default, WET mode requires human review over ≥ 5 nights.
+- No inline cross-project warning in `brain_log_decision` (future γ/δ).
+- No cron integration (manual first, cron in a separate follow-up).
+- No integration tests for the MVP (unit tests suffice).
 
 ## Preconditions (verified during exploration)
 
-Le spec assume les invariants suivants. Si l'un casse, il faut un guard explicite (TBD pendant le plan) :
+The spec assumes the following invariants. If one breaks, an explicit guard is needed (TBD during planning):
 
-| Invariant | Vérifié | Si KO |
+| Invariant | Verified | If KO |
 |-----------|---------|-------|
-| `decisions.embedding` est `Vector(1536)` mais peut être NULL (cf. `pg_decision.py:245`) | ✅ | Le script DOIT filtrer `WHERE embedding IS NOT NULL` |
-| Tous les Decisions cross-project ont été embeddés avec **Qodo-Embed-1.5B** (1 seul modèle dans le codebase, cf. CLAUDE.md) | ✅ | Si modèle change un jour : recalcul intégral nécessaire — out of MVP |
-| Domain nodes globaux Neo4j keyés par `name` seul (cf. `graph_service.py:299`) | ✅ | — |
-| Edges `BELONGS_TO_DOMAIN` créés via Layer-2 (CONNECT step B agent-driven) | ✅ | Entités non encore classifiées sont silencieusement exclues du périmètre — comportement acceptable |
-| Constante `ALLOWED_DOMAINS` exportable depuis `services/graph_service.py` | ✅ | Réutilisée tel quelle dans le script |
-| `Project {project_key}` Neo4j node existe pour chaque projet actif | À vérifier au plan | Cypher renvoie 0 résultats si manquant — section briefing omise (graceful) |
-| Module thresholds : `src/brain_v42/thresholds.py` avec `by_name(name) -> ThresholdSpec | None` (cf. ligne 146) | ✅ | Spec utilise `by_name("cross_project_resonance_min").value` |
-| pgvector `<=>` operator natif sur `decisions.embedding` (cf. `pg_decision.py:247`) | ✅ | Pair-cosine fait en PG, pas en Python (cf. décision archi ci-dessous) |
+| `decisions.embedding` is `Vector(1536)` but can be NULL (cf. `pg_decision.py:245`) | ✅ | The script MUST filter `WHERE embedding IS NOT NULL` |
+| All cross-project Decisions were embedded with **Qodo-Embed-1.5B** (1 single model in the codebase, cf. CLAUDE.md) | ✅ | If the model ever changes: full recompute needed — out of MVP |
+| Global Neo4j Domain nodes keyed by `name` alone (cf. `graph_service.py:299`) | ✅ | — |
+| `BELONGS_TO_DOMAIN` edges created via Layer-2 (agent-driven CONNECT step B) | ✅ | Entities not yet classified are silently excluded from scope — acceptable behavior |
+| `ALLOWED_DOMAINS` constant exportable from `services/graph_service.py` | ✅ | Reused as-is in the script |
+| `Project {project_key}` Neo4j node exists for each active project | To verify during planning | Cypher returns 0 results if missing — briefing section omitted (graceful) |
+| Thresholds module: `src/brain_v42/thresholds.py` with `by_name(name) -> ThresholdSpec | None` (cf. line 146) | ✅ | Spec uses `by_name("cross_project_resonance_min").value` |
+| Native pgvector `<=>` operator on `decisions.embedding` (cf. `pg_decision.py:247`) | ✅ | Pair-cosine done in PG, not in Python (cf. architecture decision below) |
 
 ## Architecture
 
-### Composants modifiés
-- `src/brain_v42/mcp/tools/session_tools.py` — `_format_session_briefing` gagne param optionnel `cross_entries`. Nouvelle fonction privée `_fetch_cross_project_entries(...)` qui interroge Neo4j + PG.
-- `src/brain_v42/services/graph_service.py` — Deux nouvelles méthodes : `fetch_active_domains(project_key, top_n)` et `fetch_cross_project_entity_ids(domains, exclude_project_key, limit)` (retourne uniquement IDs + types + project_key, pas les corps).
-- `src/brain_v42/repositories/pg_decision.py` — Nouvelle méthode `fetch_with_embeddings_by_ids(ids: list[UUID]) -> list[DecisionWithEmbedding]` (pair compute) + `fetch_brief_by_ids(ids: list[UUID]) -> list[DecisionBrief]` (briefing display).
-- `src/brain_v42/repositories/pg_learning.py`, `pg_snippet.py`, `pg_runbook.py`, `pg_adr.py` — Symétriques `fetch_brief_by_ids(...)` pour briefing display (1 round-trip par type).
-- `src/brain_v42/thresholds.py` — Une nouvelle entrée `cross_project_resonance_min` dans `REGISTRY` (value=0.80, calibrated=False).
-- `src/brain_v42/config.py` — Trois nouvelles env vars + helper de lecture.
+### Modified components
+- `src/brain_v42/mcp/tools/session_tools.py` — `_format_session_briefing` gains an optional `cross_entries` param. New private function `_fetch_cross_project_entries(...)` that queries Neo4j + PG.
+- `src/brain_v42/services/graph_service.py` — Two new methods: `fetch_active_domains(project_key, top_n)` and `fetch_cross_project_entity_ids(domains, exclude_project_key, limit)` (returns only IDs + types + project_key, not the bodies).
+- `src/brain_v42/repositories/pg_decision.py` — New method `fetch_with_embeddings_by_ids(ids: list[UUID]) -> list[DecisionWithEmbedding]` (pair compute) + `fetch_brief_by_ids(ids: list[UUID]) -> list[DecisionBrief]` (briefing display).
+- `src/brain_v42/repositories/pg_learning.py`, `pg_snippet.py`, `pg_runbook.py`, `pg_adr.py` — Symmetric `fetch_brief_by_ids(...)` for briefing display (1 round-trip per type).
+- `src/brain_v42/thresholds.py` — A new `cross_project_resonance_min` entry in `REGISTRY` (value=0.80, calibrated=False).
+- `src/brain_v42/config.py` — Three new env vars + a reader helper.
 
-### Composants créés
-- `scripts/dream/cross_project_resonance.py` — Script CLI `python -m scripts.dream.cross_project_resonance [--mode dry_run|wet] [--domains ml,memory] [--date YYYY-MM-DD]`.
-- Tests unitaires correspondants dans `tests/unit/`.
+### Created components
+- `scripts/dream/cross_project_resonance.py` — CLI script `python -m scripts.dream.cross_project_resonance [--mode dry_run|wet] [--domains ml,memory] [--date YYYY-MM-DD]`.
+- Corresponding unit tests in `tests/unit/`.
 
-### Composants intacts
-- Schéma PG (decisions, learnings, snippets, runbooks, adrs) — aucune migration.
-- Schéma Neo4j (Domain, Project, BELONGS_TO, BELONGS_TO_DOMAIN) — aucun changement.
-- 30 tools MCP existants — aucun ajout, aucune modif d'API publique.
-- `brain_search` — intact dans MVP.
-- `dream_runs` table — pas modifiée mais le script utilise `INSERT INTO dream_runs (...) RETURNING id` pour traçabilité (pattern existant).
+### Untouched components
+- PG schema (decisions, learnings, snippets, runbooks, adrs) — no migration.
+- Neo4j schema (Domain, Project, BELONGS_TO, BELONGS_TO_DOMAIN) — no change.
+- 30 existing MCP tools — no addition, no public API change.
+- `brain_search` — untouched in the MVP.
+- `dream_runs` table — not modified but the script uses `INSERT INTO dream_runs (...) RETURNING id` for traceability (existing pattern).
 
 ### Data flow
 
-**Briefing (`brain_session_start`)** :
+**Briefing (`brain_session_start`)**:
 ```
 client → brain_session_start(project_key)
   → project_context_svc.get_by_key(project_key)
@@ -87,7 +87,7 @@ client → brain_session_start(project_key)
   → return markdown
 ```
 
-**Resonance script (`cross_project_resonance.py`)** :
+**Resonance script (`cross_project_resonance.py`)**:
 ```
 CLI invocation
   → check env CROSS_PROJECT_ENABLED (else exit 0 fast, log "disabled")
@@ -126,20 +126,20 @@ CLI invocation
 
 ### Feedback-loop insulation (WET mode)
 
-Risque identifié (J2) : `brain_learn(project_key="brain-v42", ...)` ré-entre dans le pipeline PROMOTE puis CONSOLIDATION qui pourrait fusionner les learnings de résonance entre eux et corrompre la généalogie.
+Risk identified (J2): `brain_learn(project_key="brain-v42", ...)` re-enters the PROMOTE pipeline then CONSOLIDATION, which could merge resonance learnings with each other and corrupt the genealogy.
 
-Mitigation MVP :
-- **Tag `EXCLUDE_FROM_PROMOTE`** + **`source_kind="cross_project_resonance"`** sur chaque learning émis
-- PROMOTE phase (existing `promote_prepare.py:fetch_candidates`) **DOIT** filtrer `WHERE source_kind != 'cross_project_resonance' AND 'EXCLUDE_FROM_PROMOTE' NOT IN tags` — **modification PROMOTE est INCLUE dans cette MR** (sinon WET reste bloqué pour toujours)
-- Tests : `test_promote_excludes_cross_project_resonance_learnings`
+MVP mitigation:
+- **`EXCLUDE_FROM_PROMOTE` tag** + **`source_kind="cross_project_resonance"`** on every emitted learning
+- PROMOTE phase (existing `promote_prepare.py:fetch_candidates`) **MUST** filter `WHERE source_kind != 'cross_project_resonance' AND 'EXCLUDE_FROM_PROMOTE' NOT IN tags` — **the PROMOTE modification is INCLUDED in this MR** (otherwise WET stays blocked forever)
+- Tests: `test_promote_excludes_cross_project_resonance_learnings`
 
-Si la colonne `source_kind` n'existe pas sur `learnings` : utiliser uniquement le tag `EXCLUDE_FROM_PROMOTE` comme single-source-of-truth (et adapter `fetch_candidates` en conséquence). Décision finale au plan d'implémentation après vérification du schéma.
+If the `source_kind` column does not exist on `learnings`: use only the `EXCLUDE_FROM_PROMOTE` tag as single-source-of-truth (and adapt `fetch_candidates` accordingly). Final decision at implementation planning time after schema verification.
 
 ## Detailed Design
 
 ### A. `brain_session_start` cross-project briefing
 
-**Format additif** (après le bloc actuel, séparé par blank line) :
+**Additive format** (after the current block, separated by a blank line):
 
 ```
 **Cross-project (ml, memory):**
@@ -148,7 +148,7 @@ Si la colonne `source_kind` n'existe pas sur `learnings` : utiliser uniquement l
 - [red-monitor] Learning · 2026-04-15 · go-pubsub close channel race
 ```
 
-**Display field mapping** (per entity type) :
+**Display field mapping** (per entity type):
 
 | Entity type | Display field | Truncation | Notes |
 |-------------|---------------|------------|-------|
@@ -158,8 +158,8 @@ Si la colonne `source_kind` n'existe pas sur `learnings` : utiliser uniquement l
 | Runbook | `name` | 60 chars + `…` | — |
 | ADR | `title` | 60 chars + `…` | — |
 
-**Sélection** :
-1. `domains_actifs` = top-N domaines du projet courant, comptés via Neo4j :
+**Selection**:
+1. `domains_actifs` = top-N domains of the current project, counted via Neo4j:
    ```cypher
    MATCH (e)-[:BELONGS_TO]->(:Project {project_key: $current})
    MATCH (e)-[:BELONGS_TO_DOMAIN]->(d:Domain)
@@ -167,7 +167,7 @@ Si la colonne `source_kind` n'existe pas sur `learnings` : utiliser uniquement l
    ORDER BY n DESC LIMIT $top_n
    RETURN domain
    ```
-2. `cross_ids` = entités d'autres projets dans ces domaines, par recency desc :
+2. `cross_ids` = entities from other projects in these domains, by recency desc:
    ```cypher
    MATCH (e)-[:BELONGS_TO_DOMAIN]->(d:Domain)
    WHERE d.name IN $domains
@@ -179,21 +179,21 @@ Si la colonne `source_kind` n'existe pas sur `learnings` : utiliser uniquement l
 3. Group `cross_ids` by entity type → 1 PG round-trip per type via `fetch_brief_by_ids(ids)` (max 5 types × 1 query = 5 queries worst case ; typically 1-2 since `entries_max=5`).
 4. Re-merge + sort by `created_at` desc, format markdown.
 
-**Empty states** :
-- Pas de domaine actif → section omise.
-- Pas d'autres projets dans ces domaines → section omise.
-- Neo4j down → log warning + section omise (briefing ancien retourné intact).
-- Env var OFF → section omise (zero overhead).
+**Empty states**:
+- No active domain → section omitted.
+- No other projects in these domains → section omitted.
+- Neo4j down → log warning + section omitted (old briefing returned intact).
+- Env var OFF → section omitted (zero overhead).
 
-**Backward compat** : `_format_session_briefing(ctx, decisions, learnings, cross_entries=None)`. Param ajouté en fin avec default `None` — appel actuel inchangé, output identique si `cross_entries` falsy.
+**Backward compat**: `_format_session_briefing(ctx, decisions, learnings, cross_entries=None)`. Param added at the end with default `None` — current call unchanged, identical output if `cross_entries` is falsy.
 
-**Latency note** : add 2 Cypher queries + 1-2 PG queries to the briefing path. Soft target : briefing p99 < 500ms. No timeout/SLO enforcement in MVP — measured during rollout J+1, optimize via caching if needed.
+**Latency note**: add 2 Cypher queries + 1-2 PG queries to the briefing path. Soft target: briefing p99 < 500ms. No timeout/SLO enforcement in MVP — measured during rollout J+1, optimize via caching if needed.
 
 ### B. `cross_project_resonance.py` script
 
-**Vocabulaire** : "resonance" — l'algorithme surface les paires haut-cosinus, ne tranche pas convergence vs drift. Heuristique numérique (regex `\d+\.\d+`) propose un hint optionnel. Le terme "drift" n'apparaît plus dans noms de fichiers, branche, env vars, ni headings.
+**Vocabulary**: "resonance" — the algorithm surfaces high-cosine pairs, it does not settle convergence vs drift. A numeric heuristic (regex `\d+\.\d+`) offers an optional hint. The term "drift" no longer appears in file names, branch, env vars, or headings.
 
-**`ResonancePair` dataclass** :
+**`ResonancePair` dataclass**:
 
 ```python
 from dataclasses import dataclass
@@ -237,7 +237,7 @@ class ResonancePair:
         )
 ```
 
-**Algorithme** :
+**Algorithm**:
 ```python
 def main(mode: str, domains: list[str] | None, date_str: str | None) -> int:
     if not env_enabled():
@@ -302,7 +302,7 @@ def main(mode: str, domains: list[str] | None, date_str: str | None) -> int:
     return 0
 ```
 
-**PG-side pair computation** (replaces Python O(n²), per J2 critique with the simpler-but-bounded variant) :
+**PG-side pair computation** (replaces Python O(n²), per J2 critique with the simpler-but-bounded variant):
 
 ```python
 # In pg_decision.py
@@ -333,9 +333,9 @@ async def fetch_cross_project_resonance_pairs(
     return [ResonancePair(domain=domain, **dict(r)) for r in rows]
 ```
 
-Cost : worst case 200×200/2 = 20k pairs evaluated per domain inside PG, well within pgvector's capability. No embedding payload moves to Python.
+Cost: worst case 200×200/2 = 20k pairs evaluated per domain inside PG, well within pgvector's capability. No embedding payload moves to Python.
 
-**Markdown output** :
+**Markdown output**:
 ```markdown
 # Cross-Project Resonance — 2026-05-01
 
@@ -354,7 +354,7 @@ Threshold: 0.80 · Pairs found: 7 · Domains scanned: 9 · Domains with pairs: 4
 - Hint: drift candidate (numeric divergence: 0.92 vs 0.85)
 ```
 
-Empty case (zero pairs) :
+Empty case (zero pairs):
 ```markdown
 # Cross-Project Resonance — 2026-05-01
 
@@ -363,11 +363,11 @@ Threshold: 0.80 · Pairs found: 0 · Domains scanned: 9 · Domains with pairs: 0
 No cross-project resonance pairs above threshold this run.
 ```
 
-**File policy** : path = `artifacts/dream/cross_project_resonance_<UTC-ISO-date>.md` (e.g. `2026-05-01`). Overwrite if exists (idempotent re-run produces identical content).
+**File policy**: path = `artifacts/dream/cross_project_resonance_<UTC-ISO-date>.md` (e.g. `2026-05-01`). Overwrite if exists (idempotent re-run produces identical content).
 
 ### C. Threshold registry
 
-Nouvelle entrée dans `src/brain_v42/thresholds.py:REGISTRY` :
+New entry in `src/brain_v42/thresholds.py:REGISTRY`:
 ```python
 ThresholdSpec(
     name="cross_project_resonance_min",
@@ -378,49 +378,49 @@ ThresholdSpec(
 )
 ```
 
-Initial 0.80 deliberately below 0.85 (dedup threshold). Recalibrer après 5+ nuits de DRY_RUN.
+Initial 0.80 deliberately below 0.85 (dedup threshold). Recalibrate after 5+ nights of DRY_RUN.
 
-Lookup pattern : `thresholds.by_name("cross_project_resonance_min").value` (returns `ThresholdSpec | None`, defensive `if spec is None: return 1` in script).
+Lookup pattern: `thresholds.by_name("cross_project_resonance_min").value` (returns `ThresholdSpec | None`, defensive `if spec is None: return 1` in the script).
 
 ## Configuration
 
-| Var | Default | Effet |
+| Var | Default | Effect |
 |-----|---------|-------|
 | `BRAIN_DREAM_CROSS_PROJECT_ENABLED` | `false` | Master switch. OFF → briefing skip, script exit fast |
-| `BRAIN_CROSS_PROJECT_BRIEFING_DOMAINS_TOP_N` | `2` | Top-N domaines actifs surfacés dans briefing |
-| `BRAIN_CROSS_PROJECT_BRIEFING_ENTRIES_MAX` | `5` | Cap entrées briefing |
+| `BRAIN_CROSS_PROJECT_BRIEFING_DOMAINS_TOP_N` | `2` | Top-N active domains surfaced in the briefing |
+| `BRAIN_CROSS_PROJECT_BRIEFING_ENTRIES_MAX` | `5` | Briefing entries cap |
 
-Constants script (non env, code-local) :
+Script constants (non env, code-local):
 - `MIN_DECISIONS_PER_DOMAIN = 5`
 - `MAX_DECISIONS_PER_DOMAIN = 200` (per J2 graceful-degradation cap)
 - `MAX_PAIRS_PER_NIGHT = 20`
 
-CLI defaults (`argparse`) :
+CLI defaults (`argparse`):
 - `--mode` default = `"dry_run"` (explicit)
 - `--domains` default = `None` (=all 9)
 - `--date` default = `None` (=today UTC)
 
-Threshold cosine : exclusivement via `thresholds.by_name("cross_project_resonance_min").value`, pas d'env var.
+Threshold cosine: exclusively via `thresholds.by_name("cross_project_resonance_min").value`, no env var.
 
 ## Safety & Rollback
 
-1. **Killswitch fermé** : MR mergeable sans risque prod. Activation = `export BRAIN_DREAM_CROSS_PROJECT_ENABLED=true`.
-2. **DRY_RUN par défaut** : `--mode dry_run` est argparse default ; `--mode wet` nécessite intent explicite.
-3. **Triple safeguard WET** : (a) env var, (b) `--mode wet` flag, (c) inner re-check `env_enabled()` inside WET branch → `exit 1`.
-4. **Backward compat briefing** : `cross_entries=None` → output identique au comportement actuel.
-5. **Graceful degradation** : Neo4j down dans briefing → section omise, briefing ancien intact ; PG/embedding fail dans script → `dream_runs.status='error'` + raise (no partial writes).
-6. **WET idempotency** : `dedup_key = sha256(sorted(ids) + domain)` empêche les doublons re-run même nuit.
-7. **PROMOTE/CONSOLIDATION insulation** : tag `EXCLUDE_FROM_PROMOTE` + `source_kind="cross_project_resonance"` filtrés explicitement par `promote_prepare.fetch_candidates` (modif INCLUSE dans MR).
-8. **Rollback** : revert MR. Aucune migration à reverse.
+1. **Killswitch closed**: MR mergeable without prod risk. Activation = `export BRAIN_DREAM_CROSS_PROJECT_ENABLED=true`.
+2. **DRY_RUN by default**: `--mode dry_run` is the argparse default; `--mode wet` requires explicit intent.
+3. **Triple WET safeguard**: (a) env var, (b) `--mode wet` flag, (c) inner re-check `env_enabled()` inside WET branch → `exit 1`.
+4. **Backward compat briefing**: `cross_entries=None` → output identical to current behavior.
+5. **Graceful degradation**: Neo4j down in briefing → section omitted, old briefing intact; PG/embedding failure in the script → `dream_runs.status='error'` + raise (no partial writes).
+6. **WET idempotency**: `dedup_key = sha256(sorted(ids) + domain)` prevents duplicates on a same-night re-run.
+7. **PROMOTE/CONSOLIDATION insulation**: `EXCLUDE_FROM_PROMOTE` tag + `source_kind="cross_project_resonance"` explicitly filtered by `promote_prepare.fetch_candidates` (modification INCLUDED in the MR).
+8. **Rollback**: revert the MR. No migration to reverse.
 
 ## Rollout
 
 ```
-J+0    : MR mergée, killswitch fermé (no-op en prod)
-J+1    : export ENABLED=true localement, vérifier briefing sur 2-3 sessions, mesurer p99 latency
-J+2-5  : run script DRY_RUN chaque soir manuellement, review .md
-J+6+   : si signal utile et 0 false-positive aberrant → considérer WET (vérifier filter PROMOTE actif)
-J+10+  : si WET stable → ajouter cron nightly (follow-up MR séparée)
+J+0    : MR merged, killswitch closed (no-op in prod)
+J+1    : export ENABLED=true locally, verify briefing on 2-3 sessions, measure p99 latency
+J+2-5  : run script DRY_RUN manually each night, review .md
+J+6+   : if useful signal and 0 aberrant false-positive → consider WET (verify PROMOTE filter active)
+J+10+  : if WET stable → add cron nightly (separate follow-up MR)
 ```
 
 ## Test Surface
@@ -430,14 +430,14 @@ J+10+  : si WET stable → ajouter cron nightly (follow-up MR séparée)
 - `test_briefing_skips_cross_section_when_flag_off`
 - `test_briefing_skips_cross_section_when_no_active_domains`
 - `test_briefing_skips_cross_section_when_no_other_projects_in_domains`
-- `test_briefing_includes_top_n_domains_only` (4 domaines disponibles, assertion exactement 2 ressortent)
+- `test_briefing_includes_top_n_domains_only` (4 domains available, assert exactly 2 come out)
 - `test_briefing_top_n_respects_env_var` (override via env)
 - `test_briefing_excludes_current_project`
 - `test_briefing_orders_entries_by_recency_desc`
 - `test_briefing_caps_entries_at_max`
 - `test_briefing_format_includes_project_label_type_date_title`
 - `test_briefing_truncates_display_field_at_60_chars`
-- `test_briefing_graceful_when_neo4j_fails` (mock raises `Neo4jError` → section omise, briefing ancien complet)
+- `test_briefing_graceful_when_neo4j_fails` (mock raises `Neo4jError` → section omitted, old briefing complete)
 - `test_briefing_param_optional_backward_compat`
 
 ### Unit tests — script
@@ -475,46 +475,46 @@ J+10+  : si WET stable → ajouter cron nightly (follow-up MR séparée)
 
 ### Integration tests
 
-Out of MVP. Réintroduire si/quand WET mode ouvre.
+Out of MVP. Reintroduce if/when WET mode opens.
 
 ### Coverage
 
-Cible : maintenir le `60%` minimum CI. Estimation révisée v2 : ~350-450 lignes nouveau code (PG SQL + ResonancePair + script + repo methods + PROMOTE filter), ~550-650 lignes tests (~30 unit tests).
+Target: maintain the `60%` CI minimum. Revised v2 estimate: ~350-450 lines of new code (PG SQL + ResonancePair + script + repo methods + PROMOTE filter), ~550-650 lines of tests (~30 unit tests).
 
 ### Non-regression
 
-`pytest tests/unit -v` doit retourner 1837/1837 baseline + nouveaux tests verts à chaque commit.
+`pytest tests/unit -v` must return 1837/1837 baseline + new tests green at every commit.
 
 ## Open Questions Resolved
 
 | Q | Decision |
 |---|----------|
-| Cross-project topologie nouvelle ou existante ? | Existante (domains globaux Neo4j, repos `project_keys` PG) |
-| Nouveaux tools MCP ? | Non (constraint utilisateur) |
-| Schema migration ? | Non (rien à migrer ; ajout colonne `source_kind` sur learnings : à vérifier au plan, possible no-op si déjà présent) |
-| Surface briefing : passive (search) ou ponctuelle (session_start) ? | Ponctuelle (session_start) |
-| Surface drift : sync (warning) ou async (script nightly) ? | Async (script DRY_RUN-able) |
-| Threshold valeur initiale ? | 0.80, calibrated=False, ré-évaluation après 5+ nuits |
-| WET autorisé d'office ? | Non (DRY_RUN d'abord, WET opt-in après review) |
-| Cron nightly d'office ? | Non (manuel d'abord, cron en follow-up MR) |
-| Pair compute Python ou PG ? | **PG** (pgvector `<=>` natif, capped par `MAX_DECISIONS_PER_DOMAIN=200`) |
-| Terminologie partout ? | "resonance" (branch, script, env vars, headings) — "drift" uniquement comme hint heuristique |
-| Threshold registry path/API ? | `src/brain_v42/thresholds.py` + `by_name(name).value` (frozen dataclass `ThresholdSpec`) |
-| WET idempotency ? | `dedup_key = sha256(sorted(ids) + domain)` |
-| Feedback loop PROMOTE ? | Filter `tag=EXCLUDE_FROM_PROMOTE` + `source_kind=cross_project_resonance` dans `fetch_candidates` (modif INCLUSE) |
+| New or existing cross-project topology? | Existing (global Neo4j domains, PG `project_keys` repos) |
+| New MCP tools? | No (user constraint) |
+| Schema migration? | No (nothing to migrate; adding a `source_kind` column on learnings: to verify during planning, possibly a no-op if already present) |
+| Briefing surface: passive (search) or one-shot (session_start)? | One-shot (session_start) |
+| Drift surface: sync (warning) or async (nightly script)? | Async (DRY_RUN-able script) |
+| Initial threshold value? | 0.80, calibrated=False, re-evaluation after 5+ nights |
+| WET allowed by default? | No (DRY_RUN first, WET opt-in after review) |
+| Nightly cron by default? | No (manual first, cron in a follow-up MR) |
+| Pair compute Python or PG? | **PG** (native pgvector `<=>`, capped by `MAX_DECISIONS_PER_DOMAIN=200`) |
+| Terminology everywhere? | "resonance" (branch, script, env vars, headings) — "drift" only as a heuristic hint |
+| Threshold registry path/API? | `src/brain_v42/thresholds.py` + `by_name(name).value` (frozen dataclass `ThresholdSpec`) |
+| WET idempotency? | `dedup_key = sha256(sorted(ids) + domain)` |
+| PROMOTE feedback loop? | Filter `tag=EXCLUDE_FROM_PROMOTE` + `source_kind=cross_project_resonance` in `fetch_candidates` (modification INCLUDED) |
 
 ## Follow-ups (out of MVP, captured for tracking)
 
-1. Si MVP β fonctionne : étendre brain_search avec param `cross_project=False` (option α de la matrice originale).
-2. Si MVP β fonctionne : warning inline dans brain_log_decision (option γ/δ).
-3. Cron nightly du script résonance (séparé de cette MR).
-4. Recalibrage du threshold `cross_project_resonance_min` après 5+ nuits de data.
-5. Étendre la résonance aux Learnings et ADRs (pas seulement Decisions).
-6. Bridge insights generator dans SYNTH (option B initial — non retenu pour MVP car nécessite WET stable).
-7. Cache `fetch_active_domains` per (project_key, hour) si briefing latency p99 > 500ms.
-8. Embedding model fingerprint column si plusieurs modèles cohabitent un jour.
+1. If MVP β works: extend brain_search with a `cross_project=False` param (option α from the original matrix).
+2. If MVP β works: inline warning in brain_log_decision (option γ/δ).
+3. Nightly cron for the resonance script (separate from this MR).
+4. Recalibration of the `cross_project_resonance_min` threshold after 5+ nights of data.
+5. Extend resonance to Learnings and ADRs (not just Decisions).
+6. Bridge insights generator in SYNTH (initial option B — not selected for the MVP because it requires stable WET).
+7. Cache `fetch_active_domains` per (project_key, hour) if briefing latency p99 > 500ms.
+8. Embedding model fingerprint column if multiple models coexist one day.
 
 ## Changelog
 
 - **v1 (2026-05-01)** — Initial design after brainstorm.
-- **v2 (2026-05-01)** — Multi-judge critique applied : terminology consistency (drift→resonance), threshold path corrected (`thresholds.py:by_name`), `ResonancePair` dataclass defined with `format_insight`/`dedup_key`/`hint`, PG-side pair compute via pgvector `<=>` (replaces Python O(n²)), preconditions section added, WET idempotency via dedup_key, feedback-loop insulation via `EXCLUDE_FROM_PROMOTE` tag + `source_kind`, `dream_runs` traceability, CLI defaults explicit, file policy specified, display field mapping table, 2 missing tests added, hint heuristic relocated to dataclass property, `MAX_DECISIONS_PER_DOMAIN=200` cap.
+- **v2 (2026-05-01)** — Multi-judge critique applied: terminology consistency (drift→resonance), threshold path corrected (`thresholds.py:by_name`), `ResonancePair` dataclass defined with `format_insight`/`dedup_key`/`hint`, PG-side pair compute via pgvector `<=>` (replaces Python O(n²)), preconditions section added, WET idempotency via dedup_key, feedback-loop insulation via `EXCLUDE_FROM_PROMOTE` tag + `source_kind`, `dream_runs` traceability, CLI defaults explicit, file policy specified, display field mapping table, 2 missing tests added, hint heuristic relocated to dataclass property, `MAX_DECISIONS_PER_DOMAIN=200` cap.

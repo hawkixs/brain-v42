@@ -1,51 +1,51 @@
-# CAS de timestamp pour `project_contexts`
+# Timestamp CAS for `project_contexts`
 
-**Date :** 2026-07-31
+**Date:** 2026-07-31
 
-**Statut :** décision approuvée
+**Status:** decision approved
 
-**Ticket :** `44ee7643-fb06-4186-a364-cb175610b973`
+**Ticket:** `44ee7643-fb06-4186-a364-cb175610b973`
 
-## Décision et preuve racine
+## Decision and root proof
 
-La réparation doit signer puis rejouer exactement `updated_at` avec `plan_scan_paths`. PostgreSQL
-réel a donné trois preuves conformes et deux échecs : le trigger partagé `BEFORE UPDATE` a écrasé
-le timestamp signé de `+23,727 µs`, puis `finalize` a retourné `context_cas_conflict`.
+The repair must sign then replay `updated_at` exactly, along with `plan_scan_paths`. Real
+PostgreSQL produced three compliant proofs and two failures: the shared `BEFORE UPDATE` trigger overwrote
+the signed timestamp by `+23,727 µs`, then `finalize` returned `context_cas_conflict`.
 
-La cause est `trg_project_contexts_updated`, attaché à la fonction générique
-`update_updated_at`, partagée par huit tables. Après la migration Dream 038, la migration 039
-donne une fonction dédiée à `project_contexts` sans modifier la fonction historique ni ses sept
-autres liaisons : `decisions`,
-`learnings`, `snippets`, `runbooks`, `adrs`, `features` et `indexed_plans`.
+The cause is `trg_project_contexts_updated`, attached to the generic function
+`update_updated_at`, shared by eight tables. After Dream migration 038, migration 039
+gives `project_contexts` a dedicated function without modifying the historical function or its seven
+other bindings: `decisions`,
+`learnings`, `snippets`, `runbooks`, `adrs`, `features` and `indexed_plans`.
 
-## Objectifs et non-objectifs
+## Goals and non-goals
 
-La solution conserve un CAS exact, restaure exactement les chemins et le timestamp non nul du
-snapshot, préserve l’auto-timestamp des writers ordinaires et isole le changement à
+The solution keeps an exact CAS, restores exactly the paths and the non-null timestamp of the
+snapshot, preserves the ordinary writers' auto-timestamp, and isolates the change to
 `project_contexts`.
 
-`updated_at` est `NOT NULL`. Le contrat ne promet ni conservation ni rollback de `NULL` : sous le
-GUC exact `on`, une valeur explicite `NULL` échoue atomiquement ; sans GUC ou avec une valeur
-invalide, elle est remplacée par `CURRENT_TIMESTAMP`. Le changement ne modifie pas le corpus de
-plans, les phases opérateur, les sept autres tables, ni le reçu de sauvegarde.
+`updated_at` is `NOT NULL`. The contract promises neither preservation nor rollback of `NULL`: under the
+GUC set exactly to `on`, an explicit `NULL` value fails atomically; without the GUC or with an
+invalid value, it is replaced by `CURRENT_TIMESTAMP`. The change does not modify the plan corpus,
+the operator phases, the seven other tables, or the backup receipt.
 
-## Alternatives rejetées
+## Rejected alternatives
 
-| Alternative | Rejet |
+| Alternative | Rejection |
 | --- | --- |
-| Reçu de sauvegarde avec `RETURNING` | Trop complexe et incomplet pour prouver le rollback exact des deux champs. |
-| CAS qui ignore `updated_at` | Affaiblit le contrat de concurrence. |
-| Modification de `update_updated_at` | Interdite : huit tables partagent cette fonction. |
+| Backup receipt with `RETURNING` | Too complex and incomplete to prove the exact rollback of both fields. |
+| CAS that ignores `updated_at` | Weakens the concurrency contract. |
+| Modifying `update_updated_at` | Forbidden: eight tables share this function. |
 
-## Architecture retenue
+## Chosen architecture
 
-La migration `039`, avec `down_revision = "038"`, crée sans `OR REPLACE` la fonction
-`public.set_project_context_updated_at()` en `SECURITY INVOKER`. Elle remappe le trigger existant
-`trg_project_contexts_updated` vers cette fonction.
+Migration `039`, with `down_revision = "038"`, creates the function
+`public.set_project_context_updated_at()` without `OR REPLACE`, as `SECURITY INVOKER`. It remaps the existing trigger
+`trg_project_contexts_updated` to this function.
 
-La fonction dédiée est exactement `public.set_project_context_updated_at`, avec `pronargs = 0`,
-retour `trigger`, `prosecdef = false`, volatilité `VOLATILE` et parallélisme `PARALLEL UNSAFE`.
-Le DDL suivant est sa source canonique :
+The dedicated function is exactly `public.set_project_context_updated_at`, with `pronargs = 0`,
+return `trigger`, `prosecdef = false`, volatility `VOLATILE`, and parallel safety `PARALLEL UNSAFE`.
+The following DDL is its canonical source:
 
 ```sql
 CREATE FUNCTION public.set_project_context_updated_at()
@@ -70,8 +70,8 @@ END;
 $function$;
 ```
 
-La représentation canonique est l’octet UTF-8 brut de `pg_proc.prosrc`, sans normalisation. La
-requête de comparaison est :
+The canonical representation is the raw UTF-8 bytes of `pg_proc.prosrc`, without normalization. The
+comparison query is:
 
 ```sql
 SELECT
@@ -81,34 +81,34 @@ FROM pg_catalog.pg_proc
 WHERE oid = 'public.update_updated_at()'::regprocedure;
 ```
 
-Le même prédicat avec `public.set_project_context_updated_at()` compare la fonction dédiée. Les
-hashes littéraux PostgreSQL 16.14 observés sont :
+The same predicate with `public.set_project_context_updated_at()` compares the dedicated function. The
+literal PostgreSQL 16.14 hashes observed are:
 
-| Fonction | SHA-256 `prosrc` | Octets |
+| Function | SHA-256 `prosrc` | Bytes |
 | --- | --- | ---: |
 | `public.update_updated_at()` | `83ca0f7a3230405dae8b4f4e692b4983869b58e4225b6e60bbf96db3f6ae9a59` | 96 |
 | `public.set_project_context_updated_at()` | `60c6154d6230d1d0e9244d8f20bc6d6b30e887e71263692e54363c96e22c0419` | 391 |
 
-Le `prosrc` dédié commence et finit par LF. Ses attributs observés sont schéma `public`, langage
+The dedicated `prosrc` begins and ends with LF. Its observed attributes are schema `public`, language
 `plpgsql`, `prokind = 'f'`, `provolatile = 'v'`, `proparallel = 'u'`, `prosecdef = false`,
 `proleakproof = false`, `proisstrict = false`, `proretset = false`, `pronargs = 0`,
-`pronargdefaults = 0`, `proargtypes` vide, `prorettype = trigger` et `proconfig IS NULL`. La
-fonction historique possède les mêmes attributs pertinents déjà capturés ; owner et ACL restent des
-contrats séparés. `pg_get_functiondef` est conservé pour le diagnostic, jamais pour le hash.
+`pronargdefaults = 0`, empty `proargtypes`, `prorettype = trigger`, and `proconfig IS NULL`. The
+historical function has the same relevant attributes already captured; owner and ACL remain
+separate contracts. `pg_get_functiondef` is kept for diagnostics, never for the hash.
 
-Les captures proviennent de conteneurs PostgreSQL 16.14 jetables, sans accès production. Les
-ressources ont été supprimées et leur absence vérifiée. Cette preuve de fonction ne constitue pas
-une attestation de recovery.
+The captures come from disposable PostgreSQL 16.14 containers, with no production access. The
+resources were deleted and their absence verified. This function proof does not constitute
+a recovery attestation.
 
-Avec le GUC exactement `on`, tout timestamp non nul est conservé, même égal à `OLD.updated_at`.
-Seul `NEW.updated_at IS NULL` sous ce GUC échoue atomiquement en `23502`. Sans GUC, ou avec une
-valeur autre que `on`, y compris `NULL`, la fonction force `CURRENT_TIMESTAMP` et l’UPDATE réussit.
+With the GUC set exactly to `on`, any non-null timestamp is preserved, even one equal to `OLD.updated_at`.
+Only `NEW.updated_at IS NULL` under this GUC fails atomically with `23502`. Without the GUC, or with a
+value other than `on`, including `NULL`, the function forces `CURRENT_TIMESTAMP` and the UPDATE succeeds.
 
-### Fonction et triggers historiques immuables
+### Immutable historical function and triggers
 
-La migration 001 a établi `public.update_updated_at()` ; 039 ne la réécrit pas. Son identité
-canonique est `pronargs = 0`, `prokind = 'f'`, `LANGUAGE plpgsql`, retour `trigger`, `VOLATILE`,
-`PARALLEL UNSAFE`, `SECURITY INVOKER`, et ce corps :
+Migration 001 established `public.update_updated_at()`; 039 does not rewrite it. Its canonical
+identity is `pronargs = 0`, `prokind = 'f'`, `LANGUAGE plpgsql`, return `trigger`, `VOLATILE`,
+`PARALLEL UNSAFE`, `SECURITY INVOKER`, and this body:
 
 ```sql
 BEGIN
@@ -117,11 +117,11 @@ BEGIN
 END;
 ```
 
-Le preflight upgrade/downgrade et v4 comparent attributs et hash `prosrc` littéral à ce canon, afin
-de détecter un `CREATE OR REPLACE` drifté même au même OID. Les sept mappings historiques exacts
-sont :
+The upgrade/downgrade preflight and v4 compare attributes and the literal `prosrc` hash against this canon, in order
+to detect a drifted `CREATE OR REPLACE` even at the same OID. The seven exact historical mappings
+are:
 
-| Table | Trigger | Fonction |
+| Table | Trigger | Function |
 | --- | --- | --- |
 | `decisions` | `trg_decisions_updated` | `public.update_updated_at()` |
 | `learnings` | `trg_learnings_updated` | `public.update_updated_at()` |
@@ -131,55 +131,55 @@ sont :
 | `features` | `set_features_updated_at` | `public.update_updated_at()` |
 | `indexed_plans` | `set_indexed_plans_updated_at` | `public.update_updated_at()` |
 
-Chaque ligne respecte le contrat trigger exact. La fonction dédiée est liée uniquement à
+Each row honors the exact trigger contract. The dedicated function is bound only to
 `public.project_contexts` / `trg_project_contexts_updated`.
 
-`RepairStore.apply_paths` et `RepairStore.rollback_before_finalize` exécutent `SET LOCAL
-brain_v42.allow_explicit_project_context_updated_at = 'on'` seulement après identité, head,
-preuve et CAS validés, immédiatement avant une mutation réelle. Un replay `already_*` ne l’active
-pas. Chaque `UPDATE` fournit `updated_at`, utilise `RETURNING updated_at` et compare la valeur
-retournée à la valeur signée avant commit. Succès, erreur ou rollback réinitialisent le GUC à la fin
-de transaction. Ce marqueur coordonne le trigger ; il n’authentifie rien. Writers off, snapshot,
-reçu vérifié et attestations restent les gates de mutation.
+`RepairStore.apply_paths` and `RepairStore.rollback_before_finalize` run `SET LOCAL
+brain_v42.allow_explicit_project_context_updated_at = 'on'` only after identity, head,
+proof, and CAS are validated, immediately before an actual mutation. An `already_*` replay does not
+enable it. Each `UPDATE` supplies `updated_at`, uses `RETURNING updated_at`, and compares the returned
+value to the signed value before commit. Success, error, or rollback reset the GUC at the end of the
+transaction. This marker coordinates the trigger; it authenticates nothing. Writers off, snapshot,
+verified receipt, and attestations remain the mutation gates.
 
-L’impact GitNexus upstream est borné à Maintenance/Unit, sans processus affecté :
-`RepairStore.apply_paths` est MEDIUM (14 symboles, 12 directs) et
-`RepairStore.rollback_before_finalize` est LOW (3 symboles, 1 direct). Toute analyse HIGH ou
-CRITICAL nouvelle hors de cette surface bloque l’implémentation.
+The GitNexus upstream impact is bounded to Maintenance/Unit, with no process affected:
+`RepairStore.apply_paths` is MEDIUM (14 symbols, 12 direct) and
+`RepairStore.rollback_before_finalize` is LOW (3 symbols, 1 direct). Any new HIGH or
+CRITICAL analysis outside this surface blocks the implementation.
 
-La fonction reste non `SECURITY DEFINER` et conserve l’ACL PostgreSQL par défaut `PUBLIC EXECUTE`.
-Une fonction `RETURNS trigger` n’est pas appelable comme une fonction SQL ordinaire. Le préflight
-exige `current_user = proowner(public.update_updated_at())`, `nspowner(public)` inchangé, et aucune
-default ACL de fonction applicable au rôle actif, globalement ou dans `public`; sinon il échoue avant
-DDL. `CREATE FUNCTION` hérite donc ce même owner, sans `ALTER OWNER`.
+The function remains not `SECURITY DEFINER` and keeps the default PostgreSQL ACL `PUBLIC EXECUTE`.
+A `RETURNS trigger` function is not callable like an ordinary SQL function. The preflight
+requires `current_user = proowner(public.update_updated_at())`, an unchanged `nspowner(public)`, and no
+default function ACL applicable to the active role, globally or within `public`; otherwise it fails before
+DDL. `CREATE FUNCTION` therefore inherits this same owner, without `ALTER OWNER`.
 
-La postcondition exige `proowner(nouvelle) = current_user = proowner(historique)`, `proacl IS NULL`,
-et `COALESCE(proacl, acldefault('f', proowner)) = acldefault('f', proowner)`. L’ACL explosée prouve
-exactement `EXECUTE` pour owner et grantee `0`/PUBLIC. `has_function_privilege(current_user,
-function_oid, 'EXECUTE')` ne complète la preuve que pour le rôle de migration ; il ne prouve pas
-PUBLIC. Aucun `GRANT` ni `REVOKE` n’est ajouté.
+The postcondition requires `proowner(new) = current_user = proowner(historical)`, `proacl IS NULL`,
+and `COALESCE(proacl, acldefault('f', proowner)) = acldefault('f', proowner)`. The exploded ACL proves
+exactly `EXECUTE` for owner and grantee `0`/PUBLIC. `has_function_privilege(current_user,
+function_oid, 'EXECUTE')` completes the proof only for the migration role; it does not prove
+PUBLIC. No `GRANT` or `REVOKE` is added.
 
-## Migration 039 fail-closed
+## Migration 039, fail-closed
 
 ### Upgrade
 
-Les writers sont arrêtés. Dans une transaction unique, la migration prend d’abord :
+Writers are stopped. In a single transaction, the migration first takes:
 
 ```sql
 LOCK TABLE public.project_contexts IN ACCESS EXCLUSIVE MODE;
 ```
 
-Elle vérifie d’abord la fonction historique contre son canon migration 001, attributs et hash
-`prosrc` inclus. Elle lit ensuite `pg_catalog` et exige une seule ligne de trigger avec `tgrelid` de
-`public.project_contexts`, `tgfoid` de la fonction historique, `tgtype = 19` (row + before +
-update), `tgattr = ''::int2vector` (aucun `UPDATE OF`), `tgqual IS NULL` (aucun `WHEN`),
+It first verifies the historical function against its migration 001 canon, attributes and `prosrc`
+hash included. It then reads `pg_catalog` and requires exactly one trigger row with `tgrelid` of
+`public.project_contexts`, `tgfoid` of the historical function, `tgtype = 19` (row + before +
+update), `tgattr = ''::int2vector` (no `UPDATE OF`), `tgqual IS NULL` (no `WHEN`),
 `tgparentid = 0`, `tgconstraint = 0`, `tgconstrrelid = 0`, `tgconstrindid = 0`,
 `tgdeferrable = false`, `tginitdeferred = false`, `tgoldtable IS NULL`, `tgnewtable IS NULL`,
-`tgenabled = 'O'`, `tgisinternal = false`, `tgnargs = 0` et `tgargs = ''::bytea`. Toute divergence
-échoue avant DDL. Cette liste exhaustive est le **contrat trigger exact** ; preflight, postflight,
-downgrade, recovery v4 et tests l’appliquent sans la réduire.
+`tgenabled = 'O'`, `tgisinternal = false`, `tgnargs = 0`, and `tgargs = ''::bytea`. Any divergence
+fails before DDL. This exhaustive list is the **exact trigger contract**; preflight, postflight,
+downgrade, recovery v4, and tests apply it without reducing it.
 
-Après création de la fonction dédiée, elle remappe le trigger avec ce DDL qualifié exact :
+After creating the dedicated function, it remaps the trigger with this exact qualified DDL:
 
 ```sql
 CREATE OR REPLACE TRIGGER trg_project_contexts_updated
@@ -187,135 +187,135 @@ BEFORE UPDATE ON public.project_contexts
 FOR EACH ROW EXECUTE FUNCTION public.set_project_context_updated_at()
 ```
 
-Elle relit exactement tous ces prédicats avec `tgfoid` de la fonction dédiée, puis fonction, owner
-et ACL. Toute erreur annule la transaction : version Alembic, fonction et trigger restent inchangés.
+It rereads exactly all these predicates with `tgfoid` of the dedicated function, then function, owner,
+and ACL. Any error rolls back the transaction: Alembic version, function, and trigger remain unchanged.
 
 ### Downgrade
 
-Le downgrade échoue sans DDL par défaut. Il exige explicitement :
+The downgrade fails without DDL by default. It explicitly requires:
 
 ```text
 alembic -x allow_project_context_trigger_downgrade=yes downgrade 038
 ```
 
-Cette option n’est autorisée qu’après rollback et ré-inventaire, ou après restauration PostgreSQL
-complète. Avec l’opt-in, la migration prend le même verrou avant lecture catalogue et vérifie le
-contrat trigger exact, la fonction historique contre son canon migration 001, ainsi que la fonction
-dédiée et son owner/ACL. Elle rattache d’abord le
-trigger à la fonction historique, relit ce contrat avec son `tgfoid`, puis exécute
-`DROP FUNCTION public.set_project_context_updated_at()` sans `CASCADE`. Toute erreur annule
-version, fonction et trigger vers leur état initial. Le postflight après `DROP FUNCTION` exige le
-trigger historique exact, tous les prédicats de trigger ci-dessus, et l’absence de la fonction
-dédiée.
+This option is allowed only after rollback and re-inventory, or after a full PostgreSQL
+restore. With the opt-in, the migration takes the same lock before reading the catalog and verifies the
+exact trigger contract, the historical function against its migration 001 canon, and the
+dedicated function and its owner/ACL. It first reattaches the
+trigger to the historical function, rereads this contract with its `tgfoid`, then executes
+`DROP FUNCTION public.set_project_context_updated_at()` without `CASCADE`. Any error rolls back
+version, function, and trigger to their initial state. The postflight after `DROP FUNCTION` requires the
+exact historical trigger, all the trigger predicates above, and the absence of the
+dedicated function.
 
-## Recovery v4 et ordre opérateur
+## Recovery v4 and operator order
 
-Les bytes et digests de recovery v3 sont immuables. L’autorité v4 exige `head = 039`,
-`schema_version = 4` et 25 checks. Le 25e est `project_context_updated_at_039` ; il atteste la
-fonction dédiée exacte, la fonction historique canonique, la condition GUC, le trigger exact, les
-sept liaisons historiques `decisions`, `learnings`, `snippets`, `runbooks`, `adrs`, `features`,
-`indexed_plans`, et les attributs/ACL.
-v4 et ses tests comparent cet ensemble exact, jamais un simple compte de sept. Aucun résultat ne
-revendique v4 avant un restore drill `pg_restore` à 25/25. Recovery v4 et les tests de migration
-appliquent le même paquet de prédicats fonction/trigger que les preflight et postflight 039.
+The bytes and digests of recovery v3 are immutable. v4 authority requires `head = 039`,
+`schema_version = 4`, and 25 checks. The 25th is `project_context_updated_at_039`; it attests the
+exact dedicated function, the canonical historical function, the GUC condition, the exact trigger, the
+seven historical bindings `decisions`, `learnings`, `snippets`, `runbooks`, `adrs`, `features`,
+`indexed_plans`, and the attributes/ACL.
+v4 and its tests compare this exact set, never a plain count of seven. No result
+claims v4 before a `pg_restore` restore drill at 25/25. Recovery v4 and the migration tests
+apply the same function/trigger predicate package as the 039 preflight and postflight.
 
-Les assets v4 sont `brain-v42-v4.json`, `brain-v42-v4.sql` et
-`brain-v42-v4-pgrestore.sql`, avec leurs tests. Ils complètent v3 sans le modifier.
+The v4 assets are `brain-v42-v4.json`, `brain-v42-v4.sql`, and
+`brain-v42-v4-pgrestore.sql`, with their tests. They complement v3 without modifying it.
 
-L’ordre de recovery est strict : `pg_restore` du backup production 037 en isolé, upgrade isolé
-Dream 038 puis CAS 039, exécution de `brain-v42-v4-pgrestore.sql`, puis reçu isolé de type
-`brain-v42-v4-pgrestore` à 25/25. Ce reçu isolé autorise le cutover, mais ne prouve pas encore la
-production. Après writers off, l’opérateur upgrade la production en 038 puis 039, exécute
-`brain-v42-v4.sql` live et obtient le reçu live autoritaire de type `brain-v42-v4-live` à 25/25.
-Alors seulement il lance inventory/repair, puis rouvre les writers et redémarre le runtime.
-`brain-v42-v4.sql` est donc l’attestation live, non une seconde restauration. Aucune preuve live
-039 n’est revendiquée par cette livraison. Un backup 037 seul ne prouve jamais 039. Après un restore
-post-finalize, l’opérateur réapplique 038 puis 039 et atteste v4 live avant writers ou runtime ; sinon il
-reste explicitement en 037 avec l’ancien runtime.
+The recovery order is strict: `pg_restore` of the production 037 backup in isolation, isolated
+upgrade to Dream 038 then CAS 039, execution of `brain-v42-v4-pgrestore.sql`, then an isolated receipt of type
+`brain-v42-v4-pgrestore` at 25/25. This isolated receipt authorizes the cutover, but does not yet prove
+production. After writers off, the operator upgrades production to 038 then 039, runs
+`brain-v42-v4.sql` live and obtains the authoritative live receipt of type `brain-v42-v4-live` at 25/25.
+Only then does it launch inventory/repair, then reopen writers and restart the runtime.
+`brain-v42-v4.sql` is therefore the live attestation, not a second restore. No live proof of
+039 is claimed by this delivery. A 037 backup alone never proves 039. After a restore
+post-finalize, the operator reapplies 038 then 039 and attests v4 live before writers or runtime; otherwise it
+explicitly stays at 037 with the old runtime.
 
-Le head, store, runbook, spécification et plan passent à 039. `apply_paths` retourne
-`already_applied` seulement si les sept contextes sont déjà dans l’état signé. Le rollback restaure
-exactement chemins et timestamp non nul. Après finalisation, seule une restauration PostgreSQL
-complète attestée restaure les données.
+The head, store, runbook, spec, and plan move to 039. `apply_paths` returns
+`already_applied` only if the seven contexts are already in the signed state. The rollback restores
+exactly the paths and the non-null timestamp. After finalization, only a fully attested PostgreSQL
+restore restores the data.
 
-## Tests requis
+## Required tests
 
-Les preuves couvrent :
+The proofs cover:
 
-- statiques : fonction, trigger, owner, ACL, absence de `SECURITY DEFINER`, catalogue exact et
-  hashes `prosrc` SHA-256 littéraux ;
-- upgrade depuis 037 sans mutation de données, greenfield, downgrade sans opt-in atomique,
-  downgrade opt-in, puis re-upgrade ;
-- writer ordinaire avec timestamp explicite sans GUC écrasé par l’horloge serveur ;
-- opt-in local qui préserve tout timestamp non nul, y compris égal à l’ancien, seulement dans apply
-  et rollback, puis reset vérifié hors transaction ;
-- GUC absent, `off`, `true`, `1` ou de casse différente qui force `CURRENT_TIMESTAMP` ;
-- `NULL` sous GUC `on` rejeté atomiquement en `23502`, puis `NULL` sans GUC ou avec GUC invalide
-  écrasé par `CURRENT_TIMESTAMP` avec UPDATE réussi ;
-- invariance exacte de `decisions`, `learnings`, `snippets`, `runbooks`, `adrs`, `features` et
-  `indexed_plans` ;
-- fonction dédiée canonique, fonction historique migration 001 canonique, digests `prosrc` exacts
-  et les huit mappings table/trigger/fonction exacts ;
-- replay `apply_paths` en `already_applied`, rollback exact et CAS/finalize sans dérive ;
-- migrations 038 puis 039, chaîne Alembic dans `tests/unit/test_alembic_env.py`, recovery v4 dans
-  `tests/unit/test_recovery_contract_v4.py` et
-  `tests/unit/test_recovery_contract_v4_pgrestore.py`, et suites repair 037→038→039 ;
-- drift `BEFORE UPDATE OF` qui échoue et rollback totalement upgrade ou downgrade ;
-- `RETURNING updated_at` exact, absence de GUC sur replay `already_*`, et reset après erreur de
-  rollback dans `tests/unit/test_plan_index_repair_store.py` ;
-- Task 7 : cinq preuves PostgreSQL sur cinq dans un conteneur jetable.
+- static: function, trigger, owner, ACL, absence of `SECURITY DEFINER`, exact catalog, and
+  literal SHA-256 `prosrc` hashes;
+- upgrade from 037 without data mutation, greenfield, atomic downgrade without opt-in,
+  opt-in downgrade, then re-upgrade;
+- ordinary writer with an explicit timestamp without the GUC overwritten by the server clock;
+- local opt-in that preserves any non-null timestamp, including one equal to the old one, only within apply
+  and rollback, then a verified reset outside the transaction;
+- GUC absent, `off`, `true`, `1`, or of different case, which forces `CURRENT_TIMESTAMP`;
+- `NULL` under GUC `on` rejected atomically with `23502`, then `NULL` without the GUC or with an invalid GUC
+  overwritten by `CURRENT_TIMESTAMP` with a successful UPDATE;
+- exact invariance of `decisions`, `learnings`, `snippets`, `runbooks`, `adrs`, `features`, and
+  `indexed_plans`;
+- canonical dedicated function, canonical migration 001 historical function, exact `prosrc` digests,
+  and the eight exact table/trigger/function mappings;
+- `apply_paths` replay as `already_applied`, exact rollback, and CAS/finalize without drift;
+- migrations 038 then 039, Alembic chain in `tests/unit/test_alembic_env.py`, recovery v4 in
+  `tests/unit/test_recovery_contract_v4.py` and
+  `tests/unit/test_recovery_contract_v4_pgrestore.py`, and the repair 037→038→039 suites;
+- `BEFORE UPDATE OF` drift that fails and fully rolls back upgrade or downgrade;
+- exact `RETURNING updated_at`, absence of the GUC on `already_*` replay, and reset after a
+  rollback error in `tests/unit/test_plan_index_repair_store.py`;
+- Task 7: five out of five PostgreSQL proofs in a disposable container.
 
-Les tests réexécutent la capture PostgreSQL 16 dans une base ou un conteneur au nom unique,
-n’acceptent aucune URL de production et suppriment la ressource après capture. Les deux reçus v4,
-isolé `brain-v42-v4-pgrestore` puis live `brain-v42-v4-live`, sont testés comme conditions
-distinctes.
+The tests re-run the PostgreSQL 16 capture in a uniquely named database or container,
+accept no production URL, and delete the resource after capture. The two v4 receipts,
+isolated `brain-v42-v4-pgrestore` then live `brain-v42-v4-live`, are tested as distinct
+conditions.
 
-Les tests de migration utilisent une base isolée et capturent les valeurs complètes avant/après.
+The migration tests use an isolated database and capture the full before/after values.
 
-## Déploiement, rollback et risques
+## Deployment, rollback, and risks
 
-L’opérateur suit l’ordre de recovery ci-dessus, maintient les writers off jusqu’aux attestations,
-puis exécute inventaire, `apply-paths`, reindex projet par projet, `verify` et `finalize`.
-`install.sh` précède le restart, qui reste la dernière action.
+The operator follows the recovery order above, keeps writers off until the attestations,
+then runs inventory, `apply-paths`, project-by-project reindex, `verify`, and `finalize`.
+`install.sh` precedes the restart, which remains the last action.
 
-| Risque | Parade |
+| Risk | Mitigation |
 | --- | --- |
-| Trigger ou ACL inattendu | Verrou, préflight `pg_catalog` et vérification post-DDL. |
-| Drift de fonction au même OID | Attributs et hash SHA-256 exact de `prosrc`. |
-| Writer ordinaire qui injecte un timestamp ou `NULL` | GUC absent ou invalide : `CURRENT_TIMESTAMP` est forcé. |
-| Timestamp de repair perdu | GUC local qui conserve tout timestamp non nul dans apply/rollback et CAS exact. |
-| Cutover fondé sur un reçu isolé seul | Reçu live `brain-v42-v4-live` 25/25 obligatoire avant repair. |
+| Unexpected trigger or ACL | Lock, `pg_catalog` preflight, and post-DDL verification. |
+| Function drift at the same OID | Exact attributes and SHA-256 hash of `prosrc`. |
+| Ordinary writer injecting a timestamp or `NULL` | GUC absent or invalid: `CURRENT_TIMESTAMP` is forced. |
+| Lost repair timestamp | Local GUC that preserves any non-null timestamp in apply/rollback and exact CAS. |
+| Cutover based on the isolated receipt alone | Live receipt `brain-v42-v4-live` at 25/25 mandatory before repair. |
 
-## Fichiers prévus
+## Planned files
 
-- Migration : `alembic/versions/039_project_context_timestamp_cas.py`.
-- Store : `src/brain_v42/maintenance/plan_index_repair_store.py` et
+- Migration: `alembic/versions/039_project_context_timestamp_cas.py`.
+- Store: `src/brain_v42/maintenance/plan_index_repair_store.py` and
   `src/brain_v42/maintenance/plan_index_repair.py`.
-- Tests repair : `tests/unit/test_plan_index_repair.py`,
-  `tests/unit/test_plan_index_repair_store.py`, `tests/unit/test_repair_plan_index_cli.py` et
+- Repair tests: `tests/unit/test_plan_index_repair.py`,
+  `tests/unit/test_plan_index_repair_store.py`, `tests/unit/test_repair_plan_index_cli.py`, and
   `tests/integration/test_plan_index_repair.py`.
-- Tests migration/intégration : `tests/unit/db/test_migration_039_project_context_timestamp.py`,
-  `tests/integration/db/test_migration_039_project_context_timestamp.py` et
+- Migration/integration tests: `tests/unit/db/test_migration_039_project_context_timestamp.py`,
+  `tests/integration/db/test_migration_039_project_context_timestamp.py`, and
   `tests/unit/test_alembic_env.py`.
-- CLI et documents de repair : `scripts/repair_plan_index.py`,
-  `docs/PLAN_INDEX_REPAIR_RUNBOOK.md`, cette spécification, la spécification de repair et son plan.
-- Documentation dépôt et production : `README.md`, `CLAUDE.md`, les documents `docs/` de runtime
-  et le runbook opérateur.
-- Recovery v4 : `ops/recovery/brain-v42-v4.json`, `ops/recovery/brain-v42-v4.sql`,
-  `ops/recovery/brain-v42-v4-pgrestore.sql`, `tests/unit/test_recovery_contract_v4.py` et
+- CLI and repair documents: `scripts/repair_plan_index.py`,
+  `docs/PLAN_INDEX_REPAIR_RUNBOOK.md`, this specification, the repair specification, and its plan.
+- Repository and production documentation: `README.md`, `CLAUDE.md`, the runtime `docs/`
+  documents, and the operator runbook.
+- Recovery v4: `ops/recovery/brain-v42-v4.json`, `ops/recovery/brain-v42-v4.sql`,
+  `ops/recovery/brain-v42-v4-pgrestore.sql`, `tests/unit/test_recovery_contract_v4.py`, and
   `tests/unit/test_recovery_contract_v4_pgrestore.py`.
 
-Les artefacts historiques 037 et v3 ne changent pas.
+The historical 037 and v3 artifacts do not change.
 
-## Critères d’acceptation
+## Acceptance criteria
 
-1. Le trigger conserve l’auto-timestamp ordinaire et conserve tout timestamp explicite non nul,
-   même égal à l’ancien, seulement avec le GUC local de repair ; seul `NULL` sous GUC `on` échoue
-   atomiquement et `NULL` sans GUC est auto-horodaté.
-2. Apply, replay, rollback et finalize conservent un CAS exact sans dérive de timestamp.
-3. Upgrade et downgrade verrouillent, vérifient le catalogue exact et annulent entièrement sur
-   erreur.
-4. `decisions`, `learnings`, `snippets`, `runbooks`, `adrs`, `features`, `indexed_plans`, les
-   assets 037 et recovery v3 restent inchangés, avec leurs mappings historiques canoniques.
-5. v4 n’est déclarée qu’après les 25 checks, dont `project_context_updated_at_039`, et le drill
-   isolé `brain-v42-v4-pgrestore` 25/25, suivi du reçu live `brain-v42-v4-live` 25/25 avant repair.
+1. The trigger keeps the ordinary auto-timestamp and preserves any non-null explicit timestamp,
+   even one equal to the old one, only with the local repair GUC; only `NULL` under GUC `on` fails
+   atomically, and `NULL` without the GUC is auto-stamped.
+2. Apply, replay, rollback, and finalize preserve an exact CAS without timestamp drift.
+3. Upgrade and downgrade lock, verify the exact catalog, and fully roll back on
+   error.
+4. `decisions`, `learnings`, `snippets`, `runbooks`, `adrs`, `features`, `indexed_plans`, the
+   037 assets, and recovery v3 remain unchanged, with their canonical historical mappings.
+5. v4 is declared only after the 25 checks, including `project_context_updated_at_039`, and the
+   isolated drill `brain-v42-v4-pgrestore` at 25/25, followed by the live receipt `brain-v42-v4-live` at 25/25 before repair.

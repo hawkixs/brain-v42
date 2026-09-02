@@ -1,177 +1,176 @@
-# SEC2-A — Frontière réseau et ressources de l'endpoint embedding
+# SEC2-A — Network boundary and resources of the embedding endpoint
 
-Date : 2026-07-24
+Date: 2026-07-24
 
-Branche : `feat/sec2-embedding-hardening`
+Branch: `feat/sec2-embedding-hardening`
 
-Base : `main` à `c5fd9e1`
+Base: `main` at `c5fd9e1`
 
-Ticket Brain : `530d796a-42e8-48d9-91a2-5d2a17fdb53b`
+Brain ticket: `530d796a-42e8-48d9-91a2-5d2a17fdb53b`
 
-## Objectif
+## Objective
 
-Durcir l'état versionné du service embedding canonique : préparer un publish hôte uniquement sur
-loopback et refuser avant calcul les corps, lots et concurrences qui dépassent un contrat
-explicite. Le runtime reste inchangé et LAN-wide jusqu'à un rollout opérateur séparé. Le
-changement doit préserver les enveloppes des consommateurs Brain locaux et Docker connus,
-conserver le healthcheck de bout en bout et ne pas présenter l'authentification comme livrée tant
-que le client actif `auto-discord` n'a pas reçu le même secret.
+Harden the versioned state of the canonical embedding service: prepare a host publish that is
+loopback-only and reject, before any compute, bodies, batches and concurrency that exceed an
+explicit contract. The runtime stays unchanged and LAN-wide until a separate operator rollout.
+The change must preserve the envelopes of the known local Brain and Docker consumers, keep the
+end-to-end healthcheck, and not present authentication as delivered while the active
+`auto-discord` client has not received the same secret.
 
-## État observé
+## Observed state
 
-- `embedding-shim` et le rollback `embedding` publient actuellement `8003:8003`, donc toutes les
-  interfaces IPv4/IPv6 de l'hôte.
-- Le shim lit `request.json()` sans limite de corps, accepte des lots de taille arbitraire et ne
-  borne pas le nombre de calculs simultanés. Seul chaque texte est tronqué à 20 000 caractères
-  dans le backend.
-- Le serveur llama interne n'est pas publié sur l'hôte et fonctionne avec `-np 1`.
-- Les processus Brain actifs utilisent `http://localhost:8003`. Le gateway optionnel utilise le
-  DNS Docker `embedding-shim:8003`.
-- `auto-discord` appelle activement `brain_v42_embedding_shim:8003` via le réseau externe
-  `hawkixs-infra`, sans header d'authentification. Son trafic ne passe pas par le publish hôte.
-- Le seul endpoint LAN codé en dur trouvé dans `red-shrik` est `192.168.1.11:8003`; il désigne
-  l'ancien service `red-data`/nomic du dev-pc et non le shim Brain canonique sur le PC serveur.
-- Les journaux observés sur cinq jours montrent 4 263 appels `/embed` depuis `auto-discord` et
-  aucun consommateur LAN distinct identifié. `docker-proxy` masque toutefois l'adresse source
-  des éventuels appels via le publish : cette observation n'est pas une preuve d'absence absolue.
-- Le digest llama.cpp est déjà verrouillé par OPS1. Le chemin `deploy/dev-pc` est explicitement
-  superseded pour le trafic Brain actif.
+- `embedding-shim` and the `embedding` rollback currently publish `8003:8003`, i.e. every IPv4/IPv6
+  interface of the host.
+- The shim reads `request.json()` with no body limit, accepts batches of arbitrary size, and does
+  not bound the number of concurrent computations. Only each text is truncated to 20,000
+  characters in the backend.
+- The internal llama server is not published on the host and runs with `-np 1`.
+- Active Brain processes use `http://localhost:8003`. The optional gateway uses the Docker DNS
+  name `embedding-shim:8003`.
+- `auto-discord` actively calls `brain_v42_embedding_shim:8003` over the external `hawkixs-infra`
+  network, with no authentication header. Its traffic does not go through the host publish.
+- The only hardcoded LAN endpoint found in `red-shrik` is `192.168.1.11:8003`; it points to the
+  old `red-data`/nomic service on the dev-pc, not to the canonical Brain shim on the PC serveur.
+- Logs observed over five days show 4,263 `/embed` calls from `auto-discord` and no distinct LAN
+  consumer identified. `docker-proxy` masks the source address of any calls made through the
+  publish, though: this observation is not proof of absolute absence.
+- The llama.cpp digest is already pinned by OPS1. The `deploy/dev-pc` path is explicitly
+  superseded for active Brain traffic.
 
-## Décisions de contrat
+## Contract decisions
 
-1. Les publishes du shim canonique et du rollback legacy deviennent
-   `127.0.0.1:8003:8003`. Uvicorn reste sur `0.0.0.0:8003` dans le conteneur afin de servir les
-   réseaux Docker.
-2. Le corps brut maximal d'une requête de calcul est de **8 MiB**. Cette enveloppe accepte la
-   sérialisation JSON réelle des clients `httpx` maintenus pour 100 textes de 20 000 caractères,
-   même à quatre octets UTF-8 par caractère; un test construit cette enveloppe maximale au lieu
-   de supposer son overhead. La limite est vérifiée sur `Content-Length` lorsqu'il est présent
-   puis sur les octets réellement reçus; exactement 8 MiB reste accepté, le premier octet
-   supplémentaire produit `413 {"detail":"Request body too large"}`.
-3. La lecture complète d'un body doit finir en **5 secondes**. Un flux trop lent produit
-   `408 {"detail":"Request body timeout"}`. Au plus **8 bodies** sont lus/validés simultanément
-   par worker, ce qui borne la mémoire brute à 64 MiB; une admission supplémentaire reçoit
-   `503 {"error":"ingress_busy"}` avec `Retry-After: 1`. Cette réponse distincte n'est jamais
-   comptée comme une contention GPU. Le timeout empêche huit slowloris de conserver les slots
-   indéfiniment.
-4. `/embed` accepte au plus **100 textes**, soit le maximum du CLI de backfill maintenu, et
-   `/rerank` au plus **128 candidats**, au-dessus du maximum coalescé observé de 120. Un
-   dépassement produit respectivement
-   `400 {"detail":"texts must contain at most 100 items"}` ou
-   `400 {"detail":"candidates must contain at most 128 items"}`, sans backend. Les lots vides
-   et le query-param legacy restent valides. Le CLI non borné `regen_embeddings` est aligné à
-   100 dans ce lot.
-5. Après lecture/validation, au plus **1 calcul embedding** et **1 calcul rerank** sont actifs par
-   worker. Une saturation embedding produit `503 {"error":"gpu_busy"}`; une saturation rerank
-   produit `503 {"error":"service_busy"}`. Les deux réponses portent `Retry-After: 1`. Ces 5xx
-   réutilisent les retries/fallbacks actuels, contrairement à un `429` ou un autre 4xx.
-6. Le body absent ou de longueur zéro conserve le fallback historique du query-param. Un body
-   composé seulement de whitespace ou un JSON syntaxiquement invalide produit
-   `400 {"detail":"Invalid JSON body"}`. `{}`, `null` et `[]` restent des payloads sans valeur :
-   le query-param peut les remplacer sur `/embed/query` et `/embed/single`; `/embed` et
-   `/rerank` répondent avec leur erreur de contrat existante.
-7. Le healthcheck Compose reste le vrai `POST /embed`, sans bypass secret ou capacité réservée.
-   Sous saturation GPU, il reçoit rapidement `503 gpu_busy`; après libération, le même probe
-   repasse à `200`. Cette indisponibilité est observable et ne doit pas être masquée par un
-   `/health` superficiel. Le rollout devra vérifier le comportement du statut Docker sous charge.
-8. Les erreurs sont des JSON courts et ne recopient ni corps, ni texte, ni secret dans la réponse
-   ou les logs.
-9. Le bearer statique par fichier `0600` reste la cible d'authentification. Il n'est pas activé
-   dans ce lot : l'activer côté serveur seulement casserait les pipelines horaires
-   `auto-discord`. Un ticket inter-projet doit rendre ce client compatible et préparer le
-   cutover atomique. Le ticket SEC2 principal reste ouvert après SEC2-A.
+1. The publishes of the canonical shim and of the legacy rollback become
+   `127.0.0.1:8003:8003`. Uvicorn stays on `0.0.0.0:8003` inside the container so it can serve
+   Docker networks.
+2. The maximum raw body of a compute request is **8 MiB**. This envelope accepts the actual JSON
+   serialization from maintained `httpx` clients for 100 texts of 20,000 characters, even at four
+   UTF-8 bytes per character; a test builds this maximum envelope instead of assuming its
+   overhead. The limit is checked against `Content-Length` when present, then against the bytes
+   actually received; exactly 8 MiB is still accepted, the first extra byte produces
+   `413 {"detail":"Request body too large"}`.
+3. Reading a body in full must finish within **5 seconds**. A stream that is too slow produces
+   `408 {"detail":"Request body timeout"}`. At most **8 bodies** are read/validated concurrently
+   per worker, which bounds raw memory to 64 MiB; an extra admission gets
+   `503 {"error":"ingress_busy"}` with `Retry-After: 1`. This distinct response is never counted
+   as GPU contention. The timeout stops eight slowloris connections from holding slots
+   indefinitely.
+4. `/embed` accepts at most **100 texts**, the maximum of the maintained backfill CLI, and
+   `/rerank` at most **128 candidates**, above the observed coalesced maximum of 120. An overflow
+   produces respectively
+   `400 {"detail":"texts must contain at most 100 items"}` or
+   `400 {"detail":"candidates must contain at most 128 items"}`, with no backend call. Empty
+   batches and the legacy query-param stay valid. The unbounded `regen_embeddings` CLI is aligned
+   to 100 in this batch.
+5. After reading/validation, at most **1 embedding computation** and **1 rerank computation** are
+   active per worker. Embedding saturation produces `503 {"error":"gpu_busy"}`; rerank saturation
+   produces `503 {"error":"service_busy"}`. Both responses carry `Retry-After: 1`. These 5xx
+   responses reuse the existing retries/fallbacks, unlike a `429` or another 4xx.
+6. A missing or zero-length body keeps the historical query-param fallback. A body made only of
+   whitespace or syntactically invalid JSON produces
+   `400 {"detail":"Invalid JSON body"}`. `{}`, `null` and `[]` remain payloads with no value:
+   the query-param can replace them on `/embed/query` and `/embed/single`; `/embed` and
+   `/rerank` respond with their existing contract error.
+7. The Compose healthcheck stays the real `POST /embed`, with no secret bypass or reserved
+   capacity. Under GPU saturation, it quickly gets `503 gpu_busy`; after release, the same probe
+   goes back to `200`. This unavailability is observable and must not be masked by a shallow
+   `/health`. The rollout will need to verify Docker status behavior under load.
+8. Errors are short JSON and echo back neither body, nor text, nor secret in the response or the
+   logs.
+9. The static per-file `0600` bearer stays the authentication target. It is not enabled in this
+   batch: enabling it server-side only would break the `auto-discord` hourly pipelines. A
+   cross-project ticket must make this client compatible and prepare the atomic cutover. The main
+   SEC2 ticket stays open after SEC2-A.
 
-## Critères d'acceptation
+## Acceptance criteria
 
-1. Les deux seuls publishes `:8003` du Compose racine sont explicitement loopback; aucun mode
-   réseau hôte n'est introduit et les URLs Docker internes restent inchangées.
-2. Le shim applique les limites ci-dessus aux quatre routes de calcul avant le backend, y compris
-   avec un body streamé sans `Content-Length` ou volontairement lent.
-3. Les tests prouvent les frontières exactes N/N+1 pour le corps, `/embed`, `/rerank`, l'ingress
-   et les deux ressources, ainsi que l'absence d'appel backend sur chaque refus.
-4. Les tests prouvent le vrai `POST /embed` du healthcheck sous saturation puis après récupération,
-   et la libération de chaque capacité après succès ou exception. Après annulation, le lease GPU
-   n'est libéré que lorsque sa tâche backend se termine; le lease ONNX reste détenu jusqu'à la fin
-   physique du thread, jamais au seul départ du client.
-5. Les contrats existants `/embed`, `/embed/query`, `/embed/single`, `/rerank`, `/`, `/healthz`
-   et `/health` restent compatibles dans leurs cas valides.
-6. Le contrat documentaire commun README/CLAUDE/architecture distingue la configuration cible
-   loopback du runtime encore LAN-wide avant rollout. Il décrit les limites du shim et le
-   reliquat d'auth/réseau Docker/legacy sans prétendre à une isolation WAN complète.
-7. Un ticket coordonné documente le client `auto-discord` à migrer vers un bearer lu depuis un
-   secret monté; un ticket séparé documente l'URL historique `red-shrik` à rendre configurable
-   sans changer implicitement de modèle.
-8. Des sentinelles présentes dans les corps invalides et surdimensionnés sont absentes des
-   réponses et des logs capturés.
-9. Les tests ciblés, la suite complète, Ruff, format, mypy, compilation du shim, Compose et
-   `git diff --check` sont verts. Deux revues indépendantes du diff complet concluent `SHIP` sans
-   finding P0–P3 ouvert.
-10. Avant chaque commit, `gitnexus_detect_changes` confirme un rayon attendu. Après fusion, les
-   deux remotes `main` pointent sur le même SHA et la pipeline GitLab de ce SHA est verte.
+1. The Compose root's only two `:8003` publishes are explicitly loopback; no host network mode is
+   introduced and the internal Docker URLs stay unchanged.
+2. The shim applies the limits above to the four compute routes before the backend, including with
+   a streamed body with no `Content-Length` or deliberately slow.
+3. Tests prove the exact N/N+1 boundaries for the body, `/embed`, `/rerank`, ingress, and both
+   resources, as well as the absence of a backend call on every rejection.
+4. Tests prove the real `POST /embed` of the healthcheck under saturation then after recovery, and
+   the release of each capacity after success or exception. After cancellation, the GPU lease is
+   only released once its backend task ends; the ONNX lease stays held until the thread's physical
+   end, never merely at the client's departure.
+5. The existing `/embed`, `/embed/query`, `/embed/single`, `/rerank`, `/`, `/healthz` and
+   `/health` contracts stay compatible for their valid cases.
+6. The shared README/CLAUDE/architecture documentation contract distinguishes the loopback target
+   configuration from the still-LAN-wide runtime before rollout. It describes the shim's limits
+   and the auth/Docker network/legacy remainder without claiming full WAN isolation.
+7. A coordinated ticket documents the `auto-discord` client to migrate to a bearer read from a
+   mounted secret; a separate ticket documents the historical `red-shrik` URL to make
+   configurable without implicitly changing the model.
+8. Sentinels present in invalid and oversized bodies are absent from the captured responses and
+   logs.
+9. The targeted tests, the full suite, Ruff, format, mypy, shim compilation, Compose, and
+   `git diff --check` are green. Two independent reviews of the full diff conclude `SHIP` with no
+   open P0–P3 finding.
+10. Before each commit, `gitnexus_detect_changes` confirms an expected radius. After merge, both
+   `main` remotes point at the same SHA and that SHA's GitLab pipeline is green.
 
-## Non-objectifs et frontières
+## Non-goals and boundaries
 
-- Ne pas déployer, recréer ou redémarrer le shim, le modèle, le MCP ou `auto-discord`.
-- Ne pas modifier le dépôt `auto_discord` ou `red-shrik` dans cette branche.
-- Ne pas activer un bearer en mode partiel, ne pas créer de secret et ne pas inscrire de token
-  dans Git, les arguments de commande ou les logs.
-- Ne pas retirer encore le shim du réseau partagé `hawkixs-infra`; cela exige une modification
-  coordonnée du Compose `auto-discord` et la création d'un réseau client dédié.
-- Ne pas modifier `deploy/dev-pc`, son supervisor ou son socket Docker dans ce lot : ce chemin
-  est superseded et reste un sous-lot SEC2 distinct s'il doit être conservé comme rollback.
-- Ne pas modifier les modèles, dimensions, normalisation, troncature texte ou scores.
-- Ne pas prétendre fermer SEC2 globalement : l'authentification, le réseau Docker dédié et le
-  reliquat supervisor restent ouverts avec propriétaires et preuves explicites.
-- Les caps applicatifs de ce lot appartiennent au shim canonique. Le rollback PyTorch legacy
-  devient loopback mais reste non borné, et son nom DNS ne préserve pas `auto-discord`; il ne doit
-  pas être présenté comme un rollback SEC2 sûr avant un lot ingress/alias dédié.
+- Do not deploy, recreate, or restart the shim, the model, MCP, or `auto-discord`.
+- Do not modify the `auto_discord` or `red-shrik` repository on this branch.
+- Do not enable a bearer in partial mode, do not create a secret, and do not write a token into
+  Git, command arguments, or logs.
+- Do not remove the shim from the shared `hawkixs-infra` network yet; that requires a coordinated
+  `auto-discord` Compose change and the creation of a dedicated client network.
+- Do not modify `deploy/dev-pc`, its supervisor, or its Docker socket in this batch: this path is
+  superseded and remains a separate SEC2 sub-batch if it needs to be kept as a rollback.
+- Do not modify the models, dimensions, normalization, text truncation, or scores.
+- Do not claim to close SEC2 globally: authentication, the dedicated Docker network, and the
+  supervisor remainder stay open with explicit owners and proof.
+- The application caps in this batch belong to the canonical shim. The legacy PyTorch rollback
+  becomes loopback but stays unbounded, and its DNS name does not preserve `auto-discord`; it
+  must not be presented as a safe SEC2 rollback before a dedicated ingress/alias batch.
 
-## Découpage TDD
+## TDD breakdown
 
-### Tâche 1 — Limites de requête et concurrence dans le shim
+### Task 1 — Request limits and concurrency in the shim
 
-Fichiers : `services/embedding_shim/shim_app.py`, `services/embedding_shim/main.py`,
+Files: `services/embedding_shim/shim_app.py`, `services/embedding_shim/main.py`,
 `services/embedding_shim/shim_backends.py`, `scripts/regen_embeddings.py`,
-`tests/unit/test_embedding_shim.py` et les tests CLI de régénération concernés.
+`tests/unit/test_embedding_shim.py`, and the relevant regeneration CLI tests.
 
-Avant l'édition, analyser l'impact amont de `create_app`, `_json_or_none` et des nouveaux points
-d'extension pertinents; avertir avant de continuer si GitNexus retourne HIGH ou CRITICAL.
+Before editing, analyze the upstream impact of `create_app`, `_json_or_none`, and the relevant new
+extension points; warn before continuing if GitNexus returns HIGH or CRITICAL.
 
-RED : ajouter les tests de sérialisation `httpx` maximale, body déclaré/streamé N/N+1, timeout de
-lecture, formes JSON exactes, batch 100/101, candidats 128/129, huit lectures bloquées puis
-`ingress_busy`, gates GPU et ONNX séparées, vrai probe Compose sous saturation/récupération et
-libération de capacité sur tous les chemins. Utiliser `httpx.AsyncClient` + `ASGITransport`, un
-backend embedding piloté par `asyncio.Event` et un backend ONNX piloté par `threading.Event`.
-Après annulation du client rerank, prouver que le second calcul reste refusé jusqu'au déblocage
-réel du thread. Tester directement l'ASGI pour la lecture streamée et le timeout. Consigner les
-échecs réels.
+RED: add the tests for maximum `httpx` serialization, declared/streamed body N/N+1, read timeout,
+exact JSON shapes, batch 100/101, candidates 128/129, eight blocked reads then `ingress_busy`,
+separate GPU and ONNX gates, the real Compose probe under saturation/recovery, and capacity
+release on every path. Use `httpx.AsyncClient` + `ASGITransport`, an embedding backend driven by
+`asyncio.Event`, and an ONNX backend driven by `threading.Event`. After cancelling the rerank
+client, prove the second computation stays refused until the thread actually unblocks. Test the
+ASGI layer directly for streamed reads and the timeout. Record the actual failures.
 
-GREEN : introduire un contrat de limites immuable, une lecture bornée/temporisée du body, un gate
-d'ingress et deux gates de ressource limités aux routes de calcul. Aligner le CLI de régénération
-sur le maximum 100 et compléter les trois annotations manquantes du shim afin que son gate mypy
-soit réellement vert. Garder les réponses et le chemin nominal minimaux.
+GREEN: introduce an immutable limits contract, a bounded/timed body read, an ingress gate, and two
+resource gates restricted to the compute routes. Align the regeneration CLI to the 100 maximum and
+fill in the three missing shim annotations so its mypy gate is actually green. Keep the responses
+and the nominal path minimal.
 
-### Tâche 2 — Bind loopback et contrat documentaire
+### Task 2 — Loopback bind and documentation contract
 
-Fichiers : `docker-compose.yml`, `tests/unit/test_documentation_contract.py`, `README.md`,
+Files: `docker-compose.yml`, `tests/unit/test_documentation_contract.py`, `README.md`,
 `CLAUDE.md`, `docs/ARCHITECTURE.md`,
-`docs/plans/2026-07-11-sol-ultra-audit-roadmap-plan.md` et ce plan.
+`docs/plans/2026-07-11-sol-ultra-audit-roadmap-plan.md`, and this plan.
 
-RED : faire attendre au contrat documentaire les deux bindings loopback et le nouveau texte de
-frontière; prouver que la baseline échoue encore sur `8003:8003` et la déclaration LAN ouverte.
+RED: make the documentation contract expect the two loopback bindings and the new boundary text;
+prove the baseline still fails on `8003:8003` and the open-LAN statement.
 
-GREEN : modifier uniquement les deux publishes racine, aligner les documents sur « code-ready,
-non déployé » et valider le Compose résolu. Les réseaux et les URLs internes restent identiques.
+GREEN: modify only the two root publishes, align the documents on "code-ready, not deployed", and
+validate the resolved Compose. The internal networks and URLs stay identical.
 
-### Tâche 3 — Coordination et preuve SEC2-A
+### Task 3 — SEC2-A coordination and proof
 
-Créer dans Brain un ticket `brain-v42 → auto-discord` pour la migration bearer + réseau client
-dédié, ainsi qu'un ticket `brain-v42 → red-shrik` pour rendre l'URL QA configurable et clarifier
-la propriété du modèle. Ajouter au ticket SEC2 principal les commits, compteurs, limites et
-sous-lots restants; ne pas le résoudre. Consigner aussi le legacy non borné et le build CI du
-Dockerfile shim comme reliquats, sans élargir silencieusement ce lot.
+Create a `brain-v42 → auto-discord` ticket in Brain for the bearer migration + dedicated client
+network, as well as a `brain-v42 → red-shrik` ticket to make the QA URL configurable and clarify
+model ownership. Add to the main SEC2 ticket the commits, counters, limits, and remaining
+sub-batches; do not resolve it. Also record the unbounded legacy and the shim Dockerfile's CI
+build as remainders, without silently expanding this batch.
 
-## Vérification
+## Verification
 
 ```text
 uv run pytest tests/unit/test_embedding_shim.py tests/unit/test_documentation_contract.py -q
@@ -187,31 +186,30 @@ git diff --check
 git diff --check main...HEAD
 ```
 
-Exécuter `gitnexus_detect_changes` avant chaque commit. Après fusion : répéter les gates
-proportionnés depuis `main`, pousser sans force sur `origin/main` et `gitlab/main`, vérifier les
-refs distantes puis attendre la pipeline GitLab exacte.
+Run `gitnexus_detect_changes` before each commit. After merge: repeat the proportional gates from
+`main`, push without force to `origin/main` and `gitlab/main`, verify the remote refs, then wait
+for the exact GitLab pipeline.
 
-## Retour arrière
+## Rollback
 
-Un revert du ou des commits restaure les publishes et le comportement précédents. Aucune donnée,
-image, ressource Docker, configuration live ou secret n'est modifié par cette livraison. Si le
-bind loopback doit être appliqué ultérieurement, le runbook de déploiement devra vérifier le
-trafic hôte local, le DNS Docker `auto-discord`, les quatre routes de calcul, les healthchecks et
-le rollback avant tout soak.
+Reverting the commit(s) restores the previous publishes and behavior. No data, image, Docker
+resource, live configuration, or secret is modified by this delivery. If the loopback bind must be
+applied later, the deployment runbook will need to check local host traffic, the `auto-discord`
+Docker DNS, the four compute routes, the healthchecks, and the rollback before any soak.
 
-## Preuves de livraison
+## Delivery evidence
 
-- Plan critiqué par trois angles indépendants puis validé `SHIP` : commit `34ca3e5`.
-- Matrice RED vérifiée sur limites, saturation et CLI : commit `210660d`.
-- Shim GREEN : commit `13e53c0`; 61 tests shim/CLI ciblés passent, ainsi qu'une matrice
-  embedding/reranking élargie de 174 tests incluant ces 61.
-- Corps 8 MiB, JSON pathologiques, ingress 8+1, compute 1+1, erreurs/annulations et logs
-  détachés sanitizés sont couverts. Mypy shim, Ruff, format et `git diff --check` passent.
-- Quatre revues indépendantes — plan, sécurité, qualité et historique — concluent `SHIP` sans
-  finding P0–P3 ouvert.
-- Tickets de coordination créés : `9ef5c69d-cfd3-4f07-93c5-2c599ea2197b` pour `auto-discord`
-  et `89140780-b853-437b-b902-86dab64cd866` pour `red-shrik`.
-- Aucun déploiement, restart, secret ou réseau live n'a été créé. Le ticket SEC2 principal reste
-  ouvert pour l'authentification, le réseau dédié, le rollout et les reliquats legacy/supervisor.
-- Le SHA final, la concordance des remotes et la pipeline GitLab exacte seront consignés dans le
-  ticket Brain SEC2, car ces preuves sont produites après ce commit documentaire immuable.
+- Plan critiqued from three independent angles then validated `SHIP`: commit `34ca3e5`.
+- RED matrix verified on limits, saturation, and CLI: commit `210660d`.
+- Shim GREEN: commit `13e53c0`; 61 targeted shim/CLI tests pass, along with a widened
+  embedding/reranking matrix of 174 tests including these 61.
+- 8 MiB body, pathological JSON, ingress 8+1, compute 1+1, errors/cancellations, and sanitized
+  detached logs are covered. Shim mypy, Ruff, format, and `git diff --check` pass.
+- Four independent reviews — plan, security, quality, and history — conclude `SHIP` with no open
+  P0–P3 finding.
+- Coordination tickets created: `9ef5c69d-cfd3-4f07-93c5-2c599ea2197b` for `auto-discord`
+  and `89140780-b853-437b-b902-86dab64cd866` for `red-shrik`.
+- No deployment, restart, secret, or live network was created. The main SEC2 ticket stays open for
+  authentication, the dedicated network, the rollout, and the legacy/supervisor remainders.
+- The final SHA, remote concordance, and the exact GitLab pipeline will be recorded in the SEC2
+  Brain ticket, since this evidence is produced after this immutable documentation commit.

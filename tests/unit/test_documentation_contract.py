@@ -1809,7 +1809,7 @@ def test_repository_head_049_is_documented_without_claiming_a_deployed_head() ->
     in the same breath.
     """
     assert _repository_head() == "049"
-    assert "49 révisions (001 → 049)" in SCHEMA
+    assert "49 revisions (001 → 049)" in SCHEMA
     assert "| 038 |" in SCHEMA
     assert "| 039 |" in SCHEMA
     assert "| 040 |" in SCHEMA
@@ -1819,11 +1819,11 @@ def test_repository_head_049_is_documented_without_claiming_a_deployed_head() ->
     assert "| 047 |" in SCHEMA
     assert "| 048 |" in SCHEMA
     assert "| 049 |" in SCHEMA
-    assert "Un schéma neuf au head 049 contient 32 tables `public`" in SCHEMA
+    assert "A fresh schema at head 049 contains 32 `public` tables" in SCHEMA
 
     schema_normalized = " ".join(SCHEMA.split())
-    assert "La cible du dépôt est 049." in schema_normalized
-    assert "La révision 049 est la tête du dépôt." in schema_normalized
+    assert "the repository's target is 049." in schema_normalized
+    assert "Revision 049 is the head of the repository." in schema_normalized
     assert "select version_num from alembic_version" in schema_normalized
 
     # The retired claim must not come back in any of the core documents.
@@ -2033,7 +2033,7 @@ def test_documented_fastmcp_major_matches_lock() -> None:
 
 
 def test_graph_cutover_summary_matches_authoritative_runbook() -> None:
-    assert "**Statut : ACTIF — CUTOVER PRODUCTION VALIDÉ LE 22 JUILLET 2026**" in GRAPH_RUNBOOK
+    assert "**Status: ACTIVE — PRODUCTION CUTOVER VALIDATED ON JULY 22, 2026**" in GRAPH_RUNBOOK
     assert "canonical path is active in production since 22 July 2026" in README
     assert (
         "**Production graph state:** cutover validated at head 035 on 22 July 2026" in ARCHITECTURE
@@ -2090,7 +2090,7 @@ def test_post_037_production_truth_is_consistent_and_fail_closed() -> None:
         claude_normalized = " ".join(CLAUDE.split())
         assert "Il est actif en production depuis le 24 juillet 2026" in claude_normalized
     assert (
-        "Le lifecycle v4 qu'elle porte tourne en production depuis le 24 juillet 2026"
+        "The v4 lifecycle it carries has been running in production since 24 July 2026"
         in schema_normalized
     )
 
@@ -2105,49 +2105,67 @@ def test_post_037_production_truth_is_consistent_and_fail_closed() -> None:
         not in gateway_normalized
     )
     assert (
-        "la production actuelle doit annoncer le head Alembic effectivement déployé, mesuré "
-        "immédiatement avant la procédure" in gateway_normalized
+        "The repository head is `039`; the observed production stays at `037`."
+        not in gateway_normalized
+    )
+    assert (
+        "current production must announce the Alembic head actually deployed, measured "
+        "immediately before the procedure" in gateway_normalized
     )
     assert (
         "la production actuelle doit annoncer exactement `037`, son descendant validé"
         not in gateway_normalized
     )
     assert (
-        "`alembic current` doit annoncer le head déployé, mesuré avant la procédure"
+        "current production must announce exactly `037`, its validated descendant"
+        not in gateway_normalized
+    )
+    assert (
+        "`alembic current` must announce the deployed head, measured before the"
         in gateway_normalized
     )
     assert "sans marqueur `(head)`" not in gateway_normalized
+    assert "without the `(head)` marker" not in gateway_normalized
     assert (
-        "La migration 037 descend de 036 et conserve les dix vues requises par la gateway."
+        "Migration 037 descends from 036 and keeps the ten views the gateway requires."
         in gateway_normalized
     )
     assert (
-        "Ce runbook n'applique aucune migration Alembic au-delà de ce que la production porte "
-        "déjà." in gateway_normalized
+        "This runbook applies no Alembic migration beyond what production already carries."
+        in gateway_normalized
     )
     assert (
         "Ce runbook n'applique aucune migration Alembic, ni 038 ni 039." not in gateway_normalized
     )
-    assert "doit annoncer exactement `037 (head)`" not in CODEX_GATEWAY
-    assert "ne downgradez jamais vers 036" in CODEX_GATEWAY
     assert (
-        "Conservez le head déployé — mesuré avant le rollback, jamais recopié d'une exécution "
-        "précédente — pendant ce rollback" in gateway_normalized
+        "This runbook applies no Alembic migration, neither 038 nor 039." not in gateway_normalized
+    )
+    assert "doit annoncer exactement `037 (head)`" not in CODEX_GATEWAY
+    assert "must announce exactly `037 (head)`" not in CODEX_GATEWAY
+    assert "never downgrade to 036" in CODEX_GATEWAY
+    assert (
+        "Keep the deployed head — measured before the rollback, never copied from a "
+        "previous run — during this rollback" in gateway_normalized
     )
     assert "Conservez le head déployé `037` pendant ce rollback" not in gateway_normalized
-    assert "Le rollback de la gateway n'autorise aucune migration Alembic" in CODEX_GATEWAY
+    assert "Keep the deployed head `037` during this rollback" not in gateway_normalized
+    assert "The gateway rollback authorizes no Alembic migration." in CODEX_GATEWAY
     assert "sans annoncer `037`" not in CODEX_GATEWAY
+    assert "without announcing `037`" not in CODEX_GATEWAY
     assert "Conservez la migration `036` pendant ce rollback" not in CODEX_GATEWAY
 
+    assert "Keep migration `036` during this rollback" not in CODEX_GATEWAY
     # Ticket 8285215c : le head n'est plus une constante NULLE PART, ni en prose ni
     # dans le CLI. Ces deux phrases étaient exactes tant que le script encodait
     # `037` ; elles sont devenues fausses le jour où il a cessé de le faire.
     assert "la production exactement à `037`" not in gateway_normalized
+    assert "production exactly at `037`" not in gateway_normalized
     assert "`alembic_revision=037`" not in gateway_normalized
     assert "n'accepte ni `038` ni `039` implicitement" not in gateway_normalized
+    assert "accepts neither `038` nor `039` implicitly" not in gateway_normalized
     assert (
-        "la production exactement au head que VOUS avez déclaré — mesuré immédiatement "
-        "avant la procédure, jamais recopié" in gateway_normalized
+        "production exactly at the head YOU declared — measured immediately "
+        "before the procedure, never copied" in gateway_normalized
     )
     # La procédure est INEXÉCUTABLE si le runbook oublie l'argument requis.
     # La forme d'INVOCATION, pas la mention : la prose cite aussi l'argument, et
@@ -2157,50 +2175,59 @@ def test_post_037_production_truth_is_consistent_and_fail_closed() -> None:
     )
 
     graph_normalized = " ".join(GRAPH_RUNBOOK.split())
-    assert "**Acquis au head 037.**" in GRAPH_RUNBOOK
-    assert "DR-v5 `20260724_150315`" in GRAPH_RUNBOOK
+    assert "**Acquired at head 037.**" in GRAPH_RUNBOOK
+    assert "DR-v5 run `20260724_150315`" in GRAPH_RUNBOOK
     assert "**Ouvert pour le head 037.**" not in GRAPH_RUNBOOK
-    assert "ne jamais downgrader pour fermer ce gate" in graph_normalized
-    assert "Un rollback du runtime graph n'autorise aucun downgrade Alembic" in graph_normalized
-    assert "Toute nouvelle recovery ou tout nouveau rebuild doit revalider" in graph_normalized
+    assert "**Open for head 037.**" not in GRAPH_RUNBOOK
+    assert "never downgrade to close this gate" in graph_normalized
+    assert "A graph runtime rollback authorizes no Alembic downgrade." in graph_normalized
+    assert "Any new recovery or new rebuild must revalidate" in graph_normalized
     assert "interdit une nouvelle recovery ou un nouveau rebuild" not in graph_normalized
-    assert "Preuve historique au head 035" in graph_normalized
-    assert "ne ferment pas le rebuild Neo4j dédié de DR-v5" in graph_normalized
+    assert "forbids a new recovery or a new rebuild" not in graph_normalized
+    assert "Historical proof at head 035" in graph_normalized
+    assert "do not close DR-v5's dedicated Neo4j rebuild" in graph_normalized
 
     # The DR-v5 drill's own proof stays pinned to the head it was actually run against
     # ("alors courante" — the production that was current *then*) — rewriting it to a later
     # number would fabricate a restore that never happened. Only the *procedural templates*
     # (Cutover futur / Restore / Rollback) that told a future operator to expect `037` on
     # "la production courante" (today) are wrong and must become measure-before-you-act.
-    assert "pour la production alors courante, au head 037" in graph_normalized
-    assert graph_normalized.count("pour la production alors courante, au head 037") == 2
+    assert "for the then-current production, at head 037" in graph_normalized
+    assert graph_normalized.count("for the then-current production, at head 037") == 2
     assert "pour la production courante au head 037" not in graph_normalized
+    assert "for the current production, at head 037" not in graph_normalized
     assert "(`037` sur la production courante)" not in GRAPH_RUNBOOK
+    assert "(`037` on the current production)" not in GRAPH_RUNBOOK
     assert (
-        "le head exactement déployé — mesuré avant la fenêtre, jamais recopié d'une exécution "
-        "précédente" in graph_normalized
+        "the exactly deployed head — measured before the window, never copied from a "
+        "previous run" in graph_normalized
     )
     assert (
-        "un restore PostgreSQL au head exactement déployé — mesuré avant la procédure, jamais "
-        "recopié d'une exécution précédente" in graph_normalized
+        "a PostgreSQL restore at the exactly deployed head — measured before the procedure, "
+        "never copied from a previous run" in graph_normalized
     )
     assert (
-        "Exiger le head exactement déployé — mesuré avant la procédure, jamais recopié d'une "
-        "exécution précédente — et vérifier le catalogue" in graph_normalized
+        "Require the exactly deployed head — measured before the procedure, never copied "
+        "from a previous run — and check the catalog" in graph_normalized
     )
     assert (
-        "Conserver le schéma au head exactement déployé — mesuré avant le rollback, jamais "
-        "recopié d'une exécution précédente" in graph_normalized
+        "Keep the schema at the exactly deployed head — measured before the rollback, "
+        "never copied from a previous run" in graph_normalized
     )
 
-    assert "Upgrade initial vers le head 035 — procédure historique" in GRAPH_RUNBOOK
+    assert "Initial upgrade to head 035 — historical procedure" in GRAPH_RUNBOOK
     assert "Ne pas la rejouer sur la production actuelle au head 037" not in graph_normalized
+    assert "Do not replay it on current production at head 037" not in graph_normalized
     assert (
-        "Ne pas la rejouer sur la production actuelle : mesurez son head avant toute action, "
-        "il dépasse déjà 035" in graph_normalized
+        "Do not replay it on the current production: measure its head before any action, "
+        "it already exceeds 035" in graph_normalized
     )
     assert (
         "régénérer le service systemd depuis le template compatible avec le head 035"
+        not in GRAPH_RUNBOOK
+    )
+    assert (
+        "regenerate the systemd service from the template compatible with head 035"
         not in GRAPH_RUNBOOK
     )
 
@@ -2208,51 +2235,57 @@ def test_post_037_production_truth_is_consistent_and_fail_closed() -> None:
     assert "a tested PostgreSQL restore at the exact deployed head" in architecture_normalized
     assert "DR-v5 run `20260724_150315`" in architecture_normalized
 
-    assert "DR-v5 `20260724_150315`" in SCHEMA
+    assert "DR-v5 run `20260724_150315`" in SCHEMA
     assert "un contrat et un drill isolé au head 037 restent requis" not in schema_normalized
 
-    assert "`a857705f…` migrations 036/037 et restart MCP | **clos le 24 juillet**" in ROADMAP
-    assert "les trois unités MCP sont live et canariées" in ROADMAP
-    assert "cinq fragments restent non publiés" in ROADMAP
-    roadmap_normalized = " ".join(ROADMAP.split())
-    assert "Le restore PostgreSQL isolé au head 037 est acquis" in roadmap_normalized
-    assert "cleanup jetable du drill est complet" in roadmap_normalized
     assert (
-        "`1c6911a4…` statuts `planned` rejetés par plan_indexer | `in_progress`; code livré à "
-        "`223fc1f`" in ROADMAP
+        "a contract and an isolated drill at head 037 are still required" not in schema_normalized
     )
-    assert "`44ee7643…` chemins `plan_scan_paths` relatifs" in ROADMAP
-    next_work = ROADMAP.split("## Prochain chantier recommandé", maxsplit=1)[1]
+    assert "`a857705f…` migrations 036/037 and MCP restart | **closed on July 24**" in ROADMAP
+    assert "the three MCP units are live and canaried" in ROADMAP
+    assert "five fragments remain unpublished" in ROADMAP
+    roadmap_normalized = " ".join(ROADMAP.split())
+    assert "The isolated PostgreSQL restore to head 037 is acquired" in roadmap_normalized
+    assert "disposable drill cleanup is complete" in roadmap_normalized
+    assert (
+        "`1c6911a4…` `planned` statuses rejected by plan_indexer | `in_progress`; code shipped "
+        "at `223fc1f`" in ROADMAP
+    )
+    assert "`44ee7643…` relative `plan_scan_paths` paths" in ROADMAP
+    next_work = ROADMAP.split("## Recommended next effort", maxsplit=1)[1]
     next_work_normalized = " ".join(next_work.split())
-    av1_position = next_work_normalized.index("dernière preuve d'intégration du linking")
+    av1_position = next_work_normalized.index("final AV1 linking integration evidence")
     ci_security_position = next_work_normalized.index("31d68c06…")
     coverage_position = next_work_normalized.index("5619c851…")
     assert av1_position < ci_security_position < coverage_position
 
     dr_active_normalized = " ".join((DR_IMPLEMENTATION_PLAN + "\n" + DR_B3_EVIDENCE).split())
-    assert "DR-v5 `20260724_150315`" in dr_active_normalized
-    assert "24/24 contrôles" in dr_active_normalized
-    assert "preuve opérationnelle B3" in dr_active_normalized
-    assert "Ne jamais downgrader pour" in dr_active_normalized
+    assert "DR-v5 run `20260724_150315`" in dr_active_normalized
+    assert "24/24 checks" in dr_active_normalized
+    assert "B3 operational proof" in dr_active_normalized
+    assert "Never downgrade to close a" in dr_active_normalized
     assert "restore PostgreSQL au head 035" not in dr_active_normalized
+    assert "PostgreSQL restore at head 035" not in dr_active_normalized
     assert "Tant que ce drill n'est pas livré" not in dr_active_normalized
-    assert "Le timer DR-v3 est installé, persistant et actif" in dr_active_normalized
-    assert "Restent à activer DR-v5" in dr_active_normalized
+    assert "Until this drill is delivered" not in dr_active_normalized
+    assert "The DR-v3 timer is installed, persistent and active" in dr_active_normalized
+    assert "DR-v5 activation remain open" in dr_active_normalized
     assert "le cron live restent inchangés" not in dr_active_normalized
-    assert "Cycles DR-v1 historiques authentifiés" in DR_B3_EVIDENCE
+    assert "the live cron stay unchanged" not in dr_active_normalized
+    assert "Historical DR-v1 cycles authenticated" in DR_B3_EVIDENCE
     for residual_gate in (
-        "rôles, propriétaires et ACL",
-        "rebuild Neo4j dédié",
-        "off-host chiffré",
-        "alerte Discord",
-        "activer DR-v5",
+        "roles, owners and ACLs",
+        "dedicated Neo4j rebuild",
+        "encrypted off-host",
+        "Discord alert",
+        "DR-v5 activation",
     ):
         assert residual_gate in dr_active_normalized
 
     dr_b2_normalized = " ".join(DR_B2_HANDOFF.split())
     assert "status: completed" in DR_B2_HANDOFF
-    assert "Ce checkpoint ne constitue plus un point de reprise" in dr_b2_normalized
-    assert "aucun downgrade n'est autorisé" in dr_b2_normalized
+    assert "This checkpoint is no longer a resume point." in dr_b2_normalized
+    assert "no downgrade is authorized" in dr_b2_normalized
 
     stale_live_claims = (
         "Il n'est pas encore déployé sur le Brain live",
@@ -2273,9 +2306,9 @@ def test_graph_timer_runbook_requires_effective_read_only_service() -> None:
         "ExecStart=__REPO_ROOT__/.venv/bin/python __REPO_ROOT__/scripts/rebuild_graph_projection.py"
     )
     assert "systemctl --user cat brain-v42-graph-recon.service" in GRAPH_RUNBOOK
-    assert "fragment effectif" in GRAPH_RUNBOOK
+    assert "effective fragment" in GRAPH_RUNBOOK
     assert "`brain-v42-graph-recon.service`" in GRAPH_RUNBOOK
-    assert "sans `--fix`, `reconcile_graph_drift` ni" in GRAPH_RUNBOOK
+    assert "with no `--fix`, `reconcile_graph_drift`, or" in GRAPH_RUNBOOK
     assert "`recover_graph_projection.py`" in GRAPH_RUNBOOK
 
 
@@ -2289,10 +2322,10 @@ def test_production_mcp_secrets_are_documented_as_private_and_required() -> None
     assert not private_keys.intersection(_environment_assignment_keys(readme_shared))
     assert not private_keys.intersection(_environment_assignment_keys(architecture_shared))
     assert "Never place" in README
-    assert "n'appartiennent jamais" in ARCHITECTURE
+    assert "never belong" in ARCHITECTURE
     assert "mcp-token.env" in README
     assert "mcp-token.env" in ARCHITECTURE
-    assert "MCP_HTTP_TOKEN` non vide" in ARCHITECTURE
+    assert "non-empty `MCP_HTTP_TOKEN`" in ARCHITECTURE
     # The "must be non-empty" precision moved to docs/OPERATIONS.md with the
     # rest of the private-secret-file detail when README became the
     # open-source draft (ticket bdc4db73).
@@ -2390,8 +2423,8 @@ def test_sweep_plan_integration_gates_cannot_pass_by_skipping_everything() -> No
             f"integration gate targets the prod database and skips: {command}"
         )
     assert (
-        "Sans `BRAIN_V42_TEST_DB_URL`, `pytest tests/integration` skippe la suite en totalité "
-        "et sort en vert : exiger un compte `passed` non nul, jamais « tout vert »."
+        "Without `BRAIN_V42_TEST_DB_URL`, `pytest tests/integration` skips the suite entirely "
+        'and exits green: demand a nonzero `passed` count, never "all green".'
     ) in " ".join(plan.split())
 
 
