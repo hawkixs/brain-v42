@@ -50,62 +50,61 @@ def _get_free_port() -> int:
 # ---------------------------------------------------------------------------
 
 
-# LE BUDGET DE L'ITEM, REFAIT. La première rédaction annonçait « 60 s de corps
-# + 40 s de teardown = 100 s, sous le filet à 120 » et se trompait deux fois :
-# le `faulthandler_timeout` est armé sur le PROTOCOLE de l'item — setup + call +
-# teardown — et le corps porte DEUX attentes bornées CONSÉCUTIVES, pas une. Le
-# vrai pire cas était 5 (démarrage) + 60 + 60 + 15 + 10 (arrêt) + 15 (dispose),
-# soit 165 s ; même en s'arrêtant au premier dépassement il restait 5 + 60 + 40
-# = 105 s. Et le runner est mesuré 22 % plus lent le 2026-08-25 (148 s contre
-# 120,9 s sur la même suite) : 105 × 1,22 = 128 > 120. L'item franchissait donc
-# le filet sur le profil de runner qui produit la panne, et sortait par
-# `os._exit` — précisément le cas où l'on veut un verdict de test.
+# THE ITEM'S BUDGET, REDONE. The first draft announced "60 s of body + 40 s of
+# teardown = 100 s, under the net at 120" and was wrong twice: the
+# `faulthandler_timeout` is armed on the item's PROTOCOL — setup + call + teardown
+# — and the body carries TWO CONSECUTIVE bounded waits, not one. The real worst
+# case was 5 (startup) + 60 + 60 + 15 + 10 (shutdown) + 15 (dispose), i.e. 165 s;
+# even stopping at the first overrun, 5 + 60 + 40 = 105 s remained. And the runner
+# was measured 22 % slower on 2026-08-25 (148 s against 120.9 s on the same suite):
+# 105 × 1.22 = 128 > 120. The item therefore crossed the net on the runner profile
+# that produces the failure, and exited through `os._exit` — precisely the case
+# where a test verdict is wanted.
 #
-# Nouveau pire cas : 5 + 25 + 25 + 8 + 5 + 8 = 76 s, soit 93 s à +22 %, contre
-# un filet à 120. La marge est de 27 s, elle est écrite ici, et elle se refait
-# à la main dès qu'une de ces constantes bouge. Le normal mesuré de ces appels
-# est sous la seconde : 25 s reste deux ordres de grandeur au-dessus.
+# New worst case: 5 + 25 + 25 + 8 + 5 + 8 = 76 s, i.e. 93 s at +22 %, against a net
+# at 120. The margin is 27 s, it is written here, and it is redone by hand as soon
+# as one of these constants moves. The measured normal for these calls is under a
+# second: 25 s stays two orders of magnitude above.
 _STARTUP_BUDGET_SECONDS = 5.0
 _STARTUP_POLL_SECONDS = 0.1
 _STOP_BUDGET_SECONDS = 8.0
 _CANCEL_BUDGET_SECONDS = 5.0
 _DISPOSE_BUDGET_SECONDS = 8.0
-#: Large, mais BORNÉ : un appel qui ne revient pas doit se nommer bien avant
-#: le `faulthandler_timeout` de 120 s, qui est le filet et non la borne.
+#: Generous, but BOUNDED: a call that does not come back must name itself well
+#: before the 120 s `faulthandler_timeout`, which is the net and not the bound.
 _CALL_BUDGET_SECONDS = 25.0
 
 
 def _dump_deadline(default: float) -> float:
-    """Deadline d'un chien de garde de DIAGNOSTIC, armée SOUS sa borne applicative.
+    """Deadline of a DIAGNOSTIC watchdog, armed BELOW its application bound.
 
-    Sous, parce qu'il doit tirer PENDANT que la tâche est encore suspendue :
-    après le `wait_for`, `Task.get_stack()` d'une tâche déjà annulée rend une
-    liste vide et le dump devient du code mort sur son propre chemin d'erreur.
+    Below, because it must fire WHILE the task is still suspended: after the
+    `wait_for`, `Task.get_stack()` on an already-cancelled task returns an empty
+    list and the dump becomes dead code on its own error path.
 
-    Surchargeable par l'environnement pour une seule raison : PROUVER que le dump
-    tire sur le chemin réel. `BRAIN_TEST_TASK_DUMP_DEADLINE=0.001 pytest …` le
-    déclenche sur un run sain, où l'attente observée est le vrai handshake
-    `initialize`. Un diagnostic qu'on ne sait pas déclencher à la demande ne se
-    vérifie jamais.
+    Overridable through the environment for one reason only: to PROVE the dump fires
+    on the real path. `BRAIN_TEST_TASK_DUMP_DEADLINE=0.001 pytest …` triggers it on
+    a healthy run, where the observed wait is the real `initialize` handshake. A
+    diagnosis one cannot trigger on demand is never verified.
     """
     override = os.environ.get("BRAIN_TEST_TASK_DUMP_DEADLINE", "").strip()
     return float(override) if override else default
 
 
-#: Trois zones, trois deadlines — parce que le premier lot n'armait le dump
-#: qu'autour des deux attentes du CORPS et laissait nues les trois autres.
+#: Three zones, three deadlines — because the first batch only armed the dump
+#: around the BODY's two waits and left the other three bare.
 _CALL_DUMP_DEADLINE = _dump_deadline(10.0)
 _STARTUP_DUMP_DEADLINE = _dump_deadline(3.0)
 _TEARDOWN_DUMP_DEADLINE = _dump_deadline(4.0)
 
 
 class Bench(NamedTuple):
-    """Ce que le banc rend : l'URL, le collecteur, ET les objets à SONDER.
+    """What the bench returns: the URL, the collector, AND the objects to PROBE.
 
-    Le serveur uvicorn et le FastMCP servant l'app remontent jusqu'au test parce
-    que le dump de diagnostic les relève : `len(server.server_state.tasks)` est la
-    mesure DIRECTE des « requêtes en vol » que le `ASGI callable returned without
-    completing response` de l'arrêt ne fait qu'inférer.
+    The uvicorn server and the FastMCP serving the app come back up to the test
+    because the diagnostic dump reads them: `len(server.server_state.tasks)` is the
+    DIRECT measurement of the "in-flight requests" that shutdown's
+    `ASGI callable returned without completing response` only infers.
     """
 
     base_url: str
@@ -121,11 +120,11 @@ async def _stop_bounded(
     stop_budget: float = _STOP_BUDGET_SECONDS,
     cancel_budget: float = _CANCEL_BUDGET_SECONDS,
 ) -> str | None:
-    """Attendre l'arrêt d'une tâche AVEC une borne, et rendre ce qui n'est pas revenu.
+    """Wait for a task to stop WITH a bound, and return what did not come back.
 
-    Rend ``None`` quand tout s'est arrêté, sinon le libellé à rapporter. Elle ne
-    lève pas elle-même : l'appelant décide OÙ le `pytest.fail` est atteignable,
-    ce qui est précisément ce que l'ancienne forme ratait.
+    Returns ``None`` when everything stopped, otherwise the label to report. It does
+    not raise itself: the caller decides WHERE the `pytest.fail` is reachable, which
+    is precisely what the old form got wrong.
     """
     try:
         await asyncio.wait_for(asyncio.shield(task), timeout=stop_budget)
@@ -138,15 +137,15 @@ async def _stop_bounded(
 
 
 async def _fail_to_start(server: Any, server_task: asyncio.Task[None]) -> None:
-    """Rendre la main sur un serveur qui n'a jamais démarré, puis ÉCHOUER.
+    """Return control on a server that never started, then FAIL.
 
-    `should_exit = True` NE LIBÈRE RIEN ici, et c'est structurel : `Server._serve`
-    fait `await self.startup()` PUIS `if not self.should_exit: await
-    self.main_loop()`, et `main_loop` est le SEUL endroit qui relit le drapeau. Si
-    `LifespanOn.startup()` bloque sur `startup_event.wait()` — sans timeout — on
-    n'y arrive jamais. L'ancien `await server_task` nu rendait donc le
-    `pytest.fail` INATTEIGNABLE sur exactement le chemin pour lequel il est écrit.
-    On annule, borné, et on rapporte quoi qu'il arrive.
+    `should_exit = True` RELEASES NOTHING here, and that is structural:
+    `Server._serve` does `await self.startup()` THEN
+    `if not self.should_exit: await self.main_loop()`, and `main_loop` is the ONLY
+    place that re-reads the flag. If `LifespanOn.startup()` blocks on
+    `startup_event.wait()` — with no timeout — we never get there. The old bare
+    `await server_task` therefore made the `pytest.fail` UNREACHABLE on exactly the
+    path it is written for. We cancel, bounded, and report whatever happens.
     """
     server.should_exit = True
     await _stop_bounded(server_task, what="un serveur metrics qui n'a jamais démarré")
@@ -175,7 +174,7 @@ async def http_server_and_collector(
     monkeypatch.setenv("BRAIN_MCP_PROFILE", "compact")
     monkeypatch.setenv("METRICS_ENABLED", "true")
     monkeypatch.setenv("GRAPH_ENABLED", "false")
-    # Le couple, jamais la moitié — même raison que test_lifecycle.
+    # The pair, never half of it — same reason as test_lifecycle.
     monkeypatch.setenv("GRAPH_LEDGER_WRITE_ENABLED", "false")
     monkeypatch.setenv("DECAY_ENABLED", "false")
     get_settings.cache_clear()
@@ -190,34 +189,33 @@ async def http_server_and_collector(
 
     from brain_v42.mcp.server import build_services, create_mcp_instance
 
-    # Instance PROPRE au banc, jamais le singleton de module : le singleton
-    # porte les tools que tests/integration/mcp/** y a enregistrés, fermés
-    # sur un engine que leur teardown a déjà dispose() — 20 « Component
-    # already exists » mesurés, et l'ordre de collecte devenait signifiant
-    # (ticket 83d8785b). La factory vient de server.py : un seul câblage,
-    # provenance comprise, pas un double monté à la main.
+    # An instance OWN to the bench, never the module singleton: the singleton
+    # carries the tools tests/integration/mcp/** registered on it, closed over an
+    # engine their teardown has already dispose()d — 20 measured "Component already
+    # exists", and the collection order became significant (ticket 83d8785b). The
+    # factory comes from server.py: one single wiring, provenance included, not a
+    # double stood up by hand.
     mcp = create_mcp_instance()
 
-    # TÉMOIN D'ENTRÉE — relevé SEUL, aucune assertion.
+    # ENTRY WITNESS — recorded ALONE, no assertion.
     #
-    # Depuis l'isolement (ticket 83d8785b), `mcp` est une instance NEUVE : ce
-    # relevé ne peut plus voir de tools hérités. Il garde sa valeur pour l'état
-    # de PROCESSUS que l'isolement ne purge pas — le latch de classe
-    # `sse_starlette.sse.AppStatus.should_exit`, ci-dessous.
+    # Since the isolation (ticket 83d8785b), `mcp` is a FRESH instance: this reading
+    # can no longer see inherited tools. It keeps its value for the PROCESS state
+    # the isolation does not purge — the class latch
+    # `sse_starlette.sse.AppStatus.should_exit`, below.
     #
-    # Ce qui se joue ici est UNE ligne du relevé :
-    # `sse_starlette.sse.AppStatus.should_exit`. C'est un attribut de CLASSE, donc
-    # global au processus et jamais remis à False ; `True` à l'entrée dit qu'un
-    # module antérieur a armé le latch qui fait sortir
-    # `_listen_for_exit_signal` immédiatement et sans un mot — la forme mesurée de
-    # la panne, où le serveur envoie les en-têtes SSE puis revient sans corps. Ne
-    # pas le confondre avec `uvicorn.Server.should_exit`, relevé lui aussi mais
-    # propre à l'instance de ce banc.
+    # What is at stake here is ONE line of the reading:
+    # `sse_starlette.sse.AppStatus.should_exit`. It is a CLASS attribute, hence
+    # process-global and never reset to False; `True` on entry says an earlier
+    # module armed the latch that makes `_listen_for_exit_signal` exit immediately
+    # and without a word — the measured shape of the failure, where the server sends
+    # the SSE headers then returns with no body. Do not confuse it with
+    # `uvicorn.Server.should_exit`, also recorded but own to this bench's instance.
     #
-    # Une assertion ici convertirait un coin-flip en rouge franc avant qu'on sache
-    # ce que cette valeur vaut en pratique : on MESURE d'abord. La contradiction
-    # reste ouverte et n'est pas lissée — les six tests e2e passent, alors qu'un
-    # latch armé tôt devrait les tuer.
+    # An assertion here would convert a coin-flip into a plain red before we know
+    # what this value is worth in practice: we MEASURE first. The contradiction stays
+    # open and is not smoothed over — the six e2e tests pass, whereas a latch armed
+    # early should kill them.
     print(
         "-- témoin d'entrée du banc metrics (relevé, non assertif) --\n"
         + "\n".join(f"{name} = {value}" for name, value in collect_probes(mcp=mcp).items()),
@@ -244,10 +242,10 @@ async def http_server_and_collector(
         metrics_collector=collector,
     )
 
-    # Les métriques ne sont plus posées par register_tools (ticket c352eaaa) :
-    # elles enveloppent les tools APRÈS enregistrement. Ce boot est monté à la
-    # main plutôt que par _run_mcp, il doit donc reproduire ce point de câblage
-    # — sans quoi il testerait un serveur que la production ne construit plus.
+    # The metrics are no longer set by register_tools (ticket c352eaaa): they wrap
+    # the tools AFTER registration. This boot is stood up by hand rather than by
+    # _run_mcp, so it must reproduce that wiring point — without which it would test
+    # a server production no longer builds.
     from brain_v42.metrics.tool_instrumentation import (  # noqa: PLC0415
         instrument_registered_tools,
     )
@@ -259,10 +257,10 @@ async def http_server_and_collector(
     profiled_mcp = apply_tool_catalog_profile(mcp, "compact")
 
     # Build ASGI app (stateless_http so each request gets a fresh transport).
-    # json_response=True : le transport de PRODUCTION (plan_http_transport),
-    # jamais le SSE-sur-POST que le défaut de http_app() choisirait — voir le
-    # message du commit et le ticket 85559792 pour ce que ce banc CESSE de
-    # prouver en quittant ce transport fantôme.
+    # json_response=True: the PRODUCTION transport (plan_http_transport), never the
+    # SSE-over-POST that http_app()'s default would choose — see the commit message
+    # and ticket 85559792 for what this bench STOPS proving by leaving that phantom
+    # transport.
     app = profiled_mcp.http_app(stateless_http=True, json_response=True)
 
     port = _get_free_port()
@@ -272,11 +270,11 @@ async def http_server_and_collector(
         port=port,
         log_level="error",
         loop="asyncio",
-        # MESURÉ : uvicorn 0.41.0 livre `timeout_graceful_shutdown=None`, et
-        # `Server.shutdown()` attend alors `_wait_tasks_to_complete()` SANS
-        # borne, à l'intérieur de la tâche. Aucune borne extérieure ne libère
-        # ça : FastMCP ferme son lifespan sous `anyio.CancelScope(shield=True)`,
-        # donc l'annulation peut être absorbée.
+        # MEASURED: uvicorn 0.41.0 ships `timeout_graceful_shutdown=None`, and
+        # `Server.shutdown()` then waits on `_wait_tasks_to_complete()` WITHOUT a
+        # bound, inside the task. No outside bound releases that: FastMCP closes its
+        # lifespan under `anyio.CancelScope(shield=True)`, so the cancellation can
+        # be absorbed.
         timeout_graceful_shutdown=5,
     )
     server = uvicorn.Server(config)
@@ -284,10 +282,10 @@ async def http_server_and_collector(
     # Start uvicorn in a background task
     server_task = asyncio.create_task(server.serve())
 
-    # LE DÉMARRAGE, SOUS CHIEN DE GARDE. Cette boucle attend `LifespanOn.startup()`,
-    # qui attend `startup_event.wait()` SANS timeout : une des trois zones que le
-    # premier lot laissait nues. Un démarrage qui ne vient jamais rendait
-    # « uvicorn did not start » — vrai, et muet sur QUI attendait.
+    # THE STARTUP, UNDER WATCHDOG. This loop waits on `LifespanOn.startup()`, which
+    # waits on `startup_event.wait()` WITHOUT a timeout: one of the three zones the
+    # first batch left bare. A startup that never comes used to return "uvicorn did
+    # not start" — true, and mute about WHO was waiting.
     async with dump_tasks_after(
         _STARTUP_DUMP_DEADLINE,
         label="metrics/uvicorn startup",
@@ -305,21 +303,20 @@ async def http_server_and_collector(
     try:
         yield Bench(base_url=base_url, collector=collector, mcp=profiled_mcp, server=server)
     finally:
-        # Les globales sont rendues AVANT toute attente bornée : un
-        # `pytest.fail` déclenché plus bas ne doit pas laisser le moteur du banc
-        # installé pour les modules suivants.
+        # The globals are restored BEFORE any bounded wait: a `pytest.fail`
+        # triggered further down must not leave the bench's engine installed for the
+        # following modules.
         leftover_engine = engine_module._engine
         engine_module._engine = original_engine
         engine_module._session_factory = original_factory
         get_settings.cache_clear()
 
-        # L'ARRÊT, SOUS CHIEN DE GARDE — et c'est la zone qui portait le seul
-        # indice qu'on n'a jamais su lire : les deux `ASGI callable returned
-        # without completing response` apparaissent À LA FERMETURE, pas pendant
-        # les appels. `len(server.server_state.tasks)`, relevé par les sondes,
-        # MESURE les requêtes encore en vol que ce message ne fait qu'inférer.
-        # Le `pytest.fail` reste HORS du garde : le chien est déjà joint quand le
-        # verdict tombe.
+        # THE SHUTDOWN, UNDER WATCHDOG — and this is the zone that carried the one
+        # clue we never managed to read: the two `ASGI callable returned without
+        # completing response` appear AT CLOSING TIME, not during the calls.
+        # `len(server.server_state.tasks)`, read by the probes, MEASURES the
+        # still-in-flight requests that message only infers. The `pytest.fail` stays
+        # OUTSIDE the guard: the watchdog is already joined when the verdict lands.
         async with dump_tasks_after(
             _TEARDOWN_DUMP_DEADLINE,
             label="metrics/teardown (arrêt uvicorn + dispose moteur)",
@@ -364,9 +361,9 @@ async def test_agent_attribution_concurrent(
 
     bench = http_server_and_collector
     base_url, collector = bench.base_url, bench.collector
-    # Le libellé porte l'identité : depuis l'isolement (83d8785b) il doit dire
-    # False — s'il redisait True, le banc serait retombé sur le singleton et
-    # les compteurs de lifespan relevés seraient ceux d'autres modules.
+    # The label carries the identity: since the isolation (83d8785b) it must say
+    # False — if it said True again, the bench would have fallen back on the
+    # singleton and the lifespan counters read would be other modules'.
     from brain_v42.mcp.server import mcp as shared_mcp  # noqa: PLC0415
 
     label_suffix = f"profiled is singleton: {bench.mcp is shared_mcp}"
@@ -378,17 +375,17 @@ async def test_agent_attribution_concurrent(
             listed = await asyncio.wait_for(client.list_tools(), timeout=_CALL_BUDGET_SECONDS)
             return {tool.name for tool in listed}
 
-    # BORNÉ, et c'est ici que la CI a pendu : run 32779161805, `Timeout
-    # (0:02:00)!` avec le nodeid de ce test imprimé juste après le dump. Le
-    # corps du test n'avait AUCUNE borne — quatre attentes réseau nues — donc la
-    # panne coûtait le timeout du job entier au lieu de se nommer.
+    # BOUNDED, and this is where CI hung: run 32779161805, `Timeout (0:02:00)!`
+    # with this test's nodeid printed just after the dump. The test's body had NO
+    # bound at all — four bare network waits — so the failure cost the whole job's
+    # timeout instead of naming itself.
     #
-    # Le dump est armé AUTOUR de l'attente, jamais dans son `except TimeoutError` :
-    # `wait_for` annule le gather, ATTEND l'annulation, PUIS lève — là-bas les deux
-    # tâches sont déjà terminées et leurs frames ont disparu. Le blocage MESURÉ
-    # n'est d'ailleurs pas dans `list_tools` mais dans `Client.__aenter__` ->
-    # `client.py:571 ready_event.wait()`, donc le handshake `initialize` : le
-    # message d'erreur ci-dessous a envoyé deux analyses sur une fausse piste.
+    # The dump is armed AROUND the wait, never inside its `except TimeoutError`:
+    # `wait_for` cancels the gather, WAITS for the cancellation, THEN raises — by
+    # then both tasks are finished and their frames are gone. The MEASURED blockage
+    # is not in `list_tools` anyway but in `Client.__aenter__` ->
+    # `client.py:571 ready_event.wait()`, hence the `initialize` handshake: the error
+    # message below sent two analyses down a false trail.
     try:
         async with dump_tasks_after(
             _CALL_DUMP_DEADLINE,
@@ -483,25 +480,24 @@ async def test_agent_unknown_for_stdio_path() -> None:
 
 @pytest.mark.asyncio
 async def test_an_uncancellable_task_is_reported_instead_of_awaited_forever() -> None:
-    """La preuve que le diagnostic est ATTEIGNABLE, et pas seulement écrit.
+    """The proof that the diagnosis is REACHABLE, and not merely written.
 
-    L'ancienne forme faisait `task.cancel()` puis `await task` NU, avec le
-    `pytest.fail` DERRIÈRE. Or FastMCP ferme son lifespan sous
-    `anyio.CancelScope(shield=True)` : l'annulation peut être ABSORBÉE, l'attente
-    ne revient jamais, et le message nommé devient du code mort sur exactement
-    le chemin d'erreur pour lequel il a été écrit.
+    The old form did `task.cancel()` then a BARE `await task`, with the
+    `pytest.fail` BEHIND it. Yet FastMCP closes its lifespan under
+    `anyio.CancelScope(shield=True)`: the cancellation can be ABSORBED, the wait
+    never returns, and the named message becomes dead code on exactly the error path
+    it was written for.
 
-    Ici la tâche ignore délibérément son annulation. `_stop_bounded` doit RENDRE
-    son libellé — pas pendre — pour que l'appelant puisse rapporter.
+    Here the task deliberately ignores its cancellation. `_stop_bounded` must RETURN
+    its label — not hang — so that the caller can report.
     """
 
-    # La tâche absorbe l'annulation TANT QUE le test la retient, puis meurt sur
-    # commande. La première rédaction bouclait pour toujours : elle rendait le
-    # test vert et laissait derrière elle une tâche IMMORTELLE, que
-    # `asyncio.Runner.close()` attend ensuite sans borne à la fermeture de la
-    # boucle. C'est le filet `faulthandler` posé au même moment qui l'a montré —
-    # dump en `runners.py:206 _cancel_all_tasks`. Borner sans garantir la MORT
-    # de la tâche ne supprime pas le hang : il le déplace.
+    # The task absorbs the cancellation AS LONG AS the test holds it, then dies on
+    # command. The first draft looped forever: it made the test green and left an
+    # IMMORTAL task behind, which `asyncio.Runner.close()` then waits for without a
+    # bound at the loop's close. It was the `faulthandler` net laid at the same
+    # moment that showed it — a dump at `runners.py:206 _cancel_all_tasks`. Bounding
+    # without guaranteeing the task's DEATH does not remove the hang: it moves it.
     release = asyncio.Event()
 
     async def ignores_cancellation() -> None:
