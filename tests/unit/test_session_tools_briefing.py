@@ -8,6 +8,8 @@ signal is introduced — see ticket 259cfbe5 for the constraint.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from brain_v42.mcp.tools.session_tools import _TICKETS_CAP, _section_tickets
 from brain_v42.models.ticket import Ticket, TicketGroups, TicketKind, TicketStatus
 
@@ -148,3 +150,65 @@ class TestDatedSilencedSurfacing:
         section = _section_tickets(groups)
 
         assert "daté hors cap" not in section
+
+
+class TestDatedSelectionPrefersNearestToToday:
+    """Which dated tickets win the two slots — re-demonstrated on a live case.
+
+    The 2026-08-21 triage asked for the damage to be re-demonstrated on a live
+    case before a deadline column could cost a migration head. Measured on the
+    production notebook on 2026-09-02 (37 open tickets to brain-v42, four with an
+    ISO date in the title), the two slots went to the two STALEST breaches:
+
+        shown    #5281f0ef  2026-08-23  overdue by 10d
+        shown    #af5dc328  2026-08-25  overdue by 8d
+        hidden   #58711012  2026-08-27  overdue by 6d
+        hidden   #191b2dba  2026-09-03  DUE TOMORROW
+
+    So the mechanism hid the only deadline that had not passed yet, one day out.
+    Sorting by absolute date means permanently-overdue tickets squat the slots
+    forever: that is open question 2 of the ticket ("must a passed deadline stay
+    displayed indefinitely? Otherwise we recreate the permanent alarm one stops
+    reading") arriving in production.
+
+    The rule that fixes it is not a column — a `deadline` column sorted the same
+    way reproduces this exactly. A deadline's claim on attention peaks ON its date
+    and decays in BOTH directions, so the slots go to the dates NEAREST today,
+    breaches first on a tie. Still no hand-placed rank and still self-expiring:
+    an ancient breach now loses its slot by arithmetic rather than by a timer.
+    """
+
+    @staticmethod
+    def _dated_lines(*offsets: int) -> list[str]:
+        """Render the section with one silenced dated ticket per day-offset from today."""
+        today = datetime.now(UTC).date()
+        a_traiter = [_ticket(f"t{i}") for i in range(_TICKETS_CAP)]
+        a_traiter.extend(
+            _ticket(f"REVUE {today + timedelta(days=offset)} — offset {offset}")
+            for offset in offsets
+        )
+        section = _section_tickets(TicketGroups(a_traiter=a_traiter))
+        return [line for line in section.splitlines() if "daté hors cap" in line]
+
+    def test_a_deadline_due_tomorrow_beats_two_staler_overdue_ones(self):
+        today = datetime.now(UTC).date()
+        lines = self._dated_lines(-10, -8, -6, 1)
+
+        assert len(lines) == 2
+        assert str(today + timedelta(days=1)) in lines[0]
+        assert str(today + timedelta(days=-6)) in lines[1]
+        assert str(today + timedelta(days=-10)) not in "\n".join(lines)
+
+    def test_a_long_forgotten_breach_yields_its_slot_to_a_closer_one(self):
+        today = datetime.now(UTC).date()
+        lines = self._dated_lines(-2000, -3)
+
+        assert str(today + timedelta(days=-3)) in lines[0]
+        assert str(today + timedelta(days=-2000)) in lines[1]
+
+    def test_an_equally_distant_breach_outranks_an_upcoming_deadline(self):
+        today = datetime.now(UTC).date()
+        lines = self._dated_lines(3, -3)
+
+        assert str(today + timedelta(days=-3)) in lines[0]
+        assert str(today + timedelta(days=3)) in lines[1]
