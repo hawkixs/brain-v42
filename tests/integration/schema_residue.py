@@ -50,6 +50,7 @@ DOWNGRADING_TEST_FILES: tuple[str, ...] = (
     "tests/integration/db/test_migration_047_end_gate.py",
     "tests/integration/db/test_migration_048_attribution_mode.py",
     "tests/integration/db/test_migration_050_focus_history.py",
+    "tests/integration/db/test_migration_051_session_checkpoints.py",
 )
 
 # Tables probed for leftover rows, in the order the message lists them.

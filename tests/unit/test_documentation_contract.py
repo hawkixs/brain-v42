@@ -1782,7 +1782,7 @@ def test_environment_assignment_parser_preserves_duplicates_and_indentation() ->
     assert assignments == ["GRAPH_PROJECTOR_ENABLED", "GRAPH_PROJECTOR_ENABLED"]
 
 
-def test_repository_head_050_is_documented_without_claiming_a_deployed_head() -> None:
+def test_repository_head_051_is_documented_without_claiming_a_deployed_head() -> None:
     """The repository head is a fact this repository owns. The deployed head is not.
 
     Until 2026-08-04 these docs asserted a production head of `037` while the
@@ -1792,7 +1792,15 @@ def test_repository_head_050_is_documented_without_claiming_a_deployed_head() ->
 
     The head in this test's NAME is deliberate: bumping the repository head cannot
     be done without renaming the guard, which is what stops it from drifting
-    silently. Bumped to 050 on 2026-09-02 — M-D, applied to the shared
+    silently. Bumped to 051 on 2026-09-02 — M-C, the session checkpoint ledger,
+    applied to the shared `brain_test` only (chain replayed 050→051, the
+    append-only trigger proved by a refused UPDATE and a refused DELETE naming
+    their session and seq, the `ON DELETE RESTRICT` indelibility proved, downgrade
+    REFUSED while a checkpoint existed then accepted under its named opt-in, head
+    returned to 050 and back to 051). PRODUCTION UNTOUCHED: measured at 049 the
+    same day, so it now trails the repository by TWO unapplied revisions, and the
+    plan-index repair refuses to run against it until both are applied — the pin
+    working as designed. Previously bumped to 050 on 2026-09-02 — M-D, applied to the shared
     `brain_test` only (chain replayed 049→050, seed proved on two witness
     contexts including one with a NULL focus, the fail-closed downgrade refused
     then accepted under its named opt-in, head returned to 049 and back).
@@ -1815,7 +1823,7 @@ def test_repository_head_050_is_documented_without_claiming_a_deployed_head() ->
     production was still measured at 041 at that moment, and SCHEMA.md says so
     in the same breath.
     """
-    assert _repository_head() == "050"
+    assert _repository_head() == "051"
     assert "49 revisions (001 → 049)" in SCHEMA
     assert "| 038 |" in SCHEMA
     assert "| 039 |" in SCHEMA
