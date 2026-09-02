@@ -32,7 +32,12 @@ from brain_v42.models.brain_session import (
 if TYPE_CHECKING:
     from brain_v42.services.brain_session_service import BrainSessionService
 
-BriefingLoader = Callable[[str], Awaitable[str]]
+#: `(project_key, session_id)`. The session entered the signature with M-C: the
+#: briefing renders that session's last checkpoints, and a project-scoped loader
+#: could not know which session asked. Passed by BOTH start and resume — a start
+#: that REPLAYS an open session returns a session that may already hold judgment,
+#: and hiding it there would be the one place the reader most expects it.
+BriefingLoader = Callable[[str, UUID], Awaitable[str]]
 CapturedKnowledgeIdsArg = Annotated[
     list[UUID],
     Field(min_length=1, max_length=MAX_CAPTURED_KNOWLEDGE_IDS),
@@ -142,7 +147,7 @@ async def _load_briefing_safely(
 ) -> str:
     """Keep a persisted session observable when the optional briefing fails."""
     try:
-        return await briefing_loader(project_key)
+        return await briefing_loader(project_key, session_id)
     except Exception as exc:
         logger.warning(
             "brain_session_briefing_unavailable",

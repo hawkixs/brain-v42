@@ -6,6 +6,7 @@ import asyncio
 import re
 from datetime import UTC, date, datetime
 from typing import Any
+from uuid import UUID
 
 import structlog
 
@@ -16,6 +17,10 @@ from brain_v42.mcp.tools.session_lifecycle_tools import (
     register_session_lifecycle_tools,
 )
 from brain_v42.mcp.tools.workflow_guide_tools import format_workflow_guidance_briefing
+from brain_v42.models.brain_session import (
+    RESUME_CHECKPOINT_LIMIT,
+    SESSION_STALE_AFTER,
+)
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.services.dream_run_service import (
     KillswitchState,
@@ -90,6 +95,45 @@ def _section_tickets(groups: Any | None) -> str:
             lines.append(
                 f"→ daté hors cap : #{format_id(str(hidden.id))} « {hidden.title} » ({due}, {when})"
             )
+    return "\n".join(lines)
+
+
+def _section_checkpoints(checkpoints: list[Any]) -> str:
+    """### Checkpoints — the last judgments this session published (SPEC §2.4).
+
+    Rendered in the briefing TEXT and not as a structured field. That is measured,
+    not stylistic: a `recent_checkpoints` list on the resume result costs 639
+    compact bytes of output schema and the budget had 79 left, with its own comment
+    pre-deciding the case ("we stop — we do NOT loosen"). `briefing` is already a
+    `str` in the contract, so this costs zero — and it is the route tickets,
+    roadmap and killswitches already take.
+
+    Empty renders NOTHING. A section that appears with "no checkpoint" would teach
+    the reader to skip the block, which is the failure mode this repository keeps
+    paying for elsewhere.
+
+    Staleness reuses `SESSION_STALE_AFTER` (24 h) and introduces no fourth number:
+    4 h closes an inactive tracer, 24 h already displays `is_stale`, 7 d abandons,
+    and B7 is a non-blocking display exactly like the 24 h. Only the NEWEST
+    checkpoint decides — marking the block because an old one is still on screen
+    would fire on every long session, which is the permanent alarm one stops
+    reading.
+    """
+    if not checkpoints:
+        return ""
+    shown = list(checkpoints)[:RESUME_CHECKPOINT_LIMIT]
+    now = datetime.now(UTC)
+    newest = shown[0]
+    lines = ["### Checkpoints (les derniers jugements de cette session)"]
+    age = now - newest.created_at
+    if age > SESSION_STALE_AFTER:
+        hours = int(age.total_seconds() // 3600)
+        lines.append(f"⚠️ dernier checkpoint il y a {hours} h — la session est stale sémantiquement")
+    for checkpoint in shown:
+        lines.append(f"→ #{checkpoint.seq} {checkpoint.progress}")
+        if checkpoint.blocker:
+            lines.append(f"   blocked: {checkpoint.blocker}")
+        lines.append(f"   next: {checkpoint.next_step}")
     return "\n".join(lines)
 
 
@@ -399,6 +443,7 @@ def _format_session_briefing(
     ticket_groups: Any | None = None,
     schema_revision: str | None = None,
     schema_unavailable: bool = False,
+    checkpoints: list[Any] | None = None,
 ) -> str:
     blockers = list(getattr(ctx, "blockers", []) or []) if ctx else []
     sections = [
@@ -407,6 +452,7 @@ def _format_session_briefing(
             killswitches, graph_enabled=graph_enabled, unavailable=killswitch_unavailable
         ),
         _section_last_failure(last_failure),
+        _section_checkpoints(checkpoints or []),
         _section_tickets(ticket_groups),
         _section_roadmap(roadmap_items),
         _section_stale_pinned(stale_pinned),
@@ -447,7 +493,7 @@ def register_session_tools(
 ) -> None:
     """Register explicit lifecycle tools with the action-forward briefing."""
 
-    async def load_briefing(project_key: str) -> str:
+    async def load_briefing(project_key: str, session_id: UUID) -> str:
         """Build the action-forward project briefing in ~500-800 tokens.
 
         Returns: killswitches → last failure → roadmap (features vivantes) →
@@ -535,6 +581,15 @@ def register_session_tools(
                 logger.warning("brain_session_start_schema_state_failed", error=str(exc))
                 schema_unavailable = True
 
+        # Bounded read, and best-effort like every other optional section: a
+        # briefing that failed because a checkpoint query hiccuped would hide the
+        # focus, the tickets and the roadmap over the least critical block.
+        checkpoints: list[Any] = []
+        try:
+            checkpoints = list(await brain_session_svc.recent_checkpoints(session_id))
+        except Exception as exc:
+            logger.warning("brain_session_briefing_checkpoints_failed", error=str(exc))
+
         return _format_session_briefing(
             ctx,
             decisions,
@@ -549,6 +604,7 @@ def register_session_tools(
             ticket_groups=ticket_groups,
             schema_revision=schema_revision,
             schema_unavailable=schema_unavailable,
+            checkpoints=checkpoints,
         )
 
     register_session_lifecycle_tools(mcp, brain_session_svc, load_briefing)

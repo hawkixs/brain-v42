@@ -251,7 +251,9 @@ async def test_start_forwards_identity_and_adds_briefing_to_structured_result() 
     result = await tool.fn(project_key="brain-v42", client_key="codex-task-42")
 
     service.start.assert_awaited_once_with(project_key="brain-v42", client_key="codex-task-42")
-    briefing_loader.assert_awaited_once_with("brain-v42")
+    # The session entered the loader signature with M-C: the briefing renders
+    # THIS session's last checkpoints, which a project-scoped loader could not find.
+    briefing_loader.assert_awaited_once_with("brain-v42", service_result.session.id)
     assert tool.version == "4.0"
     assert isinstance(result, _symbol(MODEL_MODULE, "BrainSessionStartResult"))
     assert result is not service_result
@@ -306,7 +308,9 @@ async def test_resume_forwards_session_id_and_adds_its_project_briefing() -> Non
         session_id=session_id,
         expected_client_key="task-a",
     )
-    briefing_loader.assert_awaited_once_with("brain-v42")
+    # The session entered the loader signature with M-C: the briefing renders
+    # THIS session's last checkpoints, which a project-scoped loader could not find.
+    briefing_loader.assert_awaited_once_with("brain-v42", service_result.session.id)
     assert isinstance(result, _symbol(MODEL_MODULE, "BrainSessionResumeResult"))
     assert result is not service_result
     assert result.briefing == "## Resumed briefing"

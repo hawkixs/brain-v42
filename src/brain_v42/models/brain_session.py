@@ -42,6 +42,15 @@ MAX_CHECKPOINT_TEXT = 2000
 #: opening a tracer lives at most until the sweep, so 200 judgment notes inside a
 #: single session is already a signal in itself. Fail-closed past it.
 MAX_CHECKPOINTS_PER_SESSION = 200
+#: How many checkpoints a resume briefing renders, newest first.
+#:
+#: SPEC-checkpoint §2.4 proposes 5 and bounds it "to stay under the briefing
+#: ceiling"; the operator settled it there on 2026-09-02. It is rendered in the
+#: briefing TEXT rather than as a structured field, and that is a measurement and
+#: not a taste: the structured list costs 639 compact bytes of output schema
+#: against the 79 the budget had left. `briefing` is already a `str` in the
+#: contract, so the text costs nothing.
+RESUME_CHECKPOINT_LIMIT = 5
 
 
 class BrainSessionStatus(StrEnum):
@@ -449,6 +458,17 @@ class BrainSessionListResult(BaseModel):
     total: int = Field(..., ge=0)
     limit: int = Field(..., ge=1)
     offset: int = Field(..., ge=0)
+    #: Session id (as a string) -> timestamp of its last checkpoint, for the
+    #: sessions that have one (SPEC-checkpoint §2.4). Here and NOT on
+    #: `BrainSession`, which is measured rather than stylistic: a nullable
+    #: datetime on the session model costs 396 compact bytes across the four
+    #: schema-deriving tools that embed it, and the output-schema budget has 79
+    #: left. `brain_session_list` publishes no output schema, so it is free here.
+    #:
+    #: A session that never checkpointed is ABSENT, never mapped to null:
+    #: "never checkpointed" and "checkpointed, timestamp unknown" are different
+    #: statements and only one of them is true.
+    last_checkpoint_at: dict[str, datetime] = Field(default_factory=dict)
 
 
 class BrainSessionSweepCandidate(BaseModel):

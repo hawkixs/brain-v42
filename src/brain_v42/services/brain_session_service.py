@@ -15,6 +15,7 @@ from brain_v42.models.brain_session import (
     BrainSessionAbandonResult,
     BrainSessionCaptureConflictError,
     BrainSessionCaptureResult,
+    BrainSessionCheckpoint,
     BrainSessionCheckpointResult,
     BrainSessionClientKeyConflictError,
     BrainSessionConflictError,
@@ -82,6 +83,8 @@ class BrainSessionRepository(Protocol):
         next_step: str,
         blocker: str | None,
     ) -> BrainSessionCheckpointResult: ...
+
+    async def recent_checkpoints(self, session_id: UUID) -> Sequence[BrainSessionCheckpoint]: ...
 
     async def end(
         self,
@@ -283,6 +286,10 @@ class BrainSessionService:
             next_step=normalized_next_step,
             blocker=normalized_blocker,
         )
+
+    async def recent_checkpoints(self, session_id: UUID) -> Sequence[BrainSessionCheckpoint]:
+        """The last few checkpoints, for the briefing. A pure read, no validation."""
+        return await self.repo.recent_checkpoints(session_id)
 
     async def heartbeat(
         self, session_id: UUID, expected_client_key: str

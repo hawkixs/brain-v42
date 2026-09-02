@@ -33,11 +33,13 @@ from brain_v42.models.brain_session import (
     AUTO_STALE_AFTER,
     MAX_CAPTURED_KNOWLEDGE_IDS,
     MAX_CHECKPOINTS_PER_SESSION,
+    RESUME_CHECKPOINT_LIMIT,
     SESSION_STALE_AFTER,
     BrainSession,
     BrainSessionAbandonResult,
     BrainSessionCaptureConflictError,
     BrainSessionCaptureResult,
+    BrainSessionCheckpoint,
     BrainSessionCheckpointConflictError,
     BrainSessionCheckpointResult,
     BrainSessionClientKeyConflictError,
@@ -420,8 +422,13 @@ class PgBrainSessionRepo(BasePgRepository):
                 session,
                 [row["id"] for row in rows],
             )
+            last_checkpoints = await self._last_checkpoint_by_session(
+                session,
+                [row["id"] for row in rows],
+            )
 
         return BrainSessionListResult(
+            last_checkpoint_at=last_checkpoints,
             sessions=[
                 self._to_model(
                     row,
@@ -576,6 +583,62 @@ class PgBrainSessionRepo(BasePgRepository):
                 replayed_knowledge_ids=sorted(existing_ids, key=str),
                 replayed=not missing,
             )
+
+    @staticmethod
+    async def _last_checkpoint_by_session(
+        session: AsyncSession, session_ids: Sequence[UUID]
+    ) -> dict[str, datetime]:
+        """One grouped read for the whole page, never one query per row.
+
+        A session with no checkpoint is simply ABSENT from the result: mapping it
+        to `None` would say "checkpointed, timestamp unknown", which is not what
+        happened.
+        """
+        if not session_ids:
+            return {}
+        stmt = (
+            sa.select(
+                brain_session_checkpoints.c.session_id,
+                sa.func.max(brain_session_checkpoints.c.created_at).label("last_checkpoint_at"),
+            )
+            .where(brain_session_checkpoints.c.session_id.in_(session_ids))
+            .group_by(brain_session_checkpoints.c.session_id)
+        )
+        rows = (await session.execute(stmt)).mappings().all()
+        return {str(row["session_id"]): row["last_checkpoint_at"] for row in rows}
+
+    async def recent_checkpoints(
+        self, session_id: UUID | str
+    ) -> builtins.list[BrainSessionCheckpoint]:
+        """The last `RESUME_CHECKPOINT_LIMIT` checkpoints of a session, newest first.
+
+        Bounded at the QUERY, never in Python: a session may hold up to 200 and a
+        briefing has no reason to carry 195 of them across the wire to drop them.
+
+        `builtins.list` in the annotation, not `list`: this class defines a `list`
+        METHOD, which shadows the builtin everywhere inside the class body.
+
+        No identity guard here, deliberately — this is a READ, reached only from a
+        `resume` that has already checked `expected_client_key` against the same
+        session. Re-checking would need the key threaded through the briefing
+        loader for no gain.
+        """
+        stmt = (
+            sa.select(
+                brain_session_checkpoints.c.session_id,
+                brain_session_checkpoints.c.seq,
+                brain_session_checkpoints.c.progress,
+                brain_session_checkpoints.c.next_step,
+                brain_session_checkpoints.c.blocker,
+                brain_session_checkpoints.c.created_at,
+            )
+            .where(brain_session_checkpoints.c.session_id == session_id)
+            .order_by(brain_session_checkpoints.c.seq.desc())
+            .limit(RESUME_CHECKPOINT_LIMIT)
+        )
+        async with self.get_session() as session:
+            rows = (await session.execute(stmt)).mappings().all()
+        return [BrainSessionCheckpoint(**dict(row)) for row in rows]
 
     async def checkpoint(
         self,

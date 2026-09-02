@@ -393,7 +393,19 @@ async def test_tool_run_preserves_every_public_structured_content_contract() -> 
         "replayed",
     }
     assert heartbeat is not None and set(heartbeat) == {"session"}
-    assert listing is not None and set(listing) == {"sessions", "total", "limit", "offset"}
+    # `last_checkpoint_at` joins the LIST result and not `BrainSession` (M-C,
+    # SPEC-checkpoint §2.4). Measured, not stylistic: on the session model it
+    # costs 396 compact bytes across the four schema-deriving tools that embed
+    # it, against the 79 the budget above has left. This tool publishes no
+    # output schema, so the field is free exactly here — which is why the
+    # public surface grows without the total below moving.
+    assert listing is not None and set(listing) == {
+        "sessions",
+        "total",
+        "limit",
+        "offset",
+        "last_checkpoint_at",
+    }
     assert abandon is not None and set(abandon) == {
         "session",
         "replayed",
