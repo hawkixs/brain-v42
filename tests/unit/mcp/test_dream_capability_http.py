@@ -219,9 +219,9 @@ async def test_run_mcp_wires_enabled_http_before_invoking_uvicorn(
     assert isinstance(mcp.auth, DreamCapabilityTokenVerifier)
     assert sum(isinstance(entry, DreamCapabilityMiddleware) for entry in mcp.middleware) == 1
     assert _middleware_classes(captured["middleware"]) == [HostOriginGuard]
-    # Le mode avec état est le défaut depuis le chantier d'identité de
-    # transport : le serveur frappe un Mcp-Session-Id, seul moyen de séparer
-    # deux connexions d'un même binaire sans coopération du client.
+    # Stateful mode is the default since the transport identity work: the server
+    # mints an Mcp-Session-Id, the only way to separate two connections of the
+    # same binary without the client's cooperation.
     assert captured["stateless_http"] is False
     assert captured["json_response"] is True
 

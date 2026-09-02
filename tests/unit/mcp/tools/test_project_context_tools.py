@@ -635,14 +635,14 @@ class TestImportability:
 
 
 class TestSetProjectContextSchemaContract:
-    """Item 8 d'af3b58dd : le plus gros inputSchema du catalogue, sous contrat.
+    """Item 8 of af3b58dd: the catalogue's largest inputSchema, under contract.
 
-    16 paramètres à plat ne se réduisent pas sans casser la compat des
-    appelants (la forme plate EST le schéma public) — ce qui se contracte :
-    (1) la signature ne peut pas dériver du modèle qu'elle alimente — un 17e
-    paramètre fantôme ou un champ du modèle non exposé rougit ici ; (2) chaque
-    paramètre est documenté dans le docstring Args — un schéma de cette taille
-    sans doc par champ est illisible pour l'agent qui le remplit.
+    16 flat parameters cannot be reduced without breaking caller compatibility
+    (the flat shape IS the public schema) — what is put under contract is: (1) the
+    signature cannot drift from the model it feeds — a 17th ghost parameter or an
+    unexposed model field turns red here; (2) every parameter is documented in the
+    Args docstring — a schema of that size without per-field documentation is
+    unreadable for the agent filling it in.
     """
 
     def _tool_fn(self):

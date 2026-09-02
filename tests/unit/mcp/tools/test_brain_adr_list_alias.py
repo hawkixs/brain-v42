@@ -80,9 +80,9 @@ async def test_fastmcp_adr_alias_matches_canonical_list_contract(
     built_adapters: list[object] = []
     adapter_calls: list[tuple[str | None, str | None, int, int, bool]] = []
     canonicalize_calls: list[tuple[str | None, bool]] = []
-    # La couture du plafond est devenue une fonction NOMMÉE (ticket af3b58dd) :
-    # l'espionner vaut mieux que d'espionner `max`/`min`, qui ne disaient rien de
-    # l'intention et qui rendaient ce test sensible à toute arithmétique voisine.
+    # The cap seam has become a NAMED function (ticket af3b58dd): spying on it is
+    # better than spying on `max`/`min`, which said nothing about the intent and
+    # made this test sensitive to any neighbouring arithmetic.
     clamp_calls: list[int] = []
 
     def observed_builder(
@@ -149,8 +149,8 @@ async def test_fastmcp_adr_alias_matches_canonical_list_contract(
     )
     assert len(adapter_calls) == 1
     assert canonicalize_calls == [(project_key, False)]
-    # L'alias doit demander le MÊME plafond que le tool canonique, avec la valeur
-    # brute de l'appelant — c'est ce qui prouve qu'il ne court-circuite pas la garde.
+    # The alias must request the SAME cap as the canonical tool, with the caller's
+    # raw value — that is what proves it does not short-circuit the guard.
     assert clamp_calls == [limit]
     adr_svc.list_all.assert_awaited_once_with(
         project_key=project_key,

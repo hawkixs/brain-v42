@@ -1,29 +1,25 @@
-"""Marche 1 de `55a21fb8` : REORG cesse d'écrire une transition muette.
+"""Step 1 of `55a21fb8`: REORG stops writing a silent transition.
 
-`brain_update` écrit `freshness_status` **sans jamais nommer la colonne** — elle
-arrive par le modèle Pydantic de mise à jour. Aucun `grep` sur le nom de colonne
-ne peut le voir, et c'est ainsi qu'il a échappé à un premier recensement. Le
-trigger de la 043 remet alors `freshness_source` à `NULL` : la transition est
-datée, mais orpheline.
+`brain_update` writes `freshness_status` **without ever naming the column** — it
+arrives through the Pydantic update model. No `grep` on the column name can see
+it, and that is how it escaped a first survey. The 043 trigger then resets
+`freshness_source` to `NULL`: the transition is dated, but orphaned.
 
-Mesuré en production le 2026-08-22, sur la fenêtre réelle de douze jours :
-**3 transitions muettes sur 44**, toutes sur `learnings`, toutes vers
-`archived`, à 68 ms d'intervalle, dans un projet dont la nuit portait un run
-`reorg` WET. `brain_update` est la SEULE écriture que l'allowlist serveur
-accorde à REORG.
+Measured in production on 2026-08-22, over the real twelve-day window: **3 silent
+transitions out of 44**, all on `learnings`, all towards `archived`, 68 ms apart,
+in a project whose night carried a WET `reorg` run. `brain_update` is the ONLY
+write the server allowlist grants REORG.
 
-La valeur employée est `judgment` : le `CHECK` de la 043 l'autorise déjà et
-**aucun code ne l'écrivait** — réservée, inutilisée, et elle décrit exactement
-ce que fait REORG. Aucune migration, donc rien dans le couloir signé. Exercée
-pour la PREMIÈRE fois le 2026-08-22 contre `brain_test`, transaction annulée :
-acceptée, avec la date posée ; et une valeur hors vocabulaire refusée par la
-même contrainte.
+The value used is `judgment`: 043's `CHECK` already allows it and **no code was
+writing it** — reserved, unused, and it describes exactly what REORG does. No
+migration, hence nothing in the signed corridor. Exercised for the FIRST time on
+2026-08-22 against `brain_test`, transaction rolled back: accepted, with the date
+stamped; and a value outside the vocabulary refused by the same constraint.
 
-**Ce que cette marche ne fait PAS**, et c'est délibéré : elle ne tarit que la
-source CONNUE. Une écriture humaine reste muette — donc toujours VUE par le
-compteur de la marche 0. Tarir tout d'un coup aurait supprimé le signal en même
-temps que le bruit, et la prochaine source non recensée serait passée sans que
-rien ne bouge.
+**What this step does NOT do**, deliberately: it dries up only the KNOWN source.
+A human write stays silent — hence still SEEN by step 0's counter. Drying
+everything at once would have removed the signal along with the noise, and the
+next unsurveyed source would have slipped through with nothing moving.
 """
 
 from __future__ import annotations
@@ -46,7 +42,7 @@ from tests.unit.mcp._tool_error_adapter import capture_tool_errors
 
 PROJECT_KEY = "reorg-owned"
 
-#: Le vocabulaire fermé du `CHECK` de la 043. `judgment` y était déjà.
+#: The closed vocabulary of 043's `CHECK`. `judgment` was already in it.
 FRESHNESS_SOURCES = ("merge", "judgment", "score", "revive")
 
 
@@ -110,7 +106,7 @@ def _sent_model(services: dict[str, Any], entity: str = "learning") -> Any:
 
 @pytest.mark.asyncio
 async def test_a_scoped_freshness_write_declares_judgment() -> None:
-    """Le témoin positif : REORG déclare, donc la transition cesse d'être muette."""
+    """The positive witness: REORG declares, so the transition stops being silent."""
     tools, services = _registered_tools()
 
     with bind_dream_project_scope(_scope()):
@@ -121,10 +117,10 @@ async def test_a_scoped_freshness_write_declares_judgment() -> None:
 
 @pytest.mark.asyncio
 async def test_an_unrelated_scoped_write_declares_nothing() -> None:
-    """Une provenance FAUSSE est pire qu'une absente — le trigger le dit lui-même.
+    """A FALSE provenance is worse than a missing one — the trigger says so itself.
 
-    Estampiller toutes les écritures scopées ferait décrire une transition qui
-    n'a pas eu lieu. La marque ne suit que `freshness_status`.
+    Stamping every scoped write would describe a transition that did not happen.
+    The mark follows `freshness_status` only.
     """
     tools, services = _registered_tools()
 
@@ -136,11 +132,11 @@ async def test_an_unrelated_scoped_write_declares_nothing() -> None:
 
 @pytest.mark.asyncio
 async def test_a_human_write_stays_mute_and_therefore_visible() -> None:
-    """LE SECOND TÉMOIN, celui sans lequel on tarit la source et perd le signal.
+    """THE SECOND WITNESS, without which we dry the source and lose the signal.
 
-    Hors scope dream, rien n'est estampillé : la transition reste muette, donc
-    comptée par la marche 0. C'est ce qui permet de voir la PROCHAINE source non
-    recensée au lieu de la confondre avec REORG.
+    Outside the dream scope, nothing is stamped: the transition stays silent,
+    hence counted by step 0. That is what makes the NEXT unsurveyed source visible
+    instead of conflating it with REORG.
     """
     tools, services = _registered_tools()
 
@@ -152,11 +148,11 @@ async def test_a_human_write_stays_mute_and_therefore_visible() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("forged", ["judgment", "score", "revive", "merge"])
 async def test_a_caller_may_never_forge_its_own_provenance(forged: str) -> None:
-    """La provenance est posée par le SERVEUR ou pas du tout.
+    """The provenance is set by the SERVER or not at all.
 
-    Un appelant qui pourrait l'écrire pourrait signer une transition du nom d'un
-    autre : « une provenance fausse, qui se croit, au lieu d'une provenance
-    absente, qui se voit » — les mots de la 043.
+    A caller able to write it could sign a transition in someone else's name: "a
+    false provenance, which is believed, instead of a missing provenance, which is
+    seen" — 043's own words.
     """
     tools, services = _registered_tools()
 
@@ -174,10 +170,10 @@ async def test_a_caller_may_never_forge_its_own_provenance(forged: str) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("entity", ["decision", "learning", "snippet", "runbook", "adr"])
 async def test_every_mutable_type_declares(entity: str) -> None:
-    """Les cinq types que `brain_update` peut écrire, pas seulement `learning`.
+    """The five types `brain_update` can write, not only `learning`.
 
-    Les trois transitions mesurées étaient sur `learnings` ; rien ne garantit
-    que la prochaine le sera.
+    The three measured transitions were on `learnings`; nothing guarantees the
+    next one will be.
     """
     tools, services = _registered_tools()
 
@@ -188,9 +184,9 @@ async def test_every_mutable_type_declares(entity: str) -> None:
 
 
 def test_the_stamped_value_belongs_to_the_043_vocabulary() -> None:
-    """Sans ça, la marche 1 échouerait sur une contrainte, la nuit entière avec.
+    """Without this, step 1 would fail on a constraint, and the whole night with it.
 
-    Vérifié aussi contre la base réelle : `judgment` accepté, `reorg` refusé.
+    Also verified against the real database: `judgment` accepted, `reorg` refused.
     """
     from brain_v42.mcp.tools import crud_tools
 

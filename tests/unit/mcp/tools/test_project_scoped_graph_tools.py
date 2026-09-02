@@ -354,12 +354,12 @@ async def test_admin_dream_graph_calls_keep_historical_shapes(
 async def test_scoped_backfill_survives_a_dirty_endpoint_and_still_reports_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Ticket 6d2cf2a9 (c) — la branche scopée n'avait aucun try/except.
+    """Ticket 6d2cf2a9 (c) — the scoped branch had no try/except at all.
 
-    Une seule cible archived faisait donc remonter `UnknownGraphEndpoint` jusqu'au
-    tool, d'où `STEP_A.errors=1` et le statut connect partial. Le lot doit survivre,
-    MAIS l'échec doit rester compté : c'est l'honnêteté que codex a apportée et que
-    gemini masquait en rapportant errors=0 sur les mêmes exceptions serveur.
+    A single archived target therefore let `UnknownGraphEndpoint` surface up to the
+    tool, hence `STEP_A.errors=1` and a partial connect status. The batch must
+    survive, BUT the failure must stay counted: that is the honesty codex brought
+    and gemini masked by reporting errors=0 on the same server exceptions.
     """
     from brain_v42.repositories.pg_graph_ledger import UnknownGraphEndpoint
 
@@ -375,7 +375,7 @@ async def test_scoped_backfill_survives_a_dirty_endpoint_and_still_reports_it(
     session.execute = AsyncMock(return_value=result)
 
     tools, _session, linker = _dream_graph_tools(graph, session=session)
-    # `_dream_graph_tools` réassigne `auto_link` : le side_effect doit venir APRÈS.
+    # `_dream_graph_tools` reassigns `auto_link`: the side_effect must come AFTER.
     linker.auto_link = AsyncMock(
         side_effect=UnknownGraphEndpoint("one or more UUID endpoints are not registered")
     )
@@ -390,10 +390,10 @@ async def test_scoped_backfill_survives_a_dirty_endpoint_and_still_reports_it(
 async def test_scoped_backfill_still_propagates_an_authorization_refusal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Anti-régression du fix (c) : le catch doit rester `UnknownGraphEndpoint` seul.
+    """Anti-regression for fix (c): the catch must stay `UnknownGraphEndpoint` alone.
 
-    Ce test vire au rouge si quelqu'un « symétrise » avec un `except Exception`,
-    ce qui rendrait muet un refus d'autorisation scopé.
+    This test turns red if anyone "symmetrizes" it with an `except Exception`,
+    which would silence a scoped authorization refusal.
     """
     entity_id = uuid4()
     denial = DreamProjectAuthorizationError("object_not_authorized")
@@ -408,7 +408,7 @@ async def test_scoped_backfill_still_propagates_an_authorization_refusal(
     session.execute = AsyncMock(return_value=result)
 
     tools, _session, linker = _dream_graph_tools(graph, session=session)
-    # `_dream_graph_tools` réassigne `auto_link` : le side_effect doit venir APRÈS.
+    # `_dream_graph_tools` reassigns `auto_link`: the side_effect must come AFTER.
     linker.auto_link = AsyncMock(side_effect=denial)
 
     with pytest.raises(DreamProjectAuthorizationError) as raised:
@@ -421,16 +421,17 @@ async def test_scoped_backfill_still_propagates_an_authorization_refusal(
 async def test_backfill_never_feeds_an_archived_source_to_the_linker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Ticket 6d2cf2a9 — le résolveur exige `active` sur les DEUX ancres.
+    """Ticket 6d2cf2a9 — the resolver requires `active` on BOTH anchors.
 
-    Le filtre posé dans `_find_similar` ne couvre que la CIBLE. `find_unlinked_nodes`
-    rend aussi des SOURCES archived (mesuré le 2026-08-18 : brain-v42 a 82 entités
-    non liées actives ET 21 archived), et une source archived fait lever le résolveur
-    tout autant qu'une cible. Sans ce filtre, ces 21 sources reviennent chaque nuit,
-    ne peuvent jamais gagner d'arête, et rendent connect partial à perpétuité.
+    The filter placed in `_find_similar` covers only the TARGET.
+    `find_unlinked_nodes` also returns archived SOURCES (measured 2026-08-18:
+    brain-v42 has 82 unlinked active entities AND 21 archived), and an archived
+    source makes the resolver raise just as a target does. Without this filter,
+    those 21 sources come back every night, can never win an edge, and keep connect
+    partial in perpetuity.
 
-    Précédent du projet : `list_active_classification_orphans`, la liste de sources
-    de STEP_B, filtre déjà `candidate.lifecycle='active'` côté ledger.
+    Precedent in this project: `list_active_classification_orphans`, STEP_B's source
+    list, already filters `candidate.lifecycle='active'` at the ledger.
     """
     entity_id = uuid4()
     graph = MagicMock()
@@ -455,7 +456,7 @@ async def test_backfill_never_feeds_an_archived_source_to_the_linker(
 async def test_admin_backfill_also_refuses_an_archived_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Le trou de la source ne dépend pas du scope : la branche admin le porte aussi."""
+    """The source hole does not depend on the scope: the admin branch carries it too."""
     entity_id = uuid4()
     graph = MagicMock()
     graph.find_unlinked_nodes = AsyncMock(return_value=[str(entity_id)])

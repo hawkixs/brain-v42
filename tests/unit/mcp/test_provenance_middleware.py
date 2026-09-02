@@ -1,4 +1,4 @@
-"""Tests du middleware de provenance — pose de l'acteur sur on_call_tool."""
+"""Tests of the provenance middleware — setting the actor on on_call_tool."""
 
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ class TestProvenanceMiddleware:
         assert seen == [UNKNOWN_ACTOR]
 
     async def test_actor_is_set_before_handler_runs(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """L'acteur doit être posé AVANT call_next, pas après."""
+        """The actor must be set BEFORE call_next, not after."""
         monkeypatch.setattr(
             "brain_v42.mcp.provenance_middleware.get_http_headers",
             lambda **_kw: {"x-brain-agent": "red-lab"},
@@ -74,13 +74,13 @@ class TestProvenanceMiddleware:
         call_next.assert_awaited_once()
 
     async def test_path_like_header_is_normalized(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Le middleware doit NORMALISER, pas seulement recopier le header.
+        """The middleware must NORMALIZE, not merely copy the header.
 
-        Sans ce test, remplacer `normalize_agent(...)` par le header brut
-        laisserait les cinq autres tests verts : ils envoient tous des valeurs
-        déjà normalisées ou absentes. En production chaque session Claude
-        atterrirait alors comme `/home/.../brain_v42` au lieu de `brain_v42`,
-        avec une cardinalité d'acteurs non bornée dans access_log.
+        Without this test, replacing `normalize_agent(...)` with the raw header
+        would leave the other five tests green: they all send values that are
+        already normalized or absent. In production every Claude session would
+        then land as `/home/.../brain_v42` instead of `brain_v42`, with an
+        unbounded actor cardinality in access_log.
         """
         monkeypatch.setattr(
             "brain_v42.mcp.provenance_middleware.get_http_headers",
@@ -96,7 +96,7 @@ class TestProvenanceMiddleware:
         assert seen == ["red-lab"]
 
     async def test_unexpanded_template_is_collapsed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Session démon sans PWD : un seul seau, pas un acteur par littéral."""
+        """Daemon session without PWD: a single bucket, not one actor per literal."""
         monkeypatch.setattr(
             "brain_v42.mcp.provenance_middleware.get_http_headers",
             lambda **_kw: {"x-brain-agent": "${PWD}"},
@@ -124,17 +124,17 @@ class TestProvenanceMiddleware:
 
 
 class TestActivityReportingNeverBreaksTheToolCall:
-    """L'observabilité ne doit JAMAIS pouvoir casser l'opération qu'elle observe.
+    """Observability must NEVER be able to break the operation it observes.
 
-    Ticket 1c40c36a. Ce chemin est chaud : ``_report`` s'exécute à chaque appel de
-    tool. Il est aussi ARMÉ en production — le drop-in
-    ``brain-mcp-http.service.d/client-activity.conf`` pose
-    ``CLIENT_ACTIVITY_REPORTING_ENABLED=true``, vérifié sur l'unité vivante ET dans
-    l'environnement du process. Une exception qui en sort ne casse pas UN tool, elle
-    casse TOUS les tools du process partagé, donc les six phases des dix projets de
-    la nuit.
+    Ticket 1c40c36a. This path is hot: ``_report`` runs on every tool call. It is
+    also ARMED in production — the drop-in
+    ``brain-mcp-http.service.d/client-activity.conf`` sets
+    ``CLIENT_ACTIVITY_REPORTING_ENABLED=true``, verified on the live unit AND in
+    the process environment. An exception escaping it does not break ONE tool, it
+    breaks ALL the tools of the shared process, hence the six phases of the
+    night's ten projects.
 
-    ``_report`` était appelé dans un ``try`` qui n'avait qu'un ``finally``.
+    ``_report`` was called inside a ``try`` that had only a ``finally``.
     """
 
     async def test_a_raising_reporter_does_not_break_the_tool_call(
@@ -165,11 +165,11 @@ class TestActivityReportingNeverBreaksTheToolCall:
     async def test_a_genuine_tool_failure_still_propagates(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """La sonde ANTI-TAUTOLOGIE : on n'avale que les pannes de L'ÉMETTEUR.
+        """The ANTI-TAUTOLOGY probe: we swallow only THE EMITTER's failures.
 
-        Sans elle, un ``try/except`` posé trop large rendrait le middleware muet sur
-        les vraies erreurs d'outil — on échangerait un mode de panne bruyant contre
-        un mode de panne silencieux, ce qui est pire.
+        Without it, a ``try/except`` placed too widely would make the middleware
+        mute about real tool errors — we would trade a loud failure mode for a
+        silent one, which is worse.
         """
         monkeypatch.setattr(
             "brain_v42.mcp.provenance_middleware.get_http_headers",
@@ -190,14 +190,14 @@ class TestActivityReportingNeverBreaksTheToolCall:
 
 
 class TestAnUnidentifiedClientIsNamedOnce:
-    """Le poller `unknown` monte à un appel par minute depuis des semaines.
+    """The `unknown` poller has been calling once a minute for weeks.
 
-    Mesuré le 2026-08-12 : `brain_ticket_list` porte 1239 appels quand tout le
-    reste est à un chiffre, et RIEN ne dit qui appelle. Les instruments qui ont
-    échoué : `ss` échantillonné rate un appel de 4,4 ms par construction,
-    `ss -E` voit l'événement mais plus le processus, et `access_log` est vide.
-    Ce qui reste est la seule mesure que le serveur peut faire lui-même — l'IP
-    source et le User-Agent, au moment où l'appel arrive.
+    Measured on 2026-08-12: `brain_ticket_list` carries 1239 calls when everything
+    else is in single digits, and NOTHING says who is calling. The instruments
+    that failed: sampled `ss` misses a 4.4 ms call by construction, `ss -E` sees
+    the event but no longer the process, and `access_log` is empty. What remains
+    is the only measurement the server can make itself — the source IP and the
+    User-Agent, at the moment the call arrives.
     """
 
     def _http(
@@ -238,9 +238,9 @@ class TestAnUnidentifiedClientIsNamedOnce:
     async def test_the_same_client_is_not_logged_twice(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Un appel par minute pendant des jours ferait un journal illisible —
-        et la réponse tient dans la PREMIÈRE ligne. On journalise à la
-        découverte, pas à la répétition."""
+        """One call a minute for days would make an unreadable log — and the
+        answer fits in the FIRST line. We log on discovery, not on
+        repetition."""
         from structlog.testing import capture_logs
 
         self._http(monkeypatch, agent=None)
@@ -257,8 +257,8 @@ class TestAnUnidentifiedClientIsNamedOnce:
     async def test_an_identified_caller_is_never_logged(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """La sonde vise les anonymes. Journaliser les clients nommés
-        n'apprendrait rien et ferait du volume sur le chemin chaud."""
+        """The probe targets the anonymous. Logging named clients would teach
+        nothing and would add volume on the hot path."""
         from structlog.testing import capture_logs
 
         self._http(monkeypatch, agent="brain-v42")
@@ -273,8 +273,8 @@ class TestAnUnidentifiedClientIsNamedOnce:
     async def test_an_unreadable_request_never_breaks_the_tool_call(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Même posture que `_report` : un canal d'OBSERVATION ne peut pas
-        faire tomber l'opération observée."""
+        """Same posture as `_report`: an OBSERVATION channel cannot bring down
+        the operation it observes."""
         monkeypatch.setattr(
             "brain_v42.mcp.provenance_middleware.get_http_headers", lambda **_kw: {}
         )

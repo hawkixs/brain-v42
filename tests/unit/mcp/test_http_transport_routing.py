@@ -206,11 +206,11 @@ def test_http_app_builds() -> None:
 
 
 def test_session_idle_timeout_is_injected_and_guarded(monkeypatch: Any) -> None:
-    """L'échéance d'inactivité doit atteindre le manager, et sa garde doit mordre.
+    """The idle deadline must reach the manager, and its guard must bite.
 
-    FastMCP construit ``StreamableHTTPSessionManager`` sans transmettre
-    ``session_idle_timeout`` : sans cette injection, l'état d'une session dont
-    le client meurt sans DELETE survit jusqu'au redémarrage du processus.
+    FastMCP builds ``StreamableHTTPSessionManager`` without passing
+    ``session_idle_timeout``: without this injection, the state of a session whose
+    client dies without a DELETE survives until the process restarts.
     """
     import inspect as _inspect
 
@@ -223,7 +223,7 @@ def test_session_idle_timeout_is_injected_and_guarded(monkeypatch: Any) -> None:
 
     original = fastmcp_http.StreamableHTTPSessionManager
 
-    # CONTRÔLE POSITIF — le paramètre existe en amont et arrive au constructeur.
+    # POSITIVE CONTROL — the parameter exists upstream and reaches the constructor.
     assert "session_idle_timeout" in _inspect.signature(original.__init__).parameters
     captured: dict[str, Any] = {}
 
@@ -232,12 +232,12 @@ def test_session_idle_timeout_is_injected_and_guarded(monkeypatch: Any) -> None:
             captured.update(kwargs)
 
     monkeypatch.setattr(fastmcp_http, "StreamableHTTPSessionManager", _Spy)
-    # _Spy n'a pas le paramètre : la garde doit refuser de poser une échéance
-    # qu'elle ne pourrait pas honorer.
+    # _Spy does not have the parameter: the guard must refuse to set a deadline it
+    # could not honour.
     with pytest.raises(SessionIdleTimeoutUnavailableError):
         _install_session_idle_timeout(900.0)
 
-    # CONTRÔLE POSITIF sur une base qui, elle, l'accepte.
+    # POSITIVE CONTROL on a base that does accept it.
     class _Acceptable:
         def __init__(self, session_idle_timeout: float | None = None, **kwargs: Any) -> None:
             captured["session_idle_timeout"] = session_idle_timeout
@@ -251,7 +251,7 @@ def test_session_idle_timeout_is_injected_and_guarded(monkeypatch: Any) -> None:
 
 
 def test_stateless_can_be_restored_by_settings(monkeypatch: Any) -> None:
-    """Le rollback est un réglage, pas une édition de code."""
+    """The rollback is a setting, not a code edit."""
     from brain_v42.config import Settings, get_settings
     from brain_v42.mcp import server
 
@@ -268,10 +268,9 @@ def test_stateless_can_be_restored_by_settings(monkeypatch: Any) -> None:
         captured.update(kwargs)
 
     monkeypatch.setattr(server.mcp, "run_http_async", fake_run_http_async)
-    # ``_configure_http_security`` refuse d'armer deux fois le MÊME serveur, et
-    # ``server.mcp`` est un objet de module partagé par tout le fichier. Sans
-    # cette remise à zéro, le test échoue sur cette garde-là — pas sur ce qu'il
-    # prétend mesurer.
+    # ``_configure_http_security`` refuses to arm the SAME server twice, and
+    # ``server.mcp`` is a module object shared by the whole file. Without this
+    # reset, the test fails on that guard — not on what it claims to measure.
     server._http_security_configured_servers.discard(server.mcp)
     asyncio.run(server._run_mcp(server.mcp, settings))
 

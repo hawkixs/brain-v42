@@ -1,17 +1,17 @@
-"""Un plafond de `limit` appliqué en silence fait mentir le résultat.
+"""A `limit` cap applied silently makes the result lie.
 
-Ticket af3b58dd, item 4. `brain_search`, `brain_list` et `brain_list_adrs` ramènent
-`limit` dans [1, 100] par `max(1, min(limit, 100))` et rendent la page sans rien dire.
-Un appelant qui demande 500 en reçoit 100 et ne peut pas distinguer « il n'y en avait
-que 100 » de « il y en avait 500 et on t'en montre 100 ».
+Ticket af3b58dd, item 4. `brain_search`, `brain_list` and `brain_list_adrs` clamp
+`limit` into [1, 100] through `max(1, min(limit, 100))` and return the page saying
+nothing. A caller asking for 500 receives 100 and cannot tell "there were only 100"
+from "there were 500 and you are shown 100".
 
-C'est le dépôt qui se contredit lui-même : dans le MÊME fichier,
-`_format_plan_detail` documente « no content is silently dropped — the notice names
-the number of omitted chunks ». La règle existe, ces trois chemins ne la suivent pas.
+It is the repository contradicting itself: in the SAME file, `_format_plan_detail`
+documents "no content is silently dropped — the notice names the number of omitted
+chunks". The rule exists, these three paths do not follow it.
 
-Le contrat CLAMP n'est pas remis en cause au profit du rejet dur de
-`brain_session_list` : pour un appelant LLM, un refus coûte un aller-retour là où un
-plafond annoncé coûte une phrase. Ce qui est corrigé, c'est le SILENCE, pas le plafond.
+The CLAMP contract is not called into question in favour of `brain_session_list`'s
+hard rejection: for an LLM caller, a refusal costs a round trip where an announced
+cap costs a sentence. What is fixed is the SILENCE, not the cap.
 """
 
 from __future__ import annotations
@@ -23,11 +23,11 @@ from brain_v42.mcp.tools.formatters import LIST_LIMIT_MAX, clamp_list_limit
 
 class TestClampListLimit:
     def test_a_request_within_the_cap_is_returned_untouched_and_silent(self) -> None:
-        """Le cas nominal ne doit produire AUCUN bruit.
+        """The nominal case must produce NO noise.
 
-        Sans cette assertion, on pourrait « corriger » en annonçant le plafond à
-        chaque appel — le lecteur cesserait de lire la notice, exactement la dérive
-        que ce dépôt documente ailleurs pour l'alarme qui sonne toutes les nuits.
+        Without this assertion, one could "fix" it by announcing the cap on every
+        call — the reader would stop reading the notice, exactly the drift this
+        repository documents elsewhere for the alarm that rings every night.
         """
         value, notice = clamp_list_limit(20)
 
@@ -43,19 +43,19 @@ class TestClampListLimit:
 
     @pytest.mark.parametrize("asked", [0, -1, -100])
     def test_a_non_positive_request_says_so_too(self, asked: int) -> None:
-        """Zéro rendait une page vide en silence — indiscernable d'un corpus vide."""
+        """Zero returned an empty page silently — indistinguishable from an empty corpus."""
         value, notice = clamp_list_limit(asked)
 
         assert value == 1
         assert notice, f"limit={asked} a été corrigé sans le dire"
 
     def test_the_cap_is_the_one_the_tools_actually_apply(self) -> None:
-        """Contrôle positif : un plafond découplé des tools ne garderait rien."""
+        """Positive control: a cap decoupled from the tools would guard nothing."""
         assert LIST_LIMIT_MAX == 100
 
 
 class TestToolsAnnounceTheClamp:
-    """Le témoin comportemental, sur les trois tools que le ticket nomme."""
+    """The behavioural witness, on the three tools the ticket names."""
 
     @staticmethod
     def _sources() -> list[str]:
@@ -68,9 +68,9 @@ class TestToolsAnnounceTheClamp:
         ]
 
     def test_no_list_path_still_clamps_silently(self) -> None:
-        """La sonde NÉGATIVE : elle retombe si quelqu'un recode le clamp en dur.
+        """The NEGATIVE probe: it fires again if anyone hardcodes the clamp.
 
-        RED avant correctif : `max(1, min(limit, 100))` apparaît trois fois.
+        RED before the fix: `max(1, min(limit, 100))` appears three times.
         """
         offenders = [
             f"{index}: {line.strip()}"

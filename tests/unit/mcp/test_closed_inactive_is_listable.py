@@ -1,26 +1,25 @@
-"""Le 4ᵉ état de session est LISTABLE — sinon la nuit ferme sans témoin.
+"""The 4th session state is LISTABLE — otherwise the night closes without a witness.
 
-La 046 a livré `closed_inactive` dans les DEUX `CHECK` de `brain_sessions`, et
-le balayage nocturne sait le poser. Mais `SessionStatusFilter`, le seul filtre
-publié au catalogue MCP, ne le nommait pas (`24ca3b73`) : un opérateur ne
-pouvait donc pas lister ce que la nuit avait fermé automatiquement.
+046 delivered `closed_inactive` in BOTH `CHECK`s of `brain_sessions`, and the
+nightly sweep can set it. But `SessionStatusFilter`, the only filter published in
+the MCP catalogue, did not name it (`24ca3b73`): an operator therefore could not
+list what the night had closed automatically.
 
-**Le service et le dépôt le supportaient déjà.** `_normalize_status` accepte
-tout membre de `BrainSessionStatus`, et `list_sessions` filtre sur
-`brain_sessions.c.status == status` sans énumérer. Le trou vivait dans le seul
-littéral publié — un état atteignable en base, écrivable par le serveur, et
-indemandable par un client. Encore un schéma posé sans lecteur.
+**The service and the repository already supported it.** `_normalize_status`
+accepts any member of `BrainSessionStatus`, and `list_sessions` filters on
+`brain_sessions.c.status == status` without enumerating. The hole lived in the
+single published literal — a state reachable in the database, writable by the
+server, and unrequestable by a client. Another schema laid down with no reader.
 
-**Pourquoi c'est urgent maintenant** : le drapeau du balayage d'inactivité est
-armé sur la mauvaise unité systemd, donc `inactive_cutoff=off` et zéro
-fermeture. Le jour où l'opérateur pose le drop-in sur `brain-v42-dream`, les
-sessions inobservées seront fermées dès la première nuit — et sans ce filtre,
-personne ne pourra dire lesquelles.
+**Why it is urgent now**: the inactivity sweep flag is armed on the wrong systemd
+unit, so `inactive_cutoff=off` and zero closures. The day the operator places the
+drop-in on `brain-v42-dream`, unobserved sessions will be closed from the first
+night — and without this filter, nobody will be able to say which.
 
-Le témoin d'anti-dérive est `test_the_filter_covers_every_persisted_status` : il
-dérive ses attentes de l'énumération elle-même, donc un 5ᵉ état ajouté à
-`BrainSessionStatus` sans être publié au filtre **rougit ici**, au lieu d'être
-découvert par un opérateur qui ne trouve pas ses sessions.
+The anti-drift witness is `test_the_filter_covers_every_persisted_status`: it
+derives its expectations from the enumeration itself, so a 5th state added to
+`BrainSessionStatus` without being published in the filter **turns red here**,
+instead of being discovered by an operator who cannot find their sessions.
 """
 
 from __future__ import annotations
@@ -34,10 +33,10 @@ from pydantic import ValidationError
 
 from brain_v42.models.brain_session import BrainSessionStatus
 
-#: Les deux filtres DÉRIVÉS, qui ne sont pas des statuts persistés : `stale` est
-#: calculé sur `last_heartbeat_at`, `all` est l'absence de filtre. Les distinguer
-#: importe — les confondre avec les statuts ferait passer un test qui compte
-#: seulement des entrées, sans vérifier lesquelles.
+#: The two DERIVED filters, which are not persisted statuses: `stale` is computed
+#: from `last_heartbeat_at`, `all` is the absence of a filter. Distinguishing them
+#: matters — conflating them with the statuses would let a test pass that only
+#: counts entries, without checking which.
 DERIVED_FILTERS = frozenset({"stale", "all"})
 
 
@@ -63,39 +62,39 @@ async def _status_enum() -> list[str]:
 
 
 async def test_closed_inactive_is_an_accepted_list_filter() -> None:
-    """Le filtre publié nomme `closed_inactive`.
+    """The published filter names `closed_inactive`.
 
-    L'assertion porte sur le schéma PUBLIÉ : c'est ce qu'un client peut
-    demander, et le seul niveau où l'omission était observable.
+    The assertion is on the PUBLISHED schema: that is what a client can request,
+    and the only level at which the omission was observable.
     """
     assert BrainSessionStatus.CLOSED_INACTIVE.value in await _status_enum()
 
 
 async def test_the_filter_covers_every_persisted_status() -> None:
-    """Anti-dérive : le filtre couvre TOUS les statuts persistés, dérivé de l'énum.
+    """Anti-drift: the filter covers ALL persisted statuses, derived from the enum.
 
-    Rien n'est écrit en dur ici. Un 5ᵉ état ajouté à `BrainSessionStatus` et
-    oublié au filtre rougit sur cette ligne — c'est le témoin qui manquait
-    quand la 046 a ajouté le 4ᵉ.
+    Nothing is hardcoded here. A 5th state added to `BrainSessionStatus` and
+    forgotten in the filter turns this line red — it is the witness that was
+    missing when 046 added the 4th.
     """
     published = set(await _status_enum())
     persisted = {status.value for status in BrainSessionStatus}
 
     assert persisted <= published, f"statuts persistés absents du filtre : {persisted - published}"
-    # Témoin négatif : le filtre ne publie RIEN d'autre que les statuts
-    # persistés et les deux filtres dérivés. Sans cette moitié, publier
-    # n'importe quoi (un état inexistant, une faute de frappe) passerait.
+    # Negative witness: the filter publishes NOTHING beyond the persisted
+    # statuses and the two derived filters. Without this half, publishing
+    # anything (a nonexistent state, a typo) would pass.
     assert published == persisted | DERIVED_FILTERS, (
         f"le filtre publie des valeurs inattendues : {published - persisted - DERIVED_FILTERS}"
     )
 
 
 async def test_listing_closed_inactive_reaches_the_service() -> None:
-    """Le chemin est EMPRUNTÉ, pas seulement déclaré.
+    """The path is TAKEN, not merely declared.
 
-    Un `enum` qui contient la valeur ne prouve pas qu'un appel la traverse : la
-    validation pourrait la refuser plus bas, ou le tool la réécrire. Ce test
-    APPELLE le tool et lit ce que le service a réellement reçu.
+    An `enum` containing the value does not prove a call traverses it: validation
+    could refuse it further down, or the tool could rewrite it. This test CALLS
+    the tool and reads what the service actually received.
     """
     service = _service()
     tool = await _server(service).get_tool("brain_session_list")
@@ -108,11 +107,11 @@ async def test_listing_closed_inactive_reaches_the_service() -> None:
 
 
 async def test_an_unknown_status_is_still_refused() -> None:
-    """Élargir le filtre n'est pas l'ouvrir. Témoin négatif de l'élargissement.
+    """Widening the filter is not opening it. Negative witness for the widening.
 
-    Sans lui, remplacer le `Literal` par un `str` nu rendrait les trois tests
-    précédents verts tout en supprimant la validation — exactement le
-    contre-sens que ce lot doit éviter.
+    Without it, replacing the `Literal` with a bare `str` would turn the three
+    previous tests green while removing validation — exactly the misreading this
+    batch must avoid.
     """
     tool = await _server(_service()).get_tool("brain_session_list")
     assert tool is not None

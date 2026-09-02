@@ -1,12 +1,12 @@
-"""Contrat : `/health` nomme le build qui répond.
+"""Contract: `/health` names the build that answers.
 
-Une release n'a de valeur que si l'on peut demander à un serveur vivant quelle
-release il est. La sonde existait déjà ; elle disait seulement qu'elle était en
-vie, jamais QUI était en vie. Ces tests exigent les deux faits qui identifient
-un artefact : la version installée du paquet, et la révision de schéma que ce
-paquet embarque — mesurée, jamais recopiée.
+A release is only worth something if one can ask a live server which release it
+is. The probe already existed; it only said it was alive, never WHO was alive.
+These tests require the two facts that identify an artifact: the package's
+installed version, and the schema revision that package ships — measured, never
+copied.
 
-Tout tourne en process : le moteur est un double, aucun PostgreSQL requis.
+Everything runs in process: the engine is a double, no PostgreSQL required.
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ async def test_health_names_the_installed_version_and_the_shipped_head(
 
 
 async def test_health_keeps_its_liveness_contract(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Le watchdog et le test d'intégration lisent encore status et pool."""
+    """The watchdog and the integration test still read status and pool."""
     _install_engine(monkeypatch, _FakeEngine())
 
     body = json.loads((await server.health_check(_request())).body)
@@ -101,7 +101,7 @@ async def test_health_keeps_its_liveness_contract(monkeypatch: pytest.MonkeyPatc
 
 
 async def test_degraded_health_still_names_the_build(monkeypatch: pytest.MonkeyPatch) -> None:
-    """L'identité du build ne dépend pas de la base : c'est là qu'on la veut."""
+    """The build identity does not depend on the database: that is where we want it."""
     _install_engine(monkeypatch, _FakeEngine(broken=True))
 
     response = await server.health_check(_request())
@@ -116,10 +116,10 @@ async def test_degraded_health_still_names_the_build(monkeypatch: pytest.MonkeyP
 async def test_health_does_not_measure_the_head_per_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """La sonde a un budget de 10 s et son échec REDÉMARRE le serveur.
+    """The probe has a 10 s budget and its failure RESTARTS the server.
 
-    Scanner les 44 fichiers de révision à chaque appel mettrait un accès disque
-    sur ce chemin. La mesure est mémoïsée : deux sondes, une seule lecture.
+    Scanning the 44 revision files on every call would put a disk access on this
+    path. The measurement is memoized: two probes, a single read.
     """
     _install_engine(monkeypatch, _FakeEngine())
     release.shipped_alembic_head.cache_clear()
@@ -132,7 +132,7 @@ async def test_health_does_not_measure_the_head_per_request(
 
 
 # ---------------------------------------------------------------------------
-# Log de démarrage
+# Startup log
 # ---------------------------------------------------------------------------
 
 
@@ -160,7 +160,7 @@ def test_startup_log_names_the_build(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_startup_log_keeps_the_fields_it_already_had(monkeypatch: pytest.MonkeyPatch) -> None:
-    """L'extraction ne doit rien perdre : ces quatre clés existaient déjà."""
+    """The extraction must lose nothing: these four keys already existed."""
     recorder = _RecordingLogger()
     monkeypatch.setattr(server, "logger", recorder)
 

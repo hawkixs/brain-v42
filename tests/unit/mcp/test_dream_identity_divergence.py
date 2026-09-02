@@ -1,32 +1,30 @@
-"""Chaque appel dream porte DEUX identités ; une seule était vérifiée.
+"""Every dream call carries TWO identities; only one was checked.
 
-- Le **JETON** : le serveur n'accepte un principal scopé que si
-  `client_id == "dream-codex-{phase}"`, avec la claim `agent` identique, les
-  scopes exacts et le jeu de claims exact. Cette borne est serrée, et elle tient.
-- L'**ACTEUR** : l'en-tête `X-Brain-Agent`, posé en variable de contexte par
-  `ProvenanceMiddleware`, **jamais confronté au jeton**.
+- The **TOKEN**: the server accepts a scoped principal only if
+  `client_id == "dream-codex-{phase}"`, with an identical `agent` claim, the exact
+  scopes and the exact claim set. That bound is tight, and it holds.
+- The **ACTOR**: the `X-Brain-Agent` header, set as a context variable by
+  `ProvenanceMiddleware`, **never checked against the token**.
 
-Ce n'est PAS une faille de périmètre — la borne de capacité porte sur le jeton.
-C'est un défaut d'ATTRIBUTION, et il est STRUCTUREL, pas accidentel : le drop-in
-vivant déclare `BRAIN_DREAM_AGENT_PROVIDERS=codex,agy,claude`, et les trois
-runners posent trois en-têtes distincts — `dream-codex-{phase}`,
-`dream-agy-{phase}`, `dream-claude-{phase}` — pour un registre de jetons qui ne
-frappe que des profils codex. **Deux rails sur trois divergent par
-construction, à chaque appel.**
+This is NOT a scope hole — the capability bound is on the token. It is an
+ATTRIBUTION defect, and it is STRUCTURAL, not accidental: the live drop-in
+declares `BRAIN_DREAM_AGENT_PROVIDERS=codex,agy,claude`, and the three runners set
+three distinct headers — `dream-codex-{phase}`, `dream-agy-{phase}`,
+`dream-claude-{phase}` — against a token registry that mints codex profiles only.
+**Two rails out of three diverge by construction, on every call.**
 
-Mesuré le 2026-08-22 sur `dream_runs`, la seule source qui survive : le rail
-codex a produit 672 runs depuis le 04/08, le rail agy 235 entre le 11 et le
-17/08. Le repli n'est pas théorique, il a tourné une semaine.
+Measured on 2026-08-22 on `dream_runs`, the only surviving source: the codex rail
+produced 672 runs since 08-04, the agy rail 235 between 08-11 and 08-17. The
+fallback is not theoretical, it ran for a week.
 
-POURQUOI JOURNALISER PLUTÔT QUE REFUSER. Refuser casserait le rail de repli tant
-qu'il annonce `agy` avec un jeton codex. Dériver l'acteur du jeton ferait perdre
-l'information « quel rail a réellement tourné », précisément ce qui a permis de
-mesurer le ratio. Journaliser ne peut rien casser et produit le dénominateur
-dont les deux autres formes ont besoin — et il n'existe AUCUNE autre source :
-`access_log.actor` est drainé toutes les 300 s (mesuré à 0 ligne), rien dans
-journald ne porte l'acteur par appel, `process_metrics.agent_name` est le nom du
-PROCESSUS, les compteurs par agent du collecteur vivent en mémoire et meurent au
-restart, et `dream_runs` n'a pas de colonne d'acteur.
+WHY LOG RATHER THAN REFUSE. Refusing would break the fallback rail for as long as
+it announces `agy` with a codex token. Deriving the actor from the token would
+lose the information "which rail actually ran", precisely what made measuring the
+ratio possible. Logging can break nothing and produces the denominator the other
+two forms need — and there is NO other source: `access_log.actor` is drained
+every 300 s (measured at 0 rows), nothing in journald carries the per-call actor,
+`process_metrics.agent_name` is the PROCESS name, the collector's per-agent
+counters live in memory and die at restart, and `dream_runs` has no actor column.
 """
 
 from __future__ import annotations
@@ -51,7 +49,7 @@ def _divergences(events: list[tuple[str, dict]]) -> list[dict]:
 
 @pytest.mark.asyncio
 async def test_an_aligned_actor_is_silent() -> None:
-    """Le rail codex nominal ne doit rien produire — sinon le signal est du bruit."""
+    """The nominal codex rail must produce nothing — otherwise the signal is noise."""
     capabilities = importlib.import_module("brain_v42.mcp.dream_capabilities")
     middleware = _capability_middleware(capabilities)
     call_next = AsyncMock(return_value="allowed-result")
@@ -85,11 +83,11 @@ async def test_an_aligned_actor_is_silent() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("actor", ["dream-agy-scan", "dream-claude-scan", "unknown"])
 async def test_a_diverging_actor_is_logged_AND_NOT_REFUSED(actor: str) -> None:
-    """LE TÉMOIN QUI COMPTE : l'appel PASSE, et il est compté.
+    """THE WITNESS THAT MATTERS: the call GOES THROUGH, and it is counted.
 
-    Refuser casserait le rail de repli, qui est exactement ce que le repli
-    existe pour éviter. Une observation qui bloque la nuit qu'elle observe est
-    pire que l'angle mort qu'elle corrige.
+    Refusing would break the fallback rail, which is exactly what the fallback
+    exists to avoid. An observation that blocks the night it observes is worse
+    than the blind spot it corrects.
     """
     capabilities = importlib.import_module("brain_v42.mcp.dream_capabilities")
     middleware = _capability_middleware(capabilities)
@@ -130,11 +128,10 @@ async def test_a_diverging_actor_is_logged_AND_NOT_REFUSED(actor: str) -> None:
 
 @pytest.mark.asyncio
 async def test_the_observation_can_never_break_the_call() -> None:
-    """Un canal d'OBSERVATION ne peut pas être un point de défaillance.
+    """An OBSERVATION channel cannot be a point of failure.
 
-    Même règle que `ProvenanceMiddleware._report` : au pire on perd une ligne.
-    Sans ce témoin, une divergence journalisée pourrait tuer la nuit qu'elle
-    documente.
+    Same rule as `ProvenanceMiddleware._report`: at worst we lose one line.
+    Without this witness, a logged divergence could kill the night it documents.
     """
     capabilities = importlib.import_module("brain_v42.mcp.dream_capabilities")
     middleware = _capability_middleware(capabilities)

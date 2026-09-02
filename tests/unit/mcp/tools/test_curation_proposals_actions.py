@@ -1,25 +1,22 @@
-"""apply/reject des propositions de curation, enfin côté brain-v42 — et asymétriques.
+"""apply/reject of curation proposals, finally on the brain-v42 side — and asymmetric.
 
-Ticket 2547b4a2 : la seule surface d'action vivait au bout du routeur
-codex_gateway, scopé `project_group='red'` — un PÉRIMÈTRE, pas une panne (le
-port 9210 écoute). brain-v42 avait la lecture (`brain_list_curation_proposals`)
-et aucune action : 168 `proposed` au recensement du 2026-08-29, dernier apply
-le 2026-07-14.
+Ticket 2547b4a2: the only action surface lived at the end of the codex_gateway
+router, scoped `project_group='red'` — a PERIMETER, not a failure (port 9210 is
+listening). brain-v42 had reading (`brain_list_curation_proposals`) and no action:
+168 `proposed` at the 2026-08-29 survey, last apply on 2026-07-14.
 
-L'ASYMÉTRIE EST LE CONTRAT, pas un détail d'API. Les propositions lues sont
-des DÉGRADATIONS de titre (« Disaster recovery vérifiable — PostgreSQL +
-Neo4j + off-site » → « Infrastructure PostgreSQL sécurisée ») : une surface
-qui rendrait l'application facile serait un piège. Donc :
+THE ASYMMETRY IS THE CONTRACT, not an API detail. The proposals read are title
+DEGRADATIONS — quoted verbatim from the corpus, hence still in French: "Disaster
+recovery vérifiable — PostgreSQL + Neo4j + off-site" becoming "Infrastructure
+PostgreSQL sécurisée". A surface that made applying easy would be a trap. Hence:
 
-* `brain_reject_curation_proposals` — CONFORTABLE : un lot d'ids (≤ 50), des
-  verdicts par id, aucun geste par proposition.
-* `brain_apply_curation_proposal` — COÛTEUX : UNE proposition par appel, par
-  construction de signature (un entier, pas une liste) ; l'appelant relit ce
-  qu'il applique.
+* `brain_reject_curation_proposals` — COMFORTABLE: a batch of ids (≤ 50), verdicts
+  per id, no gesture per proposal.
+* `brain_apply_curation_proposal` — COSTLY: ONE proposal per call, by construction
+  of the signature (an integer, not a list); the caller re-reads what they apply.
 
-Le scope passe par la JOINTURE sur `features` (la table ne porte aucune clé de
-projet) : un id étranger au projet est refusé PAR NOM et n'atteint jamais le
-service.
+Scoping goes through the JOIN on `features` (the table carries no project key): an
+id foreign to the project is refused BY NAME and never reaches the service.
 """
 
 from __future__ import annotations
@@ -59,7 +56,7 @@ def _ownership_row(proposal_id: int, project_key: str, status: str = "proposed")
 
 
 class _FakeService:
-    """Enregistre les mutations demandées, sans base."""
+    """Records the requested mutations, without a database."""
 
     instances: list[_FakeService] = []
 
@@ -141,7 +138,7 @@ async def test_reject_is_a_comfortable_batch(monkeypatch: pytest.MonkeyPatch) ->
 async def test_a_foreign_proposal_is_refused_by_name_and_never_reaches_the_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Le scope par jointure est la garde : un id d'un AUTRE projet ne mute pas."""
+    """The join-based scope is the guard: an id from ANOTHER project does not mutate."""
     tools = _tools([_ownership_row(701, "brain-v42"), _ownership_row(999, "red-lab")], monkeypatch)
 
     out = await tools["brain_reject_curation_proposals"](
@@ -194,8 +191,8 @@ async def test_the_reject_batch_is_capped_and_says_so(monkeypatch: pytest.Monkey
 
 @pytest.mark.asyncio
 async def test_apply_is_deliberately_singular(monkeypatch: pytest.MonkeyPatch) -> None:
-    """UNE proposition par appel — le coût est dans la signature, pas dans une
-    consigne : les propositions lues sont des dégradations de titre."""
+    """ONE proposal per call — the cost is in the signature, not in a guideline:
+    the proposals read are title degradations."""
     tools = _tools([_ownership_row(553, "brain-v42")], monkeypatch)
 
     out = await tools["brain_apply_curation_proposal"](project_key="brain-v42", proposal_id=553)
