@@ -69,8 +69,45 @@ if TYPE_CHECKING:
 # one PARTIAL UNIQUE index, but on `brain_sessions`, out of scope. No row
 # rewritten, no backfill. 046 is inert here.
 #
+# Bumped to 047 after the same review, and this entry exists because three
+# commits bumped the constant to 047, 048 then 049 while this block stayed at 046
+# — the failure the closing line below names, realised (ticket 6cc34303). 047
+# executes exactly two statements, both on `brain_sessions`: DROP then re-ADD the
+# CHECK `brain_sessions_terminal_state_valid`, with the XOR of the `ended` branch
+# removed. No table the repair reads or writes. No column, no trigger, no index.
+# 047 is inert here.
+#
+# Bumped to 048 after the same review. Scope: `brain_session_artifacts` alone —
+# one nullable VARCHAR(24) without a default (`attribution_mode`), its CHECK
+# dropped and re-added, and a PARTIAL index on the derived mode. Same table
+# family as 047, none of it in reach of this file. No backfill, so no row
+# rewritten. 048 is inert here.
+#
+# Bumped to 049 after the same review — and this one is NOT inert on the surface,
+# the first since 043 that cannot settle for "it touches nothing". 049 widens
+# `ck_<table>_freshness_source` on the six decay tables, and `indexed_plans` is
+# one of them: DROP CONSTRAINT IF EXISTS then ADD with two more words
+# (`manual_update`, `plan_reindex`). Measured against what this file does to that
+# table: only `sa.delete(indexed_plans)`. A widened CHECK accepts strictly MORE
+# than before, so no existing row can become invalid, and a DELETE cannot violate
+# a CHECK at all. The other half of 049 is two nullable `dream_runs` columns,
+# out of scope entirely.
+#
+# 049's `plan_reindex` deserves its own line, because the obvious reading is
+# wrong: the repair does NOT have to declare that provenance. It never reindexes.
+# It DELETES stale index rows and verifies, through `ReindexEvidence`, that a
+# reindex performed elsewhere covered the same snapshot. The re-insertion goes
+# through `pg_indexed_plan_repo`, whose upsert already sets
+# `freshness_source = 'plan_reindex'` on both its INSERT and its ON CONFLICT
+# branches — which is what 049's own docstring says. A provenance written here
+# would name the wrong actor for a row this file never creates.
+#
 # The review is written down even when it is short: that is the rule, and a
-# missing review reads exactly like a review that was done.
+# missing review reads exactly like a review that was done. Since ticket
+# 6cc34303 that rule is enforced rather than trusted:
+# `tests/unit/test_plan_index_repair_review_block.py` derives the reviewed set
+# from this block and fails if the constant below outruns it, or if a revision
+# is skipped between the first entry and the head.
 _REQUIRED_ALEMBIC_HEAD = "049"
 
 
