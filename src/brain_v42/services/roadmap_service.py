@@ -13,6 +13,7 @@ import sqlalchemy as sa
 import structlog
 from sqlalchemy import text
 
+from brain_v42.db.focus_history import record_focus_history
 from brain_v42.db.focus_stamp import focus_stamp
 from brain_v42.db.tables import features, project_contexts
 from brain_v42.models.feature import VALID_FEATURE_STATUSES, RoadmapFeature, RoadmapProject
@@ -223,6 +224,16 @@ class RoadmapService:
                         current_focus=context_row["current_focus"],
                         current_revision=int(context_row["focus_revision"]),
                     )
+                # After the write, on the revision the write RETURNED — never on
+                # `expected + 1` computed here. And after the conflict branch, so
+                # a refused CAS leaves no trace of an intent it never applied.
+                await record_focus_history(
+                    session,
+                    project_key=project_key,
+                    focus_revision=int(updated_context["focus_revision"]),
+                    focus=updated_context["current_focus"],
+                    source="focus_tool",
+                )
 
         return ProjectFocusUpdateResult(
             current_focus=str(updated_context["current_focus"]),

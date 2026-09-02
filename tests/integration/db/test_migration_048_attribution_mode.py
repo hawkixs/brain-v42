@@ -147,7 +147,15 @@ async def test_the_downgrade_refuses_to_erase_what_marks_a_guess_as_a_guess(
 
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "alembic", "downgrade", "047"],
+            [
+                sys.executable,
+                "-m",
+                "alembic",
+                "-x",
+                "allow_focus_history_downgrade=yes",
+                "downgrade",
+                "047",
+            ],
             env={**os.environ, "POSTGRES_URL": INTEGRATION_DB_URL},
             cwd=str(_PROJECT_ROOT),
             capture_output=True,
@@ -194,6 +202,8 @@ async def test_the_named_opt_in_lets_a_deliberate_operator_through(
                 sys.executable,
                 "-m",
                 "alembic",
+                "-x",
+                "allow_focus_history_downgrade=yes",
                 "-x",
                 "allow_attribution_mode_downgrade=yes",
                 "downgrade",

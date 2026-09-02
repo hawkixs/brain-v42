@@ -146,7 +146,16 @@ def test_migration_037_round_trip_backfill_and_fail_closed_guards(
     migration_downgrade_fence("036")
     try:
         _run_alembic(["upgrade", "head"])
-        _run_alembic(["-x", "allow_project_context_trigger_downgrade=yes", "downgrade", "036"])
+        _run_alembic(
+            [
+                "-x",
+                "allow_project_context_trigger_downgrade=yes",
+                "-x",
+                "allow_focus_history_downgrade=yes",
+                "downgrade",
+                "036",
+            ]
+        )
 
         duplicate_knowledge_id = uuid4()
         _seed_project(ambiguous_project)
@@ -199,7 +208,7 @@ def test_migration_037_round_trip_backfill_and_fail_closed_guards(
             "captured_at_backfilled": True,
         }
 
-        _run_alembic(["downgrade", "036"])
+        _run_alembic(["-x", "allow_focus_history_downgrade=yes", "downgrade", "036"])
         assert _version() == "036"
         assert not _artifact_table_exists()
         assert not _has_column("last_heartbeat_at")
@@ -248,7 +257,9 @@ def test_migration_037_round_trip_backfill_and_fail_closed_guards(
             {"knowledge_id": uuid4(), "session_id": open_session_id},
         )
 
-        unsnapshotted = _run_alembic(["downgrade", "036"], succeeds=False)
+        unsnapshotted = _run_alembic(
+            ["-x", "allow_focus_history_downgrade=yes", "downgrade", "036"], succeeds=False
+        )
         assert "unsnapshotted artifacts" in unsnapshotted.stderr
         _assert_failed_migration_is_atomic("037")
         _cleanup_project(artifact_project)
@@ -270,7 +281,9 @@ def test_migration_037_round_trip_backfill_and_fail_closed_guards(
             {"project_key": conflict_project},
         )
 
-        conflicted = _run_alembic(["downgrade", "036"], succeeds=False)
+        conflicted = _run_alembic(
+            ["-x", "allow_focus_history_downgrade=yes", "downgrade", "036"], succeeds=False
+        )
         assert "conflicted focus outcomes" in conflicted.stderr
         _assert_failed_migration_is_atomic("037")
         _cleanup_project(conflict_project)

@@ -127,7 +127,16 @@ def test_migration_025_round_trip(migration_downgrade_fence: Callable[..., None]
     # regardless of what state a previous run left the DB in.
     migration_downgrade_fence("024")
     try:
-        _run_alembic(["-x", "allow_project_context_trigger_downgrade=yes", "downgrade", "024"])
+        _run_alembic(
+            [
+                "-x",
+                "allow_project_context_trigger_downgrade=yes",
+                "-x",
+                "allow_focus_history_downgrade=yes",
+                "downgrade",
+                "024",
+            ]
+        )
     except RuntimeError:
         # DB may already be at or below 024; try to reach it from scratch
         _run_alembic(["upgrade", "024"])

@@ -93,6 +93,8 @@ async def test_migration_039_downgrade_and_reupgrade(
         _run_alembic(
             "-x",
             "allow_project_context_trigger_downgrade=yes",
+            "-x",
+            "allow_focus_history_downgrade=yes",
             "downgrade",
             "038",
         )
@@ -112,7 +114,7 @@ async def test_migration_039_downgrade_without_opt_in_is_atomic(
 ) -> None:
     expected = await _contract_state(engine)
     migration_downgrade_fence("038")
-    result = _run_alembic_result("downgrade", "038")
+    result = _run_alembic_result("-x", "allow_focus_history_downgrade=yes", "downgrade", "038")
     try:
         assert result.returncode != 0
         assert await _contract_state(engine) == expected
@@ -129,6 +131,8 @@ async def test_migration_039_upgrade_rejects_trigger_drift_atomically(
     _run_alembic(
         "-x",
         "allow_project_context_trigger_downgrade=yes",
+        "-x",
+        "allow_focus_history_downgrade=yes",
         "downgrade",
         "038",
     )

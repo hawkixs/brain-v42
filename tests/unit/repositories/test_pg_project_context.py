@@ -87,6 +87,10 @@ def _make_row(project_key: str = "test_proj", **overrides: Any) -> dict:
         "test_strategy": None,
         "current_phase": None,
         "current_focus": None,
+        # `RETURNING *project_contexts.c` always carries this — a fixture row
+        # without it was never a faithful row, and the focus-history write path
+        # (050) is simply the first reader to notice.
+        "focus_revision": 0,
         "blockers": [],
         "related_projects": [],
         "local_path": None,
@@ -208,7 +212,11 @@ class TestCreate:
             result = await repo.create(data)
 
         assert result.project_key == "proj-log"
-        mock_session.execute.assert_called_once()
+        # TWO statements since 050: the write, then its audit row. Asserting
+        # the count rather than dropping it keeps the guard alive — what it
+        # protects is 'no extra round trip crept in', and that is still true
+        # at two. The second is the focus-history INSERT.
+        assert mock_session.execute.call_count == 2
 
 
 # ===========================================================================
@@ -484,7 +492,11 @@ class TestGetOrCreate:
         assert isinstance(result, ProjectContext)
         assert result.project_key == "existing-proj"
         # Single execute call (upsert is one statement)
-        assert mock_session.execute.call_count == 1
+        # TWO statements since 050: the write, then its audit row. Asserting
+        # the count rather than dropping it keeps the guard alive — what it
+        # protects is 'no extra round trip crept in', and that is still true
+        # at two. The second is the focus-history INSERT.
+        assert mock_session.execute.call_count == 2
 
     @pytest.mark.asyncio
     async def test_get_or_create_inserts_when_new(self):
@@ -512,7 +524,11 @@ class TestGetOrCreate:
         assert isinstance(result, ProjectContext)
         assert result.project_key == "new-proj"
         # Single execute call (upsert is one statement)
-        assert mock_session.execute.call_count == 1
+        # TWO statements since 050: the write, then its audit row. Asserting
+        # the count rather than dropping it keeps the guard alive — what it
+        # protects is 'no extra round trip crept in', and that is still true
+        # at two. The second is the focus-history INSERT.
+        assert mock_session.execute.call_count == 2
 
     @pytest.mark.asyncio
     async def test_get_or_create_passes_plan_scan_paths(self):

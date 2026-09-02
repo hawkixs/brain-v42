@@ -14,6 +14,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from brain_v42.db.focus_history import record_focus_history
 from brain_v42.db.focus_stamp import focus_stamp
 from brain_v42.db.tables import (
     adrs,
@@ -1294,6 +1295,18 @@ class PgBrainSessionRepo(BasePgRepository):
         row = (await session.execute(stmt)).mappings().one_or_none()
         if row is None:
             raise BrainSessionStateError(f"Project {project_key!r} focus could not be updated")
+        # Only the APPLIED branch reaches here — a `conflict` returned above,
+        # having written nothing. Re-posting the previous prose verbatim still
+        # records, at its new revision: the CAS sets `expected + 1` without
+        # comparing the text, and a copy-forward is exactly what this trail
+        # exists to make visible.
+        await record_focus_history(
+            session,
+            project_key=project_key,
+            focus_revision=int(row["focus_revision"]),
+            focus=row["current_focus"],
+            source="session_end",
+        )
         return dict(row), BrainSessionFocusOutcome.APPLIED
 
     async def _mark_ended(

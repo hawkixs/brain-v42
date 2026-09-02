@@ -205,6 +205,11 @@ def _terminal_router(
             return _result(row=focus_row)
         if _is_update(statement, "brain_sessions"):
             return _result(row=updated_row)
+        if _is_insert(statement, "project_focus_history"):
+            # 050: the applied CAS records the focus it just wrote, in the same
+            # transaction. Routed rather than tolerated — the dispatcher exists
+            # to refuse a statement nobody expected, and this one is expected.
+            return _result()
         if _is_insert(statement, "brain_session_artifacts"):
             return _result(rows=[{"knowledge_id": capture_id} for capture_id in valid_ids])
         if "from brain_session_artifacts" in sql:
