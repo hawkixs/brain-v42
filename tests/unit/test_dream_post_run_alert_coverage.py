@@ -1,23 +1,22 @@
-"""`post_run_alert` compare sur les paires DÉCLARÉES par la nuit.
+"""`post_run_alert` compares against the pairs DECLARED by the night.
 
-Ticket `0a9c067e`. Le comparateur existait déjà et tirait ; son attendu venait du
-drop-in systemd, qui n'a de clé que pour `promote` et `reorg`. La nuit du
-2026-08-16 a donc annoncé 20 phases manquantes quand il en manquait 60.
+Ticket `0a9c067e`. The comparator already existed and was firing; its expectation
+came from the systemd drop-in, which has keys only for `promote` and `reorg`. The
+night of 2026-08-16 therefore announced 20 missing phases when 60 were missing.
 
-Ce fichier tient trois contrats :
+This file holds three contracts:
 
-1. **La couverture passe de 2 phases à 6** — sans faux positif sur les skips
-   (pré-flight, killswitch) NI faux négatif sur les écritures déclarées en échec.
-2. **Le code de sortie 2** existe et ne sonne QUE sur un trou, une écriture
-   déclarée en échec, ou une structure de manifeste douteuse. Jamais en repli.
-3. **La ligne machine `COVERAGE` est la dernière ligne de stdout, TOUJOURS** —
-   y compris les nuits vertes. C'est tout l'objet du ticket : mettre côte à côte,
-   chaque matin, ce que la nuit dit avoir fait et ce qu'elle a écrit.
+1. **Coverage goes from 2 phases to 6** — with no false positive on skips
+   (preflight, killswitch) NOR false negative on writes declared as failed.
+2. **Exit code 2** exists and rings ONLY on a hole, a write declared as failed,
+   or a suspect manifest structure. Never in the fallback path.
+3. **The machine line `COVERAGE` is the last line of stdout, ALWAYS** — including
+   on green nights. That is the whole point of the ticket: putting side by side,
+   every morning, what the night says it did and what it wrote.
 
-Le repli reste le chemin d'aujourd'hui : mêmes lignes de synthèse, même wording,
-plus un avertissement explicite et une ligne machine aux NOMS DE CHAMPS
-différents — parce que 23 paires attendues depuis le drop-in et 62 paires
-écrites la même nuit ne sont pas comparables.
+The fallback stays today's path: same summary lines, same wording, plus an
+explicit warning and a machine line with DIFFERENT FIELD NAMES — because 23 pairs
+expected from the drop-in and 62 pairs written the same night are not comparable.
 """
 
 from __future__ import annotations
@@ -40,10 +39,10 @@ GLOBALS = ("extract", "roadmap", "sweep")
 
 @pytest.fixture(autouse=True)
 def _no_host_pool(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Couper la dépendance au drop-in systemd de la MACHINE.
+    """Cut the dependency on the MACHINE's systemd drop-in.
 
-    Même raison que dans `test_dream_post_run_alert.py` : une dépendance verte
-    là où personne ne regarde et rouge là où le système tourne.
+    Same reason as in `test_dream_post_run_alert.py`: a dependency that is green
+    where nobody looks and red where the system runs.
     """
     monkeypatch.setattr(post_run_alert, "expected_dream_phase_pairs", set)
     monkeypatch.setattr(post_run_alert, "expected_dream_phases", set)
@@ -90,11 +89,11 @@ def _session(observed: list[dict[str, object]]) -> AsyncMock:
     persisted = [row for row in observed if row.get("status") in post_run_alert.FAILED_STATUSES]
     count_result = MagicMock()
     count_result.scalar_one.return_value = len(persisted)
-    # La QUATRIÈME lecture est celle de `fetch_mute_transitions` (marche 0 de
-    # `55a21fb8`). Elle n'est consommée que par `review_and_render` ; les tests
-    # qui appellent `review_night` directement en laissent une de côté, ce qui
-    # est sans effet. Aucune assertion existante n'est touchée : c'est le
-    # HARNAIS qui suit le chemin vivant, pas le contrat qui plie.
+    # The FOURTH read is `fetch_mute_transitions`'s (step 0 of `55a21fb8`). It is
+    # consumed only by `review_and_render`; tests that call `review_night`
+    # directly leave one aside, which has no effect. No existing assertion is
+    # touched: it is the HARNESS that follows the live path, not the contract that
+    # bends.
     session.execute = AsyncMock(
         side_effect=[_result(observed), _result(persisted), count_result, _result([])]
     )
@@ -116,16 +115,16 @@ def _rows(pairs: tuple[tuple[str, str], ...], status: str = "done") -> list[dict
     ]
 
 
-# --- Le fait du ticket : 60, pas 20 -----------------------------------------
+# --- The ticket's fact: 60, not 20 ------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_the_night_that_wrote_two_rows_reports_sixty_silent_phases() -> None:
-    """Nuits des 2026-08-15 et 08-16 rejouées sur les attendus DÉCLARÉS.
+    """Nights of 2026-08-15 and 08-16 replayed against the DECLARED expectations.
 
-    Le chemin d'aujourd'hui en rapporte 20 : `LOOP_PHASES` ne porte que
-    `promote` et `reorg`, et les quatre core phases n'ont aucune clé dans
-    `_KS_KEYS`, donc les élargir là-bas serait un no-op.
+    Today's path reports 20 of them: `LOOP_PHASES` carries only `promote` and
+    `reorg`, and the four core phases have no key in `_KS_KEYS`, so widening them
+    over there would be a no-op.
     """
     manifest = _manifest(expected=_full_night())
     observed = tuple((phase, "*") for phase in GLOBALS)
@@ -144,10 +143,10 @@ async def test_the_night_that_wrote_two_rows_reports_sixty_silent_phases() -> No
 
 @pytest.mark.asyncio
 async def test_a_night_with_no_row_at_all_names_the_connection_first() -> None:
-    """`written == 0` : le premier geste n'est pas d'aller voir les phases.
+    """`written == 0`: the first move is not to go and look at the phases.
 
-    Reproduit les 08-15 et 08-16 (2 lignes sur 63) — la régression de DSN. Sans
-    ce message, l'opérateur ouvre 63 rapports de phase avant de penser au DSN.
+    Reproduces 08-15 and 08-16 (2 rows out of 63) — the DSN regression. Without
+    this message, the operator opens 63 phase reports before thinking of the DSN.
     """
     manifest = _manifest(expected=_full_night())
     session = _session([])
@@ -162,14 +161,14 @@ async def test_a_night_with_no_row_at_all_names_the_connection_first() -> None:
 
 @pytest.mark.asyncio
 async def test_a_night_that_only_wrote_its_global_phases_names_the_connection_too() -> None:
-    """Les 08-15 et 08-16 telles que la BASE les porte : 2 lignes sur 63.
+    """08-15 and 08-16 as the DATABASE carries them: 2 rows out of 63.
 
-    Mesuré en lecture seule sur la production — les deux nuits ont écrit
-    `(extract, *)` et `(roadmap, *)`, les phases qui tournent EN PROCESSUS
-    depuis dream.sh, et pas une ligne des 60 phases de projet. `written` vaut
-    donc 2, pas 0 : la garde `not written` ne se déclenchait pas et l'opérateur
-    de ces nuits-là recevait 61 lignes le renvoyant vers les rapports de phase —
-    le premier geste que ce message existe pour corriger.
+    Measured read-only on production — both nights wrote `(extract, *)` and
+    `(roadmap, *)`, the phases that run IN PROCESS from dream.sh, and not one row
+    of the 60 project phases. `written` is therefore 2, not 0: the `not written`
+    guard did not fire and the operator of those nights received 61 lines sending
+    them back to the phase reports — the very first move this message exists to
+    correct.
     """
     manifest = _manifest(expected=_full_night())
     observed = (("extract", "*"), ("roadmap", "*"))
@@ -184,10 +183,10 @@ async def test_a_night_that_only_wrote_its_global_phases_names_the_connection_to
 
 @pytest.mark.asyncio
 async def test_one_project_that_wrote_its_rows_is_not_a_connection_problem() -> None:
-    """Le sens de marche inverse : la garde ne doit pas devenir un cri permanent.
+    """The reverse direction: the guard must not become a permanent scream.
 
-    Une nuit où un projet a écrit ses six lignes et les autres rien est une
-    panne de nuit, pas de connexion : le rail d'écriture a fonctionné.
+    A night where one project wrote its six rows and the others nothing is a night
+    failure, not a connection failure: the write rail worked.
     """
     manifest = _manifest(expected=_full_night())
     observed = tuple((phase, "p0") for phase in LOOP_PHASES)
@@ -213,7 +212,7 @@ async def test_a_complete_night_reports_nothing_and_still_prints_coverage() -> N
     assert night.coverage.silent_line is None
 
 
-# --- Les quatre wordings, parce que quatre premiers gestes -------------------
+# --- The four wordings, because four different first moves ------------------
 
 
 @pytest.mark.asyncio
@@ -234,7 +233,7 @@ async def test_a_declared_write_failure_says_so_and_escalates() -> None:
 
 @pytest.mark.asyncio
 async def test_a_declared_failure_keeps_the_historic_wording_and_does_not_escalate() -> None:
-    """dream.sh sort déjà en 1 par `FAILED_PHASES` : rien à escalader ici."""
+    """dream.sh already exits 1 through `FAILED_PHASES`: nothing to escalate here."""
     manifest = _manifest(expected=(("connect", "brain-v42"),), failed=(("connect", "brain-v42"),))
     session = _session([])
 
@@ -247,18 +246,18 @@ async def test_a_declared_failure_keeps_the_historic_wording_and_does_not_escala
 
 @pytest.mark.asyncio
 async def test_a_row_written_while_the_night_declared_failure_is_reported() -> None:
-    """La nuit du 19→20, rejouée telle qu'elle s'est produite.
+    """The 19→20 night, replayed as it happened.
 
-    `reorg`/`brain-v42` a été déclaré `failed` par dream.sh, mais son marquage
-    `dream_runs` a crashé et la ligne est restée `done`. Le verdict lisait donc
-    une couverture PLEINE en ayant sous les yeux un fichier d'entrée qui disait
-    l'échec. Un rapport qui jette la déclaration de son propre fichier d'entrée
-    est un faux-vert, pas une couverture.
+    `reorg`/`brain-v42` was declared `failed` by dream.sh, but its `dream_runs`
+    marking crashed and the row stayed `done`. The verdict therefore read FULL
+    coverage while looking at an input file that said failure. A report that
+    throws away the declaration of its own input file is a false green, not
+    coverage.
 
-    L'assertion porte sur `render_stdout`, pas sur le seul verdict : une nuit
-    sans ligne en échec a `report is None`, donc un signal logé dans le corps du
-    rapport n'atteindrait PERSONNE. Le bloc de couverture, lui, est imprimé
-    toutes les nuits — c'est le seul endroit où ce signal existe vraiment.
+    The assertion is on `render_stdout`, not on the verdict alone: a night with no
+    failing row has `report is None`, so a signal lodged in the report body would
+    reach NOBODY. The coverage block, by contrast, is printed every night — it is
+    the only place where this signal really exists.
     """
     pair = ("reorg", "brain-v42")
     manifest = _manifest(expected=(pair,), failed=(pair,))
@@ -295,7 +294,7 @@ async def test_a_mismatch_reports_without_turning_the_night_red() -> None:
 
 @pytest.mark.asyncio
 async def test_a_clean_night_carries_a_zero_mismatch_counter() -> None:
-    """Le compteur est TOUJOURS imprimé : une absence de ligne serait ambiguë."""
+    """The counter is ALWAYS printed: a missing line would be ambiguous."""
     manifest = _manifest(expected=(("scan", "red"),))
     session = _session(_rows((("scan", "red"),)))
 
@@ -309,7 +308,7 @@ async def test_a_clean_night_carries_a_zero_mismatch_counter() -> None:
 
 @pytest.mark.asyncio
 async def test_a_missing_declared_pair_is_not_counted_as_a_mismatch() -> None:
-    """`declared` et `mismatch` ne doivent jamais compter la même paire."""
+    """`declared` and `mismatch` must never count the same pair."""
     pair = ("connect", "brain-v42")
     manifest = _manifest(expected=(pair,), failed=(pair,))
     session = _session([])
@@ -325,7 +324,7 @@ async def test_a_missing_declared_pair_is_not_counted_as_a_mismatch() -> None:
 
 @pytest.mark.asyncio
 async def test_a_mismatch_never_fabricates_a_synthetic_row() -> None:
-    """La ligne EXISTE — en synthétiser une seconde ferait un doublon."""
+    """The line EXISTS — synthesising a second one would make a duplicate."""
     pair = ("reorg", "brain-v42")
     manifest = _manifest(expected=(pair,), failed=(pair,))
     session = _session(_rows((pair,), status="done"))
@@ -349,7 +348,7 @@ async def test_a_declared_skip_is_never_an_alarm(reason: str) -> None:
 
 @pytest.mark.asyncio
 async def test_a_preflight_night_of_thirty_skips_stays_quiet() -> None:
-    """LE test anti-faux-positif de la couverture 2 → 6."""
+    """THE anti-false-positive test of the 2 → 6 coverage widening."""
     deep = ("synth", "promote", "reorg")
     expected = tuple((phase, project) for project in PROJECTS for phase in deep)
     manifest = _manifest(
@@ -365,7 +364,7 @@ async def test_a_preflight_night_of_thirty_skips_stays_quiet() -> None:
     assert night.coverage.escalates is False
 
 
-# --- Structure douteuse : jamais de verdict vert -----------------------------
+# --- Suspect structure: never a green verdict -------------------------------
 
 
 @pytest.mark.asyncio
@@ -391,18 +390,18 @@ async def test_disagreeing_counters_escalate() -> None:
     assert night.coverage.escalates is True
 
 
-# --- Le repli : le chemin d'aujourd'hui, dit en toutes lettres ---------------
+# --- The fallback: today's path, spelled out in full ------------------------
 
 
 @pytest.mark.asyncio
 async def test_without_a_manifest_the_synthesis_lines_are_the_ones_of_today(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Contrat de non-régression porté sur `include_missing_expected_phases`.
+    """A non-regression contract carried on `include_missing_expected_phases`.
 
-    Pas sur les octets de stdout : le repli gagne explicitement un
-    avertissement et une ligne machine. Promettre « byte-identique » tout en
-    ajoutant des lignes serait un contrat que personne ne peut tenir.
+    Not on stdout's bytes: the fallback explicitly gains a warning and a machine
+    line. Promising "byte-identical" while adding lines would be a contract nobody
+    can hold.
     """
     monkeypatch.setattr(post_run_alert, "expected_dream_phase_pairs", lambda: {("promote", "red")})
     observed = [{"phase": "scan", "status": "done", "project_key": "red"}]
@@ -426,10 +425,10 @@ async def test_without_a_manifest_the_synthesis_lines_are_the_ones_of_today(
 async def test_the_fallback_line_never_compares_incomparable_sets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """23 paires attendues depuis le drop-in contre 62 écrites le 2026-08-18.
+    """23 pairs expected from the drop-in against 62 written on 2026-08-18.
 
-    `COVERAGE expected=23 written=62` reproduirait le défaut du ticket : deux
-    nombres côte à côte que rien ne réconcilie.
+    `COVERAGE expected=23 written=62` would reproduce the ticket's flaw: two
+    numbers side by side that nothing reconciles.
     """
     expected_pairs = {("promote", f"p{index}") for index in range(23)}
     monkeypatch.setattr(post_run_alert, "expected_dream_phase_pairs", lambda: expected_pairs)
@@ -454,7 +453,7 @@ def test_a_manifest_from_another_night_is_not_used(tmp_path: Path) -> None:
     assert rm.load_run_manifest(path, run_date=RUN_DATE) is None
 
 
-# --- stdout : deux nombres côte à côte, chaque matin ------------------------
+# --- stdout: two numbers side by side, every morning ------------------------
 
 
 def _coverage(**kwargs: object) -> post_run_alert.CoverageReport:
@@ -563,7 +562,7 @@ def _wire_engine(monkeypatch: pytest.MonkeyPatch, session: AsyncMock) -> MagicMo
 
 @pytest.mark.asyncio
 async def test_the_report_stays_read_only_with_a_manifest() -> None:
-    """Contrat épinglé : aucune écriture, jamais (test_dream_post_run_alert.py:125)."""
+    """Pinned contract: no write, ever (test_dream_post_run_alert.py:125)."""
     manifest = _manifest(expected=_full_night())
     session = _session([])
 
@@ -601,8 +600,8 @@ def test_the_cli_accepts_an_explicit_manifest(monkeypatch: pytest.MonkeyPatch) -
     assert post_run_alert.main(["--date", "2026-08-18", "--manifest", "/tmp/x.tsv"]) == 0
     assert seen["manifest"] == Path("/tmp/x.tsv")
     assert seen["date"] == RUN_DATE
-    # Sans --phases-ok (rejeu à la main), pas de compteur : la ligne
-    # RECONCILIATION ne s'imprime pas et ne peut pas mentir.
+    # Without --phases-ok (a manual replay), no counter: the RECONCILIATION line
+    # is not printed and cannot lie.
     assert seen["phases_ok"] is None
 
     assert (

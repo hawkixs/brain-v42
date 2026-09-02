@@ -1,23 +1,22 @@
-"""Le contrat qui rend une bascule de provider SÛRE, et le seul qui la permette.
+"""The contract that makes a provider switch SAFE, and the only one that allows it.
 
-`dream.sh` a longtemps interdit tout fallback en cours de nuit, et pour une
-raison exacte, écrite dans son en-tête : « a WET MCP call may already have
-committed a mutation ». Rejouer une phase sur un autre modèle après qu'elle a
-écrit, c'est risquer d'écrire deux fois.
+`dream.sh` long forbade any mid-night fallback, and for an exact reason, written
+in its header: "a WET MCP call may already have committed a mutation". Replaying
+a phase on another model after it has written means risking writing twice.
 
-Cette interdiction n'est pas levée ici, elle est RAFFINÉE. Les deux runners
-savent déjà si un appel d'outil Brain a ABOUTI — codex par son flux d'événements
-JSONL, claude par sa télémétrie OTEL. Zéro appel abouti est un prédicat EXACT,
-pas une heuristique : il prouve qu'aucune mutation n'a été commitée, donc que
-rejouer la phase ailleurs est sans risque.
+That prohibition is not lifted here, it is REFINED. Both runners already know
+whether a Brain tool call SUCCEEDED — codex through its JSONL event stream,
+claude through its OTEL telemetry. Zero successful calls is an EXACT predicate,
+not a heuristic: it proves no mutation was committed, hence that replaying the
+phase elsewhere is risk-free.
 
-D'où le code de sortie 3, distinct de 1 : « j'ai échoué ET je peux prouver que
-je n'ai rien écrit ». Lui seul autorise la bascule. Un échec ordinaire (1) et un
-timeout (124) la refusent, parce qu'aucun des deux ne prouve quoi que ce soit.
+Hence exit code 3, distinct from 1: "I failed AND I can prove I wrote nothing".
+It alone authorises the switch. An ordinary failure (1) and a timeout (124)
+refuse it, because neither proves anything.
 
-Le mode de panne que ces tests visent est le pire de tous ici : une bascule qui
-s'autorise sur un échec AYANT muté. Elle serait invisible — la nuit finirait
-verte, avec des doublons dans le corpus.
+The failure mode these tests target is the worst of all here: a switch that
+authorises itself on a failure that HAS mutated. It would be invisible — the
+night would end green, with duplicates in the corpus.
 """
 
 from __future__ import annotations
@@ -31,8 +30,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Le code de sortie qui, et lui seul, autorise la phase à repartir sur le
-# provider suivant.
+# The exit code that, and it alone, authorises the phase to restart on the next
+# provider.
 SAFE_TO_FALL_BACK = 3
 
 
@@ -48,7 +47,7 @@ def _dream_sh() -> str:
     return (REPO_ROOT / "scripts" / "dream.sh").read_text(encoding="utf-8")
 
 
-# --- Le prédicat, côté codex ------------------------------------------------
+# --- The predicate, codex side ----------------------------------------------
 
 
 def _events(tmp_path: Path, *events: dict[str, object]) -> Path:
@@ -74,10 +73,10 @@ def _completed_brain_call() -> dict[str, object]:
 
 
 def test_codex_reports_zero_brain_tool_calls_as_safe_to_fall_back(tmp_path: Path) -> None:
-    """La nuit du 2026-08-11, rejouée : 60 phases, zéro appel d'outil.
+    """The night of 2026-08-11, replayed: 60 phases, zero tool calls.
 
-    Le code-mode host fermé faisait échouer codex APRÈS réponse du modèle et
-    AVANT tout appel d'outil. C'est le cas nominal de bascule.
+    The closed code-mode host made codex fail AFTER the model's answer and BEFORE
+    any tool call. This is the nominal switch case.
     """
     codex = _codex()
     events = _events(tmp_path, {"type": "turn.started"})
@@ -93,8 +92,8 @@ def test_codex_reports_a_completed_brain_call_as_unsafe(tmp_path: Path) -> None:
 
 
 def test_codex_ignores_a_failed_or_foreign_tool_call(tmp_path: Path) -> None:
-    """Un appel EN ERREUR n'a rien commité, et un appel vers un AUTRE serveur
-    n'a rien commité DANS BRAIN. Ni l'un ni l'autre ne doit bloquer la bascule."""
+    """A call IN ERROR committed nothing, and a call to ANOTHER server committed
+    nothing IN BRAIN. Neither must block the switch."""
     codex = _codex()
     errored = {
         "type": "item.completed",
@@ -123,22 +122,22 @@ def test_codex_ignores_a_failed_or_foreign_tool_call(tmp_path: Path) -> None:
 
 
 def test_codex_treats_a_missing_event_stream_as_unsafe(tmp_path: Path) -> None:
-    """Sans flux d'événements on ne PROUVE rien. Le défaut doit refuser la
-    bascule, jamais l'autoriser — c'est tout l'intérêt d'un prédicat exact."""
+    """Without an event stream nothing is PROVEN. The default must refuse the
+    switch, never authorise it — that is the whole point of an exact predicate."""
     codex = _codex()
 
     assert codex.brain_tool_call_completed(tmp_path / "absent.jsonl") is False or True
-    # Un flux illisible ne doit pas être lu comme « rien écrit ».
+    # An unreadable stream must not be read as "wrote nothing".
     unreadable = tmp_path / "broken.jsonl"
     unreadable.write_text("{not json\n", encoding="utf-8")
     assert codex.brain_tool_call_completed(unreadable) is False
 
 
-# --- Le prédicat, côté claude ----------------------------------------------
+# --- The predicate, claude side ---------------------------------------------
 
 
 def _otel_tool_result(*, success: str, tool_name: str = "mcp_tool") -> str:
-    """Reproduit la forme réelle mesurée le 2026-08-11 sur claude 2.1.226."""
+    """Reproduces the real shape measured on 2026-08-11 on claude 2.1.226."""
     return (
         "{\n"
         '  body: "claude_code.tool_result",\n'
@@ -171,7 +170,7 @@ def test_claude_reports_a_successful_mcp_result_as_unsafe(tmp_path: Path) -> Non
 
 
 def test_claude_ignores_a_failed_mcp_result(tmp_path: Path) -> None:
-    """Un outil qui a échoué n'a rien commité."""
+    """A tool that failed committed nothing."""
     claude = _claude()
     raw = tmp_path / "raw.log"
     raw.write_text(_otel_tool_result(success="false"), encoding="utf-8")
@@ -180,8 +179,8 @@ def test_claude_ignores_a_failed_mcp_result(tmp_path: Path) -> None:
 
 
 def test_claude_ignores_a_non_mcp_builtin_tool(tmp_path: Path) -> None:
-    """Les built-ins sont coupés par --tools "" ; si l'un repassait, il
-    n'écrirait toujours rien dans Brain et ne doit pas bloquer la bascule."""
+    """The built-ins are cut off by --tools ""; if one came back, it would still
+    write nothing into Brain and must not block the switch."""
     claude = _claude()
     raw = tmp_path / "raw.log"
     raw.write_text(_otel_tool_result(success="true", tool_name="Bash"), encoding="utf-8")
@@ -189,12 +188,12 @@ def test_claude_ignores_a_non_mcp_builtin_tool(tmp_path: Path) -> None:
     assert claude.brain_tool_call_completed(raw) is False
 
 
-# --- La chaîne, dans dream.sh ----------------------------------------------
+# --- The chain, inside dream.sh ---------------------------------------------
 
 
 def test_the_chain_is_configurable_and_defaults_to_the_single_provider() -> None:
-    """Une nuit qui ne configure pas de chaîne doit se comporter EXACTEMENT
-    comme avant : un provider, aucune bascule."""
+    """A night that configures no chain must behave EXACTLY as before: one
+    provider, no switch."""
     content = _dream_sh()
 
     assert (
@@ -204,11 +203,11 @@ def test_the_chain_is_configurable_and_defaults_to_the_single_provider() -> None
 
 
 def test_the_fallback_exit_code_agrees_between_the_shell_and_the_runners() -> None:
-    """Deux déclarations de la même constante, tenues d'accord ici.
+    """Two declarations of the same constant, held in agreement here.
 
-    dream.sh ne peut pas importer Python, donc le 3 y est réécrit à la main.
-    Si les deux divergent, la chaîne cesse silencieusement de basculer — le
-    runner rendrait 3 et le shell ne le reconnaîtrait plus.
+    dream.sh cannot import Python, so the 3 is retyped there by hand. If the two
+    diverge, the chain silently stops switching — the runner would return 3 and
+    the shell would no longer recognise it.
     """
     from scripts.dream._agent_capability import PROVIDER_FALLBACK_EXIT_CODE
 
@@ -216,11 +215,11 @@ def test_the_fallback_exit_code_agrees_between_the_shell_and_the_runners() -> No
     assert f"PROVIDER_FALLBACK_EXIT_CODE={PROVIDER_FALLBACK_EXIT_CODE}" in _dream_sh()
 
 
-# --- La sûreté, EXÉCUTÉE ---------------------------------------------------
+# --- The safety, EXECUTED ---------------------------------------------------
 #
-# Un test de texte prouverait qu'une condition est écrite, pas qu'elle tient.
-# Ceux qui suivent lancent une vraie copie de dream.sh avec un runner bouchonné
-# dont on choisit le code de sortie, et observent le journal.
+# A text test would prove a condition is written, not that it holds. The ones
+# that follow run a real copy of dream.sh with a stubbed runner whose exit code
+# we choose, and observe the log.
 
 
 def _sandbox(tmp_path: Path, runner_exit_code: int) -> tuple[Path, dict[str, str]]:
@@ -241,9 +240,9 @@ def _sandbox(tmp_path: Path, runner_exit_code: int) -> tuple[Path, dict[str, str
     stub = mock_bin / "claude"
     stub.write_text("#!/usr/bin/env bash\ncat >/dev/null 2>&1 || true\nexit 0\n")
     stub.chmod(0o755)
-    # codex DOIT passer son préflight, sinon il serait retiré de la chaîne
-    # avant la première phase et l'on n'observerait plus la bascule à
-    # l'exécution — qui est précisément ce que ces tests mesurent.
+    # codex MUST pass its preflight, otherwise it would be removed from the chain
+    # before the first phase and the switch would no longer be observed at
+    # execution — which is precisely what these tests measure.
     stub = mock_bin / "codex"
     stub.write_text(
         "#!/usr/bin/env bash\n"
@@ -256,8 +255,8 @@ def _sandbox(tmp_path: Path, runner_exit_code: int) -> tuple[Path, dict[str, str
     )
     stub.chmod(0o755)
 
-    # Le stub rend le code choisi pour TOUT runner d'agent, et fait échouer
-    # otel_split pour emprunter la branche WARN qui matérialise les journaux.
+    # The stub returns the chosen code for ANY agent runner, and fails otel_split
+    # to take the WARN branch that materialises the logs.
     uv_stub = mock_bin / "uv"
     uv_stub.write_text(
         "#!/usr/bin/env bash\n"
@@ -306,7 +305,7 @@ def _run_night(tmp_path: Path, runner_exit_code: int) -> str:
 
 
 def test_a_provable_no_write_failure_falls_back_to_the_next_provider(tmp_path: Path) -> None:
-    """Le cas nominal : codex meurt sans rien écrire, claude prend la nuit."""
+    """The nominal case: codex dies without writing, claude takes the night."""
     log = _run_night(tmp_path, SAFE_TO_FALL_BACK)
 
     assert "FALLBACK" in log, log
@@ -315,16 +314,15 @@ def test_a_provable_no_write_failure_falls_back_to_the_next_provider(tmp_path: P
 
 
 def test_a_failing_chain_still_reaches_the_end_of_the_night(tmp_path: Path) -> None:
-    """Piège payé DEUX FOIS pendant l'écriture de la chaîne.
+    """A trap paid for TWICE while writing the chain.
 
-    Un `set -e` posé À L'INTÉRIEUR d'une fonction shell survit à son `return`.
-    L'errexit ainsi restauré faisait sortir dream.sh sur le premier `return`
-    non nul : la nuit s'arrêtait à la première phase en échec, sans résumé et
-    sans toucher aux projets suivants — en sortant non nulle, donc avec l'air
-    d'un échec ordinaire.
+    A `set -e` placed INSIDE a shell function survives its `return`. The errexit
+    thus restored made dream.sh exit on the first non-zero `return`: the night
+    stopped at the first failing phase, with no summary and without touching the
+    following projects — exiting non-zero, hence looking like an ordinary failure.
 
-    Le résumé final est le témoin le moins cher de cette panne : il n'existe
-    que si la boucle est allée au bout.
+    The final summary is the cheapest witness of that failure: it exists only if
+    the loop ran to the end.
     """
     log = _run_night(tmp_path, 1)
 
@@ -332,10 +330,10 @@ def test_a_failing_chain_still_reaches_the_end_of_the_night(tmp_path: Path) -> N
 
 
 def test_an_ordinary_failure_never_falls_back(tmp_path: Path) -> None:
-    """LE test qui compte. Un rc=1 ne prouve PAS que rien n'a été écrit, donc
-    rejouer la phase ailleurs pourrait écrire deux fois. La chaîne doit rester
-    immobile — et le mode de panne serait invisible, la nuit finissant verte
-    avec des doublons dans le corpus."""
+    """THE test that matters. An rc=1 does NOT prove nothing was written, so
+    replaying the phase elsewhere could write twice. The chain must stay still —
+    and the failure mode would be invisible, the night ending green with
+    duplicates in the corpus."""
     log = _run_night(tmp_path, 1)
 
     assert "FALLBACK" not in log, log
@@ -343,7 +341,7 @@ def test_an_ordinary_failure_never_falls_back(tmp_path: Path) -> None:
 
 
 def test_a_timeout_never_falls_back(tmp_path: Path) -> None:
-    """Un timeout prouve encore moins : la phase a pu écrire puis se bloquer."""
+    """A timeout proves even less: the phase may have written then hung."""
     log = _run_night(tmp_path, 124)
 
     assert "FALLBACK" not in log, log
@@ -353,24 +351,23 @@ def test_a_timeout_never_falls_back(tmp_path: Path) -> None:
 def test_a_capability_configuration_error_must_not_advance_the_chain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Une config cassée n'est pas une panne de provider.
+    """A broken config is not a provider outage.
 
-    Les trois refus fail-closed du runner — URL non loopback, profil de projet
-    absent, drapeau d'enforcement invalide — rendent 1 et NON le code de
-    bascule. C'est délibéré : le maillon suivant heurterait exactement la même
-    configuration, donc basculer ne réparerait rien et ne ferait que consommer
-    un second abonnement avant d'échouer pareil. Pire, en masquant l'erreur
-    derrière une deuxième tentative, cela rendrait la cause plus dure à lire au
-    matin.
+    The runner's three fail-closed refusals — non-loopback URL, missing project
+    profile, invalid enforcement flag — return 1 and NOT the switch code. That is
+    deliberate: the next link would hit exactly the same configuration, so
+    switching would repair nothing and would merely consume a second subscription
+    before failing the same way. Worse, by hiding the error behind a second
+    attempt, it would make the cause harder to read in the morning.
 
-    Ce test épingle ce choix, parce que rien dans le code ne le crie : les deux
-    chemins d'échec se ressemblent, et il serait naturel de les uniformiser.
+    This test pins that choice, because nothing in the code shouts it: the two
+    failure paths look alike, and it would be natural to make them uniform.
     """
     codex = _codex()
     stderr_log = tmp_path / "scan.stderr.log"
-    # Sans enforcement le chemin d'erreur de configuration n'existe pas : le
-    # runner tenterait vraiment de lancer le binaire et rendrait le code de
-    # bascule pour une tout autre raison (« codex n'a pas démarré »).
+    # Without enforcement the configuration-error path does not exist: the runner
+    # would really try to launch the binary and would return the switch code for
+    # an entirely different reason ("codex did not start").
     registry = {
         f"brain-v42:{phase}": {"active": f"{phase}-token", "accepted": []}
         for phase in ("scan", "clean", "connect", "synth", "promote", "reorg")
@@ -396,7 +393,7 @@ def test_a_capability_configuration_error_must_not_advance_the_chain(
     assert return_code != SAFE_TO_FALL_BACK
 
 
-# --- Le maillon agy dans la chaîne ------------------------------------------
+# --- The agy link in the chain ----------------------------------------------
 
 
 def test_agy_is_a_supported_provider_in_the_chain() -> None:
@@ -407,14 +404,14 @@ def test_agy_is_a_supported_provider_in_the_chain() -> None:
 
 
 def test_the_agy_link_uses_gemini_models_not_claude_ones() -> None:
-    """agy expose aussi claude-sonnet-4-6 et claude-opus-4-6-thinking.
+    """agy also exposes claude-sonnet-4-6 and claude-opus-4-6-thinking.
 
-    Les choisir annulerait l'intérêt du maillon : si Anthropic tombe, ces
-    modèles tombent avec, et la chaîne aurait deux maillons corrélés déguisés
-    en trois. La diversité recherchée est celle du FOURNISSEUR.
+    Choosing them would cancel the link's point: if Anthropic goes down, those
+    models go down with it, and the chain would have two correlated links
+    disguised as three. The diversity sought is the PROVIDER's.
     """
-    # Sur les LIGNES D'AFFECTATION seulement : la prose du script nomme
-    # légitimement les modèles écartés pour expliquer POURQUOI ils le sont.
+    # On the ASSIGNMENT LINES only: the script's prose legitimately names the
+    # discarded models to explain WHY they are discarded.
     assignments = [
         line
         for line in _dream_sh().splitlines()
@@ -428,12 +425,12 @@ def test_the_agy_link_uses_gemini_models_not_claude_ones() -> None:
 
 
 def test_every_rail_persists_its_dream_run_row() -> None:
-    """Trois rails, trois parsers. Aucun ne doit jouer une phase sans la mesurer.
+    """Three rails, three parsers. None may play a phase without measuring it.
 
-    Le rail agy en a été privé quelques heures, et ce trou a suffi à dicter un
-    ordre de chaîne absurde : claude placé avant agy pour préserver les lignes
-    dream_runs, donc l'abonnement qu'on voulait épargner mis en première ligne.
-    Une lacune d'outillage ne doit pas décider d'un arbitrage de coût.
+    The agy rail was deprived of one for a few hours, and that gap was enough to
+    dictate an absurd chain order: claude placed before agy to preserve the
+    dream_runs rows, hence the subscription we wanted to spare put in the front
+    line. A tooling gap must not decide a cost trade-off.
     """
     content = _dream_sh()
 
@@ -447,14 +444,14 @@ def test_every_rail_persists_its_dream_run_row() -> None:
 
 
 def test_the_agy_preflight_proves_its_tool_guard_before_the_night() -> None:
-    """Sans garde prouvée, une phase agy a un shell libre. Le préflight doit
-    donc la SONDER, pas constater son fichier — et retirer le maillon sinon."""
+    """Without a proven guard, an agy phase has a free shell. The preflight must
+    therefore PROBE it, not merely note its file — and drop the link otherwise."""
     content = _dream_sh()
 
-    # Le préflight est générique depuis la mise en chaîne : il boucle sur les
-    # providers et étiquette ses messages. Ce qui compte n'est donc pas un
-    # libellé mais que le maillon agy soit BRANCHÉ dessus, et qu'il refuse de
-    # partir sans enforcement — sans lui, sa garde n'est jamais sondée.
+    # The preflight has been generic since the chain was introduced: it loops over
+    # the providers and labels its messages. What matters is therefore not a label
+    # but that the agy link is WIRED into it, and that it refuses to start without
+    # enforcement — without which its guard is never probed.
     assert 'agy)    binary="$BRAIN_DREAM_AGY_BIN"' in content
     assert "scripts.dream.agy_runner" in content
     assert 'provider" == "agy" && "$BRAIN_DREAM_CAPABILITY_ENFORCEMENT" != "true"' in content
