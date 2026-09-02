@@ -132,13 +132,31 @@ if TYPE_CHECKING:
 # production, until the operator applies the migration. That is the pin working
 # as designed, not a regression, and it is the same regime 049 went through.
 #
+# Bumped to 051 after its own review, and this one is genuinely short. 051 adds
+# `brain_session_checkpoints`: ONE new table, ONE trigger, and both are on that
+# table alone. Measured on the two modules rather than assumed — the executed
+# surface of this repair is `indexed_plans` (43 mentions), `project_contexts`
+# (19) and `indexed_plan_chunks` (13); `brain_sessions` appears four times and
+# every one of them is inside a COMMENT of a previous review entry, never in a
+# statement. `brain_session_checkpoints` appears nowhere at all.
+#
+# So neither the append-only trigger (BEFORE UPDATE OR DELETE, on the new table)
+# nor the FK's `ON DELETE RESTRICT` (pointing AT `brain_sessions`, from which this
+# file deletes nothing) can fire on anything this repair executes. The table is
+# also new, so no row of it can pre-exist a run. INERT.
+#
+# The consequence 050 named applies again and is worth repeating rather than
+# assuming inherited: bumping this constant makes the repair REFUSE to run against
+# production while production is still at 049. That is the pin working, not a
+# regression — and it now spans TWO unapplied revisions instead of one.
+#
 # The review is written down even when it is short: that is the rule, and a
 # missing review reads exactly like a review that was done. Since ticket
 # 6cc34303 that rule is enforced rather than trusted:
 # `tests/unit/test_plan_index_repair_review_block.py` derives the reviewed set
 # from this block and fails if the constant below outruns it, or if a revision
 # is skipped between the first entry and the head.
-_REQUIRED_ALEMBIC_HEAD = "050"
+_REQUIRED_ALEMBIC_HEAD = "051"
 
 
 class RepairStore:
