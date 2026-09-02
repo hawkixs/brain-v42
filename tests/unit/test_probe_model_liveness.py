@@ -1,23 +1,22 @@
-"""Sonde de vivacité des modèles configurés — item (3) du ticket 911bb6f5.
+"""Liveness probe for the configured models — item (3) of ticket 911bb6f5.
 
-Ce ticket avait délibérément différé cet item, avec une condition explicite :
-« À rouvrir si un deuxième EOL passe. » Il est passé. Le remplaçant choisi le
-2026-08-05 après canary — `deepseek-ai/deepseek-v4-flash` — a atteint sa fin de
-vie le 2026-08-07, deux jours plus tard, et la nuit du 2026-08-10 est repartie
-sur son secours 8B. Le ticket 2fad6cc5 de red-arena le signale dans les mêmes
-termes.
+That ticket had deliberately deferred this item, with an explicit condition: "To
+be reopened if a second EOL happens." It happened. The replacement chosen on
+2026-08-05 after a canary — `deepseek-ai/deepseek-v4-flash` — reached its end of
+life on 2026-08-07, two days later, and the night of 2026-08-10 fell back to its
+8B fallback. red-arena's ticket 2fad6cc5 reports it in the same terms.
 
-La machinerie construite le 05 a FONCTIONNÉ : la ligne `DÉGRADÉ` est bien dans le
-rapport et `dream_runs.model` est renseigné. Le défaut restant n'est plus le
-silence, c'est la LATENCE — on apprend la mort d'un modèle en lisant le rapport
-du lendemain matin, après une nuit servie en dégradé sur dix projets.
+The machinery built on the 5th WORKED: the `DÉGRADÉ` line is indeed in the report
+and `dream_runs.model` is populated. The remaining defect is no longer silence, it
+is LATENCY — a model's death is learned by reading the next morning's report,
+after a night served degraded across ten projects.
 
-Un 410 n'est pas une erreur transitoire : aucun retry ne le réparera jamais. Une
-sonde hors run permet de le savoir AVANT la nuit, et de choisir un remplaçant sur
-mesure plutôt que sur la fiche du fournisseur.
+A 410 is not a transient error: no retry will ever repair it. An out-of-run probe
+makes it knowable BEFORE the night, and lets a replacement be chosen by
+measurement rather than from the provider's datasheet.
 
-Cette sonde n'est câblée à aucun run : c'est un outil d'opérateur, et le ticket
-notait que le canary d'origine vivait dans `/tmp`.
+This probe is wired to no run: it is an operator's tool, and the ticket noted that
+the original canary lived in `/tmp`.
 """
 
 from __future__ import annotations
@@ -36,11 +35,11 @@ from scripts.probe_model_liveness import (
 
 class TestConfiguredModels:
     def test_the_inventory_comes_from_the_modules_that_use_them(self) -> None:
-        """Retaper la liste serait rejouer le défaut : deux vérités qui dérivent.
+        """Retyping the list would replay the defect: two truths that drift apart.
 
-        Un modèle remplacé dans `roadmap_curate` et oublié ici produirait une
-        sonde verte sur un modèle que plus personne n'appelle, pendant que le
-        vrai primaire meurt sans être vu.
+        A model replaced in `roadmap_curate` and forgotten here would produce a
+        green probe on a model nobody calls any more, while the real primary dies
+        unseen.
         """
         from scripts.roadmap_curate import DEFAULT_ROADMAP_MODEL
 
@@ -49,17 +48,17 @@ class TestConfiguredModels:
         assert DEFAULT_ROADMAP_MODEL in {entry.model for entry in models}
 
     def test_every_entry_names_where_it_is_used(self) -> None:
-        """Un verdict sans usage n'est pas actionnable : « lequel je remplace ? »."""
+        """A verdict with no usage is not actionable: "which one do I replace?"."""
         for entry in configured_models():
             assert entry.used_by, f"{entry.model} ne dit pas qui l'utilise"
 
     def test_no_consumer_of_a_shared_model_is_invisible(self) -> None:
-        """`extract` et `domain_backfill` partagent UNE constante.
+        """`extract` and `domain_backfill` share ONE constant.
 
-        Elle est donc listée une seule fois — une seule valeur à remplacer — mais
-        son entrée doit nommer les DEUX consommateurs. Sinon un opérateur qui lit
-        « domain_backfill » croit ne casser qu'un backfill en changeant la valeur,
-        alors qu'il déplace aussi la phase EXTRACT de la nuit.
+        It is therefore listed once — a single value to replace — but its entry must
+        name BOTH consumers. Otherwise an operator reading "domain_backfill" believes
+        they are only breaking a backfill by changing the value, when they are also
+        moving the night's EXTRACT phase.
         """
         entries = configured_models()
         shared = [e for e in entries if "extract" in e.used_by]
@@ -70,16 +69,15 @@ class TestConfiguredModels:
         )
 
     def test_the_extract_fallback_is_probed_as_its_own_site(self) -> None:
-        """Un maillon DORMANT meurt sans signal : la nuit ne sonde que ce qu'elle
-        exerce.
+        """A DORMANT link dies without a signal: the night only probes what it exercises.
 
-        Le secours d'extract n'est appelé que quand le primaire tombe. Tant qu'il
-        était ÉGAL au primaire (promotion du 2026-08-21), la sonde le couvrait par
-        coïncidence ; dès qu'il diverge, il redevient invisible — exactement le
-        mode de panne mesuré la nuit du 2026-08-28, où le 410 du secours roadmap
-        n'a été vu qu'au milieu de la nuit. L'inventaire doit donc nommer le SITE
-        `ticket_extract.DEFAULT_EXTRACT_FALLBACK_MODEL`, pas espérer que sa valeur
-        recoupe celle d'une autre entrée.
+        Extract's fallback is only called when the primary falls. As long as it was
+        EQUAL to the primary (the 2026-08-21 promotion), the probe covered it by
+        coincidence; as soon as it diverges, it becomes invisible again — exactly the
+        failure mode measured on the night of 2026-08-28, where the roadmap
+        fallback's 410 was only seen mid-night. The inventory must therefore name the
+        SITE `ticket_extract.DEFAULT_EXTRACT_FALLBACK_MODEL`, not hope that its value
+        coincides with another entry's.
         """
         from scripts.ticket_extract import DEFAULT_EXTRACT_FALLBACK_MODEL
 
@@ -90,13 +88,12 @@ class TestConfiguredModels:
 
 
 class TestEnvPrecedence:
-    """La sonde doit résoudre comme les SITES résolvent : env compris.
+    """The probe must resolve the way the SITES resolve: env included.
 
-    Son unité systemd charge nvidia.env (EnvironmentFile) — exactement le
-    fichier où vivent les overrides. Une sonde qui lirait les seules
-    constantes rendrait un vert sur un modèle que plus personne n'appelle,
-    pendant que l'override réellement servi meurt sans être vu — le défaut
-    fondateur de l'inventaire, réintroduit par la porte env.
+    Its systemd unit loads nvidia.env (EnvironmentFile) — exactly the file where
+    the overrides live. A probe reading the constants alone would return a green on
+    a model nobody calls any more, while the override actually served dies unseen —
+    the inventory's founding defect, reintroduced through the env door.
     """
 
     def test_a_roadmap_fallback_override_is_probed_instead_of_the_constant(
@@ -136,14 +133,13 @@ class TestEnvPrecedence:
 
 
 class TestExitCode:
-    """OTHER n'est pas un vert : « je ne sais pas » doit se voir.
+    """OTHER is not a green: "I do not know" must be visible.
 
-    Mesuré le 2026-08-29 : gpt-oss-120b — le maillon WET dormant, celui-là
-    même que la sonde hebdomadaire existe pour surveiller — répond en 75 s
-    en queue froide, au-delà du timeout de sonde. Un OTHER qui sort en 0
-    rendrait l'unité verte chaque lundi sur le seul site qu'elle ne peut
-    structurellement pas mesurer. GONE garde son code (1) et le domine :
-    un modèle MORT est plus urgent qu'un modèle illisible.
+    Measured on 2026-08-29: gpt-oss-120b — the dormant WET link, the very one the
+    weekly probe exists to watch — answers in 75 s from a cold queue, beyond the
+    probe timeout. An OTHER exiting 0 would make the unit green every Monday on the
+    one site it structurally cannot measure. GONE keeps its code (1) and dominates
+    it: a DEAD model is more urgent than an unreadable one.
     """
 
     @staticmethod
@@ -170,7 +166,7 @@ class TestExitCode:
 
 class TestClassify:
     def test_410_is_gone_and_never_transient(self) -> None:
-        """C'est la distinction qui vaut la sonde : aucun retry ne répare un EOL."""
+        """This is the distinction the probe is worth: no retry repairs an EOL."""
         assert classify_status(410) is Verdict.GONE
 
     def test_200_is_alive(self) -> None:
@@ -178,13 +174,13 @@ class TestClassify:
 
     @pytest.mark.parametrize("status", [429, 500, 502, 503, 504, 529])
     def test_overload_is_busy_not_gone(self, status: int) -> None:
-        """529 compris : il manquait à RETRYABLE_STATUS et renvoyait une nuit entière
-        sur le secours (commit 0eda7e18). Le confondre avec un EOL ferait remplacer
-        un modèle parfaitement vivant."""
+        """529 included: it was missing from RETRYABLE_STATUS and sent a whole night
+        onto the fallback (commit 0eda7e18). Confusing it with an EOL would have a
+        perfectly alive model replaced."""
         assert classify_status(status) is Verdict.BUSY
 
     def test_an_unknown_status_is_never_silently_alive(self) -> None:
-        """Fail-closed : un 401 mal lu ferait conclure « tous les modèles sont morts »."""
+        """Fail-closed: a misread 401 would lead to concluding "every model is dead"."""
         assert classify_status(401) is Verdict.OTHER
 
 
@@ -208,18 +204,17 @@ class TestProbe:
         results = probe_models(entries, client=self._client(statuses), api_key="k")
 
         gone = [r for r in results if r.verdict is Verdict.GONE]
-        # Un nom partagé par plusieurs constantes rend UNE ligne PAR SITE : c'est
-        # le site qui dit quelle constante remplacer, pas le nom (depuis le
-        # 2026-08-29, mistral-nemotron est à la fois primaire DRY roadmap et
-        # secours extract).
+        # A name shared by several constants returns ONE line PER SITE: it is the
+        # site that says which constant to replace, not the name (since 2026-08-29,
+        # mistral-nemotron is both the roadmap DRY primary and extract's fallback).
         assert [r.entry.model for r in gone] == [e.model for e in entries if e.model == dead]
         assert all(r.entry.used_by for r in gone)
 
     def test_the_probe_never_writes_anything(self) -> None:
-        """Lecture seule : le canary d'origine ne persistait rien, celui-ci non plus.
+        """Read-only: the original canary persisted nothing, nor does this one.
 
-        `max_tokens` minimal et aucune persistance — une sonde qui écrirait dans
-        la base ferait de la vérification un effet de bord.
+        A minimal `max_tokens` and no persistence — a probe writing to the database
+        would make the verification a side effect.
         """
         seen: list[dict] = []
 
@@ -238,7 +233,7 @@ class TestProbe:
             assert body["max_tokens"] <= 8, "la sonde consomme plus que nécessaire"
 
     def test_the_api_key_never_reaches_the_result(self) -> None:
-        """Un verdict imprimé ou journalisé ne doit pas transporter le secret."""
+        """A printed or logged verdict must not carry the secret."""
         secret = "nvapi-SENTINEL-DO-NOT-LEAK"
         statuses = {entry.model: 200 for entry in configured_models()}
 

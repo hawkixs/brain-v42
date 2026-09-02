@@ -1,24 +1,24 @@
-"""Bearer statique du shim embedding — ticket 530d796a, réduit au point (a).
+"""Static bearer for the embedding shim — ticket 530d796a, reduced to point (a).
 
-Le shim `:8003` ne portait AUCUNE authentification applicative : ce qui le
-ferme est le bind loopback, pas un jeton, et un client posé sur `brain-net`
-l'atteint sans rien présenter (mesuré le 2026-08-23, rapport
-ca-verite-doc-securite). Les deux conteneurs `auto-discord` (7 pipelines
-Dagster horaires) sont ses clients vivants : les casser est interdit.
+The `:8003` shim carried NO application authentication: what closes it is the
+loopback bind, not a token, and a client placed on `brain-net` reaches it without
+presenting anything (measured on 2026-08-23, report ca-verite-doc-securite). The
+two `auto-discord` containers (7 hourly Dagster pipelines) are its live clients:
+breaking them is forbidden.
 
-D'où les DEUX modes, et l'ordre de déploiement épinglé au ticket :
-- OPTIONNEL (livré par défaut dès qu'un secret est configuré) : un header
-  absent ou faux est ACCEPTÉ mais JOURNALISÉ — la phase d'observation qui
-  recense les clients sans jeton sans en casser un seul ;
-- ARMÉ (`required`) : 401 sauf sur les endpoints de santé — un geste
-  opérateur SÉPARÉ, à ne prendre qu'après que le client auto-discord
-  (ticket 9ef5c69d) porte son bearer.
+Hence the TWO modes, and the deployment order pinned in the ticket:
+- OPTIONAL (shipped by default as soon as a secret is configured): an absent or
+  wrong header is ACCEPTED but LOGGED — the observation phase that surveys the
+  clients without a token without breaking a single one;
+- ARMED (`required`): 401 except on the health endpoints — a SEPARATE operator
+  gesture, to be taken only after the auto-discord client (ticket 9ef5c69d)
+  carries its bearer.
 
-Sans secret configuré, `create_app` garde exactement le contrat actuel :
-le reste de la suite (test_embedding_shim.py) est le témoin.
+With no secret configured, `create_app` keeps exactly the current contract: the
+rest of the suite (test_embedding_shim.py) is the witness.
 
-Patron : src/brain_v42/codex_gateway/auth.py — secret fichier 0600,
-comparaison en temps constant, jamais le jeton dans un log.
+Template: src/brain_v42/codex_gateway/auth.py — 0600 secret file, constant-time
+comparison, never the token in a log.
 """
 
 from __future__ import annotations
@@ -61,9 +61,9 @@ class _FakeRerankBackend:
         return [0.0 for _ in candidates]
 
 
-#: Un client RÉSEAU par défaut : ASGITransport présente ("127.0.0.1", 123) si on
-#: ne dit rien, et l'exemption loopback ferait passer tous les tests du garde
-#: sans jamais l'exercer — un faux vert structurel.
+#: A NETWORK client by default: ASGITransport presents ("127.0.0.1", 123) if
+#: nothing is said, and the loopback exemption would pass every guard test without
+#: ever exercising it — a structural false green.
 NETWORK_CLIENT = ("192.168.80.9", 51000)
 LOOPBACK_CLIENT = ("127.0.0.1", 40001)
 
@@ -96,7 +96,7 @@ class TestOptionalMode:
     async def test_a_missing_bearer_is_accepted_and_logged(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Le mode optionnel observe, il ne casse jamais un client vivant."""
+        """The optional mode observes, it never breaks a live client."""
         async with _client(_guard(required=False)) as client:
             with caplog.at_level(logging.WARNING, logger="shim_app"):
                 response = await client.post("/embed", json={"texts": ["a"]})
@@ -123,7 +123,7 @@ class TestOptionalMode:
     async def test_a_valid_bearer_is_accepted_and_silent(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Un client déjà migré ne doit pas polluer le journal d'observation."""
+        """An already-migrated client must not pollute the observation log."""
         async with _client(_guard(required=False)) as client:
             with caplog.at_level(logging.WARNING, logger="shim_app"):
                 response = await client.post("/embed", json={"texts": ["a"]}, headers=_auth(TOKEN))
@@ -135,7 +135,7 @@ class TestOptionalMode:
     async def test_the_log_never_carries_the_presented_value(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Journaliser le jeton présenté ferait du log un canal d'exfiltration."""
+        """Logging the presented token would make the log an exfiltration channel."""
         secret_attempt = "nvapi-SENTINEL-DO-NOT-LEAK"
         async with _client(_guard(required=False)) as client:
             with caplog.at_level(logging.WARNING, logger="shim_app"):
@@ -177,7 +177,7 @@ class TestRequiredMode:
 
     @pytest.mark.asyncio
     async def test_health_endpoints_stay_open(self) -> None:
-        """Armer ne doit casser ni le watchdog systemd ni RerankerClient.is_available."""
+        """Arming must break neither the systemd watchdog nor RerankerClient.is_available."""
         async with _client(_guard(required=True)) as client:
             healthz = await client.get("/healthz")
             health = await client.get("/health")
@@ -187,7 +187,7 @@ class TestRequiredMode:
 
     @pytest.mark.asyncio
     async def test_healthz_still_reports_degraded_upstream(self) -> None:
-        """L'exemption laisse passer la requête, elle n'invente pas un vert."""
+        """The exemption lets the request through, it does not invent a green."""
         async with _client(_guard(required=True), healthy=False) as client:
             response = await client.get("/healthz")
 
@@ -195,7 +195,7 @@ class TestRequiredMode:
 
     @pytest.mark.asyncio
     async def test_info_route_is_guarded_too(self) -> None:
-        """Seuls les endpoints de santé sont exemptés — GET / décrit le runtime."""
+        """Only the health endpoints are exempt — GET / describes the runtime."""
         async with _client(_guard(required=True)) as client:
             response = await client.get("/")
 
@@ -215,7 +215,7 @@ class TestTokenFile:
         assert load_bearer_token(token_file) == TOKEN.encode()
 
     def test_a_group_readable_file_is_refused(self, tmp_path: Path) -> None:
-        """Un secret lisible au-delà du propriétaire n'est pas un secret (0600)."""
+        """A secret readable beyond its owner is not a secret (0600)."""
         token_file = self._write(tmp_path, TOKEN, mode=0o640)
 
         with pytest.raises(ValueError, match="0600"):
@@ -228,7 +228,7 @@ class TestTokenFile:
             load_bearer_token(token_file)
 
     def test_a_placeholder_token_is_refused(self, tmp_path: Path) -> None:
-        """Même garde que codex_gateway : un REPLACE_ME copié-collé ne compte pas."""
+        """Same guard as codex_gateway: a copy-pasted REPLACE_ME does not count."""
         token_file = self._write(tmp_path, "REPLACE_WITH_A_REAL_SECRET_OF_32_BYTES_OK")
 
         with pytest.raises(ValueError, match="REPLACE_"):
@@ -237,11 +237,11 @@ class TestTokenFile:
 
 class TestEnvWiring:
     def test_no_env_means_no_guard(self) -> None:
-        """Livré fermé : sans configuration, le contrat actuel ne bouge pas."""
+        """Shipped closed: with no configuration, the current contract does not move."""
         assert bearer_from_env({}) is None
 
     def test_token_file_alone_yields_the_optional_mode(self, tmp_path: Path) -> None:
-        """Le défaut est OBSERVER, jamais refuser : l'armement est un mot à changer."""
+        """The default is OBSERVE, never refuse: arming is one word to change."""
         token_file = tmp_path / "t"
         token_file.write_text(TOKEN)
         token_file.chmod(0o600)
@@ -264,7 +264,7 @@ class TestEnvWiring:
         assert guard.required is True
 
     def test_an_unknown_mode_fails_closed_at_startup(self, tmp_path: Path) -> None:
-        """Une faute de frappe dans le mode doit tuer le démarrage, pas ouvrir."""
+        """A typo in the mode must kill the startup, not open the door."""
         token_file = tmp_path / "t"
         token_file.write_text(TOKEN)
         token_file.chmod(0o600)
@@ -275,22 +275,22 @@ class TestEnvWiring:
             )
 
     def test_a_mode_without_token_file_fails_closed(self) -> None:
-        """Un mode posé sans secret est une configuration menteuse, pas un défaut."""
+        """A mode set without a secret is a lying configuration, not a default."""
         with pytest.raises(ValueError, match="SHIM_BEARER_TOKEN_FILE"):
             bearer_from_env({"SHIM_BEARER_MODE": "required"})
 
 
 class TestLoopbackExemption:
-    """L'intérieur du netns est DANS la frontière de confiance du processus.
+    """The inside of the netns is WITHIN the process's trust boundary.
 
-    Hypothèse de confiance, explicite : seul un processus du namespace réseau
-    du conteneur peut sourcer 127.0.0.1 — le noyau refuse les paquets à source
-    loopback arrivant par une interface non-lo (filtrage martien,
-    route_localnet=0), et les connexions publiées par Docker arrivent avec
-    l'adresse de la passerelle bridge, jamais 127.0.0.1. Quiconque peut déjà
-    exécuter dans le conteneur possède le processus : lui demander un bearer
-    ne protège rien. Le healthcheck compose (POST /embed sans Authorization,
-    exécuté dans le conteneur) vit exactement là.
+    An explicit trust assumption: only a process in the container's network
+    namespace can source 127.0.0.1 — the kernel refuses packets with a loopback
+    source arriving through a non-lo interface (martian filtering,
+    route_localnet=0), and connections published by Docker arrive with the bridge
+    gateway's address, never 127.0.0.1. Anyone who can already execute inside the
+    container owns the process: asking them for a bearer protects nothing. The
+    compose healthcheck (POST /embed with no Authorization, run inside the
+    container) lives exactly there.
     """
 
     @pytest.mark.asyncio
@@ -304,7 +304,7 @@ class TestLoopbackExemption:
     async def test_a_loopback_client_is_not_counted_by_the_census(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Le healthcheck tire toutes les 60 s : le compter noierait le recensement."""
+        """The healthcheck fires every 60 s: counting it would drown the survey."""
         async with _client(_guard(required=False), peer=LOOPBACK_CLIENT) as client:
             with caplog.at_level(logging.WARNING, logger="shim_app"):
                 await client.post("/embed", json={"texts": ["a"]})
@@ -313,13 +313,13 @@ class TestLoopbackExemption:
 
 
 class TestComposeHealthcheckContract:
-    """Le SEUL prober de prod est le healthcheck compose — épinglé depuis le YAML.
+    """The ONLY production prober is the compose healthcheck — pinned from the YAML.
 
-    La review de PR 43 a reproduit le mode de panne : en mode armé, ce POST
-    /embed sans Authorization sortait en 401 → conteneur unhealthy à vie,
-    pendant que le canari /healthz restait vert. Le test rejoue la requête
-    RÉELLE (URL, corps et absence d'Authorization extraits du compose, jamais
-    recopiés) contre l'app en mode armé ET en mode sans-secret.
+    The PR 43 review reproduced the failure mode: in armed mode, this POST /embed
+    with no Authorization returned 401 → a container unhealthy for life, while the
+    /healthz canary stayed green. The test replays the REAL request (URL, body and
+    absence of Authorization extracted from the compose, never retyped) against the
+    app in armed mode AND in no-secret mode.
     """
 
     @staticmethod
@@ -352,7 +352,7 @@ class TestComposeHealthcheckContract:
             response = await client.post(path, json=body)
 
         assert response.status_code == 200
-        # Le script du compose vérifie littéralement r.read(2) == b'[['.
+        # The compose's script literally checks r.read(2) == b'[['.
         assert response.content[:2] == b"[["
 
     @pytest.mark.asyncio
@@ -375,11 +375,10 @@ class TestComposeHealthcheckContract:
 
 
 class TestCensusIdentification:
-    """Un recensement qui ne nomme personne ne recense rien.
+    """A survey that names nobody surveys nothing.
 
-    Reproduit par la review : deux clients distincts rendaient deux lignes
-    octet pour octet identiques — impossible de savoir QUI migrer avant
-    d'armer.
+    Reproduced by the review: two distinct clients returned two byte-identical
+    lines — impossible to know WHO to migrate before arming.
     """
 
     @pytest.mark.asyncio
@@ -415,12 +414,11 @@ class TestCensusIdentification:
 
     @pytest.mark.asyncio
     async def test_an_unknown_path_is_never_logged(self, caplog: pytest.LogCaptureFixture) -> None:
-        """Le chemin est contrôlé par l'appelant : un chemin inconnu journalisé
-        brut est un canal d'injection (%0A percent-décodé = vraie nouvelle
-        ligne, reproduit par la review). Les chemins inconnus rendent leur 404
-        (ou 401 en mode armé) sans UNE ligne de recensement — le recensement ne
-        connaît que les routes réelles du shim, qui ne contiennent ni retour
-        chariot ni caractère de contrôle.
+        """The path is controlled by the caller: an unknown path logged raw is an
+        injection channel (a percent-decoded %0A = a real newline, reproduced by the
+        review). Unknown paths return their 404 (or 401 in armed mode) without a
+        SINGLE survey line — the survey only knows the shim's real routes, which
+        contain neither carriage return nor control character.
         """
         async with _client(_guard(required=False)) as client:
             with caplog.at_level(logging.WARNING, logger="shim_app"):
@@ -431,8 +429,8 @@ class TestCensusIdentification:
 
 
 class TestBuildAppWiring:
-    """`bearer=bearer_from_env(...)` dans build_app peut disparaître suite verte :
-    ces tests importent le VRAI build_app et prouvent le câblage."""
+    """`bearer=bearer_from_env(...)` in build_app can disappear with the suite green:
+    these tests import the REAL build_app and prove the wiring."""
 
     @staticmethod
     def _built_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
@@ -461,10 +459,10 @@ class TestBuildAppWiring:
     async def test_the_real_app_still_passes_with_the_bearer(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Témoin négatif du câblage : 401 partout serait aussi un garde cassé.
+        """Negative witness for the wiring: 401 everywhere would also be a broken guard.
 
-        /embed vide court-circuite avant tout appel backend — le vrai
-        LlamaEmbedBackend n'est jamais touché.
+        An empty /embed short-circuits before any backend call — the real
+        LlamaEmbedBackend is never touched.
         """
         app = self._built_app(monkeypatch, tmp_path)
 

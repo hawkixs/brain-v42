@@ -1,28 +1,25 @@
-"""Contrat schéma ↔ modèle : ce que le decay lit en base doit arriver au modèle.
+"""Schema ↔ model contract: what the decay reads from the database must reach the model.
 
-Ce test existe à cause d'un défaut mesuré le 2026-08-22, et il est écrit pour
-rendre sa CLASSE impossible, pas pour épingler son instance.
+This test exists because of a defect measured on 2026-08-22, and it is written to
+make its CLASS impossible, not to pin its instance.
 
-Le défaut : `decay_human_signal_enabled` substituait
-`getattr(entity, "access_count_human", 0)` aux compteurs machine, sur des
-modèles Pydantic qui ne déclaraient pas ce champ. Le `getattr` tombait donc
-toujours sur son défaut. Le drapeau n'était pas un interrupteur entre signal
-machine et signal humain : c'était un interrupteur entre signal machine et
-**RIEN** — pendant que `DecayFlusher` lisait, lui, les vraies colonnes en
-SQLAlchemy Core. L'armer aurait fait diverger les deux chemins sur la même
-ligne.
+The defect: `decay_human_signal_enabled` substituted
+`getattr(entity, "access_count_human", 0)` for the machine counters, on Pydantic
+models that did not declare that field. The `getattr` therefore always fell back
+on its default. The flag was not a switch between machine signal and human signal:
+it was a switch between machine signal and **NOTHING** — while `DecayFlusher`, for
+its part, read the real columns in SQLAlchemy Core. Arming it would have made the
+two paths diverge on the same row.
 
-**Pourquoi ce test-ci et pas un test de comportement.** La suite portait déjà
-`test_decay_human_signal.py`, qui fabrique un `SimpleNamespace` muni des deux
-attributs puis recopie la logique de production dans le corps du test. Il prouve
-la FORME du code et ne peut pas voir l'ARRIVÉE de la donnée : c'est lui qui a
-laissé passer ce défaut tout le chantier. La preuve de bout en bout vit
-désormais en intégration
-(`tests/integration/db/test_decay_human_signal_hydration.py`, contre de vraies
-lignes). Ce test-ci est le filet qui tourne SANS base, en CI : il dérive les
-noms de colonnes des vrais objets `Table` et des vraies listes du flusher — donc
-il ne peut pas se tromper en même temps qu'eux, ce qui était exactement le mode
-de panne.
+**Why this test and not a behaviour test.** The suite already carried
+`test_decay_human_signal.py`, which builds a `SimpleNamespace` equipped with both
+attributes then copies the production logic into the test body. It proves the
+code's SHAPE and cannot see the data's ARRIVAL: it is the one that let this defect
+through for the whole workstream. The end-to-end proof now lives in integration
+(`tests/integration/db/test_decay_human_signal_hydration.py`, against real rows).
+This test is the net that runs WITHOUT a database, in CI: it derives the column
+names from the real `Table` objects and the flusher's real lists — so it cannot be
+wrong at the same time as them, which was exactly the failure mode.
 """
 
 from __future__ import annotations
@@ -46,16 +43,15 @@ from brain_v42.models.learning import Learning
 from brain_v42.models.runbook import Runbook
 from brain_v42.models.snippet import Snippet
 
-#: Les colonnes du signal humain (migrations 041 et 044). Elles basculent
-#: ENSEMBLE : `access_count` pèse 0,2 dans la formule, `last_accessed_at` 0,3 —
-#: n'en porter qu'une répare 0,2 des 0,5 pilotés par la lecture et donne
-#: l'illusion que le decay est réparé.
+#: The human-signal columns (migrations 041 and 044). They switch TOGETHER:
+#: `access_count` weighs 0.2 in the formula, `last_accessed_at` 0.3 — carrying only
+#: one repairs 0.2 of the 0.5 driven by reads and gives the illusion that the decay
+#: is repaired.
 _HUMAN_COLUMNS = ("access_count_human", "last_accessed_at_human")
 
-#: Les six tables suivies par le decay, chacune avec le modèle que les dépôts
-#: hydratent depuis elle. `indexed_plans` est l'asymétrique : ses chunks n'ont
-#: pas de colonnes `_human`, donc le signal humain d'un plan ne peut venir que
-#: du parent.
+#: The six tables tracked by the decay, each with the model the repositories
+#: hydrate from it. `indexed_plans` is the asymmetric one: its chunks have no
+#: `_human` columns, so a plan's human signal can only come from the parent.
 _TABLE_TO_MODEL = (
     (decisions, Decision),
     (learnings, Learning),
@@ -72,11 +68,11 @@ _TABLE_TO_MODEL = (
     ids=[table.name for table, _ in _TABLE_TO_MODEL],
 )
 def test_every_human_column_has_a_model_field(table, model) -> None:
-    """Ce que la base porte, le modèle doit le déclarer — sinon Pydantic le jette.
+    """What the database carries, the model must declare — otherwise Pydantic drops it.
 
-    Les projections de recherche renvoyaient DÉJÀ ces colonnes
-    (`_search_columns()` n'exclut que `embedding` et `search_vector`) : la donnée
-    arrivait dans la ligne et se perdait au passage du modèle, faute de champ.
+    The search projections ALREADY returned these columns (`_search_columns()` only
+    excludes `embedding` and `search_vector`): the data arrived in the row and was
+    lost crossing the model, for lack of a field.
     """
     for column in _HUMAN_COLUMNS:
         assert column in table.c, f"{table.name} devrait porter {column}"
@@ -87,12 +83,12 @@ def test_every_human_column_has_a_model_field(table, model) -> None:
 
 
 def test_the_plan_chunk_carries_the_parent_human_signal() -> None:
-    """Le seul type où le signal humain ne peut PAS venir de l'entité notée.
+    """The only type where the human signal CANNOT come from the scored entity.
 
-    `indexed_plan_chunks` n'a aucune colonne `_human` ; le chemin machine le sait
-    déjà et substitue les compteurs du parent. Sans champ `parent_*_human` sur le
-    chunk, la branche humaine notait tout plan à 0 accès et récence nulle — pas
-    une divergence de valeur, une impossibilité structurelle.
+    `indexed_plan_chunks` has no `_human` column; the machine path already knows
+    that and substitutes the parent's counters. Without a `parent_*_human` field on
+    the chunk, the human branch scored every plan at 0 accesses and null recency —
+    not a value divergence, a structural impossibility.
     """
     from brain_v42.db.tables import indexed_plan_chunks
 
@@ -105,15 +101,14 @@ def test_the_plan_chunk_carries_the_parent_human_signal() -> None:
 
 
 def test_the_flusher_and_the_models_read_the_same_names() -> None:
-    """La divergence est le danger, pas l'absence.
+    """Divergence is the danger, not absence.
 
-    Le flusher lit `table.c.access_count_human` en Core ; le service lit
-    `entity.access_count_human` en Pydantic. Tant que le modèle ne portait pas le
-    champ, armer le drapeau donnait DEUX valeurs pour une même ligne : une
-    constante d'un côté, la donnée de l'autre. On compare donc les noms que le
-    flusher SELECT réellement à ceux que les modèles déclarent, au lieu de
-    recopier une liste à la main — une liste recopiée dériverait avec le code
-    qu'elle prétend garder.
+    The flusher reads `table.c.access_count_human` in Core; the service reads
+    `entity.access_count_human` in Pydantic. As long as the model did not carry the
+    field, arming the flag gave TWO values for one row: a constant on one side, the
+    data on the other. We therefore compare the names the flusher actually SELECTs
+    with those the models declare, instead of copying a list by hand — a copied list
+    would drift with the code it claims to guard.
     """
     import inspect
 
@@ -130,29 +125,28 @@ def test_the_flusher_and_the_models_read_the_same_names() -> None:
 
 
 def test_the_setting_is_still_closed_by_default() -> None:
-    """Ce lot répare l'hydratation. Il n'arme RIEN.
+    """This batch repairs the hydration. It arms NOTHING.
 
-    L'effet visible attendu est zéro : rendre l'armement futur honnête, pas
-    l'exécuter. Ouvrir ce drapeau change l'ordre des résultats de recherche le
-    jour même — c'est un geste d'opérateur.
+    The expected visible effect is zero: making a future arming honest, not
+    performing it. Opening this flag changes the order of search results the same
+    day — that is an operator's gesture.
     """
     assert Settings.model_fields["decay_human_signal_enabled"].default is False
 
 
 class TestTheModelReachesTheCalculator:
-    """Second maillon : du modèle jusqu'au multiplicateur, par la VRAIE boucle.
+    """Second link: from the model to the multiplier, through the REAL loop.
 
-    Les deux tests se composent, et il faut les lire ensemble : l'intégration
-    prouve que la donnée va de la BASE au MODÈLE ; celui-ci prouve qu'elle va du
-    MODÈLE au CALCUL. Aucun des deux ne suffit seul, et c'est précisément la
-    moitié manquante qui avait laissé passer le défaut.
+    The two tests compose, and must be read together: the integration one proves the
+    data goes from the DATABASE to the MODEL; this one proves it goes from the MODEL
+    to the CALCULATION. Neither suffices alone, and it is precisely the missing half
+    that had let the defect through.
 
-    Ce qui le distingue du motif interdit : il appelle
-    `BrainService._build_search_results`, la méthode de production, sur une
-    vraie instance d'`IndexedPlanChunk`. Il ne recopie pas la substitution dans
-    son propre corps — mutation vérifiée : retirer la bascule parent de
-    `brain_service` fait rougir ce test, et rien d'autre dans la suite ne la
-    voyait.
+    What distinguishes it from the forbidden pattern: it calls
+    `BrainService._build_search_results`, the production method, on a real
+    `IndexedPlanChunk` instance. It does not copy the substitution into its own body
+    — mutation verified: removing the parent fallback from `brain_service` reddens
+    this test, and nothing else in the suite saw it.
     """
 
     @staticmethod
@@ -217,19 +211,19 @@ class TestTheModelReachesTheCalculator:
         assert call["last_accessed_at"].month == 2
 
     def test_closed_the_plan_is_scored_on_the_parent_machine_counters(self) -> None:
-        """Témoin négatif : sans lui, un calcul figé à 3 passerait aussi."""
+        """Negative witness: without it, a calculation frozen at 3 would pass too."""
         call = self._score(human_signal=False)
         assert call["access_count"] == 400
         assert call["last_accessed_at"].month == 8
 
     def test_armed_a_learning_is_scored_on_its_own_human_counters(self) -> None:
-        """Le cas NON-plan, et il manquait.
+        """The NON-plan case, and it was missing.
 
-        MESURÉ : avec le seul cas `plan`, figer la branche humaine sur le
-        compteur machine laissait la suite VERTE — la substitution parent
-        réécrit `signal_access_count` juste après, donc elle masquait la ligne
-        qu'on croyait tester. Les cinq types de connaissance n'ont pas de
-        parent : c'est ici, et seulement ici, que cette ligne se voit.
+        MEASURED: with the `plan` case alone, freezing the human branch on the
+        machine counter left the suite GREEN — the parent substitution rewrites
+        `signal_access_count` immediately afterwards, so it masked the line we
+        believed we were testing. The five knowledge types have no parent: it is
+        here, and only here, that this line is visible.
         """
         import datetime as dt
         import uuid
