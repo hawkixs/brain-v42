@@ -39,38 +39,38 @@ from brain_v42.maintenance.plan_index_repair import (
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-# Bumpé à 043 après la revue que l'épingle exige (spec §14.7). Contrairement à la
-# 042, la 043 TOUCHE `indexed_plans` — une des trois tables que la réparation
-# écrit — donc la revue ne pouvait pas se contenter de « elle ne touche à rien ».
+# Bumped to 043 after the review the pin requires (spec §14.7). Unlike 042, 043
+# TOUCHES `indexed_plans` — one of the three tables the repair writes — so the
+# review could not settle for "it touches nothing".
 #
-# Elle y ajoute deux colonnes nullables sans défaut et un trigger
-# `BEFORE UPDATE OF freshness_status`. Mesuré sur ce fichier : la réparation ne
-# fait que `DELETE` sur `indexed_plans` et `UPDATE` sur `project_contexts`, qui
-# n'est pas dans le périmètre de la 043. Aucun `UPDATE OF freshness_status`,
-# donc le trigger ne peut pas s'y déclencher ; aucun INSERT, donc les colonnes
-# nullables ne changent rien. La CHECK accepte `NULL`. La 043 est inerte ici.
+# It adds two nullable columns without a default and a
+# `BEFORE UPDATE OF freshness_status` trigger. Measured on this file: the repair
+# only does `DELETE` on `indexed_plans` and `UPDATE` on `project_contexts`,
+# which is outside 043's scope. No `UPDATE OF freshness_status`, so the trigger
+# cannot fire here; no INSERT, so the nullable columns change nothing. The CHECK
+# accepts `NULL`. 043 is inert here.
 #
-# Bumpé à 044 après la même revue : la 044 n'ajoute qu'une colonne nullable
-# sans défaut, `last_accessed_at_human`, sans trigger ni contrainte. Elle
-# touche `indexed_plans` pour la même raison que la 043 — c'est une des six
-# tables suivies par le decay — et reste inerte pour les mêmes DELETE.
+# Bumped to 044 after the same review: 044 only adds a nullable column without a
+# default, `last_accessed_at_human`, with no trigger and no constraint. It
+# touches `indexed_plans` for the same reason 043 does — it is one of the six
+# tables tracked by the decay — and stays inert for the same DELETEs.
 #
-# Bumpé à 045 après la même revue, la plus courte des trois : la 045 ne touche
-# aucune des trois tables que la réparation écrit. Son périmètre est
-# `dream_runs.model`, élargi de 30 à 120 caractères, plus le DROP/CREATE de la
-# vue `codex_dream_run_v1` qui bloquait l'ALTER. Aucun trigger, aucune
-# contrainte, aucune colonne NOT NULL sans défaut, aucune ligne réécrite.
+# Bumped to 045 after the same review, the shortest of the three: 045 touches
+# none of the three tables the repair writes. Its scope is `dream_runs.model`,
+# widened from 30 to 120 characters, plus the DROP/CREATE of the
+# `codex_dream_run_v1` view that blocked the ALTER. No trigger, no constraint,
+# no NOT NULL column without a default, no row rewritten.
 #
-# Bumpé à 046 après la même revue. La 046 ne touche AUCUNE des trois tables que
-# la réparation écrit — son périmètre est `brain_sessions` seul. Vérifié point
-# par point contre ce que la revue doit interdire : cinq colonnes ajoutées, TOUTES
-# nullables et sans défaut ; aucun trigger posé ; deux CHECK élargis (ils
-# acceptent strictement PLUS qu'avant, jamais moins, donc aucune ligne existante
-# ne peut devenir invalide) ; un index UNIQUE PARTIEL, mais sur `brain_sessions`,
-# hors périmètre. Aucune ligne réécrite, aucun backfill. La 046 est inerte ici.
+# Bumped to 046 after the same review. 046 touches NONE of the three tables the
+# repair writes — its scope is `brain_sessions` alone. Verified point by point
+# against what the review must forbid: five columns added, ALL nullable and
+# without a default; no trigger installed; two CHECKs widened (they accept
+# strictly MORE than before, never less, so no existing row can become invalid);
+# one PARTIAL UNIQUE index, but on `brain_sessions`, out of scope. No row
+# rewritten, no backfill. 046 is inert here.
 #
-# La revue est écrite même quand elle est courte : c'est la règle, et une revue
-# absente se lit comme une revue faite.
+# The review is written down even when it is short: that is the rule, and a
+# missing review reads exactly like a review that was done.
 _REQUIRED_ALEMBIC_HEAD = "049"
 
 
