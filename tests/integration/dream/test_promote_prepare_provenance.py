@@ -1,4 +1,4 @@
-"""Le pool de PROMOTE cesse de réadmettre un verdict encore valide."""
+"""PROMOTE's pool stops re-admitting a verdict that is still valid."""
 
 from __future__ import annotations
 
@@ -14,18 +14,18 @@ from scripts.dream.promote_prepare import fetch_candidates  # noqa: E402
 
 @pytest.fixture
 def project_key() -> str:
-    """Une clé neuve par test — l'isolation est la correction, pas le nettoyage."""
+    """A fresh key per test — isolation is the fix, not the cleanup."""
     return make_promote_project_key()
 
 
 def make_promote_project_key() -> str:
-    """Clé de projet UNIQUE pour un test PROMOTE.
+    """A UNIQUE project key for a PROMOTE test.
 
-    Deux propriétés, et il faut les deux. Le préfixe ``integ-`` la rend visible du
-    prédicat de purge du teardown, qui ne voyait pas la clé de production employée
-    jusqu'ici — 159 lignes accumulées, mesurées le 2026-08-10. L'unicité, elle,
-    découple les tests d'un MÊME run : ils partageaient une clé, donc leurs lignes
-    se disputaient les dix places de ``fetch_candidates``.
+    Two properties, and both are needed. The ``integ-`` prefix makes it visible to
+    the teardown's purge predicate, which did not see the production key used until
+    now — 159 accumulated rows, measured on 2026-08-10. Uniqueness, for its part,
+    decouples the tests of the SAME run: they shared a key, so their rows competed
+    for ``fetch_candidates``'s ten slots.
     """
     return f"integ-promote-{uuid.uuid4().hex[:8]}"
 
@@ -34,8 +34,8 @@ class TestTerminalCache:
     async def test_uncertain_verdict_survives_a_counter_write(
         self, db_session, project_key, session_factory
     ) -> None:
-        """Le défaut de production : un verdict rendu, puis une lecture, et le
-        candidat revenait la nuit suivante."""
+        """The production defect: a verdict returned, then a read, and the candidate
+        came back the following night."""
         lid = uuid.uuid4()
         await db_session.execute(
             sa.text(
@@ -55,7 +55,7 @@ class TestTerminalCache:
             ),
             {"id": lid},
         )
-        # Une lecture postérieure au verdict — ce qui cassait le cache.
+        # A read later than the verdict — what broke the cache.
         await db_session.execute(
             sa.text("UPDATE learnings SET access_count = access_count + 1 WHERE id = :id"),
             {"id": lid},
@@ -68,20 +68,17 @@ class TestTerminalCache:
     async def test_verdict_survives_counter_write_in_later_transaction(
         self, project_key, session_factory
     ) -> None:
-        """Preuve à deux transactions distinctes, committées séparément.
+        """A proof across two distinct transactions, committed separately.
 
-        Le test ci-dessus (`test_uncertain_verdict_survives_a_counter_write`)
-        écrit le verdict et la mise à jour du compteur dans la MÊME
-        transaction non commitée : Postgres fige NOW() au début de la
-        transaction, donc dream_promotions.created_at et le
-        learnings.updated_at restampé par le trigger `update_updated_at`
-        finissent identiques par coïncidence — l'ancien prédicat
-        `u.created_at >= l.updated_at` passait déjà, sans prouver la
-        correction. Ici, la mise à jour du compteur est une transaction
-        séparée, committée après coup : son NOW() est strictement postérieur
-        au created_at du verdict, donc l'ancien prédicat échouerait
-        (réadmission) tandis que le nouveau, fondé sur
-        COALESCE(l.content_updated_at, l.created_at), tient.
+        The test above (`test_uncertain_verdict_survives_a_counter_write`) writes the
+        verdict and the counter update in the SAME uncommitted transaction: Postgres
+        freezes NOW() at the transaction's start, so dream_promotions.created_at and
+        the learnings.updated_at re-stamped by the `update_updated_at` trigger end up
+        identical by coincidence — the old predicate `u.created_at >= l.updated_at`
+        passed already, without proving the fix. Here, the counter update is a
+        separate transaction, committed afterwards: its NOW() is strictly later than
+        the verdict's created_at, so the old predicate would fail (re-admission) while
+        the new one, based on COALESCE(l.content_updated_at, l.created_at), holds.
         """
         lid = uuid.uuid4()
         async with session_factory() as session:
@@ -105,9 +102,9 @@ class TestTerminalCache:
             )
             await session.commit()
 
-        # Transaction séparée, committée indépendamment — le trigger
-        # update_updated_at() restampe updated_at avec le NOW() de CETTE
-        # transaction, postérieur au created_at du verdict ci-dessus.
+        # A separate transaction, committed independently — the update_updated_at()
+        # trigger re-stamps updated_at with THIS transaction's NOW(), later than the
+        # verdict's created_at above.
         async with session_factory() as session:
             await session.execute(
                 sa.text("UPDATE learnings SET access_count = access_count + 1 WHERE id = :id"),
@@ -154,7 +151,7 @@ class TestMaturityGate:
     async def test_dream_reads_alone_do_not_mature_a_learning(
         self, db_session, project_key, session_factory
     ) -> None:
-        """access_count élevé mais purement machine : pas candidat."""
+        """A high access_count but purely machine: not a candidate."""
         lid = uuid.uuid4()
         await db_session.execute(
             sa.text(

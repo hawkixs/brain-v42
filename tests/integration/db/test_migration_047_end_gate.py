@@ -1,13 +1,13 @@
-"""Migration 047 — la base cesse d'exiger un reçu de capture pour fermer.
+"""Migration 047 — the database stops requiring a capture receipt to close.
 
-Le troisième rail de la scène. Le répertoire et le modèle Pydantic ont laissé
-passer une fermeture dont le SERVEUR avait rempli le ledger ; c'est ici qu'on
-prouve que la base aussi. Sans ce rail, la 047 serait une intention : le CHECK
-`brain_sessions_terminal_state_valid` refusait la ligne, et l'utilisateur se
-retrouvait avec une session qu'il ne pouvait plus fermer.
+The scene's third rail. The repository and the Pydantic model let through a closure
+whose ledger the SERVER had filled; here we prove the database does too. Without
+this rail, 047 would be an intention: the `brain_sessions_terminal_state_valid`
+CHECK refused the row, and the user was left with a session they could no longer
+close.
 
-Ce qui RESTE refusé est le point : une raison blanche. Donner une raison est un
-acte, et le serveur ne peut pas l'accomplir à la place de l'utilisateur.
+What REMAINS refused is the point: a blank reason. Giving a reason is an act, and
+the server cannot perform it in the user's place.
 """
 
 from __future__ import annotations
@@ -79,8 +79,8 @@ async def _close(
 async def test_an_ended_session_may_hold_a_derived_ledger_and_a_reason(
     engine: AsyncEngine,
 ) -> None:
-    """LE cas qui motive la révision : le serveur a attribué, l'utilisateur dit
-    « rien de durable ». Avant la 047, cette session était infermable."""
+    """THE case that motivates the revision: the server attributed, the user says
+    "nothing durable". Before 047, that session was unclosable."""
     project_key = await _project(engine)
     await _close(
         engine,
@@ -94,13 +94,13 @@ async def test_an_ended_session_may_hold_a_derived_ledger_and_a_reason(
 async def test_an_ended_session_may_hold_neither_a_ledger_nor_a_reason(
     engine: AsyncEngine,
 ) -> None:
-    """La porte n'est plus la diligence : ne rien avoir produit est une issue."""
+    """The gate is no longer diligence: having produced nothing is an outcome."""
     project_key = await _project(engine)
     await _close(engine, project_key, client_key="quiet", captured=[], reason=None)
 
 
 async def test_a_blank_reason_is_still_refused_by_the_database(engine: AsyncEngine) -> None:
-    """Ce que la 047 ne relâche PAS, et la seule chose que le serveur ne peut pas produire."""
+    """What 047 does NOT relax, and the one thing the server cannot produce."""
     project_key = await _project(engine)
     with pytest.raises(IntegrityError, match="brain_sessions_terminal_state_valid"):
         await _close(engine, project_key, client_key="blank", captured=[], reason="   ")
@@ -110,12 +110,11 @@ async def test_the_downgrade_refuses_to_destroy_a_closure_it_cannot_restore(
     engine: AsyncEngine,
     migration_downgrade_fence,
 ) -> None:
-    """Fail-closed, gabarit 037 : le downgrade NOMME ce qu'il détruirait.
+    """Fail-closed, 037's template: the downgrade NAMES what it would destroy.
 
-    Les deux formes que la 047 rend légales sont illégales sans elle. Un
-    downgrade muet échouerait quand même — la contrainte le refuserait — mais
-    avec un message de contrainte, sans dire QUI est en cause. Celui-ci le dit,
-    et compte.
+    The two shapes 047 makes legal are illegal without it. A mute downgrade would
+    fail anyway — the constraint would refuse it — but with a constraint message,
+    without saying WHO is at fault. This one says so, and counts.
     """
     project_key = await _project(engine)
     await _close(
@@ -147,9 +146,9 @@ async def test_the_downgrade_refuses_to_destroy_a_closure_it_cannot_restore(
 
     async with engine.connect() as conn:
         head = await conn.scalar(sa.text("SELECT version_num FROM alembic_version"))
-    # Comparé à la tête MESURÉE avant la tentative, jamais à un littéral. La
-    # forme précédente épinglait `"047"` et devenait fausse à chaque révision
-    # suivante — la base est alors plus haut que 047, et un `downgrade 046`
-    # traverse les révisions intermédiaires. C'est la classe de défaut que ce
-    # dépôt a déjà payée avec les têtes Alembic codées en dur.
+    # Compared to the head MEASURED before the attempt, never to a literal. The
+    # previous form pinned `"047"` and became false at every subsequent revision —
+    # the database is then higher than 047, and a `downgrade 046` traverses the
+    # intermediate revisions. This is the class of defect this repository has already
+    # paid for with hard-coded Alembic heads.
     assert head == head_before, "le refus doit laisser la tête intacte"

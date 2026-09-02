@@ -1,18 +1,17 @@
-"""Le compteur de transitions muettes sépare une SORTIE d'une RENTRÉE de corpus.
+"""The mute-transition counter separates a corpus EXIT from a corpus RE-ENTRY.
 
-Marche 2 de `55a21fb8`, prouvée contre PostgreSQL et son trigger 043 — pas
-contre un `MagicMock`. Les modules unitaires épinglent la forme de la requête ;
-seul celui-ci prouve que le trigger, la contrainte et le compteur s'accordent sur
-une vraie transition.
+Step 2 of `55a21fb8`, proved against PostgreSQL and its 043 trigger — not against a
+`MagicMock`. The unit modules pin the query's shape; only this one proves that the
+trigger, the constraint and the counter agree on a real transition.
 
-Le témoin porte les DEUX SENS dans la même transaction : une entité qui sort du
-corpus (`fresh → archived`) et une qui y rentre (`archived → fresh`), toutes deux
-MUETTES. Avant cette marche, elles produisaient deux lignes identiques. Sans le
-second sens, un compteur qui rendrait simplement le total passerait le test.
+The witness carries BOTH DIRECTIONS in the same transaction: an entity leaving the
+corpus (`fresh → archived`) and one re-entering it (`archived → fresh`), both MUTE.
+Before this step, they produced two identical rows. Without the second direction, a
+counter that simply returned the total would pass the test.
 
-Tout vit dans une transaction ANNULÉE, et les comptes sont des DELTAS mesurés
-autour du témoin : `fetch_mute_transitions` balaie la table entière, donc une
-assertion sur une valeur absolue dépendrait de l'état de la base d'intégration.
+Everything lives in a ROLLED-BACK transaction, and the counts are DELTAS measured
+around the witness: `fetch_mute_transitions` scans the whole table, so an assertion
+on an absolute value would depend on the integration database's state.
 """
 
 from __future__ import annotations
@@ -46,9 +45,9 @@ async def test_a_mute_return_to_fresh_is_counted_apart_from_a_mute_archival(
     engine: AsyncEngine,
 ) -> None:
     today = dt.datetime.now(tz=dt.UTC).date()
-    # DEUX sorties pour UNE rentrée, et l'asymétrie est le contrôle : à un
-    # contre un, inverser la destination comparée rendrait le MÊME delta et le
-    # test passerait sur du code faux. Ici, une inversion rend 2 au lieu de 1.
+    # TWO exits for ONE re-entry, and the asymmetry is the control: at one against
+    # one, inverting the compared destination would return the SAME delta and the
+    # test would pass on wrong code. Here, an inversion returns 2 instead of 1.
     leaving = (uuid4(), uuid4())
     returning = uuid4()
 
@@ -57,8 +56,8 @@ async def test_a_mute_return_to_fresh_is_counted_apart_from_a_mute_archival(
         try:
             before = await _learnings_counts(connection, today)
 
-            # Deux entités SORTENT du corpus, une y RENTRE. Aucune ne déclare de
-            # provenance : le trigger de la 043 les rend toutes muettes.
+            # Two entities LEAVE the corpus, one RE-ENTERS it. None declares a
+            # provenance: 043's trigger makes them all mute.
             for entity_id in leaving:
                 await connection.execute(
                     _INSERT, {"id": entity_id, "topic": f"sortie-{entity_id}", "status": "fresh"}
@@ -69,7 +68,7 @@ async def test_a_mute_return_to_fresh_is_counted_apart_from_a_mute_archival(
             )
             await connection.execute(_TRANSITION, {"id": returning, "status": "fresh"})
 
-            # Le trigger a bien fait son travail : daté, et provenance effacée.
+            # The trigger did its job: dated, and provenance erased.
             stamped = (
                 await connection.execute(
                     sa.text(
@@ -87,7 +86,7 @@ async def test_a_mute_return_to_fresh_is_counted_apart_from_a_mute_archival(
 
             after = await _learnings_counts(connection, today)
 
-            # TROIS transitions muettes de plus, dont UNE SEULE est un retour.
+            # THREE more mute transitions, of which only ONE is a return.
             assert after.night - before.night == 3
             assert after.standing - before.standing == 3
             assert after.to_fresh_night - before.to_fresh_night == 1
@@ -100,10 +99,10 @@ async def test_a_mute_return_to_fresh_is_counted_apart_from_a_mute_archival(
 async def test_a_declared_return_to_fresh_is_not_muet_and_leaves_the_count_alone(
     engine: AsyncEngine,
 ) -> None:
-    """Le témoin NÉGATIF : `brain_refresh_entity` déclare `revive`, donc rien à compter.
+    """The NEGATIVE witness: `brain_refresh_entity` declares `revive`, so nothing to count.
 
-    Sans lui, un compteur qui ignorerait `freshness_source` compterait aussi les
-    désarchivages déjà tracés — et le nombre cesserait de désigner un trou.
+    Without it, a counter that ignored `freshness_source` would also count the
+    already-traced unarchivals — and the number would stop designating a hole.
     """
     today = dt.datetime.now(tz=dt.UTC).date()
     revived = uuid4()
