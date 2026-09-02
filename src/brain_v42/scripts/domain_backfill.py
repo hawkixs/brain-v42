@@ -552,7 +552,7 @@ async def run_backfill(
 def write_reports(
     out_dir: Path, run_date: str, model: str, result: BackfillResult
 ) -> tuple[Path, Path]:
-    """Écrit <date>.jsonl (propositions pures) + <date>.md (résumé humain)."""
+    """Write <date>.jsonl (pure proposals) + <date>.md (human summary)."""
     out_dir.mkdir(parents=True, exist_ok=True)
     jsonl_path = out_dir / f"{run_date}.jsonl"
     md_path = out_dir / f"{run_date}.md"

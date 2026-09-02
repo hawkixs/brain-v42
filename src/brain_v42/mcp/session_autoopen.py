@@ -184,14 +184,14 @@ class SessionAutoOpener:
         try:
             session_id = await self._opener(identity)
         except Exception:
-            # ``except`` TOTAL et étroitement scopé, même posture que
-            # ``_report`` : ce chemin s'exécute sur CHAQUE appel de tool
-            # extérieur d'un processus partagé. Un hoquet de base ne peut pas
-            # faire tomber l'appel qu'il accompagne.
+            # A TOTAL, tightly scoped ``except``, the same posture as
+            # ``_report``: this path runs on EVERY outermost tool call of a
+            # shared process. A database hiccup cannot bring down the call it
+            # accompanies.
             #
-            # ``warning`` et non ``debug`` : contrairement à un refus de
-            # récepteur, qui peut se répéter à chaque appel, un échec ici
-            # signale un défaut de l'ouvreur lui-même.
+            # ``warning`` and not ``debug``: unlike a receiver refusal, which can
+            # repeat on every call, a failure here signals a defect in the
+            # opener itself.
             self.failed += 1
             logger.warning(
                 "session_autoopen.failed",

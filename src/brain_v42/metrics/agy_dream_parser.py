@@ -49,7 +49,7 @@ def _events(content: str) -> Iterable[dict[str, object]]:
 
 
 def _counter(usage: dict[str, object], key: str) -> int:
-    """Lire un compteur, en refusant ce qui ne peut pas être un compte."""
+    """Read a counter, refusing anything that cannot be a count."""
     value = usage.get(key, 0)
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ValueError(f"usage.{key} n'est pas un nombre")

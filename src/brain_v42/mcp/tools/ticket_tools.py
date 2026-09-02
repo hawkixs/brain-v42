@@ -49,7 +49,7 @@ def _age_days(dt: datetime) -> str:
 
 
 def _ticket_line(t: Ticket, *, direction: str) -> str:
-    # direction: "in" (je suis destinataire) / "out" (je suis émetteur)
+    # direction: "in" (I am the recipient) / "out" (I am the sender)
     arrow = "⬅️" if direction == "in" else "➡️"
     peer = t.from_project if direction == "in" else t.to_project
     prep = "de" if direction == "in" else "vers"

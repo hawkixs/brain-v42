@@ -314,7 +314,11 @@ def _section_technical_state(
     focus_octets: int | None = None,
     now: datetime | None = None,
 ) -> str:
-    """### État technique — derived at briefing time, never stored.
+    """The ``### État technique (mesuré)`` briefing section.
+
+    The heading stays French because it is RENDERED output, pinned by
+    tests/fixtures/briefing_full.md and by four tests; only this prose is
+    translated. Derived at briefing time, never stored.
 
     The focus is free text: `focus_revision` guards it against concurrent
     overwrite, never against becoming false. On 2026-08-04 both the focus and

@@ -693,13 +693,14 @@ def register_dream_tools(
     ) -> str:
         """Reject proposed roadmap curations for one project — the COMFORTABLE path.
 
-        The proposals read so far are title DEGRADATIONS (« Disaster recovery
-        vérifiable — PostgreSQL + Neo4j + off-site » → « Infrastructure
-        PostgreSQL sécurisée ») : rejecting must cost one call for a whole
-        batch, applying must cost one call PER proposal — the asymmetry is the
-        contract (ticket 2547b4a2), mirrored by brain_apply_curation_proposal.
+        The proposals read so far are title DEGRADATIONS — quoted verbatim from
+        the corpus, hence still in French: "Disaster recovery vérifiable —
+        PostgreSQL + Neo4j + off-site" becoming "Infrastructure PostgreSQL
+        sécurisée". Rejecting must cost one call for a whole batch, applying must
+        cost one call PER proposal — the asymmetry is the contract (ticket
+        2547b4a2), mirrored by brain_apply_curation_proposal.
 
-        Scoping goes through the join on ``features`` : an id belonging to
+        Scoping goes through the join on ``features``: an id belonging to
         another project is refused BY NAME and never reaches the service. Only
         ``proposed`` rows mutate ; anything else is skipped with its status.
 

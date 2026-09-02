@@ -120,7 +120,7 @@ async def apply_proposals(
 
 
 def write_apply_report(report_path: Path, outcomes: list[ApplyOutcome], *, wet: bool) -> Path:
-    """Écrit <rapport>-apply.jsonl à côté du rapport d'entrée."""
+    """Write <report>-apply.jsonl next to the input report."""
     out_path = report_path.with_name(f"{report_path.stem}-apply.jsonl")
     with out_path.open("w") as fh:
         for o in outcomes:

@@ -263,8 +263,9 @@ class MetricsServer:
             app.router.add_post("/v1/logs/claude", self._handle_claude_logs)
             app.router.add_post("/v1/client-activity", self._handle_client_activity)
         elif self._nonloopback_posture == "fail_closed":
-            # Posture (1) de eac03668 : l'opérateur a préféré un démarrage qui
-            # échoue en nommant son réglage à un sidecar amputé qui se tait.
+            # Posture (1) of eac03668: the operator preferred a startup that
+            # fails while naming their setting to a crippled sidecar that stays
+            # silent.
             raise NonLoopbackReceiversError(
                 f"metrics bind {self._host!r} is not loopback: the three POST "
                 "receivers cannot be served safely there and "

@@ -293,7 +293,7 @@ class ActivityReporter:
 
 
 def set_activity_reporter(reporter: ActivityReporter | None) -> None:
-    """Poser un émetteur explicite. Réservé aux tests."""
+    """Install an explicit emitter. Reserved for tests."""
     global _reporter
     _reporter = reporter
 

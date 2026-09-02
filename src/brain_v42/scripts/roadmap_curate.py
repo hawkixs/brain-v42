@@ -584,7 +584,7 @@ def batch_llm_window(budget_s: float, elapsed_s: float, remaining_batches: int) 
 
 
 def _economic_batch_sizes(feature_count: int) -> tuple[int, int]:
-    """Tailles initiale/fallback du mode NVIDIA économique."""
+    """Initial/fallback sizes of the NVIDIA economy mode."""
     if feature_count <= 0:
         return 0, 0
     first_size = min(feature_count, ECONOMIC_FEATURE_CAP)

@@ -154,7 +154,7 @@ class BrainSessionService:
         await self.repo.absorb_derived_capture(session_id, connection_id, expected_client_key)
 
     def _absorption_skip_reason(self) -> str:
-        """Pourquoi aucune absorption n'a été tentée — drapeau, ou transport."""
+        """Why no absorption was attempted — the flag, or the transport."""
         try:
             if not get_settings().brain_session_derived_capture_enabled:
                 return "disabled"
