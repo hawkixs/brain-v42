@@ -46,6 +46,7 @@ from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.models.relation import RelationInput
 from brain_v42.models.runbook import RunbookUpdate
 from brain_v42.models.snippet import SnippetLanguage, SnippetUpdate
+from brain_v42.provenance import get_current_actor, is_human_actor
 from brain_v42.services.graph_helpers import graph_create_relation_logged
 
 if TYPE_CHECKING:
@@ -169,6 +170,10 @@ def _format_plan_list(plans: list[IndexedPlan]) -> str:
 #: date stamped, transaction rolled back; a value outside the vocabulary refused
 #: by the same constraint.
 DREAM_FRESHNESS_SOURCE = "judgment"
+#: Step 2 of `55a21fb8`. 049 admitted the word for this moment and said so —
+#: "reserved, unused […] the ruling on stamping human writes stays open and will
+#: find the word already admitted". The ruling is taken here.
+HUMAN_FRESHNESS_SOURCE = "manual_update"
 
 #: The field the SERVER sets and the caller cannot forge.
 _SERVER_ONLY_UPDATE_FIELDS = frozenset({"freshness_source"})
@@ -394,17 +399,35 @@ def register_crud_tools(
         # `BaseModel` would require an unchecked `getattr`; testing the raw
         # `fields` would also stamp a `freshness_status: None`, which writes
         # nothing. Here, stamping and writing are true together.
-        if scope is not None and "freshness_status" in update_data.model_dump(exclude_none=True):
-            # A DREAM write of `freshness_status` declares its provenance.
-            # Bounded to THIS field: stamping a write that does not touch the
-            # status would describe a transition that did not happen. And
-            # bounded to the scope: outside the dream the transition stays
-            # silent, HENCE counted by `post_run_alert.fetch_mute_transitions` —
-            # which is what makes the next unrecorded source visible instead of
-            # conflating it with REORG.
-            update_data = update_data.model_copy(
-                update={"freshness_source": DREAM_FRESHNESS_SOURCE}
+        if "freshness_status" in update_data.model_dump(exclude_none=True):
+            # A write of `freshness_status` declares WHO made it, when the server
+            # can say so without over-claiming. Bounded to THIS field: stamping a
+            # write that does not touch the status would describe a transition
+            # that did not happen.
+            #
+            # Three outcomes, and the third is the one that keeps the detector
+            # alive. Under the dream scope: `judgment`, REORG's own verdict
+            # (step 1, 2026-08-22). Outside it and from a HUMAN actor:
+            # `manual_update` (step 2 — 049 reserved the word for exactly this and
+            # recorded that the ruling was still open). Outside it and from a
+            # SURVEYED machine actor: nothing, deliberately.
+            #
+            # That third branch is not a gap. `manual_update` says *manual*, and
+            # stamping it for a bot would be a FALSE provenance — believed, where
+            # a missing one is seen, which 043 names as the worse of the two. A
+            # mute transition therefore keeps meaning what step 0 needs it to
+            # mean: a source nobody has surveyed. The classifier is
+            # `is_human_actor`, the same one the Q1 unarchival guard already
+            # trusts for a heavier decision; its limit is written in its own
+            # docstring — an UNSURVEYED bot still counts as human, a coverage
+            # floor this repository has already accepted and dated.
+            source = (
+                DREAM_FRESHNESS_SOURCE
+                if scope is not None
+                else (HUMAN_FRESHNESS_SOURCE if is_human_actor(get_current_actor()) else None)
             )
+            if source is not None:
+                update_data = update_data.model_copy(update={"freshness_source": source})
         graph = getattr(svc, "_graph", None)
         validated_relations: list[dict[str, Any]] = []
         if scope is not None and related_to and graph is not None:
