@@ -12,6 +12,7 @@ READ_ONLY_TOOLS = frozenset(
     {
         "brain_consolidation_candidates",
         "brain_decay_status",
+        "brain_focus_history",
         "brain_get",
         "brain_get_clusters",
         "brain_get_neighbors",
@@ -132,7 +133,7 @@ async def test_all_knowledge_tools_publish_exact_safety_annotations() -> None:
         DESTRUCTIVE_TOOLS,
     )
     expected_names = frozenset().union(*groups)
-    assert len(expected_names) == 46
+    assert len(expected_names) == 47
     assert sum(len(group) for group in groups) == len(expected_names)
     assert {tool.name for tool in await server.list_tools()} == expected_names
 

@@ -75,6 +75,13 @@ class ProjectContextService:
         logger.debug("project_context_service.list_groups")
         return await self.repo.list_groups()
 
+    async def focus_history(
+        self, project_key: str, *, limit: int = 20, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """The audit trail of one project's focus, newest revision first."""
+        logger.debug("project_context_service.focus_history", project_key=project_key)
+        return await self.repo.focus_history(project_key, limit=limit, offset=offset)
+
     async def refresh_counts(self, project_key: str) -> ProjectContext | None:
         """Recompute *_count columns via cross-table COUNT queries. Returns None if not found."""
         logger.debug("project_context_service.refresh_counts", project_key=project_key)

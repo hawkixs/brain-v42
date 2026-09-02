@@ -143,7 +143,7 @@ parameters; use the plain form above with host, port, username and password all 
 | Search & list | `brain_search`, `brain_list`, `brain_get`, `brain_update`, `brain_delete` |
 | Graph traversal | `brain_get_neighbors`, `brain_graph_path` |
 | Session lifecycle | `brain_session_start`, `brain_session_list`, `brain_session_resume`, `brain_session_capture`, `brain_session_heartbeat`, `brain_session_checkpoint`, `brain_session_end`, `brain_session_abandon` |
-| Project context | `brain_set_project_context`, `brain_update_project_focus`, `brain_list_projects`, `brain_list_project_groups` |
+| Project context | `brain_set_project_context`, `brain_update_project_focus`, `brain_focus_history`, `brain_list_projects`, `brain_list_project_groups` |
 | Decisions | `brain_log_decision`, `brain_supersede_decision`, `brain_get_supersession_chain` |
 | Learnings | `brain_learn`, `brain_validate_learning` |
 | Snippets | `brain_save_snippet`, `brain_use_snippet` |

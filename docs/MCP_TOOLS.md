@@ -1,7 +1,7 @@
 # MCP Tools — brain_v42
 
 **Updated:** 2026-07-24
-**Repository registry:** 52 always-on + 2 graph-gated = 54 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
+**Repository registry:** 53 always-on + 2 graph-gated = 55 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
 **Default catalog:** Admin clients use `compact` while capability enforcement is disabled: the seven session lifecycle tools plus `brain_find_tool` and `brain_call_tool`; other registered tools remain discoverable through those gateways. `native` exposes every registered tool. An authenticated Dream phase always receives its exact native allowlist, independent of presentation headers, and cannot access either gateway. Experimental `brain_code_mode` takes precedence only while Dream capability enforcement is disabled.
 **Transport:** HTTP loopback `http://127.0.0.1:8765/mcp` (production fleet). Tools are defined as closures capturing injected services — see `src/brain_v42/mcp/server.py` (`build_services()`) and the `register_*_tools()` functions in each module under `src/brain_v42/mcp/tools/`.
 
@@ -447,6 +447,14 @@ brain_list_projects(project_group=None)
 ```
 List all known projects with focus and phase.
 
+### brain_focus_history (`project_context_tools.py`)
+```
+brain_focus_history(project_key, limit=20, offset=0)
+```
+One project's focus revisions, newest first, with the characters added and
+removed against the revision below. An erased focus reads `(erased)`. Read-only;
+the trail itself is append-only (migration 050).
+
 ### brain_list_project_groups (`project_context_tools.py`)
 ```
 brain_list_project_groups()
@@ -750,11 +758,11 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `decay_tools.py` | decay + consolidation | 4 |
 | `dream_tools.py` | dream-phase maintenance | 7 |
 | `plan_tools.py` | plan indexing | 1 |
-| `project_context_tools.py` | project + groups | 4 |
+| `project_context_tools.py` | project + groups | 5 |
 | `roadmap_tools.py` | roadmap | 3 |
 | `runbook_tools.py` | runbooks | 3 |
 | `session_lifecycle_tools.py` | persistent session lifecycle | 8 |
 | `snippet_tools.py` | snippets | 2 |
 | `ticket_tools.py` | tickets cross-projet (coordination) | 5 |
 | `workflow_guide_tools.py` | bounded workflow guidance | 1 |
-| **Total** | | **52 always-on + 2 graph-gated = 54** |
+| **Total** | | **53 always-on + 2 graph-gated = 55** |

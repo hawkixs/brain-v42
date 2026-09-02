@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 import structlog
 from pydantic import Field
 
+from brain_v42.db.focus_history import focus_diff
 from brain_v42.mcp.tools.formatters import (
     format_confirmation,
     format_error,
@@ -58,6 +59,60 @@ def register_project_context_tools(
     roadmap_svc: Any | None = None,
 ) -> None:
     """Register brain_set_project_context, brain_update_project_focus, brain_list_projects on mcp."""
+
+    @mcp.tool(version="1.0", annotations=_READ_ANNOTATIONS)
+    async def brain_focus_history(
+        project_key: str,
+        limit: Annotated[int, Field(ge=1, le=50)] = 20,
+        offset: Annotated[int, Field(ge=0)] = 0,
+    ) -> str:
+        """Read one project's focus revisions, newest first, with what each changed.
+
+        Answers the question nothing could answer before migration 050: what did
+        the focus say before it was overwritten. An erased focus shows as
+        `(erased)` — that is the destructive overwrite this trail exists for, not
+        a gap in it.
+
+        Each line carries the characters added and removed against the revision
+        BELOW it. `unchanged` is marked rather than filtered: a session close
+        re-posting the previous prose verbatim is the normal regime, and a
+        filtered row is a row somebody has to go looking for.
+        """
+        try:
+            key = canonicalize_project_key(project_key)
+        except ValueError as exc:
+            return format_error(str(exc))
+
+        rows = await project_context_svc.focus_history(key, limit=limit, offset=offset)
+        if not rows:
+            return f"No focus history for {key}."
+
+        lines = [f"### Focus history — {key} ({len(rows)})"]
+        for index, row in enumerate(rows):
+            focus = row["focus"]
+            # The row BELOW in the listing is the previous revision, the
+            # listing being newest-first. The last one on the page has no
+            # predecessor HERE — saying "+N/-0" against nothing would invent a
+            # creation event for a revision that may simply be off the page.
+            previous = rows[index + 1]["focus"] if index + 1 < len(rows) else None
+            has_previous = index + 1 < len(rows) or offset > 0
+            delta = focus_diff(previous, focus) if index + 1 < len(rows) else None
+            shown = "(erased)" if focus is None else focus.splitlines()[0][:120]
+            stamp = row["created_at"].date().isoformat()
+            marker = ""
+            if delta is not None:
+                marker = (
+                    " · unchanged"
+                    if delta["unchanged"]
+                    else f" · +{delta['added']}/-{delta['removed']} chars"
+                )
+            elif not has_previous:
+                marker = " · first recorded revision"
+            actor = f" · {row['actor']}" if row["actor"] else ""
+            lines.append(
+                f"- r{row['focus_revision']} [{row['source']}] {stamp}{actor}{marker}\n    {shown}"
+            )
+        return "\n".join(lines)
 
     @mcp.tool(version="1.0", annotations=_DESTRUCTIVE_ANNOTATIONS)
     async def brain_set_project_context(

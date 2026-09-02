@@ -14,7 +14,7 @@ import sqlalchemy as sa
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from brain_v42.db.focus_history import record_focus_history
+from brain_v42.db.focus_history import focus_history_select, record_focus_history
 from brain_v42.db.focus_stamp import focus_stamp
 from brain_v42.db.tables import adrs, decisions, learnings, project_contexts, runbooks, snippets
 from brain_v42.models.project_context import (
@@ -360,6 +360,20 @@ class PgProjectContextRepo(BasePgRepository):
                     source="focus_tool",
                 )
                 return ProjectContext.model_validate(dict(row))
+
+    async def focus_history(
+        self, project_key: str, *, limit: int = 20, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """One project's focus revisions, newest first — read-only, bounded.
+
+        Returns rows as stored: an erased focus comes back as `None`, which is
+        the whole point of the column being nullable.
+        """
+        async with self.get_session() as session:
+            result = await session.execute(
+                focus_history_select(project_key, limit=limit, offset=offset)
+            )
+            return [dict(row) for row in result.mappings().all()]
 
     async def refresh_counts(self, project_key: str) -> ProjectContext | None:
         """Recompute *_count columns via cross-table COUNT queries.
