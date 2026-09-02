@@ -97,7 +97,21 @@ _TITLE_DATE = re.compile(r"20\d{2}-\d{2}-\d{2}")
 
 
 def _dated(tickets: list[Any]) -> list[tuple[date, Any]]:
-    """The tickets whose TITLE carries a valid ISO date, nearest first."""
+    """The tickets whose TITLE carries a valid ISO date, NEAREST TO TODAY first.
+
+    Nearest to today, not oldest first. A deadline's claim on attention peaks on
+    its date and decays in both directions, so the distance is absolute and a
+    breach wins the tie against an upcoming date at equal distance.
+
+    Ordering by the raw date instead put the STALEST breaches first, and they
+    never move: measured on the production notebook on 2026-09-02, the two slots
+    went to breaches 10 and 8 days old while the only deadline still ahead — one
+    day out — was hidden. That is open question 2 of ticket 259cfbe5 ("must a
+    passed deadline stay displayed indefinitely? Otherwise we recreate the
+    permanent alarm one stops reading") reaching production. An ancient breach now
+    loses its slot by arithmetic, so no timer and no hand-placed rank is needed.
+    """
+    today = datetime.now(UTC).date()
     found: list[tuple[date, Any]] = []
     for candidate in tickets:
         match = _TITLE_DATE.search(candidate.title)
@@ -107,7 +121,7 @@ def _dated(tickets: list[Any]) -> list[tuple[date, Any]]:
             found.append((date.fromisoformat(match.group(0)), candidate))
         except ValueError:
             continue
-    found.sort(key=lambda pair: pair[0])
+    found.sort(key=lambda pair: (abs((pair[0] - today).days), (pair[0] - today).days))
     return found
 
 
