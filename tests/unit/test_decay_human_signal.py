@@ -1,35 +1,33 @@
-"""Le decay cesse de compter ce que la MACHINE relit — derrière un réglage.
+"""The decay stops counting what the MACHINE re-reads — behind a setting.
 
 Spec `2026-08-08-dream-v2-design.md` §5.1, §5.2, §5.5.
 
-Le défaut, tel que le focus le nomme : « DECAY INVERSÉ ». `brain_service`
-passait `access_count` — le compteur TOTAL — au multiplicateur. Le dream relit
-le corpus chaque nuit ; ces lectures gonflent le total ; l'artefact reste donc
-« frais » parce qu'une machine l'a lu. Le signal mesure la présence du dream,
-pas l'utilité pour un humain.
+The defect, as the focus names it: "INVERTED DECAY". `brain_service` passed
+`access_count` — the TOTAL counter — to the multiplier. The dream re-reads the
+corpus every night; those reads inflate the total; the artifact therefore stays
+"fresh" because a machine read it. The signal measures the dream's presence, not
+the usefulness to a human.
 
-MESURÉ dans la spec : sur `learnings`, 19 049 accès au total contre 79 humains
-— **0,41 %**. 508 entités dépassent leur `freq_baseline` sur le total, **zéro**
-sur le compteur humain.
+MEASURED in the spec: on `learnings`, 19,049 accesses in total against 79 human
+ones — **0.41 %**. 508 entities exceed their `freq_baseline` on the total, **zero**
+on the human counter.
 
-ET LE CORRECTIF NE PEUT PAS ÊTRE LE SEUL COMPTEUR — ET LES DEUX POIDS SONT PAR
-TYPE. `access_count` pèse 0,2 pour ``decision``/``learning``/``adr`` et 0,3 pour
-les trois autres ; `last_accessed_at` pèse 0,3 partout sauf ``adr`` (0,2). Ce
-dernier n'est JAMAIS dominé par l'âge — ``w_access >= w_age`` sur les six types —
-donc « le plus lourd après l'âge » le SOUS-ESTIMAIT : il est le terme le plus
-lourd, à égalité avec l'âge pour ``decision``/``learning`` et avec la fréquence
-pour ``snippet``/``runbook``/``plan``; seul ``adr`` le voit dominé, par la
-validation (0,5). La 041 ne lui avait donné aucune variante humaine : 1 522
-learnings ont leur terme de récence piloté par des lectures machine seules
-(mesuré le 2026-08-22 ; 2 060 sur les six tables). Substituer un seul des deux ne
-répare donc qu'une part du poids piloté par la lecture, et cette part dépend du
-type — 0,2 sur 0,5 pour ``decision``/``learning``, 0,3 sur 0,6 pour
-``snippet``/``runbook``/``plan``, 0,2 sur 0,4 pour ``adr``. Les deux basculent
-ensemble.
+AND THE FIX CANNOT BE THE COUNTER ALONE — AND BOTH WEIGHTS ARE PER TYPE.
+`access_count` weighs 0.2 for ``decision``/``learning``/``adr`` and 0.3 for the
+other three; `last_accessed_at` weighs 0.3 everywhere except ``adr`` (0.2). The
+latter is NEVER dominated by age — ``w_access >= w_age`` on all six types — so "the
+heaviest after age" UNDER-ESTIMATED it: it is the heaviest term, tied with age for
+``decision``/``learning`` and with frequency for ``snippet``/``runbook``/``plan``;
+only ``adr`` sees it dominated, by validation (0.5). 041 had given it no human
+variant: 1,522 learnings have their recency term driven by machine reads alone
+(measured on 2026-08-22; 2,060 across the six tables). Substituting only one of the
+two therefore repairs only part of the read-driven weight, and that part depends on
+the type — 0.2 out of 0.5 for ``decision``/``learning``, 0.3 out of 0.6 for
+``snippet``/``runbook``/``plan``, 0.2 out of 0.4 for ``adr``. Both switch together.
 
-LE RÉGLAGE EST FERMÉ PAR DÉFAUT (§5.5) : c'est le seul élément de ce chantier
-sans irréversibilité mais à effet immédiat sur un humain — l'ordre des résultats
-de recherche change le jour où on l'ouvre.
+THE SETTING IS CLOSED BY DEFAULT (§5.5): it is this workstream's only element with
+no irreversibility but with an immediate effect on a human — the order of search
+results changes the day it is opened.
 """
 
 from __future__ import annotations
@@ -45,7 +43,7 @@ from brain_v42.services.brain_service import BrainService
 
 
 class _RecordingCalculator:
-    """Capture ce que le service passe réellement au multiplicateur."""
+    """Capture what the service really passes to the multiplier."""
 
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -74,16 +72,16 @@ def _service(*, human_signal: bool) -> tuple[BrainService, _RecordingCalculator]
 
 
 def test_the_setting_ships_closed() -> None:
-    """Défaut d'aujourd'hui. §5.5 : effet immédiat sur un humain, donc fermé."""
+    """Today's default. §5.5: an immediate effect on a human, hence closed."""
     assert Settings().decay_human_signal_enabled is False
 
 
 def test_the_constructor_default_is_closed_too() -> None:
-    """Pas seulement dans Settings.
+    """Not only in Settings.
 
-    Un appelant qui oublie de passer le réglage — un test, un script, un futur
-    point d'entrée — doit obtenir le comportement d'aujourd'hui, jamais le
-    nouveau. Un défaut ouvert dans la signature ferait basculer par omission.
+    A caller that forgets to pass the setting — a test, a script, a future entry
+    point — must get today's behaviour, never the new one. An open default in the
+    signature would switch over by omission.
     """
     service, _ = _service(human_signal=False)
     assert service._decay_human_signal_enabled is False
@@ -108,11 +106,10 @@ def test_the_constructor_default_is_closed_too() -> None:
 def test_both_signals_switch_together(
     human_signal: bool, expected_count: int, expected_recency_attr: str
 ) -> None:
-    """Les DEUX entrées basculent, ou aucune.
+    """BOTH inputs switch, or neither.
 
-    Une bascule partielle laisserait `access_factor` — le terme le plus lourd
-    après l'âge — piloté par la machine, et donnerait l'illusion que le decay
-    est réparé.
+    A partial switch would leave `access_factor` — the heaviest term after age —
+    driven by the machine, and would give the illusion that the decay is repaired.
     """
     machine_recency = dt.datetime(2026, 8, 10, tzinfo=dt.UTC)
     human_recency = dt.datetime(2026, 2, 1, tzinfo=dt.UTC)
@@ -126,8 +123,8 @@ def test_both_signals_switch_together(
     )
     service, calculator = _service(human_signal=human_signal)
 
-    # On appelle la même dérivation que la boucle de scoring, sans monter tout
-    # le pipeline de recherche : ce qui est sous test est le CHOIX du signal.
+    # We call the same derivation as the scoring loop, without standing up the whole
+    # search pipeline: what is under test is the CHOICE of signal.
     if service._decay_human_signal_enabled:
         signal_count = getattr(entity, "access_count_human", 0) or 0
         signal_recency = getattr(entity, "last_accessed_at_human", None)
@@ -148,11 +145,11 @@ def test_both_signals_switch_together(
 
 
 def test_the_scoring_loop_reads_the_setting_and_both_columns() -> None:
-    """La FORME, parce que la boucle de scoring vit au fond d'une recherche.
+    """The SHAPE, because the scoring loop lives deep inside a search.
 
-    Monter le pipeline complet pour prouver un choix de variable coûterait plus
-    qu'il ne prouve. Ces ancres échouent bruyamment si la substitution est
-    retirée, ou si elle ne porte que sur un des deux signaux.
+    Standing up the whole pipeline to prove a variable choice would cost more than
+    it proves. These anchors fail noisily if the substitution is removed, or if it
+    only covers one of the two signals.
     """
     import inspect
 
@@ -161,7 +158,7 @@ def test_the_scoring_loop_reads_the_setting_and_both_columns() -> None:
     assert "self._decay_human_signal_enabled" in source
     assert 'getattr(entity, "access_count_human", 0)' in source
     assert 'getattr(entity, "last_accessed_at_human", None)' in source
-    # Le multiplicateur doit recevoir les VARIABLES de signal, pas les colonnes
-    # brutes : c'est ce qui distingue une substitution d'un calcul mort.
+    # The multiplier must receive the signal VARIABLES, not the raw columns: that is
+    # what distinguishes a substitution from a dead computation.
     assert "last_accessed_at=signal_last_accessed" in source
     assert "access_count=signal_access_count" in source
