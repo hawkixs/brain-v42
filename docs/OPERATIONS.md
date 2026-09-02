@@ -171,6 +171,34 @@ refuses a hard-coded secret source and an undocumented override variable; it
 cannot tell whether the file exists on any given host, so
 `docker compose config` stays the measurement before any `up`.
 
+### The MCP process is a client of that shim, and it carries no token yet
+
+`SHIM_BEARER_MODE=optional` was armed to answer one question, and it answered it
+on the first day: the census names `python-httpx/0.28.1` on `/embed/query` and
+`/rerank`, which is this repository's own MCP process. Arming `required` before
+that client carries a bearer would cut `brain_search` off from its own
+embeddings. The six `auto-discord` containers are the other half, tracked in
+ticket `9ef5c69d` and living in another repository.
+
+The client half is wired and ships CLOSED. `brain_embedding_token_file`
+(`BRAIN_EMBEDDING_TOKEN_FILE`) defaults to `None`, which keeps today's contract:
+no `Authorization` header at all. Point it at the same 0600 file the shim reads
+and both clients — embedding and reranker — send `Authorization: Bearer` on
+every route they use (`/embed`, `/embed/query`, `/rerank`, `/healthz`,
+`/health`; the two health routes are exempt server-side and the header is simply
+ignored there).
+
+A PATH, never a value: `systemctl show` prints a unit's environment verbatim.
+The file is read once, at construction, which is startup for every runtime that
+goes through `build_embedding_service` / `build_reranker_client` — so rotating
+it needs a restart, exactly like the shim's own read. Configured but absent,
+empty or unreadable is a **named startup failure**, never a silent call without
+the header: while the shim answers `optional`, such a call still succeeds, and
+the misconfiguration would stay invisible until the day someone arms `required`.
+
+Arming the client is an operator gesture — a drop-in and a restart, not a config
+tweak — and it must land BEFORE `SHIM_BEARER_MODE=required` is even considered.
+
 Rollback, once the previous image is tagged before the build:
 
 ```bash
