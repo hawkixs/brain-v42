@@ -1,20 +1,20 @@
-"""Le générateur de clés des tests unitaires et le prédicat de purge doivent s'accorder.
+"""The unit tests' key generator and the purge predicate must agree.
 
-Ces deux règles vivent dans des modules indépendants — `tests/unit/keys.py` et
-`_INTEGRATION_PROJECT_PREDICATE` dans `tests/integration/conftest.py` — et rien
-ne les obligeait à parler de la même chose. Elles ont divergé en silence :
-`tests/unit/` frappe la même base `brain_test`, ses clés portaient des préfixes
-inventés sur place (`t8-`, `t9-`, `rv-`, `t-adr-`, `t-run-`), et le prédicat ne
-connaît que `integ-`. Mesuré le 2026-08-11 dans brain_test : 5 674 learnings,
-dont 4 241 sous `t8-` et 581 sous `t9-`, contre 188 lignes réelles.
+These two rules live in independent modules — `tests/unit/keys.py` and
+`_INTEGRATION_PROJECT_PREDICATE` in `tests/integration/conftest.py` — and nothing
+obliged them to speak of the same thing. They diverged in silence: `tests/unit/`
+hits the same `brain_test` database, its keys carried prefixes invented on the spot
+(`t8-`, `t9-`, `rv-`, `t-adr-`, `t-run-`), and the predicate only knows `integ-`.
+Measured on 2026-08-11 in brain_test: 5,674 learnings, of which 4,241 under `t8-`
+and 581 under `t9-`, against 188 real rows.
 
-Le défaut est invisible en CI, qui recrée sa base à chaque pipeline. Il ne se
-manifeste que sur les bases de développement locales — l'endroit où il diverge
-par machine et où personne ne le regarde (ticket cb888186).
+The defect is invisible in CI, which recreates its database at every pipeline. It
+only shows on local development databases — the place where it diverges per machine
+and where nobody looks (ticket cb888186).
 
-Ce test est le point de contact : il fabrique une clé par le chemin que les
-tests unitaires empruntent, puis lui applique la fonction de purge RÉELLE. Il
-échoue si l'un des deux bouts bouge sans l'autre.
+This test is the point of contact: it builds a key through the path the unit tests
+take, then applies the REAL purge function to it. It fails if either end moves
+without the other.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ async def _engine() -> AsyncEngine:  # type: ignore[misc]
 async def test_a_key_built_for_a_unit_test_is_deleted_by_the_real_purge(
     _engine: AsyncEngine,
 ) -> None:
-    """Le contrat qui manquait : ce que les tests unitaires écrivent, la purge l'efface."""
+    """The contract that was missing: what the unit tests write, the purge erases."""
     key = make_unit_project_key("purge-probe")
 
     async with _engine.begin() as conn:
@@ -65,8 +65,8 @@ async def test_a_key_built_for_a_unit_test_is_deleted_by_the_real_purge(
         seeded = await conn.scalar(
             sa.select(sa.func.count()).select_from(learnings).where(learnings.c.project_key == key)
         )
-    # Sans cette assertion, une insertion silencieusement perdue rendrait le
-    # test vert sur du vide — la purge n'aurait alors rien eu à effacer.
+    # Without this assertion, a silently lost insert would make the test green on
+    # nothing — the purge would then have had nothing to erase.
     assert seeded == 1, (
         "la ligne témoin n'a pas été écrite, le test suivant serait vert sur du vide"
     )

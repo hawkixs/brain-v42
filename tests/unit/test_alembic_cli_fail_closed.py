@@ -102,7 +102,7 @@ def _combined_output(result: subprocess.CompletedProcess[str]) -> str:
 
 
 def _chain_upgrade_steps() -> list[tuple[str, str]]:
-    """(parents rendus, révision) pour chaque pas d'upgrade, lus du GRAPHE réel.
+    """(rendered parents, revision) for each upgrade step, read from the real GRAPH.
 
     Derived, never enumerated: the previous version of this file spelled out
     031→041 by hand and stayed silent on everything after — a fail-closed
@@ -110,14 +110,13 @@ def _chain_upgrade_steps() -> list[tuple[str, str]]:
     evaporates without any signal (ticket ``23be2271``, 16 assertions in that
     state).
 
-    Du graphe, pas d'un ordre linéarisé : la première dérivation faisait
-    ``walk_revisions`` + zip consécutif, ce qui suppose UN parent par révision
-    — faux le jour où une migration de merge arrive (``down_revision`` tuple),
-    et faux sans bruit : le zip apparierait deux révisions sans lien. Chaque
-    révision nomme ici son ou ses propres parents. Le rendu multi-parents
-    (``a, b -> m``) est asserté tel qu'alembic joint un tuple ; si son
-    séparateur diffère le jour venu, ce test le dira bruyamment au lieu de
-    valider une paire inventée.
+    From the graph, not from a linearised order: the first derivation did
+    ``walk_revisions`` + a consecutive zip, which assumes ONE parent per revision —
+    wrong the day a merge migration arrives (a ``down_revision`` tuple), and wrong
+    without a sound: the zip would pair two unrelated revisions. Here each revision
+    names its own parent or parents. The multi-parent rendering (``a, b -> m``) is
+    asserted as alembic joins a tuple; if its separator differs when the day comes,
+    this test will say so noisily instead of validating an invented pair.
     """
     from alembic.config import Config
     from alembic.script import ScriptDirectory

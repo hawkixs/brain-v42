@@ -1,7 +1,7 @@
-"""Unit tests for scripts.domain_backfill_apply (étape C — writer gated).
+"""Unit tests for scripts.domain_backfill_apply (step C — gated writer).
 
-Aucun réseau, aucun Neo4j réel : le writer graph est un stub qui enregistre
-les appels. Le rapport jsonl d'entrée vient de scripts.domain_backfill.
+No network, no real Neo4j: the graph writer is a stub that records the calls. The
+input jsonl report comes from scripts.domain_backfill.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def _write_report(path: Path, proposals: list[dict]) -> Path:
 
 
 class _StubGraphWriter:
-    """Enregistre les appels ; outcomes programmables par domaine/entité."""
+    """Records the calls; outcomes programmable per domain/entity."""
 
     def __init__(
         self,
@@ -93,7 +93,7 @@ def test_load_proposals_missing_file_raises(tmp_path: Path) -> None:
 
 def test_filter_appliable_skips_unknown_low_bad_domain_and_bad_id() -> None:
     proposals = [
-        _proposal(),  # gardé
+        _proposal(),  # kept
         _proposal(_UUID2, domain="unknown"),  # skipped_unknown
         _proposal(_UUID3, confidence="low"),  # skipped_confidence
         _proposal("44444444-4444-4444-4444-444444444444", domain="blockchain"),
@@ -137,11 +137,11 @@ async def test_apply_wet_upserts_each_domain_once_and_links_each_row() -> None:
     graph = _StubGraphWriter()
     proposals = [
         _proposal(),  # infra
-        _proposal(_UUID2),  # infra (même domaine)
+        _proposal(_UUID2),  # infra (same domain)
         _proposal(_UUID3, domain="ops"),  # ops
     ]
     outcomes = await ap.apply_proposals(graph, proposals, wet=True)
-    assert sorted(graph.upserted) == ["infra", "ops"]  # une fois par domaine
+    assert sorted(graph.upserted) == ["infra", "ops"]  # once per domain
     assert graph.linked == [(_UUID1, "infra"), (_UUID2, "infra"), (_UUID3, "ops")]
     assert [o.outcome for o in outcomes] == ["created", "created", "created"]
 

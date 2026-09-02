@@ -236,9 +236,9 @@ _DATABASE_IDENTITY = {
     "server_address": "127.0.0.1",
     "server_port": 5432,
 }
-# Dérivé, jamais recopié : la duplication de cette constante est précisément
-# ce qui a laissé la 041 atterrir sans que rien ne le signale. Sa justesse
-# est gardée par tests/unit/test_plan_index_repair_head_pin.py.
+# Derived, never copied: duplicating this constant is precisely what let 041 land
+# with nothing reporting it. Its correctness is guarded by
+# tests/unit/test_plan_index_repair_head_pin.py.
 _ALEMBIC_HEAD = _REQUIRED_ALEMBIC_HEAD
 
 

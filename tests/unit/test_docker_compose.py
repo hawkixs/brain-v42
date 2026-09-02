@@ -124,10 +124,10 @@ class TestDockerComposePortMapping:
     def test_port_mapping_format(self, postgres_service: dict) -> None:  # type: ignore[type-arg]
         """Port mapping must be loopback-bound '127.0.0.1:5433:5432'.
 
-        Audit sécu 2026-07-03 : le port publié sans IP de bind écoutait sur
-        0.0.0.0 (LAN entier) avec les creds par défaut. Les clients hôte
-        passent par localhost:5433, les containers par le réseau docker
-        brain_v42_default — rien ne justifie une exposition LAN.
+        Security audit of 2026-07-03: the port published with no bind IP was
+        listening on 0.0.0.0 (the whole LAN) with the default credentials. Host
+        clients go through localhost:5433, containers through the
+        brain_v42_default docker network — nothing justifies a LAN exposure.
         """
         ports = postgres_service["ports"]
         port_strings = [str(p) for p in ports]

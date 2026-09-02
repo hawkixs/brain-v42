@@ -709,8 +709,8 @@ class _SpySpan:
 
 
 class _SpyTracer:
-    """Double de tracer — le SDK OTel n'est pas installé, et ces tests doivent
-    tourner sans lui (c'est l'état de la CI et de la production)."""
+    """A tracer double — the OTel SDK is not installed, and these tests must run
+    without it (that is the state of CI and of production)."""
 
     def __init__(self) -> None:
         self.spans: list[_SpySpan] = []
@@ -723,11 +723,11 @@ class _SpyTracer:
 
 
 class TestTheSpanNeverContradictsTheCounter:
-    """Le span et le compteur doivent porter LE MÊME verdict.
+    """The span and the counter must carry THE SAME verdict.
 
-    Deux vérités sur le même appel n'en font aucune : si le span dit `error`
-    là où le compteur dit succès, plus personne ne sait lequel croire, et on
-    perd les deux. Ils lisent donc la même variable et la même latence.
+    Two truths about the same call make none: if the span says `error` where the
+    counter says success, nobody knows which to believe any more, and both are lost.
+    They therefore read the same variable and the same latency.
     """
 
     async def test_a_successful_call_emits_a_span_agreeing_with_the_counter(self) -> None:
@@ -778,9 +778,8 @@ class TestTheSpanNeverContradictsTheCounter:
         assert "confidentiel" not in " ".join(str(v) for v in attributes.values())
 
     async def test_tracing_disabled_changes_nothing_for_the_counter(self) -> None:
-        """Le killswitch ne doit toucher QUE les spans. Un compteur qui
-        dépendrait du tracing ferait disparaître les métriques le jour où on
-        ferme le flag."""
+        """The killswitch must touch ONLY the spans. A counter that depended on the
+        tracing would make the metrics disappear the day the flag is closed."""
         from brain_v42 import tracing
         from brain_v42.metrics.instrument import instrument_tool
 
@@ -795,8 +794,8 @@ class TestTheSpanNeverContradictsTheCounter:
         assert collector.get_metrics()["tools"]["brain_search"]["calls"] == 1
 
     async def test_a_broken_tracer_never_breaks_the_tool_call(self) -> None:
-        """La télémétrie est un canal d'observation : elle ne peut pas faire
-        tomber l'opération observée."""
+        """Telemetry is an observation channel: it cannot bring down the operation
+        it observes."""
         from brain_v42 import tracing
         from brain_v42.metrics.instrument import instrument_tool
 

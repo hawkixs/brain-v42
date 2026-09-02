@@ -981,10 +981,10 @@ class TestPromotePromptDescribesTheRanking:
         proves a person read the entry would hand it a false premise on
         exactly the evidence it is asked to weigh.
 
-        Le préfixe est passé de ``dream-codex-`` à la famille ``dream-`` : deux
-        rails sur trois (``claude``, ``agy``) étaient comptés HUMAINS. Le
-        caveat reste néanmoins nécessaire — la garde couvre la famille dream,
-        pas toute machine concevable, et ce test le protège.
+        The prefix moved from ``dream-codex-`` to the ``dream-`` family: two rails
+        out of three (``claude``, ``agy``) were counted as HUMAN. The caveat
+        nevertheless stays necessary — the guard covers the dream family, not every
+        conceivable machine, and this test protects it.
         """
         prompt = _PROMOTE_PROMPT.read_text(encoding="utf-8")
         assert "as proof that a person read it" in prompt

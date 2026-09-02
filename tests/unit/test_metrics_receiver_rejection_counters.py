@@ -1,12 +1,12 @@
-"""Chaque refus servi par le sidecar avance un compteur — et son zéro SIGNIFIE.
+"""Every refusal served by the sidecar advances a counter — and its zero MEANS something.
 
-Ticket `d5e4bd73`, piste (b), en complément de l'access log livré : le journal
-raconte, le compteur totalise, et il est exposé au même endroit que les autres
-métriques (GET /metrics). La leçon du ticket gouverne la forme : « un compteur
-à zéro sur une source qui ne compte rien est indistinguable d'un vrai zéro ».
-La structure est donc TOUJOURS exposée, les trois récepteurs présents dès le
-démarrage — un zéro se lit alors « l'instrument est armé et n'a rien vu »,
-jamais « personne ne compte ».
+Ticket `d5e4bd73`, track (b), complementing the shipped access log: the log tells
+the story, the counter totals, and it is exposed in the same place as the other
+metrics (GET /metrics). The ticket's lesson governs the shape: "a counter at zero
+on a source that counts nothing is indistinguishable from a real zero". The
+structure is therefore ALWAYS exposed, the three receivers present from startup — a
+zero then reads as "the instrument is armed and has seen nothing", never as "nobody
+is counting".
 """
 
 from __future__ import annotations
@@ -132,9 +132,9 @@ def _short_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_the_structure_is_armed_before_any_rejection() -> None:
-    """Le zéro signifiant : les trois récepteurs sont exposés dès la
-    construction, chacun vide — la présence de la structure prouve que
-    l'instrument compte, son contenu dit ce qu'il a vu."""
+    """The meaningful zero: the three receivers are exposed from construction time,
+    each empty — the structure's presence proves the instrument counts, its content
+    says what it has seen."""
     snapshot = _server()._rejection_counters.snapshot()
 
     assert set(snapshot) == ALL_RECEIVERS
@@ -157,7 +157,7 @@ async def test_every_rejection_code_increments_its_counter(status: int, trigger:
 
 @pytest.mark.asyncio
 async def test_an_accepted_request_increments_nothing() -> None:
-    """TÉMOIN NÉGATIF : un incrément inconditionnel passerait tous les autres."""
+    """NEGATIVE WITNESS: an unconditional increment would pass all the others."""
     server = _server()
     body = json.dumps({"resourceLogs": []}, separators=(",", ":")).encode()
 
@@ -175,14 +175,14 @@ async def test_an_accepted_request_increments_nothing() -> None:
 
 @pytest.mark.asyncio
 async def test_a_provoked_413_is_visible_in_the_metrics_payload() -> None:
-    """La vérification du mandat, de bout en bout : un 413 provoqué sur
-    /v1/logs apparaît dans GET /metrics — au même endroit que le reste."""
+    """The mandate's end-to-end check: a 413 provoked on /v1/logs appears in
+    GET /metrics — in the same place as the rest."""
     server = _server()
     collector = server._collector
     collector.get_metrics.return_value = {"embedding_service": {}}
     collector.collect_process_metrics = AsyncMock(return_value={"active_processes": 0})
-    # Le reste du handler agrège d'autres sources ; elles sont muettes ici —
-    # seul le chemin des compteurs de refus est sous test.
+    # The rest of the handler aggregates other sources; they are mute here — only
+    # the rejection-counter path is under test.
     for probe in (
         "collect_db_stats",
         "collect_search_quality",
@@ -199,7 +199,7 @@ async def test_a_provoked_413_is_visible_in_the_metrics_payload() -> None:
     payload = json.loads(response.body)
 
     assert payload["receiver_rejections"]["codex_logs"] == {"413": 1}
-    # Les deux récepteurs muets restent PRÉSENTS : leur zéro est signifiant.
+    # The two mute receivers stay PRESENT: their zero is meaningful.
     assert payload["receiver_rejections"]["claude_logs"] == {}
     assert payload["receiver_rejections"]["client_activity"] == {}
 
@@ -209,7 +209,7 @@ async def test_a_provoked_413_is_visible_in_the_metrics_payload() -> None:
 async def test_a_failing_counter_can_never_break_the_rejection(
     monkeypatch: pytest.MonkeyPatch, status: int, trigger: Any
 ) -> None:
-    """Même promesse que l'access log : l'instrument n'est jamais la panne."""
+    """Same promise as the access log: the instrument is never the failure."""
     server = _server()
 
     def _explode(*_args: Any, **_kwargs: Any) -> None:
@@ -223,9 +223,9 @@ async def test_a_failing_counter_can_never_break_the_rejection(
 
 
 def test_no_declared_status_can_ship_uncounted() -> None:
-    """Garde STRUCTURELLE, jumelle de celle de l'access log : `_otlp_error`
-    exige `counters` par mot-clé — un 7ᵉ code ne peut pas être construit sans
-    être compté, la couverture tient par construction."""
+    """A STRUCTURAL guard, twin of the access log's: `_otlp_error` requires
+    `counters` as a keyword — a 7th code cannot be constructed without being counted,
+    the coverage holds by construction."""
     counters = ReceiverRejectionCounters()
 
     for status in server_module._OTLP_ERROR_STATUSES:

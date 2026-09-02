@@ -1,5 +1,5 @@
 """
-TDD tests for Feature #607: Setup pyproject.toml avec dépendances.
+TDD tests for Feature #607: set up pyproject.toml with its dependencies.
 
 These tests verify that pyproject.toml contains all required dependencies
 and does NOT contain any forbidden packages.
@@ -240,7 +240,7 @@ class TestForbiddenPackages:
 
 
 class TestDevDependencies:
-    """Whole CI toolchain pinned EXACT (learning c43ed8b8, décision 2026-07-10).
+    """Whole CI toolchain pinned EXACT (learning c43ed8b8, decision of 2026-07-10).
 
     A floating spec (tool>=...) lets CI silently float to whatever is latest
     at pipeline time, so a new upstream release can turn a green commit red
