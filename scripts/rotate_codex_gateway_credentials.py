@@ -39,19 +39,19 @@ _REVISION_SHAPE = re.compile(r"[0-9a-z_]+")
 _POSTGRES_SSLMODES = frozenset(
     {"disable", "allow", "prefer", "require", "verify-ca", "verify-full"}
 )
-# Le contrat que la passerelle exige RÉELLEMENT du schéma : dix vues, et pour
-# chacune les colonnes que son consommateur lit. La révision Alembic n'est
-# qu'un PROXY de cet invariant — `deploy/CODEX_GATEWAY.md` le dit lui-même,
-# « ce head conserve les dix vues requises par la gateway ». Un proxy dit non
-# à un schéma compatible dès que le numéro bouge (sept migrations durant), et
-# oui à un schéma qui a perdu une colonne.
+# What the gateway ACTUALLY requires of the schema: ten views, and for each of
+# them the columns its consumer reads. The Alembic revision is only a PROXY for
+# that invariant — `deploy/CODEX_GATEWAY.md` says so itself, "this head keeps
+# the ten views the gateway requires". A proxy says no to a compatible schema as
+# soon as the number moves (for seven migrations running), and yes to a schema
+# that has lost a column.
 #
-# Colonnes mesurées, pas devinées : les neuf premières viennent de
+# Columns measured, not guessed: the first nine come from
 # `tests/integration/db/test_codex_contract_views_036.py::CONTRACT_COLUMNS`,
-# la dixième de la spec du consommateur, vérifiée identique en base.
+# the tenth from the consumer's spec, verified identical in the database.
 #
-# L'assertion est un SUR-ENSEMBLE : une colonne AJOUTÉE passe, seule une
-# colonne disparue mord.
+# The assertion is a SUPERSET: an ADDED column passes, only a vanished column
+# bites.
 _CODEX_GATEWAY_CONTRACT: Mapping[str, tuple[str, ...]] = {
     "codex_brain_entity_v1": (
         "id",
@@ -166,17 +166,17 @@ _CODEX_GATEWAY_CONTRACT: Mapping[str, tuple[str, ...]] = {
         "created_at",
     ),
 }
-# DÉRIVÉ, jamais retapé : une seconde liste tenue d'accord à la main annule la
-# garde, exactement comme la révision Alembic recopiée dans un test l'avait
-# annulée (learning 8dc7e042).
+# DERIVED, never retyped: a second list kept in agreement by hand cancels the
+# guard, exactly as the Alembic revision copied into a test had cancelled it
+# (learning 8dc7e042).
 _CODEX_GATEWAY_VIEWS = tuple(_CODEX_GATEWAY_CONTRACT)
 
-# Les clauses (b), (c) et (d) du contrat faisant autorité
-# (`_CODEX_CONTRACT_READY`, composition.py, câblé sur /ready). COPIES
-# délibérées : ce script n'importe rien de brain_v42 (il réécrit les .env que
-# Settings lit) ; l'agrément est tenu par
-# TestContractProofCoversAllFourClauses, qui importe les DEUX côtés et rougit
-# si une vue, une barrière ou un trigger n'est ajouté que d'un seul.
+# Clauses (b), (c) and (d) of the authoritative contract
+# (`_CODEX_CONTRACT_READY`, composition.py, wired onto /ready). DELIBERATE
+# copies: this script imports nothing from brain_v42 (it rewrites the .env files
+# Settings reads); the agreement is held by
+# TestContractProofCoversAllFourClauses, which imports BOTH sides and turns red
+# if a view, a barrier or a trigger is added on one side only.
 _CODEX_SCOPED_BARRIER_VIEWS = (
     "codex_brain_entity_v1",
     "codex_ticket_v1",
@@ -191,10 +191,10 @@ _CODEX_GATEWAY_TRIGGERS = (
     ("trg_ticket_participants_immutable", "tickets"),
 )
 
-# `unnest($1, $2)` PADE le tableau le plus court avec NULL. Un désalignement
-# ferait donc remonter `{NULL}` parmi les manquants et exploserait au join,
-# en « credential cutover failed ». Les deux tableaux sont construits d'un
-# seul parcours pour que ce désalignement soit impossible par construction.
+# `unnest($1, $2)` PADS the shorter array with NULL. A misalignment would
+# therefore surface `{NULL}` among the missing ones and blow up at the join, as
+# "credential cutover failed". Both arrays are built in a single pass so that
+# such a misalignment is impossible by construction.
 _GATEWAY_CONTRACT_PROOF = """
 WITH expected(view_name, column_name) AS (
     SELECT * FROM unnest($1::text[], $2::text[])
@@ -259,11 +259,11 @@ FROM expected
 def _gateway_contract_arrays(
     contract: Mapping[str, tuple[str, ...]],
 ) -> tuple[list[str], list[str]]:
-    """Aplatit le contrat en deux tableaux PARALLÈLES de même longueur.
+    """Flatten the contract into two PARALLEL arrays of equal length.
 
-    Une vue absente est comptée UNE fois — la garde `to_regclass IS NOT NULL`
-    du SQL empêche ses colonnes de la suivre dans le rapport, sans quoi une
-    seule vue disparue noierait le diagnostic sous douze lignes.
+    An absent view is counted ONCE — the SQL's `to_regclass IS NOT NULL` guard
+    stops its columns following it into the report, without which a single
+    vanished view would drown the diagnosis under twelve lines.
     """
     views: list[str] = []
     columns: list[str] = []
@@ -346,13 +346,13 @@ class RotationConfig:
     rollback_preflight_confirmed: bool
     consumers_recreated_confirmed: bool
     expected_alembic_revision: str
-    """Head Alembic MESURÉ par l'opérateur juste avant la procédure.
+    """The Alembic head MEASURED by the operator just before the procedure.
 
-    Sans défaut, et c'est le point : la garde comparait à la constante ``"037"``, si
-    bien qu'elle s'est périmée à la migration suivante et que la rotation entière est
-    devenue inexécutable. Une garde qui code en dur un numéro de révision finit par
-    ne plus garder que contre elle-même. Elle n'est pas retirée — elle existe pour
-    garantir que la rotation tourne contre le schéma attendu — elle cesse de périmer.
+    Without a default, and that is the point: the guard compared against the
+    constant ``"037"``, so it went stale at the next migration and the whole
+    rotation became unrunnable. A guard that hard-codes a revision number ends up
+    guarding against nothing but itself. It is not removed — it exists to ensure
+    the rotation runs against the expected schema — it stops going stale.
     """
 
 
@@ -1117,14 +1117,14 @@ def _credential_generation(database: CredentialDatabase, state: RotationState) -
 
 
 def _refuse_a_broken_gateway_contract(database: CredentialDatabase, codex_password: str) -> None:
-    """Preuve DIRECTE que la passerelle a le schéma qu'elle exige.
+    """DIRECT proof that the gateway has the schema it requires.
 
-    Muette dans le cas nominal — aucun log, aucun champ de sortie : une ligne
-    émise à chaque rotation s'apprendrait à être sautée. Elle ne parle que
-    pour refuser, et alors elle nomme les manquants et EUX SEULS. Joindre le
-    contrat entier rejouerait le défaut qu'on corrige : aujourd'hui une vue
-    disparue fait bien échouer le préflight, mais par accident, avec un
-    message qui accuse les privilèges.
+    Mute in the nominal case — no log, no output field: a line emitted on every
+    rotation would teach itself to be skipped. It speaks only to refuse, and then
+    it names the missing ones and THEM ALONE. Attaching the whole contract would
+    replay the very defect being fixed: today a vanished view does make the
+    preflight fail, but by accident, with a message that blames the
+    privileges.
     """
     missing = database.missing_gateway_contract(codex_password)
     _safe_failure(
@@ -1140,9 +1140,9 @@ def _prove_new_generation(
         _credential_generation(database, state) != "new",
         "new PostgreSQL credentials are not exclusively active",
     )
-    # SEULE preuve de contrat du chemin --resume, qui ne repasse jamais par
-    # _preflight. Rien n'est ajouté à _rollback_state : l'échappatoire reste
-    # sans garde, et deux tests l'épinglent.
+    # The ONLY contract proof on the --resume path, which never goes back
+    # through _preflight. Nothing is added to _rollback_state: the escape hatch
+    # stays unguarded, and two tests pin that.
     _refuse_a_broken_gateway_contract(database, state.new_codex)
     measured = database.revision(state.new_brain)
     _safe_failure(
@@ -1191,9 +1191,9 @@ def _preflight(
         raise RotationError("privileged Shrik preflight failed") from None
     old_valid = database.probe("brain", old_brain) and database.probe("codex_ro", old_codex)
     _safe_failure(not old_valid, "configured PostgreSQL credentials are not accepted")
-    # AVANT la garde de révision, délibérément : quand les deux mordraient,
-    # c'est la cause actionnable qui doit parler. « cette vue a disparu » se
-    # traite ; « la révision a bougé » n'apprend rien à qui vient de migrer.
+    # BEFORE the revision guard, deliberately: when both would bite, the
+    # actionable cause must speak. "this view has vanished" can be acted on;
+    # "the revision moved" teaches nothing to someone who has just migrated.
     _refuse_a_broken_gateway_contract(database, old_codex)
     revision = database.revision(old_brain)
     _safe_failure(
@@ -1444,10 +1444,10 @@ class AsyncpgCredentialDatabase:
                     + tuple(f"security_barrier:{name}" for name in row["missing_barriers"])
                     + tuple(f"trigger:{name}" for name in row["missing_triggers"])
                 )
-            # Divergence DÉLIBÉRÉE avec codex_scope_is_bounded, qui rend False
-            # sur un mot de passe refusé : ici un refus d'authentification ne
-            # doit JAMAIS se lire comme « les vues manquent ». L'identité est
-            # de toute façon déjà prouvée en amont, par _preflight comme par
+            # A DELIBERATE divergence from codex_scope_is_bounded, which
+            # returns False on a refused password: here an authentication
+            # refusal must NEVER read as "the views are missing". Identity is
+            # already proven upstream anyway, by _preflight as by
             # _prove_new_generation.
             except Exception:
                 raise RotationError("Codex gateway contract verification failed") from None
@@ -1654,11 +1654,11 @@ def run_rotation(
 
 
 def _alembic_revision(raw: str) -> str:
-    """Head déclaré par l'opérateur, validé fail-closed.
+    """The head declared by the operator, validated fail-closed.
 
-    Refuser au parseur plutôt qu'au préflight : l'argument est recopié dans un
-    message d'erreur et dans le contrat de sortie JSON, et une révision n'a jamais
-    d'autre forme que celle d'un identifiant Alembic.
+    Refusing in the parser rather than in the preflight: the argument is copied
+    into an error message and into the JSON output contract, and a revision never
+    has any shape other than that of an Alembic identifier.
     """
     candidate = raw.strip()
     if not candidate or len(candidate) > 64 or not _REVISION_SHAPE.fullmatch(candidate):

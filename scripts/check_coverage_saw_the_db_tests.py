@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-"""Refuser une couverture mesurée sur un sous-ensemble du code testé.
+"""Refuse a coverage figure measured on a subset of the code under test.
 
-`tests/conftest.py::require_test_db_url()` fait SAUTER tout test adossé à une
-base quand `BRAIN_V42_TEST_DB_URL` est absente. C'est une garde juste — elle
-existe pour qu'un `pytest tests/unit` local ne pollue pas la production — mais
-elle a un angle mort en CI : **un test qui saute ne fait pas rougir un job**.
+`tests/conftest.py::require_test_db_url()` SKIPS every database-backed test when
+`BRAIN_V42_TEST_DB_URL` is absent. That is a fair guard — it exists so a local
+`pytest tests/unit` does not pollute production — but it has a blind spot in CI:
+**a test that skips does not turn a job red**.
 
-Le job `test-coverage` tournait sans service Postgres, sans cette variable et
-sans schéma appliqué. Ses tests adossés à une base sautaient donc en silence, et
-le pourcentage publié décrivait un sous-ensemble du code réellement testé sans
-que rien ne le dise à qui le lisait. Mesuré le 2026-08-22 : **60 tests sautés**.
+The `test-coverage` job ran with no Postgres service, without that variable and
+with no schema applied. Its database-backed tests therefore skipped in silence,
+and the published percentage described a subset of the code actually tested with
+nothing saying so to whoever read it. Measured 2026-08-22: **60 tests skipped**.
 
-Ce garde-fou est le vrai livrable du ticket `f779092b`, pas le pourcentage
-corrigé : réparer le chiffre seul le laisserait redériver au prochain écart de
-recette entre les deux jobs.
+This guard is ticket `f779092b`'s real deliverable, not the corrected
+percentage: repairing the number alone would let it drift again at the next
+recipe gap between the two jobs.
 
-**Il ne compare aucun compte à un nombre gravé**, et c'est délibéré. Le
-commentaire du workflow annonçait « 51 tests », le ticket « 55 », la mesure en
-trouve « 60 » — trois nombres, trois dates, trois mensonges programmés. Un seuil
-serait le quatrième. On exige seulement qu'AUCUN test n'ait sauté POUR CETTE
-CAUSE, ce qui reste vrai quel que soit le nombre de tests adossés à une base
-demain.
+**It compares no count against an engraved number**, and that is deliberate. The
+workflow comment announced "51 tests", the ticket "55", the measurement finds
+"60" — three numbers, three dates, three scheduled lies. A threshold would be the
+fourth. We demand only that NO test skipped FOR THIS CAUSE, which stays true
+whatever the number of database-backed tests turns out to be
+tomorrow.
 """
 
 from __future__ import annotations
@@ -29,17 +29,17 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-#: Le motif de saut qu'on refuse. On le reconnaît par le NOM DE LA VARIABLE que
-#: `require_test_db_url()` cite dans son message : c'est la seule chaîne stable
-#: entre la garde et ce contrôle. Un saut pour une autre raison — service GPU
-#: absent, plateforme — reste légitime et n'est pas compté ici.
+#: The skip reason we refuse. It is recognised by the VARIABLE NAME that
+#: `require_test_db_url()` quotes in its message: that is the only stable string
+#: between the guard and this check. A skip for another reason — GPU service
+#: absent, platform — stays legitimate and is not counted here.
 _DB_SKIP_MARKER = "BRAIN_V42_TEST_DB_URL"
 
 _MAX_NAMED = 10
 
 
 def db_skipped_tests(report: Path) -> list[str]:
-    """Rendre les tests que le rapport JUnit dit sautés faute de base."""
+    """Return the tests the JUnit report says skipped for want of a database."""
     root = ET.parse(report).getroot()
     return [
         f"{case.get('classname')}::{case.get('name')}"
@@ -55,9 +55,9 @@ def main(argv: list[str]) -> int:
         return 2
     report = Path(argv[1])
     if not report.is_file():
-        # Fail-closed : un rapport absent veut dire qu'on ne SAIT PAS si les
-        # tests ont tourné. Passer ici rendrait ce contrôle creux exactement
-        # dans le cas où pytest s'est effondré avant d'écrire son rapport.
+        # Fail-closed: an absent report means we do NOT KNOW whether the tests
+        # ran. Passing here would make this check hollow in exactly the case
+        # where pytest collapsed before writing its report.
         print(
             f"missing JUnit report {report} — cannot prove the DB-backed tests ran", file=sys.stderr
         )
@@ -77,8 +77,8 @@ def main(argv: list[str]) -> int:
     for name in skipped[:_MAX_NAMED]:
         print(f"  - {name}", file=sys.stderr)
     if len(skipped) > _MAX_NAMED:
-        # Pas de troncature muette : une liste coupée sans son reste se lit
-        # « il n'y en avait que dix ».
+        # No silent truncation: a list cut without its remainder reads as
+        # "there were only ten".
         print(f"  ... and {len(skipped) - _MAX_NAMED} more", file=sys.stderr)
     return 1
 
