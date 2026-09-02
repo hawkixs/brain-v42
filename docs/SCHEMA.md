@@ -39,7 +39,7 @@ cutover.
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
-The SQLAlchemy `METADATA` registry declares 31 tables, including the six graph
+The SQLAlchemy `METADATA` registry declares 32 tables, including the six graph
 foundation tables below. A fresh schema at head 049 contains 32 `public` tables counting
 `alembic_version`, which stays outside `METADATA`. Migrations 040 to 044 only add
 columns and 045 adds none — it widens an existing column — so the count has been

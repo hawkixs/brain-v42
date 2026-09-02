@@ -35,6 +35,8 @@ class TestMetadataAndTablePresence:
             "runbooks",
             "adrs",
             "project_contexts",
+            "project_focus_history",
+            "brain_session_checkpoints",
             "brain_sessions",
             "brain_session_artifacts",
             "search_log",

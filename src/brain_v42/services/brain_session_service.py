@@ -11,9 +11,11 @@ import structlog
 from brain_v42.config import get_settings
 from brain_v42.models.brain_session import (
     MAX_CAPTURED_KNOWLEDGE_IDS,
+    MAX_CHECKPOINT_TEXT,
     BrainSessionAbandonResult,
     BrainSessionCaptureConflictError,
     BrainSessionCaptureResult,
+    BrainSessionCheckpointResult,
     BrainSessionClientKeyConflictError,
     BrainSessionConflictError,
     BrainSessionEndResult,
@@ -69,6 +71,17 @@ class BrainSessionRepository(Protocol):
     async def heartbeat(
         self, session_id: UUID, expected_client_key: str
     ) -> BrainSessionHeartbeatResult: ...
+
+    async def checkpoint(
+        self,
+        session_id: UUID,
+        expected_client_key: str,
+        *,
+        seq: int,
+        progress: str,
+        next_step: str,
+        blocker: str | None,
+    ) -> BrainSessionCheckpointResult: ...
 
     async def end(
         self,
@@ -230,6 +243,47 @@ class BrainSessionService:
         await self._absorb_derived(session_id, identity)
         return await self.repo.capture(session_id, identity, captured)
 
+    async def checkpoint(
+        self,
+        session_id: UUID,
+        expected_client_key: str,
+        *,
+        seq: int,
+        progress: str,
+        next_step: str,
+        blocker: str | None = None,
+    ) -> BrainSessionCheckpointResult:
+        """Validate a semantic checkpoint, then append it (SPEC-checkpoint §2.2).
+
+        Every bound is fail-closed and NONE truncates. That is a deliberate
+        divergence from `parse_and_validate`, which clips a `topic` to 200
+        characters without complaint: there a model is producing text, here a
+        human or an agent is recording a JUDGMENT, and a judgment cut at its
+        ceiling reads as finished while it is not. The ceiling is generous
+        precisely so that crossing it is a caller error rather than an accident.
+
+        No heartbeat, no focus, no capture — see the tool docstring. This method
+        validates and forwards; it is not a lifecycle boundary.
+        """
+        identity = _normalize_expected_client_key(expected_client_key)
+        if seq < 1:
+            raise BrainSessionInputError("seq must be an integer >= 1")
+        normalized_progress = _normalize_checkpoint_text(progress, field_name="progress")
+        normalized_next_step = _normalize_checkpoint_text(next_step, field_name="next_step")
+        normalized_blocker = (
+            None
+            if blocker is None or not blocker.strip()
+            else _normalize_checkpoint_text(blocker, field_name="blocker")
+        )
+        return await self.repo.checkpoint(
+            session_id,
+            identity,
+            seq=seq,
+            progress=normalized_progress,
+            next_step=normalized_next_step,
+            blocker=normalized_blocker,
+        )
+
     async def heartbeat(
         self, session_id: UUID, expected_client_key: str
     ) -> BrainSessionHeartbeatResult:
@@ -340,6 +394,25 @@ def _normalize_captured_ids(
     if len(captured) != len(set(captured)):
         raise BrainSessionInputError("captured_knowledge_ids must not contain duplicate UUIDs")
     return sorted(captured, key=str)
+
+
+def _normalize_checkpoint_text(value: str, *, field_name: str) -> str:
+    """Trim, then REFUSE — never truncate (SPEC-checkpoint §2.2).
+
+    Trimming and truncating are not the same act: trimming drops what nobody
+    wrote, truncating drops what somebody did.
+    """
+    if not isinstance(value, str):
+        raise BrainSessionInputError(f"{field_name} must be a string")
+    trimmed = value.strip()
+    if not trimmed:
+        raise BrainSessionInputError(f"{field_name} must not be blank")
+    if len(trimmed) > MAX_CHECKPOINT_TEXT:
+        raise BrainSessionInputError(
+            f"{field_name} exceeds {MAX_CHECKPOINT_TEXT} characters "
+            f"({len(trimmed)}); it is refused rather than truncated"
+        )
+    return trimmed
 
 
 def _normalize_expected_client_key(value: str) -> str:

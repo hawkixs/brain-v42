@@ -1712,6 +1712,62 @@ roadmap_curation_proposals = Table(
     Index("idx_rcp_feature", "feature_id"),
 )
 
+# ---------------------------------------------------------------------------
+# brain_session_checkpoints (migration 051, SPEC-checkpoint §3)
+# ---------------------------------------------------------------------------
+#
+# APPEND-ONLY, and guaranteed by a database TRIGGER rather than by the absence of
+# a code path — house culture, the same reason 039 pins a function by SHA256
+# instead of by trust. The trigger lives in the migration; this table is its
+# shape.
+#
+# `ON DELETE RESTRICT` is carried over from PLAN §4, and it is what makes the
+# trigger simple: with no cascading delete to distinguish, the guard can refuse
+# EVERY update and EVERY delete without a single exception. The cost is real and
+# written here because an operator would otherwise discover it on the first
+# DELETE — a session that carries checkpoints becomes INDELIBLE, since removing
+# them first is exactly what the trigger forbids.
+#
+# Neighbouring trap, named so nobody "fixes" the RESTRICT: CHECK + ON DELETE SET
+# NULL is a documented trap in this repository. Neither SET NULL nor CASCADE.
+#
+# One index only. `uq_brain_session_checkpoints_session_seq` serves the
+# idempotence key AND the per-session read, and no index is added to
+# `brain_sessions`, whose index list is CLOSED by `expected_session_indexes` in
+# the two v4 recovery assets.
+brain_session_checkpoints = Table(
+    "brain_session_checkpoints",
+    METADATA,
+    Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
+    Column(
+        "session_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("brain_sessions.id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("seq", sa.Integer, nullable=False),
+    Column("progress", Text, nullable=False),
+    Column("next_step", Text, nullable=False),
+    Column("blocker", Text, nullable=True),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("now()"),
+    ),
+    sa.CheckConstraint("seq >= 1", name="brain_session_checkpoints_seq_positive"),
+    sa.CheckConstraint("btrim(progress) <> ''", name="brain_session_checkpoints_progress_nonempty"),
+    sa.CheckConstraint(
+        "btrim(next_step) <> ''", name="brain_session_checkpoints_next_step_nonempty"
+    ),
+    sa.CheckConstraint(
+        "blocker IS NULL OR btrim(blocker) <> ''",
+        name="brain_session_checkpoints_blocker_nonempty",
+    ),
+    sa.UniqueConstraint("session_id", "seq", name="uq_brain_session_checkpoints_session_seq"),
+)
+
+
 __all__ = [
     "METADATA",
     "_EMBEDDING_DIM",
@@ -1746,4 +1802,43 @@ __all__ = [
     "ticket_extraction_proposals",
     "ticket_extraction_attempts",
     "roadmap_curation_proposals",
+    "brain_session_checkpoints",
 ]
+
+
+# The audit trail migration 050 lays down: one row per persisted revision of
+# `project_contexts.current_focus`, written inside the same transaction as the
+# focus write itself.
+#
+# `project_key` carries NO foreign key, the knowledge tables' doctrine: dropping
+# a context must not take its audit trail down with it. `focus` is NULLABLE
+# because an ERASED focus is precisely the destructive overwrite this table
+# exists to record — and because a NOT NULL would have aborted 050's own seed on
+# the ten NULL focuses measured in production.
+#
+# The primary key is the only index this table needs: the reading tool pages one
+# project by descending revision, which `(project_key, focus_revision)` serves.
+project_focus_history = Table(
+    "project_focus_history",
+    METADATA,
+    Column("project_key", String(50), nullable=False),
+    Column("focus_revision", sa.BigInteger, nullable=False),
+    Column("focus", Text, nullable=True),
+    Column("actor", String(64), nullable=True),
+    Column("source", String(20), nullable=False),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("now()"),
+    ),
+    sa.PrimaryKeyConstraint("project_key", "focus_revision", name="project_focus_history_pkey"),
+    # An exact mirror of the CHECK 050 installs. Six sources for seven writers:
+    # `focus_tool` covers the roadmap CAS and the repository's `update_focus`,
+    # `context_upsert` covers `create` and `get_or_create`.
+    sa.CheckConstraint(
+        "source IN ('session_end', 'focus_tool', 'context_upsert', "
+        "'generic_update', 'maintenance_scrub', 'migration_seed')",
+        name="project_focus_history_source_valid",
+    ),
+)

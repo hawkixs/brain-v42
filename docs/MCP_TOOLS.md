@@ -1,13 +1,13 @@
 # MCP Tools — brain_v42
 
 **Updated:** 2026-07-24
-**Repository registry:** 51 always-on + 2 graph-gated = 53 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
+**Repository registry:** 52 always-on + 2 graph-gated = 54 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
 **Default catalog:** Admin clients use `compact` while capability enforcement is disabled: the seven session lifecycle tools plus `brain_find_tool` and `brain_call_tool`; other registered tools remain discoverable through those gateways. `native` exposes every registered tool. An authenticated Dream phase always receives its exact native allowlist, independent of presentation headers, and cannot access either gateway. Experimental `brain_code_mode` takes precedence only while Dream capability enforcement is disabled.
 **Transport:** HTTP loopback `http://127.0.0.1:8765/mcp` (production fleet). Tools are defined as closures capturing injected services — see `src/brain_v42/mcp/server.py` (`build_services()`) and the `register_*_tools()` functions in each module under `src/brain_v42/mcp/tools/`.
 
 Most tools return formatted markdown strings. The seven v4 session lifecycle tools return structured Pydantic results. Their repository contract is documented below. Lifecycle v4 has run in production since 24 July 2026, after revision 036, explicit schema proof and a restart-last MCP cutover with authenticated E2E canaries.
 
-Migration 049 is the repository target: it adds the sweep's per-night `closed_inactive_count`, the agy rail's `thinking_tokens`, and widens the `freshness_source` vocabulary (`manual_update`, `plan_reindex`). Migration 048 adds `brain_session_artifacts.attribution_mode`,
+Migration 050 is the repository target: it adds `project_focus_history` (M-D), the append-only audit trail of every focus revision, plus a deferred constraint trigger on `project_contexts` shipped disabled. Migration 049 it adds the sweep's per-night `closed_inactive_count`, the agy rail's `thinking_tokens`, and widens the `freshness_source` vocabulary (`manual_update`, `plan_reindex`). Migration 048 adds `brain_session_artifacts.attribution_mode`,
 so a reader can tell a PROVEN attribution (`derived_connection`, same connection) from a DEDUCED
 one (`derived_window`, sole covering session at the instant of creation) — and undo the second
 kind. Migration 047 removes the closing XOR, so a session whose ledger
@@ -297,7 +297,7 @@ Return the shortest graph path between two entities (1-6 hops, clamped). Discove
 
 ---
 
-## Session lifecycle — 7 tools (`session_lifecycle_tools.py`, v4.0)
+## Session lifecycle — 8 tools (`session_lifecycle_tools.py`, v4.0)
 
 These tools implement explicit, persistent session actions. Only an explicit user command may invoke them; hooks and agents must never infer a start, capture, heartbeat, resume, end, list, or abandon action. Migration 037 extends the schema created by migration 032 and depends on revision 036. It is active on the production database since 24 July 2026; fresh or restored environments must still prove their own Alembic head before enabling this runtime.
 
@@ -359,6 +359,17 @@ brain_session_heartbeat(session_id, expected_client_key)
 -> {session}
 ```
 Refresh `last_heartbeat_at` and `updated_at` for an `open` session without changing its lifecycle status or project focus. Terminal sessions reject heartbeats.
+
+### brain_session_checkpoint
+```
+brain_session_checkpoint(session_id, expected_client_key, seq, progress, next_step, blocker=None)
+-> {session_id, seq, created_at, replayed, checkpoint_count}
+```
+Publish one semantic checkpoint of an `open` session, in a single call, into the append-only `brain_session_checkpoints` table (migration 051). It records JUDGMENT — where the work stands, what blocks it, what comes next — published together so a reader can tell a complete snapshot from a partial one.
+
+It is **not** a lifecycle command and **not** a presence signal: it writes no `last_heartbeat_at`, touches no focus or `focus_revision`, attributes no artifact, and neither opens nor closes a session. Liveness already comes from the observation stamped by every tool call, which is why the checkpoint carries no heartbeat effect at all — on a real checkpoint or on a replay.
+
+`seq` is supplied by the caller and must be an integer >= 1. Reusing the same `seq` with an identical payload replays the call idempotently and returns `replayed=true` with the original `created_at`; reusing it with different content is a non-destructive conflict and is refused rather than silently dropped. `progress` and `next_step` are 1–2,000 characters after trimming, `blocker` is null or 1–2,000; overflow is refused, never truncated, because a judgment cut at its bound reads as complete while it is not. A session holds at most 200 checkpoints, fail-closed.
 
 ### brain_session_list
 ```
@@ -742,8 +753,8 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `project_context_tools.py` | project + groups | 4 |
 | `roadmap_tools.py` | roadmap | 3 |
 | `runbook_tools.py` | runbooks | 3 |
-| `session_lifecycle_tools.py` | persistent session lifecycle | 7 |
+| `session_lifecycle_tools.py` | persistent session lifecycle | 8 |
 | `snippet_tools.py` | snippets | 2 |
 | `ticket_tools.py` | tickets cross-projet (coordination) | 5 |
 | `workflow_guide_tools.py` | bounded workflow guidance | 1 |
-| **Total** | | **51 always-on + 2 graph-gated = 53** |
+| **Total** | | **52 always-on + 2 graph-gated = 54** |

@@ -49,8 +49,8 @@ _COVENANT = (
 #: The PRE-046 form, which knew nothing of tracers. Must have disappeared.
 _RETIRED_COVENANT = "No hook or auto-close may invoke this lifecycle boundary."
 
-#: Seven today. The checkpoint (M-C) will take this number to eight — see the module.
-_EXPECTED_TOOL_COUNT = 7
+#: Eight since the checkpoint (M-C, migration 051) landed with its covenant sentence.
+_EXPECTED_TOOL_COUNT = 8
 
 #: The word the registration docstring must use for this number.
 _COUNT_WORD = {7: "seven", 8: "eight", 9: "nine"}
@@ -75,6 +75,7 @@ def test_the_lifecycle_surface_is_exactly_the_expected_size() -> None:
             "brain_session_resume",
             "brain_session_capture",
             "brain_session_heartbeat",
+            "brain_session_checkpoint",
             "brain_session_end",
             "brain_session_abandon",
         ]

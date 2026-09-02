@@ -34,7 +34,14 @@ def _expected_checks() -> list[dict[str, Any]]:
         [
             name
             for name in METADATA.tables
-            if name not in {"brain_session_artifacts", "ticket_extraction_attempts"}
+            # `brain_session_checkpoints` arrives with 051, long after the 035
+            # this asset describes — see the note in test_recovery_contract.py.
+            if name
+            not in {
+                "brain_session_artifacts",
+                "brain_session_checkpoints",
+                "ticket_extraction_attempts",
+            }
         ]
         + ["alembic_version"]
     )

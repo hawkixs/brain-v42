@@ -278,8 +278,23 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
     # current head. Re-read at 049: it adds no table (32 `public` unchanged) — two
     # nullable columns on `dream_runs` and a widened CHECK vocabulary, nothing the
     # v1 contract describes.
-    assert script.get_heads() == ["049"]
+    # Re-read at 050: it ADDS a table (`project_focus_history`), which moves
+    # `table_set` — hence the entry below — and two triggers, one of them shipped
+    # disabled. Neither touches the SHAPE this v1 contract describes at 031.
+    assert script.get_heads() == ["050"]
     post_contract_tables = {
+        # 051's table. SPEC-checkpoint §3.2 predicted the attestation would not
+        # move, and it was right about the two things it named — no index on
+        # `brain_sessions`, no CHECK of it touched, so the terminal fingerprint and
+        # `expected_session_indexes` are untouched. It was incomplete about the
+        # THIRD surface: `table_set` is DERIVED from live METADATA, so any new
+        # table moves it. A contract describing revision 031 must not claim a table
+        # that will not exist for another twenty revisions.
+        # 050's table. `table_set` is DERIVED from live METADATA, so any new
+        # table moves it, and a contract describing revision 031 must not claim
+        # a table that will not exist for another nineteen revisions.
+        "project_focus_history",
+        "brain_session_checkpoints",
         "brain_session_artifacts",
         "brain_sessions",
         "projects",

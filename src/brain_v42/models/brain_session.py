@@ -33,6 +33,16 @@ AUTO_STALE_ABANDONMENT_REASON = "auto_stale_7d"
 # worst-case latency ≈ 28 h.
 AGENT_INACTIVE_AFTER = timedelta(hours=4)
 
+#: Per-text ceiling of a checkpoint payload (SPEC-checkpoint §2.2). Crossing it
+#: RAISES; it never truncates. `parse_and_validate` forgivingly clips a `topic`
+#: because there a model is producing — here the payload is a JUDGMENT, and a
+#: judgment cut at 2000 characters reads as complete while it is not.
+MAX_CHECKPOINT_TEXT = 2000
+#: Checkpoints per SESSION, not per night (SPEC-checkpoint §2.2). Under automatic
+#: opening a tracer lives at most until the sweep, so 200 judgment notes inside a
+#: single session is already a signal in itself. Fail-closed past it.
+MAX_CHECKPOINTS_PER_SESSION = 200
+
 
 class BrainSessionStatus(StrEnum):
     """Persistent lifecycle states.
@@ -92,6 +102,19 @@ class BrainSessionClientKeyConflictError(BrainSessionConflictError):
 
 class BrainSessionIdentityConflictError(BrainSessionConflictError):
     """Raised when a session UUID and expected client identity do not match."""
+
+
+class BrainSessionCheckpointConflictError(BrainSessionConflictError):
+    """A `seq` already used by this session, with DIFFERENT content.
+
+    `ON CONFLICT DO NOTHING` returns zero rows for an exact replay and for a
+    content collision alike, and the spec refuses to let the second pass silently
+    (SPEC-checkpoint §1.1, settled by PLAN §4: "the same `seq` with a different
+    payload is a non-destructive conflict, explicitly rejected"). The repository
+    therefore rereads the stored row and compares the triple: identical means
+    `replayed`, different raises this. Since `seq` comes from the CLIENT and agent
+    retries are the norm (invariant C6), this collision is not theoretical.
+    """
 
 
 class BrainSessionCaptureConflictError(BrainSessionConflictError):
@@ -377,6 +400,32 @@ class BrainSessionCaptureResult(BaseModel):
     newly_captured_knowledge_ids: list[UUID] = Field(default_factory=list)
     replayed_knowledge_ids: list[UUID] = Field(default_factory=list)
     replayed: bool
+
+
+class BrainSessionCheckpoint(BaseModel):
+    """One append-only semantic checkpoint of a session."""
+
+    session_id: UUID
+    seq: int = Field(..., ge=1)
+    progress: str = Field(..., min_length=1, max_length=MAX_CHECKPOINT_TEXT)
+    next_step: str = Field(..., min_length=1, max_length=MAX_CHECKPOINT_TEXT)
+    blocker: str | None = Field(default=None, min_length=1, max_length=MAX_CHECKPOINT_TEXT)
+    created_at: datetime
+
+
+class BrainSessionCheckpointResult(BaseModel):
+    """Outcome of publishing one checkpoint (SPEC-checkpoint §2).
+
+    `replayed` distinguishes a stored row from an exact retry absorbed by the
+    unique key; `checkpoint_count` is the count AFTER this call, so a caller can
+    read how close it is to the ceiling without a second round trip.
+    """
+
+    session_id: UUID
+    seq: int = Field(..., ge=1)
+    created_at: datetime
+    replayed: bool
+    checkpoint_count: int = Field(..., ge=1, le=MAX_CHECKPOINTS_PER_SESSION)
 
 
 class BrainSessionHeartbeatResult(BaseModel):
