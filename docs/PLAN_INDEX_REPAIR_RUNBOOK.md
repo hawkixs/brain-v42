@@ -23,13 +23,13 @@ here and the restore procedure below were found to be describing two different d
 | --- | --- | --- |
 | Alembic head | `049` | 2026-09-02, live production |
 | Recovery contract, live target | `ops/recovery/brain-v42-v7.sql` | 2026-09-02, live production |
-| Recovery contract, restored target | `ops/recovery/brain-v42-v7-pgrestore.sql` | **Not replayed against a restore.** Derived from the v6 twin (benched 2026-08-29) by canonicalizing the six 049 fingerprints off live production — see the row below |
+| Recovery contract, restored target | `ops/recovery/brain-v42-v7-pgrestore.sql` | **Replayed against a real restore**, 2026-09-02: `pg_restore --exit-on-error --clean --create` of a read-only `pg_dump -Fc` of live `brain` into a disposable container on the production container's own image, destroyed after |
 | Contract receipt, live asset replayed live | `30/30` — no red at all, a first for this lineage: the `045c6302` data bug the v6 row reported was cleared in production on 2026-09-02 (`focus_revision_violations: 0`), and 049 closed the `table_shape` gap this mint exists for | 2026-09-02, live production |
-| Contract receipt, `-pgrestore` asset against a real restore | **NOT REPLAYED for v7** — no disposable bench was restored on 2026-09-02, so no receipt exists and none is quoted. What *is* measured: the twin's canonicalization reproduces the v6 twin's fingerprint for 112 of 118 constraints straight off live production, the six exceptions being exactly the six 049 rewrote. Bench it before trusting it in a disaster | 2026-08-29 for the v6 twin it derives from; v7 unmeasured |
+| Contract receipt, `-pgrestore` asset against a real restore | `30/30` — no red. The canonicalization the previous row promised holds against an actual restore, not only off live production. Restored head **measured** at `049`, equal to production, so no `alembic upgrade head` was needed. The extension check states its drift and passes on names, by design: expected origin inventory `vector 0.8.2`, observed `vector 0.8.4` | 2026-09-02, disposable restore — dump `brain-p1drill-20260902.dump`, sha256 `75e0ddd404ee9d6094a60bf746dd0d78051557ff9f5bca907e655a2f6d1a169e`, image `sha256:b295c2aa9272` (`pgvector/pgvector:0.8.4-pg16`, PostgreSQL 16.14) |
 | ACL contract, live target | `ops/recovery/brain-v42-v7-acl.sql` | 2026-09-02, live production |
-| ACL contract, restored target | `ops/recovery/brain-v42-v7-acl-pgrestore.sql` | **Not replayed against a restore**; byte-identical to the v6 twin but for its identity, because 049 grants nothing and touches no view |
+| ACL contract, restored target | `ops/recovery/brain-v42-v7-acl-pgrestore.sql` | **Replayed against the same real restore**, 2026-09-02; still byte-identical to the v6 twin but for its identity, because 049 grants nothing and touches no view |
 | ACL receipt, live | `1/1` | 2026-09-02, live production |
-| ACL receipt, restored | **NOT REPLAYED for v7.** The v6 twin rendered `1/1` on a real restore, naming its one tolerance `tolerated_superuser_roles: ["postgres"]`, the maintenance superuser that performs the restore; v7 changes not one byte of that asset | 2026-08-29 for the v6 twin; v7 unmeasured |
+| ACL receipt, restored | `1/1` — 0 owner, 0 grant, 0 role-privilege and 0 unexpected-grantee mismatches, naming its one tolerance `tolerated_superuser_roles: ["postgres"]`, the maintenance superuser that performed the restore. The restore ran WITHOUT `--no-owner --no-acl`, which is the whole point of this asset | 2026-09-02, same disposable restore as the row above |
 | Search top-10 churn across HNSW rebuilds, `learnings` ONLY, n=40 probes | `0` — overlap `10/10` on ten build pairs (`BUILDS=5`, seed 0.42), strict order included, both probe bands | 2026-08-29, copy of the 3243 real `learnings` embeddings, index path forced |
 
 Replay the head and the two live-target assets against production:
@@ -837,6 +837,13 @@ timeout -s KILL 30m pg_restore \
   --dbname="service=$PGSERVICE_PRODUCTION_MAINTENANCE" \
   "$BACKUP_ARCHIVE"
 ```
+
+That command assumes the target database EXISTS — a disaster restores over a cluster that has
+one. Measured on 2026-09-02: on a fresh cluster it aborts on its own first statement,
+`DROP DATABASE brain`, because `--clean` emits the drop and `--exit-on-error` makes the failure
+fatal. A disposable bench must therefore be primed with an empty target of the signed name
+before the archive is replayed; priming the bench is correct, adding `--if-exists` to the
+disaster command is not, since that would change the command this runbook exists to rehearse.
 
 On any restore or validation failure, leave application roles `NOLOGIN`, quarantine the target,
 and keep every writer off. After a successful restore, use the gated maintenance-to-target service
