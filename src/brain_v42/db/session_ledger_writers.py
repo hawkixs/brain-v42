@@ -58,13 +58,13 @@ DECLARED_SESSION_LEDGER_WRITERS: Final[frozenset[str]] = frozenset(
         # The one runtime writer.  Reached only from brain_session_capture:
         # session_lifecycle_tools -> BrainSessionService.capture -> here.
         "src/brain_v42/repositories/pg_brain_session.py::PgBrainSessionRepo.capture::insert",
-        # La REPRISE, ajoutée avec l'étage fenêtre. `capture` refusait une ligne
-        # détenue par une traçante en levant « ownership could not be resolved » ;
-        # elle la reprend désormais quand — et SEULEMENT quand — le détenteur est
-        # `nature='agent'`, c'est-à-dire le serveur. C'est la contrepartie du
-        # fail-closed : ce que la règle d'exclusivité refuse d'attribuer reste
-        # réparable par un humain qui nomme l'UUID. Un conflit avec un autre
-        # humain lève toujours.
+        # The TAKEOVER, added with the window stage. `capture` used to refuse a
+        # row held by a tracer by raising "ownership could not be resolved"; it
+        # now takes it over when — and ONLY when — the holder is
+        # `nature='agent'`, that is, the server. This is the counterpart of
+        # fail-closed: whatever the exclusivity rule refuses to attribute stays
+        # repairable by a human who names the UUID. A conflict with another
+        # human still raises.
         "src/brain_v42/repositories/pg_brain_session.py::PgBrainSessionRepo.capture::update",
         # Backfill of pre-v4 attributions (knowledge_type='legacy').  A migration,
         # not a path in flight.

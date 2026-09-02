@@ -1,21 +1,20 @@
-"""DSN Postgres pour les points d'entrée CLI qui parlent à asyncpg en direct.
+"""Postgres DSN for the CLI entry points that talk to asyncpg directly.
 
-Les outils en ligne de commande du rail dream n'ouvrent pas le moteur SQLAlchemy
-de l'application : ils appellent `asyncpg.connect(dsn)`. Ils avaient donc chacun
-leur propre `os.environ.get("POSTGRES_URL", "…brain:brain…")`, c'est-à-dire leur
-propre identifiant en dur.
+The dream rail's command-line tools do not open the application's SQLAlchemy
+engine: they call `asyncpg.connect(dsn)`. Each therefore carried its own
+`os.environ.get("POSTGRES_URL", "…brain:brain…")` — that is, its own hardcoded
+credential.
 
-Ce défaut n'était pas un défaut de développement : `brain-v42-dream.service`
-n'exporte aucun `POSTGRES_URL`, donc le littéral ÉTAIT le DSN de production tant
-que le mot de passe valait `brain`. Sa rotation a coupé l'écrivain de
-`dream_runs` sans rien casser de visible, parce que l'appelant journalise
-`WARN … (non-fatal)`.
+That defect was not a development defect: `brain-v42-dream.service` exports no
+`POSTGRES_URL`, so the literal WAS the production DSN for as long as the
+password was `brain`. Rotating it cut the `dream_runs` writer without breaking
+anything visible, because the caller logs `WARN … (non-fatal)`.
 
-Une seule fonction, deux propriétés : elle lit la configuration comme le reste
-de l'application (variable d'environnement, puis `.env` du répertoire de
-travail — qui est bien la racine du dépôt sous systemd), et elle LÈVE quand rien
-ne la configure. Un identifiant deviné est pire que faux : il est indiscernable
-d'une configuration correcte tant que la devinette reste valide.
+One function, two properties: it reads configuration the way the rest of the
+application does (environment variable, then the working directory's `.env` —
+which under systemd really is the repository root), and it RAISES when nothing
+configures it. A guessed credential is worse than a wrong one: it is
+indistinguishable from a correct configuration for as long as the guess holds.
 """
 
 from __future__ import annotations
@@ -28,15 +27,15 @@ __all__ = ["resolve_postgres_dsn"]
 
 
 def resolve_postgres_dsn() -> str:
-    """Retourne le DSN Postgres au format attendu par asyncpg.
+    """Return the Postgres DSN in the format asyncpg expects.
 
-    Le schéma `postgresql+asyncpg://` est celui de l'application ; asyncpg veut
-    `postgresql://`. La conversion vit ici pour que les appelants n'aient pas à
-    se souvenir du sens de la traduction.
+    The `postgresql+asyncpg://` scheme is the application's; asyncpg wants
+    `postgresql://`. The conversion lives here so callers never have to remember
+    which way the translation goes.
 
     Raises:
-        RuntimeError: si aucune configuration ne fournit `POSTGRES_URL`, ou si
-            la valeur fournie ne satisfait pas le contrat de `Settings`.
+        RuntimeError: if no configuration supplies `POSTGRES_URL`, or if the
+            supplied value does not satisfy the `Settings` contract.
     """
     try:
         settings = Settings()  # type: ignore[call-arg]  # postgres_url vient de l'env/.env
