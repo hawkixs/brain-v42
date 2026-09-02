@@ -424,7 +424,7 @@ class TestCollectDreamMetrics:
 
 
 class TestDreamMetricsRoadmapSpec7:
-    """Spec 2026-07-04 §7 — dédup re-runs + dry_run par phase (contrat additif)."""
+    """Spec 2026-07-04 §7 — re-run dedup + per-phase dry_run (additive contract)."""
 
     @pytest.mark.asyncio
     async def test_phase_dry_run_flag_exposed(self) -> None:
@@ -454,10 +454,10 @@ class TestDreamMetricsRoadmapSpec7:
 
     @pytest.mark.asyncio
     async def test_last_run_query_dedups_reruns(self) -> None:
-        """La requête last-run prend la DERNIÈRE row par phase (id DESC)."""
+        """The last-run query takes the LAST row per phase (id DESC)."""
         collector = _make_collector_with_dream_data([])
         await collector.collect_dream_metrics()
-        # premier execute = requête last-run
+        # first execute = the last-run query
         sql = str(collector._session_factory.return_value.execute.call_args_list[0][0][0])
         assert "DISTINCT ON (phase)" in sql
         assert "ORDER BY phase, id DESC" in sql
@@ -471,7 +471,7 @@ class TestDreamMetricsRoadmapSpec7:
         await collector.collect_dream_metrics()
         sql = str(collector._session_factory.return_value.execute.call_args_list[1][0][0])
         assert "DISTINCT ON (run_date, phase)" in sql
-        # le coût agrège dream_runs complet (pas le sous-ensemble dédupliqué)
+        # the cost aggregates the whole dream_runs (not the deduplicated subset)
         assert "SUM(dr.cost_usd)" in sql
 
     @pytest.mark.asyncio
@@ -511,7 +511,7 @@ class TestDreamMetricsRoadmapSpec7:
 
 
 class TestExpectedDreamPhasesSweep:
-    """La phase sweep n'est attendue que si l'opérateur l'a explicitement armée."""
+    """The sweep phase is expected only if the operator explicitly armed it."""
 
     def _phases(self, tmp_path, body: str) -> set[str]:
         from brain_v42.metrics.collector_dream import expected_dream_phases
@@ -534,12 +534,12 @@ class TestExpectedDreamPhasesSweep:
 
 
 class TestExpectedDreamPhasesPromote:
-    """Promote reste ATTENDUE tant que son killswitch est ouvert.
+    """Promote stays EXPECTED for as long as its killswitch is open.
 
-    La bonne réponse à un pool vide est d'écrire une vraie row, jamais de
-    désarmer l'attente : un promote qui crashe n'écrit rien non plus, et c'est
-    précisément ce que ce détecteur doit continuer d'attraper (incidents des
-    2026-05-02 et 2026-05-03, deux jours de silence).
+    The right answer to an empty pool is to write a real row, never to disarm the
+    expectation: a promote that crashes writes nothing either, and that is exactly
+    what this detector must keep catching (incidents of 2026-05-02 and
+    2026-05-03, two days of silence).
     """
 
     def _phases(self, tmp_path, body: str) -> set[str]:

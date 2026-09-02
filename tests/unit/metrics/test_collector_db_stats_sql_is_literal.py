@@ -1,15 +1,15 @@
-"""Garde d'invariant des deux `# nosec B608` de ``MetricsCollector.collect_db_stats``.
+"""Invariant guard for the two `# nosec B608` in ``MetricsCollector.collect_db_stats``.
 
-``collect_db_stats`` construit deux requêtes par f-string : bandit les signale
-(B608, lignes 603 et 641). Les exceptions posées sur ces lignes reposent sur UN
-invariant unique — le seul fragment interpolé, ``table_name``, ne peut venir que
-du dict littéral local ``embedding_tables``, écrit 36 lignes plus haut dans la
-même fonction, laquelle n'accepte aucun paramètre. La seule valeur variable de
-la seconde requête, ``settings.embedding_dimension``, passe par le bind ``:dim``.
+``collect_db_stats`` builds two queries by f-string: bandit flags them (B608,
+lines 603 and 641). The exceptions placed on those lines rest on ONE single
+invariant — the only interpolated fragment, ``table_name``, can come only from
+the local literal dict ``embedding_tables``, written 36 lines above in the same
+function, which accepts no parameter. The second query's only variable value,
+``settings.embedding_dimension``, goes through the ``:dim`` bind.
 
-Ces tests échouent à l'instant précis où le nosec cesserait d'être justifié :
-si ``embedding_tables`` devient dynamique, si ``table_name`` reçoit une autre
-source, si la fonction gagne un paramètre, ou si la dimension est interpolée.
+These tests fail at the precise instant the nosec would stop being justified: if
+``embedding_tables`` becomes dynamic, if ``table_name`` gets another source, if
+the function gains a parameter, or if the dimension is interpolated.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import re
 
 from brain_v42.metrics import collector as mod
 
-# Un nom de table PostgreSQL non cité, tel qu'écrit en dur dans le source.
+# An unquoted PostgreSQL table name, as hardcoded in the source.
 _BARE_IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 
@@ -33,7 +33,7 @@ def _collect_db_stats_ast() -> ast.AsyncFunctionDef:
 
 
 def test_collect_db_stats_takes_no_argument_that_could_reach_the_sql() -> None:
-    """Aucun appelant ne peut passer de nom de table : la fonction n'a que ``self``."""
+    """No caller can pass a table name: the function takes only ``self``."""
     fn = _collect_db_stats_ast()
     args = fn.args
     assert [a.arg for a in args.args] == ["self"], (
@@ -45,11 +45,11 @@ def test_collect_db_stats_takes_no_argument_that_could_reach_the_sql() -> None:
 
 
 def test_embedding_tables_is_a_dict_of_string_literals() -> None:
-    """``embedding_tables`` doit rester un dict littéral de noms écrits en dur.
+    """``embedding_tables`` must stay a literal dict of hardcoded names.
 
-    Échoue sur un `dict(...)`, une compréhension, une lecture de settings, un
-    `+ suffix` ou une clé/valeur non constante — chacun rendrait la table
-    interpolée dépendante d'autre chose que du source.
+    Fails on a `dict(...)`, a comprehension, a settings read, a `+ suffix` or a
+    non-constant key/value — each would make the interpolated table depend on
+    something other than the source.
     """
     fn = _collect_db_stats_ast()
 
@@ -85,11 +85,11 @@ def test_embedding_tables_is_a_dict_of_string_literals() -> None:
 
 
 def test_table_name_is_only_ever_bound_by_a_loop_over_the_literal_tables() -> None:
-    """``table_name`` ne peut recevoir que les valeurs du dict littéral.
+    """``table_name`` can only receive the literal dict's values.
 
-    ``tables_with_embeddings`` doit rester ``list(embedding_tables.values())``, et
-    ``table_name`` ne doit être lié que par des ``for`` sur cette liste. Échoue sur
-    un `+ [...]`, un `extend`, ou un `table_name = <autre chose>`.
+    ``tables_with_embeddings`` must stay ``list(embedding_tables.values())``, and
+    ``table_name`` must be bound only by ``for`` loops over that list. Fails on a
+    `+ [...]`, an `extend`, or a `table_name = <something else>`.
     """
     fn = _collect_db_stats_ast()
 
@@ -131,10 +131,10 @@ def test_table_name_is_only_ever_bound_by_a_loop_over_the_literal_tables() -> No
 
 
 def test_the_only_interpolated_fragment_is_table_name() -> None:
-    """Tout autre trou d'f-string invaliderait les deux exceptions posées.
+    """Any other f-string hole would invalidate both exceptions.
 
-    La dimension d'embedding en particulier doit rester un bind ``:dim`` : c'est
-    la seule valeur de la fonction qui vienne de la configuration.
+    The embedding dimension in particular must stay a ``:dim`` bind: it is the
+    function's only value that comes from configuration.
     """
     fn = _collect_db_stats_ast()
 

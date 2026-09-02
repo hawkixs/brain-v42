@@ -111,8 +111,8 @@ async def test_insert_dream_run_passes_phase_dry_run_to_asyncpg():
     assert mock_conn.execute.await_count == 1
     sql, *bind_args = mock_conn.execute.await_args.args
     assert "phase_dry_run" in sql
-    # 049 : thinking_tokens entre à $15, le drapeau glisse à $16 — et reste
-    # le DERNIER lié, ce qui est l'invariant que ce test garde.
+    # 049: thinking_tokens enters at $15, the flag slides to $16 — and stays the
+    # LAST one bound, which is the invariant this test guards.
     assert "$16" in sql
     assert len(bind_args) == 16
     assert bind_args[-1] is True

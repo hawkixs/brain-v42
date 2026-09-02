@@ -1,18 +1,18 @@
-"""Le `# nosec B608` de ``MetricsFlusher._flush`` repose sur un invariant, pas sur une opinion.
+"""``MetricsFlusher._flush``'s `# nosec B608` rests on an invariant, not an opinion.
 
-La purge des lignes `process_metrics` est écrite avec une f-string :
+The purge of `process_metrics` rows is written with an f-string:
 
     text(f"DELETE FROM process_metrics WHERE {PROCESS_METRICS_STALE_SQL}")
 
-Bandit la signale (B608, MEDIUM/LOW) parce qu'il voit une interpolation dans du SQL. Elle est
-inoffensive pour UNE raison précise, et cette raison doit rester vraie : le seul fragment
-interpolé est une constante de module construite à l'import à partir d'un littéral entier,
-dans un module (`brain_v42.metrics.retention`) qui n'importe rien.
+Bandit flags it (B608, MEDIUM/LOW) because it sees an interpolation inside SQL. It is harmless
+for ONE precise reason, and that reason must stay true: the only interpolated fragment is a
+module constant built at import time from a literal integer, in a module
+(`brain_v42.metrics.retention`) that imports nothing.
 
-Ces tests gardent cette chaîne-là, maillon par maillon. Ils échouent si quelqu'un rend la
-constante dynamique — `int(os.environ[...])`, un `Settings`, un paramètre d'appel — ou si un
-second fragment apparaît dans la requête. Le jour où c'est le cas, le nosec devient un
-mensonge, et c'est ce test qui doit le dire, pas la production.
+These tests guard that chain, link by link. They fail if anyone makes the constant dynamic —
+`int(os.environ[...])`, a `Settings`, a call parameter — or if a second fragment appears in the
+query. The day that happens, the nosec becomes a lie, and this test is what must say so, not
+production.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def _parse(path: Path) -> ast.Module:
 
 
 def _sole_interpolated_delete(tree: ast.Module) -> ast.JoinedStr:
-    """La seule f-string du module qui écrit un DELETE sur process_metrics."""
+    """The module's only f-string that writes a DELETE on process_metrics."""
     found = [
         node
         for node in ast.walk(tree)
@@ -53,10 +53,10 @@ def _sole_interpolated_delete(tree: ast.Module) -> ast.JoinedStr:
 
 
 def test_the_purge_interpolates_only_the_retention_constant() -> None:
-    """Le seul trou de la f-string est un nom importé de brain_v42.metrics.retention.
+    """The f-string's only hole is a name imported from brain_v42.metrics.retention.
 
-    C'est le cœur du nosec : pas d'appel, pas d'attribut, pas de variable locale, donc
-    aucune valeur calculée à l'exécution ne peut entrer dans la requête.
+    That is the heart of the nosec: no call, no attribute, no local variable, so no
+    value computed at runtime can enter the query.
     """
     tree = _parse(_TARGET)
 
@@ -92,10 +92,10 @@ def test_the_purge_interpolates_only_the_retention_constant() -> None:
 
 
 def test_the_imported_constant_is_never_rebound_in_the_module() -> None:
-    """Le nom importé n'est jamais réaffecté, sinon le contrôle précédent serait contournable.
+    """The imported name is never reassigned, otherwise the previous check is bypassable.
 
-    Une affectation locale ``PROCESS_METRICS_STALE_SQL = <valeur reçue>`` juste avant la
-    requête laisserait l'AST identique tout en faisant entrer une entrée dans le SQL.
+    A local assignment ``PROCESS_METRICS_STALE_SQL = <received value>`` right before the
+    query would leave the AST identical while letting an input into the SQL.
     """
     rebinds = [
         node.lineno
@@ -111,10 +111,11 @@ def test_the_imported_constant_is_never_rebound_in_the_module() -> None:
 
 
 def test_the_retention_window_is_an_integer_literal_not_a_runtime_value() -> None:
-    """PROCESS_METRICS_RETENTION_SECONDS est un littéral entier, écrit dans le source.
+    """PROCESS_METRICS_RETENTION_SECONDS is a literal integer, written in the source.
 
-    RED si quelqu'un écrit ``= int(os.environ["..."])`` ou ``= get_settings().x`` : la valeur
-    deviendrait pilotable de l'extérieur du dépôt et l'interpolation cesserait d'être sûre.
+    RED if anyone writes ``= int(os.environ["..."])`` or ``= get_settings().x``: the value
+    would become drivable from outside the repository and the interpolation would stop
+    being safe.
     """
     assignments = [
         node
@@ -136,11 +137,11 @@ def test_the_retention_window_is_an_integer_literal_not_a_runtime_value() -> Non
 
 
 def test_the_retention_module_imports_nothing_that_could_carry_an_input() -> None:
-    """retention.py n'importe rien (hors `__future__`), donc rien d'externe ne peut y entrer.
+    """retention.py imports nothing (beyond `__future__`), so nothing external can enter it.
 
-    Garde volontairement large : `os`, `brain_v42.config`, `json`… n'ont aucune raison d'être
-    dans un module de deux constantes, et leur arrivée est exactement le signal qu'il faut
-    relire les deux nosec B608 qui s'appuient sur lui.
+    A deliberately wide guard: `os`, `brain_v42.config`, `json`… have no business in a
+    module of two constants, and their arrival is exactly the signal to re-read the two
+    B608 nosec that lean on it.
     """
     offenders = [
         ast.unparse(node)
@@ -155,7 +156,7 @@ def test_the_retention_module_imports_nothing_that_could_carry_an_input() -> Non
 
 
 def test_the_stale_predicate_holds_no_free_text() -> None:
-    """La constante effectivement chargée ne contient que du SQL littéral et un entier."""
+    """The constant actually loaded contains only literal SQL and an integer."""
     from brain_v42.metrics.retention import PROCESS_METRICS_STALE_SQL
 
     assert re.fullmatch(
@@ -167,10 +168,10 @@ def test_the_stale_predicate_holds_no_free_text() -> None:
 
 
 def test_the_nosec_names_b608_on_the_line_bandit_reports() -> None:
-    """Le nosec est ciblé et posé sur la ligne exacte, jamais nu.
+    """The nosec is targeted and placed on the exact line, never bare.
 
-    Un `# nosec` sans identifiant éteindrait TOUS les contrôles de la ligne : c'est la règle
-    blanket que la décision opérateur du 2026-08-16 interdit.
+    A `# nosec` without an identifier would switch off EVERY check on the line: that is the
+    blanket rule the operator decision of 2026-08-16 forbids.
     """
     lines = _TARGET.read_text(encoding="utf-8").splitlines()
     delete_line = lines[_sole_interpolated_delete(_parse(_TARGET)).lineno - 1]

@@ -1,17 +1,17 @@
-"""La fenêtre de LECTURE de process_metrics doit égaler sa fenêtre de RÉTENTION.
+"""process_metrics' READ window must equal its RETENTION window.
 
-Mesuré le 2026-08-10 (ticket d2a669c6). ``collect_process_metrics`` filtrait sur
-``updated_at > NOW() - INTERVAL '60 seconds'`` alors que la purge, elle, s'exécute à
-``INTERVAL '1 hour'`` — et à DEUX endroits (``flusher.py``, ``runtime.py``). La fenêtre de
-lecture était donc 60 fois plus étroite que la fenêtre de rétention, sans raison documentée.
+Measured on 2026-08-10 (ticket d2a669c6). ``collect_process_metrics`` filtered on
+``updated_at > NOW() - INTERVAL '60 seconds'`` while the purge runs at
+``INTERVAL '1 hour'`` — and in TWO places (``flusher.py``, ``runtime.py``). The read window
+was therefore 60 times narrower than the retention window, with no documented reason.
 
-Conséquence mesurée sur la production vivante à 19:36 : cinq lignes en base, dont ``codex``
-(7 min d'âge, 7 outils) et ``hawixs`` (30 min, 4 outils). Le panneau n'en montrait que trois.
-Deux appelants réels sur cinq étaient invisibles ALORS QUE LEURS LIGNES EXISTAIENT.
+Consequence measured on live production at 19:36: five rows in the database, including
+``codex`` (7 min old, 7 tools) and ``hawixs`` (30 min, 4 tools). The panel showed only three.
+Two of five real callers were invisible WHILE THEIR ROWS EXISTED.
 
-Ces tests gardent l'invariant plutôt que la valeur : trois littéraux SQL qui doivent
-s'accorder sans que rien ne les relie finiront toujours par diverger. C'est cette dérive
-qu'on épingle, pas le nombre ``3600``.
+These tests guard the invariant rather than the value: three SQL literals that must agree
+with nothing linking them will always end up diverging. It is that drift being pinned, not
+the number ``3600``.
 """
 
 from __future__ import annotations
@@ -27,10 +27,10 @@ _METRICS_DIR = Path(__file__).resolve().parents[3] / "src" / "brain_v42" / "metr
 
 
 def test_the_read_window_and_the_purge_window_come_from_one_constant() -> None:
-    """Les deux prédicats dérivent du même intervalle, donc ne peuvent plus diverger.
+    """Both predicates derive from the same interval, so they can no longer diverge.
 
-    RED avant correctif : ``brain_v42.metrics.retention`` n'existe pas, l'import lève
-    ModuleNotFoundError — bruyamment, ce qui est le bon échec.
+    RED before the fix: ``brain_v42.metrics.retention`` does not exist, the import raises
+    ModuleNotFoundError — loudly, which is the right failure.
     """
     from brain_v42.metrics.retention import (
         PROCESS_METRICS_FRESH_SQL,
@@ -50,15 +50,15 @@ def test_the_read_window_and_the_purge_window_come_from_one_constant() -> None:
         f"il nomme {seconds_in_stale}"
     )
 
-    # Complémentaires stricts : ce qui survit à la purge est lisible, et réciproquement.
+    # Strict complements: what survives the purge is readable, and conversely.
     assert ">" in PROCESS_METRICS_FRESH_SQL and "<" in PROCESS_METRICS_STALE_SQL
 
 
 def test_the_retention_window_is_not_narrower_than_a_flush_period() -> None:
-    """Une fenêtre plus courte que la période de flush rend des agents actifs invisibles.
+    """A window shorter than the flush period makes active agents invisible.
 
-    Contrôle de bon sens sur la valeur, pas sur son exactitude : le flush tourne à la
-    minute, donc une rétention d'une minute ferait clignoter le panneau.
+    A sanity check on the value, not on its exactness: the flush runs every minute, so a
+    one-minute retention would make the panel flicker.
     """
     from brain_v42.metrics.retention import PROCESS_METRICS_RETENTION_SECONDS
 
@@ -69,24 +69,24 @@ def test_the_retention_window_is_not_narrower_than_a_flush_period() -> None:
 
 
 def test_no_metrics_module_hardcodes_a_process_metrics_window() -> None:
-    """La sonde NÉGATIVE : elle doit échouer si quelqu'un recode un littéral en dur.
+    """The NEGATIVE probe: it must fail if anyone hardcodes a literal again.
 
-    RED avant correctif : trois sites la font échouer — collector_db.py (60 seconds),
-    flusher.py (1 hour) et runtime.py (1 hour). C'est exactement la dérive du ticket.
+    RED before the fix: three sites make it fail — collector_db.py (60 seconds),
+    flusher.py (1 hour) and runtime.py (1 hour). That is exactly the ticket's drift.
     """
     offenders: list[str] = []
 
-    # Le SQL est écrit sur plusieurs lignes : chercher ligne à ligne raterait
-    # précisément le site du défaut d'origine (collector_db.py, où la table et
-    # l'intervalle sont à 4 lignes d'écart). On cherche donc sur le texte entier.
-    # Le ``(?!FROM)`` empêche de franchir une frontière de requête : sans lui, le motif
-    # traverse le DELETE voisin sur search_log et signale son INTERVAL '30 days', qui ne
-    # concerne pas cette table.
+    # The SQL is written across several lines: searching line by line would miss
+    # precisely the original defect's site (collector_db.py, where the table and the
+    # interval are 4 lines apart). So we search over the whole text.
+    # The ``(?!FROM)`` prevents crossing a query boundary: without it, the pattern
+    # traverses the neighbouring DELETE on search_log and reports its INTERVAL
+    # '30 days', which has nothing to do with this table.
     near_table = re.compile(r"process_metrics(?:(?!FROM).){0,400}?INTERVAL\s*'([^']+)'", re.DOTALL)
 
     for module in sorted(_METRICS_DIR.glob("*.py")):
         if module.name == "retention.py":
-            continue  # la source de vérité a le droit de nommer l'intervalle
+            continue  # the source of truth is allowed to name the interval
         source = module.read_text(encoding="utf-8")
         for match in near_table.finditer(source):
             line_no = source.count("\n", 0, match.start()) + 1
@@ -100,11 +100,11 @@ def test_no_metrics_module_hardcodes_a_process_metrics_window() -> None:
 
 @pytest.mark.asyncio
 async def test_collect_process_metrics_reads_with_the_shared_predicate() -> None:
-    """Le témoin comportemental : la vraie requête porte le prédicat partagé.
+    """The behavioural witness: the real query carries the shared predicate.
 
-    RED avant correctif : le SQL exécuté contient ``INTERVAL '60 seconds'``, pas le
-    prédicat partagé, donc l'assertion mord. Si quelqu'un revient à un littéral plus
-    tard, elle mord de nouveau — c'est ce que le témoin structurel seul ne garantit pas.
+    RED before the fix: the executed SQL contains ``INTERVAL '60 seconds'``, not the
+    shared predicate, so the assertion bites. If anyone goes back to a literal later, it
+    bites again — which the structural witness alone does not guarantee.
     """
     from brain_v42.metrics.collector_db import _DbCollectorsMixin
     from brain_v42.metrics.retention import PROCESS_METRICS_FRESH_SQL
@@ -139,7 +139,7 @@ async def test_collect_process_metrics_reads_with_the_shared_predicate() -> None
 
 
 def _row(agent_name: str, pid: int, *, is_live: bool) -> tuple[Any, ...]:
-    """Une ligne process_metrics telle que la rend le SELECT (is_live en dernier)."""
+    """A process_metrics row as the SELECT returns it (is_live last)."""
     return (
         agent_name,
         pid,
@@ -154,14 +154,14 @@ def _row(agent_name: str, pid: int, *, is_live: bool) -> tuple[Any, ...]:
 
 @pytest.mark.asyncio
 async def test_active_processes_counts_only_processes_that_still_refresh() -> None:
-    """``active_processes`` est une affirmation de VIVACITÉ, pas de séjour en base.
+    """``active_processes`` is a claim of LIVENESS, not of residency in the database.
 
-    Élargir la fenêtre de lecture à la rétention sans distinguer les deux ferait
-    compter un process mort pendant une heure. Mesuré sur la production le
-    2026-08-10 : le pid 1082528 était dans la fenêtre d'une heure et absent de ``ps``.
+    Widening the read window to the retention one without distinguishing the two would
+    count a dead process for an hour. Measured on production on 2026-08-10: pid 1082528
+    was inside the one-hour window and absent from ``ps``.
 
-    RED avant correctif : ``active_processes`` compte les pids de TOUTES les lignes
-    rendues, donc 2 au lieu de 1.
+    RED before the fix: ``active_processes`` counts the pids of ALL returned rows, hence
+    2 instead of 1.
     """
     from brain_v42.metrics.collector_db import _DbCollectorsMixin
 
@@ -169,7 +169,7 @@ async def test_active_processes_counts_only_processes_that_still_refresh() -> No
         def all(self) -> list[Any]:
             return [
                 _row("brain-v42", 1111, is_live=True),
-                _row("codex", 2222, is_live=False),  # n'a plus rafraîchi depuis longtemps
+                _row("codex", 2222, is_live=False),  # has not refreshed for a long time
             ]
 
     class _FakeSession:
@@ -191,7 +191,7 @@ async def test_active_processes_counts_only_processes_that_still_refresh() -> No
         "un process qui a cessé de rafraîchir sa ligne est compté comme actif : "
         f"active_processes={result['active_processes']}"
     )
-    # …mais l'agent reste visible du panneau : c'est tout l'objet de l'élargissement.
+    # …but the agent stays visible on the panel: that is the whole point of widening.
     assert result["active_agents"] == 2, (
         "l'agent silencieux doit rester visible dans le panneau pendant la rétention"
     )
@@ -199,7 +199,7 @@ async def test_active_processes_counts_only_processes_that_still_refresh() -> No
 
 
 def test_the_liveness_window_is_strictly_tighter_than_the_retention_window() -> None:
-    """Deux fenêtres, deux questions. Les confondre est exactement le défaut d'origine."""
+    """Two windows, two questions. Confusing them is exactly the original defect."""
     from brain_v42.metrics.retention import (
         PROCESS_METRICS_LIVE_SECONDS,
         PROCESS_METRICS_RETENTION_SECONDS,

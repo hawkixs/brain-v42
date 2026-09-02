@@ -1,16 +1,17 @@
-"""Garde d'invariant des deux `# nosec B608` de ``metrics/collector_db.py``.
+"""Invariant guard for the two `# nosec B608` in ``metrics/collector_db.py``.
 
-Deux requêtes y sont construites par f-string, et bandit les signale (B608) :
+Two queries there are built by f-string, and bandit flags them (B608):
 
-* ``collect_process_metrics`` (ligne 142) interpole ``PROCESS_METRICS_IS_LIVE_SQL``
-  et ``PROCESS_METRICS_FRESH_SQL`` — deux constantes importées de
-  ``metrics/retention.py``, elles-mêmes figées sur des entiers littéraux ;
-* ``collect_graph_inventory`` (ligne 328) interpole ``table``, clé du dict
-  littéral de module ``_PG_LABEL_MAP``.
+* ``collect_process_metrics`` (line 142) interpolates
+  ``PROCESS_METRICS_IS_LIVE_SQL`` and ``PROCESS_METRICS_FRESH_SQL`` — two
+  constants imported from ``metrics/retention.py``, themselves frozen on literal
+  integers;
+* ``collect_graph_inventory`` (line 328) interpolates ``table``, a key of the
+  module-level literal dict ``_PG_LABEL_MAP``.
 
-Aucun des deux fragments ne peut venir d'un appelant. Ces tests le prouvent, et
-échouent si l'une des constantes devient dynamique — c'est-à-dire à l'instant où
-les exceptions cesseraient d'être justifiées.
+Neither fragment can come from a caller. These tests prove it, and fail if one of
+the constants becomes dynamic — that is, at the instant the exceptions would stop
+being justified.
 """
 
 from __future__ import annotations
@@ -23,10 +24,10 @@ from brain_v42.metrics import collector_db as mod
 from brain_v42.metrics import retention as retention_mod
 from brain_v42.metrics.collector_db import _PG_LABEL_MAP
 
-# Un nom de table PostgreSQL non cité, tel qu'écrit en dur dans le source.
+# An unquoted PostgreSQL table name, as hardcoded in the source.
 _BARE_IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]*$")
 
-# Aucun caractère hors de ce jeu ne peut apparaître dans un prédicat figé sur un int.
+# No character outside this set can appear in a predicate frozen on an int.
 _FROZEN_PREDICATE = re.compile(r"^\(?updated_at [<>] NOW\(\) - INTERVAL '\d+ seconds'\)?$")
 
 
@@ -49,10 +50,10 @@ def _holes(fn: ast.AST) -> list[ast.FormattedValue]:
 
 
 def test_pg_label_map_is_a_module_dict_of_string_literals() -> None:
-    """Les noms de table interpolés en ligne 328 sont écrits en dur dans le source.
+    """The table names interpolated on line 328 are hardcoded in the source.
 
-    Échoue sur un `dict(...)`, une compréhension, une clé construite, ou une clé
-    qui ne serait plus un identifiant nu — chacun rendant `{table}` injectable.
+    Fails on a `dict(...)`, a comprehension, a constructed key, or a key that
+    would no longer be a bare identifier — each making `{table}` injectable.
     """
     tree = ast.parse(inspect.getsource(mod))
     assigns = [
@@ -73,7 +74,7 @@ def test_pg_label_map_is_a_module_dict_of_string_literals() -> None:
             f"nom de table interpolable non conforme : {key.value!r}"
         )
 
-    # Le même invariant, vu à l'exécution : rien ne mute la constante à l'import.
+    # The same invariant, seen at runtime: nothing mutates the constant at import.
     assert list(_PG_LABEL_MAP) == ["decisions", "learnings", "snippets", "runbooks", "adrs"]
 
 
@@ -83,7 +84,7 @@ def _targets(node: ast.AnnAssign | ast.Assign) -> list[str]:
 
 
 def test_graph_inventory_interpolates_only_the_literal_table_key() -> None:
-    """`table` ne peut être lié que par la boucle sur `_PG_LABEL_MAP.items()`."""
+    """`table` can only be bound by the loop over `_PG_LABEL_MAP.items()`."""
     fn = _function_ast("collect_graph_inventory")
 
     loops = 0
@@ -113,12 +114,12 @@ def test_graph_inventory_interpolates_only_the_literal_table_key() -> None:
             f"ligne {hole.lineno} : fragment interpolé autre que `table` — non couvert"
         )
 
-    # `graph_svc`, le seul paramètre, est un service : il ne doit jamais toucher au SQL.
+    # `graph_svc`, the only parameter, is a service: it must never touch the SQL.
     assert [a.arg for a in fn.args.args] == ["self", "graph_svc"]
 
 
 def test_process_metrics_interpolates_only_the_two_retention_constants() -> None:
-    """Les deux trous de la requête ligne 142 sont des constantes de module importées."""
+    """Both holes of the line-142 query are imported module constants."""
     fn = _function_ast("collect_process_metrics")
 
     assert [a.arg for a in fn.args.args] == ["self"], (
@@ -138,7 +139,7 @@ def test_process_metrics_interpolates_only_the_two_retention_constants() -> None
         "PROCESS_METRICS_FRESH_SQL",
     ], f"fragments interpolés inattendus : {interpolated}"
 
-    # Ces deux noms sont bien importés de retention, pas des locales reconstruites.
+    # These two names really are imported from retention, not rebuilt locals.
     tree = ast.parse(inspect.getsource(mod))
     imported = {
         alias.name
@@ -152,11 +153,11 @@ def test_process_metrics_interpolates_only_the_two_retention_constants() -> None
 
 
 def test_retention_predicates_are_frozen_on_integer_literals() -> None:
-    """Les constantes interpolées ne portent qu'un entier, jamais une chaîne d'entrée.
+    """The interpolated constants carry only an integer, never an input string.
 
-    Échoue si quelqu'un fabrique l'intervalle depuis l'environnement ou depuis un
-    paramètre : la valeur rendue cesserait d'être un prédicat figé, et le nosec
-    B608 de ``collect_process_metrics`` deviendrait un vrai défaut.
+    Fails if anyone builds the interval from the environment or from a parameter:
+    the returned value would stop being a frozen predicate, and
+    ``collect_process_metrics``' B608 nosec would become a real defect.
     """
     assert _FROZEN_PREDICATE.match(retention_mod.PROCESS_METRICS_FRESH_SQL), (
         f"prédicat de lecture inattendu : {retention_mod.PROCESS_METRICS_FRESH_SQL!r}"
