@@ -1,4 +1,4 @@
-"""Step 1 of `55a21fb8`: REORG stops writing a silent transition.
+"""Steps 1 and 2 of `55a21fb8`: `brain_update` stops writing a silent transition.
 
 `brain_update` writes `freshness_status` **without ever naming the column** — it
 arrives through the Pydantic update model. No `grep` on the column name can see
@@ -16,16 +16,31 @@ migration, hence nothing in the signed corridor. Exercised for the FIRST time on
 2026-08-22 against `brain_test`, transaction rolled back: accepted, with the date
 stamped; and a value outside the vocabulary refused by the same constraint.
 
-**What this step does NOT do**, deliberately: it dries up only the KNOWN source.
-A human write stays silent — hence still SEEN by step 0's counter. Drying
+**What step 1 deliberately did NOT do**: it dried up only the KNOWN source. A
+human write stayed silent — hence still SEEN by step 0's counter. Drying
 everything at once would have removed the signal along with the noise, and the
 next unsurveyed source would have slipped through with nothing moving.
+
+**STEP 2 (2026-09-02) takes the ruling 049 left open**, and it can because the
+fact step 1 lacked now exists: `SYSTEM_ACTOR_NAMES` surveys the machine actors,
+per call site, dated 2026-08-29. A write from a HUMAN actor outside the dream
+declares `manual_update`; a write from a SURVEYED machine actor still declares
+nothing. The counter therefore does not go quiet — it gets SHARPER: a mute
+transition stops being ambiguous between "a human" and "a source nobody
+surveyed", and comes to mean only the second.
+
+Measured read-only on production the same day, before the change: 44 dated
+transitions, **4 mute** (3 learnings, 1 snippet), `score` the only source
+actually written on the five knowledge tables. `judgment` has never appeared —
+REORG runs DRY.
 """
 
 from __future__ import annotations
 
 import inspect
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -38,6 +53,7 @@ from brain_v42.mcp.dream_project_authorization import (
     DreamProjectScope,
     bind_dream_project_scope,
 )
+from brain_v42.provenance import SYSTEM_ACTOR_NAMES, get_current_actor, set_current_actor
 from tests.unit.mcp._tool_error_adapter import capture_tool_errors
 
 PROJECT_KEY = "reorg-owned"
@@ -61,6 +77,21 @@ class MockMCP:
 class UnusedResolver:
     async def references_belong_to_project(self, *_args: Any) -> bool:
         raise AssertionError("point-of-use scoping must not rerun middleware resolution")
+
+
+@contextmanager
+def bind_actor(actor: str) -> Iterator[None]:
+    """Set the request actor the way ``ProvenanceMiddleware`` does, then restore it.
+
+    The tests must not hand the provenance to the code under test; they set the
+    contextvar the middleware sets and let the tool resolve what it wants from it.
+    """
+    previous = get_current_actor()
+    set_current_actor(actor)
+    try:
+        yield
+    finally:
+        set_current_actor(previous)
 
 
 def _scope() -> DreamProjectScope:
@@ -131,18 +162,90 @@ async def test_an_unrelated_scoped_write_declares_nothing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_human_write_stays_mute_and_therefore_visible() -> None:
-    """THE SECOND WITNESS, without which we dry the source and lose the signal.
+async def test_a_human_write_declares_manual_update() -> None:
+    """Step 2 — and it REPLACES the step-1 pin that lived here.
 
-    Outside the dream scope, nothing is stamped: the transition stays silent,
-    hence counted by step 0. That is what makes the NEXT unsurveyed source visible
-    instead of conflating it with REORG.
+    That pin asserted `freshness_source is None` for a human write, and it was
+    right for step 1: drying every source at once would have removed the signal
+    with the noise while the machine-actor census did not exist yet. It does now
+    (`SYSTEM_ACTOR_NAMES`, surveyed per call site on 2026-08-29), which is the fact
+    that makes this step possible and did not exist before.
+
+    049 pre-admitted the word for exactly this moment — "``manual_update``
+    (reserved, unused […] the ruling on stamping human writes stays open and will
+    find the word already admitted)".
     """
     tools, services = _registered_tools()
 
-    await tools["brain_update"]("learning", str(uuid4()), {"freshness_status": "archived"})
+    with bind_actor("red-lab"):
+        await tools["brain_update"]("learning", str(uuid4()), {"freshness_status": "archived"})
+
+    assert _sent_model(services).freshness_source == "manual_update"
+
+
+@pytest.mark.asyncio
+async def test_an_unrelated_human_write_declares_nothing() -> None:
+    """Same bound as the scoped branch: the mark follows `freshness_status` alone.
+
+    Stamping a write that does not touch the status would describe a transition
+    that never happened — the false provenance 043 warns about.
+    """
+    tools, services = _registered_tools()
+
+    with bind_actor("red-lab"):
+        await tools["brain_update"]("learning", str(uuid4()), {"topic": "renamed"})
 
     assert _sent_model(services).freshness_source is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("actor", sorted(SYSTEM_ACTOR_NAMES)[:2] + ["dream-codex-reorg", "unknown"])
+async def test_a_surveyed_machine_write_stays_mute_and_therefore_visible(actor: str) -> None:
+    """THE witness that keeps step 0's counter meaningful.
+
+    `manual_update` says *manual*. Stamping it for a surveyed bot would be a FALSE
+    provenance — believed, where a missing one is seen — and 043 names that as the
+    worse of the two. A machine write outside the dream therefore stays mute, so it
+    keeps being counted by `fetch_mute_transitions` and keeps pointing at a source
+    nobody has surveyed.
+
+    The classifier is `is_human_actor`, the SAME one the Q1 unarchival guard
+    already trusts for a heavier decision. A second, weaker rule here would be the
+    inconsistency.
+    """
+    tools, services = _registered_tools()
+
+    with bind_actor(actor):
+        await tools["brain_update"]("learning", str(uuid4()), {"freshness_status": "archived"})
+
+    assert _sent_model(services).freshness_source is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entity", ["decision", "learning", "snippet", "runbook", "adr"])
+async def test_every_mutable_type_declares_the_human_write(entity: str) -> None:
+    """The five types the generic tool can write, not only `learning`."""
+    tools, services = _registered_tools()
+
+    with bind_actor("red-lab"):
+        await tools["brain_update"](entity, str(uuid4()), {"freshness_status": "archived"})
+
+    assert _sent_model(services, entity).freshness_source == "manual_update"
+
+
+def test_the_human_value_belongs_to_the_049_vocabulary() -> None:
+    """049 widened the CHECK; a word outside it would fail at the constraint."""
+    from brain_v42.mcp.tools import crud_tools
+
+    assert crud_tools.HUMAN_FRESHNESS_SOURCE == "manual_update"
+
+    migration = (
+        Path(__file__).resolve().parents[4]
+        / "alembic"
+        / "versions"
+        / "049_dream_run_series_and_freshness_vocabulary.py"
+    ).read_text(encoding="utf-8")
+    assert f'"{crud_tools.HUMAN_FRESHNESS_SOURCE}"' in migration
 
 
 @pytest.mark.asyncio
