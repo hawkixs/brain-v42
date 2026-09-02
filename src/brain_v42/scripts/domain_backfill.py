@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Proposer-only domain backfill via the NVIDIA API (OpenAI-compatible).
 
-Classifie les orphans du graph (0 RELATED_TO + 0 BELONGS_TO_DOMAIN) contre
-le set fermé ALLOWED_DOMAINS et émet des PROPOSITIONS dans
-logs/domain_backfill/<date>.{jsonl,md}. AUCUNE écriture dans le brain —
-l'apply (brain_assign_domain) est une étape future distincte.
+Classifies the graph's orphans (0 RELATED_TO + 0 BELONGS_TO_DOMAIN) against the
+closed ALLOWED_DOMAINS set and emits PROPOSALS into
+logs/domain_backfill/<date>.{jsonl,md}. NO write into the brain — the apply
+(brain_assign_domain) is a separate future step.
 
-Divergence délibérée vs phase CONNECT : CONNECT force `backend` en cas
-d'ambiguïté (il écrit directement) ; ici le modèle doit répondre `unknown`
-(un humain review le rapport). Pas de tool-calling par construction
-(gotcha red-shrik : deepseek hang avec tools ; JSON pur = OK).
+Deliberate divergence from the CONNECT phase: CONNECT forces `backend` on
+ambiguity (it writes directly); here the model must answer `unknown` (a human
+reviews the report). No tool-calling by construction (red-shrik gotcha: deepseek
+hangs with tools; pure JSON = OK).
 
 Usage:
     python -m scripts.domain_backfill --limit 30
@@ -38,26 +38,26 @@ from brain_v42.db.tables import adrs, decisions, learnings, runbooks, snippets
 from brain_v42.services.graph_service import ALLOWED_DOMAINS
 
 DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
-#: Primaire d'extract ET de backfill. `deepseek-ai/deepseek-v4-pro` a occupé
-#: cette place jusqu'au 2026-08-21 en étant mort depuis le 12/08 ; son
-#: remplaçant `meta/llama-3.3-70b-instruct` est mort à son tour entre les
-#: nuits du 27 (extract done) et du 28 août (extract fail 410, sonde GONE le
-#: 29). Remplacé le 2026-08-29 par le plus rapide des quatre vivants canaryés
-#: SANS persistance sur le vrai prompt d'extraction, contre trois tickets
-#: pending réels (`fetch_pending_threads` → `extract_thread`, arrêté avant
-#: `persist_proposals`) : 3/3 valides, 13 drafts, 16,1 s/ticket — contre
-#: 25,9 s pour mistral-nemotron (secours), 19,7 s mais 8 drafts pour
-#: nano-30b, 57,5 s pour gpt-oss-20b. Un 410 n'est pas transitoire : aucun
-#: retry ne le répare, seule la constante le fait.
+#: Primary for extract AND backfill. `deepseek-ai/deepseek-v4-pro` held this
+#: place until 2026-08-21 while having been dead since 08-12; its replacement
+#: `meta/llama-3.3-70b-instruct` died in turn between the nights of 27 August
+#: (extract done) and 28 August (extract fail 410, probe GONE on the 29th).
+#: Replaced on 2026-08-29 by the fastest of the four live candidates canaried
+#: WITHOUT persistence on the real extraction prompt, against three real pending
+#: tickets (`fetch_pending_threads` → `extract_thread`, stopped before
+#: `persist_proposals`): 3/3 valid, 13 drafts, 16.1 s/ticket — against 25.9 s
+#: for mistral-nemotron (fallback), 19.7 s but 8 drafts for nano-30b, 57.5 s for
+#: gpt-oss-20b. A 410 is not transient: no retry repairs it, only the constant
+#: does.
 DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b"
 DEFAULT_ENV_FILE = Path.home() / ".config" / "brain-v42" / "nvidia.env"
 VALID_DOMAINS: frozenset[str] = ALLOWED_DOMAINS | {"unknown"}
 VALID_CONFIDENCES: frozenset[str] = frozenset({"high", "medium", "low"})
 SNIPPET_MAX_CHARS = 400
 
-# label Neo4j -> (Table core PG, colonne titre, colonne contenu).
-# Table objects (pas de SQL f-string) : bind .in_() natif, pas de piège
-# asyncpg sur les arrays uuid[].
+# Neo4j label -> (PG core table, title column, content column).
+# Table objects (no SQL f-string): native .in_() bind, no asyncpg trap on uuid[]
+# arrays.
 _TYPE_SOURCES: dict[str, tuple[sa.Table, str, str]] = {
     "Decision": (decisions, "title", "description"),
     "Learning": (learnings, "topic", "insight"),
@@ -83,10 +83,10 @@ class EntityCard:
 
 
 def load_env_file(path: Path) -> dict[str, str]:
-    """Parse un env-file style systemd (tout après le premier '=' est littéral).
+    """Parse a systemd-style env file (everything after the first '=' is literal).
 
-    Les clés déjà présentes dans os.environ ne sont PAS écrasées
-    (précédence : environ > fichier). Fichier absent -> {}.
+    Keys already present in os.environ are NOT overwritten (precedence: environ >
+    file). Missing file -> {}.
     """
     if not path.is_file():
         return {}
@@ -124,12 +124,12 @@ async def fetch_orphans(graph_service: GraphServiceLike, limit: int) -> list[dic
 async def fetch_entity_cards(
     session_factory: async_sessionmaker[AsyncSession], orphans: list[dict]
 ) -> list[EntityCard]:
-    """Hydrate les orphans depuis PG (titre, snippet, project_key, tags).
+    """Hydrate the orphans from PG (title, snippet, project_key, tags).
 
-    Deux formes de drift graph sont ignorées sans crash (visibles via l'écart
-    orphans_seen vs cards_classified du rapport) : id présent dans le graph
-    mais absent de PG, et id non-UUID (pollution réelle : nœud Decision
-    id="None" — str(None) fuité — trouvé au premier run --limit 50 le
+    Two forms of graph drift are ignored without crashing (visible through the
+    report's orphans_seen vs cards_classified gap): an id present in the graph
+    but absent from PG, and a non-UUID id (real pollution: a Decision node with
+    id="None" — a leaked str(None) — found on the first --limit 50 run on
     2026-07-03).
     """
     by_type: dict[str, list[uuid.UUID]] = {}
@@ -174,8 +174,8 @@ _SYSTEM_PROMPT = (
     "fences markdown, pas d'explication hors du JSON."
 )
 
-# Définitions canoniques copiées de scripts/dream/phase_connect.md (Step B).
-# Seule divergence : `unknown` remplace le fallback `backend` (proposer-only).
+# Canonical definitions copied from scripts/dream/phase_connect.md (Step B).
+# Only divergence: `unknown` replaces the `backend` fallback (proposer-only).
 _DOMAIN_DEFINITIONS = """\
 infra      — deployment, Docker, networking, VPS, CI/CD, systemd
 ml         — training, inference, fine-tuning, LoRA, dataset, agent models
@@ -208,11 +208,11 @@ class Rejection:
 
 
 class ResponseParseError(Exception):
-    """Le contenu du modèle n'est pas un tableau JSON exploitable."""
+    """The model's content is not a usable JSON array."""
 
 
 def build_messages(batch: list[EntityCard]) -> list[dict[str, str]]:
-    """Messages OpenAI-compat pour classifier un batch (sans tools)."""
+    """OpenAI-compatible messages to classify a batch (without tools)."""
     lines: list[str] = [
         "Classifie chaque entité dans EXACTEMENT UN domaine du set fermé :",
         "",
@@ -255,16 +255,16 @@ def _strip_fences(content: str) -> str:
 def parse_and_validate(
     content: str, batch: list[EntityCard]
 ) -> tuple[list[Proposal], list[Rejection]]:
-    """Valide la réponse du modèle contre le batch envoyé.
+    """Validate the model's response against the batch that was sent.
 
-    Raises ResponseParseError si le contenu n'est pas un tableau JSON —
-    l'appelant (classify_batch, Task 3) fait alors UN re-prompt correctif.
+    Raises ResponseParseError if the content is not a JSON array — the caller
+    (classify_batch, Task 3) then does ONE corrective re-prompt.
 
-    Sémantique missing_in_response : toute carte du batch sans proposition
-    ACCEPTÉE reçoit un rejet missing_in_response — y compris si elle a par
-    ailleurs des rejets d'une autre nature (une carte invalid_domain produit
-    donc 2 rejets). Voulu : le rapport montre d'un coup d'œil quelles
-    entités restent orphelines après le run.
+    missing_in_response semantics: every card of the batch without an ACCEPTED
+    proposal receives a missing_in_response rejection — including when it also
+    has rejections of another kind (an invalid_domain card therefore produces 2
+    rejections). Intended: the report shows at a glance which entities remain
+    orphans after the run.
     """
     try:
         data = json.loads(_strip_fences(content))
@@ -323,10 +323,10 @@ def parse_and_validate(
 # ── Task 3 : client NVIDIA ───────────────────────────────────────────
 
 MAX_HTTP_ATTEMPTS = 3
-# 529 ajouté le 2026-08-05 : surcharge fournisseur, transitoire au même titre
-# qu'un 503. Sans lui, un seul 529 sur un batch ROADMAP ouvrait le circuit du
-# modèle primaire et renvoyait TOUTE la nuit sur le secours (canary : 2 batches
-# sur 8). À ne pas confondre avec 410, définitif et jamais retryable.
+# 529 added on 2026-08-05: provider overload, transient just like a 503.
+# Without it, a single 529 on one ROADMAP batch opened the primary model's
+# circuit and sent the WHOLE night to the fallback (canary: 2 batches out of 8).
+# Not to be confused with 410, which is definitive and never retryable.
 RETRYABLE_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504, 529})
 _REPROMPT_INSTRUCTION = (
     "Ta réponse précédente n'était pas un tableau JSON valide. Réponds "
@@ -334,29 +334,29 @@ _REPROMPT_INSTRUCTION = (
 )
 
 
-#: 404/410 : le fournisseur dit que ce nom de modèle ne désigne plus rien.
-#: STRICTEMENT DISJOINT de RETRYABLE_STATUS, et c'est tout l'intérêt : un 529
-#: est une surcharge passagère, un 410 est une fin de vie. Les confondre dans
-#: un sens gaspille une nuit à retenter un mort, dans l'autre remplace un
-#: modèle vivant sur un hoquet.
+#: 404/410: the provider says this model name no longer designates anything.
+#: STRICTLY DISJOINT from RETRYABLE_STATUS, and that is the whole point: a 529
+#: is a passing overload, a 410 is an end of life. Confusing them one way wastes
+#: a night retrying a corpse, the other way replaces a live model over a
+#: hiccup.
 MODEL_GONE_STATUS: frozenset[int] = frozenset({404, 410})
 
 
 class NvidiaAuthError(Exception):
-    """401/403 : clé invalide — inutile de continuer le run."""
+    """401/403: invalid key — no point continuing the run."""
 
 
 class ModelGoneError(RuntimeError):
-    """404/410 : le modèle a disparu chez le fournisseur.
+    """404/410: the model has disappeared at the provider.
 
-    Mesuré le 2026-08-12 : `deepseek-ai/deepseek-v4-pro` rend 410, et les 20
-    tickets de la nuit ont échoué en 0,907 s sur un budget de 540 s — vingt
-    fois la même erreur définitive, sans que rien ne dise que la cause était
-    unique et qu'un secours existait.
+    Measured on 2026-08-12: `deepseek-ai/deepseek-v4-pro` returns 410, and the
+    night's 20 tickets failed in 0.907 s out of a 540 s budget — twenty times
+    the same definitive error, with nothing saying the cause was single and that
+    a fallback existed.
 
-    Hérite de RuntimeError pour rester attrapée par les gardes existantes des
-    appelants : un appelant qui ne connaît pas encore cette classe se comporte
-    exactement comme avant.
+    Inherits from RuntimeError so it stays caught by the callers' existing
+    guards: a caller that does not yet know this class behaves exactly as
+    before.
     """
 
     def __init__(self, model: str, status_code: int, detail: str = "") -> None:
@@ -379,10 +379,10 @@ class BatchOutcome:
 
 
 def _exc_str(exc: BaseException) -> str:
-    """Nom de classe + message — str(exc) seul est souvent VIDE pour les
-    erreurs transport httpx (ReadTimeout, ConnectError…) ; le nom de classe
-    est la seule info toujours présente (incident extract 2026-07-04 :
-    « failed: » vide + dream_runs.error_message='')."""
+    """Class name + message — str(exc) alone is often EMPTY for httpx transport
+    errors (ReadTimeout, ConnectError…); the class name is the only information
+    always present (extract incident 2026-07-04: an empty "failed:" plus
+    dream_runs.error_message='')."""
     return f"{type(exc).__name__}: {exc}".rstrip(": ")
 
 
@@ -393,14 +393,14 @@ async def _post_chat(
     sleep: Callable[[float], Awaitable[Any]],
     max_tokens: int = 4096,
 ) -> tuple[str, dict[str, Any]]:
-    """POST /chat/completions avec retry backoff sur les transitoires.
+    """POST /chat/completions with backoff retry on transients.
 
-    MAX_HTTP_ATTEMPTS = 3 tentatives TOTALES (2 retries), backoff 2 s puis 4 s.
-    Retryables : statuts RETRYABLE_STATUS + timeouts transport httpx (latence
-    de queue NVIDIA — incident extract 2026-07-04 : ~100 s pour un prompt
-    trivial, ReadTimeout à 180 s pile sur le prompt réel).
-    max_tokens paramétrable (finding wet roadmap 2026-07-04 : le prompt
-    consolidateur tronquait le batch brain-v42 à 4096) — défaut inchangé.
+    MAX_HTTP_ATTEMPTS = 3 TOTAL attempts (2 retries), backoff 2 s then 4 s.
+    Retryable: RETRYABLE_STATUS statuses + httpx transport timeouts (NVIDIA
+    queue latency — extract incident 2026-07-04: ~100 s for a trivial prompt,
+    ReadTimeout at exactly 180 s on the real prompt). max_tokens is
+    configurable (wet roadmap finding 2026-07-04: the consolidator prompt
+    truncated the brain-v42 batch at 4096) — default unchanged.
     """
     payload = {
         "model": model,
@@ -420,8 +420,8 @@ async def _post_chat(
         if response.status_code in (401, 403):
             raise NvidiaAuthError(f"HTTP {response.status_code}: {response.text[:200]}")
         if response.status_code in MODEL_GONE_STATUS:
-            # Avant le retry, jamais après : attendre 2 s puis 4 s pour se
-            # réentendre dire « retiré » ne fait qu'ajouter 6 s à la certitude.
+            # Before the retry, never after: waiting 2 s then 4 s to be told
+            # "retired" again only adds 6 s to the certainty.
             raise ModelGoneError(model, response.status_code, response.text[:200])
         if response.status_code in RETRYABLE_STATUS:
             last_error = f"HTTP {response.status_code}"
@@ -518,7 +518,7 @@ async def run_backfill(
     limit: int,
     batch_size: int,
 ) -> BackfillResult:
-    """Fetch → batch → classify → agrège. Un batch failed ne tue pas le run."""
+    """Fetch → batch → classify → aggregate. A failed batch does not kill the run."""
     orphans = await fetch_orphans(graph_service, limit)
     cards = await fetch_entity_cards(session_factory, orphans)
 
@@ -610,11 +610,11 @@ def write_reports(
 
 
 def _positive_int(value: str) -> int:
-    """Validateur argparse : entier >= 1.
+    """argparse validator: integer >= 1.
 
-    Sans cette garde, --batch-size 0 atteignait _chunks (range step 0 →
-    ValueError brute) et --batch-size négatif produisait un run silencieusement
-    vide. argparse répond usage + exit 2 (contrat : 2 = erreur de config).
+    Without this guard, --batch-size 0 reached _chunks (range step 0 → a raw
+    ValueError) and a negative --batch-size produced a silently empty run.
+    argparse answers with usage + exit 2 (contract: 2 = configuration error).
     """
     number = int(value)
     if number < 1:

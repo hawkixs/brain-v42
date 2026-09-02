@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Étape C du domain backfill : applique un rapport jsonl REVIEWÉ au graph.
+"""Step C of the domain backfill: apply a REVIEWED jsonl report to the graph.
 
-Consomme logs/domain_backfill/<date>.jsonl (produit par
-scripts.domain_backfill, proposer-only) et écrit les edges
-BELONGS_TO_DOMAIN via GraphService (upsert_domain + link_entity_to_domain).
+Consumes logs/domain_backfill/<date>.jsonl (produced by scripts.domain_backfill,
+proposer-only) and writes the BELONGS_TO_DOMAIN edges through GraphService
+(upsert_domain + link_entity_to_domain).
 
-Garde-fous :
-- DRY-RUN par défaut — l'écriture exige --wet (pattern killswitch maison).
-- Le gate de qualité est la REVIEW HUMAINE du rapport .md, pas
-  --min-confidence : deepseek rend tout en "high" (calibration plate,
-  learning 6dfb9064), donc le filtre confidence ne filtre rien en pratique.
-- `unknown` n'est JAMAIS appliqué ; domaine re-validé contre ALLOWED_DOMAINS.
-- Idempotent : un edge existant ressort "matched" (pas d'erreur).
+Guardrails:
+- DRY-RUN by default — writing requires --wet (the in-house killswitch pattern).
+- The quality gate is the HUMAN REVIEW of the .md report, not --min-confidence:
+  deepseek returns everything as "high" (flat calibration, learning 6dfb9064),
+  so the confidence filter filters nothing in practice.
+- `unknown` is NEVER applied; the domain is re-validated against ALLOWED_DOMAINS.
+- Idempotent: an existing edge comes back as "matched" (not an error).
 
 Usage:
     python -m scripts.domain_backfill_apply --report logs/domain_backfill/2026-07-03.jsonl
@@ -49,8 +49,8 @@ class ApplyOutcome:
 
 
 def load_proposals(path: Path) -> list[dict]:
-    """Parse le rapport jsonl. Ligne malformée = ValueError avec le numéro
-    (le fichier est machine-généré : une corruption doit stopper net)."""
+    """Parse the jsonl report. A malformed line = ValueError with its number
+    (the file is machine-generated: corruption must stop everything dead)."""
     proposals: list[dict] = []
     for lineno, line in enumerate(path.read_text().splitlines(), start=1):
         if not line.strip():
@@ -65,7 +65,7 @@ def load_proposals(path: Path) -> list[dict]:
 def filter_appliable(
     proposals: list[dict], min_confidence: str
 ) -> tuple[list[dict], list[ApplyOutcome]]:
-    """Sépare les propositions applicables des skips (tous visibles)."""
+    """Split the applicable proposals from the skips (all of them visible)."""
     max_rank = _CONFIDENCE_RANK[min_confidence]
     kept: list[dict] = []
     skipped: list[ApplyOutcome] = []
@@ -94,10 +94,10 @@ def filter_appliable(
 async def apply_proposals(
     graph: GraphWriterLike, proposals: list[dict], *, wet: bool
 ) -> list[ApplyOutcome]:
-    """Applique (ou simule) les propositions déjà filtrées.
+    """Apply (or simulate) the already filtered proposals.
 
-    Un domaine est upserté UNE fois ; si son upsert échoue, toutes les lignes
-    de ce domaine sortent en domain_upsert_<result> sans tentative de link.
+    A domain is upserted ONCE; if its upsert fails, every row of that domain
+    comes out as domain_upsert_<result> with no link attempted.
     """
     if not wet:
         return [ApplyOutcome(str(p["entity_id"]), str(p["domain"]), "dry_run") for p in proposals]
@@ -158,7 +158,7 @@ async def _run(args: argparse.Namespace) -> int:
     from brain_v42.services.graph_service import GraphService
 
     try:
-        # pydantic-settings lit l'env ; mypy ne le sait pas (pattern config.py).
+        # pydantic-settings reads the env; mypy does not know that (config.py pattern).
         settings = Settings()  # type: ignore[call-arg]
     except ValidationError as exc:
         print(f"Config invalide (env/.env manquant ?) : {exc}", file=sys.stderr)

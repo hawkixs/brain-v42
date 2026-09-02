@@ -1,27 +1,27 @@
-"""Frapper le registre de capacités Dream — étape 8 de la spec dream v2.
+"""Mint the Dream capability registry — step 8 of the dream v2 spec.
 
-Le registre ``MCP_HTTP_DREAM_TOKENS`` est ce qui fait passer le principal d'une
-phase de ``unscoped`` à ``scoped``. Tant qu'il est absent, ``on_call_tool``
-laisse passer sans périmètre et une nuit lancée pour un projet peut lire et
-muter le corpus de tous les autres.
+The ``MCP_HTTP_DREAM_TOKENS`` registry is what takes a phase's principal from
+``unscoped`` to ``scoped``. While it is absent, ``on_call_tool`` lets calls
+through unscoped and a night launched for one project can read and mutate every
+other project's corpus.
 
-CLI (le secret ne transite JAMAIS par un argument ni par stdout) ::
+CLI (the secret NEVER travels through an argument nor through stdout) ::
 
     MCP_HTTP_TOKEN=... uv run python -m scripts.mint_dream_capability_registry \\
         --output ~/.config/brain-v42/dream-tokens.env \\
         --project-key brain-v42 --project-key red
 
-    # ou, en reprenant exactement le pool de l'unité vivante :
+    # or, taking exactly the live unit's pool:
     MCP_HTTP_TOKEN=... uv run python -m scripts.mint_dream_capability_registry \\
         --output ~/.config/brain-v42/dream-tokens.env --from-drop-in
 
-Le mode d'échec de ce chantier est CONNU et il est vert. Le 2026-07-03, un
-bearer manquant a fait tourner chaque phase en 401 — zéro outil brain — et la
-nuit a rendu « 6/6 OK ». Un registre incomplet produit exactement la même nuit.
-D'où la garde centrale : la sortie est repassée dans
-``parse_dream_capability_registry``, LA fonction que le serveur exécute au
-démarrage. Pas une copie de ses règles, la fonction. Un registre que le serveur
-refuserait ne peut donc pas sortir d'ici.
+This project's failure mode is KNOWN and it is green. On 2026-07-03, a missing
+bearer made every phase run at 401 — zero brain tools — and the night reported
+"6/6 OK". An incomplete registry produces exactly the same night. Hence the
+central guard: the output is put back through
+``parse_dream_capability_registry``, THE function the server runs at startup.
+Not a copy of its rules, the function. A registry the server would refuse can
+therefore not leave this file.
 """
 
 from __future__ import annotations
@@ -42,9 +42,9 @@ from brain_v42.models.project_key import canonicalize_project_key
 
 ENV_KEY = "MCP_HTTP_DREAM_TOKENS"
 ADMIN_TOKEN_ENV = "MCP_HTTP_TOKEN"
-# 32 octets d'entropie en base64url. Le registre compare en temps constant
-# (hmac.compare_digest) et les tokens sont opaques : leur seule propriété utile
-# est d'être imprévisibles et distincts.
+# 32 bytes of entropy in base64url. The registry compares in constant time
+# (hmac.compare_digest) and the tokens are opaque: their only useful property is
+# being unpredictable and distinct.
 _TOKEN_BYTES = 32
 
 
@@ -59,11 +59,11 @@ def mint(
     admin_token: str,
     _token_source: Callable[[], str] = _default_token,
 ) -> int:
-    """Écrire le registre pour ``project_keys``. Rend le nombre de profils.
+    """Write the registry for ``project_keys``. Returns the number of profiles.
 
-    Refuse d'écraser un fichier existant : les bearers vivants sont ceux que
-    les phases portent déjà, et les remplacer sans le vouloir donnerait 401 sur
-    toute la nuit suivante — donc « 6/6 OK » sur du vide.
+    Refuses to overwrite an existing file: the live bearers are the ones the
+    phases already carry, and replacing them unintentionally would give 401 for
+    the whole following night — hence "6/6 OK" over nothing.
     """
     if not project_keys:
         raise ValueError("at least one project key is required")
@@ -79,25 +79,25 @@ def mint(
     payload: dict[str, dict[str, object]] = {}
     for project_key in canonical:
         for phase in phases:
-            # `accepted` reste vide à la frappe initiale : il ne sert qu'au
-            # recouvrement d'une rotation, où l'ancien token doit rester honoré
-            # le temps que les clients prennent le nouveau.
+            # `accepted` stays empty at the initial mint: it only serves a
+            # rotation overlap, where the old token must stay honoured until the
+            # clients pick up the new one.
             payload[f"{project_key}:{phase}"] = {"active": _token_source(), "accepted": []}
 
     serialised = json.dumps(payload, separators=(",", ":"), sort_keys=True)
 
-    # LA garde : valider avec le parseur du serveur, pas avec une relecture de
-    # ses règles. Il vérifie la matrice complète, les doublons, la collision
-    # avec le bearer admin et la canonicité des clés — et il lève si l'un
-    # manque, AVANT que le fichier n'atteigne le disque.
+    # THE guard: validate with the server's parser, not with a re-reading of
+    # its rules. It checks the complete matrix, duplicates, collision with the
+    # admin bearer and key canonicity — and it raises if one is missing, BEFORE
+    # the file reaches the disk.
     parse_dream_capability_registry(serialised, admin_token=admin_token)
 
-    # `x` : création exclusive. Un registre existant n'est jamais écrasé.
+    # `x`: exclusive creation. An existing registry is never overwritten.
     fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(f"{ENV_KEY}={serialised}\n")
-    # os.open honore l'umask ; on repose le mode explicitement, parce que le
-    # preflight MCP refuse le service si le fichier n'est pas exactement 0600.
+    # os.open honours the umask; we re-set the mode explicitly, because the MCP
+    # preflight refuses to serve if the file is not exactly 0600.
     output.chmod(0o600)
     return len(payload)
 
@@ -140,8 +140,8 @@ def main(argv: list[str] | None = None) -> int:
 
     admin_token = os.environ.get(ADMIN_TOKEN_ENV)
     if not admin_token:
-        # Il n'entre pas par un argument : la ligne de commande est lisible
-        # dans /proc et dans l'historique du shell.
+        # It does not come in through an argument: the command line is
+        # readable in /proc and in the shell history.
         print(f"{ADMIN_TOKEN_ENV} must be set in the environment", file=sys.stderr)
         return 2
 
@@ -152,12 +152,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"refusing to overwrite {args.output} — move it aside first", file=sys.stderr)
         return 1
     except (ValueError, OSError) as exc:
-        # `exc` peut citer une clé de projet, jamais un token : les erreurs du
-        # parseur sont secret-safe par construction.
+        # `exc` may quote a project key, never a token: the parser's errors are
+        # secret-safe by construction.
         print(f"mint failed: {exc}", file=sys.stderr)
         return 1
 
-    # Le décompte, jamais la matière. Les projets sont publics, les tokens non.
+    # The count, never the material. Projects are public, tokens are not.
     print(f"wrote {count} profiles for {len(project_keys)} projects to {args.output}")
     return 0
 

@@ -1,18 +1,19 @@
-"""Purge mécanique du stock roadmap — one-shot, SQL pur, sans LLM (spec §2).
+"""Mechanical purge of the roadmap backlog — one-shot, pure SQL, no LLM (spec §2).
 
-Règles (`pinned=true` : JAMAIS touchée) :
-  R1. project_key absent de project_contexts ET hors groupe `red` → archived.
-      (get_keys_by_group réutilisé — parité vue codex. Si `red` est une vraie
-      clé legacy du groupe, la règle l'épargne et on tranche à la review.)
-  R2. 0 artifact → archived.
-  R3. 1 artifact, aucun artifact créé depuis 60 j (max(feature_artifacts.
-      created_at), PAS status_updated_at), statut non terminal → archived.
+Rules (`pinned=true`: NEVER touched):
+  R1. project_key absent from project_contexts AND outside the `red` group →
+      archived. (get_keys_by_group reused — parity with the codex view. If `red`
+      is a real legacy key of the group, the rule spares it and we settle it at
+      review.)
+  R2. 0 artifacts → archived.
+  R3. 1 artifact, no artifact created in 60 d (max(feature_artifacts.created_at),
+      NOT status_updated_at), non-terminal status → archived.
 
-Réversibilité : tout est `archived`, un UPDATE inverse suffit.
+Reversibility: everything is `archived`, one inverse UPDATE is enough.
 
 Usage:
-    python -m scripts.roadmap_purge          # dry (défaut) — rapport seul
-    python -m scripts.roadmap_purge --wet    # applique les UPDATE
+    python -m scripts.roadmap_purge          # dry (default) — report only
+    python -m scripts.roadmap_purge --wet    # applies the UPDATEs
 """
 
 from __future__ import annotations
@@ -50,10 +51,10 @@ def classify_feature(
     known_keys: set[str],
     now: datetime,
 ) -> str | None:
-    """Retourne la règle qui archive cette feature, ou None (vivante).
+    """Return the rule that archives this feature, or None (still alive).
 
-    Pure — testable sans DB. L'ordre R1 > R2 > R3 est contractuel :
-    une feature fantôme à 0 artifact compte en R1.
+    Pure — testable without a DB. The R1 > R2 > R3 order is contractual: a ghost
+    feature with 0 artifacts counts under R1.
     """
     if feature["pinned"]:
         return None

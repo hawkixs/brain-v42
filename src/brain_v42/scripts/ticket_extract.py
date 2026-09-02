@@ -1,13 +1,13 @@
 """Ticket knowledge extraction — proposer-only dream step (spec §6).
 
-Scanne les tickets en état terminal (extraction_status='pending'), envoie
-chaque fil au LLM (NVIDIA API, JSON strict SANS tools — pattern validé du
-domain backfill), stocke des proposals reviewables, applique en wet.
+Scans tickets in a terminal state (extraction_status='pending'), sends each
+thread to the LLM (NVIDIA API, strict JSON WITHOUT tools — the validated pattern
+from the domain backfill), stores reviewable proposals, applies them in wet.
 
 Usage:
     python -m scripts.ticket_extract [--limit 20]          # propose (dry)
-    python -m scripts.ticket_extract --limit 20 --wet      # propose + apply du run
-    python -m scripts.ticket_extract --apply-ids "3,4"     # override humain reviewé
+    python -m scripts.ticket_extract --limit 20 --wet      # propose + apply the run
+    python -m scripts.ticket_extract --apply-ids "3,4"     # reviewed human override
 """
 
 from __future__ import annotations
@@ -46,21 +46,20 @@ from brain_v42.scripts.domain_backfill import (
 _ENV_FILE = Path.home() / ".config" / "brain-v42" / "nvidia.env"
 _API_KEY_VAR = "BRAIN_NVIDIA_API_KEY"
 _FALLBACK_MODEL_VAR = "BRAIN_NVIDIA_FALLBACK_MODEL"
-#: Secours quand le primaire est retiré chez le fournisseur.
+#: Fallback for when the provider retires the primary.
 #:
-#: VRAI SECOND MAILLON depuis le 2026-08-29. Il avait été annulé (égal au
-#: primaire) le 2026-08-21, avec une condition explicite pour le restaurer :
-#: « CANARYER un candidat sur le prompt d'extraction — pas de le choisir sur
-#: la fiche du fournisseur, ni sur une sonde de 16 tokens, erreur mesurée le
-#: 2026-08-05 (vivant sur 16 tokens, en TIMEOUT sur le prompt réel) ». La
-#: condition est remplie : canary sans persistance du 2026-08-29 sur trois
-#: tickets pending réels, par le chemin exact de la nuit
-#: (`fetch_pending_threads` → `extract_thread`, arrêté avant
-#: `persist_proposals`) — mistral-nemotron 3/3 valides, 15 drafts,
-#: 25,9 s/ticket, deuxième derrière le primaire nemotron-3-super-120b-a12b
-#: (16,1 s). La restauration n'était plus optionnelle : le primaire promu le
-#: 21/08, llama-3.3-70b, est mort en 410 sept nuits plus tard, et un secours
-#: égal au primaire meurt AVEC lui.
+#: A REAL SECOND LINK since 2026-08-29. It had been cancelled (set equal to the
+#: primary) on 2026-08-21, with an explicit condition for restoring it: "CANARY
+#: a candidate on the extraction prompt — do not pick it from the provider's
+#: datasheet, nor from a 16-token probe, an error measured on 2026-08-05 (alive
+#: on 16 tokens, TIMING OUT on the real prompt)". The condition is met:
+#: a canary without persistence on 2026-08-29 over three real pending tickets,
+#: through the night's exact path (`fetch_pending_threads` → `extract_thread`,
+#: stopped before `persist_proposals`) — mistral-nemotron 3/3 valid, 15 drafts,
+#: 25.9 s/ticket, second behind the primary nemotron-3-super-120b-a12b
+#: (16.1 s). Restoring it was no longer optional: the primary promoted on 08-21,
+#: llama-3.3-70b, died with a 410 seven nights later, and a fallback equal to
+#: the primary dies WITH it.
 DEFAULT_EXTRACT_FALLBACK_MODEL = "mistralai/mistral-nemotron"
 
 _VALID_TARGET_TYPES = ("learning", "decision")
@@ -460,21 +459,21 @@ def parse_and_validate(content: str, thread: TicketThread) -> list[ProposalDraft
             raise ResponseParseError(
                 f"item {i}: invalid target_type {ttype!r} (valid: {_VALID_TARGET_TYPES})"
             )
-        # Canonicaliser AVANT le test d'appartenance : le modèle rend volontiers la
-        # forme underscore du dépôt (`brain_v42`) là où la clé est `brain-v42`, et un
-        # ticket refusé reste `pending` — la même erreur se rejoue donc CHAQUE nuit.
-        # `strict=False` est le seul mode admissible : `strict=True` lèverait un
-        # `ValueError` qui échapperait au `except ResponseParseError` de l'appelant et
-        # tuerait le re-prompt correctif. Les alias sont appliqués avant le test de
-        # forme et sans jamais lever, donc `strict=False` suffit à réparer le cas réel.
+        # Canonicalize BEFORE the membership test: the model readily returns the
+        # repository's underscore form (`brain_v42`) where the key is `brain-v42`, and
+        # a refused ticket stays `pending` — so the same error replays EVERY night.
+        # `strict=False` is the only admissible mode: `strict=True` would raise a
+        # `ValueError` that would escape the caller's `except ResponseParseError` and
+        # kill the corrective re-prompt. Aliases are applied before the shape test and
+        # without ever raising, so `strict=False` is enough to fix the real case.
         raw_tproject = item.get("target_project")
         tproject = (
             canonicalize_project_key(raw_tproject, strict=False)
             if isinstance(raw_tproject, str)
             else raw_tproject
         )
-        # `not in` sur un dict/list lèverait `TypeError: unhashable type` — hors du
-        # contrat d'erreur de cette fonction, donc fatal pour la phase.
+        # `not in` on a dict/list would raise `TypeError: unhashable type` — outside
+        # this function's error contract, hence fatal for the phase.
         if not isinstance(tproject, str) or tproject not in participants:
             raise ResponseParseError(
                 f"item {i}: target_project {raw_tproject!r} not in {sorted(participants)}"
@@ -572,12 +571,12 @@ async def extract_thread(
         try:
             drafts = parse_and_validate(content, thread)
         except ResponseParseError as first_error:
-            # One corrective re-prompt — qui NOMME l'erreur, comme le fait
-            # `roadmap_curate._curate_llm_attempt` depuis toujours. Sans elle, un
-            # modèle qui a rendu la mauvaise clé de projet relit « renvoie du JSON
-            # valide » et rend le même JSON, valide, avec la même mauvaise clé.
-            # Les clés valides voyagent gratuitement : le message de
-            # `parse_and_validate` les énumère déjà.
+            # One corrective re-prompt — one that NAMES the error, as
+            # `roadmap_curate._curate_llm_attempt` has always done. Without it, a
+            # model that returned the wrong project key re-reads "return valid
+            # JSON" and returns the same JSON, valid, with the same wrong key.
+            # The valid keys travel for free: `parse_and_validate`'s message
+            # already enumerates them.
             corrective = [
                 *messages,
                 {"role": "assistant", "content": content},
@@ -597,10 +596,10 @@ async def extract_thread(
                     error=f"unparseable after corrective re-prompt: {exc}",
                 )
     except ModelGoneError:
-        # NE PAS enterrer dans un outcome `failed` : un modèle retiré n'est pas
-        # un ticket fautif. Confondus, ils rendent vingt échecs identiques que
-        # personne ne peut relier à leur cause unique — et la boucle perd la
-        # seule information qui lui permettrait de basculer sur le secours.
+        # DO NOT bury this in a `failed` outcome: a retired model is not a
+        # faulty ticket. Conflated, they produce twenty identical failures
+        # nobody can trace back to their single cause — and the loop loses the
+        # one piece of information that would let it switch to the fallback.
         raise
     except (httpx.HTTPError, RuntimeError, KeyError, ValueError) as exc:
         return ThreadOutcome(thread=thread, drafts=[], failed=True, error=_exc_str(exc))
@@ -988,8 +987,8 @@ def main() -> int:
         args.fallback_model or os.environ.get(_FALLBACK_MODEL_VAR) or DEFAULT_EXTRACT_FALLBACK_MODEL
     )
     if fallback_model == model:
-        # Un secours identique au primaire n'est pas un secours : il ferait
-        # croire à une chaîne là où il n'y a qu'un seul point de panne.
+        # A fallback identical to the primary is not a fallback: it would
+        # suggest a chain where there is a single point of failure.
         fallback_model = None
 
     return asyncio.run(_run(args, api_key, model, base_url, fallback_model=fallback_model))
@@ -1040,7 +1039,7 @@ async def _run(
     threads = await fetch_pending_threads(sf, args.limit)
     if not threads:
         print("Aucun ticket pending — rien à faire.")
-        # `model` reste NULL : la file était vide, aucun modèle n'a été appelé.
+        # `model` stays NULL: the queue was empty, no model was called.
         await record_dream_run(
             sf, "done", dry=not args.wet, duration_s=time.monotonic() - t0, error=None
         )
@@ -1069,8 +1068,9 @@ async def _run(
     # exit code owes dream.sh now that `3` leaves the unit green.
     hard_failed = 0
     deduped = 0
-    # Le modèle réellement servi, qui n'est plus forcément celui demandé : une
-    # fin de vie chez le fournisseur bascule le RUN entier sur le secours.
+    # The model actually served, which is no longer necessarily the one asked
+    # for: an end of life at the provider switches the whole RUN to the
+    # fallback.
     active_model = model
     switched_to_fallback = False
     model_gone: str | None = None
@@ -1129,9 +1129,9 @@ async def _run(
                     )
                     break
                 except ModelGoneError as exc:
-                    # La bascule est une décision de RUN, pas de ticket : sans
-                    # cet état, les 19 tickets suivants repaieraient chacun le
-                    # même 410 pour réapprendre la même chose.
+                    # The switch is a RUN decision, not a ticket one: without
+                    # this state, the next 19 tickets would each pay the same
+                    # 410 again to learn the same thing.
                     if switched_to_fallback or not fallback_model:
                         model_gone = _exc_str(exc)
                         print(f"FATAL extract: plus aucun modèle vivant — {model_gone}")
@@ -1299,9 +1299,9 @@ async def _run(
         await http_client.aclose()
 
     if model_gone:
-        # Ni une échéance ni un ticket fautif : la phase n'avait plus de modèle
-        # à qui parler. `any_failed` porte le rc=1, et l'erreur NOMME le dernier
-        # modèle essayé — sans ça la nuit suivante rejoue la même impasse.
+        # Neither a deadline nor a faulty ticket: the phase had no model left to
+        # talk to. `any_failed` carries the rc=1, and the error NAMES the last
+        # model tried — without that the next night replays the same dead end.
         any_failed = True
         hard_failed += 1
         error_msg = _safe_error(model_gone)
@@ -1385,9 +1385,9 @@ async def _run(
             error_msg
             or (f"{timed_out} ticket(s) timed out before run deadline" if timed_out else None)
         ),
-        # `active_model`, pas `model` : la bascule vers le secours est une
-        # décision de RUN, et une nuit entièrement servie par le secours doit
-        # être discernable d'une nuit nominale.
+        # `active_model`, not `model`: switching to the fallback is a RUN
+        # decision, and a night served entirely by the fallback must be
+        # distinguishable from a nominal night.
         model=active_model,
     )
     return _exit_code(
