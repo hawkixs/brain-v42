@@ -2245,7 +2245,7 @@ import at all.
 ### 15.5 The flaw living one layer up — decided on 2026-08-09
 
 The decision "`--project-key` required with no default" only covered, as written, the
-Python binary. `scripts/dream.sh:70` already carries:
+Python binary. Measured on 2026-08-09, `scripts/dream.sh` already carried:
 
 ```bash
 PROJECT_KEY="${1:-brain-v42}"
@@ -2253,10 +2253,16 @@ PROJECT_KEY="${1:-brain-v42}"
 
 A bare `bash scripts/dream.sh` therefore satisfies the required flag with `brain-v42` and
 labels the whole night under another project — **exactly the class of bug the decision
-targets**, one layer above where the guard was placed. The precedent already exists in
-production: `scripts/dream/post_run_alert.py:157` carries `default=DEFAULT_PROJECT_KEY`, while
-`scripts/dream/promote_prepare.py:131` carries `required=True`. The repo holds both forms; a
-choice must be made about which one is the reference.
+targets**, one layer above where the guard was placed. The precedent already existed in
+production on that date: `scripts/dream/post_run_alert.py` carried `default=DEFAULT_PROJECT_KEY`
+on its `--project-key`, while `scripts/dream/promote_prepare.py:131` carries `required=True`.
+The repo held both forms; a choice had to be made about which one is the reference.
+
+**Both stale halves have since been applied, and the line numbers with them.** `dream.sh` now
+refuses to guess (`Refusing to guess the project`, exit 2) and `post_run_alert.py` no longer has
+a `--project-key` at all — the flag was decorative and was removed when the pool opened. Only
+`promote_prepare.py:131` still reads as written. Re-measure before citing either of the other
+two; the lines they named describe nothing today.
 
 **Decided by the operator: the default is removed, in a separate commit.** `dream.sh` will
 require its positional argument. No night changes behavior — systemd already passes `brain-v42`

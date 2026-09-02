@@ -155,10 +155,21 @@ docker compose build embedding-shim
 docker compose up -d --no-deps embedding-shim   # --no-deps: never recreate embedding-llama
 ```
 
-Never widen that to a bare `docker compose up -d`. Without `QODO_GGUF_DIR` set,
-Compose mounts an empty model directory and puts `embedding-llama` into a
-crash-loop (incident 2026-08-21), and the versioned Neo4j secret default is
-absent on this host.
+Never widen that to a bare `docker compose up -d`. Two independent traps make
+the global form unsafe on a running host, and both are silent until they are
+not: without `QODO_GGUF_DIR` set, Compose mounts an empty model directory and
+puts `embedding-llama` into a crash-loop (incident 2026-08-21); and every secret
+source whose override variable is unset falls back to a versioned default under
+`./.secrets/`, a directory this host does not have, so the `up` fails on the
+first service that needs one. Always name the service and pass `--no-deps`.
+
+The override variables are documented in `deploy/compose-secrets.env.example`
+and belong in the repository's `.env`, which Compose reads on its own — no
+ad-hoc export before the command, which is what made the Neo4j one invisible
+until 2026-09-02. `tests/unit/test_docker_compose.py::TestComposeSecretSources`
+refuses a hard-coded secret source and an undocumented override variable; it
+cannot tell whether the file exists on any given host, so
+`docker compose config` stays the measurement before any `up`.
 
 Rollback, once the previous image is tagged before the build:
 
