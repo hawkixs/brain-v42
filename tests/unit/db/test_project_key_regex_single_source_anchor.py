@@ -82,6 +82,11 @@ _RECOVERY_ASSETS_WITH_PREDICATE = frozenset(
         # friction, still exactly as written.
         "brain-v42-v7.sql",
         "brain-v42-v7-pgrestore.sql",
+        # Ajoutés le 2026-09-03 par le mint v8 (050/051) : dérivés de v7 par pure
+        # insertion, ils héritent du prédicat — cinquième rougissement de cette
+        # friction, toujours tel qu'écrit.
+        "brain-v42-v8.sql",
+        "brain-v42-v8-pgrestore.sql",
     }
 )
 
@@ -190,9 +195,9 @@ def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     )
     recovery_sites = sum(len(patterns) for patterns in _recovery_assets().values())
 
-    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 11), (
+    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 13), (
         "la ventilation des surfaces d'application a changé "
         f"(métadonnées={metadata_sites}, migrations={migration_sites}, "
-        f"attestation={recovery_sites} ; attendu 1/2/11). Recenser avant de corriger le "
+        f"attestation={recovery_sites} ; attendu 1/2/13). Recenser avant de corriger le "
         "compte : c'est ce recensement qui a été faux trois fois."
     )
