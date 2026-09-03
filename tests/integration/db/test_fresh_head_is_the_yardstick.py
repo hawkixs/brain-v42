@@ -152,7 +152,19 @@ PINNED_TWIN_DRIFT: dict[str, Any] = {
 #: The TWIN, for its part, only requires the NAMES (the v6 mint's names-only rule)
 #: and therefore passes this check — which is why it does not appear in
 #: `PINNED_TWIN_DRIFT`.
-RESTORE_BUILD_VECTOR_VERSIONS = frozenset({"0.8.4", "0.8.5"})
+#: DERIVED, ticket `9ec053b5`. It used to be a literal, and the literal grew from
+#: {0.8.4} to {0.8.4, 0.8.5} on 2026-09-02 because a restore installed 0.8.5 and
+#: this check went red — the set was widened to match what was observed, which is
+#: the opposite of what it is for. A tolerated version and a proved one look the
+#: same inside a bare frozenset; they do not inside a file that records, per
+#: version, the date of the proof and where to read it.
+RESTORE_BUILD_VECTOR_VERSIONS = frozenset(
+    json.loads(
+        (PROJECT_ROOT / "ops" / "recovery" / "proven_vector_versions.json").read_text(
+            encoding="utf-8"
+        )
+    )["versions"]
+)
 
 
 def _database_url_or_skip() -> str:
