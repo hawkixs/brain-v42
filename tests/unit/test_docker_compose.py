@@ -57,13 +57,43 @@ class TestDockerComposeServices:
         services = compose_config.get("services", {})
         assert "postgres" in services, "A 'postgres' service must be defined under 'services'"
 
-    def test_postgres_uses_pgvector_image(self, compose_config: dict) -> None:  # type: ignore[type-arg]
-        """postgres service must use pgvector/pgvector:pg16 image."""
+    def test_postgres_uses_the_pinned_pgvector_image(self, compose_config: dict) -> None:  # type: ignore[type-arg]
+        """postgres must run the catalogue entry that names `docker-compose.yml`.
+
+        DERIVED from `config/container-images.lock.yml`, not copied. A second
+        hand-written copy of the digest is a second thing to bump, and on
+        2026-09-03 it was the thing nobody bumped: ticket `fc233e91` moved the
+        compose onto the image production actually runs, and this assertion —
+        holding a literal — went red on a correct change.
+
+        What it still guards is the property that matters: the compose names the
+        image the catalogue reserves for it, and no other.
+        """
+        import yaml  # noqa: PLC0415
+
+        catalogue = yaml.safe_load(
+            (Path(__file__).parents[2] / "config" / "container-images.lock.yml").read_text(
+                encoding="utf-8"
+            )
+        )["images"]
+        # Narrowed to pgvector on purpose: llama.cpp and neo4j are ALSO consumed
+        # by the compose alone, so "reserved for the compose" is not on its own a
+        # unique key. A first version of this derivation asserted it was, and
+        # found three entries — a test that would have been wrong about the
+        # catalogue rather than about the compose.
+        reserved = [
+            entry["reference"]
+            for entry in catalogue.values()
+            if entry["tag"].startswith("pgvector/") and "docker-compose.yml" in entry["consumers"]
+        ]
+
+        assert len(reserved) == 1, (
+            f"exactly one pgvector entry may serve the compose, found {reserved}"
+        )
         postgres = compose_config["services"]["postgres"]
-        assert postgres.get("image") == (
-            "pgvector/pgvector:pg16@"
-            "sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb"
-        ), f"Expected the digest-pinned pgvector/pgvector:pg16 image, got '{postgres.get('image')}'"
+        assert postgres.get("image") == reserved[0], (
+            f"Expected the catalogue's compose-reserved image, got '{postgres.get('image')}'"
+        )
 
     def test_postgres_container_name(self, compose_config: dict) -> None:  # type: ignore[type-arg]
         """postgres service must have container_name brain_v42_postgres."""

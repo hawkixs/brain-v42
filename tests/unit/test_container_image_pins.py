@@ -39,6 +39,11 @@ EXPECTED_LOCKED_REFERENCES = {
     "python:3.12-slim": "sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de",
     "python:3.11-slim": "sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93",
     "pgvector/pgvector:pg16": "sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb",
+    # Ticket `fc233e91`: the image production actually runs. A SECOND pgvector
+    # entry, not a moved digest — CI and the test benches keep the floating one.
+    "pgvector/pgvector:0.8.4-pg16": (
+        "sha256:ad2e18408bf447f62092a8a5259e7df10505c5a0360bd1a1853ac8b8b0763da2"
+    ),
     "ghcr.io/ggml-org/llama.cpp:server-cuda": "sha256:c1ddeb6d30932ddd9ddff962cb62dbc5450cd99d8e82c8c20de2fd1f99fde85b",
     "pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime": "sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
     "nvidia/cuda:12.4.1-base-ubuntu22.04": "sha256:0f6bfcbf267e65123bcc2287e2153dedfc0f24772fb5ce84afe16ac4b2fada95",
@@ -283,7 +288,7 @@ def test_gate_boundary_python_keeps_forward_wrapper_and_late_binding_proofs(
     assert _errors(checker, tmp_path)
 
 
-def test_repository_catalog_contains_the_nine_registry_verified_references(
+def test_repository_catalog_contains_the_ten_registry_verified_references(
     checker: ModuleType | _MissingChecker,
 ) -> None:
     catalog = checker.load_catalog(LOCK_PATH)
@@ -11585,3 +11590,58 @@ def test_a_verb_that_really_pulls_an_image_is_still_refused(
     )
 
     assert [error for error in _errors(checker, tmp_path) if "pull-unpinned.sh" in error]
+
+
+# ── The production postgres entry, ticket `fc233e91` ─────────────────────────
+
+_CATALOG = Path(__file__).parents[2] / "config" / "container-images.lock.yml"
+_PROD_POSTGRES_ENTRY = "pgvector-0-8-4-pg16"
+
+
+def _lock_images() -> dict:
+    """The catalogue's `images` mapping. NOT `_catalog` — that name is taken above
+    by the fixture builder, and shadowing it would have broken every test that
+    calls `_catalog(sources)`."""
+    import yaml  # noqa: PLC0415
+
+    return yaml.safe_load(_CATALOG.read_text(encoding="utf-8"))["images"]
+
+
+def test_the_production_postgres_entry_names_the_version_it_pins() -> None:
+    """Two pgvector entries now coexist, and only the NAME tells them apart.
+
+    `brain_v42_postgres` runs an image the floating `:pg16` tag no longer points
+    at: measured 2026-09-03, the container carries `pgvector/pgvector:0.8.4-pg16`
+    (`sha256:ad2e1840…`) while `:pg16` resolves to 0.8.5. The compose declared the
+    latter, so a routine `docker compose up -d` — with no intent to upgrade
+    anything — would have recreated production on another image.
+
+    An identifier that carried no version would leave the two entries
+    distinguishable only by their digests, which is precisely the reading nobody
+    does. The version belongs in the name.
+    """
+    entry = _lock_images().get(_PROD_POSTGRES_ENTRY)
+
+    assert entry is not None, (
+        f"{_PROD_POSTGRES_ENTRY} is missing: the compose would be back on the floating tag"
+    )
+    # `0-8-4`, not `0.8.4`: catalogue identifiers are matched by
+    # `IDENTIFIER_PATTERN`, which admits no dots. The version is still IN the
+    # name, which is all this asserts — and the first version of this line
+    # asserted the dotted form and failed, which is how the constraint surfaced.
+    assert "0-8-4" in _PROD_POSTGRES_ENTRY
+    assert entry["tag"] == "pgvector/pgvector:0.8.4-pg16"
+    assert entry["consumers"] == ["docker-compose.yml"], (
+        "this entry exists for the production compose ALONE — CI and the test benches "
+        "stay on the current image, and widening its consumers would drag them back"
+    )
+
+
+def test_the_floating_pgvector_entry_no_longer_serves_the_production_compose() -> None:
+    """The other half: the two entries must not both claim the compose."""
+    floating = _lock_images()["pgvector-pg16"]
+
+    assert "docker-compose.yml" not in floating["consumers"]
+    assert ".github/workflows/continuous-integration.yml" in floating["consumers"], (
+        "CI stays on the floating entry — that is what keeps this change off its path"
+    )

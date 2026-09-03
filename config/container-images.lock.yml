@@ -57,9 +57,33 @@ images:
     resolution: docker buildx imagetools inspect --raw tag@digest
     consumers:
       - .github/workflows/continuous-integration.yml
-      - docker-compose.yml
       - tests/support/hnsw-churn-compose.yml
       - tests/support/task0-compose.yml
+
+  # The image PRODUCTION actually runs, ticket `fc233e91`. `brain_v42_postgres`
+  # was started on the versioned tag `0.8.4-pg16` and never recreated; the entry
+  # above pins the FLOATING `:pg16`, which has since moved to 0.8.5. The compose
+  # therefore declared an image the host does not run, and a routine
+  # `docker compose up -d` — with no intent to upgrade anything — would have
+  # recreated production on another one.
+  #
+  # A SECOND entry rather than a moved digest: CI and the two test benches keep
+  # consuming the floating entry, so this pin cannot drag them back to a June
+  # image. Recreating the container remains an operator gesture, unchanged by
+  # this file.
+  pgvector-0-8-4-pg16:
+    reference: pgvector/pgvector:0.8.4-pg16@sha256:ad2e18408bf447f62092a8a5259e7df10505c5a0360bd1a1853ac8b8b0763da2
+    registry: registry-1.docker.io
+    tag: pgvector/pgvector:0.8.4-pg16
+    digest: sha256:ad2e18408bf447f62092a8a5259e7df10505c5a0360bd1a1853ac8b8b0763da2
+    media_type: application/vnd.oci.image.index.v1+json
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    resolved_at: "2026-09-03"
+    resolution: docker manifest inspect pgvector/pgvector@digest (read-only, no pull)
+    consumers:
+      - docker-compose.yml
 
   llama-server-cuda:
     reference: ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:c1ddeb6d30932ddd9ddff962cb62dbc5450cd99d8e82c8c20de2fd1f99fde85b
