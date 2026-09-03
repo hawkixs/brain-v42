@@ -1,6 +1,6 @@
 # Data Schema — brain_v42
 
-**Delivery status:** the repository's target is 049. Revision 049 carries three objects from the same family (nullable columns + widened CHECK), grouped under criterion (c) of decision 9d22bc6a — their downgrades fail independently, each behind its own named opt-in: `dream_runs.closed_inactive_count` (the night-by-night series of inactivity closures, distinct from abandonments), `dream_runs.thinking_tokens` (the agy rail was generating ~38% of tokens counted nowhere), and the `freshness_source` vocabulary widened with `manual_update` and `plan_reindex` on the six decay-tracked tables — the plan upsert now declares its provenance. Nullable, no default, no backfill (`NULL` = written before 049). Revision 048 adds
+**Delivery status:** the repository's target is 051. Revision 051 adds `brain_session_checkpoints` (M-C), an append-only ledger of session checkpoints made idempotent by the KEY — `UNIQUE(session_id, seq)` with `ON CONFLICT DO NOTHING` — rather than by a CAS, because an agent retry is the norm and a CAS turns every retry into a conflict to be handled. A `BEFORE UPDATE OR DELETE` trigger refuses every rewrite, and that totality is bought by the FK's `ON DELETE RESTRICT`: a session carrying checkpoints becomes INDELIBLE, which is what append-only costs once the data enforces it instead of the code declaring it. Revision 050 adds `project_focus_history` (M-D), the append-only audit trail of project focus, plus the deferred constraint trigger that requires a history row at COMMIT — `brain_set_project_context` rewrites `current_focus` with no CAS, **including to NULL when the argument is omitted**, and until 050 the previous prose was not merely overwritten but UNRECOVERABLE. That trigger ships DISABLED, because between the `upgrade` and the MCP restart the live process still runs pre-050 code that writes no history row; arming it is a named operator gesture (`ALTER TABLE project_contexts ENABLE TRIGGER project_contexts_focus_history_required`). Both downgrades are fail-closed and NAME what they would destroy. Revision 049 carries three objects from the same family (nullable columns + widened CHECK), grouped under criterion (c) of decision 9d22bc6a — their downgrades fail independently, each behind its own named opt-in: `dream_runs.closed_inactive_count` (the night-by-night series of inactivity closures, distinct from abandonments), `dream_runs.thinking_tokens` (the agy rail was generating ~38% of tokens counted nowhere), and the `freshness_source` vocabulary widened with `manual_update` and `plan_reindex` on the six decay-tracked tables — the plan upsert now declares its provenance. Nullable, no default, no backfill (`NULL` = written before 049). Revision 048 adds
 `brain_session_artifacts.attribution_mode`: it says BY WHICH KEY a row was attributed
 — `explicit`, `derived_deposit`, `derived_connection` or `derived_window`. Nullable and with no
 backfill (`NULL` = written before 048); a partial index on the DERIVED mode only, because
@@ -39,17 +39,20 @@ cutover.
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
-The SQLAlchemy `METADATA` registry declares 32 tables, including the six graph
-foundation tables below. A fresh schema at head 049 contains 32 `public` tables counting
+The SQLAlchemy `METADATA` registry declares 33 tables, including the six graph
+foundation tables below. A fresh schema at head 051 contains 34 `public` tables counting
 `alembic_version`, which stays outside `METADATA`. Migrations 040 to 044 only add
-columns and 045 adds none — it widens an existing column — so the count has been
-unchanged since 038: verified on `brain`, measured at 32 right after 045 was applied. Migration 036 also maintains
+columns and 045 adds none — it widens an existing column — so the count held at 32 from
+038 through 049; 050 and 051 each add exactly ONE table, and that is what moves it.
+Measured on `brain` on 2026-09-03, right after the 049→051 cutover: 34 `public` base
+tables (`select count(*) from information_schema.tables where table_schema='public' and
+table_type='BASE TABLE'`). Re-measure it rather than copying this line. Migration 036 also maintains
 ten `codex_*` views in total: nine new views and `codex_brain_entity_v1`, created in
 024 then replaced in 036.
 
 Migration 037 declares `down_revision = "036"`. The v4 lifecycle it carries has been running in
 production since 24 July 2026, after sequential application of 036 then 037 and explicit
-proof before the MCP restart. Revision 049 is the head of the repository. Revision 038 adds
+proof before the MCP restart. Revision 051 is the head of the repository. Revision 038 adds
 `ticket_extraction_attempts`, 039 isolates the timestamp trigger of `project_contexts`, 040
 adds `focus_updated_at`, and 041 adds the provenance columns — none of the four adds a
 table after 038. The inventory distinguishes
@@ -1005,7 +1008,7 @@ $$ LANGUAGE plpgsql;
 
 ## Alembic Migrations
 
-49 revisions (001 → 049), in `alembic/versions/`.
+51 revisions (001 → 051), in `alembic/versions/`.
 
 | Revision | Main content |
 |----------|-------------------|
@@ -1058,6 +1061,8 @@ $$ LANGUAGE plpgsql;
 | 049 | `dream_runs.closed_inactive_count` and `dream_runs.thinking_tokens`, INTEGER NULL with no default or backfill (`NULL` = pre-049 / not measured); the six `ck_*_freshness_source` CHECKs widened with `manual_update` and `plan_reindex`. **Fail-closed** downgrade with THREE independent, named refusals — it is the independence of the downgrades that makes the multi-object head legitimate (9d22bc6a, criterion (c)): `-x allow_sweep_series_downgrade=yes`, `-x allow_thinking_tokens_downgrade=yes`, `-x allow_freshness_vocabulary_downgrade=yes` (the latter resets to NULL the provenances that 043's vocabulary cannot carry, before restoring the old CHECK). |
 | 048 | `brain_session_artifacts.attribution_mode` VARCHAR(24) NULL, with no default and no backfill (`NULL` = written before 048). CHECK `..._attribution_mode_valid` on four modes: `explicit`, `derived_deposit`, `derived_connection`, `derived_window`. PARTIAL index `idx_brain_session_artifacts_derived_window` on the DERIVED mode only — undoing a guess must be a query, not a scan. **Fail-closed** downgrade: it counts AND NAMES the `derived_window` attributions, because dropping the column makes them indistinguishable from an explicit human capture, and undoing it becomes impossible; named opt-in `-x allow_attribution_mode_downgrade=yes`. |
 | 046 | `brain_sessions` gains five nullable columns — `started_by_actor` (64), `last_observed_at`, `intent` (500), `nature` (16, CHECK `agent`/`operator`), `connection_id` (64) — plus a **PARTIAL** UNIQUE index `uq_brain_sessions_connection` `WHERE status = 'open'`: a full unique would burn the connection for life at the first auto-closure. BOTH CHECKs move — `status_valid` (032) and `terminal_state_valid` (037) — to accommodate the fourth state `closed_inactive`, reserved by the CHECK for sessions with `nature = 'agent'`. No backfill: `NULL` means "before 046". |
+| 050 | `project_focus_history` — append-only audit trail of project focus. `project_key` with NO foreign key (the knowledge tables' doctrine: dropping a context must not take the trail down with it), PK `(project_key, focus_revision)` as the only index, and `focus` NULLABLE because an erased focus IS the destructive overwrite the trail exists to record. An append-only trigger refuses UPDATE and DELETE; a DEFERRED constraint trigger on `project_contexts`, `UPDATE OF current_focus` only, requires the history row at COMMIT. It ships DISABLED — arming it is a named operator gesture after the MCP restart, and while it is off the `ops/recovery` attestation is RED by construction (its CTE requires `tgenabled = 'O'`). Seed of one row per context, `source='migration_seed'`. **Fail-closed** downgrade. |
+| 051 | `brain_session_checkpoints` — append-only ledger of session checkpoints (M-C). `UNIQUE(session_id, seq)` + `ON CONFLICT DO NOTHING` buys idempotence by the KEY instead of a CAS, so an exact replay is absorbed while the same `seq` carrying different content is REFUSED. `BEFORE UPDATE OR DELETE` trigger refuses every rewrite; FK `ON DELETE RESTRICT`, which is what lets the guard stay total — with CASCADE it would have to tell a cascaded DELETE from a direct one. Consequence, written down because an operator would otherwise meet it at 3AM: a session carrying checkpoints becomes INDELIBLE. No index beyond the key, and none added to `brain_sessions`, whose index list is CLOSED by the v4 recovery assets. **Fail-closed** downgrade naming the sessions whose judgment it would destroy; opt-in `-x allow_checkpoint_downgrade=yes`. |
 
 ## Typical queries
 
