@@ -132,9 +132,13 @@ asyncio_mode = "auto"
 # the integration job runs `pytest tests/integration/`, which would otherwise
 # spin disposable Postgres containers on every push. The bench is run on demand,
 # locally, with `-m bench_docker` — and its report says when it last ran.
-addopts = "-v --tb=short -m 'not bench_docker'"
+addopts = "-v --tb=short -m 'not bench_docker and not boundary_host'"
 markers = [
     "bench_docker: spins disposable Docker containers; excluded by default, run with -m bench_docker",
+    # Reads THIS host: listening sockets, published ports, a live bearer refusal.
+    # Hosted CI has none of that and `red-ci` measures only at push, so wiring it
+    # into the default run would make it green by absence everywhere it matters.
+    "boundary_host: replays the tracked network boundary against the local host; excluded by default, run with -m boundary_host",
 ]
 pythonpath = ["src"]
 # The net that holds whatever the cause. Twice, CI produced THIRTY MINUTES of
