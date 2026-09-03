@@ -20,6 +20,7 @@
 - No CHECK may constrain `merged_into` (gotcha skill `postgres-check-vs-on-delete-set-null`).
 - `Result.mappings()` is called on the **Result**, not on the session (mypy gotcha in scripts/); tests use `MagicMock(spec=AsyncSession)` to catch it.
 - Nightly killswitches: env vars in dream.sh + systemd drop-in `killswitches.conf` — NEVER in the unit (incident 2026-06-30). No `Settings` field for these flags.
+- Flipping `BRAIN_DREAM_ROADMAP_DRY_RUN=false` while the EFFECTIVE primary is in `AUTO_APPLY_MODELS` is refused fail-closed by `roadmap_curate.main`, which names the model and asks for `BRAIN_DREAM_ROADMAP_AUTO_APPLY_ACK=yes` — the guard blocks the accident, never a decision that was made (ticket 7511c210, armed the day a canary legitimately put `DEFAULT_WET_ROADMAP_MODEL` into the DRY chain).
 - `/metrics` contract is additive only: new keys OK, no rename/removal (consumed by red-monitor).
 - httpx transport `str(exc)` is often empty → always `_exc_str` (learning 7144c5ae).
 - Feature statuses (CHECK post-030): `planned, research, design, building, deployed, done, archived`.

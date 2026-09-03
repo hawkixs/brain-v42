@@ -590,6 +590,12 @@ class TestBudgetSecondsArg:
         """
         monkeypatch.delenv("BRAIN_NVIDIA_ROADMAP_MODEL", raising=False)
         monkeypatch.delenv("BRAIN_NVIDIA_MODEL", raising=False)
+        # 7511c210: both these paths now cross the auto-apply guard, which is
+        # the whole point of it — an allowlisted primary in `--wet` is exactly
+        # what must not happen by accident. The acknowledgement is what turns
+        # this from an accident into the decision these tests describe; every
+        # assertion below is unchanged.
+        monkeypatch.setenv(rc._AUTO_APPLY_ACK_VAR, "yes")
         monkeypatch.setattr("sys.argv", ["roadmap_curate", "--wet"])
 
         assert rc.main() == 0
@@ -618,6 +624,12 @@ class TestBudgetSecondsArg:
 
     def test_reviewed_fallback_model_keeps_wet(self, capture_args, monkeypatch):
         monkeypatch.setenv("BRAIN_NVIDIA_ROADMAP_MODEL", rc.DEFAULT_WET_ROADMAP_FALLBACK_MODEL)
+        # 7511c210: both these paths now cross the auto-apply guard, which is
+        # the whole point of it — an allowlisted primary in `--wet` is exactly
+        # what must not happen by accident. The acknowledgement is what turns
+        # this from an accident into the decision these tests describe; every
+        # assertion below is unchanged.
+        monkeypatch.setenv(rc._AUTO_APPLY_ACK_VAR, "yes")
         monkeypatch.setattr("sys.argv", ["roadmap_curate", "--wet"])
 
         assert rc.main() == 0
