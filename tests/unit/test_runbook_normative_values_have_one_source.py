@@ -342,6 +342,48 @@ def _region_text(document: str, name: str) -> str:
     )
 
 
+def _disaster_restore_invocation(document: str) -> str:
+    """The `pg_restore` command an operator runs in a disaster, joined into one line.
+
+    Read from the document rather than pinned here: a copy would go green on the
+    day the runbook changed, which is the whole class of defect this module
+    exists for.
+    """
+    joined = document.replace("\\\n", " ")
+    invocations = [
+        " ".join(line.split())
+        for line in joined.splitlines()
+        if "pg_restore" in line and "--dbname" in line
+    ]
+    assert len(invocations) == 1, (
+        f"expected exactly one pg_restore invocation with --dbname, found {len(invocations)}"
+    )
+    return invocations[0]
+
+
+def test_the_disaster_restore_command_survives_a_cluster_without_the_database() -> None:
+    """Ticket `41c7f0e8`. A disaster command that aborts on its own first statement.
+
+    `pg_restore --clean --create` emits `DROP DATABASE <name>` BEFORE the create,
+    and `--exit-on-error` makes the missing database fatal: rc=1 on a fresh
+    cluster. Measured two days running — by w42 on 2026-09-02 and w47 on
+    2026-09-03 — and both drills primed the target by hand to get past it.
+
+    A disaster runbook whose first command fails on the case it exists for is a
+    hypothesis, not a procedure (rule `087e74ff`). `--if-exists` changes the
+    behaviour in exactly ONE case, the one that fails: an absent object. Where
+    the database exists — the real disaster — the emitted DROP is the same.
+    """
+    invocation = _disaster_restore_invocation(RUNBOOK.read_text(encoding="utf-8"))
+
+    if "--clean" in invocation and "--create" in invocation:
+        assert "--if-exists" in invocation, (
+            "the disaster restore command carries --clean --create without --if-exists: "
+            "it emits DROP DATABASE before CREATE and aborts on a cluster that does not "
+            f"have the database yet.\n    {invocation}"
+        )
+
+
 @pytest.mark.parametrize("document_path", GUARDED_DOCUMENTS, ids=lambda path: path.name)
 def test_the_caveat_lives_wherever_a_receipt_is_read(document_path: Path) -> None:
     """A receipt is never read without what it does not prove.

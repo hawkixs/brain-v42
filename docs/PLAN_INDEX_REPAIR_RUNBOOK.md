@@ -847,17 +847,41 @@ PGSERVICE_PRODUCTION_MAINTENANCE=REPLACE_WITH_APPROVED_MAINTENANCE_SERVICE
 BACKUP_ARCHIVE=/ABSOLUTE/PATH/TO/THE/TESTED/FULL-BACKUP.dump
 readonly PGSERVICE_PRODUCTION_MAINTENANCE BACKUP_ARCHIVE
 timeout -s KILL 30m pg_restore \
-  --exit-on-error --clean --create \
+  --exit-on-error --clean --if-exists --create \
   --dbname="service=$PGSERVICE_PRODUCTION_MAINTENANCE" \
   "$BACKUP_ARCHIVE"
 ```
 
-That command assumes the target database EXISTS — a disaster restores over a cluster that has
-one. Measured on 2026-09-02: on a fresh cluster it aborts on its own first statement,
-`DROP DATABASE brain`, because `--clean` emits the drop and `--exit-on-error` makes the failure
-fatal. A disposable bench must therefore be primed with an empty target of the signed name
-before the archive is replayed; priming the bench is correct, adding `--if-exists` to the
-disaster command is not, since that would change the command this runbook exists to rehearse.
+**Why `--if-exists`, and what it does not change.** Without it the command aborts on its own
+first statement, `DROP DATABASE brain`, whenever the target is absent: `--clean` emits the drop
+and `--exit-on-error` makes the missing database fatal. Measured rc=1 on 2026-09-02, again on
+2026-09-03, and once more on a disposable bench that day. `--if-exists` changes the emitted SQL in
+exactly ONE case — the object is not there — and that is the case that fails. Where the database
+exists, which is the disaster this section rehearses, both forms emit the same drop and the same
+restore. An earlier version of this paragraph argued the opposite, that adding the flag "would
+change the command this runbook exists to rehearse"; the bench says otherwise, and a disaster
+command that fails on an empty cluster is a hypothesis rather than a procedure.
+
+**Priming, measured rather than assumed.** The archive recreates its own database, its encoding
+and its extensions — none of those need a bench gesture. What it does NOT carry is its roles, and
+`--exit-on-error` makes each missing one fatal at a different statement:
+
+| Role | Attributes | Why the restore needs it |
+|---|---|---|
+| `brain` | `SUPERUSER LOGIN CREATEDB CREATEROLE REPLICATION` | owner of 369 archived objects; without it the restore stops at `ALTER DATABASE brain OWNER TO brain` |
+| `codex_ro` | `LOGIN` | not an owner — a GRANTEE; without it the restore stops at `GRANT USAGE ON SCHEMA public TO codex_ro` |
+
+`codex_ro` is the one a reader misses: it appears nowhere in the archive's owner column, so
+listing the TOC owners finds only `brain` and the second failure arrives after the first is fixed.
+Create both before replaying, on the bench and on any rebuilt cluster:
+
+```sql
+CREATE ROLE brain SUPERUSER LOGIN CREATEDB CREATEROLE REPLICATION;
+CREATE ROLE codex_ro LOGIN;
+```
+
+Then VERIFY they exist rather than assuming the statement ran — `select rolname from pg_roles
+where rolname in ('brain', 'codex_ro')` must return both.
 
 On any restore or validation failure, leave application roles `NOLOGIN`, quarantine the target,
 and keep every writer off. After a successful restore, use the gated maintenance-to-target service
