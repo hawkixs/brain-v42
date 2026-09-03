@@ -315,3 +315,57 @@ def test_project_scope_stays_out_of_public_crud_signatures() -> None:
 
     for tool_name in ("brain_get", "brain_delete", "brain_update"):
         assert "project_key" not in inspect.signature(tools[tool_name]).parameters
+
+
+# ── brain_list: the last CRUD tool without a bound of its own ────────────────
+
+
+@pytest.mark.asyncio
+async def test_scoped_list_without_a_project_key_stays_inside_the_scope() -> None:
+    """CLAUDE.md's standing residue, closed.
+
+    `brain_list` was the only CRUD tool never to call `get_dream_project_scope()`
+    itself: its bound lived in the middleware ALONE, with no redundancy
+    downstream. The tool is called DIRECTLY here — no middleware — which is
+    exactly the situation the residue describes: if enforcement ever falls back,
+    REORG re-pages the whole corpus and nothing downstream says so.
+    """
+    tools, services, _session = _registered_tools()
+
+    with bind_dream_project_scope(_scope("brain_list")):
+        await tools["brain_list"]("decision")
+
+    assert services["decision_svc"].list_all.await_args.kwargs["project_key"] == PROJECT_KEY
+
+
+@pytest.mark.asyncio
+async def test_scoped_list_refuses_a_divergent_project_key() -> None:
+    """Same refusal as its siblings: a scoped caller cannot name another project."""
+    tools, services, _session = _registered_tools()
+
+    with bind_dream_project_scope(_scope("brain_list")), pytest.raises(Exception) as caught:
+        await tools["brain_list"]("decision", project_key="somebody-else")
+
+    assert "project_argument_mismatch" in str(caught.value) or "denied" in str(caught.value)
+    services["decision_svc"].list_all.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_scoped_list_bounds_the_adr_branch_too() -> None:
+    """The `adr` branch returns EARLY, so a bound placed after it would miss it."""
+    tools, services, _session = _registered_tools()
+
+    with bind_dream_project_scope(_scope("brain_list")):
+        await tools["brain_list"]("adr")
+
+    assert services["adr_svc"].list_all.await_args.kwargs["project_key"] == PROJECT_KEY
+
+
+@pytest.mark.asyncio
+async def test_unscoped_list_keeps_its_historical_shape() -> None:
+    """A human session is untouched: no scope, no injection, no refusal."""
+    tools, services, _session = _registered_tools()
+
+    await tools["brain_list"]("decision", project_key="anything-at-all")
+
+    assert services["decision_svc"].list_all.await_args.kwargs["project_key"] == "anything-at-all"
