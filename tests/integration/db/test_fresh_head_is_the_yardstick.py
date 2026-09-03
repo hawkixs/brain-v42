@@ -20,12 +20,12 @@ value and their ticket — never tolerated as a band: a drift that grows (049 ad
 an index) breaks the pin, a drift that heals (the asset brought up to date) breaks
 it too, and the exception is removed instead of surviving.
 
-**The module has pointed at the v8 asset since 2026-09-03**, one day after it
+**The module has pointed at the v9 asset since 2026-09-03**, one day after it
 pointed at v7 — and that speed is the point: 050 and 051 reached production on
 2026-09-02, the v7 asset went red the same evening, and the window between a
 migration and its re-mint is exactly the window in which this module is the only
 thing that would notice. `PINNED_ASSET_DRIFT` stays EMPTY across the move, which
-is the measured claim: the v8 mint left no structural gap for a pin to hold.
+is the measured claim: the v9 mint left no structural gap for a pin to hold.
 
 The `-pgrestore` twin is replayed here TOO, and it is deliberately half a test: a
 fresh database is not a restoration, so it says nothing about the
@@ -80,9 +80,9 @@ from tests.integration.disposable_db import (
 pytestmark = pytest.mark.integration
 
 PROJECT_ROOT = Path(__file__).parents[3]
-V8_SQL = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v8.sql"
-V8_JSON = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v8.json"
-V8_PGRESTORE = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v8-pgrestore.sql"
+V9_SQL = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v9.sql"
+V9_JSON = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v9.json"
+V9_PGRESTORE = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v9-pgrestore.sql"
 
 #: The contract checks that attest the DATA carried by a restoration. A fresh
 #: database is empty by construction: they cannot pass here and that is not a
@@ -93,7 +93,7 @@ DATA_CHECK_KINDS = frozenset({"row_count_sum_min"})
 #: The KNOWN gaps between the current DR asset and the alembic chain at head.
 #: **EMPTY since 2026-09-02**, and that is a measured result, not a relaxation: the
 #: v7 mint brought the asset back up to the chain. It was EMPTY between 2026-09-02
-#: and the v8 mint; what refilled it is not schema drift but an armed trigger —
+#: and the v9 mint; what refilled it is not schema drift but an armed trigger —
 #: see `PINNED_DISABLED_TRIGGER_DRIFT` just below. The v5 asset carried three, all
 #: pre-measured on 2026-08-29 in anticipation of this batch — `catalog_counts` (v5
 #: froze 130 indexes, 048 added a 131st), `brain_runtime_032_036_037` (047 + 048 on
@@ -111,7 +111,7 @@ DATA_CHECK_KINDS = frozenset({"row_count_sum_min"})
 #: DISABLED at birth ("this line is the whole cutover contract"), and arming it is
 #: a separate operator gesture, performed in production on 2026-09-02 at 23:54:27.
 #: So production carries `tgenabled = 'O'` and a database the alembic chain has
-#: just built carries `'D'`. The v8 contract demands the ARMED form, deliberately:
+#: just built carries `'D'`. The v9 contract demands the ARMED form, deliberately:
 #: a trigger disabled to work around something must redden the receipt. This pin
 #: is the other half of that decision, written down rather than absorbed — and it
 #: removes itself the day 050 stops shipping the trigger disabled, because the
@@ -328,7 +328,7 @@ async def test_a_create_all_bench_accepts_what_production_accepts(
 async def test_the_recovery_asset_passes_against_a_fresh_head_database(
     fresh_head_db_url: str,
 ) -> None:
-    """Replays `brain-v42-v8.sql` against the yardstick: asset↔real schema, at last.
+    """Replays `brain-v42-v9.sql` against the yardstick: asset↔real schema, at last.
 
     Every check of the receipt must pass, except:
     * the DATA checks (`DATA_CHECK_KINDS`) — a fresh database is empty;
@@ -336,9 +336,13 @@ async def test_the_recovery_asset_passes_against_a_fresh_head_database(
     * `extension_versions`, whose observed value is the build of the server hosting
       the disposable database, not a property of the alembic chain.
 
-    Measured on 2026-09-03 on v8: **23 checks pass out of 30**, and the seven
-    failures are SIX data checks and the extension. Zero structural gap — this test
-    does not declare it, it requires it.
+    Measured on 2026-09-03 on v9, at head 052: **22 checks pass out of 30**, and
+    the eight failures are SIX data checks, the extension and the disabled trigger
+    of 050 pinned just above. Zero structural gap — this test does not declare it,
+    it requires it. The count is one below v8's 23 because the extension check is a
+    property of the SERVER: the cluster hosting this disposable database ships
+    vector 0.8.4 against the 0.8.2 production declares, which is exactly why
+    `RESTORE_BUILD_VECTOR_VERSIONS` exists and why the number is not a contract.
 
     A migration that adds an index without bringing the asset up to date makes an
     unknown failure appear; bringing the asset up to date makes a pinned check pass,
@@ -347,11 +351,11 @@ async def test_the_recovery_asset_passes_against_a_fresh_head_database(
     appears on a live replay, a manual gesture" — is closed by this automatic
     replay.
     """
-    failures = await _replay(fresh_head_db_url, V8_SQL)
+    failures = await _replay(fresh_head_db_url, V9_SQL)
 
     # The receipt does not carry `kind`; each check's nature lives in the JSON
     # contract, the same source as red-backup's DSL engine.
-    contract = json.loads(V8_JSON.read_text(encoding="utf-8"))
+    contract = json.loads(V9_JSON.read_text(encoding="utf-8"))
     kinds = {check["id"]: check.get("kind") for check in contract["checks"]}
     unexplained = {
         check_id: failure
@@ -361,7 +365,7 @@ async def test_the_recovery_asset_passes_against_a_fresh_head_database(
         and check_id != "extension_versions"
     }
     assert not unexplained, (
-        "the v8 asset and the alembic chain disagree beyond the pinned drift:\n"
+        "the v9 asset and the alembic chain disagree beyond the pinned drift:\n"
         + json.dumps(unexplained, indent=2, default=str)
     )
 
@@ -397,7 +401,7 @@ async def test_the_pgrestore_twin_diverges_from_a_fresh_head_by_exactly_one_inde
 ) -> None:
     """The `-pgrestore` twin measured where it CAN be measured without a restore.
 
-    The twin exists to be replayed against a RESTORED target, and the v8 batch did
+    The twin exists to be replayed against a RESTORED target, and the v8 and v9 batches did
     not replay it there — no bench was stood up, that is written in the runbook and
     this test does not replace it. But a fresh database built by the alembic chain
     is not nothing: it carries the 049 schema for real, so it can say whether the
@@ -415,9 +419,9 @@ async def test_the_pgrestore_twin_diverges_from_a_fresh_head_by_exactly_one_inde
     What this test still does not prove: the `pg_dump`/`pg_restore` round-trip
     itself. That needs a bench.
     """
-    failures = await _replay(fresh_head_db_url, V8_PGRESTORE)
+    failures = await _replay(fresh_head_db_url, V9_PGRESTORE)
 
-    contract = json.loads(V8_JSON.read_text(encoding="utf-8"))
+    contract = json.loads(V9_JSON.read_text(encoding="utf-8"))
     kinds = {check["id"]: check.get("kind") for check in contract["checks"]}
     unexplained = {
         check_id: failure
@@ -426,13 +430,13 @@ async def test_the_pgrestore_twin_diverges_from_a_fresh_head_by_exactly_one_inde
         and check_id not in {"table_shape", "brain_runtime_032_036_037"}
     }
     assert not unexplained, (
-        "the v8 -pgrestore twin disagrees with the alembic chain somewhere other "
+        "the v9 -pgrestore twin disagrees with the alembic chain somewhere other "
         "than its one re-serialized index:\n" + json.dumps(unexplained, indent=2, default=str)
     )
 
     # The twin only requires the extension NAMES: unlike the base asset, it MUST
     # pass this check on a fresh database. If it fails, the v6 mint's names-only
-    # rule has been lost by the v8 mint.
+    # rule has been lost by the v9 mint.
     assert "extension_versions" not in failures, (
         "the twin now judges extension VERSIONS — the names-only rule was lost"
     )

@@ -2,20 +2,81 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import sqlalchemy as sa
 import structlog
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from brain_v42.db.tables import access_log
+from brain_v42.db.tables import access_log, access_log_daily
 from brain_v42.provenance import is_human_actor
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 logger = structlog.get_logger(__name__)
+
+
+def _utc_day() -> Any:
+    """The calendar day of an access, in UTC and never in the session's zone.
+
+    `date(accessed_at)` alone would resolve through `TimeZone`, so the same row
+    could land on two different days depending on which connection flushed it —
+    and the journal's primary key would then hold two rows where there is one
+    fact. `AT TIME ZONE 'UTC'` pins it.
+
+    `literal_column`, not a bound parameter, and that is load-bearing: passing
+    `"UTC"` as a value renders `timezone($1, …)` in the SELECT and `timezone($3, …)`
+    in the GROUP BY, and PostgreSQL matches grouping expressions by TEXT — two
+    different placeholders are two different expressions, and the query dies with
+    `column "access_log.accessed_at" must appear in the GROUP BY clause`.
+    """
+    return sa.func.date(sa.func.timezone(sa.literal_column("'UTC'"), access_log.c.accessed_at))
+
+
+async def _write_daily_journal(session: AsyncSession, rows: Sequence[Any]) -> None:
+    """Persist what the aggregation ALREADY grouped: (entity, actor, day).
+
+    Ticket b93e32be. The counters keep `is_human_actor()`'s verdict; this keeps
+    the ACTOR STRING that produced it, which is what makes a change to the
+    human/machine rule replayable after the queue has been drained.
+
+    `count` ACCUMULATES and `last_accessed_at` only moves forward. Writing
+    `count = excluded.count` instead would pass every single-flush test and
+    silently turn a daily total into "whatever the last 300 s window saw"; a
+    bare assignment on the instant would let a late flush of older events walk
+    the last access backwards. Both are pinned by
+    `tests/integration/db/test_migration_052_access_log_daily.py`.
+    """
+    statement = pg_insert(access_log_daily).values(
+        [
+            {
+                "entity_type": row["entity_type"],
+                "entity_id": row["entity_id"],
+                "actor": row["actor"],
+                "day": row["day"],
+                "count": row["cnt"],
+                "last_accessed_at": row["max_accessed"],
+            }
+            for row in rows
+        ]
+    )
+    await session.execute(
+        statement.on_conflict_do_update(
+            index_elements=["entity_type", "entity_id", "actor", "day"],
+            set_={
+                "count": access_log_daily.c.count + statement.excluded.count,
+                "last_accessed_at": sa.func.greatest(
+                    access_log_daily.c.last_accessed_at,
+                    statement.excluded.last_accessed_at,
+                ),
+            },
+        )
+    )
+
 
 # Advisory lock key dedicated to the decay-flush critical section.
 # Chosen as a stable, documented constant in the 0x_BRAIN_V42 namespace
@@ -67,11 +128,17 @@ class PgAccessLogRepo:
                 access_log.c.entity_type,
                 access_log.c.entity_id,
                 access_log.c.actor,
+                _utc_day().label("day"),
                 sa.func.max(access_log.c.accessed_at).label("max_accessed"),
                 sa.func.count().label("cnt"),
             )
             .where(access_log.c.id <= max_id)
-            .group_by(access_log.c.entity_type, access_log.c.entity_id, access_log.c.actor)
+            .group_by(
+                access_log.c.entity_type,
+                access_log.c.entity_id,
+                access_log.c.actor,
+                _utc_day(),
+            )
         )
         result = await session.execute(stmt)
         rows = result.mappings().all()
@@ -111,7 +178,15 @@ class PgAccessLogRepo:
             if row["max_accessed"] > entry["max_accessed"]:
                 entry["max_accessed"] = row["max_accessed"]
 
-        # 4. Delete only snapshotted rows (same txn — caller commits)
+        # 4. The DURABLE journal, written BEFORE the delete and in the SAME
+        #    transaction — otherwise a crash between the two would lose exactly
+        #    the events this table exists to keep (ticket b93e32be).
+        await _write_daily_journal(session, rows)
+
+        # 5. Delete only snapshotted rows (same txn — caller commits).
+        #    The queue stays transient: ADR #21 rules that `access_log` is an
+        #    aggregation buffer and not a journal. The journal is a SECOND
+        #    store, never a reason to keep the queue.
         await session.execute(sa.delete(access_log).where(access_log.c.id <= max_id))
 
         logger.debug(
@@ -119,63 +194,6 @@ class PgAccessLogRepo:
             entities=len(aggregated),
         )
         return aggregated
-
-    async def aggregate_and_flush(
-        self,
-    ) -> dict[tuple[str, UUID], dict[str, Any]]:
-        """Aggregate access_log rows and delete them.
-
-        .. deprecated::
-            Use :meth:`aggregate_in_session` instead.  This method opens its
-            own session and commits before the caller has updated entities,
-            creating a window where a crash loses access counts permanently.
-            Kept for backward-compatibility during the transition period.
-
-        Returns dict keyed by (entity_type, entity_id) with values:
-            {"max_accessed": datetime, "count": int}
-        """
-        async with self._session_factory() as session:
-            # 1. Capture snapshot boundary
-            max_id_result = await session.execute(sa.select(sa.func.max(access_log.c.id)))
-            max_id = max_id_result.scalar_one_or_none()
-            if max_id is None:
-                return {}
-
-            # 2. Aggregate only snapshotted rows
-            stmt = (
-                sa.select(
-                    access_log.c.entity_type,
-                    access_log.c.entity_id,
-                    sa.func.max(access_log.c.accessed_at).label("max_accessed"),
-                    sa.func.count().label("cnt"),
-                )
-                .where(access_log.c.id <= max_id)
-                .group_by(access_log.c.entity_type, access_log.c.entity_id)
-            )
-            result = await session.execute(stmt)
-            rows = result.mappings().all()
-
-            if not rows:
-                return {}
-
-            # 3. Build result dict
-            aggregated: dict[tuple[str, UUID], dict[str, Any]] = {}
-            for row in rows:
-                key = (row["entity_type"], row["entity_id"])
-                aggregated[key] = {
-                    "max_accessed": row["max_accessed"],
-                    "count": row["cnt"],
-                }
-
-            # 4. Delete only snapshotted rows
-            await session.execute(sa.delete(access_log).where(access_log.c.id <= max_id))
-            await session.commit()
-
-            logger.debug(
-                "access_log.aggregated",
-                entities=len(aggregated),
-            )
-            return aggregated
 
     async def purge_old(self, days: int = 30) -> None:
         """Delete access_log entries older than N days."""

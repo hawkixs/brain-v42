@@ -22,6 +22,7 @@ from sqlalchemy import (
     ARRAY,
     Boolean,
     Column,
+    Date,
     DateTime,
     Index,
     Integer,
@@ -1150,6 +1151,24 @@ access_log = Table(
     Index("idx_access_log_time", sa.text("accessed_at")),
 )
 
+# ─── access_log_daily (durable access journal — ticket b93e32be) ─────────────
+#: What survives the 300 s flush. `access_log` is a QUEUE whose rows are folded
+#: into boolean counters by `is_human_actor()` and then deleted; this table keeps
+#: the ACTOR STRING per (entity, day) so that a change to the human/machine rule
+#: stays replayable. Written by `pg_access_log.aggregate_in_session`, inside the
+#: same transaction and BEFORE the queue's DELETE.
+access_log_daily = Table(
+    "access_log_daily",
+    METADATA,
+    Column("entity_type", String(20), nullable=False, primary_key=True),
+    Column("entity_id", UUID(as_uuid=True), nullable=False, primary_key=True),
+    Column("actor", String(64), nullable=False, primary_key=True),
+    Column("day", Date, nullable=False, primary_key=True),
+    Column("count", sa.Integer, nullable=False),
+    Column("last_accessed_at", DateTime(timezone=True), nullable=False),
+    Index("ix_access_log_daily_entity_day", "entity_type", "entity_id", "day"),
+)
+
 # ─── consolidation_log (memory decay) ────────────────────────────────────────
 # Index on entity_type: get_handled_pairs filters WHERE entity_type = :type —
 # without this index, every consolidation run does a full seq-scan.
@@ -1790,6 +1809,7 @@ __all__ = [
     "features",
     "feature_artifacts",
     "access_log",
+    "access_log_daily",
     "consolidation_log",
     "indexed_plans",
     "indexed_plan_chunks",

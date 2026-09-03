@@ -48,7 +48,14 @@ def _make_session(
     # 4th execute: DELETE WHERE id <= max_id
     del_result = MagicMock()
 
-    session.execute = AsyncMock(side_effect=[lock_result, max_id_result, agg_result, del_result])
+    # journal_result sits between the aggregation and the delete: the durable
+    # journal (052) is written inside this same transaction and BEFORE the queue
+    # is emptied. A double that omitted it would prove an order production no
+    # longer has.
+    journal_result = MagicMock()
+    session.execute = AsyncMock(
+        side_effect=[lock_result, max_id_result, agg_result, journal_result, del_result]
+    )
     return session
 
 
@@ -80,6 +87,7 @@ class TestAggregateInSession:
                 "entity_type": "decision",
                 "entity_id": entity_id_1,
                 "actor": "red-lab",
+                "day": now.date(),
                 "max_accessed": now,
                 "cnt": 5,
             },
@@ -87,6 +95,7 @@ class TestAggregateInSession:
                 "entity_type": "learning",
                 "entity_id": entity_id_2,
                 "actor": "dream-codex-reorg",
+                "day": now.date(),
                 "max_accessed": now,
                 "cnt": 2,
             },
@@ -129,6 +138,7 @@ class TestAggregateInSession:
                 "entity_type": "decision",
                 "entity_id": entity_id,
                 "actor": "red-lab",
+                "day": now.date(),
                 "max_accessed": now,
                 "cnt": 1,
             }
@@ -168,6 +178,7 @@ class TestAggregateInSession:
                 "entity_type": "snippet",
                 "entity_id": entity_id,
                 "actor": "red-lab",
+                "day": now.date(),
                 "max_accessed": now,
                 "cnt": 3,
             }
@@ -177,9 +188,17 @@ class TestAggregateInSession:
 
         await repo.aggregate_in_session(session)
 
-        # 4th call = DELETE
-        delete_call = session.execute.call_args_list[3]
-        delete_stmt = delete_call[0][0]
+        # Found by SHAPE, never by position. The index used to be `[3]`, and 052
+        # inserted the journal write before the delete: an ordinal double freezes
+        # the NUMBER of statements the implementation may emit, which is not what
+        # this test is about.
+        deletes = [
+            call[0][0]
+            for call in session.execute.call_args_list
+            if str(call[0][0]).lstrip().upper().startswith("DELETE")
+        ]
+        assert len(deletes) == 1, "exactly one DELETE, and it is the queue's"
+        delete_stmt = deletes[0]
         compiled = str(delete_stmt.compile(compile_kwargs={"literal_binds": True}))
         assert "WHERE" in compiled, f"DELETE must have WHERE clause, got: {compiled}"
         assert str(max_id) in compiled, (

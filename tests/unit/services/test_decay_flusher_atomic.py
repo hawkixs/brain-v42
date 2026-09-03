@@ -14,6 +14,7 @@ from uuid import uuid4
 
 import pytest
 
+from brain_v42.repositories.pg_access_log import PgAccessLogRepo
 from brain_v42.services.decay import DecayCalculator
 from brain_v42.services.decay_flusher import DecayFlusher
 
@@ -94,28 +95,22 @@ class TestAtomicFlush:
         # New contract: aggregate_in_session must be called (not aggregate_and_flush)
         access_log_repo.aggregate_in_session.assert_awaited_once()
 
-    @pytest.mark.asyncio
-    async def test_aggregate_and_flush_not_called(self) -> None:
-        """_flush must NOT call the old aggregate_and_flush() method.
+    def test_the_self_committing_aggregation_is_gone_from_the_repository(self) -> None:
+        """The old `aggregate_and_flush` is DELETED, ticket `fd05f4a3`.
 
-        That method opens its own session + commit, breaking atomicity.
+        This used to assert that `_flush` never called it — on an `AsyncMock`,
+        where the attribute existed because the mock invents attributes. Once the
+        method was deleted that assertion became HOLLOW: `assert_not_called()` on
+        a name nothing can call is true of any name at all, including a
+        misspelling.
+
+        What survives deletion is the property itself, read off the real class:
+        the repository offers no aggregation that opens its own session. A
+        duplicate coming back under any spelling reddens
+        `tests/unit/repositories/test_one_aggregation_path.py`; this asserts the
+        specific one that cost the atomicity window cannot.
         """
-        access_log_repo = AsyncMock()
-        access_log_repo.aggregate_in_session = AsyncMock(return_value={})
-        access_log_repo.aggregate_and_flush = AsyncMock(return_value={})
-        access_log_repo.purge_old = AsyncMock()
-
-        session = _make_session()
-        session_factory = _make_session_factory(session)
-
-        flusher = DecayFlusher(
-            session_factory=session_factory,
-            access_log_repo=access_log_repo,
-            decay_calculator=DecayCalculator(),
-        )
-        await flusher._flush()
-
-        access_log_repo.aggregate_and_flush.assert_not_called()
+        assert not hasattr(PgAccessLogRepo, "aggregate_and_flush")
 
     @pytest.mark.asyncio
     async def test_single_session_opened_for_aggregate_and_update(self) -> None:

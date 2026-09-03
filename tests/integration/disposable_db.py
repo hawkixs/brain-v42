@@ -66,6 +66,28 @@ def drop_database(admin_url: str, database: str) -> None:
     run_sql(asyncpg_dsn(admin_url), [f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)'])
 
 
+def repository_head() -> str:
+    """The single head declared under `alembic/versions/`, DERIVED not retyped.
+
+    Migration benches downgrade the shared database and restore it afterwards.
+    Both gestures were written with the head of the day as a literal, which works
+    exactly until the next migration lands: the 051 bench asserted `head == "051"`
+    and restored to `051`, so the day 052 arrived it failed on the assertion AND
+    left the database one revision behind for every test that followed.
+
+    A downgrade TARGET stays a literal — `050` is the predecessor of 051 and will
+    not become anything else. What must be derived is the head a bench returns to,
+    and the head it expects to still find after a REFUSED downgrade.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    heads = ScriptDirectory.from_config(Config(str(PROJECT_ROOT / "alembic.ini"))).get_heads()
+    if len(heads) != 1:
+        raise RuntimeError(f"expected exactly one alembic head, found {heads}")
+    return heads[0]
+
+
 def alembic_upgrade_head(db_url: str) -> None:
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
