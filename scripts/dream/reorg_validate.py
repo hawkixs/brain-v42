@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import json
 import pathlib
 import sys
@@ -126,6 +127,32 @@ def parse_report(raw: str) -> dict:
         # the dead one, and the copy running every night was tested by nothing.
         "parsed": report,
     }
+
+
+def apply_dry_run_override(report: dict) -> dict:
+    """Apply the authoritative CLI `--dry-run` to BOTH carriers of that fact.
+
+    The flag exists to distrust the trailer: `dream.sh` passes `--dry-run`
+    whenever `reorg_effective_dry_run` is true, whatever the agent wrote in its
+    JSON. So the override has to reach every reader of "is this a dry run".
+
+    There are two, and until 2026-09-04 only one moved. The dict key was
+    replaced by a shallow copy while `report["parsed"]` — the frozen
+    `ReorgReport` whose `dry_run` comes straight from the trailer — kept the
+    value the flag was overriding. `declared_list_mismatch()` gates on that
+    object, so the dry-run relaxation was defeated in exactly the belt-and-
+    suspenders case it was written for: a dry night whose trailer claims
+    `dry_run: false` raised the false alarm the relaxation removes.
+
+    Returns a NEW dict and a NEW frozen report; the caller's originals are
+    untouched, because a function that mutates a frozen dataclass's container
+    behind the caller's back is the next version of this same bug.
+    """
+    parsed = report.get("parsed")
+    updated = {**report, "dry_run": True}
+    if parsed is not None:
+        updated["parsed"] = dataclasses.replace(parsed, dry_run=True)
+    return updated
 
 
 def declared_warnings(report: dict) -> list[str]:
@@ -470,9 +497,10 @@ async def _amain(
     """
     try:
         report = parse_report(raw)
-        # CLI --dry-run flag is authoritative over JSON trailer (belt+suspenders)
+        # CLI --dry-run flag is authoritative over JSON trailer (belt+suspenders).
+        # Applied through the helper so BOTH carriers of the fact move together.
         if args.dry_run:
-            report = {**report, "dry_run": True}
+            report = apply_dry_run_override(report)
         # Before `validate`, so the symmetry verdict prints even when the
         # validation fails right after — the night that fails is the one that
         # most needs reading.

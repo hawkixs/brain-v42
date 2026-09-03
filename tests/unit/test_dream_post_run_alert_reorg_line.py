@@ -56,8 +56,14 @@ FIXTURE_DATE = dt.date(2026, 9, 3)
 
 #: Three lines lifted from `logs/dream/2026-09-03_brain-v42_reorg.events.jsonl`,
 #: the real codex stream of that night, with the bulky result payloads dropped
-#: and nothing else changed. A fixture written from the parser would only prove
-#: the parser agrees with itself (learning 187f107c).
+#: and the two entity ids passed through the SAME deterministic anonymisation
+#: as the report fixture — `8424c8ad-…` is that night's first mutated id and
+#: becomes `00000001-…`, `6af1aa1b-…` is the second and becomes `00000002-…`.
+#: That is what keeps the declared-versus-observed cross-check possible: a
+#: slice carrying real ids could no longer be correlated with a scrubbed
+#: report, and the check was dropped in silence when the fixture landed.
+#: A fixture written from the parser would only prove the parser agrees with
+#: itself (learning 187f107c); these lines keep the real SHAPE.
 REAL_EVENT_SLICE = "\n".join(
     json.dumps(
         {
@@ -73,9 +79,9 @@ REAL_EVENT_SLICE = "\n".join(
         }
     )
     for kind, item_id, entity, entity_id in (
-        ("item.started", "item_156", "learning", "8424c8ad-21b2-4a5b-96ca-ef0a39b50a42"),
-        ("item.completed", "item_156", "learning", "8424c8ad-21b2-4a5b-96ca-ef0a39b50a42"),
-        ("item.started", "item_157", "decision", "6af1aa1b-4a62-4ddd-b6a7-8c98373ba7ab"),
+        ("item.started", "item_156", "learning", "00000001-0000-4000-8000-000000000001"),
+        ("item.completed", "item_156", "learning", "00000001-0000-4000-8000-000000000001"),
+        ("item.started", "item_157", "decision", "00000002-0000-4000-8000-000000000002"),
     )
 )
 
@@ -318,9 +324,11 @@ class TestTagsOnlyMeansTagsActuallyMoved:
         )
 
         tally = post_run_alert.reorg_tally(RUN_DATE, tmp_path)
+        block = _block(tmp_path)
 
-        assert tally.outcome != "tags_only"
-        assert "travaillé les tags" not in _block(tmp_path)
+        assert tally.outcome == "refused_only"
+        assert "travaillé les tags" not in block
+        assert "Aucun archivage et aucun tag déplacé" in block
 
     def test_a_night_that_did_move_tags_still_says_so(self, tmp_path: Path) -> None:
         _log(
@@ -487,6 +495,11 @@ class TestReplayOfARealNight:
 
         scan = scan_events(REAL_EVENT_SLICE)
         assert scan.recognised is True
+        assert scan.updated_ids, "the slice must observe something to correlate"
+        # The cross-check the class advertises: every id the stream OBSERVED
+        # appears among the ids the report DECLARED. Restored after the switch
+        # to the anonymised fixture dropped it without a word.
+        assert scan.updated_ids <= set(report["updated_ids"])
 
         # A legacy trailer must add no tally warning — twelve nights of these
         # exist and none of them is a fault.
@@ -518,6 +531,30 @@ class TestReplayOfARealNight:
 
         assert ids, "the fixture lost its ids — the replay would assert on nothing"
         assert all(uid.startswith("0000") for uid in ids), sorted(ids)[:3]
+
+    def test_the_fixture_header_counts_what_the_fixture_contains(self) -> None:
+        """A number written by hand in a comment drifts from the file under it.
+
+        The header said 20 — the length of the trailer's `updated` list — while
+        28 distinct ids had been substituted, the other 8 living in the deferred-
+        normalisation prose. Nobody would have noticed: a comment is not
+        executed. This makes it executed.
+        """
+        text = REPLAY_FIXTURE.read_text(encoding="utf-8")
+        header, body = text.split("-->\n", 1)
+        claimed = int(re.search(r"The (\d+) entity UUIDs were replaced", header).group(1))
+        present = len(
+            set(
+                re.findall(
+                    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", body
+                )
+            )
+        )
+
+        assert claimed == present, (
+            f"the fixture header claims {claimed} substituted ids, the file carries "
+            f"{present} — recount rather than retyping"
+        )
 
     def test_the_fixture_still_matches_the_night_it_copies(self) -> None:
         """Drift alarm on a hand-made copy (learning d43e760d).

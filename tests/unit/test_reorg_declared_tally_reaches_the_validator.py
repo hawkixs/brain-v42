@@ -24,7 +24,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from dream.reorg_events import EventScan  # noqa: E402
 from dream.reorg_report import REFUSAL_REASONS  # noqa: E402
-from dream.reorg_validate import parse_report, symmetry_warnings  # noqa: E402
+from dream.reorg_validate import (  # noqa: E402
+    apply_dry_run_override,
+    parse_report,
+    symmetry_warnings,
+)
 
 _PROMPT = Path(__file__).resolve().parents[2] / "scripts" / "dream" / "phase_reorg.md"
 
@@ -198,6 +202,57 @@ def test_a_malformed_tally_is_warned_about_rather_than_read_as_zeros() -> None:
     warnings = symmetry_warnings(report, EventScan(updated_ids=set(), codex_events=1))
 
     assert any("unusable" in w for w in warnings)
+
+
+def test_the_cli_dry_run_override_reaches_the_count_versus_list_check() -> None:
+    """The belt+suspenders flag must actually reach the relaxation it enables.
+
+    `_amain` applies the authoritative CLI `--dry-run` with a shallow dict copy
+    (`{**report, "dry_run": True}`), while the relaxation added for dry runs
+    gates on the frozen `ReorgReport` carried under `parsed` — whose `dry_run`
+    comes from the JSON trailer, the very value the override exists to distrust.
+
+    `dream.sh` passes `--dry-run` whenever `reorg_effective_dry_run` is true,
+    regardless of what the trailer says. So a dry night whose trailer claims
+    `dry_run: false` produced exactly the false alarm the relaxation removes,
+    in exactly the case the override covers.
+    """
+    report = parse_report(
+        _trailer(
+            '{"dry_run": false, "updated": [], "archived": [], '
+            '"declared": {"candidates_examined": 3, "archived": 3, "refused": {}, "deferred": 0}}'
+        )
+    )
+    overridden = apply_dry_run_override(report)
+
+    warnings = symmetry_warnings(overridden, EventScan(updated_ids=set(), codex_events=1))
+
+    assert [w for w in warnings if "only the list is checkable" in w] == []
+
+
+def test_the_override_leaves_a_wet_report_alone() -> None:
+    """Guard on the guard: relaxing unconditionally would silence a real alarm."""
+    report = parse_report(
+        _trailer(
+            '{"dry_run": false, "updated": [], "archived": [], '
+            '"declared": {"candidates_examined": 3, "archived": 3, "refused": {}, "deferred": 0}}'
+        )
+    )
+
+    warnings = symmetry_warnings(report, EventScan(updated_ids=set(), codex_events=1))
+
+    assert any("only the list is checkable" in w for w in warnings)
+
+
+def test_the_override_moves_both_the_dict_key_and_the_parsed_object() -> None:
+    """One fact, two carriers — they must not be allowed to disagree."""
+    report = parse_report(_trailer('{"dry_run": false, "updated": [], "archived": []}'))
+
+    overridden = apply_dry_run_override(report)
+
+    assert overridden["dry_run"] is True
+    assert overridden["parsed"].dry_run is True
+    assert report["parsed"].dry_run is False, "the original must not be mutated"
 
 
 def test_a_coherent_tally_adds_no_warning_at_all() -> None:

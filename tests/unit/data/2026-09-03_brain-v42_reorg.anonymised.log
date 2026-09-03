@@ -1,5 +1,5 @@
 <!-- FIXTURE — anonymised copy of logs/dream/2026-09-03_brain-v42_reorg.log,
-     captured 2026-09-04. The 20 entity UUIDs were replaced by deterministic
+     captured 2026-09-04. The 28 entity UUIDs were replaced by deterministic
      synthetic ones (same real id -> same fake id, so duplicates and
      cross-references survive) and the quoted corpus topics were elided.
      Everything else is verbatim: structure, markers, counts, French prose,
