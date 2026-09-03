@@ -1452,12 +1452,19 @@ class TestFormatLearningsSummaryOnly:
         result = format_learnings([lr], summary_only=True)
         assert "archived" in result
 
-    def test_summary_includes_access_count(self) -> None:
+    def test_summary_counts_human_reads_under_access_and_machine_under_reads(self) -> None:
+        """`access:` is what REORG's guardrail reads, so it counts HUMANS (1597c36d).
+
+        It carried `access_count` until 2026-09-03, the counter the nightly scans
+        inflate themselves -- and the phase archived nothing for twelve nights
+        because of it. The machine count is not lost, it moved to `reads:`.
+        """
         from brain_v42.mcp.tools.formatters import format_learnings
 
-        lr = _make_learning(access_count=7)
+        lr = _make_learning(access_count=101, access_count_human=7)
         result = format_learnings([lr], summary_only=True)
         assert "access:7" in result
+        assert "reads:101" in result
 
     def test_summary_includes_project_key(self) -> None:
         """REORG Part 1 needs project_key to detect missing/variant keys."""
@@ -1501,10 +1508,12 @@ class TestFormatDecisionsSummaryOnly:
     def test_summary_includes_freshness_and_access(self) -> None:
         from brain_v42.mcp.tools.formatters import format_decisions
 
-        d = _make_decision(freshness_status="archived", access_count=4)
+        d = _make_decision(freshness_status="archived", access_count=63, access_count_human=4)
         result = format_decisions([d], summary_only=True)
         assert "archived" in result
+        # `access:` counts humans since 1597c36d; the machine count follows.
         assert "access:4" in result
+        assert "reads:63" in result
 
     def test_summary_includes_tags_and_project(self) -> None:
         from brain_v42.mcp.tools.formatters import format_decisions

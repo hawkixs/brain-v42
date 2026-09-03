@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
+import json
 import re
 import sys
 from collections.abc import Iterable, Mapping, Sequence
@@ -445,6 +446,89 @@ def degraded_headline(run_date: dt.date, degraded: Sequence[DegradedPhase]) -> s
     """
     ran = "1 phase ran" if len(degraded) == 1 else f"{len(degraded)} phases ran"
     return f"no failed phase for {run_date.isoformat()} — but {ran} DEGRADED (standby model)"
+
+
+#: What REORG did, read from the JSON line it prints at the end of each project
+#: report. There is no column: `dream_runs` carries no REORG counter, and adding
+#: one would be a migration for a number the phase already writes down.
+REORG_HEADING = "### REORG"
+
+_REORG_REPORT = re.compile(r'\{"dry_run":\s*(?:true|false).*?\}')
+
+
+@dataclass(frozen=True)
+class ReorgTally:
+    """One night's REORG work, summed over the pool."""
+
+    projects: int = 0
+    archived: int = 0
+    updated: int = 0
+
+
+def reorg_tally(run_date: dt.date, log_dir: Path) -> ReorgTally:
+    """Sum the per-project REORG reports of one night.
+
+    Reads the FILES, not the database, and that is the whole design: the counts
+    exist only in the report each project prints (`{"dry_run":…,"updated":[…],
+    "archived":[…]}`), and putting them in `dream_runs` would be a migration for
+    a number already written down.
+
+    What this deliberately does NOT count: candidates examined and candidates
+    REFUSED. REORG states those in prose -- "Aucune entité archivée. Tous les
+    titres correspondant à l'allowlist dépassent le seuil" -- and a regex over a
+    model's free French would be a number nobody could trust. Making the phase
+    print a machine-readable tally is the follow-up; inventing one here would be
+    worse than the silence it replaces.
+
+    A missing or unreadable file is skipped, not raised: this block observes the
+    night, it must never be the reason the morning report fails.
+    """
+    projects = archived = updated = 0
+    for path in sorted(log_dir.glob(f"{run_date.isoformat()}_*_reorg.log")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for match in _REORG_REPORT.finditer(text):
+            try:
+                report = json.loads(match.group(0))
+            except ValueError:
+                continue
+            projects += 1
+            archived += len(report.get("archived") or [])
+            updated += len(report.get("updated") or [])
+    return ReorgTally(projects=projects, archived=archived, updated=updated)
+
+
+def default_log_dir() -> Path:
+    """`logs/dream/` of this repository, the directory `dream.sh` writes into."""
+    return Path(__file__).resolve().parents[2] / "logs" / "dream"
+
+
+def build_reorg_block(run_date: dt.date, tally: ReorgTally) -> list[str]:
+    """The line, or nothing when the night has nothing to say.
+
+    Mute when REORG did no work at all -- no archive and no tag update across the
+    pool -- because a line repeated every night with two zeros stops being read
+    (learning 4480d3df). It is NOT mute when the phase worked on tags and
+    archived nothing: that is exactly the shape that went unnoticed for twelve
+    nights, and it is the shape this block exists to surface.
+    """
+    if tally.archived == 0 and tally.updated == 0:
+        return []
+    lines = [
+        f"{REORG_HEADING} — {run_date.isoformat()}",
+        "",
+        f"- {tally.archived} archivage(s), {tally.updated} tag(s) normalisé(s) "
+        f"sur {tally.projects} projet(s)",
+    ]
+    if tally.archived == 0:
+        lines.append(
+            "- Aucun archivage : la phase a travaillé les tags sans retirer de "
+            "pollution. Candidats et refus ne sont pas comptés ici — REORG les "
+            "énonce en prose dans son rapport de projet."
+        )
+    return lines
 
 
 def build_degraded_block(run_date: dt.date, degraded: Sequence[DegradedPhase]) -> list[str]:
@@ -945,6 +1029,12 @@ def render_stdout(
         *coverage.block,
         *provenance_block,
         *build_degraded_block(run_date, degraded),
+        # After the degradation rubric and before CLAUDE.md: REORG worked or it
+        # did not, which is context for the failures above rather than a failure
+        # itself. Reads the night's own reports from disk — `dream_runs` has no
+        # REORG counter, and adding one would be a migration for a number the
+        # phase already writes down.
+        *build_reorg_block(run_date, reorg_tally(run_date, default_log_dir())),
         *build_claude_md_block(),
         *body[1:],
     ]
