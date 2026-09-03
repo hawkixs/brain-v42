@@ -260,3 +260,59 @@ async def test_a_degraded_night_does_not_escalate_the_exit_code() -> None:
 
     assert night.degraded
     assert night.coverage.escalates is False
+
+
+# --- The rubric in the ASSEMBLED report, not just in the parser -------------
+#
+# Until 2026-09-03 every test here stopped at `degraded_rows`: the parser was
+# proven, the RENDERING never was. The rubric (PR #73) has never bitten on a
+# real night — the first night it could have was the one the chain stopped
+# degrading — so nothing but these two tests stands between it and a silent
+# removal.
+
+
+def _blank_coverage() -> post_run_alert.CoverageReport:
+    """A coverage report that renders nothing, so the rubric is what is read."""
+    return post_run_alert.CoverageReport(
+        block=(),
+        machine_line="COVERAGE expected=0",
+        silent_line=None,
+        synthetic=(),
+        escalates=False,
+        verdict=None,
+    )
+
+
+def test_the_degraded_rubric_reaches_the_assembled_report() -> None:
+    """Positive case, built from the REAL row of the night of 2026-09-02."""
+    degraded = post_run_alert.degraded_rows([PRODUCTION_ROW])
+
+    rendered = post_run_alert.render_stdout(
+        None,
+        dt.date(2026, 9, 2),
+        _blank_coverage(),
+        degraded=degraded,
+    )
+
+    assert post_run_alert.DEGRADED_HEADING in rendered, (
+        "la rubrique DÉGRADÉ doit atteindre le rapport rendu, pas seulement le parseur"
+    )
+    assert "roadmap" in rendered, "la phase dégradée doit être NOMMÉE"
+    assert "2026-09-02" in rendered
+
+
+def test_a_night_without_degradation_renders_no_rubric() -> None:
+    """Negative case: the night of 2026-09-03, which degraded nothing.
+
+    The counter-witness matters as much as the positive one: a rubric that
+    printed its heading every night would say nothing by saying it always.
+    """
+    rendered = post_run_alert.render_stdout(
+        None,
+        dt.date(2026, 9, 3),
+        _blank_coverage(),
+        degraded=(),
+    )
+
+    assert post_run_alert.DEGRADED_HEADING not in rendered
+    assert "no failures for 2026-09-03" in rendered
