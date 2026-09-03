@@ -256,6 +256,35 @@ regexTarget = "line"
 paths = ['''^ops/recovery/brain-v42-v8-pgrestore\.sql$''']
 regexes = ['''\('brain_sessions_pkey', '6763cd8159ef6f0131abbfedfea044bc'\)''']
 
+[[rules.allowlists]]
+description = """
+Triaged 2026-09-03. The same md5 fingerprint, now in the v9 contract minted for \
+head 052. INHERITED, not re-signed: the v9 mint is v8 plus insertions, and the \
+diff against v8 removes exactly three lines — the index counter and the two \
+identity lines — so this literal is byte-identical across v8 and v9 \
+(`grep -c` returns 2 in each of the four assets). It is an md5 of PUBLIC DDL, \
+reproduced from the live database at head 051 on 2026-09-03, read-only: \
+`select md5(pg_get_indexdef(indexrelid)) …` returns 6763cd81…, and the \
+definition it digests is `CREATE UNIQUE INDEX brain_sessions_pkey ON \
+public.brain_sessions USING btree (id)`. Flagged for the vocabulary reason \
+alone: the index name ends in "key".
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v9\.sql$''']
+regexes = ['''\('brain_sessions_pkey', '6763cd8159ef6f0131abbfedfea044bc'\)''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-09-03. The same md5 fingerprint in the pg_restore variant of the \
+v9 contract. Same derivation, same triage — and the twin was MEASURED against \
+a real pg_dump/pg_restore at head 052, not assumed to canonicalise.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v9-pgrestore\.sql$''']
+regexes = ['''\('brain_sessions_pkey', '6763cd8159ef6f0131abbfedfea044bc'\)''']
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Triaged 2026-08-22 — the two findings the trigger-function census introduced.
 #
@@ -405,6 +434,35 @@ the files that carry the schema.
 condition = "AND"
 regexTarget = "line"
 paths = ['''^ops/recovery/brain-v42-v8-pgrestore\.sql$''']
+regexes = ['''\('reject_project_context_key_change', 'e800aecbe1054d8333babd1c43f1f52893db81b6b8f4e7fc6d167c6cd6f9de82', 226\)''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-09-03. The same trigger-function fingerprint — \
+`sha256(pg_proc.prosrc)` next to its octet count — in the v9 contract minted \
+for head 052. Migration 052 adds ONE table and ONE index and touches no \
+function, so this body cannot have moved; and it was reproduced from the live \
+database on 2026-09-03, read-only: \
+`select encode(sha256(prosrc::bytea),'hex'), octet_length(prosrc) from pg_proc \
+where proname='reject_project_context_key_change'` returns e800aecb… and 226, \
+the exact pair pinned here. Flagged because the FUNCTION NAME contains "key".
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v9\.sql$''']
+regexes = ['''\('reject_project_context_key_change', 'e800aecbe1054d8333babd1c43f1f52893db81b6b8f4e7fc6d167c6cd6f9de82', 226\)''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-09-03. The same trigger-function fingerprint in the pg_restore \
+variant of the v9 contract. One triage, two entries, for the reason spelled \
+out on the v6 twin above: a path regex spanning both files would have to widen \
+to the directory, and widening to `ops/recovery/` would stop scanning the files \
+that carry the schema.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v9-pgrestore\.sql$''']
 regexes = ['''\('reject_project_context_key_change', 'e800aecbe1054d8333babd1c43f1f52893db81b6b8f4e7fc6d167c6cd6f9de82', 226\)''']
 
 [[rules.allowlists]]
