@@ -61,6 +61,8 @@ from brain_v42.db.tables import (
     runbooks,
     snippets,
 )
+from brain_v42.documentation.claude_md_claims import CLAUDE_MD
+from brain_v42.documentation.claude_md_claims import failing as claude_md_failing
 from brain_v42.dream_degradation import DEGRADED_PREFIX
 from brain_v42.dream_run_project_key import GLOBAL_PHASE_PROJECT_KEY
 from brain_v42.metrics.collector_dream import (
@@ -460,6 +462,46 @@ def build_degraded_block(run_date: dt.date, degraded: Sequence[DegradedPhase]) -
             lines.append(f"  cause : {phase.cause.splitlines()[0][:DEGRADED_CAUSE_CHARS]}")
     lines.append("")
     return lines
+
+
+CLAUDE_MD_HEADING = "### CLAUDE.md (gitignoré)"
+
+
+def build_claude_md_block(path: Path | None = None) -> list[str]:
+    """The local assertions on `CLAUDE.md`, replayed and counted (ticket 87ac8b7a).
+
+    `CLAUDE.md` is the document read first and confronted with the source least:
+    the briefing DERIVES the schema revision but never opens the file, and the
+    five assertions that do open it live behind a `pytest` nobody runs at the
+    moment they are reading the document. Measured 2026-09-03: it said
+    `migration 049` while production had been on `052` since 11:20.
+
+    No new power — this script already runs each morning from the repository with
+    filesystem access — and no prose parsing: the claims are IMPORTED from the
+    module `test_documentation_contract` imports too, so the guard and the report
+    can never hold two copies of one fragment.
+
+    Returns `[]` in two cases, and the second is not a failure: a conforming
+    document, and an ABSENT one. `CLAUDE.md` is gitignored since the open-source
+    publication, so a clean checkout simply has no file — a block shouting about
+    that absence would be noise on every machine that never had it.
+    """
+    document = path or CLAUDE_MD
+    try:
+        text = document.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    reds = claude_md_failing(text)
+    if not reds:
+        return []
+    return [
+        f"{CLAUDE_MD_HEADING} — {len(reds)} assertion(s) rouge(s)",
+        "",
+        "  " + ", ".join(claim.id for claim in reds),
+        "  le document affirme un état que la source contredit ; "
+        "rejouer `pytest tests/unit/test_documentation_contract.py` pour le détail",
+        "",
+    ]
 
 
 def _group_label(row: dict) -> str:
@@ -903,6 +945,7 @@ def render_stdout(
         *coverage.block,
         *provenance_block,
         *build_degraded_block(run_date, degraded),
+        *build_claude_md_block(),
         *body[1:],
     ]
     if coverage.silent_line:
