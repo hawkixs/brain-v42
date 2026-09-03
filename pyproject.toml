@@ -128,7 +128,14 @@ packages = ["src/brain_v42"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = "-v --tb=short"
+# `-m "not bench_docker"` EXCLUDES the container bench by default, CI included:
+# the integration job runs `pytest tests/integration/`, which would otherwise
+# spin disposable Postgres containers on every push. The bench is run on demand,
+# locally, with `-m bench_docker` — and its report says when it last ran.
+addopts = "-v --tb=short -m 'not bench_docker'"
+markers = [
+    "bench_docker: spins disposable Docker containers; excluded by default, run with -m bench_docker",
+]
 pythonpath = ["src"]
 # The net that holds whatever the cause. Twice, CI produced THIRTY MINUTES of
 # silence and then a killed job: a hang says nothing, and no application-level
