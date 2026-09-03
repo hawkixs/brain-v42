@@ -44,11 +44,12 @@ foundation tables below. A fresh schema at head 052 contains 35 `public` tables 
 `alembic_version`, which stays outside `METADATA`. Migrations 040 to 044 only add
 columns and 045 adds none — it widens an existing column — so the count held at 32 from
 038 through 049; 050, 051 and 052 each add exactly ONE table, and that is what moves it.
-Measured on `brain` on 2026-09-03, right after the 049→051 cutover: 34 `public` base
-tables — that measurement PREDATES 052, which is delivered but NOT applied to `brain`. The 35
-above is what a fresh schema at head 052 contains; it is not a reading of production
-tables (`select count(*) from information_schema.tables where table_schema='public' and
-table_type='BASE TABLE'`). Re-measure it rather than copying this line. Migration 036 also maintains
+Measured on `brain` on 2026-09-03 at 11:20 CEST, right after the 051→052 upgrade: **35**
+`public` base tables. The earlier reading of 34, taken the same day after the 049→051 cutover,
+is what 052 moved. Contract v9 was replayed live at 11:27 and reads 30/30 (receipt
+`ops/recovery/receipts/2026-09-03-live-v9-052.md`). The count is read with
+`select count(*) from information_schema.tables where table_schema='public' and
+table_type='BASE TABLE'` — re-measure it rather than copying this line. Migration 036 also maintains
 ten `codex_*` views in total: nine new views and `codex_brain_entity_v1`, created in
 024 then replaced in 036.
 
