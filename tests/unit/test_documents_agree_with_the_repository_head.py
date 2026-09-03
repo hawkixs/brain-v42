@@ -49,6 +49,7 @@ Three checks, and a fourth against the blind spot:
 
 from __future__ import annotations
 
+import datetime as dt
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -156,6 +157,13 @@ _DATE = re.compile(
     r"|octobre|novembre|décembre)\s+20\d{2}"
     r"|20\d{6}_\d{6}"
 )
+
+
+#: ISO dates WITH their parts, for arithmetic. `_DATE` above answers "is this
+#: line dated at all" across several spellings and deliberately captures nothing;
+#: measuring an AGE needs the parts, so the two coexist rather than one growing
+#: groups the other's callers would have to ignore.
+_ISO_DATE = re.compile(r"(20\d{2})-(\d{2})-(\d{2})")
 
 
 @dataclass(frozen=True)
@@ -424,3 +432,151 @@ def test_the_same_claim_without_its_date_is_caught() -> None:
     )
 
     assert [claim.value for claim in undated_deployed_head_claims(undated)] == ["037"]
+
+
+# --- Form 3: a CURRENT-STATE declaration goes stale, a proof does not --------
+#
+# Ticket `3b3d64a1`, form 3, decided on 2026-09-03 (`8ddfb233`). The companion
+# guard already merged (`5dd5793`) catches a declaration CONTRADICTED by a
+# receipt. This one catches the other half: a declaration nothing contradicts
+# because nobody has re-measured it. `dr-current` announced head `046` for six
+# days over a database at `048`, with every existing gate green.
+
+#: The runbook is not in `GUARDED_DOCUMENTS`: those carry repository-scoped
+#: literals, this one carries a dated DECLARATION of live state. Different
+#: subject, same module, because the `_DATE` machinery is already here.
+RUNBOOK = ROOT / "docs" / "PLAN_INDEX_REPAIR_RUNBOOK.md"
+
+#: The ONLY region that declares CURRENT state. `project-context-cas-039` and
+#: `project-context-focus-updated-at-040` are registered HISTORICAL windows and
+#: stay out of scope by name — and that exclusion is load-bearing rather than
+#: theoretical: measured on 2026-09-03, the historical region already carries a
+#: 31-day-old date, so a rule keyed on dates alone would have reddened on a
+#: correctly-written proof its first day.
+CURRENT_STATE_REGION = "dr-current"
+
+#: Thirty days, and the number is a JUDGEMENT rather than a measurement.
+#:
+#: What it buys: the defect that opened the ticket lasted six days, so any
+#: threshold under a week would have caught it — but a week reddens on a normal
+#: holiday and teaches people to ignore the guard. Thirty days is long enough
+#: that a red means genuine neglect, short enough that a value cannot rot for a
+#: quarter.
+#:
+#: What it costs, accepted explicitly in the decision rather than discovered
+#: later: this test WILL redden one quiet day, on a pull request that changed
+#: nothing near it. That is the price of a guard keyed on the calendar, and the
+#: message therefore names the cell and the remeasure instruction instead of
+#: leaving the reader to guess what went stale.
+#:
+#: What it does NOT prove, and it matters here more than usual: that a freshly
+#: dated value is TRUE. An operator can redate without replaying. This makes
+#: staleness VISIBLE; it authenticates no measurement.
+CURRENT_STATE_MAX_AGE_DAYS = 30
+
+
+def _current_state_region(document: str) -> str | None:
+    start = f"<!-- {CURRENT_STATE_REGION}:start -->"
+    end = f"<!-- {CURRENT_STATE_REGION}:end -->"
+    if start not in document or end not in document:
+        return None
+    return document.split(start, 1)[1].split(end, 1)[0]
+
+
+def stale_current_state_claims(
+    document: str,
+    today: dt.date,
+    max_age_days: int = CURRENT_STATE_MAX_AGE_DAYS,
+) -> list[Claim]:
+    """Rows of the current-state declaration whose newest date is too old.
+
+    Keyed on the NEWEST date of a row, never the oldest: a cell legitimately
+    cites the history it supersedes — "previously 24/30 on 2026-08-22" — and
+    reading that as the row's age would redden a freshly re-measured value for
+    having a memory.
+    """
+    region = _current_state_region(document)
+    if region is None:
+        return []
+    stale: list[Claim] = []
+    for offset, line in enumerate(region.splitlines()):
+        if not line.startswith("|"):
+            continue
+        dates = [dt.date(int(y), int(m), int(d)) for y, m, d in _ISO_DATE.findall(line)]
+        if not dates:
+            continue
+        age = (today - max(dates)).days
+        if age > max_age_days:
+            stale.append(Claim("stale current state", f"{age}d", offset + 1, line))
+    return stale
+
+
+def test_the_current_state_declaration_is_not_stale() -> None:
+    """The real corpus. This is the assertion that will redden on a quiet day.
+
+    When it does, the fix is to REPLAY the row and redate it, never to widen the
+    threshold: the runbook's own instruction is "Replay it, do not quote it".
+    """
+    stale = stale_current_state_claims(RUNBOOK.read_text(encoding="utf-8"), dt.date.today())
+
+    assert not stale, (
+        f"une déclaration d'état COURANT dépasse {CURRENT_STATE_MAX_AGE_DAYS} jours. "
+        "Rejoue la mesure et redate la cellule — ne relève pas le seuil. "
+        "Tête : `docker exec brain_v42_postgres psql -U brain -d brain -Atc "
+        '"select version_num from alembic_version;"` ; reçus : rejouer les jumeaux '
+        "`ops/recovery/brain-v42-v*-pgrestore.sql`.\n" + "\n".join(str(c) for c in stale)
+    )
+
+
+def test_a_cell_one_day_past_the_threshold_is_caught() -> None:
+    """Frozen witness, 31 days: the guard bites exactly where the number says."""
+    region = (
+        "<!-- dr-current:start -->\n"
+        "| Target | Value | Measured, and against what |\n"
+        "| --- | --- | --- |\n"
+        "| Alembic head | `046` | 2026-08-03, live production |\n"
+        "<!-- dr-current:end -->\n"
+    )
+
+    (claim,) = stale_current_state_claims(region, dt.date(2026, 9, 3))
+
+    assert claim.value == "31d"
+    assert "Alembic head" in claim.text
+
+
+def test_a_cell_measured_yesterday_passes() -> None:
+    region = (
+        "<!-- dr-current:start -->\n"
+        "| Alembic head | `052` | 2026-09-02, live production |\n"
+        "<!-- dr-current:end -->\n"
+    )
+
+    assert stale_current_state_claims(region, dt.date(2026, 9, 3)) == []
+
+
+def test_a_historical_proof_of_sixty_days_is_out_of_scope() -> None:
+    """The exclusion that makes the rule usable, frozen.
+
+    A dated proof is not a declaration of current state. Measured on 2026-09-03,
+    the registered historical region of this very runbook already carries a
+    31-day-old date — so this is the case that would fire first if the scope ever
+    widened to "any dated line".
+    """
+    historical = (
+        "<!-- project-context-cas-039:start -->\n"
+        "| Repository target | `039` | Executed on 2026-07-05, production measured `039` |\n"
+        "<!-- project-context-cas-039:end -->\n"
+    )
+
+    assert stale_current_state_claims(historical, dt.date(2026, 9, 3)) == []
+
+
+def test_a_row_citing_its_own_history_is_read_at_its_NEWEST_date() -> None:
+    """Counter-witness: a re-measured cell that remembers is not a stale cell."""
+    region = (
+        "<!-- dr-current:start -->\n"
+        "| Contract receipt | `30/30` | 2026-09-02; previously 24/30 on 2026-07-01 |\n"
+        "<!-- dr-current:end -->\n"
+    )
+
+    assert stale_current_state_claims(region, dt.date(2026, 9, 3)) == []
