@@ -400,14 +400,21 @@ async def test_tool_run_preserves_every_public_structured_content_contract() -> 
         # reason — a diff the user does not see prevents nothing.
         "focus_diff",
     }
+    # `absorption` joins CAPTURE and HEARTBEAT, and only them (dfaed283). Same
+    # reason as `last_checkpoint_at` just below: these two tools publish no output
+    # schema, so the field is free exactly here. Measured 2026-09-03 against the
+    # 35 bytes this budget has left: the same object costs 417 on
+    # `BrainSessionEndResult` — which is why `end`, the tool the ticket named,
+    # does NOT carry it. The public surface grows; the total below does not move.
     assert capture is not None and set(capture) == {
         "session",
         "captured_knowledge_ids",
         "newly_captured_knowledge_ids",
         "replayed_knowledge_ids",
         "replayed",
+        "absorption",
     }
-    assert heartbeat is not None and set(heartbeat) == {"session"}
+    assert heartbeat is not None and set(heartbeat) == {"session", "absorption"}
     # `last_checkpoint_at` joins the LIST result and not `BrainSession` (M-C,
     # SPEC-checkpoint §2.4). Measured, not stylistic: on the session model it
     # costs 396 compact bytes across the four schema-deriving tools that embed
