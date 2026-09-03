@@ -168,10 +168,18 @@ async def record_dream_run(
                         "error_message": error,
                         "project_key": GLOBAL_PHASE_PROJECT_KEY,
                         "phase_dry_run": dry,
-                        # NULL — never 0 — when the night failed before
-                        # counting, or in DRY: "not evaluated" is not "zero
-                        # closures". The 049 series (ticket 24ca3b73) carries
-                        # only nights where the 4 h rule actually ran in WET.
+                        # NULL — never 0 — when the night FAILED before
+                        # counting: "not evaluated" is not "zero closures", and
+                        # that half of ticket 24ca3b73 stands.
+                        #
+                        # What changed on 2026-09-03 (554db5f8): a DRY night now
+                        # records what it WOULD have closed instead of NULL. The
+                        # rehearsal evaluates the 4 h rule for real — it just
+                        # does not write — so throwing its number away lost the
+                        # only measurement the night produced. `phase_dry_run`
+                        # sits on the SAME row, so a consumer that wants real
+                        # closures alone filters on it; measured before the
+                        # change, no consumer read this column at all.
                         "closed_inactive_count": closed_inactive_count,
                     },
                 )
@@ -232,10 +240,21 @@ async def _run(args: argparse.Namespace) -> int:
         dry=dry,
         duration_s=time.monotonic() - started,
         error=None,
-        # The 049 series: NULL in DRY (nothing closed, "not evaluated" is not
-        # "zero"), the DISTINCT counter in WET — never added to abandonments,
-        # which are the event of opposite meaning (ticket 24ca3b73).
-        closed_inactive_count=None if dry else result.closed_inactive_count,
+        # The 049 series, in BOTH modes. WET reports what it closed; DRY reports
+        # what it would have — counted from the candidates the rehearsal actually
+        # evaluated, since `BrainSessionSweepResult` zeroes its counters in dry
+        # (`counted = [] if dry_run else candidates`) and that zero would read as
+        # "nothing to close". Never added to abandonments, which are the event of
+        # opposite meaning (ticket 24ca3b73).
+        closed_inactive_count=(
+            sum(
+                1
+                for candidate in result.candidates
+                if candidate.outcome is BrainSessionStatus.CLOSED_INACTIVE
+            )
+            if dry
+            else result.closed_inactive_count
+        ),
     )
     return 0
 
