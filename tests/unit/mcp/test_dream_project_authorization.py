@@ -142,7 +142,7 @@ def test_project_policy_is_exhaustive_for_current_dream_catalog() -> None:
     }
 
     assert set(PROJECT_TOOL_POLICIES) == allowed_tools
-    assert len(PROJECT_TOOL_POLICIES) == 19
+    assert len(PROJECT_TOOL_POLICIES) == 20
 
 
 def test_production_policy_does_not_import_phase_capabilities() -> None:
@@ -239,7 +239,7 @@ async def test_authorized_arguments_are_deep_copied_before_injection() -> None:
             ("learning",),
         ),
         (
-            "brain_create_runbook",
+            "brain_promote_runbook",
             lambda a, _b: {"source_learning_id": str(a)},
             ("learning",),
         ),
@@ -309,6 +309,15 @@ async def test_malformed_or_partial_references_fail_closed(
 
 
 @pytest.mark.asyncio
+async def test_the_runbook_promotion_tool_is_denied_without_its_source() -> None:
+    """The twin of the ADR guard, on the twin tool (ticket c07957ea)."""
+    with pytest.raises(DreamProjectAuthorizationError) as caught:
+        await _authorize("brain_promote_runbook", {"content": "unchanged"})
+
+    assert caught.value.reason == "invalid_reference"
+
+
+@pytest.mark.asyncio
 async def test_promotion_tool_is_denied_without_its_required_learning_source() -> None:
     """The split moved the XOR into the schema; the middleware enforces it too.
 
@@ -341,7 +350,13 @@ async def test_non_null_project_group_is_denied() -> None:
 
 
 @pytest.mark.parametrize(
-    "tool_name", ["brain_propose_adr", "brain_promote_adr", "brain_create_runbook"]
+    "tool_name",
+    [
+        "brain_propose_adr",
+        "brain_promote_adr",
+        "brain_create_runbook",
+        "brain_promote_runbook",
+    ],
 )
 @pytest.mark.asyncio
 async def test_non_null_dream_run_is_denied(tool_name: str) -> None:

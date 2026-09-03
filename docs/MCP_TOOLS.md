@@ -1,7 +1,7 @@
 # MCP Tools — brain_v42
 
 **Updated:** 2026-09-08
-**Repository registry:** 62 always-on + 2 graph-gated = 64 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
+**Repository registry:** 63 always-on + 2 graph-gated = 65 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
 **Default catalog:** Admin clients use `compact` while capability enforcement is disabled: the seven session lifecycle tools plus `brain_find_tool` and `brain_call_tool`; other registered tools remain discoverable through those gateways. `native` exposes every registered tool. An authenticated Dream phase always receives its exact native allowlist, independent of presentation headers, and cannot access either gateway. Experimental `brain_code_mode` takes precedence only while Dream capability enforcement is disabled.
 **Transport:** HTTP loopback `http://127.0.0.1:8765/mcp` (production fleet). Tools are defined as closures capturing injected services — see `src/brain_v42/mcp/server.py` (`build_services()`) and the `register_*_tools()` functions in each module under `src/brain_v42/mcp/tools/`.
 
@@ -186,7 +186,7 @@ The 13 legacy string-returning tools listed below normalize malformed UUIDs to:
 
 Two implementation paths produce this behaviour:
 
-- **`parse_uuid()` from `parsing.py`** (10 call sites across `brain_tools.py`, `runbook_tools.py`, `snippet_tools.py`): `brain_supersede_decision`, `brain_get_supersession_chain`, `brain_validate_learning`, `brain_promote_adr` (source_learning_id path), `brain_accept_adr`, `brain_deprecate_adr`, `brain_create_runbook` (source_learning_id path), `brain_get_runbook` (runbook_id path), `brain_execute_runbook`, `brain_use_snippet`.
+- **`parse_uuid()` from `parsing.py`** (10 call sites across `brain_tools.py`, `runbook_tools.py`, `snippet_tools.py`): `brain_supersede_decision`, `brain_get_supersession_chain`, `brain_validate_learning`, `brain_promote_adr` (source_learning_id path), `brain_accept_adr`, `brain_deprecate_adr`, `brain_promote_runbook` (source_learning_id path), `brain_get_runbook` (runbook_id path), `brain_execute_runbook`, `brain_use_snippet`.
 - **Inline `try/except UUID()` in `crud_tools.py`**: `brain_get`, `brain_update`, `brain_delete`.
 
 All 13 tools return the same `✗ Invalid UUID: <value>` message on invalid input. The v4 session tools declare UUID parameters in their FastMCP schemas and therefore use MCP input validation instead of this formatted-string contract.
@@ -317,16 +317,38 @@ in three places and never called it once.
 
 ---
 
-## Runbooks — 3 tools (`runbook_tools.py`)
+## Runbooks — 4 tools (`runbook_tools.py`)
 
 ### brain_create_runbook
 ```
 brain_create_runbook(title, description, project_key, trigger, steps,
                      prerequisites=None, rollback_steps=None,
-                     estimated_duration=None, tags=None,
-                     source_learning_id=None, dream_run_id=None)
+                     estimated_duration=None, tags=None)
 ```
-`steps` is a list of `{order?, description, command?, verification?}`. Dream-agent path: `source_learning_id` graduates a learning into a runbook atomically (no accept state machine, so no `auto_accept`).
+`steps` is a list of `{order?, description, command?, verification?}`.
+
+The Dream promotion path is `brain_promote_runbook`, a separate tool. Until
+2026-09-04 this signature also published `source_learning_id` and
+`dream_run_id`, with NO guard between them: a call naming `dream_run_id` alone
+fell into the standard path, which never reads it, and returned a confirmation —
+the caller believed they were attributing a promotion nothing was recording
+(ticket c07957ea, the twin of af3b58dd item 2). Callers that passed the pair
+here must move to `brain_promote_runbook`; they now get an unknown-parameter
+error, which is loud, not silent.
+
+### brain_promote_runbook
+```
+brain_promote_runbook(title, description, project_key, trigger, steps,
+                      source_learning_id, prerequisites=None,
+                      rollback_steps=None, estimated_duration=None,
+                      tags=None, dream_run_id=None)
+```
+Graduate a mature learning into a runbook in one transaction, updating the
+source learning's metadata and writing a `dream_promotions` row for audit.
+`source_learning_id` is required. There is no `auto_accept` and there never
+was — runbooks have no proposed/accepted state machine. A scoped Dream
+principal may not pass `dream_run_id` (`forbid_dream_run_id`): `dream_runs`
+rows belong to the orchestrator, never to a phase agent.
 
 ### brain_get_runbook
 ```
@@ -856,10 +878,10 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `plan_tools.py` | plan indexing | 1 |
 | `project_context_tools.py` | project + groups | 5 |
 | `roadmap_tools.py` | roadmap | 3 |
-| `runbook_tools.py` | runbooks | 3 |
+| `runbook_tools.py` | runbooks | 4 |
 | `session_lifecycle_tools.py` | persistent session lifecycle | 8 |
 | `snippet_tools.py` | snippets | 2 |
 | `ticket_tools.py` | tickets cross-projet (coordination) | 5 |
 | `workflow_guide_tools.py` | bounded workflow guidance | 1 |
 | `delivery_tools.py` | observable delivery | 9 |
-| **Total** | | **62 always-on + 2 graph-gated = 64** |
+| **Total** | | **63 always-on + 2 graph-gated = 65** |

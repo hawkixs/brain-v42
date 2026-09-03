@@ -89,12 +89,12 @@ async def test_brain_create_runbook_backcompat(
 
 
 @pytest.mark.asyncio
-async def test_brain_create_runbook_happy_path_calls_create_with_promotion(
+async def test_brain_promote_runbook_happy_path_calls_create_with_promotion(
     tools: tuple[dict[str, Any], MagicMock],
 ) -> None:
     """source_learning_id set → routes to create_with_promotion."""
     registered, svc = tools
-    result = await registered["brain_create_runbook"](
+    result = await registered["brain_promote_runbook"](
         title="T",
         description="d",
         project_key="brain-v42",
@@ -111,14 +111,14 @@ async def test_brain_create_runbook_happy_path_calls_create_with_promotion(
 
 
 @pytest.mark.asyncio
-async def test_brain_create_runbook_translates_duplicate_source_integrity_error(
+async def test_brain_promote_runbook_translates_duplicate_source_integrity_error(
     tools: tuple[dict[str, Any], MagicMock],
 ) -> None:
     """IntegrityError (dup source) → typed error, not unhandled exception."""
     registered, svc = tools
     svc.create_with_promotion.side_effect = IntegrityError("stmt", {}, Exception("dup"))
 
-    result = await registered["brain_create_runbook"](
+    result = await registered["brain_promote_runbook"](
         title="T",
         description="d",
         project_key="brain-v42",

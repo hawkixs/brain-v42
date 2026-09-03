@@ -56,12 +56,12 @@ Each candidate carries two read counters, and they do not mean the same thing: `
    In every case, `cosine_observed` in your final report is the **exact server number**, copied verbatim from `candidates[0].dedup.<family>.nearest_raw_cosine` — never a value you compute or a `brain_search` score. If `nearest_raw_cosine` is `null` (no same-family row exists yet in this project), report `cosine_observed: null`.
 
 4. If DRY_RUN is `true`:
-   - Do NOT call `brain_promote_adr` / `brain_create_runbook`. That is the ONLY behavioral change from a real run.
+   - Do NOT call `brain_promote_adr` / `brain_promote_runbook`. That is the ONLY behavioral change from a real run.
    - You still produce a **fully populated JSON report** with `dry_run: true`. Every field below is mandatory and MUST be filled with real values (not placeholders, not null except where the schema allows): `candidate_id` (the UUID from `candidates[0]`), `candidate_topic` (first 80 chars of `candidates[0].topic`), `target_type` (your classification: `"adr"` or `"runbook"`), `target_id: null`, `cosine_observed` (copied verbatim from `candidates[0].dedup.<family>.nearest_raw_cosine`, or `null`), `draft_title` (the exact title you'd pass to the materialization tool), `reason: "dry_run rehearsal"`.
 
 5. If DRY_RUN is `false` and dedup passed:
    - For ADR: call `brain_promote_adr(title=..., context=..., decision=..., consequences=..., project_key="{{PROJECT_KEY}}", alternatives_considered=[...], tags=["dream:promoted"], source_learning_id=<candidates[0].id>)`. There is no `auto_accept`: calling this tool IS the acceptance.
-   - For Runbook: call `brain_create_runbook(title=..., description=..., project_key="{{PROJECT_KEY}}", trigger=..., steps=[...], rollback_steps=[...], tags=["dream:promoted"], source_learning_id=<candidates[0].id>)`.
+   - For Runbook: call `brain_promote_runbook(title=..., description=..., project_key="{{PROJECT_KEY}}", trigger=..., steps=[...], rollback_steps=[...], tags=["dream:promoted"], source_learning_id=<candidates[0].id>)`. `brain_create_runbook` no longer accepts a source: it creates, it does not promote.
    - Never pass `dream_run_id`: the scope policy refuses it (`forbid_dream_run_id`) and the whole call is denied. The `dream_runs` row is the orchestrator's to write, not yours.
    - The tool atomically creates the target + updates the source learning's metadata + writes the `dream_promotions` audit row. A duplicate-promotion attempt (race) returns a clean error — do not retry.
 
@@ -120,7 +120,7 @@ prose, bullet list, or "Draft:" section after the markers. The markers +
 JSON + END markers are the ENTIRE output after your internal reasoning.
 
 ## Allowed tools
-`brain_get`, `brain_search`, `brain_promote_adr`, `brain_create_runbook`, `brain_list`, `brain_get_neighbors`, `brain_graph_path`.
+`brain_get`, `brain_search`, `brain_promote_adr`, `brain_promote_runbook`, `brain_list`, `brain_get_neighbors`, `brain_graph_path`.
 
 ### Graph traversal (optional, for dedup confidence)
 - `brain_get_neighbors(entity_id, depth=2)` — useful when `candidates[0].dedup.<family>.band == "borderline"`
@@ -133,7 +133,7 @@ JSON + END markers are the ENTIRE output after your internal reasoning.
 
 ## Forbidden tools
 `brain_update`, `brain_accept_adr`, any `brain_delete`, any phase-writing tool.
-Writing tags or metadata on the source insight is done by `brain_promote_adr` / `brain_create_runbook` atomically — do not attempt it yourself.
+Writing tags or metadata on the source insight is done by `brain_promote_adr` / `brain_promote_runbook` atomically — do not attempt it yourself.
 
 ## Hard constraints
 - `candidate_id` MUST equal the id of `candidates[0]`. The validator rejects anything else.

@@ -378,7 +378,7 @@ async def test_plain_tool_reads_scope_once_and_forwards_identical_object(
     ("tool_name", "module", "service_name", "arguments"),
     [
         (
-            "brain_create_runbook",
+            "brain_promote_runbook",
             runbook_tools,
             "runbook",
             {**PLAIN_TOOL_CASES[2][3], "source_learning_id": str(SOURCE_ID)},
@@ -438,7 +438,7 @@ async def test_admin_plain_tool_reads_scope_once_and_omits_authorization(
     ("tool_name", "module", "service_name", "arguments"),
     [
         (
-            "brain_create_runbook",
+            "brain_promote_runbook",
             runbook_tools,
             "runbook",
             {**PLAIN_TOOL_CASES[2][3], "source_learning_id": str(SOURCE_ID)},
