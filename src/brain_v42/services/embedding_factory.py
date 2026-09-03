@@ -9,6 +9,8 @@ search-quality drift.
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import structlog
@@ -35,6 +37,48 @@ class EmbeddingBearerError(RuntimeError):
     """
 
 
+#: Said once per PROCESS, not once per client: nine runtimes build clients on a
+#: hot path, and a line repeated per request drowns the log it was meant to make
+#: readable.
+_bearer_absence_announced = False
+
+
+def reset_bearer_absence_announcement() -> None:
+    """Test seam. A test PROCESS builds many clients; a runtime builds a few."""
+    global _bearer_absence_announced
+    _bearer_absence_announced = False
+
+
+def _announce_bearer_absence_once() -> None:
+    """Say that this runtime calls the shim with no Authorization header at all.
+
+    Measured 2026-09-03: 1724 header-less calls reached the shim from this host in
+    twelve hours, and not one of the processes making them said anything. The
+    resolution is central and correct; what was missing was the variable, in every
+    runtime but one. A misconfiguration that only the SHIM's log can see is
+    invisible from inside the process that has it -- until an operator arms
+    `required` and every one of those calls becomes a 401.
+
+    A WARNING and not an error: header-less is still a valid deployment today, and
+    refusing to build would take a runtime down for a state the shim accepts.
+    """
+    global _bearer_absence_announced
+    if _bearer_absence_announced:
+        return
+    _bearer_absence_announced = True
+    logger.warning(
+        "embedding_factory.no_shim_bearer",
+        runtime=" ".join(sys.argv) or "<unknown>",
+        pid=os.getpid(),
+        cwd=os.getcwd(),
+        setting="BRAIN_EMBEDDING_TOKEN_FILE",
+        detail=(
+            "this runtime sends no Authorization header to the shim; set "
+            "BRAIN_EMBEDDING_TOKEN_FILE to the bearer file's PATH (never its value)"
+        ),
+    )
+
+
 def _resolve_shim_bearer(settings: Settings, api_key: str) -> str:
     """The single place the shim bearer is resolved, for both clients.
 
@@ -48,6 +92,11 @@ def _resolve_shim_bearer(settings: Settings, api_key: str) -> str:
     """
     token_file = settings.brain_embedding_token_file
     if token_file is None:
+        if not api_key:
+            # `cwd` is in the line on purpose: `Settings` reads `.env` RELATIVE to
+            # the working directory, so a runtime started elsewhere is the failure
+            # mode this warning exists to make visible.
+            _announce_bearer_absence_once()
         return api_key
     if api_key:
         raise EmbeddingBearerError(
