@@ -30,6 +30,7 @@ import sqlalchemy as sa
 import structlog
 
 from brain_v42.db.tables import MIN_COMPARABLE_EMBEDDING_NORM
+from brain_v42.dream_degradation import DEGRADED_PREFIX
 from brain_v42.dream_run_project_key import GLOBAL_PHASE_PROJECT_KEY
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.scripts.domain_backfill import (
@@ -783,6 +784,75 @@ def _exit_code(*, timed_out: int, any_failed: bool, deferred: int, hard_failed: 
     return 4 if deferred else 0
 
 
+def thinking_tokens_from_usage(usage: dict[str, Any] | None) -> int:
+    """The provider's reasoning-token count, or 0 -- never ``None``.
+
+    Migration 049 added `dream_runs.thinking_tokens`, and on the first night it
+    could have written it stayed NULL on every `extract/*` and `roadmap/*` row:
+    the codex/agy parser rail fills it, the NVIDIA rail never did.
+
+    NULL is the wrong value here. It reads "not measured", when what is true is
+    "measured, and this provider reports none" -- and the two are the distinction
+    the 049 series exists to preserve elsewhere. So the honest value is 0.
+
+    But a hard-coded 0 would still be 0 the day the provider starts reporting a
+    count, so this READS instead of assuming, in the two shapes an
+    OpenAI-compatible API uses: `usage.reasoning_tokens`, and
+    `usage.completion_tokens_details.reasoning_tokens`. Measured 2026-09-03:
+    neither appears in any dream log, and this repository reads only
+    `prompt_tokens` and `completion_tokens` from the NVIDIA usage -- so 0 is
+    today's true answer, and it will stop being 0 on its own.
+
+    Anything unusable -- absent, null, negative, not a number -- is 0, because a
+    telemetry column must never be the reason a phase raises.
+    """
+    if not isinstance(usage, dict):
+        return 0
+    candidate: Any = usage.get("reasoning_tokens")
+    if candidate is None:
+        details = usage.get("completion_tokens_details")
+        candidate = details.get("reasoning_tokens") if isinstance(details, dict) else None
+    if isinstance(candidate, bool) or not isinstance(candidate, int | float):
+        return 0
+    return max(0, int(candidate))
+
+
+def _degradation_notice(
+    *,
+    primary: str,
+    fallback: str | None,
+    switched: bool,
+    scanned: int,
+    cause: str | None,
+) -> str | None:
+    """Degradation sentence when the standby served the run, else None.
+
+    Ticket 455e5bf7, residue of e7006388. `extract` has a fallback --
+    `BRAIN_NVIDIA_FALLBACK_MODEL` -- and it has used it: eight nights of
+    `logs/dream/*_extract.log` carry `bascule sur …`, and three of those wrote
+    `status='done'`, `model=NULL`, `error_message=NULL`. Silent on exactly the
+    night the morning rubric should speak.
+
+    Speaks only when the standby ACTUALLY served: an alarm that fires every night
+    stops being read (Dream postmortem 08-04).
+
+    The difference from roadmap is worth keeping in the words. Roadmap falls back
+    when the primary does not ANSWER, which may pass. Extract falls back when the
+    primary is WITHDRAWN (404/410): it is gone, it is not coming back, and the run
+    is living on a substitute until somebody changes the configuration.
+
+    Counts TICKETS, because that is what this phase scans -- roadmap counts
+    batches, and neither borrows the other's word to fit a shared regex.
+    """
+    if not switched or not fallback:
+        return None
+    reason = cause or "cause non capturée"
+    return (
+        f"{DEGRADED_PREFIX} : {scanned} tickets servis par le modèle de SECOURS "
+        f"{fallback}, le primaire {primary} a été retiré — {reason}"
+    )
+
+
 async def record_dream_run(
     session_factory: Any,
     status: str,
@@ -790,6 +860,7 @@ async def record_dream_run(
     duration_s: float,
     error: str | None,
     model: str | None = None,
+    thinking_tokens: int = 0,
 ) -> None:
     """INSERT dream_runs row for phase='extract'. Best-effort — never raises.
 
@@ -811,9 +882,10 @@ async def record_dream_run(
                     sa.text(
                         "INSERT INTO dream_runs "
                         "(run_date, phase, status, duration_s, error_message, "
-                        "project_key, phase_dry_run, model) "
+                        "project_key, phase_dry_run, model, thinking_tokens) "
                         "VALUES (:run_date, 'extract', :status, :duration_s, "
-                        ":error_message, :project_key, :phase_dry_run, :model)"
+                        ":error_message, :project_key, :phase_dry_run, :model, "
+                        ":thinking_tokens)"
                     ),
                     {
                         "run_date": date.today(),
@@ -823,6 +895,9 @@ async def record_dream_run(
                         "project_key": GLOBAL_PHASE_PROJECT_KEY,
                         "phase_dry_run": dry,
                         "model": model,
+                        # An INTEGER, never NULL: this rail measures, and "this
+                        # provider reports no reasoning" is 0, not "unmeasured".
+                        "thinking_tokens": thinking_tokens,
                     },
                 )
     except Exception as exc:
@@ -1073,6 +1148,10 @@ async def _run(
     # fallback.
     active_model = model
     switched_to_fallback = False
+    # Kept for the dream_runs row: the withdrawn model and WHY, so the
+    # morning rubric names what died rather than only what replaced it.
+    withdrawn_model: str | None = None
+    withdrawal_cause: str | None = None
     model_gone: str | None = None
     try:
         for position, thread in enumerate(threads):
@@ -1140,6 +1219,8 @@ async def _run(
                         f"progress: modèle {exc.model} retiré (HTTP {exc.status_code}) "
                         f"— bascule sur {fallback_model} pour la suite du run"
                     )
+                    withdrawn_model = exc.model
+                    withdrawal_cause = f"HTTP {exc.status_code}"
                     active_model = fallback_model
                     switched_to_fallback = True
             if model_gone:
@@ -1376,14 +1457,30 @@ async def _run(
     # deferred tickets keep their own durable row in ticket_extraction_attempts,
     # which is the table migration 038 exists for.
     status = "timeout" if timed_out else "fail" if any_failed else "done"
+    degraded = _degradation_notice(
+        primary=withdrawn_model or model,
+        fallback=fallback_model,
+        switched=switched_to_fallback,
+        scanned=scanned,
+        cause=withdrawal_cause,
+    )
+    if degraded:
+        # The `! ` belongs to the JOURNAL and to it alone; the column stores the
+        # sentence bare, which is the form the morning reader keys on (4add5dd).
+        print(f"! {degraded}", flush=True)
     await record_dream_run(
         sf,
         status=status,
         dry=not args.wet,
         duration_s=duration,
+        # A real failure first, then a timeout, then the degradation: the last is
+        # the only one that broke nothing, so it yields to the other two. Same
+        # precedence as the roadmap rail, and the same consequence — a night that
+        # BOTH timed out and degraded reports the timeout alone.
         error=(
             error_msg
             or (f"{timed_out} ticket(s) timed out before run deadline" if timed_out else None)
+            or degraded
         ),
         # `active_model`, not `model`: switching to the fallback is a RUN
         # decision, and a night served entirely by the fallback must be

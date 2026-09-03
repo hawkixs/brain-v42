@@ -230,6 +230,8 @@ def _counter(meta: Mapping[str, str], key: str) -> tuple[int | None, bool]:
 def classify_coverage(
     observed_pairs: Iterable[Pair],
     manifest: RunManifest,
+    *,
+    written_as_failure: Iterable[Pair] = (),
 ) -> CoverageVerdict:
     """Partition the declared expectation into five disjoint classes.
 
@@ -262,7 +264,15 @@ def classify_coverage(
     extra = observed - expected
     # An overlap, not a partition: a pair that was WRITTEN yet declared failed
     # by the night. Without this line, its declaration is dropped in silence.
-    mismatch = written & (manifest.failed | manifest.timed_out)
+    #
+    # `written_as_failure` is what the ROW says, and it is the half this
+    # comparison lacked until 2026-09-03. The message promises "the row's status
+    # does not reflect the declaration"; the test was only "a row exists", so a
+    # phase that failed, declared it AND wrote `status=fail` — the machinery
+    # working — was reported as a false green. Measured that morning on
+    # `*/extract`. A pair whose row already records the failure is therefore
+    # subtracted: what remains is the shape the message names, and only it.
+    mismatch = (written & (manifest.failed | manifest.timed_out)) - frozenset(written_as_failure)
 
     assert len(written) + len(skipped) + len(writefail) + len(declared) + len(silent) == len(
         expected

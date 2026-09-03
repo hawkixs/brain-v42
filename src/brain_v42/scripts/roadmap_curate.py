@@ -52,6 +52,10 @@ from brain_v42.scripts.domain_backfill import (
     _strip_fences,
     load_env_file,
 )
+
+# ONE definition of the reasoning-token extractor, shared with the other NVIDIA
+# rail: two rails disagreeing on how to read the same provider usage is exactly
+# the drift that leaves one column right and the other silently zero.
 from brain_v42.services.proposal_service import PostConditionError as PostConditionError
 
 _API_KEY_VAR = "BRAIN_NVIDIA_API_KEY"
@@ -1285,6 +1289,7 @@ async def record_dream_run(
     duration_s: float,
     error: str | None,
     model: str | None = None,
+    thinking_tokens: int = 0,
 ) -> None:
     """INSERT dream_runs row for phase='roadmap'. Best-effort — never raises.
 
@@ -1299,9 +1304,10 @@ async def record_dream_run(
                     sa.text(
                         "INSERT INTO dream_runs "
                         "(run_date, phase, status, duration_s, error_message, "
-                        "project_key, phase_dry_run, model) "
+                        "project_key, phase_dry_run, model, thinking_tokens) "
                         "VALUES (:run_date, 'roadmap', :status, :duration_s, "
-                        ":error_message, :project_key, :phase_dry_run, :model)"
+                        ":error_message, :project_key, :phase_dry_run, :model, "
+                        ":thinking_tokens)"
                     ),
                     {
                         "run_date": date.today(),
@@ -1311,6 +1317,9 @@ async def record_dream_run(
                         "project_key": GLOBAL_PHASE_PROJECT_KEY,
                         "phase_dry_run": dry,
                         "model": model,
+                        # An INTEGER, never NULL — same contract as the extract
+                        # rail, and the same single extractor behind it.
+                        "thinking_tokens": thinking_tokens,
                     },
                 )
     except Exception as exc:

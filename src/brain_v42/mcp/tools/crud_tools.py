@@ -14,7 +14,10 @@ import structlog
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
+from brain_v42.mcp.dream_project_authorization import (
+    DreamProjectAuthorizationError,
+    get_dream_project_scope,
+)
 from brain_v42.mcp.tools.formatters import (
     clamp_list_limit,
     format_adr_detail,
@@ -513,6 +516,21 @@ def register_crud_tools(
         """
         if entity_type not in ALL_TYPES:
             return format_error(f"Unknown entity type: {entity_type}. Use: {', '.join(ALL_TYPES)}")
+
+        # The bound applied HERE, and not only by the middleware. `brain_list`
+        # was the last CRUD tool whose scope lived upstream alone: if enforcement
+        # ever falls back, REORG Part 1 re-pages the ENTIRE corpus and nothing
+        # downstream says so. The middleware still injects and still refuses —
+        # this is the redundancy, not a replacement.
+        #
+        # BEFORE the `adr` branch on purpose: that branch returns early, so a
+        # bound placed after it would leave one entity type unscoped.
+        scope = get_dream_project_scope()
+        if scope is not None:
+            requested = canonicalize_project_key(project_key, strict=False)
+            if requested is not None and requested != scope.project_key:
+                raise DreamProjectAuthorizationError("project_argument_mismatch")
+            project_key = scope.project_key
 
         if entity_type == "adr":
             return await list_adrs(
