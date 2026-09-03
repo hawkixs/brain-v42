@@ -68,6 +68,9 @@ from tests.integration.disposable_db import (
     drop_database as _drop_database,
 )
 from tests.integration.disposable_db import (
+    replay_attestation as _replay,
+)
+from tests.integration.disposable_db import (
     run_sql as _run_sql,
 )
 from tests.integration.disposable_db import (
@@ -319,29 +322,6 @@ async def test_a_create_all_bench_accepts_what_production_accepts(
             )
     finally:
         await engine.dispose()
-
-
-async def _replay(url: str, asset: Path) -> dict[str, dict[str, Any]]:
-    """Replay an attestation asset READ-ONLY, return its failures alone.
-
-    `SET TRANSACTION READ ONLY` then rollback: a contract that wrote would no longer
-    be a contract, and this disposable database owes its cleanliness to the alembic
-    chain alone — not to the fact that nobody looked.
-    """
-    engine = create_async_engine(url, poolclass=NullPool)
-    try:
-        async with engine.connect() as connection:
-            transaction = await connection.begin()
-            try:
-                await connection.execute(sa.text("SET TRANSACTION READ ONLY"))
-                raw = await connection.scalar(sa.text(asset.read_text(encoding="utf-8")))
-            finally:
-                await transaction.rollback()
-    finally:
-        await engine.dispose()
-
-    receipt = json.loads(str(raw))
-    return {check["id"]: check for check in receipt["checks"] if check["status"] != "pass"}
 
 
 @pytest.mark.asyncio
