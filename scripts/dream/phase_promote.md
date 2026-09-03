@@ -49,8 +49,9 @@ Each candidate carries two read counters, and they do not mean the same thing: `
    - You still produce a **fully populated JSON report** with `dry_run: true`. Every field below is mandatory and MUST be filled with real values (not placeholders, not null except where the schema allows): `candidate_id` (the UUID from `candidates[0]`), `candidate_topic` (first 80 chars of `candidates[0].topic`), `target_type` (your classification: `"adr"` or `"runbook"`), `target_id: null`, `cosine_observed` (the observed max from your dedup search, or `null` if you didn't need to search), `draft_title` (the exact title you'd pass to the materialization tool), `reason: "dry_run rehearsal"`.
 
 5. If DRY_RUN is `false` and dedup passed:
-   - For ADR: call `brain_propose_adr(title=..., context=..., decision=..., consequences=..., project_key="{{PROJECT_KEY}}", alternatives_considered=[...], tags=["dream:promoted"], source_learning_id=<candidates[0].id>, auto_accept=True, dream_run_id=<injected from env if available>)`.
-   - For Runbook: call `brain_create_runbook(title=..., description=..., project_key="{{PROJECT_KEY}}", trigger=..., steps=[...], rollback_steps=[...], tags=["dream:promoted"], source_learning_id=<candidates[0].id>, dream_run_id=<injected>)`.
+   - For ADR: call `brain_propose_adr(title=..., context=..., decision=..., consequences=..., project_key="{{PROJECT_KEY}}", alternatives_considered=[...], tags=["dream:promoted"], source_learning_id=<candidates[0].id>, auto_accept=True)`.
+   - For Runbook: call `brain_create_runbook(title=..., description=..., project_key="{{PROJECT_KEY}}", trigger=..., steps=[...], rollback_steps=[...], tags=["dream:promoted"], source_learning_id=<candidates[0].id>)`.
+   - Never pass `dream_run_id`: the scope policy refuses it (`forbid_dream_run_id`) and the whole call is denied. The `dream_runs` row is the orchestrator's to write, not yours.
    - The tool atomically creates the target + updates the source learning's metadata + writes the `dream_promotions` audit row. A duplicate-promotion attempt (race) returns a clean error — do not retry.
 
 6. Emit the report (exact format — the Python validator parses it with a regex).
