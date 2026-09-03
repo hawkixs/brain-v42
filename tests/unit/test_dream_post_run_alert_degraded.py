@@ -364,3 +364,74 @@ def test_a_night_without_degradation_renders_no_rubric() -> None:
 
     assert post_run_alert.DEGRADED_HEADING not in rendered
     assert "no failures for 2026-09-03" in rendered
+
+
+# --- Two producers, two units, and no borrowed word ------------------------
+#
+# `extract` counts TICKETS and falls back because its primary was WITHDRAWN;
+# `roadmap` counts BATCHES and falls back because its primary did not ANSWER.
+# The writers refused to share a wording to fit one regex (89e37c8's docstring
+# says so in as many words), so the reader learns both instead of flattening
+# them.
+
+
+def _extract_notice(scanned: int = 19) -> str:
+    """The extract sentence, BUILT by its producer rather than copied."""
+    from brain_v42.scripts.ticket_extract import _degradation_notice as extract_notice
+
+    return extract_notice(
+        primary="deepseek-ai/deepseek-v4-pro",
+        fallback="meta/llama-3.3-70b-instruct",
+        switched=True,
+        scanned=scanned,
+        cause="HTTP 410",
+    )
+
+
+def _row(phase: str, message: str, model: str) -> dict[str, object]:
+    return {
+        "phase": phase,
+        "project_key": "*",
+        "status": "done",
+        "model": model,
+        "error_message": message,
+    }
+
+
+def test_the_reader_parses_the_extract_shape_and_names_its_unit() -> None:
+    """`19 tickets`, ONE count and not a ratio: extract has no denominator."""
+    (degraded,) = post_run_alert.degraded_rows(
+        [_row("extract", _extract_notice(), "meta/llama-3.3-70b-instruct")]
+    )
+
+    assert degraded.unit == "tickets"
+    assert degraded.scanned == 19
+    assert degraded.fallback_batches is None, "extract compte, il ne rapporte pas de ratio"
+    assert degraded.primary_model == "deepseek-ai/deepseek-v4-pro"
+
+
+def test_the_reader_still_parses_the_roadmap_ratio() -> None:
+    """The shape that already worked must keep working, unit included."""
+    (degraded,) = post_run_alert.degraded_rows([PRODUCTION_ROW])
+
+    assert degraded.unit == "batches"
+    assert degraded.fallback_batches == 10
+    assert degraded.scanned == 10
+
+
+def test_neither_phase_borrows_the_other_s_word_in_the_rubric() -> None:
+    """The rubric is where a borrowed unit would mislead an operator at 7am."""
+    extract_row, roadmap_row = post_run_alert.degraded_rows(
+        [_row("extract", _extract_notice(), "meta/llama-3.3-70b-instruct"), PRODUCTION_ROW]
+    )
+    block = "\n".join(
+        post_run_alert.build_degraded_block(dt.date(2026, 9, 3), [extract_row, roadmap_row])
+    )
+
+    extract_line = next(line for line in block.splitlines() if line.startswith("- extract"))
+    roadmap_line = next(line for line in block.splitlines() if line.startswith("- roadmap"))
+
+    assert "19 tickets" in extract_line
+    assert "batches" not in extract_line, "extract ne compte pas des batches"
+    assert "10/10 batches" in roadmap_line
+    assert "tickets" not in roadmap_line, "roadmap ne compte pas des tickets"

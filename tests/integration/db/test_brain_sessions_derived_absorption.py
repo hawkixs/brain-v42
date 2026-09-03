@@ -92,8 +92,8 @@ def _transport(connection_id: str) -> Iterator[str]:
     This is the file's anti-cheat guard. `ProvenanceMiddleware` sets the
     `Mcp-Session-Id` on this contextvar and says nothing more about it; all the rest
     — which tracer, which donor — is a production decision. A test that handed the
-    identifier to `absorb_derived_capture` would prove the SQL query and never the
-    pairing.
+    identifier to `absorb_derived_capture_outcome` would prove the SQL query and
+    never the pairing.
     """
     from brain_v42.provenance import get_current_transport, set_current_transport
 
