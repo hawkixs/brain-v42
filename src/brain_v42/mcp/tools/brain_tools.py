@@ -80,29 +80,6 @@ from brain_v42.mcp.tools.workflow_guide_tools import register_workflow_guide_too
 logger = structlog.get_logger(__name__)
 
 
-def _dream_promotion_invariant(
-    source_learning_id: str | None,
-    auto_accept: bool,
-    dream_run_id: int | None,
-) -> str | None:
-    """The invariant of brain_propose_adr's dream-only trio, in ONE place.
-
-    Two scattered guards expressed source_learning_id ⟺ auto_accept; the third
-    member, dream_run_id, was guarded by NOTHING — on its own it fell into the
-    standard path, which never reads it, and disappeared silently (measured
-    2026-08-29, ticket af3b58dd item 2). An orphan dream-only parameter is a
-    named refusal: the caller believed they were tracing a promotion nothing was
-    recording.
-    """
-    if source_learning_id is not None and not auto_accept:
-        return "source_learning_id requires auto_accept=True (Dream-only path)"
-    if auto_accept and source_learning_id is None:
-        return "auto_accept=True requires source_learning_id (Dream-only path)"
-    if dream_run_id is not None and source_learning_id is None:
-        return "dream_run_id requires source_learning_id + auto_accept=True (Dream-only path)"
-    return None
-
-
 def register_tools(
     mcp: FastMCP,
     *,
@@ -436,36 +413,17 @@ def register_tools(
 
     from brain_v42.models.adr import ADRCreate  # noqa: PLC0415
 
-    @mcp.tool(version="1.1", annotations=_HEARTBEAT_ANNOTATIONS)
-    async def brain_propose_adr(
+    def _adr_create(
         title: str,
         context: str,
         decision: str,
         consequences: str,
         project_key: str,
-        alternatives_considered: list[AlternativeConsidered] | None = None,
-        tags: list[str] | None = None,
-        source_learning_id: str | None = None,
-        auto_accept: bool = False,
-        dream_run_id: int | None = None,
-    ) -> str:
-        """Propose (or graduate) an Architecture Decision Record (ADR).
-
-        Backwards-compatible: callers that pass only the original kwargs behave
-        exactly as before — an ADR is created in status='proposed'.
-
-        Dream-agent path: set source_learning_id + auto_accept=True together to
-        graduate a mature insight directly into an accepted ADR via one atomic
-        transaction that also updates the source learning's metadata and writes
-        a dream_promotions audit row. The three dream-only kwargs
-        (source_learning_id, auto_accept, dream_run_id) travel together — a
-        lone member is refused by name, never silently dropped.
-        """
-        invariant_error = _dream_promotion_invariant(source_learning_id, auto_accept, dream_run_id)
-        if invariant_error is not None:
-            return format_error(invariant_error)
-
-        data = ADRCreate(
+        alternatives_considered: list[AlternativeConsidered] | None,
+        tags: list[str] | None,
+    ) -> ADRCreate:
+        """The ADR body, identical on both paths — proposal and promotion."""
+        return ADRCreate(
             title=title,
             context=context,
             decision=decision,
@@ -474,49 +432,47 @@ def register_tools(
             alternatives_considered=alternatives_considered or [],
             tags=tags or [],
         )
-        scope = get_dream_project_scope()
 
-        if source_learning_id is not None:
-            src_uid = parse_uuid(source_learning_id)
-            if src_uid is None:
-                return format_error(f"Invalid UUID: {source_learning_id}")
-            try:
-                if scope is None:
-                    adr = await adr_svc.create_with_promotion(
-                        data=data,
-                        source_learning_id=src_uid,
-                        auto_accept=True,
-                        dream_run_id=dream_run_id,
-                    )
-                else:
-                    adr = await adr_svc.create_with_promotion(
-                        data=data,
-                        source_learning_id=src_uid,
-                        auto_accept=True,
-                        dream_run_id=dream_run_id,
-                        project_key=scope.project_key,
-                        authorization=cast("RelationAuthorization", scope),
-                    )
-            except SourceLearningNotFound:
-                if scope is None:
-                    raise
-                return format_error("source learning not found")
-            except IntegrityError:
-                return format_error(
-                    f"source_learning_id '{format_id(source_learning_id)}' already "
-                    f"materialized (duplicate promotion blocked by unique index)"
-                )
-            logger.info(
-                "mcp.brain_propose_adr.promoted",
-                adr_id=str(adr.id),
-                source_learning_id=source_learning_id,
-            )
-            return format_confirmation(
-                f"ADR #{adr.number} accepted (auto-graduated from learning)",
-                title,
-                id=str(adr.id),
-                project=project_key,
-            )
+    @mcp.tool(version="2.0", annotations=_HEARTBEAT_ANNOTATIONS)
+    async def brain_propose_adr(
+        title: str,
+        context: str,
+        decision: str,
+        consequences: str,
+        project_key: str,
+        alternatives_considered: list[AlternativeConsidered] | None = None,
+        tags: list[str] | None = None,
+    ) -> str:
+        """Propose an Architecture Decision Record (ADR) in status='proposed'.
+
+        The Dream promotion path lives in its own tool, `brain_promote_adr`
+        (ticket af3b58dd item 2). Until 2026-09-03 this signature also published
+        `source_learning_id`, `auto_accept` and `dream_run_id` to every caller,
+        and refused their meaningless combinations at runtime. Two paths now
+        publish two schemas, so the invalid request can no longer be built.
+
+        Args:
+            title: Short title of the decision.
+            context: Forces at play — why a decision is needed.
+            decision: The decision taken.
+            consequences: What becomes easier and what becomes harder.
+            project_key: Owning project.
+            alternatives_considered: Options weighed and set aside.
+            tags: Free-form tags.
+
+        Returns:
+            Confirmation string naming the ADR number.
+        """
+        data = _adr_create(
+            title,
+            context,
+            decision,
+            consequences,
+            project_key,
+            alternatives_considered,
+            tags,
+        )
+        scope = get_dream_project_scope()
 
         if scope is None:
             adr = await adr_svc.create(data)
@@ -528,6 +484,99 @@ def register_tools(
         logger.info("mcp.brain_propose_adr", adr_id=str(adr.id), project_key=project_key)
         return format_confirmation(
             f"ADR #{adr.number} proposed",
+            title,
+            id=str(adr.id),
+            project=project_key,
+        )
+
+    @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)
+    async def brain_promote_adr(
+        title: str,
+        context: str,
+        decision: str,
+        consequences: str,
+        project_key: str,
+        source_learning_id: str,
+        alternatives_considered: list[AlternativeConsidered] | None = None,
+        tags: list[str] | None = None,
+        dream_run_id: int | None = None,
+    ) -> str:
+        """Graduate a mature learning into an ACCEPTED ADR (Dream promotion path).
+
+        One atomic transaction creates the ADR in status='accepted', updates the
+        source learning's metadata, and writes a `dream_promotions` audit row.
+
+        `source_learning_id` is required: promoting nothing is not a promotion.
+        There is no `auto_accept` — calling this tool IS the acceptance.
+
+        `dream_run_id` attributes the promotion to an orchestrator run. A scoped
+        Dream principal may not set it (`forbid_dream_run_id` in the scope
+        policy): `dream_runs` rows are written by the orchestrator, never by a
+        phase agent, so an agent naming its own run id could attribute its work
+        to another night's row.
+
+        Args:
+            title: Short title of the decision.
+            context: Forces at play — why a decision is needed.
+            decision: The decision taken.
+            consequences: What becomes easier and what becomes harder.
+            project_key: Owning project.
+            source_learning_id: UUID of the learning being graduated.
+            alternatives_considered: Options weighed and set aside.
+            tags: Free-form tags.
+            dream_run_id: Optional orchestrator run to attribute the promotion to.
+
+        Returns:
+            Confirmation string, or a named error for a bad or duplicate source.
+        """
+        src_uid = parse_uuid(source_learning_id)
+        if src_uid is None:
+            return format_error(f"Invalid UUID: {source_learning_id}")
+
+        data = _adr_create(
+            title,
+            context,
+            decision,
+            consequences,
+            project_key,
+            alternatives_considered,
+            tags,
+        )
+        scope = get_dream_project_scope()
+
+        try:
+            if scope is None:
+                adr = await adr_svc.create_with_promotion(
+                    data=data,
+                    source_learning_id=src_uid,
+                    auto_accept=True,
+                    dream_run_id=dream_run_id,
+                )
+            else:
+                adr = await adr_svc.create_with_promotion(
+                    data=data,
+                    source_learning_id=src_uid,
+                    auto_accept=True,
+                    dream_run_id=dream_run_id,
+                    project_key=scope.project_key,
+                    authorization=cast("RelationAuthorization", scope),
+                )
+        except SourceLearningNotFound:
+            if scope is None:
+                raise
+            return format_error("source learning not found")
+        except IntegrityError:
+            return format_error(
+                f"source_learning_id '{format_id(source_learning_id)}' already "
+                f"materialized (duplicate promotion blocked by unique index)"
+            )
+        logger.info(
+            "mcp.brain_promote_adr.promoted",
+            adr_id=str(adr.id),
+            source_learning_id=source_learning_id,
+        )
+        return format_confirmation(
+            f"ADR #{adr.number} accepted (auto-graduated from learning)",
             title,
             id=str(adr.id),
             project=project_key,

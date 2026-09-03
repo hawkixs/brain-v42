@@ -1,7 +1,7 @@
 # MCP Tools — brain_v42
 
 **Updated:** 2026-07-24
-**Repository registry:** 53 always-on + 2 graph-gated = 55 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
+**Repository registry:** 54 always-on + 2 graph-gated = 56 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
 **Default catalog:** Admin clients use `compact` while capability enforcement is disabled: the seven session lifecycle tools plus `brain_find_tool` and `brain_call_tool`; other registered tools remain discoverable through those gateways. `native` exposes every registered tool. An authenticated Dream phase always receives its exact native allowlist, independent of presentation headers, and cannot access either gateway. Experimental `brain_code_mode` takes precedence only while Dream capability enforcement is disabled.
 **Transport:** HTTP loopback `http://127.0.0.1:8765/mcp` (production fleet). Tools are defined as closures capturing injected services — see `src/brain_v42/mcp/server.py` (`build_services()`) and the `register_*_tools()` functions in each module under `src/brain_v42/mcp/tools/`.
 
@@ -197,15 +197,34 @@ Increment `use_count`, set `last_used_at = now()`. Returns `✗ Invalid UUID: <v
 
 ---
 
-## ADRs — 4 tools (`brain_tools.py`)
+## ADRs — 5 tools (`brain_tools.py`)
 
 ### brain_propose_adr
 ```
 brain_propose_adr(title, context, decision, consequences, project_key,
-                  alternatives_considered=None, tags=None,
-                  source_learning_id=None, auto_accept=False, dream_run_id=None)
+                  alternatives_considered=None, tags=None)
 ```
-Propose an Architecture Decision Record (`status=proposed`). Dream-agent path: pass `source_learning_id` + `auto_accept=True` together to graduate a mature learning straight to `accepted` in one transaction — writes a `dream_promotions` row for audit. Both kwargs must be set together.
+Propose an Architecture Decision Record (`status=proposed`).
+
+The Dream promotion path is `brain_promote_adr`, a separate tool. Until
+2026-09-03 this signature also published `source_learning_id`, `auto_accept`
+and `dream_run_id`, and refused their meaningless combinations at runtime;
+two tools now publish two schemas, so the invalid request cannot be built.
+Callers that passed the three kwargs here must move to `brain_promote_adr` —
+they now get an unknown-parameter error, which is loud, not silent.
+
+### brain_promote_adr
+```
+brain_promote_adr(title, context, decision, consequences, project_key,
+                  source_learning_id, alternatives_considered=None, tags=None,
+                  dream_run_id=None)
+```
+Graduate a mature learning straight to an `accepted` ADR in one transaction,
+updating the source learning's metadata and writing a `dream_promotions` row
+for audit. `source_learning_id` is required; there is no `auto_accept`, because
+calling this tool IS the acceptance. A scoped Dream principal may not pass
+`dream_run_id` (`forbid_dream_run_id`): `dream_runs` rows belong to the
+orchestrator, never to a phase agent.
 
 ### brain_accept_adr
 ```
@@ -753,7 +772,7 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 
 | File | Group | Tools |
 |------|-------|-------|
-| `brain_tools.py` | decisions / learnings / ADRs / search / graph | 10 + 2 conditional |
+| `brain_tools.py` | decisions / learnings / ADRs / search / graph | 11 + 2 conditional |
 | `crud_tools.py` | generic CRUD | 4 |
 | `decay_tools.py` | decay + consolidation | 4 |
 | `dream_tools.py` | dream-phase maintenance | 7 |
@@ -765,4 +784,4 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `snippet_tools.py` | snippets | 2 |
 | `ticket_tools.py` | tickets cross-projet (coordination) | 5 |
 | `workflow_guide_tools.py` | bounded workflow guidance | 1 |
-| **Total** | | **53 always-on + 2 graph-gated = 55** |
+| **Total** | | **54 always-on + 2 graph-gated = 56** |

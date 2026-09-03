@@ -61,6 +61,7 @@ EXPECTED_PHASE_TOOLS = {
         "brain_get",
         "brain_search",
         "brain_propose_adr",
+        "brain_promote_adr",
         "brain_create_runbook",
         "brain_list_adrs",
         "brain_list",

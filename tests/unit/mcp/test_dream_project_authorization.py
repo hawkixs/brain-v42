@@ -138,7 +138,7 @@ def test_project_policy_is_exhaustive_for_current_dream_catalog() -> None:
     }
 
     assert set(PROJECT_TOOL_POLICIES) == allowed_tools
-    assert len(PROJECT_TOOL_POLICIES) == 19
+    assert len(PROJECT_TOOL_POLICIES) == 20
 
 
 def test_production_policy_does_not_import_phase_capabilities() -> None:
@@ -231,7 +231,7 @@ async def test_authorized_arguments_are_deep_copied_before_injection() -> None:
             (None, None),
         ),
         (
-            "brain_propose_adr",
+            "brain_promote_adr",
             lambda a, _b: {"source_learning_id": str(a)},
             ("learning",),
         ),
@@ -306,13 +306,40 @@ async def test_malformed_or_partial_references_fail_closed(
 
 
 @pytest.mark.asyncio
+async def test_promotion_tool_is_denied_without_its_required_learning_source() -> None:
+    """The split moved the XOR into the schema; the middleware enforces it too.
+
+    `brain_promote_adr` publishes `source_learning_id` as required, so FastMCP
+    already refuses a call without it. This asserts the SECOND, independent
+    refusal: a hand-built request that reaches the middleware without a source
+    is denied by name rather than promoted against nothing.
+    """
+    with pytest.raises(DreamProjectAuthorizationError) as caught:
+        await _authorize("brain_promote_adr", {"content": "unchanged"})
+
+    assert caught.value.reason == "invalid_reference"
+
+
+@pytest.mark.asyncio
+async def test_promotion_tool_injects_project_key_alongside_its_source() -> None:
+    source = uuid4()
+
+    result = await _authorize("brain_promote_adr", {"source_learning_id": str(source)})
+
+    assert result.arguments["project_key"] == PROJECT_KEY
+    assert result.arguments["source_learning_id"] == str(source)
+
+
+@pytest.mark.asyncio
 async def test_non_null_project_group_is_denied() -> None:
     with pytest.raises(DreamProjectAuthorizationError) as caught:
         await _authorize("brain_search", {"project_group": "red-triad"})
     assert caught.value.reason == "project_group_forbidden"
 
 
-@pytest.mark.parametrize("tool_name", ["brain_propose_adr", "brain_create_runbook"])
+@pytest.mark.parametrize(
+    "tool_name", ["brain_propose_adr", "brain_promote_adr", "brain_create_runbook"]
+)
 @pytest.mark.asyncio
 async def test_non_null_dream_run_is_denied(tool_name: str) -> None:
     with pytest.raises(DreamProjectAuthorizationError) as caught:

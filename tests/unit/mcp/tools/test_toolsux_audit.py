@@ -736,17 +736,16 @@ class TestUUIDContractSourceLearningId:
     """Malformed source_learning_id must return an unprefixed error, not raise ValueError."""
 
     @pytest.mark.asyncio
-    async def test_propose_adr_invalid_source_learning_id_returns_error(self) -> None:
-        """brain_propose_adr with an invalid source_learning_id returns a plain error."""
+    async def test_promote_adr_invalid_source_learning_id_returns_error(self) -> None:
+        """brain_promote_adr with an invalid source_learning_id returns a plain error."""
         tools, _ = _make_brain_tools()
-        result = await tools["brain_propose_adr"](
+        result = await tools["brain_promote_adr"](
             title="T",
             context="C",
             decision="D",
             consequences="Q",
             project_key="proj",
             source_learning_id="not-a-uuid",
-            auto_accept=True,
         )
         assert result and result[0].isalnum(), f"Expected an unprefixed error, got: {result!r}"
         assert "UUID" in result or "Invalid" in result, (

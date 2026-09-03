@@ -384,13 +384,12 @@ async def test_plain_tool_reads_scope_once_and_forwards_identical_object(
             {**PLAIN_TOOL_CASES[2][3], "source_learning_id": str(SOURCE_ID)},
         ),
         (
-            "brain_propose_adr",
+            "brain_promote_adr",
             brain_tools,
             "adr",
             {
                 **PLAIN_TOOL_CASES[3][3],
                 "source_learning_id": str(SOURCE_ID),
-                "auto_accept": True,
             },
         ),
     ],
@@ -445,13 +444,12 @@ async def test_admin_plain_tool_reads_scope_once_and_omits_authorization(
             {**PLAIN_TOOL_CASES[2][3], "source_learning_id": str(SOURCE_ID)},
         ),
         (
-            "brain_propose_adr",
+            "brain_promote_adr",
             brain_tools,
             "adr",
             {
                 **PLAIN_TOOL_CASES[3][3],
                 "source_learning_id": str(SOURCE_ID),
-                "auto_accept": True,
             },
         ),
     ],

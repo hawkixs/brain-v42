@@ -129,7 +129,6 @@ def adr_args(*, dream_run_id: int | None = None) -> dict[str, Any]:
         "consequences": "Consequences",
         "project_key": PROJECT_KEY,
         "source_learning_id": SOURCE_ID,
-        "auto_accept": True,
         "dream_run_id": dream_run_id,
     }
 
@@ -147,50 +146,50 @@ def runbook_args(*, dream_run_id: int | None = None) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["brain_propose_adr", "brain_create_runbook"])
+@pytest.mark.parametrize("tool_name", ["brain_promote_adr", "brain_create_runbook"])
 async def test_scoped_tool_passes_context_project_to_promotion_service(tool_name: str) -> None:
     tools, adr_svc, runbook_svc = registered_tools()
 
     with bind_dream_project_scope(scope(tool_name)):
         await tools[tool_name](
-            **(adr_args() if tool_name == "brain_propose_adr" else runbook_args())
+            **(adr_args() if tool_name == "brain_promote_adr" else runbook_args())
         )
 
-    service = adr_svc if tool_name == "brain_propose_adr" else runbook_svc
+    service = adr_svc if tool_name == "brain_promote_adr" else runbook_svc
     assert service.create_with_promotion.await_args.kwargs["project_key"] == PROJECT_KEY
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["brain_propose_adr", "brain_create_runbook"])
+@pytest.mark.parametrize("tool_name", ["brain_promote_adr", "brain_create_runbook"])
 async def test_admin_tool_omits_scope_kwarg_and_preserves_dream_run(tool_name: str) -> None:
     tools, adr_svc, runbook_svc = registered_tools()
 
     await tools[tool_name](
         **(
             adr_args(dream_run_id=73)
-            if tool_name == "brain_propose_adr"
+            if tool_name == "brain_promote_adr"
             else runbook_args(dream_run_id=73)
         )
     )
 
-    service = adr_svc if tool_name == "brain_propose_adr" else runbook_svc
+    service = adr_svc if tool_name == "brain_promote_adr" else runbook_svc
     kwargs = service.create_with_promotion.await_args.kwargs
     assert "project_key" not in kwargs
     assert kwargs["dream_run_id"] == 73
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["brain_propose_adr", "brain_create_runbook"])
+@pytest.mark.parametrize("tool_name", ["brain_promote_adr", "brain_create_runbook"])
 async def test_scoped_unavailable_source_returns_same_non_enumerating_error(
     tool_name: str,
 ) -> None:
     tools, adr_svc, runbook_svc = registered_tools()
-    service = adr_svc if tool_name == "brain_propose_adr" else runbook_svc
+    service = adr_svc if tool_name == "brain_promote_adr" else runbook_svc
     service.create_with_promotion.side_effect = SourceLearningNotFound("source learning not found")
 
     with bind_dream_project_scope(scope(tool_name)):
         output = await tools[tool_name](
-            **(adr_args() if tool_name == "brain_propose_adr" else runbook_args())
+            **(adr_args() if tool_name == "brain_promote_adr" else runbook_args())
         )
 
     assert "not found" in output.lower()
@@ -199,20 +198,20 @@ async def test_scoped_unavailable_source_returns_same_non_enumerating_error(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["brain_propose_adr", "brain_create_runbook"])
+@pytest.mark.parametrize("tool_name", ["brain_promote_adr", "brain_create_runbook"])
 async def test_admin_keeps_historical_source_exception(tool_name: str) -> None:
     tools, adr_svc, runbook_svc = registered_tools()
-    service = adr_svc if tool_name == "brain_propose_adr" else runbook_svc
+    service = adr_svc if tool_name == "brain_promote_adr" else runbook_svc
     service.create_with_promotion.side_effect = SourceLearningNotFound("historical")
 
     with pytest.raises(SourceLearningNotFound, match="historical"):
         await tools[tool_name](
-            **(adr_args() if tool_name == "brain_propose_adr" else runbook_args())
+            **(adr_args() if tool_name == "brain_promote_adr" else runbook_args())
         )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["brain_propose_adr", "brain_create_runbook"])
+@pytest.mark.parametrize("tool_name", ["brain_promote_adr", "brain_create_runbook"])
 async def test_dream_run_id_remains_denied_before_handler(tool_name: str) -> None:
     with pytest.raises(DreamProjectAuthorizationError) as raised:
         await authorize_dream_project_request(
@@ -239,8 +238,16 @@ def test_public_tool_signatures_have_no_internal_scope_parameter() -> None:
         "project_key",
         "alternatives_considered",
         "tags",
+    )
+    assert tuple(inspect.signature(tools["brain_promote_adr"]).parameters) == (
+        "title",
+        "context",
+        "decision",
+        "consequences",
+        "project_key",
         "source_learning_id",
-        "auto_accept",
+        "alternatives_considered",
+        "tags",
         "dream_run_id",
     )
     assert tuple(inspect.signature(tools["brain_create_runbook"]).parameters) == (
