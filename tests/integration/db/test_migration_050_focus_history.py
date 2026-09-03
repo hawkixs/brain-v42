@@ -76,11 +76,24 @@ async def _drop_history_rows(connection: AsyncConnection, like: str) -> None:
     Restored immediately, in the same transaction. The alternative — dropping and
     re-laying the table — costs two alembic subprocesses per test.
     """
-    await connection.execute(sa.text("ALTER TABLE project_focus_history DISABLE TRIGGER USER"))
+    # The trigger is NAMED: the wildcard `ENABLE TRIGGER USER` would switch on
+    # every user trigger on the table, which is not the inverse of the disable
+    # above and is how a fixture performs a cutover by accident.
+    await connection.execute(
+        sa.text(
+            "ALTER TABLE project_focus_history "
+            "DISABLE TRIGGER project_focus_history_append_only_trigger"
+        )
+    )
     await connection.execute(
         sa.text("DELETE FROM project_focus_history WHERE project_key LIKE :like"), {"like": like}
     )
-    await connection.execute(sa.text("ALTER TABLE project_focus_history ENABLE TRIGGER USER"))
+    await connection.execute(
+        sa.text(
+            "ALTER TABLE project_focus_history "
+            "ENABLE TRIGGER project_focus_history_append_only_trigger"
+        )
+    )
 
 
 @pytest_asyncio.fixture

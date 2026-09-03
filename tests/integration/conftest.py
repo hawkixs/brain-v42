@@ -42,11 +42,14 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from tests.integration.disposable_db import fresh_head_database
 from tests.integration.schema_fingerprint import (
     SchemaProbe,
+    describe_family_divergence,
     describe_schema_divergence,
     describe_underivable_premise,
     migrations_emitting_non_origin_trigger_state,
+    probe_schema_families,
 )
 from tests.integration.schema_residue import (
     RESIDUE_TABLES,
@@ -210,6 +213,27 @@ def _rejection_reason() -> str | None:
 
 
 def pytest_terminal_summary(terminalreporter: Any) -> None:
+    _report_schema_residue_left_by_the_suite(terminalreporter)
+    _report_missing_db_url(terminalreporter)
+
+
+def _report_schema_residue_left_by_the_suite(terminalreporter: Any) -> None:
+    """Name the family and the object, at the end of the run that left them."""
+    url = os.environ.get("BRAIN_V42_TEST_DB_URL")
+    if not url or _CHAIN_FINGERPRINT is None:
+        return
+    try:
+        message = _describe_schema_residue_left_by_the_suite(_resolve_integration_db_url())
+    except ValueError:
+        return
+    if message is None:
+        return
+    terminalreporter.write_sep("=", "schema residue left by this suite", red=True)
+    for line in message.splitlines():
+        terminalreporter.write_line(line)
+
+
+def _report_missing_db_url(terminalreporter: Any) -> None:
     """Say it, once, at the end — where a reader actually looks.
 
     The suite already skips loudly test by test, but `-q` collapses those into a
@@ -397,6 +421,59 @@ def _assert_schema_matches_the_migration_chain(db_url: str, project_root: Path) 
     message = describe_schema_divergence(_probe_live_schema(db_url))
     if message is not None:
         raise RuntimeError(message)
+    _assert_every_schema_family_matches_the_migration_chain(db_url)
+
+
+#: The chain's own fingerprint, derived ONCE per session and kept so the end-of-run
+#: comparison costs nothing. `None` means setup never got far enough to build it —
+#: no database, or a refusal upstream — and the end-of-run check stays silent
+#: rather than inventing a verdict.
+_CHAIN_FINGERPRINT: dict[str, dict[str, str]] | None = None
+
+
+def _assert_every_schema_family_matches_the_migration_chain(db_url: str) -> None:
+    """Close the CLASS ticket 3a7da99d named, not the one family it witnessed.
+
+    The guard above watches trigger STATE. This one watches the whole schema —
+    tables, columns, constraints, indexes, triggers and their state, functions,
+    views, sequences, grants — against a reference the alembic chain builds in a
+    disposable database moments earlier. Both sides derived, so nothing here ages
+    when 052 lands.
+
+    Costs 0.93 s per session, measured 2026-09-03 (0.85 s of it the chain itself).
+    That is why the reference is built outright rather than cached across runs: a
+    cache would buy a second back and pay for it in staleness.
+    """
+    global _CHAIN_FINGERPRINT
+    with fresh_head_database(db_url, prefix="brain_chainref") as reference_url:
+        _CHAIN_FINGERPRINT = probe_schema_families(reference_url)
+    message = describe_family_divergence(_CHAIN_FINGERPRINT, probe_schema_families(db_url))
+    if message is not None:
+        raise RuntimeError(message)
+
+
+def _describe_schema_residue_left_by_the_suite(db_url: str) -> str | None:
+    """What the suite LEFT, compared against the same reference it started from.
+
+    Setup refusal catches a residue on the next run, which is one run too late to
+    tell you which suite left it. This runs at the end of the run that did it.
+    A notice rather than a refusal, matching the data-residue notice above: the
+    tests have already reported their own verdicts, and turning a green suite red
+    here would hide them behind an infrastructure message.
+    """
+    if _CHAIN_FINGERPRINT is None:
+        return None
+    try:
+        divergence = describe_family_divergence(_CHAIN_FINGERPRINT, probe_schema_families(db_url))
+    except Exception as exc:  # noqa: BLE001 - a broken probe is said, never swallowed
+        return f"Could not check the schema this suite left behind: {type(exc).__name__}: {exc}"
+    if divergence is None:
+        return None
+    return (
+        "This suite LEFT the test database diverging from the migration chain.\n"
+        "The setup that started it found no divergence, so the objects below were "
+        "left by a test in this run:\n\n" + divergence
+    )
 
 
 @pytest.fixture(scope="session", autouse=True)
