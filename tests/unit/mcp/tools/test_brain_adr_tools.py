@@ -297,3 +297,82 @@ class TestBrainAcceptAdr:
 
         assert isinstance(result, str)
         assert str(adr.id)[:8] in result
+
+
+# ── brain_deprecate_adr tests ────────────────────────────────────────────────
+
+
+class TestBrainDeprecateAdr:
+    """Tests for brain_deprecate_adr MCP tool."""
+
+    @pytest.mark.asyncio
+    async def test_brain_deprecate_adr_registered(self) -> None:
+        """brain_deprecate_adr tool is registered via register_tools()."""
+        mcp, _ = _make_mcp_with_adr_tools()
+        tool = await mcp.get_tool("brain_deprecate_adr")
+        assert tool is not None
+
+    @pytest.mark.asyncio
+    async def test_deprecate_adr_calls_service_with_uuid_and_reason(self) -> None:
+        """brain_deprecate_adr calls adr_svc.deprecate(UUID, reason=...)."""
+        mcp, mock_svc = _make_mcp_with_adr_tools()
+        adr = _make_adr(status="deprecated")
+        mock_svc.deprecate = AsyncMock(return_value=adr)
+        adr_id = str(adr.id)
+
+        fn = await _get_tool_fn(mcp, "brain_deprecate_adr")
+        await fn(adr_id=adr_id, reason="No longer relevant")
+
+        mock_svc.deprecate.assert_called_once_with(UUID(adr_id), reason="No longer relevant")
+
+    @pytest.mark.asyncio
+    async def test_deprecate_adr_returns_confirmation_string(self) -> None:
+        """brain_deprecate_adr returns confirmation with ADR number and title."""
+        mcp, mock_svc = _make_mcp_with_adr_tools()
+        adr = _make_adr(number=5, title="Old Decision", status="deprecated")
+        mock_svc.deprecate = AsyncMock(return_value=adr)
+
+        fn = await _get_tool_fn(mcp, "brain_deprecate_adr")
+        result = await fn(adr_id=str(adr.id))
+
+        assert isinstance(result, str)
+        assert "ADR #5 deprecated" in result
+
+    @pytest.mark.asyncio
+    async def test_deprecate_adr_returns_error_when_not_found(self) -> None:
+        """brain_deprecate_adr returns error string when service returns None."""
+        mcp, mock_svc = _make_mcp_with_adr_tools()
+        adr_id = str(uuid4())
+        mock_svc.deprecate = AsyncMock(return_value=None)
+
+        fn = await _get_tool_fn(mcp, "brain_deprecate_adr")
+        result = await fn(adr_id=adr_id)
+
+        assert isinstance(result, str)
+        assert adr_id[:8] in result
+        assert "not found" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_deprecate_adr_reason_defaults_to_none(self) -> None:
+        """brain_deprecate_adr passes reason=None when not specified."""
+        mcp, mock_svc = _make_mcp_with_adr_tools()
+        adr = _make_adr(status="deprecated")
+        mock_svc.deprecate = AsyncMock(return_value=adr)
+
+        fn = await _get_tool_fn(mcp, "brain_deprecate_adr")
+        await fn(adr_id=str(adr.id))
+
+        mock_svc.deprecate.assert_called_once_with(UUID(str(adr.id)), reason=None)
+
+    @pytest.mark.asyncio
+    async def test_deprecate_adr_returns_string_with_id(self) -> None:
+        """brain_deprecate_adr returns string containing short id."""
+        mcp, mock_svc = _make_mcp_with_adr_tools()
+        adr = _make_adr(status="deprecated")
+        mock_svc.deprecate = AsyncMock(return_value=adr)
+
+        fn = await _get_tool_fn(mcp, "brain_deprecate_adr")
+        result = await fn(adr_id=str(adr.id))
+
+        assert isinstance(result, str)
+        assert str(adr.id)[:8] in result
