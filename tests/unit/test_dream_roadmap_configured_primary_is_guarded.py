@@ -19,7 +19,8 @@ THE COMBINATION, MEASURED ON 2026-09-03 AND NOT COPIED FROM THE TICKET:
   models.conf     BRAIN_NVIDIA_ROADMAP_MODEL=nvidia/nemotron-3-super-120b-a12b
   roadmap_curate  that model IS DEFAULT_WET_ROADMAP_MODEL, hence in AUTO_APPLY_MODELS
   killswitches    BRAIN_DREAM_ROADMAP_DRY_RUN=true   <- the only thing keeping it inert
-  dream.sh:1238   adds `--wet` whenever DRY_RUN is anything other than "true"
+  dream.sh        adds `--wet` only for an explicit `false` (fail-closed since
+                  2026-09-04; it used to arm on anything that was not "true")
 
 So this test starts at the CONFIG and walks to the consequence. It reads the
 model list from the module and the primary from a captured copy of the live
@@ -238,16 +239,24 @@ def test_todays_dry_night_says_nothing_at_all(
 # ── the flag that would arm it, read where it is actually interpreted ────────
 
 
-def test_any_value_other_than_true_arms_the_wet_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The ticket says "the first DRY_RUN=false". `dream.sh` is looser than that.
+def test_only_an_explicit_false_arms_the_wet_flag() -> None:
+    """CONTRACT REPLACED on 2026-09-04, and the replacement is the point.
 
-    Measured at `scripts/dream.sh:1238`: the test is `!= "true"`, so `false`,
-    `False`, `0`, a typo and an EMPTY value all add `--wet`. The trap therefore
-    does not need a decision to spring — a fat finger in a drop-in is enough.
+    This assertion used to pin `!= "true"` and read it as a finding: the ticket
+    speaks of "the first DRY_RUN=false", while the shell armed `--wet` on
+    `False`, `0`, a typo or an EMPTY value just as well. The trap did not need a
+    decision to spring.
+
+    That finding is now fixed rather than merely recorded. `dream.sh` routes the
+    four killswitches through `dream_wants_wet`, which returns wet ONLY for an
+    explicit `false` and falls back to DRY loudly otherwise. What this test pins
+    is therefore the reversal, and the semantics themselves are EXECUTED under
+    bash by `test_dream_sh_wet_flag_is_fail_closed.py` — text can show the
+    spelling, only bash can show what `0` does.
     """
     dream_sh = (Path(__file__).resolve().parents[2] / "scripts" / "dream.sh").read_text(
         encoding="utf-8"
     )
 
-    assert '[[ "$BRAIN_DREAM_ROADMAP_DRY_RUN" != "true" ]]' in dream_sh
-    assert '[[ "$BRAIN_DREAM_ROADMAP_DRY_RUN" == "false" ]]' not in dream_sh
+    assert 'dream_wants_wet BRAIN_DREAM_ROADMAP_DRY_RUN "$BRAIN_DREAM_ROADMAP_DRY_RUN"' in dream_sh
+    assert '"$BRAIN_DREAM_ROADMAP_DRY_RUN" != "true"' not in dream_sh

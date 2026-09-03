@@ -23,7 +23,14 @@ def test_roadmap_step_invokes_cli_module():
 
 def test_roadmap_wet_flag_only_when_dry_run_false():
     content = _content()
-    assert 'if [[ "$BRAIN_DREAM_ROADMAP_DRY_RUN" != "true" ]]' in content
+    # The comparison moved into the shared `dream_wants_wet` helper on
+    # 2026-09-04: `!= "true"` armed the wet run on ANY value that was not
+    # exactly `true`, empty strings and typos included. The intent of this
+    # assertion is unchanged; only the spelling it pins moved.
+    assert (
+        'if dream_wants_wet BRAIN_DREAM_ROADMAP_DRY_RUN "$BRAIN_DREAM_ROADMAP_DRY_RUN"' in content
+    )
+    assert '"$BRAIN_DREAM_ROADMAP_DRY_RUN" != "true"' not in content
 
 
 def test_roadmap_step_has_timeout_and_own_log():
