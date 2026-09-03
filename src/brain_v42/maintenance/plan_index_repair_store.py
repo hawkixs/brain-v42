@@ -150,13 +150,28 @@ if TYPE_CHECKING:
 # production while production is still at 049. That is the pin working, not a
 # regression — and it now spans TWO unapplied revisions instead of one.
 #
+# Bumped to 052 after its own review, shorter still. 052 adds `access_log_daily`:
+# ONE new table, ONE index, no trigger, no constraint on any existing table, and
+# no NOT NULL column added anywhere. Measured the same way as 051's entry rather
+# than asserted — `access_log` appears ZERO times in the two modules of this
+# repair, and `access_log_daily` zero times too; the executed surface is still
+# `indexed_plans`, `project_contexts` and `indexed_plan_chunks`, none of which
+# 052 mentions (`grep -c 'indexed_plans\|indexed_plan_chunks\|project_contexts'
+# alembic/versions/052_access_log_daily.py` → 0). The writer that fills the new
+# table lives in `pg_access_log.aggregate_in_session`, which this repair never
+# calls. INERT.
+#
+# The consequence named at 050 and repeated at 051 holds a third time: the pin now
+# spans THREE unapplied revisions, so the repair refuses to run against production
+# until 050, 051 and 052 are applied. That is the pin working.
+#
 # The review is written down even when it is short: that is the rule, and a
 # missing review reads exactly like a review that was done. Since ticket
 # 6cc34303 that rule is enforced rather than trusted:
 # `tests/unit/test_plan_index_repair_review_block.py` derives the reviewed set
 # from this block and fails if the constant below outruns it, or if a revision
 # is skipped between the first entry and the head.
-_REQUIRED_ALEMBIC_HEAD = "051"
+_REQUIRED_ALEMBIC_HEAD = "052"
 
 
 class RepairStore:

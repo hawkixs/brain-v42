@@ -44,6 +44,7 @@ class TestMetadataAndTablePresence:
             "features",
             "feature_artifacts",
             "access_log",
+            "access_log_daily",
             "consolidation_log",
             "indexed_plans",
             "indexed_plan_chunks",
