@@ -27,6 +27,8 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
+from tests.integration.disposable_db import repository_head
+
 pytestmark = pytest.mark.integration
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -233,7 +235,10 @@ class TestTheDowngradeIsAFence:
                     sa.text("SELECT count(*) FROM access_log_daily WHERE entity_id = :i"),
                     {"i": entity_id},
                 )
-            assert head == "052"
+            # DERIVED: a refused downgrade leaves the head where it was. Written
+            # as "052" this would fail the day 053 lands, for a reason that has
+            # nothing to do with what it tests — the 051 bench learned that today.
+            assert head == repository_head()
             assert still_there == 1
         finally:
             await _cleanup(engine, entity_id)
@@ -275,8 +280,10 @@ class TestTheDowngradeIsAFence:
         finally:
             # This bench shares its database. The fence fixture would restore the
             # head and SAY SO — that message is a defect report, not a service.
+            # `head`, never a literal: this bench shares its database with every
+            # test that runs after it.
             subprocess.run(
-                [sys.executable, "-m", "alembic", "upgrade", "052"],
+                [sys.executable, "-m", "alembic", "upgrade", "head"],
                 env={**os.environ, "POSTGRES_URL": db_url},
                 cwd=str(_PROJECT_ROOT),
                 capture_output=True,

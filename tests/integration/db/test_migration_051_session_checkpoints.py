@@ -25,6 +25,8 @@ import sqlalchemy as sa
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from tests.integration.disposable_db import repository_head
+
 pytestmark = pytest.mark.integration
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -286,7 +288,11 @@ async def test_the_downgrade_refuses_to_destroy_judgment_and_names_its_sessions(
                 ),
                 {"session_id": session_id},
             )
-        assert head == "051"
+        # DERIVED, not "051": a refused downgrade leaves the head where it was,
+        # and where it was is wherever the chain currently ends. Written as a
+        # literal this assertion started failing the day 052 landed, for a reason
+        # that had nothing to do with what it tests.
+        assert head == repository_head()
         assert still_there == 1
     finally:
         await _cleanup(engine, project_key)
@@ -332,8 +338,12 @@ async def test_the_named_opt_in_lets_a_deliberate_operator_through(
         assert head == "050"
         assert table_gone is None
     finally:
+        # `head`, not "051". This bench shares its database: restoring to a
+        # literal left every following test one revision behind, and the setup
+        # guard reported it as residue from an interrupted run — a true message
+        # pointing at the wrong cause.
         subprocess.run(
-            [sys.executable, "-m", "alembic", "upgrade", "051"],
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
             env={**os.environ, "POSTGRES_URL": INTEGRATION_DB_URL},
             cwd=str(_PROJECT_ROOT),
             capture_output=True,
