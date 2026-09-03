@@ -1,0 +1,52 @@
+# Chaîne ROADMAP — posée le 2026-09-03 05:45 CEST par le canari strict (mandat w46).
+#
+# OPTION B retenue. L'option A a ÉCHOUÉ le canari strict le même matin, sur les
+# mêmes dix batches réels :
+#   openai/gpt-oss-20b  (secours mistral-nemotron) : 9/10 portés, 34,3 s/batch,
+#     12 propositions, 343,65 s — ÉCARTÉ « pas 100 % porté par le candidat »
+#     (openai/gpt-oss-20b: TimeoutError sur le dixième, non rattrapé).
+#   nvidia/nemotron-3-super-120b-a12b (secours gpt-oss-20b) : 10/10 portés,
+#     26,2 s/batch, 15 propositions, 262,30 s, circuit fermé — PASS strict.
+# Canari joué à 05:34 et 05:40, PAS à minuit : learning 0e5ab979 (un PASS à
+# minuit ne dit rien de 06:00). Les deux canaris de la veille, à minuit, avaient
+# rendu 9/10 puis 6/10 sur l'option A — l'heure comptait bien.
+#
+# POURQUOI la bascule : le PRIMAIRE mistralai/mistral-nemotron est mort depuis
+# trois nuits (TimeoutError, circuit ouvert au batch 1) — 2026-09-01 et 09-02 ont
+# tourné 10/10 sur le SEUL secours. Ce fichier remplace un primaire mort, il ne
+# promeut pas un candidat spéculatif.
+#
+# ================= AVERTISSEMENT : CE FICHIER ARME L'AUTO-APPLY EN CAS DE FLIP WET =========
+# nvidia/nemotron-3-super-120b-a12b appartient à AUTO_APPLY_MODELS
+# (roadmap_curate.py:132, il EST DEFAULT_WET_ROADMAP_MODEL). Aujourd'hui c'est
+# inerte : le killswitch est DRY (BRAIN_DREAM_ROADMAP_DRY_RUN=true, mesuré
+# 2026-09-03 05:35), dream.sh:1238 ne passe --wet que si DRY_RUN != true, et les
+# trois usages d'AUTO_APPLY_MODELS (1399, 1421, 1554) sont gardés par args.wet.
+# MAIS : quiconque met BRAIN_DREAM_ROADMAP_DRY_RUN=false arme du même geste
+# l'auto-apply sur ce primaire — sans autre changement, et sans le canari WET
+# (fenêtres de 30 s) que roadmap_curate.py:118-127 exige d'abord.
+# Sous l'option A, ce flip aurait été REFUSÉ (« reste review-only »). Plus ici.
+# => AVANT tout passage WET : supprimer ce fichier, ou canaryer la paire en WET.
+# ==========================================================================================
+#
+# NOTE (même piège que le pont du 2026-08-29) : ces deux variables s'appliquent
+# aux DEUX régimes — roadmap_curate.py:1395-1398 et :1407 lisent l'env AVANT de
+# tester args.wet. Le secours WET des constantes (openai/gpt-oss-120b) est donc
+# masqué par gpt-oss-20b tant que ce fichier existe.
+#
+# PRÉCÉDENCE vérifiée avant écriture : ~/.config/brain-v42/nvidia.env ne porte que
+# BRAIN_NVIDIA_API_KEY (donc l'EnvironmentFile de nvidia.conf, chargé après ce
+# fichier dans l'ordre lexical, ne masque rien), et load_env_file() fait
+# os.environ.setdefault — l'environnement systemd bat le .env dans le processus.
+#
+# Migration 045 requise (nom à 33 caractères > varchar(30) d'origine) : VÉRIFIÉE
+# appliquée le 2026-09-03 — dream_runs.model = character varying(120), head 051.
+#
+# Valeurs antérieures : AUCUNE. Ces deux variables n'étaient posées nulle part ;
+# les modèles venaient des défauts du code.
+#
+# ROLLBACK : rm ~/.config/systemd/user/brain-v42-dream.service.d/models.conf \
+#            && systemctl --user daemon-reload
+[Service]
+Environment=BRAIN_NVIDIA_ROADMAP_MODEL=nvidia/nemotron-3-super-120b-a12b
+Environment=BRAIN_NVIDIA_ROADMAP_FALLBACK_MODEL=openai/gpt-oss-20b
