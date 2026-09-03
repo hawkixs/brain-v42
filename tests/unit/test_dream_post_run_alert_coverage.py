@@ -621,3 +621,60 @@ def test_the_cli_accepts_an_explicit_manifest(monkeypatch: pytest.MonkeyPatch) -
     )
     assert seen["phases_ok"] == 61
     assert seen["phases_skipped"] == 3
+
+
+# --- The fallback says WHAT IT CANNOT SAY, not only what it measured ---------
+#
+# Ticket `e30a1cec`, corrected on 2026-08-24. Its first half is FALSE and worth
+# repeating: the main path does NOT degrade silently -- it escalates to the
+# briefing and to `/metrics`, and stays fail-closed. What survives is one
+# residue: `coverage_fallback` NEVER returns 2, so a night that loses its
+# manifest stays green. That is deliberate, argued in the code, and pinned by a
+# test -- an observation failure must not become a night failure. These tests do
+# not touch it.
+#
+# What they close is the SILENCE, not the escalation. The reserve existed but
+# read as a scope note ("coverage limited to promote/reorg"), which a reader at
+# 7am can take for a clean night with a smaller perimeter. It now says the
+# verdict is not a completeness statement, and why.
+
+
+def test_the_fallback_reserve_says_the_verdict_is_not_a_completeness_statement() -> None:
+    """Measured: 26 nights `mode=manifest` since 2026-08-2x, ZERO in fallback.
+
+    The ticket targets the silence, not the frequency. A path that has never run
+    is exactly the one whose wording nobody will check on the morning it does.
+    """
+    warning = post_run_alert.FALLBACK_WARNING.lower()
+
+    assert "manifest" in warning, "la raison doit être nommée"
+    assert any(word in warning for word in ("not reliable", "unreliable", "cannot")), (
+        "la réserve doit dire que le verdict n'est PAS un constat de complétude"
+    )
+    assert "escalat" in warning, (
+        "le non-déclenchement est délibéré : il doit être LISIBLE dans le rapport, "
+        "pas seulement dans une docstring"
+    )
+
+
+def test_the_fallback_block_carries_no_count_to_be_read_as_clean() -> None:
+    """It cannot print `0 mismatch`: without a manifest there is nothing to count.
+
+    Pinned because the reserve alone is not enough — a reserve next to a row of
+    zeroes is read as the zeroes.
+    """
+    coverage = post_run_alert.coverage_fallback(expected=23, observed=62, missing=0)
+    block = "\n".join(coverage.block)
+
+    assert post_run_alert.FALLBACK_WARNING in block
+    assert "mismatch" not in block
+    assert coverage.verdict is None
+    assert coverage.escalates is False, "l'escalade du repli reste une DÉCISION, non tranchée ici"
+
+
+def test_the_manifest_block_does_not_carry_the_fallback_reserve() -> None:
+    """The counter-witness: a reserve printed every night would say nothing."""
+    manifest = _manifest(expected=(("promote", "red"),))
+    coverage = post_run_alert.coverage_from_manifest({("promote", "red")}, manifest)
+
+    assert post_run_alert.FALLBACK_WARNING not in "\n".join(coverage.block)

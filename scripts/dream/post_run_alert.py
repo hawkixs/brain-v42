@@ -233,8 +233,18 @@ INTERRUPTED_MESSAGE = (
     "the night never reached its closing block — this manifest is PARTIAL, "
     "so no green verdict is possible for it"
 )
+#: Ticket `e30a1cec`. The first wording said only what this path MEASURED —
+#: "coverage limited to promote/reorg" — which reads at 7am as a clean night with
+#: a smaller perimeter. It now says what it CANNOT say, and why. The
+#: non-escalation stays exactly as it was, deliberate and pinned by a test: a lost
+#: manifest is an observation failure, not a night failure. Making that choice
+#: visible in the report is the whole change; whether the fallback should escalate
+#: is an operator decision this line does not take.
 FALLBACK_WARNING = (
-    "manifest absent — expectations derived from the drop-in, coverage limited to promote/reorg"
+    "manifest absent — expectations derived from the drop-in, coverage limited to "
+    "promote/reorg. This verdict is NOT a completeness statement and cannot be read as "
+    "one: without a manifest an absent pair is undecidable, so this path deliberately "
+    "does not escalate. A green line here means UNMEASURED, not clean."
 )
 COVERAGE_HEADING = "### Couverture dream_runs"
 
