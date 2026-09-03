@@ -1,0 +1,16 @@
+{
+  "$comment": "Versions of the `vector` extension whose upgrade from the production label was PROVED harmless, not merely observed. Read by tests/integration/db/test_fresh_head_is_the_yardstick.py; guarded by tests/unit/test_proven_vector_versions.py. Adding a version means recording when it was proved and where to read the proof — a tolerated version and a proved one look identical inside a bare set.",
+  "origin_label": "0.8.2",
+  "versions": {
+    "0.8.4": {
+      "proved_on": "2026-08-23",
+      "sql_delta": "empty",
+      "reference": "brain ticket 2ed0d4e0, thread message 1: both upgrade scripts are 153-byte no-ops; exact search identical bit-for-bit over 40000 distances; HNSW cross-recall 8.75/10 against 8.60/10 for two rebuilds of the SAME version, so the version gap is smaller than the rebuild noise."
+    },
+    "0.8.5": {
+      "proved_on": "2026-09-03",
+      "sql_delta": "empty",
+      "reference": "orchestration/2026-09-03-brain-v42-autonome/reports/w44-9ec053b5-pgvector-085-differential-proof.md: the three upgrade scripts of the 0.8.2->0.8.3->0.8.4->0.8.5 chain are 153-byte no-ops; exact search (indexes off) over 60 probes x top-20 = 1200 distances is bit-identical between the 0.8.4 build and the 0.8.5 build, with a same-bias control (two separate containers of the SAME image, each with its own restore) returning the same md5."
+    }
+  }
+}
