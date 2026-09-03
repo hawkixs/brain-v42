@@ -18,6 +18,14 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 from brain_v42.config import Settings
+from brain_v42.documentation.claude_md_claims import (
+    NETWORK_BOUNDARY_CONTRACT,
+    SEC2_RESIDUALS_CONTRACT,
+    SHIM_LIMITS_CONTRACT,
+    fastmcp_contract,
+    mcp_transport_contract,
+    reranker_contract,
+)
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 README = (REPO_ROOT / "README.md").read_text()
@@ -1942,10 +1950,8 @@ def test_documented_transport_matches_default_and_production_client() -> None:
     assert json_block is not None
     documented_client = json.loads(json_block.group(1))["mcpServers"]["brain-v42"]
     assert documented_client == production
-    contract = (
-        f"**MCP transport**: production = HTTP loopback `{production_url}`; "
-        "configuration default and dev/fallback = `stdio`."
-    )
+    contract = mcp_transport_contract()
+    assert production_url in contract
     assert contract in README
     if CLAUDE:
         assert contract in CLAUDE
@@ -1966,7 +1972,8 @@ def test_documented_reranker_uses_unified_embedding_endpoint() -> None:
     assert reranker_default.rstrip("/") == embedding_default.rstrip("/")
     port = urlsplit(reranker_default).port
     assert port is not None
-    contract = f"unified embedding endpoint `:{port}/rerank`"
+    contract = reranker_contract()
+    assert str(port) in contract
 
     assert contract in README
     if CLAUDE:
@@ -2014,43 +2021,13 @@ def test_documented_network_boundary_matches_tracked_bindings() -> None:
     for field_name in ("mcp_http_host", "metrics_host", "automation_host"):
         assert Settings.model_fields[field_name].default in LOOPBACK_HOSTS
 
-    target_contract = (
-        "**Tracked network boundary** (replayed 2026-08-23): MCP, PostgreSQL and Neo4j bind to "
-        "loopback; metrics and automation default to loopback. The versioned Compose target "
-        "binds the embedding host publish to loopback and the live runtime matches it — "
-        "measured `127.0.0.1:8003`, with the host's own LAN address refusing the connection. "
-        "Application bearer authentication is armed and enforcing: `MCP_HTTP_TOKEN` is set and "
-        "non-empty in the live server process, and `POST /mcp` answers `401` both without a "
-        "bearer and with a wrong one. The dedicated Docker client network exists and carries "
-        "the clients: `brain-net` holds the embedding shim and both `auto-discord` containers. "
-        "Repository-managed WAN isolation remains unproven — the repository manages no "
-        "firewall rule at all. What would make this paragraph false again, and is watched by "
-        "no test: a host-publish override reopening `:8003`, or `MCP_HTTP_TOKEN` cleared. "
-        "`METRICS_HOST` has LEFT that list: since 2026-09-03 (`6c61b63`) a fail-closed "
-        "validator refuses a non-loopback bind unless `METRICS_ALLOW_NON_LOOPBACK` names the "
-        "decision, and under that opt-in the three POST receivers stay unregistered and say "
-        "so on `/healthz`. Re-measure with `ss -ltnp`, "
-        "`docker port` and an unauthenticated `POST /mcp` — do not copy this line forward."
-    )
-    limits_contract = (
-        "**Embedding shim limits (ROLLED OUT 2026-08-21, temps 1)**: 8 MiB body, 5 s body-read "
-        "timeout, 8 concurrent ingress reads, 100 embed texts, 128 rerank candidates, maximum "
-        "JSON depth 64, one embedding calculation and one rerank calculation per worker. "
-        "Saturation returns short `503` JSON with `Retry-After: 1`."
-    )
-    residual_contract = (
-        "**SEC2 residuals** (replayed 2026-08-23): bearer authentication and the dedicated "
-        "Docker client network are done — the coordinated `auto-discord` cutover happened, and "
-        "both `auto-discord` containers sit on `brain-net`. One residual stands, and it is "
-        "wider than previously written: the versioned legacy PyTorch profile remains unbounded "
-        "— `services/embedding/main.py` carries no body cap, no read deadline, no concurrency "
-        "semaphore and no `413`/`503` — and it preserves neither of the two DNS names its "
-        "clients use. A `--profile legacy` rollback publishes `embedding` and "
-        "`brain_v42_embedding` on `brain-net`, while the compose sets "
-        "`EMBEDDING_URL=http://embedding-shim:8003` and the running bot, carrying no "
-        "`EMBEDDING_URL` of its own, falls back to the code default "
-        "`http://brain_v42_embedding_shim:8003`. Two names break, not one."
-    )
+    # The three operator-facing paragraphs live in
+    # `brain_v42.documentation.claude_md_claims` and are IMPORTED here, not
+    # retyped: the morning report replays the same fragments (ticket 87ac8b7a),
+    # and two copies of one sentence is the drift this contract exists to catch.
+    target_contract = NETWORK_BOUNDARY_CONTRACT
+    limits_contract = SHIM_LIMITS_CONTRACT
+    residual_contract = SEC2_RESIDUALS_CONTRACT
     # The full three-contract detail moved to docs/OPERATIONS.md when README
     # was replaced by the open-source-facing draft (ticket bdc4db73):
     # README's own Network trust model section keeps a shorter summary, not
@@ -2077,9 +2054,11 @@ def test_documented_network_boundary_matches_tracked_bindings() -> None:
 def test_documented_fastmcp_major_matches_lock() -> None:
     major = _locked_version("fastmcp").split(".", maxsplit=1)[0]
 
-    assert f"FastMCP {major}.x" in README
+    contract = fastmcp_contract()
+    assert major in contract
+    assert contract in README
     if CLAUDE:
-        assert f"FastMCP {major}.x" in CLAUDE
+        assert contract in CLAUDE
 
 
 def test_graph_cutover_summary_matches_authoritative_runbook() -> None:
