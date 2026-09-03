@@ -195,63 +195,6 @@ class PgAccessLogRepo:
         )
         return aggregated
 
-    async def aggregate_and_flush(
-        self,
-    ) -> dict[tuple[str, UUID], dict[str, Any]]:
-        """Aggregate access_log rows and delete them.
-
-        .. deprecated::
-            Use :meth:`aggregate_in_session` instead.  This method opens its
-            own session and commits before the caller has updated entities,
-            creating a window where a crash loses access counts permanently.
-            Kept for backward-compatibility during the transition period.
-
-        Returns dict keyed by (entity_type, entity_id) with values:
-            {"max_accessed": datetime, "count": int}
-        """
-        async with self._session_factory() as session:
-            # 1. Capture snapshot boundary
-            max_id_result = await session.execute(sa.select(sa.func.max(access_log.c.id)))
-            max_id = max_id_result.scalar_one_or_none()
-            if max_id is None:
-                return {}
-
-            # 2. Aggregate only snapshotted rows
-            stmt = (
-                sa.select(
-                    access_log.c.entity_type,
-                    access_log.c.entity_id,
-                    sa.func.max(access_log.c.accessed_at).label("max_accessed"),
-                    sa.func.count().label("cnt"),
-                )
-                .where(access_log.c.id <= max_id)
-                .group_by(access_log.c.entity_type, access_log.c.entity_id)
-            )
-            result = await session.execute(stmt)
-            rows = result.mappings().all()
-
-            if not rows:
-                return {}
-
-            # 3. Build result dict
-            aggregated: dict[tuple[str, UUID], dict[str, Any]] = {}
-            for row in rows:
-                key = (row["entity_type"], row["entity_id"])
-                aggregated[key] = {
-                    "max_accessed": row["max_accessed"],
-                    "count": row["cnt"],
-                }
-
-            # 4. Delete only snapshotted rows
-            await session.execute(sa.delete(access_log).where(access_log.c.id <= max_id))
-            await session.commit()
-
-            logger.debug(
-                "access_log.aggregated",
-                entities=len(aggregated),
-            )
-            return aggregated
-
     async def purge_old(self, days: int = 30) -> None:
         """Delete access_log entries older than N days."""
         cutoff = datetime.now(tz=UTC) - timedelta(days=days)
