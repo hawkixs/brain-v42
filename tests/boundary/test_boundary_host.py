@@ -190,6 +190,14 @@ def test_claim_7_the_repository_manages_no_firewall_rule() -> None:
         "grep",
         "-lIE",
         "iptables|nftables|ufw enable|firewall-cmd",
+        # `:!` excludes THIS file. The probe carries the pattern as a literal, so
+        # it matched itself the moment it stopped being untracked and `git grep`
+        # could see it — green while unstaged, red one commit later. A census
+        # that scans its own pattern definition is the same defect class as a
+        # guard sharing its alarm's blind spot.
+        "--",
+        ".",
+        ":!tests/boundary/test_boundary_host.py",
     ).split()
 
     assert not hits, f"le dépôt gère une règle de pare-feu : {hits}"
@@ -219,3 +227,117 @@ def test_claim_9_the_metrics_bind_is_loopback_and_now_guarded(
 
     with pytest.raises(ValueError):
         Settings(metrics_host="0.0.0.0")  # noqa: S104 - exactly what must be refused
+
+
+#: The boolean deciding whether dream nights run SCOPED or on an ADMIN token.
+#: Its value is not a secret — the ticket says so — and only this one line is
+#: ever read out of the file that holds it.
+_CAPABILITY_FLAG = "BRAIN_DREAM_CAPABILITY_ENFORCEMENT"
+
+
+def _socket_owner_pid(port: int) -> str:
+    """The pid HOLDING the port, read from `ss -ltnp`.
+
+    Deliberately not `pgrep`. On 2026-09-03 `pgrep -f 'brain_v42.mcp' | head -1`
+    returned a pid that had already died, whose `/proc/<pid>/environ` could not be
+    read, and taking that for "the flag is absent" pointed at a disarmed server
+    that was in fact armed. A socket has exactly one owner; a name pattern has as
+    many as the host happens to carry.
+    """
+    for line in _run("ss", "-ltnp").splitlines():
+        fields = line.split()
+        if len(fields) < 4 or not fields[3].endswith(f":{port}"):
+            continue
+        match = re.search(r"pid=(\d+)", line)
+        if match:
+            return match.group(1)
+    pytest.fail(f"personne ne détient :{port} — l'affirmation n'est pas vérifiable")
+
+
+def _systemctl_show(unit: str, prop: str) -> str:
+    """`systemctl --user show`, with the session bus supplied rather than assumed.
+
+    A user manager is reachable only through `XDG_RUNTIME_DIR` and
+    `DBUS_SESSION_BUS_ADDRESS`, which pytest does not inherit from an interactive
+    shell. Without them `systemctl --user` returns an EMPTY string and exits 0 --
+    so a check reading it would find no EnvironmentFile and conclude the units
+    share nothing, which is the false-negative this helper removes. Derived from
+    the running uid, never from the caller's environment.
+    """
+    uid = os.getuid()
+    env = {
+        **os.environ,
+        "XDG_RUNTIME_DIR": f"/run/user/{uid}",
+        "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{uid}/bus",
+    }
+    result = subprocess.run(
+        ["systemctl", "--user", "show", unit, "-p", prop],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+        env=env,
+    )
+    return result.stdout
+
+
+def test_claim_10_the_server_holding_8765_enforces_the_capability_scope() -> None:
+    """The dream capability scope is ARMED in the process that actually serves.
+
+    Learning `f5686a04`: `systemctl show -p Environment` renders ONLY `Environment=`
+    directives, never the contents of an `EnvironmentFile=`. Measured on
+    2026-09-03, BOTH units report zero matching lines while the live server holds
+    the flag at `true`. So this assertion cannot be written against unit files,
+    and one that is would read green on a disarmed server.
+
+    What it protects: the flag lives in a secrets file nobody reviews, and a
+    botched registry rotation would drop it at the same instant as the bearers.
+    The code default is `False` = ADMIN token, so its disappearance is SILENT and
+    widens a night from a scoped 27% of the corpus to all of it.
+    """
+    pid = _socket_owner_pid(MCP_PORT)
+    environ = Path(f"/proc/{pid}/environ").read_bytes().decode("utf-8", "replace")
+
+    values = re.findall(rf"(?:^|\x00){_CAPABILITY_FLAG}=([^\x00]*)", environ)
+
+    assert values, (
+        f"{_CAPABILITY_FLAG} absent du process qui sert :{MCP_PORT} (pid {pid}) — "
+        "les nuits dream repartiraient en jeton ADMIN"
+    )
+    assert values[-1].strip().lower() == "true", (
+        f"{_CAPABILITY_FLAG} vaut {values[-1]!r} dans le process qui sert :{MCP_PORT}"
+    )
+
+
+def test_claim_10b_the_dream_unit_reads_the_same_environment_file() -> None:
+    """The two units must share the file that DEFINES the flag.
+
+    The MCP server enforces the scope; the dream phases pick their per-phase
+    token. They agree only because ONE file is listed by both. Moving the key to
+    a dream-only drop-in would disarm the server while looking like a cleanup —
+    the trap ticket `9e1a2b39` names, and the reason this second assertion exists.
+    """
+
+    def files(unit: str) -> set[str]:
+        raw = _systemctl_show(unit, "EnvironmentFiles")
+        return set(re.findall(r"(/\S+?)\s*\(ignore_errors=", raw))
+
+    mcp_files = files("brain-mcp-http.service")
+    dream_files = files("brain-v42-dream.service")
+    assert mcp_files, "impossible de lire les EnvironmentFiles de brain-mcp-http"
+
+    defining = {
+        path
+        for path in mcp_files
+        if Path(path).is_file()
+        and any(
+            line.startswith(f"{_CAPABILITY_FLAG}=")
+            for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+        )
+    }
+
+    assert defining, f"aucun EnvironmentFile de brain-mcp-http ne définit {_CAPABILITY_FLAG}"
+    assert defining & dream_files, (
+        f"le fichier qui définit {_CAPABILITY_FLAG} ({sorted(defining)}) n'est pas lu par "
+        "brain-v42-dream : les deux unités divergeraient en silence"
+    )
