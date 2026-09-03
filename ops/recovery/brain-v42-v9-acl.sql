@@ -148,6 +148,6 @@ SELECT jsonb_build_object(
      ORDER BY id
  ),
  'contract_id', 'brain-v42/postgresql-recovery/v9-acl',
- 'schema_version', 8
+ 'schema_version', 9
 )::text
 FROM check_rows;

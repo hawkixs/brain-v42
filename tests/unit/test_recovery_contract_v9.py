@@ -232,6 +232,13 @@ def test_the_acl_assets_differ_from_v8_only_by_their_identity() -> None:
         rebuilt = old.read_text(encoding="utf-8").replace("/v8", "/v9")
         rebuilt = rebuilt.replace('"schema_version": 8', '"schema_version": 9')
         rebuilt = rebuilt.replace('"schema_version":8', '"schema_version":9')
+        # The SQL form too, and it was MISSING. This assertion was written from
+        # the mint script rather than from the convention, so it reproduced the
+        # mint's own gap: the `.sql` assets carry `'schema_version', N` in
+        # jsonb_build_object syntax, which no JSON-shaped replace can reach. The
+        # live attestation of 2026-09-03 is what caught it — the receipt came
+        # back reading `contract_id v9-acl` next to `schema_version 8`.
+        rebuilt = rebuilt.replace("'schema_version', 8", "'schema_version', 9")
         assert new.read_text(encoding="utf-8") == rebuilt, (
             f"{new.name} differs from {old.name} by more than its identity"
         )
