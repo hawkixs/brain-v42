@@ -236,6 +236,7 @@ class MetricsServer:
         graph_svc: Any | None = None,
         codex_registry: ClientActivityRegistry | None = None,
         nonloopback_posture: str = "silent",
+        allow_non_loopback: bool = False,
     ) -> None:
         self._collector = collector
         self._embedding_svc = embedding_svc
@@ -253,11 +254,17 @@ class MetricsServer:
         self._cockpit: CockpitCollector | None = None
         self._rejection_counters = ReceiverRejectionCounters()
         self._nonloopback_posture = nonloopback_posture
+        self._allow_non_loopback = allow_non_loopback
 
     def _build_app(self) -> web.Application:
         app = web.Application()
         app.router.add_get("/metrics", self._handle_metrics)
         app.router.add_get("/api/cockpit", self._handle_cockpit)
+        # Always registered, including on a bind that has no receivers: it is the
+        # ONLY place a monitor can read that they are missing. The startup line
+        # below says it once, to whoever reads a boot; nobody greps a log to build
+        # an alert.
+        app.router.add_get("/healthz", self._handle_healthz)
         if _is_loopback_bind(self._host):
             app.router.add_post("/v1/logs", self._handle_codex_logs)
             app.router.add_post("/v1/logs/claude", self._handle_claude_logs)
@@ -273,10 +280,16 @@ class MetricsServer:
                 "them. Bind loopback, or choose the posture that says so "
                 "(warn) or the historical silence (silent)."
             )
-        elif self._nonloopback_posture == "warn":
-            # Posture (2): same surface as the historical silence, but the
-            # sacrifice IS SAID — one line, at startup, never per request (the
-            # per-request refusal comes from the router, invisible from here).
+        elif self._allow_non_loopback or self._nonloopback_posture == "warn":
+            # Said once, at startup, never per request — the per-request refusal
+            # comes from the router and is invisible from here.
+            #
+            # Two ways in, and the first is the one that matters now. The OPT-IN
+            # (eac03668, arbitrated 2026-09-03): a non-loopback bind is refused by
+            # `Settings` unless someone named `METRICS_ALLOW_NON_LOOPBACK`, so
+            # reaching here means they did — and what they bought has to be said.
+            # The `warn` POSTURE remains for the deployment that pinned it before
+            # the arbitration; production is one of them.
             logger.warning(
                 "metrics_server.receivers_disabled_non_loopback",
                 host=self._host,
@@ -296,6 +309,24 @@ class MetricsServer:
                 )
             app.router.add_post("/gitlab/webhook", self._handle_webhook)
         return app
+
+    async def _handle_healthz(self, _request: web.Request) -> web.Response:
+        """Whether the three POST receivers are being served, in one field.
+
+        `ingest_receivers` is the thing an operator cannot otherwise observe: on a
+        non-loopback bind the routes are absent, so their clients get router 404s
+        that no access log and no rejection counter of this process ever sees. A
+        log line at startup is not readable by a monitor; this is.
+
+        The bind address is deliberately NOT echoed: this endpoint is served on
+        the very bind it describes, including a LAN one.
+        """
+        return web.json_response(
+            {
+                "status": "ok",
+                "ingest_receivers": ("enabled" if _is_loopback_bind(self._host) else "disabled"),
+            }
+        )
 
     async def _handle_bounded_receiver(
         self,

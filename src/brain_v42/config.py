@@ -27,10 +27,28 @@ from pydantic import (
     Field,
     SecretStr,
     StringConstraints,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _is_loopback_host(value: str | None) -> bool:
+    """The one definition every bind and every egress URL of this file shares.
+
+    Four validators carried the same literal set inline. Four copies of a
+    security predicate drift the day one of them learns something -- and the one
+    that did NOT learn it is the one nobody notices.
+
+    Deliberately stricter than `metrics.server._is_loopback_bind`, which accepts
+    all of 127.0.0.0/8 and IPv4-mapped IPv6. The difference is fail-closed in the
+    safe direction: `127.0.0.2` is refused here and would be treated as loopback
+    there, so it needs the opt-in. Unifying the two is a separate lot -- widening
+    a security predicate is not a tidy-up.
+    """
+    return value in {"127.0.0.1", "localhost", "::1"}
+
 
 # pgvector 0.8.2 refuses an HNSW index on a column wider than this
 # ("column cannot have more than 2000 dimensions for hnsw index"), and every
@@ -215,10 +233,28 @@ class Settings(BaseSettings):
     )
     """Secret JSON registry for phase-scoped Dream HTTP bearer tokens."""
 
+    @field_validator("metrics_host")
+    @classmethod
+    def _metrics_bind_is_loopback_unless_opted_in(cls, v: str, info: ValidationInfo) -> str:
+        """A LAN bind is a decision, so it has to be written down somewhere.
+
+        Fail-closed and NAMED: the message carries the setting that refused and
+        the setting that reopens it, because a refusal that sends people to the
+        source is a refusal they work around.
+        """
+        if _is_loopback_host(v) or info.data.get("metrics_allow_non_loopback"):
+            return v
+        raise ValueError(
+            f"METRICS_HOST must be loopback (got {v!r}): a non-loopback bind serves "
+            "/metrics and /api/cockpit to the network while silently dropping the three "
+            "POST receivers, whose refusal the access log cannot see. Set "
+            "METRICS_ALLOW_NON_LOOPBACK=yes to take that trade deliberately."
+        )
+
     @field_validator("mcp_http_host")
     @classmethod
     def _loopback_only(cls, v: str) -> str:
-        if v not in {"127.0.0.1", "localhost", "::1"}:
+        if not _is_loopback_host(v):
             raise ValueError(
                 f"mcp_http_host must be loopback (got {v!r}); bind-0.0.0.0 is forbidden"
             )
@@ -231,6 +267,24 @@ class Settings(BaseSettings):
     # real consumers (red-monitor) are local; the GitLab webhook that justified
     # the LAN bind is off. Overridable through METRICS_HOST on revival (docker
     # gateway) — deliberately no loopback-only validator.
+    metrics_allow_non_loopback: bool = Field(
+        default=False, validation_alias=_brain_alias("METRICS_ALLOW_NON_LOOPBACK")
+    )
+    """The opt-in that reopens a non-loopback metrics bind (eac03668).
+
+    `metrics_host` was the only bind in this repository with no validator at all,
+    on a comment dated 2026-07-04 anticipating a docker-gateway revival. The
+    revival never came and the hole stayed: a LAN bind started happily, dropped
+    its three POST receivers, and their refusal came from the aiohttp router
+    upstream of anything that could log it.
+
+    Closed by default, reopened by NAME. It governs the BIND and never the
+    receivers: with the opt-in the process starts, the receivers stay absent, and
+    both `/healthz` and one startup line say so. It COMPOSES with
+    `metrics_nonloopback_posture` rather than replacing it -- this is the outer
+    gate, the posture is what happens once through it."""
+    # DECLARED BEFORE `metrics_host`: its validator reads this through `info.data`,
+    # which pydantic fills in field-definition order.
     metrics_host: str = Field(default="127.0.0.1", validation_alias=_brain_alias("METRICS_HOST"))
     # Posture for a NON-loopback bind (eac03668). On such a bind the three POST
     # receivers are not registered and the refusal comes from the aiohttp router,
@@ -333,7 +387,7 @@ class Settings(BaseSettings):
         if parsed.scheme not in {"http", "https"}:
             raise ValueError(f"client_activity_url must be http(s) (got scheme {parsed.scheme!r})")
         host = parsed.hostname
-        if host not in {"127.0.0.1", "localhost", "::1"}:
+        if not _is_loopback_host(host):
             # Only the host is copied over: a URL can carry credentials.
             raise ValueError(
                 f"client_activity_url must be loopback (got {host!r}); off-host egress is forbidden"
@@ -369,7 +423,7 @@ class Settings(BaseSettings):
         if parsed.scheme not in {"http", "https"}:
             raise ValueError(f"otel_endpoint must be http(s) (got scheme {parsed.scheme!r})")
         host = parsed.hostname
-        if host not in {"127.0.0.1", "localhost", "::1"}:
+        if not _is_loopback_host(host):
             # Only the host is copied over: a URL can carry credentials.
             raise ValueError(
                 f"otel_endpoint must be loopback (got {host!r}); off-host egress is forbidden"
@@ -393,7 +447,7 @@ class Settings(BaseSettings):
     @field_validator("automation_host")
     @classmethod
     def _automation_loopback_only(cls, v: str) -> str:
-        if v not in {"127.0.0.1", "localhost", "::1"}:
+        if not _is_loopback_host(v):
             raise ValueError(
                 f"automation_host must be loopback (got {v!r}); non-loopback binds are forbidden"
             )
