@@ -2025,8 +2025,11 @@ def test_documented_network_boundary_matches_tracked_bindings() -> None:
         "the clients: `brain-net` holds the embedding shim and both `auto-discord` containers. "
         "Repository-managed WAN isolation remains unproven — the repository manages no "
         "firewall rule at all. What would make this paragraph false again, and is watched by "
-        "no test: a host-publish override reopening `:8003`, `METRICS_HOST` set off-loopback "
-        "(no validator guards it), or `MCP_HTTP_TOKEN` cleared. Re-measure with `ss -ltnp`, "
+        "no test: a host-publish override reopening `:8003`, or `MCP_HTTP_TOKEN` cleared. "
+        "`METRICS_HOST` has LEFT that list: since 2026-09-03 (`6c61b63`) a fail-closed "
+        "validator refuses a non-loopback bind unless `METRICS_ALLOW_NON_LOOPBACK` names the "
+        "decision, and under that opt-in the three POST receivers stay unregistered and say "
+        "so on `/healthz`. Re-measure with `ss -ltnp`, "
         "`docker port` and an unauthenticated `POST /mcp` — do not copy this line forward."
     )
     limits_contract = (
