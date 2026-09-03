@@ -117,11 +117,39 @@ DEGRADED_CAUSE_CHARS = 240
 # A row whose sentence no longer matches is still listed, with its raw message:
 # a reader that dropped it would turn a producer-side rewording into a blind
 # morning, which is the defect being closed here.
-_DEGRADED_SHAPE = re.compile(
-    r"(?P<fallback>\d+)/(?P<scanned>\d+)\s+batches"
-    r".*?le primaire\s+(?P<primary>\S+)\s+n'a pas répondu\s+—\s+(?P<cause>.+)",
-    re.DOTALL,
+# TWO shapes, because there are two producers and they refuse to share a wording.
+# `roadmap` reports a RATIO of batches and falls back when its primary does not
+# ANSWER — it may answer next time. `extract` reports a COUNT of tickets, with no
+# denominator, and falls back because its primary was WITHDRAWN (404/410): it is
+# gone and is not coming back. 89e37c8 states the refusal explicitly — "neither
+# borrows the other's word to fit a shared regex" — so the reader learns both
+# rather than flattening them into one. Order matters only for readability: the
+# two cannot match the same sentence.
+_DEGRADED_SHAPES = (
+    re.compile(
+        r"(?P<fallback>\d+)/(?P<scanned>\d+)\s+(?P<unit>batches)"
+        r".*?le primaire\s+(?P<primary>\S+)\s+n'a pas répondu\s+—\s+(?P<cause>.+)",
+        re.DOTALL,
+    ),
+    re.compile(
+        r"(?P<scanned>\d+)\s+(?P<unit>tickets)\s+servis"
+        r".*?le primaire\s+(?P<primary>\S+)\s+a été retiré\s+—\s+(?P<cause>.+)",
+        re.DOTALL,
+    ),
 )
+
+#: How the primary failed, per shape. Rendering "muet" for a WITHDRAWN model
+#: would be the same defect as borrowing its unit: it would send the operator
+#: looking for a slow model instead of a removed one.
+_PRIMARY_STATE = {"batches": "muet", "tickets": "retiré"}
+
+
+def _degraded_match(message: str) -> re.Match[str] | None:
+    for shape in _DEGRADED_SHAPES:
+        match = shape.search(message)
+        if match is not None:
+            return match
+    return None
 
 
 @dataclass(frozen=True)
@@ -136,6 +164,10 @@ class DegradedPhase:
     fallback_batches: int | None = None
     scanned: int | None = None
     cause: str | None = None
+    #: The producer's OWN word for what it counted — `batches` or `tickets`.
+    #: `None` means the sentence matched no known shape, and the rubric then
+    #: prints it raw rather than guessing a unit.
+    unit: str | None = None
 
 
 def _is_degraded(row: Mapping[str, object]) -> bool:
@@ -157,7 +189,7 @@ def degraded_rows(rows: Iterable[Mapping[str, object]]) -> list[DegradedPhase]:
             continue
         message = str(row["error_message"])
         served = row.get("model")
-        match = _DEGRADED_SHAPE.search(message)
+        match = _degraded_match(message)
         degraded.append(
             DegradedPhase(
                 phase=str(row.get("phase", "?")),
@@ -165,8 +197,13 @@ def degraded_rows(rows: Iterable[Mapping[str, object]]) -> list[DegradedPhase]:
                 message=message,
                 served_model=str(served) if served else None,
                 primary_model=match.group("primary") if match else None,
-                fallback_batches=int(match.group("fallback")) if match else None,
+                fallback_batches=(
+                    int(match.group("fallback"))
+                    if match and "fallback" in match.groupdict()
+                    else None
+                ),
                 scanned=int(match.group("scanned")) if match else None,
+                unit=match.group("unit") if match else None,
                 cause=match.group("cause").strip() if match else None,
             )
         )
@@ -368,12 +405,23 @@ def _detail_line(row: dict) -> str:
 
 def _degraded_detail_line(degraded: DegradedPhase) -> str:
     project = degraded.project_key or GLOBAL_PHASE_PROJECT_KEY
-    if degraded.fallback_batches is None:
+    if degraded.unit is None:
         return f"- {degraded.phase} [{project}] : {degraded.message[:DEGRADED_CAUSE_CHARS]}"
+    if degraded.fallback_batches is None:
+        # A COUNT with no denominator. Printing `None/19` would invent a ratio
+        # its producer deliberately does not report.
+        served_only = degraded.served_model or "(modèle de secours non enregistré)"
+        state_only = _PRIMARY_STATE.get(degraded.unit, "hors service")
+        return (
+            f"- {degraded.phase} [{project}] : {degraded.scanned} {degraded.unit} "
+            f"au SECOURS {served_only} — primaire {degraded.primary_model} {state_only}"
+        )
     served = degraded.served_model or "(modèle de secours non enregistré)"
+    unit = degraded.unit or "unités"
+    state = _PRIMARY_STATE.get(degraded.unit or "", "hors service")
     return (
         f"- {degraded.phase} [{project}] : {degraded.fallback_batches}/{degraded.scanned} "
-        f"batches au SECOURS {served} — primaire {degraded.primary_model} muet"
+        f"{unit} au SECOURS {served} — primaire {degraded.primary_model} {state}"
     )
 
 

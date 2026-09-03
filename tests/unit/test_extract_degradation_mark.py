@@ -127,12 +127,20 @@ class TestTheStoredFormMatchesTheOtherRail:
         assert degraded.phase == "extract"
         assert degraded.served_model == STANDBY
 
-    def test_the_rubric_renders_the_whole_sentence(self) -> None:
-        """The structured ratio is not parsed -- the reader's regex says `batches`.
+    def test_the_rubric_renders_the_parsed_ticket_count(self) -> None:
+        """INVERTED on 2026-09-03: the reader now knows this shape.
 
-        Stated rather than hidden: the operator sees the full sentence, and
-        teaching `_DEGRADED_SHAPE` the word `tickets` is a reader-side follow-up,
-        outside this lot's surface.
+        This test used to pin the opposite -- "the structured ratio is not
+        parsed, the reader's regex says `batches`" -- and named the follow-up it
+        was waiting for. That follow-up landed, so the pin turns over rather than
+        disappearing: a deleted test would have left the new behaviour unheld,
+        and the reason this sentence is readable at all would have gone with it.
+
+        `fallback_batches` stays `None`, and the assertion below stays -- but its
+        REASON changed completely. It was "nobody parses this"; it is now "this
+        producer reports a COUNT and has no denominator to report". Same value,
+        opposite meaning, which is exactly why the message had to be rewritten
+        along with the name.
         """
         notice = _degradation_notice(
             primary=WITHDRAWN, fallback=STANDBY, switched=True, scanned=19, cause="HTTP 410"
@@ -151,7 +159,14 @@ class TestTheStoredFormMatchesTheOtherRail:
         block = "\n".join(post_run_alert.build_degraded_block(dt.date(2026, 8, 21), [degraded]))
         assert "extract" in block
         assert WITHDRAWN in block
-        assert degraded.fallback_batches is None, "the ticket ratio is not parsed today"
+        assert degraded.unit == "tickets", "le lecteur doit nommer l'unité du producteur"
+        assert degraded.scanned == 19
+        assert "19 tickets" in block
+        assert "batches" not in block, "extract ne compte pas des batches"
+        assert degraded.fallback_batches is None, (
+            "extract rapporte un COMPTE : il n'a pas de dénominateur, ce n'est plus "
+            "un défaut de parsing"
+        )
 
 
 class TestTheWriterCarriesItToTheColumn:
