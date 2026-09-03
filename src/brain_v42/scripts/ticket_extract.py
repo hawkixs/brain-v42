@@ -783,6 +783,39 @@ def _exit_code(*, timed_out: int, any_failed: bool, deferred: int, hard_failed: 
     return 4 if deferred else 0
 
 
+def thinking_tokens_from_usage(usage: dict[str, Any] | None) -> int:
+    """The provider's reasoning-token count, or 0 -- never ``None``.
+
+    Migration 049 added `dream_runs.thinking_tokens`, and on the first night it
+    could have written it stayed NULL on every `extract/*` and `roadmap/*` row:
+    the codex/agy parser rail fills it, the NVIDIA rail never did.
+
+    NULL is the wrong value here. It reads "not measured", when what is true is
+    "measured, and this provider reports none" -- and the two are the distinction
+    the 049 series exists to preserve elsewhere. So the honest value is 0.
+
+    But a hard-coded 0 would still be 0 the day the provider starts reporting a
+    count, so this READS instead of assuming, in the two shapes an
+    OpenAI-compatible API uses: `usage.reasoning_tokens`, and
+    `usage.completion_tokens_details.reasoning_tokens`. Measured 2026-09-03:
+    neither appears in any dream log, and this repository reads only
+    `prompt_tokens` and `completion_tokens` from the NVIDIA usage -- so 0 is
+    today's true answer, and it will stop being 0 on its own.
+
+    Anything unusable -- absent, null, negative, not a number -- is 0, because a
+    telemetry column must never be the reason a phase raises.
+    """
+    if not isinstance(usage, dict):
+        return 0
+    candidate: Any = usage.get("reasoning_tokens")
+    if candidate is None:
+        details = usage.get("completion_tokens_details")
+        candidate = details.get("reasoning_tokens") if isinstance(details, dict) else None
+    if isinstance(candidate, bool) or not isinstance(candidate, int | float):
+        return 0
+    return max(0, int(candidate))
+
+
 async def record_dream_run(
     session_factory: Any,
     status: str,
@@ -790,6 +823,7 @@ async def record_dream_run(
     duration_s: float,
     error: str | None,
     model: str | None = None,
+    thinking_tokens: int = 0,
 ) -> None:
     """INSERT dream_runs row for phase='extract'. Best-effort — never raises.
 
@@ -811,9 +845,10 @@ async def record_dream_run(
                     sa.text(
                         "INSERT INTO dream_runs "
                         "(run_date, phase, status, duration_s, error_message, "
-                        "project_key, phase_dry_run, model) "
+                        "project_key, phase_dry_run, model, thinking_tokens) "
                         "VALUES (:run_date, 'extract', :status, :duration_s, "
-                        ":error_message, :project_key, :phase_dry_run, :model)"
+                        ":error_message, :project_key, :phase_dry_run, :model, "
+                        ":thinking_tokens)"
                     ),
                     {
                         "run_date": date.today(),
@@ -823,6 +858,9 @@ async def record_dream_run(
                         "project_key": GLOBAL_PHASE_PROJECT_KEY,
                         "phase_dry_run": dry,
                         "model": model,
+                        # An INTEGER, never NULL: this rail measures, and "this
+                        # provider reports no reasoning" is 0, not "unmeasured".
+                        "thinking_tokens": thinking_tokens,
                     },
                 )
     except Exception as exc:
