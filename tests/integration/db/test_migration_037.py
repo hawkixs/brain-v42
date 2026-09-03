@@ -18,13 +18,23 @@ from sqlalchemy.ext.asyncio import create_async_engine
 pytestmark = pytest.mark.integration
 
 _PROJECT_ROOT = Path(__file__).parents[3]
-_DB_URL = os.environ.get("BRAIN_V42_TEST_DB_URL", "")
+
+
+def _db_url() -> str:
+    """Read at CALL time, never at import.
+
+    A module-level capture binds during collection, before the session fixture in
+    `tests/integration/db/conftest.py` points this directory at its own disposable
+    database — and this module would keep downgrading the SHARED one. Ticket
+    f7af0977 measured what that costs: 77 dropped columns per decay table per run.
+    """
+    return os.environ["BRAIN_V42_TEST_DB_URL"]
 
 
 def _run_alembic(args: list[str], *, succeeds: bool = True) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         [sys.executable, "-m", "alembic", *args],
-        env={**os.environ, "POSTGRES_URL": _DB_URL},
+        env={**os.environ, "POSTGRES_URL": _db_url()},
         cwd=str(_PROJECT_ROOT),
         capture_output=True,
         text=True,
@@ -42,7 +52,7 @@ def _sql(
     params: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     async def execute() -> list[dict[str, Any]]:
-        engine = create_async_engine(_DB_URL)
+        engine = create_async_engine(_db_url())
         try:
             async with engine.begin() as connection:
                 result = await connection.execute(sa.text(statement), params or {})
@@ -338,7 +348,7 @@ def test_the_advisory_lock_actually_serializes_two_holders() -> None:
 
     from tests.integration.conftest import _MIGRATION_ADVISORY_LOCK_KEY
 
-    dsn = _DB_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
+    dsn = _db_url().replace("postgresql+asyncpg://", "postgresql://", 1)
 
     async def scenario() -> None:
         first = await asyncpg.connect(dsn)

@@ -23,17 +23,24 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
-_DB_URL = os.environ.get(
-    "BRAIN_V42_TEST_DB_URL",
-    "postgresql+asyncpg://brain:brain@localhost:5433/brain_test",
-)
+
+
+def _db_url() -> str:
+    """Read at CALL time, never at import.
+
+    A module-level capture binds during collection, before the session fixture in
+    `tests/integration/db/conftest.py` points this directory at its own disposable
+    database — and this module would keep downgrading the SHARED one. Ticket
+    f7af0977 measured what that costs: 77 dropped columns per decay table per run.
+    """
+    return os.environ["BRAIN_V42_TEST_DB_URL"]
 
 
 def _run_alembic(args: list[str]) -> None:
     """Run an alembic command against brain_test, raise on failure."""
     result = subprocess.run(
         [sys.executable, "-m", "alembic"] + args,
-        env={**os.environ, "POSTGRES_URL": _DB_URL},
+        env={**os.environ, "POSTGRES_URL": _db_url()},
         cwd=str(_PROJECT_ROOT),
         capture_output=True,
         text=True,
@@ -47,7 +54,7 @@ def _inspect(query: str) -> list[tuple]:  # type: ignore[type-arg]
     """Run a sync inspection query via asyncpg through asyncio."""
 
     async def _run() -> list[tuple]:  # type: ignore[type-arg]
-        engine = create_async_engine(_DB_URL)
+        engine = create_async_engine(_db_url())
         try:
             async with engine.connect() as conn:
                 result = await conn.execute(sa.text(query))
