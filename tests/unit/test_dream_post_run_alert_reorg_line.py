@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -47,6 +48,11 @@ import post_run_alert  # noqa: E402
 
 RUN_DATE = dt.date(2026, 9, 3)
 REPO_LOGS = Path(__file__).resolve().parents[2] / "logs" / "dream"
+
+#: Anonymised copy of the 2026-09-03 brain-v42 REORG report, committed so the
+#: replay runs in CI instead of skipping where `logs/dream/` does not exist.
+REPLAY_FIXTURE = Path(__file__).parent / "data" / "2026-09-03_brain-v42_reorg.anonymised.log"
+FIXTURE_DATE = dt.date(2026, 9, 3)
 
 #: Three lines lifted from `logs/dream/2026-09-03_brain-v42_reorg.events.jsonl`,
 #: the real codex stream of that night, with the bulky result payloads dropped
@@ -226,6 +232,116 @@ class TestTheThreeShapesOfNothing:
         assert "sans bloc" in _block(tmp_path).lower()
 
 
+class TestANightWhereEveryTrailerIsDamaged:
+    """The confusion this lot claims to close, reappearing inside the lot itself.
+
+    A report whose markers are present but whose payload is unreadable is NOT a
+    report written in prose. Yet a night where every project is in that state
+    left `with_trailer == 0`, fell into the `no_trailer` branch, and returned
+    before reaching the line that counts unreadable reports — so the morning
+    line said "la phase n'a parlé qu'en prose" and threw the count away.
+
+    Found by adversarial review on 2026-09-04, and it is the same failure the
+    ticket exists to remove: two different facts wearing one sentence.
+    """
+
+    def _broken(self, directory: Path, project: str) -> None:
+        (directory / f"{RUN_DATE.isoformat()}_{project}_reorg.log").write_text(
+            "# Rapport REORG\n\n=== REORG REPORT ===\n{not json at all}\n=== END ===\n",
+            encoding="utf-8",
+        )
+
+    def test_every_trailer_damaged_is_not_reported_as_prose_only(self, tmp_path: Path) -> None:
+        self._broken(tmp_path, "brain-v42")
+        self._broken(tmp_path, "red-lab")
+
+        block = _block(tmp_path)
+
+        # The verdict must not be CLAIMED. The line is allowed to quote the wrong
+        # reading in order to deny it — that is useful to the operator — so the
+        # assertion targets the affirmative sentence, not the bare word.
+        assert "qu'en prose, rien n'est comptable" not in block, (
+            "a damaged trailer is not a phase that spoke prose — that reading is "
+            "exactly what this ticket removes"
+        )
+        assert "illisible" in block.lower()
+        assert "2 rapport" in block
+
+    def test_every_trailer_damaged_has_its_own_outcome(self, tmp_path: Path) -> None:
+        self._broken(tmp_path, "brain-v42")
+
+        assert post_run_alert.reorg_tally(RUN_DATE, tmp_path).outcome == "unreadable"
+
+    def test_prose_only_and_damaged_do_not_render_the_same_line(self, tmp_path: Path) -> None:
+        (tmp_path / f"{RUN_DATE.isoformat()}_prose_reorg.log").write_text(
+            "# Rapport REORG\n\nProse seule, aucun bloc machine.\n", encoding="utf-8"
+        )
+        prose = _block(tmp_path)
+        (tmp_path / f"{RUN_DATE.isoformat()}_prose_reorg.log").unlink()
+        self._broken(tmp_path, "brain-v42")
+        damaged = _block(tmp_path)
+
+        assert prose != damaged
+
+    def test_a_damaged_report_beside_a_readable_one_is_still_counted(self, tmp_path: Path) -> None:
+        """The mixed night: the readable projects must not hide the broken one."""
+        self._broken(tmp_path, "broken")
+        _log(tmp_path, "brain-v42", updated=4, archived=0)
+
+        block = _block(tmp_path)
+
+        assert "4 tag" in block
+        assert "illisible" in block
+
+
+class TestTagsOnlyMeansTagsActuallyMoved:
+    """`tags_only` printed "la phase a travaillé les tags" with zero tag updates.
+
+    The outcome fired whenever candidates had been examined and nothing archived,
+    regardless of `updated`. A night that examined thirty-one candidates, refused
+    them all and touched no tag was announced as a night of tag work — a sentence
+    that states the opposite of what happened.
+    """
+
+    def test_a_night_that_moved_no_tag_is_not_called_tag_work(self, tmp_path: Path) -> None:
+        _log(
+            tmp_path,
+            "brain-v42",
+            updated=0,
+            archived=0,
+            declared={
+                "candidates_examined": 31,
+                "archived": 0,
+                "refused": {"already_archived": 31},
+                "deferred": 0,
+            },
+        )
+
+        tally = post_run_alert.reorg_tally(RUN_DATE, tmp_path)
+
+        assert tally.outcome != "tags_only"
+        assert "travaillé les tags" not in _block(tmp_path)
+
+    def test_a_night_that_did_move_tags_still_says_so(self, tmp_path: Path) -> None:
+        _log(
+            tmp_path,
+            "brain-v42",
+            updated=28,
+            archived=0,
+            declared={
+                "candidates_examined": 0,
+                "archived": 0,
+                "refused": {},
+                "deferred": 0,
+            },
+        )
+
+        tally = post_run_alert.reorg_tally(RUN_DATE, tmp_path)
+
+        assert tally.outcome == "tags_only"
+        assert "travaillé les tags" in _block(tmp_path)
+
+
 class TestTheLineSeparatesEvidenceFromHearsay:
     def test_the_fixture_of_2026_09_03_still_renders(self, tmp_path: Path) -> None:
         """28 tags, 0 archives: the exact shape nobody saw for twelve nights."""
@@ -340,18 +456,28 @@ class TestTheLineSeparatesEvidenceFromHearsay:
 
 
 class TestReplayOfARealNight:
-    """A real transcript through parser, validator and line (learning 187f107c)."""
+    """A real transcript through parser, validator and line (learning 187f107c).
+
+    THE FIXTURE IS COMMITTED, and that is a correction. These tests used to read
+    `logs/dream/`, which is not tracked — so they skipped in CI, the one place
+    they have to run, and a green pipeline said nothing about the replay. The
+    anonymised copy under `tests/unit/data/` makes them run everywhere; a
+    companion test compares it with the real log when that log exists, so the
+    copy cannot drift away from the night it describes.
+    """
+
+    def _tally_dir(self, tmp_path: Path) -> Path:
+        """The fixture under a name `reorg_tally`'s glob will find."""
+        target = tmp_path / f"{FIXTURE_DATE.isoformat()}_brain-v42_reorg.log"
+        target.write_text(REPLAY_FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+        return tmp_path
 
     def test_the_real_september_night_replays_end_to_end(self) -> None:
-        log = REPO_LOGS / "2026-09-03_brain-v42_reorg.log"
-        if not log.exists():
-            pytest.skip("logs/dream is not tracked; absent from a worktree checkout")
-
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
         from dream.reorg_events import scan_events
         from dream.reorg_validate import parse_report, symmetry_warnings
 
-        report = parse_report(log.read_text(encoding="utf-8", errors="replace"))
+        report = parse_report(REPLAY_FIXTURE.read_text(encoding="utf-8"))
 
         # The night as it really was: 20 tag mutations, no archive, no tally.
         assert report["found_marker"] is True
@@ -359,25 +485,57 @@ class TestReplayOfARealNight:
         assert report["archived_ids"] == []
         assert report["declared"] is None
 
-        # And the real stream slice observes the first of those ids, with no
-        # ghost and no undeclared mutation among what it covers.
         scan = scan_events(REAL_EVENT_SLICE)
         assert scan.recognised is True
-        assert scan.updated_ids <= set(report["updated_ids"])
 
         # A legacy trailer must add no tally warning — twelve nights of these
         # exist and none of them is a fault.
         assert [w for w in symmetry_warnings(report, scan) if "add up" in w] == []
 
-    def test_the_real_night_renders_as_legacy_in_the_morning_line(self) -> None:
-        if not (REPO_LOGS / "2026-09-03_brain-v42_reorg.log").exists():
-            pytest.skip("logs/dream is not tracked; absent from a worktree checkout")
+    def test_the_real_night_renders_as_legacy_in_the_morning_line(self, tmp_path: Path) -> None:
+        directory = self._tally_dir(tmp_path)
 
-        tally = post_run_alert.reorg_tally(dt.date(2026, 9, 3), REPO_LOGS)
+        tally = post_run_alert.reorg_tally(FIXTURE_DATE, directory)
 
-        assert tally.projects > 0
+        assert tally.projects == 1
+        assert tally.updated == 20
         assert tally.outcome == "legacy"
         assert (
             "sans décompte"
-            in "\n".join(post_run_alert.build_reorg_block(dt.date(2026, 9, 3), tally)).lower()
+            in "\n".join(post_run_alert.build_reorg_block(FIXTURE_DATE, tally)).lower()
         )
+
+    def test_the_fixture_carries_no_real_entity_id(self) -> None:
+        """Anonymisation is part of the contract, not a one-off gesture.
+
+        The synthetic ids are deterministic, so duplicates and cross-references
+        survive; what must never come back is a real corpus UUID.
+        """
+        text = REPLAY_FIXTURE.read_text(encoding="utf-8")
+        ids = set(
+            re.findall(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", text)
+        )
+
+        assert ids, "the fixture lost its ids — the replay would assert on nothing"
+        assert all(uid.startswith("0000") for uid in ids), sorted(ids)[:3]
+
+    def test_the_fixture_still_matches_the_night_it_copies(self) -> None:
+        """Drift alarm on a hand-made copy (learning d43e760d).
+
+        Compares the SHAPE that matters — the trailer — rather than the bytes,
+        because the copy is deliberately anonymised. Skips off the server.
+        """
+        real = REPO_LOGS / "2026-09-03_brain-v42_reorg.log"
+        if not real.exists():
+            pytest.skip("logs/dream is not tracked; absent from CI and from a worktree")
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+        from dream.reorg_report import parse_trailer
+
+        original = parse_trailer(real.read_text(encoding="utf-8", errors="replace"))
+        copy = parse_trailer(REPLAY_FIXTURE.read_text(encoding="utf-8"))
+
+        assert len(copy.updated_ids) == len(original.updated_ids)
+        assert len(copy.archived_ids) == len(original.archived_ids)
+        assert copy.dry_run == original.dry_run
+        assert (copy.declared is None) == (original.declared is None)

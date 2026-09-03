@@ -154,6 +154,14 @@ different and only you can tell them apart.
 not add up is reported as a warning naming the gap, so count as you go rather than
 reconstructing at the end.
 
+**On a DRY RUN, count under `archived` every candidate you WOULD have archived.** You
+are forbidden from calling `brain_update`, so the `archived` LIST above stays empty —
+there is no UUID because there was no call. The count is what carries the night's
+finding. Do not move those candidates into `refused` or `deferred`: they were neither
+turned away nor postponed, and the arithmetic would still close while saying something
+false. The count-versus-list check is relaxed for dry runs precisely so this can be
+stated honestly.
+
 Emit `declared` even on a dry run, and even when every number is zero. An absent block and
 a block of zeros are read as different facts: the first says this phase ran an older
 prompt, the second says it looked and found nothing.

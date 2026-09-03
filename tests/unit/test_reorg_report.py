@@ -37,6 +37,7 @@ summed into the derived counters.
 
 from __future__ import annotations
 
+import pathlib
 import sys
 from pathlib import Path
 
@@ -201,6 +202,45 @@ def test_the_declared_archive_count_is_compared_to_the_declared_list() -> None:
     assert "3" in complaint and "1" in complaint
 
 
+def test_a_dry_run_may_count_archives_it_did_not_perform() -> None:
+    """On a dry run the LIST is empty by construction, and that is not a mismatch.
+
+    `phase_reorg.md` forbids the `brain_update` call in DRY_RUN, so a candidate
+    that passed every guardrail produces no UUID — there was no call to return
+    one. The declared count still has to record it, otherwise the arithmetic
+    gap would equal the number of would-be archives and the "tally does not add
+    up" warning would fire every single dry night. A guard that cries on the
+    nominal path is a guard that gets muted.
+
+    The DECLARED-versus-OBSERVED confrontation does not move: it compares ids to
+    ids, and a dry run declares none.
+    """
+    raw = (
+        "=== REORG REPORT ===\n"
+        '{"dry_run": true, "updated": [], "archived": [], '
+        '"declared": {"candidates_examined": 3, "archived": 3, "refused": {}, "deferred": 0}}\n'
+        "=== END ==="
+    )
+
+    report = parse_trailer(raw)
+
+    assert report.declared is not None
+    assert report.declared.arithmetic_complaint() is None
+    assert report.declared_list_mismatch() is None
+
+
+def test_a_wet_run_is_still_held_to_its_list() -> None:
+    """The relaxation is dry-run only; a wet night claiming phantom archives is caught."""
+    raw = (
+        "=== REORG REPORT ===\n"
+        '{"dry_run": false, "updated": [], "archived": [], '
+        '"declared": {"candidates_examined": 3, "archived": 3, "refused": {}, "deferred": 0}}\n'
+        "=== END ==="
+    )
+
+    assert parse_trailer(raw).declared_list_mismatch() is not None
+
+
 # ── shapes that must not raise ───────────────────────────────────────────────
 
 
@@ -284,12 +324,34 @@ def test_iter_trailers_reads_a_nested_block_in_each() -> None:
 # ── replay against a REAL night (learning 187f107c) ──────────────────────────
 
 
-def test_the_parser_reads_every_real_reorg_trailer_of_this_repository() -> None:
-    """A fixture invented from the parser proves the parser agrees with itself.
+_REPLAY = pathlib.Path(__file__).parent / "data" / "2026-09-03_brain-v42_reorg.anonymised.log"
 
-    These are the logs the phase actually wrote. Every trailer must parse, and
-    none of them carries a declared block yet — which is what makes the
-    `legacy` outcome a real state and not a hypothetical one.
+
+def test_the_parser_reads_a_real_reorg_trailer() -> None:
+    """Runs EVERYWHERE, which is the correction.
+
+    The sweep below reads `logs/dream/`, untracked, so it skipped in CI — the
+    one place it had to run. This reads the committed anonymised copy of the
+    2026-09-03 night instead, and a fixture invented from the parser would only
+    prove the parser agrees with itself (learning 187f107c).
+    """
+    report = parse_trailer(_REPLAY.read_text(encoding="utf-8"))
+
+    assert report.found_marker is True
+    assert len(report.updated_ids) == 20
+    assert report.archived_ids == []
+    assert report.declared is None, (
+        "the captured night predates the declared tally — that is what makes "
+        "`legacy` a real state rather than a hypothetical one"
+    )
+
+
+def test_the_parser_reads_every_real_reorg_trailer_of_this_repository() -> None:
+    """The full sweep, when the untracked logs are there.
+
+    Kept beside the committed replay rather than replaced by it: one fixture is
+    a sample, 325 real reports are a population, and only the second can show a
+    shape nobody anticipated.
     """
     logs = sorted(_FIXTURE.glob("*_reorg.log"))
     if not logs:

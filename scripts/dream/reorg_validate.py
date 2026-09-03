@@ -120,6 +120,11 @@ def parse_report(raw: str) -> dict:
         "found_marker": report.found_marker,
         "declared": report.declared,
         "declared_malformed": report.declared_malformed,
+        # The parsed object itself, so checks that belong to it are CALLED here
+        # rather than reimplemented. A private copy of `declared_list_mismatch`
+        # lived below until the review of 2026-09-04: the copy under test was
+        # the dead one, and the copy running every night was tested by nothing.
+        "parsed": report,
     }
 
 
@@ -271,25 +276,12 @@ def symmetry_warnings(report: dict, scan: EventScan) -> list[str]:
     # because the morning line needs it; it can add a warning and can never
     # remove or satisfy one above (learning c34fb865).
     warnings.extend(declared_warnings(report))
-    mismatch = _declared_list_mismatch(report)
+    parsed = report.get("parsed")
+    mismatch = parsed.declared_list_mismatch() if parsed is not None else None
     if mismatch is not None:
         warnings.append(mismatch)
 
     return warnings
-
-
-def _declared_list_mismatch(report: dict) -> str | None:
-    """The declared archive count against the declared archive list."""
-    declared = report.get("declared")
-    if declared is None:
-        return None
-    listed = len(report.get("archived_ids", []))
-    if declared.archived == listed:
-        return None
-    return (
-        f"declared archived count is {declared.archived} but the report lists {listed} "
-        f"archived id(s); only the list is checkable"
-    )
 
 
 async def validate(

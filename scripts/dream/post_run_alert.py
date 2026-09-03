@@ -512,22 +512,38 @@ class ReorgTally:
           The phase spoke prose only.
         - ``legacy``     — trailers exist, none carries a declared tally: an
           older prompt. Not a fault, and not a measured zero either.
+        - ``unreadable`` — reports exist and announce a trailer, but not one of
+          them could be read. Distinct from ``no_trailer``: the phase DID try to
+          print a block, and something ate it.
         - ``idle``       — a tally that genuinely counted zero candidates.
         - ``tags_only``  — tags moved, nothing was archived. The shape that went
           unnoticed for twelve nights.
+        - ``refused_only`` — candidates were examined, all refused, no tag moved.
+          Not ``tags_only``: no tag work happened, and saying so would be false.
         - ``archiving``  — entities left the default listings.
         """
-        if self.projects == 0 and self.unreadable == 0:
+        if self.projects == 0:
             return "no_report"
         if self.with_trailer == 0:
-            return "no_trailer"
+            # BEFORE the prose-only verdict: a report whose markers are present
+            # and whose payload cannot be read is not a report written in prose.
+            # Collapsing the two was the exact confusion this block exists to
+            # remove, and it survived inside the block until the review of
+            # 2026-09-04.
+            return "unreadable" if self.unreadable else "no_trailer"
         if self.archived:
             return "archiving"
         if self.with_declared == 0:
             return "legacy"
-        if self.candidates_examined == 0 and self.updated == 0:
+        if self.updated:
+            return "tags_only"
+        if self.candidates_examined == 0:
             return "idle"
-        return "tags_only"
+        # Candidates were examined, none archived, no tag moved. Naming this
+        # `tags_only` announced tag work that did not happen; a total does not
+        # distinguish its zeros (learning 57b85cbb) and neither does a label
+        # that claims more than it knows.
+        return "refused_only"
 
 
 def reorg_tally(run_date: dt.date, log_dir: Path) -> ReorgTally:
@@ -637,6 +653,15 @@ def build_reorg_block(run_date: dt.date, tally: ReorgTally) -> list[str]:
         )
         return lines
 
+    if outcome == "unreadable":
+        lines.append(
+            f"- {tally.unreadable} rapport(s) sur {tally.projects} annoncent un bloc "
+            "machine ILLISIBLE, et aucun n'a pu être lu. Ce n'est pas « la phase n'a "
+            "parlé qu'en prose » : elle a bien essayé d'écrire un décompte, et il est "
+            "abîmé. Rien n'est comptable cette nuit."
+        )
+        return lines
+
     if outcome == "no_trailer":
         lines.append(
             f"- {tally.projects} rapport(s) sans bloc machine : la phase n'a parlé "
@@ -682,6 +707,11 @@ def build_reorg_block(run_date: dt.date, tally: ReorgTally) -> list[str]:
 
     if outcome == "tags_only":
         lines.append("- Aucun archivage : la phase a travaillé les tags sans retirer de pollution.")
+    elif outcome == "refused_only":
+        lines.append(
+            "- Aucun archivage et aucun tag déplacé : chaque candidat examiné a été "
+            "refusé. Le détail des motifs est sur la ligne déclarée ci-dessus."
+        )
     elif outcome == "idle":
         lines.append(
             "- 0 candidat examiné : aucun titre n'a correspondu à l'allowlist de "

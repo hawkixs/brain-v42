@@ -140,8 +140,18 @@ class ReorgReport:
         Two statements about one fact, and only one of them can be taken to
         PostgreSQL. When they disagree, the list is the one with evidence
         behind it.
+
+        NOT ON A DRY RUN. `phase_reorg.md` forbids the `brain_update` call in
+        DRY_RUN, so a candidate that cleared every guardrail yields no UUID —
+        there was no call to return one — while the declared count must still
+        record it, or the arithmetic gap would equal the number of would-be
+        archives and fire a complaint on every nominal dry night. A guard that
+        cries on the happy path is a guard that gets muted.
+
+        The confrontation that matters is untouched: `symmetry_warnings` still
+        compares DECLARED ids to OBSERVED ids, and a dry run declares none.
         """
-        if self.declared is None:
+        if self.declared is None or self.dry_run:
             return None
         if self.declared.archived == len(self.archived_ids):
             return None
