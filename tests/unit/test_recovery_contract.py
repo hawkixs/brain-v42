@@ -286,7 +286,12 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
     # FK is the only thing that reaches a table this contract describes, and a
     # referencing constraint lives on the CHILD: `brain_sessions`' own columns,
     # CHECKs and indexes are untouched, so the shape at 031 still holds.
-    assert script.get_heads() == ["051"]
+    # Re-read at 052: it ADDS a table (`access_log_daily`), which moves `table_set`
+    # — hence the entry below — and NOTHING else. No trigger, no constraint on an
+    # existing table, and no foreign key at all: its `entity_id` deliberately
+    # references nothing, so unlike 051 it does not even reach a table this
+    # contract describes as a child. The shape at 031 is untouched.
+    assert script.get_heads() == ["052"]
     post_contract_tables = {
         # 050's table. `table_set` is DERIVED from live METADATA, so any new
         # table moves it, and a contract describing revision 031 must not claim
@@ -298,6 +303,12 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
         # `expected_session_indexes` are untouched. It was incomplete about the
         # THIRD surface, the one above: any new table moves `table_set`.
         "brain_session_checkpoints",
+        # 052's table, and it belongs here for the same reason as the two above and
+        # no other: `table_set` is DERIVED from live METADATA, so a table added
+        # twenty-one revisions after 031 must not appear in a contract that
+        # describes 031. Nothing about `access_log_daily` reaches this contract's
+        # shape — it is the SET, not the shape, that moves.
+        "access_log_daily",
         "brain_session_artifacts",
         "brain_sessions",
         "projects",
