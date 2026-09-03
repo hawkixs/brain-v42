@@ -88,7 +88,7 @@ def register_runbook_tools(
         """Create an operational runbook.
 
         The Dream promotion path lives in its own tool, `brain_promote_runbook`
-        (ticket c07957eaa). Until 2026-09-04 this signature also published
+        (ticket c07957ea). Until 2026-09-04 this signature also published
         `source_learning_id` and `dream_run_id`, with NO guard between them: a
         call naming `dream_run_id` alone fell into the standard path, which
         never reads it, and returned a confirmation — the caller believed they
