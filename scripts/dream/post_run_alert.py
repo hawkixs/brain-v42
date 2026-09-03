@@ -599,9 +599,15 @@ def lost_the_whole_write_rail(verdict: CoverageVerdict) -> bool:
 def coverage_from_manifest(
     observed_pairs: set[Pair],
     manifest: RunManifest,
+    *,
+    written_as_failure: Iterable[Pair] = (),
 ) -> CoverageReport:
-    """The nominal path: the expectation is what the NIGHT declared."""
-    verdict = classify_coverage(observed_pairs, manifest)
+    """The nominal path: the expectation is what the NIGHT declared.
+
+    `written_as_failure` carries what the ROWS say, so that a phase which
+    declared its failure AND wrote it is not accused of a false green.
+    """
+    verdict = classify_coverage(observed_pairs, manifest, written_as_failure=written_as_failure)
     block = [
         COVERAGE_HEADING,
         "",
@@ -742,9 +748,19 @@ async def fetch_failed_runs(
     observed_pairs = {
         (str(row["phase"]), str(row.get("project_key") or "")) for row in observed_rows
     }
+    # Read from the SAME rows, with the SAME vocabulary the failure list uses:
+    # two definitions of "this row is a failure" would drift the day one of them
+    # learns a status.
+    written_as_failure = {
+        (str(row["phase"]), str(row.get("project_key") or ""))
+        for row in observed_rows
+        if row.get("status") in FAILED_STATUSES
+    }
 
     if manifest is not None:
-        coverage = coverage_from_manifest(observed_pairs, manifest)
+        coverage = coverage_from_manifest(
+            observed_pairs, manifest, written_as_failure=written_as_failure
+        )
         failed = [*coverage.synthetic, *persisted_failures]
         synthetic_count = len(coverage.synthetic)
     else:

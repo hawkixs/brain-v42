@@ -249,6 +249,49 @@ def test_a_pair_written_but_declared_failed_is_reported_as_a_mismatch() -> None:
     assert verdict.silent == frozenset()
 
 
+def test_a_declared_failure_whose_row_records_it_is_not_a_mismatch() -> None:
+    """The night of 2026-09-03, `*/extract`: declared failed, row written `fail`.
+
+    `mismatch` exists for ONE shape, and its own message names it: "the row's
+    status does not reflect the declaration, so a green coverage verdict here is
+    a FALSE green". A phase that fails, says so, and writes `status=fail` is the
+    OPPOSITE of that — it is the machinery working. Reporting it made the rubric
+    accuse the correct case, and an alarm that fires on correct behaviour is read
+    the same way as one that never fires.
+    """
+    manifest = _parse(expected=(("extract", "*"),), failed=(("extract", "*"),))
+
+    verdict = rm.classify_coverage(
+        {("extract", "*")},
+        manifest,
+        written_as_failure={("extract", "*")},
+    )
+
+    assert verdict.mismatch == frozenset(), (
+        "une ligne écrite `fail` REFLÈTE la déclaration : ce n'est pas un faux vert"
+    )
+    assert verdict.written == frozenset({("extract", "*")})
+
+
+def test_the_row_left_done_after_a_declared_failure_is_still_a_mismatch() -> None:
+    """The frozen witness: the night of the 19th to 20th, reorg.
+
+    Declared `failed`, row left `done` because its marking had crashed, and the
+    verdict announced full coverage while reading an input that said the
+    opposite. THAT is the false green. Passing an empty `written_as_failure` is
+    the whole point of this test: it says the row records nothing.
+    """
+    manifest = _parse(expected=(("reorg", "brain-v42"),), failed=(("reorg", "brain-v42"),))
+
+    verdict = rm.classify_coverage(
+        {("reorg", "brain-v42")},
+        manifest,
+        written_as_failure=frozenset(),
+    )
+
+    assert verdict.mismatch == frozenset({("reorg", "brain-v42")})
+
+
 def test_a_pair_written_but_declared_timed_out_is_a_mismatch_too() -> None:
     manifest = _parse(expected=(("clean", "red"),), timed_out=(("clean", "red"),))
     verdict = rm.classify_coverage({("clean", "red")}, manifest)
