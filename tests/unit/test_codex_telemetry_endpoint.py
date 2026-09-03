@@ -374,8 +374,18 @@ def test_otlp_route_is_registered_for_loopback_bind_hosts(host: str) -> None:
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.0.2.8", "metrics.internal"])
 def test_otlp_route_is_absent_for_non_loopback_bind_hosts(host: str) -> None:
-    """The DEFAULT posture (`silent`, eac03668) — a named choice, not an oversight.
-    See test_metrics_nonloopback_posture.py for the other two forms.
+    """The route stays absent -- and reaching this bind now COSTS an opt-in.
+
+    Same assertion, different meaning (eac03668, arbitrated 2026-09-03). It used
+    to pin the behaviour of a bind anybody could set; `Settings` now REFUSES a
+    non-loopback `METRICS_HOST` unless `METRICS_ALLOW_NON_LOOPBACK` names the
+    trade. What is pinned here is what that opt-in buys: a process that starts,
+    and an OTLP receiver that still does not.
+
+    Serving unauthenticated OTLP ingestion to a LAN is not a posture and the
+    opt-in does not purchase it. `/healthz` now carries
+    `ingest_receivers: "disabled"` so the sacrifice is readable by a monitor and
+    not only by whoever greps a boot log.
     """
     app = _server(host=host)._build_app()
 

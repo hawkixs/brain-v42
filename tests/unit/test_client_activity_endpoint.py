@@ -162,12 +162,18 @@ def test_receiver_route_is_registered_on_a_loopback_bind(host: str, path: str) -
 @pytest.mark.parametrize("path", _RECEIVER_PATHS)
 @pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.0.2.8", "metrics.internal"])
 def test_receiver_route_is_absent_on_a_non_loopback_bind(host: str, path: str) -> None:
-    """The DEFAULT posture (`silent`, eac03668) — a named choice, not an oversight.
+    """The routes stay absent -- and reaching this bind now COSTS an opt-in.
 
-    This test pins the historical behaviour WHILE AWAITING the operator's
-    arbitration, it no longer enshrines it by omission: the other two postures
-    (warn, fail_closed) exist and are tested by
-    test_metrics_nonloopback_posture.py.
+    Same assertion as before, different meaning, and that is the point of the
+    rewrite (eac03668, arbitrated 2026-09-03). This used to pin the behaviour of a
+    bind anybody could set; `Settings` now REFUSES a non-loopback `METRICS_HOST`
+    unless `METRICS_ALLOW_NON_LOOPBACK` names the trade, so what is pinned here is
+    what the opt-in buys: the process starts, and the receivers still do not.
+
+    The absence itself is not negotiable and never was. Serving unauthenticated
+    OTLP and activity ingestion to a LAN is not a posture, and the opt-in does not
+    purchase it -- `test_metrics_bind_fails_closed.py` holds the gate, this holds
+    what is behind it.
     """
     assert ("POST", path) not in _routes(_server(_registry(), host=host)._build_app())
 
