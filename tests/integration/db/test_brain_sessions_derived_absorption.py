@@ -41,6 +41,7 @@ import pytest_asyncio
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from brain_v42.db.session_derived_capture import AbsorptionOutcome
 from brain_v42.db.tables import (
     brain_session_artifacts,
     brain_sessions,
@@ -104,9 +105,9 @@ def _transport(connection_id: str) -> Iterator[str]:
         set_current_transport(previous)
 
 
-async def _absorb_from_the_current_connection(
+async def _absorb_outcome_from_the_current_connection(
     repo: PgBrainSessionRepo, session_id: UUID, client_key: str
-) -> int:
+) -> AbsorptionOutcome:
     """Absorb exactly as `BrainSessionService._absorb_derived` does.
 
     The connection comes from the contextvar, never from the caller: that is all
@@ -115,12 +116,26 @@ async def _absorb_from_the_current_connection(
     `client_key` is passed because the IDENTITY GUARD lives in the absorption
     itself, in the same transaction as the mutation. A bench that did not pass it
     would prove a path production does not take.
+
+    Reads `absorb_derived_capture_outcome` and not the `.total` facade: three `0`
+    returns used to be indistinguishable — flag closed, no connection, nothing to
+    absorb — and a fourth, the window REFUSAL, is the only one that means the rule
+    ran and said no. A bench that only ever sees the total cannot tell them apart,
+    which is the failure mode this whole capability was built to avoid.
     """
     from brain_v42.provenance import get_current_transport
 
     connection_id = (get_current_transport() or "").strip()
     assert connection_id, "le banc doit tourner sous un transport"
-    return await repo.absorb_derived_capture(session_id, connection_id, client_key)
+    return await repo.absorb_derived_capture_outcome(session_id, connection_id, client_key)
+
+
+async def _absorb_from_the_current_connection(
+    repo: PgBrainSessionRepo, session_id: UUID, client_key: str
+) -> int:
+    """The count, for the assertions that are about a count and nothing else."""
+    outcome = await _absorb_outcome_from_the_current_connection(repo, session_id, client_key)
+    return outcome.total
 
 
 @pytest_asyncio.fixture
@@ -427,6 +442,46 @@ async def test_a_rival_open_at_the_instant_still_blocks_after_it_has_closed(
     assert await _ledger_owner(session_factory, artifact) == UUID(str(tracer))
 
 
+async def test_a_refusal_NAMES_its_rivals_instead_of_returning_a_bare_zero(
+    session_factory: async_sessionmaker[AsyncSession],
+    absorption_project: str,
+) -> None:
+    """The reason the outcome exists: `0` alone cannot say which `0` it is.
+
+    Flag closed, no connection, nothing to absorb, and "the rule ran and refused"
+    all return zero. Only the last one is a decision, and it is the only one a
+    human can act on -- by reclaiming the artifact by hand, as the test below
+    does. This bench asserts that the outcome distinguishes them, which the
+    `.total` facade structurally cannot.
+    """
+    repo = PgBrainSessionRepo(session_factory)
+    learning_repo = PgLearningRepo(session_factory)
+
+    with _derived_capture(True):
+        mine = await repo.start(absorption_project, "task-w20-named-claimant")
+        rival = await repo.start(absorption_project, "task-w20-named-rival")
+
+        with _transport(uuid4().hex) as connection_a:
+            await repo.auto_open(_Identity(absorption_project, connection_a))
+            await _derive_one_artifact(learning_repo, absorption_project)
+
+        with _transport(uuid4().hex) as connection_b:
+            await repo.auto_open(_Identity(absorption_project, connection_b))
+            outcome = await _absorb_outcome_from_the_current_connection(
+                repo, UUID(str(mine.session.id)), "task-w20-named-claimant"
+            )
+
+    assert outcome.total == 0, "the scene must be a refusal, not an absorption"
+    assert outcome.rival_artifacts >= 1, (
+        f"a refusal that counts no artifact is indistinguishable from a dead path: {outcome!r}"
+    )
+    assert UUID(str(rival.session.id)) in outcome.rival_sessions, (
+        "the refusal does not name the session that caused it, so nobody can act "
+        f"on it: {outcome.rival_sessions!r}"
+    )
+    assert outcome.reason, "a refusal with no reason is a bare zero wearing a dataclass"
+
+
 async def test_a_human_can_reclaim_what_the_rule_refused_to_attribute(
     session_factory: async_sessionmaker[AsyncSession],
     absorption_project: str,
@@ -675,7 +730,7 @@ async def test_a_mistargeted_absorption_moves_NOTHING_before_it_refuses(
             assert await _ledger_owner(session_factory, artifact) == UUID(str(tracer))
 
             with pytest.raises(BrainSessionIdentityConflictError):
-                await repo.absorb_derived_capture(
+                await repo.absorb_derived_capture_outcome(
                     victim.session.id, connection, "task-w20-SOMEONE-ELSE"
                 )
 
