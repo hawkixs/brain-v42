@@ -53,6 +53,34 @@ FocusRevisionArg = Annotated[int, Field(ge=0, strict=True)]
 ProjectFocusArg = Annotated[str, Field(max_length=NEXT_FOCUS_MAX_LENGTH)]
 
 
+def _model_bound(field_name: str) -> int:
+    """`ProjectContextCreate`'s own cap for one field — READ, never retyped.
+
+    Item 8 of af3b58dd asks for a bounded schema. Four fields were already
+    bounded by the model and by nothing the agent could see: `project_key` 50,
+    `name` 200, `gitlab_project_path` 200, `project_group` 50. Publishing them is
+    finishing the shape `ProjectFocusArg` already has one line above.
+
+    Derived rather than copied, for the reason the `NEXT_FOCUS_MAX_LENGTH` note
+    gives right above: two literals for one column drift, and the drift only
+    surfaces when a value falls between them. It raises on an absent bound so a
+    field that LOSES its cap on the model reddens here instead of quietly
+    publishing a stale number.
+    """
+    for constraint in ProjectContextCreate.model_fields[field_name].metadata:
+        bound = getattr(constraint, "max_length", None)
+        if bound is not None:
+            return int(bound)
+    raise ValueError(f"ProjectContextCreate.{field_name} carries no max_length to publish")
+
+
+#: The four bounds the model enforced without ever telling the caller.
+ProjectKeyArg = Annotated[str, Field(max_length=_model_bound("project_key"))]
+ProjectNameArg = Annotated[str, Field(max_length=_model_bound("name"))]
+GitlabProjectPathArg = Annotated[str, Field(max_length=_model_bound("gitlab_project_path"))]
+ProjectGroupArg = Annotated[str, Field(max_length=_model_bound("project_group"))]
+
+
 def register_project_context_tools(
     mcp: Any,
     project_context_svc: ProjectContextService,
@@ -116,8 +144,8 @@ def register_project_context_tools(
 
     @mcp.tool(version="1.0", annotations=_DESTRUCTIVE_ANNOTATIONS)
     async def brain_set_project_context(
-        project_key: str,
-        name: str,
+        project_key: ProjectKeyArg,
+        name: ProjectNameArg,
         description: str,
         languages: list[str] | None = None,
         frameworks: list[str] | None = None,
@@ -130,8 +158,8 @@ def register_project_context_tools(
         blockers: list[str] | None = None,
         related_projects: list[str] | None = None,
         plan_scan_paths: list[str] | None = None,
-        gitlab_project_path: str | None = None,
-        project_group: str | None = None,
+        gitlab_project_path: GitlabProjectPathArg | None = None,
+        project_group: ProjectGroupArg | None = None,
     ) -> str:
         """Set or initialize a project context (upsert by project_key).
 

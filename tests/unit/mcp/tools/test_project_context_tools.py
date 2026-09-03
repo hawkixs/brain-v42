@@ -676,6 +676,66 @@ class TestSetProjectContextSchemaContract:
             f"{sorted(params - set(ProjectContextCreate.model_fields))}"
         )
 
+    @pytest.mark.asyncio
+    async def test_every_model_bound_is_published_in_the_input_schema(self) -> None:
+        """The half of "schéma borné" that a parameter count cannot express.
+
+        `ProjectContextCreate` caps four fields — `project_key` 50, `name` 200,
+        `gitlab_project_path` 200, `project_group` 50. Measured 2026-09-03: none
+        of the four published its cap, so an agent filling the catalogue's
+        largest inputSchema (2 338 compact bytes, 16 parameters) could not see
+        them. It learned the bound by being refused, and the refusal arrives as a
+        Pydantic `ValidationError` raised inside the service, not as the schema
+        constraint that would have prevented the call.
+
+        `current_focus` already does this correctly through `ProjectFocusArg`, so
+        the shape is not being invented here — it is being finished.
+
+        The bounds are DERIVED from the model, never retyped: a second literal
+        would drift, and this test would then certify the drift instead of
+        catching it.
+        """
+        import json
+        from unittest.mock import MagicMock
+
+        from fastmcp import Client
+
+        from brain_v42.mcp.tools.project_context_tools import register_project_context_tools
+        from brain_v42.models.project_context import ProjectContextCreate
+
+        server = FastMCP("schema-contract-probe")
+        register_project_context_tools(server, MagicMock(), MagicMock())
+        async with Client(server) as client:
+            published = {tool.name: tool.inputSchema for tool in await client.list_tools()}
+        properties = published["brain_set_project_context"]["properties"]
+
+        expected = {
+            name: bound
+            for name, info in ProjectContextCreate.model_fields.items()
+            if name in properties
+            for bound in (
+                next(
+                    (
+                        getattr(meta, "max_length", None)
+                        for meta in info.metadata
+                        if getattr(meta, "max_length", None) is not None
+                    ),
+                    None,
+                ),
+            )
+            if bound is not None
+        }
+        assert expected, "aucune borne lue sur le modèle — le test ne prouverait rien"
+
+        unpublished = {
+            name: bound
+            for name, bound in expected.items()
+            if f'"maxLength": {bound}' not in json.dumps(properties[name])
+        }
+        assert not unpublished, (
+            f"le modèle borne ces champs mais l'inputSchema public ne le dit pas : {unpublished}"
+        )
+
     def test_every_parameter_is_documented_in_the_args_block(self) -> None:
         fn, inspect_mod = self._tool_fn()
         doc = fn.__doc__ or ""
