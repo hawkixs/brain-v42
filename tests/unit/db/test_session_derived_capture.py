@@ -669,7 +669,7 @@ class TestTheThreeZerosAreDistinguishable:
 
         assert outcome.total == 0
         assert outcome.reason == "ambiguous"
-        assert outcome.rivals == 2
+        assert outcome.rival_artifacts == 2
 
     async def test_a_full_ledger_is_its_own_reason(self, _open_flag: None) -> None:
         session, _ = _session(_two_stage_router(connection_tracer=uuid4(), occupied=100))
@@ -727,7 +727,7 @@ class TestTheJournalIsAsserted:
         with capture_logs() as records:
             outcome = await _outcome(session)
 
-        assert (outcome.moved_by_connection, outcome.rivals) == (1, 5)
+        assert (outcome.moved_by_connection, outcome.rival_artifacts) == (1, 5)
         (event,) = _absorption_events(records)
         assert event["reason"] == "absorbed"
         assert event["rivals_blocked"] == 5, (

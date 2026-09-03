@@ -357,6 +357,36 @@ class BrainSession(BaseModel):
             raise ValueError("terminal session cannot be stale")
 
 
+class SessionAbsorption(BaseModel):
+    """What the derived-capture absorption did, in the CLIENT's result.
+
+    Ticket dfaed283. The server has always known whether an empty ledger was an
+    honest abstention or a dead path — `AbsorptionOutcome` carries the reason and
+    `_log_absorption` writes it. None of it left the process: the client read
+    `attributed_knowledge_ids: []` and could not tell the two apart.
+
+    Three outcomes, deliberately coarser than the six internal `reason` values:
+    `absorbed` (rows moved), `abstained` (**the rule ran and said no** — today
+    only ambiguity), `nothing` (nothing to take, or nothing even attempted).
+    `reason` keeps the precise cause; the triple is what a caller branches on.
+
+    **Carried by `brain_session_capture` and `brain_session_heartbeat` only**,
+    and that is a budget decision, not an oversight: the eight session tools
+    share a frozen output-schema budget with 35 bytes left, and this object
+    costs 417 on `BrainSessionEndResult`. Those two tools declare
+    `output_schema=None`, so the field reaches the client through
+    `structuredContent` at zero schema cost. Pinned by
+    `tests/unit/services/test_absorption_is_visible_in_the_result.py`.
+    """
+
+    outcome: str
+    reason: str
+    #: The rival SESSIONS, capped at ten. Empty when nothing was contested.
+    rivals: list[UUID] = Field(default_factory=list)
+    #: Eligible artifacts a tracer still held when the absorption ran.
+    held_by_tracers: int = Field(default=0, ge=0)
+
+
 class BrainSessionStartResult(BaseModel):
     """Outcome of an idempotent session start."""
 
@@ -421,6 +451,10 @@ class BrainSessionCaptureResult(BaseModel):
     newly_captured_knowledge_ids: list[UUID] = Field(default_factory=list)
     replayed_knowledge_ids: list[UUID] = Field(default_factory=list)
     replayed: bool
+    #: Absent (`None`) when no absorption was ATTEMPTED — closed flag, or a
+    #: transport with no connection id. A verdict is never invented: `nothing`
+    #: means the rule ran and found nothing, which is not the same statement.
+    absorption: SessionAbsorption | None = None
 
 
 class BrainSessionCheckpoint(BaseModel):
@@ -453,6 +487,10 @@ class BrainSessionHeartbeatResult(BaseModel):
     """Fresh presence marker for one still-open session."""
 
     session: BrainSession
+    #: Absent (`None`) when no absorption was ATTEMPTED — closed flag, or a
+    #: transport with no connection id. A verdict is never invented: `nothing`
+    #: means the rule ran and found nothing, which is not the same statement.
+    absorption: SessionAbsorption | None = None
 
 
 class BrainSessionAbandonResult(BaseModel):

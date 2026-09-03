@@ -50,13 +50,22 @@ def _closed_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def _outcome(**kwargs: object) -> object:
+    """A real `AbsorptionOutcome`, so the double mirrors the callee's contract."""
+    from brain_v42.db.session_derived_capture import AbsorptionOutcome
+
+    return AbsorptionOutcome(**kwargs)  # type: ignore[arg-type]
+
+
 def _repo(session_id: UUID) -> MagicMock:
     result = MagicMock()
     result.session = MagicMock(id=session_id)
     repo = MagicMock()
     for method in ("start", "resume", "capture", "heartbeat", "end"):
         setattr(repo, method, AsyncMock(return_value=result))
-    repo.absorb_derived_capture = AsyncMock(return_value=0)
+    repo.absorb_derived_capture_outcome = AsyncMock(
+        return_value=_outcome(reason="nothing_to_absorb")
+    )
     # Mirror of the Protocol: `start` re-reads the ledger after absorbing. A
     # double without this method would make the tests fail on the double's SHAPE,
     # not on the service's behaviour.
@@ -90,7 +99,7 @@ async def test_every_command_absorbs_exactly_once(command: str, _open_flag: None
     # IDENTITY travels with the mutation: the guard lives inside the absorption,
     # not at the call site. An absorption called without it would be a ledger
     # move with no ownership check.
-    repo.absorb_derived_capture.assert_awaited_once_with(session_id, _CONNECTION, "task-a")
+    repo.absorb_derived_capture_outcome.assert_awaited_once_with(session_id, _CONNECTION, "task-a")
 
 
 @pytest.mark.parametrize("command", _COMMANDS)
@@ -100,7 +109,7 @@ async def test_a_closed_flag_costs_no_extra_round_trip(command: str, _closed_fla
 
     await _run(BrainSessionService(repo), command, session_id)
 
-    repo.absorb_derived_capture.assert_not_awaited()
+    repo.absorb_derived_capture_outcome.assert_not_awaited()
 
 
 @pytest.mark.parametrize("command", _COMMANDS)
@@ -112,7 +121,7 @@ async def test_no_connection_absorbs_nothing(command: str, _open_flag: None) -> 
 
     await _run(BrainSessionService(repo), command, session_id)
 
-    repo.absorb_derived_capture.assert_not_awaited()
+    repo.absorb_derived_capture_outcome.assert_not_awaited()
 
 
 async def test_start_absorbs_on_the_replay_branch_too(_open_flag: None) -> None:
@@ -129,7 +138,7 @@ async def test_start_absorbs_on_the_replay_branch_too(_open_flag: None) -> None:
     await service.start("brain-v42", "task-a")
     await service.start("brain-v42", "task-a")
 
-    assert repo.absorb_derived_capture.await_count == 2
+    assert repo.absorb_derived_capture_outcome.await_count == 2
 
 
 async def test_end_absorbs_before_it_persists(_open_flag: None) -> None:
@@ -141,7 +150,7 @@ async def test_end_absorbs_before_it_persists(_open_flag: None) -> None:
     session_id = uuid4()
     repo = _repo(session_id)
     order: list[str] = []
-    repo.absorb_derived_capture.side_effect = lambda *a, **k: order.append("absorb") or 0
+    repo.absorb_derived_capture_outcome.side_effect = lambda *a, **k: order.append("absorb") or 0
     repo.end.side_effect = lambda *a, **k: order.append("end") or MagicMock()
 
     await BrainSessionService(repo).end(session_id, "task-a", "summary", "next", 3)
@@ -159,7 +168,7 @@ async def test_end_absorbs_before_it_persists(_open_flag: None) -> None:
 #: `attributed_knowledge_ids: []` on a session carrying 5 artifacts in the
 #: ledger, the second returned all 5.
 #: `start` is ABSENT from this list, and that is not an exemption of convenience.
-#: Its target does not exist before it materializes: `absorb_derived_capture`
+#: Its target does not exist before it materializes: `absorb_derived_capture_outcome`
 #: requires a `session_id`, and `start` is precisely what resolves it. Demanding
 #: an "absorb first" order from it would force a wrong design to satisfy a test.
 #: What is asked of it is the PROPERTY, not the mechanism — that its result
@@ -202,7 +211,9 @@ def _ordering_repo(session_id: UUID, order: list[str]) -> MagicMock:
             method,
             AsyncMock(side_effect=lambda *a, _n=method, **k: _record(_n, result)),
         )
-    repo.absorb_derived_capture = AsyncMock(side_effect=lambda *a, **k: _record("absorb", 0))
+    repo.absorb_derived_capture_outcome = AsyncMock(
+        side_effect=lambda *a, **k: _record("absorb", _outcome(reason="nothing_to_absorb"))
+    )
     return repo
 
 

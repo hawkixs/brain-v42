@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol
+from typing import Any, Final, Protocol
 from uuid import UUID
 
 import structlog
@@ -32,6 +32,7 @@ from brain_v42.models.brain_session import (
     BrainSessionStateError,
     BrainSessionStatus,
     BrainSessionTerminalConflictError,
+    SessionAbsorption,
 )
 from brain_v42.models.project_key import canonicalize_project_key
 
@@ -114,7 +115,50 @@ class BrainSessionRepository(Protocol):
         self, session_id: UUID, connection_id: str, expected_client_key: str
     ) -> int: ...
 
+    async def absorb_derived_capture_outcome(
+        self, session_id: UUID, connection_id: str, expected_client_key: str
+    ) -> Any: ...
+
     async def attributed_knowledge_ids(self, session_id: UUID) -> Sequence[UUID]: ...
+
+
+#: Internal `reason` values that mean "the rule ran and said no". Ambiguity is
+#: alone here on purpose: a full ledger or a closed flag are not judgements about
+#: this session's artifacts, they are refusals to look.
+_ABSTENTION_REASONS: Final = frozenset({"ambiguous"})
+
+
+def _as_absorption(outcome: Any) -> SessionAbsorption | None:
+    """Project the repository's outcome onto the three words a caller branches on."""
+    if outcome is None:
+        return None
+    reason = getattr(outcome, "reason", "")
+    if getattr(outcome, "total", 0):
+        verdict = "absorbed"
+    elif reason in _ABSTENTION_REASONS:
+        verdict = "abstained"
+    else:
+        verdict = "nothing"
+    return SessionAbsorption(
+        outcome=verdict,
+        reason=reason,
+        rivals=list(getattr(outcome, "rival_sessions", ()) or ()),
+        held_by_tracers=getattr(outcome, "held_by_tracers", 0) or 0,
+    )
+
+
+def _with_absorption[ResultT: (BrainSessionCaptureResult, BrainSessionHeartbeatResult)](
+    result: ResultT, absorption: SessionAbsorption | None
+) -> ResultT:
+    """Attach the verdict without rebuilding the result by hand.
+
+    Absent absorption leaves the result untouched — a `model_copy` writing
+    `None` over a field that is already `None` would be noise, and would make
+    the closed-flag path indistinguishable from the armed one in a diff.
+    """
+    if absorption is None:
+        return result
+    return result.model_copy(update={"absorption": absorption})
 
 
 class BrainSessionService:
@@ -145,7 +189,9 @@ class BrainSessionService:
 
         return (get_current_transport() or "").strip() or None
 
-    async def _absorb_derived(self, session_id: UUID, expected_client_key: str) -> None:
+    async def _absorb_derived(
+        self, session_id: UUID, expected_client_key: str
+    ) -> SessionAbsorption | None:
         """Absorb what this connection's tracer collected.
 
         Does not raise for its own refusals: absorption accompanies an explicit
@@ -166,8 +212,13 @@ class BrainSessionService:
                 session_id=str(session_id),
                 reason=self._absorption_skip_reason(),
             )
-            return
-        await self.repo.absorb_derived_capture(session_id, connection_id, expected_client_key)
+            # `None`, never a `nothing` verdict: nothing was ATTEMPTED, and
+            # saying "the rule found nothing" would be a different claim.
+            return None
+        outcome = await self.repo.absorb_derived_capture_outcome(
+            session_id, connection_id, expected_client_key
+        )
+        return _as_absorption(outcome)
 
     def _absorption_skip_reason(self) -> str:
         """Why no absorption was attempted — the flag, or the transport."""
@@ -208,7 +259,12 @@ class BrainSessionService:
         connection_id = self._absorption_connection()
         if connection_id is None:
             return started
-        await self.repo.absorb_derived_capture(
+        # The same view as the other four commands. `start` cannot CARRY the
+        # verdict — `BrainSessionStartResult` derives an output schema and the
+        # budget refuses the field there — but it must not take a second route
+        # to the same absorption: two views used side by side is how one of them
+        # silently stops being the one production exercises.
+        await self.repo.absorb_derived_capture_outcome(
             started.session.id, connection_id, normalized_client_key
         )
         attributed = await self.repo.attributed_knowledge_ids(started.session.id)
@@ -243,8 +299,9 @@ class BrainSessionService:
         identity = _normalize_expected_client_key(expected_client_key)
         captured = _normalize_captured_ids(knowledge_ids, require_nonempty=True)
         assert captured is not None
-        await self._absorb_derived(session_id, identity)
-        return await self.repo.capture(session_id, identity, captured)
+        absorption = await self._absorb_derived(session_id, identity)
+        captured_result = await self.repo.capture(session_id, identity, captured)
+        return _with_absorption(captured_result, absorption)
 
     async def checkpoint(
         self,
@@ -296,8 +353,8 @@ class BrainSessionService:
     ) -> BrainSessionHeartbeatResult:
         """Refresh presence for an open session without changing its state."""
         identity = _normalize_expected_client_key(expected_client_key)
-        await self._absorb_derived(session_id, identity)
-        return await self.repo.heartbeat(session_id, identity)
+        absorption = await self._absorb_derived(session_id, identity)
+        return _with_absorption(await self.repo.heartbeat(session_id, identity), absorption)
 
     async def end(
         self,

@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from secrets import compare_digest
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 import sqlalchemy as sa
@@ -61,6 +61,10 @@ from brain_v42.models.brain_session import (
 from brain_v42.repositories.pg_base import BasePgRepository
 
 Row = dict[str, Any]
+
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from brain_v42.db.session_derived_capture import AbsorptionOutcome
 
 
 def _observation_columns(reference: datetime) -> dict[str, datetime]:
@@ -255,6 +259,24 @@ class PgBrainSessionRepo(BasePgRepository):
         connection_id: str,
         expected_client_key: str,
     ) -> int:
+        """The `.total` view of ``absorb_derived_capture_outcome``. ONE call.
+
+        Kept because a bare count is what `start` and the integration bench
+        read, and because the guarantees documented below are about the
+        TRANSACTION, which both views share — this method does not re-absorb,
+        it projects.
+        """
+        outcome = await self.absorb_derived_capture_outcome(
+            session_id, connection_id, expected_client_key
+        )
+        return outcome.total
+
+    async def absorb_derived_capture_outcome(
+        self,
+        session_id: UUID | str,
+        connection_id: str,
+        expected_client_key: str,
+    ) -> AbsorptionOutcome:
         """Have this session absorb the ledger of its connection's tracer.
 
         The repository decides nothing about the BOUNDS: it opens the
@@ -308,9 +330,14 @@ class PgBrainSessionRepo(BasePgRepository):
         sits where the refactor will be read. The cost of the hole is recalled
         above: the ledger is EXCLUSIVE, so a mistargeted move is IRREVERSIBLE.
 
-        Returns the number of rows moved; ``0`` covers every other refusal.
+        Returns the FULL outcome. It used to return ``outcome.total`` here and
+        that single projection is what ticket dfaed283 came back for: the reason
+        an absorption abstained — a rival covering the same instant — reached the
+        log and died on this line, leaving the client an empty ledger with no way
+        to tell an honest refusal from a dead path.
         """
         from brain_v42.db.session_derived_capture import (  # noqa: PLC0415
+            AbsorptionOutcome,
             absorb_tracer_ledger,
         )
 
@@ -319,15 +346,14 @@ class PgBrainSessionRepo(BasePgRepository):
             if row is None:
                 # Unknown session: nothing to absorb, and above all not an
                 # identity error — the command is what will say "not found".
-                return 0
+                return AbsorptionOutcome(reason="unknown_session")
             self._assert_identity(self._to_model(row), expected_client_key)
             target = SimpleNamespace(
                 id=row["id"],
                 project_key=row["project_key"],
                 started_at=row["started_at"],
             )
-            outcome = await absorb_tracer_ledger(session, target, connection_id)
-            return outcome.total
+            return await absorb_tracer_ledger(session, target, connection_id)
 
     async def observe(self, session_id: UUID | str, *, now: datetime | None = None) -> bool:
         """Stamp the observation of an open `agent` tracer. Returns "still open".
