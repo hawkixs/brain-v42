@@ -131,7 +131,20 @@ class AbsorptionOutcome:
     #: Artifacts the window stage refused because ANOTHER non-`agent` session
     #: covered their creation instant. Without this count, a systematic refusal
     #: is indistinguishable from a dead path.
-    rivals: int = 0
+    #:
+    #: RENAMED from `rivals` on 2026-09-03 (dfaed283): it counts ARTIFACTS, and
+    #: the ticket that asked to surface it read the name as "the rival sessions".
+    #: Two different things under one name is how a report ends up saying
+    #: something nobody measured.
+    rival_artifacts: int = 0
+    #: WHO contested — the rival sessions themselves, capped. The count answers
+    #: "how much"; an operator undoing a wrong abstention needs "who". Empty
+    #: whenever nothing was contested: the naming query does not even run.
+    rival_sessions: tuple[UUID, ...] = field(default_factory=tuple)
+    #: Eligible artifacts sitting in a tracer's ledger, measured BEFORE the move.
+    #: Taken afterwards it would count only the refused ones, the moved rows
+    #: having left `_window_donors` by then.
+    held_by_tracers: int = 0
     moved_ids: tuple[UUID, ...] = field(default_factory=tuple)
     donors: tuple[UUID, ...] = field(default_factory=tuple)
 
@@ -331,14 +344,45 @@ def _covered_by_a_rival(
     everything.
     """
     rival = brain_sessions.alias("rival")
-    return sa.exists().where(
-        sa.and_(
-            rival.c.project_key == project_key,
-            rival.c.id != target_id,
-            sa.or_(rival.c.nature.is_(None), rival.c.nature != "agent"),
-            rival.c.started_at <= created_at,
-            sa.func.coalesce(rival.c.ended_at, sa.func.now()) >= created_at,
+    return sa.exists().where(_rivalry(rival, project_key, target_id, created_at))
+
+
+def _rivalry(
+    rival: Any, project_key: str, target_id: Any, created_at: Any
+) -> sa.ColumnElement[bool]:
+    """The rivalry condition itself, written ONCE.
+
+    Two readers need it: the `EXISTS` that REFUSES, and the `SELECT DISTINCT`
+    that NAMES. A second copy would drift the day one side is widened, and the
+    drift would be invisible — the refusal and the explanation of the refusal
+    would simply stop being about the same sessions.
+    """
+    return sa.and_(
+        rival.c.project_key == project_key,
+        rival.c.id != target_id,
+        sa.or_(rival.c.nature.is_(None), rival.c.nature != "agent"),
+        rival.c.started_at <= created_at,
+        sa.func.coalesce(rival.c.ended_at, sa.func.now()) >= created_at,
+    )
+
+
+#: Ceiling on the NAMES brought back. The diagnosis needs the shape of the
+#: ambiguity, not an exhaustive census: past a handful of claimants the answer is
+#: the same, and an unbounded `IN` list would be the one place this path could
+#: hurt.
+_RIVAL_NAMES_CAP: Final = 10
+
+
+def _rival_sessions(project_key: str, target_id: Any, parked: Any, eligible: Any) -> sa.Select[Any]:
+    """WHICH non-`agent` sessions covered the instants we just refused."""
+    rival = brain_sessions.alias("rival")
+    return (
+        sa.select(rival.c.id)
+        .select_from(
+            parked.join(rival, _rivalry(rival, project_key, target_id, eligible.c.created_at))
         )
+        .distinct()
+        .limit(_RIVAL_NAMES_CAP)
     )
 
 
@@ -387,6 +431,8 @@ async def absorb_tracer_ledger(
     moved_window: list[UUID] = []
     donors: list[UUID] = []
     rivals = 0
+    rival_sessions: tuple[UUID, ...] = ()
+    held_by_tracers = 0
 
     try:
         async with session.begin_nested():
@@ -447,6 +493,19 @@ async def absorb_tracer_ledger(
                     _window_donors(target.project_key)
                 )
 
+                # BEFORE the move, and that ordering is the whole point: the
+                # update reassigns these rows to a non-`agent` session, which
+                # drops them out of `_window_donors`. Counted afterwards, this
+                # would report the refused ones only and call them "held".
+                held_by_tracers = int(
+                    (
+                        await session.execute(
+                            sa.select(sa.func.count()).select_from(parked).where(in_a_tracer)
+                        )
+                    ).scalar_one()
+                    or 0
+                )
+
                 # A1: FILTER first, then bound. And SELECT before updating,
                 # because an UPDATE's `RETURNING` yields the NEW value of
                 # `session_id`: the donor would be lost at the precise moment it
@@ -495,6 +554,21 @@ async def absorb_tracer_ledger(
                     ).scalar_one()
                     or 0
                 )
+
+                # Only when something was actually refused. On the nominal path
+                # this `SELECT` never leaves, so naming the rivals costs the
+                # quiet case nothing.
+                if rivals:
+                    rival_sessions = tuple(
+                        UUID(str(item))
+                        for item in (
+                            await session.execute(
+                                _rival_sessions(target.project_key, target.id, parked, eligible)
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
     except Exception:
         logger.warning("session_derived_capture.absorb_failed", exc_info=True)
         return AbsorptionOutcome(reason="failed")
@@ -511,7 +585,9 @@ async def absorb_tracer_ledger(
         reason=reason,
         moved_by_connection=len(moved_connection),
         moved_by_window=len(moved_window),
-        rivals=rivals,
+        rival_artifacts=rivals,
+        rival_sessions=rival_sessions,
+        held_by_tracers=held_by_tracers,
         moved_ids=moved_ids,
         donors=tuple(donors),
     )
@@ -537,7 +613,9 @@ def _log_absorption(target: Any, connection_id: str, outcome: AbsorptionOutcome)
         connection_id=connection_id,
         moved_by_connection=outcome.moved_by_connection,
         moved_by_window=outcome.moved_by_window,
-        rivals_blocked=outcome.rivals,
+        rivals_blocked=outcome.rival_artifacts,
+        rival_sessions=[str(item) for item in outcome.rival_sessions],
+        held_by_tracers=outcome.held_by_tracers,
         moved_ids=[str(item) for item in outcome.moved_ids],
         donors=[str(item) for item in outcome.donors],
     )
