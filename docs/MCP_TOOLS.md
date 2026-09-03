@@ -186,7 +186,7 @@ The 13 legacy string-returning tools listed below normalize malformed UUIDs to:
 
 Two implementation paths produce this behaviour:
 
-- **`parse_uuid()` from `parsing.py`** (10 call sites across `brain_tools.py`, `runbook_tools.py`, `snippet_tools.py`): `brain_supersede_decision`, `brain_get_supersession_chain`, `brain_validate_learning`, `brain_promote_adr` (source_learning_id path), `brain_accept_adr`, `brain_deprecate_adr`, `brain_promote_runbook` (source_learning_id path), `brain_get_runbook` (runbook_id path), `brain_execute_runbook`, `brain_use_snippet`.
+- **`parse_uuid()` from `parsing.py`** (10 call sites across `brain_tools.py`, `runbook_tools.py`, `snippet_tools.py`, `ticket_tools.py`): `brain_supersede_decision`, `brain_get_supersession_chain`, `brain_validate_learning`, `brain_promote_adr` (source_learning_id path), `brain_accept_adr`, `brain_deprecate_adr`, `brain_promote_runbook` (source_learning_id path), `brain_use_snippet`, `brain_ticket_reply`, `brain_ticket_transition`.
 - **Inline `try/except UUID()` in `crud_tools.py`**: `brain_get`, `brain_update`, `brain_delete`.
 
 All 13 tools return the same `✗ Invalid UUID: <value>` message on invalid input. The v4 session tools declare UUID parameters in their FastMCP schemas and therefore use MCP input validation instead of this formatted-string contract.
