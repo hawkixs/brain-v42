@@ -106,11 +106,40 @@ def _format_learning_item(lr: Learning, index: int) -> str:
     return "\n".join(lines)
 
 
+def _summary_access(entity: object) -> str:
+    """`access:` counts HUMAN reads; the machine count follows under `reads:`.
+
+    Ticket 1597c36d. REORG's guardrail rejects a candidate whose row shows
+    `access:N > 5` -- "someone is using it" -- and this row was carrying
+    `access_count`, the machine counter that the nightly scans themselves
+    inflate. Measured 2026-09-03: 18 of the 34 entities matching REORG's trash
+    allowlist were blocked at 18-101 machine reads while NEVER having been read
+    by a human, and the phase archived nothing for twelve nights.
+
+    Migrations 041 and 044 had already settled this question for the decay
+    (`access_count_human`, `last_accessed_at_human`, added because `access_factor`
+    was driven by machine reads). The summary row was the last place still asking
+    the old counter.
+
+    A NULL human counter reads as 0 and never falls back to the machine one:
+    "never counted" is not "counted a lot", and for a guardrail the safe reading
+    of an absent number is the one that does not protect.
+
+    `reads:` keeps the machine count in the row rather than deleting it -- a phase
+    with an explicit use for it can still see it, and the change is legible where
+    it takes effect instead of only in a commit message.
+    """
+    human = getattr(entity, "access_count_human", 0) or 0
+    machine = getattr(entity, "access_count", 0) or 0
+    return f"access:{human} | reads:{machine}"
+
+
 def _format_learning_summary(lr: Learning, index: int) -> str:
     """Token-bounded learning row for full-corpus pagination (REORG Part 1).
 
     Excludes the insight body, which dominates payload size. Surfaces the
-    metadata REORG actually inspects: project_key, tags, access_count,
+    metadata REORG actually inspects: project_key, tags, the HUMAN access
+    count (1597c36d),
     freshness_status. Two lines per row; ~100 tokens vs ~500-1500 in full mode.
     """
     badge = f" [{lr.confidence}]" if lr.confidence else ""
@@ -118,8 +147,7 @@ def _format_learning_summary(lr: Learning, index: int) -> str:
     header = f"{index}. **{lr.topic}**{badge}{archived} (id:{format_id(lr.id)})"
     pk = lr.project_key or "—"
     tags = ", ".join(lr.tags) if lr.tags else "—"
-    access = lr.access_count or 0
-    return f"{header}\n   project:{pk} | tags: {tags} | access:{access}"
+    return f"{header}\n   project:{pk} | tags: {tags} | {_summary_access(lr)}"
 
 
 def _format_decision_item(d: Decision, index: int) -> str:
@@ -143,8 +171,7 @@ def _format_decision_summary(d: Decision, index: int) -> str:
     header = f"{index}. **{d.title}** [{d.status}]{archived} (id:{format_id(d.id)})"
     pk = d.project_key or "—"
     tags = ", ".join(d.tags) if d.tags else "—"
-    access = d.access_count or 0
-    return f"{header}\n   project:{pk} | tags: {tags} | access:{access}"
+    return f"{header}\n   project:{pk} | tags: {tags} | {_summary_access(d)}"
 
 
 _SNIPPET_INTENTION_MAX = 120
