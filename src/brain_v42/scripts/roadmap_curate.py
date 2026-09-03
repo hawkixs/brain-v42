@@ -57,6 +57,11 @@ from brain_v42.services.proposal_service import PostConditionError as PostCondit
 _API_KEY_VAR = "BRAIN_NVIDIA_API_KEY"
 _ROADMAP_MODEL_VAR = "BRAIN_NVIDIA_ROADMAP_MODEL"
 _ROADMAP_FALLBACK_MODEL_VAR = "BRAIN_NVIDIA_ROADMAP_FALLBACK_MODEL"
+#: The operator's explicit "yes, I meant it" for a WET night whose primary can
+#: auto-apply. It is NOT a killswitch and it does not choose a model: it only
+#: says that the coincidence between `--wet` and an allowlisted primary was
+#: intended. Ticket 7511c210.
+_AUTO_APPLY_ACK_VAR = "BRAIN_DREAM_ROADMAP_AUTO_APPLY_ACK"
 _ENV_FILE = Path.home() / ".config" / "brain-v42" / "nvidia.env"
 # qwen/qwen3-next-80b-a3b-instruct reached its provider EOL on 2026-07-27
 # (HTTP 410 Gone) and the 8B fallback served ten nights in silence. Replacement
@@ -1417,6 +1422,29 @@ def main() -> int:
             "tourne à UN seul maillon (has_fallback=False)"
         )
     base_url = args.base_url or os.environ.get("BRAIN_NVIDIA_BASE_URL") or DEFAULT_BASE_URL
+
+    if args.wet and model in AUTO_APPLY_MODELS and os.environ.get(_AUTO_APPLY_ACK_VAR) != "yes":
+        # FAIL-CLOSED, and the twin of the refusal just below: that one protects
+        # against a WET night that would do NOTHING, this one against a WET night
+        # that would do TOO MUCH. Both are decided here because this is the only
+        # place that knows the EFFECTIVE primary — the environment overrides a
+        # default that itself depends on `--wet`.
+        #
+        # Why a guard at all when the allowlist is the point of `--wet`: the two
+        # facts arrive from different places and neither mentions the other.
+        # `BRAIN_DREAM_ROADMAP_DRY_RUN` lives in a systemd drop-in, the primary in
+        # ANOTHER drop-in, and the allowlist in this file. On 2026-09-03 a canary
+        # legitimately put `DEFAULT_WET_ROADMAP_MODEL` in the DRY chain: from that
+        # moment one word flipped the night from proposing to archiving, and
+        # nothing in the repository could see it coming.
+        print(
+            f"! REFUS : le primaire effectif {model} est dans AUTO_APPLY_MODELS. "
+            f"En --wet il APPLIQUE ({', '.join(WET_APPLYABLE_OPS)}) au lieu de "
+            f"proposer. Poser {_AUTO_APPLY_ACK_VAR}=yes pour confirmer que c'est "
+            "voulu, ou remettre BRAIN_DREAM_ROADMAP_DRY_RUN=true.",
+            file=sys.stderr,
+        )
+        return 2
 
     if args.wet and model not in AUTO_APPLY_MODELS:
         mode = "proposer-only" if model in PROPOSER_ONLY_MODELS else "hors allowlist auto-apply"
