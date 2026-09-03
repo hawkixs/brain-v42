@@ -136,6 +136,54 @@ def test_the_production_row_of_the_night_of_2026_09_02_parses() -> None:
     assert (degraded.fallback_batches, degraded.scanned) == (10, 10)
 
 
+def test_the_log_line_and_the_stored_value_are_NOT_the_same_string() -> None:
+    """The trap that produced ticket `e7006388`, pinned so it cannot be sprung twice.
+
+    `roadmap_curate` prints `f"! {degraded}"` to the journal and stores `degraded`
+    itself in `error_message`. The exclamation mark belongs to the LOG and to the
+    log alone -- but it is the form a reader sees first, so it is the form that
+    ends up in a hand-written query.
+
+    That is exactly what happened: `error_message LIKE '! DÉGRADÉ%'` returned 0
+    rows for 2026-09-02 and a ticket was opened saying the mark never reached
+    `dream_runs`. The mark was there, under `LIKE 'DÉGRADÉ%'`, and the whole
+    chain -- writer, column, fetch, parser, rubric -- was working.
+
+    Nothing here is broken, and this test is not a fix. It is the missing
+    sentence: the two forms differ, the reader keys on the STORED one, and a
+    query carrying the log's prefix finds nothing on a perfectly healthy night.
+    """
+    notice = _degradation_notice(
+        "mistralai/mistral-nemotron",
+        fallback_batches=10,
+        scanned=10,
+        primary_errors=["timeout"],
+    )
+    assert notice is not None
+
+    # What the column holds: no exclamation mark, ever.
+    assert notice.startswith(post_run_alert.DEGRADED_PREFIX)
+    assert not notice.startswith("! ")
+
+    # What the journal shows, and what a query must therefore NOT copy.
+    assert f"! {notice}".startswith(f"! {post_run_alert.DEGRADED_PREFIX}")
+
+    # The reader keys on the stored form; the log form would never match it.
+    assert post_run_alert.degraded_rows(
+        [{"phase": "roadmap", "project_key": "*", "status": "done", "error_message": notice}]
+    )
+    assert not post_run_alert.degraded_rows(
+        [
+            {
+                "phase": "roadmap",
+                "project_key": "*",
+                "status": "done",
+                "error_message": f"! {notice}",
+            }
+        ]
+    ), "if the log form ever became storable, every query written for it would be right by accident"
+
+
 def test_a_talkative_done_row_is_not_a_degraded_one() -> None:
     """`extract` and `promote` write on `'done'` too. Only the prefix counts."""
     assert post_run_alert.degraded_rows([EMPTY_POOL_ROW]) == []
