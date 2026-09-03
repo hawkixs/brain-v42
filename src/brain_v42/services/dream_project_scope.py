@@ -127,7 +127,6 @@ PROJECT_TOOL_POLICIES: Mapping[str, DreamProjectToolPolicy] = MappingProxyType(
             typed_references=(_OPTIONAL_LEARNING_SOURCE,),
             forbid_dream_run_id=True,
         ),
-        "brain_list_adrs": DreamProjectToolPolicy(inject_project_key=True),
         "brain_update": DreamProjectToolPolicy(
             typed_references=(_DYNAMIC_RESOURCE,),
             nested_reference_arguments=("related_to",),

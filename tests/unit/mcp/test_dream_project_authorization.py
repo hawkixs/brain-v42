@@ -138,7 +138,7 @@ def test_project_policy_is_exhaustive_for_current_dream_catalog() -> None:
     }
 
     assert set(PROJECT_TOOL_POLICIES) == allowed_tools
-    assert len(PROJECT_TOOL_POLICIES) == 20
+    assert len(PROJECT_TOOL_POLICIES) == 19
 
 
 def test_production_policy_does_not_import_phase_capabilities() -> None:
@@ -159,7 +159,6 @@ def test_policy_mapping_is_immutable() -> None:
         "brain_save_snippet",
         "brain_propose_adr",
         "brain_create_runbook",
-        "brain_list_adrs",
     ],
 )
 @pytest.mark.asyncio

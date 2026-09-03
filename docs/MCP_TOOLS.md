@@ -1,7 +1,7 @@
 # MCP Tools — brain_v42
 
 **Updated:** 2026-07-24
-**Repository registry:** 54 always-on + 2 graph-gated = 56 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
+**Repository registry:** 53 always-on + 2 graph-gated = 55 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
 **Default catalog:** Admin clients use `compact` while capability enforcement is disabled: the seven session lifecycle tools plus `brain_find_tool` and `brain_call_tool`; other registered tools remain discoverable through those gateways. `native` exposes every registered tool. An authenticated Dream phase always receives its exact native allowlist, independent of presentation headers, and cannot access either gateway. Experimental `brain_code_mode` takes precedence only while Dream capability enforcement is disabled.
 **Transport:** HTTP loopback `http://127.0.0.1:8765/mcp` (production fleet). Tools are defined as closures capturing injected services — see `src/brain_v42/mcp/server.py` (`build_services()`) and the `register_*_tools()` functions in each module under `src/brain_v42/mcp/tools/`.
 
@@ -197,7 +197,7 @@ Increment `use_count`, set `last_used_at = now()`. Returns `✗ Invalid UUID: <v
 
 ---
 
-## ADRs — 5 tools (`brain_tools.py`)
+## ADRs — 4 tools (`brain_tools.py`)
 
 ### brain_propose_adr
 ```
@@ -238,18 +238,13 @@ brain_deprecate_adr(adr_id, reason=None)
 ```
 Set `status=deprecated`. Optional reason appended to consequences. Returns `✗ Invalid UUID: <value>` if `adr_id` is malformed.
 
-### brain_list_adrs
-```
-brain_list_adrs(project_key=None, status=None, limit=20, offset=0)
-```
-Filter ADRs by project and status in {proposed, accepted, deprecated, superseded}.
-**Limit**: clamped server-side to [1, 100].
-
-Temporary compatibility alias: during this migration window,
-prefer `brain_list(entity_type="adr")`. Both names share the same
-ADR list adapter and exclude archived items (`include_archived=False`).
-Any eventual removal of `brain_list_adrs` requires a later ticket grounded in
-usage evidence and an explicit decision; this alias stays registered until then.
+Listing ADRs is `brain_list(entity_type="adr")`. The `brain_list_adrs`
+compatibility alias was REMOVED from the catalogue on 2026-09-03 (ticket
+af3b58dd item 3). The usage evidence this document asked for was measured
+across 1 513 Dream event logs covering 2026-07-13 to 2026-09-03, 208 of them
+PROMOTE: `"tool":"brain_list_adrs"` appears **0** times, against 88 calls to
+`brain_propose_adr` and 17 586 to `brain_list`. The Dream rail named the alias
+in three places and never called it once.
 
 ---
 
@@ -772,7 +767,7 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 
 | File | Group | Tools |
 |------|-------|-------|
-| `brain_tools.py` | decisions / learnings / ADRs / search / graph | 11 + 2 conditional |
+| `brain_tools.py` | decisions / learnings / ADRs / search / graph | 10 + 2 conditional |
 | `crud_tools.py` | generic CRUD | 4 |
 | `decay_tools.py` | decay + consolidation | 4 |
 | `dream_tools.py` | dream-phase maintenance | 7 |
@@ -784,4 +779,4 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `snippet_tools.py` | snippets | 2 |
 | `ticket_tools.py` | tickets cross-projet (coordination) | 5 |
 | `workflow_guide_tools.py` | bounded workflow guidance | 1 |
-| **Total** | | **54 always-on + 2 graph-gated = 56** |
+| **Total** | | **53 always-on + 2 graph-gated = 55** |

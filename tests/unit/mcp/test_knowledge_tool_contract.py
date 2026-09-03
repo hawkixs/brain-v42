@@ -21,7 +21,6 @@ READ_ONLY_TOOLS = frozenset(
         "brain_get_supersession_chain",
         "brain_graph_path",
         "brain_list",
-        "brain_list_adrs",
         "brain_list_curation_proposals",
         "brain_list_orphans_for_classification",
         "brain_list_project_groups",
@@ -134,7 +133,7 @@ async def test_all_knowledge_tools_publish_exact_safety_annotations() -> None:
         DESTRUCTIVE_TOOLS,
     )
     expected_names = frozenset().union(*groups)
-    assert len(expected_names) == 48
+    assert len(expected_names) == 47
     assert sum(len(group) for group in groups) == len(expected_names)
     assert {tool.name for tool in await server.list_tools()} == expected_names
 
@@ -240,7 +239,6 @@ async def test_domain_types_are_published_in_tool_input_schemas() -> None:
     search = await server.get_tool("brain_search")
     learn = await server.get_tool("brain_learn")
     execute = await server.get_tool("brain_execute_runbook")
-    list_adrs = await server.get_tool("brain_list_adrs")
     listing = await server.get_tool("brain_list")
     save_snippet = await server.get_tool("brain_save_snippet")
     transition = await server.get_tool("brain_ticket_transition")
@@ -251,7 +249,6 @@ async def test_domain_types_are_published_in_tool_input_schemas() -> None:
             search,
             learn,
             execute,
-            list_adrs,
             listing,
             save_snippet,
             transition,
@@ -282,12 +279,16 @@ async def test_domain_types_are_published_in_tool_input_schemas() -> None:
     }
     assert enum_values(learn, "confidence") == {"low", "medium", "high"}
     assert enum_values(execute, "status") == {"success", "failed", "partial", "skipped"}
-    assert enum_values(list_adrs, "status") == {
-        "proposed",
-        "accepted",
-        "deprecated",
-        "superseded",
-    }
+    # A LOSS, pinned rather than erased. `brain_list_adrs` typed its `status`
+    # as `ADRStatus`, so the four ADR statuses were published in the tool
+    # schema and a caller could discover them without reading prose. The alias
+    # was removed on 2026-09-03 (ticket af3b58dd item 3) and `brain_list` types
+    # `status` as a bare `str`, because the one parameter serves three
+    # vocabularies — decision, adr and plan — that no single enum describes.
+    # The four values now live only in the docstring. If someone publishes a
+    # per-entity-type status enum, this assertion is what tells them to come
+    # back and restore the stronger contract.
+    assert enum_values(listing, "status") == set()
     assert enum_values(listing, "confidence") == {"low", "medium", "high"}
     assert enum_values(transition, "action") == {
         "start",

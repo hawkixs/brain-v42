@@ -10,7 +10,7 @@ Tools implemented here (by feature):
   #630: brain_learn, brain_validate_learning
   #631: brain_save_snippet, brain_use_snippet  [snippet_tools.py]
   #632: brain_create_runbook, brain_get_runbook, brain_execute_runbook  [runbook_tools.py]
-  #633: brain_propose_adr, brain_accept_adr, brain_list_adrs
+  #633: brain_propose_adr, brain_promote_adr, brain_accept_adr
   #634: brain_set_project_context, brain_update_project_focus  [project_context_tools.py]
   #635: brain_search (group_by_type replaces brain_what_do_i_know_about)
 
@@ -33,13 +33,12 @@ import structlog
 from sqlalchemy.exc import IntegrityError
 
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
-from brain_v42.mcp.tools.crud_tools import _build_adr_list_adapter
 from brain_v42.mcp.tools.tool_annotations import (
     _DESTRUCTIVE_ANNOTATIONS,
     _HEARTBEAT_ANNOTATIONS,
     _READ_ANNOTATIONS,
 )
-from brain_v42.models.adr import ADRStatus, AlternativeConsidered
+from brain_v42.models.adr import AlternativeConsidered
 from brain_v42.models.brain import KnowledgeType
 from brain_v42.models.decision import DecisionCreate
 from brain_v42.models.learning import Confidence, LearningCreate, SourceType
@@ -101,7 +100,6 @@ def register_tools(
     Tools are defined as closures capturing the injected service instances.
     """
     logger.info("brain_v42.tools.register_tools.called")
-    list_adrs = _build_adr_list_adapter(adr_svc)
 
     # Metrics are no longer installed here. They are applied after registration
     # by brain_v42.metrics.tool_instrumentation, from _run_mcp (ticket
@@ -603,40 +601,6 @@ def register_tools(
             f"ADR #{adr.number} accepted",
             adr.title,
             id=str(adr.id),
-        )
-
-    @mcp.tool(version="1.0", annotations=_READ_ANNOTATIONS)
-    async def brain_list_adrs(
-        project_key: str | None = None,
-        status: ADRStatus | None = None,
-        limit: int = 20,
-        offset: int = 0,
-    ) -> str:
-        """List ADRs with optional filters by project and/or status.
-
-        CATALOGUE ALIAS: same behaviour as `list_adrs` (crud_tools) — both
-        entries are built by `_build_adr_list_adapter`, a single source since
-        72b048f, guarded by test_brain_adr_list_alias. Kept because the dream
-        rail NAMES it: capability allowlist (dream_capabilities), scope policy
-        (dream_project_scope) and the PROMOTE prompt
-        (scripts/dream/phase_promote.md). Removing it from the catalogue is a
-        batch coordinated with those three surfaces, not a local cleanup.
-
-        Args:
-            project_key: Optional project scope filter.
-            status: Optional status filter — 'proposed', 'accepted', 'deprecated', 'superseded'.
-            limit: Maximum number of results (default 20, clamped server-side to [1, 100]).
-            offset: Number of results to skip (default 0).
-
-        Returns:
-            Formatted markdown list of ADRs.
-        """
-        return await list_adrs(
-            project_key,
-            status,
-            limit,
-            offset,
-            False,
         )
 
     @mcp.tool(version="1.0", annotations=_DESTRUCTIVE_ANNOTATIONS)
