@@ -1851,6 +1851,35 @@ def test_repository_head_051_is_documented_without_claiming_a_deployed_head() ->
         assert "Production remains at 037" not in normalized
 
 
+def test_the_migration_table_is_ordered_by_revision() -> None:
+    """A reader scans this table by number; the number must be the order.
+
+    Ticket `bdd0ac75`. The contract checked that every revision had a ROW — the
+    guard above computes the missing ones over the whole range — and said nothing
+    about where the row sat. The table ended `045, 047, 049, 048, 046, 050, 051`:
+    four rows landed wherever their author was reading, and nothing noticed for
+    five revisions.
+
+    Presence and order are two properties, and the cheap one was the only one
+    guarded. The check is MONOTONY rather than equality against a computed list:
+    what a reader needs is that no row appears before one with a smaller number,
+    and stating it that way keeps the assertion true of any future range without
+    re-deriving it here.
+    """
+    numbers = [int(row) for row in re.findall(r"^\| (0\d{2}) \|", SCHEMA, flags=re.M)]
+
+    assert numbers, "no migration row found — the row pattern no longer matches the table"
+    out_of_order = [
+        (previous, current)
+        for previous, current in zip(numbers, numbers[1:], strict=False)
+        if current <= previous
+    ]
+    assert not out_of_order, (
+        "docs/SCHEMA.md migration table is not ordered by revision: "
+        + ", ".join(f"{previous} then {current}" for previous, current in out_of_order)
+    )
+
+
 def test_documented_migration_head_matches_repository() -> None:
     head = _repository_head()
 
