@@ -78,22 +78,41 @@ GUARDED_DOCUMENTS = (
 _REVISION = re.compile(r"^revision(?::\s*[^=]+)?\s*=\s*[\"']([^\"']+)", re.M)
 _DOWN_REVISION = re.compile(r"^down_revision(?::\s*[^=]+)?\s*=\s*[\"']([^\"']+)", re.M)
 
-#: "Repository target: 046", "La cible du dépôt est 046",
-#: "Migration 046 is the repository target", "La révision 046 est la tête du dépôt".
+#: "Repository target: 046", "the repository's target is 046",
+#: "La cible du dépôt est 046", "Migration 046 is the repository target",
+#: "Revision 046 is the head of the repository", "La révision 046 est la tête du dépôt".
+#:
+#: The possessive and the English inversion are listed because they cost two
+#: revisions of drift on 2026-09-03: `docs/SCHEMA.md` announced 049 while
+#: `ARCHITECTURE.md` and `MCP_TOOLS.md` announced 051, and this module stayed
+#: GREEN. `"repository's target"` does not CONTAIN `"repository target"`.
 _TARGET_PATTERNS = (
-    re.compile(r"(?:Repository target:|La cible du dépôt est)\s*`?(0\d{2})`?"),
     re.compile(
-        r"(?:Migration|La révision)\s+`?(0\d{2})`?\s+"
-        r"(?:is the repository target|est la tête du dépôt)"
+        r"(?:Repository target:|[Tt]he repository's target is|La cible du dépôt est)"
+        r"\s*`?(0\d{2})`?"
+    ),
+    re.compile(
+        r"(?:Migration|Revision|La révision)\s+`?(0\d{2})`?\s+"
+        r"(?:is the repository target|is the head of the repository|est la tête du dépôt)"
     ),
 )
 
 #: The vocabulary that ANNOUNCES a repository target, whatever the phrasing. Check
-#: 4 requires a line carrying it to be recognised by a pattern.
-_TARGET_VOCABULARY = re.compile(r"repository target|cible du dépôt|tête du dépôt", re.I)
+#: 4 requires a line carrying it to be recognised by a pattern, so this expression
+#: must stay strictly WIDER than the patterns above — that is its whole purpose.
+#: It was not: it carried the same possessive gap, so the alarm went blind exactly
+#: where the guard did, and silence read as "nothing to report".
+_TARGET_VOCABULARY = re.compile(
+    r"repository'?s? target|head of the repository|cible du dépôt|tête du dépôt", re.I
+)
 
-#: "migrations 001–046 defined", "migrations 001 .. 046".
-_RANGE = re.compile(r"migrations?\s+001\s*(?:–|—|-|\.\.|to|à)\s*`?(0\d{2})`?")
+#: "migrations 001–046 defined", "migrations 001 .. 046", "49 revisions (001 → 049)".
+#: `revisions` and the arrow are not cosmetic variants: `docs/SCHEMA.md` used
+#: exactly that spelling, and it went unguarded for two revisions.
+_RANGE = re.compile(
+    r"(?:migrations?|revisions?|révisions?)\s*\(?\s*001\s*"
+    r"(?:–|—|-|\.\.|→|->|to|à)\s*`?(0\d{2})`?"
+)
 
 #: The vocabulary of a DEPLOYED head — the one no document can prove.
 _DEPLOYED = re.compile(
@@ -260,6 +279,42 @@ def test_the_gate_catches_the_document_it_was_written_for() -> None:
     assert ("repository target", "040", 6) in stale, "la cible périmée doit être vue"
     assert ("migration range", "039", 665) in stale, "l'auto-contradiction doit être vue"
     assert ("037", 238) in deployed, "la tête déployée non datée doit être vue"
+
+
+def test_the_apostrophe_that_walked_through_the_guard_is_caught() -> None:
+    """Counter-witness, 2026-09-03: the phrasings that cost two revisions of drift.
+
+    These checks were GREEN while `docs/SCHEMA.md` announced 049 and both
+    `ARCHITECTURE.md` and `MCP_TOOLS.md` announced 051 — three documents, two
+    answers, which is the exact defect census `f7d013eb` was written to end.
+
+    Nothing exotic happened: `"repository's target"` does not CONTAIN
+    `"repository target"`, so the possessive missed `_TARGET_PATTERNS`. And
+    because `_TARGET_VOCABULARY` carried the SAME gap, check 4 — the blind-spot
+    check, whose whole job is to make an unknown phrasing noisy — stayed silent
+    as well. A guard and its own alarm shared one blind spot; that is why the
+    drift was invisible rather than merely unfixed.
+
+    The three phrasings are frozen here verbatim, so that narrowing the patterns
+    back fails a test instead of quietly re-opening the hole.
+    """
+    document = "\n".join(
+        (
+            "**Delivery status:** the repository's target is 049.",
+            "proof before the MCP restart. Revision 049 is the head of the repository.",
+            "49 revisions (001 \u2192 049), in `alembic/versions/`.",
+        )
+    )
+
+    assert [(claim.kind, claim.value, claim.line) for claim in repository_claims(document)] == [
+        ("repository target", "049", 1),
+        ("repository target", "049", 2),
+        ("migration range", "049", 3),
+    ]
+    assert unrecognised_target_lines(document) == [], (
+        "check 4 doit reconnaître ces tournures, pas les signaler : c'est le motif qui "
+        "manquait, pas la phrase qui est fautive"
+    )
 
 
 def test_a_dated_measurement_of_the_deployed_head_stays_legitimate() -> None:

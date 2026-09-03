@@ -1823,22 +1823,25 @@ def test_repository_head_051_is_documented_without_claiming_a_deployed_head() ->
     production was still measured at 041 at that moment, and SCHEMA.md says so
     in the same breath.
     """
-    assert _repository_head() == "051"
-    assert "49 revisions (001 → 049)" in SCHEMA
-    assert "| 038 |" in SCHEMA
-    assert "| 039 |" in SCHEMA
-    assert "| 040 |" in SCHEMA
-    assert "| 041 |" in SCHEMA
-    assert "| 044 |" in SCHEMA
-    assert "| 046 |" in SCHEMA
-    assert "| 047 |" in SCHEMA
-    assert "| 048 |" in SCHEMA
-    assert "| 049 |" in SCHEMA
-    assert "A fresh schema at head 049 contains 32 `public` tables" in SCHEMA
+    head = _repository_head()
+    assert head == "051"
+
+    # Everything below is DERIVED from that measured head. It used to be COPIED,
+    # and that is precisely how `SCHEMA.md` came to announce 049 while the chain
+    # was at 051: a pin written as the stale literal cannot notice it is stale —
+    # it goes green ON the drift. The name of this test still carries the head on
+    # purpose (bumping requires renaming the guard); the document assertions no
+    # longer do.
+    assert f"{int(head)} revisions (001 → {head})" in SCHEMA
+    missing = [
+        f"{number:03d}" for number in range(1, int(head) + 1) if f"| {number:03d} |" not in SCHEMA
+    ]
+    assert not missing, f"SCHEMA.md documents no row for revisions {missing}"
+    assert f"A fresh schema at head {head} contains" in SCHEMA
 
     schema_normalized = " ".join(SCHEMA.split())
-    assert "the repository's target is 049." in schema_normalized
-    assert "Revision 049 is the head of the repository." in schema_normalized
+    assert f"the repository's target is {head}." in schema_normalized
+    assert f"Revision {head} is the head of the repository." in schema_normalized
     assert "select version_num from alembic_version" in schema_normalized
 
     # The retired claim must not come back in any of the core documents.
