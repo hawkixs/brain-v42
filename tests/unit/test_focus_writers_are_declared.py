@@ -19,15 +19,24 @@ missed the scrub, whose write goes through `values = dict(updates)` with the
 column name coming from a module-level tuple — invisible to any scan looking for
 the keyword. Being noisy and absorbing the noise in a declared list has no false
 negatives; being clever has.
+
+WHAT THIS GUARD STILL CANNOT SEE, said rather than discovered. It scans `src/`
+AND the repository's own `scripts/`, but it keys on the COLUMN. A shim that names
+the MODULE and never the column is invisible to it — `scripts/migrate_neo4j_to_pg.py`
+is exactly that: two lines, `sys.modules[__name__] = _impl`, no mention of
+`current_focus`. Finding that one is the census's job, not this guard's, and on
+2026-09-03 a truncated `grep` missed it (a `head -5` over a list whose `grep -v`
+filter silently matched nothing). The lesson belongs here because this file is
+where someone will look next: count first, abbreviate after.
 """
 
 from __future__ import annotations
 
-import re
+import ast
 from pathlib import Path
 
 ROOT = Path(__file__).parents[2]
-SOURCES = (ROOT / "src",)
+SOURCES = (ROOT / "src", ROOT / "scripts")
 COLUMN = "current_focus"
 
 #: What each module does with the column. `stamps` answers ONE question — does
@@ -50,18 +59,20 @@ FOCUS_WRITERS: dict[str, tuple[str, bool | None, str]] = {
         True,
         "update_project_focus — the CAS of brain_update_project_focus",
     ),
-    # ── writers OUTSIDE the MCP layer, and outside the bound ──────────────
+    # ── writers OUTSIDE the MCP layer: stamped since 2026-09-03, still unbounded ──
     "src/brain_v42/scripts/scrub_xml_tool_call_leak.py": (
         "writer",
-        False,
-        "maintenance scrub, --live rewrites the prose to strip a leaked tool call "
-        "and sets neither focus_updated_at nor the bound — measured 2026-09-03",
+        True,
+        "maintenance scrub; --live rewrites the prose, so `focus_stamp` applies by "
+        "040's own rule. Still outside the 10 000-character bound, which lives at "
+        "the MCP layer alone",
     ),
     "src/brain_v42/scripts/migrate_neo4j_to_pg.py": (
         "writer",
-        False,
-        "one-shot datalake_v2 import, referenced nowhere else in the tree; writes "
-        "the column through a generic row dict, unstamped and unbounded",
+        True,
+        "datalake_v2 import; sets `focus_updated_at` EXPLICITLY to NULL — the row "
+        "predates brain_v42 and `now()` would date the prose at import time. Still "
+        "outside the bound",
     ),
     # ── the rest: readers, models, plumbing ───────────────────────────────
     "src/brain_v42/db/focus_stamp.py": ("rule", None, "the stamping rule itself"),
@@ -81,7 +92,35 @@ FOCUS_WRITERS: dict[str, tuple[str, bool | None, str]] = {
     "src/brain_v42/maintenance/xml_scrub.py": ("reader", None, "the scrubbing regex"),
 }
 
-_STAMPS = re.compile(r"focus_stamp|focus_updated_at")
+
+#: Does this module DECIDE what happens to `focus_updated_at`? Answered from the
+#: AST, and that took two tries — both failures of the same family, both found by
+#: removing the stamp and watching the guard stay green:
+#:
+#:   1. matching raw source let a COMMENT satisfy the rule, so the prose written
+#:      to explain the stamp stood in for the stamp;
+#:   2. matching code let the IMPORT satisfy it — `from … import focus_stamp` on
+#:      a module that no longer calls it.
+#:
+#: A mention is not a decision. What counts is a CALL to `focus_stamp`, or
+#: `focus_updated_at` in a position that assigns it: a dict key, a keyword
+#: argument, or a subscript target.
+def _decides_the_focus_date(path: Path) -> bool:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == "focus_stamp":
+                return True
+        if isinstance(node, ast.keyword) and node.arg == "focus_updated_at":
+            return True
+        if isinstance(node, ast.Dict):
+            for key in node.keys:
+                if isinstance(key, ast.Constant) and key.value == "focus_updated_at":
+                    return True
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+            if node.slice.value == "focus_updated_at":
+                return True
+    return False
 
 
 def _modules_naming_the_column() -> set[str]:
@@ -115,9 +154,7 @@ def test_every_writer_that_claims_to_stamp_really_does() -> None:
     liars = sorted(
         module
         for module, (role, stamps, _note) in FOCUS_WRITERS.items()
-        if role == "writer"
-        and stamps
-        and not _STAMPS.search((ROOT / module).read_text(encoding="utf-8"))
+        if role == "writer" and stamps and not _decides_the_focus_date(ROOT / module)
     )
 
     assert not liars, (
@@ -127,21 +164,14 @@ def test_every_writer_that_claims_to_stamp_really_does() -> None:
     )
 
 
-#: The writers that do NOT stamp, measured on 2026-09-03 and frozen here.
-#: Frozen rather than merely tolerated: a NEW unstamped writer reddens the test
-#: below, and STAMPING one of these two also reddens it — which is the point.
-#: Neither is fixed in this batch. Both write the production database when run,
-#: so the decision to route them through the shared path is an operator's, taken
-#: with the ticket in hand, not a side effect of a census.
-UNSTAMPED_WRITERS = frozenset(
-    {
-        "src/brain_v42/scripts/scrub_xml_tool_call_leak.py",
-        "src/brain_v42/scripts/migrate_neo4j_to_pg.py",
-    }
-)
+#: EMPTY since 2026-09-03: every writer decides what happens to
+#: `focus_updated_at`. It stays as a named set rather than being deleted, because
+#: an empty set is an assertion — "no writer escapes the rule" — and the test
+#: below turns a new escapee into a red line instead of a silent one.
+UNSTAMPED_WRITERS: frozenset[str] = frozenset()
 
 
-def test_the_writers_outside_the_shared_path_are_exactly_the_two_named_ones() -> None:
+def test_no_writer_escapes_the_stamping_rule() -> None:
     """Ticket `5281f0ef`: the hole its own author predicted, measured and pinned.
 
     The bound of 2026-08-23 lives at the MCP layer alone. These two writers reach
@@ -161,6 +191,6 @@ def test_the_writers_outside_the_shared_path_are_exactly_the_two_named_ones() ->
 
     assert measured == UNSTAMPED_WRITERS
     for module in UNSTAMPED_WRITERS:
-        assert not _STAMPS.search((ROOT / module).read_text(encoding="utf-8")), (
+        assert not _decides_the_focus_date(ROOT / module), (
             f"{module} now stamps — move it out of UNSTAMPED_WRITERS and say so"
         )
