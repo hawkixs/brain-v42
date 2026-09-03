@@ -397,7 +397,7 @@ class TestRepositoryEntryPoint:
 
     async def _absorb_via_repo(
         self, monkeypatch: pytest.MonkeyPatch, *, row: dict[str, Any] | None
-    ) -> tuple[int, list[Any]]:
+    ) -> tuple[Any, list[Any]]:
         import brain_v42.db.session_derived_capture as module
         from brain_v42.repositories.pg_brain_session import PgBrainSessionRepo
         from tests.unit.repositories.test_pg_brain_session import _make_session
@@ -414,16 +414,16 @@ class TestRepositoryEntryPoint:
 
         monkeypatch.setattr(module, "absorb_tracer_ledger", _fake)
         _, _statements, _, factory = _make_session(lambda _stmt: _result(row=row))
-        moved = await PgBrainSessionRepo(factory).absorb_derived_capture(
+        outcome = await PgBrainSessionRepo(factory).absorb_derived_capture_outcome(
             uuid4(), _CONNECTION, _CLIENT_KEY
         )
-        return moved, seen
+        return outcome, seen
 
     async def test_it_delegates_with_the_target_identity(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         session_id = uuid4()
-        moved, seen = await self._absorb_via_repo(
+        outcome, seen = await self._absorb_via_repo(
             monkeypatch,
             # `client_key` is now READ by the identity guard, which lives in the
             # same transaction as the mutation. A double row without it would no
@@ -431,7 +431,7 @@ class TestRepositoryEntryPoint:
             row=_session_row(session_id),
         )
 
-        assert moved == 3
+        assert outcome.total == 3
         ((target, connection_id),) = seen
         assert (target.id, target.project_key, target.started_at) == (
             session_id,
@@ -443,9 +443,28 @@ class TestRepositoryEntryPoint:
     async def test_an_unknown_session_absorbs_nothing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        moved, seen = await self._absorb_via_repo(monkeypatch, row=None)
-        assert moved == 0
+        outcome, seen = await self._absorb_via_repo(monkeypatch, row=None)
+
+        assert outcome.total == 0
+        # The count alone could not say WHICH zero this is. Reading the reason
+        # is what the facade's removal buys: an unknown session is not a full
+        # ledger, and neither is a closed flag.
+        assert outcome.reason == "unknown_session"
         assert seen == []
+
+    def test_the_repository_offers_only_the_outcome_path(self) -> None:
+        """The `.total` facade is GONE, and nothing may quietly bring it back.
+
+        It existed for one reason — the integration bench read a bare count — and
+        w45 aligned that bench on the outcome (1170b98). Keeping a second view of
+        the same call is how one of the two silently stops being the one
+        production exercises; the facade had already reached that state the day
+        `start` moved to the outcome route.
+        """
+        from brain_v42.repositories.pg_brain_session import PgBrainSessionRepo
+
+        assert hasattr(PgBrainSessionRepo, "absorb_derived_capture_outcome")
+        assert not hasattr(PgBrainSessionRepo, "absorb_derived_capture")
 
 
 # ---------------------------------------------------------------------------
