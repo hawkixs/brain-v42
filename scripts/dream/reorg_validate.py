@@ -60,7 +60,6 @@ import argparse
 import asyncio
 import json
 import pathlib
-import re
 import sys
 from uuid import UUID
 
@@ -74,14 +73,10 @@ from sqlalchemy.ext.asyncio import (
 from brain_v42.config import Settings
 from brain_v42.db.tables import decisions, dream_runs, learnings
 from scripts.dream.reorg_events import EventScan, scan_events
+from scripts.dream.reorg_report import parse_trailer
 
 # Machine-readable trailer inserted by the agent after the prose report.
 # Mirrors the PROMOTE REPORT block so tooling parses both the same way.
-_REPORT_RE = re.compile(
-    r"===\s*REORG\s+REPORT\s*===\s*(\{.*?\})\s*===\s*END\s*===",
-    re.DOTALL,
-)
-
 # Maximum mutations per run as specified in phase_reorg.md guardrails.
 _MAX_UPDATED = 20
 _MAX_ARCHIVED = 20
@@ -99,44 +94,72 @@ def parse_report(raw: str) -> dict:
       ``archived_ids``: list[str]  — full UUIDs from the ``archived`` field
       ``dry_run``: bool            — from the ``dry_run`` field in the JSON
       ``found_marker``: bool       — True when the REORG REPORT block was present
+      ``declared``: DeclaredTally | None — the phase's own Part 2 tally, or None
+                                    when the trailer predates it. NOT evidence.
+      ``declared_malformed``: bool — a ``declared`` key that could not be read,
+                                    which is a different fact from its absence
+
+    Reading is delegated to ``scripts.dream.reorg_report``, the single reader
+    shared with the morning report. It used to be two regexes that had to agree
+    with nothing enforcing it, and they had already stopped agreeing: the
+    alert-side pattern truncated any nested object at its first inner brace.
 
     Raises ValidationFailure only if the marker IS present but the JSON is
     malformed.  When the marker is absent ``found_marker`` is False and the
     caller (``validate``) decides whether to fail-close.
     """
-    m = _REPORT_RE.search(raw)
-    if m is None:
-        return {
-            "updated_ids": [],
-            "archived_ids": [],
-            "dry_run": False,
-            "found_marker": False,
-        }
-
     try:
-        payload = json.loads(m.group(1))
-    except json.JSONDecodeError as exc:
-        raise ValidationFailure(f"malformed REORG REPORT JSON: {exc}") from exc
-
-    # Deduplicate while preserving order — the JSON may theoretically repeat
-    # a UUID if the agent listed the same entity twice; normalise early so
-    # cap-enforcement counts are accurate.
-    def _dedup(ids: list) -> list[str]:
-        seen: set[str] = set()
-        out: list[str] = []
-        for x in ids:
-            s = str(x)
-            if s not in seen:
-                seen.add(s)
-                out.append(s)
-        return out
+        report = parse_trailer(raw)
+    except ValueError as exc:
+        raise ValidationFailure(str(exc)) from exc
 
     return {
-        "updated_ids": _dedup(payload.get("updated", [])),
-        "archived_ids": _dedup(payload.get("archived", [])),
-        "dry_run": bool(payload.get("dry_run", False)),
-        "found_marker": True,
+        "updated_ids": report.updated_ids,
+        "archived_ids": report.archived_ids,
+        "dry_run": report.dry_run,
+        "found_marker": report.found_marker,
+        "declared": report.declared,
+        "declared_malformed": report.declared_malformed,
     }
+
+
+def declared_warnings(report: dict) -> list[str]:
+    """Check the phase's self-reported tally, and say what that is worth.
+
+    These numbers describe entities REORG looked at and did not touch. No call
+    was made, so nothing in PostgreSQL and nothing in the event stream can
+    confirm them. Two checks are available and both are weak, which is why they
+    warn and never fail:
+
+    - the tally against ITSELF, so a careless count is caught;
+    - the declared archive COUNT against the declared archive LIST, the one
+      statement in this report that a database can answer.
+
+    A tally is not required. A trailer without one comes from a phase running an
+    older prompt, and treating that as a fault would print a warning every night
+    of a rollback — noise for a state that is merely old.
+    """
+    if report.get("declared_malformed"):
+        return [
+            "the report carried a `declared` block that is unusable — this is NOT the "
+            "same fact as a trailer without one, which would simply be an older prompt"
+        ]
+
+    declared = report.get("declared")
+    if declared is None:
+        return []
+
+    warnings: list[str] = []
+    complaint = declared.arithmetic_complaint()
+    if complaint is not None:
+        warnings.append(complaint)
+    unknown = declared.unknown_reasons()
+    if unknown:
+        warnings.append(
+            f"declared refusal reason(s) outside the vocabulary phase_reorg.md defines: "
+            f"{', '.join(unknown)} — prompt and reader have drifted"
+        )
+    return warnings
 
 
 async def _entity_row(
@@ -244,7 +267,29 @@ def symmetry_warnings(report: dict, scan: EventScan) -> list[str]:
             f"report: {', '.join(undeclared)}"
         )
 
+    # AFTER the id-level verdict, never instead of it. The tally rides along
+    # because the morning line needs it; it can add a warning and can never
+    # remove or satisfy one above (learning c34fb865).
+    warnings.extend(declared_warnings(report))
+    mismatch = _declared_list_mismatch(report)
+    if mismatch is not None:
+        warnings.append(mismatch)
+
     return warnings
+
+
+def _declared_list_mismatch(report: dict) -> str | None:
+    """The declared archive count against the declared archive list."""
+    declared = report.get("declared")
+    if declared is None:
+        return None
+    listed = len(report.get("archived_ids", []))
+    if declared.archived == listed:
+        return None
+    return (
+        f"declared archived count is {declared.archived} but the report lists {listed} "
+        f"archived id(s); only the list is checkable"
+    )
 
 
 async def validate(

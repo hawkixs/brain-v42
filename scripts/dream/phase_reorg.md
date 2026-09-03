@@ -92,7 +92,13 @@ For each candidate:
    d. If this is NOT a dry run: `brain_update(entity_type, entity_id, fields={"freshness_status": "archived"})`.
    e. Log each archive with the matched pattern + entity topic in the report.
 
-**Stop at 20 archives per run.** If more than 20 candidates exist, list the overflow under "deferred to next run" without acting.
+**Stop at 20 archives per run.** If more than 20 candidates exist, list the overflow under "deferred to next run" without acting, and count them under `deferred` in the trailer.
+
+**Count as you go.** Every candidate that matched a regex at step (a) increments
+`candidates_examined`, and each one then lands in exactly one bucket: archived, refused
+under the key naming the guardrail that stopped it, or deferred. Keeping the count while
+you work is what makes the arithmetic close; reconstructing it from your prose afterwards
+is what makes it drift.
 
 ## Part 3 — Flag entity-type mismatches (no auto-fix)
 
@@ -110,7 +116,7 @@ After the prose report, append a machine-readable trailer — **required** even 
 
 ```
 === REORG REPORT ===
-{"dry_run": <true|false>, "updated": ["<full-UUID>", ...], "archived": ["<full-UUID>", ...]}
+{"dry_run": <true|false>, "updated": ["<full-UUID>", ...], "archived": ["<full-UUID>", ...], "declared": {"candidates_examined": <int>, "archived": <int>, "refused": {"already_archived": <int>, "dream_managed": <int>, "access_above_threshold": <int>, "content_not_trivial": <int>}, "deferred": <int>}}
 === END ===
 ```
 
@@ -118,6 +124,39 @@ After the prose report, append a machine-readable trailer — **required** even 
 - `archived`: full UUIDs of entities whose `freshness_status` was set to `"archived"` in Part 2. Empty list `[]` on dry run or when nothing was archived.
 - Always use **full** UUIDs from `brain_update` responses — never abbreviated short-ids.
 - The JSON block must be on a single line between the two `===` markers.
+
+### The `declared` object — Part 2 in numbers
+
+The two lists above name entities a server can be asked about. `declared` is your own
+account of what you LOOKED at in Part 2, and nothing can confirm it — so state it
+carefully and never inflate it to look busy. It exists because the morning report could
+previously say "0 archivage" without being able to distinguish *no title matched the
+allowlist* from *thirty-one matched and every one was refused*. Those two nights are
+different and only you can tell them apart.
+
+- `candidates_examined`: how many entities matched one of the six allowlist regex in
+  Part 2. This is the count BEFORE any guardrail — a candidate you reject at step (b) was
+  still examined. If no title matched, this is `0`.
+- `archived`: how many you actually archived. It MUST equal the length of the `archived`
+  list above; the two are checked against each other.
+- `refused`: how many candidates each guardrail turned away. Use **only** these four keys,
+  one per rejection point in Part 2, and emit a key even when its count is `0`:
+  - `already_archived` — the summary header showed `[archived]` (step b).
+  - `dream_managed` — the summary tags carried a tag starting with `dream:` (step b).
+  - `access_above_threshold` — the summary showed `access:N` with N > 5 (step b).
+  - `content_not_trivial` — `brain_get` showed the content was neither trivially short
+    nor an operational snapshot (step c).
+- `deferred`: candidates left for the next run because the cap of 20 was reached. A
+  deferral is not a refusal — the entity is still eligible.
+
+**The arithmetic must close**:
+`candidates_examined == archived + sum(refused.values()) + deferred`. A tally that does
+not add up is reported as a warning naming the gap, so count as you go rather than
+reconstructing at the end.
+
+Emit `declared` even on a dry run, and even when every number is zero. An absent block and
+a block of zeros are read as different facts: the first says this phase ran an older
+prompt, the second says it looked and found nothing.
 
 Do NOT call brain_learn.
 

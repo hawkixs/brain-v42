@@ -312,6 +312,24 @@ how many batches the standby served. A degraded phase does NOT change the exit c
 escalation to `2` belongs to coverage alone, because `dream.sh` reads that `2` as
 "expected rows are missing" and writes a `coverage` row saying so.
 
+It also prints a `### REORG` block, read from the trailer each project's report
+ends with — not from `dream_runs`, which carries no REORG counter. The block keeps
+two kinds of number APART, and a reader who merges them draws the wrong conclusion:
+
+- **Mesuré** — archives and tag updates, derived from the ids the report names.
+  `scripts.dream.reorg_validate` confronts those same ids with the event stream and
+  with PostgreSQL, so they are evidence.
+- **Déclaré** — candidates examined, refusals by reason, deferrals. This is the
+  phase's own account of entities it looked at and did NOT touch. No call exists
+  that could confirm it. It is checked only against itself, and the block says so.
+
+The block is never mute, because the ways a REORG night can look empty are
+different failures: no report file at all, reports carrying no machine-readable
+trailer, a trailer from a prompt older than the declared tally, and a tally that
+genuinely examined zero candidates. Each gets its own sentence. The second and
+third are rails succeeding without producing, which is the reading this block
+exists to prevent.
+
 ## Automation service
 
 The `brain-v42-automation.service` unit is generated and verified, but stays dormant.

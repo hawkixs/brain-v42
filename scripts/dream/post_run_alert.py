@@ -41,7 +41,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
-import json
 import re
 import sys
 from collections.abc import Iterable, Mapping, Sequence
@@ -70,6 +69,7 @@ from brain_v42.metrics.collector_dream import (
     expected_dream_phase_pairs,
     expected_dream_phases,
 )
+from scripts.dream.reorg_report import iter_trailers, marker_count
 from scripts.dream.run_manifest import (
     CoverageVerdict,
     Pair,
@@ -448,56 +448,166 @@ def degraded_headline(run_date: dt.date, degraded: Sequence[DegradedPhase]) -> s
     return f"no failed phase for {run_date.isoformat()} — but {ran} DEGRADED (standby model)"
 
 
-#: What REORG did, read from the JSON line it prints at the end of each project
-#: report. There is no column: `dream_runs` carries no REORG counter, and adding
-#: one would be a migration for a number the phase already writes down.
+#: What REORG did, read from the JSON trailer it prints at the end of each
+#: project report. There is no column: `dream_runs` carries no REORG counter,
+#: and adding one would be a migration for a number the phase already writes
+#: down — and a migration must land in the same window as its writers (049).
 REORG_HEADING = "### REORG"
 
-_REORG_REPORT = re.compile(r'\{"dry_run":\s*(?:true|false).*?\}')
+#: The trailer's English keys, rendered for a human reading at 7am. The two
+#: vocabularies are deliberately independent (learning abfaf932): generating one
+#: from the other would make the alarm a mirror of the detector, and a rename
+#: would then satisfy the check it was supposed to trip. An unknown key falls
+#: through to its raw form, because drift must reach the reader.
+_REFUSAL_LABELS = {
+    "already_archived": "déjà archivé",
+    "dream_managed": "géré par dream",
+    "access_above_threshold": "trop lu",
+    "content_not_trivial": "contenu non trivial",
+}
 
 
 @dataclass(frozen=True)
 class ReorgTally:
-    """One night's REORG work, summed over the pool."""
+    """One night's REORG work, summed over the pool.
+
+    MEASURED and DECLARED are kept in separate fields on purpose. `archived` and
+    `updated` count ids the report names, which `reorg_validate` confronts with
+    the event stream and with PostgreSQL. `candidates_examined`, `refused` and
+    `deferred` are the phase's own account of entities it did NOT touch: no call
+    exists that could confirm them (learning c34fb865). Nothing here sums the
+    two together, and the rendered line labels which is which.
+    """
 
     projects: int = 0
     archived: int = 0
     updated: int = 0
+    #: Reports that carried the markers but whose JSON could not be read.
+    unreadable: int = 0
+    #: Reports that carried a trailer at all.
+    with_trailer: int = 0
+    #: Reports whose trailer carried a declared tally.
+    with_declared: int = 0
+    #: DECLARED, never measured.
+    candidates_examined: int = 0
+    refused: dict[str, int] = field(default_factory=dict)
+    deferred: int = 0
+    #: True when at least one declared tally failed its own arithmetic.
+    incoherent: bool = False
+
+    @property
+    def refused_total(self) -> int:
+        return sum(self.refused.values())
+
+    @property
+    def outcome(self) -> str:
+        """The night's shape, as a name rather than as a pile of zeros.
+
+        A total does not distinguish its zeros (learning 57b85cbb), and the three
+        ways a night can look empty fail very differently (learning 083d74e5):
+
+        - ``no_report``  — not one report file for this date. The phase did not
+          run, or did not write. Nothing downstream would otherwise say so.
+        - ``no_trailer`` — files exist, none carries the machine-readable block.
+          The phase spoke prose only.
+        - ``legacy``     — trailers exist, none carries a declared tally: an
+          older prompt. Not a fault, and not a measured zero either.
+        - ``idle``       — a tally that genuinely counted zero candidates.
+        - ``tags_only``  — tags moved, nothing was archived. The shape that went
+          unnoticed for twelve nights.
+        - ``archiving``  — entities left the default listings.
+        """
+        if self.projects == 0 and self.unreadable == 0:
+            return "no_report"
+        if self.with_trailer == 0:
+            return "no_trailer"
+        if self.archived:
+            return "archiving"
+        if self.with_declared == 0:
+            return "legacy"
+        if self.candidates_examined == 0 and self.updated == 0:
+            return "idle"
+        return "tags_only"
 
 
 def reorg_tally(run_date: dt.date, log_dir: Path) -> ReorgTally:
     """Sum the per-project REORG reports of one night.
 
     Reads the FILES, not the database, and that is the whole design: the counts
-    exist only in the report each project prints (`{"dry_run":…,"updated":[…],
-    "archived":[…]}`), and putting them in `dream_runs` would be a migration for
-    a number already written down.
+    exist only in the trailer each project prints, and putting them in
+    `dream_runs` would be a migration for a number already written down.
 
-    What this deliberately does NOT count: candidates examined and candidates
-    REFUSED. REORG states those in prose -- "Aucune entité archivée. Tous les
-    titres correspondant à l'allowlist dépassent le seuil" -- and a regex over a
-    model's free French would be a number nobody could trust. Making the phase
-    print a machine-readable tally is the follow-up; inventing one here would be
-    worse than the silence it replaces.
+    Parsing is delegated to `reorg_report`, the reader shared with
+    `reorg_validate`. This function used to carry a second regex, non-greedy and
+    unanchored, which truncated any nested object at its first inner brace — so
+    the declared tally could not have been added here without unifying first.
 
     A missing or unreadable file is skipped, not raised: this block observes the
-    night, it must never be the reason the morning report fails.
+    night, it must never be the reason the morning report fails. Skipping is
+    COUNTED, though, and printed: a project silently dropped from a sum is how a
+    tally starts lying quietly.
     """
-    projects = archived = updated = 0
+    projects = archived = updated = unreadable = 0
+    with_trailer = with_declared = examined = deferred = 0
+    refused: dict[str, int] = {}
+    incoherent = False
+
     for path in sorted(log_dir.glob(f"{run_date.isoformat()}_*_reorg.log")):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for match in _REORG_REPORT.finditer(text):
-            try:
-                report = json.loads(match.group(0))
-            except ValueError:
+        projects += 1
+        announced = marker_count(text)
+        try:
+            reports = iter_trailers(text)
+        except ValueError:
+            unreadable += 1
+            continue
+        if announced > len(reports):
+            # The phase said it was printing a block and what followed could not
+            # be read. Counting that as "no trailer" would file a damaged report
+            # under the same heading as an honest prose-only one.
+            unreadable += 1
+        if not reports:
+            continue
+        with_trailer += 1
+        for report in reports:
+            archived += len(report.archived_ids)
+            updated += len(report.updated_ids)
+            declared = report.declared
+            if declared is None:
                 continue
-            projects += 1
-            archived += len(report.get("archived") or [])
-            updated += len(report.get("updated") or [])
-    return ReorgTally(projects=projects, archived=archived, updated=updated)
+            with_declared += 1
+            examined += declared.candidates_examined
+            deferred += declared.deferred
+            for reason, count in declared.refused.items():
+                refused[reason] = refused.get(reason, 0) + count
+            if declared.arithmetic_complaint() is not None:
+                incoherent = True
+
+    return ReorgTally(
+        projects=projects,
+        archived=archived,
+        updated=updated,
+        unreadable=unreadable,
+        with_trailer=with_trailer,
+        with_declared=with_declared,
+        candidates_examined=examined,
+        refused=refused,
+        deferred=deferred,
+        incoherent=incoherent,
+    )
+
+
+def _refusal_phrase(refused: dict[str, int]) -> str:
+    """`28 déjà archivé, 2 trop lu` — French, and raw for an unknown key."""
+    parts = [
+        f"{count} {_REFUSAL_LABELS.get(reason, reason)}"
+        for reason, count in sorted(refused.items())
+        if count
+    ]
+    return ", ".join(parts)
 
 
 def default_log_dir() -> Path:
@@ -506,27 +616,76 @@ def default_log_dir() -> Path:
 
 
 def build_reorg_block(run_date: dt.date, tally: ReorgTally) -> list[str]:
-    """The line, or nothing when the night has nothing to say.
+    """The line, with a sentence per outcome rather than a mute.
 
-    Mute when REORG did no work at all -- no archive and no tag update across the
-    pool -- because a line repeated every night with two zeros stops being read
-    (learning 4480d3df). It is NOT mute when the phase worked on tags and
-    archived nothing: that is exactly the shape that went unnoticed for twelve
-    nights, and it is the shape this block exists to surface.
+    The mute this function used to carry rested on 4480d3df — a line repeated
+    nightly with two zeros stops being read. That was right while "nothing
+    happened" was one undifferentiated fact. It is not one any more: a night
+    with no report, a night on an older prompt and a night that examined zero
+    candidates wear the same zeros and fail very differently, and the middle
+    reading — a rail that succeeds without producing — is the worst signal there
+    is (learning 083d74e5). Each gets its own sentence, so the line varies with
+    the night, which is what 4480d3df actually asks for.
     """
-    if tally.archived == 0 and tally.updated == 0:
-        return []
-    lines = [
-        f"{REORG_HEADING} — {run_date.isoformat()}",
-        "",
-        f"- {tally.archived} archivage(s), {tally.updated} tag(s) normalisé(s) "
-        f"sur {tally.projects} projet(s)",
-    ]
-    if tally.archived == 0:
+    lines = [f"{REORG_HEADING} — {run_date.isoformat()}", ""]
+    outcome = tally.outcome
+
+    if outcome == "no_report":
         lines.append(
-            "- Aucun archivage : la phase a travaillé les tags sans retirer de "
-            "pollution. Candidats et refus ne sont pas comptés ici — REORG les "
-            "énonce en prose dans son rapport de projet."
+            "- Aucun rapport REORG pour cette date : la phase n'a produit aucun "
+            "fichier. Ce n'est PAS « rien à faire » — c'est l'absence de la trace."
+        )
+        return lines
+
+    if outcome == "no_trailer":
+        lines.append(
+            f"- {tally.projects} rapport(s) sans bloc machine : la phase n'a parlé "
+            "qu'en prose, rien n'est comptable."
+        )
+        return lines
+
+    lines.append(
+        f"- Mesuré (ids déclarés, recoupés par le validateur) : {tally.archived} "
+        f"archivage(s), {tally.updated} tag(s) normalisé(s) sur {tally.projects} projet(s)"
+    )
+
+    if tally.with_declared == 0:
+        lines.append(
+            "- Sans décompte déclaré : ces rapports viennent d'un prompt antérieur "
+            "au décompte structuré. Candidats et refus restent en prose."
+        )
+    else:
+        phrase = _refusal_phrase(tally.refused)
+        lines.append(
+            f"- Déclaré par la phase (sa parole, rien ne la vérifie) : "
+            f"{tally.candidates_examined} candidat(s) examiné(s), "
+            f"{tally.refused_total} refus" + (f" ({phrase})" if phrase else "") + f", "
+            f"{tally.deferred} différé(s)"
+        )
+        if tally.with_declared < tally.with_trailer:
+            lines.append(
+                f"- {tally.with_trailer - tally.with_declared} rapport(s) sans décompte "
+                "déclaré, comptés dans le mesuré seulement."
+            )
+        if tally.incoherent:
+            lines.append(
+                "- Décompte déclaré incohérent sur au moins un projet : examinés ≠ "
+                "archivés + refusés + différés. Le détail est dans les avertissements "
+                "du validateur."
+            )
+
+    if tally.unreadable:
+        lines.append(
+            f"- {tally.unreadable} rapport(s) illisible(s), non comptés : un projet "
+            "retiré d'une somme en silence est une somme qui ment."
+        )
+
+    if outcome == "tags_only":
+        lines.append("- Aucun archivage : la phase a travaillé les tags sans retirer de pollution.")
+    elif outcome == "idle":
+        lines.append(
+            "- 0 candidat examiné : aucun titre n'a correspondu à l'allowlist de "
+            "pollution. La phase a regardé et n'a rien trouvé."
         )
     return lines
 
