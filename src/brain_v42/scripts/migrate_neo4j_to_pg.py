@@ -287,6 +287,21 @@ def extract_project_context(node: dict[str, Any]) -> dict[str, Any] | None:
         "test_strategy": node.get("test_strategy"),
         "current_phase": node.get("current_phase"),
         "current_focus": node.get("current_focus"),
+        # Ticket `5281f0ef`. This site writes the focus, so it owes a decision
+        # about its date — and NULL is that decision, not its absence.
+        #
+        # `focus_stamp` is an UPDATE expression: it CASEs against the stored row,
+        # and there is no stored row here (`pg_insert … ON CONFLICT DO NOTHING`).
+        # The two conforming INSERT paths do not use it either; `create` reduces
+        # to the base case and dates a focus supplied at birth with `now()`.
+        #
+        # `now()` would be a LIE here, and that is the whole difference. This
+        # import reconstructs rows authored in datalake_v2 BEFORE brain_v42
+        # existed; stamping them at import time would claim the prose was written
+        # the day it was copied. The source carries no focus timestamp — 040 is a
+        # brain_v42 invention — so the honest value is the one 040 defines for
+        # exactly this case: NULL means "never measured".
+        "focus_updated_at": None,
         "blockers": to_list(node.get("blockers")),
         "related_projects": to_list(node.get("related_projects")),
         "local_path": node.get("local_path"),
