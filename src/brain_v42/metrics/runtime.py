@@ -415,6 +415,7 @@ def build_metrics_runtime(
             graph_svc=graph_svc,
             graph_projection_svc=graph_projection_svc,
             nonloopback_posture=effective_settings.metrics_nonloopback_posture,
+            allow_non_loopback=effective_settings.metrics_allow_non_loopback,
         )
 
     lease = (

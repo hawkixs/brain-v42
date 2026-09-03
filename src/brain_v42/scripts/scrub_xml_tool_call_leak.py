@@ -26,6 +26,7 @@ import sqlalchemy as sa
 
 from brain_v42.db.engine import get_session_factory
 from brain_v42.db.focus_history import record_focus_history
+from brain_v42.db.focus_stamp import focus_stamp
 from brain_v42.db.tables import decisions, learnings, project_contexts
 from brain_v42.maintenance.xml_scrub import scrub_xml_tool_call_leak
 
@@ -89,6 +90,18 @@ async def _scrub_table(
             values: dict = dict(updates)
             if "embedding" in table.c:
                 values["embedding"] = None
+            if table is project_contexts and "current_focus" in updates:
+                # Ticket `5281f0ef`. This rewrites the PROSE — the focus minus a
+                # leaked tool call — so by 040's own rule its date must move. The
+                # scrub reached the column without this for as long as it existed,
+                # and `focus_updated_at` answered "when was this written?" with a
+                # date older than the text it describes.
+                #
+                # `focus_stamp` and not `now()`: it compares in SQL against the
+                # stored row, so a scrub that changes nothing (same prose in, same
+                # prose out) leaves the age alone. That case is real — the regex
+                # can match a marker and return an identical string.
+                values["focus_updated_at"] = focus_stamp(values["current_focus"])
             upd = sa.update(table).where(table.c.id == row.id).values(**values)
             # The seventh focus writer, and the only one outside the MCP surface.
             # It rewrites `current_focus` to strip a leaked tool call — a real

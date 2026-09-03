@@ -38,11 +38,42 @@ services:
     #            && docker compose --profile legacy up -d embedding
     profiles: ["legacy"]
     restart: unless-stopped
+    # THE REFUSAL LIVES HERE AND NOT IN THE DOCKERFILE. `docker compose up` reuses
+    # an existing image, and brain_v42-embedding:latest was built eight weeks ago:
+    # an image-side ENTRYPOINT would stay inert until somebody rebuilt it. And the
+    # rebuild is the one operation nobody can vouch for — the base is pinned by
+    # digest but `torch` is not pinned at all, so eight weeks of PyTorch/CUDA drift
+    # sit between this recipe and that artifact. A guard that can only arm itself
+    # through the least trustworthy operation available is not a guard.
+    #
+    # `$$` escapes compose interpolation so the shell expands it at runtime.
+    # `exec "$$@"` hands over to the image CMD, which stays the single source of
+    # truth for how the server actually starts.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ "$$BRAIN_LEGACY_EMBEDDING_ACK" != "yes" ]; then
+          echo "REFUSED: the legacy PyTorch profile is UNBOUNDED (no body cap, no read deadline, no semaphore, no 413/503) and is a rollback artifact only. Set BRAIN_LEGACY_EMBEDDING_ACK=yes to start it deliberately." >&2
+          exit 78
+        fi
+        exec "$$@"
+      - legacy-guard
     ports:
       - "127.0.0.1:8003:8003"
     networks:
-      - default
-      - brain-net
+      default:
+      brain-net:
+        # BOTH names, not one. The two live clients on brain-net
+        # (auto-discord-bot, auto-discord-dagster-daemon) carry no EMBEDDING_URL
+        # and fall back to the code default `brain_v42_embedding_shim:8003`, while
+        # the auto_discord compose pins `embedding-shim:8003`. Measured 2026-09-03:
+        # preserving one of the two breaks the other, silently.
+        # No collision: the rollback stops embedding-shim FIRST (runbook 6830f3db),
+        # so the two containers are never on brain-net at the same time.
+        aliases:
+          - embedding-shim
+          - brain_v42_embedding_shim
     environment:
       # Reduce PyTorch CUDA fragmentation drift over long uptimes.
       # Without this, repeated inferences fragment VRAM until even small

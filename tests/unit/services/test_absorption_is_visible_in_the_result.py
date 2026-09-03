@@ -64,7 +64,6 @@ def _repo(outcome: object) -> MagicMock:
     for method in ("start", "resume", "capture", "heartbeat", "end"):
         setattr(repo, method, AsyncMock(return_value=result))
     repo.absorb_derived_capture_outcome = AsyncMock(return_value=outcome)
-    repo.absorb_derived_capture = AsyncMock(return_value=outcome.total)
     repo.attributed_knowledge_ids = AsyncMock(return_value=[])
     return repo
 

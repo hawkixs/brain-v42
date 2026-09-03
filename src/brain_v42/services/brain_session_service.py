@@ -111,10 +111,6 @@ class BrainSessionRepository(Protocol):
         self, session_id: UUID, expected_client_key: str, reason: str
     ) -> BrainSessionAbandonResult: ...
 
-    async def absorb_derived_capture(
-        self, session_id: UUID, connection_id: str, expected_client_key: str
-    ) -> int: ...
-
     async def absorb_derived_capture_outcome(
         self, session_id: UUID, connection_id: str, expected_client_key: str
     ) -> Any: ...

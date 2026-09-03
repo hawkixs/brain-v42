@@ -253,24 +253,6 @@ class PgBrainSessionRepo(BasePgRepository):
         async with self.get_session() as session:
             return await self._load_session_artifact_ids(session, UUID(str(session_id)))
 
-    async def absorb_derived_capture(
-        self,
-        session_id: UUID | str,
-        connection_id: str,
-        expected_client_key: str,
-    ) -> int:
-        """The `.total` view of ``absorb_derived_capture_outcome``. ONE call.
-
-        Kept because a bare count is what `start` and the integration bench
-        read, and because the guarantees documented below are about the
-        TRANSACTION, which both views share — this method does not re-absorb,
-        it projects.
-        """
-        outcome = await self.absorb_derived_capture_outcome(
-            session_id, connection_id, expected_client_key
-        )
-        return outcome.total
-
     async def absorb_derived_capture_outcome(
         self,
         session_id: UUID | str,

@@ -19,6 +19,7 @@ in the same server as the URL handed in, exactly like `brain_test` itself.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -26,8 +27,12 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import asyncpg
+import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
 PROJECT_ROOT = Path(__file__).parents[2]
 
@@ -89,3 +94,34 @@ def fresh_head_database(admin_url: str, *, prefix: str = "brain_fresh") -> Itera
         yield url
     finally:
         drop_database(admin_url, database)
+
+
+async def replay_attestation(url: str, asset: Path) -> dict[str, dict[str, Any]]:
+    """Replay an attestation asset READ-ONLY, return its failures alone.
+
+    `SET TRANSACTION READ ONLY` then rollback: a contract that wrote would no
+    longer be a contract, and a disposable database owes its cleanliness to the
+    alembic chain alone -- not to the fact that nobody looked.
+
+    Lives here rather than in one of its two callers. The yardstick had it
+    private; the ACL mutation module imported it across test modules, which works
+    and reads like an accident. Two copies would drift the day one of them learns
+    something -- a timeout, a different isolation level, a second receipt shape.
+
+    An EMPTY mapping means every check passed. That is the whole return contract:
+    callers assert `== {}` for a clean receipt and index by check id otherwise.
+    """
+    engine = create_async_engine(url, poolclass=NullPool)
+    try:
+        async with engine.connect() as connection:
+            transaction = await connection.begin()
+            try:
+                await connection.execute(sa.text("SET TRANSACTION READ ONLY"))
+                raw = await connection.scalar(sa.text(asset.read_text(encoding="utf-8")))
+            finally:
+                await transaction.rollback()
+    finally:
+        await engine.dispose()
+
+    receipt = json.loads(str(raw))
+    return {check["id"]: check for check in receipt["checks"] if check["status"] != "pass"}

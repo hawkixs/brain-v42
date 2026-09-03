@@ -35,12 +35,10 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-# Reused, not duplicated: the yardstick already replays an attestation asset
-# READ-ONLY and returns its failures. Imported rather than extracted because
-# another worker holds that file today; extracting it into `disposable_db.py` is
-# the follow-up, and this import fails LOUDLY if the name moves.
-from tests.integration.db.test_fresh_head_is_the_yardstick import _replay
-from tests.integration.disposable_db import fresh_head_database
+# One path, shared with the yardstick: `replay_attestation` lives in the brick
+# rather than in either caller. Importing it from another TEST module worked and
+# read like an accident.
+from tests.integration.disposable_db import fresh_head_database, replay_attestation
 
 pytestmark = pytest.mark.integration
 
@@ -123,7 +121,7 @@ async def test_the_acl_contract_passes_on_a_chain_built_database(
     Without it, every refusal below would be indistinguishable from a contract
     that refuses everything.
     """
-    assert await _replay(acl_database_url, ACL_ASSET) == {}
+    assert await replay_attestation(acl_database_url, ACL_ASSET) == {}
 
 
 @pytest.mark.parametrize(("label", "damage", "repair", "counter"), MUTATIONS, ids=lambda v: v)
@@ -138,7 +136,7 @@ async def test_a_real_privilege_change_is_caught_and_named(
     """
     await _execute(acl_database_url, damage)
     try:
-        failures = await _replay(acl_database_url, ACL_ASSET)
+        failures = await replay_attestation(acl_database_url, ACL_ASSET)
         assert "acl_and_ownership" in failures, f"{label}: the contract did not notice"
         observed = failures["acl_and_ownership"]["observed"]
         assert observed[counter] >= 1, (
@@ -147,7 +145,7 @@ async def test_a_real_privilege_change_is_caught_and_named(
     finally:
         await _execute(acl_database_url, repair)
 
-    assert await _replay(acl_database_url, ACL_ASSET) == {}, (
+    assert await replay_attestation(acl_database_url, ACL_ASSET) == {}, (
         f"{label}: the contract still refuses after the repair -- either the repair "
         "is incomplete or the counter latches"
     )
@@ -190,8 +188,10 @@ async def test_the_missing_grant_term_is_load_bearing(
 
     await _execute(acl_database_url, "REVOKE SELECT ON public.codex_ticket_v1 FROM codex_ro")
     try:
-        assert await _replay(acl_database_url, ACL_ASSET) != {}, "the shipped asset must catch it"
-        assert await _replay(acl_database_url, crippled) == {}, (
+        assert await replay_attestation(acl_database_url, ACL_ASSET) != {}, (
+            "the shipped asset must catch it"
+        )
+        assert await replay_attestation(acl_database_url, crippled) == {}, (
             "the crippled asset caught the revoke anyway -- the term removed is not "
             "the one that does the work, and this witness proves nothing"
         )
