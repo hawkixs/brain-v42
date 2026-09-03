@@ -97,6 +97,28 @@ _TARGET_PATTERNS = (
     ),
 )
 
+#: An ASSERTION about the schema AS IT IS at the head — ticket `bdd0ac75`. It is
+#: the only reading of `at head NNN` that goes false when the chain moves, and it
+#: is therefore the only one guarded.
+#:
+#: NARROW ON PURPOSE, and the cost is stated rather than hidden. Measured
+#: 2026-09-03: `at head NNN` appears 19 times across the reference documents —
+#: one assertion, four dated measurements, and FOURTEEN historical proofs bound
+#: to a named past artifact ("gate at head 037 with 24/24", "Historical proof at
+#: head 035") carrying no date on their own line. w47 left the whole phrasing
+#: unguarded rather than sweep those in, and it was right: doing so "would
+#: criminalise history to catch one structural claim". So this pattern
+#: enumerates, and there is deliberately NO `at head` entry in
+#: `_TARGET_VOCABULARY` — check 4 would fire on all fourteen, and an alarm that
+#: cries every night is one nobody reads. What that buys is silence on a NEW
+#: assertion phrasing until someone adds it here; the frozen witnesses below say
+#: so out loud.
+_SCHEMA_AT_HEAD = re.compile(
+    r"(?:A|The)\s+fresh\s+schema\s+at\s+head\s+`?(0\d{2})`?"
+    r"|(?:[Tt]he\s+)?current\s+head\s+is\s+(?:now\s+)?`?(0\d{2})`?"
+    r"|[Tt]he\s+head\s+is\s+(?:now\s+)?`?(0\d{2})`?"
+)
+
 #: The vocabulary that ANNOUNCES a repository target, whatever the phrasing. Check
 #: 4 requires a line carrying it to be recognised by a pattern, so this expression
 #: must stay strictly WIDER than the patterns above — that is its whole purpose.
@@ -177,6 +199,12 @@ def repository_claims(document: str) -> list[Claim]:
             )
         claims.extend(
             Claim("migration range", match.group(1), index, line) for match in _RANGE.finditer(line)
+        )
+        claims.extend(
+            # One alternative matches per hit, the others yielding None: the
+            # value is whichever group fired.
+            Claim("schema at head", next(g for g in match.groups() if g), index, line)
+            for match in _SCHEMA_AT_HEAD.finditer(line)
         )
     return claims
 
@@ -315,6 +343,65 @@ def test_the_apostrophe_that_walked_through_the_guard_is_caught() -> None:
         "check 4 doit reconnaître ces tournures, pas les signaler : c'est le motif qui "
         "manquait, pas la phrase qui est fautive"
     )
+
+
+def test_a_stale_schema_at_head_assertion_is_caught() -> None:
+    """Ticket `bdd0ac75`, class 1 of 3: the assertion that goes false when the chain moves.
+
+    `docs/SCHEMA.md:43` carried one — "A fresh schema at head 049 contains …" —
+    and it was corrected by hand, unguarded, while the chain sat at 051. It
+    describes the schema AS IT IS, so a moved head makes it a lie.
+    """
+    stale = "foundation tables below. A fresh schema at head 049 contains 34 `public` tables"
+
+    assert [(claim.kind, claim.value) for claim in repository_claims(stale)] == [
+        ("schema at head", "049")
+    ]
+
+
+def test_a_dated_measurement_at_a_head_stays_legitimate() -> None:
+    """Class 2 of 3: the same three words, plus a date, and it must stay green.
+
+    The ratified doctrine (2026-08-04) keeps a dated measurement licit however
+    old it gets: it says what was true THEN, and it is not asked to age well.
+    """
+    dated = (
+        "The last real-restore receipt is the v7 one: `30/30` on 2026-09-02 against a "
+        "disposable restore at head `049`. It attests v7 and head 049, and nothing "
+        "about 050 or 051."
+    )
+
+    assert repository_claims(dated) == []
+
+
+def test_an_undated_historical_proof_at_a_head_stays_legitimate() -> None:
+    """Class 3 of 3, the one the ticket did not anticipate — and the reason for a NARROW pattern.
+
+    Measured on 2026-09-03: `at head NNN` appears 19 times across the reference
+    documents. ONE is an assertion, four are dated measurements, and FOURTEEN are
+    historical proofs bound to a named past artifact — a gate, a run, a restore,
+    a recovery — carrying no date on their own line. They are facts about the
+    past, not claims about the current head, and w47 named the trap when it left
+    this phrasing unguarded: sweeping them in "would criminalise history to catch
+    one structural claim".
+
+    So the pattern above enumerates the assertion, and NOTHING wider. There is
+    deliberately no `at head` entry in `_TARGET_VOCABULARY` either: check 4 would
+    then fire on all fourteen, and an alarm that cries every night is one nobody
+    reads. The cost is stated rather than hidden — a NEW assertion phrasing about
+    the current head would slip through until someone adds it here.
+    """
+    historical = [
+        "gate at head 037 with 24/24",
+        "| **Projection recovery 035** | **Historical proof at head 035.** Recovery …",
+        "- a PostgreSQL sandbox restore at head 035 followed by the DR-v3 contract at 24/24;",
+        "DR-v5 now certifies an isolated PostgreSQL restore at head 037.",
+        "The DR-v5 run renews the PostgreSQL gate for the then-current production, at head 037.",
+        "## Initial upgrade to head 035 — historical procedure",
+    ]
+
+    for line in historical:
+        assert repository_claims(line) == [], f"a past proof must not redden: {line}"
 
 
 def test_a_dated_measurement_of_the_deployed_head_stays_legitimate() -> None:
