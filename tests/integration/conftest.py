@@ -22,11 +22,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import subprocess
 import sys
 import warnings
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
+from functools import cache
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, unquote, urlparse
@@ -240,13 +242,32 @@ def _report_missing_db_url(terminalreporter: Any) -> None:
     row of dots and the final line reads `423 skipped`. This is the only place
     the reason survives the summary.
     """
-    if not nothing_was_measured(terminalreporter.stats):
-        return
     skipped = len(terminalreporter.stats.get("skipped", []))
-    line = format_missing_db_url_summary(skipped, _rejection_reason())
-    if line is not None:
-        terminalreporter.write_sep("=", "integration suite not measured", red=True)
-        terminalreporter.write_line(line)
+    if skipped == 0:
+        return
+    reason = _rejection_reason()
+    if reason is None and os.environ.get("BRAIN_V42_TEST_DB_URL"):
+        # A usable URL: whatever was skipped, it was not skipped for want of a
+        # database. Note this keys on the URL being UNUSABLE, never on the
+        # variable being non-empty — a URL pointing at prod `brain` is non-empty
+        # AND refused, and must still warn. That distinction is the whole lesson
+        # of this guard's first version.
+        return
+    line = format_missing_db_url_summary(skipped, reason)
+    if line is None:
+        return
+    # The subject is the DATABASE half, not the session. Since the conftest
+    # stopped taking db-free tests hostage, a run can measure 30 tests and skip
+    # 462 for want of a URL — `nothing_was_measured` is then False and the old
+    # condition swallowed the banner entirely, which CI caught on PR #91. The
+    # helper keeps a job it is honest about: choosing which of the two happened.
+    header = (
+        "integration suite not measured"
+        if nothing_was_measured(terminalreporter.stats)
+        else "integration database not measured"
+    )
+    terminalreporter.write_sep("=", header, red=True)
+    terminalreporter.write_line(line)
 
 
 # ---------------------------------------------------------------------------
@@ -485,35 +506,91 @@ def _describe_schema_residue_left_by_the_suite(db_url: str) -> str | None:
 _DATABASE_ENTRY_POINTS = frozenset({"engine", "migration_downgrade_fence"})
 
 
-@pytest.fixture(autouse=True)
-def _database_only_for_tests_that_ask(request: pytest.FixtureRequest) -> None:
-    """ONE rule: a test meets the database only if it ASKS for one.
+#: The conftest's own resolved URL. A module that IMPORTS it builds its own
+#: engine from it and never touches a fixture — so importing it IS asking. This
+#: is the second spelling of the one rule, not a second rule.
+_SHARED_URL_IMPORT = re.compile(r"^\s*(?:from\s+\S+\s+)?import\b.*\bINTEGRATION_DB_URL\b", re.M)
 
-    Ticket `b83ae9fe`. Three session-scoped autouse fixtures used to make this
-    whole tree conditional on `BRAIN_V42_TEST_DB_URL`: `run_migrations` skipped
-    without it, and `check_db_connection` and `cleanup_test_data` pulled `engine`,
-    which pulls `run_migrations`. Every test under this root skipped, database
-    touched or not — and it skipped SILENTLY, which is worse than failing.
 
-    It cost twice, both times on tests that need no database at all: w44's HNSW
-    bench, which spins its own containers, and w47's network boundary probe,
-    which reads sockets and published ports. The probe had to leave the tree
-    entirely; a probe that can skip itself proves nothing.
+@cache
+def _module_imports_the_shared_url(path: str) -> bool:
+    try:
+        return _SHARED_URL_IMPORT.search(Path(path).read_text(encoding="utf-8")) is not None
+    except OSError:  # pragma: no cover - a test item without a readable file
+        return False
 
-    Nothing about the database path changes. A test that asks still gets the
-    migrations, the connectivity probe and the end-of-session purge, in that
-    order and once per session. What changes is who is asked to pay for them.
 
-    The rule is DERIVED, not declared: no marker to remember, no opt-out to
-    forget. A new bench added tomorrow is free by default, and a test that starts
-    using the database becomes gated the moment it names a fixture — because
-    naming the fixture IS the request.
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Decide at COLLECTION, because a fixture decides too late.
+
+    The first version of this gate was an autouse FUNCTION-scoped fixture, and
+    CI showed the flaw within the hour: a module- or session-scoped fixture in
+    the test module is set up BEFORE any function-scoped autouse fixture, so
+    three modules built an engine from an empty URL and died in `pydantic` and
+    `sqlalchemy` before the gate ever ran. A skip has to be decided before
+    anything can be constructed, which is what this hook is for.
     """
-    if _DATABASE_ENTRY_POINTS.isdisjoint(request.fixturenames):
+    reason = _unusable_url_reason()
+    if reason is None:
         return
-    # Requested here rather than declared as arguments: as arguments they would
-    # be dependencies of an AUTOUSE fixture, which is exactly the hostage-taking
-    # this gate removes.
+    skip = pytest.mark.skip(reason=reason)
+    for item in items:
+        if _item_asks_for_the_database(item):
+            item.add_marker(skip)
+
+
+def _unusable_url_reason() -> str | None:
+    """Why the integration database cannot be used, or None when it can.
+
+    Keys on the URL being UNUSABLE, never on the variable being non-empty: a URL
+    pointing at the production `brain` database is non-empty AND refused, and
+    must still stop the suite.
+    """
+    try:
+        _resolve_integration_db_url()
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def _item_asks_for_the_database(item: pytest.Item) -> bool:
+    """The one rule, in its two spellings — both DERIVED, neither declared.
+
+    A test asks by naming a database FIXTURE, or by importing the resolved
+    `INTEGRATION_DB_URL`. The second spelling exists because a module can build
+    its own engine from that constant and never touch a fixture:
+    `test_automation_runtime_independence.py` does exactly that, and the first
+    version of this gate freed it from the skip without giving it a guard. It
+    then failed in CI with `Could not parse SQLAlchemy URL` — what an
+    unconfigured suite looks like when nothing stops it in time.
+
+    The trigger matches the IMPORT STATEMENT, and both narrower forms were tried
+    and failed the same afternoon. A bare source scan for the variable's NAME
+    caught `test_db_free_tests_are_not_hostages.py`, whose whole subject is that
+    variable and which only describes it — its own witness reddened on it. Reading
+    module GLOBALS instead then missed `mcp/test_health.py`, which imports the
+    constant INSIDE a function, so the name never reaches module scope. Matching
+    the import covers both: prose mentions a name, an import binds one, wherever
+    it is written.
+    """
+    fixturenames = set(getattr(item, "fixturenames", ()))
+    if not _DATABASE_ENTRY_POINTS.isdisjoint(fixturenames):
+        return True
+    path = getattr(item, "path", None)
+    return path is not None and _module_imports_the_shared_url(str(path))
+
+
+@pytest.fixture(autouse=True)
+def _pull_the_database_guards(request: pytest.FixtureRequest) -> None:
+    """Give an asking test the connectivity probe and the end-of-session purge.
+
+    Requested here rather than declared as arguments: as arguments they would be
+    dependencies of an AUTOUSE fixture, which is the hostage-taking this gate
+    removes. Only reached when the URL is usable — otherwise the collection hook
+    has already skipped this item.
+    """
+    if not _item_asks_for_the_database(request.node):
+        return
     request.getfixturevalue("check_db_connection")
     request.getfixturevalue("cleanup_test_data")
 
