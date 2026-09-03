@@ -258,7 +258,10 @@ async def test_the_downgrade_refuses_to_destroy_judgment_and_names_its_sessions(
     project_key, session_id = await _session_with_checkpoint(engine)
     migration_downgrade_fence("050")
 
-    from tests.integration.conftest import INTEGRATION_DB_URL
+    # Read from the environment, not from the conftest constant: that constant
+    # is bound when the conftest is imported, which is before the session fixture
+    # in this directory rebinds the variable to a disposable database.
+    INTEGRATION_DB_URL = os.environ["BRAIN_V42_TEST_DB_URL"]
 
     try:
         result = subprocess.run(
@@ -297,7 +300,10 @@ async def test_the_named_opt_in_lets_a_deliberate_operator_through(
     project_key, _ = await _session_with_checkpoint(engine)
     migration_downgrade_fence("050")
 
-    from tests.integration.conftest import INTEGRATION_DB_URL
+    # Read from the environment, not from the conftest constant: that constant
+    # is bound when the conftest is imported, which is before the session fixture
+    # in this directory rebinds the variable to a disposable database.
+    INTEGRATION_DB_URL = os.environ["BRAIN_V42_TEST_DB_URL"]
 
     try:
         down = subprocess.run(

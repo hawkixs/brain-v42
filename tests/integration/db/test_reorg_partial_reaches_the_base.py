@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import uuid
 from pathlib import Path
 
@@ -47,7 +48,10 @@ def _run_sql(dsn: str, query: str, *args: object) -> list[tuple]:
 def test_a_reorg_validation_failure_lands_as_partial_in_dream_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, run_migrations: None
 ) -> None:
-    from tests.integration.conftest import INTEGRATION_DB_URL
+    # Read from the environment, not from the conftest constant: that constant
+    # is bound when the conftest is imported, which is before the session fixture
+    # in this directory rebinds the variable to a disposable database.
+    INTEGRATION_DB_URL = os.environ.get("BRAIN_V42_TEST_DB_URL", "")
 
     if not INTEGRATION_DB_URL:
         pytest.skip("BRAIN_V42_TEST_DB_URL is not set")

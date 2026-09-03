@@ -140,7 +140,10 @@ async def test_the_downgrade_refuses_to_erase_what_marks_a_guess_as_a_guess(
     project_key, knowledge_id = await _session_with_one_artifact(engine, mode="derived_window")
     migration_downgrade_fence("047")
 
-    from tests.integration.conftest import INTEGRATION_DB_URL
+    # Read from the environment, not from the conftest constant: that constant
+    # is bound when the conftest is imported, which is before the session fixture
+    # in this directory rebinds the variable to a disposable database.
+    INTEGRATION_DB_URL = os.environ["BRAIN_V42_TEST_DB_URL"]
 
     async with engine.connect() as conn:
         head_before = await conn.scalar(sa.text("SELECT version_num FROM alembic_version"))
@@ -194,7 +197,10 @@ async def test_the_named_opt_in_lets_a_deliberate_operator_through(
     project_key, _ = await _session_with_one_artifact(engine, mode="derived_window")
     migration_downgrade_fence("047")
 
-    from tests.integration.conftest import INTEGRATION_DB_URL
+    # Read from the environment, not from the conftest constant: that constant
+    # is bound when the conftest is imported, which is before the session fixture
+    # in this directory rebinds the variable to a disposable database.
+    INTEGRATION_DB_URL = os.environ["BRAIN_V42_TEST_DB_URL"]
 
     try:
         result = subprocess.run(

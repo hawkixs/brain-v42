@@ -126,7 +126,10 @@ async def test_the_downgrade_refuses_to_destroy_a_closure_it_cannot_restore(
     )
     migration_downgrade_fence("046")
 
-    from tests.integration.conftest import INTEGRATION_DB_URL
+    # Read from the environment, not from the conftest constant: that constant
+    # is bound when the conftest is imported, which is before the session fixture
+    # in this directory rebinds the variable to a disposable database.
+    INTEGRATION_DB_URL = os.environ["BRAIN_V42_TEST_DB_URL"]
 
     async with engine.connect() as conn:
         head_before = await conn.scalar(sa.text("SELECT version_num FROM alembic_version"))
