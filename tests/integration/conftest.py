@@ -476,7 +476,49 @@ def _describe_schema_residue_left_by_the_suite(db_url: str) -> str | None:
     )
 
 
-@pytest.fixture(scope="session", autouse=True)
+#: The two ways a test can reach the shared database. Everything else chains
+#: through `engine` — `session_factory`, `db_session`, `check_db_connection` and
+#: `cleanup_test_data` all take it as an argument — so naming these two names the
+#: whole surface. `migration_downgrade_fence` is listed separately because it
+#: takes only `request`: it serializes a downgrade rather than opening a
+#: connection, and would otherwise slip through a check anchored on `engine`.
+_DATABASE_ENTRY_POINTS = frozenset({"engine", "migration_downgrade_fence"})
+
+
+@pytest.fixture(autouse=True)
+def _database_only_for_tests_that_ask(request: pytest.FixtureRequest) -> None:
+    """ONE rule: a test meets the database only if it ASKS for one.
+
+    Ticket `b83ae9fe`. Three session-scoped autouse fixtures used to make this
+    whole tree conditional on `BRAIN_V42_TEST_DB_URL`: `run_migrations` skipped
+    without it, and `check_db_connection` and `cleanup_test_data` pulled `engine`,
+    which pulls `run_migrations`. Every test under this root skipped, database
+    touched or not — and it skipped SILENTLY, which is worse than failing.
+
+    It cost twice, both times on tests that need no database at all: w44's HNSW
+    bench, which spins its own containers, and w47's network boundary probe,
+    which reads sockets and published ports. The probe had to leave the tree
+    entirely; a probe that can skip itself proves nothing.
+
+    Nothing about the database path changes. A test that asks still gets the
+    migrations, the connectivity probe and the end-of-session purge, in that
+    order and once per session. What changes is who is asked to pay for them.
+
+    The rule is DERIVED, not declared: no marker to remember, no opt-out to
+    forget. A new bench added tomorrow is free by default, and a test that starts
+    using the database becomes gated the moment it names a fixture — because
+    naming the fixture IS the request.
+    """
+    if _DATABASE_ENTRY_POINTS.isdisjoint(request.fixturenames):
+        return
+    # Requested here rather than declared as arguments: as arguments they would
+    # be dependencies of an AUTOUSE fixture, which is exactly the hostage-taking
+    # this gate removes.
+    request.getfixturevalue("check_db_connection")
+    request.getfixturevalue("cleanup_test_data")
+
+
+@pytest.fixture(scope="session")
 def run_migrations() -> None:
     """Run Alembic migrations once per session before any integration test.
 
@@ -673,7 +715,7 @@ async def engine(run_migrations: None) -> AsyncEngine:  # type: ignore[misc]
 # ---------------------------------------------------------------------------
 
 
-@pytest_asyncio.fixture(scope="session", autouse=True)
+@pytest_asyncio.fixture(scope="session")
 async def check_db_connection(engine: AsyncEngine) -> None:  # type: ignore[misc]
     """Skip all integration tests if PostgreSQL is not reachable.
 
@@ -828,7 +870,7 @@ async def purge_integration_rows(conn: Any) -> None:
     await conn.execute(sa.text(f"DELETE FROM projects WHERE {_INTEGRATION_PROJECT_PREDICATE}"))
 
 
-@pytest_asyncio.fixture(scope="session", autouse=True)
+@pytest_asyncio.fixture(scope="session")
 async def cleanup_test_data(engine: AsyncEngine) -> None:  # type: ignore[misc]
     """Run :func:`purge_integration_rows` once every integration test has finished."""
     yield  # type: ignore[misc]
