@@ -437,6 +437,12 @@ class MetricsServer:
         # a zero on a source that counts nothing says nothing).
         metrics["receiver_rejections"] = self._rejection_counters.snapshot()
 
+        # What the activity registry threw away, by cause, plus its occupancy —
+        # the reopening condition of 863ff2ca reads BOTH: occupancy above 48 of
+        # 64 sustained over 24 h, or any bearing eviction at all. Same path and
+        # same always-present shape as the rejections above, for the same reason.
+        metrics["client_activity_registry"] = self._codex_registry.eviction_counters()
+
         # DB stats (async)
         db_stats = await self._collector.collect_db_stats()
         metrics["database"] = db_stats

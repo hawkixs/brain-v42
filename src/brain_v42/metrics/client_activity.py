@@ -122,6 +122,12 @@ class ClientActivityRegistry:
         self._lock = threading.Lock()
         self._conversations: dict[str, _Conversation] = {}
         self._brain: dict[str, _BrainActivity] = {}
+        # Present from construction, both causes at zero: a structure that only
+        # appears once it fires cannot be read as "nothing happened" — the lesson
+        # `d5e4bd73` wrote for the receiver rejections, at the other end of the
+        # same registry.
+        self._evictions: dict[str, int] = {"ttl": 0, "capacity": 0}
+        self._evictions_bearing = 0
         self._fingerprints: dict[bytes, float] = {}
         self._receipt_order = 0
 
@@ -257,13 +263,16 @@ class ClientActivityRegistry:
             if now - value.last_seen < ACTIVITY_TTL_SECONDS
         }
 
-    @staticmethod
-    def _prune_brain(brain: dict[str, _BrainActivity], now: float) -> dict[str, _BrainActivity]:
-        return {
+    def _prune_brain(
+        self, brain: dict[str, _BrainActivity], now: float
+    ) -> dict[str, _BrainActivity]:
+        kept = {
             key: value
             for key, value in brain.items()
             if now - value.last_seen < ACTIVITY_TTL_SECONDS
         }
+        self._evictions["ttl"] += len(brain) - len(kept)
+        return kept
 
     @staticmethod
     def _prune_fingerprints(fingerprints: dict[bytes, float], now: float) -> dict[bytes, float]:
@@ -313,9 +322,8 @@ class ClientActivityRegistry:
             kept.update(entries)
         return kept
 
-    @staticmethod
     def _trim_brain(
-        brain: dict[str, _BrainActivity], live_sessions: frozenset[str]
+        self, brain: dict[str, _BrainActivity], live_sessions: frozenset[str]
     ) -> dict[str, _BrainActivity]:
         """Cap the brain half, JOINED rows first.
 
@@ -354,6 +362,14 @@ class ClientActivityRegistry:
             key=lambda item: (item[0] in live_sessions, item[1].last_seen),
             reverse=True,
         )
+        dropped = ranked[MAX_ACTIVE_CONVERSATIONS:]
+        self._evictions["capacity"] += len(dropped)
+        # BEARING, and only here: a row cut for capacity while carrying calls is
+        # a measurement thrown away. The TTL path drops rows too, and counts them
+        # under `ttl` -- but a row silent for the whole window is stale by design,
+        # not a loss, and conflating them would make the reopening condition fire
+        # on healthy traffic.
+        self._evictions_bearing += sum(1 for _, value in dropped if value.calls > 0)
         return dict(ranked[:MAX_ACTIVE_CONVERSATIONS])
 
     def ingest_otlp_json(self, payload: bytes) -> None:
@@ -550,6 +566,37 @@ class ClientActivityRegistry:
                 if now - conversation.last_seen < ACTIVITY_TTL_SECONDS
             )
             self._brain = self._trim_brain(brain, live_sessions)
+
+    def eviction_counters(self) -> dict[str, object]:
+        """What this registry threw away, by cause, and how full it is.
+
+        Ticket `863ff2ca` point 3 asked whether measurement is being lost to the
+        64-row cap. `_trim_brain` cut a sorted list and counted nothing, so the
+        question was unanswerable in EITHER direction — and both candidate fixes
+        (purge on `DELETE /mcp`; reversing `e5cda111` to protect residues) would
+        have shipped against a problem nobody could size. Measured 2026-09-03
+        before this instrument: 9 rows of 64, zero unattributed residues.
+
+        REOPENING CONDITION for that ticket, which these numbers exist to
+        evaluate: `occupancy` above 48 of `capacity` sustained over 24 h, OR any
+        non-zero `evictions_bearing_total`. Until one fires, neither fix has a
+        measured problem to solve.
+
+        Two causes, because two is what the code can attribute: `ttl` from
+        `_prune_brain`, `capacity` from `_trim_brain`. Transport rotation is why
+        rows APPEAR, never why they are dropped; a third bucket claiming to
+        separate it would be inventing an attribution.
+
+        Monotonic counters and a gauge: the two totals only grow, `occupancy` is
+        read at the instant it is asked for.
+        """
+        with self._lock:
+            return {
+                "evictions_total": dict(self._evictions),
+                "evictions_bearing_total": self._evictions_bearing,
+                "occupancy": len(self._brain),
+                "capacity": MAX_ACTIVE_CONVERSATIONS,
+            }
 
     def snapshot(self) -> dict[str, object]:
         """Return the current cockpit projection, free of unbounded client text.
