@@ -149,9 +149,53 @@ def test_the_documented_inventory_is_exactly_what_the_code_emits() -> None:
 def test_the_headline_total_equals_what_the_code_emits() -> None:
     """Derived, not remembered. It said 13, then 16, before it said 18."""
     text = MCP_TOOLS.read_text(encoding="utf-8")
-    claimed = int(re.search(r"The (\d+) legacy string-returning tools", text).group(1))
+    claimed = int(re.search(r"The (\d+) tools listed below reject a malformed UUID", text).group(1))
 
     assert claimed == len(_tools_emitting_the_contract())
+
+
+FORMATTERS = REPO_ROOT / "src" / "brain_v42" / "mcp" / "tools" / "formatters.py"
+
+
+def test_the_page_never_says_a_tool_RETURNS_an_invalid_uuid_message() -> None:
+    """`format_error` is typed `-> Never` and raises. Nothing returns this text.
+
+    The page said "returns" on seven sibling lines and in the paragraph, for
+    four iterations. Anchored on the signature rather than on a reading of the
+    prose, so the claim cannot come back while the code says otherwise.
+    """
+    formatters = FORMATTERS.read_text(encoding="utf-8")
+    assert "def format_error(message: str) -> Never:" in formatters, (
+        "format_error changed shape — re-measure before trusting the assertion below"
+    )
+    assert "raise ToolError(message)" in formatters
+
+    offenders = [
+        line
+        for line in MCP_TOOLS.read_text(encoding="utf-8").splitlines()
+        if re.search(r"[Rr]eturns `?.?.? ?Invalid UUID", line)
+    ]
+
+    assert offenders == [], f"these lines say a tool RETURNS the message: {offenders}"
+
+
+def test_the_page_does_not_attribute_a_glyph_no_layer_produces() -> None:
+    """The `✗` is absent from `src/` entirely; earlier versions blamed a layer.
+
+    The one occurrence left in the page is the sentence saying the glyph does
+    not exist, which is why the assertion counts rather than forbids.
+    """
+    src_glyphs = [
+        path.name
+        for path in (REPO_ROOT / "src").rglob("*.py")
+        if "✗" in path.read_text(encoding="utf-8", errors="replace")
+    ]
+    assert src_glyphs == [], f"the glyph reappeared in src/: {src_glyphs} — re-measure the page"
+
+    page = MCP_TOOLS.read_text(encoding="utf-8")
+    assert page.count("✗") == 1, (
+        "the page carries a glyph beyond the sentence explaining it does not exist"
+    )
 
 
 def test_the_scan_finds_something_at_all() -> None:

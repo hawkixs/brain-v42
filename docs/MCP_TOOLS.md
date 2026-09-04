@@ -178,10 +178,11 @@ Session lifecycle actions remain under exclusive user control on the agent and c
 
 ## UUID error contracts
 
-The 18 legacy string-returning tools listed below normalize malformed UUIDs to:
+The 18 tools listed below reject a malformed UUID through the MCP error channel,
+with this message:
 
 ```
-✗ Invalid UUID: <value>
+Invalid UUID: <value>
 ```
 
 Three implementation paths produce this behaviour:
@@ -190,7 +191,13 @@ Three implementation paths produce this behaviour:
 - **Inline `UUID()` parsing**: `brain_get`, `brain_update`, `brain_delete` (`crud_tools.py`) and `brain_refresh_entity`, `brain_merge_entities` (`decay_tools.py`).
 - **`resolve_entity_id()` from `entity_ids.py`** (the git-style prefix path, which calls `parse_uuid` itself and returns the same string when the value is neither a UUID nor a usable prefix): `brain_get_runbook`, `brain_execute_runbook`, `brain_ticket_get`. `brain_get` also reaches it, on its non-plan branch, and is counted once under the inline path above.
 
-All 18 emit the same `Invalid UUID: <value>` text on invalid input, through `format_error`; whether that reaches the caller as a returned string or as a raised `ToolError` depends on the tool, and the `✗` glyph is added by the presentation layer rather than by the message itself. The count reached 18 by measurement on 2026-09-04, after saying 13 and then 16: each correction had counted the tools reachable through the mechanisms it already knew about, which is why the guard below now derives the set from the emitted TEXT and treats the three mechanisms as explanation rather than as the source of the number. The v4 session tools declare UUID parameters in their FastMCP schemas and therefore use MCP input validation instead of this formatted-string contract.
+All 18 go through `format_error`, which is typed `-> Never` and **raises** `ToolError`: none of them returns a string on this path, and the message is passed through unprefixed. Seventeen emit the malformed VALUE. `brain_merge_entities` is the exception — it formats the `ValueError` instead (`Invalid UUID: badly formed hexadecimal UUID string`), naming neither the value nor which of its two ids was bad.
+
+There is no `✗` in this path. The glyph appears nowhere in `src/`, and in `scripts/` only inside two Dream utilities that print their own console output; earlier versions of this page attributed it to a presentation layer that does not exist.
+
+The count reached 18 by measurement on 2026-09-04, after saying 13 and then 16. Each correction counted the tools reachable through the mechanisms it already knew about, and each guard inherited that scope, so the guard below derives the set from the emitted TEXT and treats the three mechanisms as explanation rather than as the source of the number.
+
+The v4 session tools declare UUID parameters in their FastMCP schemas and therefore use MCP input validation instead of this message.
 
 ## Removed / deprecated (no longer exposed)
 
@@ -263,7 +270,7 @@ Save a reusable snippet keyed by `intention` (the embedded field). Write intenti
 ```
 brain_use_snippet(snippet_id)
 ```
-Increment `use_count`, set `last_used_at = now()`. Returns `✗ Invalid UUID: <value>` if `snippet_id` is malformed.
+Increment `use_count`, set `last_used_at = now()`. Raises `Invalid UUID: <value>` if `snippet_id` is malformed.
 
 ---
 
@@ -306,7 +313,7 @@ Flip `status=proposed` -> `status=accepted`, stamp `decided_at`.
 ```
 brain_deprecate_adr(adr_id, reason=None)
 ```
-Set `status=deprecated`. Optional reason appended to consequences. Returns `✗ Invalid UUID: <value>` if `adr_id` is malformed.
+Set `status=deprecated`. Optional reason appended to consequences. Raises `Invalid UUID: <value>` if `adr_id` is malformed.
 
 Listing ADRs is `brain_list(entity_type="adr")`. The `brain_list_adrs`
 compatibility alias was REMOVED from the catalogue on 2026-09-03 (ticket
@@ -356,7 +363,7 @@ rows belong to the orchestrator, never to a phase agent.
 brain_get_runbook(runbook_id=None, title=None, project_key=None, limit=10)
 ```
 Three dispatch modes:
-- `runbook_id` — fetch one runbook by UUID (returns `✗ Invalid UUID` if malformed)
+- `runbook_id` — fetch one runbook by UUID (raises `Invalid UUID: <value>` if malformed)
 - `(title, project_key)` — fetch by exact title match within project
 - `project_key` alone — list all runbooks for project (**limit default 10, max 50**; trailing notice if more exist)
 
@@ -364,7 +371,7 @@ Three dispatch modes:
 ```
 brain_execute_runbook(runbook_id, status="success")
 ```
-Increment `execution_count`, stamp `last_executed_at`, set `last_execution_status` in {success, failed, partial}. Returns `✗ Invalid UUID` if `runbook_id` is malformed.
+Increment `execution_count`, stamp `last_executed_at`, set `last_execution_status` in {success, failed, partial}. Raises `Invalid UUID: <value>` if `runbook_id` is malformed.
 
 ---
 
@@ -611,7 +618,7 @@ segments separated by `-` or `:`; the aliases `brain` and `brain_v42` are canoni
 passed as `false`. A name already present in the same project, after trim and exact
 case-insensitive comparison, is refused. Invalid validation, a missing project, a duplicate, or
 an embedding that is unavailable, non-numeric, non-finite, or of a dimension different from
-`EMBEDDING_DIMENSION` (1536 by default) returns `✗ ...` without creating a feature. The scope of
+`EMBEDDING_DIMENSION` (1536 by default) raises a `ToolError` without creating a feature. The scope of
 uniqueness and the choice of the two writers are documented in the
 [explicit creation decision](superpowers/specs/2026-07-23-explicit-roadmap-feature-creation-design.md).
 
@@ -650,7 +657,7 @@ Work across `entity_type` in {decision, learning, snippet, runbook, adr, plan}.
 ```
 brain_get(entity_type, entity_id, max_chars=8000)
 ```
-Fetch one entity by type + UUID. Returns `✗ Invalid UUID: <value>` if `entity_id` is malformed.
+Fetch one entity by type + UUID. Raises `Invalid UUID: <value>` if `entity_id` is malformed.
 
 For `entity_type="plan"`: renders the plan header + chunk list bounded by `max_chars` (default **8000 chars**). A trailing notice identifies omitted chunks — increase `max_chars` to retrieve more content.
 
@@ -670,13 +677,13 @@ List with per-type filters. `runbook` requires `project_key`. `include_archived=
 ```
 brain_update(entity_type, entity_id, fields, related_to=None)
 ```
-Partial update validated through the per-type `<Entity>Update` Pydantic model. `related_to` adds graph edges when Neo4j is enabled. Returns `✗ Invalid UUID` if `entity_id` is malformed. `plan` is immutable — rerun `brain_reindex_plans`.
+Partial update validated through the per-type `<Entity>Update` Pydantic model. `related_to` adds graph edges when Neo4j is enabled. Raises `Invalid UUID: <value>` if `entity_id` is malformed. `plan` is immutable — rerun `brain_reindex_plans`.
 
 ### brain_delete
 ```
 brain_delete(entity_type, entity_id)
 ```
-Hard delete; no soft-delete here — use `brain_merge_entities` if you want audit + archive. Returns `✗ Invalid UUID` if `entity_id` is malformed.
+Hard delete; no soft-delete here — use `brain_merge_entities` if you want audit + archive. Raises `Invalid UUID: <value>` if `entity_id` is malformed.
 
 ---
 
