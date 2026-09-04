@@ -322,6 +322,14 @@ def test_the_call_site_applies_the_override_not_only_the_helper(
 
     printed = "".join(capsys.readouterr())
     assert rc == 0
+    # The fixture verifies ITSELF before the negative assertion below. An empty
+    # or unrecognisable stream makes `symmetry_warnings` return its single
+    # UNVERIFIED line and never reach the tally checks — which is exactly how
+    # the first draft of this test passed whatever the call site did.
+    assert "UNVERIFIED" not in printed, (
+        "the event stream was not recognised, so the check under test was never "
+        "reached and the assertion below proves nothing"
+    )
     assert "only the list is checkable" not in printed, (
         "the CLI --dry-run override did not reach declared_list_mismatch() — the "
         "call site lost what the helper provides"
