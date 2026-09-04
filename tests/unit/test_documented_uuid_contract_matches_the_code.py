@@ -92,6 +92,68 @@ def _call_site_count() -> int:
     return total
 
 
+def _tools_emitting_the_contract() -> set[str]:
+    """Every tool that puts `Invalid UUID: <value>` in front of a caller.
+
+    ANCHORED ON THE CONTRACT, not on a mechanism. Three times running, a
+    correction to this paragraph counted the tools reachable through the
+    mechanisms it already knew about and missed the rest: 13, then 16, then 18.
+    A set derived from the emitted TEXT cannot miss a fourth mechanism, because
+    it never asks how the text got there.
+
+    `resolve_entity_id` is the one indirection that has to be named: it returns
+    the string itself, so a tool that calls it emits the contract without
+    containing the words.
+    """
+    emitters: set[str] = set()
+    for path in sorted(TOOLS_DIR.glob("*.py")):
+        current: str | None = None
+        for line in path.read_text(encoding="utf-8").splitlines():
+            match = re.match(r"\s*async def (brain_[a-z0-9_]+)\s*\(", line)
+            if match:
+                current = match.group(1)
+            elif current is not None and ("Invalid UUID" in line or "resolve_entity_id(" in line):
+                emitters.add(current)
+    return emitters
+
+
+def test_the_contract_scan_finds_more_than_the_direct_callers() -> None:
+    """Guard on the anchor: if it ever returns only the parse_uuid callers, the
+    indirection has been lost and the count is about to drift again."""
+    emitters = _tools_emitting_the_contract()
+
+    assert len(emitters) > len(_tools_calling_parse_uuid())
+    assert "brain_get_runbook" in emitters, "the prefix path is no longer seen"
+    assert "brain_refresh_entity" in emitters, "the decay path is no longer seen"
+
+
+def test_the_documented_inventory_is_exactly_what_the_code_emits() -> None:
+    """The whole paragraph against the whole code, in both directions.
+
+    This is the assertion the previous two versions of this file lacked: they
+    checked each mechanism bullet against its own mechanism, which is airtight
+    per bullet and blind to a mechanism nobody listed. `brain_refresh_entity`
+    and `brain_merge_entities` were invisible to both.
+    """
+    documented: set[str] = set()
+    for marker in (*_MECHANISMS, "**Inline `UUID()` parsing**"):
+        documented |= set(re.findall(r"`(brain_[a-z0-9_]+)`", _documented_line(marker)))
+    actual = _tools_emitting_the_contract()
+
+    assert documented - actual == set(), f"documented, emits nothing: {sorted(documented - actual)}"
+    assert actual - documented == set(), (
+        f"emits the contract, undocumented: {sorted(actual - documented)}"
+    )
+
+
+def test_the_headline_total_equals_what_the_code_emits() -> None:
+    """Derived, not remembered. It said 13, then 16, before it said 18."""
+    text = MCP_TOOLS.read_text(encoding="utf-8")
+    claimed = int(re.search(r"The (\d+) legacy string-returning tools", text).group(1))
+
+    assert claimed == len(_tools_emitting_the_contract())
+
+
 def test_the_scan_finds_something_at_all() -> None:
     """Guard on the reader: an empty inventory would make every check vacuous."""
     assert len(_tools_calling_parse_uuid()) > 5
@@ -154,27 +216,6 @@ def test_each_mechanism_bullet_names_exactly_its_callers(marker: str, call: str)
     assert actual - documented == set(), (
         f"calls {call}, undocumented: {sorted(actual - documented)}"
     )
-
-
-def test_the_documented_total_counts_every_mechanism() -> None:
-    """The headline number, derived rather than remembered.
-
-    It said 13 while three tools honoured the contract through a third path.
-    """
-    text = MCP_TOOLS.read_text(encoding="utf-8")
-    claimed = int(re.search(r"The (\d+) legacy string-returning tools", text).group(1))
-
-    named: set[str] = set()
-    for marker in _MECHANISMS:
-        named |= set(re.findall(r"`(brain_[a-z0-9_]+)`", _documented_line(marker)))
-    named |= set(
-        re.findall(
-            r"`(brain_[a-z0-9_]+)`",
-            _documented_line("**Inline `try/except UUID()` in `crud_tools.py`**"),
-        )
-    )
-
-    assert claimed == len(named), f"the paragraph says {claimed} and names {len(named)}"
 
 
 def test_the_documented_call_site_count_matches_the_code() -> None:

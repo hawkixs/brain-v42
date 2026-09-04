@@ -178,7 +178,7 @@ Session lifecycle actions remain under exclusive user control on the agent and c
 
 ## UUID error contracts
 
-The 16 legacy string-returning tools listed below normalize malformed UUIDs to:
+The 18 legacy string-returning tools listed below normalize malformed UUIDs to:
 
 ```
 ✗ Invalid UUID: <value>
@@ -187,10 +187,10 @@ The 16 legacy string-returning tools listed below normalize malformed UUIDs to:
 Three implementation paths produce this behaviour:
 
 - **`parse_uuid()` from `parsing.py`** (10 call sites across `brain_tools.py`, `runbook_tools.py`, `snippet_tools.py`, `ticket_tools.py`): `brain_supersede_decision`, `brain_get_supersession_chain`, `brain_validate_learning`, `brain_promote_adr` (source_learning_id path), `brain_accept_adr`, `brain_deprecate_adr`, `brain_promote_runbook` (source_learning_id path), `brain_use_snippet`, `brain_ticket_reply`, `brain_ticket_transition`.
-- **Inline `try/except UUID()` in `crud_tools.py`**: `brain_get`, `brain_update`, `brain_delete`.
+- **Inline `UUID()` parsing**: `brain_get`, `brain_update`, `brain_delete` (`crud_tools.py`) and `brain_refresh_entity`, `brain_merge_entities` (`decay_tools.py`).
 - **`resolve_entity_id()` from `entity_ids.py`** (the git-style prefix path, which calls `parse_uuid` itself and returns the same string when the value is neither a UUID nor a usable prefix): `brain_get_runbook`, `brain_execute_runbook`, `brain_ticket_get`. `brain_get` also reaches it, on its non-plan branch, and is counted once under the inline path above.
 
-All 16 tools return the same `✗ Invalid UUID: <value>` message on invalid input. The count said 13 until 2026-09-04, when the third path was measured: naming only the tools that call `parse_uuid` DIRECTLY excluded three that honour the identical contract one call deeper. The v4 session tools declare UUID parameters in their FastMCP schemas and therefore use MCP input validation instead of this formatted-string contract.
+All 18 emit the same `Invalid UUID: <value>` text on invalid input, through `format_error`; whether that reaches the caller as a returned string or as a raised `ToolError` depends on the tool, and the `✗` glyph is added by the presentation layer rather than by the message itself. The count reached 18 by measurement on 2026-09-04, after saying 13 and then 16: each correction had counted the tools reachable through the mechanisms it already knew about, which is why the guard below now derives the set from the emitted TEXT and treats the three mechanisms as explanation rather than as the source of the number. The v4 session tools declare UUID parameters in their FastMCP schemas and therefore use MCP input validation instead of this formatted-string contract.
 
 ## Removed / deprecated (no longer exposed)
 
