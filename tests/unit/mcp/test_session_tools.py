@@ -165,6 +165,46 @@ class TestSectionKillswitches:
         assert "REORG" in out and "dry" in out.lower()
         assert "3" in out
 
+    def test_a_non_canonical_killswitch_value_reaches_the_operator(self):
+        """The third state, rendered — a state nobody reads is a state nobody has.
+
+        `parse_killswitches` answers on the safe side, so the night is never in
+        danger. But "dry because the operator said so" and "dry because nobody
+        could read what the operator wrote" are different facts, and the second
+        asks for a gesture. The VALUE is printed because it is what tells an
+        operator it was a typo rather than a decision.
+        """
+        state = KillswitchState(
+            last_run_date=date(2026, 5, 14),
+            promote_enabled=True,
+            promote_dry=False,
+            reorg_enabled=True,
+            reorg_dry=True,
+            promote_clean_dry_nights=0,
+            reorg_clean_dry_nights=3,
+            non_canonical=(("BRAIN_DREAM_SWEEP_DRY_RUN", "flase"),),
+        )
+
+        out = _section_killswitches(state)
+
+        assert "BRAIN_DREAM_SWEEP_DRY_RUN" in out
+        assert "flase" in out
+        assert "DRY" in out
+
+    def test_a_canonical_drop_in_adds_no_warning_line(self):
+        """A line printed every night stops being read."""
+        state = KillswitchState(
+            last_run_date=date(2026, 5, 14),
+            promote_enabled=True,
+            promote_dry=False,
+            reorg_enabled=True,
+            reorg_dry=True,
+            promote_clean_dry_nights=0,
+            reorg_clean_dry_nights=3,
+        )
+
+        assert "non-canonical" not in _section_killswitches(state)
+
     def test_no_activity_renders_anchor(self):
         state = KillswitchState(
             last_run_date=None,

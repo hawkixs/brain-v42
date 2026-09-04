@@ -24,7 +24,7 @@ _KS_KEYS = {
 
 
 # A LIST-VALUED key, deliberately outside `_KS_KEYS`. That dictionary returns a
-# `dict[str, bool]` and coerces through `value.lower() == "true"`: a project list
+# `dict[str, bool]` and coerces through `value == "true"`: a project list
 # would enter it as `False` and switch a phase off in the session briefing and in
 # `/metrics` without touching the night. A second function, not one more key.
 PROJECT_POOL_KEY = "BRAIN_DREAM_PROJECT_POOL"

@@ -93,12 +93,17 @@ def test_an_explicit_true_is_dry(env: str, flag: str) -> None:
         ("BRAIN_DREAM_SWEEP_ENABLED", "sweep"),
     ],
 )
-@pytest.mark.parametrize("value", ["false", "", "flase", "0"])
+@pytest.mark.parametrize("value", ["false", "", "flase", "0", "True", "TRUE"])
 def test_a_non_true_enabled_flag_still_reads_as_disabled(env: str, flag: str, value: str) -> None:
     """`dream.sh` reads these `!= "true"` and SKIPS. Both sides already agreed.
 
     Pinned rather than assumed: this lot changes the neighbouring coercion, and
     flipping these by accident would announce a phase that never ran.
+
+    `True` and `TRUE` are in the list because the case half of the change was
+    otherwise untested here: mutation-proven on 2026-09-04, restoring
+    `value.lower() == "true"` on the ENABLED branch alone left the whole suite
+    green, so "both families now compare exactly" was half a claim.
     """
     assert parse_killswitches(_drop_in(env, value))[flag] is False
 

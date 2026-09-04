@@ -203,6 +203,17 @@ def _section_killswitches(
         streak_str = f" · {streak} clean DRY nights" if dry else ""
         return f"- {label}: enabled ({mode}{streak_str})"
 
+    if state.non_canonical:
+        # Rendered FIRST and named, because it is the line that asks for a
+        # gesture. `dream.sh` and this briefing both read such a value as DRY,
+        # so nothing is at risk tonight — but the drop-in holds a word nobody
+        # meant to write, and only its VALUE tells the operator it was a typo
+        # rather than a decision.
+        offenders = ", ".join(f"{key}={value!r}" for key, value in state.non_canonical)
+        lines.append(
+            f"- ⚠ non-canonical killswitch value(s), read as DRY: {offenders} "
+            "— fix the drop-in; neither `true` nor `false` was written"
+        )
     lines.append(
         _row("PROMOTE", state.promote_enabled, state.promote_dry, state.promote_clean_dry_nights)
     )

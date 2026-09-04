@@ -13,7 +13,11 @@ import sqlalchemy as sa
 
 from brain_v42.db.tables import dream_runs as _default_dream_runs
 from brain_v42.dream_degradation import DEGRADED_PREFIX
-from brain_v42.dream_killswitches import KILLSWITCHES_PATH, parse_killswitches
+from brain_v42.dream_killswitches import (
+    KILLSWITCHES_PATH,
+    non_canonical_killswitches,
+    parse_killswitches,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -36,6 +40,19 @@ def _read_killswitch_flags(path: Path | None) -> dict[str, bool]:
         return {}
 
 
+def _read_non_canonical(path: Path | None) -> tuple[tuple[str, str], ...]:
+    """Killswitch keys the drop-in sets to something unreadable, and their value.
+
+    Same file, same failure mode: unreadable means an empty answer, never a
+    guess. Sorted so the briefing line is stable between runs.
+    """
+    ks_path = path if path is not None else KILLSWITCHES_PATH
+    try:
+        return tuple(sorted(non_canonical_killswitches(ks_path.read_text()).items()))
+    except OSError:
+        return ()
+
+
 @dataclass(frozen=True)
 class KillswitchState:
     last_run_date: date | None
@@ -54,6 +71,12 @@ class KillswitchState:
     sweep_enabled: bool = False
     sweep_dry: bool = True
     sweep_clean_dry_nights: int = 0
+    #: Killswitch keys whose value is neither `true` nor `false`, with what they
+    #: hold. `parse_killswitches` always answers on the safe side, so the night
+    #: is never in danger — but "dry because the operator said so" and "dry
+    #: because nobody could read what the operator wrote" are different facts,
+    #: and a briefing showing only the first hides a drop-in somebody has to fix.
+    non_canonical: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -80,6 +103,7 @@ class DreamRunService:
         t = self._t
         cutoff = date.today() - timedelta(days=within_days)
         ks = _read_killswitch_flags(killswitches_path)
+        odd = _read_non_canonical(killswitches_path)
         async with self._sf() as session:
             last_date = (
                 await session.execute(
@@ -95,6 +119,7 @@ class DreamRunService:
                     reorg_dry=False,
                     promote_clean_dry_nights=0,
                     reorg_clean_dry_nights=0,
+                    non_canonical=odd,
                 )
 
             rows = (
@@ -160,6 +185,7 @@ class DreamRunService:
             sweep_enabled=sweep_enabled,
             sweep_dry=sweep_dry,
             sweep_clean_dry_nights=sweep_streak,
+            non_canonical=odd,
         )
 
     async def _clean_dry_streak(self, session: AsyncSession, phase: str) -> int:
