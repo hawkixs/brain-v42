@@ -16,9 +16,12 @@ alongside the new ones, so a future edit that trades one for the other reddens.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
@@ -253,6 +256,76 @@ def test_the_override_moves_both_the_dict_key_and_the_parsed_object() -> None:
     assert overridden["dry_run"] is True
     assert overridden["parsed"].dry_run is True
     assert report["parsed"].dry_run is False, "the original must not be mutated"
+
+
+def test_the_call_site_applies_the_override_not_only_the_helper(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """The wiring, not the helper — the line the defect actually lived on.
+
+    Reverting `_amain`'s call to `apply_dry_run_override` back to a shallow dict
+    copy left the ENTIRE unit suite green: the helper was covered, its only
+    caller was not. A fix whose call site nothing exercises is a fix one
+    careless edit away from being undone in silence.
+
+    Drives the real `_amain` with the CLI flag set, a trailer that CLAIMS to be
+    wet, and a declared count that contradicts its own list — the shape that
+    produced the false alarm. `validate` is stubbed because the DB is not the
+    subject; stderr is read because that is where the alarm would appear.
+    """
+    import asyncio
+    import types
+
+    from dream import reorg_validate
+
+    async def _no_validation(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(reorg_validate, "validate", _no_validation)
+
+    # A RECOGNISABLE stream. An empty file makes `scan.recognised` false, and
+    # `symmetry_warnings` then returns its single "UNVERIFIED" line before ever
+    # reaching the tally checks — a test written that way passes whatever the
+    # call site does, which is how the first draft of this test failed to bite.
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "item_1",
+                    "type": "mcp_tool_call",
+                    "server": "brain-v42",
+                    "tool": "brain_update",
+                    "arguments": {"entity_type": "learning", "entity_id": _ID_A},
+                    "status": "completed",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    args = types.SimpleNamespace(
+        dry_run=True,
+        events_jsonl=str(events),
+        dream_run_id=None,
+        project_key="brain-v42",
+    )
+    raw = _trailer(
+        '{"dry_run": false, "updated": ["' + _ID_A + '"], "archived": [], '
+        '"declared": {"candidates_examined": 3, "archived": 3, "refused": {}, "deferred": 0}}'
+    )
+
+    rc = asyncio.run(reorg_validate._amain(raw, {}, object(), args))
+
+    printed = "".join(capsys.readouterr())
+    assert rc == 0
+    assert "only the list is checkable" not in printed, (
+        "the CLI --dry-run override did not reach declared_list_mismatch() — the "
+        "call site lost what the helper provides"
+    )
 
 
 def test_a_coherent_tally_adds_no_warning_at_all() -> None:

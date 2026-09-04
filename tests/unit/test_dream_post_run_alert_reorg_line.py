@@ -57,8 +57,10 @@ FIXTURE_DATE = dt.date(2026, 9, 3)
 #: Three lines lifted from `logs/dream/2026-09-03_brain-v42_reorg.events.jsonl`,
 #: the real codex stream of that night, with the bulky result payloads dropped
 #: and the two entity ids passed through the SAME deterministic anonymisation
-#: as the report fixture — `8424c8ad-…` is that night's first mutated id and
-#: becomes `00000001-…`, `6af1aa1b-…` is the second and becomes `00000002-…`.
+#: as the report fixture: that night's first mutated id becomes `00000001-…`,
+#: the second becomes `00000002-…`. The real prefixes are deliberately NOT
+#: written here — naming them would put the mapping key back in a tracked file
+#: and undo the scrubbing this very fixture exists to perform.
 #: That is what keeps the declared-versus-observed cross-check possible: a
 #: slice carrying real ids could no longer be correlated with a scrubbed
 #: report, and the check was dropped in silence when the fixture landed.
