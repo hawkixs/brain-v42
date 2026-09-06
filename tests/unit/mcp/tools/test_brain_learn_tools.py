@@ -120,6 +120,48 @@ class TestBrainLearn:
         assert str(learning.id) in result
 
     @pytest.mark.asyncio
+    async def test_brain_learn_returns_confirmation_without_warnings_key_by_default(self) -> None:
+        """No `warnings:` noise in the common case — nothing degraded."""
+        mcp, mock_svc = _make_mcp_with_learning_tools()
+        learning = _make_learning()
+        mock_svc.create = AsyncMock(return_value=learning)
+
+        fn = await _get_tool_fn(mcp, "brain_learn")
+        result = await fn(topic="TDD", insight="Write tests first")
+
+        assert "warnings" not in result
+
+    @pytest.mark.asyncio
+    async def test_brain_learn_surfaces_graph_warnings_in_confirmation(self) -> None:
+        """Regression for the 2026-09-06 incident: a degraded related_to
+        relation (endpoint not yet registered in the graph ledger) must
+        reach the agent as a visible warning, not a silent success and not
+        a raised tool error — the row is already committed by this point."""
+        mcp, mock_svc = _make_mcp_with_learning_tools()
+        learning = _make_learning().model_copy(
+            update={
+                "graph_warnings": [
+                    "relation RELATED_TO to 11111111-1111-1111-1111-111111111111 "
+                    "was not staged (missing_node)"
+                ]
+            }
+        )
+        mock_svc.create = AsyncMock(return_value=learning)
+
+        fn = await _get_tool_fn(mcp, "brain_learn")
+        result = await fn(
+            topic="TDD",
+            insight="Write tests first",
+            related_to=[{"id": "11111111-1111-1111-1111-111111111111", "type": "RELATED_TO"}],
+        )
+
+        assert isinstance(result, str)
+        assert "Learned" in result
+        assert str(learning.id) in result
+        assert "warnings" in result
+        assert "11111111-1111-1111-1111-111111111111" in result
+
+    @pytest.mark.asyncio
     async def test_brain_learn_defaults_tags_to_empty_list(self) -> None:
         """brain_learn passes tags=[] when tags parameter is None."""
         mcp, mock_svc = _make_mcp_with_learning_tools()
