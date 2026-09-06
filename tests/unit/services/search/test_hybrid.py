@@ -311,3 +311,37 @@ class TestHybridSearcher:
 
         assert mode == RERANK_MODE_RRF_FALLBACK
         assert len(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_empty_shard_with_reranker_configured_is_not_rrf_only(self):
+        """An empty shard (no FTS/vector hits) must not report 'rrf_only'.
+
+        Lot F4: 'rrf_only' means "no reranker is configured" (SearchResponse.degraded
+        docstring: "permanent mode"), a property of the HybridSearcher instance, not
+        of a single query's candidate count. Before the fix, ``search()`` skipped the
+        call to ``rerank_with_mode`` whenever ``fused`` was empty (``if self._reranker
+        and fused:``), so a shard with zero candidates reported "rrf_only" even though
+        a reranker IS configured and used for every other shard — flipping the whole
+        query into a degraded state it never actually entered.
+        """
+        fts_fn = AsyncMock(return_value=[])
+        vec_fn = AsyncMock(return_value=[])
+
+        reranker = MagicMock()
+        reranker.rerank_with_mode = AsyncMock(return_value=(RERANK_MODE_RERANKED, []))
+
+        searcher = HybridSearcher(reranker=reranker)
+        results, mode = await searcher.search(
+            query="q",
+            fts_search_fn=fts_fn,
+            vector_search_fn=vec_fn,
+            text_extractor=lambda e: "t",
+            limit=10,
+        )
+
+        assert results == []
+        # The reranker owns the empty-candidates contract (it already returns
+        # RERANKED for []); HybridSearcher must delegate to it, not shortcut.
+        reranker.rerank_with_mode.assert_awaited_once_with("q", [])
+        assert mode == RERANK_MODE_RERANKED
+        assert mode != RERANK_MODE_RRF_ONLY
