@@ -39,12 +39,13 @@ from brain_v42.mcp.tools.tool_annotations import (
     _READ_ANNOTATIONS,
 )
 from brain_v42.models.adr import AlternativeConsidered
-from brain_v42.models.brain import KnowledgeType
+from brain_v42.models.brain import ALL_TYPES, KnowledgeType
 from brain_v42.models.decision import DecisionCreate
 from brain_v42.models.learning import Confidence, LearningCreate, SourceType
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.models.relation import RelationInput
 from brain_v42.repositories.promotion import SourceLearningNotFound
+from brain_v42.services.brain_service import _TYPE_TO_PLURAL
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -673,8 +674,8 @@ def register_tools(
             if metrics_collector is not None:
                 all_scores = [
                     r.score
-                    for attr in ["decisions", "learnings", "snippets", "runbooks", "adrs"]
-                    for r in getattr(wdik_response.by_type, attr)
+                    for t in ALL_TYPES
+                    for r in getattr(wdik_response.by_type, _TYPE_TO_PLURAL[t])
                 ]
                 await metrics_collector.record_search_log(
                     tool_name="brain_search",

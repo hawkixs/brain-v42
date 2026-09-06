@@ -8,6 +8,7 @@ Tests verify correct delegation, parameter passing, type filtering, and serializ
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -50,6 +51,20 @@ _FAKE_ITEMS: dict[str, dict] = {
         "metadata": {},
         "created_at": datetime(2026, 3, 1, 12, 0, 0).isoformat(),
         "updated_at": datetime(2026, 3, 1, 12, 0, 0).isoformat(),
+    },
+    "plan": {
+        "id": str(uuid4()),
+        "plan_id": str(uuid4()),
+        "section_title": "Test Plan Section",
+        "section_path": "1/2",
+        "content": "test plan content",
+        "section_order": 0,
+        "word_count": 3,
+        "project_key": "brain-v42",
+        "plan_type": "plan",
+        "status": "active",
+        "tags": [],
+        "created_at": datetime(2026, 3, 1, 12, 0, 0).isoformat(),
     },
 }
 
@@ -103,7 +118,7 @@ def _make_oversized_body_results() -> tuple[SearchResult, SearchResult]:
     )
 
 
-def _make_mcp_with_brain_svc() -> tuple[FastMCP, MagicMock]:
+def _make_mcp_with_brain_svc(metrics_collector: Any | None = None) -> tuple[FastMCP, MagicMock]:
     """Create a test FastMCP instance with a mocked brain_svc."""
     mcp = FastMCP("test-brain")
     mock_brain_svc = MagicMock()
@@ -116,6 +131,7 @@ def _make_mcp_with_brain_svc() -> tuple[FastMCP, MagicMock]:
         adr_svc=MagicMock(),
         project_context_svc=MagicMock(),
         brain_svc=mock_brain_svc,
+        metrics_collector=metrics_collector,
     )
     return mcp, mock_brain_svc
 
@@ -624,6 +640,46 @@ class TestBrainSearchGroupByType:
         assert result.count("OVERSIZED_REASONING") == 500
         assert result.count("OVERSIZED_CONSEQUENCES") == 500
         assert result.count("OVERSIZED_INSIGHT") == 500
+
+
+# ── grouped search_log metrics must count every type, including plans (lot G3) ─
+
+
+class TestGroupedSearchLogScoresCoverAllTypes:
+    """The grouped branch's search_log metrics must derive top_score/avg_score
+    from every KnowledgeByType attribute, not a hardcoded subset. A search that
+    matches only 'plans' must still record a non-null top_score/avg_score.
+    """
+
+    @pytest.mark.asyncio
+    async def test_grouped_metrics_score_non_null_when_only_plans_match(self) -> None:
+        """A plans-only grouped hit must feed non-null top_score/avg_score.
+
+        Regression for the all_scores comprehension that listed
+        ['decisions', 'learnings', 'snippets', 'runbooks', 'adrs'] and forgot
+        'plans': result_count counted the plan hit while top_score/avg_score
+        stayed None.
+        """
+        metrics_collector = MagicMock()
+        metrics_collector.record_search_log = AsyncMock()
+        mcp, mock_svc = _make_mcp_with_brain_svc(metrics_collector=metrics_collector)
+        plan_result = _make_search_result("plan", 0.77)
+        response = WhatDoIKnowResponse(
+            topic="plan only",
+            by_type=KnowledgeByType(plans=[plan_result]),
+            total=1,
+            types_searched=["plan"],
+        )
+        mock_svc.what_do_i_know_about = AsyncMock(return_value=response)
+
+        fn = await _get_tool_fn(mcp, "brain_search")
+        await fn(query="plan only", group_by_type=True, types=["plan"])
+
+        metrics_collector.record_search_log.assert_awaited_once()
+        call_kwargs = metrics_collector.record_search_log.await_args.kwargs
+        assert call_kwargs["result_count"] == 1
+        assert call_kwargs["top_score"] == 0.77
+        assert call_kwargs["avg_score"] == 0.77
 
 
 # ── brain_search received-parameters telemetry (lot G3) ────────────────────────
