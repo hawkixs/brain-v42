@@ -690,12 +690,15 @@ def register_tools(
                 "mcp.brain_search.grouped",
                 query_length=len(query),
                 project_key=project_key,
+                project_group=project_group,
                 limit=limit,
                 types_requested=types,
                 tags_present=bool(tags),
                 tags_count=len(tags) if tags else 0,
                 min_score=min_score,
                 include_archived=include_archived,
+                include_related=include_related,
+                full=full,
                 group_by_type=group_by_type,
             )
             return (
@@ -735,12 +738,15 @@ def register_tools(
             "mcp.brain_search",
             query_length=len(query),
             project_key=project_key,
+            project_group=project_group,
             limit=limit,
             types_requested=types,
             tags_present=bool(tags),
             tags_count=len(tags) if tags else 0,
             min_score=min_score,
             include_archived=include_archived,
+            include_related=include_related,
+            full=full,
             group_by_type=group_by_type,
         )
         output = format_search_results(

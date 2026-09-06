@@ -705,9 +705,12 @@ class TestBrainSearchTelemetry:
             await fn(
                 query="a secret sounding query",
                 types=["decision", "learning"],
+                project_group="platform",
                 tags=["dream:scan", "sec2"],
                 min_score=0.42,
                 include_archived=True,
+                include_related=True,
+                full=True,
                 limit=10,
             )
 
@@ -716,10 +719,13 @@ class TestBrainSearchTelemetry:
         event = events[0]
         assert event["query_length"] == len("a secret sounding query")
         assert event["types_requested"] == ["decision", "learning"]
+        assert event["project_group"] == "platform"
         assert event["tags_present"] is True
         assert event["tags_count"] == 2
         assert event["min_score"] == 0.42
         assert event["include_archived"] is True
+        assert event["include_related"] is True
+        assert event["full"] is True
         assert event["group_by_type"] is False
         assert event["limit"] == 10
         rendered = repr(logs)
@@ -758,9 +764,12 @@ class TestBrainSearchTelemetry:
                 query="PostgreSQL",
                 group_by_type=True,
                 types=["decision"],
+                project_group="platform",
                 tags=["ops"],
                 min_score=0.5,
                 include_archived=True,
+                include_related=True,
+                full=True,
                 limit=7,
             )
 
@@ -768,10 +777,13 @@ class TestBrainSearchTelemetry:
         assert len(events) == 1
         event = events[0]
         assert event["types_requested"] == ["decision"]
+        assert event["project_group"] == "platform"
         assert event["tags_present"] is True
         assert event["tags_count"] == 1
         assert event["min_score"] == 0.5
         assert event["include_archived"] is True
+        assert event["include_related"] is True
+        assert event["full"] is True
         assert event["group_by_type"] is True
         assert event["limit"] == 7
 
