@@ -286,7 +286,16 @@ brain_search(query, types=None, project_key=None, project_group=None,
 ```
 Hybrid semantic search: pgvector fan-out across services + `BatchingRerankerClient` rerank (20 ms coalescing window). `types` subset of {decision, learning, snippet, runbook, adr, plan}. `project_key` XOR `project_group` scope. `tags` filter by overlap. Results render with `[s:score]` prefix sorted by score desc. `group_by_type=True` groups output into sections (former `brain_what_do_i_know_about`); `types` still scopes which sections are searched and rendered in grouped mode. `include_related=True` appends a `### Related` graph-neighbour block.
 
+**Grouped mode ignores `tags` and `include_related`**: `what_do_i_know_about()` has no `tags` parameter at all and never renders a `### Related` section, so `group_by_type=True` structurally cannot honour either — use flat search (`group_by_type=False`) for both. The `mcp.brain_search.grouped` telemetry event journals the EFFECTIVE values (`tags_present=false`, `tags_count=0`, `include_related=false`), not the caller's raw request, so the log never claims an effect that never happened.
+
 **Limit**: clamped server-side to [1, 100]. Degraded banners: see top of document.
+
+**A 0-result answer explains itself** (both flat and grouped): "## 0 results" is never the whole story — the rendering distinguishes three kinds, each pointing at a different next move:
+- `0 candidates in scope (types searched: …; project: …; archived excluded)` — nothing matched the fan-out at all; widen `types` or the project scope.
+- `N candidates, none above min_score X (best raw score Y; threshold applies to the raw score, before decay)` — candidates existed; lower `min_score`.
+- `N candidates removed by the tags filter [tags]` — flat search only (grouped has no `tags` to remove anything with); drop or loosen a tag.
+
+A non-nominal `rerank_mode` (`rrf_fallback` / `rrf_only`) is appended to the explanation when relevant. This block is derived from `SearchResponse.diagnostics` / `WhatDoIKnowResponse.diagnostics` (candidates before threshold, best raw score, tags removed, requested vs. effective project_key and min_score, rerank mode, degraded flag) — the same 7 fields (`candidates_before_threshold`, `best_raw_score`, `tags_filtered_out`, `rerank_mode`, `degraded`, `min_score_effective`, `project_key_effective`) also land in both telemetry events.
 
 Examples:
 - `brain_search("pgvector migration", types=["decision"])`

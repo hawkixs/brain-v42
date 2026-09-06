@@ -22,6 +22,7 @@ from brain_v42.models.brain import (
     ALL_TYPES,
     KnowledgeByType,
     KnowledgeType,
+    SearchDiagnostics,
     SearchResponse,
     SearchResult,
     WhatDoIKnowResponse,
@@ -74,19 +75,46 @@ def _make_search_result(type: KnowledgeType = "learning", score: float = 0.9) ->
     return SearchResult(type=type, score=score, item=item)
 
 
+def _make_diagnostics(**overrides: Any) -> SearchDiagnostics:
+    defaults: dict[str, Any] = {
+        "candidates_before_threshold": 1,
+        "best_raw_score": 0.9,
+        "min_score_requested": 0.2,
+        "min_score_effective": 0.2,
+        "tags_filtered_out": 0,
+        "types_searched": ["learning", "decision"],
+        "project_key_requested": None,
+        "project_key_effective": None,
+        "project_key_injected_by_dream_scope": False,
+        "include_archived": False,
+        "rerank_mode": "reranked",
+        "degraded": False,
+    }
+    defaults.update(overrides)
+    return SearchDiagnostics(**defaults)
+
+
 def _make_search_response(
     query: str = "test query",
     results: list[SearchResult] | None = None,
     types_searched: list[KnowledgeType] | None = None,
+    diagnostics: SearchDiagnostics | None = None,
 ) -> SearchResponse:
     r = results or [_make_search_result()]
     t = types_searched or ["learning", "decision"]
-    return SearchResponse(query=query, results=r, total=len(r), types_searched=t)
+    return SearchResponse(
+        query=query,
+        results=r,
+        total=len(r),
+        types_searched=t,
+        diagnostics=diagnostics or _make_diagnostics(),
+    )
 
 
 def _make_what_do_i_know_response(
     topic: str = "PostgreSQL",
     total: int = 2,
+    diagnostics: SearchDiagnostics | None = None,
 ) -> WhatDoIKnowResponse:
     by_type = KnowledgeByType(
         decisions=[_make_search_result("decision", 0.95)],
@@ -97,6 +125,7 @@ def _make_what_do_i_know_response(
         by_type=by_type,
         total=total,
         types_searched=["decision", "learning", "snippet", "runbook", "adr"],
+        diagnostics=diagnostics or _make_diagnostics(),
     )
 
 
@@ -754,7 +783,16 @@ class TestBrainSearchTelemetry:
 
     @pytest.mark.asyncio
     async def test_grouped_search_logs_received_parameters(self) -> None:
-        """group_by_type=True journals the same received-parameter shape."""
+        """group_by_type=True journals the same received-parameter shape.
+
+        tags/include_related are journaled as their EFFECTIVE value, not the
+        requested one: what_do_i_know_about() has no tags parameter at all and
+        never renders a "### Related" section, so grouped mode structurally
+        ignores both — logging the caller's raw request here would claim an
+        effect that never happened. See
+        test_grouped_search_logs_effective_tags_and_include_related_as_ignored
+        for the dedicated regression.
+        """
         mcp, mock_svc = _make_mcp_with_brain_svc()
         mock_svc.what_do_i_know_about = AsyncMock(return_value=_make_what_do_i_know_response())
 
@@ -778,14 +816,99 @@ class TestBrainSearchTelemetry:
         event = events[0]
         assert event["types_requested"] == ["decision"]
         assert event["project_group"] == "platform"
-        assert event["tags_present"] is True
-        assert event["tags_count"] == 1
+        assert event["tags_present"] is False
+        assert event["tags_count"] == 0
         assert event["min_score"] == 0.5
         assert event["include_archived"] is True
-        assert event["include_related"] is True
+        assert event["include_related"] is False
         assert event["full"] is True
         assert event["group_by_type"] is True
         assert event["limit"] == 7
+
+    @pytest.mark.asyncio
+    async def test_grouped_search_logs_effective_tags_and_include_related_as_ignored(
+        self,
+    ) -> None:
+        """Regression: grouped mode must never echo the requested tags/
+        include_related as if they were honoured — it structurally ignores
+        both (what_do_i_know_about has no tags param, no related section)."""
+        mcp, mock_svc = _make_mcp_with_brain_svc()
+        mock_svc.what_do_i_know_about = AsyncMock(return_value=_make_what_do_i_know_response())
+
+        fn = await _get_tool_fn(mcp, "brain_search")
+        with capture_logs() as logs:
+            await fn(
+                query="x",
+                group_by_type=True,
+                tags=["a", "b", "c"],
+                include_related=True,
+            )
+
+        event = next(log for log in logs if log["event"] == "mcp.brain_search.grouped")
+        assert event["tags_present"] is False
+        assert event["tags_count"] == 0
+        assert event["include_related"] is False
+
+    @pytest.mark.asyncio
+    async def test_flat_search_logs_diagnostics_fields(self) -> None:
+        """The flat event journals the 7 new diagnostics fields from the
+        service response — computed already, not recomputed at the tool layer."""
+        mcp, mock_svc = _make_mcp_with_brain_svc()
+        diagnostics = _make_diagnostics(
+            candidates_before_threshold=5,
+            best_raw_score=0.14,
+            tags_filtered_out=2,
+            rerank_mode="rrf_fallback",
+            degraded=True,
+            min_score_effective=0.0,
+            project_key_effective="brain-v42",
+        )
+        mock_svc.search = AsyncMock(
+            return_value=_make_search_response(results=[], diagnostics=diagnostics)
+        )
+
+        fn = await _get_tool_fn(mcp, "brain_search")
+        with capture_logs() as logs:
+            await fn(query="x")
+
+        event = next(log for log in logs if log["event"] == "mcp.brain_search")
+        assert event["candidates_before_threshold"] == 5
+        assert event["best_raw_score"] == pytest.approx(0.14)
+        assert event["tags_filtered_out"] == 2
+        assert event["rerank_mode"] == "rrf_fallback"
+        assert event["degraded"] is True
+        assert event["min_score_effective"] == pytest.approx(0.0)
+        assert event["project_key_effective"] == "brain-v42"
+
+    @pytest.mark.asyncio
+    async def test_grouped_search_logs_diagnostics_fields(self) -> None:
+        """The grouped event journals the same 7 diagnostics fields."""
+        mcp, mock_svc = _make_mcp_with_brain_svc()
+        diagnostics = _make_diagnostics(
+            candidates_before_threshold=3,
+            best_raw_score=None,
+            tags_filtered_out=0,
+            rerank_mode=None,
+            degraded=False,
+            min_score_effective=0.2,
+            project_key_effective="dream-owned",
+        )
+        mock_svc.what_do_i_know_about = AsyncMock(
+            return_value=_make_what_do_i_know_response(total=0, diagnostics=diagnostics)
+        )
+
+        fn = await _get_tool_fn(mcp, "brain_search")
+        with capture_logs() as logs:
+            await fn(query="x", group_by_type=True)
+
+        event = next(log for log in logs if log["event"] == "mcp.brain_search.grouped")
+        assert event["candidates_before_threshold"] == 3
+        assert event["best_raw_score"] is None
+        assert event["tags_filtered_out"] == 0
+        assert event["rerank_mode"] is None
+        assert event["degraded"] is False
+        assert event["min_score_effective"] == pytest.approx(0.2)
+        assert event["project_key_effective"] == "dream-owned"
 
     @pytest.mark.asyncio
     async def test_neither_event_leaks_raw_query_or_raw_tags(self) -> None:

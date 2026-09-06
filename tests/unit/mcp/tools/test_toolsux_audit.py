@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import pytest
 
+from brain_v42.models.brain import SearchDiagnostics
 from tests.unit.mcp._tool_error_adapter import capture_tool_errors
 
 # ---------------------------------------------------------------------------
@@ -131,12 +132,15 @@ def _make_brain_tools() -> tuple[dict[str, Any], dict[str, Any]]:
     svcs["project_context_svc"] = ctx_svc
 
     brain_svc = MagicMock()
-    brain_svc.search = AsyncMock(return_value=MagicMock(results=[], total=0, degraded=None))
+    brain_svc.search = AsyncMock(
+        return_value=MagicMock(results=[], total=0, degraded=None, diagnostics=SearchDiagnostics())
+    )
     brain_svc.what_do_i_know_about = AsyncMock(
         return_value=MagicMock(
             by_type=MagicMock(decisions=[], learnings=[], snippets=[], runbooks=[], adrs=[]),
             total=0,
             degraded=None,
+            diagnostics=SearchDiagnostics(),
         )
     )
     svcs["brain_svc"] = brain_svc

@@ -647,12 +647,18 @@ def register_tools(
         project_key XOR project_group for scoping. tags filter by overlap.
         Results render with [s:score] prefix, sorted by score desc.
         group_by_type=True groups output sections (former what_do_i_know_about);
-        types still scopes which sections are searched and rendered.
+        types still scopes which sections are searched and rendered. Grouped
+        mode structurally IGNORES tags and include_related — the underlying
+        what_do_i_know_about() call has no tags parameter and never renders a
+        "### Related" section; use flat search (group_by_type=False) for either.
         include_related=True appends a "### Related" graph-neighbour block;
         default off — use brain_get_neighbors for targeted traversal instead.
         full=True restores complete decision/learning bodies; by default their
         compact summaries bound each search item. Use brain_get for full entity detail.
         limit: max results returned (default 20, clamped server-side to [1, 100]).
+        A 0-result answer explains itself: it names whether nothing was in
+        scope, candidates fell under min_score, or the tags filter removed
+        them — see the rendered output, not a separate field.
         """
         project_key = canonicalize_project_key(project_key, strict=False)
         types = types or None
@@ -686,6 +692,7 @@ def register_tools(
                     latency_ms=latency_ms,
                 )
 
+            diag = wdik_response.diagnostics
             logger.info(
                 "mcp.brain_search.grouped",
                 query_length=len(query),
@@ -693,13 +700,23 @@ def register_tools(
                 project_group=project_group,
                 limit=limit,
                 types_requested=types,
-                tags_present=bool(tags),
-                tags_count=len(tags) if tags else 0,
+                # Effective, not requested: grouped mode has no tags parameter
+                # and never renders "### Related" — logging the caller's raw
+                # request here would claim an effect that never happened.
+                tags_present=False,
+                tags_count=0,
                 min_score=min_score,
                 include_archived=include_archived,
-                include_related=include_related,
+                include_related=False,
                 full=full,
                 group_by_type=group_by_type,
+                candidates_before_threshold=diag.candidates_before_threshold,
+                best_raw_score=diag.best_raw_score,
+                tags_filtered_out=diag.tags_filtered_out,
+                rerank_mode=diag.rerank_mode,
+                degraded=diag.degraded,
+                min_score_effective=diag.min_score_effective,
+                project_key_effective=diag.project_key_effective,
             )
             return (
                 format_knowledge_by_type(
@@ -707,6 +724,7 @@ def register_tools(
                     topic=query,
                     degraded=wdik_response.degraded,
                     full=full,
+                    diagnostics=wdik_response.diagnostics,
                 )
                 + limit_notice
             )
@@ -734,6 +752,7 @@ def register_tools(
                 latency_ms=latency_ms,
             )
 
+        diag = search_response.diagnostics
         logger.info(
             "mcp.brain_search",
             query_length=len(query),
@@ -748,12 +767,21 @@ def register_tools(
             include_related=include_related,
             full=full,
             group_by_type=group_by_type,
+            candidates_before_threshold=diag.candidates_before_threshold,
+            best_raw_score=diag.best_raw_score,
+            tags_filtered_out=diag.tags_filtered_out,
+            rerank_mode=diag.rerank_mode,
+            degraded=diag.degraded,
+            min_score_effective=diag.min_score_effective,
+            project_key_effective=diag.project_key_effective,
         )
         output = format_search_results(
             search_response.results,
             query=query,
             degraded=search_response.degraded,
             full=full,
+            diagnostics=search_response.diagnostics,
+            tags=tags,
         )
         if include_related and search_response.related:
             output += "\n" + format_related_section(search_response.related)
