@@ -645,7 +645,8 @@ def register_tools(
         types: subset of {decision, learning, snippet, runbook, adr, plan}.
         project_key XOR project_group for scoping. tags filter by overlap.
         Results render with [s:score] prefix, sorted by score desc.
-        group_by_type=True groups output sections (former what_do_i_know_about).
+        group_by_type=True groups output sections (former what_do_i_know_about);
+        types still scopes which sections are searched and rendered.
         include_related=True appends a "### Related" graph-neighbour block;
         default off — use brain_get_neighbors for targeted traversal instead.
         full=True restores complete decision/learning bodies; by default their
@@ -660,6 +661,7 @@ def register_tools(
         if group_by_type:
             wdik_response = await brain_svc.what_do_i_know_about(
                 topic=query,
+                types=types,
                 project_key=project_key,
                 project_group=project_group,
                 limit=limit,

@@ -18,6 +18,7 @@ from structlog.testing import capture_logs
 
 from brain_v42.mcp.tools.brain_tools import register_tools
 from brain_v42.models.brain import (
+    ALL_TYPES,
     KnowledgeByType,
     KnowledgeType,
     SearchResponse,
@@ -475,6 +476,57 @@ class TestBrainSearchGroupByType:
         assert call_kwargs["project_key"] == "brain-v42"
 
     @pytest.mark.asyncio
+    async def test_group_by_type_forwards_types_to_service(self) -> None:
+        """brain_search(group_by_type=True, types=[...]) forwards types to what_do_i_know_about.
+
+        The fake service below mirrors BrainService.what_do_i_know_about's real
+        contract (types_searched reflects exactly what was received, defaulting
+        to ALL_TYPES only when the caller passed none) so that the assertion on
+        the returned response's types_searched is meaningful rather than an
+        echo of a hard-coded mock.
+        """
+        mcp, mock_svc = _make_mcp_with_brain_svc()
+        captured: dict[str, WhatDoIKnowResponse] = {}
+
+        async def fake_what_do_i_know_about(
+            *, topic: str, types: list[KnowledgeType] | None = None, **_kwargs: object
+        ) -> WhatDoIKnowResponse:
+            types_searched = types if types is not None else list(ALL_TYPES)
+            response = WhatDoIKnowResponse(
+                topic=topic,
+                by_type=KnowledgeByType(),
+                total=0,
+                types_searched=types_searched,
+            )
+            captured["response"] = response
+            return response
+
+        mock_svc.what_do_i_know_about = AsyncMock(side_effect=fake_what_do_i_know_about)
+
+        fn = await _get_tool_fn(mcp, "brain_search")
+        with capture_logs() as logs:
+            await fn(query="test", types=["decision"], group_by_type=True)
+
+        call_kwargs = mock_svc.what_do_i_know_about.call_args.kwargs
+        assert call_kwargs["types"] == ["decision"]
+        assert captured["response"].types_searched == ["decision"]
+
+        events = [log for log in logs if log["event"] == "mcp.brain_search.grouped"]
+        assert events[0]["types_requested"] == ["decision"]
+
+    @pytest.mark.asyncio
+    async def test_group_by_type_without_types_forwards_none(self) -> None:
+        """Positive witness: group_by_type=True without types still forwards types=None."""
+        mcp, mock_svc = _make_mcp_with_brain_svc()
+        mock_svc.what_do_i_know_about = AsyncMock(return_value=_make_what_do_i_know_response())
+
+        fn = await _get_tool_fn(mcp, "brain_search")
+        await fn(query="test", group_by_type=True)
+
+        call_kwargs = mock_svc.what_do_i_know_about.call_args.kwargs
+        assert call_kwargs["types"] is None
+
+    @pytest.mark.asyncio
     async def test_group_by_type_returns_grouped_formatted_string(self) -> None:
         """brain_search(group_by_type=True) returns grouped markdown string."""
         mcp, mock_svc = _make_mcp_with_brain_svc()
@@ -666,3 +718,42 @@ class TestBrainSearchTelemetry:
         assert event["include_archived"] is True
         assert event["group_by_type"] is True
         assert event["limit"] == 7
+
+    @pytest.mark.asyncio
+    async def test_neither_event_leaks_raw_query_or_raw_tags(self) -> None:
+        """Both events log only shapes/counts of query and tags — never the raw values.
+
+        Two-sided guard: covers both logger.info() calls (flat "mcp.brain_search"
+        and grouped "mcp.brain_search.grouped"), and both leak vectors (the raw
+        query text and the raw tag values). Mutation-proof: this fails if a
+        future edit adds `topic=query` or `tags=tags` (or any other echo of the
+        raw payload) to either event.
+        """
+        mcp, mock_svc = _make_mcp_with_brain_svc()
+        mock_svc.search = AsyncMock(return_value=_make_search_response())
+        mock_svc.what_do_i_know_about = AsyncMock(return_value=_make_what_do_i_know_response())
+
+        raw_query = "a very unique needle query 7f3c9a2e"
+        raw_tags = ["needle-tag-alpha", "needle-tag-beta"]
+
+        fn = await _get_tool_fn(mcp, "brain_search")
+        with capture_logs() as logs:
+            await fn(query=raw_query, tags=raw_tags, group_by_type=False)
+            await fn(query=raw_query, tags=raw_tags, group_by_type=True)
+
+        flat_events = [log for log in logs if log["event"] == "mcp.brain_search"]
+        grouped_events = [log for log in logs if log["event"] == "mcp.brain_search.grouped"]
+        assert len(flat_events) == 1
+        assert len(grouped_events) == 1
+
+        for event in (flat_events[0], grouped_events[0]):
+            for value in event.values():
+                assert value != raw_query
+                assert value != raw_tags
+                if isinstance(value, str):
+                    assert raw_query not in value
+                    assert raw_tags[0] not in value
+                    assert raw_tags[1] not in value
+                if isinstance(value, list):
+                    assert raw_tags[0] not in value
+                    assert raw_tags[1] not in value
