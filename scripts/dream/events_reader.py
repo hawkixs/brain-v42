@@ -141,6 +141,32 @@ def _parse_filename(path: Path) -> tuple[str, str] | None:
     return None
 
 
+#: Matches the pre-pool *frame* (date + one segment) without restricting the
+#: segment to the phase allowlist, unlike :data:`_LEGACY_FILENAME_RE`. Used
+#: only to distinguish, for :func:`_unnamed_reason`'s diagnostic, a name
+#: that has the right shape but an unrecognised phase from one that matches
+#: no known frame at all.
+_LEGACY_SHAPE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_(?P<phase>[^_]+)\.events\.jsonl$")
+
+
+def _unnamed_reason(name: str) -> str:
+    """Explain why ``name`` was not parsed by :func:`_parse_filename`.
+
+    A name can fail to parse for two different reasons that call for two
+    different fixes, and conflating them sends an operator looking for the
+    wrong thing: a malformed date or missing project segment when the real
+    problem is a phase the pool has not run yet (or a typo).
+    """
+    legacy_shape = _LEGACY_SHAPE_RE.match(name)
+    if legacy_shape:
+        return f"pre-pool shape with an unrecognised phase segment '{legacy_shape.group('phase')}'"
+    return (
+        "filename matches neither the pool-era "
+        "(<date>_<project>_<phase>.events.jsonl) nor the pre-pool "
+        "(<date>_<phase>.events.jsonl) naming convention"
+    )
+
+
 def _load_records(path: Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     with path.open(encoding="utf-8") as handle:
@@ -421,11 +447,7 @@ def run_census(logs_dir: Path, night: str, tool_filter: str | None = None) -> Ce
 
         parsed = _parse_filename(path)
         if parsed is None:
-            unnamed_files[str(path)] = (
-                "filename matches neither the pool-era "
-                "(<date>_<project>_<phase>.events.jsonl) nor the pre-pool "
-                "(<date>_<phase>.events.jsonl) naming convention"
-            )
+            unnamed_files[str(path)] = _unnamed_reason(path.name)
             continue
         project, phase = parsed
 
@@ -508,6 +530,12 @@ def format_census_report(report: CensusReport, logs_dir: Path) -> str:
         f"total: calls={report.total_calls} empties={report.total_empties} "
         f"unknown={report.total_unknown}"
     )
+    excluded_files = len(report.unclassified_files) + len(report.unnamed_files)
+    if excluded_files:
+        lines.append(
+            f"UNMEASURED files: {excluded_files} file(s) excluded from the totals above "
+            "(see UNMEASURED dialect/naming)"
+        )
     if report.total_unknown:
         lines.append(
             f"UNMEASURED emptiness: {report.total_unknown} call(s) with no recorded output "

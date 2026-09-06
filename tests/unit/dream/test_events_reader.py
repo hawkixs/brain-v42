@@ -442,3 +442,61 @@ def test_run_census_counts_a_failed_status_null_error_codex_call_as_an_error_not
     # empties or unknown -- both are errors, not measurements.
     assert report.calls_by_phase["promote"].empties == 0
     assert report.calls_by_phase["promote"].unknown == 0
+
+
+def test_unnamed_files_message_names_the_unrecognised_phase_for_a_pre_pool_shaped_name() -> None:
+    """The ``unnamed_files`` reason must say *which* check failed.
+
+    ``2026-09-08_extract.events.jsonl`` DOES match the pre-pool
+    ``<date>_<phase>.events.jsonl`` frame -- its phase segment,
+    ``extract``, is simply outside the six-phase allowlist. The old
+    "matches neither ... naming convention" wording was factually wrong for
+    this case and would send an operator debugging a new loop phase looking
+    for a malformed date or a missing project segment instead.
+    """
+    report = run_census(logs_dir=_FIXTURES, night="2026-09-08")
+
+    assert report.files_total == 1
+    reason = next(iter(report.unnamed_files.values()))
+    assert "extract" in reason
+    assert "unrecognised phase" in reason
+    assert "matches neither" not in reason
+
+
+def test_unnamed_files_message_keeps_the_generic_wording_when_no_frame_matches_at_all() -> None:
+    """A name with no date-shaped prefix at all still gets the generic "matches neither" wording."""
+    report = run_census(logs_dir=_FIXTURES, night="not-a-real-night")
+
+    assert report.files_total == 1
+    reason = next(iter(report.unnamed_files.values()))
+    assert "matches neither" in reason
+
+
+def test_total_line_gets_a_marker_when_files_were_excluded_from_the_totals() -> None:
+    """Files filed under ``unclassified_files``/``unnamed_files`` silently shrink the ``total:`` line.
+
+    Reproduced on night 2026-09-05: 2 of 4 files are unclassified, so the
+    calls they may have carried never enter ``total_calls``. Unlike
+    ``UNMEASURED emptiness``, this under-count previously had no marker
+    adjacent to the greppable ``total:`` line -- the count silently read as
+    a complete measurement instead of the lower bound it actually is.
+    """
+    report = run_census(logs_dir=_FIXTURES, night="2026-09-05")
+    assert len(report.unclassified_files) == 2
+    assert report.unnamed_files == {}
+
+    text = format_census_report(report, logs_dir=_FIXTURES)
+    lines = text.splitlines()
+    total_index = next(i for i, line in enumerate(lines) if line.startswith("total:"))
+    assert lines[total_index + 1] == (
+        "UNMEASURED files: 2 file(s) excluded from the totals above (see UNMEASURED dialect/naming)"
+    )
+
+
+def test_total_line_has_no_marker_when_no_files_were_excluded() -> None:
+    report = run_census(logs_dir=_FIXTURES, night="2026-07-20")
+    assert report.unclassified_files == {}
+    assert report.unnamed_files == {}
+
+    text = format_census_report(report, logs_dir=_FIXTURES)
+    assert "UNMEASURED files" not in text
