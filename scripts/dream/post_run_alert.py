@@ -1156,75 +1156,115 @@ def format_reconciliation_line(
 
 @dataclass(frozen=True)
 class OrphanPromotionsTally:
-    """`dream_promotions` rows created THIS NIGHT with no `dream_run_id`.
+    """`dream_promotions` rows with no `dream_run_id`, counted two ways.
 
     `dream_run_id` is `ON DELETE SET NULL` (`dream_promotions_dream_run_id_fkey`):
     a `NULL` here has two possible origins — a promotion inserted without ever
     knowing its `dream_run_id`, or one whose `dream_runs` row was deleted
-    afterwards. This tally only ever catches the first: the query filters on
-    `created_at`, so a promotion nulled by a deletion that lands on a LATER
-    night than its own is a standing backlog this line does not claim to see
-    (measured 2026-09-06: 32 rows all-time, against 1 created tonight). Both
-    origins read the same way from here regardless: nothing joins the
-    promotion back to a phase, so it is invisible to `format_reconciliation_line`
-    above (it names no `(phase, project)` pair) and to dream.sh's `FAIL_TOTAL`
-    (it is not a `dream_runs` row at all). ``count`` is `None` (UNMEASURED) when
-    the table could not be read: this check must never be the reason the
-    morning report fails, and the session it shares with its caller must come
-    back usable (see `fetch_orphan_promotions`).
+    afterwards. Both origins read the same way from here regardless: nothing
+    joins the promotion back to a phase, so it is invisible to
+    `format_reconciliation_line` above (it names no `(phase, project)` pair)
+    and to dream.sh's `FAIL_TOTAL` (it is not a `dream_runs` row at all).
+
+    `night` alone under-reports the backlog by construction: scoped to
+    `created_at` for one calendar day, it never sees a promotion nulled by a
+    deletion landing on a LATER night than its own creation (measured
+    2026-09-06: `night=1`, `all_time=32` — a 32x gap between "what happened
+    tonight" and "what still needs fixing"). `all_time` is the only field
+    that answers "how big is the backlog", so both are always printed
+    together, labelled, rather than the night count standing in for it.
+
+    Each field is independently `None` (UNMEASURED) when its OWN query could
+    not be read: a broken `all_time` COUNT must not blank out a working
+    `night` COUNT, or the reverse (see `fetch_orphan_promotions`).
     """
 
-    count: int | None = None
+    night: int | None = None
+    all_time: int | None = None
 
     @property
-    def measured(self) -> bool:
-        return self.count is not None
+    def night_measured(self) -> bool:
+        return self.night is not None
+
+    @property
+    def all_time_measured(self) -> bool:
+        return self.all_time is not None
 
 
 ORPHAN_PROMOTIONS_LINE_PREFIX = "PROMOTIONS orphan (dream_run_id NULL):"
 
 
 def format_orphan_promotions_line(tally: OrphanPromotionsTally) -> str:
-    """One line, always printed. UNMEASURED beats a silent, misleading `0`."""
-    if not tally.measured:
-        return f"{ORPHAN_PROMOTIONS_LINE_PREFIX} UNMEASURED"
-    return f"{ORPHAN_PROMOTIONS_LINE_PREFIX} {tally.count}"
+    """One line, always printed, both counts labelled and independently
+    UNMEASURED. `night` alone would silently under-report the backlog this
+    line exists to surface — see `OrphanPromotionsTally`."""
+    night = str(tally.night) if tally.night_measured else "UNMEASURED"
+    all_time = str(tally.all_time) if tally.all_time_measured else "UNMEASURED"
+    return f"{ORPHAN_PROMOTIONS_LINE_PREFIX} night={night} all_time={all_time}"
+
+
+async def _rollback_after_failed_orphan_count(session: AsyncSession) -> None:
+    """Roll back after a broken orphan-promotions COUNT, without letting a
+    broken rollback itself turn a best-effort WARN into a crash (a driver
+    whose connection already dropped can fail `rollback()` too)."""
+    try:
+        await session.rollback()
+    except Exception:  # noqa: BLE001 — a failed rollback must not become a crash.
+        pass
+
+
+async def _count_orphan_promotions(
+    session: AsyncSession,
+    *,
+    night: dt.date | None,
+) -> int | None:
+    """One `dream_promotions` COUNT, guarded on its own: `night` and
+    `all_time` in `fetch_orphan_promotions` must be able to fail
+    independently, so each gets its own try/except and its own rollback
+    rather than sharing one around both queries.
+    """
+    conditions = [dream_promotions.c.dream_run_id.is_(None)]
+    if night is not None:
+        conditions.append(sa.cast(dream_promotions.c.created_at, sa.Date) == night)
+    try:
+        result = await session.execute(
+            sa.select(sa.func.count()).select_from(dream_promotions).where(*conditions)
+        )
+        return int(result.scalar_one())
+    except Exception:  # noqa: BLE001 — a broken count must never fail the morning report.
+        await _rollback_after_failed_orphan_count(session)
+        return None
 
 
 async def fetch_orphan_promotions(
     session: AsyncSession,
     run_date: dt.date,
 ) -> OrphanPromotionsTally:
-    """Count the night's `dream_promotions` rows carrying no `dream_run_id`.
+    """Count `dream_promotions` rows carrying no `dream_run_id`, both for the
+    night and all-time.
 
     There is no `dream_run_id` to join through for these rows — that absence is
     exactly what makes them orphan — so the night is read off `created_at`
     alone, cast to a plain date, the same pattern `fetch_mute_transitions` uses
-    for the freshness tables' timestamps. Best-effort like the other file- and
-    log-derived tallies in this module (`roadmap_shrink_tally`, `reorg_tally`):
-    a broken query leaves the count UNMEASURED rather than failing the report.
+    for the freshness tables' timestamps. `all_time` runs the identical query
+    without that date filter. Best-effort like the other file- and log-derived
+    tallies in this module (`roadmap_shrink_tally`, `reorg_tally`): a broken
+    query leaves ITS OWN count UNMEASURED rather than failing the report.
 
     That best-effort posture only holds if the shared `session` comes back
-    USABLE: on PostgreSQL a failed statement aborts the whole transaction, and
-    `_run` reads from this exact session again right after this call returns
-    (`review_and_render`). Swallowing the exception alone would turn a
-    best-effort miss here into a hard crash a few lines later, from an error
-    that no longer even names `dream_promotions` — so roll back before
-    returning UNMEASURED.
+    USABLE after either query: on PostgreSQL a failed statement aborts the
+    whole transaction, and this function runs a second query of its own right
+    after the first, then `_run` reads from this exact session again right
+    after this call returns (`review_and_render`). Swallowing an exception
+    without rolling back would turn a best-effort miss here into a hard crash
+    a few lines later, from an error that no longer even names
+    `dream_promotions` — so `_count_orphan_promotions` rolls back before
+    returning UNMEASURED, and does so per query, so a broken `night` cannot
+    take `all_time` down with it (or the reverse).
     """
-    try:
-        result = await session.execute(
-            sa.select(sa.func.count())
-            .select_from(dream_promotions)
-            .where(
-                dream_promotions.c.dream_run_id.is_(None),
-                sa.cast(dream_promotions.c.created_at, sa.Date) == run_date,
-            )
-        )
-        return OrphanPromotionsTally(count=int(result.scalar_one()))
-    except Exception:  # noqa: BLE001 — a broken count must never fail the morning report.
-        await session.rollback()
-        return OrphanPromotionsTally()
+    night = await _count_orphan_promotions(session, night=run_date)
+    all_time = await _count_orphan_promotions(session, night=None)
+    return OrphanPromotionsTally(night=night, all_time=all_time)
 
 
 async def fetch_failed_runs(
@@ -1460,10 +1500,12 @@ async def _run(
                         skipped=phases_skipped,
                     )
                 )
-                # Same gate as RECONCILIATION above, and for the same reason:
-                # a manual replay without `--phases-ok` has no OK_TOTAL to
-                # reconcile against, so neither machine line claims to measure
-                # the night.
+                # Gated on the same flag as RECONCILIATION, but NOT for the
+                # same reason: `fetch_orphan_promotions` needs only `run_date`,
+                # which is always available, so it has no OK_TOTAL of its own
+                # to be missing. `--phases-ok` is reused here purely as the
+                # marker of the automated (dream.sh) invocation, so a manual
+                # replay never emits half of the machine-line pair.
                 print(
                     format_orphan_promotions_line(await fetch_orphan_promotions(session, run_date))
                 )

@@ -1,23 +1,15 @@
-"""The night reconciles its own OK phases with its written rows (b95c5742).
+"""RECONCILIATION: dream.sh's own OK count against `dream_runs`' written rows.
 
-On 15-16/08, the loop signed off "61/63 phases OK" while `dream_runs` received
-only 2 rows — 240 `InvalidPasswordError` swallowed best-effort. Since then, the
-absence of a `done` row does not prove a phase failure: it may prove a lost
-INSERT, and any reliability analysis carried out on the table alone is wrong in
-the pessimistic direction.
+`format_reconciliation_line` compares `OK_TOTAL` (minus phases marked
+SKIPPED, which write no row) against the `(phase, project)` pairs observed in
+`dream_runs`, printing `RECONCILIATION phases_ok=N skipped=S pairs_written=M
+gap=K`. A validator-invalidated phase (status `partial`) must count as
+unwritten on both sides of that comparison, or the line reports a phantom gap
+on every night that hits one.
 
-The INSERT stays best-effort — that is 042's lesson, a `NOT NULL` there would
-make a warning printed on all of them — but the gap becomes VISIBLE: dream.sh
-passes its `OK_TOTAL` counter to `post_run_alert`, which prints a machine line
-`RECONCILIATION phases_ok=N pairs_written=M gap=K`. A non-zero `gap` in the
-morning is exactly the loss of 15-16/08, readable without cross-checking the log.
-
-The manifest's in-band fallback (e30a1cec) is guarded in the same place: when the
-COVERAGE line says `mode=fallback` while dream.sh has just written its manifest,
-the engine SAYS so (FAIL) and records it (record_coverage_gap) — without touching
-the exit code: the reporter keeps its "never 2" (undecidable pairs), it is the
-ONLY caller that knows the manifest was supposed to exist that escalates, and it
-escalates visibility only.
+The tests below also pin dream.sh's own wiring: the counters it passes on the
+command line, the WARN it logs on a non-zero gap, and its in-band fallback
+recording for a missing manifest.
 """
 
 from __future__ import annotations
