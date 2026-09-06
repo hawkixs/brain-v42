@@ -117,7 +117,7 @@ The 13 legacy string-returning tools listed below normalize malformed UUIDs to:
 
 Two implementation paths produce this behaviour:
 
-- **`parse_uuid()` from `parsing.py`** (10 call sites across `brain_tools.py`, `runbook_tools.py`, `snippet_tools.py`): `brain_supersede_decision`, `brain_get_supersession_chain`, `brain_validate_learning`, `brain_propose_adr` (source_learning_id path), `brain_accept_adr`, `brain_deprecate_adr`, `brain_create_runbook` (source_learning_id path), `brain_get_runbook` (runbook_id path), `brain_execute_runbook`, `brain_use_snippet`.
+- **`parse_uuid()` from `parsing.py`** (10 call sites across `brain_tools.py`, `runbook_tools.py`, `snippet_tools.py`): `brain_supersede_decision`, `brain_get_supersession_chain`, `brain_validate_learning`, `brain_promote_adr` (source_learning_id path), `brain_accept_adr`, `brain_deprecate_adr`, `brain_create_runbook` (source_learning_id path), `brain_get_runbook` (runbook_id path), `brain_execute_runbook`, `brain_use_snippet`.
 - **Inline `try/except UUID()` in `crud_tools.py`**: `brain_get`, `brain_update`, `brain_delete`.
 
 All 13 tools return the same `✗ Invalid UUID: <value>` message on invalid input. The v4 session tools declare UUID parameters in their FastMCP schemas and therefore use MCP input validation instead of this formatted-string contract.
@@ -202,10 +202,29 @@ Increment `use_count`, set `last_used_at = now()`. Returns `✗ Invalid UUID: <v
 ### brain_propose_adr
 ```
 brain_propose_adr(title, context, decision, consequences, project_key,
-                  alternatives_considered=None, tags=None,
-                  source_learning_id=None, auto_accept=False, dream_run_id=None)
+                  alternatives_considered=None, tags=None)
 ```
-Propose an Architecture Decision Record (`status=proposed`). Dream-agent path: pass `source_learning_id` + `auto_accept=True` together to graduate a mature learning straight to `accepted` in one transaction — writes a `dream_promotions` row for audit. Both kwargs must be set together.
+Propose an Architecture Decision Record (`status=proposed`).
+
+The Dream promotion path is `brain_promote_adr`, a separate tool. Until
+2026-09-03 this signature also published `source_learning_id`, `auto_accept`
+and `dream_run_id`, and refused their meaningless combinations at runtime;
+two tools now publish two schemas, so the invalid request cannot be built.
+Callers that passed the three kwargs here must move to `brain_promote_adr` —
+they now get an unknown-parameter error, which is loud, not silent.
+
+### brain_promote_adr
+```
+brain_promote_adr(title, context, decision, consequences, project_key,
+                  source_learning_id, alternatives_considered=None, tags=None,
+                  dream_run_id=None)
+```
+Graduate a mature learning straight to an `accepted` ADR in one transaction,
+updating the source learning's metadata and writing a `dream_promotions` row
+for audit. `source_learning_id` is required; there is no `auto_accept`, because
+calling this tool IS the acceptance. A scoped Dream principal may not pass
+`dream_run_id` (`forbid_dream_run_id`): `dream_runs` rows belong to the
+orchestrator, never to a phase agent.
 
 ### brain_accept_adr
 ```
@@ -219,18 +238,13 @@ brain_deprecate_adr(adr_id, reason=None)
 ```
 Set `status=deprecated`. Optional reason appended to consequences. Returns `✗ Invalid UUID: <value>` if `adr_id` is malformed.
 
-### brain_list_adrs
-```
-brain_list_adrs(project_key=None, status=None, limit=20, offset=0)
-```
-Filter ADRs by project and status in {proposed, accepted, deprecated, superseded}.
-**Limit**: clamped server-side to [1, 100].
-
-Temporary compatibility alias: during this migration window,
-prefer `brain_list(entity_type="adr")`. Both names share the same
-ADR list adapter and exclude archived items (`include_archived=False`).
-Any eventual removal of `brain_list_adrs` requires a later ticket grounded in
-usage evidence and an explicit decision; this alias stays registered until then.
+Listing ADRs is `brain_list(entity_type="adr")`. The `brain_list_adrs`
+compatibility alias was REMOVED from the catalogue on 2026-09-03 (ticket
+af3b58dd item 3). The usage evidence this document asked for was measured
+across 1 513 Dream event logs covering 2026-07-13 to 2026-09-03, 208 of them
+PROMOTE: `"tool":"brain_list_adrs"` appears **0** times, against 88 calls to
+`brain_propose_adr` and 17 586 to `brain_list`. The Dream rail named the alias
+in three places and never called it once.
 
 ---
 

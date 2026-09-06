@@ -1,6 +1,6 @@
 """TDD tests for toolsux audit wave 4:
   - Anti-token-bomb bounds on plan chunks, clusters, runbook list, roadmap features
-  - Limit clamps (max 100) on brain_search, brain_list, brain_list_adrs
+  - Limit clamps (max 100) on brain_search, brain_list
   - UUID contract: parse_uuid helper + error-returning sites instead of ValueError
 
 All tests written RED-first — they document the *required* behaviour and should
@@ -526,12 +526,17 @@ class TestGetRunbookProjectBranchLimit:
 
 
 # ===========================================================================
-# 7. Limit clamps on brain_search, brain_list, brain_list_adrs
+# 7. Limit clamps on brain_search, brain_list
 # ===========================================================================
 
 
 class TestLimitClamps:
-    """brain_search, brain_list, brain_list_adrs must clamp limit to [1, 100]."""
+    """brain_search and brain_list must clamp limit to [1, 100].
+
+    The ADR clamp moved with its surface: `brain_list_adrs` was removed from the
+    catalogue (ticket af3b58dd item 3) and `brain_list(entity_type="adr")` now
+    carries the case, in test_brain_adr_list_single_surface.py.
+    """
 
     @pytest.mark.asyncio
     async def test_brain_search_limit_clamped_to_100(self) -> None:
@@ -558,33 +563,6 @@ class TestLimitClamps:
         assert passed_limit is not None and passed_limit >= 1, (
             f"brain_search must clamp limit<1 to 1; got {passed_limit}"
         )
-
-    @pytest.mark.asyncio
-    async def test_brain_list_adrs_limit_clamped_to_100(self) -> None:
-        """brain_list_adrs clamps limit to ≤100."""
-        tools, svcs = _make_brain_tools()
-        await tools["brain_list_adrs"](limit=9999)
-        call_kwargs = svcs["adr_svc"].list_all.call_args
-        passed_limit = call_kwargs.kwargs.get("limit") or (
-            next(
-                (a for a in call_kwargs.args if isinstance(a, int) and a <= 100),
-                None,
-            )
-        )
-        assert passed_limit is not None and passed_limit <= 100, (
-            f"brain_list_adrs must clamp limit to ≤100; got {passed_limit} (call: {call_kwargs})"
-        )
-
-    @pytest.mark.asyncio
-    async def test_brain_list_adrs_limit_below_1_becomes_1(self) -> None:
-        """brain_list_adrs clamps limit<1 to 1."""
-        tools, svcs = _make_brain_tools()
-        await tools["brain_list_adrs"](limit=0)
-        call_kwargs = svcs["adr_svc"].list_all.call_args
-        passed_limit = call_kwargs.kwargs.get("limit")
-        if passed_limit is None:
-            passed_limit = call_kwargs.args[2] if len(call_kwargs.args) > 2 else None
-        assert passed_limit is not None and passed_limit >= 1
 
     @pytest.mark.asyncio
     async def test_brain_list_limit_clamped_to_100(self) -> None:
@@ -736,17 +714,16 @@ class TestUUIDContractSourceLearningId:
     """Malformed source_learning_id must return an unprefixed error, not raise ValueError."""
 
     @pytest.mark.asyncio
-    async def test_propose_adr_invalid_source_learning_id_returns_error(self) -> None:
-        """brain_propose_adr with an invalid source_learning_id returns a plain error."""
+    async def test_promote_adr_invalid_source_learning_id_returns_error(self) -> None:
+        """brain_promote_adr with an invalid source_learning_id returns a plain error."""
         tools, _ = _make_brain_tools()
-        result = await tools["brain_propose_adr"](
+        result = await tools["brain_promote_adr"](
             title="T",
             context="C",
             decision="D",
             consequences="Q",
             project_key="proj",
             source_learning_id="not-a-uuid",
-            auto_accept=True,
         )
         assert result and result[0].isalnum(), f"Expected an unprefixed error, got: {result!r}"
         assert "UUID" in result or "Invalid" in result, (

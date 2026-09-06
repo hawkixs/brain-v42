@@ -1,6 +1,6 @@
 """A `limit` cap applied silently makes the result lie.
 
-Ticket af3b58dd, item 4. `brain_search`, `brain_list` and `brain_list_adrs` clamp
+Ticket af3b58dd, item 4. `brain_search` and `brain_list` clamp
 `limit` into [1, 100] through `max(1, min(limit, 100))` and return the page saying
 nothing. A caller asking for 500 receives 100 and cannot tell "there were only 100"
 from "there were 500 and you are shown 100".

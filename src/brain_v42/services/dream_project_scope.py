@@ -79,6 +79,14 @@ _OPTIONAL_LEARNING_SOURCE = DreamTypedReferenceRule(
     id_arguments=("source_learning_id",),
     optional=True,
 )
+#: `brain_promote_adr` cannot be called without its source: the tool publishes
+#: `source_learning_id` as a required parameter, so the rule stops being
+#: optional here. `brain_create_runbook` keeps the optional rule — its source is
+#: still an optional kwarg on a dual-purpose tool.
+_REQUIRED_LEARNING_SOURCE = DreamTypedReferenceRule(
+    fixed_entity_type="learning",
+    id_arguments=("source_learning_id",),
+)
 
 PROJECT_TOOL_POLICIES: Mapping[str, DreamProjectToolPolicy] = MappingProxyType(
     {
@@ -107,7 +115,11 @@ PROJECT_TOOL_POLICIES: Mapping[str, DreamProjectToolPolicy] = MappingProxyType(
         ),
         "brain_propose_adr": DreamProjectToolPolicy(
             inject_project_key=True,
-            typed_references=(_OPTIONAL_LEARNING_SOURCE,),
+            forbid_dream_run_id=True,
+        ),
+        "brain_promote_adr": DreamProjectToolPolicy(
+            inject_project_key=True,
+            typed_references=(_REQUIRED_LEARNING_SOURCE,),
             forbid_dream_run_id=True,
         ),
         "brain_create_runbook": DreamProjectToolPolicy(
@@ -115,7 +127,6 @@ PROJECT_TOOL_POLICIES: Mapping[str, DreamProjectToolPolicy] = MappingProxyType(
             typed_references=(_OPTIONAL_LEARNING_SOURCE,),
             forbid_dream_run_id=True,
         ),
-        "brain_list_adrs": DreamProjectToolPolicy(inject_project_key=True),
         "brain_update": DreamProjectToolPolicy(
             typed_references=(_DYNAMIC_RESOURCE,),
             nested_reference_arguments=("related_to",),
