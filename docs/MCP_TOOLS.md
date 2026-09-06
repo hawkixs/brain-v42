@@ -169,7 +169,7 @@ Walk the supersession chain (recursive CTE) from any decision in the chain — r
 brain_learn(topic, insight, source=None, source_type="experience",
             confidence="medium", project_key=None, tags=None, related_to=None)
 ```
-Record a pure insight/gotcha. `source_type` in {experience, documentation, code_review, bug, external, article, video, book, conversation, research, automated}. `confidence` in {low, medium, high}.
+Record a pure insight/gotcha. `source_type` in {experience, documentation, code_review, bug, external, article, video, book, conversation, research, automated}. `confidence` in {low, medium, high}. The row commits even when a `related_to` endpoint is not yet registered in the graph ledger — that case never raises; the confirmation carries an extra `warnings:` note instead (e.g. `ok Learned (id:..., warnings:relation RELATED_TO to <uuid> was not staged (missing_node))`).
 
 ### brain_validate_learning
 ```
