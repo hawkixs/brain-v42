@@ -136,7 +136,9 @@ brain_search, brain_list, brain_get, brain_update
   server refuses any ownership field by name, and the refusal fails the whole call.
 - `freshness_status` may only be set to `"archived"`, never to `"fresh"` or `"stale"` — this phase archives, it does not revive.
 - **NEVER touch entities with any tag starting with `dream:`.** Dream entities manage their own metadata.
-- **NEVER archive** an entity with `access_count > 5`.
+- **NEVER archive** an entity whose summary row shows `access:N > 5`
+  (`access_count_human`) — the machine counter `reads:M` (`access_count`) is
+  NOT the guardrail.
 - Each change must be logged in the report with its reasoning or matched pattern.
 - Entity_type changes are flagged only, never auto-applied.
 
