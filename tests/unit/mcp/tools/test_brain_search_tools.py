@@ -850,6 +850,56 @@ class TestBrainSearchTelemetry:
         assert event["include_related"] is False
 
     @pytest.mark.asyncio
+    async def test_grouped_search_logs_the_ignored_request_alongside_the_effective_fields(
+        self,
+    ) -> None:
+        """Fix round (lot G2): the effective fields alone made a call that
+        passed tags/include_related byte-indistinguishable from one that
+        never did — a W11-style investigation could no longer count how
+        often callers hit the silent drop. New fields preserve the caller's
+        actual request without changing the effective (always-False/0) ones.
+        """
+        mcp, mock_svc = _make_mcp_with_brain_svc()
+        mock_svc.what_do_i_know_about = AsyncMock(return_value=_make_what_do_i_know_response())
+
+        fn = await _get_tool_fn(mcp, "brain_search")
+        with capture_logs() as logs:
+            await fn(
+                query="x",
+                group_by_type=True,
+                tags=["a", "b", "c"],
+                include_related=True,
+            )
+
+        event = next(log for log in logs if log["event"] == "mcp.brain_search.grouped")
+        assert event["tags_ignored"] is True
+        assert event["tags_requested_count"] == 3
+        assert event["include_related_ignored"] is True
+        # Effective fields are untouched by this fix.
+        assert event["tags_present"] is False
+        assert event["tags_count"] == 0
+        assert event["include_related"] is False
+
+    @pytest.mark.asyncio
+    async def test_grouped_search_logs_ignored_request_as_false_when_none_requested(
+        self,
+    ) -> None:
+        """A bare grouped call (no tags, no include_related) logs the new
+        fields as False/0 too — 'ignored' only means 'discarded', never
+        implies something was actually asked for."""
+        mcp, mock_svc = _make_mcp_with_brain_svc()
+        mock_svc.what_do_i_know_about = AsyncMock(return_value=_make_what_do_i_know_response())
+
+        fn = await _get_tool_fn(mcp, "brain_search")
+        with capture_logs() as logs:
+            await fn(query="x", group_by_type=True)
+
+        event = next(log for log in logs if log["event"] == "mcp.brain_search.grouped")
+        assert event["tags_ignored"] is False
+        assert event["tags_requested_count"] == 0
+        assert event["include_related_ignored"] is False
+
+    @pytest.mark.asyncio
     async def test_flat_search_logs_diagnostics_fields(self) -> None:
         """The flat event journals the 7 new diagnostics fields from the
         service response — computed already, not recomputed at the tool layer."""

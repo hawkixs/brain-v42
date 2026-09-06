@@ -340,8 +340,38 @@ class TestHybridSearcher:
         )
 
         assert results == []
-        # The reranker owns the empty-candidates contract (it already returns
-        # RERANKED for []); HybridSearcher must delegate to it, not shortcut.
-        reranker.rerank_with_mode.assert_awaited_once_with("q", [])
         assert mode == RERANK_MODE_RERANKED
         assert mode != RERANK_MODE_RRF_ONLY
+
+    @pytest.mark.asyncio
+    async def test_empty_shard_with_reranker_configured_does_not_call_the_reranker(self):
+        """G2 fix round: an empty shard reports RERANKED WITHOUT round-tripping
+        through the reranker adapter.
+
+        Delegating unconditionally (the original F4 fix) round-trips every
+        empty shard through the reranker. In production the reranker is
+        wrapped by InstrumentedReranker, whose ``finally`` block records a
+        reranker_call unconditionally — so an all-empty shard would inflate
+        ``reranker.total_calls`` and dilute ``avg_latency_ms`` toward zero for
+        a call that never touched the reranker at all. rerank_with_mode()
+        already returns RERANKED for ``[]`` vacuously; HybridSearcher must
+        short-circuit to that same value instead of paying the round-trip.
+        """
+        fts_fn = AsyncMock(return_value=[])
+        vec_fn = AsyncMock(return_value=[])
+
+        reranker = MagicMock()
+        reranker.rerank_with_mode = AsyncMock(return_value=(RERANK_MODE_RERANKED, []))
+
+        searcher = HybridSearcher(reranker=reranker)
+        results, mode = await searcher.search(
+            query="q",
+            fts_search_fn=fts_fn,
+            vector_search_fn=vec_fn,
+            text_extractor=lambda e: "t",
+            limit=10,
+        )
+
+        assert results == []
+        assert mode == RERANK_MODE_RERANKED
+        reranker.rerank_with_mode.assert_not_awaited()

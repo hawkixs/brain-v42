@@ -705,9 +705,17 @@ def register_tools(
                 # request here would claim an effect that never happened.
                 tags_present=False,
                 tags_count=0,
+                # Preserve what the caller actually asked for, alongside the
+                # effective (always-False/0) fields above: a byte-identical
+                # log between "no tags passed" and "tags passed but silently
+                # dropped by grouped mode" made a W11-style investigation
+                # unable to count how often callers hit this silent drop.
+                tags_ignored=bool(tags),
+                tags_requested_count=len(tags) if tags else 0,
                 min_score=min_score,
                 include_archived=include_archived,
                 include_related=False,
+                include_related_ignored=include_related,
                 full=full,
                 group_by_type=group_by_type,
                 candidates_before_threshold=diag.candidates_before_threshold,

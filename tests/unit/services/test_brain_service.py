@@ -535,6 +535,51 @@ class TestBrainServiceWhatDoIKnowAboutTypeFilter:
         decision_svc.semantic_search.assert_not_awaited()
         runbook_svc.semantic_search.assert_not_awaited()
 
+    async def test_empty_project_group_early_return_names_the_unresolved_group(self) -> None:
+        """Fix round (lot G2 major): an unresolvable project_group must carry
+        its own name into diagnostics, on BOTH search() and
+        what_do_i_know_about() — before this fix, the early return produced a
+        SearchDiagnostics indistinguishable from 'nothing exists in scope',
+        which sends the caller to fix the wrong thing (widen scope instead of
+        fixing the group name).
+        """
+        decision_svc, learning_svc, snippet_svc, runbook_svc, adr_svc, embedding_svc = (
+            make_mock_services()
+        )
+        project_context_svc = MagicMock()
+        project_context_svc.get_keys_by_group = AsyncMock(return_value=[])
+        brain = BrainService(
+            decision_svc=decision_svc,
+            learning_svc=learning_svc,
+            snippet_svc=snippet_svc,
+            runbook_svc=runbook_svc,
+            adr_svc=adr_svc,
+            embedding_svc=embedding_svc,
+            project_context_svc=project_context_svc,
+        )
+
+        wdika_response = await brain.what_do_i_know_about("topic", project_group="typo-group-name")
+        assert wdika_response.diagnostics.project_group_requested == "typo-group-name"
+        assert wdika_response.diagnostics.project_group_unresolved is True
+
+        search_response = await brain.search("query", project_group="typo-group-name")
+        assert search_response.diagnostics.project_group_requested == "typo-group-name"
+        assert search_response.diagnostics.project_group_unresolved is True
+
+    async def test_resolved_project_group_does_not_set_the_unresolved_flag(self) -> None:
+        """Positive witness: a project_group that DOES resolve to members must
+        not be flagged as unresolved — the flag names a specific failure mode,
+        not "a project_group was passed"."""
+        brain, _svcs = make_brain_service()
+        brain._project_context_svc = MagicMock()
+        brain._project_context_svc.get_keys_by_group = AsyncMock(
+            return_value=["brain-v42", "other-project"]
+        )
+
+        response = await brain.search("query", project_group="platform")
+
+        assert response.diagnostics.project_group_unresolved is False
+
     async def test_empty_types_list_searches_nothing(self) -> None:
         """types=[] means 'search nothing', not 'fall back to ALL_TYPES'.
 
@@ -889,6 +934,27 @@ class TestBrainServiceScoreThreshold:
         )
         response = await brain.search("query")
         assert response.total == 1
+
+    async def test_survived_threshold_counts_only_what_cleared_min_score(self) -> None:
+        """Fix round (lot G2 major): diagnostics.survived_threshold must count
+        candidates that cleared min_score, distinct from
+        candidates_before_threshold (which also counts the ones that never
+        cleared it) — needed so the formatter's archived/merged fallback
+        kind can name a real count instead of a floor over the whole pool.
+        """
+        archived = make_decision(title="Archived", freshness_status="archived")
+        archived2 = make_decision(title="Archived 2", freshness_status="archived")
+        low = make_decision(title="Low score")
+
+        brain, _ = make_brain_service(
+            decision_results=[(archived, 0.9), (archived2, 0.8), (low, 0.1)],
+            min_score=0.5,
+        )
+        response = await brain.search("query")
+
+        assert response.total == 0
+        assert response.diagnostics.candidates_before_threshold == 3
+        assert response.diagnostics.survived_threshold == 2
 
 
 # ---------------------------------------------------------------------------

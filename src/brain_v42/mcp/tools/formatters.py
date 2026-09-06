@@ -649,11 +649,22 @@ def _format_empty_search_reason(
     min_score, or drop a tag).
 
     The pipeline order (``BrainService._build_search_results``) is: score
-    threshold -> archived filter -> tags filter. So these three conditions
-    are mutually exclusive in practice: if nothing cleared the score
-    threshold, nothing ever reached the tags filter, so tags_filtered_out
-    is necessarily 0 in that case.
+    threshold -> archived filter -> tags filter. These kinds are RANKED, not
+    mutually exclusive: a mixed candidate set (some killed by min_score, a
+    disjoint few by the tags filter) is the common case, so the branches
+    below are checked in a fixed priority order and each reads only the
+    counter for the kind it names — never a total that a different filter
+    also contributed to.
     """
+    if diagnostics.project_group_unresolved:
+        lines = [
+            f'project group "{diagnostics.project_group_requested}" matched 0 '
+            "projects — nothing was searched"
+        ]
+        if diagnostics.rerank_mode not in (None, "reranked"):
+            lines.append(f"rerank mode: {diagnostics.rerank_mode}")
+        return "\n".join(lines)
+
     scope_bits = [f"types searched: {', '.join(diagnostics.types_searched) or 'none'}"]
     if diagnostics.project_key_effective:
         marker = (
@@ -669,9 +680,9 @@ def _format_empty_search_reason(
 
     if diagnostics.candidates_before_threshold == 0:
         reason = f"0 candidates in scope ({scope_desc})"
-    elif diagnostics.tags_filtered_out > 0:
-        tag_list = ", ".join(tags or [])
-        n = diagnostics.candidates_before_threshold
+    elif diagnostics.tags_filtered_out > 0 and tags:
+        tag_list = ", ".join(tags)
+        n = diagnostics.tags_filtered_out
         reason = f"{n} candidate{'s' if n != 1 else ''} removed by the tags filter [{tag_list}]"
     elif (
         diagnostics.best_raw_score is None
@@ -687,9 +698,11 @@ def _format_empty_search_reason(
             f"threshold applies to the raw score, before decay)"
         )
     else:
-        # Fallback: candidates cleared score+tags but 0 survived — most likely
-        # the archived/merged filter (no dedicated counter for it, see G2 scope).
-        n = diagnostics.candidates_before_threshold
+        # Fallback: candidates cleared min_score but 0 survived — most likely
+        # the archived/merged filter (no dedicated counter for it, see G2
+        # scope). survived_threshold, not candidates_before_threshold: the
+        # latter also counts candidates that never cleared min_score at all.
+        n = diagnostics.survived_threshold
         reason = (
             f"{n} candidate{'s' if n != 1 else ''} above min_score "
             f"{diagnostics.min_score_effective:g}, but 0 remained after filtering ({scope_desc})"

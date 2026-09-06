@@ -52,7 +52,12 @@ class SearchDiagnostics(BaseModel):
 
     candidates_before_threshold: int = Field(
         default=0,
-        description="Fused candidates across all searched types, BEFORE the min_score cut.",
+        description=(
+            "Fused candidates across all searched types, BEFORE the min_score cut. "
+            "Bounded by the hybrid fan-out's internal fused[:20] cap and, when "
+            "limit < 20, further bounded by limit — a floor on the true "
+            "candidate pool, not necessarily its full size."
+        ),
     )
     best_raw_score: float | None = Field(
         default=None,
@@ -69,6 +74,29 @@ class SearchDiagnostics(BaseModel):
     tags_filtered_out: int = Field(
         default=0,
         description="Entities excluded by the post-filter tags overlap check (flat search only).",
+    )
+    survived_threshold: int = Field(
+        default=0,
+        description=(
+            "Candidates that cleared the min_score cut (i.e. NOT excluded by "
+            "min_score), before the archived/merged filter and the tags filter "
+            "are applied. Counted independently of candidates_before_threshold "
+            "and tags_filtered_out — the three do not sum to candidates_before_threshold "
+            "when several filters remove different subsets."
+        ),
+    )
+    project_group_requested: str | None = Field(
+        default=None,
+        description="The project_group argument as received from the caller.",
+    )
+    project_group_unresolved: bool = Field(
+        default=False,
+        description=(
+            "True when project_group_requested resolved to zero project_keys via "
+            "ProjectContextService.get_keys_by_group() — the fan-out never ran, "
+            "so every other counter in this object is meaningless zero, not a "
+            "measurement."
+        ),
     )
     types_searched: list[KnowledgeType] = Field(
         default_factory=list,

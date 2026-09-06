@@ -99,6 +99,84 @@ class TestFlatEmptyExplainsItself:
         assert "sec2" in output
         assert "none above min_score" not in output
 
+    def test_mixed_pool_reports_tags_filtered_count_not_total_candidates(self) -> None:
+        """Fix round (lot G2 blocker): a MIXED pool — most candidates killed
+        by min_score, a disjoint few removed by tags — must report the
+        tags-removal count, not the whole pool. Before the fix this branch
+        read candidates_before_threshold (40), not tags_filtered_out (1),
+        pointing the caller at "drop a tag" when the real fix is "lower
+        min_score" for the other 39.
+        """
+        diagnostics = SearchDiagnostics(
+            candidates_before_threshold=40,
+            best_raw_score=0.91,
+            min_score_requested=0.2,
+            min_score_effective=0.2,
+            tags_filtered_out=1,
+            types_searched=["decision"],
+        )
+        output = format_search_results([], query="x", diagnostics=diagnostics, tags=["sec2"])
+
+        assert "1 candidate removed by the tags filter" in output
+        assert "40 candidates" not in output
+
+    def test_tags_filter_reason_falls_through_when_caller_tags_missing(self) -> None:
+        """Regression (minor): if tags_filtered_out > 0 but the formatter's own
+        `tags` argument is empty (a drifted/mismatched caller), the tags-filter
+        kind must not render an empty bracket — fall through to the next kind
+        instead of asserting a fact ('the tags filter removed these') the
+        formatter cannot name."""
+        diagnostics = SearchDiagnostics(
+            candidates_before_threshold=5,
+            best_raw_score=0.91,
+            min_score_requested=0.2,
+            min_score_effective=0.2,
+            tags_filtered_out=5,
+            types_searched=["decision"],
+        )
+        output = format_search_results([], query="x", diagnostics=diagnostics, tags=None)
+
+        assert "removed by the tags filter" not in output
+
+    def test_fallback_kind_uses_survived_threshold_not_total_candidates(self) -> None:
+        """Fix round (lot G2 major): the archived/merged-filter fallback kind
+        must report how many candidates SURVIVED min_score, not the raw
+        candidates_before_threshold count (which also counts candidates that
+        never cleared min_score at all)."""
+        diagnostics = SearchDiagnostics(
+            candidates_before_threshold=10,
+            best_raw_score=0.91,
+            min_score_requested=0.2,
+            min_score_effective=0.2,
+            survived_threshold=3,
+            tags_filtered_out=0,
+            types_searched=["decision"],
+        )
+        output = format_search_results([], query="x", diagnostics=diagnostics)
+
+        assert "3 candidates above min_score" in output
+        assert "10 candidates above min_score" not in output
+
+    def test_project_group_unresolved_names_itself(self) -> None:
+        """Fix round (lot G2 major): an unresolvable project_group must not
+        render as '0 candidates in scope' / 'project: none (admin scope)' —
+        that claims the whole corpus was searched and empty, when the
+        fan-out never ran at all because the group name matched nothing."""
+        diagnostics = SearchDiagnostics(
+            candidates_before_threshold=0,
+            min_score_requested=0.2,
+            min_score_effective=0.2,
+            types_searched=["decision", "learning"],
+            project_group_requested="typo-group-name",
+            project_group_unresolved=True,
+        )
+        output = format_search_results([], query="x", diagnostics=diagnostics)
+
+        assert "typo-group-name" in output
+        assert "matched 0 projects" in output
+        assert "0 candidates in scope" not in output
+        assert "admin scope" not in output
+
     def test_rerank_mode_surfaced_when_not_nominal(self) -> None:
         diagnostics = SearchDiagnostics(
             candidates_before_threshold=0,
@@ -183,6 +261,24 @@ class TestGroupedEmptyExplainsItself:
 
         assert "0 candidates in scope" in output
         assert "archived excluded" in output
+
+    def test_project_group_unresolved_names_itself(self) -> None:
+        """Fix round (lot G2 major): grouped mode carries the same
+        project_group_unresolved kind as flat search — the WDIKA early return
+        must not be rendered as an empty-corpus scan either."""
+        diagnostics = SearchDiagnostics(
+            candidates_before_threshold=0,
+            min_score_requested=0.2,
+            min_score_effective=0.2,
+            types_searched=["decision"],
+            project_group_requested="typo-group-name",
+            project_group_unresolved=True,
+        )
+        output = format_knowledge_by_type(KnowledgeByType(), topic="x", diagnostics=diagnostics)
+
+        assert "typo-group-name" in output
+        assert "matched 0 projects" in output
+        assert "0 candidates in scope" not in output
 
     def test_candidates_below_min_score(self) -> None:
         diagnostics = SearchDiagnostics(

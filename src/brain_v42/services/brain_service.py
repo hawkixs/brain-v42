@@ -72,12 +72,15 @@ class ThresholdDiagnostics:
     nominal path. ``candidates_before_threshold``/``best_raw_score`` are
     computed for every candidate BEFORE the min_score cut; ``tags_filtered_out``
     counts only entities excluded specifically by the tags overlap check
-    (i.e. that already survived the score and archived filters).
+    (i.e. that already survived the score and archived filters);
+    ``survived_threshold`` counts candidates that cleared the min_score cut,
+    before either the archived/merged filter or the tags filter runs.
     """
 
     candidates_before_threshold: int
     best_raw_score: float | None
     tags_filtered_out: int
+    survived_threshold: int
 
 
 class BrainService:
@@ -323,6 +326,7 @@ class BrainService:
         candidates_before_threshold = 0
         best_raw_score: float | None = None
         tags_filtered_out = 0
+        survived_threshold = 0
 
         for t, items in results_by_type.items():
             for entity, score in items:
@@ -332,6 +336,7 @@ class BrainService:
 
                 if score < threshold:
                     continue
+                survived_threshold += 1
 
                 # Filter archived/merged entities
                 if not include_archived:
@@ -463,6 +468,7 @@ class BrainService:
             candidates_before_threshold=candidates_before_threshold,
             best_raw_score=best_raw_score,
             tags_filtered_out=tags_filtered_out,
+            survived_threshold=survived_threshold,
         )
         return flat[:limit], diagnostics
 
@@ -548,6 +554,8 @@ class BrainService:
                         types_searched=types_to_search,
                         project_key_requested=project_key,
                         include_archived=include_archived,
+                        project_group_requested=project_group,
+                        project_group_unresolved=True,
                     ),
                 )
 
@@ -593,6 +601,7 @@ class BrainService:
             min_score_requested=min_score_requested,
             min_score_effective=min_score_effective,
             tags_filtered_out=threshold_diagnostics.tags_filtered_out,
+            survived_threshold=threshold_diagnostics.survived_threshold,
             types_searched=types_to_search,
             project_key_requested=project_key,
             project_key_effective=project_key_effective,
@@ -750,6 +759,8 @@ class BrainService:
                         types_searched=types_to_search,
                         project_key_requested=project_key,
                         include_archived=include_archived,
+                        project_group_requested=project_group,
+                        project_group_unresolved=True,
                     ),
                 )
 
@@ -769,6 +780,7 @@ class BrainService:
         total = 0
         candidates_before_threshold = 0
         best_raw_score: float | None = None
+        survived_threshold = 0
 
         for t, items in results_by_type.items():
             type_results: list[SearchResult] = []
@@ -779,6 +791,7 @@ class BrainService:
 
                 if score < threshold:
                     continue
+                survived_threshold += 1
 
                 # Filter archived/merged entities
                 if not include_archived:
@@ -843,6 +856,7 @@ class BrainService:
             min_score_requested=min_score_requested,
             min_score_effective=threshold,
             tags_filtered_out=0,
+            survived_threshold=survived_threshold,
             types_searched=types_to_search,
             project_key_requested=project_key,
             project_key_effective=project_key_effective,
