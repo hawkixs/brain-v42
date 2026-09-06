@@ -812,7 +812,7 @@ class TestLearningServiceRelationDegradation:
 
         warnings = [e for e in logs if e["log_level"] == "warning"]
         assert any(
-            e["event"] == "graph_relation_missing_node" and e.get("tgt_id") == related_uuid
+            e["event"] == "graph_relation_unknown_endpoint" and e.get("tgt_id") == related_uuid
             for e in warnings
         ), warnings
 

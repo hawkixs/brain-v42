@@ -190,8 +190,15 @@ async def graph_upsert_entity(
                 # never raise (unlike a genuine authorization refusal, or a
                 # real backend failure on a durable graph, both of which keep
                 # propagating unchanged — see graph_create_relation_logged).
+                #
+                # Distinct event name from "graph_relation_missing_node": that
+                # one covers a Neo4j MATCH returning zero rows (an *outcome*
+                # returned by graph_create_relation_logged, handled below).
+                # This one covers an endpoint absent from brain_entities
+                # entirely (an *exception* raised by the durable ledger). The
+                # two failure classes must stay distinguishable in the logs.
                 logger.warning(
-                    "graph_relation_missing_node",
+                    "graph_relation_unknown_endpoint",
                     rel_type=rel["type"],
                     src_id=str(entity_id),
                     tgt_id=str(rel["id"]),

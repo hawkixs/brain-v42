@@ -167,7 +167,7 @@ class TestGraphUpsertEntity:
 
         assert warnings
         assert str(REL_UUID) in warnings[0]
-        assert any(e["event"] == "graph_relation_missing_node" for e in logs)
+        assert any(e["event"] == "graph_relation_unknown_endpoint" for e in logs)
 
     async def test_no_related_to_returns_empty_warnings(self) -> None:
         graph = MagicMock()
@@ -487,7 +487,7 @@ class TestScopedGraphHelperPropagation:
 
         assert warnings
         assert str(REL_UUID) in warnings[0]
-        assert any(e["event"] == "graph_relation_missing_node" for e in logs)
+        assert any(e["event"] == "graph_relation_unknown_endpoint" for e in logs)
 
     async def test_graph_upsert_does_not_swallow_scoped_refusal(self) -> None:
         signature = inspect.signature(graph_upsert_entity)
