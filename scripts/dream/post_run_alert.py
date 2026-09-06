@@ -1156,17 +1156,22 @@ def format_reconciliation_line(
 
 @dataclass(frozen=True)
 class OrphanPromotionsTally:
-    """`dream_promotions` rows the night wrote with no `dream_run_id`.
+    """`dream_promotions` rows created THIS NIGHT with no `dream_run_id`.
 
     `dream_run_id` is `ON DELETE SET NULL` (`dream_promotions_dream_run_id_fkey`):
     a `NULL` here has two possible origins — a promotion inserted without ever
     knowing its `dream_run_id`, or one whose `dream_runs` row was deleted
-    afterwards — and both read the same way from here: nothing joins the
+    afterwards. This tally only ever catches the first: the query filters on
+    `created_at`, so a promotion nulled by a deletion that lands on a LATER
+    night than its own is a standing backlog this line does not claim to see
+    (measured 2026-09-06: 32 rows all-time, against 1 created tonight). Both
+    origins read the same way from here regardless: nothing joins the
     promotion back to a phase, so it is invisible to `format_reconciliation_line`
     above (it names no `(phase, project)` pair) and to dream.sh's `FAIL_TOTAL`
     (it is not a `dream_runs` row at all). ``count`` is `None` (UNMEASURED) when
     the table could not be read: this check must never be the reason the
-    morning report fails.
+    morning report fails, and the session it shares with its caller must come
+    back usable (see `fetch_orphan_promotions`).
     """
 
     count: int | None = None
@@ -1198,6 +1203,14 @@ async def fetch_orphan_promotions(
     for the freshness tables' timestamps. Best-effort like the other file- and
     log-derived tallies in this module (`roadmap_shrink_tally`, `reorg_tally`):
     a broken query leaves the count UNMEASURED rather than failing the report.
+
+    That best-effort posture only holds if the shared `session` comes back
+    USABLE: on PostgreSQL a failed statement aborts the whole transaction, and
+    `_run` reads from this exact session again right after this call returns
+    (`review_and_render`). Swallowing the exception alone would turn a
+    best-effort miss here into a hard crash a few lines later, from an error
+    that no longer even names `dream_promotions` — so roll back before
+    returning UNMEASURED.
     """
     try:
         result = await session.execute(
@@ -1210,6 +1223,7 @@ async def fetch_orphan_promotions(
         )
         return OrphanPromotionsTally(count=int(result.scalar_one()))
     except Exception:  # noqa: BLE001 — a broken count must never fail the morning report.
+        await session.rollback()
         return OrphanPromotionsTally()
 
 

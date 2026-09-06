@@ -98,15 +98,21 @@ def test_dream_sh_classifies_partial_as_a_failed_phase() -> None:
     followed, on every phase, by a `case "$phase_rc" in … *) FAILED_PHASES+=`
     that has no branch of its own for 1 — it falls into the same bucket as
     any other non-zero, non-timeout code. `phase_rc=1` is exactly what the
-    REORG validator sets right before that `case` runs."""
-    assert "phase_rc=1 so the FAIL_TOTAL counter" in DREAM_SH
+    REORG validator sets right before that `case` runs.
+
+    The branch SET is asserted, not just the presence of three substrings:
+    `assert "0) ;;" in case_block` alone stays green if a `1) ;;` branch is
+    inserted ALONGSIDE it — the exact regression this test exists to catch,
+    a validator-invalidated phase (`phase_rc=1`) reclassified as OK instead
+    of falling into the `*)` catch-all that feeds `FAIL_TOTAL`."""
     case_block = DREAM_SH.split('case "$phase_rc" in', 1)[1].split("esac", 1)[0]
-    assert "0) ;;" in case_block
-    assert "2) TIMED_OUT_PHASES+=" in case_block
-    assert "*) FAILED_PHASES+=" in case_block, (
-        "phase_rc=1 (partial) has no branch of its own — it falls into the "
-        "catch-all that feeds FAIL_TOTAL, same as a hard failure"
+    branch_labels = re.findall(r"^\s*([^\s)]+)\)", case_block, re.M)
+    assert branch_labels == ["0", "2", "*"], (
+        "phase_rc=1 (partial) must have no branch of its own — it must fall "
+        f"into the `*)` catch-all that feeds FAIL_TOTAL; got branches {branch_labels}"
     )
+    assert "TIMED_OUT_PHASES+=" in case_block
+    assert "FAILED_PHASES+=" in case_block
 
 
 def test_reconciliation_docstring_names_no_ticket() -> None:
@@ -115,11 +121,26 @@ def test_reconciliation_docstring_names_no_ticket() -> None:
     rejeu ?") were themselves wrong for a partial night: the true cause was
     the `partial` miscount fixed above, neither a lost write nor a replay.
     Pinning this doc to an incident id lets the id go stale in silence;
-    describing the measurement itself cannot."""
+    describing the measurement itself cannot.
+
+    The ticket-id shape is `[0-9a-f]{8}` but a plain `\\b[0-9a-f]{8}\\b` scan
+    is both too loose and too easy to fool: an 8-DIGIT date like `20260906`
+    (all decimal, no letter) trips it on a perfectly legitimate "measured on"
+    note, while deleting the whole docstring — saying nothing at all — passes
+    it. A ticket id, unlike a date, always carries at least one `a`-`f`
+    letter; requiring that plus a positive check that the doc still names
+    what the line measures rules out both failure modes."""
     doc = format_reconciliation_line.__doc__ or ""
-    assert not re.search(r"\b[0-9a-f]{8}\b", doc), (
+    assert doc, "the docstring must exist and describe the measurement"
+    assert "pairs_written" in doc, (
+        "the docstring must keep describing the measurement (pairs_written), "
+        "not just avoid naming a ticket"
+    )
+    hex_tokens = re.findall(r"\b[0-9a-f]{8}\b", doc)
+    ticket_shaped = [token for token in hex_tokens if re.search(r"[a-f]", token)]
+    assert not ticket_shaped, (
         "the reconciliation line's own doc must describe what it measures, "
-        "not cite a ticket id that can (and did) close"
+        f"not cite a ticket id that can (and did) close: {ticket_shaped}"
     )
 
 

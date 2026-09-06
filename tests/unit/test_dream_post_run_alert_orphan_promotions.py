@@ -100,6 +100,34 @@ async def test_fetch_orphan_promotions_is_unmeasured_when_the_table_is_unreachab
 
 
 @pytest.mark.asyncio
+async def test_fetch_orphan_promotions_rolls_back_before_returning_unmeasured() -> None:
+    """On the real driver a failed statement aborts the WHOLE transaction:
+    this function shares its session with `review_and_render`, called right
+    after it in `_run`. Swallowing the exception without rolling back would
+    leave that shared session poisoned, so the next unrelated SELECT would
+    raise `InFailedSqlTransactionError` instead of succeeding — an error that
+    no longer even names `dream_promotions`. `AsyncMock(spec=AsyncSession)`
+    has no real transaction to poison, so only an explicit assertion on
+    `rollback`, plus proof a downstream read still works, can catch its
+    removal."""
+    session = AsyncMock(spec=AsyncSession)
+    session.execute = AsyncMock(
+        side_effect=[Exception("relation does not exist"), _count_result(7)]
+    )
+    session.rollback = AsyncMock()
+
+    tally = await post_run_alert.fetch_orphan_promotions(session, RUN_DATE)
+
+    assert not tally.measured
+    session.rollback.assert_awaited_once()
+
+    # A downstream read on the SAME session must still work — proof this
+    # module does not leave the transaction poisoned for its caller.
+    downstream = await session.execute(None)
+    assert downstream.scalar_one() == 7
+
+
+@pytest.mark.asyncio
 async def test_run_prints_orphan_promotions_line_with_phases_ok(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
