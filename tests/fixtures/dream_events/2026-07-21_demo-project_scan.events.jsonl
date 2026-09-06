@@ -1,0 +1,2 @@
+{"type": "thread.started", "thread_id": "fixture-malformed-0001"
+{"type": "item.completed", "item": {"id": "item_1", "type": "mcp_tool_call", "tool": "brain_search", "arguments": {}, "result": null, "error": null}}

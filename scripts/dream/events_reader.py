@@ -1,9 +1,16 @@
 """Read one dream night's tool calls across both wire dialects.
 
 The dream pool writes one ``<date>_<project>_<phase>.events.jsonl`` file per
-(project, phase) run under ``logs/dream/``. Two shapes have been observed on
-disk, and they map onto the two rails documented by the existing metrics
-parsers (``src/brain_v42/metrics/agy_dream_parser.py`` and
+(project, phase) run under ``logs/dream/``. A pre-pool shape,
+``<date>_<phase>.events.jsonl`` (no project component), is still on disk for
+165 of 1684 real files across 28 nights starting 2026-07-13; it is recognised
+too, mapped to the real phase with an explicit :data:`PRE_POOL_PROJECT`
+label rather than a fabricated "unknown" that would read like a genuine
+measurement. A filename matching neither shape is never guessed at either —
+it is surfaced by the census CLI as its own ``UNMEASURED naming`` bucket.
+Two shapes of *file content* have also been observed on disk, and they map
+onto the two rails documented by the existing metrics parsers
+(``src/brain_v42/metrics/agy_dream_parser.py`` and
 ``codex_dream_parser.py``) rather than onto a naive guess:
 
 - the **codex** rail (``codex exec --json``, the live default,
@@ -54,12 +61,31 @@ _FILENAME_RE = re.compile(
     r"^(?P<date>\d{4}-\d{2}-\d{2})_(?P<project>.+)_(?P<phase>[^_]+)\.events\.jsonl$"
 )
 
+#: The pre-pool naming shape, predating the dream pool: no project
+#: component. Phase is restricted to the six known dream phases so an
+#: unrelated one-segment name is not misread as a phase (it falls through
+#: to the ``UNMEASURED naming`` bucket instead, see :func:`_parse_filename`).
+_LEGACY_FILENAME_RE = re.compile(
+    r"^(?P<date>\d{4}-\d{2}-\d{2})_(?P<phase>clean|connect|promote|reorg|scan|synth)\.events\.jsonl$"
+)
+
+#: Project label used for the pre-pool filename shape (see
+#: :data:`_LEGACY_FILENAME_RE`), which names no project. Rendered
+#: explicitly so it is never mistaken for a real, unresolved project name.
+PRE_POOL_PROJECT = "(pre-pool, no project)"
+
 #: Matches the exact empty-result header written by
 #: ``brain_v42.mcp.tools.formatters.format_search_results`` when a search
 #: returns zero hits: ``## 0 results for "<query>" (across all types)``. A
 #: degraded-mode banner line may precede it, hence MULTILINE + search rather
-#: than a full-string match.
-_EMPTY_SEARCH_RE = re.compile(r'^## 0 results for "', re.MULTILINE)
+#: than a full-string match. The alternation also matches
+#: ``format_knowledge_by_type``'s zero-items header (formatters.py:750),
+#: reached when ``brain_search(group_by_type=True)`` returns nothing:
+#: ``## Everything known about "<topic>" (0 items)``. Measured on the real
+#: corpus: 5 calls used ``group_by_type=True``, 1 of which returned 0 items.
+_EMPTY_SEARCH_RE = re.compile(
+    r'^## 0 results for "|^## Everything known about ".*" \(0 items\)$', re.MULTILINE
+)
 
 
 class UnknownDialectError(ValueError):
@@ -90,18 +116,29 @@ class ToolCall:
     timestamp: str | None = None
 
 
-def _parse_filename(path: Path) -> tuple[str, str]:
+def _parse_filename(path: Path) -> tuple[str, str] | None:
     """Return ``(project, phase)`` parsed from a dream events filename.
 
-    Falls back to ``("unknown", "unknown")`` for a name that does not match
-    the ``<date>_<project>_<phase>.events.jsonl`` convention, rather than
-    raising — a caller that only wants normalised calls should not have to
-    care about naming, only the census CLI does.
+    Two shapes are recognised:
+
+    - the pool-era ``<date>_<project>_<phase>.events.jsonl`` convention;
+    - the pre-pool ``<date>_<phase>.events.jsonl`` convention (no project),
+      returned as (:data:`PRE_POOL_PROJECT`, phase).
+
+    Returns ``None`` for a name matching neither shape. This used to fall
+    back to a fabricated ``("unknown", "unknown")`` pair that a census could
+    not tell apart from a genuinely measured phase called "unknown" — the
+    census CLI is the one caller that names filenames, and it now renders a
+    ``None`` result as its own explicit ``UNMEASURED naming`` bucket instead
+    of guessing.
     """
     match = _FILENAME_RE.match(path.name)
-    if not match:
-        return ("unknown", "unknown")
-    return (match.group("project"), match.group("phase"))
+    if match:
+        return (match.group("project"), match.group("phase"))
+    legacy_match = _LEGACY_FILENAME_RE.match(path.name)
+    if legacy_match:
+        return (PRE_POOL_PROJECT, legacy_match.group("phase"))
+    return None
 
 
 def _load_records(path: Path) -> list[dict[str, Any]]:
@@ -257,10 +294,17 @@ def iter_tool_calls(path: Path | str) -> Iterator[ToolCall]:
     a plain function that loads and classifies the file eagerly and returns
     the generator from a private helper, precisely so ``try: iter_tool_calls(p)
     / except UnknownDialectError`` behaves as a caller would expect.
+
+    A filename matching neither known naming convention (see
+    :func:`_parse_filename`) falls back to ``("unknown", "unknown")`` here:
+    this function returns ``ToolCall`` objects, not a rendered report, so
+    there is nothing for the fallback to masquerade as. The census CLI
+    (``run_census``) does not use this fallback — it surfaces the same
+    filenames explicitly instead.
     """
     path = Path(path)
     dialect, records = _load_and_detect(path)
-    project, phase = _parse_filename(path)
+    project, phase = _parse_filename(path) or ("unknown", "unknown")
     return _iter_calls(records, dialect, project, phase)
 
 
@@ -315,6 +359,11 @@ class CensusReport:
     files_total: int
     files_by_dialect: dict[str, int]
     unclassified_files: dict[str, str]
+    #: Files whose dialect was classified but whose name matched neither
+    #: known naming convention (see :func:`_parse_filename`) — rendered as
+    #: their own ``UNMEASURED naming`` bucket, never folded into a
+    #: fabricated "unknown" phase or project.
+    unnamed_files: dict[str, str]
     calls_by_phase: dict[str, _Counts]
     calls_by_project: dict[str, _Counts]
     total_calls: int
@@ -335,11 +384,17 @@ def run_census(logs_dir: Path, night: str, tool_filter: str | None = None) -> Ce
 
     Never returns a silent zero for a night with no files: callers must
     check ``files_total`` and report ``UNMEASURED`` rather than printing the
-    zeroed totals as if they were a real, empty measurement.
+    zeroed totals as if they were a real, empty measurement. A file whose
+    dialect could not be classified, or whose JSON is malformed, costs only
+    that one file (filed under ``unclassified_files``) rather than aborting
+    the whole night; a file whose name matches neither known naming
+    convention costs only that one file too (filed under ``unnamed_files``),
+    never a fabricated "unknown" phase or project.
     """
     files = _night_files(logs_dir, night)
     files_by_dialect: dict[str, int] = defaultdict(int)
     unclassified_files: dict[str, str] = {}
+    unnamed_files: dict[str, str] = {}
     calls_by_phase: dict[str, _Counts] = defaultdict(_Counts)
     calls_by_project: dict[str, _Counts] = defaultdict(_Counts)
     total_calls = 0
@@ -349,16 +404,29 @@ def run_census(logs_dir: Path, night: str, tool_filter: str | None = None) -> Ce
     for path in files:
         try:
             dialect, records = _load_and_detect(path)
-        except UnknownDialectError as exc:
+        except ValueError as exc:
+            # UnknownDialectError (an unrecognised or empty file) and a bare
+            # ValueError from malformed JSON (see _load_records) are both
+            # ValueError; either way, one bad file costs one file, not the
+            # night's whole census.
             unclassified_files[str(path)] = str(exc)
             continue
         files_by_dialect[dialect] += 1
 
-        # A successfully classified file names its own (project, phase) even
-        # if every call inside it is filtered out below: seed both buckets
-        # here so "0 calls" always renders, rather than the phase or project
-        # silently disappearing from the report.
-        project, phase = _parse_filename(path)
+        parsed = _parse_filename(path)
+        if parsed is None:
+            unnamed_files[str(path)] = (
+                "filename matches neither the pool-era "
+                "(<date>_<project>_<phase>.events.jsonl) nor the pre-pool "
+                "(<date>_<phase>.events.jsonl) naming convention"
+            )
+            continue
+        project, phase = parsed
+
+        # A successfully classified and named file names its own (project,
+        # phase) even if every call inside it is filtered out below: seed
+        # both buckets here so "0 calls" always renders, rather than the
+        # phase or project silently disappearing from the report.
         calls_by_phase.setdefault(phase, _Counts())
         calls_by_project.setdefault(project, _Counts())
 
@@ -385,6 +453,7 @@ def run_census(logs_dir: Path, night: str, tool_filter: str | None = None) -> Ce
         files_total=len(files),
         files_by_dialect=dict(files_by_dialect),
         unclassified_files=unclassified_files,
+        unnamed_files=unnamed_files,
         calls_by_phase=dict(calls_by_phase),
         calls_by_project=dict(calls_by_project),
         total_calls=total_calls,
@@ -410,6 +479,10 @@ def format_census_report(report: CensusReport, logs_dir: Path) -> str:
         lines.append(f"  UNMEASURED dialect: {len(report.unclassified_files)} file(s)")
         for path in sorted(report.unclassified_files):
             lines.append(f"    {path}: {report.unclassified_files[path]}")
+    if report.unnamed_files:
+        lines.append(f"  UNMEASURED naming: {len(report.unnamed_files)} file(s)")
+        for path in sorted(report.unnamed_files):
+            lines.append(f"    {path}: {report.unnamed_files[path]}")
 
     lines.append("by phase:")
     for phase in sorted(report.calls_by_phase):

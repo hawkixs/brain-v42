@@ -13,6 +13,7 @@ either branch of the reader shows up here rather than in a night's totals.
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -20,8 +21,11 @@ from scripts.dream import events_reader
 from scripts.dream.events_reader import (
     AGY,
     CODEX,
+    PRE_POOL_PROJECT,
+    ToolCall,
     UnknownDialectError,
     _Counts,
+    detect_dialect,
     emptiness_unknown,
     format_census_report,
     is_empty_search,
@@ -35,6 +39,13 @@ _CODEX_FILE = _FIXTURES / "2026-09-05_demo-project_scan.events.jsonl"
 _CODEX_CONNECT_FILE = _FIXTURES / "2026-09-05_demo-project_connect.events.jsonl"
 _UNKNOWN_FILE = _FIXTURES / "2026-09-05_demo-project_mystery.events.jsonl"
 _EMPTY_FILE = _FIXTURES / "2026-09-05_demo-project_empty.events.jsonl"
+#: Pre-pool naming shape (``<date>_<phase>.events.jsonl``), still on disk for
+#: 165 of 1684 real files across 28 nights starting 2026-07-13.
+_LEGACY_FILE = _FIXTURES / "2026-07-20_scan.events.jsonl"
+#: Matches neither the pool-era nor the pre-pool naming convention.
+_UNNAMED_FILE = _FIXTURES / "2026-09-04_totallybogus.events.jsonl"
+#: First line is truncated, invalid JSON.
+_MALFORMED_FILE = _FIXTURES / "2026-07-21_demo-project_scan.events.jsonl"
 
 _SEARCH_OUTPUT = (
     '## 2 results for "clean phase status" (across all types)\n\n'
@@ -58,7 +69,13 @@ def test_codex_fixture_parses_as_the_codex_dialect() -> None:
 
 
 def test_both_dialects_normalise_the_same_logical_search_call_identically() -> None:
-    """The non-empty ``brain_search`` call is byte-identical across dialects, dialect field excepted."""
+    """The non-empty ``brain_search`` call is byte-identical across dialects, dialect field excepted.
+
+    Asserting via ``dataclasses.replace`` (rather than a hand-picked field
+    list) means any future :class:`ToolCall` field is covered by
+    construction: a new field that diverges between rails fails this test
+    even if nobody remembers to add an assertion for it.
+    """
     agy_call = next(
         c for c in iter_tool_calls(_AGY_FILE) if c.tool == "brain_search" and not is_empty_search(c)
     )
@@ -68,22 +85,10 @@ def test_both_dialects_normalise_the_same_logical_search_call_identically() -> N
         if c.tool == "brain_search" and not is_empty_search(c)
     )
 
-    assert agy_call.phase == codex_call.phase == "scan"
-    assert agy_call.project == codex_call.project == "demo-project"
-    assert agy_call.tool == codex_call.tool == "brain_search"
-    assert (
-        agy_call.arguments
-        == codex_call.arguments
-        == {
-            "query": "clean phase status",
-            "limit": 5,
-        }
-    )
-    assert agy_call.output == codex_call.output == _SEARCH_OUTPUT
-    assert agy_call.is_error is False
-    assert codex_call.is_error is False
+    assert dataclasses.replace(agy_call, dialect=CODEX) == codex_call
     assert agy_call.dialect == AGY
     assert codex_call.dialect == CODEX
+    assert agy_call.output == codex_call.output == _SEARCH_OUTPUT
 
 
 def test_empty_search_detected_identically_on_both_dialects() -> None:
@@ -223,3 +228,166 @@ def test_run_census_loads_each_classified_file_exactly_once(monkeypatch) -> None
     run_census(logs_dir=_FIXTURES, night="2026-08-12")
 
     assert load_calls == [_AGY_FILE]
+
+
+def test_legacy_filename_shape_parses_the_real_phase_with_a_pre_pool_project_label() -> None:
+    """The pre-pool ``<date>_<phase>.events.jsonl`` shape must not collapse to "unknown".
+
+    165 of 1684 real files (28 nights starting 2026-07-13) predate the dream
+    pool and carry no project component at all. Before this fix, such a name
+    fell through ``_FILENAME_RE`` to the ``("unknown", "unknown")`` fallback
+    and a census rendered it as if "unknown" were a genuinely measured
+    phase — indistinguishable from a real one.
+    """
+    calls = list(iter_tool_calls(_LEGACY_FILE))
+    assert calls
+    assert all(call.phase == "scan" for call in calls)
+    assert all(call.project == PRE_POOL_PROJECT for call in calls)
+
+
+def test_run_census_on_a_legacy_night_names_the_real_phase_not_unknown() -> None:
+    report = run_census(logs_dir=_FIXTURES, night="2026-07-20")
+
+    assert "scan" in report.calls_by_phase
+    assert report.calls_by_phase["scan"].calls == 1
+    assert PRE_POOL_PROJECT in report.calls_by_project
+    assert "unknown" not in report.calls_by_phase
+    assert "unknown" not in report.calls_by_project
+
+    text = format_census_report(report, logs_dir=_FIXTURES)
+    assert "unknown:" not in text
+    assert "scan: calls=1" in text
+
+
+def test_filename_matching_neither_shape_is_reported_as_unmeasured_naming() -> None:
+    """A name matching neither known convention must never fall into "unknown".
+
+    Reproduces the naming-layer version of the module's own stated failure
+    mode: a degraded reading (a fabricated "unknown" phase/project) that
+    reads exactly like a real measurement. Instead it must be surfaced in
+    its own rendered bucket, by name, the same way an unrecognised dialect
+    already is via ``unclassified_files``.
+    """
+    assert _UNNAMED_FILE.exists()
+
+    report = run_census(logs_dir=_FIXTURES, night="2026-09-04")
+
+    assert report.files_total == 1
+    assert str(_UNNAMED_FILE) in report.unnamed_files
+    assert report.calls_by_phase == {}
+    assert report.calls_by_project == {}
+    assert report.total_calls == 0
+
+    text = format_census_report(report, logs_dir=_FIXTURES)
+    assert "UNMEASURED naming: 1 file(s)" in text
+    assert str(_UNNAMED_FILE) in text
+    assert "unknown:" not in text
+
+
+def test_run_census_on_a_night_with_no_files_is_unmeasured_not_a_silent_zero(
+    tmp_path: Path,
+) -> None:
+    """The lot's headline anti-silent-zero contract, previously untested.
+
+    Nothing forced ``format_census_report``'s ``files_total == 0`` branch to
+    stay in place: without this test, a refactor could delete it and the
+    report would instead print ``files: 0 total`` / ``total: calls=0
+    empties=0 unknown=0`` — a rendering indistinguishable from a real, idle
+    night.
+    """
+    report = run_census(logs_dir=tmp_path, night="2099-01-01")
+
+    assert report.files_total == 0
+
+    text = format_census_report(report, logs_dir=tmp_path)
+    assert "UNMEASURED: no events.jsonl files found" in text
+    assert "files: 0 total" not in text
+
+
+def test_main_exits_2_for_a_night_with_no_files(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    exit_code = events_reader.main(["--night", "2099-01-01", "--logs-dir", str(tmp_path)])
+
+    assert exit_code == 2
+    assert "UNMEASURED: no events.jsonl files found" in capsys.readouterr().out
+
+
+def test_is_empty_search_detects_the_group_by_type_zero_items_rendering() -> None:
+    """``brain_search(group_by_type=True)`` has a SECOND empty rendering.
+
+    ``format_knowledge_by_type`` (formatters.py:750) renders
+    ``## Everything known about "<topic>" (0 items)`` on an empty result,
+    distinct from ``format_search_results``'s ``## 0 results for ...``.
+    Measured on the real corpus: 5 ``brain_search`` calls used
+    ``group_by_type=True``, 1 of which returned 0 items and was silently
+    miscounted as "not empty" before this fix.
+    """
+    call = ToolCall(
+        dialect=CODEX,
+        phase="scan",
+        project="demo-project",
+        tool="brain_search",
+        output='## Everything known about "backup strategy" (0 items)',
+    )
+    assert is_empty_search(call) is True
+
+
+def test_is_empty_search_group_by_type_rendering_rejects_error_and_non_search() -> None:
+    error_call = ToolCall(
+        dialect=CODEX,
+        phase="scan",
+        project="demo-project",
+        tool="brain_search",
+        output='## Everything known about "backup strategy" (0 items)',
+        is_error=True,
+    )
+    non_search_call = ToolCall(
+        dialect=CODEX,
+        phase="scan",
+        project="demo-project",
+        tool="brain_list",
+        output='## Everything known about "backup strategy" (0 items)',
+    )
+    assert is_empty_search(error_call) is False
+    assert is_empty_search(non_search_call) is False
+
+
+def test_detect_dialect_returns_the_known_tag_for_each_fixture() -> None:
+    assert detect_dialect(_AGY_FILE) == AGY
+    assert detect_dialect(_CODEX_FILE) == CODEX
+
+
+def test_detect_dialect_raises_for_a_file_matching_neither_shape() -> None:
+    with pytest.raises(UnknownDialectError):
+        detect_dialect(_UNKNOWN_FILE)
+
+
+def test_run_census_tracks_files_by_dialect_and_unclassified_files() -> None:
+    """Pins ``files_by_dialect`` and ``unclassified_files``, exercised but unasserted before this fix."""
+    report = run_census(logs_dir=_FIXTURES, night="2026-09-05")
+
+    assert report.files_by_dialect == {"codex": 2}
+    assert str(_UNKNOWN_FILE) in report.unclassified_files
+    assert str(_EMPTY_FILE) in report.unclassified_files
+
+    text = format_census_report(report, logs_dir=_FIXTURES)
+    assert "UNMEASURED dialect: 2 file(s)" in text
+    assert str(_UNKNOWN_FILE) in text
+    assert str(_EMPTY_FILE) in text
+
+
+def test_run_census_isolates_a_malformed_json_line_to_its_own_file() -> None:
+    """One corrupt line must cost one file, not the whole night's census.
+
+    Before this fix, ``_load_records`` raised a bare ``ValueError`` that
+    ``run_census`` did not catch (only ``UnknownDialectError`` was caught),
+    so one truncated line aborted the entire night with a traceback instead
+    of filing that one file under ``unclassified_files``.
+    """
+    report = run_census(logs_dir=_FIXTURES, night="2026-07-21")
+
+    assert report.files_total == 1
+    assert str(_MALFORMED_FILE) in report.unclassified_files
+    assert "invalid JSON" in report.unclassified_files[str(_MALFORMED_FILE)]
+    assert report.total_calls == 0
