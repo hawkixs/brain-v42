@@ -80,6 +80,22 @@ class TestFlatEmptyExplainsItself:
         assert "before decay" in output
         assert "0 candidates in scope" not in output
 
+    def test_candidates_below_min_score_wording_names_it_as_a_floor(self) -> None:
+        """Review round 3 (minor): candidates_before_threshold is a FLOOR
+        (HybridSearcher applies rrf_fuse(...)[:20] before reranking, and
+        fused[:limit] after) — the rendered sentence must not present it as
+        an exact count."""
+        diagnostics = SearchDiagnostics(
+            candidates_before_threshold=5,
+            best_raw_score=0.14,
+            min_score_requested=0.2,
+            min_score_effective=0.2,
+            types_searched=["decision", "learning"],
+        )
+        output = format_search_results([], query="x", diagnostics=diagnostics)
+
+        assert "at least 5 candidates" in output
+
     def test_candidates_removed_by_tags_filter(self) -> None:
         diagnostics = SearchDiagnostics(
             candidates_before_threshold=3,
@@ -157,6 +173,24 @@ class TestFlatEmptyExplainsItself:
         assert "3 candidates above min_score" in output
         assert "10 candidates above min_score" not in output
 
+    def test_fallback_kind_wording_names_it_as_a_floor(self) -> None:
+        """Review round 3 (minor): survived_threshold is bounded by the same
+        fused[:20]/limit cap as candidates_before_threshold — the archived/
+        merged-filter fallback sentence must not present it as an exact
+        count either."""
+        diagnostics = SearchDiagnostics(
+            candidates_before_threshold=10,
+            best_raw_score=0.91,
+            min_score_requested=0.2,
+            min_score_effective=0.2,
+            survived_threshold=3,
+            tags_filtered_out=0,
+            types_searched=["decision"],
+        )
+        output = format_search_results([], query="x", diagnostics=diagnostics)
+
+        assert "at least 3 candidates above min_score" in output
+
     def test_project_group_unresolved_names_itself(self) -> None:
         """Fix round (lot G2 major): an unresolvable project_group must not
         render as '0 candidates in scope' / 'project: none (admin scope)' —
@@ -173,9 +207,35 @@ class TestFlatEmptyExplainsItself:
         output = format_search_results([], query="x", diagnostics=diagnostics)
 
         assert "typo-group-name" in output
-        assert "matched 0 projects" in output
+        assert "project group" in output
+        assert "no known project" in output
         assert "0 candidates in scope" not in output
         assert "admin scope" not in output
+
+    def test_project_group_resolved_names_the_group_and_its_keys(self) -> None:
+        """Review round 3 (major): a project_group that RESOLVES to one or
+        more project_keys must say so in the rendered scope — before this
+        fix, project_key_effective stayed None for a group-scoped search
+        (project_key XOR project_group), so the empty explanation fell back
+        to 'project: none (admin scope)', a false statement about the scope
+        actually searched."""
+        diagnostics = SearchDiagnostics(
+            candidates_before_threshold=0,
+            min_score_requested=0.2,
+            min_score_effective=0.2,
+            types_searched=["decision", "learning"],
+            project_group_requested="red-triad",
+            project_group_resolved_keys=["proj-a", "proj-b"],
+            project_group_unresolved=False,
+            project_key_effective=None,
+        )
+        output = format_search_results([], query="x", diagnostics=diagnostics)
+
+        assert "red-triad" in output
+        assert "proj-a" in output
+        assert "proj-b" in output
+        assert "admin scope" not in output
+        assert "no known project" not in output
 
     def test_rerank_mode_surfaced_when_not_nominal(self) -> None:
         diagnostics = SearchDiagnostics(
@@ -204,6 +264,30 @@ class TestFlatEmptyExplainsItself:
         output = format_search_results([], query="x", diagnostics=diagnostics)
 
         assert "rerank mode: reranked" not in output.lower()
+
+    def test_rerank_mode_not_duplicated_when_degraded_banner_present(self) -> None:
+        """Review round 3 (minor): the appended 'rerank mode: X' line always
+        duplicated the degraded banner rendered above it in production — both
+        come from the same rerank_mode_observed. Once the caller passes the
+        real `degraded` dict (the production shape), the banner alone must
+        carry the information; the redundant line is dropped."""
+        diagnostics = SearchDiagnostics(
+            candidates_before_threshold=0,
+            min_score_requested=0.2,
+            min_score_effective=0.2,
+            types_searched=["decision"],
+            rerank_mode="rrf_fallback",
+            degraded=True,
+        )
+        output = format_search_results(
+            [],
+            query="x",
+            diagnostics=diagnostics,
+            degraded={"rerank_mode": "rrf_fallback"},
+        )
+
+        assert "degraded: reranker indisponible" in output
+        assert "rerank mode: rrf_fallback" not in output
 
     def test_no_diagnostics_falls_back_to_bare_header(self) -> None:
         """Callers that never pass diagnostics (raw formatter unit tests, older
@@ -277,8 +361,31 @@ class TestGroupedEmptyExplainsItself:
         output = format_knowledge_by_type(KnowledgeByType(), topic="x", diagnostics=diagnostics)
 
         assert "typo-group-name" in output
-        assert "matched 0 projects" in output
+        assert "project group" in output
+        assert "no known project" in output
         assert "0 candidates in scope" not in output
+
+    def test_project_group_resolved_names_the_group_and_its_keys(self) -> None:
+        """Review round 3 (major): mirrors the flat fix — grouped mode must
+        also name a RESOLVED project_group in the rendered scope, not just
+        the unresolved kind."""
+        diagnostics = SearchDiagnostics(
+            candidates_before_threshold=0,
+            min_score_requested=0.2,
+            min_score_effective=0.2,
+            types_searched=["decision", "learning", "snippet", "runbook", "adr", "plan"],
+            project_group_requested="red-triad",
+            project_group_resolved_keys=["proj-a", "proj-b"],
+            project_group_unresolved=False,
+            project_key_effective=None,
+        )
+        output = format_knowledge_by_type(KnowledgeByType(), topic="x", diagnostics=diagnostics)
+
+        assert "red-triad" in output
+        assert "proj-a" in output
+        assert "proj-b" in output
+        assert "admin scope" not in output
+        assert "no known project" not in output
 
     def test_candidates_below_min_score(self) -> None:
         diagnostics = SearchDiagnostics(
@@ -293,6 +400,79 @@ class TestGroupedEmptyExplainsItself:
         assert "7 candidates" in output
         assert "none above min_score" in output
         assert "0.05" in output
+
+    def test_candidates_below_min_score_wording_names_it_as_a_floor(self) -> None:
+        """Review round 3 (minor): mirrors the flat fix — candidates_before_threshold
+        is a floor here too."""
+        diagnostics = SearchDiagnostics(
+            candidates_before_threshold=7,
+            best_raw_score=0.05,
+            min_score_requested=0.2,
+            min_score_effective=0.2,
+            types_searched=["decision"],
+        )
+        output = format_knowledge_by_type(KnowledgeByType(), topic="x", diagnostics=diagnostics)
+
+        assert "at least 7 candidates" in output
+
+    def test_rerank_mode_not_duplicated_when_degraded_banner_present(self) -> None:
+        """Review round 3 (minor): mirrors the flat fix for the grouped
+        renderer's own banner-building block."""
+        diagnostics = SearchDiagnostics(
+            candidates_before_threshold=0,
+            min_score_requested=0.2,
+            min_score_effective=0.2,
+            types_searched=["decision"],
+            rerank_mode="rrf_fallback",
+            degraded=True,
+        )
+        output = format_knowledge_by_type(
+            KnowledgeByType(),
+            topic="x",
+            diagnostics=diagnostics,
+            degraded={"rerank_mode": "rrf_fallback"},
+        )
+
+        assert "degraded: reranker indisponible" in output
+        assert "rerank mode: rrf_fallback" not in output
+
+    def test_grouped_empty_block_names_ignored_tags_and_include_related(self) -> None:
+        """Review round 3 (minor): grouped mode structurally drops tags and
+        include_related — the caller reading the markdown must see it too,
+        at least on the empty path."""
+        diagnostics = SearchDiagnostics(
+            candidates_before_threshold=0,
+            min_score_requested=0.2,
+            min_score_effective=0.2,
+            types_searched=["decision"],
+        )
+        output = format_knowledge_by_type(
+            KnowledgeByType(),
+            topic="x",
+            diagnostics=diagnostics,
+            tags=["dream:scan"],
+            include_related=True,
+        )
+
+        assert "dream:scan" in output
+        assert "include_related" in output
+        assert "group_by_type=False" in output
+
+    def test_grouped_empty_block_silent_when_tags_and_include_related_not_requested(
+        self,
+    ) -> None:
+        """Negative witness: the ignored-params notice never appears when the
+        caller did not pass tags or include_related — the nominal empty
+        rendering is unaffected."""
+        diagnostics = SearchDiagnostics(
+            candidates_before_threshold=0,
+            min_score_requested=0.2,
+            min_score_effective=0.2,
+            types_searched=["decision"],
+        )
+        output = format_knowledge_by_type(KnowledgeByType(), topic="x", diagnostics=diagnostics)
+
+        assert "ignores" not in output
 
     def test_grouped_mode_never_reports_tags_filtered_since_it_has_no_tags_param(self) -> None:
         """WhatDoIKnowResponse has no tags argument — tags_filtered_out is

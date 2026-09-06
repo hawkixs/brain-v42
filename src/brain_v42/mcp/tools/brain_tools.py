@@ -733,6 +733,8 @@ def register_tools(
                     degraded=wdik_response.degraded,
                     full=full,
                     diagnostics=wdik_response.diagnostics,
+                    tags=tags,
+                    include_related=include_related,
                 )
                 + limit_notice
             )

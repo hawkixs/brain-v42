@@ -636,6 +636,7 @@ def _format_search_item(
 def _format_empty_search_reason(
     diagnostics: SearchDiagnostics,
     tags: list[str] | None,
+    banner_present: bool = False,
 ) -> str:
     """Explain WHY a search returned 0 results — never silently.
 
@@ -655,18 +656,26 @@ def _format_empty_search_reason(
     below are checked in a fixed priority order and each reads only the
     counter for the kind it names — never a total that a different filter
     also contributed to.
+
+    Args:
+        banner_present: True when the caller already rendered a degraded
+            banner above this block (``format_search_results``/
+            ``format_knowledge_by_type``'s own banner_lines). The trailing
+            "rerank mode: X" line is redundant with that banner — both are
+            derived from the same ``rerank_mode_observed`` in production —
+            so it is dropped whenever a banner is already on screen.
     """
     if diagnostics.project_group_unresolved:
-        lines = [
-            f'project group "{diagnostics.project_group_requested}" matched 0 '
-            "projects — nothing was searched"
-        ]
-        if diagnostics.rerank_mode not in (None, "reranked"):
+        lines = [f'project group "{diagnostics.project_group_requested}" → no known project']
+        if not banner_present and diagnostics.rerank_mode not in (None, "reranked"):
             lines.append(f"rerank mode: {diagnostics.rerank_mode}")
         return "\n".join(lines)
 
     scope_bits = [f"types searched: {', '.join(diagnostics.types_searched) or 'none'}"]
-    if diagnostics.project_key_effective:
+    if diagnostics.project_group_requested and diagnostics.project_group_resolved_keys:
+        keys = ", ".join(diagnostics.project_group_resolved_keys)
+        scope_bits.append(f'project group "{diagnostics.project_group_requested}" → {keys}')
+    elif diagnostics.project_key_effective:
         marker = (
             " [injected by dream scope]" if diagnostics.project_key_injected_by_dream_scope else ""
         )
@@ -688,12 +697,15 @@ def _format_empty_search_reason(
         diagnostics.best_raw_score is None
         or diagnostics.best_raw_score < diagnostics.min_score_effective
     ):
+        # candidates_before_threshold is a FLOOR, not a total: HybridSearcher
+        # applies rrf_fuse(...)[:20] before reranking and fused[:limit] after —
+        # "at least N", never an exact count (SearchDiagnostics docstring).
         n = diagnostics.candidates_before_threshold
         best = (
             f"{diagnostics.best_raw_score:.2f}" if diagnostics.best_raw_score is not None else "n/a"
         )
         reason = (
-            f"{n} candidate{'s' if n != 1 else ''}, none above min_score "
+            f"at least {n} candidate{'s' if n != 1 else ''}, none above min_score "
             f"{diagnostics.min_score_effective:g} (best raw score {best}; "
             f"threshold applies to the raw score, before decay)"
         )
@@ -702,16 +714,39 @@ def _format_empty_search_reason(
         # the archived/merged filter (no dedicated counter for it, see G2
         # scope). survived_threshold, not candidates_before_threshold: the
         # latter also counts candidates that never cleared min_score at all.
+        # Same floor caveat as above: "at least N", never an exact count.
         n = diagnostics.survived_threshold
         reason = (
-            f"{n} candidate{'s' if n != 1 else ''} above min_score "
+            f"at least {n} candidate{'s' if n != 1 else ''} above min_score "
             f"{diagnostics.min_score_effective:g}, but 0 remained after filtering ({scope_desc})"
         )
 
     lines = [reason]
-    if diagnostics.rerank_mode not in (None, "reranked"):
+    if not banner_present and diagnostics.rerank_mode not in (None, "reranked"):
         lines.append(f"rerank mode: {diagnostics.rerank_mode}")
     return "\n".join(lines)
+
+
+def _format_grouped_ignored_params_notice(
+    tags: list[str] | None,
+    include_related: bool,
+) -> str | None:
+    """Name what grouped mode silently drops — only when the caller asked.
+
+    ``what_do_i_know_about()`` has no ``tags`` parameter and never renders a
+    "### Related" section: a caller passing either to ``group_by_type=True``
+    gets results (or an empty explanation) that quietly ignore that request.
+    Returns None when neither was requested, so the nominal rendering is
+    unaffected (same rule as the empty-reason block itself).
+    """
+    ignored_bits: list[str] = []
+    if tags:
+        ignored_bits.append(f"tags [{', '.join(tags)}]")
+    if include_related:
+        ignored_bits.append("include_related")
+    if not ignored_bits:
+        return None
+    return f"note: grouped mode ignores {' and '.join(ignored_bits)} — use group_by_type=False for either."
 
 
 def format_search_results(
@@ -767,7 +802,9 @@ def format_search_results(
     if not results:
         empty_body = header
         if diagnostics is not None:
-            empty_body += "\n" + _format_empty_search_reason(diagnostics, tags)
+            empty_body += "\n" + _format_empty_search_reason(
+                diagnostics, tags, banner_present=bool(banner_lines)
+            )
         if banner_lines:
             return "\n".join(banner_lines) + "\n" + empty_body
         return empty_body
@@ -803,6 +840,8 @@ def format_knowledge_by_type(
     degraded: dict[str, Any] | None = None,
     full: bool = False,
     diagnostics: SearchDiagnostics | None = None,
+    tags: list[str] | None = None,
+    include_related: bool = False,
 ) -> str:
     """Format grouped knowledge results (brain_what_do_i_know_about / group_by_type=True).
 
@@ -821,6 +860,12 @@ def format_knowledge_by_type(
             AND diagnostics is provided, a short block explains WHY — mirrors
             format_search_results (grouped mode has no tags parameter, so the
             "removed by the tags filter" kind never applies here).
+        tags: The tags filter the caller requested, if any. Grouped mode has
+            no tags parameter and structurally ignores it — used only to name
+            that in the empty-result block (never affects non-empty output).
+        include_related: Whether the caller requested "### Related". Grouped
+            mode never renders that section — used only to name it in the
+            empty-result block (never affects non-empty output).
     """
     # Build degraded banner — mirrors format_search_results
     banner_lines: list[str] = []
@@ -848,7 +893,12 @@ def format_knowledge_by_type(
     if total == 0:
         empty_body = header
         if diagnostics is not None:
-            empty_body += "\n" + _format_empty_search_reason(diagnostics, tags=None)
+            empty_body += "\n" + _format_empty_search_reason(
+                diagnostics, tags=None, banner_present=bool(banner_lines)
+            )
+        ignored_notice = _format_grouped_ignored_params_notice(tags, include_related)
+        if ignored_notice:
+            empty_body += "\n" + ignored_notice
         if banner_lines:
             return "\n".join(banner_lines) + "\n" + empty_body
         return empty_body

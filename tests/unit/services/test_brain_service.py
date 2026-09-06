@@ -580,6 +580,29 @@ class TestBrainServiceWhatDoIKnowAboutTypeFilter:
 
         assert response.diagnostics.project_group_unresolved is False
 
+    async def test_resolved_project_group_is_recorded_in_diagnostics(self) -> None:
+        """MAJOR fix (review round 3): a project_group that RESOLVES to
+        project_keys must say so in diagnostics on BOTH search() and
+        what_do_i_know_about() — before this fix, project_group_requested was
+        set ONLY on the unresolved early-return path, so a resolved group's
+        SearchDiagnostics was indistinguishable from "no group requested"
+        (project_key_effective stays None, which the formatter renders as
+        "project: none (admin scope)" — a false statement about the scope
+        actually searched)."""
+        brain, _svcs = make_brain_service()
+        brain._project_context_svc = MagicMock()
+        brain._project_context_svc.get_keys_by_group = AsyncMock(return_value=["proj-a", "proj-b"])
+
+        search_response = await brain.search("query", project_group="red-triad")
+        assert search_response.diagnostics.project_group_requested == "red-triad"
+        assert search_response.diagnostics.project_group_resolved_keys == ["proj-a", "proj-b"]
+        assert search_response.diagnostics.project_group_unresolved is False
+
+        wdika_response = await brain.what_do_i_know_about("topic", project_group="red-triad")
+        assert wdika_response.diagnostics.project_group_requested == "red-triad"
+        assert wdika_response.diagnostics.project_group_resolved_keys == ["proj-a", "proj-b"]
+        assert wdika_response.diagnostics.project_group_unresolved is False
+
     async def test_empty_types_list_searches_nothing(self) -> None:
         """types=[] means 'search nothing', not 'fall back to ALL_TYPES'.
 

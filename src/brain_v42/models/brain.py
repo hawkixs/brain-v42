@@ -55,8 +55,9 @@ class SearchDiagnostics(BaseModel):
         description=(
             "Fused candidates across all searched types, BEFORE the min_score cut. "
             "Bounded by the hybrid fan-out's internal fused[:20] cap and, when "
-            "limit < 20, further bounded by limit — a floor on the true "
-            "candidate pool, not necessarily its full size."
+            "limit < 20, further bounded by limit — a FLOOR on the true "
+            "candidate pool, not necessarily its full size. Render it as 'at "
+            "least N', never as an exact count."
         ),
     )
     best_raw_score: float | None = Field(
@@ -88,6 +89,16 @@ class SearchDiagnostics(BaseModel):
     project_group_requested: str | None = Field(
         default=None,
         description="The project_group argument as received from the caller.",
+    )
+    project_group_resolved_keys: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The project_keys project_group_requested resolved to via "
+            "ProjectContextService.get_keys_by_group(), set on the RESOLVED path "
+            "(project_group_unresolved=False) alongside project_group_requested. "
+            "Empty when no project_group was requested, or when it was requested "
+            "but resolved to zero keys (see project_group_unresolved instead)."
+        ),
     )
     project_group_unresolved: bool = Field(
         default=False,

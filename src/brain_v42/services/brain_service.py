@@ -609,6 +609,11 @@ class BrainService:
             include_archived=include_archived,
             rerank_mode=rerank_mode_observed,
             degraded=fan_out_degraded is not None,
+            # Review round 3 (major): a RESOLVED project_group must be named
+            # here too, not only on the unresolved early-return above — both
+            # values were already in hand, this is a zero-extra-query fix.
+            project_group_requested=project_group if project_keys else None,
+            project_group_resolved_keys=list(project_keys) if project_keys else [],
         )
 
         # Task 8: Graph neighbor enrichment — batch-fetch related nodes for result entities.
@@ -864,6 +869,11 @@ class BrainService:
             include_archived=include_archived,
             rerank_mode=rerank_mode_observed,
             degraded=_wdika_degraded is not None,
+            # Review round 3 (major): mirrors search() — a RESOLVED
+            # project_group must be named here too, not only on the
+            # unresolved early-return above.
+            project_group_requested=project_group if project_keys else None,
+            project_group_resolved_keys=list(project_keys) if project_keys else [],
         )
 
         return WhatDoIKnowResponse(
