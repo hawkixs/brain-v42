@@ -1,0 +1,77 @@
+<!-- FIXTURE — anonymised copy of logs/dream/2026-09-03_brain-v42_reorg.log,
+     captured 2026-09-04. The 28 entity UUIDs were replaced by deterministic
+     synthetic ones (same real id -> same fake id, so duplicates and
+     cross-references survive) and the quoted corpus topics were elided.
+     Everything else is verbatim: structure, markers, counts, French prose,
+     and the trailer. Committed so the replay tests RUN in CI instead of
+     skipping, which is the one place they have to run. -->
+# REORG — brain-v42 — 2026-09-03
+
+800 entités analysées avec `summary_only=True` : 500 learnings et 300 décisions. Les 20 mutations de tags ont été relues et vérifiées après écriture.
+
+## Metadata normalization
+
+16 entités normalisées :
+
+- `migrations` → `migration` — majorité 22 contre 1 :
+  - `00000001-0000-4000-8000-000000000001` — « topic élidé »
+- `models` → `modeles` — 7 contre 2 :
+  - `00000002-0000-4000-8000-000000000002` — chaîne de modèles ROADMAP.
+  - `00000003-0000-4000-8000-000000000003` — canari ROADMAP.
+- `method` → `methode` — 12 contre 6 :
+  - `00000004-0000-4000-8000-000000000004`
+  - `00000005-0000-4000-8000-000000000005`
+  - `00000006-0000-4000-8000-000000000006`
+  - `00000007-0000-4000-8000-000000000007`
+  - `00000008-0000-4000-8000-000000000008`
+  - `00000009-0000-4000-8000-000000000009`
+- `guards` → `guard` — 6 contre 1 :
+  - `00000006-0000-4000-8000-000000000006`, dans la même mutation que `method`.
+- `SEC2` → `sec2` — 4 contre 1 :
+  - `00000010-0000-4000-8000-000000000010`
+- `docs` → `documentation` — 11 contre 2 :
+  - `00000011-0000-4000-8000-000000000011`
+- `securite` → `security` — 26 contre 13 :
+  - `00000012-0000-4000-8000-000000000012`
+  - `00000013-0000-4000-8000-000000000013`
+  - `00000014-0000-4000-8000-000000000014`
+  - `00000015-0000-4000-8000-000000000015`
+  - `00000016-0000-4000-8000-000000000016`
+
+Les huit autres occurrences de `securite` sont reportées, le plafond partagé de 20 mutations ayant été atteint.
+
+## Pollution archived
+
+Aucun titre des 800 entités ne correspond aux six regex autorisées.
+
+- Archivages effectués : 0
+- Candidats différés : 0
+- Aucun contenu ni statut de fraîcheur modifié.
+
+## Flagged only
+
+Quatre mismatches nets ont reçu le tag durable `reorg:flagged-entity-type` :
+
+- `00000017-0000-4000-8000-000000000017` — « topic élidé » : checkpoint opérationnel daté.
+- `00000018-0000-4000-8000-000000000018` — « topic élidé » : état opérationnel daté.
+- `00000019-0000-4000-8000-000000000019` — « topic élidé » : observations runtime et métriques de test.
+- `00000020-0000-4000-8000-000000000020` — « topic élidé » : snapshot de versions et backlog daté.
+
+Normalisation différée à cause du plafond :
+
+- `00000021-0000-4000-8000-000000000021`
+- `00000022-0000-4000-8000-000000000022`
+- `00000023-0000-4000-8000-000000000023`
+- `00000024-0000-4000-8000-000000000024`
+- `00000025-0000-4000-8000-000000000025`
+- `00000026-0000-4000-8000-000000000026`
+- `00000027-0000-4000-8000-000000000027`
+- `00000028-0000-4000-8000-000000000028`
+
+Variantes laissées ambiguës faute de seuil 3 et 2× : `securite`/`sécurité`, `API`/`api`, `ACL`/`acl`, `brain-test`/`brain_test`, `piege-de-mesure`/`piège-de-mesure`, `recovery contract`/`recovery-contract`, `UnknownGraphEndpoint`/`unknown-graph-endpoint`, `revision`/`révision`, `dependances`/`dépendances`, `environnements`/`environnement`, `jetons`/`jeton`, `sondes`/`sonde`, `luna-subagents`/`luna-subagent`, `self-tickets`/`self-ticket`, `exit-codes`/`exit-code`, `metriques`/`métriques`, `data quality`/`data-quality`, `schema drift`/`schema-drift`, `risk management`/`risk-management`, `process_metrics`/`process-metrics`, `detect_changes`/`detect-changes`, `format_error`/`format-error` et `session_start`/`session-start`.
+
+`securite-reseau`/`security` satisfait numériquement le seuil, mais n’a pas été normalisé : le premier tag désigne spécifiquement la sécurité réseau, tandis que le second est générique.
+
+=== REORG REPORT ===
+{"dry_run":false,"updated":["00000001-0000-4000-8000-000000000001","00000002-0000-4000-8000-000000000002","00000003-0000-4000-8000-000000000003","00000004-0000-4000-8000-000000000004","00000005-0000-4000-8000-000000000005","00000006-0000-4000-8000-000000000006","00000007-0000-4000-8000-000000000007","00000008-0000-4000-8000-000000000008","00000009-0000-4000-8000-000000000009","00000010-0000-4000-8000-000000000010","00000011-0000-4000-8000-000000000011","00000017-0000-4000-8000-000000000017","00000018-0000-4000-8000-000000000018","00000019-0000-4000-8000-000000000019","00000020-0000-4000-8000-000000000020","00000012-0000-4000-8000-000000000012","00000013-0000-4000-8000-000000000013","00000014-0000-4000-8000-000000000014","00000015-0000-4000-8000-000000000015","00000016-0000-4000-8000-000000000016"],"archived":[]}
+=== END ===

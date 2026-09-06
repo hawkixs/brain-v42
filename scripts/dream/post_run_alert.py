@@ -41,7 +41,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
-import json
 import re
 import sys
 from collections.abc import Iterable, Mapping, Sequence
@@ -56,6 +55,7 @@ from brain_v42.config import Settings
 from brain_v42.db.tables import (
     adrs,
     decisions,
+    dream_promotions,
     dream_runs,
     indexed_plans,
     learnings,
@@ -70,6 +70,7 @@ from brain_v42.metrics.collector_dream import (
     expected_dream_phase_pairs,
     expected_dream_phases,
 )
+from scripts.dream.reorg_report import iter_trailers, marker_count
 from scripts.dream.run_manifest import (
     CoverageVerdict,
     Pair,
@@ -448,56 +449,251 @@ def degraded_headline(run_date: dt.date, degraded: Sequence[DegradedPhase]) -> s
     return f"no failed phase for {run_date.isoformat()} — but {ran} DEGRADED (standby model)"
 
 
-#: What REORG did, read from the JSON line it prints at the end of each project
-#: report. There is no column: `dream_runs` carries no REORG counter, and adding
-#: one would be a migration for a number the phase already writes down.
+#: `roadmap_curate` marks a batch whose card list was reduced after a timed-out
+#: full attempt with `· shrunk ·` in its per-batch line (see
+#: `[{i}/{total}] {project}: … ({elapsed}s{shrunk marker} · model=…)` in
+#: `roadmap_curate.py`). It is a LEADING indicator of a fallback night — the
+#: three nights measured 2026-08-27→09-02 that were served by the standby model
+#: had shrunk batches first — and today it is visible only by grepping the
+#: dated log by hand. This is a DIFFERENT signal from `DegradedPhase` above:
+#: that one reads `dream_runs.error_message` and says which model served the
+#: night; this one reads the log file itself and says how many batches needed
+#: shrinking, which can happen on the primary model too.
+_ROADMAP_BATCH_LINE_RE = re.compile(r"^\[\d+/\d+\]\s")
+#: The bullet-delimited marker inside the parenthesised timing suffix. `\b`
+#: after `shrunk` keeps this from matching a future word that merely starts
+#: with it.
+_ROADMAP_SHRUNK_MARKER_RE = re.compile(r"·\s*shrunk\b")
+
+
+@dataclass(frozen=True)
+class RoadmapShrinkTally:
+    """How many of the night's ROADMAP batches were served shrunk.
+
+    ABSENT IS NOT ZERO (learning 083d74e5, the same rule `reorg_report` follows
+    for its own tally): ``total`` is `None` when the night's roadmap log carries
+    no batch line at all — the file is missing, or it exists but the phase never
+    reached its first batch. Reading that as `0/0` would print a clean night for
+    a rail that produced nothing to measure. ``shrunk`` is meaningless without a
+    total and stays at 0 in that case.
+    """
+
+    shrunk: int = 0
+    total: int | None = None
+
+    @property
+    def measured(self) -> bool:
+        return self.total is not None
+
+
+def roadmap_shrink_tally(run_date: dt.date, log_dir: Path) -> RoadmapShrinkTally:
+    """Count shrunk batches straight from the night's `roadmap.log`.
+
+    Unlike REORG's per-project files, `dream.sh` writes exactly one
+    `<date>_roadmap.log` for the whole pool, so there is nothing to sum across
+    files here — only across the batch lines inside the one file. A missing
+    file, or a file with no batch line, is left `RoadmapShrinkTally()`
+    (unmeasured): this reads the night, it must never be the reason the morning
+    report fails.
+    """
+    path = log_dir / f"{run_date.isoformat()}_roadmap.log"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return RoadmapShrinkTally()
+    batch_lines = [line for line in text.splitlines() if _ROADMAP_BATCH_LINE_RE.match(line)]
+    if not batch_lines:
+        return RoadmapShrinkTally()
+    shrunk = sum(1 for line in batch_lines if _ROADMAP_SHRUNK_MARKER_RE.search(line))
+    return RoadmapShrinkTally(shrunk=shrunk, total=len(batch_lines))
+
+
+ROADMAP_SHRINK_LINE_PREFIX = "ROADMAP shrunk batches:"
+
+
+def build_roadmap_shrink_line(tally: RoadmapShrinkTally) -> str:
+    """One line, always printed. UNMEASURED beats a silent, misleading `0/0`."""
+    if not tally.measured:
+        return f"{ROADMAP_SHRINK_LINE_PREFIX} UNMEASURED"
+    return f"{ROADMAP_SHRINK_LINE_PREFIX} {tally.shrunk}/{tally.total}"
+
+
+#: What REORG did, read from the JSON trailer it prints at the end of each
+#: project report. There is no column: `dream_runs` carries no REORG counter,
+#: and adding one would be a migration for a number the phase already writes
+#: down — and a migration must land in the same window as its writers (049).
 REORG_HEADING = "### REORG"
 
-_REORG_REPORT = re.compile(r'\{"dry_run":\s*(?:true|false).*?\}')
+#: The trailer's English keys, rendered for a human reading at 7am. The two
+#: vocabularies are deliberately independent (learning abfaf932): generating one
+#: from the other would make the alarm a mirror of the detector, and a rename
+#: would then satisfy the check it was supposed to trip. An unknown key falls
+#: through to its raw form, because drift must reach the reader.
+_REFUSAL_LABELS = {
+    "already_archived": "déjà archivé",
+    "dream_managed": "géré par dream",
+    "access_above_threshold": "trop lu",
+    "content_not_trivial": "contenu non trivial",
+}
 
 
 @dataclass(frozen=True)
 class ReorgTally:
-    """One night's REORG work, summed over the pool."""
+    """One night's REORG work, summed over the pool.
+
+    MEASURED and DECLARED are kept in separate fields on purpose. `archived` and
+    `updated` count ids the report names, which `reorg_validate` confronts with
+    the event stream and with PostgreSQL. `candidates_examined`, `refused` and
+    `deferred` are the phase's own account of entities it did NOT touch: no call
+    exists that could confirm them (learning c34fb865). Nothing here sums the
+    two together, and the rendered line labels which is which.
+    """
 
     projects: int = 0
     archived: int = 0
     updated: int = 0
+    #: Reports that carried the markers but whose JSON could not be read.
+    unreadable: int = 0
+    #: Reports that carried a trailer at all.
+    with_trailer: int = 0
+    #: Reports whose trailer carried a declared tally.
+    with_declared: int = 0
+    #: DECLARED, never measured.
+    candidates_examined: int = 0
+    refused: dict[str, int] = field(default_factory=dict)
+    deferred: int = 0
+    #: True when at least one declared tally failed its own arithmetic.
+    incoherent: bool = False
+
+    @property
+    def refused_total(self) -> int:
+        return sum(self.refused.values())
+
+    @property
+    def outcome(self) -> str:
+        """The night's shape, as a name rather than as a pile of zeros.
+
+        A total does not distinguish its zeros (learning 57b85cbb), and the three
+        ways a night can look empty fail very differently (learning 083d74e5):
+
+        - ``no_report``  — not one report file for this date. The phase did not
+          run, or did not write. Nothing downstream would otherwise say so.
+        - ``no_trailer`` — files exist, none carries the machine-readable block.
+          The phase spoke prose only.
+        - ``legacy``     — trailers exist, none carries a declared tally: an
+          older prompt. Not a fault, and not a measured zero either.
+        - ``unreadable`` — reports exist and announce a trailer, but not one of
+          them could be read. Distinct from ``no_trailer``: the phase DID try to
+          print a block, and something ate it.
+        - ``idle``       — a tally that genuinely counted zero candidates.
+        - ``tags_only``  — tags moved, nothing was archived. The shape that went
+          unnoticed for twelve nights.
+        - ``refused_only`` — candidates were examined, all refused, no tag moved.
+          Not ``tags_only``: no tag work happened, and saying so would be false.
+        - ``archiving``  — entities left the default listings.
+        """
+        if self.projects == 0:
+            return "no_report"
+        if self.with_trailer == 0:
+            # BEFORE the prose-only verdict: a report whose markers are present
+            # and whose payload cannot be read is not a report written in prose.
+            # Collapsing the two was the exact confusion this block exists to
+            # remove, and it survived inside the block until the review of
+            # 2026-09-04.
+            return "unreadable" if self.unreadable else "no_trailer"
+        if self.archived:
+            return "archiving"
+        if self.with_declared == 0:
+            return "legacy"
+        if self.updated:
+            return "tags_only"
+        if self.candidates_examined == 0:
+            return "idle"
+        # Candidates were examined, none archived, no tag moved. Naming this
+        # `tags_only` announced tag work that did not happen; a total does not
+        # distinguish its zeros (learning 57b85cbb) and neither does a label
+        # that claims more than it knows.
+        return "refused_only"
 
 
 def reorg_tally(run_date: dt.date, log_dir: Path) -> ReorgTally:
     """Sum the per-project REORG reports of one night.
 
     Reads the FILES, not the database, and that is the whole design: the counts
-    exist only in the report each project prints (`{"dry_run":…,"updated":[…],
-    "archived":[…]}`), and putting them in `dream_runs` would be a migration for
-    a number already written down.
+    exist only in the trailer each project prints, and putting them in
+    `dream_runs` would be a migration for a number already written down.
 
-    What this deliberately does NOT count: candidates examined and candidates
-    REFUSED. REORG states those in prose -- "Aucune entité archivée. Tous les
-    titres correspondant à l'allowlist dépassent le seuil" -- and a regex over a
-    model's free French would be a number nobody could trust. Making the phase
-    print a machine-readable tally is the follow-up; inventing one here would be
-    worse than the silence it replaces.
+    Parsing is delegated to `reorg_report`, the reader shared with
+    `reorg_validate`. This function used to carry a second regex, non-greedy and
+    unanchored, which truncated any nested object at its first inner brace — so
+    the declared tally could not have been added here without unifying first.
 
     A missing or unreadable file is skipped, not raised: this block observes the
-    night, it must never be the reason the morning report fails.
+    night, it must never be the reason the morning report fails. Skipping is
+    COUNTED, though, and printed: a project silently dropped from a sum is how a
+    tally starts lying quietly.
     """
-    projects = archived = updated = 0
+    projects = archived = updated = unreadable = 0
+    with_trailer = with_declared = examined = deferred = 0
+    refused: dict[str, int] = {}
+    incoherent = False
+
     for path in sorted(log_dir.glob(f"{run_date.isoformat()}_*_reorg.log")):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for match in _REORG_REPORT.finditer(text):
-            try:
-                report = json.loads(match.group(0))
-            except ValueError:
+        projects += 1
+        announced = marker_count(text)
+        try:
+            reports = iter_trailers(text)
+        except ValueError:
+            unreadable += 1
+            continue
+        if announced > len(reports):
+            # The phase said it was printing a block and what followed could not
+            # be read. Counting that as "no trailer" would file a damaged report
+            # under the same heading as an honest prose-only one.
+            unreadable += 1
+        if not reports:
+            continue
+        with_trailer += 1
+        for report in reports:
+            archived += len(report.archived_ids)
+            updated += len(report.updated_ids)
+            declared = report.declared
+            if declared is None:
                 continue
-            projects += 1
-            archived += len(report.get("archived") or [])
-            updated += len(report.get("updated") or [])
-    return ReorgTally(projects=projects, archived=archived, updated=updated)
+            with_declared += 1
+            examined += declared.candidates_examined
+            deferred += declared.deferred
+            for reason, count in declared.refused.items():
+                refused[reason] = refused.get(reason, 0) + count
+            if declared.arithmetic_complaint() is not None:
+                incoherent = True
+
+    return ReorgTally(
+        projects=projects,
+        archived=archived,
+        updated=updated,
+        unreadable=unreadable,
+        with_trailer=with_trailer,
+        with_declared=with_declared,
+        candidates_examined=examined,
+        refused=refused,
+        deferred=deferred,
+        incoherent=incoherent,
+    )
+
+
+def _refusal_phrase(refused: dict[str, int]) -> str:
+    """`28 déjà archivé, 2 trop lu` — French, and raw for an unknown key."""
+    parts = [
+        f"{count} {_REFUSAL_LABELS.get(reason, reason)}"
+        for reason, count in sorted(refused.items())
+        if count
+    ]
+    return ", ".join(parts)
 
 
 def default_log_dir() -> Path:
@@ -506,27 +702,90 @@ def default_log_dir() -> Path:
 
 
 def build_reorg_block(run_date: dt.date, tally: ReorgTally) -> list[str]:
-    """The line, or nothing when the night has nothing to say.
+    """The line, with a sentence per outcome rather than a mute.
 
-    Mute when REORG did no work at all -- no archive and no tag update across the
-    pool -- because a line repeated every night with two zeros stops being read
-    (learning 4480d3df). It is NOT mute when the phase worked on tags and
-    archived nothing: that is exactly the shape that went unnoticed for twelve
-    nights, and it is the shape this block exists to surface.
+    The mute this function used to carry rested on 4480d3df — a line repeated
+    nightly with two zeros stops being read. That was right while "nothing
+    happened" was one undifferentiated fact. It is not one any more: a night
+    with no report, a night on an older prompt and a night that examined zero
+    candidates wear the same zeros and fail very differently, and the middle
+    reading — a rail that succeeds without producing — is the worst signal there
+    is (learning 083d74e5). Each gets its own sentence, so the line varies with
+    the night, which is what 4480d3df actually asks for.
     """
-    if tally.archived == 0 and tally.updated == 0:
-        return []
-    lines = [
-        f"{REORG_HEADING} — {run_date.isoformat()}",
-        "",
-        f"- {tally.archived} archivage(s), {tally.updated} tag(s) normalisé(s) "
-        f"sur {tally.projects} projet(s)",
-    ]
-    if tally.archived == 0:
+    lines = [f"{REORG_HEADING} — {run_date.isoformat()}", ""]
+    outcome = tally.outcome
+
+    if outcome == "no_report":
         lines.append(
-            "- Aucun archivage : la phase a travaillé les tags sans retirer de "
-            "pollution. Candidats et refus ne sont pas comptés ici — REORG les "
-            "énonce en prose dans son rapport de projet."
+            "- Aucun rapport REORG pour cette date : la phase n'a produit aucun "
+            "fichier. Ce n'est PAS « rien à faire » — c'est l'absence de la trace."
+        )
+        return lines
+
+    if outcome == "unreadable":
+        lines.append(
+            f"- {tally.unreadable} rapport(s) sur {tally.projects} annoncent un bloc "
+            "machine ILLISIBLE, et aucun n'a pu être lu. Ce n'est pas « la phase n'a "
+            "parlé qu'en prose » : elle a bien essayé d'écrire un décompte, et il est "
+            "abîmé. Rien n'est comptable cette nuit."
+        )
+        return lines
+
+    if outcome == "no_trailer":
+        lines.append(
+            f"- {tally.projects} rapport(s) sans bloc machine : la phase n'a parlé "
+            "qu'en prose, rien n'est comptable."
+        )
+        return lines
+
+    lines.append(
+        f"- Mesuré (ids déclarés, recoupés par le validateur) : {tally.archived} "
+        f"archivage(s), {tally.updated} tag(s) normalisé(s) sur {tally.projects} projet(s)"
+    )
+
+    if tally.with_declared == 0:
+        lines.append(
+            "- Sans décompte déclaré : ces rapports viennent d'un prompt antérieur "
+            "au décompte structuré. Candidats et refus restent en prose."
+        )
+    else:
+        phrase = _refusal_phrase(tally.refused)
+        lines.append(
+            f"- Déclaré par la phase (sa parole, rien ne la vérifie) : "
+            f"{tally.candidates_examined} candidat(s) examiné(s), "
+            f"{tally.refused_total} refus" + (f" ({phrase})" if phrase else "") + f", "
+            f"{tally.deferred} différé(s)"
+        )
+        if tally.with_declared < tally.with_trailer:
+            lines.append(
+                f"- {tally.with_trailer - tally.with_declared} rapport(s) sans décompte "
+                "déclaré, comptés dans le mesuré seulement."
+            )
+        if tally.incoherent:
+            lines.append(
+                "- Décompte déclaré incohérent sur au moins un projet : examinés ≠ "
+                "archivés + refusés + différés. Le détail est dans les avertissements "
+                "du validateur."
+            )
+
+    if tally.unreadable:
+        lines.append(
+            f"- {tally.unreadable} rapport(s) illisible(s), non comptés : un projet "
+            "retiré d'une somme en silence est une somme qui ment."
+        )
+
+    if outcome == "tags_only":
+        lines.append("- Aucun archivage : la phase a travaillé les tags sans retirer de pollution.")
+    elif outcome == "refused_only":
+        lines.append(
+            "- Aucun archivage et aucun tag déplacé : chaque candidat examiné a été "
+            "refusé. Le détail des motifs est sur la ligne déclarée ci-dessus."
+        )
+    elif outcome == "idle":
+        lines.append(
+            "- 0 candidat examiné : aucun titre n'a correspondu à l'allowlist de "
+            "pollution. La phase a regardé et n'a rien trouvé."
         )
     return lines
 
@@ -855,25 +1114,35 @@ def format_reconciliation_line(
 ) -> str:
     """The "N phases OK / M pairs written" gap nobody was reconciling.
 
-    Ticket `b95c5742`: on 15-16/08, "61/63 phases OK" in the log, 2 rows in the
-    database, 240 swallowed `InvalidPasswordError`. The INSERT stays best-effort
-    (042 says why); this line makes the loss VISIBLE in the morning.
+    A night that loses an INSERT best-effort makes `OK_TOTAL` (dream.sh) and
+    `pairs_written` (this line) diverge with nothing else changing; that
+    divergence is what this line measures, morning after morning, whether
+    the cause is a lost write, a replay, or a miscounted status. It should
+    not be read as pinned to any one past incident — the incident that first
+    surfaced it is closed, and a number that outlives its origin story is the
+    whole point of a measurement over a story.
 
-    `pairs_written` counts the (phase, project) pairs carrying AT LEAST
-    one row whose status is not a pure failure: `done` of course, but
-    `partial` too — a phase marked by the validator DID write, and
-    counting it lost would start an INSERT hunt every time G4 does its
-    job. A `fail`+`done` pair (a fallback) counts ONCE: dream.sh counts
-    phases where dream_runs counts attempts. The SKIPPED phases —
-    included in OK_TOTAL — are subtracted: they write no row and
-    therefore lose none. A negative gap (recorded skips, replays)
-    prints as it stands — a clamp would be a counter that
-    lies.
+    `pairs_written` counts the (phase, project) pairs carrying AT LEAST one
+    row whose status is NOT one of `FAILED_STATUSES` — the exact set
+    dream.sh's own `case "$phase_rc" in … *) FAILED_PHASES+=(…)` already
+    excludes from `OK_TOTAL`. That set is `{fail, partial, timeout}`: a
+    validator that flips a row to `partial` (reorg, promote, connect) makes
+    dream.sh translate it to `phase_rc=1` and file it under `FAILED_PHASES`
+    — it is NOT part of `OK_TOTAL`. Counting that same row as "written" here
+    would compare an OK phase's numerator against a denominator that
+    disagrees with dream.sh about what OK means, producing a deterministic
+    off-by-one gap on every night with a validator-invalidated phase — not a
+    lost INSERT, just two counters using two different vocabularies for the
+    same word. A `fail`+`done` pair (a fallback) counts ONCE: dream.sh counts
+    phases where dream_runs counts attempts. The SKIPPED phases — included
+    in OK_TOTAL — are subtracted: they write no row and therefore lose none.
+    A negative gap (recorded skips, replays) prints as it stands — a clamp
+    would be a counter that lies.
     """
     pairs_written = {
         (str(row["phase"]), str(row.get("project_key") or ""))
         for row in observed_rows
-        if str(row["status"]) not in ("fail", "timeout")
+        if str(row["status"]) not in FAILED_STATUSES
     }
     # SKIPPED phases are inside OK_TOTAL (= TOTAL_PHASES - FAIL_TOTAL) and
     # write no row: without subtracting them, the WARN would fire on almost
@@ -883,6 +1152,119 @@ def format_reconciliation_line(
         f"RECONCILIATION phases_ok={phases_ok} skipped={skipped} "
         f"pairs_written={len(pairs_written)} gap={gap}"
     )
+
+
+@dataclass(frozen=True)
+class OrphanPromotionsTally:
+    """`dream_promotions` rows with no `dream_run_id`, counted two ways.
+
+    `dream_run_id` is `ON DELETE SET NULL` (`dream_promotions_dream_run_id_fkey`):
+    a `NULL` here has two possible origins — a promotion inserted without ever
+    knowing its `dream_run_id`, or one whose `dream_runs` row was deleted
+    afterwards. Both origins read the same way from here regardless: nothing
+    joins the promotion back to a phase, so it is invisible to
+    `format_reconciliation_line` above (it names no `(phase, project)` pair)
+    and to dream.sh's `FAIL_TOTAL` (it is not a `dream_runs` row at all).
+
+    `night` alone under-reports the backlog by construction: scoped to
+    `created_at` for one calendar day, it never sees a promotion nulled by a
+    deletion landing on a LATER night than its own creation (measured
+    2026-09-06: `night=1`, `all_time=32` — a 32x gap between "what happened
+    tonight" and "what still needs fixing"). `all_time` is the only field
+    that answers "how big is the backlog", so both are always printed
+    together, labelled, rather than the night count standing in for it.
+
+    Each field is independently `None` (UNMEASURED) when its OWN query could
+    not be read: a broken `all_time` COUNT must not blank out a working
+    `night` COUNT, or the reverse (see `fetch_orphan_promotions`).
+    """
+
+    night: int | None = None
+    all_time: int | None = None
+
+    @property
+    def night_measured(self) -> bool:
+        return self.night is not None
+
+    @property
+    def all_time_measured(self) -> bool:
+        return self.all_time is not None
+
+
+ORPHAN_PROMOTIONS_LINE_PREFIX = "PROMOTIONS orphan (dream_run_id NULL):"
+
+
+def format_orphan_promotions_line(tally: OrphanPromotionsTally) -> str:
+    """One line, always printed, both counts labelled and independently
+    UNMEASURED. `night` alone would silently under-report the backlog this
+    line exists to surface — see `OrphanPromotionsTally`."""
+    night = str(tally.night) if tally.night_measured else "UNMEASURED"
+    all_time = str(tally.all_time) if tally.all_time_measured else "UNMEASURED"
+    return f"{ORPHAN_PROMOTIONS_LINE_PREFIX} night={night} all_time={all_time}"
+
+
+async def _rollback_after_failed_orphan_count(session: AsyncSession) -> None:
+    """Roll back after a broken orphan-promotions COUNT, without letting a
+    broken rollback itself turn a best-effort WARN into a crash (a driver
+    whose connection already dropped can fail `rollback()` too)."""
+    try:
+        await session.rollback()
+    except Exception:  # noqa: BLE001 — a failed rollback must not become a crash.
+        pass
+
+
+async def _count_orphan_promotions(
+    session: AsyncSession,
+    *,
+    night: dt.date | None,
+) -> int | None:
+    """One `dream_promotions` COUNT, guarded on its own: `night` and
+    `all_time` in `fetch_orphan_promotions` must be able to fail
+    independently, so each gets its own try/except and its own rollback
+    rather than sharing one around both queries.
+    """
+    conditions = [dream_promotions.c.dream_run_id.is_(None)]
+    if night is not None:
+        conditions.append(sa.cast(dream_promotions.c.created_at, sa.Date) == night)
+    try:
+        result = await session.execute(
+            sa.select(sa.func.count()).select_from(dream_promotions).where(*conditions)
+        )
+        return int(result.scalar_one())
+    except Exception:  # noqa: BLE001 — a broken count must never fail the morning report.
+        await _rollback_after_failed_orphan_count(session)
+        return None
+
+
+async def fetch_orphan_promotions(
+    session: AsyncSession,
+    run_date: dt.date,
+) -> OrphanPromotionsTally:
+    """Count `dream_promotions` rows carrying no `dream_run_id`, both for the
+    night and all-time.
+
+    There is no `dream_run_id` to join through for these rows — that absence is
+    exactly what makes them orphan — so the night is read off `created_at`
+    alone, cast to a plain date, the same pattern `fetch_mute_transitions` uses
+    for the freshness tables' timestamps. `all_time` runs the identical query
+    without that date filter. Best-effort like the other file- and log-derived
+    tallies in this module (`roadmap_shrink_tally`, `reorg_tally`): a broken
+    query leaves ITS OWN count UNMEASURED rather than failing the report.
+
+    That best-effort posture only holds if the shared `session` comes back
+    USABLE after either query: on PostgreSQL a failed statement aborts the
+    whole transaction, and this function runs a second query of its own right
+    after the first, then `_run` reads from this exact session again right
+    after this call returns (`review_and_render`). Swallowing an exception
+    without rolling back would turn a best-effort miss here into a hard crash
+    a few lines later, from an error that no longer even names
+    `dream_promotions` — so `_count_orphan_promotions` rolls back before
+    returning UNMEASURED, and does so per query, so a broken `night` cannot
+    take `all_time` down with it (or the reverse).
+    """
+    night = await _count_orphan_promotions(session, night=run_date)
+    all_time = await _count_orphan_promotions(session, night=None)
+    return OrphanPromotionsTally(night=night, all_time=all_time)
 
 
 async def fetch_failed_runs(
@@ -1029,6 +1411,12 @@ def render_stdout(
         *coverage.block,
         *provenance_block,
         *build_degraded_block(run_date, degraded),
+        # Right after the degradation rubric: same phase, the earlier tell. A
+        # night can shrink batches on its PRIMARY model and never show up in
+        # `build_degraded_block` above, which only fires once the standby has
+        # taken over.
+        build_roadmap_shrink_line(roadmap_shrink_tally(run_date, default_log_dir())),
+        "",
         # After the degradation rubric and before CLAUDE.md: REORG worked or it
         # did not, which is context for the failures above rather than a failure
         # itself. Reads the night's own reports from disk — `dream_runs` has no
@@ -1111,6 +1499,15 @@ async def _run(
                         [dict(row._mapping) for row in observed.all()],
                         skipped=phases_skipped,
                     )
+                )
+                # Gated on the same flag as RECONCILIATION, but NOT for the
+                # same reason: `fetch_orphan_promotions` needs only `run_date`,
+                # which is always available, so it has no OK_TOTAL of its own
+                # to be missing. `--phases-ok` is reused here purely as the
+                # marker of the automated (dream.sh) invocation, so a manual
+                # replay never emits half of the machine-line pair.
+                print(
+                    format_orphan_promotions_line(await fetch_orphan_promotions(session, run_date))
                 )
             rendered, escalates = await review_and_render(session, run_date, manifest=manifest)
             print(rendered, end="")

@@ -58,9 +58,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import json
 import pathlib
-import re
 import sys
 from uuid import UUID
 
@@ -74,14 +74,10 @@ from sqlalchemy.ext.asyncio import (
 from brain_v42.config import Settings
 from brain_v42.db.tables import decisions, dream_runs, learnings
 from scripts.dream.reorg_events import EventScan, scan_events
+from scripts.dream.reorg_report import parse_trailer
 
 # Machine-readable trailer inserted by the agent after the prose report.
 # Mirrors the PROMOTE REPORT block so tooling parses both the same way.
-_REPORT_RE = re.compile(
-    r"===\s*REORG\s+REPORT\s*===\s*(\{.*?\})\s*===\s*END\s*===",
-    re.DOTALL,
-)
-
 # Maximum mutations per run as specified in phase_reorg.md guardrails.
 _MAX_UPDATED = 20
 _MAX_ARCHIVED = 20
@@ -99,44 +95,103 @@ def parse_report(raw: str) -> dict:
       ``archived_ids``: list[str]  — full UUIDs from the ``archived`` field
       ``dry_run``: bool            — from the ``dry_run`` field in the JSON
       ``found_marker``: bool       — True when the REORG REPORT block was present
+      ``declared``: DeclaredTally | None — the phase's own Part 2 tally, or None
+                                    when the trailer predates it. NOT evidence.
+      ``declared_malformed``: bool — a ``declared`` key that could not be read,
+                                    which is a different fact from its absence
+
+    Reading is delegated to ``scripts.dream.reorg_report``, the single reader
+    shared with the morning report. It used to be two regexes that had to agree
+    with nothing enforcing it, and they had already stopped agreeing: the
+    alert-side pattern truncated any nested object at its first inner brace.
 
     Raises ValidationFailure only if the marker IS present but the JSON is
     malformed.  When the marker is absent ``found_marker`` is False and the
     caller (``validate``) decides whether to fail-close.
     """
-    m = _REPORT_RE.search(raw)
-    if m is None:
-        return {
-            "updated_ids": [],
-            "archived_ids": [],
-            "dry_run": False,
-            "found_marker": False,
-        }
-
     try:
-        payload = json.loads(m.group(1))
-    except json.JSONDecodeError as exc:
-        raise ValidationFailure(f"malformed REORG REPORT JSON: {exc}") from exc
-
-    # Deduplicate while preserving order — the JSON may theoretically repeat
-    # a UUID if the agent listed the same entity twice; normalise early so
-    # cap-enforcement counts are accurate.
-    def _dedup(ids: list) -> list[str]:
-        seen: set[str] = set()
-        out: list[str] = []
-        for x in ids:
-            s = str(x)
-            if s not in seen:
-                seen.add(s)
-                out.append(s)
-        return out
+        report = parse_trailer(raw)
+    except ValueError as exc:
+        raise ValidationFailure(str(exc)) from exc
 
     return {
-        "updated_ids": _dedup(payload.get("updated", [])),
-        "archived_ids": _dedup(payload.get("archived", [])),
-        "dry_run": bool(payload.get("dry_run", False)),
-        "found_marker": True,
+        "updated_ids": report.updated_ids,
+        "archived_ids": report.archived_ids,
+        "dry_run": report.dry_run,
+        "found_marker": report.found_marker,
+        "declared": report.declared,
+        "declared_malformed": report.declared_malformed,
+        # The parsed object itself, so checks that belong to it are CALLED here
+        # rather than reimplemented. A private copy of `declared_list_mismatch`
+        # lived below until the review of 2026-09-04: the copy under test was
+        # the dead one, and the copy running every night was tested by nothing.
+        "parsed": report,
     }
+
+
+def apply_dry_run_override(report: dict) -> dict:
+    """Apply the authoritative CLI `--dry-run` to BOTH carriers of that fact.
+
+    The flag exists to distrust the trailer: `dream.sh` passes `--dry-run`
+    whenever `reorg_effective_dry_run` is true, whatever the agent wrote in its
+    JSON. So the override has to reach every reader of "is this a dry run".
+
+    There are two, and until 2026-09-04 only one moved. The dict key was
+    replaced by a shallow copy while `report["parsed"]` — the frozen
+    `ReorgReport` whose `dry_run` comes straight from the trailer — kept the
+    value the flag was overriding. `declared_list_mismatch()` gates on that
+    object, so the dry-run relaxation was defeated in exactly the belt-and-
+    suspenders case it was written for: a dry night whose trailer claims
+    `dry_run: false` raised the false alarm the relaxation removes.
+
+    Returns a NEW dict and a NEW frozen report; the caller's originals are
+    untouched, because a function that mutates a frozen dataclass's container
+    behind the caller's back is the next version of this same bug.
+    """
+    parsed = report.get("parsed")
+    updated = {**report, "dry_run": True}
+    if parsed is not None:
+        updated["parsed"] = dataclasses.replace(parsed, dry_run=True)
+    return updated
+
+
+def declared_warnings(report: dict) -> list[str]:
+    """Check the phase's self-reported tally, and say what that is worth.
+
+    These numbers describe entities REORG looked at and did not touch. No call
+    was made, so nothing in PostgreSQL and nothing in the event stream can
+    confirm them. Two checks are available and both are weak, which is why they
+    warn and never fail:
+
+    - the tally against ITSELF, so a careless count is caught;
+    - the declared archive COUNT against the declared archive LIST, the one
+      statement in this report that a database can answer.
+
+    A tally is not required. A trailer without one comes from a phase running an
+    older prompt, and treating that as a fault would print a warning every night
+    of a rollback — noise for a state that is merely old.
+    """
+    if report.get("declared_malformed"):
+        return [
+            "the report carried a `declared` block that is unusable — this is NOT the "
+            "same fact as a trailer without one, which would simply be an older prompt"
+        ]
+
+    declared = report.get("declared")
+    if declared is None:
+        return []
+
+    warnings: list[str] = []
+    complaint = declared.arithmetic_complaint()
+    if complaint is not None:
+        warnings.append(complaint)
+    unknown = declared.unknown_reasons()
+    if unknown:
+        warnings.append(
+            f"declared refusal reason(s) outside the vocabulary phase_reorg.md defines: "
+            f"{', '.join(unknown)} — prompt and reader have drifted"
+        )
+    return warnings
 
 
 async def _entity_row(
@@ -243,6 +298,15 @@ def symmetry_warnings(report: dict, scan: EventScan) -> list[str]:
             f"{len(undeclared)} id(s) mutated through brain_update but absent from the "
             f"report: {', '.join(undeclared)}"
         )
+
+    # AFTER the id-level verdict, never instead of it. The tally rides along
+    # because the morning line needs it; it can add a warning and can never
+    # remove or satisfy one above (learning c34fb865).
+    warnings.extend(declared_warnings(report))
+    parsed = report.get("parsed")
+    mismatch = parsed.declared_list_mismatch() if parsed is not None else None
+    if mismatch is not None:
+        warnings.append(mismatch)
 
     return warnings
 
@@ -433,9 +497,10 @@ async def _amain(
     """
     try:
         report = parse_report(raw)
-        # CLI --dry-run flag is authoritative over JSON trailer (belt+suspenders)
+        # CLI --dry-run flag is authoritative over JSON trailer (belt+suspenders).
+        # Applied through the helper so BOTH carriers of the fact move together.
         if args.dry_run:
-            report = {**report, "dry_run": True}
+            report = apply_dry_run_override(report)
         # Before `validate`, so the symmetry verdict prints even when the
         # validation fails right after — the night that fails is the one that
         # most needs reading.
