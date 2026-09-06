@@ -725,9 +725,13 @@ class TestBrainSearchTelemetry:
 
         Two-sided guard: covers both logger.info() calls (flat "mcp.brain_search"
         and grouped "mcp.brain_search.grouped"), and both leak vectors (the raw
-        query text and the raw tag values). Mutation-proof: this fails if a
-        future edit adds `topic=query` or `tags=tags` (or any other echo of the
-        raw payload) to either event.
+        query text and the raw tag values). The check is applied identically to
+        BOTH events against the event's full repr — not a per-value type dispatch
+        on str/list — so a leak nested inside a dict or any other container
+        (e.g. `ctx={"q": query}` or `tag_audit={"tags": tags}`) cannot escape it
+        by hiding behind a type the dispatch didn't check. Mutation-proof: this
+        fails if a future edit adds `topic=query`, `tags=tags`, or any other
+        echo of the raw payload — nested or not — to either event.
         """
         mcp, mock_svc = _make_mcp_with_brain_svc()
         mock_svc.search = AsyncMock(return_value=_make_search_response())
@@ -747,13 +751,7 @@ class TestBrainSearchTelemetry:
         assert len(grouped_events) == 1
 
         for event in (flat_events[0], grouped_events[0]):
-            for value in event.values():
-                assert value != raw_query
-                assert value != raw_tags
-                if isinstance(value, str):
-                    assert raw_query not in value
-                    assert raw_tags[0] not in value
-                    assert raw_tags[1] not in value
-                if isinstance(value, list):
-                    assert raw_tags[0] not in value
-                    assert raw_tags[1] not in value
+            blob = repr(event)
+            assert raw_query not in blob
+            for raw_tag in raw_tags:
+                assert raw_tag not in blob
