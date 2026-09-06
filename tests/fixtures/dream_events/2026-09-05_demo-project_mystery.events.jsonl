@@ -1,0 +1,2 @@
+{"kind": "not_a_known_dialect", "payload": {"foo": "bar"}}
+{"kind": "still_not_known", "payload": {"baz": 1}}
