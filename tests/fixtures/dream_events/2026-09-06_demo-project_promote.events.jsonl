@@ -1,0 +1,7 @@
+{"type": "thread.started", "thread_id": "fixture-codex-failed-status-0001"}
+{"type": "turn.started"}
+{"type": "item.started", "item": {"id": "item_1", "type": "mcp_tool_call", "server": "brain-v42", "tool": "brain_assign_domain", "arguments": {"entity_id": "9c46b40c-6d2a-448c-9104-2abface5cdd1", "domain_name": "ops"}, "result": null, "error": null, "status": "in_progress"}}
+{"type": "item.completed", "item": {"id": "item_1", "type": "mcp_tool_call", "server": "brain-v42", "tool": "brain_assign_domain", "arguments": {"entity_id": "9c46b40c-6d2a-448c-9104-2abface5cdd1", "domain_name": "ops"}, "result": {"content": [{"type": "text", "text": "Error calling tool 'brain_assign_domain'"}], "structured_content": null}, "error": null, "status": "failed"}}
+{"type": "item.started", "item": {"id": "item_2", "type": "mcp_tool_call", "server": "brain-v42", "tool": "brain_search", "arguments": {"query": "fixture failed status null error", "limit": 5}, "result": null, "error": null, "status": "in_progress"}}
+{"type": "item.completed", "item": {"id": "item_2", "type": "mcp_tool_call", "server": "brain-v42", "tool": "brain_search", "arguments": {"query": "fixture failed status null error", "limit": 5}, "result": null, "error": null, "status": "failed"}}
+{"type": "turn.completed", "usage": {"input_tokens": 1000, "cached_input_tokens": 200, "output_tokens": 100}}

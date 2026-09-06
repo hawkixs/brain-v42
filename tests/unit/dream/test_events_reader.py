@@ -46,6 +46,11 @@ _LEGACY_FILE = _FIXTURES / "2026-07-20_scan.events.jsonl"
 _UNNAMED_FILE = _FIXTURES / "2026-09-04_totallybogus.events.jsonl"
 #: First line is truncated, invalid JSON.
 _MALFORMED_FILE = _FIXTURES / "2026-07-21_demo-project_scan.events.jsonl"
+#: Codex ``item.completed`` records with ``status: "failed"`` and a null
+#: ``error`` -- the real corpus shape (105/22719 real codex mcp_tool_call
+#: items, 103 with a null error) that the ``error is not None`` check alone
+#: cannot see.
+_CODEX_FAILED_STATUS_FILE = _FIXTURES / "2026-09-06_demo-project_promote.events.jsonl"
 
 _SEARCH_OUTPUT = (
     '## 2 results for "clean phase status" (across all types)\n\n'
@@ -391,3 +396,49 @@ def test_run_census_isolates_a_malformed_json_line_to_its_own_file() -> None:
     assert str(_MALFORMED_FILE) in report.unclassified_files
     assert "invalid JSON" in report.unclassified_files[str(_MALFORMED_FILE)]
     assert report.total_calls == 0
+
+
+def test_codex_status_failed_with_null_error_is_flagged_as_an_error() -> None:
+    """A codex call with ``status: "failed"`` and a null ``error`` must not read as a success.
+
+    Measured on the real corpus (``logs/dream``, 1684 files): 105 codex
+    ``mcp_tool_call`` items carry ``status == "failed"``, and only 2 of them
+    also carry a non-null ``error`` -- so deriving ``is_error`` from
+    ``item.error`` alone missed 103 of 105 (98%) real codex errors. The agy
+    branch already consults its own status field (``state in ("DONE",
+    "ERROR")``); the codex branch must do the same instead of disagreeing
+    with agy on the same logical event.
+    """
+    call = next(
+        c for c in iter_tool_calls(_CODEX_FAILED_STATUS_FILE) if c.tool == "brain_assign_domain"
+    )
+    assert call.is_error is True
+    assert call.output == "Error calling tool 'brain_assign_domain'"
+
+
+def test_codex_status_failed_search_with_null_result_is_neither_a_success_nor_unmeasured() -> None:
+    """A failed ``brain_search`` with ``status: "failed"``, null ``error`` and null ``result``.
+
+    Before the fix this normalised to ``is_error=False, output=None``, which
+    made it disappear into the ``UNMEASURED emptiness`` bucket
+    (:func:`emptiness_unknown`) instead of being counted as the error it
+    actually is -- a second silent misclassification from the same root
+    cause, one call away from a genuine "we never measured this" case.
+    """
+    call = next(c for c in iter_tool_calls(_CODEX_FAILED_STATUS_FILE) if c.tool == "brain_search")
+    assert call.is_error is True
+    assert is_empty_search(call) is False
+    assert emptiness_unknown(call) is False
+
+
+def test_run_census_counts_a_failed_status_null_error_codex_call_as_an_error_not_a_call_zero_fill() -> (
+    None
+):
+    """The census must not let a ``status: "failed"``/null-``error`` call hide inside phase totals."""
+    report = run_census(logs_dir=_FIXTURES, night="2026-09-06")
+
+    assert report.calls_by_phase["promote"].calls == 2
+    # Neither the assign-domain failure nor the failed search is folded into
+    # empties or unknown -- both are errors, not measurements.
+    assert report.calls_by_phase["promote"].empties == 0
+    assert report.calls_by_phase["promote"].unknown == 0

@@ -221,7 +221,13 @@ def _iter_codex_calls(
             tool=item.get("tool") or "",
             arguments=item.get("arguments") or {},
             output=output,
-            is_error=error is not None,
+            # ``error`` alone misses the codex rail's own status field: 105
+            # real mcp_tool_call items carry status == "failed", and only 2
+            # of them also carry a non-null error (measured on
+            # logs/dream, 1684 files). The other 103 would otherwise
+            # normalise as a success, disagreeing with the agy branch below
+            # which does consult its status/state field.
+            is_error=error is not None or item.get("status") == "failed",
             timestamp=record.get("timestamp") or item.get("timestamp"),
         )
 
