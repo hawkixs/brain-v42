@@ -519,6 +519,7 @@ def test_public_search_signatures_are_unchanged() -> None:
     assert tuple(inspect.signature(BrainService.what_do_i_know_about).parameters) == (
         "self",
         "topic",
+        "types",
         "project_key",
         "project_group",
         "limit",

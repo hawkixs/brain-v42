@@ -8,6 +8,7 @@ Test classes:
 3. TestBrainServiceSearchProjectKeyFilter — project_key passed to all services
 4. TestBrainServiceSearchMergesAndSorts — results merged and sorted by score DESC
 5. TestBrainServiceWhatDoIKnowAbout — grouped by type
+5b. TestBrainServiceWhatDoIKnowAboutTypeFilter — group_by_type honours the caller's types
 6. TestBrainServiceEmptyResults — all services return empty → empty SearchResponse
 7. TestBrainServiceServiceException — one service raises, others' results returned
 8. TestBrainServiceEmbedCalledOnce — embed_text called once per search(), once per what_do_i_know
@@ -446,6 +447,61 @@ class TestBrainServiceWhatDoIKnowAbout:
 
         call_kwargs = decision_svc.semantic_search.call_args.kwargs
         assert call_kwargs.get("project_key") == "proj"
+
+
+# ---------------------------------------------------------------------------
+# TestBrainServiceWhatDoIKnowAboutTypeFilter — group_by_type honours the
+# caller's types instead of silently searching everything.
+# ---------------------------------------------------------------------------
+
+
+class TestBrainServiceWhatDoIKnowAboutTypeFilter:
+    async def test_types_filter_only_calls_those_services(self) -> None:
+        """what_do_i_know_about(types=['decision', 'runbook']) only queries those two services."""
+        brain, svcs = make_brain_service()
+        decision_svc, learning_svc, snippet_svc, runbook_svc, adr_svc, _ = svcs
+
+        await brain.what_do_i_know_about("topic", types=["decision", "runbook"])
+
+        decision_svc.semantic_search.assert_awaited_once()
+        runbook_svc.semantic_search.assert_awaited_once()
+        learning_svc.semantic_search.assert_not_awaited()
+        snippet_svc.semantic_search.assert_not_awaited()
+        adr_svc.semantic_search.assert_not_awaited()
+
+    async def test_types_filter_sets_types_searched(self) -> None:
+        """what_do_i_know_about(types=['decision', 'runbook']) reports only those as searched."""
+        brain, _ = make_brain_service()
+        response = await brain.what_do_i_know_about("topic", types=["decision", "runbook"])
+        assert set(response.types_searched) == {"decision", "runbook"}
+
+    async def test_types_filter_excludes_ungrouped_types_even_with_matches(self) -> None:
+        """A type outside the filter never appears in by_type, even if its service would match."""
+        decision = make_decision()
+        learning = make_learning()
+        brain, _ = make_brain_service(
+            decision_results=[(decision, 0.9)],
+            learning_results=[(learning, 0.8)],
+        )
+
+        response = await brain.what_do_i_know_about("topic", types=["decision", "runbook"])
+
+        assert len(response.by_type.decisions) == 1
+        assert len(response.by_type.learnings) == 0
+
+    async def test_types_none_still_searches_all_types(self) -> None:
+        """Positive witness: group_by_type with types=None keeps searching everything."""
+        brain, svcs = make_brain_service()
+        decision_svc, learning_svc, snippet_svc, runbook_svc, adr_svc, _ = svcs
+
+        response = await brain.what_do_i_know_about("topic", types=None)
+
+        decision_svc.semantic_search.assert_awaited_once()
+        learning_svc.semantic_search.assert_awaited_once()
+        snippet_svc.semantic_search.assert_awaited_once()
+        runbook_svc.semantic_search.assert_awaited_once()
+        adr_svc.semantic_search.assert_awaited_once()
+        assert set(response.types_searched) == set(ALL_TYPES)
 
 
 # ---------------------------------------------------------------------------
