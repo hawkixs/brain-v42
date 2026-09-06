@@ -11,7 +11,7 @@ Normalize metadata and archive well-defined corpus pollution. Never touch conten
 ## Pagination strategy — `summary_only=True` is mandatory
 
 `brain_list` returns 5× lighter rows when `summary_only=True`: each row is a 2-line block
-`**topic** [confidence][archived] (id:abc123)\n   project:KEY | tags: a, b | access:N`.
+`**topic** [confidence][archived] (id:abc123)\n   project:KEY | tags: a, b | access:N | reads:M`.
 The full body is dropped — irrelevant to REORG, which only inspects metadata.
 
 Both Part 1 (normalization scan) and Part 2 (pollution scan) MUST use `summary_only=True`
@@ -19,8 +19,11 @@ on every paginated `brain_list` call. Without it, a single page (limit=100) over
 token budget on the current corpus (~96k–186k chars per page, see learning 4d693f4a).
 
 The summary header surfaces guardrail signals directly: `[archived]` means the entity is
-already archived, `access:N` is the live access_count. Read these from the list to avoid
-calling `brain_get` on entities you're going to skip anyway.
+already archived. `access:N` is `access_count_human` — reads by a person, not a scan
+(ticket `1597c36d`) — and is the ONLY field the guardrail below reads. `reads:M` is
+`access_count`, the machine counter the nightly scans themselves inflate; it is shown for
+visibility but MUST NOT be used in place of `access:N` for the guardrail decision. Read
+these from the list to avoid calling `brain_get` on entities you're going to skip anyway.
 
 ## Part 1 — Metadata normalization (max 20 updates)
 
@@ -133,7 +136,9 @@ brain_search, brain_list, brain_get, brain_update
   server refuses any ownership field by name, and the refusal fails the whole call.
 - `freshness_status` may only be set to `"archived"`, never to `"fresh"` or `"stale"` — this phase archives, it does not revive.
 - **NEVER touch entities with any tag starting with `dream:`.** Dream entities manage their own metadata.
-- **NEVER archive** an entity with `access_count > 5`.
+- **NEVER archive** an entity whose summary row shows `access:N > 5`
+  (`access_count_human`) — the machine counter `reads:M` (`access_count`) is
+  NOT the guardrail.
 - Each change must be logged in the report with its reasoning or matched pattern.
 - Entity_type changes are flagged only, never auto-applied.
 
