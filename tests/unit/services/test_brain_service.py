@@ -503,6 +503,57 @@ class TestBrainServiceWhatDoIKnowAboutTypeFilter:
         adr_svc.semantic_search.assert_awaited_once()
         assert set(response.types_searched) == set(ALL_TYPES)
 
+    async def test_empty_project_group_early_return_pins_requested_types(self) -> None:
+        """An empty-project_group early return still reports the caller's requested types.
+
+        Before types was threaded through, this early return unconditionally
+        reported types_searched=list(ALL_TYPES) — misleading a caller who asked
+        for a subset while the resolved project_group had zero members.
+        """
+        decision_svc, learning_svc, snippet_svc, runbook_svc, adr_svc, embedding_svc = (
+            make_mock_services()
+        )
+        project_context_svc = MagicMock()
+        project_context_svc.get_keys_by_group = AsyncMock(return_value=[])
+        brain = BrainService(
+            decision_svc=decision_svc,
+            learning_svc=learning_svc,
+            snippet_svc=snippet_svc,
+            runbook_svc=runbook_svc,
+            adr_svc=adr_svc,
+            embedding_svc=embedding_svc,
+            project_context_svc=project_context_svc,
+        )
+
+        response = await brain.what_do_i_know_about(
+            "topic", types=["decision", "runbook"], project_group="empty-group"
+        )
+
+        assert response.total == 0
+        assert response.types_searched == ["decision", "runbook"]
+        decision_svc.semantic_search.assert_not_awaited()
+        runbook_svc.semantic_search.assert_not_awaited()
+
+    async def test_empty_types_list_searches_nothing(self) -> None:
+        """types=[] means 'search nothing', not 'fall back to ALL_TYPES'.
+
+        This pins the `types if types is not None else list(ALL_TYPES)` contract:
+        an explicit empty list is a deliberate request for zero types, distinct
+        from the caller omitting the parameter (types=None).
+        """
+        brain, svcs = make_brain_service()
+        decision_svc, learning_svc, snippet_svc, runbook_svc, adr_svc, _ = svcs
+
+        response = await brain.what_do_i_know_about("topic", types=[])
+
+        decision_svc.semantic_search.assert_not_awaited()
+        learning_svc.semantic_search.assert_not_awaited()
+        snippet_svc.semantic_search.assert_not_awaited()
+        runbook_svc.semantic_search.assert_not_awaited()
+        adr_svc.semantic_search.assert_not_awaited()
+        assert response.types_searched == []
+        assert response.total == 0
+
 
 # ---------------------------------------------------------------------------
 # TestBrainServiceEmptyResults — all services return empty
