@@ -15,7 +15,7 @@ from fastmcp.exceptions import ToolError
 from pydantic import BaseModel
 
 from brain_v42.models.adr import ADR
-from brain_v42.models.brain import KnowledgeByType, SearchResult
+from brain_v42.models.brain import KnowledgeByType, SearchDiagnostics, SearchResult
 from brain_v42.models.decision import Decision
 from brain_v42.models.indexed_plan_chunk import IndexedPlanChunk
 from brain_v42.models.learning import Learning
@@ -633,11 +633,81 @@ def _format_search_item(
     return item
 
 
+def _format_empty_search_reason(
+    diagnostics: SearchDiagnostics,
+    tags: list[str] | None,
+) -> str:
+    """Explain WHY a search returned 0 results — never silently.
+
+    Doctrine (``clamp_list_limit``, ~864-882 below): "A cap applied silently
+    makes the result lie: the caller who asks for 500 and receives 100 rows
+    cannot tell 'there were only 100' from 'there were 500'." The same rule
+    applies to a 0-result answer: "## 0 results" alone cannot tell "nothing
+    exists in scope" from "5 candidates existed but none cleared min_score"
+    from "3 candidates existed but the tags filter removed them" — three
+    dead ends that call for three different next moves (widen scope, lower
+    min_score, or drop a tag).
+
+    The pipeline order (``BrainService._build_search_results``) is: score
+    threshold -> archived filter -> tags filter. So these three conditions
+    are mutually exclusive in practice: if nothing cleared the score
+    threshold, nothing ever reached the tags filter, so tags_filtered_out
+    is necessarily 0 in that case.
+    """
+    scope_bits = [f"types searched: {', '.join(diagnostics.types_searched) or 'none'}"]
+    if diagnostics.project_key_effective:
+        marker = (
+            " [injected by dream scope]" if diagnostics.project_key_injected_by_dream_scope else ""
+        )
+        scope_bits.append(f"project: {diagnostics.project_key_effective}{marker}")
+    else:
+        scope_bits.append("project: none (admin scope)")
+    scope_bits.append(
+        "archived excluded" if not diagnostics.include_archived else "archived included"
+    )
+    scope_desc = "; ".join(scope_bits)
+
+    if diagnostics.candidates_before_threshold == 0:
+        reason = f"0 candidates in scope ({scope_desc})"
+    elif diagnostics.tags_filtered_out > 0:
+        tag_list = ", ".join(tags or [])
+        n = diagnostics.candidates_before_threshold
+        reason = f"{n} candidate{'s' if n != 1 else ''} removed by the tags filter [{tag_list}]"
+    elif (
+        diagnostics.best_raw_score is None
+        or diagnostics.best_raw_score < diagnostics.min_score_effective
+    ):
+        n = diagnostics.candidates_before_threshold
+        best = (
+            f"{diagnostics.best_raw_score:.2f}" if diagnostics.best_raw_score is not None else "n/a"
+        )
+        reason = (
+            f"{n} candidate{'s' if n != 1 else ''}, none above min_score "
+            f"{diagnostics.min_score_effective:g} (best raw score {best}; "
+            f"threshold applies to the raw score, before decay)"
+        )
+    else:
+        # Fallback: candidates cleared score+tags but 0 survived — most likely
+        # the archived/merged filter (no dedicated counter for it, see G2 scope).
+        n = diagnostics.candidates_before_threshold
+        reason = (
+            f"{n} candidate{'s' if n != 1 else ''} above min_score "
+            f"{diagnostics.min_score_effective:g}, but 0 remained after filtering ({scope_desc})"
+        )
+
+    lines = [reason]
+    if diagnostics.rerank_mode not in (None, "reranked"):
+        lines.append(f"rerank mode: {diagnostics.rerank_mode}")
+    return "\n".join(lines)
+
+
 def format_search_results(
     results: list[SearchResult],
     query: str,
     degraded: dict[str, Any] | None = None,
     full: bool = False,
+    diagnostics: SearchDiagnostics | None = None,
+    tags: list[str] | None = None,
 ) -> str:
     """Format cross-type search results grouped by type.
 
@@ -653,6 +723,12 @@ def format_search_results(
             in degraded mode (rrf_fallback or fts_fallback).
         full: When True, include complete decision and learning bodies.
             The default renders their existing compact summaries instead.
+        diagnostics: Optional SearchResponse.diagnostics. When results is
+            empty AND diagnostics is provided, a short block explains WHY
+            (see ``_format_empty_search_reason``). Never affects non-empty
+            rendering — the nominal path is byte-identical either way.
+        tags: The tags filter the caller requested, used only to name them
+            in the empty-result "removed by the tags filter" explanation.
     """
     # Build degraded banner (Fix 1 + Fix 2 + MINOR 2: rrf_only)
     banner_lines: list[str] = []
@@ -676,9 +752,12 @@ def format_search_results(
     header = f'## {n} result{"s" if n != 1 else ""} for "{query}" (across all types)'
 
     if not results:
+        empty_body = header
+        if diagnostics is not None:
+            empty_body += "\n" + _format_empty_search_reason(diagnostics, tags)
         if banner_lines:
-            return "\n".join(banner_lines) + "\n" + header
-        return header
+            return "\n".join(banner_lines) + "\n" + empty_body
+        return empty_body
 
     grouped: dict[str, list[SearchResult]] = defaultdict(list)
     for r in results:
@@ -710,6 +789,7 @@ def format_knowledge_by_type(
     topic: str,
     degraded: dict[str, Any] | None = None,
     full: bool = False,
+    diagnostics: SearchDiagnostics | None = None,
 ) -> str:
     """Format grouped knowledge results (brain_what_do_i_know_about / group_by_type=True).
 
@@ -724,6 +804,10 @@ def format_knowledge_by_type(
             - search_mode='fts_fallback': embedding service was down, FTS only
         full: When True, include complete decision and learning bodies.
             The default renders their existing compact summaries instead.
+        diagnostics: Optional WhatDoIKnowResponse.diagnostics. When total is 0
+            AND diagnostics is provided, a short block explains WHY — mirrors
+            format_search_results (grouped mode has no tags parameter, so the
+            "removed by the tags filter" kind never applies here).
     """
     # Build degraded banner — mirrors format_search_results
     banner_lines: list[str] = []
@@ -749,9 +833,12 @@ def format_knowledge_by_type(
     )
     header = f'## Everything known about "{topic}" ({total} items)'
     if total == 0:
+        empty_body = header
+        if diagnostics is not None:
+            empty_body += "\n" + _format_empty_search_reason(diagnostics, tags=None)
         if banner_lines:
-            return "\n".join(banner_lines) + "\n" + header
-        return header
+            return "\n".join(banner_lines) + "\n" + empty_body
+        return empty_body
 
     sections: list[str] = []
     for type_key, attr_name in [
