@@ -1,0 +1,4 @@
+{"type": "thread.started", "thread_id": "fixture-codex-0002"}
+{"type": "item.started", "item": {"id": "item_1", "type": "mcp_tool_call", "server": "brain-v42", "tool": "brain_list", "arguments": {"entity_type": "learning", "limit": 20}, "result": null, "error": null, "status": "in_progress"}}
+{"type": "item.completed", "item": {"id": "item_1", "type": "mcp_tool_call", "server": "brain-v42", "tool": "brain_list", "arguments": {"entity_type": "learning", "limit": 20}, "result": {"content": [{"type": "text", "text": "1 result"}], "_meta": {"fastmcp": {"wrap_result": true}}, "structured_content": {"result": "1 result"}}, "error": null, "status": "completed"}}
+{"type": "turn.completed", "usage": {"input_tokens": 40, "output_tokens": 10}}

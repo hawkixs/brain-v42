@@ -16,17 +16,23 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from scripts.dream import events_reader
 from scripts.dream.events_reader import (
     AGY,
     CODEX,
     UnknownDialectError,
+    _Counts,
+    emptiness_unknown,
+    format_census_report,
     is_empty_search,
     iter_tool_calls,
+    run_census,
 )
 
 _FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "dream_events"
 _AGY_FILE = _FIXTURES / "2026-08-12_demo-project_scan.events.jsonl"
 _CODEX_FILE = _FIXTURES / "2026-09-05_demo-project_scan.events.jsonl"
+_CODEX_CONNECT_FILE = _FIXTURES / "2026-09-05_demo-project_connect.events.jsonl"
 _UNKNOWN_FILE = _FIXTURES / "2026-09-05_demo-project_mystery.events.jsonl"
 _EMPTY_FILE = _FIXTURES / "2026-09-05_demo-project_empty.events.jsonl"
 
@@ -128,3 +134,92 @@ def test_unknown_dialect_file_raises_a_named_error() -> None:
 def test_empty_file_raises_a_named_error_rather_than_a_silent_zero() -> None:
     with pytest.raises(UnknownDialectError):
         list(iter_tool_calls(_EMPTY_FILE))
+
+
+def test_iter_tool_calls_raises_eagerly_not_only_when_the_iterator_is_advanced() -> None:
+    """``iter_tool_calls`` must not be a generator function.
+
+    A generator function only starts executing its body -- and so only
+    raises -- once its returned iterator is first advanced. A caller
+    wrapping the call itself in ``try/except UnknownDialectError`` (rather
+    than the eventual ``list(...)``/``for`` loop) must see the error here.
+    """
+    with pytest.raises(UnknownDialectError):
+        iter_tool_calls(_UNKNOWN_FILE)
+
+
+def test_agy_successful_search_with_no_recorded_output_is_flagged_unknown() -> None:
+    """A DONE, non-error agy ``brain_search`` call can still omit ``tool_info.output``.
+
+    Measured on the real corpus: 105 of 694 agy ``brain_search`` calls are in
+    this state. Such a call must never be scored as "not empty" by
+    :func:`is_empty_search` without a companion signal saying its emptiness
+    was never actually measured.
+    """
+    call = next(
+        c
+        for c in iter_tool_calls(_AGY_FILE)
+        if c.tool == "brain_search" and not c.is_error and c.output is None
+    )
+    assert emptiness_unknown(call) is True
+    assert is_empty_search(call) is False
+
+
+def test_emptiness_unknown_rejects_error_calls_and_non_search_tools() -> None:
+    calls = list(iter_tool_calls(_AGY_FILE))
+    error_call = next(c for c in calls if c.is_error)
+    non_search_call = next(c for c in calls if c.tool != "brain_search")
+    assert emptiness_unknown(error_call) is False
+    assert emptiness_unknown(non_search_call) is False
+
+
+def test_run_census_reports_unknown_emptiness_separately_from_empties() -> None:
+    report = run_census(logs_dir=_FIXTURES, night="2026-08-12", tool_filter="brain_search")
+    assert report.total_unknown == 1
+    assert report.calls_by_phase["scan"].unknown == 1
+    # The genuinely empty search is still counted as an empty, not folded
+    # into "unknown".
+    assert report.total_empties == 1
+
+    text = format_census_report(report, logs_dir=_FIXTURES)
+    assert "unknown=1" in text
+    assert "UNMEASURED emptiness: 1 call(s)" in text
+
+
+def test_run_census_zero_fills_phases_with_no_matching_calls_under_a_tool_filter() -> None:
+    """A phase whose file was parsed but had zero matching calls still renders.
+
+    Reproduces the W11-investigation confusion where the CLEAN phase vanished
+    from a ``--tool brain_search`` census: here the classified ``connect``
+    file has no ``brain_search`` call at all, and must still show
+    ``calls=0`` rather than being absent from the report.
+    """
+    assert _CODEX_CONNECT_FILE.exists()
+
+    report = run_census(logs_dir=_FIXTURES, night="2026-09-05", tool_filter="brain_search")
+
+    assert "connect" in report.calls_by_phase
+    assert report.calls_by_phase["connect"] == _Counts()
+
+    text = format_census_report(report, logs_dir=_FIXTURES)
+    assert "connect: calls=0 empties=0 unknown=0" in text
+
+
+def test_run_census_loads_each_classified_file_exactly_once(monkeypatch) -> None:  # noqa: ANN001
+    """``run_census`` must not parse the same file's JSON twice.
+
+    Before the fix, ``detect_dialect(path)`` and ``iter_tool_calls(path)``
+    each called the private loader independently for the very same path.
+    """
+    load_calls: list[Path] = []
+    original_load_records = events_reader._load_records
+
+    def counting_load_records(path: Path) -> list[dict]:  # noqa: ANN001
+        load_calls.append(path)
+        return original_load_records(path)
+
+    monkeypatch.setattr(events_reader, "_load_records", counting_load_records)
+
+    run_census(logs_dir=_FIXTURES, night="2026-08-12")
+
+    assert load_calls == [_AGY_FILE]

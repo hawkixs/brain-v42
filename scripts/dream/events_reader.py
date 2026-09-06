@@ -18,13 +18,20 @@ parsers (``src/brain_v42/metrics/agy_dream_parser.py`` and
   ``Arguments``), because ``tool_name`` itself is always the constant
   ``"call_mcp_tool"``. Each call produces TWO records sharing one
   ``step_index`` — an ``ACTIVE`` start and a terminal ``DONE``/``ERROR`` — and
-  only the terminal one carries ``tool_info.output``.
+  only the terminal one carries ``tool_info.output``. That terminal record
+  can still omit ``tool_info.output`` even on a successful, non-error call
+  (measured: 105 of 694 agy ``brain_search`` calls); see
+  :func:`emptiness_unknown`.
 
 A census that reads only one of the two shapes silently drops every event
 written by the other rail — this is exactly what happened to the CLEAN phase
 and to REORG's call count in the 2026-09 W11 investigation. This module
 normalises both shapes into one :class:`ToolCall` so a census (see
-``main`` below) or any other consumer never has to special-case a rail.
+``main`` below) or any other consumer never has to special-case a rail. The
+census also never lets a filtered-out phase or project vanish from its
+report, and it never scores a call whose emptiness could not be measured as
+"not empty" — both silently reproduce the same kind of blind spot the
+dialect split created, at a finer grain.
 """
 
 from __future__ import annotations
@@ -75,6 +82,11 @@ class ToolCall:
     arguments: dict[str, Any] = field(default_factory=dict)
     output: str | None = None
     is_error: bool = False
+    #: Always ``None`` today: neither dialect emits a per-event timestamp
+    #: under ``logs/dream`` (measured 2026-09-06: 0/29312 normalised calls
+    #: carried one). Both extraction sites look for a ``timestamp`` key that
+    #: is simply never written; the field is kept for forward compatibility
+    #: with a rail that starts emitting one, not because it is populated now.
     timestamp: str | None = None
 
 
@@ -120,15 +132,28 @@ def _dialect_of(records: list[dict[str, Any]], path: Path) -> str:
     )
 
 
+def _load_and_detect(path: Path) -> tuple[str, list[dict[str, Any]]]:
+    """Read ``path`` once and return ``(dialect, records)``.
+
+    Both :func:`detect_dialect` and :func:`iter_tool_calls` need the parsed
+    records to know the dialect, and the census loop needs them again to
+    extract calls. Routing every caller through this one helper means a
+    given file's JSON is parsed exactly once per call site instead of once
+    per site that happens to want the dialect *and* the records.
+    """
+    records = _load_records(path)
+    dialect = _dialect_of(records, path)
+    return dialect, records
+
+
 def detect_dialect(path: Path | str) -> str:
     """Return :data:`CODEX` or :data:`AGY` for the given events.jsonl file.
 
     Raises :class:`UnknownDialectError` for an empty file or one whose
     records match neither shape.
     """
-    path = Path(path)
-    records = _load_records(path)
-    return _dialect_of(records, path)
+    dialect, _records = _load_and_detect(Path(path))
+    return dialect
 
 
 def _error_message(error: Any) -> str | None:
@@ -210,25 +235,33 @@ def _iter_agy_calls(records: list[dict[str, Any]], project: str, phase: str) -> 
         )
 
 
+def _iter_calls(
+    records: list[dict[str, Any]], dialect: str, project: str, phase: str
+) -> Iterator[ToolCall]:
+    if dialect == CODEX:
+        yield from _iter_codex_calls(records, project, phase)
+    else:
+        yield from _iter_agy_calls(records, project, phase)
+
+
 def iter_tool_calls(path: Path | str) -> Iterator[ToolCall]:
-    """Yield one :class:`ToolCall` per completed tool call in ``path``.
+    """Return an iterator of :class:`ToolCall` for every completed call in ``path``.
 
     Normalises both the codex (``item.completed``) and agy (``step_update``)
     shapes. Only terminal records are yielded — one per logical call — so a
     call that starts but never completes (a truncated file) is silently
     absent rather than reported half-done.
 
-    Raises :class:`UnknownDialectError` if the file is empty or matches
-    neither known shape.
+    Raises :class:`UnknownDialectError` immediately, when this function is
+    called — not only once the returned iterator is first advanced. This is
+    a plain function that loads and classifies the file eagerly and returns
+    the generator from a private helper, precisely so ``try: iter_tool_calls(p)
+    / except UnknownDialectError`` behaves as a caller would expect.
     """
     path = Path(path)
-    records = _load_records(path)
-    dialect = _dialect_of(records, path)
+    dialect, records = _load_and_detect(path)
     project, phase = _parse_filename(path)
-    if dialect == CODEX:
-        yield from _iter_codex_calls(records, project, phase)
-    else:
-        yield from _iter_agy_calls(records, project, phase)
+    return _iter_calls(records, dialect, project, phase)
 
 
 def is_empty_search(call: ToolCall) -> bool:
@@ -245,6 +278,21 @@ def is_empty_search(call: ToolCall) -> bool:
     return bool(_EMPTY_SEARCH_RE.search(call.output))
 
 
+def emptiness_unknown(call: ToolCall) -> bool:
+    """True when whether ``call`` returned an empty search cannot be measured.
+
+    A non-error ``brain_search`` call always carries its result text under
+    ``tool_info.output`` on the codex rail, but the agy rail's terminal
+    ``DONE`` record can omit ``tool_info.output`` entirely even though the
+    call itself succeeded (measured on the real corpus: 105 of 694 agy
+    ``brain_search`` calls, 15.1%). :func:`is_empty_search` folds that case
+    into "not empty", which would silently understate an empty-result rate
+    computed over the same denominator. Use this predicate to route such
+    calls into their own ``unknown`` bucket instead.
+    """
+    return call.tool == "brain_search" and not call.is_error and call.output is None
+
+
 # --- Census CLI -------------------------------------------------------------
 
 
@@ -252,6 +300,10 @@ def is_empty_search(call: ToolCall) -> bool:
 class _Counts:
     calls: int = 0
     empties: int = 0
+    #: Non-error ``brain_search`` calls whose emptiness could not be
+    #: determined (see :func:`emptiness_unknown`) — never folded into
+    #: ``empties`` or silently dropped.
+    unknown: int = 0
 
 
 @dataclass
@@ -267,6 +319,7 @@ class CensusReport:
     calls_by_project: dict[str, _Counts]
     total_calls: int
     total_empties: int
+    total_unknown: int
 
 
 def _default_logs_dir() -> Path:
@@ -291,25 +344,40 @@ def run_census(logs_dir: Path, night: str, tool_filter: str | None = None) -> Ce
     calls_by_project: dict[str, _Counts] = defaultdict(_Counts)
     total_calls = 0
     total_empties = 0
+    total_unknown = 0
 
     for path in files:
         try:
-            dialect = detect_dialect(path)
+            dialect, records = _load_and_detect(path)
         except UnknownDialectError as exc:
             unclassified_files[str(path)] = str(exc)
             continue
         files_by_dialect[dialect] += 1
 
-        for call in iter_tool_calls(path):
+        # A successfully classified file names its own (project, phase) even
+        # if every call inside it is filtered out below: seed both buckets
+        # here so "0 calls" always renders, rather than the phase or project
+        # silently disappearing from the report.
+        project, phase = _parse_filename(path)
+        calls_by_phase.setdefault(phase, _Counts())
+        calls_by_project.setdefault(project, _Counts())
+
+        for call in _iter_calls(records, dialect, project, phase):
             if tool_filter is not None and call.tool != tool_filter:
                 continue
             total_calls += 1
-            calls_by_phase[call.phase].calls += 1
-            calls_by_project[call.project].calls += 1
+            phase_counts = calls_by_phase[call.phase]
+            project_counts = calls_by_project[call.project]
+            phase_counts.calls += 1
+            project_counts.calls += 1
             if is_empty_search(call):
                 total_empties += 1
-                calls_by_phase[call.phase].empties += 1
-                calls_by_project[call.project].empties += 1
+                phase_counts.empties += 1
+                project_counts.empties += 1
+            elif emptiness_unknown(call):
+                total_unknown += 1
+                phase_counts.unknown += 1
+                project_counts.unknown += 1
 
     return CensusReport(
         night=night,
@@ -321,6 +389,7 @@ def run_census(logs_dir: Path, night: str, tool_filter: str | None = None) -> Ce
         calls_by_project=dict(calls_by_project),
         total_calls=total_calls,
         total_empties=total_empties,
+        total_unknown=total_unknown,
     )
 
 
@@ -345,14 +414,26 @@ def format_census_report(report: CensusReport, logs_dir: Path) -> str:
     lines.append("by phase:")
     for phase in sorted(report.calls_by_phase):
         counts = report.calls_by_phase[phase]
-        lines.append(f"  {phase}: calls={counts.calls} empties={counts.empties}")
+        lines.append(
+            f"  {phase}: calls={counts.calls} empties={counts.empties} unknown={counts.unknown}"
+        )
 
     lines.append("by project:")
     for project in sorted(report.calls_by_project):
         counts = report.calls_by_project[project]
-        lines.append(f"  {project}: calls={counts.calls} empties={counts.empties}")
+        lines.append(
+            f"  {project}: calls={counts.calls} empties={counts.empties} unknown={counts.unknown}"
+        )
 
-    lines.append(f"total: calls={report.total_calls} empties={report.total_empties}")
+    lines.append(
+        f"total: calls={report.total_calls} empties={report.total_empties} "
+        f"unknown={report.total_unknown}"
+    )
+    if report.total_unknown:
+        lines.append(
+            f"UNMEASURED emptiness: {report.total_unknown} call(s) with no recorded output "
+            "(never folded into empties)"
+        )
     return "\n".join(lines)
 
 
