@@ -55,6 +55,7 @@ from brain_v42.config import Settings
 from brain_v42.db.tables import (
     adrs,
     decisions,
+    dream_promotions,
     dream_runs,
     indexed_plans,
     learnings,
@@ -1153,6 +1154,65 @@ def format_reconciliation_line(
     )
 
 
+@dataclass(frozen=True)
+class OrphanPromotionsTally:
+    """`dream_promotions` rows the night wrote with no `dream_run_id`.
+
+    `dream_run_id` is `ON DELETE SET NULL` (`dream_promotions_dream_run_id_fkey`):
+    a `NULL` here has two possible origins — a promotion inserted without ever
+    knowing its `dream_run_id`, or one whose `dream_runs` row was deleted
+    afterwards — and both read the same way from here: nothing joins the
+    promotion back to a phase, so it is invisible to `format_reconciliation_line`
+    above (it names no `(phase, project)` pair) and to dream.sh's `FAIL_TOTAL`
+    (it is not a `dream_runs` row at all). ``count`` is `None` (UNMEASURED) when
+    the table could not be read: this check must never be the reason the
+    morning report fails.
+    """
+
+    count: int | None = None
+
+    @property
+    def measured(self) -> bool:
+        return self.count is not None
+
+
+ORPHAN_PROMOTIONS_LINE_PREFIX = "PROMOTIONS orphan (dream_run_id NULL):"
+
+
+def format_orphan_promotions_line(tally: OrphanPromotionsTally) -> str:
+    """One line, always printed. UNMEASURED beats a silent, misleading `0`."""
+    if not tally.measured:
+        return f"{ORPHAN_PROMOTIONS_LINE_PREFIX} UNMEASURED"
+    return f"{ORPHAN_PROMOTIONS_LINE_PREFIX} {tally.count}"
+
+
+async def fetch_orphan_promotions(
+    session: AsyncSession,
+    run_date: dt.date,
+) -> OrphanPromotionsTally:
+    """Count the night's `dream_promotions` rows carrying no `dream_run_id`.
+
+    There is no `dream_run_id` to join through for these rows — that absence is
+    exactly what makes them orphan — so the night is read off `created_at`
+    alone, cast to a plain date, the same pattern `fetch_mute_transitions` uses
+    for the freshness tables' timestamps. Best-effort like the other file- and
+    log-derived tallies in this module (`roadmap_shrink_tally`, `reorg_tally`):
+    a broken query leaves the count UNMEASURED rather than failing the report.
+    """
+    try:
+        result = await session.execute(
+            sa.select(sa.func.count())
+            .select_from(dream_promotions)
+            .where(
+                dream_promotions.c.dream_run_id.is_(None),
+                sa.cast(dream_promotions.c.created_at, sa.Date) == run_date,
+            )
+        )
+        return OrphanPromotionsTally(count=int(result.scalar_one()))
+    except Exception:  # noqa: BLE001 — a broken count must never fail the morning report.
+        return OrphanPromotionsTally()
+
+
 async def fetch_failed_runs(
     session: AsyncSession,
     run_date: dt.date,
@@ -1385,6 +1445,13 @@ async def _run(
                         [dict(row._mapping) for row in observed.all()],
                         skipped=phases_skipped,
                     )
+                )
+                # Same gate as RECONCILIATION above, and for the same reason:
+                # a manual replay without `--phases-ok` has no OK_TOTAL to
+                # reconcile against, so neither machine line claims to measure
+                # the night.
+                print(
+                    format_orphan_promotions_line(await fetch_orphan_promotions(session, run_date))
                 )
             rendered, escalates = await review_and_render(session, run_date, manifest=manifest)
             print(rendered, end="")
