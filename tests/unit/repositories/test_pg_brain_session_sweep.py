@@ -214,6 +214,48 @@ class TestTheRuleIsDeliveredClosed:
         assert "case" in sql
 
 
+class TestTheSevenDayRuleScope:
+    """The 7 d 'abandoned' path is nature-agnostic BY DESIGN (SPEC-M-G.md
+    §3.1, ADR §0ter.4): `agent`, `operator` and pre-046 `nature IS NULL`
+    sessions are all eligible. It is the ONLY terminal path an `operator`
+    session, or a pre-046 `NULL`-nature session, ever gets — narrowing it by
+    nature would make those ghosts unreapable, which is the regression this
+    class exists to keep out.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_predicate_still_requires_open_and_stale(self) -> None:
+        _, statements = await _sweep([], dry_run=False)
+        where = _where(statements[0])
+
+        assert "status =" in where
+        assert "last_heartbeat_at <" in where
+
+    @pytest.mark.asyncio
+    async def test_when_armed_the_stale_leg_still_names_no_nature(self) -> None:
+        """Negative shape witness: the nature guard lives ONLY in the 4 h leg
+        of the `OR`, never in the 7 d (stale) leg — even with the 4 h rule
+        armed.
+
+        Splitting the compiled WHERE on its single top-level `or` isolates the
+        two legs of the eligibility predicate: the 7 d leg on the left, the
+        4 h leg on the right. `nature` must be absent from the first and
+        present in the second — this is what would catch a fix that hoists a
+        nature guard outside the `OR`, where it would also gate the 7 d path
+        and make `operator`/pre-046 `NULL` sessions unreachable by either
+        rule.
+        """
+        _, statements = await _sweep([], dry_run=False, close_inactive_after=FOUR_HOURS)
+        where = _where(statements[0])
+
+        legs = where.split(" or ")
+        assert len(legs) == 2, where
+        stale_leg, inactivity_leg = legs
+
+        assert "nature" not in stale_leg
+        assert "nature =" in inactivity_leg
+
+
 class TestTheFourHourRuleScope:
     @pytest.mark.asyncio
     async def test_only_agent_tracers_are_eligible(self) -> None:

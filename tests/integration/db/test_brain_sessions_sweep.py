@@ -279,6 +279,132 @@ async def test_manual_abandonment_reason_is_never_overwritten(
     assert row["abandonment_reason"] == "abandon manuel de l'opérateur"
 
 
+# ─── Lot L4: the abandoned path is nature-agnostic by design ────────────────
+#
+# SPEC-M-G.md §3.1 and ADR §0ter.4 settle it: the 7 d 'abandoned' path names
+# no nature at all — `agent`, `operator` and pre-046 `nature IS NULL` sessions
+# are ALL eligible. It is the ONLY terminal path an `operator` (claimed)
+# session, or a pre-046 `NULL`-nature session, ever gets. These tests are the
+# real-database witnesses of `TestTheSevenDayRuleScope` in
+# tests/unit/repositories/test_pg_brain_session_sweep.py, which proves the
+# SQL shape without asserting on an actually persisted row.
+
+
+async def test_an_operator_ghost_past_seven_days_is_abandoned_even_with_the_four_hour_rule_armed(
+    session_factory: async_sessionmaker[AsyncSession],
+    sweep_project: str,
+) -> None:
+    """Precedence witness: an `operator` ghost past the 7 d threshold is
+    ABANDONED, never left open and never silently `closed_inactive`, even
+    with the 4 h rule armed. The `CASE` tests `is_stale` first, and the 7 d
+    leg names no nature — this is the one and only terminal path an
+    `operator` session ever gets (SPEC-M-G.md §3.1, ADR §0ter.4).
+    """
+    now = datetime.now(UTC)
+    operator_ghost = await _insert_open_session(
+        session_factory,
+        sweep_project,
+        "operator-ghost-armed",
+        now - THRESHOLD - timedelta(days=1),
+        nature="operator",
+        observed=now - THRESHOLD - timedelta(days=1),
+    )
+
+    result = await PgBrainSessionRepo(session_factory).sweep_open_sessions(
+        older_than=THRESHOLD, close_inactive_after=timedelta(hours=4), dry_run=False, now=now
+    )
+
+    assert operator_ghost in {candidate.id for candidate in result.candidates}
+    row = await _read(session_factory, operator_ghost)
+    assert row["status"] == "abandoned"
+    assert row["abandonment_reason"] == "auto_stale_7d"
+
+
+async def test_a_null_nature_session_within_the_four_hour_window_is_not_closed(
+    session_factory: async_sessionmaker[AsyncSession],
+    sweep_project: str,
+) -> None:
+    """Resolution (d), against the database: a pre-046 `nature IS NULL`
+    tracer is NEVER taken by the 4 h rule, whatever its observation age —
+    only `nature = 'agent'` is. The heartbeat is 48 h old, well short of the
+    365-day `older_than` used across this module, so the 7 d leg is
+    deliberately not engaged either: this is a witness of the 4 h leg alone.
+    """
+    now = datetime.now(UTC)
+    null_nature = await _insert_open_session(
+        session_factory,
+        sweep_project,
+        "null-nature-idle",
+        now - timedelta(hours=48),
+        observed=now - timedelta(hours=5),
+    )
+
+    result = await PgBrainSessionRepo(session_factory).sweep_open_sessions(
+        older_than=THRESHOLD, close_inactive_after=timedelta(hours=4), dry_run=False, now=now
+    )
+
+    assert null_nature not in {candidate.id for candidate in result.candidates}
+    assert (await _read(session_factory, null_nature))["status"] == "open"
+
+
+async def test_a_null_nature_stale_session_is_still_abandoned(
+    session_factory: async_sessionmaker[AsyncSession],
+    sweep_project: str,
+) -> None:
+    """Positive witness, alongside the `operator` one above: the 7 d
+    'abandoned' path is nature-agnostic (ADR §0ter.4 / SPEC-M-G.md D11), so
+    a pre-046 `NULL`-nature ghost — the shape of every session
+    `brain_session_start` opens today, since no writer sets `nature` and the
+    column has no server default — must still be reachable by it. Losing
+    this would silently retire the only automatic reaper those sessions
+    have (ADR §0ter.4: `NULL` stays under the 7-day regime).
+    """
+    now = datetime.now(UTC)
+    null_nature_ghost = await _insert_open_session(
+        session_factory,
+        sweep_project,
+        "pre-046-ghost",
+        now - THRESHOLD - timedelta(days=1),
+    )
+
+    result = await PgBrainSessionRepo(session_factory).sweep_open_sessions(
+        older_than=THRESHOLD, dry_run=False, now=now
+    )
+
+    assert null_nature_ghost in {candidate.id for candidate in result.candidates}
+    row = await _read(session_factory, null_nature_ghost)
+    assert row["status"] == "abandoned"
+    assert row["abandonment_reason"] == "auto_stale_7d"
+
+
+async def test_an_agent_stale_session_is_still_abandoned(
+    session_factory: async_sessionmaker[AsyncSession],
+    sweep_project: str,
+) -> None:
+    """Positive witness completing the trio with the `operator` and
+    `NULL`-nature ghosts above: `agent` is also eligible for the
+    nature-agnostic 7 d 'abandoned' path (ADR §0ter.4 / SPEC-M-G.md D11),
+    same terminal reason, same rule.
+    """
+    now = datetime.now(UTC)
+    agent_ghost = await _insert_open_session(
+        session_factory,
+        sweep_project,
+        "agent-ghost",
+        now - THRESHOLD - timedelta(days=1),
+        nature="agent",
+    )
+
+    result = await PgBrainSessionRepo(session_factory).sweep_open_sessions(
+        older_than=THRESHOLD, dry_run=False, now=now
+    )
+
+    assert agent_ghost in {candidate.id for candidate in result.candidates}
+    row = await _read(session_factory, agent_ghost)
+    assert row["status"] == "abandoned"
+    assert row["abandonment_reason"] == "auto_stale_7d"
+
+
 # ─── M-G: the 4 h rule against a real database ───────────────────────────────
 #
 # The unit harness proves the predicate's SHAPE; it can say nothing about 046's
