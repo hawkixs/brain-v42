@@ -25,6 +25,7 @@ import pytest
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from brain_v42.dream_project_errors import DreamProjectAuthorizationError
 from brain_v42.models.learning import Learning, LearningCreate, LearningUpdate
 from brain_v42.repositories.pg_graph_ledger import UnknownGraphEndpoint
 from brain_v42.repositories.pg_learning import PgLearningRepo
@@ -845,3 +846,32 @@ class TestLearningServiceRelationDegradation:
             )
 
         mock_repo.create.assert_awaited_once()
+
+    async def test_create_scoped_authorization_refusal_from_per_relation_check_still_raises(
+        self,
+    ) -> None:
+        """Negative witness placed at the per-relation revalidate call, not
+        the batch pre-check: ``graph_upsert_entity`` first revalidates the
+        whole batch of ids (that call succeeds here), then
+        ``graph_create_relation_logged`` revalidates again per relation
+        inside the try/except this lot added around ``UnknownGraphEndpoint``.
+        A genuine ``DreamProjectAuthorizationError`` raised from that SECOND
+        call — the one actually guarded by the new try/except — must still
+        escape unchanged, not be mistaken for a degradable unregistered
+        endpoint."""
+        svc, mock_repo, _mock_graph = self._make_service_with_graph()
+        authorization = MagicMock(project_key="brain-v42")
+        authorization.revalidate_ids = AsyncMock(
+            side_effect=[None, DreamProjectAuthorizationError("object_not_authorized")]
+        )
+        data = LearningCreate(topic="t", insight="i", project_key="brain-v42")
+
+        with pytest.raises(DreamProjectAuthorizationError):
+            await svc.create(
+                data,
+                related_to=[{"id": str(uuid.uuid4()), "type": "RELATED_TO"}],
+                authorization=authorization,
+            )
+
+        mock_repo.create.assert_awaited_once()
+        assert authorization.revalidate_ids.await_count == 2
