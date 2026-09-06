@@ -149,24 +149,29 @@ for i in $(seq 1 "$ITERATIONS"); do
     continue
   fi
 
-  # Validator regex from scripts/dream/promote_validate.py:_REPORT_RE.
-  if python3 -c "
-import re, sys
+  # Calls the validator's own parser (scripts/dream/promote_validate.py
+  # parse_report) instead of duplicating its marker/JSON pattern here: a
+  # second, hand-rolled regex drifted from the validator once already (it
+  # still cited the deleted _REPORT_RE and used the old strict marker
+  # sequence, rejecting a trailing-word marker line the validator now
+  # tolerates). uv run gives it the same environment the validator itself
+  # needs (brain_v42 imports) — see tests/unit/test_promote_smoke.py for
+  # the fixture that pins smoke and validator to agree.
+  if uv run python3 -c "
+import sys
+from scripts.dream.promote_validate import ValidationFailure, parse_report
+
 raw = open('$log').read()
-m = re.search(r'===\s*PROMOTE\s+REPORT\s*===\s*(\{.*?\})\s*===\s*END\s*===', raw, re.DOTALL)
-if m is None:
-    print('FAIL: no JSON between markers')
-    if '=== PROMOTE REPORT ===' in raw and '=== END ===' in raw:
+try:
+    report = parse_report(raw)
+except ValidationFailure as e:
+    msg = str(e)
+    print('FAIL: ' + msg)
+    if 'missing PROMOTE REPORT markers' in msg and '=== PROMOTE REPORT ===' in raw and '=== END ===' in raw:
         print('  markers present but body empty (the bug we are hunting)')
     sys.exit(1)
-import json
-try:
-    d = json.loads(m.group(1))
-    print('PASS: target_type=' + str(d.get('target_type')) + ', dry_run=' + str(d.get('dry_run')))
-    print('  draft_title=' + str(d.get('draft_title', ''))[:80])
-except json.JSONDecodeError as e:
-    print('FAIL: malformed JSON: ' + str(e))
-    sys.exit(1)
+print('PASS: target_type=' + str(report.get('target_type')) + ', dry_run=' + str(report.get('dry_run')))
+print('  draft_title=' + str(report.get('draft_title', ''))[:80])
 "; then
     pass=$((pass + 1))
   else

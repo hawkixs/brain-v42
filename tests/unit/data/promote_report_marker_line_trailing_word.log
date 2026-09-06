@@ -1,0 +1,17 @@
+[dream] promote phase — synthetic sample log for parser regression coverage.
+Iteration 1/1, generating report...
+
+=== PROMOTE REPORT === Bettina
+{
+  "dry_run": false,
+  "candidate_id": "f18ddc01-1493-4fdd-99a8-eeca3cb55512",
+  "candidate_topic": "sample_module.py is missing a null check on init",
+  "target_type": "adr",
+  "target_id": "d778d077-0fd5-4e80-92e1-147845fa1959",
+  "cosine_observed": null,
+  "draft_title": "Add an explicit null check before sample_module init",
+  "reason": "ADR accepted after deduplication check found no match at threshold 0.80."
+}
+=== END ===
+
+[dream] promote phase — done.
