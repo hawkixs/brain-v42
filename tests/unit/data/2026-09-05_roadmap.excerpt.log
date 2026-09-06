@@ -1,0 +1,14 @@
+2026-09-05 07:05:58 [info     ] SQLAlchemy async engine created url=postgresql+asyncpg://brain:***@localhost:5433/brain
+2026-09-05 07:05:58 [info     ] SQLAlchemy async session factory created
+[1/10] red-games: 0 drafts, 0 no-op, 0 dup, 0 rej-skip, 0 cap-drop, 0 persistées (32s · shrunk · model=nvidia/nemotron-3-super-120b-a12b)
+[2/10] red-gift: 0 drafts, 0 no-op, 0 dup, 0 rej-skip, 0 cap-drop, 0 persistées (17s · shrunk · model=nvidia/nemotron-3-super-120b-a12b)
+[3/10] red-lab: 4 drafts, 0 no-op, 0 dup, 0 rej-skip, 0 cap-drop, 4 persistées (21s · shrunk · model=nvidia/nemotron-3-super-120b-a12b)
+[4/10] red-lab:architect: 0 drafts, 0 no-op, 0 dup, 0 rej-skip, 0 cap-drop, 0 persistées (37s · shrunk · model=nvidia/nemotron-3-super-120b-a12b)
+[5/10] red-lab:orchestrator: 2 drafts, 1 no-op, 0 dup, 0 rej-skip, 0 cap-drop, 1 persistées (52s · shrunk · model=nvidia/nemotron-3-super-120b-a12b)
+[6/10] red-lab:reviewer: 1 drafts, 0 no-op, 0 dup, 0 rej-skip, 0 cap-drop, 1 persistées (10s · model=nvidia/nemotron-3-super-120b-a12b)
+[7/10] red-lab:sentinel: 0 drafts, 0 no-op, 0 dup, 0 rej-skip, 0 cap-drop, 0 persistées (2s · model=nvidia/nemotron-3-super-120b-a12b)
+[8/10] red-ml: 0 drafts, 0 no-op, 0 dup, 0 rej-skip, 0 cap-drop, 0 persistées (2s · model=nvidia/nemotron-3-super-120b-a12b)
+[9/10] red-monitor: 0 drafts, 0 no-op, 0 dup, 0 rej-skip, 0 cap-drop, 0 persistées (6s · model=nvidia/nemotron-3-super-120b-a12b)
+[10/10] red-orchestrator: 0 drafts, 0 no-op, 0 dup, 0 rej-skip, 0 cap-drop, 0 persistées (1s · model=nvidia/nemotron-3-super-120b-a12b)
+10 projets scannés, 6 proposals, 7 sans proposition, 0 failed
+proposal ids: [977, 978, 979, 980, 981, 982]

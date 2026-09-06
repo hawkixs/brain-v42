@@ -448,6 +448,75 @@ def degraded_headline(run_date: dt.date, degraded: Sequence[DegradedPhase]) -> s
     return f"no failed phase for {run_date.isoformat()} — but {ran} DEGRADED (standby model)"
 
 
+#: `roadmap_curate` marks a batch whose card list was reduced after a timed-out
+#: full attempt with `· shrunk ·` in its per-batch line (see
+#: `[{i}/{total}] {project}: … ({elapsed}s{shrunk marker} · model=…)` in
+#: `roadmap_curate.py`). It is a LEADING indicator of a fallback night — the
+#: three nights measured 2026-08-27→09-02 that were served by the standby model
+#: had shrunk batches first — and today it is visible only by grepping the
+#: dated log by hand. This is a DIFFERENT signal from `DegradedPhase` above:
+#: that one reads `dream_runs.error_message` and says which model served the
+#: night; this one reads the log file itself and says how many batches needed
+#: shrinking, which can happen on the primary model too.
+_ROADMAP_BATCH_LINE_RE = re.compile(r"^\[\d+/\d+\]\s")
+#: The bullet-delimited marker inside the parenthesised timing suffix. `\b`
+#: after `shrunk` keeps this from matching a future word that merely starts
+#: with it.
+_ROADMAP_SHRUNK_MARKER_RE = re.compile(r"·\s*shrunk\b")
+
+
+@dataclass(frozen=True)
+class RoadmapShrinkTally:
+    """How many of the night's ROADMAP batches were served shrunk.
+
+    ABSENT IS NOT ZERO (learning 083d74e5, the same rule `reorg_report` follows
+    for its own tally): ``total`` is `None` when the night's roadmap log carries
+    no batch line at all — the file is missing, or it exists but the phase never
+    reached its first batch. Reading that as `0/0` would print a clean night for
+    a rail that produced nothing to measure. ``shrunk`` is meaningless without a
+    total and stays at 0 in that case.
+    """
+
+    shrunk: int = 0
+    total: int | None = None
+
+    @property
+    def measured(self) -> bool:
+        return self.total is not None
+
+
+def roadmap_shrink_tally(run_date: dt.date, log_dir: Path) -> RoadmapShrinkTally:
+    """Count shrunk batches straight from the night's `roadmap.log`.
+
+    Unlike REORG's per-project files, `dream.sh` writes exactly one
+    `<date>_roadmap.log` for the whole pool, so there is nothing to sum across
+    files here — only across the batch lines inside the one file. A missing
+    file, or a file with no batch line, is left `RoadmapShrinkTally()`
+    (unmeasured): this reads the night, it must never be the reason the morning
+    report fails.
+    """
+    path = log_dir / f"{run_date.isoformat()}_roadmap.log"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return RoadmapShrinkTally()
+    batch_lines = [line for line in text.splitlines() if _ROADMAP_BATCH_LINE_RE.match(line)]
+    if not batch_lines:
+        return RoadmapShrinkTally()
+    shrunk = sum(1 for line in batch_lines if _ROADMAP_SHRUNK_MARKER_RE.search(line))
+    return RoadmapShrinkTally(shrunk=shrunk, total=len(batch_lines))
+
+
+ROADMAP_SHRINK_LINE_PREFIX = "ROADMAP shrunk batches:"
+
+
+def build_roadmap_shrink_line(tally: RoadmapShrinkTally) -> str:
+    """One line, always printed. UNMEASURED beats a silent, misleading `0/0`."""
+    if not tally.measured:
+        return f"{ROADMAP_SHRINK_LINE_PREFIX} UNMEASURED"
+    return f"{ROADMAP_SHRINK_LINE_PREFIX} {tally.shrunk}/{tally.total}"
+
+
 #: What REORG did, read from the JSON trailer it prints at the end of each
 #: project report. There is no column: `dream_runs` carries no REORG counter,
 #: and adding one would be a migration for a number the phase already writes
@@ -1218,6 +1287,12 @@ def render_stdout(
         *coverage.block,
         *provenance_block,
         *build_degraded_block(run_date, degraded),
+        # Right after the degradation rubric: same phase, the earlier tell. A
+        # night can shrink batches on its PRIMARY model and never show up in
+        # `build_degraded_block` above, which only fires once the standby has
+        # taken over.
+        build_roadmap_shrink_line(roadmap_shrink_tally(run_date, default_log_dir())),
+        "",
         # After the degradation rubric and before CLAUDE.md: REORG worked or it
         # did not, which is context for the failures above rather than a failure
         # itself. Reads the night's own reports from disk — `dream_runs` has no
