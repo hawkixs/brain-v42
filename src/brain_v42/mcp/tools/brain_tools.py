@@ -688,6 +688,12 @@ def register_tools(
                 query_length=len(query),
                 project_key=project_key,
                 limit=limit,
+                types_requested=types,
+                tags_present=bool(tags),
+                tags_count=len(tags) if tags else 0,
+                min_score=min_score,
+                include_archived=include_archived,
+                group_by_type=group_by_type,
             )
             return (
                 format_knowledge_by_type(
@@ -727,6 +733,12 @@ def register_tools(
             query_length=len(query),
             project_key=project_key,
             limit=limit,
+            types_requested=types,
+            tags_present=bool(tags),
+            tags_count=len(tags) if tags else 0,
+            min_score=min_score,
+            include_archived=include_archived,
+            group_by_type=group_by_type,
         )
         output = format_search_results(
             search_response.results,

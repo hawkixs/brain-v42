@@ -14,6 +14,7 @@ from uuid import uuid4
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
+from structlog.testing import capture_logs
 
 from brain_v42.mcp.tools.brain_tools import register_tools
 from brain_v42.models.brain import (
@@ -571,3 +572,97 @@ class TestBrainSearchGroupByType:
         assert result.count("OVERSIZED_REASONING") == 500
         assert result.count("OVERSIZED_CONSEQUENCES") == 500
         assert result.count("OVERSIZED_INSIGHT") == 500
+
+
+# ── brain_search received-parameters telemetry (lot G3) ────────────────────────
+
+
+class TestBrainSearchTelemetry:
+    """The mcp.brain_search[.grouped] structlog events must journal the shape of
+    the parameters the tool RECEIVED (types requested, tags presence/count,
+    min_score, group_by_type, include_archived) — never the raw query text.
+
+    Zero-schema: no new table, no migration, no new event name. These are the
+    two existing logger.info() calls in brain_search().
+    """
+
+    @pytest.mark.asyncio
+    async def test_flat_search_logs_received_parameters_with_types_and_tags(self) -> None:
+        """A flat search call with types + tags journals their shape, not the query."""
+        mcp, mock_svc = _make_mcp_with_brain_svc()
+        mock_svc.search = AsyncMock(return_value=_make_search_response())
+
+        fn = await _get_tool_fn(mcp, "brain_search")
+        with capture_logs() as logs:
+            await fn(
+                query="a secret sounding query",
+                types=["decision", "learning"],
+                tags=["dream:scan", "sec2"],
+                min_score=0.42,
+                include_archived=True,
+                limit=10,
+            )
+
+        events = [log for log in logs if log["event"] == "mcp.brain_search"]
+        assert len(events) == 1
+        event = events[0]
+        assert event["query_length"] == len("a secret sounding query")
+        assert event["types_requested"] == ["decision", "learning"]
+        assert event["tags_present"] is True
+        assert event["tags_count"] == 2
+        assert event["min_score"] == 0.42
+        assert event["include_archived"] is True
+        assert event["group_by_type"] is False
+        assert event["limit"] == 10
+        rendered = repr(logs)
+        assert "a secret sounding query" not in rendered
+
+    @pytest.mark.asyncio
+    async def test_flat_search_logs_received_parameters_without_types_or_tags(self) -> None:
+        """A bare call journals the absence of types/tags and the tool's defaults."""
+        mcp, mock_svc = _make_mcp_with_brain_svc()
+        mock_svc.search = AsyncMock(return_value=_make_search_response())
+
+        fn = await _get_tool_fn(mcp, "brain_search")
+        with capture_logs() as logs:
+            await fn(query="test")
+
+        events = [log for log in logs if log["event"] == "mcp.brain_search"]
+        assert len(events) == 1
+        event = events[0]
+        assert event["types_requested"] is None
+        assert event["tags_present"] is False
+        assert event["tags_count"] == 0
+        assert event["min_score"] == 0.2
+        assert event["include_archived"] is False
+        assert event["group_by_type"] is False
+        assert event["limit"] == 20
+
+    @pytest.mark.asyncio
+    async def test_grouped_search_logs_received_parameters(self) -> None:
+        """group_by_type=True journals the same received-parameter shape."""
+        mcp, mock_svc = _make_mcp_with_brain_svc()
+        mock_svc.what_do_i_know_about = AsyncMock(return_value=_make_what_do_i_know_response())
+
+        fn = await _get_tool_fn(mcp, "brain_search")
+        with capture_logs() as logs:
+            await fn(
+                query="PostgreSQL",
+                group_by_type=True,
+                types=["decision"],
+                tags=["ops"],
+                min_score=0.5,
+                include_archived=True,
+                limit=7,
+            )
+
+        events = [log for log in logs if log["event"] == "mcp.brain_search.grouped"]
+        assert len(events) == 1
+        event = events[0]
+        assert event["types_requested"] == ["decision"]
+        assert event["tags_present"] is True
+        assert event["tags_count"] == 1
+        assert event["min_score"] == 0.5
+        assert event["include_archived"] is True
+        assert event["group_by_type"] is True
+        assert event["limit"] == 7
