@@ -1113,25 +1113,35 @@ def format_reconciliation_line(
 ) -> str:
     """The "N phases OK / M pairs written" gap nobody was reconciling.
 
-    Ticket `b95c5742`: on 15-16/08, "61/63 phases OK" in the log, 2 rows in the
-    database, 240 swallowed `InvalidPasswordError`. The INSERT stays best-effort
-    (042 says why); this line makes the loss VISIBLE in the morning.
+    A night that loses an INSERT best-effort makes `OK_TOTAL` (dream.sh) and
+    `pairs_written` (this line) diverge with nothing else changing; that
+    divergence is what this line measures, morning after morning, whether
+    the cause is a lost write, a replay, or a miscounted status. It should
+    not be read as pinned to any one past incident — the incident that first
+    surfaced it is closed, and a number that outlives its origin story is the
+    whole point of a measurement over a story.
 
-    `pairs_written` counts the (phase, project) pairs carrying AT LEAST
-    one row whose status is not a pure failure: `done` of course, but
-    `partial` too — a phase marked by the validator DID write, and
-    counting it lost would start an INSERT hunt every time G4 does its
-    job. A `fail`+`done` pair (a fallback) counts ONCE: dream.sh counts
-    phases where dream_runs counts attempts. The SKIPPED phases —
-    included in OK_TOTAL — are subtracted: they write no row and
-    therefore lose none. A negative gap (recorded skips, replays)
-    prints as it stands — a clamp would be a counter that
-    lies.
+    `pairs_written` counts the (phase, project) pairs carrying AT LEAST one
+    row whose status is NOT one of `FAILED_STATUSES` — the exact set
+    dream.sh's own `case "$phase_rc" in … *) FAILED_PHASES+=(…)` already
+    excludes from `OK_TOTAL`. That set is `{fail, partial, timeout}`: a
+    validator that flips a row to `partial` (reorg, promote, connect) makes
+    dream.sh translate it to `phase_rc=1` and file it under `FAILED_PHASES`
+    — it is NOT part of `OK_TOTAL`. Counting that same row as "written" here
+    would compare an OK phase's numerator against a denominator that
+    disagrees with dream.sh about what OK means, producing a deterministic
+    off-by-one gap on every night with a validator-invalidated phase — not a
+    lost INSERT, just two counters using two different vocabularies for the
+    same word. A `fail`+`done` pair (a fallback) counts ONCE: dream.sh counts
+    phases where dream_runs counts attempts. The SKIPPED phases — included
+    in OK_TOTAL — are subtracted: they write no row and therefore lose none.
+    A negative gap (recorded skips, replays) prints as it stands — a clamp
+    would be a counter that lies.
     """
     pairs_written = {
         (str(row["phase"]), str(row.get("project_key") or ""))
         for row in observed_rows
-        if str(row["status"]) not in ("fail", "timeout")
+        if str(row["status"]) not in FAILED_STATUSES
     }
     # SKIPPED phases are inside OK_TOTAL (= TOTAL_PHASES - FAIL_TOTAL) and
     # write no row: without subtracting them, the WARN would fire on almost

@@ -22,6 +22,7 @@ escalates visibility only.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from scripts.dream.post_run_alert import format_reconciliation_line
@@ -69,15 +70,57 @@ def test_a_fallback_retry_counts_its_pair_once() -> None:
     assert line.endswith("pairs_written=1 gap=0")
 
 
-def test_a_partial_row_is_a_written_row() -> None:
-    """`partial` = the phase wrote THEN the validator invalidated it: the row
-    exists, counting it as lost would trigger an INSERT hunt on every night where
-    G4 does its job."""
+def test_a_night_with_one_partial_phase_reconciles_to_zero_and_causes_no_warn() -> None:
+    """dream.sh's REORG/PROMOTE/CONNECT validators flip a row's status to
+    `partial` on failure and force `phase_rc=1`, which dream.sh's own
+    `case "$phase_rc" in … *) FAILED_PHASES+=(…)` files under `FAIL_TOTAL`, NOT
+    `OK_TOTAL` (see `test_dream_sh_classifies_partial_as_a_failed_phase` below).
+    A lone partial phase therefore makes `OK_TOTAL=0` for that night.
+    `pairs_written` must exclude the same row for the same reason, or the two
+    counters disagree about what "OK" means and produce a deterministic
+    off-by-one gap on every partial night (measured 2026-09-06:
+    `62 - 0 - 63 = -1`) — not a lost INSERT, just two vocabularies for one
+    word. Superseded design (git history): counting `partial` as "written"
+    reasoned "the row exists, so nothing was lost" — true of the INSERT, but
+    irrelevant to a counter whose whole job is to match dream.sh's verdict."""
     rows = [_row("reorg", "partial", "brain-v42")]
 
-    line = format_reconciliation_line(1, rows)
+    line = format_reconciliation_line(0, rows)
 
-    assert line.endswith("pairs_written=1 gap=0")
+    assert line == "RECONCILIATION phases_ok=0 skipped=0 pairs_written=0 gap=0"
+    # dream.sh's own trigger (test_dream_sh_logs_the_reconciliation_and_warns_on_gap):
+    # the WARN fires unless the line ends in exactly " gap=0".
+    assert line.endswith(" gap=0"), "a gap=0 line never trips dream.sh's WARN"
+
+
+def test_dream_sh_classifies_partial_as_a_failed_phase() -> None:
+    """Structural pin for the test above: the validators' `partial` write is
+    followed, on every phase, by a `case "$phase_rc" in … *) FAILED_PHASES+=`
+    that has no branch of its own for 1 — it falls into the same bucket as
+    any other non-zero, non-timeout code. `phase_rc=1` is exactly what the
+    REORG validator sets right before that `case` runs."""
+    assert "phase_rc=1 so the FAIL_TOTAL counter" in DREAM_SH
+    case_block = DREAM_SH.split('case "$phase_rc" in', 1)[1].split("esac", 1)[0]
+    assert "0) ;;" in case_block
+    assert "2) TIMED_OUT_PHASES+=" in case_block
+    assert "*) FAILED_PHASES+=" in case_block, (
+        "phase_rc=1 (partial) has no branch of its own — it falls into the "
+        "catch-all that feeds FAIL_TOTAL, same as a hard failure"
+    )
+
+
+def test_reconciliation_docstring_names_no_ticket() -> None:
+    """`b95c5742` is CLOSED (`tickets.status='closed'`, measured 2026-09-06),
+    and the causes it named in dream.sh's WARN ("INSERT best-effort perdu ?
+    rejeu ?") were themselves wrong for a partial night: the true cause was
+    the `partial` miscount fixed above, neither a lost write nor a replay.
+    Pinning this doc to an incident id lets the id go stale in silence;
+    describing the measurement itself cannot."""
+    doc = format_reconciliation_line.__doc__ or ""
+    assert not re.search(r"\b[0-9a-f]{8}\b", doc), (
+        "the reconciliation line's own doc must describe what it measures, "
+        "not cite a ticket id that can (and did) close"
+    )
 
 
 def test_pure_failure_rows_do_not_count_as_written_success() -> None:
