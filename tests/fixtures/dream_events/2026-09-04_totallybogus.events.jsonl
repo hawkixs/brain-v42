@@ -1,0 +1,4 @@
+{"type": "thread.started", "thread_id": "fixture-unnamed-0001"}
+{"type": "item.started", "item": {"id": "item_1", "type": "mcp_tool_call", "server": "brain-v42", "tool": "brain_search", "arguments": {"query": "should never be attributed to a phase", "limit": 5}, "result": null, "error": null, "status": "in_progress"}}
+{"type": "item.completed", "item": {"id": "item_1", "type": "mcp_tool_call", "server": "brain-v42", "tool": "brain_search", "arguments": {"query": "should never be attributed to a phase", "limit": 5}, "result": {"content": [{"type": "text", "text": "## 1 result for \"should never be attributed to a phase\" (across all types)"}], "_meta": {"fastmcp": {"wrap_result": true}}, "structured_content": {"result": "## 1 result for \"should never be attributed to a phase\" (across all types)"}}, "error": null, "status": "completed"}}
+{"type": "turn.completed", "usage": {"input_tokens": 30, "output_tokens": 10}}
