@@ -34,8 +34,27 @@ from sqlalchemy.ext.asyncio import (
 from brain_v42.config import Settings
 from brain_v42.db.tables import adrs, dream_promotions, dream_runs, runbooks
 
-_REPORT_RE = re.compile(
-    r"===\s*PROMOTE\s+REPORT\s*===\s*(\{.*?\})\s*===\s*END\s*===",
+# Matched anywhere in the text, not on an exact
+# '=== PROMOTE REPORT ===\s*{' sequence: the model has been observed
+# appending a stray trailing word after the marker (night 2026-09-06,
+# '=== PROMOTE REPORT === Bettina'), which the old single-regex match
+# rejected outright even though the JSON body that followed was
+# well-formed. The JSON block is located separately, from the end of the
+# marker match up to the '=== END ===' sentinel — malformed JSON there
+# still fails strictly (see test_parse_report_malformed_json_raises and its
+# trailing-word twin).
+#
+# Deliberately NOT anchored with ^...$/re.MULTILINE: the codex rail writes
+# the model's last message verbatim (--output-last-message), so the marker
+# can share a line with leading prose too ('Voici le rapport.
+# === PROMOTE REPORT ===') — line-anchoring would reject that even though
+# it is a superset of both main's original behaviour and the trailing-word
+# case (test_parse_report_tolerates_prose_prefix_on_marker_line).
+_MARKER_RE = re.compile(
+    r"===\s*PROMOTE\s+REPORT\s*===",
+)
+_REPORT_BODY_RE = re.compile(
+    r"(\{.*?\})\s*===\s*END\s*===",
     re.DOTALL,
 )
 
@@ -55,12 +74,21 @@ class ValidationFailure(Exception):
 
 
 def parse_report(raw: str) -> dict:
-    """Extract the JSON report block between the PROMOTE markers."""
-    m = _REPORT_RE.search(raw)
-    if m is None:
+    """Extract the JSON report block between the PROMOTE markers.
+
+    The marker is matched loosely: text before or after
+    ``=== PROMOTE REPORT ===`` on its line is tolerated, and the marker
+    need not start the line. The JSON body is then located in the
+    remainder of the text, up to ``=== END ===``.
+    """
+    marker_match = _MARKER_RE.search(raw)
+    if marker_match is None:
+        raise ValidationFailure("missing PROMOTE REPORT markers")
+    body_match = _REPORT_BODY_RE.search(raw, marker_match.end())
+    if body_match is None:
         raise ValidationFailure("missing PROMOTE REPORT markers")
     try:
-        return json.loads(m.group(1))
+        return json.loads(body_match.group(1))
     except json.JSONDecodeError as e:
         raise ValidationFailure(f"malformed JSON: {e}") from e
 
@@ -214,6 +242,43 @@ async def validate(
             )
 
 
+async def _backfill_dream_run_id_from_candidate(
+    session_factory: async_sessionmaker[AsyncSession],
+    candidate_id: str,
+    dream_run_id: int | None,
+) -> None:
+    """Backfill dream_promotions.dream_run_id for the night's top candidate.
+
+    Deliberately independent of the PROMOTE report: create_with_promotion
+    (T2/T3) writes the adr/runbook audit row with dream_run_id=NULL at
+    tool-call time, before this script ever reads the LLM's stdout. Keying
+    off ``candidate_id`` (== candidates[0]["id"], known from the candidates
+    file alone) means a malformed or unparseable report — the night of
+    2026-09-06, a stray word on the marker line — no longer orphans that
+    row: production had dream_promotions.dream_run_id NULL for an ADR that
+    WAS accepted, and dream_runs stuck on 'partial'.
+
+    ``idx_dream_promotions_source_materialized`` guarantees at most one
+    ('adr'|'runbook') row per source_learning_id, so this is unambiguous.
+    A candidate with no such row yet (dry_run, skip path, or nothing
+    materialized) simply updates zero rows.
+    """
+    if dream_run_id is None:
+        return
+    source_uuid = UUID(candidate_id)
+    async with session_factory() as session:
+        async with session.begin():
+            await session.execute(
+                sa.update(dream_promotions)
+                .where(
+                    dream_promotions.c.source_learning_id == source_uuid,
+                    dream_promotions.c.target_type.in_(("adr", "runbook")),
+                    dream_promotions.c.dream_run_id.is_(None),
+                )
+                .values(dream_run_id=dream_run_id)
+            )
+
+
 async def _mark_dream_run_partial(
     session_factory: async_sessionmaker[AsyncSession],
     dream_run_id: int | None,
@@ -247,7 +312,26 @@ async def _amain(
     Found not by a night but by reading, after `reorg`'s failure of the 19th to
     20th: the shape was identical here, character for character. Only one of the
     two fired, because only `reorg` failed that night.
+
+    The dream_run_id backfill runs FIRST and unconditionally, before
+    parse_report is even attempted — it is keyed off the candidates file,
+    not the report, precisely so a report the model garbled (2026-09-06:
+    a stray word on the marker line) does not also orphan an audit row
+    that create_with_promotion already wrote correctly.
+
+    The backfill call itself is best-effort ("Best-effort — never raises",
+    the repo idiom): a DB failure or a non-UUID candidates[0]["id"] used to
+    sit outside this function's try/except and crash the process uncaught,
+    printing no "PROMOTE VALIDATION FAILED" line and never marking the run
+    'partial'. It is caught and warned to stderr so validation still runs.
     """
+    if candidates:
+        try:
+            await _backfill_dream_run_id_from_candidate(
+                session_factory, candidates[0]["id"], args.dream_run_id
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort, never raises
+            print(f"WARN backfill dream_run_id skipped: {exc}", file=sys.stderr)
     try:
         report = parse_report(raw)
         await validate(
