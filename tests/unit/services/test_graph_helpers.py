@@ -130,6 +130,30 @@ class TestGraphUpsertEntity:
         warnings = [e for e in logs if e["log_level"] == "warning"]
         assert any(e["event"] == "graph_relation_write_degraded" for e in warnings), logs
 
+    @pytest.mark.parametrize("outcome", ["missing_node", "error"])
+    async def test_returns_relation_warning_for_missing_node_and_error_outcomes(
+        self, outcome: str
+    ) -> None:
+        """Pins graph_helpers.py's ``if outcome in ("missing_node", "error")``
+        branch in ``create_related_relations`` — deleting it previously left
+        the whole suite green because every other test only asserted the WARN
+        log emitted by ``graph_create_relation_logged``, never the returned
+        warnings list ``graph_upsert_entity`` itself builds from that branch."""
+        graph = MagicMock()
+        graph.upsert_node = AsyncMock()
+        graph.link_to_project = AsyncMock()
+        graph.create_relation = AsyncMock(return_value=outcome)
+
+        warnings = await graph_upsert_entity(
+            graph,
+            "Decision",
+            FIXED_UUID,
+            {"title": "x"},
+            related_to=[{"id": str(REL_UUID), "type": "MOTIVATED_BY"}],
+        )
+
+        assert warnings == [f"relation MOTIVATED_BY to {REL_UUID} was not staged ({outcome})"]
+
     async def test_durable_related_relation_failure_propagates(self) -> None:
         graph = MagicMock()
         graph.requires_durable_write_success = True
