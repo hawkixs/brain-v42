@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
@@ -534,6 +535,74 @@ class TestBrainServiceWhatDoIKnowAboutTypeFilter:
         decision_svc.semantic_search.assert_not_awaited()
         runbook_svc.semantic_search.assert_not_awaited()
 
+    async def test_empty_project_group_early_return_names_the_unresolved_group(self) -> None:
+        """Fix round (lot G2 major): an unresolvable project_group must carry
+        its own name into diagnostics, on BOTH search() and
+        what_do_i_know_about() — before this fix, the early return produced a
+        SearchDiagnostics indistinguishable from 'nothing exists in scope',
+        which sends the caller to fix the wrong thing (widen scope instead of
+        fixing the group name).
+        """
+        decision_svc, learning_svc, snippet_svc, runbook_svc, adr_svc, embedding_svc = (
+            make_mock_services()
+        )
+        project_context_svc = MagicMock()
+        project_context_svc.get_keys_by_group = AsyncMock(return_value=[])
+        brain = BrainService(
+            decision_svc=decision_svc,
+            learning_svc=learning_svc,
+            snippet_svc=snippet_svc,
+            runbook_svc=runbook_svc,
+            adr_svc=adr_svc,
+            embedding_svc=embedding_svc,
+            project_context_svc=project_context_svc,
+        )
+
+        wdika_response = await brain.what_do_i_know_about("topic", project_group="typo-group-name")
+        assert wdika_response.diagnostics.project_group_requested == "typo-group-name"
+        assert wdika_response.diagnostics.project_group_unresolved is True
+
+        search_response = await brain.search("query", project_group="typo-group-name")
+        assert search_response.diagnostics.project_group_requested == "typo-group-name"
+        assert search_response.diagnostics.project_group_unresolved is True
+
+    async def test_resolved_project_group_does_not_set_the_unresolved_flag(self) -> None:
+        """Positive witness: a project_group that DOES resolve to members must
+        not be flagged as unresolved — the flag names a specific failure mode,
+        not "a project_group was passed"."""
+        brain, _svcs = make_brain_service()
+        brain._project_context_svc = MagicMock()
+        brain._project_context_svc.get_keys_by_group = AsyncMock(
+            return_value=["brain-v42", "other-project"]
+        )
+
+        response = await brain.search("query", project_group="platform")
+
+        assert response.diagnostics.project_group_unresolved is False
+
+    async def test_resolved_project_group_is_recorded_in_diagnostics(self) -> None:
+        """MAJOR fix (review round 3): a project_group that RESOLVES to
+        project_keys must say so in diagnostics on BOTH search() and
+        what_do_i_know_about() — before this fix, project_group_requested was
+        set ONLY on the unresolved early-return path, so a resolved group's
+        SearchDiagnostics was indistinguishable from "no group requested"
+        (project_key_effective stays None, which the formatter renders as
+        "project: none (admin scope)" — a false statement about the scope
+        actually searched)."""
+        brain, _svcs = make_brain_service()
+        brain._project_context_svc = MagicMock()
+        brain._project_context_svc.get_keys_by_group = AsyncMock(return_value=["proj-a", "proj-b"])
+
+        search_response = await brain.search("query", project_group="red-triad")
+        assert search_response.diagnostics.project_group_requested == "red-triad"
+        assert search_response.diagnostics.project_group_resolved_keys == ["proj-a", "proj-b"]
+        assert search_response.diagnostics.project_group_unresolved is False
+
+        wdika_response = await brain.what_do_i_know_about("topic", project_group="red-triad")
+        assert wdika_response.diagnostics.project_group_requested == "red-triad"
+        assert wdika_response.diagnostics.project_group_resolved_keys == ["proj-a", "proj-b"]
+        assert wdika_response.diagnostics.project_group_unresolved is False
+
     async def test_empty_types_list_searches_nothing(self) -> None:
         """types=[] means 'search nothing', not 'fall back to ALL_TYPES'.
 
@@ -889,6 +958,27 @@ class TestBrainServiceScoreThreshold:
         response = await brain.search("query")
         assert response.total == 1
 
+    async def test_survived_threshold_counts_only_what_cleared_min_score(self) -> None:
+        """Fix round (lot G2 major): diagnostics.survived_threshold must count
+        candidates that cleared min_score, distinct from
+        candidates_before_threshold (which also counts the ones that never
+        cleared it) — needed so the formatter's archived/merged fallback
+        kind can name a real count instead of a floor over the whole pool.
+        """
+        archived = make_decision(title="Archived", freshness_status="archived")
+        archived2 = make_decision(title="Archived 2", freshness_status="archived")
+        low = make_decision(title="Low score")
+
+        brain, _ = make_brain_service(
+            decision_results=[(archived, 0.9), (archived2, 0.8), (low, 0.1)],
+            min_score=0.5,
+        )
+        response = await brain.search("query")
+
+        assert response.total == 0
+        assert response.diagnostics.candidates_before_threshold == 3
+        assert response.diagnostics.survived_threshold == 2
+
 
 # ---------------------------------------------------------------------------
 # TestBrainServiceHybridSearcher — hybrid search integration
@@ -970,6 +1060,139 @@ class TestBrainServiceHybridSearcher:
         for svc in called_domain_svcs:
             assert "include_archived" not in svc.search.await_args.kwargs
             assert "include_archived" not in svc.semantic_search.await_args.kwargs
+
+
+class _ContractReranker:
+    """Minimal double honoring HybridReranker.rerank_with_mode's documented
+    contract on its happy path: empty candidates -> ("reranked", []),
+    non-empty candidates -> ("reranked", <normalised-score candidates>).
+
+    Used instead of a MagicMock so the fan-out actually calls into a
+    reranker for BOTH the empty and the non-empty shard, exercising the
+    real HybridSearcher.search() code path (not a stubbed-out mode).
+    """
+
+    async def rerank_with_mode(self, query: str, candidates: list[Any]) -> tuple[str, list[Any]]:
+        if not candidates:
+            return "reranked", []
+        for c in candidates:
+            c.score = 0.9
+        return "reranked", sorted(candidates, key=lambda c: c.score, reverse=True)
+
+
+# ---------------------------------------------------------------------------
+# TestBrainServiceEmptyShardDoesNotDegrade — lot F4
+# ---------------------------------------------------------------------------
+
+
+class TestBrainServiceEmptyShardDoesNotDegrade:
+    """Lot F4: an empty shard must not degrade the whole query.
+
+    Investigation W11 / F4 facts: HybridSearcher.search() reported "rrf_only"
+    for any shard with zero fused candidates, even when a reranker IS
+    configured and successfully used by every other shard (root cause:
+    ``if self._reranker and fused:`` in hybrid.py treated "nothing to
+    rerank" the same as "no reranker configured"). Because
+    ``brain_service._fan_out`` picks ``observed_rerank_modes[0]`` as the
+    query-wide mode, an empty FIRST shard flipped a healthy multi-type query
+    into "degraded", which in turn forced effective_min_score to 0.0 —
+    87 non-empty search_log rows with top_score<0.05, measured 2026-09-06.
+    """
+
+    @pytest.mark.asyncio
+    async def test_one_empty_shard_others_reranked_query_not_degraded(self) -> None:
+        """One empty shard + one reranked shard -> query-wide mode is 'reranked'."""
+        decision = make_decision()
+
+        # Empty shard FIRST so a naive observed_rerank_modes[0] would surface
+        # its (buggy) mode rather than the healthy one.
+        learning_svc = MagicMock()
+        learning_svc.search = AsyncMock(return_value=[])
+        learning_svc.semantic_search = AsyncMock(return_value=[])
+
+        decision_svc = MagicMock()
+        decision_svc.search = AsyncMock(return_value=[decision])
+        decision_svc.semantic_search = AsyncMock(return_value=[])
+
+        embedding_svc = MagicMock()
+        embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
+
+        brain = BrainService(
+            decision_svc=decision_svc,
+            learning_svc=learning_svc,
+            snippet_svc=MagicMock(),
+            runbook_svc=MagicMock(),
+            adr_svc=MagicMock(),
+            embedding_svc=embedding_svc,
+            hybrid_searcher=HybridSearcher(reranker=_ContractReranker()),
+            min_score=0.0,
+        )
+
+        response = await brain.search(
+            "query",
+            types=["learning", "decision"],
+            min_score=0.5,
+        )
+
+        assert response.diagnostics.rerank_mode == "reranked", (
+            f"expected a healthy 'reranked' query-wide mode, got "
+            f"{response.diagnostics.rerank_mode!r} — an empty shard must not "
+            "masquerade as rrf_only and degrade the whole query"
+        )
+        assert response.diagnostics.degraded is False
+        assert response.degraded is None
+        # The requested threshold must survive — no real degradation happened.
+        assert response.diagnostics.min_score_effective == 0.5
+        assert response.total == 1
+
+    @pytest.mark.asyncio
+    async def test_search_and_what_do_i_know_about_report_the_same_mode(self) -> None:
+        """G2 diagnostics report the SAME per-query mode from both entrypoints.
+
+        search() and what_do_i_know_about() both derive degraded/rerank_mode from
+        the same _fan_out() call — the empty-shard fix must benefit both
+        consistently, not just the flat search() path.
+        """
+
+        def _build_brain() -> BrainService:
+            decision = make_decision()
+
+            learning_svc = MagicMock()
+            learning_svc.search = AsyncMock(return_value=[])
+            learning_svc.semantic_search = AsyncMock(return_value=[])
+
+            decision_svc = MagicMock()
+            decision_svc.search = AsyncMock(return_value=[decision])
+            decision_svc.semantic_search = AsyncMock(return_value=[])
+
+            embedding_svc = MagicMock()
+            embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
+
+            return BrainService(
+                decision_svc=decision_svc,
+                learning_svc=learning_svc,
+                snippet_svc=MagicMock(),
+                runbook_svc=MagicMock(),
+                adr_svc=MagicMock(),
+                embedding_svc=embedding_svc,
+                hybrid_searcher=HybridSearcher(reranker=_ContractReranker()),
+                min_score=0.0,
+            )
+
+        search_response = await _build_brain().search(
+            "query", types=["learning", "decision"], min_score=0.5
+        )
+        wdika_response = await _build_brain().what_do_i_know_about(
+            "query", types=["learning", "decision"], min_score=0.5
+        )
+
+        assert search_response.diagnostics.rerank_mode == "reranked"
+        assert wdika_response.diagnostics.rerank_mode == "reranked"
+        assert search_response.diagnostics.rerank_mode == wdika_response.diagnostics.rerank_mode
+        assert search_response.diagnostics.degraded is False
+        assert wdika_response.diagnostics.degraded is False
+        assert search_response.diagnostics.min_score_effective == 0.5
+        assert wdika_response.diagnostics.min_score_effective == 0.5
 
 
 # ---------------------------------------------------------------------------

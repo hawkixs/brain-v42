@@ -311,3 +311,67 @@ class TestHybridSearcher:
 
         assert mode == RERANK_MODE_RRF_FALLBACK
         assert len(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_empty_shard_with_reranker_configured_is_not_rrf_only(self):
+        """An empty shard (no FTS/vector hits) must not report 'rrf_only'.
+
+        Lot F4: 'rrf_only' means "no reranker is configured" (SearchResponse.degraded
+        docstring: "permanent mode"), a property of the HybridSearcher instance, not
+        of a single query's candidate count. Before the fix, ``search()`` skipped the
+        call to ``rerank_with_mode`` whenever ``fused`` was empty (``if self._reranker
+        and fused:``), so a shard with zero candidates reported "rrf_only" even though
+        a reranker IS configured and used for every other shard — flipping the whole
+        query into a degraded state it never actually entered.
+        """
+        fts_fn = AsyncMock(return_value=[])
+        vec_fn = AsyncMock(return_value=[])
+
+        reranker = MagicMock()
+        reranker.rerank_with_mode = AsyncMock(return_value=(RERANK_MODE_RERANKED, []))
+
+        searcher = HybridSearcher(reranker=reranker)
+        results, mode = await searcher.search(
+            query="q",
+            fts_search_fn=fts_fn,
+            vector_search_fn=vec_fn,
+            text_extractor=lambda e: "t",
+            limit=10,
+        )
+
+        assert results == []
+        assert mode == RERANK_MODE_RERANKED
+        assert mode != RERANK_MODE_RRF_ONLY
+
+    @pytest.mark.asyncio
+    async def test_empty_shard_with_reranker_configured_does_not_call_the_reranker(self):
+        """G2 fix round: an empty shard reports RERANKED WITHOUT round-tripping
+        through the reranker adapter.
+
+        Delegating unconditionally (the original F4 fix) round-trips every
+        empty shard through the reranker. In production the reranker is
+        wrapped by InstrumentedReranker, whose ``finally`` block records a
+        reranker_call unconditionally — so an all-empty shard would inflate
+        ``reranker.total_calls`` and dilute ``avg_latency_ms`` toward zero for
+        a call that never touched the reranker at all. rerank_with_mode()
+        already returns RERANKED for ``[]`` vacuously; HybridSearcher must
+        short-circuit to that same value instead of paying the round-trip.
+        """
+        fts_fn = AsyncMock(return_value=[])
+        vec_fn = AsyncMock(return_value=[])
+
+        reranker = MagicMock()
+        reranker.rerank_with_mode = AsyncMock(return_value=(RERANK_MODE_RERANKED, []))
+
+        searcher = HybridSearcher(reranker=reranker)
+        results, mode = await searcher.search(
+            query="q",
+            fts_search_fn=fts_fn,
+            vector_search_fn=vec_fn,
+            text_extractor=lambda e: "t",
+            limit=10,
+        )
+
+        assert results == []
+        assert mode == RERANK_MODE_RERANKED
+        reranker.rerank_with_mode.assert_not_awaited()

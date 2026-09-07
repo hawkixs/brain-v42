@@ -20,6 +20,7 @@ Design decisions:
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +31,7 @@ from brain_v42.models.brain import (
     ALL_TYPES,
     KnowledgeByType,
     KnowledgeType,
+    SearchDiagnostics,
     SearchResponse,
     SearchResult,
     WhatDoIKnowResponse,
@@ -60,6 +62,25 @@ _TYPE_TO_PLURAL: dict[str, str] = {t: t + "s" for t in ALL_TYPES}
 _GRAPH_BACKED_TYPES: frozenset[KnowledgeType] = frozenset(
     ("decision", "learning", "snippet", "runbook", "adr")
 )
+
+
+@dataclass
+class ThresholdDiagnostics:
+    """Counters already known once ``_build_search_results`` has scanned candidates.
+
+    Lot G2: read where the numbers already exist — no extra query on the
+    nominal path. ``candidates_before_threshold``/``best_raw_score`` are
+    computed for every candidate BEFORE the min_score cut; ``tags_filtered_out``
+    counts only entities excluded specifically by the tags overlap check
+    (i.e. that already survived the score and archived filters);
+    ``survived_threshold`` counts candidates that cleared the min_score cut,
+    before either the archived/merged filter or the tags filter runs.
+    """
+
+    candidates_before_threshold: int
+    best_raw_score: float | None
+    tags_filtered_out: int
+    survived_threshold: int
 
 
 class BrainService:
@@ -126,7 +147,7 @@ class BrainService:
         limit: int,
         project_keys: list[str] | None = None,
         include_archived: bool = False,
-    ) -> tuple[dict[KnowledgeType, list[tuple[Any, float]]], dict[str, Any] | None]:
+    ) -> tuple[dict[KnowledgeType, list[tuple[Any, float]]], dict[str, Any] | None, str | None]:
         """Run search concurrently across all requested service types.
 
         Pre-computes the query embedding ONCE and passes it to each service,
@@ -148,8 +169,13 @@ class BrainService:
             rerank_mode == "rrf_fallback", the caller receives degraded info.
 
         Returns:
-            2-tuple (results_by_type, degraded) where degraded is None (healthy)
-            or a dict with mode keys ("rerank_mode", "search_mode").
+            3-tuple (results_by_type, degraded, rerank_mode_observed).
+            degraded is None (healthy) or a dict with mode keys
+            ("rerank_mode", "search_mode"). rerank_mode_observed is the raw
+            single-value summary ("reranked" / "rrf_fallback" / "rrf_only")
+            surfaced for diagnostics even when NOT degraded — None when no
+            hybrid searcher ran (vector-only path, or the FTS-only fallback,
+            which reports through search_mode instead).
         """
         scope = get_dream_project_scope()
         if scope is not None:
@@ -254,6 +280,9 @@ class BrainService:
 
         # Build degraded marker
         degraded: dict[str, Any] | None = None
+        # Diagnostics (lot G2): the raw observed mode, surfaced even when the
+        # search is NOT degraded, so an empty-result explanation can name it.
+        rerank_mode_observed: str | None = None
         if fts_only_fallback:
             degraded = {"search_mode": "fts_fallback"}
         elif observed_rerank_modes:
@@ -261,14 +290,15 @@ class BrainService:
 
             # If ANY shard degraded to rrf_fallback, surface that
             if RERANK_MODE_RRF_FALLBACK in observed_rerank_modes:
+                rerank_mode_observed = RERANK_MODE_RRF_FALLBACK
                 degraded = {"rerank_mode": RERANK_MODE_RRF_FALLBACK}
             else:
                 # Surface the mode (reranked / rrf_only) — None means healthy
-                mode = observed_rerank_modes[0] if observed_rerank_modes else None
-                if mode not in (None, "reranked"):
-                    degraded = {"rerank_mode": mode}
+                rerank_mode_observed = observed_rerank_modes[0]
+                if rerank_mode_observed not in (None, "reranked"):
+                    degraded = {"rerank_mode": rerank_mode_observed}
 
-        return results, degraded
+        return results, degraded, rerank_mode_observed
 
     def _build_search_results(
         self,
@@ -277,21 +307,36 @@ class BrainService:
         min_score: float | None = None,
         include_archived: bool = False,
         tags: list[str] | None = None,
-    ) -> list[SearchResult]:
+    ) -> tuple[list[SearchResult], ThresholdDiagnostics]:
         """Flatten, filter by min_score, sort by score DESC, and slice to limit.
 
         When include_archived is False (default), entities with
         freshness_status='archived' or a non-null merged_into are excluded.
         When decay_calculator is set, results are re-ranked by effective_score.
+
+        Returns:
+            2-tuple (results, diagnostics). diagnostics counts candidates
+            BEFORE the min_score cut and entities removed specifically by the
+            tags filter — read here because this is where the numbers are
+            already known (lot G2, no extra query on the nominal path).
         """
         threshold = min_score if min_score is not None else self._min_score
         flat: list[SearchResult] = []
         effective_scores: list[float] = []
+        candidates_before_threshold = 0
+        best_raw_score: float | None = None
+        tags_filtered_out = 0
+        survived_threshold = 0
 
         for t, items in results_by_type.items():
             for entity, score in items:
+                candidates_before_threshold += 1
+                if best_raw_score is None or score > best_raw_score:
+                    best_raw_score = score
+
                 if score < threshold:
                     continue
+                survived_threshold += 1
 
                 # Filter archived/merged entities
                 if not include_archived:
@@ -309,6 +354,7 @@ class BrainService:
                 if tags:
                     entity_tags = getattr(entity, "tags", None) or []
                     if not set(tags) & set(entity_tags):
+                        tags_filtered_out += 1
                         continue
 
                 try:
@@ -418,7 +464,13 @@ class BrainService:
         paired = list(zip(flat, effective_scores, strict=True))
         paired.sort(key=lambda pair: pair[1], reverse=True)
         flat = [r for r, _ in paired]
-        return flat[:limit]
+        diagnostics = ThresholdDiagnostics(
+            candidates_before_threshold=candidates_before_threshold,
+            best_raw_score=best_raw_score,
+            tags_filtered_out=tags_filtered_out,
+            survived_threshold=survived_threshold,
+        )
+        return flat[:limit], diagnostics
 
     def _log_search_accesses(self, results: list[SearchResult]) -> int:
         """Emit one usage signal per canonical entity represented in a response."""
@@ -490,11 +542,21 @@ class BrainService:
         if project_group and self._project_context_svc:
             project_keys = await self._project_context_svc.get_keys_by_group(project_group)
             if not project_keys:
+                threshold = min_score if min_score is not None else self._min_score
                 return SearchResponse(
                     results=[],
                     total=0,
                     query=query,
                     types_searched=types_to_search,
+                    diagnostics=SearchDiagnostics(
+                        min_score_requested=threshold,
+                        min_score_effective=threshold,
+                        types_searched=types_to_search,
+                        project_key_requested=project_key,
+                        include_archived=include_archived,
+                        project_group_requested=project_group,
+                        project_group_unresolved=True,
+                    ),
                 )
 
         # Fix 3: Task 9 dead fetch removed — graph.get_project_tree() was called
@@ -502,7 +564,7 @@ class BrainService:
         # One wasted Neo4j roundtrip per scoped search. The full multi-project
         # fan-out is still deferred; the dead roundtrip is now gone.
 
-        results_by_type, fan_out_degraded = await self._fan_out(
+        results_by_type, fan_out_degraded, rerank_mode_observed = await self._fan_out(
             types=types_to_search,
             query=query,
             project_key=project_key,
@@ -516,12 +578,42 @@ class BrainService:
         # and applying min_score=0.2 would silently discard all results (incident d3cf29e9).
         effective_min_score: float | None = min_score if fan_out_degraded is None else 0.0
 
-        search_results = self._build_search_results(
+        search_results, threshold_diagnostics = self._build_search_results(
             results_by_type,
             limit=limit,
             min_score=effective_min_score,
             include_archived=include_archived,
             tags=tags,
+        )
+
+        # Diagnostics (lot G2): the dream scope reads a ContextVar (no IO) —
+        # re-reading it here (rather than threading it back out of _fan_out)
+        # is free, and gives the CALLER's project_key untouched for comparison.
+        dream_scope = get_dream_project_scope()
+        project_key_effective = dream_scope.project_key if dream_scope is not None else project_key
+        min_score_requested = min_score if min_score is not None else self._min_score
+        min_score_effective = (
+            effective_min_score if effective_min_score is not None else self._min_score
+        )
+        diagnostics = SearchDiagnostics(
+            candidates_before_threshold=threshold_diagnostics.candidates_before_threshold,
+            best_raw_score=threshold_diagnostics.best_raw_score,
+            min_score_requested=min_score_requested,
+            min_score_effective=min_score_effective,
+            tags_filtered_out=threshold_diagnostics.tags_filtered_out,
+            survived_threshold=threshold_diagnostics.survived_threshold,
+            types_searched=types_to_search,
+            project_key_requested=project_key,
+            project_key_effective=project_key_effective,
+            project_key_injected_by_dream_scope=dream_scope is not None,
+            include_archived=include_archived,
+            rerank_mode=rerank_mode_observed,
+            degraded=fan_out_degraded is not None,
+            # Review round 3 (major): a RESOLVED project_group must be named
+            # here too, not only on the unresolved early-return above — both
+            # values were already in hand, this is a zero-extra-query fix.
+            project_group_requested=project_group if project_keys else None,
+            project_group_resolved_keys=list(project_keys) if project_keys else [],
         )
 
         # Task 8: Graph neighbor enrichment — batch-fetch related nodes for result entities.
@@ -622,6 +714,7 @@ class BrainService:
             types_searched=types_to_search,
             related=related,
             degraded=fan_out_degraded,
+            diagnostics=diagnostics,
         )
 
     async def what_do_i_know_about(
@@ -651,7 +744,8 @@ class BrainService:
         Returns:
             WhatDoIKnowResponse with results grouped under by_type.
         """
-        threshold = min_score if min_score is not None else self._min_score
+        min_score_requested = min_score if min_score is not None else self._min_score
+        threshold = min_score_requested
         types_to_search: list[KnowledgeType] = types if types is not None else list(ALL_TYPES)
 
         # Resolve project_group to a list of project_keys
@@ -664,9 +758,18 @@ class BrainService:
                     by_type=KnowledgeByType(),
                     total=0,
                     types_searched=types_to_search,
+                    diagnostics=SearchDiagnostics(
+                        min_score_requested=min_score_requested,
+                        min_score_effective=min_score_requested,
+                        types_searched=types_to_search,
+                        project_key_requested=project_key,
+                        include_archived=include_archived,
+                        project_group_requested=project_group,
+                        project_group_unresolved=True,
+                    ),
                 )
 
-        results_by_type, _wdika_degraded = await self._fan_out(
+        results_by_type, _wdika_degraded, rerank_mode_observed = await self._fan_out(
             types=types_to_search,
             query=topic,
             project_key=project_key,
@@ -680,12 +783,20 @@ class BrainService:
 
         by_type = KnowledgeByType()
         total = 0
+        candidates_before_threshold = 0
+        best_raw_score: float | None = None
+        survived_threshold = 0
 
         for t, items in results_by_type.items():
             type_results: list[SearchResult] = []
             for entity, score in items:
+                candidates_before_threshold += 1
+                if best_raw_score is None or score > best_raw_score:
+                    best_raw_score = score
+
                 if score < threshold:
                     continue
+                survived_threshold += 1
 
                 # Filter archived/merged entities
                 if not include_archived:
@@ -740,10 +851,36 @@ class BrainService:
         elif total > 0:
             logger.warning("brain_service.access_logger_none", result_count=total)
 
+        # Diagnostics (lot G2) — grouped mode has no tags parameter, so
+        # tags_filtered_out is always 0 (see SearchDiagnostics docstring).
+        dream_scope = get_dream_project_scope()
+        project_key_effective = dream_scope.project_key if dream_scope is not None else project_key
+        diagnostics = SearchDiagnostics(
+            candidates_before_threshold=candidates_before_threshold,
+            best_raw_score=best_raw_score,
+            min_score_requested=min_score_requested,
+            min_score_effective=threshold,
+            tags_filtered_out=0,
+            survived_threshold=survived_threshold,
+            types_searched=types_to_search,
+            project_key_requested=project_key,
+            project_key_effective=project_key_effective,
+            project_key_injected_by_dream_scope=dream_scope is not None,
+            include_archived=include_archived,
+            rerank_mode=rerank_mode_observed,
+            degraded=_wdika_degraded is not None,
+            # Review round 3 (major): mirrors search() — a RESOLVED
+            # project_group must be named here too, not only on the
+            # unresolved early-return above.
+            project_group_requested=project_group if project_keys else None,
+            project_group_resolved_keys=list(project_keys) if project_keys else [],
+        )
+
         return WhatDoIKnowResponse(
             topic=topic,
             by_type=by_type,
             total=total,
             types_searched=types_to_search,
             degraded=_wdika_degraded,
+            diagnostics=diagnostics,
         )

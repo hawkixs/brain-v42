@@ -147,8 +147,30 @@ class HybridSearcher:
 
         fused = rrf_fuse(fts_candidates, vec_candidates, k=60)[:20]
 
-        if self._reranker and fused:
-            rerank_mode, fused = await self._reranker.rerank_with_mode(query, fused)
+        if self._reranker:
+            if fused:
+                rerank_mode, fused = await self._reranker.rerank_with_mode(query, fused)
+            else:
+                # An empty shard must not report RRF_ONLY: that mode means "no
+                # reranker configured" (a property of this instance), not
+                # "this particular shard had zero candidates". Reporting
+                # RRF_ONLY for a merely-empty shard flipped an otherwise
+                # healthy multi-type query into "degraded" whenever that
+                # shard happened to be observed first (lot F4;
+                # brain_service._fan_out picks observed_rerank_modes[0]).
+                #
+                # rerank_with_mode() already returns RERANK_MODE_RERANKED for
+                # `[]` (nothing needed reranking, vacuously true) — we
+                # short-circuit to that SAME value here instead of
+                # delegating, so an empty shard costs zero reranker
+                # round-trips. Delegating unconditionally (the original F4
+                # fix) round-trips every empty shard through
+                # InstrumentedReranker, which records a reranker_call for
+                # it — inflating total_calls and diluting avg_latency_ms for
+                # calls that never touched the reranker (measured: 6 empty
+                # shards -> 6 record_reranker_call(0.0, 0) on the delegating
+                # version, 0 on this one).
+                rerank_mode = RERANK_MODE_RERANKED
         else:
             rerank_mode = RERANK_MODE_RRF_ONLY
 

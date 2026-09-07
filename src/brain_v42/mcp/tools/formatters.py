@@ -15,7 +15,7 @@ from fastmcp.exceptions import ToolError
 from pydantic import BaseModel
 
 from brain_v42.models.adr import ADR
-from brain_v42.models.brain import KnowledgeByType, SearchResult
+from brain_v42.models.brain import KnowledgeByType, SearchDiagnostics, SearchResult
 from brain_v42.models.decision import Decision
 from brain_v42.models.indexed_plan_chunk import IndexedPlanChunk
 from brain_v42.models.learning import Learning
@@ -633,11 +633,129 @@ def _format_search_item(
     return item
 
 
+def _format_empty_search_reason(
+    diagnostics: SearchDiagnostics,
+    tags: list[str] | None,
+    banner_present: bool = False,
+) -> str:
+    """Explain WHY a search returned 0 results — never silently.
+
+    Doctrine (``clamp_list_limit``, ~864-882 below): "A cap applied silently
+    makes the result lie: the caller who asks for 500 and receives 100 rows
+    cannot tell 'there were only 100' from 'there were 500'." The same rule
+    applies to a 0-result answer: "## 0 results" alone cannot tell "nothing
+    exists in scope" from "5 candidates existed but none cleared min_score"
+    from "3 candidates existed but the tags filter removed them" — three
+    dead ends that call for three different next moves (widen scope, lower
+    min_score, or drop a tag).
+
+    The pipeline order (``BrainService._build_search_results``) is: score
+    threshold -> archived filter -> tags filter. These kinds are RANKED, not
+    mutually exclusive: a mixed candidate set (some killed by min_score, a
+    disjoint few by the tags filter) is the common case, so the branches
+    below are checked in a fixed priority order and each reads only the
+    counter for the kind it names — never a total that a different filter
+    also contributed to.
+
+    Args:
+        banner_present: True when the caller already rendered a degraded
+            banner above this block (``format_search_results``/
+            ``format_knowledge_by_type``'s own banner_lines). The trailing
+            "rerank mode: X" line is redundant with that banner — both are
+            derived from the same ``rerank_mode_observed`` in production —
+            so it is dropped whenever a banner is already on screen.
+    """
+    if diagnostics.project_group_unresolved:
+        lines = [f'project group "{diagnostics.project_group_requested}" → no known project']
+        if not banner_present and diagnostics.rerank_mode not in (None, "reranked"):
+            lines.append(f"rerank mode: {diagnostics.rerank_mode}")
+        return "\n".join(lines)
+
+    scope_bits = [f"types searched: {', '.join(diagnostics.types_searched) or 'none'}"]
+    if diagnostics.project_group_requested and diagnostics.project_group_resolved_keys:
+        keys = ", ".join(diagnostics.project_group_resolved_keys)
+        scope_bits.append(f'project group "{diagnostics.project_group_requested}" → {keys}')
+    elif diagnostics.project_key_effective:
+        marker = (
+            " [injected by dream scope]" if diagnostics.project_key_injected_by_dream_scope else ""
+        )
+        scope_bits.append(f"project: {diagnostics.project_key_effective}{marker}")
+    else:
+        scope_bits.append("project: none (admin scope)")
+    scope_bits.append(
+        "archived excluded" if not diagnostics.include_archived else "archived included"
+    )
+    scope_desc = "; ".join(scope_bits)
+
+    if diagnostics.candidates_before_threshold == 0:
+        reason = f"0 candidates in scope ({scope_desc})"
+    elif diagnostics.tags_filtered_out > 0 and tags:
+        tag_list = ", ".join(tags)
+        n = diagnostics.tags_filtered_out
+        reason = f"{n} candidate{'s' if n != 1 else ''} removed by the tags filter [{tag_list}]"
+    elif (
+        diagnostics.best_raw_score is None
+        or diagnostics.best_raw_score < diagnostics.min_score_effective
+    ):
+        # candidates_before_threshold is a FLOOR, not a total: HybridSearcher
+        # applies rrf_fuse(...)[:20] before reranking and fused[:limit] after —
+        # "at least N", never an exact count (SearchDiagnostics docstring).
+        n = diagnostics.candidates_before_threshold
+        best = (
+            f"{diagnostics.best_raw_score:.2f}" if diagnostics.best_raw_score is not None else "n/a"
+        )
+        reason = (
+            f"at least {n} candidate{'s' if n != 1 else ''}, none above min_score "
+            f"{diagnostics.min_score_effective:g} (best raw score {best}; "
+            f"threshold applies to the raw score, before decay)"
+        )
+    else:
+        # Fallback: candidates cleared min_score but 0 survived — most likely
+        # the archived/merged filter (no dedicated counter for it, see G2
+        # scope). survived_threshold, not candidates_before_threshold: the
+        # latter also counts candidates that never cleared min_score at all.
+        # Same floor caveat as above: "at least N", never an exact count.
+        n = diagnostics.survived_threshold
+        reason = (
+            f"at least {n} candidate{'s' if n != 1 else ''} above min_score "
+            f"{diagnostics.min_score_effective:g}, but 0 remained after filtering ({scope_desc})"
+        )
+
+    lines = [reason]
+    if not banner_present and diagnostics.rerank_mode not in (None, "reranked"):
+        lines.append(f"rerank mode: {diagnostics.rerank_mode}")
+    return "\n".join(lines)
+
+
+def _format_grouped_ignored_params_notice(
+    tags: list[str] | None,
+    include_related: bool,
+) -> str | None:
+    """Name what grouped mode silently drops — only when the caller asked.
+
+    ``what_do_i_know_about()`` has no ``tags`` parameter and never renders a
+    "### Related" section: a caller passing either to ``group_by_type=True``
+    gets results (or an empty explanation) that quietly ignore that request.
+    Returns None when neither was requested, so the nominal rendering is
+    unaffected (same rule as the empty-reason block itself).
+    """
+    ignored_bits: list[str] = []
+    if tags:
+        ignored_bits.append(f"tags [{', '.join(tags)}]")
+    if include_related:
+        ignored_bits.append("include_related")
+    if not ignored_bits:
+        return None
+    return f"note: grouped mode ignores {' and '.join(ignored_bits)} — use group_by_type=False for either."
+
+
 def format_search_results(
     results: list[SearchResult],
     query: str,
     degraded: dict[str, Any] | None = None,
     full: bool = False,
+    diagnostics: SearchDiagnostics | None = None,
+    tags: list[str] | None = None,
 ) -> str:
     """Format cross-type search results grouped by type.
 
@@ -653,6 +771,12 @@ def format_search_results(
             in degraded mode (rrf_fallback or fts_fallback).
         full: When True, include complete decision and learning bodies.
             The default renders their existing compact summaries instead.
+        diagnostics: Optional SearchResponse.diagnostics. When results is
+            empty AND diagnostics is provided, a short block explains WHY
+            (see ``_format_empty_search_reason``). Never affects non-empty
+            rendering — the nominal path is byte-identical either way.
+        tags: The tags filter the caller requested, used only to name them
+            in the empty-result "removed by the tags filter" explanation.
     """
     # Build degraded banner (Fix 1 + Fix 2 + MINOR 2: rrf_only)
     banner_lines: list[str] = []
@@ -676,9 +800,14 @@ def format_search_results(
     header = f'## {n} result{"s" if n != 1 else ""} for "{query}" (across all types)'
 
     if not results:
+        empty_body = header
+        if diagnostics is not None:
+            empty_body += "\n" + _format_empty_search_reason(
+                diagnostics, tags, banner_present=bool(banner_lines)
+            )
         if banner_lines:
-            return "\n".join(banner_lines) + "\n" + header
-        return header
+            return "\n".join(banner_lines) + "\n" + empty_body
+        return empty_body
 
     grouped: dict[str, list[SearchResult]] = defaultdict(list)
     for r in results:
@@ -710,6 +839,9 @@ def format_knowledge_by_type(
     topic: str,
     degraded: dict[str, Any] | None = None,
     full: bool = False,
+    diagnostics: SearchDiagnostics | None = None,
+    tags: list[str] | None = None,
+    include_related: bool = False,
 ) -> str:
     """Format grouped knowledge results (brain_what_do_i_know_about / group_by_type=True).
 
@@ -724,6 +856,16 @@ def format_knowledge_by_type(
             - search_mode='fts_fallback': embedding service was down, FTS only
         full: When True, include complete decision and learning bodies.
             The default renders their existing compact summaries instead.
+        diagnostics: Optional WhatDoIKnowResponse.diagnostics. When total is 0
+            AND diagnostics is provided, a short block explains WHY — mirrors
+            format_search_results (grouped mode has no tags parameter, so the
+            "removed by the tags filter" kind never applies here).
+        tags: The tags filter the caller requested, if any. Grouped mode has
+            no tags parameter and structurally ignores it — used only to name
+            that in the empty-result block (never affects non-empty output).
+        include_related: Whether the caller requested "### Related". Grouped
+            mode never renders that section — used only to name it in the
+            empty-result block (never affects non-empty output).
     """
     # Build degraded banner — mirrors format_search_results
     banner_lines: list[str] = []
@@ -749,9 +891,17 @@ def format_knowledge_by_type(
     )
     header = f'## Everything known about "{topic}" ({total} items)'
     if total == 0:
+        empty_body = header
+        if diagnostics is not None:
+            empty_body += "\n" + _format_empty_search_reason(
+                diagnostics, tags=None, banner_present=bool(banner_lines)
+            )
+        ignored_notice = _format_grouped_ignored_params_notice(tags, include_related)
+        if ignored_notice:
+            empty_body += "\n" + ignored_notice
         if banner_lines:
-            return "\n".join(banner_lines) + "\n" + header
-        return header
+            return "\n".join(banner_lines) + "\n" + empty_body
+        return empty_body
 
     sections: list[str] = []
     for type_key, attr_name in [

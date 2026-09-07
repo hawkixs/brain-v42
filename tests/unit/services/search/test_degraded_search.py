@@ -543,3 +543,71 @@ class TestDeadFetchRemoved:
         # Task 8 enrichment still works
         graph.get_related_ids.assert_awaited_once()
         assert len(response.related) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Lot F4: a REAL rerank failure must still degrade — and the documented
+# min_score=0.0 override for rrf_fallback is intentional (commit 4bc7bb9,
+# BrainService.search docstring "Mixed degraded modes"), so it is pinned
+# here rather than "fixed" — the empty-shard fix (this lot) must not touch it.
+# ---------------------------------------------------------------------------
+
+
+class TestRealRerankFailureStillDegradesAlongsideAnEmptyShard:
+    @pytest.mark.asyncio
+    async def test_empty_shard_plus_real_rerank_failure_still_reports_rrf_fallback(
+        self,
+    ) -> None:
+        """One empty shard (learning) + one shard whose reranker HTTP call really
+        raises (decision, non-empty candidates) must still surface 'rrf_fallback'
+        and the documented effective_min_score=0.0 override — a genuine reranker
+        outage is not the empty-shard bug this lot fixes, and must keep degrading
+        the whole query exactly as before.
+        """
+        decision = _make_decision(title="Real outage survivor")
+
+        learning_svc = MagicMock()
+        learning_svc.search = AsyncMock(return_value=[])
+        learning_svc.semantic_search = AsyncMock(return_value=[])
+
+        decision_svc = MagicMock()
+        decision_svc.search = AsyncMock(return_value=[decision])
+        decision_svc.semantic_search = AsyncMock(return_value=[(decision, 0.9)])
+
+        embedding_svc = MagicMock()
+        embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
+
+        # Reranker client that ALWAYS raises — a real outage, not an empty shard.
+        reranker_client = AsyncMock()
+        reranker_client.rerank = AsyncMock(side_effect=Exception("503 gpu_busy"))
+        reranker = HybridReranker(client=reranker_client)
+        hybrid_searcher = HybridSearcher(reranker=reranker)
+
+        brain = BrainService(
+            decision_svc=decision_svc,
+            learning_svc=learning_svc,
+            snippet_svc=MagicMock(),
+            runbook_svc=MagicMock(),
+            adr_svc=MagicMock(),
+            embedding_svc=embedding_svc,
+            hybrid_searcher=hybrid_searcher,
+            min_score=0.5,
+        )
+
+        response = await brain.search(
+            "query",
+            types=["learning", "decision"],
+            min_score=0.5,
+        )
+
+        # Documented behaviour, pinned: a real rrf_fallback still degrades the
+        # WHOLE query and drops the threshold to 0.0, rescuing rank-based scores.
+        assert response.diagnostics.rerank_mode == "rrf_fallback"
+        assert response.degraded == {"rerank_mode": "rrf_fallback"}
+        assert response.diagnostics.degraded is True
+        assert response.diagnostics.min_score_effective == 0.0
+        assert response.total > 0, (
+            "rrf_fallback must still rescue rank-based scores below the "
+            "requested min_score, exactly as documented"
+        )
