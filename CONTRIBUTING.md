@@ -119,19 +119,28 @@ of `docs/` predates this rule; those files are left coherent in their original
 language until a deliberate translation pass, rather than drifting into a
 mix of both. New content does not get that grandfather clause.
 
-**Exception — byte-exact operator-configuration fixtures (decided
-2026-09-07).** A test fixture that is a byte-exact copy of a live operator
-configuration file, captured to prove a test against the real artifact
-instead of a hand-retyped stand-in (for example
-`tests/unit/data/models.conf.2026-09-03-live-dream-drop-in`, a French
-systemd drop-in whose content a test asserts against verbatim), is evidence
-and not prose: retranslating it would break the byte-for-byte identity the
-test exists to check, so it is exempt from the English-only rule for new
-files. The exemption is narrow and comes with its own obligations — the
-fixture must carry no secret (rotate or redact before capturing), and its
-filename must name both its source and the capture date, exactly as the
-example above does, so a reader can tell what it is a copy of without
-opening it.
+**Exception — byte-exact captures of a live artefact (decided
+2026-09-07).** A test fixture that is a byte-exact capture of a live
+artefact — operator configuration, a drop-in, a captured log excerpt —
+whose identity a test asserts, rather than a hand-retyped stand-in, is
+evidence and not prose: retranslating it would break the byte-for-byte
+identity the test exists to check, so it is exempt from the English-only
+rule for new files. `tests/unit/data/` already holds several:
+`models.conf.2026-09-03-live-dream-drop-in` (a French systemd drop-in
+compared byte-for-byte with the live file on the machine that holds the
+source — a drift alarm there, and a skip everywhere else, including CI's
+hosted runner, where the live file cannot exist) and
+`2026-09-03_brain-v42_reorg.anonymised.log`,
+`2026-09-04_roadmap.excerpt.log` and `2026-09-05_roadmap.excerpt.log`
+(captured run output whose French prose comes verbatim from the process
+that produced it). The exemption is narrow: a capture that would contain
+a secret is not eligible for it at all, full stop — it must be synthetic
+instead, because redacting it would stop being byte-exact and defeat the
+exception's own premise. Naming the capture's source and the date it
+pins in the filename, as the examples above do, is recommended so a
+reader can tell what it is without opening it, but is not a fixed
+convention — `ARCHITECTURE.2026-08-22-before-f7d013eb.md`, for one, dates
+the source state it captured rather than the moment of capture.
 
 ## Commit conventions
 
