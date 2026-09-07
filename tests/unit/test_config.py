@@ -508,6 +508,36 @@ class TestDecayConfig:
         assert s.forgetting_archive_days == 180
 
 
+class TestPromoteDedupConfig:
+    """W25 lot 1: per-family raw-cosine shadow-verdict bounds.
+
+    Defaults are measured, not guessed -- see the comment above the fields
+    in config.py for the provenance (W25-promote-nearest-tool-design.md
+    §1.3). ADR and runbook get DISTINCT bounds because the two families
+    embed different text (embedding_text.py): a shared constant would
+    sacrifice one family, which is exactly what a single 0.85 gate did.
+    """
+
+    def test_defaults_match_the_measured_bounds(self) -> None:
+        from brain_v42.config import Settings
+
+        s = Settings(postgres_url="postgresql+asyncpg://brain:brain@localhost:5433/brain")
+        assert s.promote_dedup_borderline_low_adr == 0.760
+        assert s.promote_dedup_block_adr == 0.820
+        assert s.promote_dedup_borderline_low_runbook == 0.712
+        assert s.promote_dedup_block_runbook == 0.818
+
+    def test_adr_and_runbook_bounds_are_independent_settings(self) -> None:
+        """A shared constant would be a regression: the two families do not
+        embed the same text, so their overlap bands sit at different values.
+        """
+        from brain_v42.config import Settings
+
+        s = Settings(postgres_url="postgresql+asyncpg://brain:brain@localhost:5433/brain")
+        assert s.promote_dedup_borderline_low_adr != s.promote_dedup_borderline_low_runbook
+        assert s.promote_dedup_block_adr != s.promote_dedup_block_runbook
+
+
 class TestAutomationRuntimeConfig:
     """Configuration additive for the isolated automation runtime."""
 
@@ -808,6 +838,10 @@ _ALIASED_FIELDS: list[tuple[str, str]] = [
     ("graph_projector_neo4j_password", "GRAPH_PROJECTOR_NEO4J_PASSWORD"),
     ("gitlab_webhook_secret", "GITLAB_WEBHOOK_SECRET"),
     ("brain_project_hierarchy_path", "PROJECT_HIERARCHY_PATH"),
+    ("promote_dedup_borderline_low_adr", "PROMOTE_DEDUP_BORDERLINE_LOW_ADR"),
+    ("promote_dedup_block_adr", "PROMOTE_DEDUP_BLOCK_ADR"),
+    ("promote_dedup_borderline_low_runbook", "PROMOTE_DEDUP_BORDERLINE_LOW_RUNBOOK"),
+    ("promote_dedup_block_runbook", "PROMOTE_DEDUP_BLOCK_RUNBOOK"),
 ]
 
 

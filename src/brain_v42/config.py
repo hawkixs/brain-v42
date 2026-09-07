@@ -526,6 +526,38 @@ class Settings(BaseSettings):
     )
     reranker_timeout: float = Field(default=10.0, validation_alias=_brain_alias("RERANKER_TIMEOUT"))
 
+    # --- PROMOTE dedup shadow verdict (W25, lot 1 — server-side, shadow only) ---
+    # Bounds measured against the live dream_promotions/ADR/runbook corpus
+    # (W25-promote-nearest-tool-design.md §1.3, replayed and reproduced to the
+    # thousandth): raw pgvector cosine `1 - (l.embedding <=> x.embedding)`.
+    #   ADR:     duplicate-proxy (learning -> its own ADR) min 0.760, n=72;
+    #            non-duplicate (promoted learning -> nearest PRIOR ADR) max
+    #            0.820, n=66. Overlap band: [0.760, 0.820].
+    #   Runbook: duplicate-proxy min 0.712, n=35; non-duplicate max 0.818,
+    #            n=33. Overlap band: [0.712, 0.818].
+    # Below the low bound: no historical duplicate-proxy ever measured that
+    # low -> band "clear". Above the high bound: no historical non-duplicate
+    # ever measured that high -> band "block". Inside the closed interval
+    # (bounds included, since both were themselves observed on the opposite
+    # population): band "borderline" -- the server says "I don't know"
+    # instead of guessing. Per family, never a shared constant: the two
+    # families embed different text (embedding_text.py -- learning excludes
+    # nothing, adr = "title context decision", runbook = "title description
+    # trigger" with steps EXCLUDED), which is exactly why the runbook anchor
+    # sits lower than the ADR one.
+    promote_dedup_borderline_low_adr: float = Field(
+        default=0.760, validation_alias=_brain_alias("PROMOTE_DEDUP_BORDERLINE_LOW_ADR")
+    )
+    promote_dedup_block_adr: float = Field(
+        default=0.820, validation_alias=_brain_alias("PROMOTE_DEDUP_BLOCK_ADR")
+    )
+    promote_dedup_borderline_low_runbook: float = Field(
+        default=0.712, validation_alias=_brain_alias("PROMOTE_DEDUP_BORDERLINE_LOW_RUNBOOK")
+    )
+    promote_dedup_block_runbook: float = Field(
+        default=0.818, validation_alias=_brain_alias("PROMOTE_DEDUP_BLOCK_RUNBOOK")
+    )
+
     # --- Neo4j (optional — disabled by default) ---
     neo4j_url: str | None = Field(default=None, validation_alias=_brain_alias("NEO4J_URL"))
     neo4j_user: str = Field(default="neo4j", validation_alias=_brain_alias("NEO4J_USER"))

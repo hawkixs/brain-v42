@@ -23,6 +23,7 @@ import sqlalchemy as sa
 from scripts.dream.promote_validate import (
     ValidationFailure,
     _amain,
+    _as_float_or_fail,
     _mark_dream_run_partial,
     parse_report,
     validate,
@@ -66,6 +67,44 @@ async def session_factory(_engine: AsyncEngine) -> async_sessionmaker[AsyncSessi
 @pytest_asyncio.fixture
 async def isolated_pk() -> str:
     return make_unit_project_key("t9")
+
+
+# ────────── dedup shadow-verdict fixtures (W25 lot 1) ──────────────────────
+#
+# `candidates[0]["dedup"]` is the block `promote_prepare.attach_dedup_verdict`
+# injects (see test_promote_prepare_dedup_bands.py for the real SQL). These
+# tests exercise `validate()` in isolation, so a synthetic block of the same
+# SHAPE is enough — the two are pinned to agree by
+# test_human_access_count_survives_all_the_way_into_the_promote_prompt-style
+# end-to-end coverage on the promote_prepare side, not duplicated here.
+
+
+def _dedup_family_block(
+    band: str = "clear",
+    *,
+    nearest_id: str | None = None,
+    nearest_title: str | None = None,
+    nearest_raw_cosine: float | None = None,
+) -> dict:
+    return {
+        "band": band,
+        "nearest_id": nearest_id,
+        "nearest_title": nearest_title,
+        "nearest_raw_cosine": nearest_raw_cosine,
+        "top3": [],
+        "null_embedding_excluded": 0,
+    }
+
+
+def _dedup_block(adr: dict | None = None, runbook: dict | None = None) -> dict:
+    """Both families default to "clear" with nothing to compare against —
+    the shape a validator call unrelated to dedup behaviour should see.
+    """
+    return {
+        "score_kind": "raw_cosine_pgvector",
+        "adr": adr or _dedup_family_block(),
+        "runbook": runbook or _dedup_family_block(),
+    }
 
 
 # ────────── parse_report ──────────────────────────────────────────────────────
@@ -207,7 +246,7 @@ async def test_validate_adr_happy_path_passes(
     session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
 ) -> None:
     learning_id, adr_id = await _seed_learning_and_adr(session_factory, isolated_pk)
-    candidates = [{"id": str(learning_id), "topic": "t"}]
+    candidates = [{"id": str(learning_id), "topic": "t", "dedup": _dedup_block()}]
     report = {
         "target_type": "adr",
         "candidate_id": str(learning_id),
@@ -453,10 +492,30 @@ async def test_validate_skip_path_inserts_audit_row(
                 )
             ).scalar_one()
 
-    candidates = [{"id": str(learning_id), "topic": "t"}]
+    candidates = [
+        {
+            "id": str(learning_id),
+            "topic": "t",
+            "dedup": _dedup_block(
+                adr=_dedup_family_block(
+                    "block",
+                    nearest_id=str(uuid.uuid4()),
+                    nearest_title="ADR-3",
+                    nearest_raw_cosine=0.9153,
+                )
+            ),
+        }
+    ]
+    # Asymmetric on purpose (review finding, round 3): the injected
+    # 0.9153 and the reported 0.92 differ by 0.0047, within
+    # _DEDUP_COSINE_TOLERANCE (6e-3) so the cross-check still passes, but
+    # far enough apart that persisting the WRONG one is visible below. What
+    # must land in the row is the SERVER-injected 0.9153, never the
+    # model's 0.92 transcription.
     report = {
         "target_type": "skipped_dedup",
         "candidate_id": str(learning_id),
+        "dedup_family": "adr",
         "cosine_observed": 0.92,
         "reason": "matches existing ADR-3",
     }
@@ -475,7 +534,7 @@ async def test_validate_skip_path_inserts_audit_row(
             .one()
         )
     assert row["target_type"] == "skipped_dedup"
-    assert row["cosine_observed"] == pytest.approx(0.92)
+    assert row["cosine_observed"] == pytest.approx(0.9153)
     assert row["skipped_reason"] == "matches existing ADR-3"
 
 
@@ -607,12 +666,19 @@ async def test_validate_adr_wet_backfills_dream_run_id(
     """
     learning_id, adr_id = await _seed_learning_and_adr(session_factory, isolated_pk)
     run_id = await _seed_dream_run(session_factory)
-    candidates = [{"id": str(learning_id), "topic": "t"}]
+    candidates = [
+        {
+            "id": str(learning_id),
+            "topic": "t",
+            "dedup": _dedup_block(adr=_dedup_family_block("clear", nearest_raw_cosine=0.5)),
+        }
+    ]
     report = {
         "target_type": "adr",
         "candidate_id": str(learning_id),
         "target_id": str(adr_id),
         "dry_run": False,
+        "cosine_observed": 0.5,
     }
     await validate(
         report, candidates, session_factory, dream_run_id=run_id, project_key=isolated_pk
@@ -629,6 +695,10 @@ async def test_validate_adr_wet_backfills_dream_run_id(
             .one()
         )
     assert row["dream_run_id"] == run_id
+    # W25 lot 1: the model-reported cosine, cross-checked against the
+    # server-injected one, is now persisted on the MATERIALIZED row too —
+    # not just on skip paths.
+    assert row["cosine_observed"] == pytest.approx(0.5)
 
 
 @pytest.mark.asyncio
@@ -637,12 +707,19 @@ async def test_validate_runbook_wet_backfills_dream_run_id(
 ) -> None:
     learning_id, runbook_id = await _seed_learning_and_runbook(session_factory, isolated_pk)
     run_id = await _seed_dream_run(session_factory)
-    candidates = [{"id": str(learning_id), "topic": "t"}]
+    candidates = [
+        {
+            "id": str(learning_id),
+            "topic": "t",
+            "dedup": _dedup_block(runbook=_dedup_family_block("clear", nearest_raw_cosine=0.4)),
+        }
+    ]
     report = {
         "target_type": "runbook",
         "candidate_id": str(learning_id),
         "target_id": str(runbook_id),
         "dry_run": False,
+        "cosine_observed": 0.4,
     }
     await validate(
         report, candidates, session_factory, dream_run_id=run_id, project_key=isolated_pk
@@ -661,6 +738,7 @@ async def test_validate_runbook_wet_backfills_dream_run_id(
             .one()
         )
     assert row["dream_run_id"] == run_id
+    assert row["cosine_observed"] == pytest.approx(0.4)
 
 
 @pytest.mark.asyncio
@@ -671,7 +749,7 @@ async def test_validate_adr_wet_with_none_run_id_leaves_dream_run_id_null(
     clobber an existing dream_run_id nor raise — just no-op the backfill.
     """
     learning_id, adr_id = await _seed_learning_and_adr(session_factory, isolated_pk)
-    candidates = [{"id": str(learning_id), "topic": "t"}]
+    candidates = [{"id": str(learning_id), "topic": "t", "dedup": _dedup_block()}]
     report = {
         "target_type": "adr",
         "candidate_id": str(learning_id),
@@ -743,6 +821,787 @@ async def test_validate_hallucinated_adr_raises(
         await validate(
             report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk
         )
+
+
+# ────────── dedup shadow-verdict cross-check (W25 lot 1) ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_missing_dedup_block(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """A candidates[0] with no `dedup` key at all is a bug (promote_prepare
+    silently not deployed / stale pool), never a silent pass. Fail closed.
+    """
+    learning_id, adr_id = await _seed_learning_and_adr(session_factory, isolated_pk)
+    candidates = [{"id": str(learning_id), "topic": "t"}]  # no "dedup" key
+    report = {
+        "target_type": "adr",
+        "candidate_id": str(learning_id),
+        "target_id": str(adr_id),
+    }
+    with pytest.raises(ValidationFailure, match="missing dedup band"):
+        await validate(
+            report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk
+        )
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_missing_dedup_block_runbook(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """Runbook twin of test_validate_rejects_missing_dedup_block. Mutation
+    verified (review finding, fix round): deleting the
+    `_check_dedup_against_pool(...)` call on the runbook materialization
+    branch leaves every other test in this module green — only the ADR
+    branch had a witness for this guard.
+    """
+    learning_id, rb_id = await _seed_learning_and_runbook(session_factory, isolated_pk)
+    candidates = [{"id": str(learning_id), "topic": "t"}]  # no "dedup" key
+    report = {
+        "target_type": "runbook",
+        "candidate_id": str(learning_id),
+        "target_id": str(rb_id),
+    }
+    with pytest.raises(ValidationFailure, match="missing dedup band"):
+        await validate(
+            report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk
+        )
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_cosine_diverging_from_injected_pool(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """The model's reported `cosine_observed` must match the server-injected
+    `nearest_raw_cosine` for the SAME family. A divergence is treated as
+    fabrication (`dream.sh:1100` already hands the validator the pool that
+    was injected into the prompt — this is a free cross-check).
+    """
+    learning_id, adr_id = await _seed_learning_and_adr(session_factory, isolated_pk)
+    candidates = [
+        {
+            "id": str(learning_id),
+            "topic": "t",
+            "dedup": _dedup_block(adr=_dedup_family_block("clear", nearest_raw_cosine=0.3)),
+        }
+    ]
+    report = {
+        "target_type": "adr",
+        "candidate_id": str(learning_id),
+        "target_id": str(adr_id),
+        "cosine_observed": 0.95,  # fabricated — server injected 0.3
+    }
+    with pytest.raises(ValidationFailure, match="diverges from the server-injected"):
+        await validate(
+            report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk
+        )
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_cosine_diverging_from_injected_pool_runbook(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """Runbook twin of test_validate_rejects_cosine_diverging_from_injected_pool.
+    Same fabrication cross-check, same mutation witness, runbook family."""
+    learning_id, rb_id = await _seed_learning_and_runbook(session_factory, isolated_pk)
+    candidates = [
+        {
+            "id": str(learning_id),
+            "topic": "t",
+            "dedup": _dedup_block(runbook=_dedup_family_block("clear", nearest_raw_cosine=0.3)),
+        }
+    ]
+    report = {
+        "target_type": "runbook",
+        "candidate_id": str(learning_id),
+        "target_id": str(rb_id),
+        "cosine_observed": 0.95,  # fabricated — server injected 0.3
+    }
+    with pytest.raises(ValidationFailure, match="diverges from the server-injected"):
+        await validate(
+            report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk
+        )
+
+
+def test_as_float_or_fail_rejects_non_numeric_string() -> None:
+    """`cosine_observed` arrives straight from `json.loads` on the model's
+    report -- a stray shape must fail closed as ValidationFailure, not an
+    uncaught ValueError (review finding, fix round: `_amain` only catches
+    ValidationFailure, so anything else dies with a traceback and never
+    marks the run 'partial').
+    """
+    with pytest.raises(ValidationFailure, match="is not a number"):
+        _as_float_or_fail("0.85 (approx)", "cosine_observed")
+
+
+def test_as_float_or_fail_rejects_list() -> None:
+    with pytest.raises(ValidationFailure, match="is not a number"):
+        _as_float_or_fail([0.85], "cosine_observed")
+
+
+def test_as_float_or_fail_accepts_a_numeric_string() -> None:
+    """Negative twin: JSON round-tripping a number AS a string (rare but
+    not itself malformed) must still convert, not fail.
+    """
+    assert _as_float_or_fail("0.85", "cosine_observed") == pytest.approx(0.85)
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_non_numeric_cosine_string_as_validation_failure(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """Production-path witness for `_as_float_or_fail`: a non-numeric
+    `cosine_observed` reaching the divergence cross-check used to raise a
+    bare, uncaught `ValueError` out of `float()` -- `_amain` catches only
+    `ValidationFailure`, so the process died with a Python traceback,
+    printed no "PROMOTE VALIDATION FAILED" line, and never called
+    `_mark_dream_run_partial`. Verified before the fix: `float("0.85
+    (approx)")` raises `ValueError: could not convert string to float`.
+    """
+    learning_id, adr_id = await _seed_learning_and_adr(session_factory, isolated_pk)
+    candidates = [
+        {
+            "id": str(learning_id),
+            "topic": "t",
+            "dedup": _dedup_block(adr=_dedup_family_block("clear", nearest_raw_cosine=0.3)),
+        }
+    ]
+    report = {
+        "target_type": "adr",
+        "candidate_id": str(learning_id),
+        "target_id": str(adr_id),
+        "cosine_observed": "0.85 (approx)",
+    }
+    with pytest.raises(ValidationFailure, match="is not a number"):
+        await validate(
+            report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk
+        )
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_list_shaped_cosine_as_validation_failure(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """Same production-path witness, list shape (`TypeError` out of a bare
+    `float()`, not `ValueError` -- both must fail the same way).
+    """
+    learning_id, adr_id = await _seed_learning_and_adr(session_factory, isolated_pk)
+    candidates = [
+        {
+            "id": str(learning_id),
+            "topic": "t",
+            "dedup": _dedup_block(adr=_dedup_family_block("clear", nearest_raw_cosine=0.3)),
+        }
+    ]
+    report = {
+        "target_type": "adr",
+        "candidate_id": str(learning_id),
+        "target_id": str(adr_id),
+        "cosine_observed": [0.3],
+    }
+    with pytest.raises(ValidationFailure, match="is not a number"):
+        await validate(
+            report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk
+        )
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_fabricated_cosine_when_server_has_no_candidate(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """The server injected `nearest_raw_cosine: null` (no same-family row
+    exists yet) but the model reported a number anyway — fabrication.
+    """
+    learning_id, adr_id = await _seed_learning_and_adr(session_factory, isolated_pk)
+    candidates = [
+        {
+            "id": str(learning_id),
+            "topic": "t",
+            "dedup": _dedup_block(),  # both families: nearest_raw_cosine=None
+        }
+    ]
+    report = {
+        "target_type": "adr",
+        "candidate_id": str(learning_id),
+        "target_id": str(adr_id),
+        "cosine_observed": 0.5,
+    }
+    with pytest.raises(ValidationFailure, match="fabrication"):
+        await validate(
+            report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk
+        )
+
+
+@pytest.mark.asyncio
+async def test_validate_accepts_matching_cosine_within_tolerance(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """Negative twin: a cosine that matches (within float tolerance) passes."""
+    learning_id, adr_id = await _seed_learning_and_adr(session_factory, isolated_pk)
+    candidates = [
+        {
+            "id": str(learning_id),
+            "topic": "t",
+            "dedup": _dedup_block(adr=_dedup_family_block("clear", nearest_raw_cosine=0.30000001)),
+        }
+    ]
+    report = {
+        "target_type": "adr",
+        "candidate_id": str(learning_id),
+        "target_id": str(adr_id),
+        "cosine_observed": 0.3,
+    }
+    await validate(report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk)
+
+
+@pytest.mark.asyncio
+async def test_validate_accepts_two_decimal_transcription_of_injected_cosine(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """Blocker regression (fix round, W25 lot 1): all 15 historical
+    dream_promotions.cosine_observed values the model has ever reported
+    carry 2 decimals (0.82, 0.98, 0.87, ...), and phase_promote.md's own
+    dry-run example teaches ``"cosine_observed": 0.42`` -- a 2-decimal
+    style. `candidates[0].dedup.<family>.nearest_raw_cosine` is what
+    promote_prepare.py now rounds to (at most) 4 decimals before injecting
+    it into the pool JSON (see test_promote_prepare_dedup_bands.py), so the
+    validator's tolerance must accept a faithful 2-decimal transcription of
+    THAT number -- not demand the model reproduce a 16-significant-digit
+    float it was never asked to compute. 0.65 is exactly what a model
+    transcribing 0.645 to 2 decimals would write.
+
+    What lands in `dream_promotions.cosine_observed` is the SERVER-injected
+    0.645, not the model's 0.65 transcription (review finding, fix round):
+    the reported value is used only as a cross-check, and as a fallback
+    when the server injects nothing at all. Reading the row back is what
+    makes this distinction a witness rather than a claim in a docstring.
+    """
+    learning_id, adr_id = await _seed_learning_and_adr(session_factory, isolated_pk)
+    candidates = [
+        {
+            "id": str(learning_id),
+            "topic": "t",
+            "dedup": _dedup_block(adr=_dedup_family_block("clear", nearest_raw_cosine=0.645)),
+        }
+    ]
+    report = {
+        "target_type": "adr",
+        "candidate_id": str(learning_id),
+        "target_id": str(adr_id),
+        "cosine_observed": 0.65,
+    }
+    await validate(report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk)
+
+    async with session_factory() as session:
+        row = (
+            (
+                await session.execute(
+                    sa.select(dream_promotions.c.cosine_observed).where(
+                        dream_promotions.c.target_adr_id == adr_id
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert row["cosine_observed"] == pytest.approx(0.645)
+
+
+@pytest.mark.asyncio
+async def test_validate_accepts_two_decimal_transcription_of_injected_cosine_runbook(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """Runbook twin of test_validate_accepts_two_decimal_transcription_of_injected_cosine
+    (review finding, round 3): the ADR write site (:380) had a reader for
+    "the SERVER-injected value is what gets persisted", but the runbook
+    write site (:430, now the second `if injected_cosine is not None`
+    branch) did not. Every other runbook cosine assertion in this module
+    uses reported == injected, so none of them could catch a regression
+    that persisted the model's transcription instead of the server's
+    number on THIS site specifically. Reading the row back is what makes
+    this a witness rather than a claim.
+    """
+    learning_id, rb_id = await _seed_learning_and_runbook(session_factory, isolated_pk)
+    candidates = [
+        {
+            "id": str(learning_id),
+            "topic": "t",
+            "dedup": _dedup_block(runbook=_dedup_family_block("clear", nearest_raw_cosine=0.645)),
+        }
+    ]
+    report = {
+        "target_type": "runbook",
+        "candidate_id": str(learning_id),
+        "target_id": str(rb_id),
+        "cosine_observed": 0.65,
+    }
+    await validate(report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk)
+
+    async with session_factory() as session:
+        row = (
+            (
+                await session.execute(
+                    sa.select(dream_promotions.c.cosine_observed).where(
+                        dream_promotions.c.target_runbook_id == rb_id
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert row["cosine_observed"] == pytest.approx(0.645)
+
+
+@pytest.mark.asyncio
+async def test_validate_still_rejects_fabricated_cosine_with_widened_tolerance(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """Negative twin of the widened-tolerance regression above: a genuinely
+    fabricated value (0.95 vs the server-injected 0.30) must still fail by
+    a wide margin -- widening the tolerance to absorb 2-decimal rounding
+    must not also swallow real divergence.
+    """
+    learning_id, adr_id = await _seed_learning_and_adr(session_factory, isolated_pk)
+    candidates = [
+        {
+            "id": str(learning_id),
+            "topic": "t",
+            "dedup": _dedup_block(adr=_dedup_family_block("clear", nearest_raw_cosine=0.30)),
+        }
+    ]
+    report = {
+        "target_type": "adr",
+        "candidate_id": str(learning_id),
+        "target_id": str(adr_id),
+        "cosine_observed": 0.95,
+    }
+    with pytest.raises(ValidationFailure, match="diverges from the server-injected"):
+        await validate(
+            report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk
+        )
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_borderline_without_dedup_examined(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """band="borderline" MUST come with a non-empty `dedup_examined` — this
+    is what makes a near-duplicate pass-through observable instead of mute.
+    """
+    learning_id, adr_id = await _seed_learning_and_adr(session_factory, isolated_pk)
+    candidates = [
+        {
+            "id": str(learning_id),
+            "topic": "t",
+            "dedup": _dedup_block(adr=_dedup_family_block("borderline", nearest_raw_cosine=0.79)),
+        }
+    ]
+    report = {
+        "target_type": "adr",
+        "candidate_id": str(learning_id),
+        "target_id": str(adr_id),
+        "cosine_observed": 0.79,
+        # dedup_examined intentionally omitted
+    }
+    with pytest.raises(ValidationFailure, match="requires a non-empty dedup_examined"):
+        await validate(
+            report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk
+        )
+
+
+@pytest.mark.asyncio
+async def test_validate_accepts_borderline_with_dedup_examined(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """Negative twin: the same borderline band WITH `dedup_examined` populated
+    passes — proving the check is on presence, not on the band itself.
+    """
+    learning_id, adr_id = await _seed_learning_and_adr(session_factory, isolated_pk)
+    candidates = [
+        {
+            "id": str(learning_id),
+            "topic": "t",
+            "dedup": _dedup_block(adr=_dedup_family_block("borderline", nearest_raw_cosine=0.79)),
+        }
+    ]
+    report = {
+        "target_type": "adr",
+        "candidate_id": str(learning_id),
+        "target_id": str(adr_id),
+        "cosine_observed": 0.79,
+        "dedup_examined": [{"id": str(uuid.uuid4()), "raw_cosine": 0.79, "verdict": "distinct"}],
+    }
+    await validate(report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk)
+
+
+@pytest.mark.asyncio
+async def test_validate_does_not_enforce_the_block_band_lot1_is_shadow(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """Characterization test (review finding, fix round): SHADOW means
+    `promote_validate.validate` never enforces the band -- it only
+    cross-checks the reported `cosine_observed` against the server-injected
+    number. This name is deliberately unmistakable: a materialization
+    landing in band="block" is ACCEPTED today, on purpose, because the
+    model -- not the server -- still decides who gets promoted (W25 lot 1,
+    W25-promote-nearest-tool-design.md §5). Verified by direct call before
+    this test existed: `_check_dedup_against_pool` accepted
+    `{"target_type": "adr", "cosine_observed": 0.95}` against `band ==
+    "block"` with zero test in this module ever materializing while the
+    band said "block" -- every "block" fixture elsewhere in this module is
+    a `skipped_dedup` report, never a WET materialization.
+
+    If lot 2 makes the validator enforce the band, THIS test must be
+    deleted (not adjusted) as part of that change -- its own name says why
+    it existed. Until then, it is the mechanical proof that the authority
+    transfer has NOT silently happened.
+    """
+    learning_id, adr_id = await _seed_learning_and_adr(session_factory, isolated_pk)
+    candidates = [
+        {
+            "id": str(learning_id),
+            "topic": "t",
+            "dedup": _dedup_block(adr=_dedup_family_block("block", nearest_raw_cosine=0.95)),
+        }
+    ]
+    report = {
+        "target_type": "adr",
+        "candidate_id": str(learning_id),
+        "target_id": str(adr_id),
+        "cosine_observed": 0.95,
+    }
+    await validate(report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk)
+
+    async with session_factory() as session:
+        row = (
+            (
+                await session.execute(
+                    sa.select(dream_promotions).where(dream_promotions.c.target_adr_id == adr_id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert row["cosine_observed"] == pytest.approx(0.95)
+
+
+@pytest.mark.asyncio
+async def test_validate_skipped_dedup_uses_dedup_family_field_to_locate_the_band(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """`skipped_dedup` no longer carries the classification in `target_type`
+    (it was overwritten) — the report's `dedup_family` field is what the
+    validator uses to pick which family's block to cross-check against.
+    A mismatched `dedup_family` must diverge against the WRONG family's
+    number and fail.
+    """
+    async with session_factory() as session:
+        async with session.begin():
+            learning_id = (
+                await session.execute(
+                    learnings.insert()
+                    .values(
+                        topic="t",
+                        insight="i",
+                        project_key=isolated_pk,
+                        source_type="experience",
+                        confidence="high",
+                        tags=[],
+                    )
+                    .returning(learnings.c.id)
+                )
+            ).scalar_one()
+
+    candidates = [
+        {
+            "id": str(learning_id),
+            "topic": "t",
+            "dedup": _dedup_block(
+                adr=_dedup_family_block("block", nearest_raw_cosine=0.9),
+                runbook=_dedup_family_block("clear", nearest_raw_cosine=0.3),
+            ),
+        }
+    ]
+    report = {
+        "target_type": "skipped_dedup",
+        "candidate_id": str(learning_id),
+        "dedup_family": "runbook",  # wrong family for a cosine of 0.9
+        "cosine_observed": 0.9,
+        "reason": "near-duplicate",
+    }
+    with pytest.raises(ValidationFailure, match="diverges from the server-injected"):
+        await validate(
+            report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk
+        )
+
+
+# ────────── dedup_family mandatory + fabrication on never-reached-step-3 ───
+# (major finding, fix round: `_report_dedup_family` used to return None
+# — a silent no-op — whenever a `skipped_dedup` report omitted
+# `dedup_family` or set it to anything other than "adr"/"runbook", and the
+# same None was returned for every target_type that never reaches Step 3
+# at all. Either way the fabricated `cosine_observed` still got INSERTed.
+# One test per bypass route named in the finding.
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_skipped_dedup_missing_dedup_family(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """`dedup_family` is mandatory for `skipped_dedup` — the prompt already
+    declares it required. Omitting it must not silently bypass the
+    fabrication cross-check.
+    """
+    async with session_factory() as session:
+        async with session.begin():
+            learning_id = (
+                await session.execute(
+                    learnings.insert()
+                    .values(
+                        topic="t",
+                        insight="i",
+                        project_key=isolated_pk,
+                        source_type="experience",
+                        confidence="high",
+                        tags=[],
+                    )
+                    .returning(learnings.c.id)
+                )
+            ).scalar_one()
+
+    candidates = [{"id": str(learning_id), "topic": "t"}]
+    report = {
+        "target_type": "skipped_dedup",
+        "candidate_id": str(learning_id),
+        "cosine_observed": 0.99,  # fabricated — no dedup_family to cross-check against
+    }
+    with pytest.raises(ValidationFailure, match="dedup_family"):
+        await validate(
+            report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk
+        )
+
+    async with session_factory() as session:
+        count = (
+            await session.execute(
+                sa.select(sa.func.count())
+                .select_from(dream_promotions)
+                .where(dream_promotions.c.source_learning_id == learning_id)
+            )
+        ).scalar_one()
+    assert count == 0, "fabricated report must not be persisted"
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_skipped_dedup_invalid_dedup_family(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """`dedup_family` set to anything other than "adr"/"runbook" is the same
+    bypass as omitting it entirely.
+    """
+    async with session_factory() as session:
+        async with session.begin():
+            learning_id = (
+                await session.execute(
+                    learnings.insert()
+                    .values(
+                        topic="t",
+                        insight="i",
+                        project_key=isolated_pk,
+                        source_type="experience",
+                        confidence="high",
+                        tags=[],
+                    )
+                    .returning(learnings.c.id)
+                )
+            ).scalar_one()
+
+    candidates = [{"id": str(learning_id), "topic": "t"}]
+    report = {
+        "target_type": "skipped_dedup",
+        "candidate_id": str(learning_id),
+        "dedup_family": "learning",  # not "adr" or "runbook"
+        "cosine_observed": 0.99,
+    }
+    with pytest.raises(ValidationFailure, match="dedup_family"):
+        await validate(
+            report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk
+        )
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_cosine_on_dedup_unavailable(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """`dedup_unavailable` means the source learning has no embedding — Step
+    3 never ran, so there is no server number to have copied. A reported
+    `cosine_observed` here can only be fabricated.
+    """
+    async with session_factory() as session:
+        async with session.begin():
+            learning_id = (
+                await session.execute(
+                    learnings.insert()
+                    .values(
+                        topic="t",
+                        insight="i",
+                        project_key=isolated_pk,
+                        source_type="experience",
+                        confidence="high",
+                        tags=[],
+                    )
+                    .returning(learnings.c.id)
+                )
+            ).scalar_one()
+
+    candidates = [{"id": str(learning_id), "topic": "t"}]  # no "dedup" key at all
+    report = {
+        "target_type": "dedup_unavailable",
+        "candidate_id": str(learning_id),
+        "cosine_observed": 0.99,
+        "reason": "embedding missing on source learning",
+    }
+    with pytest.raises(ValidationFailure, match="fabrication"):
+        await validate(
+            report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk
+        )
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_cosine_on_dry_run_target_type(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """`target_type="dry_run"` (the literal value, distinct from the `dry_run`
+    boolean flag carried by an "adr"/"runbook" report) never reaches Step 3
+    either — same fabrication hole.
+    """
+    async with session_factory() as session:
+        async with session.begin():
+            learning_id = (
+                await session.execute(
+                    learnings.insert()
+                    .values(
+                        topic="t",
+                        insight="i",
+                        project_key=isolated_pk,
+                        source_type="experience",
+                        confidence="high",
+                        tags=[],
+                    )
+                    .returning(learnings.c.id)
+                )
+            ).scalar_one()
+
+    candidates = [{"id": str(learning_id), "topic": "t"}]
+    report = {
+        "target_type": "dry_run",
+        "candidate_id": str(learning_id),
+        "cosine_observed": 0.99,
+    }
+    with pytest.raises(ValidationFailure, match="fabrication"):
+        await validate(
+            report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk
+        )
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_cosine_on_target_type_none(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """`target_type="none"` returns immediately in `validate()` — the
+    fabrication guard must apply BEFORE that early return, not only inside
+    `_check_dedup_against_pool`, which this path never reaches.
+    """
+    report = {"target_type": "none", "cosine_observed": 0.99}
+    with pytest.raises(ValidationFailure, match="fabrication"):
+        await validate(report, [], session_factory, dream_run_id=None, project_key=isolated_pk)
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_cosine_on_none_that_names_a_candidate(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """Rebase-seam regression (review finding, round 3): a 'none' report
+    that NAMES a candidate falls through past the early no-candidate guard
+    (test_validate_rejects_cosine_on_target_type_none, above) into the
+    skip-path branch, where `_check_dedup_against_pool` runs BEFORE the
+    `target_type == "none"` split. Moving that call into the `else` branch
+    -- a natural-looking simplification, since the `none` branch hard-codes
+    `cosine = None` anyway -- would let this exact shape through silently:
+    the run stays `ok` and a fabricated cosine_observed is audited under
+    _NONE_REFUSAL_TARGET_TYPE with no fabrication check ever having run.
+    This pins the call at its current, unconditional position.
+    """
+    async with session_factory() as session:
+        async with session.begin():
+            learning_id = (
+                await session.execute(
+                    learnings.insert()
+                    .values(
+                        topic="t",
+                        insight="i",
+                        project_key=isolated_pk,
+                        source_type="experience",
+                        confidence="high",
+                        tags=[],
+                    )
+                    .returning(learnings.c.id)
+                )
+            ).scalar_one()
+
+    candidates = [{"id": str(learning_id), "topic": "t"}]
+    report = {
+        "target_type": "none",
+        "candidate_id": str(learning_id),
+        "cosine_observed": 0.99,
+    }
+    with pytest.raises(ValidationFailure, match="fabrication"):
+        await validate(
+            report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk
+        )
+
+    async with session_factory() as session:
+        count = (
+            await session.execute(
+                sa.select(sa.func.count())
+                .select_from(dream_promotions)
+                .where(dream_promotions.c.source_learning_id == learning_id)
+            )
+        ).scalar_one()
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_validate_classification_uncertain_skips_dedup_check_entirely(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """`classification_uncertain` never reaches Step 3 — no `dedup` key is
+    required on candidates[0], and no cosine cross-check applies.
+    """
+    async with session_factory() as session:
+        async with session.begin():
+            learning_id = (
+                await session.execute(
+                    learnings.insert()
+                    .values(
+                        topic="t",
+                        insight="i",
+                        project_key=isolated_pk,
+                        source_type="experience",
+                        confidence="high",
+                        tags=[],
+                    )
+                    .returning(learnings.c.id)
+                )
+            ).scalar_one()
+
+    candidates = [{"id": str(learning_id), "topic": "t"}]  # no "dedup" key
+    report = {
+        "target_type": "classification_uncertain",
+        "candidate_id": str(learning_id),
+        "reason": "no clear alternatives or steps",
+    }
+    await validate(report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk)
 
 
 # ────────── _mark_dream_run_partial ───────────────────────────────────────────
@@ -857,7 +1716,7 @@ async def test_amain_backfill_runs_even_when_marker_line_has_trailing_junk(
     """
     learning_id, adr_id = await _seed_learning_and_adr(session_factory, isolated_pk)
     run_id = await _seed_dream_run(session_factory)
-    candidates = [{"id": str(learning_id), "topic": "t"}]
+    candidates = [{"id": str(learning_id), "topic": "t", "dedup": _dedup_block()}]
     raw = json.dumps(
         {
             "dry_run": False,
@@ -1135,7 +1994,7 @@ async def test_validate_accepts_adr_in_the_expected_project(
     Without this, a check that rejected *everything* would look correct.
     """
     learning_id, adr_id = await _seed_learning_and_adr(session_factory, isolated_pk)
-    candidates = [{"id": str(learning_id), "topic": "t"}]
+    candidates = [{"id": str(learning_id), "topic": "t", "dedup": _dedup_block()}]
     report = {
         "target_type": "adr",
         "candidate_id": str(learning_id),
@@ -1149,7 +2008,7 @@ async def test_validate_accepts_runbook_in_the_expected_project(
     session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
 ) -> None:
     learning_id, rb_id = await _seed_learning_and_runbook(session_factory, isolated_pk)
-    candidates = [{"id": str(learning_id), "topic": "t"}]
+    candidates = [{"id": str(learning_id), "topic": "t", "dedup": _dedup_block()}]
     report = {
         "target_type": "runbook",
         "candidate_id": str(learning_id),
