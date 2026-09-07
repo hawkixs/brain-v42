@@ -31,6 +31,7 @@ dependencies = [
     "pgvector>=0.3",
     # HTTP client (GPU embedding service)
     "httpx>=0.27",
+    "PyJWT[crypto]>=2.13,<3",
     # HTTP server (metrics sidecar)
     "aiohttp>=3.9",
     # Codex management gateway
