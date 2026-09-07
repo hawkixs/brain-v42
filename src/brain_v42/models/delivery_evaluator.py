@@ -70,7 +70,7 @@ def _current_health(
     if confirmations and not successes:
         binding_health = "never_observed"
     if (
-        binding_health != "error"
+        binding_health not in {"error", "never_observed"}
         and successes
         and any(
             confirmation.collection_started_at.tzinfo is None
@@ -82,7 +82,7 @@ def _current_health(
     ):
         binding_health = "error"
     elif (
-        binding_health != "error"
+        binding_health not in {"error", "never_observed"}
         and successes
         and any(
             (now - confirmation.collection_finished_at).total_seconds() > inputs.freshness_seconds
@@ -90,7 +90,7 @@ def _current_health(
         )
     ):
         binding_health = "stale"
-    elif binding_health != "error" and successes:
+    elif binding_health not in {"error", "never_observed"} and successes:
         binding_health = "fresh"
     context_health = _repository_context_health(inputs, now)
     if "error" in {binding_health, context_health}:
@@ -686,14 +686,22 @@ def _observation_times(inputs: EvaluationInput) -> tuple[datetime | None, dateti
     observed = [
         item.confirmation.collection_finished_at
         for item in inputs.active_bindings
-        if item.confirmation is not None and item.confirmation.evidence is not None
+        if item.confirmation is not None
+        and item.confirmation.evidence is not None
+        and item.confirmation.collection_finished_at.tzinfo is not None
     ]
+    required_repository_identities = {
+        context_reference_identity(reference)
+        for reference in inputs.contract.context_refs
+        if reference.required and isinstance(reference, RepositoryDocumentReference)
+    }
     required_context_times = [
         item.collection_finished_at
         for item in inputs.contexts
-        if item.reference_identity.startswith("repository_document:")
+        if item.reference_identity in required_repository_identities
         and item.status == "available"
         and item.collection_finished_at is not None
+        and item.collection_finished_at.tzinfo is not None
     ]
     all_observed = observed + required_context_times
     if not all_observed:

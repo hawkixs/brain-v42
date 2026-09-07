@@ -630,6 +630,8 @@ class ContextPredicate(_StrictModel):
             or self.evidence is None
         ):
             raise ValueError("available repository context requires immutable confirmation proof")
+        if self.collection_started_at.tzinfo is None or self.collection_finished_at.tzinfo is None:
+            raise ValueError("repository context confirmation interval must be timezone-aware")
         if self.collection_finished_at < self.collection_started_at:
             raise ValueError("repository context confirmation interval is reversed")
         return self
