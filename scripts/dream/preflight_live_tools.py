@@ -36,6 +36,7 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+import mcp.types
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
@@ -91,9 +92,17 @@ async def fetch_live_tool_names(
     hung server cannot hang the night's start instead of refusing it.
     """
     transport = StreamableHttpTransport(url, auth=token, headers=NATIVE_PROFILE_HEADERS)
-    try:
+
+    async def _connect_and_list() -> list[mcp.types.Tool]:
+        # Connect + MCP handshake happen inside this `async with`, not before
+        # it — they must stay inside the wait_for below, or a server that
+        # accepts the TCP connection and never answers hangs on fastmcp's
+        # httpx default (read=300s) regardless of timeout_seconds.
         async with Client(transport) as client:
-            listed = await asyncio.wait_for(client.list_tools(), timeout=timeout_seconds)
+            return await client.list_tools()
+
+    try:
+        listed = await asyncio.wait_for(_connect_and_list(), timeout=timeout_seconds)
     except Exception as exc:  # noqa: BLE001 — fail-closed: any error refuses the night
         raise LiveServerUnreachable(f"{type(exc).__name__}: {exc}") from exc
     return frozenset(tool.name for tool in listed)

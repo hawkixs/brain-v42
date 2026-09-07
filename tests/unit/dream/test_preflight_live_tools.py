@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import time
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -208,6 +209,62 @@ async def test_main_fails_closed_with_a_named_reason_when_the_server_is_unreacha
         timeout=15,
     )
 
+    assert rc == plt.FAIL_EXIT_CODE
+    err = capsys.readouterr().err
+    assert "could not reach the live MCP server" in err
+
+
+@pytest.mark.asyncio
+async def test_main_fails_closed_within_the_timeout_when_the_server_accepts_but_never_answers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The wedged-uvicorn shape, not the refused-connection shape above: a
+    socket that ACCEPTS the TCP handshake (the kernel completes it from the
+    listen backlog even though nothing ever calls ``accept()``) and then
+    never answers. ``--timeout`` must bound the WHOLE round trip — connect +
+    MCP handshake + list — not just the final ``list_tools()`` call. A
+    server wedged this way is indistinguishable, at the socket level, from a
+    live uvicorn whose event loop is stuck."""
+    _write_prompt(tmp_path, "scan", "brain_widget_alpha")
+    monkeypatch.setenv(MCP_TOKEN_ENV, _TEST_TOKEN)
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(128)
+    port = listener.getsockname()[1]
+    # Deliberately never accept()/serve: the connection succeeds, nothing
+    # ever reads the request or writes a response.
+
+    started = time.monotonic()
+    try:
+        try:
+            rc = await asyncio.wait_for(
+                asyncio.to_thread(
+                    plt.main,
+                    [
+                        "--url",
+                        f"http://127.0.0.1:{port}/mcp",
+                        "--prompt-dir",
+                        str(tmp_path),
+                        "--timeout",
+                        "2",
+                    ],
+                ),
+                timeout=10,
+            )
+        except TimeoutError:
+            pytest.fail(
+                "main(['--timeout', '2']) did not return within 10s against a "
+                "server that accepts the connection and never answers -- "
+                "--timeout must bound connect+handshake, not just list_tools() "
+                "(see fetch_live_tool_names)"
+            )
+    finally:
+        listener.close()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 10, f"preflight took {elapsed:.1f}s for a --timeout=2 run"
     assert rc == plt.FAIL_EXIT_CODE
     err = capsys.readouterr().err
     assert "could not reach the live MCP server" in err
