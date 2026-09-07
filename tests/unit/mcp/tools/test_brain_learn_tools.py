@@ -18,6 +18,9 @@ from fastmcp.exceptions import ToolError
 
 from brain_v42.mcp.tools.brain_tools import register_tools
 from brain_v42.models.learning import Learning
+from brain_v42.repositories.pg_graph_ledger import UnknownGraphEndpoint
+from brain_v42.repositories.pg_learning import PgLearningRepo
+from brain_v42.services.learning_service import LearningService
 from tests.unit.mcp._tool_error_adapter import capture_tool_errors
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -118,6 +121,94 @@ class TestBrainLearn:
         assert isinstance(result, str)
         assert "Learned" in result
         assert str(learning.id) in result
+
+    @pytest.mark.asyncio
+    async def test_brain_learn_returns_confirmation_without_warnings_key_by_default(self) -> None:
+        """No `warnings:` noise in the common case — nothing degraded."""
+        mcp, mock_svc = _make_mcp_with_learning_tools()
+        learning = _make_learning()
+        mock_svc.create = AsyncMock(return_value=learning)
+
+        fn = await _get_tool_fn(mcp, "brain_learn")
+        result = await fn(topic="TDD", insight="Write tests first")
+
+        assert "warnings" not in result
+
+    @pytest.mark.asyncio
+    async def test_brain_learn_surfaces_graph_warnings_in_confirmation(self) -> None:
+        """Regression for the 2026-09-06 incident: a degraded related_to
+        relation (endpoint not yet registered in the graph ledger) must
+        reach the agent as a visible warning, not a silent success and not
+        a raised tool error — the row is already committed by this point."""
+        mcp, mock_svc = _make_mcp_with_learning_tools()
+        learning = _make_learning().model_copy(
+            update={
+                "graph_warnings": [
+                    "relation RELATED_TO to 11111111-1111-1111-1111-111111111111 "
+                    "was not staged (missing_node)"
+                ]
+            }
+        )
+        mock_svc.create = AsyncMock(return_value=learning)
+
+        fn = await _get_tool_fn(mcp, "brain_learn")
+        result = await fn(
+            topic="TDD",
+            insight="Write tests first",
+            related_to=[{"id": "11111111-1111-1111-1111-111111111111", "type": "RELATED_TO"}],
+        )
+
+        assert isinstance(result, str)
+        assert "Learned" in result
+        assert str(learning.id) in result
+        assert "warnings" in result
+        assert "11111111-1111-1111-1111-111111111111" in result
+
+    @pytest.mark.asyncio
+    async def test_brain_learn_confirmation_renders_the_documented_unknown_endpoint_marker(
+        self,
+    ) -> None:
+        """End-to-end proof for docs/MCP_TOOLS.md's brain_learn example: the
+        marker is rendered by driving a REAL ``LearningService`` through
+        ``graph_upsert_entity``'s fail-soft ``UnknownGraphEndpoint`` path and
+        the real ``format_confirmation`` — not a hand-typed fixture string
+        that can silently drift from what the code actually produces."""
+        mcp = FastMCP("test")
+        mock_repo = MagicMock(spec=PgLearningRepo)
+        learning = _make_learning()
+        mock_repo.create = AsyncMock(return_value=learning)
+        mock_graph = MagicMock()
+        mock_graph.requires_durable_write_success = True
+        mock_graph.upsert_node = AsyncMock(return_value="ok")
+        mock_graph.link_to_project = AsyncMock(return_value="ok")
+        mock_graph.create_relation = AsyncMock(
+            side_effect=UnknownGraphEndpoint("one or more UUID endpoints are not registered")
+        )
+        real_learning_svc = LearningService(pg_repo=mock_repo, graph=mock_graph)
+        register_tools(
+            mcp,
+            decision_svc=MagicMock(),
+            learning_svc=real_learning_svc,
+            snippet_svc=MagicMock(),
+            runbook_svc=MagicMock(),
+            adr_svc=MagicMock(),
+            project_context_svc=MagicMock(),
+            brain_svc=MagicMock(),
+        )
+        fn = await _get_tool_fn(mcp, "brain_learn")
+        related_uuid = "11111111-1111-1111-1111-111111111111"
+
+        result = await fn(
+            topic="TDD",
+            insight="Write tests first",
+            project_key="brain-v42",
+            related_to=[{"id": related_uuid, "type": "RELATED_TO"}],
+        )
+
+        assert result == (
+            f"ok Learned (id:{learning.id}, "
+            f"warnings:relation RELATED_TO to {related_uuid} was not staged (unknown_endpoint))"
+        )
 
     @pytest.mark.asyncio
     async def test_brain_learn_defaults_tags_to_empty_list(self) -> None:

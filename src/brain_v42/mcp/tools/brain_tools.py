@@ -385,11 +385,19 @@ def register_tools(
                 related_to=validated_relations,
                 authorization=cast("RelationAuthorization", scope),
             )
+        # A degraded related_to relation (e.g. an endpoint not yet registered
+        # in the graph ledger) never raises past learning_svc.create() — the
+        # row is already committed by then. Surface it here so the agent
+        # sees it, instead of a silent success (2026-09-06 incident).
+        extra: dict[str, object] = {}
+        if learning.graph_warnings:
+            extra["warnings"] = "; ".join(learning.graph_warnings)
         return format_confirmation(
             "Learned",
             topic,
             id=str(learning.id),
             project=project_key,
+            **extra,
         )
 
     @mcp.tool(version="1.0", annotations=_DESTRUCTIVE_ANNOTATIONS)

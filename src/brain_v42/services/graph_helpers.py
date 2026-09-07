@@ -8,6 +8,8 @@ from uuid import UUID
 
 import structlog
 
+from brain_v42.repositories.pg_graph_ledger import UnknownGraphEndpoint
+
 logger = structlog.get_logger(__name__)
 
 
@@ -60,6 +62,15 @@ async def graph_create_relation_logged(
     degraded graph must never break the PG path. Scoped authorization and the
     scoped graph call deliberately remain outside that degradation wrapper so
     authorization failures propagate without a secondary identifier log.
+
+    ``UnknownGraphEndpoint`` (raised by the durable ledger when an endpoint
+    UUID is not yet registered in ``brain_entities``) is deliberately NOT
+    caught here, in either branch: ``auto_linker.auto_link`` calls this
+    function directly and catches it itself to bucket it into its own
+    ``errors`` accounting with a distinct WARN shape (ticket 6d2cf2a9 c).
+    Callers that want it downgraded to a plain warning instead — e.g.
+    ``graph_upsert_entity``, for the 2026-09-06 brain_learn incident — catch
+    it themselves around their own call to this function.
 
     Returns the outcome (``"created" | "matched" | "missing_node" | "error"``),
     or ``None`` if ``graph`` is ``None``.
@@ -138,31 +149,70 @@ async def graph_upsert_entity(
     related_to: list[dict] | None = None,
     *,
     authorization: RelationAuthorization | None = None,
-) -> None:
+) -> list[str]:
     """Mirror an entity create to Neo4j without hiding scoped relation refusals.
 
     Fix 2: upsert_node now returns 'ok'|'error'. A returned 'error' outcome
     (swallowed Neo4j failure inside GraphService) is surfaced here as a
     structured WARN — mirroring graph_create_relation_logged — so that
     node-level write-through drift becomes observable without exceptions.
+
+    Returns a (possibly empty) list of human-readable warnings for every
+    ``related_to`` relation that degraded instead of landing (``"missing_node"``
+    or ``"error"`` outcome from ``graph_create_relation_logged``, itself
+    already WARN-logged there). A caller that has nowhere to surface these —
+    every existing call site today — can keep discarding the return value;
+    it never carried meaning before this field existed.
     """
     if graph is None:
-        return
+        return []
     if authorization is not None and related_to:
         await authorization.revalidate_ids(
             [entity_id, *(UUID(relation["id"]) for relation in related_to)]
         )
 
-    async def create_related_relations() -> None:
+    async def create_related_relations() -> list[str]:
+        relation_warnings: list[str] = []
         for rel in related_to or []:
-            await graph_create_relation_logged(
-                graph,
-                entity_id,
-                UUID(rel["id"]),
-                rel["type"],
-                authorization=authorization,
-                entity_type=entity_type,
-            )
+            try:
+                outcome = await graph_create_relation_logged(
+                    graph,
+                    entity_id,
+                    UUID(rel["id"]),
+                    rel["type"],
+                    authorization=authorization,
+                    entity_type=entity_type,
+                )
+            except UnknownGraphEndpoint:
+                # The 2026-09-06 brain_learn incident: the PG row already
+                # committed by the time this runs — an endpoint that has not
+                # caught up yet in the graph ledger must degrade to a warning,
+                # never raise (unlike a genuine authorization refusal, or a
+                # real backend failure on a durable graph, both of which keep
+                # propagating unchanged — see graph_create_relation_logged).
+                #
+                # Distinct event name from "graph_relation_missing_node": that
+                # one covers a Neo4j MATCH returning zero rows (an *outcome*
+                # returned by graph_create_relation_logged, handled below).
+                # This one covers an endpoint absent from brain_entities
+                # entirely (an *exception* raised by the durable ledger). The
+                # two failure classes must stay distinguishable in the logs.
+                logger.warning(
+                    "graph_relation_unknown_endpoint",
+                    rel_type=rel["type"],
+                    src_id=str(entity_id),
+                    tgt_id=str(rel["id"]),
+                    entity_type=entity_type,
+                )
+                relation_warnings.append(
+                    f"relation {rel['type']} to {rel['id']} was not staged (unknown_endpoint)"
+                )
+                continue
+            if outcome in ("missing_node", "error"):
+                relation_warnings.append(
+                    f"relation {rel['type']} to {rel['id']} was not staged ({outcome})"
+                )
+        return relation_warnings
 
     try:
         node_outcome = await graph.upsert_node(entity_type, entity_id, props)
@@ -190,12 +240,11 @@ async def graph_upsert_entity(
         )
         if _requires_durable_write_success(graph):
             raise
-        return
+        return []
     if authorization is not None:
-        await create_related_relations()
-        return
+        return await create_related_relations()
     try:
-        await create_related_relations()
+        return await create_related_relations()
     except Exception:
         logger.error(
             "graph_write_failed",
@@ -205,6 +254,7 @@ async def graph_upsert_entity(
         )
         if _requires_durable_write_success(graph):
             raise
+        return []
 
 
 async def graph_delete_entity(

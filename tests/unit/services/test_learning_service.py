@@ -19,14 +19,18 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from brain_v42.dream_project_errors import DreamProjectAuthorizationError
 from brain_v42.models.learning import Learning, LearningCreate, LearningUpdate
+from brain_v42.repositories.pg_graph_ledger import UnknownGraphEndpoint
 from brain_v42.repositories.pg_learning import PgLearningRepo
 from brain_v42.repositories.pg_project_context import PgProjectContextRepo
+from brain_v42.services import learning_service
 from brain_v42.services.gpu_embedding_service import EmbeddingUnavailable
 from brain_v42.services.learning_service import LearningService
 from brain_v42.services.ticket_service import UnknownProjectError
@@ -748,3 +752,175 @@ class TestLearningServiceGetById:
         result = await svc.get_by_id(uuid.uuid4())
 
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# create() — related_to relation staging degrades instead of raising
+# ---------------------------------------------------------------------------
+
+
+class TestLearningServiceRelationDegradation:
+    """Regression for the 2026-09-06 brain_learn incident (project red, phase
+    synth, logs/dream/2026-09-06_red_synth.events.jsonl:113-114): the
+    learning row committed, but ``UnknownGraphEndpoint`` escaped unguarded
+    from relation staging and turned the call into the generic
+    'Error calling tool brain_learn'.
+    """
+
+    def _make_service_with_graph(self) -> tuple[LearningService, MagicMock, MagicMock]:
+        """Wire a real ``embedding_svc`` so ``_embedding_enricher`` is
+        non-None, matching how ``mcp/server.py`` constructs the production
+        ``LearningService``. Without it, every test in this class returned
+        at the early ``if self._embedding_enricher is None`` branch inside
+        ``enrich_created`` and never reached the terminal
+        ``return self._with_graph_warnings(...)`` that the embedding-enabled
+        production path actually takes — a mutant replacing that terminal
+        return with a bare ``return result`` (dropping graph_warnings)
+        passed the whole suite (fix round 3 of lot I1)."""
+        mock_repo = MagicMock(spec=PgLearningRepo)
+        mock_repo.create = AsyncMock(return_value=SAMPLE_LEARNING)
+        mock_repo.set_embedding_if_current = AsyncMock(
+            return_value=SAMPLE_LEARNING.model_copy(
+                update={"embedding": FAKE_EMBEDDING}
+            ).model_dump()
+        )
+        mock_embedding_svc = MagicMock()
+        mock_embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        mock_embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
+        mock_graph = MagicMock()
+        mock_graph.requires_durable_write_success = True
+        mock_graph.upsert_node = AsyncMock(return_value="ok")
+        mock_graph.link_to_project = AsyncMock(return_value="ok")
+        svc = LearningService(pg_repo=mock_repo, embedding_svc=mock_embedding_svc, graph=mock_graph)
+        return svc, mock_repo, mock_graph
+
+    async def test_create_with_unknown_graph_endpoint_returns_warning_not_raise(self) -> None:
+        """The row exists (repo.create awaited) and the return carries a
+        warning instead of an exception escaping the tool call."""
+        svc, mock_repo, mock_graph = self._make_service_with_graph()
+        mock_graph.create_relation = AsyncMock(
+            side_effect=UnknownGraphEndpoint("one or more UUID endpoints are not registered")
+        )
+        related_uuid = str(uuid.uuid4())
+        data = LearningCreate(
+            topic="Synthetic topic for relation-degradation regression",
+            insight="Synthetic insight body, unrelated to any real project content",
+            project_key="brain-v42",
+        )
+
+        result = await svc.create(data, related_to=[{"id": related_uuid, "type": "RELATED_TO"}])
+
+        mock_repo.create.assert_awaited_once()
+        assert result.id == SAMPLE_LEARNING.id
+        assert result.graph_warnings
+        assert related_uuid in result.graph_warnings[0]
+        # Pins docs/MCP_TOOLS.md's brain_learn example: this is the marker
+        # the unregistered-endpoint case actually renders, not "missing_node"
+        # (that string is the untested legacy-graph outcome branch instead).
+        assert result.graph_warnings[0] == (
+            f"relation RELATED_TO to {related_uuid} was not staged (unknown_endpoint)"
+        )
+
+    async def test_create_with_unknown_graph_endpoint_executes_the_guarded_relation_staging(
+        self,
+    ) -> None:
+        """Spy proof the fail-soft path is actually reached, not skipped by
+        an early return: ``graph_upsert_entity`` (the function wrapping the
+        new try/except) and the graph's own per-relation staging call are
+        both really invoked, not bypassed by a mocked shortcut."""
+        svc, mock_repo, mock_graph = self._make_service_with_graph()
+        mock_graph.create_relation = AsyncMock(
+            side_effect=UnknownGraphEndpoint("one or more UUID endpoints are not registered")
+        )
+        related_uuid = str(uuid.uuid4())
+        data = LearningCreate(topic="t", insight="i", project_key="brain-v42")
+
+        with patch(
+            "brain_v42.services.learning_service.graph_upsert_entity",
+            wraps=learning_service.graph_upsert_entity,
+        ) as spy_graph_upsert_entity:
+            result = await svc.create(data, related_to=[{"id": related_uuid, "type": "RELATED_TO"}])
+
+        spy_graph_upsert_entity.assert_awaited_once()
+        mock_graph.create_relation.assert_awaited_once()
+        assert result.graph_warnings
+        mock_repo.create.assert_awaited_once()
+
+    async def test_create_logs_relation_staging_failure_with_offending_uuid(self) -> None:
+        """The relation staging failure is logged at WARNING with the
+        offending UUIDs — not swallowed silently."""
+        svc, _, mock_graph = self._make_service_with_graph()
+        mock_graph.create_relation = AsyncMock(
+            side_effect=UnknownGraphEndpoint("one or more UUID endpoints are not registered")
+        )
+        related_uuid = str(uuid.uuid4())
+        data = LearningCreate(topic="t", insight="i", project_key="brain-v42")
+
+        with structlog.testing.capture_logs() as logs:
+            await svc.create(data, related_to=[{"id": related_uuid, "type": "RELATED_TO"}])
+
+        warnings = [e for e in logs if e["log_level"] == "warning"]
+        assert any(
+            e["event"] == "graph_relation_unknown_endpoint" and e.get("tgt_id") == related_uuid
+            for e in warnings
+        ), warnings
+
+    async def test_create_without_relation_trouble_has_no_warnings(self) -> None:
+        """The happy path is unchanged: no warnings when nothing degraded."""
+        svc, mock_repo, mock_graph = self._make_service_with_graph()
+        mock_graph.create_relation = AsyncMock(return_value="created")
+        data = LearningCreate(topic="t", insight="i", project_key="brain-v42")
+
+        result = await svc.create(
+            data, related_to=[{"id": str(uuid.uuid4()), "type": "RELATED_TO"}]
+        )
+
+        mock_repo.create.assert_awaited_once()
+        assert result.graph_warnings == []
+
+    async def test_create_scoped_authorization_refusal_still_raises(self) -> None:
+        """Negative witness: a genuine fail-closed authorization refusal must
+        STILL raise — it is not the same failure mode as an unregistered
+        graph endpoint and must not be silently degraded."""
+        svc, mock_repo, _mock_graph = self._make_service_with_graph()
+        authorization = MagicMock(project_key="brain-v42")
+        authorization.revalidate_ids = AsyncMock(side_effect=RuntimeError("object_not_authorized"))
+        data = LearningCreate(topic="t", insight="i", project_key="brain-v42")
+
+        with pytest.raises(RuntimeError, match="object_not_authorized"):
+            await svc.create(
+                data,
+                related_to=[{"id": str(uuid.uuid4()), "type": "RELATED_TO"}],
+                authorization=authorization,
+            )
+
+        mock_repo.create.assert_awaited_once()
+
+    async def test_create_scoped_authorization_refusal_from_per_relation_check_still_raises(
+        self,
+    ) -> None:
+        """Negative witness placed at the per-relation revalidate call, not
+        the batch pre-check: ``graph_upsert_entity`` first revalidates the
+        whole batch of ids (that call succeeds here), then
+        ``graph_create_relation_logged`` revalidates again per relation
+        inside the try/except this lot added around ``UnknownGraphEndpoint``.
+        A genuine ``DreamProjectAuthorizationError`` raised from that SECOND
+        call — the one actually guarded by the new try/except — must still
+        escape unchanged, not be mistaken for a degradable unregistered
+        endpoint."""
+        svc, mock_repo, _mock_graph = self._make_service_with_graph()
+        authorization = MagicMock(project_key="brain-v42")
+        authorization.revalidate_ids = AsyncMock(
+            side_effect=[None, DreamProjectAuthorizationError("object_not_authorized")]
+        )
+        data = LearningCreate(topic="t", insight="i", project_key="brain-v42")
+
+        with pytest.raises(DreamProjectAuthorizationError):
+            await svc.create(
+                data,
+                related_to=[{"id": str(uuid.uuid4()), "type": "RELATED_TO"}],
+                authorization=authorization,
+            )
+
+        mock_repo.create.assert_awaited_once()
+        assert authorization.revalidate_ids.await_count == 2

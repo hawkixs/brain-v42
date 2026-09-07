@@ -14,6 +14,7 @@ from brain_v42.mcp.dream_project_authorization import (
     DreamProjectAuthorizationError,
     DreamProjectScope,
 )
+from brain_v42.repositories.pg_graph_ledger import UnknownGraphEndpoint
 from brain_v42.services.graph_helpers import (
     auto_link_if_enabled,
     graph_create_relation_logged,
@@ -129,6 +130,30 @@ class TestGraphUpsertEntity:
         warnings = [e for e in logs if e["log_level"] == "warning"]
         assert any(e["event"] == "graph_relation_write_degraded" for e in warnings), logs
 
+    @pytest.mark.parametrize("outcome", ["missing_node", "error"])
+    async def test_returns_relation_warning_for_missing_node_and_error_outcomes(
+        self, outcome: str
+    ) -> None:
+        """Pins graph_helpers.py's ``if outcome in ("missing_node", "error")``
+        branch in ``create_related_relations`` — deleting it previously left
+        the whole suite green because every other test only asserted the WARN
+        log emitted by ``graph_create_relation_logged``, never the returned
+        warnings list ``graph_upsert_entity`` itself builds from that branch."""
+        graph = MagicMock()
+        graph.upsert_node = AsyncMock()
+        graph.link_to_project = AsyncMock()
+        graph.create_relation = AsyncMock(return_value=outcome)
+
+        warnings = await graph_upsert_entity(
+            graph,
+            "Decision",
+            FIXED_UUID,
+            {"title": "x"},
+            related_to=[{"id": str(REL_UUID), "type": "MOTIVATED_BY"}],
+        )
+
+        assert warnings == [f"relation MOTIVATED_BY to {REL_UUID} was not staged ({outcome})"]
+
     async def test_durable_related_relation_failure_propagates(self) -> None:
         graph = MagicMock()
         graph.requires_durable_write_success = True
@@ -143,6 +168,44 @@ class TestGraphUpsertEntity:
                 {"title": "x"},
                 related_to=[{"id": str(REL_UUID), "type": "MOTIVATED_BY"}],
             )
+
+    async def test_admin_unknown_endpoint_returns_warning_instead_of_raising(self) -> None:
+        """The row-committed-then-crash shape of the 2026-09-06 incident, in
+        admin (non-scoped) mode: an unregistered relation endpoint must
+        degrade to a returned warning, never an exception."""
+        graph = MagicMock()
+        graph.requires_durable_write_success = True
+        graph.upsert_node = AsyncMock(return_value="ok")
+        graph.create_relation = AsyncMock(
+            side_effect=UnknownGraphEndpoint("one or more UUID endpoints are not registered")
+        )
+
+        with structlog.testing.capture_logs() as logs:
+            warnings = await graph_upsert_entity(
+                graph,
+                "Learning",
+                FIXED_UUID,
+                {"title": "x"},
+                related_to=[{"id": str(REL_UUID), "type": "MOTIVATED_BY"}],
+            )
+
+        assert warnings
+        assert str(REL_UUID) in warnings[0]
+        assert any(e["event"] == "graph_relation_unknown_endpoint" for e in logs)
+
+    async def test_no_related_to_returns_empty_warnings(self) -> None:
+        graph = MagicMock()
+        graph.upsert_node = AsyncMock(return_value="ok")
+        graph.link_to_project = AsyncMock(return_value="ok")
+
+        warnings = await graph_upsert_entity(graph, "Learning", FIXED_UUID, {"title": "x"})
+
+        assert warnings == []
+
+    async def test_noop_graph_none_returns_empty_warnings(self) -> None:
+        warnings = await graph_upsert_entity(None, "Learning", FIXED_UUID, {"title": "x"})
+
+        assert warnings == []
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +268,54 @@ class TestGraphCreateRelationLogged:
                 FIXED_UUID,
                 REL_UUID,
                 "MOTIVATED_BY",
+            )
+
+    async def test_durable_unknown_endpoint_still_propagates_here(self) -> None:
+        """``graph_create_relation_logged`` keeps raising ``UnknownGraphEndpoint``
+        on a durable graph, in BOTH branches — it does not degrade it itself.
+
+        Ticket 6d2cf2a9 (c) already relies on this exact contract:
+        ``auto_linker.auto_link`` calls this function directly and catches
+        ``UnknownGraphEndpoint`` itself to bucket it into ``errors`` with its
+        own identifier and WARN shape (see ``test_auto_linker.py``,
+        ``TestUnknownEndpointIsBucketedNotRaised``). Degrading the exception
+        HERE would silently break that caller's counting. Callers that want
+        the softer "missing_node" outcome instead (``graph_upsert_entity``,
+        fixed for the 2026-09-06 brain_learn incident) catch it themselves at
+        their own call site.
+        """
+        graph = MagicMock()
+        graph.requires_durable_write_success = True
+        graph.create_relation = AsyncMock(
+            side_effect=UnknownGraphEndpoint("one or more UUID endpoints are not registered")
+        )
+
+        with pytest.raises(UnknownGraphEndpoint):
+            await graph_create_relation_logged(
+                graph,
+                FIXED_UUID,
+                REL_UUID,
+                "RELATED_TO",
+            )
+
+    async def test_scoped_unknown_endpoint_still_propagates_here(self) -> None:
+        """Same contract-lock as above, for the scoped (authorized) branch —
+        the exact branch exercised by the 2026-09-06 incident's Dream call."""
+        graph = MagicMock()
+        graph.requires_durable_write_success = True
+        graph.create_relation = AsyncMock(
+            side_effect=UnknownGraphEndpoint("one or more UUID endpoints are not registered")
+        )
+        authorization = MagicMock(project_key="owned-project")
+        authorization.revalidate_ids = AsyncMock()
+
+        with pytest.raises(UnknownGraphEndpoint):
+            await graph_create_relation_logged(
+                graph,
+                FIXED_UUID,
+                REL_UUID,
+                "RELATED_TO",
+                authorization=authorization,
             )
 
     async def test_scoped_write_revalidates_pair_immediately_before_project_edge(self) -> None:
@@ -370,6 +481,37 @@ class TestScopedGraphHelperPropagation:
             "RELATED_TO",
             project_key="owned-project",
         )
+
+    async def test_graph_upsert_scoped_unknown_endpoint_returns_warning(self) -> None:
+        """Exact incident shape: related_to UUIDs that pass project ownership
+        (revalidate_ids succeeds — they belong to the caller's project) but
+        are not yet registered as graph endpoints must degrade to a returned
+        warning, never an exception, even though the graph requires durable
+        write success."""
+        graph = MagicMock()
+        graph.requires_durable_write_success = True
+        graph.upsert_node = AsyncMock(return_value="ok")
+        graph.link_to_project = AsyncMock(return_value="ok")
+        graph.create_relation = AsyncMock(
+            side_effect=UnknownGraphEndpoint("one or more UUID endpoints are not registered")
+        )
+        authorization = MagicMock(project_key="owned-project")
+        authorization.revalidate_ids = AsyncMock()
+
+        with structlog.testing.capture_logs() as logs:
+            warnings = await graph_upsert_entity(
+                graph,
+                "Learning",
+                FIXED_UUID,
+                {"topic": "Scoped"},
+                project_key="payload-project",
+                related_to=[{"id": str(REL_UUID), "type": "RELATED_TO"}],
+                authorization=authorization,
+            )
+
+        assert warnings
+        assert str(REL_UUID) in warnings[0]
+        assert any(e["event"] == "graph_relation_unknown_endpoint" for e in logs)
 
     async def test_graph_upsert_does_not_swallow_scoped_refusal(self) -> None:
         signature = inspect.signature(graph_upsert_entity)

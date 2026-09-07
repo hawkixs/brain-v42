@@ -65,5 +65,10 @@ class Learning(LearningBase, TimestampMixin, DecayMixin):
     id: UUID = Field(default_factory=uuid4)
     validated_at: datetime | None = None
     embedding: list[float] | None = None
+    #: Transient, in-memory only — never a DB column, never serialized (``exclude=True``).
+    #: Set by ``LearningService.create()`` when a ``related_to`` relation degraded
+    #: instead of raising (e.g. an endpoint not yet registered in the graph
+    #: ledger). Absent from every DB-backed read, which defaults it to ``[]``.
+    graph_warnings: list[str] = Field(default_factory=list, exclude=True)
 
     model_config = {"from_attributes": True}

@@ -124,7 +124,17 @@ class LearningService:
         *,
         authorization: RelationAuthorization | None = None,
     ) -> Learning:
-        """Run derived graph and embedding work after the PG transaction commits."""
+        """Run derived graph and embedding work after the PG transaction commits.
+
+        A ``related_to`` relation that degrades instead of landing (e.g. an
+        endpoint not yet registered in the graph ledger — ticket for the
+        2026-09-06 incident) never raises past this point: ``graph_upsert_entity``
+        already logs it at WARNING and returns a human-readable note per
+        relation, which is attached to the returned ``Learning`` via
+        ``graph_warnings`` so the MCP tool can surface it to the caller. The
+        row is already committed by the time this runs; a degraded relation
+        must not turn that commit into a tool error.
+        """
         text = self._build_embed_text(data.topic, data.insight)
         logger.info(
             "learning.created",
@@ -132,7 +142,7 @@ class LearningService:
             project_key=data.project_key,
         )
 
-        await graph_upsert_entity(
+        graph_warnings = await graph_upsert_entity(
             self._graph,
             "Learning",
             result.id,
@@ -143,7 +153,7 @@ class LearningService:
         )
 
         if self._embedding_enricher is None:
-            return result
+            return self._with_graph_warnings(result, graph_warnings)
 
         enrichment = await self._embedding_enricher.enrich(
             repo=self._repo,
@@ -169,9 +179,16 @@ class LearningService:
                 authorization=authorization,
             )
             if enrichment.row is not None:
-                return Learning.model_validate(enrichment.row)
+                result = Learning.model_validate(enrichment.row)
 
-        return result
+        return self._with_graph_warnings(result, graph_warnings)
+
+    @staticmethod
+    def _with_graph_warnings(result: Learning, warnings: list[str]) -> Learning:
+        """Attach degraded-relation warnings without mutating a shared instance."""
+        if not warnings:
+            return result
+        return result.model_copy(update={"graph_warnings": warnings})
 
     async def get_by_id(
         self,
