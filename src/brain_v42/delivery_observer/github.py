@@ -20,6 +20,9 @@ from brain_v42.models.delivery import (
     ContractRevision,
     Deliverable,
     PullRequestEvidence,
+    RepositoryContextEvidence,
+    RepositoryDocumentFact,
+    RepositoryDocumentReference,
     ReviewEvidence,
     SyntheticMergeAssociation,
 )
@@ -452,3 +455,110 @@ class GitHubClient:
                 "collected_at": collected_at,
             }
         )
+
+    async def collect_repository_context(
+        self, contract: ContractRevision
+    ) -> RepositoryContextEvidence:
+        """Prove the full required pin set from immutable trees, without document bodies.
+
+        A conclusive non-regular/absent path returns incomplete, normalized missing
+        facts. The runtime publishes a failed attempt, never a partial success.
+        Optional references cause no requests; their empty result is not evidence.
+        """
+        try:
+            references = sorted(
+                (
+                    reference
+                    for reference in contract.context_refs
+                    if isinstance(reference, RepositoryDocumentReference) and reference.required
+                ),
+                key=lambda reference: (reference.repository_id, reference.sha, reference.path),
+            )
+            roots = {
+                reference.repository_id: self._address(reference.repository_id)
+                for reference in references
+            }
+            facts: list[RepositoryDocumentFact] = []
+            commits: dict[tuple[int, str], str] = {}
+            trees: dict[tuple[int, str], dict[str, dict[str, Any]]] = {}
+            for repository_id, address in roots.items():
+                repository = _object((await self._get(address)).data)
+                if _positive(repository["id"]) != repository_id:
+                    raise ProviderError("provider_invalid_response")
+                name = _text(repository["full_name"], 201)
+                if not _REPOSITORY.fullmatch(name):
+                    raise ProviderError("provider_invalid_response")
+                roots[repository_id] = "/repos/" + name
+            for reference in references:
+                root = roots[reference.repository_id]
+                commit_key = (reference.repository_id, reference.sha)
+                if commit_key not in commits:
+                    commit = _object((await self._get(f"{root}/git/commits/{reference.sha}")).data)
+                    if commit["sha"] != reference.sha:
+                        raise ProviderError("provider_invalid_response")
+                    commits[commit_key] = _sha(_object(commit["tree"])["sha"])
+                tree_sha = commits[commit_key]
+                tree_key = (reference.repository_id, tree_sha)
+                if tree_key not in trees:
+                    payload = _object(
+                        (await self._get(f"{root}/git/trees/{tree_sha}?recursive=1")).data
+                    )
+                    entries = payload["tree"]
+                    if (
+                        payload["sha"] != tree_sha
+                        or payload.get("truncated") is not False
+                        or not isinstance(entries, list)
+                        or len(entries) > 20000
+                    ):
+                        raise ProviderError("provider_invalid_response")
+                    indexed: dict[str, dict[str, Any]] = {}
+                    mode_types = {
+                        "100644": "blob",
+                        "100755": "blob",
+                        "120000": "blob",
+                        "160000": "commit",
+                        "040000": "tree",
+                    }
+                    for value in entries:
+                        entry = _object(value)
+                        path = _text(entry["path"], 4096)
+                        if (
+                            "\\" in path
+                            or any(part in {"", ".", ".."} for part in path.split("/"))
+                            or path in indexed
+                            or entry["mode"] not in mode_types
+                            or entry["type"] != mode_types[entry["mode"]]
+                        ):
+                            raise ProviderError("provider_invalid_response")
+                        _sha(entry["sha"])
+                        indexed[path] = entry
+                    trees[tree_key] = indexed
+                tree = trees[tree_key]
+                entry = tree.get(reference.path, {})
+                parts = reference.path.split("/")
+                regular_parents = all(
+                    tree.get("/".join(parts[:index]), {}).get("mode") == "040000"
+                    for index in range(1, len(parts))
+                )
+                available = bool(
+                    entry and entry["mode"] in {"100644", "100755"} and regular_parents
+                )
+                facts.append(
+                    RepositoryDocumentFact.model_validate(
+                        {
+                            "repository_id": reference.repository_id,
+                            "commit_sha": reference.sha,
+                            "path": reference.path,
+                            "tree_sha": tree_sha,
+                            "blob_sha": entry["sha"] if entry and available else None,
+                            "mode": entry["mode"] if entry and available else None,
+                            "status": "available" if available else "missing",
+                        }
+                    )
+                )
+            return RepositoryContextEvidence(
+                facts=tuple(facts),
+                complete=bool(facts) and all(fact.status == "available" for fact in facts),
+            )
+        except (KeyError, TypeError, ValueError, ValidationError, OverflowError):
+            raise ProviderError("provider_invalid_response") from None
