@@ -16,6 +16,7 @@ from brain_v42.models.delivery import (
     EvaluationInput,
     MilestoneReceipt,
     PullRequestEvidence,
+    RepositoryDocumentReference,
     RequiredCheck,
     ReviewEvidence,
     context_reference_digest,
@@ -49,7 +50,8 @@ def _timestamp(value: datetime | None) -> str | None:
 
 
 def _finding(code: str, detail: str, key: str | None = None) -> DeliveryFinding:
-    return DeliveryFinding(code=code, detail=detail, deliverable_key=key)
+    bounded = detail if len(detail) <= 1000 else f"{detail[:997]}..."
+    return DeliveryFinding(code=code, detail=bounded, deliverable_key=key)
 
 
 def _current_health(
@@ -58,26 +60,90 @@ def _current_health(
     if not inputs.feature_enabled:
         return "disabled"
     confirmations = [item.confirmation for item in inputs.active_bindings]
-    if not confirmations or any(item is None for item in confirmations):
-        return "never_observed"
-    if any(item.last_attempt_outcome == "error" for item in inputs.active_bindings):
-        return "error"
+    binding_health: Literal["never_observed", "fresh", "stale", "error"] | None = None
+    if confirmations:
+        if any(item is None for item in confirmations):
+            binding_health = "never_observed"
+        elif any(item.last_attempt_outcome == "error" for item in inputs.active_bindings):
+            binding_health = "error"
     successes = [item for item in confirmations if item is not None and item.evidence is not None]
-    if not successes:
-        return "never_observed"
-    if any(
-        confirmation.collection_started_at.tzinfo is None
-        or confirmation.collection_finished_at.tzinfo is None
-        or confirmation.collection_finished_at > now
-        or confirmation.collection_finished_at < confirmation.collection_started_at
-        for confirmation in successes
+    if confirmations and not successes:
+        binding_health = "never_observed"
+    if (
+        binding_health != "error"
+        and successes
+        and any(
+            confirmation.collection_started_at.tzinfo is None
+            or confirmation.collection_finished_at.tzinfo is None
+            or confirmation.collection_finished_at > now
+            or confirmation.collection_finished_at < confirmation.collection_started_at
+            for confirmation in successes
+        )
     ):
+        binding_health = "error"
+    elif (
+        binding_health != "error"
+        and successes
+        and any(
+            (now - confirmation.collection_finished_at).total_seconds() > inputs.freshness_seconds
+            for confirmation in successes
+        )
+    ):
+        binding_health = "stale"
+    elif binding_health != "error" and successes:
+        binding_health = "fresh"
+    context_health = _repository_context_health(inputs, now)
+    if "error" in {binding_health, context_health}:
         return "error"
-    if any(
-        (now - confirmation.collection_finished_at).total_seconds() > inputs.freshness_seconds
-        for confirmation in successes
-    ):
+    if "stale" in {binding_health, context_health}:
         return "stale"
+    if binding_health == "fresh" or context_health == "fresh":
+        return "fresh"
+    return "never_observed"
+
+
+def _repository_context_health(
+    inputs: EvaluationInput, now: datetime
+) -> Literal["never_observed", "fresh", "stale", "error"] | None:
+    required = [
+        reference
+        for reference in inputs.contract.context_refs
+        if reference.required and isinstance(reference, RepositoryDocumentReference)
+    ]
+    if not required:
+        return None
+    predicates = {item.reference_identity: item for item in inputs.contexts}
+    states: list[Literal["never_observed", "fresh", "stale", "error"]] = []
+    for reference in required:
+        identity = context_reference_identity(reference)
+        predicate = predicates.get(identity)
+        if predicate is None or predicate.status == "missing":
+            states.append("never_observed")
+            continue
+        if predicate.status != "available" or predicate.evidence is None:
+            states.append("error")
+            continue
+        if (
+            predicate.collection_started_at is None
+            or predicate.collection_finished_at is None
+            or predicate.collection_started_at.tzinfo is None
+            or predicate.collection_finished_at.tzinfo is None
+            or predicate.collection_finished_at < predicate.collection_started_at
+            or predicate.collection_finished_at > now
+            or predicate.success_confirmation_id is None
+            or predicate.latest_attempt_confirmation_id is None
+        ):
+            states.append("error")
+        elif (now - predicate.collection_finished_at).total_seconds() > inputs.freshness_seconds:
+            states.append("stale")
+        else:
+            states.append("fresh")
+    if "error" in states:
+        return "error"
+    if "stale" in states:
+        return "stale"
+    if "never_observed" in states:
+        return "never_observed"
     return "fresh"
 
 
@@ -274,15 +340,19 @@ def _deliverable_findings(inputs: EvaluationInput) -> tuple[DeliveryFinding, ...
 
 def _context_findings(inputs: EvaluationInput) -> tuple[DeliveryFinding, ...]:
     findings: list[DeliveryFinding] = []
-    required = {
-        context_reference_identity(reference): context_reference_digest(reference)
+    declared = {
+        context_reference_identity(reference): reference
         for reference in inputs.contract.context_refs
+    }
+    required = {
+        identity: (reference, context_reference_digest(reference))
+        for identity, reference in declared.items()
         if reference.required
     }
     provided: dict[str, list[ContextPredicate]] = {}
     for context in inputs.contexts:
         provided.setdefault(context.reference_identity, []).append(context)
-    for identity, digest in sorted(required.items()):
+    for identity, (reference, digest) in sorted(required.items()):
         values = provided.pop(identity, [])
         if not values:
             findings.append(
@@ -297,26 +367,51 @@ def _context_findings(inputs: EvaluationInput) -> tuple[DeliveryFinding, ...]:
             )
             continue
         context = values[0]
-        if digest is None or context.current_digest is None:
-            findings.append(
-                _finding("context_digest_missing", f"required context {identity} has no digest")
-            )
-            continue
         if context.status == "missing":
             findings.append(_finding("context_missing", f"required context {identity} is missing"))
         elif context.status == "error":
             findings.append(
                 _finding("context_error", f"required context {identity} could not be read")
             )
+        elif digest is None or context.current_digest is None:
+            findings.append(
+                _finding("context_digest_missing", f"required context {identity} has no digest")
+            )
+            continue
         elif context.status != "available" or context.current_digest != digest:
             findings.append(
                 _finding("context_changed", f"required context {identity} differs from its pin")
             )
+        elif isinstance(reference, RepositoryDocumentReference) and not _matches_repository_fact(
+            context, reference
+        ):
+            findings.append(
+                _finding(
+                    "context_proof_invalid", f"required context {identity} lacks exact file proof"
+                )
+            )
+    for identity in declared:
+        if not declared[identity].required:
+            provided.pop(identity, None)
     for identity in sorted(provided):
         findings.append(
             _finding("context_predicate_unexpected", f"context {identity} is not declared")
         )
     return tuple(findings)
+
+
+def _matches_repository_fact(
+    context: ContextPredicate, reference: RepositoryDocumentReference
+) -> bool:
+    if context.evidence is None or not context.evidence.complete:
+        return False
+    return any(
+        fact.status == "available"
+        and fact.repository_id == reference.repository_id
+        and fact.commit_sha == reference.sha
+        and fact.path == reference.path
+        for fact in context.evidence.facts
+    )
 
 
 def _dependency_findings(inputs: EvaluationInput) -> tuple[DeliveryFinding, ...]:
@@ -515,6 +610,13 @@ def _assessment_id(
                 "outcome": item.confirmation.outcome
                 if item.confirmation is not None
                 else item.last_attempt_outcome,
+                "snapshot_id": str(item.snapshot_id) if item.snapshot_id is not None else None,
+                "success_confirmation_id": str(item.success_confirmation_id)
+                if item.success_confirmation_id is not None
+                else None,
+                "latest_attempt_confirmation_id": str(item.latest_attempt_confirmation_id)
+                if item.latest_attempt_confirmation_id is not None
+                else None,
             }
         )
     return canonical_digest(
@@ -532,6 +634,14 @@ def _assessment_id(
                     "identity": item.reference_identity,
                     "status": item.status,
                     "current_digest": item.current_digest,
+                    "snapshot_id": str(item.snapshot_id) if item.snapshot_id is not None else None,
+                    "success_confirmation_id": str(item.success_confirmation_id)
+                    if item.success_confirmation_id is not None
+                    else None,
+                    "latest_attempt_confirmation_id": str(item.latest_attempt_confirmation_id)
+                    if item.latest_attempt_confirmation_id is not None
+                    else None,
+                    "collection_finished_at": _timestamp(item.collection_finished_at),
                 }
                 for item in sorted(inputs.contexts, key=lambda value: value.reference_identity)
             ],
@@ -578,10 +688,20 @@ def _observation_times(inputs: EvaluationInput) -> tuple[datetime | None, dateti
         for item in inputs.active_bindings
         if item.confirmation is not None and item.confirmation.evidence is not None
     ]
-    if not observed:
+    required_context_times = [
+        item.collection_finished_at
+        for item in inputs.contexts
+        if item.reference_identity.startswith("repository_document:")
+        and item.status == "available"
+        and item.collection_finished_at is not None
+    ]
+    all_observed = observed + required_context_times
+    if not all_observed:
         return (None, None)
-    oldest = min(observed)
-    return (oldest, oldest + timedelta(seconds=inputs.freshness_seconds))
+    return (
+        min(all_observed),
+        min(value + timedelta(seconds=inputs.freshness_seconds) for value in all_observed),
+    )
 
 
 def evaluate_delivery(inputs: EvaluationInput, *, now: datetime) -> DeliveryAssessment:

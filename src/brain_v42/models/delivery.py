@@ -224,6 +224,56 @@ class RepositoryDocumentReference(_StrictModel):
         return _validate_relative_path(value, field_name="path")
 
 
+class RepositoryDocumentFact(_StrictModel):
+    """A provider observation for one exact repository-document pin, without its body."""
+
+    repository_id: StrictInt = Field(gt=0)
+    commit_sha: str = Field(min_length=40, max_length=64)
+    path: str = Field(min_length=1, max_length=4096)
+    tree_sha: str | None = Field(default=None, min_length=40, max_length=64)
+    blob_sha: str | None = Field(default=None, min_length=40, max_length=64)
+    mode: Literal["100644", "100755"] | None = None
+    status: Literal["available", "missing", "error"]
+
+    _valid_shas = field_validator("commit_sha", "tree_sha", "blob_sha")(
+        lambda value: _validate_sha(value) if value is not None else None
+    )
+    _valid_path = field_validator("path")(
+        lambda value: _validate_relative_path(value, field_name="path")
+    )
+
+    @model_validator(mode="after")
+    def _complete_available_proof(self) -> RepositoryDocumentFact:
+        if self.status == "available" and (
+            self.tree_sha is None or self.blob_sha is None or self.mode is None
+        ):
+            raise ValueError("available repository fact requires complete regular-file proof")
+        return self
+
+    def identity(self) -> tuple[int, str, str]:
+        return (self.repository_id, self.commit_sha, self.path)
+
+
+class RepositoryContextEvidence(_StrictModel):
+    """A bounded immutable set of repository-document facts for one collection."""
+
+    facts: Annotated[tuple[RepositoryDocumentFact, ...], BeforeValidator(_lists_to_tuples)] = Field(
+        default_factory=tuple, max_length=32
+    )
+    complete: StrictBool
+
+    @model_validator(mode="after")
+    def _consistent_facts(self) -> RepositoryContextEvidence:
+        identities = [fact.identity() for fact in self.facts]
+        if len(identities) != len(set(identities)):
+            raise ValueError("repository context evidence has duplicate pins")
+        if self.complete and (
+            not self.facts or any(fact.status != "available" for fact in self.facts)
+        ):
+            raise ValueError("complete repository context evidence requires available facts")
+        return self
+
+
 class UrlReference(_StrictModel):
     kind: Literal["url"]
     url: str = Field(min_length=1, max_length=4096)
@@ -539,21 +589,50 @@ class BindingEvidence(_StrictModel):
 
     binding: ArtifactBinding
     confirmation: ObservationConfirmation | None = None
+    snapshot_id: UUIDValue | None = None
+    success_confirmation_id: UUIDValue | None = None
+    latest_attempt_confirmation_id: UUIDValue | None = None
     last_attempt_at: datetime | None = None
     last_success_at: datetime | None = None
-    last_attempt_outcome: Literal["success", "error", "never"] = "success"
+    last_attempt_outcome: Literal["success", "error", "never"] = "never"
 
 
 class ContextPredicate(_StrictModel):
     """Current comparison of one pinned context fact with its contract digest."""
 
-    reference_identity: str = Field(min_length=1, max_length=500)
+    reference_identity: str = Field(min_length=1, max_length=5000)
     current_digest: str | None = Field(default=None, min_length=64, max_length=64)
     status: Literal["available", "changed", "missing", "error"]
+    snapshot_id: UUIDValue | None = None
+    success_confirmation_id: UUIDValue | None = None
+    latest_attempt_confirmation_id: UUIDValue | None = None
+    collection_started_at: datetime | None = None
+    collection_finished_at: datetime | None = None
+    evidence: RepositoryContextEvidence | None = None
 
     _valid_current = field_validator("current_digest")(
         lambda value: _validate_digest(value) if value is not None else None
     )
+
+    @model_validator(mode="after")
+    def _repository_proof_is_explicit(self) -> ContextPredicate:
+        if not self.reference_identity.startswith("repository_document:"):
+            return self
+        if self.status != "available":
+            return self
+        if (
+            self.current_digest is None
+            or self.snapshot_id is None
+            or self.success_confirmation_id is None
+            or self.latest_attempt_confirmation_id is None
+            or self.collection_started_at is None
+            or self.collection_finished_at is None
+            or self.evidence is None
+        ):
+            raise ValueError("available repository context requires immutable confirmation proof")
+        if self.collection_finished_at < self.collection_started_at:
+            raise ValueError("repository context confirmation interval is reversed")
+        return self
 
 
 class MilestoneReceipt(_StoredModel):
