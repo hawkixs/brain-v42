@@ -39,12 +39,13 @@ from brain_v42.mcp.tools.tool_annotations import (
     _READ_ANNOTATIONS,
 )
 from brain_v42.models.adr import AlternativeConsidered
-from brain_v42.models.brain import KnowledgeType
+from brain_v42.models.brain import ALL_TYPES, KnowledgeType
 from brain_v42.models.decision import DecisionCreate
 from brain_v42.models.learning import Confidence, LearningCreate, SourceType
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.models.relation import RelationInput
 from brain_v42.repositories.promotion import SourceLearningNotFound
+from brain_v42.services.brain_service import _TYPE_TO_PLURAL
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -653,7 +654,8 @@ def register_tools(
         types: subset of {decision, learning, snippet, runbook, adr, plan}.
         project_key XOR project_group for scoping. tags filter by overlap.
         Results render with [s:score] prefix, sorted by score desc.
-        group_by_type=True groups output sections (former what_do_i_know_about).
+        group_by_type=True groups output sections (former what_do_i_know_about);
+        types still scopes which sections are searched and rendered.
         include_related=True appends a "### Related" graph-neighbour block;
         default off — use brain_get_neighbors for targeted traversal instead.
         full=True restores complete decision/learning bodies; by default their
@@ -668,6 +670,7 @@ def register_tools(
         if group_by_type:
             wdik_response = await brain_svc.what_do_i_know_about(
                 topic=query,
+                types=types,
                 project_key=project_key,
                 project_group=project_group,
                 limit=limit,
@@ -679,8 +682,8 @@ def register_tools(
             if metrics_collector is not None:
                 all_scores = [
                     r.score
-                    for attr in ["decisions", "learnings", "snippets", "runbooks", "adrs"]
-                    for r in getattr(wdik_response.by_type, attr)
+                    for t in ALL_TYPES
+                    for r in getattr(wdik_response.by_type, _TYPE_TO_PLURAL[t])
                 ]
                 await metrics_collector.record_search_log(
                     tool_name="brain_search",
@@ -695,7 +698,16 @@ def register_tools(
                 "mcp.brain_search.grouped",
                 query_length=len(query),
                 project_key=project_key,
+                project_group=project_group,
                 limit=limit,
+                types_requested=types,
+                tags_present=bool(tags),
+                tags_count=len(tags) if tags else 0,
+                min_score=min_score,
+                include_archived=include_archived,
+                include_related=include_related,
+                full=full,
+                group_by_type=group_by_type,
             )
             return (
                 format_knowledge_by_type(
@@ -734,7 +746,16 @@ def register_tools(
             "mcp.brain_search",
             query_length=len(query),
             project_key=project_key,
+            project_group=project_group,
             limit=limit,
+            types_requested=types,
+            tags_present=bool(tags),
+            tags_count=len(tags) if tags else 0,
+            min_score=min_score,
+            include_archived=include_archived,
+            include_related=include_related,
+            full=full,
+            group_by_type=group_by_type,
         )
         output = format_search_results(
             search_response.results,

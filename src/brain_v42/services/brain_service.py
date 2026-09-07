@@ -627,6 +627,7 @@ class BrainService:
     async def what_do_i_know_about(
         self,
         topic: str,
+        types: list[KnowledgeType] | None = None,
         project_key: str | None = None,
         project_group: str | None = None,
         limit: int = 20,
@@ -637,6 +638,9 @@ class BrainService:
 
         Args:
             topic: The topic to search for.
+            types: Optional list of KnowledgeType to search. Defaults to ALL_TYPES.
+                Only the requested types are fanned out to, and only their
+                groups can be non-empty in the returned by_type.
             project_key: Optional project scope filter.
             project_group: Optional project group — resolved to project_keys via
                 ProjectContextService.get_keys_by_group().
@@ -648,6 +652,7 @@ class BrainService:
             WhatDoIKnowResponse with results grouped under by_type.
         """
         threshold = min_score if min_score is not None else self._min_score
+        types_to_search: list[KnowledgeType] = types if types is not None else list(ALL_TYPES)
 
         # Resolve project_group to a list of project_keys
         project_keys: list[str] | None = None
@@ -658,11 +663,11 @@ class BrainService:
                     topic=topic,
                     by_type=KnowledgeByType(),
                     total=0,
-                    types_searched=list(ALL_TYPES),
+                    types_searched=types_to_search,
                 )
 
         results_by_type, _wdika_degraded = await self._fan_out(
-            types=list(ALL_TYPES),
+            types=types_to_search,
             query=topic,
             project_key=project_key,
             limit=limit,
@@ -739,6 +744,6 @@ class BrainService:
             topic=topic,
             by_type=by_type,
             total=total,
-            types_searched=list(ALL_TYPES),
+            types_searched=types_to_search,
             degraded=_wdika_degraded,
         )

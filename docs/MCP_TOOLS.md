@@ -284,7 +284,7 @@ brain_search(query, types=None, project_key=None, project_group=None,
              limit=20, min_score=0.2, include_archived=False,
              group_by_type=False, tags=None, include_related=False)
 ```
-Hybrid semantic search: pgvector fan-out across services + `BatchingRerankerClient` rerank (20 ms coalescing window). `types` subset of {decision, learning, snippet, runbook, adr, plan}. `project_key` XOR `project_group` scope. `tags` filter by overlap. Results render with `[s:score]` prefix sorted by score desc. `group_by_type=True` groups output into sections (former `brain_what_do_i_know_about`). `include_related=True` appends a `### Related` graph-neighbour block.
+Hybrid semantic search: pgvector fan-out across services + `BatchingRerankerClient` rerank (20 ms coalescing window). `types` subset of {decision, learning, snippet, runbook, adr, plan}. `project_key` XOR `project_group` scope. `tags` filter by overlap. Results render with `[s:score]` prefix sorted by score desc. `group_by_type=True` groups output into sections (former `brain_what_do_i_know_about`); `types` still scopes which sections are searched and rendered in grouped mode. `include_related=True` appends a `### Related` graph-neighbour block.
 
 **Limit**: clamped server-side to [1, 100]. Degraded banners: see top of document.
 
