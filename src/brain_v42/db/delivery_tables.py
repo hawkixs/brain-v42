@@ -99,6 +99,7 @@ def register_delivery_tables(metadata: sa.MetaData) -> dict[str, sa.Table]:
         sa.Column("contract_revision", sa.Integer, primary_key=True),
         sa.Column("normalized_contract", JSONB, nullable=False),
         sa.Column("content_digest", sa.String(64), nullable=False),
+        sa.Column("context_set_digest", sa.String(64), nullable=False),
         sa.Column("author_project", sa.String(50), nullable=False),
         sa.Column("amendment_reason", sa.Text),
         sa.Column(
@@ -107,7 +108,12 @@ def register_delivery_tables(metadata: sa.MetaData) -> dict[str, sa.Table]:
             nullable=False,
             server_default=sa.text("now()"),
         ),
-        sa.UniqueConstraint("ticket_id", "content_digest", name="uq_delivery_revision_digest"),
+        sa.UniqueConstraint(
+            "ticket_id",
+            "contract_revision",
+            "context_set_digest",
+            name="uq_delivery_revision_context_subject",
+        ),
         sa.CheckConstraint(
             "contract_revision >= 1", name="delivery_contract_revisions_revision_valid"
         ),
@@ -231,6 +237,24 @@ def register_delivery_tables(metadata: sa.MetaData) -> dict[str, sa.Table]:
             unique=True,
             postgresql_where=sa.text("subject_kind = 'artifact_binding'"),
         ),
+        sa.UniqueConstraint("id", "binding_id", name="uq_delivery_snapshot_binding_subject"),
+        sa.UniqueConstraint(
+            "id",
+            "ticket_id",
+            "contract_revision",
+            "attempt",
+            "context_set_digest",
+            name="uq_delivery_snapshot_context_subject",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ticket_id", "contract_revision", "context_set_digest"],
+            [
+                "delivery_contract_revisions.ticket_id",
+                "delivery_contract_revisions.contract_revision",
+                "delivery_contract_revisions.context_set_digest",
+            ],
+            ondelete="RESTRICT",
+        ),
         sa.Index(
             "uq_delivery_snapshot_context_digest",
             "ticket_id",
@@ -258,10 +282,11 @@ def register_delivery_tables(metadata: sa.MetaData) -> dict[str, sa.Table]:
         sa.Column("contract_revision", sa.Integer),
         sa.Column("attempt", sa.Integer),
         sa.Column("context_set_digest", sa.String(64)),
+        sa.Column("snapshot_id", UUID(as_uuid=True)),
         sa.Column(
-            "snapshot_id",
+            "success_id",
             UUID(as_uuid=True),
-            sa.ForeignKey("delivery_snapshots.id", ondelete="RESTRICT"),
+            sa.Computed("CASE WHEN outcome = 'success' THEN id END", persisted=True),
         ),
         sa.Column("collection_started_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("collection_finished_at", sa.DateTime(timezone=True), nullable=False),
@@ -282,20 +307,92 @@ def register_delivery_tables(metadata: sa.MetaData) -> dict[str, sa.Table]:
             "(subject_kind = 'artifact_binding' AND binding_id IS NOT NULL AND ticket_id IS NULL AND contract_revision IS NULL AND attempt IS NULL AND context_set_digest IS NULL) OR (subject_kind = 'repository_context' AND binding_id IS NULL AND ticket_id IS NOT NULL AND contract_revision IS NOT NULL AND attempt IS NOT NULL AND context_set_digest IS NOT NULL)",
             name="delivery_confirmations_subject_shape_valid",
         ),
-    )
-    for table, success, attempt in (
-        (
-            workflows,
-            "latest_context_success_confirmation_id",
-            "latest_context_attempt_confirmation_id",
+        sa.CheckConstraint(
+            "subject_kind <> 'repository_context' OR attempt >= 1",
+            name="delivery_confirmations_context_attempt_valid",
         ),
-        (bindings, "latest_success_confirmation_id", "latest_attempt_confirmation_id"),
-    ):
-        table.append_constraint(
-            sa.ForeignKeyConstraint([success], ["delivery_confirmations.id"], ondelete="RESTRICT")
+        sa.ForeignKeyConstraint(
+            ["snapshot_id", "binding_id"],
+            ["delivery_snapshots.id", "delivery_snapshots.binding_id"],
+            ondelete="RESTRICT",
+        ),
+        sa.ForeignKeyConstraint(
+            ["snapshot_id", "ticket_id", "contract_revision", "attempt", "context_set_digest"],
+            [
+                "delivery_snapshots.id",
+                "delivery_snapshots.ticket_id",
+                "delivery_snapshots.contract_revision",
+                "delivery_snapshots.attempt",
+                "delivery_snapshots.context_set_digest",
+            ],
+            ondelete="RESTRICT",
+        ),
+        sa.UniqueConstraint("id", "binding_id", name="uq_delivery_confirmation_binding_attempt"),
+        sa.UniqueConstraint(
+            "success_id", "binding_id", name="uq_delivery_confirmation_binding_success"
+        ),
+        sa.UniqueConstraint(
+            "id",
+            "ticket_id",
+            "contract_revision",
+            "attempt",
+            "context_set_digest",
+            name="uq_delivery_confirmation_context_attempt",
+        ),
+        sa.UniqueConstraint(
+            "success_id",
+            "ticket_id",
+            "contract_revision",
+            "attempt",
+            "context_set_digest",
+            name="uq_delivery_confirmation_context_success",
+        ),
+    )
+    workflows.append_constraint(
+        sa.ForeignKeyConstraint(
+            ["ticket_id", "current_revision", "context_set_digest"],
+            [
+                "delivery_contract_revisions.ticket_id",
+                "delivery_contract_revisions.contract_revision",
+                "delivery_contract_revisions.context_set_digest",
+            ],
+            ondelete="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+            use_alter=True,
+            name="fk_delivery_workflow_current_context_revision",
         )
-        table.append_constraint(
-            sa.ForeignKeyConstraint([attempt], ["delivery_confirmations.id"], ondelete="RESTRICT")
+    )
+    bindings.append_constraint(
+        sa.ForeignKeyConstraint(
+            ["latest_attempt_confirmation_id", "id"],
+            ["delivery_confirmations.id", "delivery_confirmations.binding_id"],
+            ondelete="RESTRICT",
+        )
+    )
+    bindings.append_constraint(
+        sa.ForeignKeyConstraint(
+            ["latest_success_confirmation_id", "id"],
+            ["delivery_confirmations.success_id", "delivery_confirmations.binding_id"],
+            ondelete="RESTRICT",
+        )
+    )
+    for pointer, confirmation in (
+        ("latest_context_attempt_confirmation_id", "id"),
+        ("latest_context_success_confirmation_id", "success_id"),
+    ):
+        workflows.append_constraint(
+            sa.ForeignKeyConstraint(
+                [pointer, "ticket_id", "current_revision", "attempt", "context_set_digest"],
+                [
+                    f"delivery_confirmations.{confirmation}",
+                    "delivery_confirmations.ticket_id",
+                    "delivery_confirmations.contract_revision",
+                    "delivery_confirmations.attempt",
+                    "delivery_confirmations.context_set_digest",
+                ],
+                ondelete="RESTRICT",
+            )
         )
     receipts = sa.Table(
         "delivery_receipts",
@@ -324,7 +421,16 @@ def register_delivery_tables(metadata: sa.MetaData) -> dict[str, sa.Table]:
             "contract_revision",
             "attempt",
             "milestone",
+            "delivery_digest",
             name="uq_delivery_receipt_milestone",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ticket_id", "contract_revision"],
+            [
+                "delivery_contract_revisions.ticket_id",
+                "delivery_contract_revisions.contract_revision",
+            ],
+            ondelete="RESTRICT",
         ),
         sa.CheckConstraint(
             "milestone IN ('integration', 'fulfilled')", name="delivery_receipts_milestone_valid"

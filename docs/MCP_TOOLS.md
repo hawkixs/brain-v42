@@ -392,6 +392,8 @@ brain_session_checkpoint(session_id, expected_client_key, seq, progress, next_st
 ```
 Publish one semantic checkpoint of an `open` session, in a single call, into the append-only `brain_session_checkpoints` table (migration 052). It records JUDGMENT — where the work stands, what blocks it, what comes next — published together so a reader can tell a complete snapshot from a partial one.
 
+The repository migration target is migration 053; this does not enable delivery operations in MCP.
+
 It is **not** a lifecycle command and **not** a presence signal: it writes no `last_heartbeat_at`, touches no focus or `focus_revision`, attributes no artifact, and neither opens nor closes a session. Liveness already comes from the observation stamped by every tool call, which is why the checkpoint carries no heartbeat effect at all — on a real checkpoint or on a replay.
 
 `seq` is supplied by the caller and must be an integer >= 1. Reusing the same `seq` with an identical payload replays the call idempotently and returns `replayed=true` with the original `created_at`; reusing it with different content is a non-destructive conflict and is refused rather than silently dropped. `progress` and `next_step` are 1–2,000 characters after trimming, `blocker` is null or 1–2,000; overflow is refused, never truncated, because a judgment cut at its bound reads as complete while it is not. A session holds at most 200 checkpoints, fail-closed.

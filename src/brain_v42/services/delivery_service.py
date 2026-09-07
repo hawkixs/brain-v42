@@ -19,7 +19,7 @@ from brain_v42.models.delivery import (
     RepositoryDocumentReference,
 )
 from brain_v42.models.delivery_hashes import canonical_digest
-from brain_v42.repositories.pg_delivery import PgDeliveryRepo
+from brain_v42.repositories.pg_delivery import PgDeliveryRepo, _contract_from_json, lock_workflows
 
 
 class DeliveryService:
@@ -60,8 +60,8 @@ class DeliveryService:
                 raise DeliveryError(
                     "ticket_not_contractable", "only active request tickets may hold a contract"
                 )
-            if actor_project not in {ticket["from_project"], ticket["to_project"]}:
-                raise DeliveryError("not_allowed", "actor is not a ticket participant")
+            if actor_project != ticket["from_project"]:
+                raise DeliveryError("not_allowed", "only the requester may set a delivery contract")
             registry = self._settings.repositories_for(ticket["to_project"])
             normalized = []
             for deliverable in contract.deliverables:
@@ -75,47 +75,57 @@ class DeliveryService:
                         "unknown_repository",
                         "deliverable repository is not registered for the executor project",
                     )
-                normalized.append(deliverable.model_copy(update={"repository_id": matched[0]}))
-            pinned_context = []
-            for reference in contract.context_refs:
-                if reference.kind == "brain_entity":
-                    # Actual semantic source loading is delegated to repository hydration; the
-                    # immutable contract stores an empty safe snapshot only after later tests.
-                    raise DeliveryError(
-                        "context_unavailable",
-                        "Brain entity context requires a stored source snapshot",
+                normalized.append(
+                    type(deliverable).model_validate(
+                        {**deliverable.model_dump(), "repository_id": matched[0]}
                     )
+                )
+            unresolved_context = []
+            for reference in contract.context_refs:
                 if isinstance(reference, RepositoryDocumentReference):
                     if reference.repository_id not in registry:
                         raise DeliveryError(
                             "unknown_repository",
                             "context repository is not registered for the executor project",
                         )
-                pinned_context.append(reference)
-            revision = ContractRevision(
-                ticket_id=ticket_id,
-                contract_revision=expected_revision + 1,
-                author_project=actor_project,
-                created_at=datetime.now(UTC),
-                amendment_reason=("amendment" if expected_revision else None),
-                schema_version=contract.schema_version,
-                objective=contract.objective,
-                constraints=contract.constraints,
-                acceptance_criteria=contract.acceptance_criteria,
-                priority=contract.priority,
-                context_refs=tuple(pinned_context),
-                dependencies=contract.dependencies,
-                deliverables=tuple(normalized),
-                acceptance_mode=contract.acceptance_mode,
-            )
-            return await self._repo.set_contract(
-                revision,
-                expected_revision=expected_revision,
-                actor_project=actor_project,
-                idempotency_key=idempotency_key,
-                request_digest=request_digest,
-                session=session,
-            )
+                unresolved_context.append(reference)
+            async with lock_workflows(session, (ticket_id,), graph_write=True):
+                replay = await self._repo._event_replay(
+                    session,
+                    operation="set_contract",
+                    actor_project=actor_project,
+                    key=idempotency_key,
+                    digest=request_digest,
+                )
+                if replay is not None:
+                    return _contract_from_json(replay)
+                pinned_context = await self._repo.resolve_context_references(
+                    session, unresolved_context
+                )
+                revision = ContractRevision(
+                    ticket_id=ticket_id,
+                    contract_revision=expected_revision + 1,
+                    author_project=actor_project,
+                    created_at=datetime.now(UTC),
+                    amendment_reason=("amendment" if expected_revision else None),
+                    schema_version=contract.schema_version,
+                    objective=contract.objective,
+                    constraints=contract.constraints,
+                    acceptance_criteria=contract.acceptance_criteria,
+                    priority=contract.priority,
+                    context_refs=pinned_context,
+                    dependencies=contract.dependencies,
+                    deliverables=tuple(normalized),
+                    acceptance_mode=contract.acceptance_mode,
+                )
+                return await self._repo.set_contract(
+                    revision,
+                    expected_revision=expected_revision,
+                    actor_project=actor_project,
+                    idempotency_key=idempotency_key,
+                    request_digest=request_digest,
+                    session=session,
+                )
 
     async def bind_pr(
         self,
@@ -129,13 +139,30 @@ class DeliveryService:
     ) -> ArtifactBinding:
         if not self._settings.enabled:
             raise DeliveryError("delivery_disabled", "delivery workflow operations are disabled")
+        async with self._repo._maybe_session(None, write=False) as session:
+            ticket = (
+                (await session.execute(sa.select(tickets).where(tickets.c.id == ticket_id)))
+                .mappings()
+                .one_or_none()
+            )
+        if ticket is None:
+            raise DeliveryError("ticket_not_found", "ticket was not found")
+        if actor_project != ticket["to_project"]:
+            raise DeliveryError("not_allowed", "only the executor may bind a pull request")
         view = await self.get(ticket_id, actor_project=actor_project)
-        ticket_registry = self._settings.repositories_for(view.contract.author_project)
+        ticket_registry = self._settings.repositories_for(ticket["to_project"])
         if repository_id not in ticket_registry:
             raise DeliveryError("unknown_repository", "repository is not registered")
-        if deliverable_key not in {item.key for item in view.contract.deliverables}:
+        deliverable = next(
+            (item for item in view.contract.deliverables if item.key == deliverable_key), None
+        )
+        if deliverable is None:
             raise DeliveryError(
                 "unknown_deliverable", "deliverable key is not in the current contract"
+            )
+        if deliverable.repository_id != repository_id:
+            raise DeliveryError(
+                "repository_mismatch", "binding repository differs from its deliverable"
             )
         binding = ArtifactBinding(
             ticket_id=ticket_id,
@@ -158,12 +185,23 @@ class DeliveryService:
         )
         return await self._repo.bind_pr(
             binding,
+            repository_name=ticket_registry[repository_id],
             actor_project=actor_project,
             idempotency_key=idempotency_key,
             request_digest=digest,
         )
 
     async def get(self, ticket_id: UUID, *, actor_project: str) -> DeliveryView:
+        async with self._repo._maybe_session(None, write=False) as session:
+            ticket = (
+                (await session.execute(sa.select(tickets).where(tickets.c.id == ticket_id)))
+                .mappings()
+                .one_or_none()
+            )
+        if ticket is None:
+            raise DeliveryError("ticket_not_found", "ticket was not found")
+        if actor_project not in {ticket["from_project"], ticket["to_project"]}:
+            raise DeliveryError("not_allowed", "actor is not a ticket participant")
         view = await self._repo.get_view(
             ticket_id,
             feature_enabled=self._settings.enabled,
@@ -176,6 +214,8 @@ class DeliveryService:
     async def list(
         self, *, actor_project: str, limit: int = 20, cursor: str | None = None
     ) -> DeliveryPage:
+        if not 1 <= limit <= 100:
+            raise DeliveryError("invalid_limit", "limit must be between 1 and 100")
         return await self._repo.list_views(
             actor_project,
             feature_enabled=self._settings.enabled,
@@ -185,4 +225,6 @@ class DeliveryService:
         )
 
     async def refresh(self, ticket_id: UUID, *, actor_project: str) -> DeliveryView:
+        await self.get(ticket_id, actor_project=actor_project)
+        await self._repo.refresh(ticket_id)
         return await self.get(ticket_id, actor_project=actor_project)

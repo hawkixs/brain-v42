@@ -29,14 +29,17 @@ from brain_v42.db.tables import (
 from brain_v42.models.delivery import (
     ArtifactBinding,
     BindingEvidence,
+    BrainEntityReference,
     ClaimState,
     ContextPredicate,
+    ContextReference,
     ContractRevision,
     DeliveryError,
     DeliveryPage,
     DeliveryView,
     EvaluationInput,
     PinnedBrainEntityReference,
+    PinnedContextReference,
     RepositoryDocumentReference,
     context_reference_digest,
     context_reference_identity,
@@ -53,7 +56,7 @@ DELIVERY_OBSERVER_LOCK = 7_311_041_002
 _CONTEXT_TABLES: dict[str, tuple[sa.Table, tuple[str, ...]]] = {
     "decision": (
         decisions,
-        ("id", "title", "decision", "rationale", "status", "project_key", "superseded_by"),
+        ("id", "title", "description", "reasoning", "status", "project_key", "superseded_by"),
     ),
     "learning": (
         learnings,
@@ -138,6 +141,15 @@ class PgDeliveryRepo(BasePgRepository):
             if replay is not None:
                 return _contract_from_json(replay)
             async with lock_workflows(sess, (contract.ticket_id,), graph_write=True):
+                replay = await self._event_replay(
+                    sess,
+                    operation="set_contract",
+                    actor_project=actor_project,
+                    key=idempotency_key,
+                    digest=request_digest,
+                )
+                if replay is not None:
+                    return _contract_from_json(replay)
                 current = (
                     (
                         await sess.execute(
@@ -176,6 +188,7 @@ class PgDeliveryRepo(BasePgRepository):
                         .values(
                             current_revision=contract.contract_revision,
                             row_version=current["row_version"] + 1,
+                            context_row_version=current["context_row_version"] + 1,
                             context_set_digest=_context_set_digest(contract),
                             context_due_at=datetime.now(UTC),
                             latest_context_success_confirmation_id=None,
@@ -190,6 +203,7 @@ class PgDeliveryRepo(BasePgRepository):
                         contract_revision=contract.contract_revision,
                         normalized_contract=stored,
                         content_digest=contract.content_digest,
+                        context_set_digest=_context_set_digest(contract),
                         author_project=contract.author_project,
                         amendment_reason=contract.amendment_reason,
                         created_at=contract.created_at,
@@ -220,10 +234,69 @@ class PgDeliveryRepo(BasePgRepository):
                 )
                 return contract
 
+    async def resolve_context_references(
+        self, session: AsyncSession, references: Iterable[ContextReference]
+    ) -> tuple[PinnedContextReference, ...]:
+        """Freeze supported Brain sources while the caller owns the decision transaction."""
+        original = tuple(references)
+        pinned: dict[tuple[str, UUID], PinnedBrainEntityReference] = {}
+        brain_references = sorted(
+            (reference for reference in original if isinstance(reference, BrainEntityReference)),
+            key=lambda reference: (
+                _context_table_rank(reference.entity_type),
+                str(reference.entity_id),
+            ),
+        )
+        for reference in brain_references:
+            table, fields = _CONTEXT_TABLES[reference.entity_type]
+            row = (
+                (
+                    await session.execute(
+                        sa.select(table)
+                        .where(table.c.id == reference.entity_id)
+                        .with_for_update(read=True)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                raise DeliveryError("context_unavailable", "required Brain context is unavailable")
+            content = {
+                field: row[field] for field in fields if field in row and row[field] is not None
+            }
+            snapshot = json.dumps(
+                content, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":")
+            )
+            digest = canonical_digest(
+                {
+                    "entity_type": reference.entity_type,
+                    "entity_id": str(reference.entity_id),
+                    "content": snapshot,
+                },
+                domain="result",
+            )
+            pinned[(reference.entity_type, reference.entity_id)] = PinnedBrainEntityReference(
+                kind="brain_entity",
+                entity_type=reference.entity_type,
+                entity_id=reference.entity_id,
+                required=reference.required,
+                content_snapshot=snapshot,
+                content_digest=digest,
+            )
+        resolved: list[PinnedContextReference] = []
+        for source_reference in original:
+            if isinstance(source_reference, BrainEntityReference):
+                resolved.append(pinned[(source_reference.entity_type, source_reference.entity_id)])
+            else:
+                resolved.append(source_reference)
+        return tuple(resolved)
+
     async def bind_pr(
         self,
         binding: ArtifactBinding,
         *,
+        repository_name: str,
         actor_project: str,
         idempotency_key: str,
         request_digest: str,
@@ -240,6 +313,15 @@ class PgDeliveryRepo(BasePgRepository):
             if replay is not None:
                 return ArtifactBinding.model_validate(replay)
             async with lock_workflows(sess, (binding.ticket_id,), graph_write=True):
+                replay = await self._event_replay(
+                    sess,
+                    operation="bind_pr",
+                    actor_project=actor_project,
+                    key=idempotency_key,
+                    digest=request_digest,
+                )
+                if replay is not None:
+                    return ArtifactBinding.model_validate(replay)
                 current = (
                     (
                         await sess.execute(
@@ -273,7 +355,7 @@ class PgDeliveryRepo(BasePgRepository):
                         attempt=binding.attempt,
                         deliverable_key=binding.deliverable_key,
                         repository_id=binding.repository_id,
-                        repository_name="",
+                        repository_name=repository_name,
                         pr_number=binding.pr_number,
                         state=binding.state,
                         active=True,
@@ -424,6 +506,25 @@ class PgDeliveryRepo(BasePgRepository):
             contexts=inputs.contexts,
         )
 
+    async def refresh(self, ticket_id: UUID, *, session: AsyncSession | None = None) -> None:
+        """Queue workflow context and active bindings without publishing evidence."""
+        async with self._maybe_session(session, write=True) as sess:
+            async with lock_workflows(sess, (ticket_id,)):
+                now = datetime.now(UTC)
+                await sess.execute(
+                    delivery_workflows.update()
+                    .where(delivery_workflows.c.ticket_id == ticket_id)
+                    .values(context_due_at=now, updated_at=sa.func.now())
+                )
+                await sess.execute(
+                    delivery_artifact_bindings.update()
+                    .where(
+                        delivery_artifact_bindings.c.ticket_id == ticket_id,
+                        delivery_artifact_bindings.c.active.is_(True),
+                    )
+                    .values(due_at=now)
+                )
+
     async def list_views(
         self,
         actor_project: str,
@@ -472,6 +573,10 @@ def _context_set_digest(contract: ContractRevision) -> str:
         if isinstance(ref, RepositoryDocumentReference) and ref.required
     )
     return canonical_digest({"references": refs}, domain="result")
+
+
+def _context_table_rank(entity_type: str) -> int:
+    return tuple(_CONTEXT_TABLES).index(entity_type)
 
 
 def _contract_from_json(payload: dict[str, Any]) -> ContractRevision:
