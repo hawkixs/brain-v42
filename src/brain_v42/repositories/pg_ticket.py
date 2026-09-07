@@ -8,17 +8,23 @@ from uuid import UUID
 
 import sqlalchemy as sa
 import structlog
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from brain_v42.db.tables import ticket_messages, tickets
+from brain_v42.db.tables import delivery_workflows, ticket_messages, tickets
+from brain_v42.delivery_config import DeliverySettings
+from brain_v42.models.delivery import DeliveryError
 from brain_v42.models.ticket import (
     ExtractionStatus,
     Ticket,
+    TicketAction,
     TicketCreate,
     TicketGroups,
     TicketMessage,
     TicketStatus,
 )
+from brain_v42.repositories.delivery_ticket_guard import guard_delivery_transition
 from brain_v42.repositories.pg_base import BasePgRepository
+from brain_v42.repositories.pg_delivery import lock_workflows
 
 logger = structlog.get_logger(__name__)
 
@@ -29,6 +35,38 @@ _CONFIRMABLE = ("resolved", "wontfix")
 class PgTicketRepo(BasePgRepository):
     table = tickets
     fts_columns: list[str] = []  # hors recherche — famille coordination (spec §1)
+
+    async def update(
+        self,
+        id: UUID | str,
+        data: dict[str, Any],
+        *,
+        session: AsyncSession | None = None,
+    ) -> dict[str, Any] | None:
+        protected = {
+            "id",
+            "status",
+            "kind",
+            "from_project",
+            "to_project",
+            "resolved_at",
+            "closed_at",
+        }
+        if not protected.intersection(data):
+            return await super().update(id, data, session=session)
+        async with self._maybe_session(session, write=True) as sess:
+            async with lock_workflows(sess, (UUID(str(id)),)):
+                contracted = await sess.scalar(
+                    sa.select(delivery_workflows.c.ticket_id).where(
+                        delivery_workflows.c.ticket_id == id
+                    )
+                )
+                if contracted is not None:
+                    raise DeliveryError(
+                        "delivery_transition_required",
+                        "use the canonical contracted ticket transition",
+                    )
+                return await super().update(id, data, session=sess)
 
     async def create(self, data: TicketCreate) -> Ticket:  # type: ignore[override]
         values = {
@@ -107,6 +145,8 @@ class PgTicketRepo(BasePgRepository):
         new_status: TicketStatus,
         *,
         expected_status: TicketStatus,
+        action: TicketAction | str | None = None,
+        actor_project: str | None = None,
         resolved_at: datetime | None,
         closed_at: datetime | None,
         extraction_status: ExtractionStatus | None,
@@ -118,6 +158,15 @@ class PgTicketRepo(BasePgRepository):
 
         async with self.get_session() as session:
             async with session.begin():
+                mutation = await guard_delivery_transition(
+                    session,
+                    ticket_id,
+                    action=action,
+                    actor_project=actor_project,
+                    expected_status=expected_status,
+                    new_status=new_status,
+                    settings=DeliverySettings(),
+                )
                 stmt = (
                     tickets.update()
                     .where(
@@ -136,6 +185,8 @@ class PgTicketRepo(BasePgRepository):
                 row = (await session.execute(stmt)).mappings().one_or_none()
                 if row is None:
                     return None
+                if mutation is not None:
+                    await mutation.apply(session, ticket_id)
                 if message_author is not None and message_body is not None:
                     await session.execute(
                         ticket_messages.insert().values(

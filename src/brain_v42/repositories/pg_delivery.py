@@ -241,6 +241,25 @@ class PgDeliveryRepo(BasePgRepository):
                 )
                 if replay is not None:
                     return _contract_from_json(replay)
+                ticket = (
+                    (
+                        await sess.execute(
+                            sa.select(tickets).where(tickets.c.id == contract.ticket_id)
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if ticket is None:
+                    raise DeliveryError("ticket_not_found", "ticket was not found")
+                if ticket["kind"] != "request" or ticket["status"] in {"closed", "acked"}:
+                    raise DeliveryError(
+                        "ticket_not_contractable", "only active request tickets may hold a contract"
+                    )
+                if actor_project != ticket["from_project"]:
+                    raise DeliveryError(
+                        "not_allowed", "only the requester may set a delivery contract"
+                    )
                 await _validate_dependencies(sess, contract, actor_project)
                 current = (
                     (
