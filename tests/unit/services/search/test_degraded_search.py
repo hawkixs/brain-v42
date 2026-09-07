@@ -685,6 +685,64 @@ class TestScoreKindMarksTheIncidentReplay:
         assert "[s:" not in rendered
         assert "[rank 1/20]" in rendered
 
+    @pytest.mark.asyncio
+    async def test_embedding_outage_shard_of_twenty_never_reports_a_perfect_score(
+        self,
+    ) -> None:
+        """Sibling of the reranker-outage replay above, for the OTHER real
+        degraded path: EmbeddingUnavailable -> _fan_out's FTS-only fallback
+        produces the SAME (n-rank)/n band topped by exactly 1.0. Until now
+        this was only covered at the formatter level (a hand-built
+        SearchResult(score_kind="fts_rank")) — nothing exercised
+        EmbeddingUnavailable -> _fan_out -> SearchResult.score_kind for real,
+        which is exactly the gap that let a fail-open default survive the
+        full suite.
+        """
+        decisions = [_make_decision(title=f"Decision {i}") for i in range(20)]
+
+        decision_svc = MagicMock()
+        decision_svc.search = AsyncMock(return_value=decisions)
+        decision_svc.semantic_search = AsyncMock(
+            side_effect=EmbeddingUnavailable("should not be called")
+        )
+
+        empty_svc = MagicMock()
+        empty_svc.search = AsyncMock(return_value=[])
+        empty_svc.semantic_search = AsyncMock(return_value=[])
+
+        # A real embedding outage — not a reranker one.
+        embedding_svc = MagicMock()
+        embedding_svc.embed = AsyncMock(
+            side_effect=EmbeddingUnavailable("GPU unreachable", kind="unreachable")
+        )
+        embedding_svc.embed_query = AsyncMock(
+            side_effect=EmbeddingUnavailable("GPU unreachable", kind="unreachable")
+        )
+
+        brain = BrainService(
+            decision_svc=decision_svc,
+            learning_svc=empty_svc,
+            snippet_svc=empty_svc,
+            runbook_svc=empty_svc,
+            adr_svc=empty_svc,
+            embedding_svc=embedding_svc,
+            min_score=0.2,
+        )
+
+        response = await brain.search("zzqx quokka widget nonexistent gizmo", types=["decision"])
+
+        assert response.total > 0
+        assert {r.score_kind for r in response.results} == {"fts_rank"}
+
+        from brain_v42.mcp.tools.formatters import format_search_results
+
+        rendered = format_search_results(
+            response.results, query="zzqx quokka widget nonexistent gizmo"
+        )
+        assert "[s:1.00]" not in rendered
+        assert "[s:" not in rendered
+        assert "[rank 1/20]" in rendered
+
 
 class TestRrfFallbackLogNamesTheShard:
     """W33 bullet 4: the rrf_fallback log carried n_candidates but never WHICH

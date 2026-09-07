@@ -356,10 +356,11 @@ class BrainService:
         self,
         results_by_type: dict[KnowledgeType, list[tuple[Any, float]]],
         limit: int,
+        *,
+        score_kind_by_type: dict[KnowledgeType, str],
         min_score: float | None = None,
         include_archived: bool = False,
         tags: list[str] | None = None,
-        score_kind_by_type: dict[KnowledgeType, str] | None = None,
     ) -> tuple[list[SearchResult], ThresholdDiagnostics]:
         """Flatten, filter by min_score, sort by score DESC, and slice to limit.
 
@@ -370,12 +371,17 @@ class BrainService:
         Args:
             score_kind_by_type: W33 — provenance of each type's scores
                 ("cross_encoder" / "rank" / "fts_rank"), as computed by
-                _fan_out. Defaults to {} (falls back to "cross_encoder" per
-                type below) so direct low-level callers that predate this
-                field — this method is exercised directly by decay tests —
-                keep working unchanged; the real _fan_out-driven callers
-                (search(), what_do_i_know_about()) always supply a real
-                entry for every searched type.
+                _fan_out. REQUIRED, with no plausible default: a type that
+                reaches the loop below without a matching entry raises
+                KeyError rather than masquerading a rank ordinal as a
+                calibrated cross-encoder score (the fail-open bug this
+                parameter was hardened against — a caller-supplied default
+                of "cross_encoder" would have reintroduced it at the one
+                place it matters). Both real callers (search(),
+                what_do_i_know_about()) always supply a real entry for every
+                type whose items list is non-empty — an empty items list
+                never indexes into this dict, so a type that _fan_out
+                skipped (e.g. a raised exception) never trips the KeyError.
 
         Returns:
             2-tuple (results, diagnostics). diagnostics counts candidates
@@ -383,9 +389,6 @@ class BrainService:
             tags filter — read here because this is where the numbers are
             already known (lot G2, no extra query on the nominal path).
         """
-        from brain_v42.services.search.hybrid import SCORE_KIND_CROSS_ENCODER  # noqa: PLC0415
-
-        score_kind_by_type = score_kind_by_type or {}
         threshold = min_score if min_score is not None else self._min_score
         flat: list[SearchResult] = []
         effective_scores: list[float] = []
@@ -517,10 +520,9 @@ class BrainService:
                     SearchResult(
                         type=t,
                         score=score,
-                        score_kind=cast(
-                            _ScoreKindLiteral,
-                            score_kind_by_type.get(t, SCORE_KIND_CROSS_ENCODER),
-                        ),
+                        # No plausible default (W33): a missing entry raises
+                        # KeyError instead of masquerading as "cross_encoder".
+                        score_kind=cast(_ScoreKindLiteral, score_kind_by_type[t]),
                         item=item_dict,
                         title=result_title,
                         project_key=result_project_key,
@@ -862,8 +864,6 @@ class BrainService:
         if _wdika_degraded is not None:
             threshold = 0.0
 
-        from brain_v42.services.search.hybrid import SCORE_KIND_CROSS_ENCODER  # noqa: PLC0415
-
         by_type = KnowledgeByType()
         total = 0
         candidates_before_threshold = 0
@@ -902,10 +902,9 @@ class BrainService:
                     SearchResult(
                         type=t,
                         score=score,
-                        score_kind=cast(
-                            _ScoreKindLiteral,
-                            score_kind_by_type.get(t, SCORE_KIND_CROSS_ENCODER),
-                        ),
+                        # No plausible default (W33): a missing entry raises
+                        # KeyError instead of masquerading as "cross_encoder".
+                        score_kind=cast(_ScoreKindLiteral, score_kind_by_type[t]),
                         item=item_dict,
                         parent_id=getattr(entity, "plan_id", None),
                     )

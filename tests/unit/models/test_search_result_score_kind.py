@@ -15,13 +15,10 @@ score by picking up some plausible-looking default.
 
 from __future__ import annotations
 
-import uuid
-
 import pytest
 from pydantic import ValidationError
 
 from brain_v42.models.brain import SearchResult
-from brain_v42.services.search.hybrid import SCORE_KIND_UNSET, RankedCandidate
 
 
 class TestSearchResultScoreKindHasNoPlausibleDefault:
@@ -52,44 +49,11 @@ class TestSearchResultScoreKindHasNoPlausibleDefault:
             )
 
 
-class TestRankedCandidateScoreKindSentinelIsNeverPlausible:
-    def test_default_score_kind_is_not_one_of_the_real_values(self) -> None:
-        """A RankedCandidate built without an explicit score_kind (i.e. a
-        producer that forgot to set it) must carry a value that is
-        detectably wrong, not one of the three real ScoreKind values.
-
-        If this ever regresses to a plausible default (e.g. "cross_encoder"),
-        a missed producer would render a rank ordinal as a calibrated score
-        with nothing downstream able to tell the difference.
-        """
-        candidate = RankedCandidate(
-            id=uuid.uuid4(),
-            entity=None,
-            entity_type="learning",
-            score=0.0,
-            text="t",
-        )
-
-        assert candidate.score_kind == SCORE_KIND_UNSET
-        assert candidate.score_kind not in {"cross_encoder", "rank", "fts_rank"}
-
-    def test_sentinel_is_rejected_by_search_result(self) -> None:
-        """The sentinel is not just "different" — it is REJECTED the moment
-        it would reach the public SearchResult contract, which is the actual
-        enforcement point (RankedCandidate itself has no runtime validation).
-        """
-        candidate = RankedCandidate(
-            id=uuid.uuid4(),
-            entity=None,
-            entity_type="learning",
-            score=0.0,
-            text="t",
-        )
-
-        with pytest.raises(ValidationError):
-            SearchResult(
-                type="learning",
-                score=candidate.score,
-                score_kind=candidate.score_kind,
-                item={},
-            )
+# RankedCandidate (services/search/hybrid.py) used to carry its own
+# score_kind field with a SCORE_KIND_UNSET sentinel, set by reranker.py but
+# never read by anything — a second, unenforced source of truth alongside
+# the real one below. It has been removed (2026-09-07 fix round): the only
+# place score_kind is decided is brain_service._fan_out's rerank_mode ->
+# score_kind mapping, and the only enforcement point is direct dict indexing
+# (no `.get(..., default)`) at the two SearchResult construction sites — see
+# tests/unit/services/test_brain_service.py::TestScoreKindByTypeHasNoPlausibleDefault.

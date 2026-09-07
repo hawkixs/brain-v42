@@ -24,22 +24,21 @@ RERANK_MODE_RERANKED = "reranked"
 RERANK_MODE_RRF_FALLBACK = "rrf_fallback"
 RERANK_MODE_RRF_ONLY = "rrf_only"
 
-# W33 "a rank is not a score" — score_kind names the PROVENANCE of
-# RankedCandidate.score, not just its value. A rank ordinal rescaled into
-# (0, 1] (rrf_fallback) is numerically indistinguishable from a calibrated
-# cross-encoder sigmoid unless something tags it. Exactly one of the two real
-# producers below (reranker.py) must overwrite the sentinel default.
+# W33 "a rank is not a score" — these name the PROVENANCE of a score, not
+# just its value. A rank ordinal rescaled into (0, 1] (rrf_fallback) is
+# numerically indistinguishable from a calibrated cross-encoder sigmoid
+# unless something tags it. The decision of which value applies is made in
+# exactly one place — brain_service._fan_out's rerank_mode -> score_kind
+# mapping — and consumed with NO plausible default at SearchResult
+# construction: a type missing from that mapping raises KeyError rather than
+# silently rendering a rank ordinal as a calibrated score. RankedCandidate
+# itself carries no score_kind field: an earlier version duplicated the
+# provenance there (set by reranker.py, never read by anything), which gave
+# the impression of two independent guarantees when only the _fan_out
+# mapping was actually enforced.
 SCORE_KIND_CROSS_ENCODER = "cross_encoder"
 SCORE_KIND_RANK = "rank"
 SCORE_KIND_FTS_RANK = "fts_rank"
-
-# Sentinel default for RankedCandidate.score_kind — deliberately NOT one of
-# the three real ScoreKind values above. A producer that forgets to
-# overwrite it must fail loudly the moment the value reaches
-# SearchResult.score_kind (a required Literal field): pydantic rejects this
-# sentinel at construction instead of silently rendering a rank ordinal as a
-# plausible-looking score.
-SCORE_KIND_UNSET = "score_kind_unset"
 
 
 @dataclass
@@ -51,9 +50,6 @@ class RankedCandidate:
     entity_type: str
     score: float
     text: str
-    # See SCORE_KIND_UNSET docstring above — overwritten by reranker.py's two
-    # producers (cross_encoder / rank). Never read as a plausible default.
-    score_kind: str = SCORE_KIND_UNSET
 
 
 def rrf_fuse(

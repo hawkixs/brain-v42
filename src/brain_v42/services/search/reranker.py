@@ -24,12 +24,6 @@ logger = structlog.get_logger(__name__)
 RERANK_MODE_RERANKED = "reranked"
 RERANK_MODE_RRF_FALLBACK = "rrf_fallback"
 
-# ScoreKind values set on RankedCandidate — mirrors hybrid.SCORE_KIND_* by
-# value (duplicated locally, matching this module's existing RERANK_MODE_*
-# pattern above, to avoid a runtime import of hybrid.py from reranker.py).
-SCORE_KIND_CROSS_ENCODER = "cross_encoder"
-SCORE_KIND_RANK = "rank"
-
 
 class HybridReranker:
     """Async adapter: RerankerClient → HybridSearcher-compatible reranker.
@@ -91,19 +85,19 @@ class HybridReranker:
                 entity_type=candidates[0].entity_type,
             )
             # Rescale by rank so scores are in (0, 1] — compatible with min_score.
-            # W33 "a rank is not a score": tag score_kind="rank" so a rank
-            # ordinal is never rendered as a calibrated score downstream.
+            # W33 "a rank is not a score": the mode returned here
+            # (RERANK_MODE_RRF_FALLBACK) is what brain_service._fan_out maps
+            # to score_kind="rank" — the single place that decision is made
+            # and enforced (see hybrid.py's SCORE_KIND_* comment).
             n = len(candidates)
             for rank, candidate in enumerate(candidates):
                 candidate.score = (n - rank) / n
-                candidate.score_kind = SCORE_KIND_RANK
             return RERANK_MODE_RRF_FALLBACK, candidates
 
         for candidate, raw_score in zip(candidates, scores, strict=True):
             # Cross-encoder returns raw logits (e.g. -11 to +8).
             # Normalize to [0, 1] via sigmoid so min_score filtering works.
             candidate.score = 1.0 / (1.0 + math.exp(-float(raw_score)))
-            candidate.score_kind = SCORE_KIND_CROSS_ENCODER
 
         return RERANK_MODE_RERANKED, sorted(candidates, key=lambda c: c.score, reverse=True)
 

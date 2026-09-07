@@ -20,7 +20,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -1958,3 +1958,47 @@ class TestWhatDoIKnowAboutDegradedPropagation:
             types_searched=list(ALL_TYPES),
         )
         assert response.degraded is None
+
+
+# ---------------------------------------------------------------------------
+# TestScoreKindByTypeHasNoPlausibleDefault — W33 fix round (2026-09-07)
+# ---------------------------------------------------------------------------
+
+
+class TestScoreKindByTypeHasNoPlausibleDefault:
+    """`score_kind_by_type.get(t, SCORE_KIND_CROSS_ENCODER)` at both
+    SearchResult construction sites silently re-introduced the exact
+    plausible default W33 exists to forbid. A type that produced real items
+    but has no matching score_kind_by_type entry (a `_fan_out` bug) must now
+    fail loudly (KeyError) at construction, never render as a calibrated
+    cross-encoder score.
+
+    PROVEN BY MUTATION: reverting either construction site's `[t]` back to
+    `.get(t, SCORE_KIND_CROSS_ENCODER)` turns each `pytest.raises(KeyError)`
+    below into a silent pass-through — both tests go green -> fail on that
+    mutation.
+    """
+
+    async def test_search_fails_closed_on_missing_score_kind_entry(self) -> None:
+        """`_fan_out` returning items for "decision" without a matching
+        score_kind_by_type entry must raise, not default to "cross_encoder".
+        """
+        decision = make_decision()
+        brain, _ = make_brain_service()
+
+        broken_fan_out = AsyncMock(
+            return_value=({"decision": [(decision, 0.9)]}, None, "reranked", {})
+        )
+        with patch.object(brain, "_fan_out", broken_fan_out), pytest.raises(KeyError):
+            await brain.search("query")
+
+    async def test_what_do_i_know_about_fails_closed_on_missing_score_kind_entry(self) -> None:
+        """Same guarantee on the what_do_i_know_about() construction site."""
+        decision = make_decision()
+        brain, _ = make_brain_service()
+
+        broken_fan_out = AsyncMock(
+            return_value=({"decision": [(decision, 0.9)]}, None, "reranked", {})
+        )
+        with patch.object(brain, "_fan_out", broken_fan_out), pytest.raises(KeyError):
+            await brain.what_do_i_know_about("topic")
