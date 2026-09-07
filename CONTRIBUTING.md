@@ -122,11 +122,12 @@ mix of both. New content does not get that grandfather clause.
 **Exception — byte-exact apart from a declared anonymisation pass
 (decided 2026-09-07).** A test fixture that captures a live artifact —
 operator configuration, a drop-in, a captured log excerpt — is evidence,
-not prose, and it is exempt from the English-only rule for new files on
-either of two grounds. Ground one: a test compares it byte-for-byte with
-its live source, so retranslating it would break the identity the test
-exists to check — `models.conf.2026-09-03-live-dream-drop-in` is the
-only fixture on this ground, checked against the live systemd drop-in by
+not prose, and the four post-rule byte-exact captures named here are
+exempt from the English-only rule for new files, each on one of two
+grounds. Ground one: a test compares it byte-for-byte with its live
+source, so retranslating it would break the identity the test exists to
+check — `models.conf.2026-09-03-live-dream-drop-in` is the only fixture
+on this ground, checked against the live systemd drop-in by
 `tests/unit/test_dream_roadmap_configured_primary_is_guarded.py:139`; a
 drift alarm on the machine that holds the source, and a skip everywhere
 else, including CI's hosted runner, where the live file cannot exist.
@@ -135,13 +136,21 @@ and a hand-invented fixture would only prove the parser agrees with
 itself rather than a real night happening (learning 187f107c, stated at
 `tests/unit/test_reorg_report.py:336`) — the other three fixtures are on
 this ground: `2026-09-03_brain-v42_reorg.anonymised.log`, replayed by
-that same test, and `2026-09-04_roadmap.excerpt.log` and
-`2026-09-05_roadmap.excerpt.log`, replayed by
-`tests/unit/test_dream_post_run_alert_roadmap_shrink_line.py`. Their
-parsers key on markers (`[n/n]`, `· shrunk`, the JSON trailer), not on
-the French words around them, so retranslating one would leave every
+`tests/unit/test_reorg_report.py` and by
+`tests/unit/test_dream_post_run_alert_reorg_line.py`, and
+`2026-09-04_roadmap.excerpt.log` and `2026-09-05_roadmap.excerpt.log`,
+replayed by `tests/unit/test_dream_post_run_alert_roadmap_shrink_line.py`.
+Their parsers key on markers (`[n/n]`, `· shrunk`, the JSON trailer), not
+on the French words around them, so retranslating one would leave every
 assertion green while turning evidence of a real night into a
 hand-written stand-in — the loss is silent, not a test failure.
+
+Golden-output fixtures are a different case, outside this exception:
+`tests/fixtures/briefing_full.md` is the session-briefing renderer's own
+output, in the product's language, compared as text against freshly
+rendered output — it is not a captured external artifact compared
+byte-for-byte, nor a replay of a process run as evidence, so neither
+ground above applies to it and this exception says nothing about it.
 
 The exemption is narrow in a different way than "byte-exact" alone
 would suggest. A capture that would carry a secret is not eligible for
@@ -157,15 +166,6 @@ rest of the French prose stay verbatim. That declared pass is what
 keeps the file inside the exception, not outside it — call this
 category byte-exact apart from a declared anonymisation pass, not
 byte-exact without qualification.
-
-Naming the capture's source and a date in the filename, as most of the
-examples above do, helps a reader tell what a fixture is without
-opening it, but the existing names do not share one fixed shape:
-`models.conf.2026-09-03-live-dream-drop-in` and
-`ARCHITECTURE.2026-08-22-before-f7d013eb.md` put the subject first and
-pin a commit (`before-<sha>`) rather than a plain date, where the log
-excerpts put the date first — so treat it as a recommendation, not a
-pinned convention.
 
 ## Commit conventions
 
