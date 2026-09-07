@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from datetime import datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,6 +55,47 @@ def _require_version(value: object) -> int:
     if not isinstance(value, int):
         raise DeliveryError("binding_superseded", "artifact binding is no longer publishable")
     return value
+
+
+def _validated_repository_context_success(
+    evidence: RepositoryContextEvidence,
+    collection_started_at: datetime,
+    collection_finished_at: datetime,
+) -> RepositoryContextEvidence:
+    """Revalidate an untrusted model instance and its confirmation before persistence."""
+    try:
+        validated_evidence = RepositoryContextEvidence.model_validate(
+            evidence.model_dump(warnings=False)
+        )
+        confirmation = RepositoryContextObservationConfirmation(
+            snapshot_id=uuid4(),
+            evidence=validated_evidence,
+            collection_started_at=collection_started_at,
+            collection_finished_at=collection_finished_at,
+        )
+    except ValueError:
+        raise DeliveryError(
+            "repository_context_mismatch", "repository context confirmation is invalid"
+        ) from None
+    assert confirmation.evidence is not None
+    return confirmation.evidence
+
+
+def _validated_repository_context_error(
+    code: str, collection_started_at: datetime, collection_finished_at: datetime
+) -> None:
+    """Validate a failed confirmation before persistence without exposing caller input."""
+    try:
+        RepositoryContextObservationConfirmation(
+            collection_started_at=collection_started_at,
+            collection_finished_at=collection_finished_at,
+            outcome="error",
+            error_code=code,
+        )
+    except ValueError:
+        raise DeliveryError(
+            "repository_context_mismatch", "repository context confirmation is invalid"
+        ) from None
 
 
 class PgDeliveryEvidenceRepo(BasePgRepository):
@@ -161,6 +202,9 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
         collection_finished_at: datetime,
     ) -> RepositoryContextObservationConfirmation:
         """Persist a successful repository-context observation without committing the caller."""
+        evidence = _validated_repository_context_success(
+            evidence, collection_started_at, collection_finished_at
+        )
         workflow = await self._lock_current_context(
             session,
             ticket_id,
@@ -219,6 +263,7 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
         """Append a sanitized failed context attempt without replacing prior proof."""
         if code not in _SAFE_ERROR_CODES:
             raise DeliveryError("invalid_error_code", "observation error code is not supported")
+        _validated_repository_context_error(code, collection_started_at, collection_finished_at)
         workflow = await self._lock_current_context(
             session,
             ticket_id,

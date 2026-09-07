@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from traceback import format_exception
 from uuid import uuid4
 
 import pytest
@@ -242,6 +243,144 @@ async def test_incomplete_or_wrong_context_subject_never_publishes_success(
             .where(delivery_confirmations.c.ticket_id == ticket.id)
         )
     assert count == 0
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        _evidence().model_copy(
+            update={
+                "facts": (
+                    _evidence().facts[0].model_copy(update={"tree_sha": "invalid-sha"}),
+                    _evidence().facts[1],
+                )
+            }
+        ),
+        _evidence().model_copy(update={"complete": "not-a-bool"}),
+    ],
+)
+async def test_context_publisher_revalidates_bypassed_dto_before_writing(
+    session_factory, evidence
+) -> None:
+    """Bypassed Pydantic validation must not turn malformed context proof into persisted success."""
+    from brain_v42.models.delivery import DeliveryError
+    from brain_v42.repositories.pg_delivery_evidence import PgDeliveryEvidenceRepo
+
+    ticket, row = await _workflow(session_factory, refs=_refs())
+    instant = datetime(2026, 9, 7, 12, tzinfo=UTC)
+    async with session_factory() as session:
+        async with session.begin():
+            with pytest.raises(DeliveryError, match="repository_context_mismatch") as raised:
+                await _publish(
+                    PgDeliveryEvidenceRepo(session_factory),
+                    session,
+                    row,
+                    evidence,
+                    instant,
+                    instant,
+                )
+    assert "invalid-sha" not in raised.value.message
+    async with session_factory() as session:
+        count = await session.scalar(
+            sa.select(sa.func.count())
+            .select_from(delivery_confirmations)
+            .where(delivery_confirmations.c.ticket_id == ticket.id)
+        )
+        snapshots = await session.scalar(
+            sa.select(sa.func.count())
+            .select_from(delivery_snapshots)
+            .where(delivery_snapshots.c.ticket_id == ticket.id)
+        )
+    assert count == snapshots == 0
+
+
+async def test_context_publisher_sanitizes_bypassed_dto_traceback() -> None:
+    """Chaining DTO validation errors would disclose untrusted provider input in logs."""
+    from brain_v42.models.delivery import DeliveryError
+    from brain_v42.repositories.pg_delivery_evidence import _validated_repository_context_success
+
+    malformed = _evidence().model_copy(
+        update={
+            "facts": (
+                _evidence().facts[0].model_copy(update={"tree_sha": "raw-boundary-sentinel"}),
+                _evidence().facts[1],
+            )
+        }
+    )
+    instant = datetime(2026, 9, 7, 12, tzinfo=UTC)
+    with pytest.raises(DeliveryError) as raised:
+        _validated_repository_context_success(malformed, instant, instant)
+    assert "raw-boundary-sentinel" not in "".join(format_exception(raised.value))
+
+
+@pytest.mark.parametrize("method", ["success", "error"])
+@pytest.mark.parametrize("interval", ["naive", "inverted"])
+async def test_context_publication_validates_intervals_before_mutating(
+    session_factory, method: str, interval: str
+) -> None:
+    """A caller catching ValueError must not commit a context snapshot, confirmation, or pointer."""
+    from brain_v42.models.delivery import DeliveryError
+    from brain_v42.repositories.pg_delivery_evidence import PgDeliveryEvidenceRepo
+
+    ticket, row = await _workflow(session_factory, refs=_refs())
+    instant = datetime(2026, 9, 7, 12, tzinfo=UTC)
+    started = instant.replace(tzinfo=None) if interval == "naive" else instant
+    finished = started if interval == "naive" else instant - timedelta(seconds=1)
+    escaped: Exception | None = None
+    async with session_factory() as session:
+        async with session.begin():
+            try:
+                if method == "success":
+                    await _publish(
+                        PgDeliveryEvidenceRepo(session_factory),
+                        session,
+                        row,
+                        _evidence(),
+                        started,
+                        finished,
+                    )
+                else:
+                    await PgDeliveryEvidenceRepo(session_factory).record_repository_context_error(
+                        session,
+                        ticket.id,
+                        row["current_revision"],
+                        row["attempt"],
+                        row["context_set_digest"],
+                        row["context_row_version"],
+                        "provider_timeout",
+                        started,
+                        finished,
+                    )
+            except ValueError:
+                pass
+            except DeliveryError as error:
+                escaped = error
+    async with session_factory() as session:
+        current = (
+            (
+                await session.execute(
+                    sa.select(delivery_workflows).where(delivery_workflows.c.ticket_id == ticket.id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+        count = await session.scalar(
+            sa.select(sa.func.count())
+            .select_from(delivery_confirmations)
+            .where(delivery_confirmations.c.ticket_id == ticket.id)
+        )
+        snapshots = await session.scalar(
+            sa.select(sa.func.count())
+            .select_from(delivery_snapshots)
+            .where(delivery_snapshots.c.ticket_id == ticket.id)
+        )
+    assert count == snapshots == 0
+    assert current["latest_context_success_confirmation_id"] is None
+    assert current["latest_context_attempt_confirmation_id"] is None
+    assert current["row_version"] == current["context_row_version"] == 1
+    assert isinstance(escaped, DeliveryError)
+    assert escaped.code == "repository_context_mismatch"
 
 
 async def test_identical_context_reobservation_deduplicates_snapshot_and_appends_confirmation(
