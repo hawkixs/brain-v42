@@ -14,23 +14,24 @@ Merge confirmed duplicates, delete dead entities, and prune stale dream insights
 the candidates and decay stats below already come from
 `brain_consolidation_candidates`, `brain_decay_status` and `brain_list`. When
 you do reach for it, phrase the query as a natural-language question of at
-least three words describing a concept, e.g.
-`brain_search(query="how does tag normalization handle plural variants")`.
-Never search with a bare tag, status word, or wildcard such as "archived",
-"infra_status", or "*" — those rarely match anything: a one- or two-token
-query almost never clears the score threshold after reranking. To enumerate
-entities by tag without a question to ask, use `brain_list(tags=[...])` — it
-is in this phase's allowed tools and filters on tags alone, where
-`brain_search` still needs a query and applies a score threshold; `tags`
-reaches decisions and learnings only, silently dropped for other entity
-types. To include archived entities in that scan, add `include_archived=True`
-to the same call; `brain_list`'s `status` filter only applies to decisions,
-ADRs and plans, and "archived" is not a `status` value for any entity type —
-it lives in `freshness_status`, which is what `include_archived` exposes. If
-a search does return zero results, read the explanation the response already
-gives (candidates considered, score threshold, tags filter) and do not retry
-the same query — either rephrase it as a real question or skip the search
-and merge/delete based on the deterministic candidates alone.
+least three words describing a concept, e.g. `brain_search(query="how does tag
+normalization handle plural variants")`. Never search with a bare tag, status
+word, or wildcard such as "archived", "infra_status", or "*" — those rarely
+match anything: a one- or two-token query almost never clears the score
+threshold after reranking. To enumerate entities by tag without a question to
+ask, use `brain_list(tags=[...])` — it is in this phase's allowed tools and
+filters on tags alone, where `brain_search` still needs a query and applies a
+score threshold; `tags` reaches decisions and learnings only, silently dropped
+for other entity types. To include archived entities in that scan, add
+`include_archived=True` to the same call — it reaches decision, learning,
+snippet and adr only, silently dropped for runbook and plan. For `plan`, use
+`status="archived"` instead: `brain_list`'s `status` filter reaches decisions,
+ADRs and plans, and `archived` is itself a real `status` value there — it is
+not one for decisions or ADRs. If a search does return zero results, read the
+explanation the response already gives (candidates considered, score threshold,
+tags filter) and do not retry the same query — either rephrase it as a real
+question or skip the search and merge/delete based on the deterministic
+candidates alone.
 
 ## Steps
 

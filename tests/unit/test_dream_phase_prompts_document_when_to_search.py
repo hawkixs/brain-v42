@@ -19,10 +19,9 @@ tells the agent what a good query looks like, that a bare tag/status word/
 wildcard is not one, that `brain_list(tags=[...])` (already in every one of
 these three allowlists) is the right tool for a literal tag filter -- and
 `brain_list(..., include_archived=True)`, not a `status=` argument, for an
-archived filter, since `brain_list`'s `status` filter only reaches decisions,
-ADRs and plans and "archived" is not one of its values for any entity type --
-that a zero result should not be retried with the same wording, and that a
-search is optional here -- most runs will not need one.
+archived filter, since `brain_list`'s `status` filter reaches decisions,
+ADRs and plans -- that a zero result should not be retried with the same
+wording, and that a search is optional here -- most runs will not need one.
 
 Fix round (same lot, same date): the first draft of this paragraph pointed
 the archived-filter case at `brain_list(status=...)`, which silently drops
@@ -33,6 +32,33 @@ assertion for that pointer also asserted only the bare string `"brain_list"`,
 which the section's own opening sentence already satisfies as a data-source
 mention -- so the redirect itself was never under contract. Both are fixed
 here: the prompt text and the assertion that pins it.
+
+Fourth-round fix (same lot, next day): the round-3 rewrite kept the redirect
+to `include_archived=True` but added a NEW universal claim next to it --
+"'archived' is not a `status` value for any entity type" -- to explain why
+`status=` is the wrong argument. That claim is false for `entity_type="plan"`:
+`IndexedPlan.status` is `Literal["draft", "active", "archived"]`
+(`models/indexed_plan.py`), the DB CHECK is
+`status IN ('draft', 'active', 'archived')`
+(`indexed_plans_status_check`, `db/tables.py`), and `brain_list`'s plan
+branch forwards `status` verbatim into `status = :status`
+(`crud_tools.py` -> `pg_indexed_plan_repo.py`) -- so
+`brain_list(entity_type="plan", status="archived")` is a real, working
+filter, the opposite of what the prompt told the agent. Meanwhile
+`include_archived` is never forwarded for `plan` (nor for `runbook`) --
+only `decision`, `learning`, `snippet` and `adr` receive it -- so the
+substitute the sentence offered was a silent no-op for exactly the type it
+misdescribed. This is the third round in a row a rewrite of this exact
+sentence introduced a new universal claim ("only", "never", "any entity
+type") the code did not support. The fix removes the false claim instead of
+narrowing it: the prompts now say `include_archived` reaches decision,
+learning, snippet and adr only, and separately that for `plan`,
+`status="archived"` is the real filter, since `status` is not one of the
+values `decision` or `adr` accept (`decisions_status_check`,
+`adrs_status_check`, both in `db/tables.py`, neither lists `archived`).
+`test_when_to_search_does_not_claim_archived_is_universally_excluded_as_a_status`
+pins the absence of "for any entity type" so this class of regression cannot
+land a fourth time unnoticed.
 
 Two kinds of assertion, mirroring `test_dream_reorg_prompt_documents_both_
 counters.py`:
@@ -225,6 +251,41 @@ def test_when_to_search_does_not_claim_brain_search_cannot_filter_by_tag(phase: 
     assert "which `brain_search` does not" not in section, (
         f"phase_{phase}.md's '{HEADING}' section falsely claims brain_search "
         "cannot filter by tag literally -- it does, by overlap."
+    )
+
+
+# Universal claims the round-4 rewrite removed because the code refutes them
+# for at least one entity type. `IndexedPlan.status` is
+# `Literal["draft", "active", "archived"]` (models/indexed_plan.py) and the
+# DB CHECK `indexed_plans_status_check` allows `archived` (db/tables.py) --
+# so a claim that "archived" is not a `status` value "for any entity type"
+# is false for `plan`, and a bare `"only"`/`"never"` covering all six entity
+# types is exactly the shape this section keeps getting wrong.
+_REMOVED_UNIVERSAL_CLAIMS = (
+    "for any entity type",
+    "is not a `status` value for any entity type",
+)
+
+
+@pytest.mark.parametrize("phase", PHASES)
+@pytest.mark.parametrize("claim", _REMOVED_UNIVERSAL_CLAIMS)
+def test_when_to_search_does_not_claim_archived_is_universally_excluded_as_a_status(
+    phase: str, claim: str
+) -> None:
+    """Negative assertion: `archived` IS a real `status` value for
+    `entity_type="plan"` (`IndexedPlan.status` Literal includes it, the DB
+    CHECK `indexed_plans_status_check` allows it, and `brain_list`'s plan
+    branch forwards `status` verbatim into the query) -- so the redirect to
+    `include_archived` must not claim `archived` is excluded as a `status`
+    value universally. This is the third round this exact sentence has
+    introduced a new false universal claim; this test pins its removal by
+    substring, not by meaning, since a paraphrase would not redden it."""
+    section = _unwrapped(_when_to_search_section(_prompt_text(phase)))
+    assert claim not in section, (
+        f"phase_{phase}.md's '{HEADING}' section still claims {claim!r}, "
+        'which is false for entity_type="plan": its `status` column is '
+        'Literal["draft", "active", "archived"] and the DB CHECK '
+        "constraint allows 'archived' there."
     )
 
 
