@@ -200,6 +200,14 @@ Do NOT call brain_learn.
 ## Allowed tools
 brain_search, brain_list, brain_get, brain_update
 
+## Guard — archive only
+
+- **This phase is archive-only.** The only mutations it may ever perform, in any run, are the two already described above: normalising `tags` (Part 1) and setting `freshness_status="archived"` via `brain_update` (Part 2). It never merges or deduplicates entities (the `brain_merge_entities` tool), never deletes (the `brain_delete` tool), never changes `status`, `project_key`, or any other ownership field, and it never un-archives. Archiving stays reversible, as Part 2 already states — this guard is about what one run may do, not about making the state permanent.
+- **Merge and delete are unreachable, not merely discouraged.** This phase's tool allowlist (`DREAM_PHASE_TOOL_ALLOWLISTS["reorg"]`, `src/brain_v42/mcp/dream_capabilities.py`) carries only `brain_search`, `brain_list`, `brain_get` and `brain_update` — `brain_merge_entities` and `brain_delete` sit in the `clean` phase's allowlist instead, never in this one — and `DreamCapabilityMiddleware.on_call_tool` denies any tool name outside the calling phase's allowlist with reason `tool_not_allowed_for_phase` before the handler ever runs.
+- **`project_key` and the other ownership fields are refused by NAME, not by value.** `brain_update`'s project policy sets `reject_update_ownership_fields=True` (`src/brain_v42/services/dream_project_scope.py`), and a `fields` argument touching `project_key`, `project_group`, `project_keys`, `owner_project_key`, `dream_run_id` or `superseded_by` is refused whole-call with reason `ownership_field_forbidden` — see Part 1 step 4c above.
+- **Restricting writes to `tags` and `freshness_status`, and forbidding un-archival, is a prompt rule, not enforced by `reorg_validate.py`.** Past the ownership-field refusal above, the same `brain_update` call can still mechanically write `topic`/`insight` on a learning, `status`/`description`/`reasoning` on a decision, or `freshness_status="fresh"`/`"stale"` — none of that is blocked server-side for this phase. `reorg_validate.py` only checks, after the fact, that a declared `archived` id carries `freshness_status='archived'` in Postgres and that a declared `updated` id's tags differ from the pre-phase snapshot (the G4 tags-before/after control) — it never checks that any other field was left untouched.
+- `reorg_validate.py` does enforce three things of its own: the caps (`_MAX_UPDATED`, `_MAX_ARCHIVED` — 20 each), the project perimeter (`_reject_foreign_project`, parity with `promote_validate`), and the G4 tag-movement control just described.
+
 ## Guardrails (apply across ALL parts)
 - Max 20 metadata updates per run (Part 1).
 - Max 20 archives per run (Part 2).
