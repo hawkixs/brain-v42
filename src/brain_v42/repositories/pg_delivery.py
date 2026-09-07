@@ -20,6 +20,7 @@ from brain_v42.db.tables import (
     delivery_contract_revisions,
     delivery_dependencies,
     delivery_events,
+    delivery_receipts,
     delivery_snapshots,
     delivery_workflows,
     indexed_plans,
@@ -41,6 +42,7 @@ from brain_v42.models.delivery import (
     DeliveryView,
     DependencyPredicate,
     EvaluationInput,
+    MilestoneReceipt,
     ObservationConfirmation,
     PinnedBrainEntityReference,
     PinnedContextReference,
@@ -51,7 +53,7 @@ from brain_v42.models.delivery import (
     context_reference_identity,
 )
 from brain_v42.models.delivery_evaluator import evaluate_delivery
-from brain_v42.models.delivery_hashes import canonical_digest
+from brain_v42.models.delivery_hashes import canonical_digest, delivery_digest
 from brain_v42.repositories.pg_base import BasePgRepository
 
 # Namespaces are fixed and distinct: graph edits must serialize independently
@@ -587,6 +589,7 @@ class PgDeliveryRepo(BasePgRepository):
                 .one()
             )
             contract = _contract_from_json(dict(revision["normalized_contract"]))
+            contract_digest = _required_contract_digest(contract)
             binding_rows = (
                 (
                     await sess.execute(
@@ -603,6 +606,29 @@ class PgDeliveryRepo(BasePgRepository):
                 .all()
             )
             bindings = tuple([await _binding_evidence(sess, row) for row in binding_rows])
+            current_delivery_digest = delivery_digest(
+                contract_digest=contract_digest,
+                attempt=workflow["attempt"],
+                active_bindings=bindings,
+            )
+            integration_receipt = await _matching_receipt(
+                sess,
+                ticket_id=ticket_id,
+                contract_revision=workflow["current_revision"],
+                attempt=workflow["attempt"],
+                milestone="integration",
+                contract_digest=contract_digest,
+                delivery_digest=current_delivery_digest,
+            )
+            fulfillment_receipt = await _matching_receipt(
+                sess,
+                ticket_id=ticket_id,
+                contract_revision=workflow["current_revision"],
+                attempt=workflow["attempt"],
+                milestone="fulfilled",
+                contract_digest=contract_digest,
+                delivery_digest=current_delivery_digest,
+            )
             upstream_revision = delivery_contract_revisions.alias("upstream_revision")
             dependency_rows = (
                 (
@@ -613,6 +639,7 @@ class PgDeliveryRepo(BasePgRepository):
                             delivery_workflows.c.attempt.label("current_attempt"),
                             delivery_workflows.c.disposition,
                             upstream_revision.c.content_digest,
+                            upstream_revision.c.normalized_contract,
                         )
                         .join(
                             delivery_workflows,
@@ -638,28 +665,67 @@ class PgDeliveryRepo(BasePgRepository):
                 .mappings()
                 .all()
             )
-            dependencies = tuple(
-                DependencyPredicate(
-                    ticket_id=row["upstream_ticket_id"],
-                    contract_revision=row["upstream_revision"],
-                    attempt=row["upstream_attempt"],
-                    milestone=row["milestone"],
-                    current_contract_revision=row["current_revision"],
-                    current_attempt=row["current_attempt"],
-                    current_contract_digest=row["content_digest"],
-                    current_delivery_digest=canonical_digest(
-                        {
-                            "ticket_id": str(row["upstream_ticket_id"]),
-                            "contract_revision": row["current_revision"],
-                            "attempt": row["current_attempt"],
-                        },
-                        domain="result",
-                    ),
-                    current_disposition=row["disposition"],
-                    receipt=None,
+            dependencies: list[DependencyPredicate] = []
+            for row in dependency_rows:
+                upstream_contract = _contract_from_json(dict(row["normalized_contract"]))
+                upstream_contract_digest = _required_contract_digest(upstream_contract)
+                upstream_binding_rows = (
+                    (
+                        await sess.execute(
+                            sa.select(delivery_artifact_bindings).where(
+                                delivery_artifact_bindings.c.ticket_id == row["upstream_ticket_id"],
+                                delivery_artifact_bindings.c.contract_revision
+                                == row["current_revision"],
+                                delivery_artifact_bindings.c.attempt == row["current_attempt"],
+                                delivery_artifact_bindings.c.active.is_(True),
+                            )
+                        )
+                    )
+                    .mappings()
+                    .all()
                 )
-                for row in dependency_rows
-            )
+                upstream_bindings = tuple(
+                    [
+                        await _binding_evidence(sess, binding_row)
+                        for binding_row in upstream_binding_rows
+                    ]
+                )
+                upstream_delivery_digest = delivery_digest(
+                    contract_digest=upstream_contract_digest,
+                    attempt=row["current_attempt"],
+                    active_bindings=upstream_bindings,
+                )
+                receipt = None
+                if (
+                    row["disposition"] not in {"cancelled", "wontfix"}
+                    and row["upstream_revision"] == row["current_revision"]
+                    and row["upstream_attempt"] == row["current_attempt"]
+                ):
+                    receipt = await _matching_receipt(
+                        sess,
+                        ticket_id=row["upstream_ticket_id"],
+                        contract_revision=row["upstream_revision"],
+                        attempt=row["upstream_attempt"],
+                        milestone="integration"
+                        if row["milestone"] == "integrated"
+                        else "fulfilled",
+                        contract_digest=upstream_contract_digest,
+                        delivery_digest=upstream_delivery_digest,
+                    )
+                dependencies.append(
+                    DependencyPredicate(
+                        ticket_id=row["upstream_ticket_id"],
+                        contract_revision=row["upstream_revision"],
+                        attempt=row["upstream_attempt"],
+                        milestone=row["milestone"],
+                        current_contract_revision=row["current_revision"],
+                        current_attempt=row["current_attempt"],
+                        current_contract_digest=row["content_digest"],
+                        current_delivery_digest=upstream_delivery_digest,
+                        current_disposition=row["disposition"],
+                        receipt=receipt,
+                    )
+                )
             contexts = tuple(await _context_predicates(sess, contract, workflow))
             return EvaluationInput(
                 contract=contract,
@@ -670,9 +736,9 @@ class PgDeliveryRepo(BasePgRepository):
                 is_self_ticket=ticket["from_project"] == ticket["to_project"],
                 active_bindings=bindings,
                 contexts=contexts,
-                dependencies=dependencies,
-                integration_receipt=None,
-                fulfillment_receipt=None,
+                dependencies=tuple(dependencies),
+                integration_receipt=integration_receipt,
+                fulfillment_receipt=fulfillment_receipt,
                 feature_enabled=feature_enabled,
                 freshness_seconds=freshness_seconds,
                 claim=ClaimState(
@@ -705,6 +771,8 @@ class PgDeliveryRepo(BasePgRepository):
             assessment=assessment,
             bindings=inputs.active_bindings,
             contexts=inputs.contexts,
+            integration_receipt=inputs.integration_receipt,
+            fulfillment_receipt=inputs.fulfillment_receipt,
         )
 
     async def refresh(self, ticket_id: UUID, *, session: AsyncSession | None = None) -> None:
@@ -851,6 +919,57 @@ def _contract_from_json(payload: dict[str, Any]) -> ContractRevision:
     if isinstance(created, str):
         restored["created_at"] = datetime.fromisoformat(created.replace("Z", "+00:00"))
     return ContractRevision.model_validate(restored)
+
+
+def _required_contract_digest(contract: ContractRevision) -> str:
+    """Return the normalized digest guaranteed by stored contract validation."""
+    if contract.content_digest is None:
+        raise ValueError("stored contract lacks a content digest")
+    return contract.content_digest
+
+
+async def _matching_receipt(
+    session: AsyncSession,
+    *,
+    ticket_id: UUID,
+    contract_revision: int,
+    attempt: int,
+    milestone: Literal["integration", "fulfilled"],
+    contract_digest: str,
+    delivery_digest: str,
+) -> MilestoneReceipt | None:
+    """Restore one receipt only when its stored row and payload share the current identity."""
+    row = (
+        (
+            await session.execute(
+                sa.select(delivery_receipts).where(
+                    delivery_receipts.c.ticket_id == ticket_id,
+                    delivery_receipts.c.contract_revision == contract_revision,
+                    delivery_receipts.c.attempt == attempt,
+                    delivery_receipts.c.milestone == milestone,
+                    delivery_receipts.c.delivery_digest == delivery_digest,
+                )
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None:
+        return None
+    receipt = MilestoneReceipt.model_validate_json(json.dumps(row["payload"]))
+    if (
+        receipt.id != row["id"]
+        or receipt.ticket_id != ticket_id
+        or receipt.contract_revision != contract_revision
+        or receipt.attempt != attempt
+        or receipt.milestone != milestone
+        or receipt.contract_digest != contract_digest
+        or receipt.delivery_digest != delivery_digest
+        or receipt.issued_at != row["issued_at"]
+        or receipt.acceptance_basis != row["basis"]
+    ):
+        return None
+    return receipt
 
 
 async def _binding_evidence(session: AsyncSession, row: sa.RowMapping) -> BindingEvidence:

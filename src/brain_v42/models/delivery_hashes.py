@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from brain_v42.models.delivery import ContractRevision
+    from brain_v42.models.delivery import BindingEvidence, ContractRevision
 
 
 DigestDomain = Literal["contract", "request", "result", "assessment"]
@@ -62,3 +62,39 @@ def contract_digest(contract: ContractRevision) -> str:
     if not isinstance(contract, ContractRevision):
         raise ValueError("contract digest requires a normalized ContractRevision")
     return canonical_digest(contract_content_payload(contract), domain="contract")
+
+
+def delivery_digest(
+    *,
+    contract_digest: str,
+    attempt: int,
+    active_bindings: Iterable[BindingEvidence],
+) -> str:
+    """Return the current delivery identity from retained binding evidence."""
+    bindings = []
+    for item in sorted(active_bindings, key=lambda value: value.binding.deliverable_key):
+        evidence = item.confirmation.evidence if item.confirmation is not None else None
+        bindings.append(
+            {
+                "key": item.binding.deliverable_key,
+                "binding_id": str(item.binding.id),
+                "repository_id": item.binding.repository_id,
+                "pr_number": item.binding.pr_number,
+                "head_sha": evidence.head_sha if evidence is not None else item.binding.head_sha,
+                "base_sha": evidence.base_sha if evidence is not None else item.binding.base_sha,
+                "integration": {
+                    "sha": evidence.integration_sha,
+                    "revision": evidence.integration_revision,
+                }
+                if evidence is not None
+                else None,
+            }
+        )
+    return canonical_digest(
+        {
+            "contract_digest": contract_digest,
+            "attempt": attempt,
+            "bindings": bindings,
+        },
+        domain="result",
+    )

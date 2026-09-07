@@ -36,6 +36,23 @@ def _receipt(inputs: Any, result: Any, milestone: Literal["integration", "fulfil
     )
 
 
+def test_matching_explicit_integration_receipt_remains_pending() -> None:
+    """Treating a matching integration receipt as superseded hides requester acceptance work."""
+    from brain_v42.models.delivery_evaluator import evaluate_delivery
+    from tests.delivery_helpers import FIXED_NOW, delivery_inputs
+
+    inputs = delivery_inputs(acceptance_mode="explicit")
+    assessment = evaluate_delivery(inputs, now=FIXED_NOW)
+    matching = inputs.model_copy(
+        update={"integration_receipt": _receipt(inputs, assessment, "integration")}
+    )
+
+    result = evaluate_delivery(matching, now=FIXED_NOW)
+
+    assert result.acceptance_state == "pending"
+    assert {item.kind for item in result.eligible_work} == {"accept"}
+
+
 def test_a_bare_merge_does_not_satisfy_technical_delivery() -> None:
     """A failed required check must block a merged PR from receipt eligibility."""
     from brain_v42.models.delivery_evaluator import evaluate_delivery

@@ -22,7 +22,7 @@ from brain_v42.models.delivery import (
     context_reference_digest,
     context_reference_identity,
 )
-from brain_v42.models.delivery_hashes import canonical_digest
+from brain_v42.models.delivery_hashes import canonical_digest, delivery_digest
 
 _TECHNICAL_CHECK_CODES = frozenset(
     {
@@ -495,32 +495,13 @@ def _stage(
 
 
 def _delivery_digest(inputs: EvaluationInput) -> str:
-    bindings = []
-    for item in sorted(inputs.active_bindings, key=lambda value: value.binding.deliverable_key):
-        evidence = item.confirmation.evidence if item.confirmation is not None else None
-        bindings.append(
-            {
-                "key": item.binding.deliverable_key,
-                "binding_id": str(item.binding.id),
-                "repository_id": item.binding.repository_id,
-                "pr_number": item.binding.pr_number,
-                "head_sha": evidence.head_sha if evidence is not None else item.binding.head_sha,
-                "base_sha": evidence.base_sha if evidence is not None else item.binding.base_sha,
-                "integration": {
-                    "sha": evidence.integration_sha,
-                    "revision": evidence.integration_revision,
-                }
-                if evidence is not None
-                else None,
-            }
-        )
-    return canonical_digest(
-        {
-            "contract_digest": inputs.contract.content_digest,
-            "attempt": inputs.attempt,
-            "bindings": bindings,
-        },
-        domain="result",
+    contract_digest = inputs.contract.content_digest
+    if contract_digest is None:
+        raise ValueError("current contract lacks a content digest")
+    return delivery_digest(
+        contract_digest=contract_digest,
+        attempt=inputs.attempt,
+        active_bindings=inputs.active_bindings,
     )
 
 
@@ -764,7 +745,9 @@ def evaluate_delivery(inputs: EvaluationInput, *, now: datetime) -> DeliveryAsse
     integration_receipt_eligible = stage == "integrated" and requirements_satisfied
     if has_fulfillment:
         acceptance_state: Literal["not_required", "pending", "accepted", "superseded"] = "accepted"
-    elif inputs.fulfillment_receipt is not None or inputs.integration_receipt is not None:
+    elif inputs.fulfillment_receipt is not None or (
+        inputs.integration_receipt is not None and not has_integration
+    ):
         acceptance_state = "superseded"
     elif inputs.contract.acceptance_mode == "automatic":
         acceptance_state = "not_required"
