@@ -7,9 +7,9 @@ Capabilities:
 - Auto-number: per project_key, using COALESCE(MAX(number), 0)+1 within the same
   transaction as the INSERT (advisory lock prevents duplicate-number races).
 - FTS: full-text search using tsvector (ts_rank + plainto_tsquery)
-- Vector search: pgvector cosine similarity via <=> operator (base); public
-  contract exposes distance = 1.0 - similarity (epsilon ~1e-17, no consumer
-  thresholds on this).
+- Vector search: pgvector cosine similarity via <=> operator (base);
+  vector_search returns row["similarity"] as-is (higher = better), aligned
+  with the other five shards.
 - Filters: by status, project_key, tags (overlap &&)
 - accept(): sets status='accepted' + decided_at=now() atomically via super().update()
 - create_with_promotion(): local transaction (statement order is load-bearing);
@@ -22,8 +22,8 @@ Design rules (vague 3):
   - list_all ORDER BY number DESC (not created_at).
   - search() without query DOES NOT filter archived rows — brain_service refilters
     in Python; filtering in SQL would break include_archived=True use-cases.
-  - vector_search maps distance = 1.0 - row["similarity"] so the public
-    contract (ADR, cosine-distance) is preserved after the base move.
+  - vector_search returns row["similarity"] as-is (higher = better),
+    aligned with the other five shards.
 """
 
 from __future__ import annotations
@@ -568,15 +568,17 @@ class PgADRRepo(BasePgRepository):
         *,
         session: AsyncSession | None = None,
     ) -> list[tuple[ADR, float]]:
-        """Semantic search using pgvector cosine distance (<=> operator).
+        """Semantic search using pgvector cosine similarity (<=> operator).
 
-        Delegates to base search_vector() which returns rows with a 'similarity'
-        key (= 1 - cosine_distance).  This wrapper maps:
-            distance = 1.0 - row["similarity"]
-        so the public contract (ADR, cosine-distance float) is preserved.
-
-        The epsilon difference (~1e-17) from the previous direct distance
-        computation is assumed-acceptable — no consumer thresholds on this value.
+        Delegates to base search_vector() which returns rows with a
+        'similarity' key (= 1 - cosine_distance) and returns it AS-IS —
+        aligned with the other five shards (decision, learning, snippet,
+        runbook, plan), all of which return similarity (higher = better),
+        never distance. Before W33 (2026-09-07), this method inverted it
+        into `distance = 1.0 - similarity`, the only shard doing so; invisible
+        today because rrf_fuse overwrites RankedCandidate.score before any
+        consumer reads it (hybrid.py), but a latent inversion bug for the
+        day something reads this value directly.
 
         Args:
             query_embedding: Query vector (1536 floats, L2-normalized).
@@ -586,7 +588,8 @@ class PgADRRepo(BasePgRepository):
             session: Optional shared session.
 
         Returns:
-            List of (ADR, distance) tuples where distance is cosine distance [0, 1].
+            List of (ADR, similarity) tuples where similarity is cosine
+            similarity [0, 1] — higher is a better match.
         """
         scope = project_scope(project_key, project_keys)
         filters: dict[str, Any] = {}
@@ -602,7 +605,6 @@ class PgADRRepo(BasePgRepository):
         output: list[tuple[ADR, float]] = []
         for row in rows:
             similarity = float(row.get("similarity", 0.0))
-            distance = 1.0 - similarity
             adr_obj = self._row_to_model(row)
-            output.append((adr_obj, distance))
+            output.append((adr_obj, similarity))
         return output

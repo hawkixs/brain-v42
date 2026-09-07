@@ -72,7 +72,7 @@ _FAKE_ITEMS: dict[str, dict] = {
 
 def _make_search_result(type: KnowledgeType = "learning", score: float = 0.9) -> SearchResult:
     item = _FAKE_ITEMS.get(type, _FAKE_ITEMS["learning"])
-    return SearchResult(type=type, score=score, item=item)
+    return SearchResult(type=type, score=score, score_kind="cross_encoder", item=item)
 
 
 def _make_diagnostics(**overrides: Any) -> SearchDiagnostics:
@@ -142,8 +142,8 @@ def _make_oversized_body_results() -> tuple[SearchResult, SearchResult]:
         "insight": "OVERSIZED_INSIGHT " * 500,
     }
     return (
-        SearchResult(type="decision", score=0.95, item=decision),
-        SearchResult(type="learning", score=0.90, item=learning),
+        SearchResult(type="decision", score=0.95, score_kind="cross_encoder", item=decision),
+        SearchResult(type="learning", score=0.90, score_kind="cross_encoder", item=learning),
     )
 
 

@@ -499,7 +499,9 @@ class TestFormatSearchResultsSnippetCompact:
         from brain_v42.models.brain import SearchResult
 
         snippet_dict = _make_snippet().model_dump(mode="json")
-        results = [SearchResult(type="snippet", score=0.91, item=snippet_dict)]
+        results = [
+            SearchResult(type="snippet", score=0.91, score_kind="cross_encoder", item=snippet_dict)
+        ]
         rendered = format_search_results(results, query="health")
 
         assert "### Snippets" in rendered
@@ -662,11 +664,13 @@ class TestFormatSearchResults:
             SearchResult(
                 type="learning",
                 score=0.85,
+                score_kind="cross_encoder",
                 item=_make_learning().model_dump(mode="json"),
             ),
             SearchResult(
                 type="decision",
                 score=0.80,
+                score_kind="cross_encoder",
                 item=_make_decision().model_dump(mode="json"),
             ),
         ]
@@ -690,11 +694,13 @@ class TestFormatSearchResults:
             SearchResult(
                 type="learning",
                 score=0.9,
+                score_kind="cross_encoder",
                 item=_make_learning().model_dump(mode="json"),
             ),
             SearchResult(
                 type="decision",
                 score=0.8,
+                score_kind="cross_encoder",
                 item=_make_decision().model_dump(mode="json"),
             ),
         ]
@@ -711,6 +717,7 @@ class TestFormatSearchResults:
             SearchResult(
                 type="plan",
                 score=0.91,
+                score_kind="cross_encoder",
                 item=chunk.model_dump(mode="json"),
                 title=chunk.section_title,
                 project_key=chunk.project_key,
@@ -739,11 +746,13 @@ class TestFormatSearchResults:
             SearchResult(
                 type="learning",
                 score=0.85,
+                score_kind="cross_encoder",
                 item=_make_learning().model_dump(mode="json"),
             ),
             SearchResult(
                 type="decision",
                 score=0.42,
+                score_kind="cross_encoder",
                 item=_make_decision().model_dump(mode="json"),
             ),
         ]
@@ -768,9 +777,24 @@ class TestFormatSearchResults:
             topic="highest-score insight",
         )
         results = [
-            SearchResult(type="learning", score=0.30, item=l_low.model_dump(mode="json")),
-            SearchResult(type="learning", score=0.91, item=l_high.model_dump(mode="json")),
-            SearchResult(type="learning", score=0.62, item=l_mid.model_dump(mode="json")),
+            SearchResult(
+                type="learning",
+                score=0.30,
+                score_kind="cross_encoder",
+                item=l_low.model_dump(mode="json"),
+            ),
+            SearchResult(
+                type="learning",
+                score=0.91,
+                score_kind="cross_encoder",
+                item=l_high.model_dump(mode="json"),
+            ),
+            SearchResult(
+                type="learning",
+                score=0.62,
+                score_kind="cross_encoder",
+                item=l_mid.model_dump(mode="json"),
+            ),
         ]
         rendered = format_search_results(results, query="x")
         pos_high = rendered.index("highest-score insight")
@@ -788,6 +812,7 @@ class TestFormatKnowledgeByType:
                 SearchResult(
                     type="learning",
                     score=0.9,
+                    score_kind="cross_encoder",
                     item=_make_learning().model_dump(mode="json"),
                 )
             ],
@@ -795,6 +820,7 @@ class TestFormatKnowledgeByType:
                 SearchResult(
                     type="decision",
                     score=0.8,
+                    score_kind="cross_encoder",
                     item=_make_decision().model_dump(mode="json"),
                 )
             ],
@@ -820,6 +846,7 @@ class TestFormatKnowledgeByType:
                 SearchResult(
                     type="plan",
                     score=0.91,
+                    score_kind="cross_encoder",
                     item=chunk.model_dump(mode="json"),
                     title=chunk.section_title,
                     project_key=chunk.project_key,
