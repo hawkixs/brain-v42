@@ -180,18 +180,20 @@ class TestWritersThatNeverClaimAModelNeverClaimAReasoningCount:
         assert "thinking_tokens" not in params
 
 
-class TestTheNvidiaRailAlreadyClosedThisGap:
-    """`ticket_extract` and `roadmap_curate` are named in this lot's scope too.
-    Their contract is already pinned in
-    `tests/unit/test_dream_049_columns_are_written.py`
-    (`TestTheNvidiaRailWritesAnIntegerNeverNull`); this is a thin,
-    non-duplicating sanity check that both still expose the same signature so
-    a future refactor cannot silently drop the default out from under that
-    other module.
+class TestTheNvidiaRailFollowsTheSameRuleNow:
+    """`ticket_extract` and `roadmap_curate` used to hard-code a non-null int
+    default (0) here -- this lot's `test_dream_049_columns_are_written.py`
+    (`TestTheNvidiaRailNowDistinguishesZeroFromUnmeasured`) shows that was the
+    wrong half of the fix: a column that must tell "measured zero" apart from
+    "unmeasured" cannot default to the value that means the former. Both rails
+    now default to `None`, exactly like every other writer pinned in this
+    module. This is a thin, non-duplicating sanity check that both still
+    expose the same signature so a future refactor cannot silently drop the
+    default out from under that other module.
     """
 
     @pytest.mark.parametrize("module_name", ["ticket_extract", "roadmap_curate"])
-    def test_thinking_tokens_defaults_to_a_non_null_int(self, module_name: str) -> None:
+    def test_thinking_tokens_defaults_to_none(self, module_name: str) -> None:
         import importlib
         import inspect
 
@@ -200,5 +202,4 @@ class TestTheNvidiaRailAlreadyClosedThisGap:
 
         default = signature.parameters["thinking_tokens"].default
 
-        assert default is not None
-        assert isinstance(default, int)
+        assert default is None

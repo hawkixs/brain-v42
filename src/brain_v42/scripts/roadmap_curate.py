@@ -55,7 +55,16 @@ from brain_v42.scripts.domain_backfill import (
 
 # ONE definition of the reasoning-token extractor, shared with the other NVIDIA
 # rail: two rails disagreeing on how to read the same provider usage is exactly
-# the drift that leaves one column right and the other silently zero.
+# the drift that leaves one column right and the other silently zero. Imported
+# under a private alias so this module still exposes no
+# `thinking_tokens_from_usage`/`combine_thinking_tokens` of its own — pinned by
+# test_dream_049_columns_are_written.py::test_there_is_exactly_one_definition_of_it.
+from brain_v42.scripts.ticket_extract import (
+    combine_thinking_tokens as _combine_thinking_tokens,
+)
+from brain_v42.scripts.ticket_extract import (
+    thinking_tokens_from_usage as _thinking_tokens_from_usage,
+)
 from brain_v42.services.proposal_service import PostConditionError as PostConditionError
 
 _API_KEY_VAR = "BRAIN_NVIDIA_API_KEY"
@@ -312,6 +321,10 @@ class BatchOutcome:
     # indistinguishable from a nominal one (qwen 80B died on 2026-07-27,
     # discovered on 08-05 after ten green nights).
     primary_error: str | None = None
+    #: 049 — `None` means "this attempt's usage never carried a reasoning-token
+    #: count" (no key, wrong type, negative), never "it reported zero". See
+    #: `thinking_tokens_from_usage` (ticket_extract.py).
+    thinking_tokens: int | None = None
 
 
 @dataclass
@@ -733,7 +746,8 @@ async def _curate_llm_attempt(
     """One full LLM attempt: call + corrective re-prompt on a parse error."""
     messages = build_messages(batch)
     completion_cap = max_tokens or _completion_token_budget(len(batch.features))
-    content, _usage = await _post_chat(client, model, messages, sleep, max_tokens=completion_cap)
+    content, usage = await _post_chat(client, model, messages, sleep, max_tokens=completion_cap)
+    thinking_tokens = _thinking_tokens_from_usage(usage)
     parser = _parse_proposer_only_response if proposer_only else parse_and_validate
     try:
         drafts = parser(content, batch)
@@ -746,8 +760,11 @@ async def _curate_llm_attempt(
                 "content": f"{_REPROMPT_INSTRUCTION}\nErreur précise : {first_error}",
             },
         ]
-        content2, _usage2 = await _post_chat(
+        content2, usage2 = await _post_chat(
             client, model, corrective, sleep, max_tokens=completion_cap
+        )
+        thinking_tokens = _combine_thinking_tokens(
+            thinking_tokens, _thinking_tokens_from_usage(usage2)
         )
         try:
             drafts = parser(content2, batch)
@@ -758,8 +775,11 @@ async def _curate_llm_attempt(
                 failed=True,
                 error=f"unparseable after corrective re-prompt: {exc}",
                 model_used=model,
+                thinking_tokens=thinking_tokens,
             )
-    return BatchOutcome(batch=batch, drafts=drafts, model_used=model)
+    return BatchOutcome(
+        batch=batch, drafts=drafts, model_used=model, thinking_tokens=thinking_tokens
+    )
 
 
 def _describe_model_failure(label: str, exc: BaseException) -> str:
@@ -823,6 +843,7 @@ async def _curate_managed_model_chain(
     last_compact_size = len(batch.features)
     last_model = profiles[-1][0]
     last_was_fallback = profiles[-1][3]
+    thinking_tokens_acc: int | None = None
     for candidate, feature_cap, completion_cap, is_fallback in profiles:
         attempt_count = 2 if is_fallback else 1
         for attempt_index in range(attempt_count):
@@ -871,6 +892,9 @@ async def _curate_managed_model_chain(
 
             if outcome.failed:
                 errors.append(f"{candidate}: {outcome.error}")
+                thinking_tokens_acc = _combine_thinking_tokens(
+                    thinking_tokens_acc, outcome.thinking_tokens
+                )
                 if not is_fallback and has_fallback:
                     circuit.add(candidate)
                     primary_error = f"{candidate}: {outcome.error}"
@@ -890,6 +914,7 @@ async def _curate_managed_model_chain(
         model_used=last_model,
         fallback_used=last_was_fallback,
         primary_error=primary_error,
+        thinking_tokens=thinking_tokens_acc,
     )
 
 
@@ -1289,13 +1314,18 @@ async def record_dream_run(
     duration_s: float,
     error: str | None,
     model: str | None = None,
-    thinking_tokens: int = 0,
+    thinking_tokens: int | None = None,
 ) -> None:
     """INSERT dream_runs row for phase='roadmap'. Best-effort — never raises.
 
     `roadmap` is a GLOBAL phase and writes the sentinel, not a real key. Its own
     project rotation (`_rotate`) is NOT the loop's coverage and must never be
     read as one — which is precisely why this row names no project.
+
+    ``thinking_tokens`` defaults to ``None`` — "not measured" — never 0: 0 is
+    reserved for a run where at least one batch genuinely reported a real zero
+    reasoning-token count (`thinking_tokens_from_usage`, `combine_thinking_tokens`
+    in ticket_extract.py).
     """
     try:
         async with session_factory() as session:
@@ -1317,8 +1347,9 @@ async def record_dream_run(
                         "project_key": GLOBAL_PHASE_PROJECT_KEY,
                         "phase_dry_run": dry,
                         "model": model,
-                        # An INTEGER, never NULL — same contract as the extract
-                        # rail, and the same single extractor behind it.
+                        # NULL means "not measured"; 0 means a batch genuinely
+                        # reported zero reasoning tokens. Same contract as the
+                        # extract rail, and the same single extractor behind it.
                         "thinking_tokens": thinking_tokens,
                     },
                 )
@@ -1541,6 +1572,10 @@ async def _run(
     fallback_batches = 0
     primary_errors: list[str] = []
     last_model_used: str | None = None
+    # None until a real batch measures something (including a real zero); see
+    # `combine_thinking_tokens`. Must reach `record_dream_run` as-is — a night
+    # where nothing measured anything writes NULL, never 0.
+    thinking_tokens_total: int | None = None
     try:
         for i, batch in enumerate(batches, 1):
             if remaining_cap <= 0:
@@ -1573,10 +1608,20 @@ async def _run(
                 disabled_models=disabled_models,
             )
             scanned += 1
+            thinking_tokens_total = _combine_thinking_tokens(
+                thinking_tokens_total, outcome.thinking_tokens
+            )
             if outcome.model_used:
                 last_model_used = outcome.model_used
             if outcome.fallback_used:
-                fallback_batches += 1
+                # `fallback_used=True` on a FAILED outcome means the fallback
+                # was TRIED, not that it SERVED — both the primary and the
+                # fallback died on that batch. Counting it here inflated the
+                # DEGRADE ratio (night of 2026-09-07: "4/10 servis par le
+                # modèle de SECOURS" while only 3 batches actually got a
+                # proposal out of it).
+                if not outcome.failed:
+                    fallback_batches += 1
                 if outcome.primary_error and outcome.primary_error not in primary_errors:
                     primary_errors.append(outcome.primary_error)
             if outcome.failed:
@@ -1685,6 +1730,7 @@ async def _run(
         duration_s=duration,
         error=error_msg or degraded,
         model=last_model_used,
+        thinking_tokens=thinking_tokens_total,
     )
     return 1 if any_failed else 0
 

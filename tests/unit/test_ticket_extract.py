@@ -968,6 +968,95 @@ class TestRunDedupWiring:
         assert "[redacted]" in recorded_error
 
     @pytest.mark.asyncio
+    async def test_a_measured_reasoning_count_reaches_the_dream_run_row(self) -> None:
+        """The count `extract_thread` measures via `thinking_tokens_from_usage`
+        must reach `record_dream_run`, not be dropped in favour of the
+        hard-coded default -- 2026-09-07: models ran on this phase and the row
+        still carried 0 because nothing threaded the measurement through.
+        """
+        thread = _thread()
+        draft = _draft(ticket_id=thread.id)
+        args = SimpleNamespace(apply_ids=None, limit=20, wet=False)
+        session_factory = MagicMock()
+        embedding = MagicMock(close=AsyncMock())
+        persist = AsyncMock(return_value=[41])
+        record = AsyncMock()
+        attempts = AsyncMock()
+
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=session_factory),
+            patch(
+                "brain_v42.services.embedding_factory.build_embedding_service",
+                return_value=embedding,
+            ),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[thread]),
+            ),
+            patch(
+                "scripts.ticket_extract._extract_thread_with_budget",
+                new=AsyncMock(
+                    return_value=ThreadOutcome(thread=thread, drafts=[draft], thinking_tokens=17)
+                ),
+            ),
+            patch(
+                "scripts.ticket_extract.deduplicate_drafts",
+                new=AsyncMock(return_value=DedupResult(kept=[draft])),
+            ),
+            patch("scripts.ticket_extract.persist_proposals", persist),
+            patch("scripts.ticket_extract.record_ticket_attempt", attempts),
+            patch("scripts.ticket_extract.record_dream_run", record),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            await _run(args, "secret", "model", "https://llm.test")
+
+        assert record.await_args.kwargs["thinking_tokens"] == 17
+
+    @pytest.mark.asyncio
+    async def test_a_run_that_never_measured_anything_records_null_not_zero(self) -> None:
+        """No outcome ever reported a reasoning count -- the row must say NULL
+        ("not measured"), never 0 ("measured, zero"): the two are the whole
+        point of migration 049's column.
+        """
+        thread = _thread()
+        draft = _draft(ticket_id=thread.id)
+        args = SimpleNamespace(apply_ids=None, limit=20, wet=False)
+        session_factory = MagicMock()
+        embedding = MagicMock(close=AsyncMock())
+        persist = AsyncMock(return_value=[41])
+        record = AsyncMock()
+        attempts = AsyncMock()
+
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=session_factory),
+            patch(
+                "brain_v42.services.embedding_factory.build_embedding_service",
+                return_value=embedding,
+            ),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[thread]),
+            ),
+            patch(
+                "scripts.ticket_extract._extract_thread_with_budget",
+                new=AsyncMock(return_value=ThreadOutcome(thread=thread, drafts=[draft])),
+            ),
+            patch(
+                "scripts.ticket_extract.deduplicate_drafts",
+                new=AsyncMock(return_value=DedupResult(kept=[draft])),
+            ),
+            patch("scripts.ticket_extract.persist_proposals", persist),
+            patch("scripts.ticket_extract.record_ticket_attempt", attempts),
+            patch("scripts.ticket_extract.record_dream_run", record),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            await _run(args, "secret", "model", "https://llm.test")
+
+        assert record.await_args.kwargs["thinking_tokens"] is None
+
+    @pytest.mark.asyncio
     async def test_wet_persists_and_applies_only_novel_drafts(self) -> None:
         thread = _thread()
         duplicate_draft = _draft(ticket_id=thread.id)
@@ -2191,7 +2280,12 @@ class TestTheTerminalRowNamesItsModel:
     async def test_the_terminal_row_names_the_model_that_actually_ran(self) -> None:
         async def extract(client, model, thread, **kw):
             return SimpleNamespace(
-                drafts=[], failed=False, error=None, timed_out=False, duration_s=0.1
+                drafts=[],
+                failed=False,
+                error=None,
+                timed_out=False,
+                duration_s=0.1,
+                thinking_tokens=None,
             )
 
         args = SimpleNamespace(
@@ -2235,7 +2329,12 @@ class TestTheTerminalRowNamesItsModel:
             if model == "primaire-mort":
                 raise ModelGoneError(model, 410)
             return SimpleNamespace(
-                drafts=[], failed=False, error=None, timed_out=False, duration_s=0.1
+                drafts=[],
+                failed=False,
+                error=None,
+                timed_out=False,
+                duration_s=0.1,
+                thinking_tokens=None,
             )
 
         args = SimpleNamespace(

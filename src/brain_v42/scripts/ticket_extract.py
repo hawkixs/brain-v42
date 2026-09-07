@@ -557,6 +557,10 @@ class ThreadOutcome:
     drafts: list[ProposalDraft]
     failed: bool = False
     error: str | None = None
+    #: 049 — `None` means "this call's usage never carried a reasoning-token
+    #: count" (no key, wrong type, negative), never "it reported zero". See
+    #: `thinking_tokens_from_usage`.
+    thinking_tokens: int | None = None
 
 
 async def extract_thread(
@@ -567,8 +571,10 @@ async def extract_thread(
 ) -> ThreadOutcome:
     """Call LLM once; on parse error, one corrective re-prompt; fail → outcome failed."""
     messages = build_messages(thread)
+    thinking_tokens: int | None = None
     try:
-        content, _usage = await _post_chat(client, model, messages, sleep)
+        content, usage = await _post_chat(client, model, messages, sleep)
+        thinking_tokens = thinking_tokens_from_usage(usage)
         try:
             drafts = parse_and_validate(content, thread)
         except ResponseParseError as first_error:
@@ -586,7 +592,10 @@ async def extract_thread(
                     "content": f"{_REPROMPT_INSTRUCTION}\nErreur précise : {first_error}",
                 },
             ]
-            content2, _usage2 = await _post_chat(client, model, corrective, sleep)
+            content2, usage2 = await _post_chat(client, model, corrective, sleep)
+            thinking_tokens = combine_thinking_tokens(
+                thinking_tokens, thinking_tokens_from_usage(usage2)
+            )
             try:
                 drafts = parse_and_validate(content2, thread)
             except ResponseParseError as exc:
@@ -595,6 +604,7 @@ async def extract_thread(
                     drafts=[],
                     failed=True,
                     error=f"unparseable after corrective re-prompt: {exc}",
+                    thinking_tokens=thinking_tokens,
                 )
     except ModelGoneError:
         # DO NOT bury this in a `failed` outcome: a retired model is not a
@@ -604,7 +614,7 @@ async def extract_thread(
         raise
     except (httpx.HTTPError, RuntimeError, KeyError, ValueError) as exc:
         return ThreadOutcome(thread=thread, drafts=[], failed=True, error=_exc_str(exc))
-    return ThreadOutcome(thread=thread, drafts=drafts)
+    return ThreadOutcome(thread=thread, drafts=drafts, thinking_tokens=thinking_tokens)
 
 
 def _safe_error(value: str | None) -> str | None:
@@ -784,37 +794,59 @@ def _exit_code(*, timed_out: int, any_failed: bool, deferred: int, hard_failed: 
     return 4 if deferred else 0
 
 
-def thinking_tokens_from_usage(usage: dict[str, Any] | None) -> int:
-    """The provider's reasoning-token count, or 0 -- never ``None``.
+def thinking_tokens_from_usage(usage: dict[str, Any] | None) -> int | None:
+    """The provider's reasoning-token count, or ``None`` if it did not report one.
 
     Migration 049 added `dream_runs.thinking_tokens`, and on the first night it
     could have written it stayed NULL on every `extract/*` and `roadmap/*` row:
     the codex/agy parser rail fills it, the NVIDIA rail never did.
 
-    NULL is the wrong value here. It reads "not measured", when what is true is
-    "measured, and this provider reports none" -- and the two are the distinction
-    the 049 series exists to preserve elsewhere. So the honest value is 0.
+    A first fix hard-coded 0 whenever the shape was absent or unusable, on the
+    reasoning that "measured, and this provider reports none" is 0, never NULL.
+    That was itself half-wrong: it collapsed "this call genuinely reported
+    zero" and "this call never carried a count at all" into the same value,
+    which is exactly the distinction migration 049 and `PhaseTelemetry`
+    (`dream_parser.py`, the codex/agy/claude rail) exist to preserve. Measured
+    2026-09-07: models ran on both extract and roadmap phases, and every row
+    still carried 0 -- because this function was dead code (never threaded to
+    the writer), and even once wired, "no key present" is not the same fact as
+    "reported zero".
 
-    But a hard-coded 0 would still be 0 the day the provider starts reporting a
-    count, so this READS instead of assuming, in the two shapes an
-    OpenAI-compatible API uses: `usage.reasoning_tokens`, and
-    `usage.completion_tokens_details.reasoning_tokens`. Measured 2026-09-03:
-    neither appears in any dream log, and this repository reads only
-    `prompt_tokens` and `completion_tokens` from the NVIDIA usage -- so 0 is
-    today's true answer, and it will stop being 0 on its own.
-
-    Anything unusable -- absent, null, negative, not a number -- is 0, because a
-    telemetry column must never be the reason a phase raises.
+    So this now reads the two shapes an OpenAI-compatible API uses --
+    `usage.reasoning_tokens` and `usage.completion_tokens_details.reasoning_tokens`
+    -- and returns the real value when either is a usable non-negative number,
+    ``None`` otherwise: absent, non-dict usage, ``null``, wrong type, or
+    negative. A telemetry column must never be the reason a phase raises, so
+    every unusable shape maps to "not measured" rather than raising -- never
+    to a fabricated zero.
     """
     if not isinstance(usage, dict):
-        return 0
+        return None
     candidate: Any = usage.get("reasoning_tokens")
     if candidate is None:
         details = usage.get("completion_tokens_details")
         candidate = details.get("reasoning_tokens") if isinstance(details, dict) else None
+    if candidate is None:
+        return None
     if isinstance(candidate, bool) or not isinstance(candidate, int | float):
-        return 0
-    return max(0, int(candidate))
+        return None
+    if candidate < 0:
+        return None
+    return int(candidate)
+
+
+def combine_thinking_tokens(current: int | None, addition: int | None) -> int | None:
+    """Fold one more measurement into a running reasoning-token total.
+
+    ``None`` stays ``None`` only while NOTHING has measured anything yet: the
+    moment one call reports a real count (including a real zero), the running
+    total becomes an int and stays one for the rest of the run. Used both
+    within a single thread/batch (initial attempt + corrective re-prompt) and
+    across a whole night's threads/batches -- one rule, one place.
+    """
+    if addition is None:
+        return current
+    return (current or 0) + addition
 
 
 def _degradation_notice(
@@ -860,7 +892,7 @@ async def record_dream_run(
     duration_s: float,
     error: str | None,
     model: str | None = None,
-    thinking_tokens: int = 0,
+    thinking_tokens: int | None = None,
 ) -> None:
     """INSERT dream_runs row for phase='extract'. Best-effort — never raises.
 
@@ -874,6 +906,10 @@ async def record_dream_run(
     so the configured value cannot reconstitute what ran. ``None`` means no
     model was called at all (empty queue, or ``--apply-ids`` mode) — that is a
     fact worth recording, not an omission.
+
+    ``thinking_tokens`` defaults to ``None`` — "not measured" — never 0: 0 is
+    reserved for a run where at least one call genuinely reported a real zero
+    reasoning-token count (`thinking_tokens_from_usage`, `combine_thinking_tokens`).
     """
     try:
         async with session_factory() as session:
@@ -895,8 +931,8 @@ async def record_dream_run(
                         "project_key": GLOBAL_PHASE_PROJECT_KEY,
                         "phase_dry_run": dry,
                         "model": model,
-                        # An INTEGER, never NULL: this rail measures, and "this
-                        # provider reports no reasoning" is 0, not "unmeasured".
+                        # NULL means "not measured"; 0 means a call genuinely
+                        # reported zero reasoning tokens. Never conflate them.
                         "thinking_tokens": thinking_tokens,
                     },
                 )
@@ -1143,6 +1179,10 @@ async def _run(
     # exit code owes dream.sh now that `3` leaves the unit green.
     hard_failed = 0
     deduped = 0
+    # None until a real call measures something (including a real zero); see
+    # `combine_thinking_tokens`. Must reach `record_dream_run` as-is — a run
+    # where nothing measured anything writes NULL, never 0.
+    thinking_tokens_total: int | None = None
     # The model actually served, which is no longer necessarily the one asked
     # for: an end of life at the provider switches the whole RUN to the
     # fallback.
@@ -1227,6 +1267,9 @@ async def _run(
                 break
             ticket_duration = time.monotonic() - ticket_started
             scanned += 1
+            thinking_tokens_total = combine_thinking_tokens(
+                thinking_tokens_total, outcome.thinking_tokens
+            )
             if outcome.failed:
                 is_timeout = "timeout" in (outcome.error or "").lower()
                 attempt_status = "timeout" if is_timeout else "failed"
@@ -1486,6 +1529,7 @@ async def _run(
         # decision, and a night served entirely by the fallback must be
         # distinguishable from a nominal night.
         model=active_model,
+        thinking_tokens=thinking_tokens_total,
     )
     return _exit_code(
         timed_out=timed_out,
