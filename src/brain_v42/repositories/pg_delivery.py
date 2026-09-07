@@ -37,6 +37,7 @@ from brain_v42.models.delivery import (
     DeliveryError,
     DeliveryPage,
     DeliveryView,
+    DependencyPredicate,
     EvaluationInput,
     PinnedBrainEntityReference,
     PinnedContextReference,
@@ -150,6 +151,7 @@ class PgDeliveryRepo(BasePgRepository):
                 )
                 if replay is not None:
                     return _contract_from_json(replay)
+                await _validate_dependencies(sess, contract, actor_project)
                 current = (
                     (
                         await sess.execute(
@@ -459,6 +461,63 @@ class PgDeliveryRepo(BasePgRepository):
                 )
                 for row in binding_rows
             )
+            upstream_revision = delivery_contract_revisions.alias("upstream_revision")
+            dependency_rows = (
+                (
+                    await sess.execute(
+                        sa.select(
+                            delivery_dependencies,
+                            delivery_workflows.c.current_revision,
+                            delivery_workflows.c.attempt.label("current_attempt"),
+                            delivery_workflows.c.disposition,
+                            upstream_revision.c.content_digest,
+                        )
+                        .join(
+                            delivery_workflows,
+                            delivery_workflows.c.ticket_id
+                            == delivery_dependencies.c.upstream_ticket_id,
+                        )
+                        .join(
+                            upstream_revision,
+                            sa.and_(
+                                upstream_revision.c.ticket_id
+                                == delivery_dependencies.c.upstream_ticket_id,
+                                upstream_revision.c.contract_revision
+                                == delivery_workflows.c.current_revision,
+                            ),
+                        )
+                        .where(
+                            delivery_dependencies.c.ticket_id == ticket_id,
+                            delivery_dependencies.c.contract_revision
+                            == workflow["current_revision"],
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            dependencies = tuple(
+                DependencyPredicate(
+                    ticket_id=row["upstream_ticket_id"],
+                    contract_revision=row["upstream_revision"],
+                    attempt=row["upstream_attempt"],
+                    milestone=row["milestone"],
+                    current_contract_revision=row["current_revision"],
+                    current_attempt=row["current_attempt"],
+                    current_contract_digest=row["content_digest"],
+                    current_delivery_digest=canonical_digest(
+                        {
+                            "ticket_id": str(row["upstream_ticket_id"]),
+                            "contract_revision": row["current_revision"],
+                            "attempt": row["current_attempt"],
+                        },
+                        domain="result",
+                    ),
+                    current_disposition=row["disposition"],
+                    receipt=None,
+                )
+                for row in dependency_rows
+            )
             contexts = tuple(await _context_predicates(sess, contract))
             return EvaluationInput(
                 contract=contract,
@@ -469,7 +528,7 @@ class PgDeliveryRepo(BasePgRepository):
                 is_self_ticket=ticket["from_project"] == ticket["to_project"],
                 active_bindings=bindings,
                 contexts=contexts,
-                dependencies=(),
+                dependencies=dependencies,
                 integration_receipt=None,
                 fulfillment_receipt=None,
                 feature_enabled=feature_enabled,
@@ -573,6 +632,61 @@ def _context_set_digest(contract: ContractRevision) -> str:
         if isinstance(ref, RepositoryDocumentReference) and ref.required
     )
     return canonical_digest({"references": refs}, domain="result")
+
+
+async def _validate_dependencies(
+    session: AsyncSession, contract: ContractRevision, actor_project: str
+) -> None:
+    """Validate pinned upstream generations and reject cycles while graph writes serialize."""
+    frontier = {dependency.ticket_id for dependency in contract.dependencies}
+    for dependency in contract.dependencies:
+        upstream = (
+            (
+                await session.execute(
+                    sa.select(
+                        delivery_workflows.c.current_revision, delivery_workflows.c.attempt
+                    ).where(delivery_workflows.c.ticket_id == dependency.ticket_id)
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if upstream is None or (upstream["current_revision"], upstream["attempt"]) != (
+            dependency.contract_revision,
+            dependency.attempt,
+        ):
+            raise DeliveryError("dependency_unavailable", "upstream generation is unavailable")
+        projects = (
+            (
+                await session.execute(
+                    sa.select(tickets.c.from_project, tickets.c.to_project).where(
+                        tickets.c.id == dependency.ticket_id
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        if actor_project not in {projects["from_project"], projects["to_project"]}:
+            raise DeliveryError("dependency_not_visible", "upstream dependency is not visible")
+
+    seen: set[UUID] = set()
+    while frontier:
+        if contract.ticket_id in frontier:
+            raise DeliveryError("dependency_cycle", "delivery dependency would create a cycle")
+        frontier -= seen
+        if not frontier:
+            return
+        seen |= frontier
+        frontier = set(
+            (
+                await session.execute(
+                    sa.select(delivery_dependencies.c.upstream_ticket_id).where(
+                        delivery_dependencies.c.ticket_id.in_(frontier)
+                    )
+                )
+            ).scalars()
+        )
 
 
 def _context_table_rank(entity_type: str) -> int:
