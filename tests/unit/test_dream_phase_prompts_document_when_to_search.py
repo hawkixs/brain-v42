@@ -213,6 +213,22 @@ def test_when_to_search_points_at_brain_list_for_literal_filters(phase: str) -> 
 
 
 @pytest.mark.parametrize("phase", PHASES)
+def test_when_to_search_does_not_claim_brain_search_cannot_filter_by_tag(phase: str) -> None:
+    """Negative assertion: `brain_search` DOES filter by tag overlap
+    (`tags: list[str] | None` at brain_tools.py, forwarded by
+    `brain_service.search()`, with `tags_filtered_out` rendered in the
+    empty-result explanation) -- so the redirect to `brain_list` must not
+    claim the opposite. An agent that believed the false claim would stop
+    passing `tags=` to `brain_search` to narrow a real question, which is
+    the opposite of what this section wants."""
+    section = _unwrapped(_when_to_search_section(_prompt_text(phase)))
+    assert "which `brain_search` does not" not in section, (
+        f"phase_{phase}.md's '{HEADING}' section falsely claims brain_search "
+        "cannot filter by tag literally -- it does, by overlap."
+    )
+
+
+@pytest.mark.parametrize("phase", PHASES)
 def test_when_to_search_forbids_retrying_the_same_empty_query(phase: str) -> None:
     section = _unwrapped(_when_to_search_section(_prompt_text(phase)))
     assert "do not retry" in section, (

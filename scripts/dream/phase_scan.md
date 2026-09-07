@@ -17,19 +17,20 @@ phrase the query as a natural-language question of at least three words
 describing a concept, e.g.
 `brain_search(query="how does tag normalization handle plural variants")`.
 Never search with a bare tag, status word, or wildcard such as "archived",
-"infra_status", or "*" — those rarely match anything, because search ranks
-against prose, not literal tokens, and a short technical token is exactly the
-shape most likely to return zero results. To filter entities by tag, use
-`brain_list(tags=[...])` instead — it is in this phase's allowed tools and does
-literal filtering, which `brain_search` does not. To include archived entities
-in that scan, add `include_archived=True` to the same call; `brain_list`'s
-`status` filter only applies to decisions, ADRs and plans, and "archived" is
-not a `status` value for any entity type — it lives in `freshness_status`,
-which `include_archived` is what exposes. If a search does return zero
-results, read the explanation the response already gives (candidates
-considered, score threshold, tags filter) and do not retry the same query —
-either rephrase it as a real question or skip the search and note the anomaly
-some other way.
+"infra_status", or "*" — those rarely match anything: a one- or two-token
+query almost never clears the score threshold after reranking. To enumerate
+entities by tag without a question to ask, use `brain_list(tags=[...])` — it
+is in this phase's allowed tools and filters on tags alone, where
+`brain_search` still needs a query and applies a score threshold; `tags`
+reaches decisions and learnings only, silently dropped for other entity
+types. To include archived entities in that scan, add `include_archived=True`
+to the same call; `brain_list`'s `status` filter only applies to decisions,
+ADRs and plans, and "archived" is not a `status` value for any entity type —
+it lives in `freshness_status`, which is what `include_archived` exposes. If
+a search does return zero results, read the explanation the response already
+gives (candidates considered, score threshold, tags filter) and do not retry
+the same query — either rephrase it as a real question or skip the search
+and note the anomaly some other way.
 
 ## Steps
 1. Call `brain_decay_status` to get freshness stats per entity type.
