@@ -712,7 +712,7 @@ def evaluate_delivery(inputs: EvaluationInput, *, now: datetime) -> DeliveryAsse
                 "coordination disposition permits no further delivery work",
             )
         )
-    if inputs.coordination_status in {"closed", "acked"}:
+    if inputs.coordination_status in {"wontfix", "closed", "acked"}:
         blockers.append(_finding("delivery_terminal", "ticket status is terminal"))
     action_valid = (
         inputs.requested_completion_action is None

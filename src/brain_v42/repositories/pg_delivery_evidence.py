@@ -5,33 +5,51 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from datetime import datetime
+from typing import Literal
 from uuid import UUID, uuid4
 
 import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from brain_v42.db.tables import (
     delivery_artifact_bindings,
     delivery_confirmations,
     delivery_contract_revisions,
     delivery_dependencies,
+    delivery_receipts,
     delivery_snapshots,
     delivery_workflows,
     tickets,
 )
+from brain_v42.delivery_config import DeliverySettings
 from brain_v42.models.delivery import (
     SAFE_OBSERVATION_ERROR_CODES,
     ContractRevision,
     DeliveryError,
+    EvaluationInput,
+    FrozenArtifactReceiptProof,
+    FrozenBrainContextReceiptProof,
+    FrozenReceiptProof,
+    FrozenRepositoryContextReceiptProof,
+    MilestoneReceipt,
     ObservationConfirmation,
+    PinnedBrainEntityReference,
     PullRequestEvidence,
+    ReceiptIssuerProvenance,
     RepositoryContextEvidence,
     RepositoryContextObservationConfirmation,
     RepositoryDocumentReference,
+    context_reference_digest,
+    context_reference_identity,
 )
+from brain_v42.models.delivery_evaluator import evaluate_delivery
 from brain_v42.models.delivery_hashes import canonical_digest
 from brain_v42.repositories.pg_base import BasePgRepository
-from brain_v42.repositories.pg_delivery import DELIVERY_GRAPH_LOCK
+from brain_v42.repositories.pg_delivery import (
+    DELIVERY_GRAPH_LOCK,
+    LockedDeliveryDecisionScope,
+    PgDeliveryRepo,
+)
 
 _TERMINAL_STATUSES = frozenset({"wontfix", "closed", "acked"})
 
@@ -133,6 +151,243 @@ def _validated_artifact_error(
 
 class PgDeliveryEvidenceRepo(BasePgRepository):
     """Append confirmations while the injected session retains transaction ownership."""
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
+        *,
+        settings: DeliverySettings | None = None,
+        observer_provenance: ReceiptIssuerProvenance | None = None,
+    ) -> None:
+        """Keep receipt issuance opt-in while preserving persistence-only construction."""
+        super().__init__(session_factory)
+        self._receipt_settings = settings if settings is not None and settings.enabled else None
+        self._observer_provenance: ReceiptIssuerProvenance | None = None
+        if self._receipt_settings is not None:
+            if observer_provenance is None:
+                raise DeliveryError(
+                    "receipt_issuer_configuration",
+                    "enabled receipt issuance requires observer provenance",
+                )
+            try:
+                provenance = ReceiptIssuerProvenance.model_validate(
+                    observer_provenance.model_dump(warnings=False)
+                )
+            except ValueError as error:
+                raise DeliveryError(
+                    "receipt_issuer_configuration", "receipt issuer provenance is invalid"
+                ) from error
+            if provenance.issuer_kind != "observer":
+                raise DeliveryError(
+                    "receipt_issuer_configuration", "receipt issuance requires observer provenance"
+                )
+            self._observer_provenance = provenance
+        self._delivery_repo = PgDeliveryRepo(session_factory)
+
+    async def issue_integration_receipt(
+        self, session: AsyncSession, ticket_id: UUID
+    ) -> MilestoneReceipt | None:
+        """Issue the current immutable receipt while the caller owns the transaction."""
+        if self._receipt_settings is None or self._observer_provenance is None:
+            return None
+        scope = await self._delivery_repo.lock_decision_scope(session, ticket_id)
+        return await self._issue_integration_receipt_under_scope(session, scope)
+
+    async def _issue_integration_receipt_under_scope(
+        self, session: AsyncSession, scope: LockedDeliveryDecisionScope
+    ) -> MilestoneReceipt | None:
+        """Rehydrate after retained decision locks, then insert immutable current receipts."""
+        settings = self._receipt_settings
+        issuer = self._observer_provenance
+        if settings is None or issuer is None:
+            return None
+        locked = await self._delivery_repo._load_decision_inputs_under_scope(
+            session,
+            scope,
+            feature_enabled=True,
+            freshness_seconds=settings.freshness_seconds,
+        )
+        inputs = locked.inputs
+        if inputs is None:
+            return None
+        assessment = evaluate_delivery(inputs, now=locked.decision_time)
+        if not assessment.integration_receipt_eligible:
+            return None
+        if inputs.integration_receipt is not None:
+            return inputs.integration_receipt
+        proof = await self._frozen_receipt_proof(
+            session,
+            inputs=inputs,
+            assessment_id=assessment.assessment_id,
+            delivery_digest=assessment.delivery_digest,
+            decision_time=locked.decision_time,
+            acceptance_basis=None,
+            issuer=issuer,
+        )
+        integration = MilestoneReceipt(
+            ticket_id=inputs.contract.ticket_id,
+            milestone="integration",
+            contract_revision=inputs.contract.contract_revision,
+            attempt=inputs.attempt,
+            contract_digest=proof.contract_digest,
+            delivery_digest=assessment.delivery_digest,
+            issued_at=locked.decision_time,
+            proof=proof,
+        )
+        await self._insert_receipt(session, integration)
+        if inputs.contract.acceptance_mode == "automatic":
+            fulfillment_proof = proof.model_copy(update={"acceptance_basis": "automatic"})
+            fulfillment = MilestoneReceipt(
+                ticket_id=inputs.contract.ticket_id,
+                milestone="fulfilled",
+                contract_revision=inputs.contract.contract_revision,
+                attempt=inputs.attempt,
+                contract_digest=proof.contract_digest,
+                delivery_digest=assessment.delivery_digest,
+                issued_at=locked.decision_time,
+                acceptance_basis="automatic",
+                proof=fulfillment_proof,
+            )
+            await self._insert_receipt(session, fulfillment)
+        return integration
+
+    async def _frozen_receipt_proof(
+        self,
+        session: AsyncSession,
+        *,
+        inputs: EvaluationInput,
+        assessment_id: str,
+        delivery_digest: str,
+        decision_time: datetime,
+        acceptance_basis: Literal["automatic", "explicit"] | None,
+        issuer: ReceiptIssuerProvenance,
+    ) -> FrozenReceiptProof:
+        """Freeze only concrete current database proof selected by the evaluator."""
+        contract_digest = inputs.contract.content_digest
+        if contract_digest is None:
+            raise RuntimeError("current delivery contract has no digest")
+        artifact_proofs: list[FrozenArtifactReceiptProof] = []
+        for item in sorted(inputs.active_bindings, key=lambda value: value.binding.deliverable_key):
+            confirmation = item.confirmation
+            if (
+                confirmation is None
+                or confirmation.evidence is None
+                or item.snapshot_id is None
+                or item.success_confirmation_id is None
+                or item.latest_attempt_confirmation_id is None
+            ):
+                raise RuntimeError("eligible delivery input lacks immutable artifact proof")
+            evidence = confirmation.evidence
+            artifact_proofs.append(
+                FrozenArtifactReceiptProof(
+                    binding_id=item.binding.id,
+                    binding_version=item.binding.binding_version,
+                    deliverable_key=item.binding.deliverable_key,
+                    repository_id=item.binding.repository_id,
+                    pr_number=item.binding.pr_number,
+                    head_sha=evidence.head_sha,
+                    base_sha=evidence.base_sha,
+                    integration_sha=evidence.integration_sha,
+                    integration_revision=evidence.integration_revision,
+                    snapshot_id=item.snapshot_id,
+                    snapshot_digest=await self._snapshot_digest(session, item.snapshot_id),
+                    success_confirmation_id=item.success_confirmation_id,
+                    latest_attempt_confirmation_id=item.latest_attempt_confirmation_id,
+                    collection_started_at=confirmation.collection_started_at,
+                    collection_finished_at=confirmation.collection_finished_at,
+                )
+            )
+        predicates = {item.reference_identity: item for item in inputs.contexts}
+        brain_context_proofs: list[FrozenBrainContextReceiptProof] = []
+        repository_context_proofs: list[FrozenRepositoryContextReceiptProof] = []
+        for reference in sorted(inputs.contract.context_refs, key=context_reference_identity):
+            if not reference.required:
+                continue
+            predicate = predicates.get(context_reference_identity(reference))
+            if isinstance(reference, PinnedBrainEntityReference):
+                if predicate is None or predicate.current_digest is None:
+                    raise RuntimeError("eligible delivery input lacks current Brain context proof")
+                brain_context_proofs.append(
+                    FrozenBrainContextReceiptProof(
+                        reference_identity=predicate.reference_identity,
+                        pinned_digest=reference.content_digest,
+                        current_digest=predicate.current_digest,
+                    )
+                )
+            elif isinstance(reference, RepositoryDocumentReference):
+                expected_digest = context_reference_digest(reference)
+                if (
+                    expected_digest is None
+                    or predicate is None
+                    or predicate.current_digest is None
+                    or predicate.snapshot_id is None
+                    or predicate.success_confirmation_id is None
+                    or predicate.latest_attempt_confirmation_id is None
+                    or predicate.collection_started_at is None
+                    or predicate.collection_finished_at is None
+                ):
+                    raise RuntimeError("eligible delivery input lacks repository context proof")
+                repository_context_proofs.append(
+                    FrozenRepositoryContextReceiptProof(
+                        reference_identity=predicate.reference_identity,
+                        required=reference.required,
+                        expected_digest=expected_digest,
+                        current_digest=predicate.current_digest,
+                        snapshot_id=predicate.snapshot_id,
+                        snapshot_digest=await self._snapshot_digest(session, predicate.snapshot_id),
+                        success_confirmation_id=predicate.success_confirmation_id,
+                        latest_attempt_confirmation_id=predicate.latest_attempt_confirmation_id,
+                        collection_started_at=predicate.collection_started_at,
+                        collection_finished_at=predicate.collection_finished_at,
+                    )
+                )
+        upstream_receipt_ids = tuple(
+            item.receipt.id
+            for item in sorted(inputs.dependencies, key=lambda value: str(value.ticket_id))
+            if item.receipt is not None
+        )
+        return FrozenReceiptProof(
+            ticket_id=inputs.contract.ticket_id,
+            contract_revision=inputs.contract.contract_revision,
+            contract_digest=contract_digest,
+            attempt=inputs.attempt,
+            workflow_version=inputs.workflow_version,
+            delivery_digest=delivery_digest,
+            assessment_id=assessment_id,
+            decision_time=decision_time,
+            artifact_proofs=tuple(artifact_proofs),
+            brain_context_proofs=tuple(brain_context_proofs),
+            repository_context_proofs=tuple(repository_context_proofs),
+            upstream_receipt_ids=upstream_receipt_ids,
+            issuer=issuer,
+            acceptance_basis=acceptance_basis,
+        )
+
+    async def _snapshot_digest(self, session: AsyncSession, snapshot_id: UUID) -> str:
+        value = await session.scalar(
+            sa.select(delivery_snapshots.c.semantic_digest).where(
+                delivery_snapshots.c.id == snapshot_id
+            )
+        )
+        if not isinstance(value, str):
+            raise RuntimeError("delivery snapshot proof is unavailable")
+        return value
+
+    async def _insert_receipt(self, session: AsyncSession, receipt: MilestoneReceipt) -> None:
+        await session.execute(
+            delivery_receipts.insert().values(
+                id=receipt.id,
+                ticket_id=receipt.ticket_id,
+                contract_revision=receipt.contract_revision,
+                attempt=receipt.attempt,
+                milestone=receipt.milestone,
+                delivery_digest=receipt.delivery_digest,
+                payload=receipt.model_dump(mode="json"),
+                issuer=receipt.proof.issuer.issuer_identity,
+                basis=receipt.acceptance_basis,
+                issued_at=receipt.issued_at,
+            )
+        )
 
     async def publish_observation(
         self,
