@@ -269,7 +269,7 @@ async def test_current_error_keeps_success_digest_but_moves_latest_attempt_and_h
 ) -> None:
     """Replacing success evidence with an error would lose receipt identity during an outage."""
     ticket, service, binding = await _binding(session_factory)
-    instant = datetime(2026, 9, 7, 12, tzinfo=UTC)
+    instant = datetime.now(UTC)
     repo = PgDeliveryEvidenceRepo(session_factory)
     async with session_factory() as session:
         async with session.begin():
@@ -277,11 +277,15 @@ async def test_current_error_keeps_success_digest_but_moves_latest_attempt_and_h
                 session,
                 binding_id=binding.id,
                 expected_binding_version=1,
-                evidence=_pr_evidence(collected_at=instant),
+                evidence=_pr_evidence(collected_at=instant).model_copy(
+                    update={"state": "open", "mergeable": True}
+                ),
                 collection_started_at=instant,
                 collection_finished_at=instant,
             )
     before = await service.get(ticket.id, actor_project="brain-v42")
+    assert before.assessment.observation_health == "fresh"
+    assert {item.kind for item in before.assessment.eligible_work} == {"integrate"}
     async with session_factory() as session:
         async with session.begin():
             failed = await repo.record_observation_error(
@@ -298,6 +302,8 @@ async def test_current_error_keeps_success_digest_but_moves_latest_attempt_and_h
     assert before.assessment.delivery_digest == after.assessment.delivery_digest
     assert before.assessment.assessment_id != after.assessment.assessment_id
     assert after.assessment.observation_health == "error"
+    assert {item.code for item in after.assessment.blockers} >= {"observation_error"}
+    assert after.assessment.eligible_work == ()
     assert hydrated.confirmation is not None
     assert hydrated.confirmation.id == success.id
     assert hydrated.confirmation.evidence is not None
@@ -408,6 +414,9 @@ async def test_context_latest_error_retains_success_proof_and_blocks_new_eligibi
     success = await _publish_context(
         session_factory, ticket.id, _context_evidence(reference), instant, instant
     )
+    before = await service.get(ticket.id, actor_project="brain-v42")
+    assert before.assessment.observation_health == "fresh"
+    assert {item.kind for item in before.assessment.eligible_work} == {"implement"}
     inputs = await PgDeliveryRepo(session_factory).load_inputs(
         ticket.id, feature_enabled=True, freshness_seconds=3_600
     )
@@ -441,11 +450,24 @@ async def test_context_latest_error_retains_success_proof_and_blocks_new_eligibi
                 collection_finished_at=instant + timedelta(seconds=1),
             )
 
-    predicate = (await service.get(ticket.id, actor_project="brain-v42")).contexts[0]
+    after = await service.get(ticket.id, actor_project="brain-v42")
+    predicate = after.contexts[0]
+    assert after.assessment.observation_health == "error"
+    assert {item.code for item in after.assessment.blockers} >= {
+        "context_error",
+        "observation_error",
+    }
+    assert after.assessment.eligible_work == ()
     assert predicate.status == "error"
     assert predicate.snapshot_id == success.snapshot_id
     assert predicate.success_confirmation_id == success.id
     assert predicate.latest_attempt_confirmation_id == failed.id
+    assert predicate.collection_started_at == instant
+    assert predicate.collection_finished_at == instant
+    assert predicate.evidence is not None
+    assert tuple(fact.identity() for fact in predicate.evidence.facts) == (
+        (reference.repository_id, reference.sha, reference.path),
+    )
 
 
 async def test_context_expiring_before_pr_limits_view_freshness_to_context_interval(
