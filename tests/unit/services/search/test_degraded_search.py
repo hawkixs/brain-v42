@@ -743,6 +743,121 @@ class TestScoreKindMarksTheIncidentReplay:
         assert "[s:" not in rendered
         assert "[rank 1/20]" in rendered
 
+    @pytest.mark.asyncio
+    async def test_healthy_reranker_never_reports_rank(self) -> None:
+        """Sibling of the two degraded replays above, for the NOMINAL path:
+        a HEALTHY reranker (client.rerank returns real logits, no exception)
+        must mark every result score_kind="cross_encoder" and render the
+        "[s:X.XX]" banner, never "[rank i/n]". This is the end-to-end
+        guarantee the incident replays never exercised: both of them drive a
+        degraded reranker, so a fail-open default on the healthy branch could
+        survive the full suite undetected (as it did — see git history of
+        this file's mapping in brain_service.py's rerank_mode -> score_kind
+        table).
+        """
+        decision_low = _make_decision(title="Low relevance")
+        decision_high = _make_decision(title="High relevance")
+
+        decision_svc = MagicMock()
+        decision_svc.search = AsyncMock(return_value=[decision_low, decision_high])
+        decision_svc.semantic_search = AsyncMock(
+            return_value=[(decision_low, 0.9), (decision_high, 0.9)]
+        )
+
+        empty_svc = MagicMock()
+        empty_svc.search = AsyncMock(return_value=[])
+        empty_svc.semantic_search = AsyncMock(return_value=[])
+
+        embedding_svc = MagicMock()
+        embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
+
+        # A real, healthy reranker call — no exception, real logits for both
+        # candidates, both well above the min_score=0.2 sigmoid threshold.
+        reranker_client = AsyncMock()
+        reranker_client.rerank = AsyncMock(return_value=[5.0, 4.0])
+        reranker = HybridReranker(client=reranker_client)
+        hybrid_searcher = HybridSearcher(reranker=reranker)
+
+        brain = BrainService(
+            decision_svc=decision_svc,
+            learning_svc=empty_svc,
+            snippet_svc=empty_svc,
+            runbook_svc=empty_svc,
+            adr_svc=empty_svc,
+            embedding_svc=embedding_svc,
+            hybrid_searcher=hybrid_searcher,
+            min_score=0.2,
+        )
+
+        response = await brain.search("test", types=["decision"])
+
+        assert response.total > 0
+        assert {r.score_kind for r in response.results} == {"cross_encoder"}
+
+        from brain_v42.mcp.tools.formatters import format_search_results
+
+        rendered = format_search_results(response.results, query="test")
+        assert "[s:" in rendered
+        assert "[rank " not in rendered
+
+    @pytest.mark.asyncio
+    async def test_rrf_only_marks_rank_not_cross_encoder(self) -> None:
+        """Pins RRF_ONLY: no reranker at all, so the raw RRF fusion score
+        (max ~0.033 for k=60) is a rank ordinal, not a calibrated score."""
+        decision = _make_decision(title="RRF-only result")
+        decision_svc = MagicMock()
+        decision_svc.search = AsyncMock(return_value=[decision])
+        decision_svc.semantic_search = AsyncMock(return_value=[(decision, 0.9)])
+        empty_svc = MagicMock()
+        empty_svc.search = AsyncMock(return_value=[])
+        empty_svc.semantic_search = AsyncMock(return_value=[])
+        embedding_svc = MagicMock()
+        embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
+
+        brain = BrainService(
+            decision_svc=decision_svc,
+            learning_svc=empty_svc,
+            snippet_svc=empty_svc,
+            runbook_svc=empty_svc,
+            adr_svc=empty_svc,
+            embedding_svc=embedding_svc,
+            hybrid_searcher=HybridSearcher(reranker=None),
+            min_score=0.0,
+        )
+        response = await brain.search("test", types=["decision"])
+
+        assert response.total > 0
+        assert {r.score_kind for r in response.results} == {"rank"}
+
+    @pytest.mark.asyncio
+    async def test_vector_only_path_marks_cross_encoder(self) -> None:
+        """Pins the vector-only branch (no hybrid_searcher at all): a
+        genuine pgvector cosine similarity, currently labelled cross_encoder."""
+        decision = _make_decision(title="Vector-only result")
+        decision_svc = MagicMock()
+        decision_svc.semantic_search = AsyncMock(return_value=[(decision, 0.9)])
+        empty_svc = MagicMock()
+        empty_svc.semantic_search = AsyncMock(return_value=[])
+        embedding_svc = MagicMock()
+        embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
+
+        brain = BrainService(
+            decision_svc=decision_svc,
+            learning_svc=empty_svc,
+            snippet_svc=empty_svc,
+            runbook_svc=empty_svc,
+            adr_svc=empty_svc,
+            embedding_svc=embedding_svc,
+            min_score=0.2,
+        )
+        response = await brain.search("test", types=["decision"])
+
+        assert response.total > 0
+        assert {r.score_kind for r in response.results} == {"cross_encoder"}
+
 
 class TestRrfFallbackLogNamesTheShard:
     """W33 bullet 4: the rrf_fallback log carried n_candidates but never WHICH
