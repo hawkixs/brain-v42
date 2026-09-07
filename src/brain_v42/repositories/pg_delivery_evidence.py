@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
 from datetime import datetime
 from typing import Literal
 from uuid import UUID, uuid4
@@ -15,11 +14,9 @@ from brain_v42.db.tables import (
     delivery_artifact_bindings,
     delivery_confirmations,
     delivery_contract_revisions,
-    delivery_dependencies,
     delivery_receipts,
     delivery_snapshots,
     delivery_workflows,
-    tickets,
 )
 from brain_v42.delivery_config import DeliverySettings
 from brain_v42.models.delivery import (
@@ -402,7 +399,7 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
         evidence = _validated_artifact_success(
             evidence, collection_started_at, collection_finished_at
         )
-        binding, workflow = await self._lock_current_subject(
+        binding, workflow, scope = await self._lock_current_subject(
             session, binding_id, expected_binding_version
         )
         await self._validate_subject(session, binding, evidence)
@@ -434,6 +431,7 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
             collection_finished_at,
             evidence=evidence,
         )
+        await self._issue_integration_receipt_under_scope(session, scope)
         return ObservationConfirmation(
             id=confirmation_id,
             evidence=evidence,
@@ -452,7 +450,7 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
     ) -> ObservationConfirmation:
         """Append a safe failed collection confirmation without replacing prior proof."""
         _validated_artifact_error(code, collection_started_at, collection_finished_at)
-        binding, workflow = await self._lock_current_subject(
+        binding, workflow, _scope = await self._lock_current_subject(
             session, binding_id, expected_binding_version
         )
         confirmation_id = await session.scalar(
@@ -495,7 +493,7 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
         evidence = _validated_repository_context_success(
             evidence, collection_started_at, collection_finished_at
         )
-        workflow = await self._lock_current_context(
+        workflow, scope = await self._lock_current_context(
             session,
             ticket_id,
             expected_revision,
@@ -530,6 +528,7 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
         await self._advance_context(
             session, workflow, confirmation_id, collection_finished_at, success=True
         )
+        await self._issue_integration_receipt_under_scope(session, scope)
         return RepositoryContextObservationConfirmation(
             id=confirmation_id,
             snapshot_id=snapshot_id,
@@ -554,7 +553,7 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
         if code not in SAFE_OBSERVATION_ERROR_CODES:
             raise DeliveryError("invalid_error_code", "observation error code is not supported")
         _validated_repository_context_error(code, collection_started_at, collection_finished_at)
-        workflow = await self._lock_current_context(
+        workflow, _scope = await self._lock_current_context(
             session,
             ticket_id,
             expected_revision,
@@ -596,16 +595,15 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
 
     async def _lock_current_subject(
         self, session: AsyncSession, binding_id: UUID, expected_binding_version: int
-    ) -> tuple[dict[str, object], dict[str, object]]:
-        """Lock graph, complete direct dependency set, then binding and revalidate it."""
+    ) -> tuple[dict[str, object], dict[str, object], LockedDeliveryDecisionScope]:
+        """Discover the immutable binding identity, then retain the shared decision scope."""
         await session.execute(sa.select(sa.func.pg_advisory_xact_lock_shared(DELIVERY_GRAPH_LOCK)))
         discovered = (
             (
                 await session.execute(
-                    sa.select(
-                        delivery_artifact_bindings.c.ticket_id,
-                        delivery_artifact_bindings.c.contract_revision,
-                    ).where(delivery_artifact_bindings.c.id == binding_id)
+                    sa.select(delivery_artifact_bindings.c.ticket_id).where(
+                        delivery_artifact_bindings.c.id == binding_id
+                    )
                 )
             )
             .mappings()
@@ -613,24 +611,14 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
         )
         if discovered is None:
             raise DeliveryError("binding_conflict", "artifact binding is no longer current")
-        dependency_ids = await self._direct_dependency_ids(
-            session, discovered["ticket_id"], discovered["contract_revision"]
-        )
-        ticket_ids = sorted({discovered["ticket_id"], *dependency_ids}, key=str)
-        locked_tickets = await session.execute(
-            sa.select(tickets)
-            .where(tickets.c.id.in_(ticket_ids))
-            .order_by(tickets.c.id)
-            .with_for_update()
-        )
-        ticket_rows = {row["id"]: dict(row) for row in locked_tickets.mappings()}
-        locked_workflows = await session.execute(
-            sa.select(delivery_workflows)
-            .where(delivery_workflows.c.ticket_id.in_(ticket_ids))
-            .order_by(delivery_workflows.c.ticket_id)
-            .with_for_update()
-        )
-        workflow_rows = {row["ticket_id"]: dict(row) for row in locked_workflows.mappings()}
+        try:
+            scope = await self._delivery_repo.lock_decision_scope(session, discovered["ticket_id"])
+        except DeliveryError as error:
+            if error.code == "ticket_not_found":
+                raise DeliveryError(
+                    "binding_conflict", "artifact binding is no longer current"
+                ) from None
+            raise
         binding_row = (
             (
                 await session.execute(
@@ -647,18 +635,27 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
         binding = dict(binding_row)
         if not binding["active"]:
             raise DeliveryError("binding_conflict", "artifact binding is no longer current")
-        workflow = workflow_rows.get(binding["ticket_id"])
-        ticket = ticket_rows.get(binding["ticket_id"])
+        workflow_row = (
+            (
+                await session.execute(
+                    sa.select(delivery_workflows).where(
+                        delivery_workflows.c.ticket_id == binding["ticket_id"]
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        workflow = None if workflow_row is None else dict(workflow_row)
         if (
             workflow is None
-            or ticket is None
-            or ticket["status"] in _TERMINAL_STATUSES
+            or scope.ticket.status in _TERMINAL_STATUSES
             or workflow["disposition"] != "active"
             or workflow["current_revision"] != binding["contract_revision"]
             or workflow["attempt"] != binding["attempt"]
         ):
             raise DeliveryError("binding_superseded", "artifact binding is no longer publishable")
-        return binding, workflow
+        return binding, workflow, scope
 
     async def _lock_current_context(
         self,
@@ -668,33 +665,32 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
         expected_attempt: int,
         expected_context_set_digest: str,
         expected_context_row_version: int,
-    ) -> dict[str, object]:
-        """Lock graph then the complete workflow set before revalidating context CAS."""
-        await session.execute(sa.select(sa.func.pg_advisory_xact_lock_shared(DELIVERY_GRAPH_LOCK)))
-        dependency_ids = await self._direct_dependency_ids(session, ticket_id, expected_revision)
-        ticket_ids = sorted({ticket_id, *dependency_ids}, key=str)
-        locked_tickets = await session.execute(
-            sa.select(tickets)
-            .where(tickets.c.id.in_(ticket_ids))
-            .order_by(tickets.c.id)
-            .with_for_update()
+    ) -> tuple[dict[str, object], LockedDeliveryDecisionScope]:
+        """Retain the shared decision scope before checking the context generation CAS."""
+        try:
+            scope = await self._delivery_repo.lock_decision_scope(session, ticket_id)
+        except DeliveryError as error:
+            if error.code == "ticket_not_found":
+                raise DeliveryError(
+                    "repository_context_conflict", "repository context is no longer current"
+                ) from None
+            raise
+        workflow_row = (
+            (
+                await session.execute(
+                    sa.select(delivery_workflows).where(delivery_workflows.c.ticket_id == ticket_id)
+                )
+            )
+            .mappings()
+            .one_or_none()
         )
-        ticket_rows = {row["id"]: dict(row) for row in locked_tickets.mappings()}
-        locked_workflows = await session.execute(
-            sa.select(delivery_workflows)
-            .where(delivery_workflows.c.ticket_id.in_(ticket_ids))
-            .order_by(delivery_workflows.c.ticket_id)
-            .with_for_update()
-        )
-        workflow_rows = {row["ticket_id"]: dict(row) for row in locked_workflows.mappings()}
-        workflow = workflow_rows.get(ticket_id)
-        ticket = ticket_rows.get(ticket_id)
-        if workflow is None or ticket is None:
+        if workflow_row is None:
             raise DeliveryError(
                 "repository_context_conflict", "repository context is no longer current"
             )
+        workflow = dict(workflow_row)
         if (
-            ticket["status"] in _TERMINAL_STATUSES
+            scope.ticket.status in _TERMINAL_STATUSES
             or workflow["disposition"] != "active"
             or workflow["current_revision"] != expected_revision
             or workflow["attempt"] != expected_attempt
@@ -707,18 +703,7 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
             raise DeliveryError(
                 "repository_context_conflict", "repository context is no longer current"
             )
-        return workflow
-
-    async def _direct_dependency_ids(
-        self, session: AsyncSession, ticket_id: object, revision: object
-    ) -> Iterable[UUID]:
-        result = await session.execute(
-            sa.select(delivery_dependencies.c.upstream_ticket_id).where(
-                delivery_dependencies.c.ticket_id == ticket_id,
-                delivery_dependencies.c.contract_revision == revision,
-            )
-        )
-        return tuple(result.scalars())
+        return workflow, scope
 
     async def _validate_subject(
         self, session: AsyncSession, binding: dict[str, object], evidence: PullRequestEvidence
