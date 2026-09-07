@@ -26,6 +26,16 @@ _SHA_RE = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 _KEY_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+SAFE_OBSERVATION_ERROR_CODES = frozenset(
+    {
+        "provider_forbidden",
+        "provider_invalid_response",
+        "provider_not_found",
+        "provider_rate_limited",
+        "provider_timeout",
+        "provider_unavailable",
+    }
+)
 
 
 class DeliveryError(Exception):
@@ -575,10 +585,15 @@ class ObservationConfirmation(_StoredModel):
 
     @model_validator(mode="after")
     def _has_evidence_only_for_success(self) -> ObservationConfirmation:
-        if self.outcome == "success" and self.evidence is None:
-            raise ValueError("successful confirmation requires evidence")
-        if self.outcome == "error" and self.error_code is None:
-            raise ValueError("error confirmation requires error_code")
+        if self.collection_started_at.tzinfo is None or self.collection_finished_at.tzinfo is None:
+            raise ValueError("observation confirmation interval must be timezone-aware")
+        if self.outcome == "success":
+            if self.evidence is None or self.error_code is not None:
+                raise ValueError("successful confirmation requires evidence without an error code")
+        elif self.evidence is not None or self.error_code is None:
+            raise ValueError("error confirmation requires only a safe error code")
+        elif self.error_code not in SAFE_OBSERVATION_ERROR_CODES:
+            raise ValueError("error confirmation requires a safe error code")
         if self.collection_finished_at < self.collection_started_at:
             raise ValueError("collection_finished_at precedes collection_started_at")
         return self

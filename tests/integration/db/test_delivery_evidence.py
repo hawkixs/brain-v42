@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import traceback
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -16,8 +17,10 @@ from brain_v42.db.tables import (
 )
 from brain_v42.delivery_config import DeliverySettings
 from brain_v42.models.delivery import (
+    CheckAttempt,
     ContractInput,
     Deliverable,
+    DeliveryError,
     PullRequestEvidence,
     ReviewPolicy,
 )
@@ -92,6 +95,59 @@ def _evidence(*, collected_at: datetime) -> PullRequestEvidence:
         complete=True,
         collected_at=collected_at,
     )
+
+
+def _malformed_nested_evidence(*, collected_at: datetime, sentinel: str) -> PullRequestEvidence:
+    """Build a model_copy-only invalid nested DTO, as an untrusted collector can."""
+    check = CheckAttempt(
+        record_id=1,
+        provider_id=7001,
+        kind="check_run",
+        name="test-unit",
+        app_slug="github-actions",
+        head_sha="a" * 40,
+        conclusion="success",
+    )
+    return _evidence(collected_at=collected_at).model_copy(
+        update={"checks": (check.model_copy(update={"head_sha": sentinel}),)}
+    )
+
+
+async def _publication_state(session_factory, binding):
+    async with session_factory() as session:
+        binding_row = (
+            (
+                await session.execute(
+                    sa.select(delivery_artifact_bindings).where(
+                        delivery_artifact_bindings.c.id == binding.id
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        workflow_row = (
+            (
+                await session.execute(
+                    sa.select(delivery_workflows).where(
+                        delivery_workflows.c.ticket_id == binding.ticket_id
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        snapshots = await session.scalar(
+            sa.select(sa.func.count())
+            .select_from(delivery_snapshots)
+            .where(delivery_snapshots.c.binding_id == binding.id)
+        )
+        confirmations = await session.scalar(
+            sa.select(sa.func.count())
+            .select_from(delivery_confirmations)
+            .where(delivery_confirmations.c.binding_id == binding.id)
+        )
+    return binding_row, workflow_row, snapshots, confirmations
 
 
 async def test_identical_polls_deduplicate_snapshot_but_append_immutable_confirmations(
@@ -349,6 +405,156 @@ async def test_invalid_provider_subject_facts_never_publish_success(
             .where(delivery_confirmations.c.binding_id == binding.id)
         )
     assert count == 0
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "root_sha",
+        "nested_check_sha",
+        "success_naive_interval",
+        "error_naive_interval",
+        "success_mixed_interval",
+        "error_mixed_interval",
+    ],
+)
+async def test_invalid_observations_raise_safely_before_caller_commit_and_leave_no_state(
+    session_factory, case: str
+) -> None:
+    """Validation after inserts would let a caller commit a corrupt observation."""
+    from brain_v42.repositories.pg_delivery_evidence import PgDeliveryEvidenceRepo
+
+    binding = await _binding(session_factory)
+    (
+        before_binding,
+        before_workflow,
+        before_snapshots,
+        before_confirmations,
+    ) = await _publication_state(session_factory, binding)
+    instant = datetime(2026, 9, 7, 12, tzinfo=UTC)
+    started = instant
+    finished = instant
+    sentinel = "sentinel" + "g" * 32
+    evidence = _evidence(collected_at=instant)
+    if case == "root_sha":
+        evidence = evidence.model_copy(update={"head_sha": sentinel})
+    elif case == "nested_check_sha":
+        evidence = _malformed_nested_evidence(collected_at=instant, sentinel=sentinel)
+    elif "naive_interval" in case:
+        started = started.replace(tzinfo=None)
+        finished = finished.replace(tzinfo=None)
+    elif "mixed_interval" in case:
+        finished = finished.astimezone().replace(tzinfo=None) + timedelta(seconds=1)
+
+    caught: Exception | None = None
+    async with session_factory() as session:
+        async with session.begin():
+            try:
+                if case.startswith("error_"):
+                    await PgDeliveryEvidenceRepo(session_factory).record_observation_error(
+                        session,
+                        binding.id,
+                        1,
+                        "provider_timeout",
+                        started,
+                        finished,
+                    )
+                else:
+                    await PgDeliveryEvidenceRepo(session_factory).publish_observation(
+                        session, binding.id, 1, evidence, started, finished
+                    )
+            except Exception as error:  # The caller intentionally commits after a rejected poll.
+                caught = error
+
+    assert isinstance(caught, DeliveryError)
+    if case in {"root_sha", "nested_check_sha"}:
+        assert sentinel not in str(caught)
+        assert sentinel not in "".join(traceback.format_exception(caught))
+    after_binding, after_workflow, snapshots, confirmations = await _publication_state(
+        session_factory, binding
+    )
+    assert snapshots == before_snapshots == 0
+    assert confirmations == before_confirmations == 0
+    assert after_binding["row_version"] == before_binding["row_version"]
+    assert after_binding["latest_success_confirmation_id"] is None
+    assert after_binding["latest_attempt_confirmation_id"] is None
+    assert after_workflow["row_version"] == before_workflow["row_version"]
+
+
+@pytest.mark.parametrize("method", ["success", "error"])
+async def test_reversed_aware_interval_is_rejected_before_artifact_publication(
+    session_factory, method: str
+) -> None:
+    """The prior SQL check rejects this too; the publisher must now reject before locking/writing."""
+    from brain_v42.repositories.pg_delivery_evidence import PgDeliveryEvidenceRepo
+
+    binding = await _binding(session_factory)
+    instant = datetime(2026, 9, 7, 12, tzinfo=UTC)
+    async with session_factory() as session:
+        async with session.begin():
+            with pytest.raises(DeliveryError):
+                if method == "success":
+                    await PgDeliveryEvidenceRepo(session_factory).publish_observation(
+                        session,
+                        binding.id,
+                        1,
+                        _evidence(collected_at=instant),
+                        instant + timedelta(seconds=1),
+                        instant,
+                    )
+                else:
+                    await PgDeliveryEvidenceRepo(session_factory).record_observation_error(
+                        session,
+                        binding.id,
+                        1,
+                        "provider_timeout",
+                        instant + timedelta(seconds=1),
+                        instant,
+                    )
+    _binding_row, _workflow_row, snapshots, confirmations = await _publication_state(
+        session_factory, binding
+    )
+    assert snapshots == 0
+    assert confirmations == 0
+
+
+async def test_valid_success_and_error_continue_to_round_trip_through_strict_hydration(
+    session_factory,
+) -> None:
+    """Prevalidation must preserve valid success/error publication and retained proof hydration."""
+    from brain_v42.repositories.pg_delivery import PgDeliveryRepo
+    from brain_v42.repositories.pg_delivery_evidence import PgDeliveryEvidenceRepo
+
+    binding = await _binding(session_factory)
+    instant = datetime(2026, 9, 7, 12, tzinfo=UTC)
+    repo = PgDeliveryEvidenceRepo(session_factory)
+    async with session_factory() as session:
+        async with session.begin():
+            success = await repo.publish_observation(
+                session, binding.id, 1, _evidence(collected_at=instant), instant, instant
+            )
+    async with session_factory() as session:
+        async with session.begin():
+            failure = await repo.record_observation_error(
+                session,
+                binding.id,
+                2,
+                "provider_timeout",
+                instant,
+                instant + timedelta(seconds=1),
+            )
+
+    hydrated = await PgDeliveryRepo(session_factory).load_inputs(
+        binding.ticket_id, feature_enabled=True, freshness_seconds=600
+    )
+
+    evidence = hydrated.active_bindings[0]
+    assert evidence.confirmation is not None
+    assert evidence.confirmation.id == success.id
+    assert evidence.confirmation.evidence is not None
+    assert evidence.confirmation.evidence.head_sha == "a" * 40
+    assert evidence.latest_attempt_confirmation_id == failure.id
+    assert evidence.last_attempt_outcome == "error"
 
 
 async def test_success_rollback_undoes_snapshot_confirmation_and_pointers(session_factory) -> None:

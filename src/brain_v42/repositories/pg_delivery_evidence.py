@@ -20,6 +20,7 @@ from brain_v42.db.tables import (
     tickets,
 )
 from brain_v42.models.delivery import (
+    SAFE_OBSERVATION_ERROR_CODES,
     ContractRevision,
     DeliveryError,
     ObservationConfirmation,
@@ -33,16 +34,6 @@ from brain_v42.repositories.pg_base import BasePgRepository
 from brain_v42.repositories.pg_delivery import DELIVERY_GRAPH_LOCK
 
 _TERMINAL_STATUSES = frozenset({"wontfix", "closed", "acked"})
-_SAFE_ERROR_CODES = frozenset(
-    {
-        "provider_forbidden",
-        "provider_invalid_response",
-        "provider_not_found",
-        "provider_rate_limited",
-        "provider_timeout",
-        "provider_unavailable",
-    }
-)
 
 
 def _require_uuid(value: object) -> UUID:
@@ -98,6 +89,48 @@ def _validated_repository_context_error(
         ) from None
 
 
+def _validated_artifact_success(
+    evidence: PullRequestEvidence,
+    collection_started_at: datetime,
+    collection_finished_at: datetime,
+) -> PullRequestEvidence:
+    """Revalidate untrusted provider facts and their intended confirmation before locks."""
+    try:
+        validated_evidence = PullRequestEvidence.model_validate(evidence.model_dump(warnings=False))
+        if not validated_evidence.complete:
+            raise ValueError("artifact observation requires complete evidence")
+        confirmation = ObservationConfirmation(
+            evidence=validated_evidence,
+            collection_started_at=collection_started_at,
+            collection_finished_at=collection_finished_at,
+        )
+    except ValueError:
+        raise DeliveryError(
+            "evidence_subject_mismatch", "artifact observation is invalid"
+        ) from None
+    assert confirmation.evidence is not None
+    return confirmation.evidence
+
+
+def _validated_artifact_error(
+    code: str, collection_started_at: datetime, collection_finished_at: datetime
+) -> None:
+    """Validate an intended failed confirmation without exposing caller input."""
+    if code not in SAFE_OBSERVATION_ERROR_CODES:
+        raise DeliveryError("invalid_error_code", "observation error code is not supported")
+    try:
+        ObservationConfirmation(
+            collection_started_at=collection_started_at,
+            collection_finished_at=collection_finished_at,
+            outcome="error",
+            error_code=code,
+        )
+    except ValueError:
+        raise DeliveryError(
+            "evidence_subject_mismatch", "artifact observation is invalid"
+        ) from None
+
+
 class PgDeliveryEvidenceRepo(BasePgRepository):
     """Append confirmations while the injected session retains transaction ownership."""
 
@@ -111,6 +144,9 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
         collection_finished_at: datetime,
     ) -> ObservationConfirmation:
         """Persist one successful immutable collection confirmation without committing."""
+        evidence = _validated_artifact_success(
+            evidence, collection_started_at, collection_finished_at
+        )
         binding, workflow = await self._lock_current_subject(
             session, binding_id, expected_binding_version
         )
@@ -160,8 +196,7 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
         collection_finished_at: datetime,
     ) -> ObservationConfirmation:
         """Append a safe failed collection confirmation without replacing prior proof."""
-        if code not in _SAFE_ERROR_CODES:
-            raise DeliveryError("invalid_error_code", "observation error code is not supported")
+        _validated_artifact_error(code, collection_started_at, collection_finished_at)
         binding, workflow = await self._lock_current_subject(
             session, binding_id, expected_binding_version
         )
@@ -261,7 +296,7 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
         collection_finished_at: datetime,
     ) -> RepositoryContextObservationConfirmation:
         """Append a sanitized failed context attempt without replacing prior proof."""
-        if code not in _SAFE_ERROR_CODES:
+        if code not in SAFE_OBSERVATION_ERROR_CODES:
             raise DeliveryError("invalid_error_code", "observation error code is not supported")
         _validated_repository_context_error(code, collection_started_at, collection_finished_at)
         workflow = await self._lock_current_context(
