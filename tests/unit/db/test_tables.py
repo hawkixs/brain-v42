@@ -63,6 +63,14 @@ class TestMetadataAndTablePresence:
             "entity_relations",
             "graph_outbox",
             "graph_projection_leases",
+            "delivery_workflows",
+            "delivery_contract_revisions",
+            "delivery_dependencies",
+            "delivery_artifact_bindings",
+            "delivery_snapshots",
+            "delivery_confirmations",
+            "delivery_receipts",
+            "delivery_events",
         }
         assert expected_tables == set(METADATA.tables.keys())
 
