@@ -68,7 +68,8 @@ def _token(value: object) -> SecretStr:
     return SecretStr(value)
 
 
-def _load_pat(path: Path) -> SecretStr:
+def load_private_environment(path: Path) -> dict[str, str]:
+    """Read a bounded private environment file without executing or expanding it."""
     try:
         text = read_private_file(path).decode("utf-8")
         values: dict[str, str] = {}
@@ -85,9 +86,13 @@ def _load_pat(path: Path) -> SecretStr:
             if len(value) >= 2 and value[0] in {"'", '"'} and value[-1] == value[0]:
                 value = value[1:-1]
             values[key] = value
-        return _token(values.get("BRAIN_DELIVERY_GITHUB_TOKEN"))
+        return values
     except UnicodeError:
         raise ProviderError("provider_forbidden") from None
+
+
+def _load_pat(path: Path) -> SecretStr:
+    return _token(load_private_environment(path).get("BRAIN_DELIVERY_GITHUB_TOKEN"))
 
 
 class GitHubAuthProvider:

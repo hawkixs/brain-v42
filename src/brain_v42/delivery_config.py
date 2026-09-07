@@ -26,6 +26,7 @@ class DeliverySettings(BaseSettings):
     )
 
     enabled: bool = False
+    postgres_url: SecretStr | None = Field(default=None, repr=False)
     repository_registry: dict[str, dict[int, str]] = Field(
         default_factory=lambda: {
             key: dict(value) for key, value in DEFAULT_REPOSITORY_REGISTRY.items()
@@ -46,6 +47,27 @@ class DeliverySettings(BaseSettings):
     observer_env_path: Path = Field(
         default=Path("~/.config/brain-v42/delivery-observer.env").expanduser(), repr=False
     )
+
+    @field_validator("postgres_url")
+    @classmethod
+    def _explicit_postgres_url(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None:
+            return None
+        raw = value.get_secret_value()
+        try:
+            parts = urlsplit(raw)
+            if (
+                parts.scheme not in {"postgres", "postgresql", "postgresql+asyncpg"}
+                or not parts.hostname
+                or not parts.path.strip("/")
+                or parts.fragment
+                or any(ord(char) < 33 or ord(char) == 127 for char in raw)
+            ):
+                raise ValueError
+            _ = parts.port
+        except ValueError:
+            raise ValueError("an explicit PostgreSQL database URL is required") from None
+        return SecretStr("postgresql+asyncpg:" + raw.split(":", 1)[1])
 
     @field_validator("github_api_origin")
     @classmethod
