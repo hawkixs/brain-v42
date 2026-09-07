@@ -57,6 +57,11 @@ def _reject_surrogates(value: str) -> str:
     return value
 
 
+def _lists_to_tuples(value: object) -> object:
+    """Accept JSON arrays while retaining immutable tuple values after validation."""
+    return tuple(value) if isinstance(value, list) else value
+
+
 def _validate_sha(value: str) -> str:
     _reject_surrogates(value)
     if not _SHA_RE.fullmatch(value):
@@ -82,11 +87,15 @@ def _validate_relative_path(value: str, *, field_name: str) -> str:
 
 
 class _StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+    model_config = ConfigDict(
+        extra="forbid", strict=True, populate_by_name=True, frozen=True, validate_default=True
+    )
 
 
 class _StoredModel(_StrictModel):
-    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True, frozen=True)
+    model_config = ConfigDict(
+        extra="forbid", strict=True, populate_by_name=True, frozen=True, validate_default=True
+    )
 
 
 class RequiredCheck(_StrictModel):
@@ -114,14 +123,16 @@ class RequiredCheck(_StrictModel):
 
 class ReviewPolicy(_StrictModel):
     required_approvals: StrictInt = Field(ge=0, le=100)
-    allowed_reviewers: list[str] = Field(max_length=200)
+    allowed_reviewers: Annotated[tuple[str, ...], BeforeValidator(_lists_to_tuples)] = Field(
+        max_length=200
+    )
 
     @field_validator("allowed_reviewers")
     @classmethod
-    def _reviewers_are_unique(cls, value: list[str]) -> list[str]:
+    def _reviewers_are_unique(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if len(value) != len(set(value)):
             raise ValueError("allowed_reviewers contains duplicate identities")
-        return [_reject_surrogates(reviewer) for reviewer in value]
+        return tuple(_reject_surrogates(reviewer) for reviewer in value)
 
 
 class Deliverable(_StrictModel):
@@ -129,7 +140,9 @@ class Deliverable(_StrictModel):
     repository: str = Field(min_length=3, max_length=201)
     repository_id: StrictInt | None = Field(default=None, gt=0)
     target_branch: str = Field(min_length=1, max_length=255)
-    required_checks: list[RequiredCheck] = Field(max_length=100)
+    required_checks: Annotated[tuple[RequiredCheck, ...], BeforeValidator(_lists_to_tuples)] = (
+        Field(max_length=100)
+    )
     no_checks_reason: str | None = Field(default=None, min_length=1, max_length=2000)
     review: ReviewPolicy
 
@@ -171,11 +184,16 @@ class Deliverable(_StrictModel):
 
 class BrainEntityReference(_StrictModel):
     kind: Literal["brain_entity"]
-    entity_type: Literal["knowledge", "decision", "runbook", "plan", "project_context"]
+    entity_type: Literal["decision", "learning", "snippet", "runbook", "adr", "plan"]
     entity_id: UUIDValue
+    required: StrictBool = True
+
+
+class PinnedBrainEntityReference(BrainEntityReference):
+    """Server-resolved Brain context stored with immutable content provenance."""
+
     content_snapshot: str = Field(min_length=1, max_length=65536)
     content_digest: str = Field(min_length=64, max_length=64)
-    required: StrictBool = True
 
     @field_validator("content_snapshot")
     @classmethod
@@ -231,6 +249,10 @@ ContextReference = Annotated[
     BrainEntityReference | RepositoryDocumentReference | UrlReference,
     Field(discriminator="kind"),
 ]
+PinnedContextReference = Annotated[
+    PinnedBrainEntityReference | RepositoryDocumentReference | UrlReference,
+    Field(discriminator="kind"),
+]
 
 
 class DeliveryDependency(_StrictModel):
@@ -246,22 +268,39 @@ class DeliveryDependency(_StrictModel):
 class ContractInput(_StrictModel):
     """Caller-owned, validated contract content before repository normalization."""
 
-    schema_version: Literal[1] = 1
+    schema_version: StrictInt = 1
     objective: str = Field(min_length=1, max_length=8000)
-    constraints: list[str] = Field(default_factory=list, max_length=200)
-    acceptance_criteria: list[str] = Field(default_factory=list, max_length=200)
+    constraints: Annotated[tuple[str, ...], BeforeValidator(_lists_to_tuples)] = Field(
+        default_factory=tuple, max_length=200
+    )
+    acceptance_criteria: Annotated[tuple[str, ...], BeforeValidator(_lists_to_tuples)] = Field(
+        default_factory=tuple, max_length=200
+    )
     priority: StrictInt = Field(ge=0, le=10000)
-    context_refs: list[ContextReference] = Field(default_factory=list, max_length=32)
-    dependencies: list[DeliveryDependency] = Field(default_factory=list, max_length=32)
-    deliverables: list[Deliverable] = Field(min_length=1, max_length=20)
+    context_refs: Annotated[tuple[ContextReference, ...], BeforeValidator(_lists_to_tuples)] = (
+        Field(default_factory=tuple, max_length=32)
+    )
+    dependencies: Annotated[tuple[DeliveryDependency, ...], BeforeValidator(_lists_to_tuples)] = (
+        Field(default_factory=tuple, max_length=32)
+    )
+    deliverables: Annotated[tuple[Deliverable, ...], BeforeValidator(_lists_to_tuples)] = Field(
+        min_length=1, max_length=20
+    )
     acceptance_mode: Literal["automatic", "explicit"]
+
+    @field_validator("schema_version", mode="before")
+    @classmethod
+    def _schema_version_is_exact_integer(cls, value: object) -> int:
+        if type(value) is not int or value != 1:
+            raise ValueError("schema_version must be the integer 1")
+        return value
 
     @field_validator("objective", "constraints", "acceptance_criteria")
     @classmethod
-    def _strings_have_no_surrogates(cls, value: str | list[str]) -> str | list[str]:
+    def _strings_have_no_surrogates(cls, value: str | tuple[str, ...]) -> str | tuple[str, ...]:
         if isinstance(value, str):
             return _reject_surrogates(value)
-        return [_reject_surrogates(item) for item in value]
+        return tuple(_reject_surrogates(item) for item in value)
 
     @model_validator(mode="after")
     def _validate_contract_content(self) -> ContractInput:
@@ -290,15 +329,18 @@ class ContractRevision(ContractInput, _StoredModel):
 
     ticket_id: UUIDValue
     contract_revision: StrictInt = Field(gt=0)
-    content_digest: str = Field(min_length=64, max_length=64)
+    content_digest: str | None = Field(default=None, min_length=64, max_length=64)
     author_project: str = Field(min_length=1, max_length=50)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     amendment_reason: str | None = Field(default=None, min_length=1, max_length=4000)
+    context_refs: Annotated[
+        tuple[PinnedContextReference, ...], BeforeValidator(_lists_to_tuples)
+    ] = Field(default_factory=tuple, max_length=32)
 
     @field_validator("content_digest")
     @classmethod
-    def _valid_content_digest(cls, value: str) -> str:
-        return _validate_digest(value)
+    def _valid_content_digest(cls, value: str | None) -> str | None:
+        return _validate_digest(value) if value is not None else None
 
     @field_validator("author_project", "amendment_reason")
     @classmethod
@@ -313,6 +355,13 @@ class ContractRevision(ContractInput, _StoredModel):
             raise ValueError("self_dependency is not permitted")
         if self.contract_revision > 1 and self.amendment_reason is None:
             raise ValueError("amendment_reason is required after the first revision")
+        from brain_v42.models.delivery_hashes import contract_digest
+
+        expected_digest = contract_digest(self)
+        if self.content_digest is None:
+            object.__setattr__(self, "content_digest", expected_digest)
+        elif self.content_digest != expected_digest:
+            raise ValueError("content_digest does not match canonical contract content")
         return self
 
 
@@ -326,8 +375,9 @@ class ArtifactBinding(_StoredModel):
     deliverable_key: str = Field(min_length=1, max_length=64)
     repository_id: StrictInt = Field(gt=0)
     pr_number: StrictInt = Field(gt=0)
-    head_sha: str = Field(min_length=40, max_length=64)
-    base_sha: str = Field(min_length=40, max_length=64)
+    state: Literal["proposed", "observed"] = "proposed"
+    head_sha: str | None = Field(default=None, min_length=40, max_length=64)
+    base_sha: str | None = Field(default=None, min_length=40, max_length=64)
     integration_sha: str | None = Field(default=None, min_length=40, max_length=64)
     binding_version: StrictInt = Field(default=1, gt=0)
 
@@ -344,9 +394,27 @@ class ArtifactBinding(_StoredModel):
     def _valid_shas(cls, value: str | None) -> str | None:
         return _validate_sha(value) if value is not None else None
 
+    @model_validator(mode="after")
+    def _validated_revision_state(self) -> ArtifactBinding:
+        if self.state == "proposed":
+            if (
+                self.head_sha is not None
+                or self.base_sha is not None
+                or self.integration_sha is not None
+            ):
+                raise ValueError("proposed bindings cannot contain observed revision identities")
+        elif self.head_sha is None or self.base_sha is None:
+            raise ValueError("observed bindings require head_sha and base_sha")
+        return self
 
-def contract_content_payload(contract: ContractInput | ContractRevision) -> Mapping[str, Any]:
-    """Return the JSON-ready content fields that define a contract digest."""
+    @property
+    def is_observed(self) -> bool:
+        """Whether a provider observation has established a head/base revision pair."""
+        return self.state == "observed"
+
+
+def contract_content_payload(contract: ContractRevision) -> Mapping[str, Any]:
+    """Project a normalized stored contract onto its canonical content identity."""
     payload = contract.model_dump(mode="json", by_alias=True)
     for field_name in {
         "ticket_id",
@@ -357,4 +425,13 @@ def contract_content_payload(contract: ContractInput | ContractRevision) -> Mapp
         "amendment_reason",
     }:
         payload.pop(field_name, None)
+    normalized_deliverables: list[dict[str, Any]] = []
+    for deliverable in payload["deliverables"]:
+        repository_id = deliverable.get("repository_id")
+        if type(repository_id) is not int or repository_id <= 0:
+            raise ValueError("contract digest requires normalized repository_id values")
+        normalized_deliverable = dict(deliverable)
+        normalized_deliverable.pop("repository", None)
+        normalized_deliverables.append(normalized_deliverable)
+    payload["deliverables"] = normalized_deliverables
     return payload

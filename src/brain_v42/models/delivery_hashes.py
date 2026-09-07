@@ -8,21 +8,11 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from brain_v42.models.delivery import ContractInput, ContractRevision
+    from brain_v42.models.delivery import ContractRevision
 
 
 DigestDomain = Literal["contract", "request", "result", "assessment"]
 _DIGEST_DOMAINS: frozenset[str] = frozenset({"contract", "request", "result", "assessment"})
-_SERVER_CONTRACT_FIELDS: frozenset[str] = frozenset(
-    {
-        "ticket_id",
-        "contract_revision",
-        "content_digest",
-        "author_project",
-        "created_at",
-        "amendment_reason",
-    }
-)
 
 
 def _reject_invalid_json_value(value: object) -> None:
@@ -65,9 +55,10 @@ def canonical_digest(payload: Mapping[str, Any], *, domain: DigestDomain) -> str
     return hashlib.sha256(prefix + encoded).hexdigest()
 
 
-def contract_digest(contract: ContractInput | ContractRevision) -> str:
-    """Digest contract content while excluding immutable server revision metadata."""
-    payload = contract.model_dump(mode="json", by_alias=True)
-    for field_name in _SERVER_CONTRACT_FIELDS:
-        payload.pop(field_name, None)
-    return canonical_digest(payload, domain="contract")
+def contract_digest(contract: ContractRevision) -> str:
+    """Digest one normalized stored contract through the sole content projector."""
+    from brain_v42.models.delivery import ContractRevision, contract_content_payload
+
+    if not isinstance(contract, ContractRevision):
+        raise ValueError("contract digest requires a normalized ContractRevision")
+    return canonical_digest(contract_content_payload(contract), domain="contract")
