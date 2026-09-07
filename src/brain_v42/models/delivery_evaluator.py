@@ -8,14 +8,18 @@ from typing import Literal
 from brain_v42.models.delivery import (
     BindingEvidence,
     CheckAttempt,
+    ContextPredicate,
     DeliveryAssessment,
     DeliveryFinding,
+    DependencyPredicate,
     EligibleWork,
     EvaluationInput,
     MilestoneReceipt,
     PullRequestEvidence,
     RequiredCheck,
     ReviewEvidence,
+    context_reference_digest,
+    context_reference_identity,
 )
 from brain_v42.models.delivery_hashes import canonical_digest
 
@@ -58,29 +62,45 @@ def _current_health(
         return "never_observed"
     if any(item.last_attempt_outcome == "error" for item in inputs.active_bindings):
         return "error"
-    successes = [
-        item.evidence for item in confirmations if item is not None and item.evidence is not None
-    ]
+    successes = [item for item in confirmations if item is not None and item.evidence is not None]
     if not successes:
         return "never_observed"
     if any(
-        (now - evidence.collected_at).total_seconds() > inputs.freshness_seconds
-        for evidence in successes
+        confirmation.collection_started_at.tzinfo is None
+        or confirmation.collection_finished_at.tzinfo is None
+        or confirmation.collection_finished_at > now
+        or confirmation.collection_finished_at < confirmation.collection_started_at
+        for confirmation in successes
+    ):
+        return "error"
+    if any(
+        (now - confirmation.collection_finished_at).total_seconds() > inputs.freshness_seconds
+        for confirmation in successes
     ):
         return "stale"
     return "fresh"
 
 
-def _matching_binding(bindings: tuple[BindingEvidence, ...], key: str) -> BindingEvidence | None:
-    candidates = [item for item in bindings if item.binding.deliverable_key == key]
-    return candidates[0] if len(candidates) == 1 else None
+def _matching_binding(inputs: EvaluationInput, key: str) -> tuple[BindingEvidence | None, bool]:
+    candidates = [item for item in inputs.active_bindings if item.binding.deliverable_key == key]
+    if len(candidates) != 1:
+        return (None, bool(candidates))
+    candidate = candidates[0]
+    deliverable = next(item for item in inputs.contract.deliverables if item.key == key)
+    valid = (
+        candidate.binding.ticket_id == inputs.contract.ticket_id
+        and candidate.binding.contract_revision == inputs.contract.contract_revision
+        and candidate.binding.attempt == inputs.attempt
+        and candidate.binding.repository_id == deliverable.repository_id
+    )
+    return (candidate if valid else None, not valid)
 
 
 def _select_check(evidence: PullRequestEvidence, required: RequiredCheck) -> CheckAttempt | None:
     checks = [
         check
         for check in evidence.checks
-        if check.head_sha == evidence.head_sha
+        if _check_applies_to_evidence(check, evidence)
         and check.kind == required.kind
         and check.name == required.name
         and (required.app_slug is None or check.app_slug == required.app_slug)
@@ -91,10 +111,20 @@ def _select_check(evidence: PullRequestEvidence, required: RequiredCheck) -> Che
     return max(
         checks,
         key=lambda check: (
-            check.run_attempt,
-            _timestamp(check.completed_at) or "",
-            check.provider_id,
+            check.record_id,
+            _timestamp(check.started_at) or _timestamp(check.completed_at) or "",
         ),
+    )
+
+
+def _check_applies_to_evidence(check: CheckAttempt, evidence: PullRequestEvidence) -> bool:
+    if check.head_sha == evidence.head_sha:
+        return True
+    return any(
+        check.head_sha == association.synthetic_sha
+        and association.head_sha == evidence.head_sha
+        and association.base_sha == evidence.base_sha
+        for association in evidence.synthetic_merges
     )
 
 
@@ -108,6 +138,7 @@ def _review_findings(
         review
         for review in evidence.reviews
         if review.head_sha == evidence.head_sha
+        and review.reviewer != evidence.author_id
         and review.reviewer != inputs.executor_identity
         and (not policy.allowed_reviewers or review.reviewer in policy.allowed_reviewers)
     ]
@@ -115,7 +146,8 @@ def _review_findings(
     for review in sorted(
         reviews, key=lambda item: (_timestamp(item.submitted_at) or "", item.provider_id)
     ):
-        latest[review.reviewer] = review
+        if review.decision != "commented":
+            latest[review.reviewer] = review
     effective: tuple[ReviewEvidence, ...] = tuple(latest.values())
     findings: list[DeliveryFinding] = []
     if any(review.decision == "changes_requested" for review in effective):
@@ -133,11 +165,15 @@ def _review_findings(
 def _deliverable_findings(inputs: EvaluationInput) -> tuple[DeliveryFinding, ...]:
     findings: list[DeliveryFinding] = []
     for deliverable in sorted(inputs.contract.deliverables, key=lambda item: item.key):
-        current = _matching_binding(inputs.active_bindings, deliverable.key)
+        current, invalid_binding = _matching_binding(inputs, deliverable.key)
         if current is None:
-            findings.append(
-                _finding("binding_missing", "no active pull-request binding", deliverable.key)
+            code = "binding_identity_invalid" if invalid_binding else "binding_missing"
+            detail = (
+                "binding does not belong to current workflow"
+                if invalid_binding
+                else "no active pull-request binding"
             )
+            findings.append(_finding(code, detail, deliverable.key))
             continue
         if current.binding.state != "observed" or current.confirmation is None:
             findings.append(
@@ -238,27 +274,76 @@ def _deliverable_findings(inputs: EvaluationInput) -> tuple[DeliveryFinding, ...
 
 def _context_findings(inputs: EvaluationInput) -> tuple[DeliveryFinding, ...]:
     findings: list[DeliveryFinding] = []
-    for context in sorted(inputs.contexts, key=lambda item: item.key):
-        if not context.required:
+    required = {
+        context_reference_identity(reference): context_reference_digest(reference)
+        for reference in inputs.contract.context_refs
+        if reference.required
+    }
+    provided: dict[str, list[ContextPredicate]] = {}
+    for context in inputs.contexts:
+        provided.setdefault(context.reference_identity, []).append(context)
+    for identity, digest in sorted(required.items()):
+        values = provided.pop(identity, [])
+        if not values:
+            findings.append(
+                _finding("context_predicate_missing", f"required context {identity} is absent")
+            )
+            continue
+        if len(values) != 1:
+            findings.append(
+                _finding(
+                    "context_predicate_duplicate", f"required context {identity} is duplicated"
+                )
+            )
+            continue
+        context = values[0]
+        if digest is None or context.current_digest is None:
+            findings.append(
+                _finding("context_digest_missing", f"required context {identity} has no digest")
+            )
             continue
         if context.status == "missing":
-            findings.append(
-                _finding("context_missing", f"required context {context.key} is missing")
-            )
+            findings.append(_finding("context_missing", f"required context {identity} is missing"))
         elif context.status == "error":
             findings.append(
-                _finding("context_error", f"required context {context.key} could not be read")
+                _finding("context_error", f"required context {identity} could not be read")
             )
-        elif context.status != "available" or context.current_digest != context.expected_digest:
+        elif context.status != "available" or context.current_digest != digest:
             findings.append(
-                _finding("context_changed", f"required context {context.key} differs from its pin")
+                _finding("context_changed", f"required context {identity} differs from its pin")
             )
+    for identity in sorted(provided):
+        findings.append(
+            _finding("context_predicate_unexpected", f"context {identity} is not declared")
+        )
     return tuple(findings)
 
 
 def _dependency_findings(inputs: EvaluationInput) -> tuple[DeliveryFinding, ...]:
     findings: list[DeliveryFinding] = []
-    for dependency in sorted(inputs.dependencies, key=lambda item: str(item.ticket_id)):
+    required = {dependency.identity() for dependency in inputs.contract.dependencies}
+    provided: dict[tuple[object, int, int, str], list[DependencyPredicate]] = {}
+    for dependency in inputs.dependencies:
+        identity: tuple[object, int, int, str] = (
+            dependency.ticket_id,
+            dependency.contract_revision,
+            dependency.attempt,
+            dependency.milestone,
+        )
+        provided.setdefault(identity, []).append(dependency)
+    for identity in sorted(required, key=str):
+        values = provided.pop(identity, [])
+        if not values:
+            findings.append(
+                _finding("dependency_predicate_missing", "required dependency is absent")
+            )
+            continue
+        if len(values) != 1:
+            findings.append(
+                _finding("dependency_predicate_duplicate", "required dependency is duplicated")
+            )
+            continue
+        dependency = values[0]
         if dependency.current_disposition in {"cancelled", "wontfix"}:
             findings.append(
                 _finding(
@@ -296,6 +381,8 @@ def _dependency_findings(inputs: EvaluationInput) -> tuple[DeliveryFinding, ...]
                         "dependency_receipt_mismatch", "upstream receipt does not match its pin"
                     )
                 )
+    for _identity in sorted(provided, key=str):
+        findings.append(_finding("dependency_predicate_unexpected", "dependency is not declared"))
     return tuple(findings)
 
 
@@ -331,12 +418,14 @@ def _delivery_digest(inputs: EvaluationInput) -> str:
             {
                 "key": item.binding.deliverable_key,
                 "binding_id": str(item.binding.id),
-                "binding_version": item.binding.binding_version,
                 "repository_id": item.binding.repository_id,
                 "pr_number": item.binding.pr_number,
                 "head_sha": evidence.head_sha if evidence is not None else item.binding.head_sha,
                 "base_sha": evidence.base_sha if evidence is not None else item.binding.base_sha,
-                "integration_revision": evidence.integration_revision
+                "integration": {
+                    "sha": evidence.integration_sha,
+                    "revision": evidence.integration_revision,
+                }
                 if evidence is not None
                 else None,
             }
@@ -379,6 +468,13 @@ def _eligible_work(
     ):
         return ()
     codes = {item.code for item in findings}
+    if any(
+        code.startswith(("context_", "dependency_"))
+        or code
+        in {"observation_stale", "observation_error", "observation_missing", "delivery_terminal"}
+        for code in codes
+    ):
+        return ()
     if "binding_missing" in codes:
         return (EligibleWork(kind="implement", role="executor"),)
     if codes & {"pr_draft", "binding_unobserved"}:
@@ -432,8 +528,12 @@ def _assessment_id(
             "action": inputs.requested_completion_action,
             "bindings": bindings,
             "contexts": [
-                {"key": item.key, "status": item.status, "current_digest": item.current_digest}
-                for item in sorted(inputs.contexts, key=lambda value: value.key)
+                {
+                    "identity": item.reference_identity,
+                    "status": item.status,
+                    "current_digest": item.current_digest,
+                }
+                for item in sorted(inputs.contexts, key=lambda value: value.reference_identity)
             ],
             "dependencies": [
                 {
@@ -456,6 +556,7 @@ def _assessment_id(
             "claim": {
                 "epoch": inputs.claim.epoch if inputs.claim else None,
                 "owner": inputs.claim.owner if inputs.claim else None,
+                "expires_at": _timestamp(inputs.claim.expires_at) if inputs.claim else None,
                 "active": bool(
                     inputs.claim and inputs.claim.expires_at and inputs.claim.expires_at > now
                 ),
@@ -473,7 +574,7 @@ def _assessment_id(
 
 def _observation_times(inputs: EvaluationInput) -> tuple[datetime | None, datetime | None]:
     observed = [
-        item.confirmation.evidence.collected_at
+        item.confirmation.collection_finished_at
         for item in inputs.active_bindings
         if item.confirmation is not None and item.confirmation.evidence is not None
     ]
@@ -513,6 +614,26 @@ def evaluate_delivery(inputs: EvaluationInput, *, now: datetime) -> DeliveryAsse
                 "coordination disposition permits no further delivery work",
             )
         )
+    if inputs.coordination_status in {"closed", "acked"}:
+        blockers.append(_finding("delivery_terminal", "ticket status is terminal"))
+    action_valid = (
+        inputs.requested_completion_action is None
+        or (
+            inputs.is_self_ticket
+            and inputs.requested_completion_action
+            in {"self_resolve_pending", "self_resolve", "self_confirm"}
+        )
+        or (
+            not inputs.is_self_ticket
+            and inputs.requested_completion_action in {"cross_resolve", "cross_confirm"}
+        )
+    )
+    if not action_valid:
+        blockers.append(
+            _finding(
+                "completion_action_invalid", "completion action does not match ticket ownership"
+            )
+        )
     blockers_tuple = tuple(
         sorted(blockers, key=lambda item: (item.deliverable_key or "", item.code, item.detail))
     )
@@ -536,9 +657,17 @@ def evaluate_delivery(inputs: EvaluationInput, *, now: datetime) -> DeliveryAsse
         completion_eligible = requirements_satisfied and has_integration
     else:
         completion_eligible = requirements_satisfied and has_fulfillment
+    if not action_valid:
+        completion_eligible = False
     work = _eligible_work(
         inputs, blockers_tuple, stage, requirements_satisfied, has_integration, has_fulfillment
     )
+    if (
+        inputs.claim is not None
+        and inputs.claim.expires_at is not None
+        and inputs.claim.expires_at > now
+    ):
+        work = ()
     assessment_id = _assessment_id(inputs, health, blockers_tuple, work, digest, now)
     observed_at, fresh_until = _observation_times(inputs)
     return DeliveryAssessment(

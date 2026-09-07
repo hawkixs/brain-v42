@@ -70,6 +70,7 @@ def delivery_inputs(**overrides: Any) -> Any:
         ObservationConfirmation,
         PullRequestEvidence,
         ReviewEvidence,
+        context_reference_identity,
     )
 
     stored = stored_contract_payload()
@@ -78,6 +79,16 @@ def delivery_inputs(**overrides: Any) -> Any:
         "required_approvals": overrides.pop("required_approvals", 0),
         "allowed_reviewers": overrides.pop("allowed_reviewers", []),
     }
+    stored["context_refs"] = [
+        {
+            "kind": "brain_entity",
+            "entity_type": "adr",
+            "entity_id": "00000000-0000-0000-0000-000000000060",
+            "content_snapshot": "Pinned architecture",
+            "content_digest": "d" * 64,
+        }
+    ]
+    stored["dependencies"] = overrides.pop("contract_dependencies", [])
     contract = ContractRevision.model_validate(stored)
     binding = ArtifactBinding(
         id=UUID("00000000-0000-0000-0000-000000000010"),
@@ -93,16 +104,18 @@ def delivery_inputs(**overrides: Any) -> Any:
         integration_sha=_INTEGRATION_SHA,
     )
     check = CheckAttempt(
+        record_id=8001,
         provider_id=8001,
         kind="check_run",
         name="test-unit",
         app_slug="github-actions",
         head_sha=_HEAD_SHA,
         conclusion=overrides.pop("required_check", "success"),
-        run_attempt=1,
+        started_at=FIXED_NOW - timedelta(seconds=35),
         completed_at=FIXED_NOW - timedelta(seconds=30),
     )
     review = ReviewEvidence(
+        record_id=9001,
         provider_id=9001,
         reviewer="reviewer-project",
         head_sha=_HEAD_SHA,
@@ -113,6 +126,7 @@ def delivery_inputs(**overrides: Any) -> Any:
         provider_id=7001,
         repository_id=42,
         pr_number=73,
+        author_id=overrides.pop("author_id", "github-author"),
         head_sha=overrides.pop("head_sha", _HEAD_SHA),
         base_sha=overrides.pop("base_sha", _BASE_SHA),
         integration_sha=_INTEGRATION_SHA,
@@ -122,6 +136,7 @@ def delivery_inputs(**overrides: Any) -> Any:
         complete=overrides.pop("complete", True),
         checks=tuple(overrides.pop("checks", (check,))),
         reviews=tuple(overrides.pop("reviews", (review,))),
+        synthetic_merges=tuple(overrides.pop("synthetic_merges", ())),
         integration_revision=_INTEGRATION_SHA,
         collected_at=FIXED_NOW - timedelta(seconds=10),
     )
@@ -132,6 +147,7 @@ def delivery_inputs(**overrides: Any) -> Any:
         collection_finished_at=FIXED_NOW - timedelta(seconds=10),
     )
     context_status = overrides.pop("context_status", "available")
+    context_identity = context_reference_identity(contract.context_refs[0])
     defaults: dict[str, Any] = {
         "contract": contract,
         "attempt": 1,
@@ -142,9 +158,7 @@ def delivery_inputs(**overrides: Any) -> Any:
         "active_bindings": (BindingEvidence(binding=binding, confirmation=confirmation),),
         "contexts": (
             ContextPredicate(
-                key="architecture",
-                required=True,
-                expected_digest="d" * 64,
+                reference_identity=context_identity,
                 current_digest=("e" * 64 if context_status == "changed" else "d" * 64),
                 status=context_status,
             ),

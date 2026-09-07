@@ -255,6 +255,33 @@ PinnedContextReference = Annotated[
 ]
 
 
+def context_reference_identity(reference: PinnedContextReference) -> str:
+    """Return the stable identity used to reconcile a stored context predicate."""
+    if isinstance(reference, PinnedBrainEntityReference):
+        return f"brain_entity:{reference.entity_type}:{reference.entity_id}"
+    if isinstance(reference, RepositoryDocumentReference):
+        return f"repository_document:{reference.repository_id}:{reference.sha}:{reference.path}"
+    return f"url:{reference.url}"
+
+
+def context_reference_digest(reference: PinnedContextReference) -> str | None:
+    """Return the stored proof digest for a required context reference."""
+    if isinstance(reference, PinnedBrainEntityReference):
+        return reference.content_digest
+    if isinstance(reference, RepositoryDocumentReference):
+        from brain_v42.models.delivery_hashes import canonical_digest
+
+        return canonical_digest(
+            {
+                "repository_id": reference.repository_id,
+                "sha": reference.sha,
+                "path": reference.path,
+            },
+            domain="result",
+        )
+    return None
+
+
 class DeliveryDependency(_StrictModel):
     ticket_id: UUIDValue
     contract_revision: StrictInt = Field(gt=0)
@@ -416,13 +443,14 @@ class ArtifactBinding(_StoredModel):
 class CheckAttempt(_StrictModel):
     """One provider check result associated with an evaluated pull-request head."""
 
+    record_id: StrictInt = Field(gt=0)
     provider_id: StrictInt = Field(gt=0)
     kind: Literal["check_run", "commit_status"]
     name: str = Field(min_length=1, max_length=200)
     app_slug: str | None = Field(default=None, min_length=1, max_length=200)
     head_sha: str = Field(min_length=40, max_length=64)
     conclusion: Literal["success", "failure", "pending", "skipped", "neutral", "cancelled"]
-    run_attempt: StrictInt = Field(ge=1)
+    started_at: datetime | None = None
     completed_at: datetime | None = None
 
     _valid_head = field_validator("head_sha")(_validate_sha)
@@ -431,6 +459,7 @@ class CheckAttempt(_StrictModel):
 class ReviewEvidence(_StrictModel):
     """One immutable provider review decision on a pull-request revision."""
 
+    record_id: StrictInt = Field(gt=0)
     provider_id: StrictInt = Field(gt=0)
     reviewer: str = Field(min_length=1, max_length=200)
     head_sha: str = Field(min_length=40, max_length=64)
@@ -446,6 +475,7 @@ class PullRequestEvidence(_StrictModel):
     provider_id: StrictInt = Field(gt=0)
     repository_id: StrictInt = Field(gt=0)
     pr_number: StrictInt = Field(gt=0)
+    author_id: str = Field(min_length=1, max_length=200)
     head_sha: str = Field(min_length=40, max_length=64)
     base_sha: str = Field(min_length=40, max_length=64)
     integration_sha: str | None = Field(default=None, min_length=40, max_length=64)
@@ -454,17 +484,30 @@ class PullRequestEvidence(_StrictModel):
     mergeable: StrictBool | None = None
     complete: StrictBool
     checks: Annotated[tuple[CheckAttempt, ...], BeforeValidator(_lists_to_tuples)] = Field(
-        default_factory=tuple, max_length=1000
+        default_factory=tuple, max_length=2000
     )
     reviews: Annotated[tuple[ReviewEvidence, ...], BeforeValidator(_lists_to_tuples)] = Field(
-        default_factory=tuple, max_length=1000
+        default_factory=tuple, max_length=2000
     )
+    synthetic_merges: Annotated[
+        tuple[SyntheticMergeAssociation, ...], BeforeValidator(_lists_to_tuples)
+    ] = Field(default_factory=tuple, max_length=2000)
     integration_revision: str | None = Field(default=None, min_length=40, max_length=64)
     collected_at: datetime
 
     _valid_head = field_validator(
         "head_sha", "base_sha", "integration_sha", "integration_revision"
     )(lambda value: _validate_sha(value) if value is not None else None)
+
+
+class SyntheticMergeAssociation(_StrictModel):
+    """Proven parents for a provider-created synthetic merge revision."""
+
+    synthetic_sha: str = Field(min_length=40, max_length=64)
+    head_sha: str = Field(min_length=40, max_length=64)
+    base_sha: str = Field(min_length=40, max_length=64)
+
+    _valid_shas = field_validator("synthetic_sha", "head_sha", "base_sha")(_validate_sha)
 
 
 class ObservationConfirmation(_StoredModel):
@@ -501,13 +544,11 @@ class BindingEvidence(_StrictModel):
 class ContextPredicate(_StrictModel):
     """Current comparison of one pinned context fact with its contract digest."""
 
-    key: str = Field(min_length=1, max_length=200)
-    required: StrictBool
-    expected_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    reference_identity: str = Field(min_length=1, max_length=500)
     current_digest: str | None = Field(default=None, min_length=64, max_length=64)
     status: Literal["available", "changed", "missing", "error"]
 
-    _valid_expected = field_validator("expected_digest", "current_digest")(
+    _valid_current = field_validator("current_digest")(
         lambda value: _validate_digest(value) if value is not None else None
     )
 
@@ -588,7 +629,10 @@ class EvaluationInput(_StrictModel):
     claim: ClaimState | None = None
     executor_identity: str = Field(default="executor-project", min_length=1, max_length=200)
     requested_completion_action: (
-        Literal["cross_resolve", "cross_confirm", "self_resolve_pending", "self_resolve"] | None
+        Literal[
+            "cross_resolve", "cross_confirm", "self_resolve_pending", "self_resolve", "self_confirm"
+        ]
+        | None
     ) = None
 
 

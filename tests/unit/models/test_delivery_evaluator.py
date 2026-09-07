@@ -81,23 +81,25 @@ def test_newer_pending_check_attempt_supersedes_old_success() -> None:
     from tests.delivery_helpers import FIXED_NOW, delivery_inputs
 
     old = CheckAttempt(
+        record_id=8001,
         provider_id=8001,
         kind="check_run",
         name="test-unit",
         app_slug="github-actions",
         head_sha="a" * 40,
         conclusion="success",
-        run_attempt=1,
+        started_at=FIXED_NOW - timedelta(seconds=40),
         completed_at=FIXED_NOW - timedelta(seconds=40),
     )
     rerun = CheckAttempt(
+        record_id=8002,
         provider_id=8002,
         kind="check_run",
         name="test-unit",
         app_slug="github-actions",
         head_sha="a" * 40,
         conclusion="pending",
-        run_attempt=2,
+        started_at=None,
         completed_at=None,
     )
     result = evaluate_delivery(delivery_inputs(checks=(old, rerun)), now=FIXED_NOW)
@@ -112,6 +114,7 @@ def test_effective_change_request_and_self_approval_do_not_count() -> None:
     from tests.delivery_helpers import FIXED_NOW, delivery_inputs
 
     self_approval = ReviewEvidence(
+        record_id=9010,
         provider_id=9010,
         reviewer="executor-project",
         head_sha="a" * 40,
@@ -119,6 +122,7 @@ def test_effective_change_request_and_self_approval_do_not_count() -> None:
         submitted_at=FIXED_NOW - timedelta(seconds=20),
     )
     changed = ReviewEvidence(
+        record_id=9011,
         provider_id=9011,
         reviewer="reviewer-project",
         head_sha="a" * 40,
@@ -163,6 +167,22 @@ def test_stale_observation_blocks_new_completion_but_historical_fulfillment_surv
         initial.model_copy(update={"fulfillment_receipt": fulfilled}),
         collected_at=FIXED_NOW - timedelta(seconds=601),
     )
+    stale = stale.model_copy(
+        update={
+            "active_bindings": (
+                stale.active_bindings[0].model_copy(
+                    update={
+                        "confirmation": stale.active_bindings[0].confirmation.model_copy(
+                            update={
+                                "collection_started_at": FIXED_NOW - timedelta(seconds=606),
+                                "collection_finished_at": FIXED_NOW - timedelta(seconds=601),
+                            }
+                        )
+                    }
+                ),
+            )
+        }
+    )
     result = evaluate_delivery(stale, now=FIXED_NOW)
 
     assert result.contract_fulfilled is True
@@ -187,7 +207,17 @@ def test_changed_context_and_wrong_dependency_generation_block_delivery() -> Non
         current_delivery_digest="e" * 64,
         current_disposition="active",
     )
-    dependency_changed = delivery_inputs(dependencies=(dependency,))
+    dependency_changed = delivery_inputs(
+        dependencies=(dependency,),
+        contract_dependencies=[
+            {
+                "ticket_id": str(dependency.ticket_id),
+                "contract_revision": 2,
+                "attempt": 3,
+                "milestone": "accepted",
+            }
+        ],
+    )
 
     context_result = evaluate_delivery(context_changed, now=FIXED_NOW)
     dependency_result = evaluate_delivery(dependency_changed, now=FIXED_NOW)
@@ -234,11 +264,30 @@ def test_requested_completion_action_applies_the_correct_acceptance_gate() -> No
         ),
         now=FIXED_NOW,
     )
+    self_confirm = evaluate_delivery(
+        base.model_copy(
+            update={"is_self_ticket": True, "requested_completion_action": "self_confirm"}
+        ),
+        now=FIXED_NOW,
+    )
+    fulfilled = _receipt(base, first, "fulfilled")
+    self_confirm_fulfilled = evaluate_delivery(
+        base.model_copy(
+            update={
+                "is_self_ticket": True,
+                "requested_completion_action": "self_confirm",
+                "fulfillment_receipt": fulfilled,
+            }
+        ),
+        now=FIXED_NOW,
+    )
 
     assert cross_resolve.completion_eligible_now is True
     assert self_pending.completion_eligible_now is True
     assert cross_confirm.completion_eligible_now is False
     assert self_resolve.completion_eligible_now is False
+    assert self_confirm.completion_eligible_now is False
+    assert self_confirm_fulfilled.completion_eligible_now is True
 
 
 def test_terminal_or_unsuccessful_disposition_exposes_no_claimable_work() -> None:
@@ -414,6 +463,284 @@ def test_dependency_receipt_is_superseded_when_current_delivery_digest_changes()
         receipt=receipt,
     )
 
-    result = evaluate_delivery(delivery_inputs(dependencies=(dependency,)), now=FIXED_NOW)
+    result = evaluate_delivery(
+        delivery_inputs(
+            dependencies=(dependency,),
+            contract_dependencies=[
+                {
+                    "ticket_id": str(dependency.ticket_id),
+                    "contract_revision": 2,
+                    "attempt": 3,
+                    "milestone": "accepted",
+                }
+            ],
+        ),
+        now=FIXED_NOW,
+    )
 
     assert "dependency_receipt_mismatch" in {item.code for item in result.blockers}
+
+
+def test_contract_required_context_and_dependency_cannot_be_omitted_from_predicates() -> None:
+    from brain_v42.models.delivery import ContractRevision
+    from brain_v42.models.delivery_evaluator import evaluate_delivery
+    from tests.delivery_helpers import FIXED_NOW, delivery_inputs, stored_contract_payload
+
+    stored = stored_contract_payload()
+    stored["context_refs"] = [
+        {
+            "kind": "brain_entity",
+            "entity_type": "adr",
+            "entity_id": "00000000-0000-0000-0000-000000000050",
+            "content_snapshot": "Pinned architecture",
+            "content_digest": "d" * 64,
+        }
+    ]
+    stored["dependencies"] = [
+        {
+            "ticket_id": "00000000-0000-0000-0000-000000000051",
+            "contract_revision": 2,
+            "attempt": 3,
+            "milestone": "integrated",
+        }
+    ]
+    result = evaluate_delivery(
+        delivery_inputs(
+            contract=ContractRevision.model_validate(stored), contexts=(), dependencies=()
+        ),
+        now=FIXED_NOW,
+    )
+
+    assert result.integration_receipt_eligible is False
+    assert {item.code for item in result.blockers} >= {
+        "context_predicate_missing",
+        "dependency_predicate_missing",
+    }
+
+
+def test_pr_author_approval_and_commented_review_cannot_bypass_effective_review() -> None:
+    from brain_v42.models.delivery import ReviewEvidence
+    from brain_v42.models.delivery_evaluator import evaluate_delivery
+    from tests.delivery_helpers import FIXED_NOW, delivery_inputs
+
+    author = ReviewEvidence(
+        record_id=9010,
+        provider_id=91,
+        reviewer="github-author",
+        head_sha="a" * 40,
+        decision="approved",
+        submitted_at=FIXED_NOW - timedelta(seconds=30),
+    )
+    approved = ReviewEvidence(
+        record_id=9011,
+        provider_id=92,
+        reviewer="reviewer-project",
+        head_sha="a" * 40,
+        decision="approved",
+        submitted_at=FIXED_NOW - timedelta(seconds=20),
+    )
+    comment = ReviewEvidence(
+        record_id=9012,
+        provider_id=92,
+        reviewer="reviewer-project",
+        head_sha="a" * 40,
+        decision="commented",
+        submitted_at=FIXED_NOW - timedelta(seconds=10),
+    )
+    result = evaluate_delivery(
+        delivery_inputs(
+            merged=False,
+            author_id="github-author",
+            required_approvals=2,
+            allowed_reviewers=["github-author", "reviewer-project"],
+            reviews=(author, approved, comment),
+        ),
+        now=FIXED_NOW,
+    )
+
+    assert "review_approval_missing" in {item.code for item in result.blockers}
+
+
+def test_confirmation_refresh_keeps_snapshot_fresh_and_delivery_digest_stable() -> None:
+    from brain_v42.models.delivery_evaluator import evaluate_delivery
+    from tests.delivery_helpers import FIXED_NOW, delivery_inputs
+
+    first_input = delivery_inputs(acceptance_mode="automatic")
+    first = evaluate_delivery(first_input, now=FIXED_NOW)
+    fulfilled = _receipt(first_input, first, "fulfilled")
+    binding = first_input.active_bindings[0].binding.model_copy(update={"binding_version": 2})
+    confirmation = first_input.active_bindings[0].confirmation.model_copy(
+        update={
+            "id": UUID("00000000-0000-0000-0000-000000000021"),
+            "collection_finished_at": FIXED_NOW,
+        }
+    )
+    refreshed = first_input.model_copy(
+        update={
+            "fulfillment_receipt": fulfilled,
+            "active_bindings": (
+                first_input.active_bindings[0].model_copy(
+                    update={"binding": binding, "confirmation": confirmation}
+                ),
+            ),
+        }
+    )
+    result = evaluate_delivery(refreshed, now=FIXED_NOW)
+
+    assert result.observation_health == "fresh"
+    assert result.delivery_digest == first.delivery_digest
+    assert result.contract_fulfilled is True
+    assert result.assessment_id != first.assessment_id
+
+
+def test_newest_real_provider_record_and_proven_synthetic_merge_are_selected() -> None:
+    from brain_v42.models.delivery import CheckAttempt, SyntheticMergeAssociation
+    from brain_v42.models.delivery_evaluator import evaluate_delivery
+    from tests.delivery_helpers import FIXED_NOW, delivery_inputs
+
+    old = CheckAttempt(
+        record_id=100,
+        provider_id=77,
+        kind="check_run",
+        name="test-unit",
+        app_slug="github-actions",
+        head_sha="a" * 40,
+        conclusion="success",
+        started_at=FIXED_NOW - timedelta(seconds=30),
+        completed_at=FIXED_NOW - timedelta(seconds=20),
+    )
+    pending = CheckAttempt(
+        record_id=101,
+        provider_id=77,
+        kind="check_run",
+        name="test-unit",
+        app_slug="github-actions",
+        head_sha="a" * 40,
+        conclusion="pending",
+        started_at=None,
+        completed_at=None,
+    )
+    synthetic = CheckAttempt(
+        record_id=102,
+        provider_id=77,
+        kind="check_run",
+        name="test-unit",
+        app_slug="github-actions",
+        head_sha="c" * 40,
+        conclusion="success",
+        started_at=FIXED_NOW - timedelta(seconds=5),
+        completed_at=FIXED_NOW,
+    )
+    association = SyntheticMergeAssociation(
+        synthetic_sha="c" * 40, head_sha="a" * 40, base_sha="b" * 40
+    )
+
+    pending_result = evaluate_delivery(delivery_inputs(checks=(old, pending)), now=FIXED_NOW)
+    synthetic_result = evaluate_delivery(
+        delivery_inputs(checks=(synthetic,), synthetic_merges=(association,)), now=FIXED_NOW
+    )
+
+    assert "check_pending" in {item.code for item in pending_result.blockers}
+    assert "check_missing" not in {item.code for item in synthetic_result.blockers}
+
+
+def test_invalid_action_terminal_status_claim_and_global_blockers_prevent_acquisition() -> None:
+    from brain_v42.models.delivery import ClaimState
+    from brain_v42.models.delivery_evaluator import evaluate_delivery
+    from tests.delivery_helpers import FIXED_NOW, delivery_inputs
+
+    terminal = evaluate_delivery(delivery_inputs(coordination_status="closed"), now=FIXED_NOW)
+    action = evaluate_delivery(
+        delivery_inputs(is_self_ticket=True, requested_completion_action="cross_resolve"),
+        now=FIXED_NOW,
+    )
+    claimed = evaluate_delivery(
+        delivery_inputs(
+            active_bindings=(),
+            claim=ClaimState(epoch=1, owner="owner", expires_at=FIXED_NOW + timedelta(seconds=30)),
+        ),
+        now=FIXED_NOW,
+    )
+    blocked = evaluate_delivery(
+        delivery_inputs(active_bindings=(), context_status="changed"), now=FIXED_NOW
+    )
+
+    assert terminal.integration_receipt_eligible is False
+    assert terminal.eligible_work == ()
+    assert "completion_action_invalid" in {item.code for item in action.blockers}
+    assert claimed.eligible_work == ()
+    assert blocked.eligible_work == ()
+
+
+def test_claim_expiry_and_integration_sha_change_assessment_or_delivery_identity() -> None:
+    from brain_v42.models.delivery import ClaimState
+    from brain_v42.models.delivery_evaluator import evaluate_delivery
+    from tests.delivery_helpers import FIXED_NOW, delivery_inputs
+
+    inputs = delivery_inputs()
+    short = evaluate_delivery(
+        inputs.model_copy(
+            update={
+                "claim": ClaimState(
+                    epoch=1, owner="owner", expires_at=FIXED_NOW + timedelta(seconds=10)
+                )
+            }
+        ),
+        now=FIXED_NOW,
+    )
+    long = evaluate_delivery(
+        inputs.model_copy(
+            update={
+                "claim": ClaimState(
+                    epoch=1, owner="owner", expires_at=FIXED_NOW + timedelta(seconds=500)
+                )
+            }
+        ),
+        now=FIXED_NOW,
+    )
+    changed = evaluate_delivery(
+        _replace_evidence(inputs, integration_sha="f" * 40, integration_revision=None),
+        now=FIXED_NOW,
+    )
+
+    assert short.assessment_id != long.assessment_id
+    assert changed.delivery_digest != evaluate_delivery(inputs, now=FIXED_NOW).delivery_digest
+
+
+def test_binding_from_an_old_attempt_cannot_satisfy_current_contract() -> None:
+    from brain_v42.models.delivery_evaluator import evaluate_delivery
+    from tests.delivery_helpers import FIXED_NOW, delivery_inputs
+
+    inputs = delivery_inputs()
+    old_binding = inputs.active_bindings[0].binding.model_copy(update={"attempt": 2})
+    result = evaluate_delivery(
+        inputs.model_copy(
+            update={
+                "active_bindings": (
+                    inputs.active_bindings[0].model_copy(update={"binding": old_binding}),
+                )
+            }
+        ),
+        now=FIXED_NOW,
+    )
+
+    assert result.integration_receipt_eligible is False
+    assert "binding_identity_invalid" in {item.code for item in result.blockers}
+
+
+def test_provider_collections_allow_two_thousand_records_but_reject_more() -> None:
+    import pytest
+
+    from brain_v42.models.delivery import PullRequestEvidence
+    from tests.delivery_helpers import delivery_inputs
+
+    evidence = delivery_inputs().active_bindings[0].confirmation.evidence
+    accepted = PullRequestEvidence.model_validate(
+        {**evidence.model_dump(), "checks": [evidence.checks[0].model_dump()] * 2000}
+    )
+
+    assert len(accepted.checks) == 2000
+    with pytest.raises(ValueError):
+        PullRequestEvidence.model_validate(
+            {**evidence.model_dump(), "checks": [evidence.checks[0].model_dump()] * 2001}
+        )
