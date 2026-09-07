@@ -754,22 +754,29 @@ class PgDeliveryRepo(BasePgRepository):
         session: AsyncSession | None = None,
     ) -> DeliveryPage:
         async with self._maybe_session(session, write=False) as sess:
+            filters: list[sa.ColumnElement[bool]] = [
+                sa.or_(
+                    tickets.c.from_project == actor_project,
+                    tickets.c.to_project == actor_project,
+                )
+            ]
+            if cursor:
+                filters.append(delivery_workflows.c.ticket_id > UUID(cursor))
             stmt = (
                 sa.select(delivery_workflows.c.ticket_id)
                 .join(tickets)
-                .where(
-                    sa.or_(
-                        tickets.c.from_project == actor_project,
-                        tickets.c.to_project == actor_project,
-                    )
-                )
+                .where(*filters)
                 .order_by(delivery_workflows.c.ticket_id)
                 .limit(limit + 1)
             )
-            if cursor:
-                stmt = stmt.where(delivery_workflows.c.ticket_id > UUID(cursor))
             ids = list((await sess.execute(stmt)).scalars())
-            next_cursor = str(ids[limit]) if len(ids) > limit else None
+            page_ids = ids[:limit]
+            remaining = await sess.scalar(
+                sa.select(sa.func.count())
+                .select_from(delivery_workflows.join(tickets))
+                .where(*filters)
+            )
+            next_cursor = str(page_ids[-1]) if len(ids) > limit else None
             views = [
                 await self.get_view(
                     identifier,
@@ -777,10 +784,12 @@ class PgDeliveryRepo(BasePgRepository):
                     freshness_seconds=freshness_seconds,
                     session=sess,
                 )
-                for identifier in ids[:limit]
+                for identifier in page_ids
             ]
             return DeliveryPage(
-                items=tuple(view for view in views if view is not None), next_cursor=next_cursor
+                items=tuple(view for view in views if view is not None),
+                next_cursor=next_cursor,
+                omitted_count=max((remaining or 0) - len(page_ids), 0),
             )
 
 

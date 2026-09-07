@@ -17,6 +17,9 @@ from brain_v42.db.tables import (
     decisions,
     delivery_artifact_bindings,
     delivery_confirmations,
+    delivery_contract_revisions,
+    delivery_dependencies,
+    delivery_events,
     delivery_snapshots,
     delivery_workflows,
     indexed_plans,
@@ -155,6 +158,23 @@ async def _create_bindable_ticket(session_factory):
         ),
     )
     return ticket, service
+
+
+def _amended_contract(current, *, ticket_id, objective: str, dependencies=()):
+    from brain_v42.models.delivery import ContractRevision
+
+    return ContractRevision.model_validate(
+        {
+            **current.contract.model_dump(mode="python"),
+            "ticket_id": ticket_id,
+            "contract_revision": current.contract.contract_revision + 1,
+            "objective": objective,
+            "dependencies": dependencies,
+            "author_project": "brain-v42",
+            "amendment_reason": "concurrency regression",
+            "content_digest": None,
+        }
+    )
 
 
 @pytest.mark.asyncio
@@ -771,6 +791,313 @@ async def test_terminal_transition_first_refuses_a_waiting_binding(session_facto
                 await terminal_session.rollback()
             if bind_session.in_transaction():
                 await bind_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_opposite_dependency_edges_serialize_to_one_acyclic_generation(
+    session_factory,
+) -> None:
+    """Concurrent A→B and B→A amendments cannot both publish a cycle."""
+    from brain_v42.models.delivery import DeliveryDependency, DeliveryError
+    from brain_v42.models.delivery_hashes import canonical_digest
+    from brain_v42.repositories.pg_delivery import PgDeliveryRepo
+
+    first_ticket, first_service = await _create_bindable_ticket(session_factory)
+    second_ticket, second_service = await _create_bindable_ticket(session_factory)
+    first_current = await first_service.get(first_ticket.id, actor_project="brain-v42")
+    second_current = await second_service.get(second_ticket.id, actor_project="brain-v42")
+    first_amendment = _amended_contract(
+        first_current,
+        ticket_id=first_ticket.id,
+        objective="first depends on second",
+        dependencies=(
+            DeliveryDependency(
+                ticket_id=second_ticket.id,
+                contract_revision=1,
+                attempt=1,
+                milestone="integrated",
+            ),
+        ),
+    )
+    second_amendment = _amended_contract(
+        second_current,
+        ticket_id=second_ticket.id,
+        objective="second depends on first",
+        dependencies=(
+            DeliveryDependency(
+                ticket_id=first_ticket.id,
+                contract_revision=1,
+                attempt=1,
+                milestone="integrated",
+            ),
+        ),
+    )
+    repo = PgDeliveryRepo(session_factory)
+    async with (
+        session_factory() as first_session,
+        session_factory() as second_session,
+        session_factory() as observer,
+    ):
+        first_transaction = await first_session.begin()
+        await second_session.begin()
+        try:
+            await repo.set_contract(
+                first_amendment,
+                expected_revision=1,
+                actor_project="brain-v42",
+                idempotency_key=f"edge-first-{first_ticket.id}",
+                request_digest=canonical_digest({"edge": "first"}, domain="request"),
+                session=first_session,
+            )
+            first_pid = await first_session.scalar(sa.text("SELECT pg_backend_pid()"))
+            second_pid = await second_session.scalar(sa.text("SELECT pg_backend_pid()"))
+            second_edge = asyncio.create_task(
+                repo.set_contract(
+                    second_amendment,
+                    expected_revision=1,
+                    actor_project="brain-v42",
+                    idempotency_key=f"edge-second-{second_ticket.id}",
+                    request_digest=canonical_digest({"edge": "second"}, domain="request"),
+                    session=second_session,
+                )
+            )
+            await _wait_for_blocker(
+                observer, waiter_pid=second_pid, blocker_pid=first_pid, operation=second_edge
+            )
+            await first_transaction.commit()
+            with pytest.raises(DeliveryError):
+                await asyncio.wait_for(second_edge, timeout=5)
+        finally:
+            if first_session.in_transaction():
+                await first_session.rollback()
+            if second_session.in_transaction():
+                await second_session.rollback()
+    async with session_factory() as session:
+        edges = (
+            await session.execute(
+                sa.select(
+                    delivery_dependencies.c.ticket_id, delivery_dependencies.c.upstream_ticket_id
+                ).where(delivery_dependencies.c.ticket_id.in_((first_ticket.id, second_ticket.id)))
+            )
+        ).all()
+    assert edges == [(first_ticket.id, second_ticket.id)]
+
+
+@pytest.mark.asyncio
+async def test_delivery_list_has_stable_scoped_pagination_and_omitted_count(
+    session_factory,
+) -> None:
+    """Pages neither leak foreign workflows nor skip the first row after their boundary."""
+    from brain_v42.delivery_config import DeliverySettings
+    from brain_v42.models.delivery import DeliveryError
+    from brain_v42.repositories.pg_delivery import PgDeliveryRepo
+    from brain_v42.services.delivery_service import DeliveryService
+
+    service = DeliveryService(
+        PgDeliveryRepo(session_factory),
+        settings=DeliverySettings(
+            enabled=True,
+            repository_registry={
+                "pager": {1337360966: "hawkixs/brain-v42"},
+                "outsider": {1337360966: "hawkixs/brain-v42"},
+            },
+        ),
+    )
+    contract = ContractInput(
+        objective="stable page",
+        priority=1,
+        acceptance_mode="automatic",
+        deliverables=(
+            Deliverable(
+                key="implementation",
+                repository="hawkixs/brain-v42",
+                target_branch="main",
+                required_checks=(),
+                no_checks_reason="covered later",
+                review=ReviewPolicy(required_approvals=0, allowed_reviewers=()),
+            ),
+        ),
+    )
+    visible_ids = set()
+    for index in range(22):
+        ticket = await PgTicketRepo(session_factory).create(
+            TicketCreate(
+                kind=TicketKind.REQUEST,
+                title=f"page {index}",
+                body="stable scoped page",
+                from_project="pager",
+                to_project="pager",
+            )
+        )
+        visible_ids.add(ticket.id)
+        await service.set_contract(
+            ticket.id,
+            actor_project="pager",
+            contract=contract,
+            expected_revision=0,
+            idempotency_key=f"page-{ticket.id}",
+        )
+    foreign = await PgTicketRepo(session_factory).create(
+        TicketCreate(
+            kind=TicketKind.REQUEST,
+            title="foreign page",
+            body="must remain hidden",
+            from_project="outsider",
+            to_project="outsider",
+        )
+    )
+    await service.set_contract(
+        foreign.id,
+        actor_project="outsider",
+        contract=contract,
+        expected_revision=0,
+        idempotency_key=f"page-{foreign.id}",
+    )
+    first = await service.list(actor_project="pager")
+    assert len(first.items) == 20
+    assert first.omitted_count == 2
+    assert first.next_cursor is not None
+    second = await service.list(actor_project="pager", cursor=first.next_cursor)
+    first_ids = {view.contract.ticket_id for view in first.items}
+    second_ids = {view.contract.ticket_id for view in second.items}
+    assert first_ids.isdisjoint(second_ids)
+    assert first_ids | second_ids == visible_ids
+    assert foreign.id not in first_ids | second_ids
+    assert len((await service.list(actor_project="pager", limit=1)).items) == 1
+    assert len((await service.list(actor_project="pager", limit=100)).items) == 22
+    for limit in (0, 101):
+        with pytest.raises(DeliveryError, match="invalid_limit"):
+            await service.list(actor_project="pager", limit=limit)
+
+
+@pytest.mark.asyncio
+async def test_contract_content_can_return_to_a_prior_digest_without_rewriting_history(
+    session_factory,
+) -> None:
+    """A→B→A creates three immutable revisions even when canonical content repeats."""
+    ticket, service = await _create_bindable_ticket(session_factory)
+    first = await service.get(ticket.id, actor_project="brain-v42")
+    await service.set_contract(
+        ticket.id,
+        actor_project="brain-v42",
+        expected_revision=1,
+        idempotency_key=f"content-b-{ticket.id}",
+        contract=ContractInput(
+            objective="content B",
+            priority=1,
+            acceptance_mode="automatic",
+            deliverables=first.contract.deliverables,
+        ),
+    )
+    third = await service.set_contract(
+        ticket.id,
+        actor_project="brain-v42",
+        expected_revision=2,
+        idempotency_key=f"content-a-{ticket.id}",
+        contract=ContractInput(
+            objective="bind with a current generation",
+            priority=1,
+            acceptance_mode="automatic",
+            deliverables=first.contract.deliverables,
+        ),
+    )
+    async with session_factory() as session:
+        revisions = (
+            await session.execute(
+                sa.select(
+                    delivery_contract_revisions.c.contract_revision,
+                    delivery_contract_revisions.c.content_digest,
+                )
+                .where(delivery_contract_revisions.c.ticket_id == ticket.id)
+                .order_by(delivery_contract_revisions.c.contract_revision)
+            )
+        ).all()
+    assert [revision for revision, _digest in revisions] == [1, 2, 3]
+    assert revisions[0][1] != revisions[1][1]
+    assert revisions[0][1] == revisions[2][1] == third.content_digest
+
+
+@pytest.mark.asyncio
+async def test_contract_retry_replays_the_original_context_pin_after_source_drift(
+    session_factory,
+) -> None:
+    """Idempotency hashes caller intent before source resolution and preserves the first pin."""
+    from brain_v42.delivery_config import DeliverySettings
+    from brain_v42.repositories.pg_delivery import PgDeliveryRepo
+    from brain_v42.services.delivery_service import DeliveryService
+
+    decision_id = await _insert_context_decision(session_factory, "before")
+    ticket = await PgTicketRepo(session_factory).create(
+        TicketCreate(
+            kind=TicketKind.REQUEST,
+            title="replay frozen context",
+            body="retry unchanged caller intent",
+            from_project="brain-v42",
+            to_project="brain-v42",
+        )
+    )
+    service = DeliveryService(
+        PgDeliveryRepo(session_factory), settings=DeliverySettings(enabled=True)
+    )
+    contract = ContractInput(
+        objective="freeze before retry",
+        priority=1,
+        acceptance_mode="automatic",
+        context_refs=(
+            {
+                "kind": "brain_entity",
+                "entity_type": "decision",
+                "entity_id": decision_id,
+                "required": True,
+            },
+        ),
+        deliverables=(
+            Deliverable(
+                key="implementation",
+                repository="hawkixs/brain-v42",
+                target_branch="main",
+                required_checks=(),
+                no_checks_reason="covered later",
+                review=ReviewPolicy(required_approvals=0, allowed_reviewers=()),
+            ),
+        ),
+    )
+    key = f"retry-context-{ticket.id}"
+    first = await service.set_contract(
+        ticket.id,
+        actor_project="brain-v42",
+        contract=contract,
+        expected_revision=0,
+        idempotency_key=key,
+    )
+    async with session_factory() as session:
+        async with session.begin():
+            await session.execute(
+                sa.update(decisions)
+                .where(decisions.c.id == decision_id)
+                .values(description="after")
+            )
+    replay = await service.set_contract(
+        ticket.id,
+        actor_project="brain-v42",
+        contract=contract,
+        expected_revision=0,
+        idempotency_key=key,
+    )
+    async with session_factory() as session:
+        event_count = await session.scalar(
+            sa.select(sa.func.count())
+            .select_from(delivery_events)
+            .where(delivery_events.c.ticket_id == ticket.id)
+        )
+        revision_count = await session.scalar(
+            sa.select(sa.func.count())
+            .select_from(delivery_contract_revisions)
+            .where(delivery_contract_revisions.c.ticket_id == ticket.id)
+        )
+    assert replay == first
+    assert replay.context_refs[0].content_snapshot == first.context_refs[0].content_snapshot
+    assert event_count == revision_count == 1
 
 
 @pytest.mark.asyncio
