@@ -874,6 +874,21 @@ else
   log "PREFLIGHT RUN — corpus changed since last run (or check inconclusive)"
 fi
 
+# --- Live-tool preflight: no phase may run with a prompt that names a tool
+# the LIVE MCP server does not expose. Incident 2026-09-07: PR #102 rewrote
+# phase_promote.md to call a tool `scripts/` picked up at run time while
+# `src/` — and therefore the running brain-mcp-http process — still had the
+# old catalogue, because a restart is a separate, hand-operated step. The
+# static guard (tests/unit/test_dream_prompts_only_name_real_tools.py)
+# cannot see this: it compares prompts to the REPOSITORY, never to the
+# running server. Fail-closed, ahead of the pool loop: an unreachable server
+# or a stale catalogue must refuse the whole night, not one phase deep in.
+if ! uv run python -m scripts.dream.preflight_live_tools \
+  2>&1 | tee -a "$LOG_DIR/$TIMESTAMP.log"; then
+  log "FAIL — preflight_live_tools: see the missing phase/tool pairs above; night aborted before the pool loop"
+  exit 1
+fi
+
 # Serves ONE project: its six agent phases, in order, with their killswitches
 # and their validators. Extracting this block into a function is not cosmetic.
 #
