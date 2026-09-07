@@ -18,6 +18,7 @@ from brain_v42.db.tables import (
     delivery_confirmations,
     delivery_snapshots,
     delivery_workflows,
+    tickets,
 )
 from brain_v42.models.delivery import ContractInput, Deliverable, ReviewPolicy
 from brain_v42.models.ticket import TicketCreate, TicketKind
@@ -933,3 +934,63 @@ async def test_evidence_foreign_keys_reject_cross_binding_snapshot_and_error_suc
                         .where(delivery_artifact_bindings.c.id == second.id)
                         .values(latest_success_confirmation_id=error)
                     )
+
+
+@pytest.mark.asyncio
+async def test_fyi_and_terminal_tickets_never_accept_delivery_contracts(session_factory) -> None:
+    """Legacy FYI and closed request lifecycles remain outside delivery contracts."""
+    from brain_v42.delivery_config import DeliverySettings
+    from brain_v42.models.delivery import DeliveryError
+    from brain_v42.repositories.pg_delivery import PgDeliveryRepo
+    from brain_v42.services.delivery_service import DeliveryService
+
+    service = DeliveryService(
+        PgDeliveryRepo(session_factory), settings=DeliverySettings(enabled=True)
+    )
+    fyi = await PgTicketRepo(session_factory).create(
+        TicketCreate(
+            kind=TicketKind.FYI,
+            title="fyi",
+            body="legacy",
+            from_project="brain-v42",
+            to_project="brain-v42",
+        )
+    )
+    closed = await PgTicketRepo(session_factory).create(
+        TicketCreate(
+            kind=TicketKind.REQUEST,
+            title="closed",
+            body="terminal",
+            from_project="brain-v42",
+            to_project="brain-v42",
+        )
+    )
+    async with session_factory() as session:
+        async with session.begin():
+            await session.execute(
+                sa.update(tickets).where(tickets.c.id == closed.id).values(status="closed")
+            )
+    contract = ContractInput(
+        objective="reject",
+        priority=1,
+        acceptance_mode="automatic",
+        deliverables=(
+            Deliverable(
+                key="implementation",
+                repository="hawkixs/brain-v42",
+                target_branch="main",
+                required_checks=(),
+                no_checks_reason="none",
+                review=ReviewPolicy(required_approvals=0, allowed_reviewers=()),
+            ),
+        ),
+    )
+    for ticket in (fyi, closed):
+        with pytest.raises(DeliveryError, match="ticket_not_contractable"):
+            await service.set_contract(
+                ticket.id,
+                actor_project="brain-v42",
+                contract=contract,
+                expected_revision=0,
+                idempotency_key=f"terminal-{ticket.id}",
+            )
