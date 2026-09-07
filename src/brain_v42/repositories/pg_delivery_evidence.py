@@ -24,6 +24,7 @@ from brain_v42.models.delivery import (
     ContractRevision,
     DeliveryError,
     EvaluationInput,
+    ExplicitAcceptanceDecision,
     FrozenArtifactReceiptProof,
     FrozenBrainContextReceiptProof,
     FrozenReceiptProof,
@@ -190,6 +191,97 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
         scope = await self._delivery_repo.lock_decision_scope(session, ticket_id)
         return await self._issue_integration_receipt_under_scope(session, scope)
 
+    async def accept(
+        self,
+        session: AsyncSession,
+        ticket_id: UUID,
+        *,
+        settings: DeliverySettings,
+        actor_project: str,
+        caller_identity: str,
+        rationale: str,
+        expected_revision: int,
+        expected_attempt: int,
+        expected_delivery_digest: str,
+    ) -> MilestoneReceipt:
+        """Freeze one requester decision from fresh, locked integration evidence."""
+        if not settings.enabled:
+            raise DeliveryError("delivery_disabled", "delivery workflow operations are disabled")
+        if not caller_identity.strip():
+            raise DeliveryError("invalid_acceptance", "requester caller identity must not be blank")
+        try:
+            issuer = ReceiptIssuerProvenance(
+                issuer_project=actor_project,
+                issuer_identity=caller_identity,
+                issuer_kind="requester",
+            )
+            explicit = ExplicitAcceptanceDecision(
+                requester_project=actor_project, rationale=rationale
+            )
+        except ValueError:
+            raise DeliveryError(
+                "invalid_acceptance", "requester acceptance provenance is invalid"
+            ) from None
+        scope = await self._delivery_repo.lock_decision_scope(session, ticket_id)
+        if scope.ticket.from_project != actor_project:
+            raise DeliveryError("not_allowed", "only the requester may accept delivery")
+        locked = await self._delivery_repo._load_decision_inputs_under_scope(
+            session, scope, feature_enabled=True, freshness_seconds=settings.freshness_seconds
+        )
+        inputs = locked.inputs
+        if inputs is None:
+            raise DeliveryError("acceptance_not_eligible", "delivery inputs are unavailable")
+        assessment = evaluate_delivery(inputs, now=locked.decision_time)
+        if inputs.contract.acceptance_mode != "explicit":
+            raise DeliveryError(
+                "acceptance_not_eligible", "delivery does not require explicit acceptance"
+            )
+        if (
+            inputs.contract.contract_revision != expected_revision
+            or inputs.attempt != expected_attempt
+            or assessment.delivery_digest != expected_delivery_digest
+        ):
+            raise DeliveryError("generation_conflict", "delivery generation is no longer current")
+        integration = inputs.integration_receipt
+        if integration is None or not assessment.integration_receipt_eligible:
+            raise DeliveryError(
+                "acceptance_not_eligible", "matching integration receipt is not currently eligible"
+            )
+        if (
+            integration.contract_revision != expected_revision
+            or integration.attempt != expected_attempt
+            or integration.delivery_digest != expected_delivery_digest
+        ):
+            raise DeliveryError(
+                "acceptance_not_eligible", "matching integration receipt is unavailable"
+            )
+        if inputs.fulfillment_receipt is not None:
+            return inputs.fulfillment_receipt
+        proof = await self._frozen_receipt_proof(
+            session,
+            inputs=inputs,
+            assessment_id=assessment.assessment_id,
+            delivery_digest=assessment.delivery_digest,
+            decision_time=locked.decision_time,
+            acceptance_basis="explicit",
+            issuer=issuer,
+            explicit_acceptance=explicit,
+        )
+        fulfillment = MilestoneReceipt(
+            ticket_id=inputs.contract.ticket_id,
+            milestone="fulfilled",
+            contract_revision=inputs.contract.contract_revision,
+            attempt=inputs.attempt,
+            contract_digest=proof.contract_digest,
+            delivery_digest=assessment.delivery_digest,
+            issued_at=locked.decision_time,
+            acceptance_basis="explicit",
+            explicit_acceptance=explicit,
+            proof=proof,
+        )
+        await self._insert_receipt(session, fulfillment)
+        return fulfillment
+
     async def _issue_integration_receipt_under_scope(
         self, session: AsyncSession, scope: LockedDeliveryDecisionScope
     ) -> MilestoneReceipt | None:
@@ -258,6 +350,7 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
         decision_time: datetime,
         acceptance_basis: Literal["automatic", "explicit"] | None,
         issuer: ReceiptIssuerProvenance,
+        explicit_acceptance: ExplicitAcceptanceDecision | None = None,
     ) -> FrozenReceiptProof:
         """Freeze only concrete current database proof selected by the evaluator."""
         contract_digest = inputs.contract.content_digest
@@ -358,6 +451,7 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
             upstream_receipt_ids=upstream_receipt_ids,
             issuer=issuer,
             acceptance_basis=acceptance_basis,
+            explicit_acceptance=explicit_acceptance,
         )
 
     async def _snapshot_digest(self, session: AsyncSession, snapshot_id: UUID) -> str:
