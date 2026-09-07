@@ -42,6 +42,7 @@ from pathlib import Path
 
 import pytest
 
+from brain_v42.config import Settings
 from brain_v42.mcp.dream_capabilities import DREAM_PHASE_TOOL_ALLOWLISTS
 from brain_v42.services.dream_project_scope import _OWNERSHIP_FIELDS
 
@@ -147,6 +148,45 @@ def test_guard_section_names_what_reorg_validate_does_enforce() -> None:
             f"phase_reorg.md's '{HEADING}' section does not name `{symbol}`, "
             "one of the checks reorg_validate.py actually performs."
         )
+
+
+def test_guard_section_pins_the_capability_enforcement_flag() -> None:
+    """The middleware bound is conditional on a flag -- the section must say so.
+
+    Round-1 review found the guard section stating merge/delete-unreachable
+    and ownership-field-refused as unconditional absolutes, when both hold
+    only while `DreamCapabilityMiddleware` is installed. The round-1 fix
+    reworded both bullets to say so "while capability enforcement is armed",
+    but nothing pinned that qualifier: a later edit could strip the flag's
+    name, its code default, or the enforcement-off rollback sentence and
+    leave the section reading as an absolute again without any test
+    reddening. This test reads the flag's real default straight from
+    `Settings` -- not a copy-pasted `False` -- so a future flip of the
+    default cannot leave a stale "code default `false`" in prose.
+    """
+    section = _guard_section()
+    assert "brain_dream_capability_enforcement" in section, (
+        f"phase_reorg.md's '{HEADING}' section does not name "
+        "`brain_dream_capability_enforcement`, the flag that gates whether "
+        "`DreamCapabilityMiddleware` is installed at all -- the section's "
+        "merge/delete-unreachable and ownership-field-refused claims are "
+        "conditional on this flag and must name it, not just say "
+        '"while capability enforcement is armed".'
+    )
+    default = Settings.model_fields["brain_dream_capability_enforcement"].default
+    assert ("code default `false`" in section) == (default is False), (
+        "phase_reorg.md's '"
+        f"{HEADING}"
+        '\' section and `Settings.model_fields["brain_dream_capability_enforcement"]'
+        f".default` ({default!r}) have drifted: the section must say "
+        '"code default `false`" exactly when the code default is `False`.'
+    )
+    assert "documented enforcement-off rollback" in section, (
+        f"phase_reorg.md's '{HEADING}' section does not describe the "
+        "documented enforcement-off rollback -- naming the flag is not "
+        "enough; the reader must be told what these absolutes revert to "
+        "when the flag is not armed."
+    )
 
 
 def test_reorg_still_has_no_merge_or_delete_in_its_allowlist() -> None:
