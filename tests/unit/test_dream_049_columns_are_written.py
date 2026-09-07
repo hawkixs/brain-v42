@@ -223,3 +223,48 @@ class TestTheReasoningCountIsReadFromWhateverTheProviderSends:
         assert not hasattr(roadmap, "thinking_tokens_from_usage"), (
             "a second definition appeared -- one usage, one reading"
         )
+
+
+class TestCombineThinkingTokensFoldsMeasurements:
+    """`combine_thinking_tokens` had ZERO direct tests: every run-level test
+    only ever folded `None` and `17`, so a fold that collapsed a genuinely
+    measured zero back to `None` (the exact conflation this module exists to
+    forbid) could pass the whole suite unnoticed.
+    """
+
+    @pytest.mark.parametrize(
+        ("current", "addition", "expected"),
+        [
+            (None, None, None),
+            (None, 0, 0),
+            (None, 5, 5),
+            (0, None, 0),
+            (3, 0, 3),
+            (3, 4, 7),
+        ],
+    )
+    def test_the_fold_table(
+        self, current: int | None, addition: int | None, expected: int | None
+    ) -> None:
+        from brain_v42.scripts.ticket_extract import combine_thinking_tokens
+
+        assert combine_thinking_tokens(current, addition) == expected
+
+    def test_more_than_two_measurements_fold_left_to_right(self) -> None:
+        """A whole night's worth of batches/threads, not just one call chain."""
+        from brain_v42.scripts.ticket_extract import combine_thinking_tokens
+
+        total: int | None = None
+        for addition in (None, 5, None, 3, 0):
+            total = combine_thinking_tokens(total, addition)
+
+        assert total == 8
+
+    def test_there_is_exactly_one_definition_of_the_combiner_too(self) -> None:
+        import brain_v42.scripts.roadmap_curate as roadmap
+        import brain_v42.scripts.ticket_extract as extract
+
+        assert callable(extract.combine_thinking_tokens)
+        assert not hasattr(roadmap, "combine_thinking_tokens"), (
+            "a second definition appeared -- one fold, one place"
+        )

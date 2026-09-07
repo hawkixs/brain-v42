@@ -383,7 +383,7 @@ def _extract_notice(scanned: int = 19) -> str:
         primary="deepseek-ai/deepseek-v4-pro",
         fallback="meta/llama-3.3-70b-instruct",
         switched=True,
-        scanned=scanned,
+        served=scanned,
         cause="HTTP 410",
     )
 

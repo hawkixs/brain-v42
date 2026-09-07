@@ -1057,6 +1057,51 @@ class TestRunDedupWiring:
         assert record.await_args.kwargs["thinking_tokens"] is None
 
     @pytest.mark.asyncio
+    async def test_a_genuinely_measured_zero_reaches_the_row_as_zero_not_null(self) -> None:
+        """Mirror of the NULL test above: a single outcome that measured a
+        real zero must bind 0, not fall back to NULL -- the fold
+        (`combine_thinking_tokens`) must not treat a measured zero as falsy.
+        """
+        thread = _thread()
+        draft = _draft(ticket_id=thread.id)
+        args = SimpleNamespace(apply_ids=None, limit=20, wet=False)
+        session_factory = MagicMock()
+        embedding = MagicMock(close=AsyncMock())
+        persist = AsyncMock(return_value=[41])
+        record = AsyncMock()
+        attempts = AsyncMock()
+
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=session_factory),
+            patch(
+                "brain_v42.services.embedding_factory.build_embedding_service",
+                return_value=embedding,
+            ),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[thread]),
+            ),
+            patch(
+                "scripts.ticket_extract._extract_thread_with_budget",
+                new=AsyncMock(
+                    return_value=ThreadOutcome(thread=thread, drafts=[draft], thinking_tokens=0)
+                ),
+            ),
+            patch(
+                "scripts.ticket_extract.deduplicate_drafts",
+                new=AsyncMock(return_value=DedupResult(kept=[draft])),
+            ),
+            patch("scripts.ticket_extract.persist_proposals", persist),
+            patch("scripts.ticket_extract.record_ticket_attempt", attempts),
+            patch("scripts.ticket_extract.record_dream_run", record),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            await _run(args, "secret", "model", "https://llm.test")
+
+        assert record.await_args.kwargs["thinking_tokens"] == 0
+
+    @pytest.mark.asyncio
     async def test_wet_persists_and_applies_only_novel_drafts(self) -> None:
         thread = _thread()
         duplicate_draft = _draft(ticket_id=thread.id)
@@ -2220,6 +2265,66 @@ class TestADeadPrimaryModelFallsBack:
         assert record.await_args.kwargs["status"] == "done"
 
     @pytest.mark.asyncio
+    async def test_the_degradation_notice_counts_only_tickets_the_fallback_served(
+        self, capsys
+    ) -> None:
+        """`_degradation_notice` printed `{scanned} tickets servis par le
+        modèle de SECOURS`, where `scanned` counted every ticket of the run --
+        including one served by the PRIMARY before the switch, and one that
+        failed on the fallback. Same class of overcount as roadmap's
+        `fallback_batches` bug, fixed for the OTHER rail here.
+        """
+        from scripts.domain_backfill import ModelGoneError
+
+        threads = [_thread(), _thread(), _thread()]
+        calls = {"n": 0}
+
+        async def extract(client, model, thread, **kw):
+            calls["n"] += 1
+            n = calls["n"]
+            if n == 1:
+                return ThreadOutcome(thread=thread, drafts=[])  # served by the PRIMARY
+            if n == 2:
+                raise ModelGoneError(model, 410)  # triggers the switch
+            if n == 3:
+                return ThreadOutcome(thread=thread, drafts=[])  # retried, served by SECOURS
+            return ThreadOutcome(
+                thread=thread, drafts=[], failed=True, error="boom"
+            )  # tried on SECOURS, failed on both
+
+        args = SimpleNamespace(
+            apply_ids=None,
+            limit=20,
+            wet=False,
+            run_budget_seconds=600.0,
+            ticket_budget_seconds=180.0,
+        )
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=threads),
+            ),
+            patch("scripts.ticket_extract._extract_thread_with_budget", extract),
+            patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
+            patch("scripts.ticket_extract.persist_proposals", AsyncMock(return_value=[])),
+            patch("scripts.ticket_extract.record_dream_run", AsyncMock()),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            await _run(
+                args,
+                "secret",
+                "primaire-mort",
+                "https://llm.test",
+                fallback_model="secours-vivant",
+            )
+
+        out = capsys.readouterr().out
+        assert "1 tickets servis par le modèle de SECOURS" in out
+        assert "3 tickets servis par le modèle de SECOURS" not in out
+
+    @pytest.mark.asyncio
     async def test_a_run_without_any_live_model_fails_loudly(self) -> None:
         """If the fallback is dead too, there is nothing left to degrade to: the
         phase must fail LOUDLY, not return an empty `done`."""
@@ -2448,6 +2553,101 @@ class TestTheCorrectiveRepromptCarriesTheError:
         assert outcome.failed is True
         assert outcome.error is not None
         assert outcome.error.startswith("unparseable after corrective re-prompt: ")
+
+
+class TestExtractThreadMeasuresRealUsage:
+    """`_post_chat`'s usage payload must reach `ThreadOutcome.thinking_tokens`
+    through the REAL measurement code (`thinking_tokens_from_usage`,
+    `combine_thinking_tokens`) -- not just from the layer above it
+    (`_extract_thread_with_budget`), where the wiring tests in
+    `TestRunDedupWiring` hand-feed the count directly on a test double.
+
+    VERIFIED BY MUTATION: replacing
+    `thinking_tokens = thinking_tokens_from_usage(usage)` (ticket_extract.py)
+    with a literal `None` -- the "extractor is dead code" regression this lot
+    exists to close -- turns every test below red.
+    """
+
+    _VALID = (
+        '[{"target_type": "learning", "target_project": "red-shrik", '
+        '"payload": {"topic": "t", "insight": "i", "tags": []}, "rationale": "r"}]'
+    )
+    _WRONG_PROJECT = (
+        '[{"target_type": "learning", "target_project": "red-lab", '
+        '"payload": {"topic": "t", "insight": "i", "tags": []}, "rationale": "r"}]'
+    )
+
+    @pytest.mark.asyncio
+    async def test_a_reported_reasoning_count_reaches_the_outcome(self) -> None:
+        async def fake_post_chat(client, model, messages, sleep, **kw):
+            return (self._VALID, {"reasoning_tokens": 12})
+
+        with patch("scripts.ticket_extract._post_chat", fake_post_chat):
+            outcome = await extract_thread(MagicMock(), "m", _thread(), sleep=_no_sleep)
+
+        assert outcome.failed is False
+        assert outcome.thinking_tokens == 12
+
+    @pytest.mark.asyncio
+    async def test_usage_without_a_reasoning_field_leaves_the_outcome_unmeasured(self) -> None:
+        async def fake_post_chat(client, model, messages, sleep, **kw):
+            return (self._VALID, {"prompt_tokens": 10, "completion_tokens": 20})
+
+        with patch("scripts.ticket_extract._post_chat", fake_post_chat):
+            outcome = await extract_thread(MagicMock(), "m", _thread(), sleep=_no_sleep)
+
+        assert outcome.failed is False
+        assert outcome.thinking_tokens is None
+
+    @pytest.mark.asyncio
+    async def test_a_genuinely_reported_zero_reaches_the_outcome_as_zero_not_none(self) -> None:
+        async def fake_post_chat(client, model, messages, sleep, **kw):
+            return (self._VALID, {"reasoning_tokens": 0})
+
+        with patch("scripts.ticket_extract._post_chat", fake_post_chat):
+            outcome = await extract_thread(MagicMock(), "m", _thread(), sleep=_no_sleep)
+
+        assert outcome.failed is False
+        assert outcome.thinking_tokens == 0
+
+    @pytest.mark.asyncio
+    async def test_a_corrective_reprompt_sums_both_calls_measurements(self) -> None:
+        """The only place `combine_thinking_tokens` folds within a single call
+        chain: initial attempt (12) + corrective re-prompt (5) -> 17."""
+        calls = {"n": 0}
+
+        async def fake_post_chat(client, model, messages, sleep, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return (self._WRONG_PROJECT, {"reasoning_tokens": 12})
+            return (self._VALID, {"reasoning_tokens": 5})
+
+        with patch("scripts.ticket_extract._post_chat", fake_post_chat):
+            outcome = await extract_thread(MagicMock(), "m", _thread(), sleep=_no_sleep)
+
+        assert outcome.failed is False
+        assert calls["n"] == 2
+        assert outcome.thinking_tokens == 17
+
+    @pytest.mark.asyncio
+    async def test_a_transport_error_on_the_reprompt_keeps_the_first_calls_count(self) -> None:
+        """`extract_thread`'s outer `except (httpx.HTTPError, ...)` used to build
+        a `ThreadOutcome` with no `thinking_tokens` at all, dropping the first
+        call's measured count when the corrective re-prompt raised a transport
+        error instead of returning a parseable answer."""
+        calls = {"n": 0}
+
+        async def fake_post_chat(client, model, messages, sleep, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return (self._WRONG_PROJECT, {"reasoning_tokens": 12})
+            raise httpx.ReadTimeout("boom")
+
+        with patch("scripts.ticket_extract._post_chat", fake_post_chat):
+            outcome = await extract_thread(MagicMock(), "m", _thread(), sleep=_no_sleep)
+
+        assert outcome.failed is True
+        assert outcome.thinking_tokens == 12
 
 
 class TestThePrimaryModelIsAliveRatherThanRetired:

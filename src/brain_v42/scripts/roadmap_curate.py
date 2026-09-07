@@ -904,6 +904,13 @@ async def _curate_managed_model_chain(
             outcome.model_used = candidate
             outcome.fallback_used = is_fallback
             outcome.primary_error = primary_error if is_fallback else None
+            # Fold in whatever earlier failed attempts on this batch measured —
+            # a primary that reported reasoning tokens before dying must not
+            # lose that count just because the winning attempt measured
+            # nothing of its own.
+            outcome.thinking_tokens = _combine_thinking_tokens(
+                thinking_tokens_acc, outcome.thinking_tokens
+            )
             return outcome
     return BatchOutcome(
         batch=batch,
@@ -1016,6 +1023,11 @@ async def curate_batch(
             disabled_models=circuit,
         )
         fallback.fallback_used = True
+        # Keep whatever the primary measured before it died — a fallback that
+        # reports nothing of its own must not erase a real count.
+        fallback.thinking_tokens = _combine_thinking_tokens(
+            primary.thinking_tokens, fallback.thinking_tokens
+        )
         if fallback.failed:
             fallback.error = (
                 f"{model}: {primary.error or 'failed'}; "
@@ -1123,6 +1135,11 @@ async def judge_merges(
     from aberrant — the discriminant is semantic, hence an LLM judge.
     FAIL-CLOSED: a transport/parse/timeout error or an index absent from the
     answer → held back; the judge's silence is never a validation.
+
+    Discards its own `_post_chat` usage — a judge call's reasoning tokens, if
+    any, never reach `dream_runs.thinking_tokens` (see `combine_thinking_tokens`
+    in ticket_extract.py): the night's recorded total covers curation/extraction
+    calls only, not the merge judge.
     """
     if not merges:
         return set()

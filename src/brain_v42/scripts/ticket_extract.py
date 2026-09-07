@@ -613,7 +613,17 @@ async def extract_thread(
         # one piece of information that would let it switch to the fallback.
         raise
     except (httpx.HTTPError, RuntimeError, KeyError, ValueError) as exc:
-        return ThreadOutcome(thread=thread, drafts=[], failed=True, error=_exc_str(exc))
+        # `thinking_tokens` may already hold the first call's measurement (a
+        # parse error triggered the corrective re-prompt, which then failed at
+        # the transport level) — keep it, rather than silently dropping a real
+        # measurement because the SECOND call never answered.
+        return ThreadOutcome(
+            thread=thread,
+            drafts=[],
+            failed=True,
+            error=_exc_str(exc),
+            thinking_tokens=thinking_tokens,
+        )
     return ThreadOutcome(thread=thread, drafts=drafts, thinking_tokens=thinking_tokens)
 
 
@@ -843,6 +853,14 @@ def combine_thinking_tokens(current: int | None, addition: int | None) -> int | 
     total becomes an int and stays one for the rest of the run. Used both
     within a single thread/batch (initial attempt + corrective re-prompt) and
     across a whole night's threads/batches -- one rule, one place.
+
+    "A whole night" means curation/extraction calls only. `roadmap_curate`'s
+    `judge_merges` (the anti-dump gate on auto-applied merges) also calls the
+    provider and discards its own usage — its reasoning tokens, if any, never
+    reach this fold, so a wet night with judged merges under-reports by
+    whatever the judge spent. Documented here rather than fixed: folding a
+    per-run call into a per-batch accumulator would need its own threading
+    through `_run`, out of scope for the batch/thread-level fix this lot makes.
     """
     if addition is None:
         return current
@@ -854,7 +872,7 @@ def _degradation_notice(
     primary: str,
     fallback: str | None,
     switched: bool,
-    scanned: int,
+    served: int,
     cause: str | None,
 ) -> str | None:
     """Degradation sentence when the standby served the run, else None.
@@ -875,12 +893,17 @@ def _degradation_notice(
 
     Counts TICKETS, because that is what this phase scans -- roadmap counts
     batches, and neither borrows the other's word to fit a shared regex.
+
+    ``served`` is not ``scanned``: it counts only the tickets processed AFTER
+    the switch that did NOT fail -- never the tickets the primary served
+    before the 410, and never a ticket the fallback also failed on (fixed
+    2026-09-07, same overcount class as roadmap's `fallback_batches`).
     """
     if not switched or not fallback:
         return None
     reason = cause or "cause non capturée"
     return (
-        f"{DEGRADED_PREFIX} : {scanned} tickets servis par le modèle de SECOURS "
+        f"{DEGRADED_PREFIX} : {served} tickets servis par le modèle de SECOURS "
         f"{fallback}, le primaire {primary} a été retiré — {reason}"
     )
 
@@ -1179,6 +1202,11 @@ async def _run(
     # exit code owes dream.sh now that `3` leaves the unit green.
     hard_failed = 0
     deduped = 0
+    # Same overcount roadmap's `fallback_batches` had: `scanned` counts every
+    # ticket of the run, including ones served by the PRIMARY before the
+    # switch and ones that failed on the SECOURS too. Only a ticket processed
+    # AFTER the switch, and not failed, was actually SERVED by the fallback.
+    fallback_served = 0
     # None until a real call measures something (including a real zero); see
     # `combine_thinking_tokens`. Must reach `record_dream_run` as-is — a run
     # where nothing measured anything writes NULL, never 0.
@@ -1270,6 +1298,8 @@ async def _run(
             thinking_tokens_total = combine_thinking_tokens(
                 thinking_tokens_total, outcome.thinking_tokens
             )
+            if switched_to_fallback and not outcome.failed:
+                fallback_served += 1
             if outcome.failed:
                 is_timeout = "timeout" in (outcome.error or "").lower()
                 attempt_status = "timeout" if is_timeout else "failed"
@@ -1504,7 +1534,7 @@ async def _run(
         primary=withdrawn_model or model,
         fallback=fallback_model,
         switched=switched_to_fallback,
-        scanned=scanned,
+        served=fallback_served,
         cause=withdrawal_cause,
     )
     if degraded:

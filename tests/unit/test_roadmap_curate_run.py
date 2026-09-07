@@ -545,6 +545,33 @@ class TestFallbackDegradationIsReported:
 
         assert run_mocks["record"].await_args.kwargs["thinking_tokens"] is None
 
+    @pytest.mark.asyncio
+    async def test_a_genuinely_measured_zero_reaches_the_row_as_zero_not_null(
+        self, run_mocks, monkeypatch
+    ):
+        """Mirror of the NULL test above: a single batch that measured a real
+        zero must bind 0, not fall back to NULL -- the fold
+        (`_combine_thinking_tokens`) must not treat a measured zero as falsy.
+        """
+        batches = [_mk_batch("p1")]
+        monkeypatch.setattr(rc, "fetch_project_batches", AsyncMock(return_value=batches))
+
+        async def fake_curate(client, model, b, **kw):
+            return BatchOutcome(batch=b, drafts=[], model_used=model, thinking_tokens=0)
+
+        monkeypatch.setattr(rc, "curate_batch", fake_curate)
+        monkeypatch.setattr(rc, "persist_proposals", AsyncMock(return_value=PersistResult()))
+
+        await rc._run(
+            _args(wet=False),
+            api_key="k",
+            model=rc.DEFAULT_ROADMAP_MODEL,
+            base_url="https://mock.nvidia.local/v1",
+            clock=_Clock([0.0]),
+        )
+
+        assert run_mocks["record"].await_args.kwargs["thinking_tokens"] == 0
+
 
 class TestBudgetSecondsArg:
     @pytest.fixture

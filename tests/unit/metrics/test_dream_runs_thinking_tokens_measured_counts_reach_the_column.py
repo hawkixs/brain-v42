@@ -1,21 +1,32 @@
-"""Every `dream_runs` writer that names a model also writes `thinking_tokens`.
+"""A `dream_runs` writer that MEASURED a reasoning count never drops it.
+
+This file's name predates a correction and now overstates its own subject:
+"never null with model" was true only while the NVIDIA rail (`ticket_extract`,
+`roadmap_curate`) hard-coded `thinking_tokens=0` for every row that named a
+model. That hard-code was ITSELF the bug this test module's neighbour
+(`tests/unit/test_dream_049_columns_are_written.py::
+TestTheNvidiaRailNowDistinguishesZeroFromUnmeasured`) exists to undo: NVIDIA
+reports no reasoning-token count today, so `extract/*` and `roadmap/*` rows
+that DO carry a model go back to writing NULL -- on purpose, because NULL
+means "not measured", which is the truth. The corrected invariant, read from
+the code rather than assumed: a count a writer's own telemetry POSITIVELY
+MEASURED for a call always reaches the bound SQL parameter, never dropped and
+never silently replaced by NULL; a writer that measured nothing writes NULL,
+on every rail, whether or not that row names a model.
 
 Migration 049 lesson (ticket `554db5f8`): a column can be added, merged and
 applied in production while the writers that should fill it stay silent --
 `closed_inactive_count` was NULL on 63/63 rows the first night, and
 `thinking_tokens` was NULL on every `extract/*` and `roadmap/*` row that DID
-carry a model. `tests/unit/test_dream_049_columns_are_written.py` closed that
-gap for the NVIDIA rail (`ticket_extract`, `roadmap_curate`). This module
-closes it for the remaining writers that can bind `model`: the shared parser
-INSERT (`dream_parser._insert_dream_run`, the single site behind three CLIs --
-`dream_parser`, `codex_dream_parser`, `agy_dream_parser`), and confirms the two
-writers that never claim a model (`session_sweep`, the empty-pool `promote`
-row) never fabricate a measurement either.
-
-The invariant this module pins, read from the code rather than assumed:
-whenever a writer's ``model`` argument is a real value AND its own telemetry
-positively measured reasoning tokens for that call, that number reaches the
-bound SQL parameter -- never dropped, never silently replaced by NULL.
+carry a model because the extractor was dead code, never threaded to the
+writer at all. This module pins that wiring for the writers that can bind
+`model`: the shared parser INSERT (`dream_parser._insert_dream_run`, the
+single site behind three CLIs -- `dream_parser`, `codex_dream_parser`,
+`agy_dream_parser`), a thin sanity check that the NVIDIA rail's `record_dream_run`
+still defaults to `None` (the class below, added by the same lot that
+corrected the invariant above), and confirms the two writers that never claim
+a model (`session_sweep`, the empty-pool `promote` row) never fabricate a
+measurement either.
 
 One documented exception is deliberately NOT touched here. When the call
 executed but the specific rail/version cannot report reasoning at all --
