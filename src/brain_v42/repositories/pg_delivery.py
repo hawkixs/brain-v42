@@ -560,6 +560,18 @@ class PgDeliveryRepo(BasePgRepository):
                         },
                     )
                 )
+                workflow_values: dict[str, Any] = {
+                    "row_version": expected_workflow_version + 1,
+                    "updated_at": sa.func.now(),
+                }
+                if current is not None:
+                    workflow_values.update(
+                        claim_owner=None,
+                        claim_kind=None,
+                        claim_digest=None,
+                        claim_expires_at=None,
+                        claim_epoch=delivery_workflows.c.claim_epoch + 1,
+                    )
                 await sess.execute(
                     delivery_workflows.update()
                     .where(
@@ -567,15 +579,7 @@ class PgDeliveryRepo(BasePgRepository):
                         delivery_workflows.c.current_revision == expected_revision,
                         delivery_workflows.c.row_version == expected_workflow_version,
                     )
-                    .values(
-                        row_version=expected_workflow_version + 1,
-                        claim_owner=None,
-                        claim_kind=None,
-                        claim_digest=None,
-                        claim_expires_at=None,
-                        claim_epoch=delivery_workflows.c.claim_epoch + 1,
-                        updated_at=sa.func.now(),
-                    )
+                    .values(**workflow_values)
                 )
                 return binding
 

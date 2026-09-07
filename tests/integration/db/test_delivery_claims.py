@@ -665,6 +665,29 @@ async def test_amendment_fences_old_renew_and_release_but_replay_does_not_increm
     assert (await _claim_row(session_factory, ticket.id))["claim_epoch"] == amended["claim_epoch"]
 
 
+async def test_first_pr_binding_preserves_a_live_implementation_lease(session_factory) -> None:
+    """Opening the first draft PR records work without changing its leased generation."""
+    ticket, service = await _workflow(session_factory)
+    claim = await _claim(service, ticket.id, work="implement")
+    before = await _claim_row(session_factory, ticket.id)
+    binding = await service.bind_pr(
+        ticket.id,
+        actor_project="brain-v42",
+        deliverable_key="implementation",
+        repository_id=RID,
+        pr_number=42,
+        expected_revision=1,
+        expected_workflow_version=1,
+        idempotency_key=f"claim-first-bind-preserves-{ticket.id}",
+    )
+    assert binding.pr_number == 42
+    after = await _claim_row(session_factory, ticket.id)
+    for field in ("claim_owner", "claim_kind", "claim_digest", "claim_expires_at", "claim_epoch"):
+        assert after[field] == before[field]
+    renewed = await _renew(service, ticket.id, claim, ttl=1200)
+    assert renewed.epoch == claim.epoch
+
+
 async def test_binding_replacement_fences_lease_but_identical_reconfirmation_preserves_it(
     session_factory,
 ) -> None:
