@@ -584,6 +584,40 @@ class ObservationConfirmation(_StoredModel):
         return self
 
 
+class RepositoryContextObservationConfirmation(_StoredModel):
+    """Append-only successful or failed collection confirmation for repository context."""
+
+    id: UUIDValue = Field(default_factory=uuid4)
+    snapshot_id: UUIDValue | None = None
+    evidence: RepositoryContextEvidence | None = None
+    collection_started_at: datetime
+    collection_finished_at: datetime
+    outcome: Literal["success", "error"] = "success"
+    error_code: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def _has_evidence_only_for_success(self) -> RepositoryContextObservationConfirmation:
+        if self.collection_started_at.tzinfo is None or self.collection_finished_at.tzinfo is None:
+            raise ValueError("repository context confirmation interval must be timezone-aware")
+        if self.outcome == "success":
+            if (
+                self.evidence is None
+                or self.snapshot_id is None
+                or self.error_code is not None
+                or not self.evidence.complete
+            ):
+                raise ValueError(
+                    "successful repository context confirmation requires immutable evidence"
+                )
+        elif self.evidence is not None or self.snapshot_id is not None or self.error_code is None:
+            raise ValueError(
+                "repository context error confirmation requires only a safe error code"
+            )
+        if self.collection_finished_at < self.collection_started_at:
+            raise ValueError("collection_finished_at precedes collection_started_at")
+        return self
+
+
 class BindingEvidence(_StrictModel):
     """Active binding plus its latest retained provider confirmation and health facts."""
 
