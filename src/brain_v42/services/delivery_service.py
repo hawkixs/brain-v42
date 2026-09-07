@@ -11,6 +11,8 @@ from brain_v42.db.tables import tickets
 from brain_v42.delivery_config import DeliverySettings
 from brain_v42.models.delivery import (
     ArtifactBinding,
+    ClaimResult,
+    ClaimState,
     ContractInput,
     ContractRevision,
     DeliveryError,
@@ -21,6 +23,7 @@ from brain_v42.models.delivery import (
 )
 from brain_v42.models.delivery_hashes import canonical_digest
 from brain_v42.repositories.pg_delivery import PgDeliveryRepo, _contract_from_json, lock_workflows
+from brain_v42.repositories.pg_delivery_claims import PgDeliveryClaimsRepo
 from brain_v42.repositories.pg_delivery_evidence import PgDeliveryEvidenceRepo
 
 
@@ -35,6 +38,73 @@ class DeliveryService:
         self._repo = repo
         self._settings = settings
         self._evidence_repo = evidence_repo or PgDeliveryEvidenceRepo(repo._session_factory)
+        self._claims_repo = PgDeliveryClaimsRepo(repo._session_factory)
+
+    async def claim(
+        self,
+        ticket_id: UUID,
+        *,
+        actor_project: str,
+        owner_key: str,
+        work_kind: str,
+        expected_workflow_version: int,
+        expected_assessment_id: str,
+        ttl_seconds: int = 900,
+    ) -> ClaimResult:
+        async with self._repo._maybe_session(None, write=True) as session:
+            return await self._claims_repo.acquire(
+                session,
+                ticket_id,
+                settings=self._settings,
+                actor_project=actor_project,
+                owner_key=owner_key,
+                work_kind=work_kind,
+                expected_workflow_version=expected_workflow_version,
+                expected_assessment_id=expected_assessment_id,
+                ttl_seconds=ttl_seconds,
+            )
+
+    async def renew_claim(
+        self,
+        ticket_id: UUID,
+        *,
+        actor_project: str,
+        owner_key: str,
+        claim_token: str,
+        epoch: int,
+        ttl_seconds: int = 900,
+    ) -> ClaimState:
+        async with self._repo._maybe_session(None, write=True) as session:
+            return await self._claims_repo.renew(
+                session,
+                ticket_id,
+                settings=self._settings,
+                actor_project=actor_project,
+                owner_key=owner_key,
+                claim_token=claim_token,
+                epoch=epoch,
+                ttl_seconds=ttl_seconds,
+            )
+
+    async def release_claim(
+        self,
+        ticket_id: UUID,
+        *,
+        actor_project: str,
+        owner_key: str,
+        claim_token: str,
+        epoch: int,
+    ) -> ClaimState:
+        async with self._repo._maybe_session(None, write=True) as session:
+            return await self._claims_repo.release(
+                session,
+                ticket_id,
+                settings=self._settings,
+                actor_project=actor_project,
+                owner_key=owner_key,
+                claim_token=claim_token,
+                epoch=epoch,
+            )
 
     async def accept(
         self,

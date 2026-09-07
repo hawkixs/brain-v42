@@ -280,6 +280,11 @@ class PgDeliveryRepo(BasePgRepository):
                         .values(
                             current_revision=contract.contract_revision,
                             row_version=current["row_version"] + 1,
+                            claim_owner=None,
+                            claim_kind=None,
+                            claim_digest=None,
+                            claim_expires_at=None,
+                            claim_epoch=current["claim_epoch"] + 1,
                             context_row_version=current["context_row_version"] + 1,
                             context_set_digest=_context_set_digest(contract),
                             context_due_at=datetime.now(UTC),
@@ -562,7 +567,15 @@ class PgDeliveryRepo(BasePgRepository):
                         delivery_workflows.c.current_revision == expected_revision,
                         delivery_workflows.c.row_version == expected_workflow_version,
                     )
-                    .values(row_version=expected_workflow_version + 1, updated_at=sa.func.now())
+                    .values(
+                        row_version=expected_workflow_version + 1,
+                        claim_owner=None,
+                        claim_kind=None,
+                        claim_digest=None,
+                        claim_expires_at=None,
+                        claim_epoch=delivery_workflows.c.claim_epoch + 1,
+                        updated_at=sa.func.now(),
+                    )
                 )
                 return binding
 

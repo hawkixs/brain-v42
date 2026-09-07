@@ -1058,7 +1058,7 @@ class ClaimResult(_StrictModel):
     work: EligibleWork
     epoch: StrictInt = Field(ge=0)
     expires_at: datetime
-    claim_token: str = Field(min_length=1, max_length=1000)
+    claim_token: str = Field(min_length=1, max_length=1000, repr=False)
 
     _valid_assessment = field_validator("assessment_id")(_validate_digest)
 
