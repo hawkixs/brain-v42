@@ -20,6 +20,7 @@ from brain_v42.models.delivery import (
     ReviewPolicy,
 )
 from brain_v42.models.delivery_evaluator import evaluate_delivery
+from brain_v42.models.delivery_hashes import canonical_digest
 from brain_v42.models.ticket import TicketCreate, TicketKind
 from brain_v42.repositories.pg_delivery import PgDeliveryRepo, _context_set_digest
 from brain_v42.repositories.pg_delivery_evidence import PgDeliveryEvidenceRepo
@@ -143,7 +144,8 @@ async def _observed_workflow(session_factory, *, acceptance_mode: str = "automat
 
 
 def _receipt(inputs, *, milestone: str, **changes: object) -> MilestoneReceipt:
-    assessment = evaluate_delivery(inputs, now=datetime.now(UTC))
+    issued_at = datetime.now(UTC)
+    assessment = evaluate_delivery(inputs, now=issued_at)
     payload: dict[str, object] = {
         "id": uuid4(),
         "ticket_id": inputs.contract.ticket_id,
@@ -152,10 +154,76 @@ def _receipt(inputs, *, milestone: str, **changes: object) -> MilestoneReceipt:
         "attempt": inputs.attempt,
         "contract_digest": inputs.contract.content_digest,
         "delivery_digest": assessment.delivery_digest,
-        "issued_at": datetime.now(UTC),
+        "issued_at": issued_at,
         "acceptance_basis": "automatic" if milestone == "fulfilled" else None,
     }
     payload.update(changes)
+    binding_evidence = inputs.active_bindings[0]
+    confirmation = binding_evidence.confirmation
+    evidence = confirmation.evidence if confirmation is not None else None
+    assert confirmation is not None
+    assert evidence is not None
+    assert binding_evidence.snapshot_id is not None
+    assert binding_evidence.success_confirmation_id is not None
+    assert binding_evidence.latest_attempt_confirmation_id is not None
+    snapshot_payload = evidence.model_dump(mode="json")
+    semantic_payload = dict(snapshot_payload)
+    semantic_payload.pop("collected_at")
+    basis = payload["acceptance_basis"]
+    explicit_acceptance = (
+        {"requester_project": "brain-v42", "rationale": "hydration fixture acceptance"}
+        if basis == "explicit"
+        else None
+    )
+    issuer = (
+        {
+            "issuer_project": "brain-v42",
+            "issuer_identity": "brain-v42",
+            "issuer_kind": "requester",
+        }
+        if basis == "explicit"
+        else {
+            "issuer_project": "brain-v42",
+            "issuer_identity": "receipt-hydration-test",
+            "issuer_kind": "observer",
+        }
+    )
+    payload["explicit_acceptance"] = explicit_acceptance
+    payload["proof"] = {
+        "ticket_id": payload["ticket_id"],
+        "contract_revision": payload["contract_revision"],
+        "attempt": payload["attempt"],
+        "workflow_version": inputs.workflow_version,
+        "contract_digest": payload["contract_digest"],
+        "delivery_digest": payload["delivery_digest"],
+        "assessment_id": assessment.assessment_id,
+        "decision_time": payload["issued_at"],
+        "artifact_proofs": (
+            {
+                "binding_id": binding_evidence.binding.id,
+                "binding_version": binding_evidence.binding.binding_version,
+                "deliverable_key": binding_evidence.binding.deliverable_key,
+                "repository_id": binding_evidence.binding.repository_id,
+                "pr_number": binding_evidence.binding.pr_number,
+                "head_sha": evidence.head_sha,
+                "base_sha": evidence.base_sha,
+                "integration_sha": evidence.integration_sha,
+                "integration_revision": evidence.integration_revision,
+                "snapshot_id": binding_evidence.snapshot_id,
+                "snapshot_digest": canonical_digest(semantic_payload, domain="result"),
+                "success_confirmation_id": binding_evidence.success_confirmation_id,
+                "latest_attempt_confirmation_id": binding_evidence.latest_attempt_confirmation_id,
+                "collection_started_at": confirmation.collection_started_at,
+                "collection_finished_at": confirmation.collection_finished_at,
+            },
+        ),
+        "brain_context_proofs": (),
+        "repository_context_proofs": (),
+        "upstream_receipt_ids": (),
+        "issuer": issuer,
+        "acceptance_basis": basis,
+        "explicit_acceptance": explicit_acceptance,
+    }
     return MilestoneReceipt.model_validate(payload)
 
 
@@ -171,7 +239,7 @@ async def _insert_receipt(session_factory, receipt: MilestoneReceipt) -> None:
                     milestone=receipt.milestone,
                     delivery_digest=receipt.delivery_digest,
                     payload=receipt.model_dump(mode="json"),
-                    issuer="receipt-hydration-test",
+                    issuer=receipt.proof.issuer.issuer_identity,
                     basis=receipt.acceptance_basis,
                     issued_at=receipt.issued_at,
                 )

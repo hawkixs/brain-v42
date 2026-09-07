@@ -62,6 +62,19 @@ def _parse_uuid(value: UUID | str) -> UUID:
 UUIDValue = Annotated[UUID, BeforeValidator(_parse_uuid)]
 
 
+def _parse_stored_datetime(value: object) -> object:
+    """Restore canonical JSON timestamps before strict receipt validation."""
+    if not isinstance(value, str):
+        return value
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+
+
+StoredAwareDatetime = Annotated[AwareDatetime, BeforeValidator(_parse_stored_datetime)]
+
+
 def _reject_surrogates(value: str) -> str:
     if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
         raise ValueError("Unicode surrogate code points are not supported")
@@ -692,6 +705,178 @@ class ContextPredicate(_StrictModel):
         return self
 
 
+class ReceiptIssuerProvenance(_StoredModel):
+    """The bounded actor provenance frozen with an immutable receipt."""
+
+    issuer_project: str = Field(min_length=1, max_length=50)
+    issuer_identity: str = Field(min_length=1, max_length=200)
+    issuer_kind: Literal["observer", "requester"]
+
+    _no_surrogates = field_validator("issuer_project", "issuer_identity")(_reject_surrogates)
+
+
+class ExplicitAcceptanceDecision(_StoredModel):
+    """Requester evidence frozen only for an explicit fulfillment decision."""
+
+    requester_project: str = Field(min_length=1, max_length=50)
+    rationale: str = Field(min_length=1, max_length=4000)
+
+    _no_surrogates = field_validator("requester_project", "rationale")(_reject_surrogates)
+
+    @field_validator("rationale")
+    @classmethod
+    def _nonblank_rationale(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("explicit acceptance rationale must not be blank")
+        return value
+
+
+class FrozenArtifactReceiptProof(_StoredModel):
+    """Exact successful artifact observation selected for a receipt decision."""
+
+    binding_id: UUIDValue
+    binding_version: StrictInt = Field(gt=0)
+    deliverable_key: str = Field(min_length=1, max_length=64)
+    repository_id: StrictInt = Field(gt=0)
+    pr_number: StrictInt = Field(gt=0)
+    head_sha: str = Field(min_length=40, max_length=64)
+    base_sha: str = Field(min_length=40, max_length=64)
+    integration_sha: str | None = Field(min_length=40, max_length=64)
+    integration_revision: str | None = Field(min_length=40, max_length=64)
+    snapshot_id: UUIDValue
+    snapshot_digest: str = Field(min_length=64, max_length=64)
+    success_confirmation_id: UUIDValue
+    latest_attempt_confirmation_id: UUIDValue
+    collection_started_at: StoredAwareDatetime
+    collection_finished_at: StoredAwareDatetime
+
+    _valid_shas = field_validator(
+        "head_sha", "base_sha", "integration_sha", "integration_revision"
+    )(lambda value: _validate_sha(value) if value is not None else None)
+    _valid_digest = field_validator("snapshot_digest")(_validate_digest)
+    _valid_key = field_validator("deliverable_key")(_reject_surrogates)
+
+    @model_validator(mode="after")
+    def _complete_success_proof(self) -> FrozenArtifactReceiptProof:
+        if self.integration_sha is None and self.integration_revision is None:
+            raise ValueError("artifact receipt proof requires integration SHA or revision")
+        if self.success_confirmation_id != self.latest_attempt_confirmation_id:
+            raise ValueError("artifact receipt proof requires the latest successful confirmation")
+        if self.collection_finished_at < self.collection_started_at:
+            raise ValueError("artifact receipt proof interval is reversed")
+        return self
+
+
+class FrozenBrainContextReceiptProof(_StoredModel):
+    """Pinned required Brain context without fabricated collector evidence."""
+
+    reference_identity: str = Field(min_length=1, max_length=5000)
+    pinned_digest: str = Field(min_length=64, max_length=64)
+    current_digest: str = Field(min_length=64, max_length=64)
+
+    _valid_digests = field_validator("pinned_digest", "current_digest")(_validate_digest)
+    _valid_identity = field_validator("reference_identity")(_reject_surrogates)
+
+    @model_validator(mode="after")
+    def _pinned_content_is_current(self) -> FrozenBrainContextReceiptProof:
+        if not self.reference_identity.startswith("brain_entity:"):
+            raise ValueError("Brain receipt proof requires a Brain reference identity")
+        if self.pinned_digest != self.current_digest:
+            raise ValueError("required Brain receipt proof is no longer current")
+        return self
+
+
+class FrozenRepositoryContextReceiptProof(_StoredModel):
+    """Exact repository-document observation used by a receipt decision."""
+
+    reference_identity: str = Field(min_length=1, max_length=5000)
+    required: StrictBool
+    expected_digest: str = Field(min_length=64, max_length=64)
+    current_digest: str = Field(min_length=64, max_length=64)
+    snapshot_id: UUIDValue
+    snapshot_digest: str = Field(min_length=64, max_length=64)
+    success_confirmation_id: UUIDValue
+    latest_attempt_confirmation_id: UUIDValue
+    collection_started_at: StoredAwareDatetime
+    collection_finished_at: StoredAwareDatetime
+
+    _valid_digests = field_validator("expected_digest", "current_digest", "snapshot_digest")(
+        _validate_digest
+    )
+    _valid_identity = field_validator("reference_identity")(_reject_surrogates)
+
+    @model_validator(mode="after")
+    def _complete_context_success_proof(self) -> FrozenRepositoryContextReceiptProof:
+        if not self.reference_identity.startswith("repository_document:"):
+            raise ValueError("repository receipt proof requires a repository reference identity")
+        if self.success_confirmation_id != self.latest_attempt_confirmation_id:
+            raise ValueError("repository receipt proof requires the latest successful confirmation")
+        if self.collection_finished_at < self.collection_started_at:
+            raise ValueError("repository receipt proof interval is reversed")
+        if self.required and self.expected_digest != self.current_digest:
+            raise ValueError("required repository receipt proof is no longer current")
+        return self
+
+
+class FrozenReceiptProof(_StoredModel):
+    """Full immutable evidence and decision facts for one milestone receipt."""
+
+    ticket_id: UUIDValue
+    contract_revision: StrictInt = Field(gt=0)
+    contract_digest: str = Field(min_length=64, max_length=64)
+    attempt: StrictInt = Field(gt=0)
+    workflow_version: StrictInt = Field(gt=0)
+    delivery_digest: str = Field(min_length=64, max_length=64)
+    assessment_id: str = Field(min_length=64, max_length=64)
+    decision_time: StoredAwareDatetime
+    artifact_proofs: Annotated[
+        tuple[FrozenArtifactReceiptProof, ...], BeforeValidator(_lists_to_tuples)
+    ] = Field(min_length=1, max_length=20)
+    brain_context_proofs: Annotated[
+        tuple[FrozenBrainContextReceiptProof, ...], BeforeValidator(_lists_to_tuples)
+    ] = Field(default_factory=tuple, max_length=32)
+    repository_context_proofs: Annotated[
+        tuple[FrozenRepositoryContextReceiptProof, ...], BeforeValidator(_lists_to_tuples)
+    ] = Field(default_factory=tuple, max_length=32)
+    upstream_receipt_ids: Annotated[tuple[UUIDValue, ...], BeforeValidator(_lists_to_tuples)] = (
+        Field(default_factory=tuple, max_length=32)
+    )
+    issuer: ReceiptIssuerProvenance
+    acceptance_basis: Literal["automatic", "explicit"] | None = None
+    explicit_acceptance: ExplicitAcceptanceDecision | None = None
+
+    _valid_digests = field_validator("contract_digest", "delivery_digest", "assessment_id")(
+        _validate_digest
+    )
+
+    @model_validator(mode="after")
+    def _complete_frozen_identity(self) -> FrozenReceiptProof:
+        binding_ids = [proof.binding_id for proof in self.artifact_proofs]
+        if len(binding_ids) != len(set(binding_ids)):
+            raise ValueError("receipt proof has duplicate artifact bindings")
+        context_ids = [proof.reference_identity for proof in self.brain_context_proofs]
+        context_ids.extend(proof.reference_identity for proof in self.repository_context_proofs)
+        if len(context_ids) != len(set(context_ids)):
+            raise ValueError("receipt proof has duplicate context references")
+        if len(self.upstream_receipt_ids) != len(set(self.upstream_receipt_ids)):
+            raise ValueError("receipt proof has duplicate upstream receipt IDs")
+        intervals = tuple(self.artifact_proofs) + tuple(self.repository_context_proofs)
+        if any(proof.collection_finished_at > self.decision_time for proof in intervals):
+            raise ValueError("receipt proof decision predates collected evidence")
+        if self.acceptance_basis == "explicit":
+            if self.explicit_acceptance is None:
+                raise ValueError("explicit receipt proof requires requester decision")
+            if self.issuer.issuer_kind != "requester":
+                raise ValueError("explicit receipt proof requires requester provenance")
+            if self.issuer.issuer_project != self.explicit_acceptance.requester_project:
+                raise ValueError(
+                    "explicit receipt proof requester provenance does not match decision"
+                )
+        elif self.explicit_acceptance is not None:
+            raise ValueError("only explicit receipt proofs may contain requester decisions")
+        return self
+
+
 class MilestoneReceipt(_StoredModel):
     """Immutable historical integration or fulfillment evidence for one delivery identity."""
 
@@ -702,16 +887,42 @@ class MilestoneReceipt(_StoredModel):
     attempt: StrictInt = Field(gt=0)
     contract_digest: str = Field(min_length=64, max_length=64)
     delivery_digest: str = Field(min_length=64, max_length=64)
-    issued_at: datetime
+    issued_at: StoredAwareDatetime
     acceptance_basis: Literal["automatic", "explicit"] | None = None
+    explicit_acceptance: ExplicitAcceptanceDecision | None = None
+    proof: FrozenReceiptProof
 
     _valid_digests = field_validator("contract_digest", "delivery_digest")(_validate_digest)
 
     @model_validator(mode="after")
     def _valid_basis(self) -> MilestoneReceipt:
-        if self.milestone == "integration" and self.acceptance_basis is not None:
-            raise ValueError("integration receipts cannot have an acceptance basis")
-        if self.milestone == "fulfilled" and self.acceptance_basis is None:
+        if (
+            self.ticket_id != self.proof.ticket_id
+            or self.contract_revision != self.proof.contract_revision
+            or self.attempt != self.proof.attempt
+            or self.contract_digest != self.proof.contract_digest
+            or self.delivery_digest != self.proof.delivery_digest
+            or self.issued_at != self.proof.decision_time
+        ):
+            raise ValueError("receipt identity must match its frozen proof")
+        if (
+            self.acceptance_basis != self.proof.acceptance_basis
+            or self.explicit_acceptance != self.proof.explicit_acceptance
+        ):
+            raise ValueError("receipt acceptance fields must match its frozen proof")
+        if self.milestone == "integration":
+            if (
+                self.acceptance_basis is not None
+                or self.explicit_acceptance is not None
+                or self.proof.issuer.issuer_kind != "observer"
+            ):
+                raise ValueError(
+                    "integration receipts require observer provenance without acceptance"
+                )
+        elif self.acceptance_basis == "automatic":
+            if self.explicit_acceptance is not None or self.proof.issuer.issuer_kind != "observer":
+                raise ValueError("automatic fulfillment requires observer provenance")
+        elif self.acceptance_basis != "explicit" or self.explicit_acceptance is None:
             raise ValueError("fulfillment receipts require an acceptance basis")
         return self
 

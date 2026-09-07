@@ -15,24 +15,89 @@ def _replace_evidence(inputs: Any, **changes: Any) -> Any:
     )
 
 
-def _receipt(inputs: Any, result: Any, milestone: Literal["integration", "fulfilled"]) -> Any:
+def _receipt(
+    inputs: Any,
+    result: Any,
+    milestone: Literal["integration", "fulfilled"],
+    *,
+    ticket_id: UUID | None = None,
+    contract_revision: int | None = None,
+    attempt: int | None = None,
+    contract_digest: str | None = None,
+    delivery_digest: str | None = None,
+) -> Any:
     from brain_v42.models.delivery import MilestoneReceipt
     from tests.delivery_helpers import FIXED_NOW
 
+    binding_evidence = inputs.active_bindings[0]
+    evidence = binding_evidence.confirmation.evidence
+    assert evidence is not None
+    actual_ticket_id = ticket_id or inputs.contract.ticket_id
+    actual_contract_revision = contract_revision or inputs.contract.contract_revision
+    actual_attempt = attempt or inputs.attempt
+    actual_contract_digest = contract_digest or inputs.contract.content_digest
+    actual_delivery_digest = delivery_digest or result.delivery_digest
+    basis = "automatic" if milestone == "fulfilled" else None
+    proof = {
+        "ticket_id": actual_ticket_id,
+        "contract_revision": actual_contract_revision,
+        "attempt": actual_attempt,
+        "workflow_version": inputs.workflow_version,
+        "contract_digest": actual_contract_digest,
+        "delivery_digest": actual_delivery_digest,
+        "assessment_id": result.assessment_id,
+        "decision_time": FIXED_NOW,
+        "artifact_proofs": (
+            {
+                "binding_id": binding_evidence.binding.id,
+                "binding_version": binding_evidence.binding.binding_version,
+                "deliverable_key": binding_evidence.binding.deliverable_key,
+                "repository_id": binding_evidence.binding.repository_id,
+                "pr_number": binding_evidence.binding.pr_number,
+                "head_sha": evidence.head_sha,
+                "base_sha": evidence.base_sha,
+                "integration_sha": evidence.integration_sha,
+                "integration_revision": evidence.integration_revision,
+                "snapshot_id": UUID("00000000-0000-0000-0000-000000000021"),
+                "snapshot_digest": "f" * 64,
+                "success_confirmation_id": binding_evidence.confirmation.id,
+                "latest_attempt_confirmation_id": binding_evidence.confirmation.id,
+                "collection_started_at": binding_evidence.confirmation.collection_started_at,
+                "collection_finished_at": binding_evidence.confirmation.collection_finished_at,
+            },
+        ),
+        "brain_context_proofs": (
+            {
+                "reference_identity": "brain_entity:adr:00000000-0000-0000-0000-000000000060",
+                "pinned_digest": "d" * 64,
+                "current_digest": "d" * 64,
+            },
+        ),
+        "repository_context_proofs": (),
+        "upstream_receipt_ids": (),
+        "issuer": {
+            "issuer_project": "brain-v42",
+            "issuer_identity": "delivery-observer",
+            "issuer_kind": "observer",
+        },
+        "acceptance_basis": basis,
+        "explicit_acceptance": None,
+    }
     return MilestoneReceipt(
         id=UUID(
             "00000000-0000-0000-0000-000000000030"
             if milestone == "integration"
             else "00000000-0000-0000-0000-000000000031"
         ),
-        ticket_id=inputs.contract.ticket_id,
+        ticket_id=actual_ticket_id,
         milestone=milestone,
-        contract_revision=inputs.contract.contract_revision,
-        attempt=inputs.attempt,
-        contract_digest=inputs.contract.content_digest,
-        delivery_digest=result.delivery_digest,
+        contract_revision=actual_contract_revision,
+        attempt=actual_attempt,
+        contract_digest=actual_contract_digest,
+        delivery_digest=actual_delivery_digest,
         issued_at=FIXED_NOW,
-        acceptance_basis="automatic" if milestone == "fulfilled" else None,
+        acceptance_basis=basis,
+        proof=proof,
     )
 
 
@@ -427,21 +492,15 @@ def test_assessment_identity_is_stable_for_same_predicates_and_changes_at_freshn
 
 
 def test_receipt_ticket_identity_must_match_its_own_workflow() -> None:
-    from brain_v42.models.delivery import MilestoneReceipt
     from brain_v42.models.delivery_evaluator import evaluate_delivery
     from tests.delivery_helpers import FIXED_NOW, delivery_inputs
 
     inputs = delivery_inputs()
     initial = evaluate_delivery(inputs, now=FIXED_NOW)
-    receipt = MilestoneReceipt(
-        id=UUID("00000000-0000-0000-0000-000000000032"),
-        ticket_id=inputs.contract.ticket_id,
-        milestone="integration",
-        contract_revision=inputs.contract.contract_revision,
-        attempt=inputs.attempt,
-        contract_digest=inputs.contract.content_digest,
-        delivery_digest=initial.delivery_digest,
-        issued_at=FIXED_NOW,
+    receipt = _receipt(
+        inputs,
+        initial,
+        "integration",
     )
 
     matching = evaluate_delivery(
@@ -459,20 +518,21 @@ def test_receipt_ticket_identity_must_match_its_own_workflow() -> None:
 
 
 def test_dependency_receipt_is_superseded_when_current_delivery_digest_changes() -> None:
-    from brain_v42.models.delivery import DependencyPredicate, MilestoneReceipt
+    from brain_v42.models.delivery import DependencyPredicate
     from brain_v42.models.delivery_evaluator import evaluate_delivery
     from tests.delivery_helpers import FIXED_NOW, delivery_inputs
 
-    receipt = MilestoneReceipt(
-        id=UUID("00000000-0000-0000-0000-000000000033"),
+    source_inputs = delivery_inputs()
+    source_result = evaluate_delivery(source_inputs, now=FIXED_NOW)
+    receipt = _receipt(
+        source_inputs,
+        source_result,
+        "fulfilled",
         ticket_id=UUID("00000000-0000-0000-0000-000000000040"),
-        milestone="fulfilled",
         contract_revision=2,
         attempt=3,
         contract_digest="d" * 64,
         delivery_digest="e" * 64,
-        issued_at=FIXED_NOW,
-        acceptance_basis="automatic",
     )
     dependency = DependencyPredicate(
         ticket_id=receipt.ticket_id,
