@@ -119,6 +119,20 @@ of `docs/` predates this rule; those files are left coherent in their original
 language until a deliberate translation pass, rather than drifting into a
 mix of both. New content does not get that grandfather clause.
 
+**Exception — byte-exact operator-configuration fixtures (decided
+2026-09-07).** A test fixture that is a byte-exact copy of a live operator
+configuration file, captured to prove a test against the real artifact
+instead of a hand-retyped stand-in (for example
+`tests/unit/data/models.conf.2026-09-03-live-dream-drop-in`, a French
+systemd drop-in whose content a test asserts against verbatim), is evidence
+and not prose: retranslating it would break the byte-for-byte identity the
+test exists to check, so it is exempt from the English-only rule for new
+files. The exemption is narrow and comes with its own obligations — the
+fixture must carry no secret (rotate or redact before capturing), and its
+filename must name both its source and the capture date, exactly as the
+example above does, so a reader can tell what it is a copy of without
+opening it.
+
 ## Commit conventions
 
 Conventional Commits, in English: `feat(scope): ...`, `fix(scope): ...`,
