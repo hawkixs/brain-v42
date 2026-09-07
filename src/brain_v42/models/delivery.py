@@ -476,8 +476,10 @@ class PullRequestEvidence(_StrictModel):
     repository_id: StrictInt = Field(gt=0)
     pr_number: StrictInt = Field(gt=0)
     author_id: str = Field(min_length=1, max_length=200)
+    head_repository_id: StrictInt = Field(gt=0)
     head_sha: str = Field(min_length=40, max_length=64)
     base_sha: str = Field(min_length=40, max_length=64)
+    base_ref: str = Field(min_length=1, max_length=255)
     integration_sha: str | None = Field(default=None, min_length=40, max_length=64)
     state: Literal["open", "merged", "closed"]
     draft: StrictBool
@@ -498,6 +500,7 @@ class PullRequestEvidence(_StrictModel):
     _valid_head = field_validator(
         "head_sha", "base_sha", "integration_sha", "integration_revision"
     )(lambda value: _validate_sha(value) if value is not None else None)
+    _valid_base_ref = field_validator("base_ref")(_reject_surrogates)
 
 
 class SyntheticMergeAssociation(_StrictModel):
