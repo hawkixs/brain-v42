@@ -413,6 +413,262 @@ class ArtifactBinding(_StoredModel):
         return self.state == "observed"
 
 
+class CheckAttempt(_StrictModel):
+    """One provider check result associated with an evaluated pull-request head."""
+
+    provider_id: StrictInt = Field(gt=0)
+    kind: Literal["check_run", "commit_status"]
+    name: str = Field(min_length=1, max_length=200)
+    app_slug: str | None = Field(default=None, min_length=1, max_length=200)
+    head_sha: str = Field(min_length=40, max_length=64)
+    conclusion: Literal["success", "failure", "pending", "skipped", "neutral", "cancelled"]
+    run_attempt: StrictInt = Field(ge=1)
+    completed_at: datetime | None = None
+
+    _valid_head = field_validator("head_sha")(_validate_sha)
+
+
+class ReviewEvidence(_StrictModel):
+    """One immutable provider review decision on a pull-request revision."""
+
+    provider_id: StrictInt = Field(gt=0)
+    reviewer: str = Field(min_length=1, max_length=200)
+    head_sha: str = Field(min_length=40, max_length=64)
+    decision: Literal["approved", "changes_requested", "dismissed", "commented"]
+    submitted_at: datetime
+
+    _valid_head = field_validator("head_sha")(_validate_sha)
+
+
+class PullRequestEvidence(_StrictModel):
+    """Provider facts collected for an observed pull request; never caller-authored success."""
+
+    provider_id: StrictInt = Field(gt=0)
+    repository_id: StrictInt = Field(gt=0)
+    pr_number: StrictInt = Field(gt=0)
+    head_sha: str = Field(min_length=40, max_length=64)
+    base_sha: str = Field(min_length=40, max_length=64)
+    integration_sha: str | None = Field(default=None, min_length=40, max_length=64)
+    state: Literal["open", "merged", "closed"]
+    draft: StrictBool
+    mergeable: StrictBool | None = None
+    complete: StrictBool
+    checks: Annotated[tuple[CheckAttempt, ...], BeforeValidator(_lists_to_tuples)] = Field(
+        default_factory=tuple, max_length=1000
+    )
+    reviews: Annotated[tuple[ReviewEvidence, ...], BeforeValidator(_lists_to_tuples)] = Field(
+        default_factory=tuple, max_length=1000
+    )
+    integration_revision: str | None = Field(default=None, min_length=40, max_length=64)
+    collected_at: datetime
+
+    _valid_head = field_validator(
+        "head_sha", "base_sha", "integration_sha", "integration_revision"
+    )(lambda value: _validate_sha(value) if value is not None else None)
+
+
+class ObservationConfirmation(_StoredModel):
+    """Append-only successful or failed collection confirmation for one binding."""
+
+    id: UUIDValue = Field(default_factory=uuid4)
+    evidence: PullRequestEvidence | None = None
+    collection_started_at: datetime
+    collection_finished_at: datetime
+    outcome: Literal["success", "error"] = "success"
+    error_code: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def _has_evidence_only_for_success(self) -> ObservationConfirmation:
+        if self.outcome == "success" and self.evidence is None:
+            raise ValueError("successful confirmation requires evidence")
+        if self.outcome == "error" and self.error_code is None:
+            raise ValueError("error confirmation requires error_code")
+        if self.collection_finished_at < self.collection_started_at:
+            raise ValueError("collection_finished_at precedes collection_started_at")
+        return self
+
+
+class BindingEvidence(_StrictModel):
+    """Active binding plus its latest retained provider confirmation and health facts."""
+
+    binding: ArtifactBinding
+    confirmation: ObservationConfirmation | None = None
+    last_attempt_at: datetime | None = None
+    last_success_at: datetime | None = None
+    last_attempt_outcome: Literal["success", "error", "never"] = "success"
+
+
+class ContextPredicate(_StrictModel):
+    """Current comparison of one pinned context fact with its contract digest."""
+
+    key: str = Field(min_length=1, max_length=200)
+    required: StrictBool
+    expected_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    current_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    status: Literal["available", "changed", "missing", "error"]
+
+    _valid_expected = field_validator("expected_digest", "current_digest")(
+        lambda value: _validate_digest(value) if value is not None else None
+    )
+
+
+class MilestoneReceipt(_StoredModel):
+    """Immutable historical integration or fulfillment evidence for one delivery identity."""
+
+    id: UUIDValue = Field(default_factory=uuid4)
+    ticket_id: UUIDValue
+    milestone: Literal["integration", "fulfilled"]
+    contract_revision: StrictInt = Field(gt=0)
+    attempt: StrictInt = Field(gt=0)
+    contract_digest: str = Field(min_length=64, max_length=64)
+    delivery_digest: str = Field(min_length=64, max_length=64)
+    issued_at: datetime
+    acceptance_basis: Literal["automatic", "explicit"] | None = None
+
+    _valid_digests = field_validator("contract_digest", "delivery_digest")(_validate_digest)
+
+    @model_validator(mode="after")
+    def _valid_basis(self) -> MilestoneReceipt:
+        if self.milestone == "integration" and self.acceptance_basis is not None:
+            raise ValueError("integration receipts cannot have an acceptance basis")
+        if self.milestone == "fulfilled" and self.acceptance_basis is None:
+            raise ValueError("fulfillment receipts require an acceptance basis")
+        return self
+
+
+class DependencyPredicate(_StrictModel):
+    """Current upstream generation and immutable receipt available to this contract."""
+
+    ticket_id: UUIDValue
+    contract_revision: StrictInt = Field(gt=0)
+    attempt: StrictInt = Field(gt=0)
+    milestone: Literal["integrated", "accepted"]
+    current_contract_revision: StrictInt = Field(gt=0)
+    current_attempt: StrictInt = Field(gt=0)
+    current_contract_digest: str = Field(min_length=64, max_length=64)
+    current_delivery_digest: str = Field(min_length=64, max_length=64)
+    current_disposition: Literal["active", "fulfilled", "cancelled", "wontfix"]
+    receipt: MilestoneReceipt | None = None
+
+    _valid_current_digests = field_validator("current_contract_digest", "current_delivery_digest")(
+        _validate_digest
+    )
+
+
+class ClaimState(_StrictModel):
+    """Non-secret lease facts that can influence claim availability and assessment identity."""
+
+    epoch: StrictInt = Field(ge=0)
+    owner: str | None = Field(default=None, min_length=1, max_length=200)
+    expires_at: datetime | None = None
+
+
+class EvaluationInput(_StrictModel):
+    """Read-only facts consumed by the deterministic delivery evaluator."""
+
+    contract: ContractRevision
+    attempt: StrictInt = Field(gt=0)
+    workflow_version: StrictInt = Field(gt=0)
+    coordination_status: str = Field(min_length=1, max_length=50)
+    coordination_disposition: Literal["active", "fulfilled", "cancelled", "wontfix"]
+    is_self_ticket: StrictBool
+    active_bindings: Annotated[tuple[BindingEvidence, ...], BeforeValidator(_lists_to_tuples)] = (
+        Field(default_factory=tuple, max_length=20)
+    )
+    contexts: Annotated[tuple[ContextPredicate, ...], BeforeValidator(_lists_to_tuples)] = Field(
+        default_factory=tuple, max_length=32
+    )
+    dependencies: Annotated[tuple[DependencyPredicate, ...], BeforeValidator(_lists_to_tuples)] = (
+        Field(default_factory=tuple, max_length=32)
+    )
+    integration_receipt: MilestoneReceipt | None = None
+    fulfillment_receipt: MilestoneReceipt | None = None
+    feature_enabled: StrictBool
+    freshness_seconds: StrictInt = Field(ge=1, le=86400)
+    claim: ClaimState | None = None
+    executor_identity: str = Field(default="executor-project", min_length=1, max_length=200)
+    requested_completion_action: (
+        Literal["cross_resolve", "cross_confirm", "self_resolve_pending", "self_resolve"] | None
+    ) = None
+
+
+class DeliveryFinding(_StrictModel):
+    """A deterministic, stable explanation of an observed delivery predicate."""
+
+    code: str = Field(min_length=1, max_length=100)
+    deliverable_key: str | None = Field(default=None, min_length=1, max_length=64)
+    detail: str = Field(min_length=1, max_length=1000)
+
+
+class EligibleWork(_StrictModel):
+    """A claimable external work category and its required participating role."""
+
+    kind: Literal["implement", "repair", "review", "integrate", "accept"]
+    role: Literal["executor", "requester"]
+
+
+class DeliveryAssessment(_StrictModel):
+    """Pure, replayable assessment returned by the delivery evaluator."""
+
+    assessment_id: str = Field(min_length=64, max_length=64)
+    assessment_version: StrictInt = Field(gt=0)
+    assessed_at: datetime
+    observed_at: datetime | None = None
+    fresh_until: datetime | None = None
+    coordination_status: str
+    delivery_stage: Literal["awaiting_artifact", "proposed", "verified", "integrated"]
+    observation_health: Literal["never_observed", "fresh", "stale", "error", "disabled"]
+    acceptance_state: Literal["not_required", "pending", "accepted", "superseded"]
+    requirements_satisfied: StrictBool
+    integration_receipt_eligible: StrictBool
+    completion_eligible_now: StrictBool
+    contract_fulfilled: StrictBool
+    delivery_digest: str = Field(min_length=64, max_length=64)
+    blockers: Annotated[tuple[DeliveryFinding, ...], BeforeValidator(_lists_to_tuples)]
+    deliverables: Annotated[tuple[DeliveryFinding, ...], BeforeValidator(_lists_to_tuples)]
+    eligible_work: Annotated[tuple[EligibleWork, ...], BeforeValidator(_lists_to_tuples)]
+
+    _valid_ids = field_validator("assessment_id", "delivery_digest")(_validate_digest)
+
+
+class DeliveryView(_StrictModel):
+    """Concrete API read shape for one workflow, its evidence assessment and receipts."""
+
+    contract: ContractRevision
+    assessment: DeliveryAssessment
+    bindings: Annotated[tuple[BindingEvidence, ...], BeforeValidator(_lists_to_tuples)] = Field(
+        default_factory=tuple, max_length=20
+    )
+    contexts: Annotated[tuple[ContextPredicate, ...], BeforeValidator(_lists_to_tuples)] = Field(
+        default_factory=tuple, max_length=32
+    )
+    integration_receipt: MilestoneReceipt | None = None
+    fulfillment_receipt: MilestoneReceipt | None = None
+
+
+class DeliveryPage(_StrictModel):
+    """Concrete stable page of delivery views."""
+
+    items: Annotated[tuple[DeliveryView, ...], BeforeValidator(_lists_to_tuples)] = Field(
+        default_factory=tuple, max_length=100
+    )
+    next_cursor: str | None = Field(default=None, min_length=1, max_length=1000)
+    omitted_count: StrictInt = Field(default=0, ge=0)
+
+
+class ClaimResult(_StrictModel):
+    """Result returned by a future atomic claim operation; token remains secret at the boundary."""
+
+    ticket_id: UUIDValue
+    assessment_id: str = Field(min_length=64, max_length=64)
+    work: EligibleWork
+    epoch: StrictInt = Field(ge=0)
+    expires_at: datetime
+    claim_token: str = Field(min_length=1, max_length=1000)
+
+    _valid_assessment = field_validator("assessment_id")(_validate_digest)
+
+
 def contract_content_payload(contract: ContractRevision) -> Mapping[str, Any]:
     """Project a normalized stored contract onto its canonical content identity."""
     payload = contract.model_dump(mode="json", by_alias=True)
