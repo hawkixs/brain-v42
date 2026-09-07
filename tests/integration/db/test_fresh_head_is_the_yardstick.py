@@ -26,12 +26,10 @@ dump/restore, rather than from a production attestation. `PINNED_ASSET_DRIFT`
 stays EMPTY across the move: the yardstick therefore rejects every structural
 gap instead of accepting the eight delivery tables as an exception.
 
-The `-pgrestore` twin is replayed here TOO, and it is deliberately half a test: a
-fresh database is not a restoration, so it says nothing about the
-`pg_dump`/`pg_restore` round-trip. What it does say, and nothing else did, is that
-the twin's fingerprints do describe the 049 schema — canonicalisation included,
-the six constraints DERIVED from 049 included. It diverges from it by exactly one
-index, pinned.
+The `-pgrestore` twin was measured on a real custom-format restore. Its replay
+here is deliberately a fresh-head check: it confirms that the restored-target
+fingerprints describe head 053, canonicalisation included. Against that fresh
+head it diverges only by the pinned pre-existing index.
 
 The disposable databases live in the SAME server as `BRAIN_V42_TEST_DB_URL`, like
 `brain_test` itself; they are created and destroyed by the module. They never
