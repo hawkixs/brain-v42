@@ -305,11 +305,13 @@ class TestFlatEmptyExplainsItself:
             SearchResult(
                 type="learning",
                 score=0.85,
+                score_kind="cross_encoder",
                 item=_make_learning().model_dump(mode="json"),
             ),
             SearchResult(
                 type="decision",
                 score=0.80,
+                score_kind="cross_encoder",
                 item=_make_decision().model_dump(mode="json"),
             ),
         ]
@@ -502,6 +504,7 @@ class TestGroupedEmptyExplainsItself:
                 SearchResult(
                     type="learning",
                     score=0.9,
+                    score_kind="cross_encoder",
                     item=_make_learning().model_dump(mode="json"),
                 )
             ],

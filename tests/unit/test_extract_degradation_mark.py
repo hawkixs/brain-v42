@@ -49,7 +49,7 @@ class TestItSpeaksOnlyWhenTheStandbyServed:
         """An alarm that fires every night stops being read (Dream postmortem 08-04)."""
         assert (
             _degradation_notice(
-                primary=WITHDRAWN, fallback=STANDBY, switched=False, scanned=19, cause="HTTP 410"
+                primary=WITHDRAWN, fallback=STANDBY, switched=False, served=19, cause="HTTP 410"
             )
             is None
         )
@@ -57,14 +57,14 @@ class TestItSpeaksOnlyWhenTheStandbyServed:
     def test_a_run_with_no_fallback_configured_produces_no_notice(self) -> None:
         assert (
             _degradation_notice(
-                primary=WITHDRAWN, fallback=None, switched=False, scanned=19, cause=None
+                primary=WITHDRAWN, fallback=None, switched=False, served=19, cause=None
             )
             is None
         )
 
     def test_a_run_served_by_the_standby_produces_one(self) -> None:
         notice = _degradation_notice(
-            primary=WITHDRAWN, fallback=STANDBY, switched=True, scanned=19, cause="HTTP 410"
+            primary=WITHDRAWN, fallback=STANDBY, switched=True, served=19, cause="HTTP 410"
         )
         assert notice is not None
         assert notice.startswith(DEGRADED_PREFIX)
@@ -73,7 +73,7 @@ class TestItSpeaksOnlyWhenTheStandbyServed:
 class TestTheSentenceNamesWhatAnOperatorNeeds:
     def test_it_names_the_withdrawn_primary_and_the_standby(self) -> None:
         notice = _degradation_notice(
-            primary=WITHDRAWN, fallback=STANDBY, switched=True, scanned=19, cause="HTTP 410"
+            primary=WITHDRAWN, fallback=STANDBY, switched=True, served=19, cause="HTTP 410"
         )
         assert notice is not None
         assert WITHDRAWN in notice
@@ -81,10 +81,10 @@ class TestTheSentenceNamesWhatAnOperatorNeeds:
 
     def test_it_carries_the_cause_and_says_so_when_there_is_none(self) -> None:
         with_cause = _degradation_notice(
-            primary=WITHDRAWN, fallback=STANDBY, switched=True, scanned=19, cause="HTTP 410"
+            primary=WITHDRAWN, fallback=STANDBY, switched=True, served=19, cause="HTTP 410"
         )
         without = _degradation_notice(
-            primary=WITHDRAWN, fallback=STANDBY, switched=True, scanned=19, cause=None
+            primary=WITHDRAWN, fallback=STANDBY, switched=True, served=19, cause=None
         )
         assert with_cause is not None and "HTTP 410" in with_cause
         assert without is not None and "cause non capturée" in without
@@ -92,7 +92,7 @@ class TestTheSentenceNamesWhatAnOperatorNeeds:
     def test_it_counts_TICKETS_because_that_is_what_extract_scans(self) -> None:
         """Roadmap counts batches; extract counts tickets. Neither borrows the other's word."""
         notice = _degradation_notice(
-            primary=WITHDRAWN, fallback=STANDBY, switched=True, scanned=19, cause="HTTP 410"
+            primary=WITHDRAWN, fallback=STANDBY, switched=True, served=19, cause="HTTP 410"
         )
         assert notice is not None
         assert "19 tickets" in notice
@@ -104,14 +104,14 @@ class TestTheStoredFormMatchesTheOtherRail:
 
     def test_the_stored_sentence_never_carries_the_journals_exclamation(self) -> None:
         notice = _degradation_notice(
-            primary=WITHDRAWN, fallback=STANDBY, switched=True, scanned=19, cause="HTTP 410"
+            primary=WITHDRAWN, fallback=STANDBY, switched=True, served=19, cause="HTTP 410"
         )
         assert notice is not None
         assert not notice.startswith("! ")
 
     def test_the_morning_reader_lists_the_phase(self) -> None:
         notice = _degradation_notice(
-            primary=WITHDRAWN, fallback=STANDBY, switched=True, scanned=19, cause="HTTP 410"
+            primary=WITHDRAWN, fallback=STANDBY, switched=True, served=19, cause="HTTP 410"
         )
         (degraded,) = post_run_alert.degraded_rows(
             [
@@ -143,7 +143,7 @@ class TestTheStoredFormMatchesTheOtherRail:
         along with the name.
         """
         notice = _degradation_notice(
-            primary=WITHDRAWN, fallback=STANDBY, switched=True, scanned=19, cause="HTTP 410"
+            primary=WITHDRAWN, fallback=STANDBY, switched=True, served=19, cause="HTTP 410"
         )
         (degraded,) = post_run_alert.degraded_rows(
             [
@@ -208,7 +208,7 @@ class TestTheWriterCarriesItToTheColumn:
 
         bound, factory = self._capture()
         notice = _degradation_notice(
-            primary=WITHDRAWN, fallback=STANDBY, switched=True, scanned=19, cause="HTTP 410"
+            primary=WITHDRAWN, fallback=STANDBY, switched=True, served=19, cause="HTTP 410"
         )
         await record_dream_run(
             factory, "done", dry=False, duration_s=1.0, error=notice, model=STANDBY

@@ -9,9 +9,13 @@ Mock mechanism adaptation (vague 3 re-platform):
   (all tests already used this pattern; no patch teardown needed).
 - _patch_adr_factory target updated to brain_v42.repositories.pg_base because
   get_session_factory is imported there, not in pg_adr anymore.
-- vector_search rows now carry "similarity" (base contract) instead of
-  "distance"; the public wrapper maps distance = 1.0 - similarity.
-  Assertions adapted: dist ≈ 1.0 - similarity (epsilon ~1e-17 is irrelevant).
+- W33 (2026-09-07, "a rank is not a score"): vector_search() now returns the
+  base "similarity" value AS-IS, aligned with the other five shards
+  (decision, learning, snippet, runbook, plan) — higher is a better match.
+  Before this fix, ADR was the ONLY shard that inverted it into
+  `distance = 1.0 - similarity`; invisible in production because rrf_fuse
+  overwrites the score before any consumer reads it, but a latent inversion
+  bug for the day something reads this value directly.
 """
 
 from __future__ import annotations
@@ -872,13 +876,13 @@ class TestSearch:
 
 class TestVectorSearch:
     @pytest.mark.asyncio
-    async def test_vector_search_returns_list_of_adr_distance_tuples(self):
+    async def test_vector_search_returns_list_of_adr_similarity_tuples(self):
         """vector_search() returns list of (ADR, float) tuples.
 
-        Adaptation (vague 3): the base search_vector() returns rows with a
-        "similarity" key (= 1 - cosine_distance).  The wrapper maps
-        distance = 1.0 - similarity, so we supply similarity=0.88 and expect
-        distance ≈ 0.12.
+        W33: the base search_vector() returns rows with a "similarity" key
+        (= 1 - cosine_distance), and the wrapper now returns it AS-IS — we
+        supply similarity=0.88 and expect similarity ≈ 0.88 back, not
+        1.0 - 0.88.
         """
         from brain_v42.models.adr import ADR
         from brain_v42.repositories.pg_adr import PgADRRepo
@@ -905,9 +909,10 @@ class TestVectorSearch:
         results = await repo.vector_search([0.1] * 1536)
         assert isinstance(results, list)
         assert len(results) == 1
-        adr_obj, dist = results[0]
+        adr_obj, similarity = results[0]
         assert isinstance(adr_obj, ADR)
-        assert isinstance(dist, float)
+        assert isinstance(similarity, float)
+        assert similarity == pytest.approx(0.88)
 
     @pytest.mark.asyncio
     async def test_vector_search_with_project_key_filter(self):
@@ -935,15 +940,16 @@ class TestVectorSearch:
         assert results == []
 
     @pytest.mark.asyncio
-    async def test_vector_search_filters_distance_from_adr_mapping(self):
+    async def test_vector_search_filters_similarity_from_adr_mapping(self):
         """vector_search() excludes 'similarity' key from ADR model construction.
 
-        Adaptation (vague 3): the base search_vector() returns rows with a
-        "similarity" key.  The wrapper pops it (via dict.get), maps
-        distance = 1.0 - similarity, and passes the remainder to _row_to_model.
-        The allowlist in _row_to_model also strips "similarity" independently.
+        W33: the base search_vector() returns rows with a "similarity" key.
+        The wrapper reads it (via dict.get) and returns it AS-IS; the
+        allowlist in _row_to_model strips "similarity" independently so it
+        never leaks into the ADR model construction.
 
-        With similarity=0.75 we expect distance = 0.25 in the public tuple.
+        With similarity=0.75 we expect similarity = 0.75 in the public tuple
+        (not 1.0 - 0.75).
         """
         from brain_v42.models.adr import ADR
         from brain_v42.repositories.pg_adr import PgADRRepo
@@ -970,10 +976,119 @@ class TestVectorSearch:
         results = await repo.vector_search([0.1] * 1536)
         # Must not raise a Pydantic validation error due to extra keys in the row
         assert len(results) == 1
-        adr_obj, dist = results[0]
+        adr_obj, similarity = results[0]
         assert isinstance(adr_obj, ADR)
-        # distance = 1.0 - similarity = 1.0 - 0.75 = 0.25
-        assert dist == pytest.approx(0.25)
+        assert similarity == pytest.approx(0.75)
+
+    @pytest.mark.asyncio
+    async def test_adr_similarity_matches_the_other_shards_direction(self):
+        """ADR's vector_search() must agree with the other shards: higher
+        cosine similarity in the row -> higher returned score, never inverted.
+
+        W33 regression guard: before this fix, ADR was the only one of six
+        shards (decision, learning, snippet, runbook, adr, plan) returning
+        `1.0 - similarity` instead of `similarity`. Decision and learning are
+        exercised here directly (same repository-pattern shape as ADR);
+        snippet, runbook and plan follow the identical
+        row.get/pop("similarity") pass-through and are pinned in their own
+        test files (test_pg_snippet.py, test_pg_runbook.py,
+        test_search_vector_returns_tuples-equivalent for plan).
+        """
+        from brain_v42.repositories.pg_adr import PgADRRepo
+        from brain_v42.repositories.pg_decision import PgDecisionRepo
+        from brain_v42.repositories.pg_learning import PgLearningRepo
+
+        similarity_value = 0.73
+
+        # -- ADR --
+        adr_session = _make_mock_session()
+        adr_row = {**_make_adr_row(), "similarity": similarity_value}
+
+        async def mock_adr_execute(stmt, *args, **kwargs):
+            mock_result = MagicMock()
+            mock_result.mappings.return_value.all.return_value = [adr_row]
+            return mock_result
+
+        adr_session.execute = mock_adr_execute
+
+        @asynccontextmanager
+        async def _adr_session_cm(*args, **kwargs):
+            yield adr_session
+
+        adr_factory = MagicMock()
+        adr_factory.side_effect = lambda: _adr_session_cm()
+        adr_repo = PgADRRepo(session_factory=adr_factory)
+        _, adr_similarity = (await adr_repo.vector_search([0.1] * 1536))[0]
+
+        # -- Decision --
+        decision_session = AsyncMock()
+        decision_row = {
+            "id": uuid.uuid4(),
+            "title": "t",
+            "description": "d",
+            "reasoning": "r",
+            "alternatives": [],
+            "consequences": None,
+            "project_key": "p",
+            "tags": [],
+            "status": "active",
+            "superseded_by": None,
+            "embedding": None,
+            "metadata": {},
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
+            "similarity": similarity_value,
+            "search_vector": None,
+        }
+        decision_mock_result = MagicMock()
+        decision_mock_result.mappings.return_value.all.return_value = [decision_row]
+        decision_session.execute = AsyncMock(return_value=decision_mock_result)
+
+        @asynccontextmanager
+        async def _decision_session_cm(*args, **kwargs):
+            yield decision_session
+
+        decision_repo = PgDecisionRepo()
+        with patch.object(decision_repo, "get_session", lambda: _decision_session_cm()):
+            _, decision_similarity = (await decision_repo.search_vector([0.1] * 1536))[0]
+
+        # -- Learning --
+        learning_session = AsyncMock()
+        learning_row = {
+            "id": uuid.uuid4(),
+            "topic": "t",
+            "insight": "i",
+            "source": "docs",
+            "source_type": "documentation",
+            "confidence": "high",
+            "project_key": "p",
+            "tags": [],
+            "validated_at": None,
+            "embedding": None,
+            "metadata": {},
+            "search_vector": None,
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
+            "similarity": similarity_value,
+        }
+        learning_mock_result = MagicMock()
+        learning_mock_result.mappings.return_value.all.return_value = [learning_row]
+        learning_session.execute = AsyncMock(return_value=learning_mock_result)
+
+        @asynccontextmanager
+        async def _learning_session_cm(*args, **kwargs):
+            yield learning_session
+
+        learning_factory = MagicMock()
+        learning_factory.side_effect = lambda: _learning_session_cm()
+        learning_repo = PgLearningRepo(learning_factory)
+        _, learning_similarity = (await learning_repo.search_vector([0.1] * 1536))[0]
+
+        # All three shards must return THE SAME value for the SAME input
+        # similarity — never `1.0 - similarity`.
+        assert adr_similarity == pytest.approx(similarity_value)
+        assert decision_similarity == pytest.approx(similarity_value)
+        assert learning_similarity == pytest.approx(similarity_value)
 
 
 # ===========================================================================

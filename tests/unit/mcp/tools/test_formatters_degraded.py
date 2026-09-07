@@ -48,6 +48,7 @@ class TestFormatSearchResultsDegradedBanner:
         result = SearchResult(
             type="decision",
             score=0.7,
+            score_kind="cross_encoder",
             item=_make_decision_dict(),
             title="Test",
         )
@@ -69,6 +70,7 @@ class TestFormatSearchResultsDegradedBanner:
         result = SearchResult(
             type="decision",
             score=0.7,
+            score_kind="cross_encoder",
             item=_make_decision_dict(),
             title="Test",
         )
@@ -89,6 +91,7 @@ class TestFormatSearchResultsDegradedBanner:
         result = SearchResult(
             type="decision",
             score=0.7,
+            score_kind="cross_encoder",
             item=_make_decision_dict(),
             title="Test",
         )
@@ -104,6 +107,7 @@ class TestFormatSearchResultsDegradedBanner:
         result = SearchResult(
             type="decision",
             score=0.7,
+            score_kind="cross_encoder",
             item=_make_decision_dict(),
             title="Test",
         )
@@ -133,6 +137,7 @@ class TestFormatSearchResultsDegradedBanner:
         result = SearchResult(
             type="decision",
             score=0.7,
+            score_kind="cross_encoder",
             item=_make_decision_dict(),
             title="Test",
         )
@@ -197,6 +202,7 @@ class TestFormatKnowledgeByTypeDegradedBanner:
                 SearchResult(
                     type="learning",
                     score=1.0,
+                    score_kind="cross_encoder",
                     item=_make_learning_dict(),
                 )
             ]
@@ -218,6 +224,7 @@ class TestFormatKnowledgeByTypeDegradedBanner:
                 SearchResult(
                     type="learning",
                     score=0.9,
+                    score_kind="cross_encoder",
                     item=_make_learning_dict(),
                 )
             ]
@@ -243,6 +250,7 @@ class TestFormatKnowledgeByTypeDegradedBanner:
                 SearchResult(
                     type="learning",
                     score=0.5,
+                    score_kind="cross_encoder",
                     item=_make_learning_dict(),
                 )
             ]
@@ -267,6 +275,7 @@ class TestFormatKnowledgeByTypeDegradedBanner:
                 SearchResult(
                     type="learning",
                     score=0.9,
+                    score_kind="cross_encoder",
                     item=_make_learning_dict(),
                 )
             ]

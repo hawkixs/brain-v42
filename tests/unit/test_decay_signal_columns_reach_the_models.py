@@ -42,6 +42,7 @@ from brain_v42.models.indexed_plan_chunk import IndexedPlanChunk
 from brain_v42.models.learning import Learning
 from brain_v42.models.runbook import Runbook
 from brain_v42.models.snippet import Snippet
+from brain_v42.services.search.hybrid import SCORE_KIND_CROSS_ENCODER
 
 #: The human-signal columns (migrations 041 and 044). They switch TOGETHER:
 #: `access_count` weighs 0.2 in the formula, `last_accessed_at` 0.3 — carrying only
@@ -202,7 +203,11 @@ class TestTheModelReachesTheCalculator:
             decay_calculator=recorder,
             decay_human_signal_enabled=human_signal,
         )
-        service._build_search_results({"plan": [(self._chunk(), 0.9)]}, limit=10)
+        service._build_search_results(
+            {"plan": [(self._chunk(), 0.9)]},
+            limit=10,
+            score_kind_by_type={"plan": SCORE_KIND_CROSS_ENCODER},
+        )
         return recorder.calls[-1]
 
     def test_armed_the_plan_is_scored_on_the_parent_human_counters(self) -> None:
@@ -265,7 +270,11 @@ class TestTheModelReachesTheCalculator:
             embedding_svc=None,
             decay_calculator=recorder,
             decay_human_signal_enabled=True,
-        )._build_search_results({"learning": [(learning, 0.9)]}, limit=10)
+        )._build_search_results(
+            {"learning": [(learning, 0.9)]},
+            limit=10,
+            score_kind_by_type={"learning": SCORE_KIND_CROSS_ENCODER},
+        )
 
         call = recorder.calls[-1]
         assert call["access_count"] == 3

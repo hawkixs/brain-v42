@@ -24,6 +24,22 @@ RERANK_MODE_RERANKED = "reranked"
 RERANK_MODE_RRF_FALLBACK = "rrf_fallback"
 RERANK_MODE_RRF_ONLY = "rrf_only"
 
+# W33 "a rank is not a score" — these name the PROVENANCE of a score, not
+# just its value. A rank ordinal rescaled into (0, 1] (rrf_fallback) is
+# numerically indistinguishable from a calibrated cross-encoder sigmoid
+# unless something tags it. The decision of which value applies is made in
+# exactly one place — brain_service._fan_out's rerank_mode -> score_kind
+# mapping — and consumed with NO plausible default at SearchResult
+# construction: a type missing from that mapping raises KeyError rather than
+# silently rendering a rank ordinal as a calibrated score. RankedCandidate
+# itself carries no score_kind field: an earlier version duplicated the
+# provenance there (set by reranker.py, never read by anything), which gave
+# the impression of two independent guarantees when only the _fan_out
+# mapping was actually enforced.
+SCORE_KIND_CROSS_ENCODER = "cross_encoder"
+SCORE_KIND_RANK = "rank"
+SCORE_KIND_FTS_RANK = "fts_rank"
+
 
 @dataclass
 class RankedCandidate:
@@ -91,6 +107,7 @@ class HybridSearcher:
         project_key: str | None = None,
         embedding: list[float] | None = None,
         project_keys: list[str] | None = None,
+        entity_type: str = "",
     ) -> tuple[list[tuple[Any, float]], str]:
         """Run hybrid: FTS + vector in parallel -> RRF -> optional rerank.
 
@@ -107,6 +124,10 @@ class HybridSearcher:
             project_key: Optional project scope filter.
             embedding: Optional pre-computed embedding vector forwarded to vector_search_fn.
             project_keys: Optional list of project keys for group-based filtering.
+            entity_type: The KnowledgeType this shard searches (e.g. "decision").
+                Threaded onto every RankedCandidate so a degraded reranker can
+                name which shard fell back — W33 incident (2026-09-07): the
+                log carried n_candidates but not WHICH shard produced them.
 
         Returns:
             2-tuple (list[tuple[entity, score]], rerank_mode) sorted by score desc.
@@ -128,7 +149,7 @@ class HybridSearcher:
             RankedCandidate(
                 id=e.id,
                 entity=e,
-                entity_type="",
+                entity_type=entity_type,
                 score=0.0,
                 text=text_extractor(e),
             )
@@ -138,7 +159,7 @@ class HybridSearcher:
             RankedCandidate(
                 id=e.id,
                 entity=e,
-                entity_type="",
+                entity_type=entity_type,
                 score=s,
                 text=text_extractor(e),
             )

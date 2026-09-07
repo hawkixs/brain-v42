@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import httpx
@@ -491,6 +491,75 @@ class TestCurateBatchErrorCapture:
         assert "ConnectError" in outcome.error
 
 
+class TestCurateLlmAttemptMeasuresRealUsage:
+    """`_post_chat`'s usage payload must reach `BatchOutcome.thinking_tokens`
+    through the REAL measurement code (`_thinking_tokens_from_usage`,
+    `_combine_thinking_tokens`) -- not just from the layer above it
+    (`curate_batch`), where the run-level wiring tests hand-feed the count
+    directly on a test double.
+
+    VERIFIED BY MUTATION: replacing
+    `thinking_tokens = _thinking_tokens_from_usage(usage)` (roadmap_curate.py)
+    with a literal `None` -- the "extractor is dead code" regression this lot
+    exists to close -- turns every test below red.
+    """
+
+    _VALID = json.dumps([{"op": "archive", "feature_id": str(_F1), "payload": {}}])
+    _INVALID_OP = json.dumps([{"op": "bogus", "feature_id": str(_F1), "payload": {}}])
+
+    @pytest.mark.asyncio
+    async def test_a_reported_reasoning_count_reaches_the_outcome(self) -> None:
+        async def fake_post_chat(client, model, messages, sleep, **kw):
+            return (self._VALID, {"reasoning_tokens": 12})
+
+        with patch("scripts.roadmap_curate._post_chat", fake_post_chat):
+            outcome = await rc._curate_llm_attempt(MagicMock(), "m", _batch(), AsyncMock())
+
+        assert outcome.failed is False
+        assert outcome.thinking_tokens == 12
+
+    @pytest.mark.asyncio
+    async def test_usage_without_a_reasoning_field_leaves_the_outcome_unmeasured(self) -> None:
+        async def fake_post_chat(client, model, messages, sleep, **kw):
+            return (self._VALID, {"prompt_tokens": 10, "completion_tokens": 20})
+
+        with patch("scripts.roadmap_curate._post_chat", fake_post_chat):
+            outcome = await rc._curate_llm_attempt(MagicMock(), "m", _batch(), AsyncMock())
+
+        assert outcome.failed is False
+        assert outcome.thinking_tokens is None
+
+    @pytest.mark.asyncio
+    async def test_a_genuinely_reported_zero_reaches_the_outcome_as_zero_not_none(self) -> None:
+        async def fake_post_chat(client, model, messages, sleep, **kw):
+            return (self._VALID, {"reasoning_tokens": 0})
+
+        with patch("scripts.roadmap_curate._post_chat", fake_post_chat):
+            outcome = await rc._curate_llm_attempt(MagicMock(), "m", _batch(), AsyncMock())
+
+        assert outcome.failed is False
+        assert outcome.thinking_tokens == 0
+
+    @pytest.mark.asyncio
+    async def test_a_corrective_reprompt_sums_both_calls_measurements(self) -> None:
+        """The only place `_combine_thinking_tokens` folds within a single call
+        chain: initial attempt (12) + corrective re-prompt (5) -> 17."""
+        calls = {"n": 0}
+
+        async def fake_post_chat(client, model, messages, sleep, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return (self._INVALID_OP, {"reasoning_tokens": 12})
+            return (self._VALID, {"reasoning_tokens": 5})
+
+        with patch("scripts.roadmap_curate._post_chat", fake_post_chat):
+            outcome = await rc._curate_llm_attempt(MagicMock(), "m", _batch(), AsyncMock())
+
+        assert outcome.failed is False
+        assert calls["n"] == 2
+        assert outcome.thinking_tokens == 17
+
+
 class TestManagedModelChain:
     @pytest.mark.asyncio
     async def test_proposer_only_duplicates_keep_first_proposal(self) -> None:
@@ -877,6 +946,48 @@ class TestManagedModelChain:
         assert rc.DEFAULT_ROADMAP_FALLBACK_MODEL in outcome.error
 
 
+class TestManagedModelChainFoldsTheMeasuredCount:
+    """`_curate_managed_model_chain` accumulated `thinking_tokens_acc` only on
+    the FAILED branch (one line above `circuit.add(candidate)`) and discarded
+    it on the success branch's `return outcome` -- a primary that measured
+    reasoning tokens before dying lost that count the moment the fallback
+    served without measuring anything of its own.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_measured_primary_failure_survives_a_silent_fallback_success(self) -> None:
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            model = json.loads(request.content)["model"]
+            if model == rc.DEFAULT_ROADMAP_MODEL:
+                calls["n"] += 1
+                usage = {"reasoning_tokens": 12} if calls["n"] == 1 else {}
+                return httpx.Response(
+                    200,
+                    json={"choices": [{"message": {"content": "pas du json"}}], "usage": usage},
+                )
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "[]"}}], "usage": {}},
+            )
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="https://mock.nvidia.local/v1",
+        ) as client:
+            outcome = await curate_batch(
+                client,
+                rc.DEFAULT_ROADMAP_MODEL,
+                _batch_n(8),
+                fallback_model=rc.DEFAULT_ROADMAP_FALLBACK_MODEL,
+            )
+
+        assert not outcome.failed
+        assert outcome.fallback_used is True
+        assert outcome.thinking_tokens == 12
+
+
 class TestPrimaryFailureIsNeverSwallowed:
     """A fallback that succeeds must not erase the primary's failure.
 
@@ -1071,6 +1182,49 @@ class TestReviewedModelFallback:
             rc.DEFAULT_WET_ROADMAP_FALLBACK_MODEL,
             rc.DEFAULT_WET_ROADMAP_FALLBACK_MODEL,
         ]
+
+    @pytest.mark.asyncio
+    async def test_a_measured_primary_failure_survives_the_fallback_on_the_reviewed_path(
+        self,
+    ) -> None:
+        """`finish_with_fallback` returned the fallback outcome unmodified,
+        dropping the primary's measured reasoning-token count on the legacy
+        (reviewed-model) path -- the same defect as `_curate_managed_model_chain`,
+        one call frame up."""
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            model = json.loads(request.content)["model"]
+            if model == rc.DEFAULT_WET_ROADMAP_MODEL:
+                calls["n"] += 1
+                usage = {"reasoning_tokens": 12} if calls["n"] == 1 else {}
+                return httpx.Response(
+                    200,
+                    json={"choices": [{"message": {"content": "pas du json"}}], "usage": usage},
+                )
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "[]"}}], "usage": {}},
+            )
+
+        async def no_sleep(_seconds: float) -> None:
+            return None
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="https://mock.nvidia.local/v1",
+        ) as client:
+            outcome = await curate_batch(
+                client,
+                rc.DEFAULT_WET_ROADMAP_MODEL,
+                _batch(),
+                fallback_model=rc.DEFAULT_WET_ROADMAP_FALLBACK_MODEL,
+                sleep=no_sleep,
+            )
+
+        assert not outcome.failed
+        assert outcome.fallback_used is True
+        assert outcome.thinking_tokens == 12
 
     @pytest.mark.asyncio
     async def test_auth_failure_never_calls_reviewed_fallback(self) -> None:

@@ -761,7 +761,12 @@ def format_search_results(
 
     Within each type section, items are sorted by ``score`` descending and
     each is prefixed with ``[s:0.XX]`` so the LLM can rank/filter without
-    issuing a second tool call.
+    issuing a second tool call — UNLESS ``score_kind`` says the value is a
+    rank ordinal, not a calibrated score (W33, 2026-09-07: a degraded
+    reranker rescales by rank into (0, 1], and a synthetic ``[s:1.00]`` reads
+    as a perfect match). Those items are prefixed ``[rank i/n]`` instead; the
+    ``[s:X.XX]`` prefix is reserved for ``score_kind == "cross_encoder"`` and
+    is byte-identical to before this change on that path.
 
     Args:
         results: Search results from BrainService.search().
@@ -822,10 +827,18 @@ def format_search_results(
         label = _TYPE_LABELS[type_key]
         model_cls = _MODEL_MAP[type_key]
         section_lines = [f"### {label} ({len(items)})"]
+        n_items = len(items)
         for i, sr in enumerate(items, 1):
             model = model_cls.model_validate(sr.item)
             item = _format_search_item(type_key, model, i, full=full)
-            section_lines.append(f"[s:{sr.score:.2f}] {item}")
+            # W33 "a rank is not a score": a rank ordinal rescaled into
+            # (0, 1] is numerically indistinguishable from a calibrated
+            # cross-encoder sigmoid — score_kind is what tells them apart.
+            if sr.score_kind != "cross_encoder":
+                prefix = f"[rank {i}/{n_items}]"
+            else:
+                prefix = f"[s:{sr.score:.2f}]"
+            section_lines.append(f"{prefix} {item}")
         sections.append("\n".join(section_lines))
 
     body = header + "\n\n" + "\n\n".join(sections)

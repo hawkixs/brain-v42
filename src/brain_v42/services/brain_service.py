@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import structlog
 
@@ -58,6 +58,13 @@ _TEXT_EXTRACTORS: dict[str, Callable[..., str]] = {
 # Mapping from KnowledgeType to plural field name on KnowledgeByType
 # "decision" → "decisions", "learning" → "learnings", etc.
 _TYPE_TO_PLURAL: dict[str, str] = {t: t + "s" for t in ALL_TYPES}
+
+# Mirrors SearchResult.score_kind's Literal (W33). score_kind_by_type dicts
+# are typed as plain `dict[KnowledgeType, str]` (their values come from
+# hybrid.py's SCORE_KIND_* string constants, not this Literal, to avoid a
+# hard type-level coupling between the two modules) — cast() at the
+# SearchResult construction sites narrows back before the required field.
+_ScoreKindLiteral = Literal["cross_encoder", "rank", "fts_rank"]
 
 _GRAPH_BACKED_TYPES: frozenset[KnowledgeType] = frozenset(
     ("decision", "learning", "snippet", "runbook", "adr")
@@ -147,7 +154,12 @@ class BrainService:
         limit: int,
         project_keys: list[str] | None = None,
         include_archived: bool = False,
-    ) -> tuple[dict[KnowledgeType, list[tuple[Any, float]]], dict[str, Any] | None, str | None]:
+    ) -> tuple[
+        dict[KnowledgeType, list[tuple[Any, float]]],
+        dict[str, Any] | None,
+        str | None,
+        dict[KnowledgeType, str],
+    ]:
         """Run search concurrently across all requested service types.
 
         Pre-computes the query embedding ONCE and passes it to each service,
@@ -169,13 +181,17 @@ class BrainService:
             rerank_mode == "rrf_fallback", the caller receives degraded info.
 
         Returns:
-            3-tuple (results_by_type, degraded, rerank_mode_observed).
+            4-tuple (results_by_type, degraded, rerank_mode_observed,
+            score_kind_by_type).
             degraded is None (healthy) or a dict with mode keys
             ("rerank_mode", "search_mode"). rerank_mode_observed is the raw
             single-value summary ("reranked" / "rrf_fallback" / "rrf_only")
             surfaced for diagnostics even when NOT degraded — None when no
             hybrid searcher ran (vector-only path, or the FTS-only fallback,
-            which reports through search_mode instead).
+            which reports through search_mode instead). score_kind_by_type
+            (W33) names the PROVENANCE of each type's scores — one of
+            "cross_encoder" / "rank" / "fts_rank" — so a rank ordinal is
+            never rendered as a calibrated score.
         """
         scope = get_dream_project_scope()
         if scope is not None:
@@ -235,6 +251,7 @@ class BrainService:
                     project_key=project_key,
                     project_keys=project_keys,
                     embedding=shared_embedding,
+                    entity_type=t,
                 )
             else:
                 coro = svc.semantic_search(
@@ -251,6 +268,12 @@ class BrainService:
         raw_results = await asyncio.gather(*tasks, return_exceptions=True)
 
         results: dict[KnowledgeType, list[tuple[Any, float]]] = {}
+        # W33 "a rank is not a score": per-type provenance of the scores in
+        # `results[t]`, consumed by _build_search_results/what_do_i_know_about
+        # to set SearchResult.score_kind. Homogeneous per type — each branch
+        # below handles one whole shard in one code path, so every item a
+        # shard contributes shares the same score_kind.
+        score_kind_by_type: dict[KnowledgeType, str] = {}
         # Collect rerank modes from hybrid searcher results (Fix 1)
         observed_rerank_modes: list[str] = []
 
@@ -270,13 +293,42 @@ class BrainService:
                     (entity, (n - rank) / n if n > 0 else 0.0)
                     for rank, entity in enumerate(entities)
                 ]
+                from brain_v42.services.search.hybrid import SCORE_KIND_FTS_RANK  # noqa: PLC0415
+
+                score_kind_by_type[t] = SCORE_KIND_FTS_RANK
             elif self._hybrid_searcher:
                 # Fix 1: HybridSearcher now returns (list[tuple], rerank_mode)
                 search_results, rerank_mode = result
                 results[t] = search_results
                 observed_rerank_modes.append(rerank_mode)
+
+                from brain_v42.services.search.hybrid import (  # noqa: PLC0415
+                    RERANK_MODE_RERANKED,
+                    RERANK_MODE_RRF_FALLBACK,
+                    RERANK_MODE_RRF_ONLY,
+                    SCORE_KIND_CROSS_ENCODER,
+                    SCORE_KIND_RANK,
+                )
+
+                score_kind_by_type[t] = {
+                    RERANK_MODE_RERANKED: SCORE_KIND_CROSS_ENCODER,
+                    RERANK_MODE_RRF_FALLBACK: SCORE_KIND_RANK,
+                    # rrf_only: no reranker configured — the RRF fusion score
+                    # is not a calibrated similarity either (max ~0.033 for
+                    # k=60), so it renders like a rank ordinal, not a score.
+                    RERANK_MODE_RRF_ONLY: SCORE_KIND_RANK,
+                }[rerank_mode]
             else:
                 results[t] = result
+                from brain_v42.services.search.hybrid import (  # noqa: PLC0415
+                    SCORE_KIND_CROSS_ENCODER,
+                )
+
+                # Vector-only path (no hybrid_searcher configured at all —
+                # legacy/test-only in this codebase, production always wires
+                # a HybridSearcher): a genuine, comparable cosine similarity,
+                # not a synthetic ordinal.
+                score_kind_by_type[t] = SCORE_KIND_CROSS_ENCODER
 
         # Build degraded marker
         degraded: dict[str, Any] | None = None
@@ -298,12 +350,14 @@ class BrainService:
                 if rerank_mode_observed not in (None, "reranked"):
                     degraded = {"rerank_mode": rerank_mode_observed}
 
-        return results, degraded, rerank_mode_observed
+        return results, degraded, rerank_mode_observed, score_kind_by_type
 
     def _build_search_results(
         self,
         results_by_type: dict[KnowledgeType, list[tuple[Any, float]]],
         limit: int,
+        *,
+        score_kind_by_type: dict[KnowledgeType, str],
         min_score: float | None = None,
         include_archived: bool = False,
         tags: list[str] | None = None,
@@ -313,6 +367,21 @@ class BrainService:
         When include_archived is False (default), entities with
         freshness_status='archived' or a non-null merged_into are excluded.
         When decay_calculator is set, results are re-ranked by effective_score.
+
+        Args:
+            score_kind_by_type: W33 — provenance of each type's scores
+                ("cross_encoder" / "rank" / "fts_rank"), as computed by
+                _fan_out. REQUIRED, with no plausible default: a type that
+                reaches the loop below without a matching entry raises
+                KeyError rather than masquerading a rank ordinal as a
+                calibrated cross-encoder score (the fail-open bug this
+                parameter was hardened against — a caller-supplied default
+                of "cross_encoder" would have reintroduced it at the one
+                place it matters). Both real callers (search(),
+                what_do_i_know_about()) always supply a real entry for every
+                type whose items list is non-empty — an empty items list
+                never indexes into this dict, so a type that _fan_out
+                skipped (e.g. a raised exception) never trips the KeyError.
 
         Returns:
             2-tuple (results, diagnostics). diagnostics counts candidates
@@ -451,6 +520,9 @@ class BrainService:
                     SearchResult(
                         type=t,
                         score=score,
+                        # No plausible default (W33): a missing entry raises
+                        # KeyError instead of masquerading as "cross_encoder".
+                        score_kind=cast(_ScoreKindLiteral, score_kind_by_type[t]),
                         item=item_dict,
                         title=result_title,
                         project_key=result_project_key,
@@ -564,7 +636,12 @@ class BrainService:
         # One wasted Neo4j roundtrip per scoped search. The full multi-project
         # fan-out is still deferred; the dead roundtrip is now gone.
 
-        results_by_type, fan_out_degraded, rerank_mode_observed = await self._fan_out(
+        (
+            results_by_type,
+            fan_out_degraded,
+            rerank_mode_observed,
+            score_kind_by_type,
+        ) = await self._fan_out(
             types=types_to_search,
             query=query,
             project_key=project_key,
@@ -584,6 +661,7 @@ class BrainService:
             min_score=effective_min_score,
             include_archived=include_archived,
             tags=tags,
+            score_kind_by_type=score_kind_by_type,
         )
 
         # Diagnostics (lot G2): the dream scope reads a ContextVar (no IO) —
@@ -769,7 +847,12 @@ class BrainService:
                     ),
                 )
 
-        results_by_type, _wdika_degraded, rerank_mode_observed = await self._fan_out(
+        (
+            results_by_type,
+            _wdika_degraded,
+            rerank_mode_observed,
+            score_kind_by_type,
+        ) = await self._fan_out(
             types=types_to_search,
             query=topic,
             project_key=project_key,
@@ -819,6 +902,9 @@ class BrainService:
                     SearchResult(
                         type=t,
                         score=score,
+                        # No plausible default (W33): a missing entry raises
+                        # KeyError instead of masquerading as "cross_encoder".
+                        score_kind=cast(_ScoreKindLiteral, score_kind_by_type[t]),
                         item=item_dict,
                         parent_id=getattr(entity, "plan_id", None),
                     )

@@ -111,12 +111,23 @@ class TestTheSweepWritesWhatItClosedOrWouldHaveClosed:
         assert bound[0]["closed_inactive_count"] is None
 
 
-class TestTheNvidiaRailWritesAnIntegerNeverNull:
-    """`thinking_tokens` was NULL on every extract/* and roadmap/* row."""
+class TestTheNvidiaRailNowDistinguishesZeroFromUnmeasured:
+    """`thinking_tokens` was NULL on every extract/* and roadmap/* row that DID
+    carry a model -- the first fix (hard-coding 0 as "the honest value today")
+    corrected that, but was itself half-wrong: 0 and "not measured" collapsed
+    into the same value again, just the other one. Measured 2026-09-07: models
+    ran on both phases and every row still carried 0, because nothing threaded
+    the real per-call measurement through -- the extractor was dead code.
+
+    The NVIDIA rail now follows the same rule as the codex/agy/claude rail
+    (`PhaseTelemetry`, `dream_parser.py`): `None` when nothing was measured
+    (including "the call was never made"), `0` only when a real zero was
+    reported.
+    """
 
     @pytest.mark.parametrize("module", ["ticket_extract", "roadmap_curate"])
     @pytest.mark.asyncio
-    async def test_the_column_is_bound_and_is_never_None(self, module: str) -> None:
+    async def test_the_default_is_none_not_zero(self, module: str) -> None:
         import importlib
 
         record_dream_run = importlib.import_module(f"brain_v42.scripts.{module}").record_dream_run
@@ -126,8 +137,7 @@ class TestTheNvidiaRailWritesAnIntegerNeverNull:
             _factory(bound), "done", dry=False, duration_s=1.0, error=None, model="m"
         )
         assert "thinking_tokens" in bound[0]
-        assert bound[0]["thinking_tokens"] is not None
-        assert isinstance(bound[0]["thinking_tokens"], int)
+        assert bound[0]["thinking_tokens"] is None
 
     @pytest.mark.parametrize("module", ["ticket_extract", "roadmap_curate"])
     @pytest.mark.asyncio
@@ -148,32 +158,52 @@ class TestTheNvidiaRailWritesAnIntegerNeverNull:
         )
         assert bound[0]["thinking_tokens"] == 1234
 
+    @pytest.mark.parametrize("module", ["ticket_extract", "roadmap_curate"])
+    @pytest.mark.asyncio
+    async def test_a_measured_zero_is_not_coerced_back_to_none(self, module: str) -> None:
+        import importlib
+
+        record_dream_run = importlib.import_module(f"brain_v42.scripts.{module}").record_dream_run
+
+        bound: list[dict[str, Any]] = []
+        await record_dream_run(
+            _factory(bound),
+            "done",
+            dry=False,
+            duration_s=1.0,
+            error=None,
+            model="m",
+            thinking_tokens=0,
+        )
+        assert bound[0]["thinking_tokens"] == 0
+
 
 class TestTheReasoningCountIsReadFromWhateverTheProviderSends:
-    """0 is the honest value TODAY, and it must stop being 0 on its own.
-
-    Measured 2026-09-03: this repository reads only `prompt_tokens` and
-    `completion_tokens` from the NVIDIA usage, and no dream log carries
-    `reasoning_tokens` or `completion_tokens_details`. So the count is 0 -- but a
-    hard-coded 0 would still be 0 the day the provider starts reporting one.
-    The extractor looks for both known shapes instead.
+    """`None` means the call's usage did not carry a trustworthy reasoning
+    count -- absent key, non-dict usage, wrong type, or a negative value.
+    `0` means the provider explicitly reported zero. Collapsing the two (the
+    previous contract here) is exactly what let 2026-09-07's rows read 0 while
+    genuinely unmeasured.
     """
 
     @pytest.mark.parametrize(
         ("usage", "expected"),
         [
-            ({}, 0),
-            ({"prompt_tokens": 10, "completion_tokens": 20}, 0),
+            (None, None),
+            ({}, None),
+            ({"prompt_tokens": 10, "completion_tokens": 20}, None),
             ({"reasoning_tokens": 42}, 42),
+            ({"reasoning_tokens": 0}, 0),
             ({"completion_tokens_details": {"reasoning_tokens": 7}}, 7),
-            ({"reasoning_tokens": None}, 0),
-            ({"reasoning_tokens": "nonsense"}, 0),
-            ({"completion_tokens_details": None}, 0),
-            ({"reasoning_tokens": -5}, 0),
+            ({"completion_tokens_details": {"reasoning_tokens": 0}}, 0),
+            ({"reasoning_tokens": None}, None),
+            ({"reasoning_tokens": "nonsense"}, None),
+            ({"completion_tokens_details": None}, None),
+            ({"reasoning_tokens": -5}, None),
         ],
     )
     def test_it_survives_every_shape_the_provider_might_send(
-        self, usage: dict[str, Any], expected: int
+        self, usage: dict[str, Any] | None, expected: int | None
     ) -> None:
         from brain_v42.scripts.ticket_extract import thinking_tokens_from_usage
 
@@ -182,11 +212,9 @@ class TestTheReasoningCountIsReadFromWhateverTheProviderSends:
     def test_there_is_exactly_one_definition_of_it(self) -> None:
         """Two rails reading the same provider usage differently is the drift.
 
-        The extractor is defined once, in `ticket_extract`. `roadmap_curate`
-        does NOT yet thread its usage to the writer -- it binds 0 -- so this
-        asserts the definition is unique rather than pretending both rails
-        already measure. Threading the roadmap usage is the remaining step, and
-        it is named in the report rather than implied by a green test.
+        The extractor is defined once, in `ticket_extract`, and imported into
+        `roadmap_curate` under a private alias so this module never grows a
+        second `thinking_tokens_from_usage` of its own.
         """
         import brain_v42.scripts.roadmap_curate as roadmap
         import brain_v42.scripts.ticket_extract as extract
@@ -194,4 +222,49 @@ class TestTheReasoningCountIsReadFromWhateverTheProviderSends:
         assert callable(extract.thinking_tokens_from_usage)
         assert not hasattr(roadmap, "thinking_tokens_from_usage"), (
             "a second definition appeared -- one usage, one reading"
+        )
+
+
+class TestCombineThinkingTokensFoldsMeasurements:
+    """`combine_thinking_tokens` had ZERO direct tests: every run-level test
+    only ever folded `None` and `17`, so a fold that collapsed a genuinely
+    measured zero back to `None` (the exact conflation this module exists to
+    forbid) could pass the whole suite unnoticed.
+    """
+
+    @pytest.mark.parametrize(
+        ("current", "addition", "expected"),
+        [
+            (None, None, None),
+            (None, 0, 0),
+            (None, 5, 5),
+            (0, None, 0),
+            (3, 0, 3),
+            (3, 4, 7),
+        ],
+    )
+    def test_the_fold_table(
+        self, current: int | None, addition: int | None, expected: int | None
+    ) -> None:
+        from brain_v42.scripts.ticket_extract import combine_thinking_tokens
+
+        assert combine_thinking_tokens(current, addition) == expected
+
+    def test_more_than_two_measurements_fold_left_to_right(self) -> None:
+        """A whole night's worth of batches/threads, not just one call chain."""
+        from brain_v42.scripts.ticket_extract import combine_thinking_tokens
+
+        total: int | None = None
+        for addition in (None, 5, None, 3, 0):
+            total = combine_thinking_tokens(total, addition)
+
+        assert total == 8
+
+    def test_there_is_exactly_one_definition_of_the_combiner_too(self) -> None:
+        import brain_v42.scripts.roadmap_curate as roadmap
+        import brain_v42.scripts.ticket_extract as extract
+
+        assert callable(extract.combine_thinking_tokens)
+        assert not hasattr(roadmap, "combine_thinking_tokens"), (
+            "a second definition appeared -- one fold, one place"
         )

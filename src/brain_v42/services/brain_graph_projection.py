@@ -1292,9 +1292,17 @@ class BrainGraphProjectionService:
                     promotion_target,
                     "MATERIALIZED_AS",
                     origin="postgres",
-                    weight=(
-                        row["cosine_observed"] if row.get("cosine_observed") is not None else 1.0
-                    ),
+                    # Pinned to 1.0 EXPLICITLY, never derived from
+                    # cosine_observed (W25-promote-nearest-tool-design.md
+                    # §1.6/§5): a materialized promotion is a fact with
+                    # certainty 1, not a similarity score. Before this pin,
+                    # the fallback to 1.0 was accidental -- it only held
+                    # because cosine_observed was NEVER written on adr/runbook
+                    # rows. Lot 1 starts writing it (promote_validate.py), so
+                    # without this explicit pin the edge would have silently
+                    # re-weighted to ~0.90 the first time a shadow verdict
+                    # landed on a materialized row.
+                    weight=1.0,
                 )
 
         for row in self._rows(tables, "tickets"):

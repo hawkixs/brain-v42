@@ -42,6 +42,7 @@ in mind before editing a fixture here:
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import uuid
@@ -1001,7 +1002,11 @@ def test_cli_outputs_json(capsys, monkeypatch) -> None:
     async def fake_fetch(*_a, **_k):
         return fake_rows
 
+    async def fake_attach(_session_factory, candidates, _project_key, _settings):
+        return candidates
+
     monkeypatch.setattr(promote_prepare, "fetch_candidates", fake_fetch)
+    monkeypatch.setattr(promote_prepare, "attach_dedup_verdict", fake_attach)
     monkeypatch.setattr(
         promote_prepare,
         "_build_factory",
@@ -1010,3 +1015,69 @@ def test_cli_outputs_json(capsys, monkeypatch) -> None:
     promote_prepare.main(["--project-key", "brain-v42", "--limit", "10"])
     captured = capsys.readouterr()
     assert json.loads(captured.out) == fake_rows
+
+
+def test_cli_main_attaches_the_real_dedup_verdict(capsys, monkeypatch) -> None:
+    """The only production path — `main()`'s `_build_pool` calling
+    `attach_dedup_verdict` — had no test that let it actually run: the sole
+    CLI test above monkeypatches `attach_dedup_verdict` away, so `main()`
+    passed whether or not it was ever called (review finding, W25 lot 1 fix
+    round). Mutation verified: replacing `return await attach_dedup_verdict(
+    ...)` in `_build_pool` with `return candidates` left the full unit suite,
+    both new dedup files and the e2e module green (48 passed). In production
+    that mutation emits a pool with no "dedup" key at all, and
+    promote_validate then raises "missing dedup band for family 'adr'" on
+    EVERY materialized promotion, every night, with zero test going red.
+
+    Neither `fetch_candidates` nor `attach_dedup_verdict` is stubbed here:
+    `main()` runs its real `_build_pool` coroutine against the test
+    database. `_build_factory` isn't stubbed either — `main()` builds its
+    own `Settings()`/session_factory internally from `POSTGRES_URL`, so
+    redirecting that one env var is the only seam needed to keep this off
+    production.
+    """
+    isolated_pk = make_unit_project_key("t8-cli")
+    db_url = require_test_db_url()
+    monkeypatch.setenv("POSTGRES_URL", db_url)
+
+    async def _seed() -> None:
+        engine = create_async_engine(db_url, poolclass=NullPool, echo=False)
+        try:
+            session_factory = async_sessionmaker(
+                engine, class_=AsyncSession, expire_on_commit=False
+            )
+            now = dt.datetime.now(dt.UTC)
+            async with session_factory() as session:
+                async with session.begin():
+                    await session.execute(
+                        learnings.insert().values(
+                            topic="cli-real-dedup-wiring",
+                            insight="i",
+                            project_key=isolated_pk,
+                            source_type="experience",
+                            confidence="high",
+                            tags=[],
+                            access_count=5,
+                            access_count_human=4,
+                            created_at=now - dt.timedelta(days=10),
+                        )
+                    )
+        finally:
+            await engine.dispose()
+
+    try:
+        asyncio.run(_seed())
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"PostgreSQL not reachable: {exc}")
+
+    promote_prepare.main(["--project-key", isolated_pk, "--limit", "10"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    # dream.sh:949 runs `jq 'length'` on this stdout — the top level MUST
+    # stay an array, never an object, or that command returns the KEY COUNT
+    # instead of the pool size and silently breaks the empty-pool path.
+    assert isinstance(payload, list)
+    assert len(payload) == 1
+    assert payload[0]["topic"] == "cli-real-dedup-wiring"
+    assert payload[0]["dedup"]["adr"]["band"] in ("clear", "borderline", "block", "unavailable")

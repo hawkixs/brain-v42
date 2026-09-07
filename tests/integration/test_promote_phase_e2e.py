@@ -13,11 +13,13 @@ fed to validate(), which is the same path dream.sh takes on a real run.
 
 from __future__ import annotations
 
+import math
 import uuid
 
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
+from scripts.dream import promote_prepare
 from scripts.dream.promote_validate import (
     ValidationFailure,
     parse_report,
@@ -31,7 +33,8 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
-from brain_v42.db.tables import adrs, dream_promotions, learnings
+from brain_v42.config import Settings
+from brain_v42.db.tables import _EMBEDDING_DIM, adrs, dream_promotions, learnings
 from brain_v42.models.adr import ADRCreate
 from brain_v42.repositories.pg_adr import PgADRRepo
 from brain_v42.services.adr_service import ADRService
@@ -146,7 +149,31 @@ some log noise
 === END ===
 """
     report = parse_report(raw)
-    candidates = [{"id": str(source_id), "topic": "mature insight"}]
+    candidates = [
+        {
+            "id": str(source_id),
+            "topic": "mature insight",
+            "dedup": {
+                "score_kind": "raw_cosine_pgvector",
+                "adr": {
+                    "band": "clear",
+                    "nearest_id": None,
+                    "nearest_title": None,
+                    "nearest_raw_cosine": None,
+                    "top3": [],
+                    "null_embedding_excluded": 0,
+                },
+                "runbook": {
+                    "band": "clear",
+                    "nearest_id": None,
+                    "nearest_title": None,
+                    "nearest_raw_cosine": None,
+                    "top3": [],
+                    "null_embedding_excluded": 0,
+                },
+            },
+        }
+    ]
     await validate(report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk)
 
     # Final assertions on the DB state.
@@ -185,11 +212,35 @@ async def test_e2e_dedup_skip_inserts_audit_row(
 
     raw = f"""
 === PROMOTE REPORT ===
-{{"dry_run": false, "candidate_id": "{source_id}", "target_type": "skipped_dedup", "cosine_observed": 0.92, "reason": "near-dup of ADR-3"}}
+{{"dry_run": false, "candidate_id": "{source_id}", "target_type": "skipped_dedup", "dedup_family": "adr", "cosine_observed": 0.92, "reason": "near-dup of ADR-3"}}
 === END ===
 """
     report = parse_report(raw)
-    candidates = [{"id": str(source_id), "topic": "mature insight"}]
+    candidates = [
+        {
+            "id": str(source_id),
+            "topic": "mature insight",
+            "dedup": {
+                "score_kind": "raw_cosine_pgvector",
+                "adr": {
+                    "band": "block",
+                    "nearest_id": str(uuid.uuid4()),
+                    "nearest_title": "ADR-3",
+                    "nearest_raw_cosine": 0.92,
+                    "top3": [],
+                    "null_embedding_excluded": 0,
+                },
+                "runbook": {
+                    "band": "clear",
+                    "nearest_id": None,
+                    "nearest_title": None,
+                    "nearest_raw_cosine": None,
+                    "top3": [],
+                    "null_embedding_excluded": 0,
+                },
+            },
+        }
+    ]
     await validate(report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk)
 
     async with session_factory() as session:
@@ -302,3 +353,108 @@ async def test_e2e_hallucinated_candidate_id_fails_validation(
             )
         ).scalar_one()
         assert count == 0
+
+
+# ────────── scenario 5: dedup shadow verdict, wired end-to-end (W25 lot 1) ────
+
+
+def _embedding_at_cosine(cosine: float) -> list[float]:
+    return [cosine, math.sqrt(1.0 - cosine**2)] + [0.0] * (_EMBEDDING_DIM - 2)
+
+
+def _base_embedding() -> list[float]:
+    return [1.0] + [0.0] * (_EMBEDDING_DIM - 1)
+
+
+@pytest.mark.asyncio
+async def test_e2e_dedup_block_flows_from_prepare_through_validate(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """The REAL server-computed dedup block — produced by
+    `promote_prepare.attach_dedup_verdict` against actual pgvector
+    arithmetic — is what `promote_validate.validate` cross-checks, not a
+    hand-built fixture. This is the seam the unit tests on either side
+    (test_promote_prepare_dedup_bands.py, test_promote_validate.py) each
+    mock away; this test proves the two sides actually agree.
+    """
+    settings = Settings(postgres_url="postgresql+asyncpg://brain:brain@localhost:5433/brain")
+
+    async with session_factory() as session:
+        async with session.begin():
+            source_id = (
+                await session.execute(
+                    learnings.insert()
+                    .values(
+                        topic="dedup e2e",
+                        insight="full insight body",
+                        project_key=isolated_pk,
+                        source_type="experience",
+                        confidence="high",
+                        tags=[],
+                        embedding=_base_embedding(),
+                    )
+                    .returning(learnings.c.id)
+                )
+            ).scalar_one()
+            # A pre-existing ADR far enough away that the ADR family band is
+            # "clear" — nothing here should block materialization.
+            await session.execute(
+                adrs.insert().values(
+                    number=1,
+                    title="Unrelated prior ADR",
+                    context="c",
+                    decision="d",
+                    consequences="e",
+                    project_key=isolated_pk,
+                    embedding=_embedding_at_cosine(0.3),
+                )
+            )
+
+    candidates = [{"id": str(source_id), "topic": "dedup e2e"}]
+    candidates = await promote_prepare.attach_dedup_verdict(
+        session_factory, candidates, isolated_pk, settings
+    )
+
+    assert candidates[0]["dedup"]["adr"]["band"] == "clear"
+    injected_cosine = candidates[0]["dedup"]["adr"]["nearest_raw_cosine"]
+    assert injected_cosine == pytest.approx(0.3, abs=1e-4)
+
+    repo = PgADRRepo(session_factory)
+    svc = ADRService(pg_repo=repo, embedding_svc=None)
+    adr = await svc.create_with_promotion(
+        data=ADRCreate(
+            title=f"E2E dedup ADR {uuid.uuid4().hex[:6]}",
+            context="the context",
+            decision="the decision",
+            consequences="the consequences",
+            project_key=isolated_pk,
+            alternatives_considered=[],
+            tags=["dream:promoted"],
+        ),
+        source_learning_id=source_id,
+        auto_accept=True,
+        dream_run_id=None,
+    )
+
+    raw = f"""
+=== PROMOTE REPORT ===
+{{"dry_run": false, "candidate_id": "{source_id}", "target_type": "adr",
+  "target_id": "{adr.id}", "cosine_observed": {injected_cosine}}}
+=== END ===
+"""
+    report = parse_report(raw)
+    await validate(report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk)
+
+    async with session_factory() as session:
+        row = (
+            (
+                await session.execute(
+                    sa.select(dream_promotions.c.cosine_observed).where(
+                        dream_promotions.c.target_adr_id == adr.id
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert row["cosine_observed"] == pytest.approx(0.3, abs=1e-4)

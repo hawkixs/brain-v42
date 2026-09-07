@@ -71,12 +71,24 @@ class HybridReranker:
         try:
             scores = await self._client.rerank(query, texts)
         except Exception:
+            # entity_type is read off the candidates themselves (threaded in
+            # from HybridSearcher.search()'s new `entity_type` param) rather
+            # than added as a new parameter here — candidates is non-empty at
+            # this point (the `if not candidates` guard above already
+            # returned), and every candidate in a single shard call shares
+            # the same entity_type. W33 incident: the log named n_candidates
+            # but never WHICH shard degraded.
             logger.warning(
                 "hybrid_reranker.rrf_fallback",
                 reason="reranker_unavailable",
                 n_candidates=len(candidates),
+                entity_type=candidates[0].entity_type,
             )
             # Rescale by rank so scores are in (0, 1] — compatible with min_score.
+            # W33 "a rank is not a score": the mode returned here
+            # (RERANK_MODE_RRF_FALLBACK) is what brain_service._fan_out maps
+            # to score_kind="rank" — the single place that decision is made
+            # and enforced (see hybrid.py's SCORE_KIND_* comment).
             n = len(candidates)
             for rank, candidate in enumerate(candidates):
                 candidate.score = (n - rank) / n
