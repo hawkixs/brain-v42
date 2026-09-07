@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -54,6 +55,7 @@ from brain_v42.models.delivery import (
 )
 from brain_v42.models.delivery_evaluator import evaluate_delivery
 from brain_v42.models.delivery_hashes import canonical_digest, delivery_digest
+from brain_v42.models.ticket import Ticket
 from brain_v42.repositories.pg_base import BasePgRepository
 
 # Namespaces are fixed and distinct: graph edits must serialize independently
@@ -140,6 +142,22 @@ _CONTEXT_TABLES: dict[str, tuple[sa.Table, tuple[str, ...]]] = {
     ),
     "plan": (indexed_plans, ("id", "title", "content", "status", "project_key", "plan_type")),
 }
+
+
+@dataclass(frozen=True, slots=True)
+class LockedDeliveryDecisionScope:
+    """Caller-owned transaction locks retained for one delivery decision."""
+
+    ticket: Ticket
+
+
+@dataclass(frozen=True, slots=True)
+class LockedDeliveryDecisionInputs:
+    """Current hydrated decision facts sampled at one PostgreSQL instant."""
+
+    ticket: Ticket
+    inputs: EvaluationInput | None
+    decision_time: datetime
 
 
 @asynccontextmanager
@@ -747,6 +765,143 @@ class PgDeliveryRepo(BasePgRepository):
                     expires_at=workflow["claim_expires_at"],
                 ),
                 executor_identity=ticket["to_project"],
+            )
+
+    async def lock_decision_scope(
+        self, session: AsyncSession, ticket_id: UUID
+    ) -> LockedDeliveryDecisionScope:
+        """Acquire the full deterministic lock scope for a caller-owned decision.
+
+        The graph lock precedes discovery.  Discovery identifies the current
+        revision's direct dependencies without locking an individual ticket;
+        only then are every involved ticket and workflow row locked by UUID.
+        Required Brain sources follow in fixed table/UUID order.
+        """
+        await session.execute(sa.select(sa.func.pg_advisory_xact_lock_shared(DELIVERY_GRAPH_LOCK)))
+        discovered = (
+            (
+                await session.execute(
+                    sa.select(delivery_workflows.c.current_revision).where(
+                        delivery_workflows.c.ticket_id == ticket_id
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        dependency_ids: tuple[UUID, ...] = ()
+        if discovered is not None:
+            dependency_ids = tuple(
+                (
+                    await session.execute(
+                        sa.select(delivery_dependencies.c.upstream_ticket_id).where(
+                            delivery_dependencies.c.ticket_id == ticket_id,
+                            delivery_dependencies.c.contract_revision
+                            == discovered["current_revision"],
+                        )
+                    )
+                ).scalars()
+            )
+        ticket_ids = sorted({ticket_id, *dependency_ids}, key=str)
+        locked_tickets = await session.execute(
+            sa.select(tickets)
+            .where(tickets.c.id.in_(ticket_ids))
+            .order_by(tickets.c.id)
+            .with_for_update()
+        )
+        ticket_rows = {row["id"]: dict(row) for row in locked_tickets.mappings()}
+        ticket_row = ticket_rows.get(ticket_id)
+        if ticket_row is None:
+            raise DeliveryError("ticket_not_found", "ticket was not found")
+        locked_workflows = await session.execute(
+            sa.select(delivery_workflows)
+            .where(delivery_workflows.c.ticket_id.in_(ticket_ids))
+            .order_by(delivery_workflows.c.ticket_id)
+            .with_for_update()
+        )
+        workflow_rows = {row["ticket_id"]: dict(row) for row in locked_workflows.mappings()}
+        workflow = workflow_rows.get(ticket_id)
+        if workflow is not None:
+            revision = (
+                (
+                    await session.execute(
+                        sa.select(delivery_contract_revisions.c.normalized_contract).where(
+                            delivery_contract_revisions.c.ticket_id == ticket_id,
+                            delivery_contract_revisions.c.contract_revision
+                            == workflow["current_revision"],
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            await self._lock_required_brain_sources(
+                session, _contract_from_json(dict(revision["normalized_contract"]))
+            )
+        return LockedDeliveryDecisionScope(ticket=Ticket.model_validate(ticket_row))
+
+    async def load_locked_decision_inputs(
+        self,
+        session: AsyncSession,
+        ticket_id: UUID,
+        *,
+        feature_enabled: bool,
+        freshness_seconds: int,
+    ) -> LockedDeliveryDecisionInputs:
+        """Always acquire decision locks before hydrating current inputs and PG time."""
+        scope = await self.lock_decision_scope(session, ticket_id)
+        return await self._load_decision_inputs_under_scope(
+            session,
+            scope,
+            feature_enabled=feature_enabled,
+            freshness_seconds=freshness_seconds,
+        )
+
+    async def _load_decision_inputs_under_scope(
+        self,
+        session: AsyncSession,
+        scope: LockedDeliveryDecisionScope,
+        *,
+        feature_enabled: bool,
+        freshness_seconds: int,
+    ) -> LockedDeliveryDecisionInputs:
+        """Rehydrate after caller mutations while the previously acquired scope is retained."""
+        decision_time = await session.scalar(sa.select(sa.func.clock_timestamp()))
+        if not isinstance(decision_time, datetime):
+            raise RuntimeError("PostgreSQL did not return a decision timestamp")
+        inputs = await self.load_inputs(
+            scope.ticket.id,
+            feature_enabled=feature_enabled,
+            freshness_seconds=freshness_seconds,
+            session=session,
+        )
+        return LockedDeliveryDecisionInputs(
+            ticket=scope.ticket,
+            inputs=inputs,
+            decision_time=decision_time,
+        )
+
+    async def _lock_required_brain_sources(
+        self, session: AsyncSession, contract: ContractRevision
+    ) -> None:
+        """Lock each required Brain source after tickets/workflows in stable order."""
+        references = sorted(
+            (
+                reference
+                for reference in contract.context_refs
+                if isinstance(reference, PinnedBrainEntityReference) and reference.required
+            ),
+            key=lambda reference: (
+                _context_table_rank(reference.entity_type),
+                str(reference.entity_id),
+            ),
+        )
+        for reference in references:
+            table, _fields = _CONTEXT_TABLES[reference.entity_type]
+            await session.execute(
+                sa.select(table.c.id)
+                .where(table.c.id == reference.entity_id)
+                .with_for_update(read=True)
             )
 
     async def get_view(
