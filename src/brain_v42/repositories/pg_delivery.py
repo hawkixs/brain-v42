@@ -1121,6 +1121,7 @@ async def _matching_receipt(
         or receipt.contract_digest != contract_digest
         or receipt.delivery_digest != delivery_digest
         or receipt.issued_at != row["issued_at"]
+        or receipt.proof.issuer.issuer_identity != row["issuer"]
         or receipt.acceptance_basis != row["basis"]
     ):
         return None

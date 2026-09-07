@@ -339,6 +339,37 @@ async def test_get_view_hydrates_matching_receipts_with_strict_stored_types(
     assert superseded.assessment.acceptance_state == "pending"
 
 
+async def test_load_inputs_rejects_receipt_when_row_issuer_differs_from_frozen_proof(
+    session_factory,
+) -> None:
+    """A mutable index column must not authenticate a different proof issuer."""
+    ticket, _service, _binding, inputs = await _observed_workflow(session_factory)
+    receipt = _receipt(inputs, milestone="integration")
+    await _insert_receipt(session_factory, receipt)
+
+    coherent = await PgDeliveryRepo(session_factory).load_inputs(
+        ticket.id, feature_enabled=True, freshness_seconds=3_600
+    )
+
+    assert coherent is not None
+    assert coherent.integration_receipt is not None
+    assert coherent.integration_receipt.id == receipt.id
+    async with session_factory() as session:
+        async with session.begin():
+            await session.execute(
+                sa.update(delivery_receipts)
+                .where(delivery_receipts.c.id == receipt.id)
+                .values(issuer="different-row-issuer")
+            )
+
+    rejected = await PgDeliveryRepo(session_factory).load_inputs(
+        ticket.id, feature_enabled=True, freshness_seconds=3_600
+    )
+
+    assert rejected is not None
+    assert rejected.integration_receipt is None
+
+
 async def test_matching_dependency_receipt_hydrates_using_the_upstream_delivery_identity(
     session_factory,
 ) -> None:
