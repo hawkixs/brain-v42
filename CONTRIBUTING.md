@@ -119,28 +119,53 @@ of `docs/` predates this rule; those files are left coherent in their original
 language until a deliberate translation pass, rather than drifting into a
 mix of both. New content does not get that grandfather clause.
 
-**Exception — byte-exact captures of a live artefact (decided
-2026-09-07).** A test fixture that is a byte-exact capture of a live
-artefact — operator configuration, a drop-in, a captured log excerpt —
-whose identity a test asserts, rather than a hand-retyped stand-in, is
-evidence and not prose: retranslating it would break the byte-for-byte
-identity the test exists to check, so it is exempt from the English-only
-rule for new files. `tests/unit/data/` already holds several:
-`models.conf.2026-09-03-live-dream-drop-in` (a French systemd drop-in
-compared byte-for-byte with the live file on the machine that holds the
-source — a drift alarm there, and a skip everywhere else, including CI's
-hosted runner, where the live file cannot exist) and
-`2026-09-03_brain-v42_reorg.anonymised.log`,
-`2026-09-04_roadmap.excerpt.log` and `2026-09-05_roadmap.excerpt.log`
-(captured run output whose French prose comes verbatim from the process
-that produced it). The exemption is narrow: a capture that would contain
-a secret is not eligible for it at all, full stop — it must be synthetic
-instead, because redacting it would stop being byte-exact and defeat the
-exception's own premise. Naming the capture's source and the date it
-pins in the filename, as the examples above do, is recommended so a
-reader can tell what it is without opening it, but is not a fixed
-convention — `ARCHITECTURE.2026-08-22-before-f7d013eb.md`, for one, dates
-the source state it captured rather than the moment of capture.
+**Exception — byte-exact apart from a declared anonymisation pass
+(decided 2026-09-07).** A test fixture that captures a live artifact —
+operator configuration, a drop-in, a captured log excerpt — is evidence,
+not prose, and it is exempt from the English-only rule for new files on
+either of two grounds. Ground one: a test compares it byte-for-byte with
+its live source, so retranslating it would break the identity the test
+exists to check — `models.conf.2026-09-03-live-dream-drop-in` is the
+only fixture on this ground, checked against the live systemd drop-in by
+`tests/unit/test_dream_roadmap_configured_primary_is_guarded.py:139`; a
+drift alarm on the machine that holds the source, and a skip everywhere
+else, including CI's hosted runner, where the live file cannot exist.
+Ground two: a test replays it because the process itself produced it,
+and a hand-invented fixture would only prove the parser agrees with
+itself rather than a real night happening (learning 187f107c, stated at
+`tests/unit/test_reorg_report.py:336`) — the other three fixtures are on
+this ground: `2026-09-03_brain-v42_reorg.anonymised.log`, replayed by
+that same test, and `2026-09-04_roadmap.excerpt.log` and
+`2026-09-05_roadmap.excerpt.log`, replayed by
+`tests/unit/test_dream_post_run_alert_roadmap_shrink_line.py`. Their
+parsers key on markers (`[n/n]`, `· shrunk`, the JSON trailer), not on
+the French words around them, so retranslating one would leave every
+assertion green while turning evidence of a real night into a
+hand-written stand-in — the loss is silent, not a test failure.
+
+The exemption is narrow in a different way than "byte-exact" alone
+would suggest. A capture that would carry a secret is not eligible for
+it at all — it must be synthetic instead. Anonymising identifiers or
+private corpus content is a separate move from redacting a secret, and
+this exception allows it, provided the pass is declared both in the
+filename and in a header comment: `2026-09-03_brain-v42_reorg.anonymised.log`
+does exactly that, its header recording that the 28 entity UUIDs were
+swapped for deterministic synthetic ones (same real id maps to the same
+fake id, so duplicates and cross-references survive) and the quoted
+corpus topics were elided, while structure, markers, counts and the
+rest of the French prose stay verbatim. That declared pass is what
+keeps the file inside the exception, not outside it — call this
+category byte-exact apart from a declared anonymisation pass, not
+byte-exact without qualification.
+
+Naming the capture's source and a date in the filename, as most of the
+examples above do, helps a reader tell what a fixture is without
+opening it, but the existing names do not share one fixed shape:
+`models.conf.2026-09-03-live-dream-drop-in` and
+`ARCHITECTURE.2026-08-22-before-f7d013eb.md` put the subject first and
+pin a commit (`before-<sha>`) rather than a plain date, where the log
+excerpts put the date first — so treat it as a recommendation, not a
+pinned convention.
 
 ## Commit conventions
 
