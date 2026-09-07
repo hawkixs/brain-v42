@@ -524,8 +524,8 @@ class CheckAttempt(_StrictModel):
     app_slug: str | None = Field(default=None, min_length=1, max_length=200)
     head_sha: str = Field(min_length=40, max_length=64)
     conclusion: Literal["success", "failure", "pending", "skipped", "neutral", "cancelled"]
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
+    started_at: StoredAwareDatetime | None = None
+    completed_at: StoredAwareDatetime | None = None
     check_suite_id: StrictInt | None = Field(default=None, gt=0)
     record_url: str | None = Field(default=None, min_length=1, max_length=2048)
 
@@ -540,7 +540,7 @@ class ReviewEvidence(_StrictModel):
     reviewer: str = Field(min_length=1, max_length=200)
     head_sha: str = Field(min_length=40, max_length=64)
     decision: Literal["approved", "changes_requested", "dismissed", "commented"]
-    submitted_at: datetime
+    submitted_at: StoredAwareDatetime
     record_url: str | None = Field(default=None, min_length=1, max_length=2048)
 
     _valid_head = field_validator("head_sha")(_validate_sha)
