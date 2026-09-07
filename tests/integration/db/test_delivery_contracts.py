@@ -86,6 +86,77 @@ _CONTEXT_CASES = (
 )
 
 
+async def _wait_for_blocker(
+    observer, *, waiter_pid: int, blocker_pid: int, operation: asyncio.Task[object]
+) -> None:
+    """Prove a real PostgreSQL wait edge instead of guessing from elapsed time."""
+    for _ in range(100):
+        blockers = await observer.scalar(
+            sa.text("SELECT pg_blocking_pids(:pid)"), {"pid": waiter_pid}
+        )
+        if blocker_pid in blockers:
+            assert not operation.done()
+            return
+        if operation.done():
+            await operation
+            raise AssertionError("contender completed without waiting on the expected lock")
+        await asyncio.sleep(0.01)
+    raise AssertionError("PostgreSQL did not expose the expected blocking transaction")
+
+
+async def _insert_context_decision(session_factory, description: str) -> object:
+    async with session_factory() as session:
+        async with session.begin():
+            return (
+                await session.execute(
+                    decisions.insert()
+                    .values(title="concurrency", description=description, reasoning="test")
+                    .returning(decisions.c.id)
+                )
+            ).scalar_one()
+
+
+async def _create_bindable_ticket(session_factory):
+    from brain_v42.delivery_config import DeliverySettings
+    from brain_v42.repositories.pg_delivery import PgDeliveryRepo
+    from brain_v42.services.delivery_service import DeliveryService
+
+    ticket = await PgTicketRepo(session_factory).create(
+        TicketCreate(
+            kind=TicketKind.REQUEST,
+            title="concurrent delivery binding",
+            body="serialize generation changes",
+            from_project="brain-v42",
+            to_project="brain-v42",
+        )
+    )
+    service = DeliveryService(
+        PgDeliveryRepo(session_factory), settings=DeliverySettings(enabled=True)
+    )
+    await service.set_contract(
+        ticket.id,
+        actor_project="brain-v42",
+        expected_revision=0,
+        idempotency_key=f"concurrent-contract-{ticket.id}",
+        contract=ContractInput(
+            objective="bind with a current generation",
+            priority=1,
+            acceptance_mode="automatic",
+            deliverables=(
+                Deliverable(
+                    key="implementation",
+                    repository="hawkixs/brain-v42",
+                    target_branch="main",
+                    required_checks=(),
+                    no_checks_reason="covered later",
+                    review=ReviewPolicy(required_approvals=0, allowed_reviewers=()),
+                ),
+            ),
+        ),
+    )
+    return ticket, service
+
+
 @pytest.mark.asyncio
 async def test_delivery_schema_exposes_all_eight_workflow_tables(session_factory) -> None:
     """The production change that fails this is omitting any persisted workflow family."""
@@ -384,6 +455,108 @@ async def test_contract_context_digest_tracks_real_semantic_sources_only(
 
 
 @pytest.mark.asyncio
+async def test_context_guard_first_holds_for_share_until_the_updater_commits(
+    session_factory,
+) -> None:
+    """A guarded context read holds a real shared lock against a native writer."""
+    from brain_v42.models.delivery import BrainEntityReference
+    from brain_v42.repositories.pg_delivery import PgDeliveryRepo
+
+    decision_id = await _insert_context_decision(session_factory, "before")
+    repo = PgDeliveryRepo(session_factory)
+    async with (
+        session_factory() as guard,
+        session_factory() as updater,
+        session_factory() as observer,
+    ):
+        guard_transaction = await guard.begin()
+        updater_transaction = await updater.begin()
+        try:
+            guard_pid = await guard.scalar(sa.text("SELECT pg_backend_pid()"))
+            pinned = await repo.resolve_context_references(
+                guard,
+                (
+                    BrainEntityReference(
+                        kind="brain_entity",
+                        entity_type="decision",
+                        entity_id=decision_id,
+                    ),
+                ),
+            )
+            updater_pid = await updater.scalar(sa.text("SELECT pg_backend_pid()"))
+            update = asyncio.create_task(
+                updater.execute(
+                    sa.update(decisions)
+                    .where(decisions.c.id == decision_id)
+                    .values(description="after")
+                )
+            )
+            await _wait_for_blocker(
+                observer, waiter_pid=updater_pid, blocker_pid=guard_pid, operation=update
+            )
+            assert '"description":"before"' in pinned[0].content_snapshot
+            await guard_transaction.commit()
+            await asyncio.wait_for(update, timeout=5)
+            await updater_transaction.commit()
+        finally:
+            if guard.in_transaction():
+                await guard.rollback()
+            if updater.in_transaction():
+                await updater.rollback()
+
+
+@pytest.mark.asyncio
+async def test_context_updater_first_blocks_guard_then_exposes_committed_drift(
+    session_factory,
+) -> None:
+    """A shared guard waits for a native writer and snapshots its committed content."""
+    from brain_v42.models.delivery import BrainEntityReference
+    from brain_v42.repositories.pg_delivery import PgDeliveryRepo
+
+    decision_id = await _insert_context_decision(session_factory, "before")
+    repo = PgDeliveryRepo(session_factory)
+    async with (
+        session_factory() as updater,
+        session_factory() as guard,
+        session_factory() as observer,
+    ):
+        updater_transaction = await updater.begin()
+        guard_transaction = await guard.begin()
+        try:
+            updater_pid = await updater.scalar(sa.text("SELECT pg_backend_pid()"))
+            await updater.execute(
+                sa.update(decisions)
+                .where(decisions.c.id == decision_id)
+                .values(description="after")
+            )
+            guard_pid = await guard.scalar(sa.text("SELECT pg_backend_pid()"))
+            guarded_read = asyncio.create_task(
+                repo.resolve_context_references(
+                    guard,
+                    (
+                        BrainEntityReference(
+                            kind="brain_entity",
+                            entity_type="decision",
+                            entity_id=decision_id,
+                        ),
+                    ),
+                )
+            )
+            await _wait_for_blocker(
+                observer, waiter_pid=guard_pid, blocker_pid=updater_pid, operation=guarded_read
+            )
+            await updater_transaction.commit()
+            pinned = await asyncio.wait_for(guarded_read, timeout=5)
+            assert '"description":"after"' in pinned[0].content_snapshot
+            await guard_transaction.commit()
+        finally:
+            if updater.in_transaction():
+                await updater.rollback()
+            if guard.in_transaction():
+                await guard.rollback()
+
+
+@pytest.mark.asyncio
 async def test_binding_persists_canonical_registry_name_and_replays_its_uuid(
     session_factory,
 ) -> None:
@@ -471,6 +644,133 @@ async def test_binding_persists_canonical_registry_name_and_replays_its_uuid(
             expected_workflow_version=1,
             idempotency_key="stale-generation",
         )
+
+
+@pytest.mark.asyncio
+async def test_amendment_first_forces_a_stale_binding_generation_to_conflict(
+    session_factory,
+) -> None:
+    """A binding cannot publish against revision 1 after an in-flight amendment wins."""
+    from brain_v42.models.delivery import ArtifactBinding, ContractRevision, DeliveryError
+    from brain_v42.models.delivery_hashes import canonical_digest
+    from brain_v42.repositories.pg_delivery import PgDeliveryRepo
+
+    ticket, service = await _create_bindable_ticket(session_factory)
+    current = await service.get(ticket.id, actor_project="brain-v42")
+    amendment = ContractRevision.model_validate(
+        {
+            **current.contract.model_dump(mode="python"),
+            "ticket_id": ticket.id,
+            "contract_revision": 2,
+            "objective": "amended while binding waits",
+            "author_project": "brain-v42",
+            "amendment_reason": "concurrency regression",
+            "content_digest": None,
+        }
+    )
+    repo = PgDeliveryRepo(session_factory)
+    async with (
+        session_factory() as amend_session,
+        session_factory() as bind_session,
+        session_factory() as observer,
+    ):
+        amend_transaction = await amend_session.begin()
+        await bind_session.begin()
+        try:
+            await repo.set_contract(
+                amendment,
+                expected_revision=1,
+                actor_project="brain-v42",
+                idempotency_key=f"amend-race-{ticket.id}",
+                request_digest=canonical_digest({"race": "amend"}, domain="request"),
+                session=amend_session,
+            )
+            amend_pid = await amend_session.scalar(sa.text("SELECT pg_backend_pid()"))
+            bind_pid = await bind_session.scalar(sa.text("SELECT pg_backend_pid()"))
+            bind = asyncio.create_task(
+                repo.bind_pr(
+                    ArtifactBinding(
+                        ticket_id=ticket.id,
+                        contract_revision=1,
+                        attempt=1,
+                        deliverable_key="implementation",
+                        repository_id=1337360966,
+                        pr_number=91,
+                    ),
+                    repository_name="hawkixs/brain-v42",
+                    actor_project="brain-v42",
+                    expected_revision=1,
+                    expected_workflow_version=1,
+                    idempotency_key=f"bind-race-{ticket.id}",
+                    request_digest=canonical_digest({"race": "bind"}, domain="request"),
+                    session=bind_session,
+                )
+            )
+            await _wait_for_blocker(
+                observer, waiter_pid=bind_pid, blocker_pid=amend_pid, operation=bind
+            )
+            await amend_transaction.commit()
+            with pytest.raises(DeliveryError, match="revision_conflict"):
+                await asyncio.wait_for(bind, timeout=5)
+        finally:
+            if amend_session.in_transaction():
+                await amend_session.rollback()
+            if bind_session.in_transaction():
+                await bind_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_terminal_transition_first_refuses_a_waiting_binding(session_factory) -> None:
+    """A binding rechecks ticket status after a concurrent terminal transition commits."""
+    from brain_v42.models.delivery import ArtifactBinding, DeliveryError
+    from brain_v42.models.delivery_hashes import canonical_digest
+    from brain_v42.repositories.pg_delivery import PgDeliveryRepo
+
+    ticket, _service = await _create_bindable_ticket(session_factory)
+    repo = PgDeliveryRepo(session_factory)
+    async with (
+        session_factory() as terminal_session,
+        session_factory() as bind_session,
+        session_factory() as observer,
+    ):
+        terminal_transaction = await terminal_session.begin()
+        await bind_session.begin()
+        try:
+            terminal_pid = await terminal_session.scalar(sa.text("SELECT pg_backend_pid()"))
+            await terminal_session.execute(
+                sa.update(tickets).where(tickets.c.id == ticket.id).values(status="closed")
+            )
+            bind_pid = await bind_session.scalar(sa.text("SELECT pg_backend_pid()"))
+            bind = asyncio.create_task(
+                repo.bind_pr(
+                    ArtifactBinding(
+                        ticket_id=ticket.id,
+                        contract_revision=1,
+                        attempt=1,
+                        deliverable_key="implementation",
+                        repository_id=1337360966,
+                        pr_number=92,
+                    ),
+                    repository_name="hawkixs/brain-v42",
+                    actor_project="brain-v42",
+                    expected_revision=1,
+                    expected_workflow_version=1,
+                    idempotency_key=f"terminal-race-{ticket.id}",
+                    request_digest=canonical_digest({"race": "terminal"}, domain="request"),
+                    session=bind_session,
+                )
+            )
+            await _wait_for_blocker(
+                observer, waiter_pid=bind_pid, blocker_pid=terminal_pid, operation=bind
+            )
+            await terminal_transaction.commit()
+            with pytest.raises(DeliveryError, match="ticket_not_contractable"):
+                await asyncio.wait_for(bind, timeout=5)
+        finally:
+            if terminal_session.in_transaction():
+                await terminal_session.rollback()
+            if bind_session.in_transaction():
+                await bind_session.rollback()
 
 
 @pytest.mark.asyncio
