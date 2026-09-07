@@ -16,26 +16,40 @@ query less likely before the call.
 User decision 2026-09-07 (lot D18): keep `brain_search` in all three
 allowlists, but add a short "When to search" paragraph to each prompt that
 tells the agent what a good query looks like, that a bare tag/status word/
-wildcard is not one, that `brain_list` (already in every one of these three
-allowlists) is the right tool for a literal tag-or-status filter, that a zero
-result should not be retried with the same wording, and that a search is
-optional here -- most runs will not need one.
+wildcard is not one, that `brain_list(tags=[...])` (already in every one of
+these three allowlists) is the right tool for a literal tag filter -- and
+`brain_list(..., include_archived=True)`, not a `status=` argument, for an
+archived filter, since `brain_list`'s `status` filter only reaches decisions,
+ADRs and plans and "archived" is not one of its values for any entity type --
+that a zero result should not be retried with the same wording, and that a
+search is optional here -- most runs will not need one.
+
+Fix round (same lot, same date): the first draft of this paragraph pointed
+the archived-filter case at `brain_list(status=...)`, which silently drops
+the filter for `learning`, `snippet` and `runbook` (`status` is only wired
+to `decision`/`adr`/`plan` in `crud_tools.py`) and used "archived" as its own
+worked example of a `status` value that does not exist. The pinning
+assertion for that pointer also asserted only the bare string `"brain_list"`,
+which the section's own opening sentence already satisfies as a data-source
+mention -- so the redirect itself was never under contract. Both are fixed
+here: the prompt text and the assertion that pins it.
 
 Two kinds of assertion, mirroring `test_dream_reorg_prompt_documents_both_
 counters.py`:
 
 - Prose-anchored: independently hardcoded phrases pinning the required
   content of the "## When to search" section (the three-word rule, the
-  bare-token prohibition, the `brain_list` pointer, the no-retry rule, the
-  optionality statement). These do not derive from code, by construction --
-  they are a targeted prose contract.
-- Code-derived, whole-file, negative: `_search_calls` parses every actual
-  `brain_search(query="...")` CALL SITE the prompt carries (its own
-  illustrative example included) and asserts none of them is a query under
-  three words. An example that violated the very rule it is meant to
-  illustrate would be worse than no example -- and a bare-token call site
-  added anywhere else in the file later is caught the same way, not just in
-  the new section.
+  bare-token prohibition, the `brain_list(tags=...)` / `include_archived=True`
+  pointer, the no-retry rule, the optionality statement). These do not
+  derive from code, by construction -- they are a targeted prose contract.
+- Code-derived, whole-file, negative: `_search_call_queries` parses every
+  actual `brain_search(...)` CALL SITE the prompt carries (its own
+  illustrative example included), in any of its three valid spellings
+  (`query="..."`, `query='...'`, or a bare positional string), and asserts
+  none of them is a query under three words. An example that violated the
+  very rule it is meant to illustrate would be worse than no example -- and
+  a bare-token call site added anywhere else in the file later, in any of
+  those spellings, is caught the same way, not just in the new section.
 
 `test_dream_prompts_match_phase_allowlists.py` and its siblings must stay
 green: this file adds no new tool mention, only two more `brain_search(...)`
@@ -62,7 +76,12 @@ HEADING = "## When to search"
 # and take one keyword argument, so this never needs to balance nested parens
 # the way `test_dream_prompts_match_argument_policies.py`'s scanner does.
 _SEARCH_CALL = re.compile(r"brain_search\(([^)]*)\)")
-_QUERY_LITERAL = re.compile(r'query\s*=\s*"([^"]*)"')
+# The `query=` keyword is optional (a positional first argument is valid
+# Python too), and the quoting can be single or double -- a bare-token call
+# site written in any of these three spellings must still be caught by the
+# whole-file negative scan below, not just the one spelling this regex used
+# to require.
+_QUERY_LITERAL = re.compile(r"""(?:query\s*=\s*)?["']([^"']*)["']""")
 
 
 def _prompt_path(phase: str) -> Path:
@@ -74,7 +93,12 @@ def _prompt_text(phase: str) -> str:
 
 
 def _search_call_queries(text: str) -> list[str]:
-    """Every literal `query="..."` value from a `brain_search(...)` call site."""
+    """Every literal query value from a `brain_search(...)` call site.
+
+    Recognizes `query="..."`, `query='...'`, and a bare positional string
+    (`brain_search("...")`) -- the three spellings a bare-token call site
+    could plausibly use.
+    """
     queries = []
     for call in _SEARCH_CALL.finditer(text):
         literal = _QUERY_LITERAL.search(call.group(1))
@@ -114,6 +138,25 @@ def test_brain_list_and_brain_search_are_actually_allowed_in_this_phase(phase: s
     assert "brain_search" in allowed
 
 
+@pytest.mark.parametrize(
+    "call_source",
+    [
+        'brain_search(query="how does tag normalization handle plurals")',
+        "brain_search(query='how does tag normalization handle plurals')",
+        'brain_search("how does tag normalization handle plurals")',
+    ],
+    ids=["double-quoted keyword", "single-quoted keyword", "bare positional"],
+)
+def test_query_literal_extractor_recognizes_every_call_spelling(call_source: str) -> None:
+    """Self-guard on the extractor: the whole-file negative scan
+    (`test_no_search_call_site_anywhere_in_the_prompt_uses_a_bare_query`) is
+    only as strong as its ability to find a call site. A single-quoted
+    `query=` and a bare positional string are both valid Python and both
+    unrecognized by a double-quoted-keyword-only regex -- exactly the two
+    spellings a bare-token call site could use to slip past the scan."""
+    assert _search_call_queries(call_source) == ["how does tag normalization handle plurals"]
+
+
 @pytest.mark.parametrize("phase", PHASES)
 def test_phase_prompt_has_a_when_to_search_section(phase: str) -> None:
     assert HEADING in _prompt_text(phase), (
@@ -151,10 +194,21 @@ def test_when_to_search_forbids_bare_tags_status_words_and_wildcards(phase: str)
 
 @pytest.mark.parametrize("phase", PHASES)
 def test_when_to_search_points_at_brain_list_for_literal_filters(phase: str) -> None:
+    """Pin the actionable call shape, not just the bare tool name -- every
+    section's opening sentence already names `brain_list` as a data source,
+    so asserting the name alone is satisfied by that sentence and never
+    exercises the redirect this paragraph exists to give."""
     section = _unwrapped(_when_to_search_section(_prompt_text(phase)))
-    assert "brain_list" in section, (
+    assert "brain_list(tags=" in section, (
         f"phase_{phase}.md's '{HEADING}' section does not redirect a "
-        "tag-or-status filter to brain_list, which this phase can already call."
+        "tag filter to brain_list(tags=...), which this phase can already call."
+    )
+    assert "include_archived=True" in section, (
+        f"phase_{phase}.md's '{HEADING}' section does not redirect an "
+        "archived-entity filter to brain_list(..., include_archived=True). "
+        "brain_list's `status` filter only reaches decisions, ADRs and "
+        "plans -- pointing an archived-tag search at `status=` instead would "
+        "silently list an unfiltered page for learning, snippet and runbook."
     )
 
 
