@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     BeforeValidator,
     ConfigDict,
@@ -578,15 +579,13 @@ class ObservationConfirmation(_StoredModel):
 
     id: UUIDValue = Field(default_factory=uuid4)
     evidence: PullRequestEvidence | None = None
-    collection_started_at: datetime
-    collection_finished_at: datetime
+    collection_started_at: AwareDatetime
+    collection_finished_at: AwareDatetime
     outcome: Literal["success", "error"] = "success"
     error_code: str | None = Field(default=None, min_length=1, max_length=100)
 
     @model_validator(mode="after")
     def _has_evidence_only_for_success(self) -> ObservationConfirmation:
-        if self.collection_started_at.tzinfo is None or self.collection_finished_at.tzinfo is None:
-            raise ValueError("observation confirmation interval must be timezone-aware")
         if self.outcome == "success":
             if self.evidence is None or self.error_code is not None:
                 raise ValueError("successful confirmation requires evidence without an error code")
@@ -605,15 +604,13 @@ class RepositoryContextObservationConfirmation(_StoredModel):
     id: UUIDValue = Field(default_factory=uuid4)
     snapshot_id: UUIDValue | None = None
     evidence: RepositoryContextEvidence | None = None
-    collection_started_at: datetime
-    collection_finished_at: datetime
+    collection_started_at: AwareDatetime
+    collection_finished_at: AwareDatetime
     outcome: Literal["success", "error"] = "success"
     error_code: str | None = Field(default=None, min_length=1, max_length=100)
 
     @model_validator(mode="after")
     def _has_evidence_only_for_success(self) -> RepositoryContextObservationConfirmation:
-        if self.collection_started_at.tzinfo is None or self.collection_finished_at.tzinfo is None:
-            raise ValueError("repository context confirmation interval must be timezone-aware")
         if self.outcome == "success":
             if (
                 self.evidence is None

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import traceback
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 
 import pytest
 import sqlalchemy as sa
@@ -29,6 +29,17 @@ from brain_v42.repositories.pg_ticket import PgTicketRepo
 from brain_v42.services.delivery_service import DeliveryService
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+
+
+class _TimezoneWithoutOffset(tzinfo):
+    def utcoffset(self, value: datetime | None) -> None:
+        return None
+
+    def dst(self, value: datetime | None) -> None:
+        return None
+
+    def tzname(self, value: datetime | None) -> str:
+        return "naive-with-tzinfo"
 
 
 async def _binding(session_factory):
@@ -416,6 +427,8 @@ async def test_invalid_provider_subject_facts_never_publish_success(
         "error_naive_interval",
         "success_mixed_interval",
         "error_mixed_interval",
+        "success_pseudo_aware_interval",
+        "error_pseudo_aware_interval",
     ],
 )
 async def test_invalid_observations_raise_safely_before_caller_commit_and_leave_no_state(
@@ -445,6 +458,9 @@ async def test_invalid_observations_raise_safely_before_caller_commit_and_leave_
         finished = finished.replace(tzinfo=None)
     elif "mixed_interval" in case:
         finished = finished.astimezone().replace(tzinfo=None) + timedelta(seconds=1)
+    elif "pseudo_aware_interval" in case:
+        started = datetime(2026, 9, 7, 12, tzinfo=_TimezoneWithoutOffset())
+        finished = datetime(2026, 9, 7, 12, tzinfo=_TimezoneWithoutOffset())
 
     caught: Exception | None = None
     async with session_factory() as session:

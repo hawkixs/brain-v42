@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from traceback import format_exception
 from uuid import uuid4
 
@@ -35,6 +35,17 @@ _SHA_A = "a" * 40
 _SHA_B = "b" * 40
 _SHA_C = "c" * 40
 _SHA_D = "d" * 40
+
+
+class _TimezoneWithoutOffset(tzinfo):
+    def utcoffset(self, value: datetime | None) -> None:
+        return None
+
+    def dst(self, value: datetime | None) -> None:
+        return None
+
+    def tzname(self, value: datetime | None) -> str:
+        return "naive-with-tzinfo"
 
 
 def _contract(*, refs: tuple[RepositoryDocumentReference, ...]) -> ContractInput:
@@ -514,6 +525,12 @@ async def test_context_errors_keep_success_and_have_distinct_attempt_ids(session
             collection_finished_at=instant.replace(tzinfo=None),
         ),
         lambda instant: RepositoryContextObservationConfirmation(
+            outcome="error",
+            error_code="provider_timeout",
+            collection_started_at=datetime(2026, 9, 7, 12, tzinfo=_TimezoneWithoutOffset()),
+            collection_finished_at=datetime(2026, 9, 7, 12, tzinfo=_TimezoneWithoutOffset()),
+        ),
+        lambda instant: RepositoryContextObservationConfirmation(
             snapshot_id=uuid4(),
             evidence=_evidence(),
             outcome="error",
@@ -530,6 +547,53 @@ async def test_context_confirmation_dto_rejects_ambiguous_or_unproved_shapes(
     del session_factory
     with pytest.raises(ValueError):
         confirmation(datetime(2026, 9, 7, 12, tzinfo=UTC))
+
+
+async def test_context_error_rejects_tzinfo_without_offset_before_caller_commit(
+    session_factory,
+) -> None:
+    """A tzinfo that cannot define UTC must fail before it advances context attempts."""
+    from brain_v42.models.delivery import DeliveryError
+    from brain_v42.repositories.pg_delivery_evidence import PgDeliveryEvidenceRepo
+
+    ticket, row = await _workflow(session_factory, refs=_refs())
+    instant = datetime(2026, 9, 7, 12, tzinfo=_TimezoneWithoutOffset())
+    caught: Exception | None = None
+    async with session_factory() as session:
+        async with session.begin():
+            try:
+                await PgDeliveryEvidenceRepo(session_factory).record_repository_context_error(
+                    session,
+                    ticket.id,
+                    row["current_revision"],
+                    row["attempt"],
+                    row["context_set_digest"],
+                    row["context_row_version"],
+                    "provider_timeout",
+                    instant,
+                    instant,
+                )
+            except Exception as error:  # A caller may commit unrelated work after rejection.
+                caught = error
+    assert isinstance(caught, DeliveryError)
+    async with session_factory() as session:
+        confirmation_count = await session.scalar(
+            sa.select(sa.func.count())
+            .select_from(delivery_confirmations)
+            .where(delivery_confirmations.c.ticket_id == ticket.id)
+        )
+        current = (
+            (
+                await session.execute(
+                    sa.select(delivery_workflows).where(delivery_workflows.c.ticket_id == ticket.id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert confirmation_count == 0
+    assert current["context_row_version"] == row["context_row_version"]
+    assert current["row_version"] == row["row_version"]
 
 
 async def test_reversed_context_fact_order_reuses_the_same_semantic_snapshot(

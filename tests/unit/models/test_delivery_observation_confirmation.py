@@ -1,11 +1,22 @@
 """Strict boundaries for artifact observation confirmations."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 
 import pytest
 from pydantic import ValidationError
 
 from brain_v42.models.delivery import ObservationConfirmation, PullRequestEvidence
+
+
+class _TimezoneWithoutOffset(tzinfo):
+    def utcoffset(self, value: datetime | None) -> None:
+        return None
+
+    def dst(self, value: datetime | None) -> None:
+        return None
+
+    def tzname(self, value: datetime | None) -> str:
+        return "naive-with-tzinfo"
 
 
 def _evidence(*, complete: bool = True) -> PullRequestEvidence:
@@ -62,6 +73,21 @@ def test_observation_confirmation_keeps_incomplete_provider_facts_representable(
 
     assert confirmation.evidence is not None
     assert confirmation.evidence.complete is False
+
+
+@pytest.mark.parametrize("outcome", ["success", "error"])
+def test_observation_confirmation_rejects_tzinfo_without_a_utc_offset(outcome: str) -> None:
+    """A non-None tzinfo is still naive when it cannot supply a UTC offset."""
+    instant = datetime(2026, 9, 7, 12, tzinfo=_TimezoneWithoutOffset())
+
+    with pytest.raises(ValidationError):
+        ObservationConfirmation(
+            evidence=_evidence() if outcome == "success" else None,
+            collection_started_at=instant,
+            collection_finished_at=instant,
+            outcome=outcome,  # type: ignore[arg-type]
+            error_code=None if outcome == "success" else "provider_timeout",
+        )
 
 
 @pytest.mark.parametrize(
