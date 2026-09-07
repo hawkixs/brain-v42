@@ -744,3 +744,50 @@ def test_provider_collections_allow_two_thousand_records_but_reject_more() -> No
         PullRequestEvidence.model_validate(
             {**evidence.model_dump(), "checks": [evidence.checks[0].model_dump()] * 2001}
         )
+
+
+def test_equal_review_timestamps_use_record_id_independent_of_input_order() -> None:
+    from brain_v42.models.delivery import ReviewEvidence
+    from brain_v42.models.delivery_evaluator import evaluate_delivery
+    from tests.delivery_helpers import FIXED_NOW, delivery_inputs
+
+    changed = ReviewEvidence(
+        record_id=100,
+        provider_id=99,
+        reviewer="reviewer-project",
+        head_sha="a" * 40,
+        decision="changes_requested",
+        submitted_at=FIXED_NOW,
+    )
+    approved = ReviewEvidence(
+        record_id=101,
+        provider_id=1,
+        reviewer="reviewer-project",
+        head_sha="a" * 40,
+        decision="approved",
+        submitted_at=FIXED_NOW,
+    )
+
+    forward = evaluate_delivery(
+        delivery_inputs(
+            merged=False,
+            required_approvals=1,
+            allowed_reviewers=["reviewer-project"],
+            reviews=(changed, approved),
+        ),
+        now=FIXED_NOW,
+    )
+    reverse = evaluate_delivery(
+        delivery_inputs(
+            merged=False,
+            required_approvals=1,
+            allowed_reviewers=["reviewer-project"],
+            reviews=(approved, changed),
+        ),
+        now=FIXED_NOW,
+    )
+
+    assert "review_changes_requested" not in {item.code for item in forward.blockers}
+    assert "review_changes_requested" not in {item.code for item in reverse.blockers}
+    assert "review_approval_missing" not in {item.code for item in forward.blockers}
+    assert "review_approval_missing" not in {item.code for item in reverse.blockers}

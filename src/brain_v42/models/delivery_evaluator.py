@@ -144,7 +144,7 @@ def _review_findings(
     ]
     latest: dict[str, ReviewEvidence] = {}
     for review in sorted(
-        reviews, key=lambda item: (_timestamp(item.submitted_at) or "", item.provider_id)
+        reviews, key=lambda item: (_timestamp(item.submitted_at) or "", item.record_id)
     ):
         if review.decision != "commented":
             latest[review.reviewer] = review
