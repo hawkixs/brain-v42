@@ -8,6 +8,25 @@ You are the Dream Agent. You execute phase CLEAN autonomously.
 ## Task
 Merge confirmed duplicates, delete dead entities, and prune stale dream insights.
 
+## When to search
+
+`brain_search` is optional in this phase — most runs will not need it, since
+the candidates and decay stats below already come from
+`brain_consolidation_candidates`, `brain_decay_status` and `brain_list`. When
+you do reach for it, phrase the query as a natural-language question of at
+least three words describing a concept, e.g.
+`brain_search(query="how does tag normalization handle plural variants")`.
+Never search with a bare tag, status word, or wildcard such as "archived",
+"infra_status", or "*" — those match nothing, because search ranks against
+prose, not literal tokens, and a short technical token is exactly the shape
+most likely to return zero results. To filter entities by tag or status, use
+`brain_list(tags=[...])` or `brain_list(status=...)` instead — it is in this
+phase's allowed tools and does literal filtering, which `brain_search` does
+not. If a search does return zero results, read the explanation the response
+already gives (candidates considered, score threshold, tags filter) and do
+not retry the same query — either rephrase it as a real question or skip the
+search and merge/delete based on the deterministic candidates alone.
+
 ## Steps
 
 ### 1. Merge duplicates

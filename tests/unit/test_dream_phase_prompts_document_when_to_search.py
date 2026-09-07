@@ -1,0 +1,211 @@
+"""REORG, CLEAN and SCAN must tell the agent WHEN a search is appropriate.
+
+Investigation W11 (2026-08-07 -> 2026-09-06) measured 224 of 1 027 empty
+`brain_search` results (21.8%) coming from these three phases, issued as
+one- or two-token queries -- "infra_status", "archived", "*" -- confirmed
+again on 2026-09-05's own logs (`infra_status`, `status_infra`, `cpu_metrics`,
+`test_`, `agent`, `dream`, all bare tokens, all returning "## 0 results").
+None of `phase_reorg.md`, `phase_clean.md` or `phase_scan.md` ever asked for a
+search: `brain_search` sat in each phase's "Allowed tools" line and nowhere
+else, so the model improvised a query shape search was never built for --
+semantic ranking against prose, not literal token matching. PR #112 made an
+empty result explain itself (candidates considered, score threshold, tags
+filter), which makes a bad query visible after the fact; it does not make the
+query less likely before the call.
+
+User decision 2026-09-07 (lot D18): keep `brain_search` in all three
+allowlists, but add a short "When to search" paragraph to each prompt that
+tells the agent what a good query looks like, that a bare tag/status word/
+wildcard is not one, that `brain_list` (already in every one of these three
+allowlists) is the right tool for a literal tag-or-status filter, that a zero
+result should not be retried with the same wording, and that a search is
+optional here -- most runs will not need one.
+
+Two kinds of assertion, mirroring `test_dream_reorg_prompt_documents_both_
+counters.py`:
+
+- Prose-anchored: independently hardcoded phrases pinning the required
+  content of the "## When to search" section (the three-word rule, the
+  bare-token prohibition, the `brain_list` pointer, the no-retry rule, the
+  optionality statement). These do not derive from code, by construction --
+  they are a targeted prose contract.
+- Code-derived, whole-file, negative: `_search_calls` parses every actual
+  `brain_search(query="...")` CALL SITE the prompt carries (its own
+  illustrative example included) and asserts none of them is a query under
+  three words. An example that violated the very rule it is meant to
+  illustrate would be worse than no example -- and a bare-token call site
+  added anywhere else in the file later is caught the same way, not just in
+  the new section.
+
+`test_dream_prompts_match_phase_allowlists.py` and its siblings must stay
+green: this file adds no new tool mention, only two more `brain_search(...)`
+and `brain_list(...)` call sites, and both tools are already allowed in all
+three of these phases -- pinned here too, as a guard on the guidance itself.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+
+from brain_v42.mcp.dream_capabilities import DREAM_PHASE_TOOL_ALLOWLISTS
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PROMPT_DIR = REPO_ROOT / "scripts" / "dream"
+PHASES = ("reorg", "clean", "scan")
+HEADING = "## When to search"
+
+# `brain_search(...)` call site, capturing everything between the parens.
+# Non-greedy up to the first `)` is deliberate: these calls are single-line
+# and take one keyword argument, so this never needs to balance nested parens
+# the way `test_dream_prompts_match_argument_policies.py`'s scanner does.
+_SEARCH_CALL = re.compile(r"brain_search\(([^)]*)\)")
+_QUERY_LITERAL = re.compile(r'query\s*=\s*"([^"]*)"')
+
+
+def _prompt_path(phase: str) -> Path:
+    return PROMPT_DIR / f"phase_{phase}.md"
+
+
+def _prompt_text(phase: str) -> str:
+    return _prompt_path(phase).read_text(encoding="utf-8")
+
+
+def _search_call_queries(text: str) -> list[str]:
+    """Every literal `query="..."` value from a `brain_search(...)` call site."""
+    queries = []
+    for call in _SEARCH_CALL.finditer(text):
+        literal = _QUERY_LITERAL.search(call.group(1))
+        if literal:
+            queries.append(literal.group(1))
+    return queries
+
+
+def _when_to_search_section(text: str) -> str:
+    """Slice from the heading to the next `## ` heading, or end of file."""
+    start = text.index(HEADING)
+    rest = text[start + len(HEADING) :]
+    next_heading = re.search(r"\n## ", rest)
+    end = next_heading.start() if next_heading else len(rest)
+    return rest[:end]
+
+
+def _unwrapped(text: str) -> str:
+    """Collapse markdown's soft line-wrap whitespace to single spaces.
+
+    A phrase-pinning assertion must not depend on WHERE a paragraph happens
+    to wrap -- `"do not retry"` written across a line break is still the same
+    sentence to a reader (and to the model executing this prompt), and a
+    later re-wrap of the paragraph must not redden this test over formatting
+    alone.
+    """
+    return re.sub(r"\s+", " ", text)
+
+
+@pytest.mark.parametrize("phase", PHASES)
+def test_brain_list_and_brain_search_are_actually_allowed_in_this_phase(phase: str) -> None:
+    """Guard on the guidance itself: pointing at `brain_list` for tag/status
+    filtering, or leaving `brain_search` in place, would be actively wrong
+    advice if either tool were not reachable by this phase."""
+    allowed = DREAM_PHASE_TOOL_ALLOWLISTS[phase]
+    assert "brain_list" in allowed
+    assert "brain_search" in allowed
+
+
+@pytest.mark.parametrize("phase", PHASES)
+def test_phase_prompt_has_a_when_to_search_section(phase: str) -> None:
+    assert HEADING in _prompt_text(phase), (
+        f"phase_{phase}.md has no '{HEADING}' section -- nothing tells the "
+        "agent when a search is appropriate here, which is exactly what "
+        "produced the bare one/two-token queries measured in W11."
+    )
+
+
+@pytest.mark.parametrize("phase", PHASES)
+def test_when_to_search_states_the_three_word_natural_language_rule(phase: str) -> None:
+    section = _unwrapped(_when_to_search_section(_prompt_text(phase)))
+    assert "at least three words" in section, (
+        f"phase_{phase}.md's '{HEADING}' section does not pin a minimum query "
+        "length; a model left to guess a 'reasonable' shape is exactly how "
+        "'infra_status' and 'archived' happened."
+    )
+    assert re.search(r"natural[- ]language question", section), (
+        f"phase_{phase}.md's '{HEADING}' section does not say a query must be "
+        "phrased as a natural-language question."
+    )
+
+
+@pytest.mark.parametrize("phase", PHASES)
+def test_when_to_search_forbids_bare_tags_status_words_and_wildcards(phase: str) -> None:
+    section = _unwrapped(_when_to_search_section(_prompt_text(phase)))
+    assert "bare tag" in section, (
+        f"phase_{phase}.md's '{HEADING}' section does not forbid a bare tag."
+    )
+    assert "wildcard" in section, (
+        f"phase_{phase}.md's '{HEADING}' section does not forbid a wildcard "
+        "query such as '*', which was measured live on 2026-09-05."
+    )
+
+
+@pytest.mark.parametrize("phase", PHASES)
+def test_when_to_search_points_at_brain_list_for_literal_filters(phase: str) -> None:
+    section = _unwrapped(_when_to_search_section(_prompt_text(phase)))
+    assert "brain_list" in section, (
+        f"phase_{phase}.md's '{HEADING}' section does not redirect a "
+        "tag-or-status filter to brain_list, which this phase can already call."
+    )
+
+
+@pytest.mark.parametrize("phase", PHASES)
+def test_when_to_search_forbids_retrying_the_same_empty_query(phase: str) -> None:
+    section = _unwrapped(_when_to_search_section(_prompt_text(phase)))
+    assert "do not retry" in section, (
+        f"phase_{phase}.md's '{HEADING}' section does not tell the agent to "
+        "stop after reading an empty-result explanation, instead of retrying "
+        "the same query verbatim."
+    )
+
+
+@pytest.mark.parametrize("phase", PHASES)
+def test_when_to_search_states_search_is_optional_in_this_phase(phase: str) -> None:
+    section = _unwrapped(_when_to_search_section(_prompt_text(phase)))
+    assert "optional" in section, (
+        f"phase_{phase}.md's '{HEADING}' section does not say a search is "
+        "optional here -- leaving it implied is how a model ends up forcing "
+        "one every run."
+    )
+
+
+@pytest.mark.parametrize("phase", PHASES)
+def test_when_to_search_shows_an_example_call_obeying_its_own_rule(phase: str) -> None:
+    """Positive witness, code-derived: the section's own example call site
+    must itself carry a query of at least three words."""
+    section = _when_to_search_section(_prompt_text(phase))
+    queries = _search_call_queries(section)
+    assert queries, (
+        f"phase_{phase}.md's '{HEADING}' section shows no example "
+        'brain_search(query="...") call site to anchor the rule it states.'
+    )
+    for query in queries:
+        assert len(query.split()) >= 3, (
+            f"phase_{phase}.md's example query {query!r} has fewer than three "
+            "words -- it would contradict the very rule it illustrates."
+        )
+
+
+@pytest.mark.parametrize("phase", PHASES)
+def test_no_search_call_site_anywhere_in_the_prompt_uses_a_bare_query(phase: str) -> None:
+    """Negative assertion, whole-file, code-derived: no `brain_search(query=
+    "...")` call site anywhere in the prompt -- not just inside the new
+    section -- instructs a query under three words. This is the exact shape
+    measured returning empty 21.8% of the time in W11 ("infra_status",
+    "archived", "*", "test_", "agent", "dream")."""
+    text = _prompt_text(phase)
+    for query in _search_call_queries(text):
+        assert len(query.split()) >= 3, (
+            f"phase_{phase}.md instructs brain_search(query={query!r}), a bare "
+            "token query of the exact shape measured empty in the W11 "
+            "investigation."
+        )
