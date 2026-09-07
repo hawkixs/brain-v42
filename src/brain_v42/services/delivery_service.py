@@ -135,44 +135,13 @@ class DeliveryService:
         deliverable_key: str,
         repository_id: int,
         pr_number: int,
+        expected_revision: int,
+        expected_workflow_version: int,
         idempotency_key: str,
     ) -> ArtifactBinding:
         if not self._settings.enabled:
             raise DeliveryError("delivery_disabled", "delivery workflow operations are disabled")
-        async with self._repo._maybe_session(None, write=False) as session:
-            ticket = (
-                (await session.execute(sa.select(tickets).where(tickets.c.id == ticket_id)))
-                .mappings()
-                .one_or_none()
-            )
-        if ticket is None:
-            raise DeliveryError("ticket_not_found", "ticket was not found")
-        if actor_project != ticket["to_project"]:
-            raise DeliveryError("not_allowed", "only the executor may bind a pull request")
-        view = await self.get(ticket_id, actor_project=actor_project)
-        ticket_registry = self._settings.repositories_for(ticket["to_project"])
-        if repository_id not in ticket_registry:
-            raise DeliveryError("unknown_repository", "repository is not registered")
-        deliverable = next(
-            (item for item in view.contract.deliverables if item.key == deliverable_key), None
-        )
-        if deliverable is None:
-            raise DeliveryError(
-                "unknown_deliverable", "deliverable key is not in the current contract"
-            )
-        if deliverable.repository_id != repository_id:
-            raise DeliveryError(
-                "repository_mismatch", "binding repository differs from its deliverable"
-            )
-        binding = ArtifactBinding(
-            ticket_id=ticket_id,
-            contract_revision=view.contract.contract_revision,
-            attempt=1,
-            deliverable_key=deliverable_key,
-            repository_id=repository_id,
-            pr_number=pr_number,
-        )
-        digest = canonical_digest(
+        request_digest = canonical_digest(
             {
                 "operation": "bind_pr",
                 "ticket_id": str(ticket_id),
@@ -180,16 +149,46 @@ class DeliveryService:
                 "deliverable_key": deliverable_key,
                 "repository_id": repository_id,
                 "pr_number": pr_number,
+                "expected_revision": expected_revision,
+                "expected_workflow_version": expected_workflow_version,
             },
             domain="request",
         )
-        return await self._repo.bind_pr(
-            binding,
-            repository_name=ticket_registry[repository_id],
-            actor_project=actor_project,
-            idempotency_key=idempotency_key,
-            request_digest=digest,
-        )
+        async with self._repo._maybe_session(None, write=True) as session:
+            async with lock_workflows(session, (ticket_id,), graph_write=True):
+                ticket = (
+                    (
+                        await session.execute(
+                            sa.select(tickets).where(tickets.c.id == ticket_id).with_for_update()
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if ticket is None:
+                    raise DeliveryError("ticket_not_found", "ticket was not found")
+                if actor_project != ticket["to_project"]:
+                    raise DeliveryError("not_allowed", "only the executor may bind a pull request")
+                ticket_registry = self._settings.repositories_for(ticket["to_project"])
+                if repository_id not in ticket_registry:
+                    raise DeliveryError("unknown_repository", "repository is not registered")
+                return await self._repo.bind_pr(
+                    ArtifactBinding(
+                        ticket_id=ticket_id,
+                        contract_revision=expected_revision,
+                        attempt=1,
+                        deliverable_key=deliverable_key,
+                        repository_id=repository_id,
+                        pr_number=pr_number,
+                    ),
+                    repository_name=ticket_registry[repository_id],
+                    actor_project=actor_project,
+                    expected_revision=expected_revision,
+                    expected_workflow_version=expected_workflow_version,
+                    idempotency_key=idempotency_key,
+                    request_digest=request_digest,
+                    session=session,
+                )
 
     async def get(self, ticket_id: UUID, *, actor_project: str) -> DeliveryView:
         async with self._repo._maybe_session(None, write=False) as session:

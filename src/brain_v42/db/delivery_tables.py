@@ -230,6 +230,10 @@ def register_delivery_tables(metadata: sa.MetaData) -> dict[str, sa.Table]:
             "(subject_kind = 'artifact_binding' AND binding_id IS NOT NULL AND ticket_id IS NULL AND contract_revision IS NULL AND attempt IS NULL AND context_set_digest IS NULL) OR (subject_kind = 'repository_context' AND binding_id IS NULL AND ticket_id IS NOT NULL AND contract_revision IS NOT NULL AND attempt IS NOT NULL AND context_set_digest IS NOT NULL)",
             name="delivery_snapshots_subject_shape_valid",
         ),
+        sa.CheckConstraint(
+            "subject_kind <> 'repository_context' OR attempt >= 1",
+            name="delivery_snapshots_context_attempt_valid",
+        ),
         sa.Index(
             "uq_delivery_snapshot_binding_digest",
             "binding_id",

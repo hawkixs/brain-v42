@@ -86,6 +86,7 @@ def upgrade() -> None:
       CONSTRAINT delivery_snapshots_subject_shape_valid CHECK (
         (subject_kind='artifact_binding' AND binding_id IS NOT NULL AND ticket_id IS NULL AND contract_revision IS NULL AND attempt IS NULL AND context_set_digest IS NULL)
         OR (subject_kind='repository_context' AND binding_id IS NULL AND ticket_id IS NOT NULL AND contract_revision IS NOT NULL AND attempt IS NOT NULL AND context_set_digest IS NOT NULL)),
+      CONSTRAINT delivery_snapshots_context_attempt_valid CHECK (subject_kind <> 'repository_context' OR attempt >= 1),
       CONSTRAINT uq_delivery_snapshot_binding_subject UNIQUE (id, binding_id),
       CONSTRAINT uq_delivery_snapshot_context_subject UNIQUE (id, ticket_id, contract_revision, attempt, context_set_digest),
       FOREIGN KEY (ticket_id, contract_revision, context_set_digest) REFERENCES delivery_contract_revisions(ticket_id, contract_revision, context_set_digest) ON DELETE RESTRICT

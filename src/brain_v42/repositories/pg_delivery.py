@@ -57,15 +57,80 @@ DELIVERY_OBSERVER_LOCK = 7_311_041_002
 _CONTEXT_TABLES: dict[str, tuple[sa.Table, tuple[str, ...]]] = {
     "decision": (
         decisions,
-        ("id", "title", "description", "reasoning", "status", "project_key", "superseded_by"),
+        (
+            "id",
+            "title",
+            "description",
+            "reasoning",
+            "alternatives",
+            "consequences",
+            "status",
+            "project_key",
+            "merged_into",
+        ),
     ),
     "learning": (
         learnings,
-        ("id", "title", "content", "category", "confidence", "project_key", "superseded_by"),
+        (
+            "id",
+            "topic",
+            "insight",
+            "source",
+            "source_type",
+            "confidence",
+            "project_key",
+            "tags",
+            "merged_into",
+        ),
     ),
-    "snippet": (snippets, ("id", "title", "content", "language", "project_key", "file_path")),
-    "runbook": (runbooks, ("id", "title", "content", "project_key", "version")),
-    "adr": (adrs, ("id", "number", "title", "decision", "status", "project_key", "superseded_by")),
+    "snippet": (
+        snippets,
+        (
+            "id",
+            "title",
+            "intention",
+            "code",
+            "language",
+            "dependencies",
+            "usage_example",
+            "gotchas",
+            "project_key",
+            "tags",
+            "merged_into",
+        ),
+    ),
+    "runbook": (
+        runbooks,
+        (
+            "id",
+            "title",
+            "description",
+            "project_key",
+            "trigger",
+            "prerequisites",
+            "steps",
+            "rollback_steps",
+            "estimated_duration",
+            "tags",
+            "merged_into",
+        ),
+    ),
+    "adr": (
+        adrs,
+        (
+            "id",
+            "number",
+            "title",
+            "context",
+            "decision",
+            "consequences",
+            "project_key",
+            "tags",
+            "status",
+            "superseded_by",
+            "merged_into",
+        ),
+    ),
     "plan": (indexed_plans, ("id", "title", "content", "status", "project_key", "plan_type")),
 }
 
@@ -300,6 +365,8 @@ class PgDeliveryRepo(BasePgRepository):
         *,
         repository_name: str,
         actor_project: str,
+        expected_revision: int,
+        expected_workflow_version: int,
         idempotency_key: str,
         request_digest: str,
         session: AsyncSession | None = None,
@@ -324,6 +391,86 @@ class PgDeliveryRepo(BasePgRepository):
                 )
                 if replay is not None:
                     return ArtifactBinding.model_validate(replay)
+                workflow = (
+                    (
+                        await sess.execute(
+                            sa.select(delivery_workflows)
+                            .where(delivery_workflows.c.ticket_id == binding.ticket_id)
+                            .with_for_update()
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                ticket = (
+                    (
+                        await sess.execute(
+                            sa.select(tickets)
+                            .where(tickets.c.id == binding.ticket_id)
+                            .with_for_update()
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if workflow is None:
+                    raise DeliveryError("contract_not_found", "delivery contract was not found")
+                if ticket is None:
+                    raise DeliveryError("ticket_not_found", "ticket was not found")
+                if ticket["kind"] != "request" or ticket["status"] in {
+                    "wontfix",
+                    "closed",
+                    "acked",
+                }:
+                    raise DeliveryError(
+                        "ticket_not_contractable", "ticket cannot accept a pull request"
+                    )
+                if actor_project != ticket["to_project"]:
+                    raise DeliveryError("not_allowed", "only the executor may bind a pull request")
+                if (
+                    expected_revision != workflow["current_revision"]
+                    or expected_workflow_version != workflow["row_version"]
+                ):
+                    raise DeliveryError(
+                        "revision_conflict", "delivery workflow is no longer current"
+                    )
+                revision = (
+                    (
+                        await sess.execute(
+                            sa.select(delivery_contract_revisions.c.normalized_contract).where(
+                                delivery_contract_revisions.c.ticket_id == binding.ticket_id,
+                                delivery_contract_revisions.c.contract_revision
+                                == workflow["current_revision"],
+                            )
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                contract = _contract_from_json(dict(revision["normalized_contract"]))
+                deliverable = next(
+                    (item for item in contract.deliverables if item.key == binding.deliverable_key),
+                    None,
+                )
+                if deliverable is None:
+                    raise DeliveryError(
+                        "unknown_deliverable", "deliverable key is not in the current contract"
+                    )
+                if (
+                    deliverable.repository_id != binding.repository_id
+                    or deliverable.repository != repository_name
+                ):
+                    raise DeliveryError(
+                        "repository_mismatch", "binding repository differs from its deliverable"
+                    )
+                binding = ArtifactBinding(
+                    ticket_id=binding.ticket_id,
+                    contract_revision=workflow["current_revision"],
+                    attempt=workflow["attempt"],
+                    deliverable_key=binding.deliverable_key,
+                    repository_id=binding.repository_id,
+                    pr_number=binding.pr_number,
+                )
                 current = (
                     (
                         await sess.execute(
@@ -377,8 +524,20 @@ class PgDeliveryRepo(BasePgRepository):
                         idempotency_key=idempotency_key,
                         request_digest=request_digest,
                         result=result,
-                        payload={},
+                        payload={
+                            "expected_revision": expected_revision,
+                            "expected_workflow_version": expected_workflow_version,
+                        },
                     )
+                )
+                await sess.execute(
+                    delivery_workflows.update()
+                    .where(
+                        delivery_workflows.c.ticket_id == binding.ticket_id,
+                        delivery_workflows.c.current_revision == expected_revision,
+                        delivery_workflows.c.row_version == expected_workflow_version,
+                    )
+                    .values(row_version=expected_workflow_version + 1, updated_at=sa.func.now())
                 )
                 return binding
 

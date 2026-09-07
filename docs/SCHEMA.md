@@ -39,8 +39,8 @@ cutover.
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
-The SQLAlchemy `METADATA` registry declares 43 tables, including the six graph
-foundation tables below. A fresh schema at head 053 contains 44 `public` tables counting
+The SQLAlchemy `METADATA` registry declares 42 tables, including the six graph
+foundation tables below. A fresh schema at head 053 contains 43 `public` tables counting
 `alembic_version`, which stays outside `METADATA`. Migrations 040 to 044 only add
 columns and 045 adds none — it widens an existing column — so the count held at 32 from
 038 through 049; 050, 051 and 052 each add exactly ONE table, and that is what moves it.

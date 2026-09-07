@@ -13,11 +13,16 @@ import pytest
 import sqlalchemy as sa
 
 from brain_v42.db.tables import (
+    adrs,
     decisions,
     delivery_artifact_bindings,
     delivery_confirmations,
     delivery_snapshots,
     delivery_workflows,
+    indexed_plans,
+    learnings,
+    runbooks,
+    snippets,
     tickets,
 )
 from brain_v42.models.delivery import ContractInput, Deliverable, ReviewPolicy
@@ -26,6 +31,59 @@ from brain_v42.repositories.pg_ticket import PgTicketRepo
 from tests.integration.disposable_db import fresh_head_database
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+_CONTEXT_CASES = (
+    (
+        "decision",
+        decisions,
+        {"title": "decision", "description": "before", "reasoning": "why"},
+        "description",
+    ),
+    ("learning", learnings, {"topic": "topic", "insight": "before"}, "insight"),
+    (
+        "snippet",
+        snippets,
+        {"title": "snippet", "intention": "use", "code": "before", "language": "python"},
+        "code",
+    ),
+    (
+        "runbook",
+        runbooks,
+        {
+            "title": "runbook",
+            "description": "before",
+            "project_key": "brain-v42",
+            "trigger": "manual",
+        },
+        "description",
+    ),
+    (
+        "adr",
+        adrs,
+        {
+            "number": 9203,
+            "title": "adr",
+            "context": "context",
+            "decision": "before",
+            "consequences": "consequences",
+            "project_key": "brain-v42",
+        },
+        "decision",
+    ),
+    (
+        "plan",
+        indexed_plans,
+        {
+            "file_path": "plans/delivery-context-9203.md",
+            "title": "plan",
+            "plan_type": "plan",
+            "project_key": "brain-v42",
+            "content_hash": "a" * 64,
+            "content": "before",
+        },
+        "content",
+    ),
+)
 
 
 @pytest.mark.asyncio
@@ -151,6 +209,8 @@ async def test_binding_requires_a_ticket_participant_and_replaces_the_active_ide
             deliverable_key="implementation",
             repository_id=1337360966,
             pr_number=7,
+            expected_revision=1,
+            expected_workflow_version=1,
             idempotency_key="outside",
         )
     first = await service.bind_pr(
@@ -159,6 +219,8 @@ async def test_binding_requires_a_ticket_participant_and_replaces_the_active_ide
         deliverable_key="implementation",
         repository_id=1337360966,
         pr_number=7,
+        expected_revision=1,
+        expected_workflow_version=1,
         idempotency_key="context-generation-first",
     )
     second = await service.bind_pr(
@@ -167,6 +229,8 @@ async def test_binding_requires_a_ticket_participant_and_replaces_the_active_ide
         deliverable_key="implementation",
         repository_id=1337360966,
         pr_number=8,
+        expected_revision=1,
+        expected_workflow_version=2,
         idempotency_key="generation-second",
     )
     assert first.id != second.id
@@ -243,11 +307,89 @@ async def test_contract_pins_brain_context_and_view_reports_a_later_content_drif
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("entity_type", "table", "values", "semantic_column"), _CONTEXT_CASES)
+async def test_contract_context_digest_tracks_real_semantic_sources_only(
+    session_factory, entity_type, table, values, semantic_column
+) -> None:
+    """Every supported mutable Brain source drifts only when its semantic content changes."""
+    from brain_v42.delivery_config import DeliverySettings
+    from brain_v42.repositories.pg_delivery import PgDeliveryRepo
+    from brain_v42.services.delivery_service import DeliveryService
+
+    async with session_factory() as session:
+        async with session.begin():
+            source_id = (
+                await session.execute(table.insert().values(**values).returning(table.c.id))
+            ).scalar_one()
+    ticket = await PgTicketRepo(session_factory).create(
+        TicketCreate(
+            kind=TicketKind.REQUEST,
+            title=f"context {entity_type}",
+            body="freeze source",
+            from_project="brain-v42",
+            to_project="brain-v42",
+        )
+    )
+    service = DeliveryService(
+        PgDeliveryRepo(session_factory), settings=DeliverySettings(enabled=True)
+    )
+    await service.set_contract(
+        ticket.id,
+        actor_project="brain-v42",
+        expected_revision=0,
+        idempotency_key=f"context-{entity_type}",
+        contract=ContractInput(
+            objective="freeze semantic source",
+            priority=1,
+            acceptance_mode="automatic",
+            context_refs=(
+                {
+                    "kind": "brain_entity",
+                    "entity_type": entity_type,
+                    "entity_id": source_id,
+                    "required": True,
+                },
+            ),
+            deliverables=(
+                Deliverable(
+                    key="implementation",
+                    repository="hawkixs/brain-v42",
+                    target_branch="main",
+                    required_checks=(),
+                    no_checks_reason="covered later",
+                    review=ReviewPolicy(required_approvals=0, allowed_reviewers=()),
+                ),
+            ),
+        ),
+    )
+    before = await service.get(ticket.id, actor_project="brain-v42")
+    pinned_snapshot = before.contract.context_refs[0].content_snapshot
+    assert before.contexts[0].status == "available"
+    async with session_factory() as session:
+        async with session.begin():
+            await session.execute(
+                sa.update(table).where(table.c.id == source_id).values(access_count=1)
+            )
+    assert (await service.get(ticket.id, actor_project="brain-v42")).contexts[
+        0
+    ].status == "available"
+    async with session_factory() as session:
+        async with session.begin():
+            await session.execute(
+                sa.update(table).where(table.c.id == source_id).values({semantic_column: "after"})
+            )
+    after = await service.get(ticket.id, actor_project="brain-v42")
+    assert after.contexts[0].status == "changed"
+    assert after.contract.context_refs[0].content_snapshot == pinned_snapshot
+
+
+@pytest.mark.asyncio
 async def test_binding_persists_canonical_registry_name_and_replays_its_uuid(
     session_factory,
 ) -> None:
     """Numeric repository identity binds the configured name and a retry is immutable."""
     from brain_v42.delivery_config import DeliverySettings
+    from brain_v42.models.delivery import DeliveryError
     from brain_v42.repositories.pg_delivery import PgDeliveryRepo
     from brain_v42.services.delivery_service import DeliveryService
 
@@ -294,6 +436,8 @@ async def test_binding_persists_canonical_registry_name_and_replays_its_uuid(
         deliverable_key="implementation",
         repository_id=7,
         pr_number=12,
+        expected_revision=1,
+        expected_workflow_version=1,
         idempotency_key="same-request",
     )
     replay = await service.bind_pr(
@@ -302,6 +446,8 @@ async def test_binding_persists_canonical_registry_name_and_replays_its_uuid(
         deliverable_key="implementation",
         repository_id=7,
         pr_number=12,
+        expected_revision=1,
+        expected_workflow_version=1,
         idempotency_key="same-request",
     )
     async with session_factory() as session:
@@ -314,6 +460,17 @@ async def test_binding_persists_canonical_registry_name_and_replays_its_uuid(
         ).scalar_one()
     assert replay.id == first.id
     assert name == "example/executor-repo"
+    with pytest.raises(DeliveryError, match="revision_conflict"):
+        await service.bind_pr(
+            ticket.id,
+            actor_project="executor",
+            deliverable_key="implementation",
+            repository_id=7,
+            pr_number=13,
+            expected_revision=1,
+            expected_workflow_version=1,
+            idempotency_key="stale-generation",
+        )
 
 
 @pytest.mark.asyncio
@@ -479,6 +636,8 @@ async def test_refresh_marks_context_and_active_bindings_due_without_changing_ve
         deliverable_key="implementation",
         repository_id=1337360966,
         pr_number=33,
+        expected_revision=1,
+        expected_workflow_version=1,
         idempotency_key="refresh-binding",
     )
     future = datetime.now(UTC) + timedelta(days=1)
@@ -813,6 +972,8 @@ async def test_cross_ticket_roles_and_registered_repository_identity(session_fac
             deliverable_key="implementation",
             repository_id=7,
             pr_number=1,
+            expected_revision=1,
+            expected_workflow_version=1,
             idempotency_key="cross-requester-bind",
         )
     with pytest.raises(DeliveryError, match="repository_mismatch"):
@@ -822,6 +983,8 @@ async def test_cross_ticket_roles_and_registered_repository_identity(session_fac
             deliverable_key="implementation",
             repository_id=8,
             pr_number=1,
+            expected_revision=1,
+            expected_workflow_version=1,
             idempotency_key="cross-wrong-repo",
         )
     with pytest.raises(DeliveryError, match="not_allowed"):
@@ -876,6 +1039,8 @@ async def test_evidence_foreign_keys_reject_cross_binding_snapshot_and_error_suc
         deliverable_key="implementation",
         repository_id=1337360966,
         pr_number=1,
+        expected_revision=1,
+        expected_workflow_version=1,
         idempotency_key="evidence-first",
     )
     second = await service.bind_pr(
@@ -884,11 +1049,33 @@ async def test_evidence_foreign_keys_reject_cross_binding_snapshot_and_error_suc
         deliverable_key="implementation",
         repository_id=1337360966,
         pr_number=2,
+        expected_revision=1,
+        expected_workflow_version=2,
         idempotency_key="evidence-second",
     )
     now = datetime.now(UTC)
     async with session_factory() as session:
         async with session.begin():
+            context_digest = (
+                await session.execute(
+                    sa.select(delivery_workflows.c.context_set_digest).where(
+                        delivery_workflows.c.ticket_id == ticket.id
+                    )
+                )
+            ).scalar_one()
+            with pytest.raises(sa.exc.IntegrityError):
+                async with session.begin_nested():
+                    await session.execute(
+                        delivery_snapshots.insert().values(
+                            subject_kind="repository_context",
+                            ticket_id=ticket.id,
+                            contract_revision=1,
+                            attempt=0,
+                            context_set_digest=context_digest,
+                            semantic_digest="0" * 64,
+                            evidence={},
+                        )
+                    )
             snapshot = (
                 await session.execute(
                     delivery_snapshots.insert()
