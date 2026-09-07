@@ -394,6 +394,19 @@ async def test_full_projection_contains_every_visible_family_and_semantic_edges(
     assert ("dream-phase:41", "dream-night:2026-07-20", "BELONGS_TO_NIGHT") in edges
     assert ("dream-promotion:51", f"learning:{LEARNING_ID}", "EVALUATES") in edges
     assert ("dream-promotion:51", f"adr:{ADR_NEW_ID}", "MATERIALIZED_AS") in edges
+    # W25 lot 1: cosine_observed=0.88 is set on this fixture row (see
+    # _representative_tables), yet MATERIALIZED_AS weight must stay pinned
+    # to 1.0 -- a materialized promotion is a fact with certainty 1, not a
+    # similarity score. Before the explicit pin this silently re-weighted to
+    # ~0.90 the moment cosine_observed stopped being NULL.
+    materialized_edge = next(
+        e
+        for e in payload["edges"]
+        if e["source"] == "dream-promotion:51"
+        and e["target"] == f"adr:{ADR_NEW_ID}"
+        and e["type"] == "MATERIALIZED_AS"
+    )
+    assert materialized_edge["weight"] == 1.0
     assert (f"ticket:{TICKET_ID}", "project:brain-v42", "SENT_BY") in edges
     assert (f"ticket:{TICKET_ID}", "project:red-monitor", "ASSIGNED_TO") in edges
     assert (f"session:{SESSION_ID}", f"decision:{NEW_DECISION_ID}", "CAPTURED") in edges

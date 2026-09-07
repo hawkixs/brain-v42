@@ -97,6 +97,152 @@ class ValidationFailure(Exception):
     """Any violation of the PROMOTE report contract."""
 
 
+# ─── Dedup shadow-verdict cross-check (W25 lot 1) ──────────────────────────
+#
+# dream.sh:1100 already passes --candidates-json to this script. Comparing
+# the model's reported `cosine_observed` against the number promote_prepare
+# injected into `candidates[0]["dedup"]` turns fabrication into a
+# ValidationFailure at zero extra cost -- no recomputation, no new plumbing.
+#
+# Tolerance absorbs a FAITHFUL 2-decimal transcription of the (now 4-decimal,
+# see promote_prepare._compute_family_dedup) injected value, not genuine
+# divergence: every one of the 15 historical cosine_observed values the model
+# has ever reported carries 2 decimals, and phase_promote.md's own dry-run
+# example teaches `"cosine_observed": 0.42`. Worst case a 2-decimal rounding
+# can diverge from a 4-decimal source is 0.005 (e.g. 0.645 -> "0.65"); 6e-3
+# leaves headroom for float representation noise on that boundary while
+# still failing hard on genuine fabrication (the smallest observed gap
+# between historical distinct/duplicate cosines is two orders of magnitude
+# wider than this).
+_DEDUP_COSINE_TOLERANCE = 6e-3
+
+
+def _report_dedup_family(report: dict, target_type: str) -> str | None:
+    """Which family of `candidates[0]["dedup"]` this report's
+    `cosine_observed` refers to, or None if Step 3 (the dedup check) was
+    never reached at all.
+
+    `target_type` is the report's OWN field, which for a WET or DRY_RUN
+    materialization is genuinely "adr"/"runbook" (dry_run is a separate
+    boolean flag, see phase_promote.md) -- so both share this branch.
+    `"skipped_dedup"` does not carry the classification in `target_type`
+    anymore (it was overwritten), hence the dedicated `dedup_family` field --
+    the prompt already declares it required, so a missing or malformed value
+    here is a contract violation, not a shape this function can just decline
+    to recognize: doing so used to make the whole cross-check a silent
+    no-op, exactly where a fabricated `cosine_observed` still got persisted.
+    `classification_uncertain`, `dedup_unavailable` and `none` never reach
+    the per-family dedup block -- `None` for THOSE is legitimate.
+
+    Raises:
+        ValidationFailure: `target_type == "skipped_dedup"` but `dedup_family`
+            is missing or not one of "adr"/"runbook".
+    """
+    if target_type in ("adr", "runbook"):
+        return target_type
+    if target_type == "skipped_dedup":
+        family = report.get("dedup_family")
+        if family not in ("adr", "runbook"):
+            raise ValidationFailure(
+                f"target_type='skipped_dedup' requires dedup_family in "
+                f"('adr', 'runbook'), got {family!r}"
+            )
+        return family
+    return None
+
+
+def _as_float_or_fail(value: object, field: str) -> float:
+    """Coerce a report-supplied value to `float`, or fail closed.
+
+    `cosine_observed` (and, defensively, the server's own injected
+    `nearest_raw_cosine`) arrive straight from `json.loads` on text the
+    model produced. A stray shape -- ``"0.85 (approx)"``, ``"n/a"``, a list,
+    a dict -- used to raise a bare ValueError/TypeError out of `float()`
+    uncaught: `_amain` only catches `ValidationFailure`, so the process died
+    with a Python traceback instead of printing "PROMOTE VALIDATION FAILED"
+    and calling `_mark_dream_run_partial` -- the exact audit trail every
+    OTHER contract violation in this module produces (review finding, fix
+    round, W25 lot 1).
+    """
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValidationFailure(f"{field}={value!r} is not a number") from exc
+
+
+def _check_dedup_against_pool(report: dict, candidate0: dict, target_type: str) -> float | None:
+    """Fail closed on a missing band, a fabricated cosine, or a silent
+    pass-through of the overlap band.
+
+    When the report never reached the dedup step at all (see
+    `_report_dedup_family`), the only thing left to guard against is a
+    `cosine_observed` reported anyway -- there is no server number it could
+    legitimately have been copied from, so its mere presence is fabrication.
+
+    Returns the server-injected raw cosine for this report's family (as a
+    validated `float`), or `None` when the report never reaches Step 3, or
+    when the server itself injected no comparison value. Callers persist
+    THIS number on `dream_promotions.cosine_observed` -- it is the ONLY
+    value ever written there (review finding, fix round, W25 lot 1). A
+    `None` return always means `reported_cosine` is `None` too: any report
+    that names a cosine without a matching injected value has already
+    raised above as fabrication, so there is never a reported transcription
+    left to fall back to. What the model writes is a cross-check only: it
+    has already been rounded once by promote_prepare and can carry up to
+    `_DEDUP_COSINE_TOLERANCE` of further transcription drift, noise of the
+    same order as the gap between the per-family bounds.
+    """
+    family = _report_dedup_family(report, target_type)
+    if family is None:
+        reported_cosine = report.get("cosine_observed")
+        if reported_cosine is not None:
+            raise ValidationFailure(
+                f"cosine_observed={reported_cosine!r} reported but target_type="
+                f"{target_type!r} never reaches the dedup step (fabrication)"
+            )
+        return None
+
+    dedup = candidate0.get("dedup")
+    if not isinstance(dedup, dict) or family not in dedup:
+        raise ValidationFailure(
+            f"missing dedup band for family {family!r} on candidates[0] -- "
+            "promote_prepare.py did not inject a dedup block"
+        )
+    family_block = dedup[family]
+    band = family_block.get("band")
+    if band is None:
+        raise ValidationFailure(f"missing dedup band for family {family!r}")
+
+    raw_injected_cosine = family_block.get("nearest_raw_cosine")
+    reported_cosine = report.get("cosine_observed")
+    injected_cosine = (
+        _as_float_or_fail(raw_injected_cosine, "nearest_raw_cosine")
+        if raw_injected_cosine is not None
+        else None
+    )
+    if injected_cosine is None:
+        if reported_cosine is not None:
+            raise ValidationFailure(
+                f"cosine_observed={reported_cosine!r} reported but the server "
+                f"injected no nearest_raw_cosine for family {family!r} (fabrication)"
+            )
+    elif reported_cosine is None or (
+        abs(_as_float_or_fail(reported_cosine, "cosine_observed") - injected_cosine)
+        > _DEDUP_COSINE_TOLERANCE
+    ):
+        raise ValidationFailure(
+            f"cosine_observed={reported_cosine!r} diverges from the server-injected "
+            f"nearest_raw_cosine={raw_injected_cosine!r} for family {family!r}"
+        )
+
+    if band == "borderline" and not report.get("dedup_examined"):
+        raise ValidationFailure(
+            f"band=borderline for family {family!r} requires a non-empty dedup_examined"
+        )
+
+    return injected_cosine
+
+
 def parse_report(raw: str) -> dict:
     """Extract the JSON report block between the PROMOTE markers.
 
@@ -153,6 +299,21 @@ async def validate(
         # A 'none' report that DOES name a candidate falls through below: it
         # is a refusal, not an empty run, and is an audited outcome (see the
         # skip-path branch further down and _NONE_REFUSAL_TARGET_TYPE above).
+        #
+        # Fabrication guard (W25 lot 1 shadow): target_type="none" never
+        # reaches Step 3 (the dedup check) regardless of whether a candidate
+        # is named, so a reported cosine_observed is always fabrication. This
+        # no-candidate shape returns before _check_dedup_against_pool would
+        # ever run, so the guard has to sit here too; the candidate-naming
+        # "none" shape falls through to the skip-path branch further down,
+        # which calls _check_dedup_against_pool and raises on the same
+        # condition (_report_dedup_family returns None for "none").
+        reported_cosine = report.get("cosine_observed")
+        if reported_cosine is not None:
+            raise ValidationFailure(
+                f"cosine_observed={reported_cosine!r} reported but target_type="
+                "'none' never reaches the dedup step (fabrication)"
+            )
         return
 
     if not candidates or candidate_id != candidates[0]["id"]:
@@ -201,14 +362,28 @@ async def validate(
                     raise ValidationFailure(
                         f"expected 1 dream_promotions row for adr {target_id}, got {count}"
                     )
+                injected_cosine = _check_dedup_against_pool(report, candidates[0], target_type)
                 # Backfill dream_run_id: the repo inserted the audit row with
                 # dream_run_id=NULL because the agent has no knowledge of the
                 # run id at tool-call time. The validator does — close the loop.
+                # cosine_observed is backfilled the same way: create_with_promotion
+                # writes the row before the model's report even exists, so this
+                # validator is the only place that can persist the server-verdict
+                # cosine on a MATERIALIZED (adr/runbook) row (W25 lot 1 — shadow).
+                # The SERVER-injected value is the only thing ever written
+                # here -- the model's own `cosine_observed` is a cross-check
+                # only (already validated above, tolerance
+                # _DEDUP_COSINE_TOLERANCE) and is never persisted.
+                adr_update_values: dict[str, object] = {}
                 if dream_run_id is not None:
+                    adr_update_values["dream_run_id"] = dream_run_id
+                if injected_cosine is not None:
+                    adr_update_values["cosine_observed"] = injected_cosine
+                if adr_update_values:
                     await session.execute(
                         sa.update(dream_promotions)
                         .where(dream_promotions.c.target_adr_id == adr_uuid)
-                        .values(dream_run_id=dream_run_id)
+                        .values(**adr_update_values)
                     )
                 return
 
@@ -243,11 +418,21 @@ async def validate(
                     raise ValidationFailure(
                         f"expected 1 dream_promotions row for runbook {target_id}, got {count}"
                     )
+                injected_cosine = _check_dedup_against_pool(report, candidates[0], target_type)
+                # The SERVER-injected value is the only thing ever written
+                # here -- the model's own `cosine_observed` is a cross-check
+                # only (already validated above, tolerance
+                # _DEDUP_COSINE_TOLERANCE) and is never persisted.
+                rb_update_values: dict[str, object] = {}
                 if dream_run_id is not None:
+                    rb_update_values["dream_run_id"] = dream_run_id
+                if injected_cosine is not None:
+                    rb_update_values["cosine_observed"] = injected_cosine
+                if rb_update_values:
                     await session.execute(
                         sa.update(dream_promotions)
                         .where(dream_promotions.c.target_runbook_id == rb_uuid)
-                        .values(dream_run_id=dream_run_id)
+                        .values(**rb_update_values)
                     )
                 return
 
@@ -257,6 +442,14 @@ async def validate(
             # _NONE_REFUSAL_TARGET_TYPE (see the module-level comment on that
             # constant for why) with the literal reported value tagged onto
             # skipped_reason so no information is silently lost.
+            #
+            # _check_dedup_against_pool runs for every shape here, including
+            # "none": _report_dedup_family returns None for "none" (it never
+            # reaches Step 3), so this is also where a "none" report that
+            # NAMES a candidate but still fabricates a cosine_observed gets
+            # caught -- the early no-candidate "none" shape is guarded
+            # separately, above, before this branch is ever reached.
+            injected_cosine = _check_dedup_against_pool(report, candidates[0], target_type)
             if target_type == "none":
                 skip_type = _NONE_REFUSAL_TARGET_TYPE
                 cosine = None
@@ -267,8 +460,20 @@ async def validate(
                     else f"{_NONE_REFUSAL_REASON_MARKER} no reason given"
                 )
             else:
+                # No skip_type gate (removed, W25 lot 1). The old gate
+                # (`cosine = ... if skip_type == "skipped_dedup" else None`)
+                # is exactly why 0/7 dry_run rows carried a cosine even
+                # though the model was already reporting one -- it discarded
+                # the value for every skip_type except "skipped_dedup"
+                # before it ever reached the INSERT below.
+                #
+                # The SERVER-injected value is the only thing ever
+                # persisted -- see _check_dedup_against_pool's docstring.
+                # The model's reported value is a cross-check only, already
+                # validated (and range-checked via `_as_float_or_fail`)
+                # inside that call.
                 skip_type = "dry_run" if dry_run else target_type
-                cosine = report.get("cosine_observed") if skip_type == "skipped_dedup" else None
+                cosine = injected_cosine
                 reason = report.get("reason")
             await session.execute(
                 sa.text(
