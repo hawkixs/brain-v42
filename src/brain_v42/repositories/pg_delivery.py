@@ -6,7 +6,7 @@ import json
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -16,9 +16,11 @@ from brain_v42.db.tables import (
     adrs,
     decisions,
     delivery_artifact_bindings,
+    delivery_confirmations,
     delivery_contract_revisions,
     delivery_dependencies,
     delivery_events,
+    delivery_snapshots,
     delivery_workflows,
     indexed_plans,
     learnings,
@@ -39,8 +41,11 @@ from brain_v42.models.delivery import (
     DeliveryView,
     DependencyPredicate,
     EvaluationInput,
+    ObservationConfirmation,
     PinnedBrainEntityReference,
     PinnedContextReference,
+    PullRequestEvidence,
+    RepositoryContextEvidence,
     RepositoryDocumentReference,
     context_reference_digest,
     context_reference_identity,
@@ -597,29 +602,7 @@ class PgDeliveryRepo(BasePgRepository):
                 .mappings()
                 .all()
             )
-            bindings = tuple(
-                BindingEvidence(
-                    binding=ArtifactBinding(
-                        id=row["id"],
-                        ticket_id=row["ticket_id"],
-                        contract_revision=row["contract_revision"],
-                        attempt=row["attempt"],
-                        deliverable_key=row["deliverable_key"],
-                        repository_id=row["repository_id"],
-                        pr_number=row["pr_number"],
-                        state=row["state"],
-                        head_sha=row["head_sha"],
-                        base_sha=row["base_sha"],
-                        integration_sha=row["integration_sha"],
-                        binding_version=row["row_version"],
-                    ),
-                    confirmation=None,
-                    last_attempt_at=row["last_attempt_at"],
-                    last_success_at=row["last_success_at"],
-                    last_attempt_outcome="never",
-                )
-                for row in binding_rows
-            )
+            bindings = tuple([await _binding_evidence(sess, row) for row in binding_rows])
             upstream_revision = delivery_contract_revisions.alias("upstream_revision")
             dependency_rows = (
                 (
@@ -677,7 +660,7 @@ class PgDeliveryRepo(BasePgRepository):
                 )
                 for row in dependency_rows
             )
-            contexts = tuple(await _context_predicates(sess, contract))
+            contexts = tuple(await _context_predicates(sess, contract, workflow))
             return EvaluationInput(
                 contract=contract,
                 attempt=workflow["attempt"],
@@ -870,15 +853,156 @@ def _contract_from_json(payload: dict[str, Any]) -> ContractRevision:
     return ContractRevision.model_validate(restored)
 
 
+async def _binding_evidence(session: AsyncSession, row: sa.RowMapping) -> BindingEvidence:
+    """Hydrate retained success proof independently from the latest collection attempt."""
+    success_confirmation = None
+    snapshot_id = None
+    success_id = row["latest_success_confirmation_id"]
+    if success_id is not None:
+        success = (
+            (
+                await session.execute(
+                    sa.select(delivery_confirmations, delivery_snapshots.c.evidence)
+                    .join(
+                        delivery_snapshots,
+                        delivery_snapshots.c.id == delivery_confirmations.c.snapshot_id,
+                    )
+                    .where(delivery_confirmations.c.id == success_id)
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if success is not None:
+            evidence = PullRequestEvidence.model_validate_json(json.dumps(success["evidence"]))
+            snapshot_id = success["snapshot_id"]
+            success_confirmation = ObservationConfirmation(
+                id=success["id"],
+                evidence=evidence,
+                collection_started_at=success["collection_started_at"],
+                collection_finished_at=success["collection_finished_at"],
+                outcome="success",
+            )
+    latest_id = row["latest_attempt_confirmation_id"]
+    latest = None
+    if latest_id is not None:
+        latest = (
+            (
+                await session.execute(
+                    sa.select(delivery_confirmations.c.outcome).where(
+                        delivery_confirmations.c.id == latest_id
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+    return BindingEvidence(
+        binding=ArtifactBinding(
+            id=row["id"],
+            ticket_id=row["ticket_id"],
+            contract_revision=row["contract_revision"],
+            attempt=row["attempt"],
+            deliverable_key=row["deliverable_key"],
+            repository_id=row["repository_id"],
+            pr_number=row["pr_number"],
+            state=row["state"],
+            head_sha=row["head_sha"],
+            base_sha=row["base_sha"],
+            integration_sha=row["integration_sha"],
+            binding_version=row["row_version"],
+        ),
+        confirmation=success_confirmation,
+        snapshot_id=snapshot_id,
+        success_confirmation_id=success_id,
+        latest_attempt_confirmation_id=latest_id,
+        last_attempt_at=row["last_attempt_at"],
+        last_success_at=row["last_success_at"],
+        last_attempt_outcome="never" if latest is None else latest["outcome"],
+    )
+
+
 async def _context_predicates(
-    session: AsyncSession, contract: ContractRevision
+    session: AsyncSession, contract: ContractRevision, workflow: sa.RowMapping
 ) -> list[ContextPredicate]:
+    """Hydrate repository proof from its retained success and current attempt pointers."""
     predicates: list[ContextPredicate] = []
+    success_id = workflow["latest_context_success_confirmation_id"]
+    latest_id = workflow["latest_context_attempt_confirmation_id"]
+    success = None
+    success_evidence = None
+    if success_id is not None:
+        success = (
+            (
+                await session.execute(
+                    sa.select(delivery_confirmations, delivery_snapshots.c.evidence)
+                    .join(
+                        delivery_snapshots,
+                        delivery_snapshots.c.id == delivery_confirmations.c.snapshot_id,
+                    )
+                    .where(delivery_confirmations.c.id == success_id)
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if success is not None:
+            success_evidence = RepositoryContextEvidence.model_validate(success["evidence"])
+    latest = None
+    if latest_id is not None:
+        latest = (
+            (
+                await session.execute(
+                    sa.select(delivery_confirmations.c.outcome).where(
+                        delivery_confirmations.c.id == latest_id
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
     for reference in contract.context_refs:
         identity = context_reference_identity(reference)
         if isinstance(reference, RepositoryDocumentReference):
+            fact = next(
+                (
+                    candidate
+                    for candidate in (() if success_evidence is None else success_evidence.facts)
+                    if candidate.identity()
+                    == (reference.repository_id, reference.sha, reference.path)
+                ),
+                None,
+            )
+            proof = (
+                RepositoryContextEvidence(complete=True, facts=(fact,))
+                if fact is not None and fact.status == "available"
+                else None
+            )
+            status: Literal["available", "missing", "error"]
+            if latest is not None and latest["outcome"] == "error":
+                status = "error"
+            elif proof is not None and success is not None:
+                status = "available"
+            else:
+                status = "missing"
             predicates.append(
-                ContextPredicate(reference_identity=identity, current_digest=None, status="missing")
+                ContextPredicate(
+                    reference_identity=identity,
+                    current_digest=context_reference_digest(reference)
+                    if proof is not None
+                    else None,
+                    status=status,
+                    snapshot_id=None if success is None else success["snapshot_id"],
+                    success_confirmation_id=success_id,
+                    latest_attempt_confirmation_id=latest_id,
+                    collection_started_at=None
+                    if success is None
+                    else success["collection_started_at"],
+                    collection_finished_at=None
+                    if success is None
+                    else success["collection_finished_at"],
+                    evidence=proof,
+                )
             )
         elif isinstance(reference, PinnedBrainEntityReference):
             table, fields = _CONTEXT_TABLES[reference.entity_type]
