@@ -230,6 +230,209 @@ async def test_validate_none_is_noop(
 
 
 @pytest.mark.asyncio
+async def test_validate_none_with_pool_but_no_reported_candidate_is_still_noop(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """Discriminator is the REPORT's candidate_id, not whether the pool was
+    non-empty. A model that reports bare ``{"target_type": "none"}`` while a
+    pool existed said nothing identifiable — still nothing to audit.
+    """
+    async with session_factory() as session:
+        async with session.begin():
+            learning_id = (
+                await session.execute(
+                    learnings.insert()
+                    .values(
+                        topic="t",
+                        insight="i",
+                        project_key=isolated_pk,
+                        source_type="experience",
+                        confidence="high",
+                        tags=[],
+                    )
+                    .returning(learnings.c.id)
+                )
+            ).scalar_one()
+
+    candidates = [{"id": str(learning_id), "topic": "t"}]
+    await validate(
+        {"target_type": "none"},
+        candidates,
+        session_factory,
+        dream_run_id=None,
+        project_key=isolated_pk,
+    )
+
+    async with session_factory() as session:
+        count = (
+            await session.execute(
+                sa.select(sa.func.count())
+                .select_from(dream_promotions)
+                .where(dream_promotions.c.source_learning_id == learning_id)
+            )
+        ).scalar_one()
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_validate_none_with_candidate_is_audited_as_refused(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """Night 2026-09-06/07 regression: auto-discord and watchk-claude both
+    reported ``target_type="none"`` carrying a real ``candidate_id``,
+    ``candidate_topic`` and ``draft_title`` because the promote tool itself
+    was unavailable — a REFUSAL, not "nothing happened". The old early
+    ``return`` at the top of validate() swallowed both: dream_promotions held
+    4 rows for a night that examined 6 candidates. A refusal that names a
+    candidate is an audited outcome and MUST produce a row.
+
+    dream_promotions_target_shape (migration 017) does not admit
+    target_type='none' — confirmed live against production
+    (INSERT ... target_type='none' raises CheckViolation) — so this can't be
+    stored verbatim without a migration, which this validator-only lot does
+    not write. The row is filed under 'dedup_unavailable' (no migration
+    needed, and unlike 'classification_uncertain' it carries no terminal
+    "don't re-offer" exclusion in promote_prepare.py's candidate query — a
+    transient tool outage must not permanently blacklist a good candidate),
+    with the literal reported value preserved in skipped_reason.
+    """
+    async with session_factory() as session:
+        async with session.begin():
+            learning_id = (
+                await session.execute(
+                    learnings.insert()
+                    .values(
+                        topic="t",
+                        insight="i",
+                        project_key=isolated_pk,
+                        source_type="experience",
+                        confidence="high",
+                        tags=[],
+                    )
+                    .returning(learnings.c.id)
+                )
+            ).scalar_one()
+
+    candidates = [{"id": str(learning_id), "topic": "t"}]
+    report = {
+        "target_type": "none",
+        "candidate_id": str(learning_id),
+        "candidate_topic": "t",
+        "draft_title": "Some draft title",
+        "reason": "promote tool unavailable",
+    }
+    await validate(report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk)
+
+    async with session_factory() as session:
+        row = (
+            (
+                await session.execute(
+                    sa.select(dream_promotions).where(
+                        dream_promotions.c.source_learning_id == learning_id
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert row["target_type"] == "dedup_unavailable"
+    assert row["target_adr_id"] is None
+    assert row["target_runbook_id"] is None
+    assert row["cosine_observed"] is None
+    assert "promote tool unavailable" in row["skipped_reason"]
+    assert "none" in row["skipped_reason"]
+
+
+@pytest.mark.asyncio
+async def test_validate_none_with_candidate_and_no_reason_still_records_row(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """The prompt never requires a `reason` field for target_type='none' (it
+    is only listed in the output shape's enum, not tied to a step). A missing
+    reason must not crash the audit write or silently drop the row.
+    """
+    async with session_factory() as session:
+        async with session.begin():
+            learning_id = (
+                await session.execute(
+                    learnings.insert()
+                    .values(
+                        topic="t",
+                        insight="i",
+                        project_key=isolated_pk,
+                        source_type="experience",
+                        confidence="high",
+                        tags=[],
+                    )
+                    .returning(learnings.c.id)
+                )
+            ).scalar_one()
+
+    candidates = [{"id": str(learning_id), "topic": "t"}]
+    report = {"target_type": "none", "candidate_id": str(learning_id)}
+    await validate(report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk)
+
+    async with session_factory() as session:
+        row = (
+            (
+                await session.execute(
+                    sa.select(dream_promotions).where(
+                        dream_promotions.c.source_learning_id == learning_id
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert row["target_type"] == "dedup_unavailable"
+    assert row["skipped_reason"] is not None
+    assert "none" in row["skipped_reason"]
+
+
+@pytest.mark.asyncio
+async def test_validate_none_candidate_mismatch_raises(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """A 'none' report naming a candidate is still subject to the same
+    referential-integrity check as every other target_type: the reported
+    candidate_id must match candidates[0].id.
+    """
+    async with session_factory() as session:
+        async with session.begin():
+            learning_id = (
+                await session.execute(
+                    learnings.insert()
+                    .values(
+                        topic="t",
+                        insight="i",
+                        project_key=isolated_pk,
+                        source_type="experience",
+                        confidence="high",
+                        tags=[],
+                    )
+                    .returning(learnings.c.id)
+                )
+            ).scalar_one()
+
+    candidates = [{"id": str(learning_id), "topic": "t"}]
+    report = {"target_type": "none", "candidate_id": str(uuid.uuid4())}
+    with pytest.raises(ValidationFailure, match="does not match candidates\\[0\\].id"):
+        await validate(
+            report, candidates, session_factory, dream_run_id=None, project_key=isolated_pk
+        )
+
+    async with session_factory() as session:
+        count = (
+            await session.execute(
+                sa.select(sa.func.count())
+                .select_from(dream_promotions)
+                .where(dream_promotions.c.source_learning_id == learning_id)
+            )
+        ).scalar_one()
+    assert count == 0
+
+
+@pytest.mark.asyncio
 async def test_validate_skip_path_inserts_audit_row(
     session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
 ) -> None:
@@ -723,6 +926,69 @@ async def test_amain_backfill_is_noop_without_matching_promotion_row(
             )
         ).scalar_one()
     assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_amain_none_refusal_with_candidate_is_audited_and_run_stays_ok(
+    session_factory: async_sessionmaker[AsyncSession], isolated_pk: str
+) -> None:
+    """End-to-end regression for the 2026-09-06/07 vanished refusals: a
+    well-formed report naming a candidate but classifying target_type='none'
+    must (a) exit 0 — this is a graceful report, not a contract violation —
+    (b) leave dream_runs.status untouched (a refusal is not a validation
+    failure), and (c) still land a dream_promotions row for the candidate.
+    """
+    async with session_factory() as session:
+        async with session.begin():
+            learning_id = (
+                await session.execute(
+                    learnings.insert()
+                    .values(
+                        topic="t",
+                        insight="i",
+                        project_key=isolated_pk,
+                        source_type="experience",
+                        confidence="high",
+                        tags=[],
+                    )
+                    .returning(learnings.c.id)
+                )
+            ).scalar_one()
+    run_id = await _seed_dream_run(session_factory)
+    candidates = [{"id": str(learning_id), "topic": "t"}]
+    raw = (
+        "=== PROMOTE REPORT ===\n"
+        "{"
+        f'"target_type": "none", "candidate_id": "{learning_id}", '
+        '"candidate_topic": "t", "draft_title": "Some draft", '
+        '"reason": "promote tool unavailable"'
+        "}\n"
+        "=== END ==="
+    )
+
+    args = argparse.Namespace(dream_run_id=run_id, project_key=isolated_pk)
+    exit_code = await _amain(raw, candidates, session_factory, args)
+
+    assert exit_code == 0
+    async with session_factory() as session:
+        row = (
+            (
+                await session.execute(
+                    sa.select(dream_promotions).where(
+                        dream_promotions.c.source_learning_id == learning_id
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        run_status = (
+            await session.execute(sa.select(dream_runs.c.status).where(dream_runs.c.id == run_id))
+        ).scalar_one()
+    assert row["dream_run_id"] == run_id
+    assert row["target_type"] == "dedup_unavailable"
+    assert "promote tool unavailable" in row["skipped_reason"]
+    assert run_status == "ok"
 
 
 # ---------------------------------------------------------------------------

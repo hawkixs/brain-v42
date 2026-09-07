@@ -68,6 +68,30 @@ VALID_TARGET_TYPES = {
     "none",
 }
 
+# NAMED RESIDUAL (lot P3, 2026-09-07). dream_promotions_target_shape
+# (migration 017) enumerates exactly {'skipped_dedup', 'dry_run',
+# 'classification_uncertain', 'dedup_unavailable'} for the "nothing
+# materialized" branch. 'none' is a valid REPORT-level classification
+# (VALID_TARGET_TYPES above) but is NOT admitted by that CHECK constraint —
+# confirmed live against production: `INSERT ... target_type='none'` raises
+# CheckViolation. Widening the CHECK to admit 'none' as a first-class,
+# persisted value needs a migration; this lot owns promote_validate.py only
+# (surface note) and deliberately does not write one.
+#
+# A 'none' report that names a real candidate (see `validate`) is instead
+# filed under this bucket rather than 'classification_uncertain':
+# promote_prepare.py's candidate query treats a recent
+# 'classification_uncertain' verdict as terminal — it excludes the learning
+# from future pools until its content changes — and a transient "the promote
+# tool was unavailable" refusal must not silently blacklist an otherwise-good
+# candidate. 'dedup_unavailable' carries no such exclusion in that query, so
+# the candidate is simply re-offered another night. The literal reported
+# value ('none') is preserved verbatim in skipped_reason (see
+# _NONE_REFUSAL_REASON_MARKER) so the approximation is greppable and
+# reversible once a migration adds 'none' as a first-class persisted value.
+_NONE_REFUSAL_TARGET_TYPE = "dedup_unavailable"
+_NONE_REFUSAL_REASON_MARKER = "[promote reported target_type=none]"
+
 
 class ValidationFailure(Exception):
     """Any violation of the PROMOTE report contract."""
@@ -118,10 +142,19 @@ async def validate(
     if target_type not in VALID_TARGET_TYPES:
         raise ValidationFailure(f"invalid target_type={target_type!r}")
 
-    if target_type == "none":
-        return  # agent reported no work; nothing to audit.
-
     candidate_id = report.get("candidate_id")
+
+    if target_type == "none" and candidate_id is None:
+        # Genuine empty pool / no candidate identified at all: nothing
+        # happened AND nothing was reported, so there is truly nothing to
+        # audit. This is the ONLY 'none' shape that stays a silent no-op —
+        # see test_validate_none_is_noop and
+        # test_validate_none_with_pool_but_no_reported_candidate_is_still_noop.
+        # A 'none' report that DOES name a candidate falls through below: it
+        # is a refusal, not an empty run, and is an audited outcome (see the
+        # skip-path branch further down and _NONE_REFUSAL_TARGET_TYPE above).
+        return
+
     if not candidates or candidate_id != candidates[0]["id"]:
         top = candidates[0]["id"] if candidates else None
         raise ValidationFailure(
@@ -218,10 +251,25 @@ async def validate(
                     )
                 return
 
-            # Skip paths + dry_run — validator owns the audit INSERT.
-            skip_type = "dry_run" if dry_run else target_type
-            cosine = report.get("cosine_observed") if skip_type == "skipped_dedup" else None
-            reason = report.get("reason")
+            # Skip paths + dry_run + refused-none — validator owns the audit
+            # INSERT. A 'none' report naming a candidate is a refusal, not a
+            # dry run or a dedup/classification skip: it is bucketed under
+            # _NONE_REFUSAL_TARGET_TYPE (see the module-level comment on that
+            # constant for why) with the literal reported value tagged onto
+            # skipped_reason so no information is silently lost.
+            if target_type == "none":
+                skip_type = _NONE_REFUSAL_TARGET_TYPE
+                cosine = None
+                raw_reason = report.get("reason")
+                reason = (
+                    f"{_NONE_REFUSAL_REASON_MARKER} {raw_reason}"
+                    if raw_reason
+                    else f"{_NONE_REFUSAL_REASON_MARKER} no reason given"
+                )
+            else:
+                skip_type = "dry_run" if dry_run else target_type
+                cosine = report.get("cosine_observed") if skip_type == "skipped_dedup" else None
+                reason = report.get("reason")
             await session.execute(
                 sa.text(
                     """
