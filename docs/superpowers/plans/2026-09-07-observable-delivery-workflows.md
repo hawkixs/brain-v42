@@ -110,6 +110,42 @@ The database tables are:
 
 Use FK restrictions for proof history. New tables need no destructive backfill. The migration is numbered from the actual head when Task 3 starts. Downgrade refuses populated delivery tables; production rollback retains the guarded application.
 
+### Repository context before the first PR
+
+The evidence pair also serves required repository-document context. This refines
+the binding-only table descriptions above: keep eight tables, and give snapshots
+and confirmations an explicit `subject_kind` (`artifact_binding` or
+`repository_context`). Enforce mutually exclusive subject columns with CHECKs and
+foreign keys. Artifact subjects use their binding ID; context subjects use ticket,
+contract revision, attempt and a digest of the sorted required repository pins.
+Snapshot deduplication is scoped to that complete subject identity. Error
+confirmations carry their subject even when they have no snapshot.
+
+The workflow owns context due/health fields, its latest successful context
+confirmation pointer and a context publication version, initially 1. Moving only
+the due time changes no evidence version. Publishing an attempt or confirmation
+increments the context version and workflow row version. Publication compares the
+captured context version and exact subject generation, so a late collection cannot
+replace a newer result. Amend/reopen supersedes the current pointer and queues the
+new context generation.
+
+Task 3 creates this shape and hydrates unresolved required repository pins as
+missing, even when registry and pin syntax are valid. Task 4 publishes context
+snapshots/confirmations using the same fenced observer connection and freezes their
+IDs and times in receipts. Task 6 adds a bounded internal repository-context
+collector that verifies the registered repository ID, exact commit and exact path.
+Task 7 schedules due workflow-context subjects alongside PR bindings, including
+workflows with no PR. Task 8 exposes the resulting context blockers through the
+existing views; no new public operation is needed.
+
+Reusing the existing freshness limit, hydration derives available/missing/error
+predicates from current confirmations and PG time; it never stores a permanent
+fresh boolean. Required context blocks new work until resolved. A freshly resolved
+context can enable implementation while the workflow remains awaiting_artifact.
+Brain entity refs still use authoritative PG content comparison; optional URLs
+remain reference-only. The tests cover no-binding discovery, missing/stale/error
+context, identical reconfirmation and stale-generation publication.
+
 ## Task 1: Validated contracts, identities and canonical digests
 
 **Files:**
