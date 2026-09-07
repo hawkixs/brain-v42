@@ -387,6 +387,57 @@ class TestFallbackDegradationIsReported:
         assert rc.DEFAULT_ROADMAP_MODEL in out
 
     @pytest.mark.asyncio
+    async def test_a_batch_failed_on_both_models_does_not_count_as_served(
+        self, run_mocks, monkeypatch, capsys
+    ):
+        """`fallback_used=True` on a FAILED outcome means the fallback was TRIED,
+        not that it SERVED -- both the primary and the fallback died on that
+        batch. Counting it anyway inflated the ratio: night of 2026-09-07, the
+        printed line read "4/10 batches servis par le modèle de SECOURS" while
+        only 3 batches actually got a proposal out of the fallback; the 4th
+        failed on both models and was counted as served by neither.
+        """
+        batches = [_mk_batch("p1"), _mk_batch("p2")]
+        monkeypatch.setattr(rc, "fetch_project_batches", AsyncMock(return_value=batches))
+
+        calls = {"n": 0}
+
+        async def fake_curate(client, model, b, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return BatchOutcome(
+                    batch=b,
+                    drafts=[],
+                    model_used=rc.DEFAULT_ROADMAP_FALLBACK_MODEL,
+                    fallback_used=True,
+                    primary_error=f"{rc.MODEL_GONE_MARKER} — HTTP 410 end of life",
+                )
+            return BatchOutcome(
+                batch=b,
+                drafts=[],
+                failed=True,
+                error="both models failed",
+                model_used=rc.DEFAULT_ROADMAP_FALLBACK_MODEL,
+                fallback_used=True,
+                primary_error=f"{rc.MODEL_GONE_MARKER} — HTTP 410 end of life",
+            )
+
+        monkeypatch.setattr(rc, "curate_batch", fake_curate)
+        monkeypatch.setattr(rc, "persist_proposals", AsyncMock(return_value=PersistResult()))
+
+        await rc._run(
+            _args(wet=False),
+            api_key="k",
+            model=rc.DEFAULT_ROADMAP_MODEL,
+            base_url="https://mock.nvidia.local/v1",
+            clock=_Clock([0.0]),
+        )
+
+        out = capsys.readouterr().out
+        assert "1/2 batches servis" in out
+        assert "2/2 batches servis" not in out
+
+    @pytest.mark.asyncio
     async def test_nominal_run_stays_silent_about_fallback(self, run_mocks, monkeypatch, capsys):
         """No noise when the primary serves: the alarm must stay rare."""
         batches = [_mk_batch("p1")]
@@ -438,6 +489,88 @@ class TestFallbackDegradationIsReported:
         kwargs = run_mocks["record"].await_args.kwargs
         assert kwargs["status"] == "done"
         assert kwargs["model"] == rc.DEFAULT_ROADMAP_FALLBACK_MODEL
+
+    @pytest.mark.asyncio
+    async def test_a_measured_reasoning_count_reaches_the_dream_run_row(
+        self, run_mocks, monkeypatch
+    ):
+        """The count a `BatchOutcome` measures via `thinking_tokens_from_usage`
+        must reach `record_dream_run`, not be dropped in favour of the
+        hard-coded default -- 2026-09-07: models ran on this phase and the row
+        still carried 0 because nothing threaded the measurement through.
+        """
+        batches = [_mk_batch("p1")]
+        monkeypatch.setattr(rc, "fetch_project_batches", AsyncMock(return_value=batches))
+
+        async def fake_curate(client, model, b, **kw):
+            return BatchOutcome(batch=b, drafts=[], model_used=model, thinking_tokens=17)
+
+        monkeypatch.setattr(rc, "curate_batch", fake_curate)
+        monkeypatch.setattr(rc, "persist_proposals", AsyncMock(return_value=PersistResult()))
+
+        await rc._run(
+            _args(wet=False),
+            api_key="k",
+            model=rc.DEFAULT_ROADMAP_MODEL,
+            base_url="https://mock.nvidia.local/v1",
+            clock=_Clock([0.0]),
+        )
+
+        assert run_mocks["record"].await_args.kwargs["thinking_tokens"] == 17
+
+    @pytest.mark.asyncio
+    async def test_a_run_that_never_measured_anything_records_null_not_zero(
+        self, run_mocks, monkeypatch
+    ):
+        """No batch ever reported a reasoning count -- the row must say NULL
+        ("not measured"), never 0 ("measured, zero"): the two are the whole
+        point of migration 049's column.
+        """
+        batches = [_mk_batch("p1")]
+        monkeypatch.setattr(rc, "fetch_project_batches", AsyncMock(return_value=batches))
+
+        async def fake_curate(client, model, b, **kw):
+            return BatchOutcome(batch=b, drafts=[], model_used=model)
+
+        monkeypatch.setattr(rc, "curate_batch", fake_curate)
+        monkeypatch.setattr(rc, "persist_proposals", AsyncMock(return_value=PersistResult()))
+
+        await rc._run(
+            _args(wet=False),
+            api_key="k",
+            model=rc.DEFAULT_ROADMAP_MODEL,
+            base_url="https://mock.nvidia.local/v1",
+            clock=_Clock([0.0]),
+        )
+
+        assert run_mocks["record"].await_args.kwargs["thinking_tokens"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_genuinely_measured_zero_reaches_the_row_as_zero_not_null(
+        self, run_mocks, monkeypatch
+    ):
+        """Mirror of the NULL test above: a single batch that measured a real
+        zero must bind 0, not fall back to NULL -- the fold
+        (`_combine_thinking_tokens`) must not treat a measured zero as falsy.
+        """
+        batches = [_mk_batch("p1")]
+        monkeypatch.setattr(rc, "fetch_project_batches", AsyncMock(return_value=batches))
+
+        async def fake_curate(client, model, b, **kw):
+            return BatchOutcome(batch=b, drafts=[], model_used=model, thinking_tokens=0)
+
+        monkeypatch.setattr(rc, "curate_batch", fake_curate)
+        monkeypatch.setattr(rc, "persist_proposals", AsyncMock(return_value=PersistResult()))
+
+        await rc._run(
+            _args(wet=False),
+            api_key="k",
+            model=rc.DEFAULT_ROADMAP_MODEL,
+            base_url="https://mock.nvidia.local/v1",
+            clock=_Clock([0.0]),
+        )
+
+        assert run_mocks["record"].await_args.kwargs["thinking_tokens"] == 0
 
 
 class TestBudgetSecondsArg:
