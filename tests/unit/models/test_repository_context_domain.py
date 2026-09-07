@@ -269,6 +269,61 @@ def test_unobserved_binding_cannot_be_hidden_by_another_fresh_binding() -> None:
     assert result.observation_health == "never_observed"
 
 
+def test_missing_required_context_cannot_be_hidden_by_a_fresh_pull_request() -> None:
+    from brain_v42.models.delivery import ContextPredicate
+    from brain_v42.models.delivery_evaluator import evaluate_delivery
+
+    identity = f"repository_document:42:{'a' * 40}:docs/guide.md"
+    result = evaluate_delivery(
+        _repository_inputs().model_copy(
+            update={
+                "active_bindings": delivery_inputs().active_bindings,
+                "contexts": (ContextPredicate(reference_identity=identity, status="missing"),),
+            }
+        ),
+        now=FIXED_NOW,
+    )
+
+    assert result.observation_health == "never_observed"
+    assert "context_missing" in {item.code for item in result.blockers}
+
+
+def test_unobserved_binding_cannot_be_hidden_by_fresh_repository_context() -> None:
+    from brain_v42.models.delivery import BindingEvidence
+    from brain_v42.models.delivery_evaluator import evaluate_delivery
+
+    binding = delivery_inputs().active_bindings[0].binding
+    result = evaluate_delivery(
+        _repository_inputs().model_copy(
+            update={
+                "active_bindings": (BindingEvidence(binding=binding),),
+                "contexts": (_predicate(),),
+            }
+        ),
+        now=FIXED_NOW,
+    )
+
+    assert result.observation_health == "never_observed"
+    assert "binding_unobserved" in {item.code for item in result.blockers}
+
+
+def test_first_failed_binding_observation_cannot_be_hidden_by_fresh_context() -> None:
+    from brain_v42.models.delivery import BindingEvidence
+    from brain_v42.models.delivery_evaluator import evaluate_delivery
+
+    fresh_context = _predicate()
+    binding = delivery_inputs().active_bindings[0].binding
+    first_error = BindingEvidence(binding=binding, last_attempt_outcome="error")
+    result = evaluate_delivery(
+        _repository_inputs().model_copy(
+            update={"active_bindings": (first_error,), "contexts": (fresh_context,)}
+        ),
+        now=FIXED_NOW,
+    )
+
+    assert result.observation_health == "error"
+
+
 def test_optional_declared_brain_and_repository_contexts_never_block_or_truncate_paths() -> None:
     from brain_v42.models.delivery import ContextPredicate, ContractRevision
     from brain_v42.models.delivery_evaluator import evaluate_delivery

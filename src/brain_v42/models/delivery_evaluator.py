@@ -54,64 +54,59 @@ def _finding(code: str, detail: str, key: str | None = None) -> DeliveryFinding:
     return DeliveryFinding(code=code, detail=bounded, deliverable_key=key)
 
 
+def _aggregate_observation_health(
+    states: list[Literal["never_observed", "fresh", "stale", "error"]],
+) -> Literal["never_observed", "fresh", "stale", "error"]:
+    for state in ("error", "stale", "never_observed", "fresh"):
+        if state in states:
+            return state
+    return "never_observed"
+
+
+def _binding_health_states(
+    inputs: EvaluationInput, now: datetime
+) -> list[Literal["never_observed", "fresh", "stale", "error"]]:
+    states: list[Literal["never_observed", "fresh", "stale", "error"]] = []
+    for item in inputs.active_bindings:
+        confirmation = item.confirmation
+        if item.last_attempt_outcome == "error":
+            states.append("error")
+        elif confirmation is None or confirmation.evidence is None:
+            states.append("never_observed")
+        elif (
+            confirmation.collection_started_at.tzinfo is None
+            or confirmation.collection_finished_at.tzinfo is None
+            or confirmation.collection_finished_at > now
+            or confirmation.collection_finished_at < confirmation.collection_started_at
+        ):
+            states.append("error")
+        elif (now - confirmation.collection_finished_at).total_seconds() > inputs.freshness_seconds:
+            states.append("stale")
+        else:
+            states.append("fresh")
+    return states
+
+
 def _current_health(
     inputs: EvaluationInput, now: datetime
 ) -> Literal["never_observed", "fresh", "stale", "error", "disabled"]:
     if not inputs.feature_enabled:
         return "disabled"
-    confirmations = [item.confirmation for item in inputs.active_bindings]
-    binding_health: Literal["never_observed", "fresh", "stale", "error"] | None = None
-    if confirmations:
-        if any(item is None for item in confirmations):
-            binding_health = "never_observed"
-        elif any(item.last_attempt_outcome == "error" for item in inputs.active_bindings):
-            binding_health = "error"
-    successes = [item for item in confirmations if item is not None and item.evidence is not None]
-    if confirmations and not successes:
-        binding_health = "never_observed"
-    if (
-        binding_health not in {"error", "never_observed"}
-        and successes
-        and any(
-            confirmation.collection_started_at.tzinfo is None
-            or confirmation.collection_finished_at.tzinfo is None
-            or confirmation.collection_finished_at > now
-            or confirmation.collection_finished_at < confirmation.collection_started_at
-            for confirmation in successes
-        )
-    ):
-        binding_health = "error"
-    elif (
-        binding_health not in {"error", "never_observed"}
-        and successes
-        and any(
-            (now - confirmation.collection_finished_at).total_seconds() > inputs.freshness_seconds
-            for confirmation in successes
-        )
-    ):
-        binding_health = "stale"
-    elif binding_health not in {"error", "never_observed"} and successes:
-        binding_health = "fresh"
-    context_health = _repository_context_health(inputs, now)
-    if "error" in {binding_health, context_health}:
-        return "error"
-    if "stale" in {binding_health, context_health}:
-        return "stale"
-    if binding_health == "fresh" or context_health == "fresh":
-        return "fresh"
-    return "never_observed"
+    states = _binding_health_states(inputs, now)
+    states.extend(_repository_context_health_states(inputs, now))
+    return _aggregate_observation_health(states)
 
 
-def _repository_context_health(
+def _repository_context_health_states(
     inputs: EvaluationInput, now: datetime
-) -> Literal["never_observed", "fresh", "stale", "error"] | None:
+) -> list[Literal["never_observed", "fresh", "stale", "error"]]:
     required = [
         reference
         for reference in inputs.contract.context_refs
         if reference.required and isinstance(reference, RepositoryDocumentReference)
     ]
     if not required:
-        return None
+        return []
     predicates = {item.reference_identity: item for item in inputs.contexts}
     states: list[Literal["never_observed", "fresh", "stale", "error"]] = []
     for reference in required:
@@ -138,13 +133,7 @@ def _repository_context_health(
             states.append("stale")
         else:
             states.append("fresh")
-    if "error" in states:
-        return "error"
-    if "stale" in states:
-        return "stale"
-    if "never_observed" in states:
-        return "never_observed"
-    return "fresh"
+    return states
 
 
 def _matching_binding(inputs: EvaluationInput, key: str) -> tuple[BindingEvidence | None, bool]:
