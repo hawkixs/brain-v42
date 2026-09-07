@@ -16,16 +16,52 @@ from brain_v42.models.delivery import (
     DeliveryError,
     DeliveryPage,
     DeliveryView,
+    MilestoneReceipt,
     RepositoryDocumentReference,
 )
 from brain_v42.models.delivery_hashes import canonical_digest
 from brain_v42.repositories.pg_delivery import PgDeliveryRepo, _contract_from_json, lock_workflows
+from brain_v42.repositories.pg_delivery_evidence import PgDeliveryEvidenceRepo
 
 
 class DeliveryService:
-    def __init__(self, repo: PgDeliveryRepo, *, settings: DeliverySettings) -> None:
+    def __init__(
+        self,
+        repo: PgDeliveryRepo,
+        *,
+        settings: DeliverySettings,
+        evidence_repo: PgDeliveryEvidenceRepo | None = None,
+    ) -> None:
         self._repo = repo
         self._settings = settings
+        self._evidence_repo = evidence_repo or PgDeliveryEvidenceRepo(repo._session_factory)
+
+    async def accept(
+        self,
+        ticket_id: UUID,
+        *,
+        actor_project: str,
+        caller_identity: str,
+        rationale: str,
+        expected_revision: int,
+        expected_attempt: int,
+        expected_delivery_digest: str,
+    ) -> MilestoneReceipt:
+        """Record one explicit requester acceptance from the exact current delivery."""
+        if not self._settings.enabled:
+            raise DeliveryError("delivery_disabled", "delivery workflow operations are disabled")
+        async with self._repo._maybe_session(None, write=True) as session:
+            return await self._evidence_repo.accept(
+                session,
+                ticket_id,
+                settings=self._settings,
+                actor_project=actor_project,
+                caller_identity=caller_identity,
+                rationale=rationale,
+                expected_revision=expected_revision,
+                expected_attempt=expected_attempt,
+                expected_delivery_digest=expected_delivery_digest,
+            )
 
     async def set_contract(
         self,
