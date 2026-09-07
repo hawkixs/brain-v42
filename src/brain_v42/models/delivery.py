@@ -596,6 +596,12 @@ class BindingEvidence(_StrictModel):
     last_success_at: datetime | None = None
     last_attempt_outcome: Literal["success", "error", "never"] = "never"
 
+    @model_validator(mode="after")
+    def _error_attempt_is_identified(self) -> BindingEvidence:
+        if self.last_attempt_outcome == "error" and self.latest_attempt_confirmation_id is None:
+            raise ValueError("error binding evidence requires latest_attempt_confirmation_id")
+        return self
+
 
 class ContextPredicate(_StrictModel):
     """Current comparison of one pinned context fact with its contract digest."""
@@ -618,6 +624,8 @@ class ContextPredicate(_StrictModel):
     def _repository_proof_is_explicit(self) -> ContextPredicate:
         if not self.reference_identity.startswith("repository_document:"):
             return self
+        if self.status == "error" and self.latest_attempt_confirmation_id is None:
+            raise ValueError("repository context error requires latest_attempt_confirmation_id")
         if self.status != "available":
             return self
         if (
@@ -628,6 +636,7 @@ class ContextPredicate(_StrictModel):
             or self.collection_started_at is None
             or self.collection_finished_at is None
             or self.evidence is None
+            or not self.evidence.complete
         ):
             raise ValueError("available repository context requires immutable confirmation proof")
         if self.collection_started_at.tzinfo is None or self.collection_finished_at.tzinfo is None:

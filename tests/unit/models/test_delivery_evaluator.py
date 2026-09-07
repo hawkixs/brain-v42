@@ -327,7 +327,14 @@ def test_stale_or_error_health_changes_current_eligibility_without_erasing_recei
         update={
             "fulfillment_receipt": fulfilled,
             "active_bindings": (
-                original.active_bindings[0].model_copy(update={"last_attempt_outcome": "error"}),
+                original.active_bindings[0].model_copy(
+                    update={
+                        "last_attempt_outcome": "error",
+                        "latest_attempt_confirmation_id": UUID(
+                            "00000000-0000-0000-0000-000000000206"
+                        ),
+                    }
+                ),
             ),
         }
     )

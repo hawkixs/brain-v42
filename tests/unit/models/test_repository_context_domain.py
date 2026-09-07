@@ -118,6 +118,76 @@ def test_context_bundle_rejects_duplicates_but_represents_incomplete_collection(
     assert incomplete_missing.facts[0].status == "missing"
 
 
+def test_available_repository_context_rejects_incomplete_evidence_bundle() -> None:
+    from brain_v42.models.delivery import ContextPredicate, RepositoryContextEvidence
+
+    predicate = _predicate()
+    incomplete = RepositoryContextEvidence(facts=predicate.evidence.facts, complete=False)
+    with pytest.raises(ValueError, match="complete"):
+        ContextPredicate.model_validate(
+            {**predicate.model_dump(), "evidence": incomplete.model_dump()}
+        )
+
+
+def test_binding_error_requires_latest_attempt_confirmation_identity() -> None:
+    from brain_v42.models.delivery import BindingEvidence
+
+    binding = delivery_inputs().active_bindings[0].binding
+    with pytest.raises(ValueError, match="latest_attempt_confirmation_id"):
+        BindingEvidence(binding=binding, last_attempt_outcome="error")
+
+
+def test_repository_context_error_requires_latest_attempt_confirmation_identity() -> None:
+    from brain_v42.models.delivery import ContextPredicate
+
+    with pytest.raises(ValueError, match="latest_attempt_confirmation_id"):
+        ContextPredicate(
+            reference_identity=f"repository_document:42:{'a' * 40}:docs/guide.md",
+            status="error",
+        )
+
+
+def test_live_brain_and_uncollected_repository_contexts_remain_representable() -> None:
+    from brain_v42.models.delivery import ContextPredicate
+
+    assert (
+        ContextPredicate(reference_identity="brain_entity:adr:live", status="error").status
+        == "error"
+    )
+    assert (
+        ContextPredicate(
+            reference_identity=f"repository_document:42:{'a' * 40}:docs/guide.md",
+            status="missing",
+        ).status
+        == "missing"
+    )
+
+
+def test_distinct_identified_binding_errors_change_assessment_identity() -> None:
+    from brain_v42.models.delivery import BindingEvidence
+    from brain_v42.models.delivery_evaluator import evaluate_delivery
+
+    inputs = delivery_inputs()
+    binding = inputs.active_bindings[0].binding
+    first = BindingEvidence(
+        binding=binding,
+        last_attempt_outcome="error",
+        latest_attempt_confirmation_id=UUID("00000000-0000-0000-0000-000000000201"),
+    )
+    second = first.model_copy(
+        update={"latest_attempt_confirmation_id": UUID("00000000-0000-0000-0000-000000000202")}
+    )
+
+    first_result = evaluate_delivery(
+        inputs.model_copy(update={"active_bindings": (first,)}), now=FIXED_NOW
+    )
+    second_result = evaluate_delivery(
+        inputs.model_copy(update={"active_bindings": (second,)}), now=FIXED_NOW
+    )
+
+    assert first_result.assessment_id != second_result.assessment_id
+
+
 def test_required_repository_context_before_pr_is_fresh_and_enables_implementation() -> None:
     from brain_v42.models.delivery_evaluator import evaluate_delivery
 
@@ -134,7 +204,14 @@ def test_required_repository_context_before_pr_is_fresh_and_enables_implementati
 def test_missing_or_error_required_repository_context_blocks_work(status: str) -> None:
     from brain_v42.models.delivery_evaluator import evaluate_delivery
 
-    predicate = _predicate().model_copy(update={"status": status})
+    predicate = _predicate().model_copy(
+        update={
+            "status": status,
+            "latest_attempt_confirmation_id": (
+                UUID("00000000-0000-0000-0000-000000000204") if status == "error" else None
+            ),
+        }
+    )
     result = evaluate_delivery(
         _repository_inputs().model_copy(update={"contexts": (predicate,)}), now=FIXED_NOW
     )
@@ -313,7 +390,11 @@ def test_first_failed_binding_observation_cannot_be_hidden_by_fresh_context() ->
 
     fresh_context = _predicate()
     binding = delivery_inputs().active_bindings[0].binding
-    first_error = BindingEvidence(binding=binding, last_attempt_outcome="error")
+    first_error = BindingEvidence(
+        binding=binding,
+        last_attempt_outcome="error",
+        latest_attempt_confirmation_id=UUID("00000000-0000-0000-0000-000000000203"),
+    )
     result = evaluate_delivery(
         _repository_inputs().model_copy(
             update={"active_bindings": (first_error,), "contexts": (fresh_context,)}
