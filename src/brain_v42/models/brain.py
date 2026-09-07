@@ -22,6 +22,20 @@ class SearchResult(BaseModel):
         ge=0.0,
         description="Relevance score (cosine similarity for vector search, RRF fusion score for hybrid search)",
     )
+    score_kind: Literal["cross_encoder", "rank", "fts_rank"] = Field(
+        ...,
+        description=(
+            "Provenance of `score`, not just its value (W33, 2026-09-07). "
+            "'cross_encoder': a calibrated, comparable relevance score — safe "
+            "to render as '[s:X.XX]'. 'rank'/'fts_rank': a rank ordinal "
+            "rescaled into (0, 1] so a degraded reranker/embedding fallback "
+            "doesn't get zeroed by min_score — numerically indistinguishable "
+            "from a real score unless tagged, so it must render as "
+            "'[rank i/n]' instead. Deliberately REQUIRED, no default: a "
+            "producer that forgets to set it must fail construction loudly, "
+            "not silently masquerade as a real score."
+        ),
+    )
     item: dict[str, Any]
     # Convenience fields populated for all types (extracted from item for easy access)
     title: str | None = None

@@ -24,6 +24,23 @@ RERANK_MODE_RERANKED = "reranked"
 RERANK_MODE_RRF_FALLBACK = "rrf_fallback"
 RERANK_MODE_RRF_ONLY = "rrf_only"
 
+# W33 "a rank is not a score" — score_kind names the PROVENANCE of
+# RankedCandidate.score, not just its value. A rank ordinal rescaled into
+# (0, 1] (rrf_fallback) is numerically indistinguishable from a calibrated
+# cross-encoder sigmoid unless something tags it. Exactly one of the two real
+# producers below (reranker.py) must overwrite the sentinel default.
+SCORE_KIND_CROSS_ENCODER = "cross_encoder"
+SCORE_KIND_RANK = "rank"
+SCORE_KIND_FTS_RANK = "fts_rank"
+
+# Sentinel default for RankedCandidate.score_kind — deliberately NOT one of
+# the three real ScoreKind values above. A producer that forgets to
+# overwrite it must fail loudly the moment the value reaches
+# SearchResult.score_kind (a required Literal field): pydantic rejects this
+# sentinel at construction instead of silently rendering a rank ordinal as a
+# plausible-looking score.
+SCORE_KIND_UNSET = "score_kind_unset"
+
 
 @dataclass
 class RankedCandidate:
@@ -34,6 +51,9 @@ class RankedCandidate:
     entity_type: str
     score: float
     text: str
+    # See SCORE_KIND_UNSET docstring above — overwritten by reranker.py's two
+    # producers (cross_encoder / rank). Never read as a plausible default.
+    score_kind: str = SCORE_KIND_UNSET
 
 
 def rrf_fuse(
@@ -91,6 +111,7 @@ class HybridSearcher:
         project_key: str | None = None,
         embedding: list[float] | None = None,
         project_keys: list[str] | None = None,
+        entity_type: str = "",
     ) -> tuple[list[tuple[Any, float]], str]:
         """Run hybrid: FTS + vector in parallel -> RRF -> optional rerank.
 
@@ -107,6 +128,10 @@ class HybridSearcher:
             project_key: Optional project scope filter.
             embedding: Optional pre-computed embedding vector forwarded to vector_search_fn.
             project_keys: Optional list of project keys for group-based filtering.
+            entity_type: The KnowledgeType this shard searches (e.g. "decision").
+                Threaded onto every RankedCandidate so a degraded reranker can
+                name which shard fell back — W33 incident (2026-09-07): the
+                log carried n_candidates but not WHICH shard produced them.
 
         Returns:
             2-tuple (list[tuple[entity, score]], rerank_mode) sorted by score desc.
@@ -128,7 +153,7 @@ class HybridSearcher:
             RankedCandidate(
                 id=e.id,
                 entity=e,
-                entity_type="",
+                entity_type=entity_type,
                 score=0.0,
                 text=text_extractor(e),
             )
@@ -138,7 +163,7 @@ class HybridSearcher:
             RankedCandidate(
                 id=e.id,
                 entity=e,
-                entity_type="",
+                entity_type=entity_type,
                 score=s,
                 text=text_extractor(e),
             )

@@ -611,3 +611,143 @@ class TestRealRerankFailureStillDegradesAlongsideAnEmptyShard:
             "rrf_fallback must still rescue rank-based scores below the "
             "requested min_score, exactly as documented"
         )
+
+
+# ---------------------------------------------------------------------------
+# W33 (2026-09-07) "a rank is not a score" — score_kind incident replay.
+#
+# This section is APPENDED after the F4 pin above and does not touch it: the
+# empty-shard fix's min_score=0.0 override for rrf_fallback stays exactly as
+# documented. What changes here is purely the LABEL attached to the rank
+# ordinal, never its value or the threshold applied to it.
+# ---------------------------------------------------------------------------
+
+
+class TestScoreKindMarksTheIncidentReplay:
+    """Incident (2026-09-06): a real brain_search on a nonsense query returned
+    five results banded [s:1.00] [s:0.95] [s:0.90] [s:0.85] [s:0.80] — the
+    rank-rescaled score = (n - rank) / n from a 20-candidate shard whose
+    reranker call failed with a real 503. This replays that shape end to end.
+    """
+
+    @pytest.mark.asyncio
+    async def test_degraded_shard_of_twenty_never_reports_a_perfect_score(
+        self,
+    ) -> None:
+        decisions = [_make_decision(title=f"Decision {i}") for i in range(20)]
+
+        decision_svc = MagicMock()
+        decision_svc.search = AsyncMock(return_value=decisions)
+        decision_svc.semantic_search = AsyncMock(
+            return_value=[(d, (20 - i) / 20) for i, d in enumerate(decisions)]
+        )
+
+        empty_svc = MagicMock()
+        empty_svc.search = AsyncMock(return_value=[])
+        empty_svc.semantic_search = AsyncMock(return_value=[])
+
+        embedding_svc = MagicMock()
+        embedding_svc.embed = AsyncMock(return_value=FAKE_EMBEDDING)
+        embedding_svc.embed_query = AsyncMock(return_value=FAKE_EMBEDDING)
+
+        # A real reranker outage — the exact incident shape, not an empty shard.
+        reranker_client = AsyncMock()
+        reranker_client.rerank = AsyncMock(side_effect=Exception("503 gpu_busy"))
+        reranker = HybridReranker(client=reranker_client)
+        hybrid_searcher = HybridSearcher(reranker=reranker)
+
+        brain = BrainService(
+            decision_svc=decision_svc,
+            learning_svc=empty_svc,
+            snippet_svc=empty_svc,
+            runbook_svc=empty_svc,
+            adr_svc=empty_svc,
+            embedding_svc=embedding_svc,
+            hybrid_searcher=hybrid_searcher,
+            min_score=0.2,
+        )
+
+        response = await brain.search("zzqx quokka widget nonexistent gizmo", types=["decision"])
+
+        assert response.total > 0
+        for result in response.results:
+            # score_kind is what the FORMER bug had no way of expressing.
+            assert result.score_kind == "rank"
+
+        # The rendered banner is the actual regression surface: the incident
+        # was a human reading "[s:1.00]" as a confident match.
+        from brain_v42.mcp.tools.formatters import format_search_results
+
+        rendered = format_search_results(
+            response.results, query="zzqx quokka widget nonexistent gizmo"
+        )
+        assert "[s:1.00]" not in rendered
+        assert "[s:" not in rendered
+        assert "[rank 1/20]" in rendered
+
+
+class TestRrfFallbackLogNamesTheShard:
+    """W33 bullet 4: the rrf_fallback log carried n_candidates but never WHICH
+    shard degraded — entity_type is threaded from _fan_out's `t` through
+    HybridSearcher.search() into RankedCandidate, and read off the candidates
+    by the log call (not a new rerank_with_mode parameter).
+    """
+
+    @pytest.mark.asyncio
+    async def test_rerank_with_mode_log_carries_the_candidates_entity_type(
+        self,
+    ) -> None:
+        import structlog
+
+        client = AsyncMock()
+        client.rerank.side_effect = Exception("503 gpu_busy")
+        reranker = HybridReranker(client=client)
+
+        c1 = RankedCandidate(
+            id=uuid.uuid4(),
+            entity=_make_decision(),
+            entity_type="decision",
+            score=1.0 / 61,
+            text="some text",
+        )
+
+        with structlog.testing.capture_logs() as logs:
+            await reranker.rerank_with_mode("test query", [c1])
+
+        fallback_logs = [log for log in logs if log.get("event") == "hybrid_reranker.rrf_fallback"]
+        assert len(fallback_logs) == 1
+        assert fallback_logs[0]["entity_type"] == "decision"
+
+    @pytest.mark.asyncio
+    async def test_hybrid_searcher_threads_its_entity_type_into_the_log(
+        self,
+    ) -> None:
+        """End-to-end: _fan_out passes entity_type=t into
+        HybridSearcher.search(), which must reach the candidates the
+        reranker logs about — proven here directly against HybridSearcher,
+        which is what actually owns RankedCandidate construction.
+        """
+        import structlog
+
+        entity = MagicMock(id=uuid.uuid4())
+        fts_fn = AsyncMock(return_value=[entity])
+        vec_fn = AsyncMock(return_value=[])
+
+        client = AsyncMock()
+        client.rerank.side_effect = Exception("503 gpu_busy")
+        reranker = HybridReranker(client=client)
+        searcher = HybridSearcher(reranker=reranker)
+
+        with structlog.testing.capture_logs() as logs:
+            await searcher.search(
+                query="q",
+                fts_search_fn=fts_fn,
+                vector_search_fn=vec_fn,
+                text_extractor=lambda e: "t",
+                limit=10,
+                entity_type="learning",
+            )
+
+        fallback_logs = [log for log in logs if log.get("event") == "hybrid_reranker.rrf_fallback"]
+        assert len(fallback_logs) == 1
+        assert fallback_logs[0]["entity_type"] == "learning"
