@@ -165,6 +165,122 @@ class TestSectionKillswitches:
         assert "REORG" in out and "dry" in out.lower()
         assert "3" in out
 
+    def test_a_non_canonical_killswitch_value_reaches_the_operator(self):
+        """The third state, rendered — a state nobody reads is a state nobody has.
+
+        `parse_killswitches` answers on the safe side, so the night is never in
+        danger. But "dry because the operator said so" and "dry because nobody
+        could read what the operator wrote" are different facts, and the second
+        asks for a gesture. The VALUE is printed because it is what tells an
+        operator it was a typo rather than a decision.
+        """
+        state = KillswitchState(
+            last_run_date=date(2026, 5, 14),
+            promote_enabled=True,
+            promote_dry=False,
+            reorg_enabled=True,
+            reorg_dry=True,
+            promote_clean_dry_nights=0,
+            reorg_clean_dry_nights=3,
+            non_canonical=(("BRAIN_DREAM_SWEEP_DRY_RUN", "flase"),),
+        )
+
+        out = _section_killswitches(state)
+
+        line = next(ln for ln in out.splitlines() if "non-canonical" in ln)
+
+        assert "BRAIN_DREAM_SWEEP_DRY_RUN='flase'" in line
+        # NOT `assert "DRY" in out`: the clean-DRY-nights suffix of a neighbouring
+        # row supplies that word, so the assertion held whatever this line said.
+        assert "read as DRY" in line
+
+    def test_an_enabled_key_is_not_announced_as_dry(self):
+        """The two families read DIFFERENTLY, and one sentence cannot cover both.
+
+        `dream.sh` reads a non-canonical `*_ENABLED` as `!= "true"` and SKIPS the
+        phase — it does not run at all. Calling that "read as DRY" tells the
+        operator the phase ran without writing, which is the opposite of what
+        happened. An affichage that lies is the class this whole lot exists to
+        close, so reproducing it in the line that reports it is worse than the
+        silence it replaced.
+        """
+        state = KillswitchState(
+            last_run_date=date(2026, 5, 14),
+            promote_enabled=True,
+            promote_dry=False,
+            reorg_enabled=True,
+            reorg_dry=True,
+            promote_clean_dry_nights=0,
+            reorg_clean_dry_nights=3,
+            non_canonical=(("BRAIN_DREAM_REORG_ENABLED", "True"),),
+        )
+
+        out = _section_killswitches(state)
+        line = next(ln for ln in out.splitlines() if "non-canonical" in ln)
+
+        assert "BRAIN_DREAM_REORG_ENABLED='True'" in line
+        assert "DISABLED" in line
+        assert "read as DRY" not in line
+
+    def test_both_families_at_once_are_reported_separately(self):
+        """A mixed drop-in must not force one reading onto the other family."""
+        state = KillswitchState(
+            last_run_date=date(2026, 5, 14),
+            promote_enabled=True,
+            promote_dry=False,
+            reorg_enabled=True,
+            reorg_dry=True,
+            promote_clean_dry_nights=0,
+            reorg_clean_dry_nights=3,
+            non_canonical=(
+                ("BRAIN_DREAM_REORG_ENABLED", "True"),
+                ("BRAIN_DREAM_SWEEP_DRY_RUN", "flase"),
+            ),
+        )
+
+        out = _section_killswitches(state)
+
+        assert "DISABLED" in out and "read as DRY" in out
+        disabled_line = next(ln for ln in out.splitlines() if "DISABLED" in ln)
+        assert "BRAIN_DREAM_SWEEP_DRY_RUN" not in disabled_line
+
+    def test_a_bad_value_is_visible_even_without_a_night(self):
+        """A drop-in typo does not wait for a run to be worth showing.
+
+        The no-activity branch returned before the warning, so a phase disabled
+        by a typo stayed invisible for as long as it stayed disabled — the
+        longest possible time.
+        """
+        state = KillswitchState(
+            last_run_date=None,
+            promote_enabled=False,
+            promote_dry=False,
+            reorg_enabled=False,
+            reorg_dry=False,
+            promote_clean_dry_nights=0,
+            reorg_clean_dry_nights=0,
+            non_canonical=(("BRAIN_DREAM_ROADMAP_DRY_RUN", "0"),),
+        )
+
+        out = _section_killswitches(state)
+
+        assert "no dream pipeline activity" in out
+        assert "BRAIN_DREAM_ROADMAP_DRY_RUN='0'" in out
+
+    def test_a_canonical_drop_in_adds_no_warning_line(self):
+        """A line printed every night stops being read."""
+        state = KillswitchState(
+            last_run_date=date(2026, 5, 14),
+            promote_enabled=True,
+            promote_dry=False,
+            reorg_enabled=True,
+            reorg_dry=True,
+            promote_clean_dry_nights=0,
+            reorg_clean_dry_nights=3,
+        )
+
+        assert "non-canonical" not in _section_killswitches(state)
+
     def test_no_activity_renders_anchor(self):
         state = KillswitchState(
             last_run_date=None,

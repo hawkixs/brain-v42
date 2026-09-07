@@ -25,6 +25,7 @@ this one proves bash takes the right decision.
 
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -43,6 +44,20 @@ def _reorg_validator_block() -> str:
     start = content.index(_BLOCK_START)
     end = content.index(_BLOCK_END, start)
     return content[start:end]
+
+
+def _wet_flag_helper() -> str:
+    """The REAL `dream_wants_wet`, inlined rather than stubbed.
+
+    The block recomputes REORG's dry-ness and now delegates that decision to the
+    shared helper. Stubbing it here would let this harness disagree with the
+    night about what `BRAIN_DREAM_REORG_DRY_RUN` means, which is the whole class
+    of bug the helper exists to remove.
+    """
+    content = DREAM_SH.read_text(encoding="utf-8")
+    match = re.search(r"^dream_wants_wet\(\)\s*\{.*?^\}", content, re.DOTALL | re.MULTILINE)
+    assert match, "dream_wants_wet() not found in dream.sh"
+    return match.group(0)
 
 
 def _run_block(
@@ -77,6 +92,7 @@ def _run_block(
             f"UV_CALLS={shlex.quote(str(uv_calls))}",
             f"VALIDATOR_RC={validator_rc}",
             'log() { printf "%s\\n" "$*"; }',
+            _wet_flag_helper(),
             # Two distinct calls go through this stub: fetching the `dream_runs`
             # id (`uv run python -c …`) and the validator itself. Only the second
             # carries an interesting return code.

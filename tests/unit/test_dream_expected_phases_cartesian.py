@@ -84,7 +84,7 @@ def test_a_quoted_whitespace_value_does_not_silently_become_one_key() -> None:
 def test_the_killswitch_flags_still_parse_next_to_a_list_valued_key() -> None:
     """The list key must not poison the shared `dict[str, bool]`.
 
-    `parse_killswitches` coerces through `value.lower() == "true"`: a list key
+    `parse_killswitches` coerces through `value == "true"`: a list key
     entering it would become `False` and would switch off a phase in the session
     briefing and in `/metrics`, without touching the night.
     """

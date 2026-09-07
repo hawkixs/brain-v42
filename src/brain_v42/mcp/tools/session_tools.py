@@ -185,6 +185,40 @@ def _section_header(ctx: Any | None) -> str:
     return f"## {ctx.project_key} — Session Briefing"
 
 
+def _non_canonical_lines(state: KillswitchState) -> list[str]:
+    """One line per killswitch FAMILY, because the two are read differently.
+
+    `dream.sh` tests `*_ENABLED` with `!= "true"` and SKIPS the phase, and
+    `*_DRY_RUN` with `!= "false"` and runs it dry. So an unreadable value means
+    "this phase does not run at all" on one family and "it runs without
+    writing" on the other. One sentence covering both told the operator a
+    skipped phase had run — an affichage that lies, which is the class this
+    whole change exists to close.
+
+    Named with their VALUE, because only the value distinguishes a typo from a
+    decision. Silent on a canonical drop-in: a line printed every night stops
+    being read.
+    """
+    if not state.non_canonical:
+        return []
+
+    def _render(keys: list[tuple[str, str]], reading: str) -> str:
+        offenders = ", ".join(f"{key}={value!r}" for key, value in keys)
+        return (
+            f"- ⚠ non-canonical killswitch value(s), {reading}: {offenders} "
+            "— fix the drop-in; neither `true` nor `false` was written"
+        )
+
+    enabled = [pair for pair in state.non_canonical if pair[0].endswith("_ENABLED")]
+    dry = [pair for pair in state.non_canonical if not pair[0].endswith("_ENABLED")]
+    rendered = []
+    if enabled:
+        rendered.append(_render(enabled, "read as DISABLED — the phase does not run"))
+    if dry:
+        rendered.append(_render(dry, "read as DRY — the phase runs without writing"))
+    return rendered
+
+
 def _section_killswitches(
     state: KillswitchState, *, graph_enabled: bool = False, unavailable: bool = False
 ) -> str:
@@ -193,8 +227,16 @@ def _section_killswitches(
         # would lie when the pipeline is actually running but the query crashed.
         return "### Killswitches (status unavailable — see logs)"
     if state.last_run_date is None:
-        return "### Killswitches (no dream pipeline activity in 7d)"
-    lines = [f"### Killswitches (as of {state.last_run_date.isoformat()})"]
+        # The warning belongs HERE too. A drop-in typo does not wait for a run to
+        # be worth showing, and a phase disabled by one stays quiet for exactly
+        # as long as it stays disabled — the longest possible time.
+        return "\n".join(
+            ["### Killswitches (no dream pipeline activity in 7d)", *_non_canonical_lines(state)]
+        )
+    lines = [
+        f"### Killswitches (as of {state.last_run_date.isoformat()})",
+        *_non_canonical_lines(state),
+    ]
 
     def _row(label: str, enabled: bool, dry: bool, streak: int) -> str:
         if not enabled:

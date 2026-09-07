@@ -309,6 +309,36 @@ export MCP_CONNECT_TIMEOUT_MS=10000
 
 log() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG_DIR/$TIMESTAMP.log"; }
 
+# Does this DRY_RUN killswitch authorise a WET phase?
+#
+# Returns 0 (run wet) ONLY for an explicit `false`. `true` stays dry silently;
+# ANY other value — empty, unset, `False`, `0`, a typo — stays dry and says so,
+# naming the variable and the value it received.
+#
+# The direction is deliberate and it is a reversal. Until 2026-09-04 three
+# killswitches were read as `!= "true"`, so every unanticipated value armed
+# `--wet`; REORG used the mirror `== "true"`, which fell through to the global
+# `DRY_RUN` and its `false` default. Two opposite spellings, one destination:
+# whatever nobody thought of ended up writing. On the only switch between a
+# proposer and a writer, that is the wrong way round — writing must require the
+# one value a human can only type on purpose.
+#
+# The fallback is LOUD because a silent downgrade trades a dangerous night for
+# an invisible one (learning 083d74e5), and it names variable AND value because
+# only the value distinguishes a typo from a decision (learning e2e5a550).
+dream_wants_wet() {
+  local var_name="$1"
+  local value="${2-}"
+  case "$value" in
+    false) return 0 ;;
+    true) return 1 ;;
+    *)
+      log "KILLSWITCH $var_name='$value' is neither 'true' nor 'false' — staying DRY"
+      return 1
+      ;;
+  esac
+}
+
 #
 # Exit codes from run_phase:
 #   0 → phase succeeded (DONE)
@@ -358,7 +388,8 @@ run_phase() {
   # The override only fires when REORG is enabled — disabled phases never
   # reach the renderer (they `continue` above).
   local effective_dry_run="$DRY_RUN"
-  if [[ "$name" == "reorg" && "$BRAIN_DREAM_REORG_DRY_RUN" == "true" ]]; then
+  if [[ "$name" == "reorg" ]] \
+    && ! dream_wants_wet BRAIN_DREAM_REORG_DRY_RUN "$BRAIN_DREAM_REORG_DRY_RUN"; then
     effective_dry_run="true"
   fi
   # Delegate to scripts/dream/_render_prompt.py — sed used to break here
@@ -1096,7 +1127,8 @@ run_project_phases() {
     # exact same derivation run_phase uses for the REORG phase.
     if [[ "$name" == "reorg" ]]; then
       reorg_effective_dry_run="$DRY_RUN"
-      [[ "$BRAIN_DREAM_REORG_DRY_RUN" == "true" ]] && reorg_effective_dry_run="true"
+      dream_wants_wet BRAIN_DREAM_REORG_DRY_RUN "$BRAIN_DREAM_REORG_DRY_RUN" \
+        || reorg_effective_dry_run="true"
 
       # Fetch the dream_runs.id for this reorg run (same helper, different phase filter).
       REORG_RUN_ID=$(
@@ -1189,7 +1221,7 @@ else
   # The CLI owns a 9m deadline and checkpoints each ticket before returning
   # rc=3. The outer 10m timeout remains only as a last-resort process guard.
   extract_args=(--limit 20 --run-budget-seconds 540 --ticket-budget-seconds 180)
-  if [[ "$BRAIN_DREAM_EXTRACT_DRY_RUN" != "true" ]]; then
+  if dream_wants_wet BRAIN_DREAM_EXTRACT_DRY_RUN "$BRAIN_DREAM_EXTRACT_DRY_RUN"; then
     extract_args+=(--wet)
   fi
   log "extract: ticket_extract starting (dry_run=$BRAIN_DREAM_EXTRACT_DRY_RUN)"
@@ -1235,7 +1267,7 @@ if [[ "$BRAIN_DREAM_ROADMAP_ENABLED" != "true" ]]; then
   manifest_put skipped roadmap '*' killswitch
 else
   roadmap_args=(--limit 10)
-  if [[ "$BRAIN_DREAM_ROADMAP_DRY_RUN" != "true" ]]; then
+  if dream_wants_wet BRAIN_DREAM_ROADMAP_DRY_RUN "$BRAIN_DREAM_ROADMAP_DRY_RUN"; then
     roadmap_args+=(--wet)
   fi
   log "roadmap: roadmap_curate starting (dry_run=$BRAIN_DREAM_ROADMAP_DRY_RUN)"
@@ -1268,7 +1300,7 @@ if [[ "$BRAIN_DREAM_SWEEP_ENABLED" != "true" ]]; then
   manifest_put skipped sweep '*' killswitch
 else
   sweep_args=()
-  if [[ "$BRAIN_DREAM_SWEEP_DRY_RUN" != "true" ]]; then
+  if dream_wants_wet BRAIN_DREAM_SWEEP_DRY_RUN "$BRAIN_DREAM_SWEEP_DRY_RUN"; then
     sweep_args+=(--wet)
   fi
   log "sweep: session_sweep starting (dry_run=$BRAIN_DREAM_SWEEP_DRY_RUN)"
