@@ -40,10 +40,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PROMPT_DIR = REPO_ROOT / "scripts" / "dream"
 TOOLS_DIR = REPO_ROOT / "src" / "brain_v42" / "mcp" / "tools"
 
-#: `brain_v42` is the Python package, not a tool. It is the only `brain_*`
-#: token a prompt legitimately names without a tool behind it; anything else
-#: added here should be justified in the same breath.
-_NOT_A_TOOL = frozenset({"brain_v42"})
+#: `brain_v42` is the Python package, not a tool. `brain_dream_capability_enforcement`
+#: is a `Settings` field (`src/brain_v42/config.py`), not a tool -- `phase_reorg.md`'s
+#: "Guard -- archive only" section names it to state the condition under which the
+#: middleware that makes `brain_merge_entities`/`brain_delete` unreachable is even
+#: installed. These are the only `brain_*` tokens a prompt legitimately names without
+#: a tool behind them; anything else added here should be justified in the same breath.
+_NOT_A_TOOL = frozenset({"brain_v42", "brain_dream_capability_enforcement"})
 
 
 def _registered_tool_names() -> frozenset[str]:

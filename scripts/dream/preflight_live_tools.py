@@ -50,9 +50,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PROMPT_DIR = REPO_ROOT / "scripts" / "dream"
 
 #: Mirrors tests/unit/test_dream_prompts_only_name_real_tools.py::_NOT_A_TOOL —
-#: the only `brain_*` token a prompt legitimately names without a tool behind
-#: it. Kept in sync by test_phase_tool_mentions_agrees_with_the_repository_guard.
-_NOT_A_TOOL = frozenset({"brain_v42"})
+#: the `brain_*` tokens a prompt legitimately names without a tool behind
+#: them. Kept in sync by test_phase_tool_mentions_agrees_with_the_repository_guard.
+_NOT_A_TOOL = frozenset({"brain_v42", "brain_dream_capability_enforcement"})
 _TOOL_MENTION = re.compile(r"\b(brain_[a-z][a-z0-9_]*)")
 
 # A plain admin bearer sees the COMPACT, BM25-filtered catalogue by default in
