@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager, suppress
 from typing import Literal
 
 import sqlalchemy as sa
+from asyncpg import InternalClientError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 
@@ -55,9 +56,9 @@ class ObserverOwnership:
     async def _dispose(connection: AsyncConnection) -> None:
         # Closing the physical dedicated connection also drops any session lock
         # if cancellation or an error prevented a normal unlock transaction.
-        with suppress(SQLAlchemyError):
+        with suppress(SQLAlchemyError, InternalClientError):
             await connection.invalidate()
-        with suppress(SQLAlchemyError):
+        with suppress(SQLAlchemyError, InternalClientError):
             await connection.close()
 
     async def acquire(self) -> bool:
@@ -86,7 +87,7 @@ class ObserverOwnership:
                 self._lose()
                 if connection is not None:
                     await self._dispose(connection)
-                if isinstance(error, SQLAlchemyError):
+                if isinstance(error, (SQLAlchemyError, InternalClientError)):
                     raise ObserverOwnershipLost() from None
                 raise
 
@@ -112,7 +113,10 @@ class ObserverOwnership:
                 ).one()
             if row.backend_pid != self._backend_pid or not row.locked:
                 raise ObserverOwnershipLost()
-        except (SQLAlchemyError, TimeoutError, ObserverOwnershipLost):
+        # asyncpg protocol-state failures can escape SQLAlchemy's DBAPI wrapper
+        # when a backend dies during transaction startup. That connection no
+        # longer proves ownership, regardless of whether the wrapper saw it.
+        except (SQLAlchemyError, InternalClientError, TimeoutError, ObserverOwnershipLost):
             self._lose()
             raise ObserverOwnershipLost() from None
 
@@ -137,7 +141,7 @@ class ObserverOwnership:
                         async with session.begin():
                             yield session
                         await self._verify(connection)
-            except SQLAlchemyError:
+            except (SQLAlchemyError, InternalClientError):
                 self._lose()
                 raise ObserverOwnershipLost() from None
             except BaseException:
@@ -156,7 +160,9 @@ class ObserverOwnership:
             connection, self._connection = self._connection, None
             try:
                 if connection is not None and self.owned:
-                    with suppress(SQLAlchemyError, ObserverOwnershipLost, TimeoutError):
+                    with suppress(
+                        SQLAlchemyError, InternalClientError, ObserverOwnershipLost, TimeoutError
+                    ):
                         async with connection.begin():
                             await self._verify(connection)
                             unlocked = await connection.scalar(
