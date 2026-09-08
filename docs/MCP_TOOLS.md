@@ -130,6 +130,11 @@ identities. Repository context reports its latest attempt and successful
 collection separately. A merge receipt proves integration of the specified
 revision; it does not prove a production deployment.
 
+Reads are advisory and do not form an atomic snapshot across all related records.
+Concurrent contract or observation updates can produce a transiently stale or
+mixed view. Claims and completion decisions reload their inputs under database
+locks and reject stale expectations; re-read before retrying.
+
 Business failures are MCP errors with stable codes such as `not_allowed`,
 `revision_conflict`, `claim_stale`, `claim_fenced`, `generation_conflict` and
 `delivery_requirements_unsatisfied`. Invalid transport inputs report
