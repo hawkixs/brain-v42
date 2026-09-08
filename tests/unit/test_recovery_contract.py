@@ -291,7 +291,12 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
     # existing table, and no foreign key at all: its `entity_id` deliberately
     # references nothing, so unlike 051 it does not even reach a table this
     # contract describes as a child. The shape at 031 is untouched.
-    assert script.get_heads() == ["052"]
+    # Re-read at 053: it ADDS the eight `delivery_*` tables listed below. All
+    # ALTERs and all but one FK stay within that new family; the sole link to the
+    # pre-053 schema is the child FK `delivery_workflows.ticket_id -> tickets.id`.
+    # It changes no column, CHECK, index or trigger on `tickets`, so the shape at
+    # 031 remains intact while the live METADATA table set must exclude the eight.
+    assert script.get_heads() == ["053"]
     post_contract_tables = {
         # 050's table. `table_set` is DERIVED from live METADATA, so any new
         # table moves it, and a contract describing revision 031 must not claim
@@ -309,6 +314,17 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
         # describes 031. Nothing about `access_log_daily` reaches this contract's
         # shape — it is the SET, not the shape, that moves.
         "access_log_daily",
+        # 053's eight tables. They form a new delivery authority whose only link
+        # to the pre-existing schema is a child FK to `tickets`; none existed at
+        # the revision 031 described by this frozen contract.
+        "delivery_artifact_bindings",
+        "delivery_confirmations",
+        "delivery_contract_revisions",
+        "delivery_dependencies",
+        "delivery_events",
+        "delivery_receipts",
+        "delivery_snapshots",
+        "delivery_workflows",
         "brain_session_artifacts",
         "brain_sessions",
         "projects",

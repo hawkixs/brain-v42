@@ -644,6 +644,12 @@ def build_services() -> dict[str, Any]:
         project_context_repo=project_context_repo,
     )
 
+    from brain_v42.delivery_config import DeliverySettings  # noqa: PLC0415
+    from brain_v42.repositories.pg_delivery import PgDeliveryRepo  # noqa: PLC0415
+    from brain_v42.services.delivery_service import DeliveryService  # noqa: PLC0415
+
+    delivery_svc = DeliveryService(PgDeliveryRepo(session_factory), settings=DeliverySettings())
+
     logger.info("brain_v42.server.services_initialized")
 
     return {
@@ -674,6 +680,7 @@ def build_services() -> dict[str, Any]:
         "neo4j_driver": neo4j_driver,
         "auto_linker": auto_linker,
         "ticket_svc": ticket_svc,
+        "delivery_svc": delivery_svc,
     }
 
 
@@ -974,6 +981,7 @@ def build_server() -> BuiltServer:
         cross_project_svc=_cross_project_svc,
         ticket_svc=services["ticket_svc"],
         schema_state_svc=SchemaStateService(_session_factory),
+        delivery_svc=services["delivery_svc"],
     )
 
     # Roadmap tools
@@ -1028,6 +1036,10 @@ def build_server() -> BuiltServer:
     from brain_v42.mcp.tools.ticket_tools import register_ticket_tools  # noqa: PLC0415
 
     register_ticket_tools(mcp, ticket_svc=services["ticket_svc"])
+
+    from brain_v42.mcp.tools.delivery_tools import register_delivery_tools  # noqa: PLC0415
+
+    register_delivery_tools(mcp, delivery_svc=services["delivery_svc"])
 
     if settings.brain_code_mode:
         server = maybe_apply_code_mode(mcp, settings)

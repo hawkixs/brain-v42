@@ -40,6 +40,9 @@ from pathlib import Path
 # tests/unit/test_integration_schema_residue_guard.py so a new downgrading
 # migration test cannot silently drop out of it.
 DOWNGRADING_TEST_FILES: tuple[str, ...] = (
+    # The first 053 round-trip uses its own fresh database; the history-refusal
+    # case in this file downgrades the shared database and takes the fence.
+    "tests/integration/db/test_delivery_contracts.py",
     "tests/integration/db/test_migration_025.py",
     "tests/integration/db/test_migration_026.py",
     "tests/integration/db/test_migration_037.py",

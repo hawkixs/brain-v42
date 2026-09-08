@@ -528,3 +528,49 @@ condition = "AND"
 regexTarget = "line"
 paths = ['''^tests/unit/test_recovery_contract_v3\.py$''']
 regexes = ['''"brain_sessions_pkey": "6763cd8159ef6f0131abbfedfea044bc"''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-09-08. The v10 recovery contract inherits this exact v9 fingerprint: \
+md5 of the public CREATE UNIQUE INDEX brain_sessions_pkey DDL, independently \
+recomputed from that statement. It grants no access. Only this complete SQL \
+tuple line in this one file is exempt; new credentials remain scanned.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v10\.sql$''']
+regexes = ['''^\s*\('brain_sessions_pkey', '6763cd8159ef6f0131abbfedfea044bc'\),?\s*$''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-09-08. The same inherited public-index md5 fingerprint in the v10 \
+pg_restore twin, byte-identical to its v9 counterpart. Exact path and complete \
+tuple line only; this is not a file exclusion.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v10-pgrestore\.sql$''']
+regexes = ['''^\s*\('brain_sessions_pkey', '6763cd8159ef6f0131abbfedfea044bc'\),?\s*$''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-09-08. The v10 contract inherits the exact v9 SHA-256 and 226-byte \
+length of the public reject_project_context_key_change trigger function body. \
+The function-name keyword caused the finding, not credential material. The \
+literal digest, length, complete tuple line and single path are all pinned.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v10\.sql$''']
+regexes = ['''^\s*\('reject_project_context_key_change', 'e800aecbe1054d8333babd1c43f1f52893db81b6b8f4e7fc6d167c6cd6f9de82', 226\),?\s*$''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-09-08. The same inherited public trigger-body SHA-256 and byte \
+length in the v10 pg_restore twin, byte-identical to v9. Only this complete \
+tuple in this exact path is exempt; changed digests and credentials still fail.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v10-pgrestore\.sql$''']
+regexes = ['''^\s*\('reject_project_context_key_change', 'e800aecbe1054d8333babd1c43f1f52893db81b6b8f4e7fc6d167c6cd6f9de82', 226\),?\s*$''']

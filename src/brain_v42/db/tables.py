@@ -34,6 +34,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 
+from brain_v42.db.delivery_tables import register_delivery_tables
+
 _EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIMENSION", "1536"))
 MIN_COMPARABLE_EMBEDDING_NORM = 1e-6
 
@@ -1823,7 +1825,25 @@ __all__ = [
     "ticket_extraction_attempts",
     "roadmap_curation_proposals",
     "brain_session_checkpoints",
+    "delivery_workflows",
+    "delivery_contract_revisions",
+    "delivery_dependencies",
+    "delivery_artifact_bindings",
+    "delivery_snapshots",
+    "delivery_confirmations",
+    "delivery_receipts",
+    "delivery_events",
 ]
+
+_delivery_tables = register_delivery_tables(METADATA)
+delivery_workflows = _delivery_tables["delivery_workflows"]
+delivery_contract_revisions = _delivery_tables["delivery_contract_revisions"]
+delivery_dependencies = _delivery_tables["delivery_dependencies"]
+delivery_artifact_bindings = _delivery_tables["delivery_artifact_bindings"]
+delivery_snapshots = _delivery_tables["delivery_snapshots"]
+delivery_confirmations = _delivery_tables["delivery_confirmations"]
+delivery_receipts = _delivery_tables["delivery_receipts"]
+delivery_events = _delivery_tables["delivery_events"]
 
 
 # The audit trail migration 050 lays down: one row per persisted revision of

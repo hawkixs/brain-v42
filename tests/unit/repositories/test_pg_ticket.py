@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
@@ -63,7 +64,7 @@ def _all_result(rows: list[dict[str, Any]]) -> MagicMock:
 
 def _repo_with_session(session: AsyncMock) -> PgTicketRepo:
     @asynccontextmanager
-    async def _session_context():
+    async def _session_context() -> AsyncIterator[AsyncMock]:
         yield session
 
     factory = MagicMock(side_effect=_session_context)
@@ -79,8 +80,32 @@ def _session(*results: MagicMock) -> AsyncMock:
     return session
 
 
+@pytest.fixture
+def uncontracted_transition_guard(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """Keep these CAS tests at the repository boundary for an uncontracted ticket."""
+    guard = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "brain_v42.repositories.pg_ticket.guard_delivery_transition",
+        guard,
+    )
+    return guard
+
+
+def _assert_guard_awaited_for(
+    guard: AsyncMock,
+    session: AsyncMock,
+    ticket_id: UUID,
+) -> None:
+    guard.assert_awaited_once()
+    await_args = guard.await_args
+    assert await_args is not None
+    assert await_args.args == (session, ticket_id)
+
+
 class TestApplyTransition:
-    async def test_update_is_compare_and_swap_on_id_and_expected_status(self) -> None:
+    async def test_update_is_compare_and_swap_on_id_and_expected_status(
+        self, uncontracted_transition_guard: AsyncMock
+    ) -> None:
         ticket_id = uuid4()
         session = _session(_result(_ticket_row(ticket_id)))
         repo = _repo_with_session(session)
@@ -94,6 +119,7 @@ class TestApplyTransition:
             extraction_status=None,
         )
 
+        _assert_guard_awaited_for(uncontracted_transition_guard, session, ticket_id)
         assert result is not None
         statement = session.execute.await_args_list[0].args[0]
         sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
@@ -103,7 +129,9 @@ class TestApplyTransition:
         assert "'open'" in where
         assert "updated_at" not in where
 
-    async def test_status_and_message_share_one_transaction_update_first(self) -> None:
+    async def test_status_and_message_share_one_transaction_update_first(
+        self, uncontracted_transition_guard: AsyncMock
+    ) -> None:
         ticket_id = uuid4()
         session = _session(_result(_ticket_row(ticket_id)), _result())
         repo = _repo_with_session(session)
@@ -119,6 +147,7 @@ class TestApplyTransition:
             message_body="done",
         )
 
+        _assert_guard_awaited_for(uncontracted_transition_guard, session, ticket_id)
         session.begin.assert_called_once_with()
         assert session.execute.await_count == 2
         first = session.execute.await_args_list[0].args[0]
@@ -131,12 +160,15 @@ class TestApplyTransition:
         assert "'done'" in second_sql
         assert "'resolved'" in second_sql
 
-    async def test_compare_and_swap_miss_returns_none_without_message_insert(self) -> None:
+    async def test_compare_and_swap_miss_returns_none_without_message_insert(
+        self, uncontracted_transition_guard: AsyncMock
+    ) -> None:
+        ticket_id = uuid4()
         session = _session(_result(None))
         repo = _repo_with_session(session)
 
         result = await repo.apply_transition(
-            uuid4(),
+            ticket_id,
             TicketStatus.CLOSED,
             expected_status=TicketStatus.OPEN,
             resolved_at=None,
@@ -146,6 +178,7 @@ class TestApplyTransition:
             message_body="cancelled",
         )
 
+        _assert_guard_awaited_for(uncontracted_transition_guard, session, ticket_id)
         assert result is None
         session.begin.assert_called_once_with()
         session.execute.assert_awaited_once()

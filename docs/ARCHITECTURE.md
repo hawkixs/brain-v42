@@ -1,9 +1,9 @@
 # Architecture — brain_v42
 
 **Updated:** 2026-07-24
-**Repository and production state:** migrations 001–052 defined, 33 PG tables modeled; MCP catalog: 53 always-on + 2 graph-gated = 55. Production runs lifecycle v4 since 24 July 2026: revision 036 was applied and validated first, then 037 was proved before the restart-last MCP cutover and authenticated lifecycle-v4 E2E. The deployed Alembic head has since advanced and is not asserted here — measure it with `select version_num from alembic_version`. Last measurement: `045` on 16 August 2026, right after the 044→045 cutover.
+**Repository and production state:** migrations 001–053 defined, 42 PG tables modeled; MCP catalog: 62 always-on + 2 graph-gated = 64. Production runs lifecycle v4 since 24 July 2026: revision 036 was applied and validated first, then 037 was proved before the restart-last MCP cutover and authenticated lifecycle-v4 E2E. The deployed Alembic head has since advanced and is not asserted here — measure it with `select version_num from alembic_version`. Last measurement: `045` on 16 August 2026, right after the 044→045 cutover.
 
-**Repository target: 052.** Revision 051 is M-C of the projects/sessions overhaul: `brain_session_checkpoints`, an append-only ledger of session JUDGMENT — progress, blocker and next step published together in one call. Append-only is enforced by a `BEFORE UPDATE OR DELETE` trigger rather than by the absence of a code path, and its FK carries `ON DELETE RESTRICT` so that guard needs no exception for cascades — with the consequence, named rather than discovered, that a session holding checkpoints becomes indelible. Idempotence comes from `UNIQUE(session_id, seq)` + `ON CONFLICT DO NOTHING` instead of a CAS, because agent retries are the norm; the same `seq` with different content is refused rather than absorbed. It writes no `last_heartbeat_at` (ADR §0bis.4, D4 amended in place). Its downgrade is fail-closed behind `-x allow_checkpoint_downgrade=yes` and names the sessions whose judgment it would destroy. Revision 050 is M-D of the projects/sessions overhaul, the head 049 reserved for it: `project_focus_history`, an append-only audit trail of every focus revision, seeded from the contexts present at upgrade time (NULL focuses included). It ships a DEFERRED CONSTRAINT TRIGGER on `project_contexts`, scoped `AFTER UPDATE OF current_focus` so the plan-index repair stays out of its reach, and **created DISABLED** — arming it is a named operator gesture after the MCP restart, because until then the live process writes no history row and the trigger would abort every `brain_session_end` that applies a focus. Its downgrade is fail-closed outside the seed behind `-x allow_focus_history_downgrade=yes`. Revision 049 carries three objects of one family (nullable ADD COLUMN + widened CHECK), grouped under criterion (c) of decision 9d22bc6a — their downgrades fail independently, each behind its own named opt-in: `dream_runs.closed_inactive_count` (the per-night series of inactivity closures, kept distinct from abandonments), `dream_runs.thinking_tokens` (the agy rail was under-declaring ~38% of its tokens), and the `freshness_source` vocabulary widened with `manual_update` and `plan_reindex` on the six decay tables — the plan upsert now declares its provenance. Revision 048 adds `brain_session_artifacts.attribution_mode`,
+**Repository target: 053.** Revision 053 adds versioned delivery workflows: immutable contracts and dependency identities, proposed PR bindings, append-only provider confirmation subjects, receipts and idempotency events. Required repository-document context is a workflow-level observation subject before any PR exists; both it and an artifact binding retain separate latest-success and latest-attempt confirmation pointers. This is a repository target only: no production rollout or live recovery attestation is implied. Revision 051 is M-C of the projects/sessions overhaul: `brain_session_checkpoints`, an append-only ledger of session JUDGMENT — progress, blocker and next step published together in one call. Append-only is enforced by a `BEFORE UPDATE OR DELETE` trigger rather than by the absence of a code path, and its FK carries `ON DELETE RESTRICT` so that guard needs no exception for cascades — with the consequence, named rather than discovered, that a session holding checkpoints becomes indelible. Idempotence comes from `UNIQUE(session_id, seq)` + `ON CONFLICT DO NOTHING` instead of a CAS, because agent retries are the norm; the same `seq` with different content is refused rather than absorbed. It writes no `last_heartbeat_at` (ADR §0bis.4, D4 amended in place). Its downgrade is fail-closed behind `-x allow_checkpoint_downgrade=yes` and names the sessions whose judgment it would destroy. Revision 050 is M-D of the projects/sessions overhaul, the head 049 reserved for it: `project_focus_history`, an append-only audit trail of every focus revision, seeded from the contexts present at upgrade time (NULL focuses included). It ships a DEFERRED CONSTRAINT TRIGGER on `project_contexts`, scoped `AFTER UPDATE OF current_focus` so the plan-index repair stays out of its reach, and **created DISABLED** — arming it is a named operator gesture after the MCP restart, because until then the live process writes no history row and the trigger would abort every `brain_session_end` that applies a focus. Its downgrade is fail-closed outside the seed behind `-x allow_focus_history_downgrade=yes`. Revision 049 carries three objects of one family (nullable ADD COLUMN + widened CHECK), grouped under criterion (c) of decision 9d22bc6a — their downgrades fail independently, each behind its own named opt-in: `dream_runs.closed_inactive_count` (the per-night series of inactivity closures, kept distinct from abandonments), `dream_runs.thinking_tokens` (the agy rail was under-declaring ~38% of its tokens), and the `freshness_source` vocabulary widened with `manual_update` and `plan_reindex` on the six decay tables — the plan upsert now declares its provenance. Revision 048 adds `brain_session_artifacts.attribution_mode`,
 which records BY WHICH KEY a row was attributed: `explicit` (a human named the UUID),
 `derived_deposit` (the server parked it in a tracer), `derived_connection` (the exact match)
 and `derived_window` (deduced by temporal exclusivity). Nullable, no backfill — `NULL` means
@@ -46,7 +46,7 @@ is the dev/fallback mode.
                                  v
  +-------------------------------+--+  +----------------------+  +----------------------+
  | FastMCP server (Python 3.12+)     |  | Metrics runtime      |  | Automation runtime   |
- | 53 always-on + 2 graph-gated = 55 |  | 127.0.0.1:9200       |  | 127.0.0.1:9201       |
+ | 62 always-on + 2 graph-gated = 64 |  | 127.0.0.1:9200       |  | 127.0.0.1:9201       |
  | service layer + search fan-out    |  | /metrics / cockpit   |  | health / webhook     |
  | MCP background flushers/indexer   |  | optional legacy owner|  | dedup scheduler      |
  +----------------+------------------+  +----------+-----------+  +-----------+----------+
@@ -141,7 +141,7 @@ to the Internet; independently verify the router/network boundary.
 | GPU embedding service | 8003 | Qodo-Embed-1-1.5B, 1536 dims, local HTTP; also serves cross-encoder reranker | `src/brain_v42/services/gpu_embedding_service.py` |
 | Reranker | 8003 | Cross-encoder rerank for hybrid search + ClusterGuard grey zone (same unified endpoint as embed) | `src/brain_v42/services/reranker_client.py` |
 
-### 33 PG tables (`src/brain_v42/db/tables.py`)
+### 42 PG tables (`src/brain_v42/db/tables.py`)
 
 Knowledge: `decisions`, `learnings`, `snippets`, `runbooks`, `adrs`, `project_contexts`.
 Plans: `indexed_plans` (extended by migration 014), `indexed_plan_chunks` (created by migration 014).
@@ -155,6 +155,9 @@ note-to-self that resurfaces in that project's briefing.
 Sessions: `brain_sessions`, `brain_session_artifacts`.
 Graph foundation and projection control: `projects`, `project_aliases`, `brain_entities`,
 `entity_relations`, `graph_outbox`, `graph_projection_leases`.
+Delivery: `delivery_workflows`, `delivery_contract_revisions`, `delivery_dependencies`,
+`delivery_artifact_bindings`, `delivery_snapshots`, `delivery_confirmations`,
+`delivery_receipts`, `delivery_events`.
 
 See `docs/SCHEMA.md` for the maintained schema reference. Migration files and
 `src/brain_v42/db/tables.py` remain authoritative.
@@ -679,8 +682,8 @@ brain_v42/
 │   └── mcp/
 │       ├── server.py             # entry point (stdio+http), build_services(), app_lifecycle()
 │       ├── http_security.py      # HostOriginGuard + BearerTokenGuard ASGI middleware
-│       └── tools/                # 53 always-on + 2 graph-gated = 55
-├── alembic/versions/             # migrations 001 .. 052 defined in the repository
+│       └── tools/                # 62 always-on + 2 graph-gated = 64
+├── alembic/versions/             # migrations 001 .. 053 defined in the repository
 ├── scripts/                      # legacy import + projection inventory/recovery CLIs
 ├── tests/                        # unit/ + integration/
 ├── docs/
@@ -703,7 +706,7 @@ brain_v42/
 | Embeddings | sentence-transformers / PyTorch in-process | Local GPU service :8003 (Qodo-Embed-1-1.5B, 1536d) |
 | Reranker | none | Cross-encoder :8003 unified endpoint, BatchingRerankerClient (20 ms window) |
 | MCP transport | stdio | HTTP loopback 127.0.0.1:8765 + HostOriginGuard + bearer obligatoire sous systemd (optionnel en HTTP dev direct) |
-| MCP tools | 21 | 53 always-on + 2 graph-gated = 55 |
+| MCP tools | 21 | 62 always-on + 2 graph-gated = 64 |
 | Tables | 6 | 31 (knowledge, audit, plans, dream, webhook, coordination, sessions, graph ledger) |
 | Maintenance | manual | Dream mode nightly + DecayFlusher + ConsolidationJob |
 | Observability | none | /metrics :9200 + /api/cockpit + process_metrics |

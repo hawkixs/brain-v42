@@ -35,13 +35,22 @@ def _expected_checks() -> list[dict[str, Any]]:
             name
             for name in METADATA.tables
             # `project_focus_history` arrives with 050, `brain_session_checkpoints`
-            # with 051 and `access_log_daily` with 052 — all long after the 035 this
-            # asset describes. See the note in test_recovery_contract.py.
+            # with 051, `access_log_daily` with 052 and the eight `delivery_*`
+            # tables with 053 — all long after the 035 this asset describes. See
+            # the revision-by-revision review in test_recovery_contract.py.
             if name
             not in {
                 "access_log_daily",
                 "brain_session_artifacts",
                 "brain_session_checkpoints",
+                "delivery_artifact_bindings",
+                "delivery_confirmations",
+                "delivery_contract_revisions",
+                "delivery_dependencies",
+                "delivery_events",
+                "delivery_receipts",
+                "delivery_snapshots",
+                "delivery_workflows",
                 "project_focus_history",
                 "ticket_extraction_attempts",
             }

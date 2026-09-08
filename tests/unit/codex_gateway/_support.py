@@ -62,6 +62,8 @@ class InMemoryTicketRepo:
         new_status: TicketStatus,
         *,
         expected_status: TicketStatus,
+        action: Any = None,
+        actor_project: str | None = None,
         resolved_at: datetime | None,
         closed_at: datetime | None,
         extraction_status: ExtractionStatus | None,

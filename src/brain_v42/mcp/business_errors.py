@@ -65,6 +65,7 @@ from fastmcp.exceptions import ToolError
 from fastmcp.tools.function_tool import FunctionTool
 
 from brain_v42.models.brain_session import BrainSessionError
+from brain_v42.models.delivery import DeliveryError
 from brain_v42.services.consolidation import ConsolidationEntityNotFoundError
 from brain_v42.services.entity_maintenance_service import UnknownEntityTypeError
 from brain_v42.services.feature_creation_service import FeatureCreationError
@@ -79,6 +80,7 @@ from brain_v42.services.ticket_service import TicketError
 SURFACED_BUSINESS_ERRORS: tuple[type[Exception], ...] = (
     TicketError,
     BrainSessionError,
+    DeliveryError,
     FeatureCreationError,
     FeatureStateConflictError,
     ProposalServiceError,

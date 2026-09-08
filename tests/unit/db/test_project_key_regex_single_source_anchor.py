@@ -1,14 +1,14 @@
-"""Phase 0 anchor — the project-key regex has EIGHT guardians, and nothing linked them.
+"""Phase 0 anchor — the project-key regex now has TWENTY-ONE guardians.
 
 `models/project_key.py` declares itself the "single source of truth" for the key format.
-It is not: the same pattern is copied by hand into eight live enforcement surfaces,
+It is not: the same pattern is copied by hand across twenty-one live enforcement surfaces,
 spread over three registers that never read each other —
 
   1. `_KEBAB`, the Python write path (Pydantic, through `ProjectKeyCanonicalMixin`);
   2. the `CheckConstraint` `projects_key_format_valid` declared in `db/tables.py`;
   3. two SQL `CHECK`s in migrations: **012** (`chk_project_key_format` on
      `project_contexts`) and **033** (`projects_key_format_valid` on `projects`);
-  4. **five recovery attestation assets** (`ops/recovery/*.sql`), where the pattern
+  4. **seventeen recovery attestation assets** (`ops/recovery/*.sql`), where the pattern
      appears in its NEGATED form (`!~`) to count non-conforming keys.
 
 **No test linked them** — surveyed on 2026-08-20 through three independent angles:
@@ -25,9 +25,9 @@ the other direction, touching an `ops/recovery/` asset breaks the restoration pr
 without breaking any test.
 
 This test is therefore BIDIRECTIONAL by construction: it writes the pattern nowhere. It
-imports `_KEBAB` and **extracts** the other eight from the tree — the metadata
-constraint is read off the SQLAlchemy object, the other seven off their file. Mutating a
-single side turns it red; mutating all nine consistently stays green, which is the
+imports `_KEBAB` and **extracts** the other twenty from the tree — the metadata
+constraint is read off the SQLAlchemy object, the other nineteen off their file. Mutating a
+single side turns it red; mutating all twenty-one consistently stays green, which is the
 intended behaviour — the guarded property is AGREEMENT, not a frozen value.
 
 Phase 0 = photograph what exists. This test expresses no preference about the key format
@@ -55,9 +55,9 @@ _MIGRATIONS = {
     "033_graph_relation_ledger.py": "projects_key_format_valid",
 }
 
-#: The five attestation assets that carry the predicate today. Pinned DELIBERATELY: a v5
-#: asset must either reuse the pattern or force an explicit decision here. The sixth
-#: `.sql` of the directory (`brain-v42-v1.sql`) predates the constraint and does not
+#: The seventeen attestation assets that carry the predicate today. Pinned DELIBERATELY:
+#: each new authority must either reuse the pattern or force an explicit decision here.
+#: `brain-v42-v1.sql` predates the constraint and does not
 #: carry it.
 _RECOVERY_ASSETS_WITH_PREDICATE = frozenset(
     {
@@ -92,6 +92,11 @@ _RECOVERY_ASSETS_WITH_PREDICATE = frozenset(
         # sans que personne l'ait retapé. Sixième rougissement de cette friction.
         "brain-v42-v9.sql",
         "brain-v42-v9-pgrestore.sql",
+        # Ajoutés le 2026-09-07 par le mint v10 (053) : les deux autorités ont
+        # conservé le prédicat exact. Ce pin garde leur présence et le test
+        # paramétré ci-dessous garde leur accord avec `_KEBAB`.
+        "brain-v42-v10.sql",
+        "brain-v42-v10-pgrestore.sql",
     }
 )
 
@@ -179,9 +184,9 @@ def test_every_recovery_attestation_asset_checks_the_python_source_of_truth(
 def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     """Non-vacuity guard: count the surfaces, so none escapes in silence.
 
-    FOURTEEN guardians besides `_KEBAB` (1 metadata + 2 migrations + 11 assets) since
-    the v7 mint of 2026-09-02 — it was eight when this anchor was written, ten at the v5
-    mint, twelve at the v6 mint. This count deliberately includes NO document:
+    TWENTY guardians besides `_KEBAB` (1 metadata + 2 migrations + 17 assets) since
+    the v10 mint of 2026-09-07 — it was eight when this anchor was written, fourteen at
+    the v7 mint and eighteen at the v9 mint. This count deliberately includes NO document:
     `docs/design/` is not tracked, and a test counting prose would fail depending on the
     working tree.
     """
@@ -200,9 +205,9 @@ def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     )
     recovery_sites = sum(len(patterns) for patterns in _recovery_assets().values())
 
-    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 15), (
+    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 17), (
         "la ventilation des surfaces d'application a changé "
         f"(métadonnées={metadata_sites}, migrations={migration_sites}, "
-        f"attestation={recovery_sites} ; attendu 1/2/15). Recenser avant de corriger le "
+        f"attestation={recovery_sites} ; attendu 1/2/17). Recenser avant de corriger le "
         "compte : c'est ce recensement qui a été faux trois fois."
     )

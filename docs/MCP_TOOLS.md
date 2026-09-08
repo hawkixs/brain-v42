@@ -1,13 +1,13 @@
 # MCP Tools — brain_v42
 
-**Updated:** 2026-07-24
-**Repository registry:** 53 always-on + 2 graph-gated = 55 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
+**Updated:** 2026-09-08
+**Repository registry:** 62 always-on + 2 graph-gated = 64 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
 **Default catalog:** Admin clients use `compact` while capability enforcement is disabled: the seven session lifecycle tools plus `brain_find_tool` and `brain_call_tool`; other registered tools remain discoverable through those gateways. `native` exposes every registered tool. An authenticated Dream phase always receives its exact native allowlist, independent of presentation headers, and cannot access either gateway. Experimental `brain_code_mode` takes precedence only while Dream capability enforcement is disabled.
 **Transport:** HTTP loopback `http://127.0.0.1:8765/mcp` (production fleet). Tools are defined as closures capturing injected services — see `src/brain_v42/mcp/server.py` (`build_services()`) and the `register_*_tools()` functions in each module under `src/brain_v42/mcp/tools/`.
 
 Most tools return formatted markdown strings. The seven v4 session lifecycle tools return structured Pydantic results. Their repository contract is documented below. Lifecycle v4 has run in production since 24 July 2026, after revision 036, explicit schema proof and a restart-last MCP cutover with authenticated E2E canaries.
 
-Migration 052 is the repository target: it adds `access_log_daily`, the durable access journal that keeps the ACTOR STRING per (entity, day) so an `is_human_actor` requalification stays replayable after the 300 s flush (ticket b93e32be). Migration 051 adds `brain_session_checkpoints` (M-C), the append-only ledger behind `brain_session_checkpoint`, guarded by a trigger and reachable only by INSERT. Migration 050 adds `project_focus_history` (M-D), the append-only audit trail of every focus revision, plus a deferred constraint trigger on `project_contexts` shipped disabled. Migration 049 it adds the sweep's per-night `closed_inactive_count`, the agy rail's `thinking_tokens`, and widens the `freshness_source` vocabulary (`manual_update`, `plan_reindex`). Migration 048 adds `brain_session_artifacts.attribution_mode`,
+Migration 053 is the repository target: it adds the eight durable delivery tables for workflows, versioned contracts, dependencies, artifact bindings, confirmations, snapshots, events, and immutable receipts. Migration 052 adds `access_log_daily`, the durable access journal that keeps the ACTOR STRING per (entity, day) so an `is_human_actor` requalification stays replayable after the 300 s flush (ticket b93e32be). Migration 051 adds `brain_session_checkpoints` (M-C), the append-only ledger behind `brain_session_checkpoint`, guarded by a trigger and reachable only by INSERT. Migration 050 adds `project_focus_history` (M-D), the append-only audit trail of every focus revision, plus a deferred constraint trigger on `project_contexts` shipped disabled. Migration 049 it adds the sweep's per-night `closed_inactive_count`, the agy rail's `thinking_tokens`, and widens the `freshness_source` vocabulary (`manual_update`, `plan_reindex`). Migration 048 adds `brain_session_artifacts.attribution_mode`,
 so a reader can tell a PROVEN attribution (`derived_connection`, same connection) from a DEDUCED
 one (`derived_window`, sole covering session at the instant of creation) — and undo the second
 kind. Migration 047 removes the closing XOR, so a session whose ledger
@@ -77,6 +77,71 @@ rollout, and rollback are documented in
 | Refresh bounded workflow guidance | `brain_workflow_guide` |
 
 `brain_learn` is the last-resort tool, never the default.
+
+## Observable delivery workflows
+
+The nine `brain_delivery_*` operations are version 1.0 and return structured
+results. The same PostgreSQL service evaluates reads, claims, acceptance and
+legacy ticket completion. Brain never launches or controls execution agents;
+external orchestrators decide which eligible work to run.
+
+Every operation takes `actor_project`. Every ticket argument is a complete,
+hyphenated UUID. These project declarations use the existing admin trust
+boundary; they are not independently authenticated project identities. Dream
+principals cannot invoke the delivery mutations, including through compact
+catalog gateways.
+
+| Operation | Other arguments | Structured result |
+| --- | --- | --- |
+| `brain_delivery_contract_set` | `ticket_id`, `contract`, `expected_revision` (0 for create), `idempotency_key`, required `reason` | `ContractRevision` |
+| `brain_delivery_bind_pr` | `ticket_id`, `deliverable_key`, `repository_id`, `pr_number`, `expected_revision`, `expected_workflow_version`, `idempotency_key` | `ArtifactBinding` |
+| `brain_delivery_get` | `ticket_id`, `history_limit=20`, `history_cursor=None` | `DeliveryView` |
+| `brain_delivery_list` | `limit=20`, `cursor=None`, `work=None`, `blocker=None`, `stage=None` | `DeliveryPage` |
+| `brain_delivery_refresh` | `ticket_id` | `{status: "queued", view: DeliveryView}` |
+| `brain_delivery_claim` | `ticket_id`, `owner_key`, `work_kind`, `expected_workflow_version`, `expected_assessment_id`, `ttl_seconds=900` | `ClaimResult` |
+| `brain_delivery_claim_renew` | `ticket_id`, `owner_key`, `claim_token`, `epoch`, `ttl_seconds=900` | `ClaimState` |
+| `brain_delivery_claim_release` | `ticket_id`, `owner_key`, `claim_token`, `epoch` | `ClaimState` |
+| `brain_delivery_accept` | `ticket_id`, `rationale`, `expected_revision`, `expected_attempt`, `expected_delivery_digest` | `MilestoneReceipt` |
+
+The requester sets/amends contracts and accepts deliveries. The executor binds
+PRs and claims executor work; either ticket participant can read or refresh.
+Acceptance records the normalized `X-Brain-Agent` caller label and refuses an
+unknown caller. The header is declared provenance within the admin boundary.
+
+Use `view.assessment.assessment_version` for `expected_workflow_version` and
+`view.assessment.assessment_id` for the claim comparison. Re-read after a conflict;
+do not reuse a claim acquired for an obsolete assessment. Work kinds are
+`implement`, `repair`, `review`, `integrate` and `accept`. Claim TTL is 60–3600
+seconds. Only acquisition returns the raw token; renew/release require its exact
+owner and epoch, and reads/history never expose it. An expired claim does not
+stop external work: the orchestrator must fence its own execution with the epoch.
+
+List and history limits are 1–100. History retains immutable contract revisions
+and milestone receipts and marks superseded entries. List filters apply to the
+shared assessment before pagination. A list cursor belongs to the original
+project and filters; a history cursor belongs to its ticket. Both pages expose
+`next_cursor` and `omitted_count`. Contract reasons are retained in revision
+history and participate in idempotency.
+
+Reads use persisted observations and make no GitHub calls. Refresh only queues
+collection; its returned view may still contain the previous observation. Inspect
+`observation_health`, `observed_at`, `fresh_until`, blockers and the current receipt
+identities. Repository context reports its latest attempt and successful
+collection separately. A merge receipt proves integration of the specified
+revision; it does not prove a production deployment.
+
+Reads are advisory and do not form an atomic snapshot across all related records.
+Concurrent contract or observation updates can produce a transiently stale or
+mixed view. Claims and completion decisions reload their inputs under database
+locks and reject stale expectations; re-read before retrying.
+
+Business failures are MCP errors with stable codes such as `not_allowed`,
+`revision_conflict`, `claim_stale`, `claim_fenced`, `generation_conflict` and
+`delivery_requirements_unsatisfied`. Invalid transport inputs report
+`invalid_arguments`; unexpected execution failures report `delivery_unavailable`
+without echoing inputs or private exceptions. `BRAIN_DELIVERY_ENABLED=false`
+pauses delivery mutations while reads remain available and the canonical
+completion guard remains active for existing contracts.
 
 ## Workflow guidance
 
@@ -391,6 +456,8 @@ brain_session_checkpoint(session_id, expected_client_key, seq, progress, next_st
 -> {session_id, seq, created_at, replayed, checkpoint_count}
 ```
 Publish one semantic checkpoint of an `open` session, in a single call, into the append-only `brain_session_checkpoints` table (migration 052). It records JUDGMENT — where the work stands, what blocks it, what comes next — published together so a reader can tell a complete snapshot from a partial one.
+
+The repository migration target is migration 053; this does not enable delivery operations in MCP.
 
 It is **not** a lifecycle command and **not** a presence signal: it writes no `last_heartbeat_at`, touches no focus or `focus_revision`, attributes no artifact, and neither opens nor closes a session. Liveness already comes from the observation stamped by every tool call, which is why the checkpoint carries no heartbeat effect at all — on a real checkpoint or on a replay.
 
@@ -790,4 +857,5 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `snippet_tools.py` | snippets | 2 |
 | `ticket_tools.py` | tickets cross-projet (coordination) | 5 |
 | `workflow_guide_tools.py` | bounded workflow guidance | 1 |
-| **Total** | | **53 always-on + 2 graph-gated = 55** |
+| `delivery_tools.py` | observable delivery | 9 |
+| **Total** | | **62 always-on + 2 graph-gated = 64** |

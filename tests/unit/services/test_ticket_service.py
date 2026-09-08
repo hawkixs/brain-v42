@@ -65,6 +65,8 @@ def _svc(ticket=None, known_projects=(FROM, TO)):
         new_status,
         *,
         expected_status,
+        action,
+        actor_project,
         resolved_at,
         closed_at,
         extraction_status,

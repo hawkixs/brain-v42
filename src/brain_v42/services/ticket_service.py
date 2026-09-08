@@ -14,6 +14,7 @@ from uuid import UUID
 
 import structlog
 
+from brain_v42.models.delivery import DeliveryError
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.models.ticket import (
     SELF_TRANSITIONS,
@@ -205,16 +206,25 @@ class TicketService:
             if extraction is not ExtractionStatus.SKIPPED:
                 extraction = ExtractionStatus.PENDING
 
-        updated = await self._repo.apply_transition(
-            ticket_id,
-            new_status,
-            expected_status=ticket.status,
-            resolved_at=resolved_at,
-            closed_at=closed_at,
-            extraction_status=extraction,
-            message_author=author if message else None,
-            message_body=message if message else None,
-        )
+        try:
+            updated = await self._repo.apply_transition(
+                ticket_id,
+                new_status,
+                action=act,
+                actor_project=author,
+                expected_status=ticket.status,
+                resolved_at=resolved_at,
+                closed_at=closed_at,
+                extraction_status=extraction,
+                message_author=author if message else None,
+                message_body=message if message else None,
+            )
+        except DeliveryError as error:
+            if error.code == "delivery_not_allowed":
+                raise NotAllowedError(str(error)) from None
+            if error.code in {"delivery_transition_invalid", "delivery_transition_required"}:
+                raise IllegalTransitionError(str(error)) from None
+            raise TicketTransitionConflictError(str(error)) from None
         if updated is None:
             raise TicketTransitionConflictError("Ticket changed concurrently; reload and retry")
         return updated

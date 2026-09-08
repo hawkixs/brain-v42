@@ -110,6 +110,7 @@ def test_build_services_returns_all_services() -> None:
             "neo4j_driver",
             "auto_linker",
             "ticket_svc",
+            "delivery_svc",
         }
 
 

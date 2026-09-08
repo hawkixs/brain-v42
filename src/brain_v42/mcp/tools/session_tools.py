@@ -11,9 +11,11 @@ from uuid import UUID
 import structlog
 
 from brain_v42.config import get_settings
+from brain_v42.mcp.tools.delivery_formatters import format_delivery_briefing
 from brain_v42.mcp.tools.formatters import format_id
 from brain_v42.mcp.tools.session_lifecycle_tools import (
     NEXT_FOCUS_MAX_LENGTH,
+    BriefingLoader,
     register_session_lifecycle_tools,
 )
 from brain_v42.mcp.tools.workflow_guide_tools import format_workflow_guidance_briefing
@@ -486,6 +488,7 @@ def _format_session_briefing(
     schema_revision: str | None = None,
     schema_unavailable: bool = False,
     checkpoints: list[Any] | None = None,
+    delivery_briefing: str = "",
 ) -> str:
     blockers = list(getattr(ctx, "blockers", []) or []) if ctx else []
     sections = [
@@ -514,14 +517,14 @@ def _format_session_briefing(
         _section_blockers(blockers),
         _section_recap(decisions, learnings),
         _section_cross_project(cross_block),
+        delivery_briefing,
         format_workflow_guidance_briefing(),
         _section_drill_in_hint(),
     ]
     return "\n\n".join(s for s in sections if s)
 
 
-def register_session_tools(
-    mcp: Any,
+def make_session_briefing_loader(
     project_context_svc: Any,
     decision_svc: Any,
     learning_svc: Any,
@@ -532,8 +535,9 @@ def register_session_tools(
     cross_project_svc: Any | None = None,
     ticket_svc: Any | None = None,
     schema_state_svc: Any | None = None,
-) -> None:
-    """Register explicit lifecycle tools with the action-forward briefing."""
+    delivery_svc: Any | None = None,
+) -> BriefingLoader:
+    """Build the shared, read-only session briefing loader without lifecycle effects."""
 
     async def load_briefing(project_key: str, session_id: UUID) -> str:
         """Build the action-forward project briefing in ~500-800 tokens.
@@ -632,6 +636,19 @@ def register_session_tools(
         except Exception as exc:
             logger.warning("brain_session_briefing_checkpoints_failed", error=str(exc))
 
+        delivery_briefing = ""
+        if delivery_svc is not None:
+            try:
+                delivery_page = await delivery_svc.list(actor_project=project_key, limit=5)
+                delivery_briefing = format_delivery_briefing(delivery_page)
+            except Exception:
+                logger.warning(
+                    "brain_session_briefing_delivery_unavailable", project_key=project_key
+                )
+                delivery_briefing = (
+                    "### Livraison\n- indisponible : lecture PostgreSQL de livraison échouée"
+                )
+
         return _format_session_briefing(
             ctx,
             decisions,
@@ -647,6 +664,37 @@ def register_session_tools(
             schema_revision=schema_revision,
             schema_unavailable=schema_unavailable,
             checkpoints=checkpoints,
+            delivery_briefing=delivery_briefing,
         )
 
+    return load_briefing
+
+
+def register_session_tools(
+    mcp: Any,
+    project_context_svc: Any,
+    decision_svc: Any,
+    learning_svc: Any,
+    dream_run_svc: Any,
+    feature_svc: Any,
+    brain_session_svc: Any,
+    *,
+    cross_project_svc: Any | None = None,
+    ticket_svc: Any | None = None,
+    schema_state_svc: Any | None = None,
+    delivery_svc: Any | None = None,
+) -> None:
+    """Register explicit lifecycle tools with the shared action-forward loader."""
+    load_briefing = make_session_briefing_loader(
+        project_context_svc,
+        decision_svc,
+        learning_svc,
+        dream_run_svc,
+        feature_svc,
+        brain_session_svc,
+        cross_project_svc=cross_project_svc,
+        ticket_svc=ticket_svc,
+        schema_state_svc=schema_state_svc,
+        delivery_svc=delivery_svc,
+    )
     register_session_lifecycle_tools(mcp, brain_session_svc, load_briefing)
