@@ -85,7 +85,12 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
         expected_workflow_version: Positive,
         idempotency_key: Key,
     ) -> ArtifactBinding:
-        """Bind the executor's registered GitHub PR to an exact contract generation."""
+        """Bind the executor's registered GitHub PR to an exact contract generation.
+
+        `expected_workflow_version` is `view.assessment.assessment_version` from
+        `brain_delivery_get`. It advances on every observer poll, so read the view
+        and bind back to back; on `revision_conflict` re-read the view and retry.
+        """
         return await delivery_svc.bind_pr(
             UUID(ticket_id),
             actor_project=actor_project,
@@ -154,6 +159,10 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
 
         Brain fences claim mutations with the epoch. The external orchestrator
         must fence its own execution; claim expiry never stops an agent.
+        `expected_workflow_version` is `view.assessment.assessment_version` and
+        `expected_assessment_id` is `view.assessment.assessment_id`; both advance
+        on every observer poll, so on `revision_conflict` re-read the view and
+        retry rather than reuse a minute-old read.
         """
         return await delivery_svc.claim(
             UUID(ticket_id),

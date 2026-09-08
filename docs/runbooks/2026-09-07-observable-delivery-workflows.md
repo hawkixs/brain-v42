@@ -1840,11 +1840,14 @@ Run the canary in this order:
    `brain_ticket_transition(action='resolve', author_project='brain-v42', ...)`;
    it must fail with the documented delivery guard, and a read must show the
    ticket still open.
-5. Read `brain_delivery_get`, then call `brain_delivery_bind_pr` with the returned
-   `expected_revision`, current assessment `expected_workflow_version`,
-   `repository_id=1337360966`, PR number, `deliverable_key='canary-docs'`,
-   `actor_project='brain-v42'`, the full ticket UUID, and a stable idempotency
-   key. Do not call `brain_delivery_refresh`; let the observer poll autonomously.
+5. Read `brain_delivery_get`, then call `brain_delivery_bind_pr` at once with the
+   returned `expected_revision`, `view.assessment.assessment_version` as
+   `expected_workflow_version`, `repository_id=1337360966`, PR number,
+   `deliverable_key='canary-docs'`, `actor_project='brain-v42'`, the full ticket
+   UUID, and a stable idempotency key. That version advances on every observer
+   poll; a `revision_conflict` here means the read is stale, so read the view
+   again and retry immediately. Do not call `brain_delivery_refresh`; let the
+   observer poll autonomously.
 6. After the first successful observation, run verifier phase `observed` and
    retain its JSON as the only proof of H1. The current view alone cannot prove
    an older head later.
