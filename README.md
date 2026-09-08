@@ -20,6 +20,8 @@ consolidated every night by an agent pipeline.
   killswitches that all ship closed.
 - **Multi-project** — per-project focus with compare-and-swap revisions, roadmaps,
   cross-project tickets.
+- **Observable delivery** — versioned delivery contracts bind addressed work to a
+  pull request, persisted CI evidence, integration, and policy-governed fulfillment.
 
 ## Architecture
 
@@ -162,6 +164,40 @@ visible, and every other tool is reached through two gateways — `brain_find_to
 to discover, `brain_call_tool` to invoke. Set `BRAIN_MCP_PROFILE=native` to expose
 every tool directly.
 
+## Observable delivery
+
+One delivery path is `contract → PR binding → persisted PR/CI observation →
+integration receipt → explicit requester acceptance`. A merge receipt proves the
+contracted revision reached its target branch. Contracts with
+`acceptance_mode=explicit` require the requester to accept the current attempt and
+delivery digest; automatic contracts can produce fulfillment without that decision.
+
+Brain stores and evaluates this evidence. It does not launch agents, choose work,
+push commits, merge pull requests, or deploy releases. External orchestrators keep
+those responsibilities. Delivery reads use persisted observations and make no
+GitHub calls. With `BRAIN_DELIVERY_ENABLED=false`, mutations pause while reads and
+the completion guard for existing contracts remain active.
+
+The observer is a separate process with separate credentials. Its dedicated
+`~/.config/brain-v42/delivery-observer.env` must be an owned, regular, non-symlink
+file with mode `0600`. It carries `BRAIN_DELIVERY_ENABLED=true`, an explicit
+`BRAIN_DELIVERY_POSTGRES_URL`, the repository registry, and either a dedicated
+GitHub token or a complete GitHub App credential set. Keep the observer's GitHub
+credentials out of the shared application environment; the application keeps its
+own existing PostgreSQL configuration. The immutable service command is:
+
+```text
+<release>/venv/bin/python -m brain_v42.delivery_observer --env-file ~/.config/brain-v42/delivery-observer.env
+```
+
+Each host release lives under
+`~/.local/share/brain-v42/releases/<full-source-sha>/` and retains the same-SHA
+source archive, wheel, lock, copied Python 3.12 environment, and hashed manifest.
+The archive supplies Dream and root scripts that the wheel does not install. Build
+and installed-wheel checks do not attest a rollout. Follow the
+[immutable delivery release and canary runbook](docs/runbooks/2026-09-07-observable-delivery-workflows.md)
+for preflight, activation, evidence capture, and compatible forward rollback.
+
 ## Sessions
 
 The user controls every session boundary: `start`, `resume`, `end` and `abandon` are
@@ -201,6 +237,9 @@ GRAPH_LEDGER_WRITE_ENABLED=false
 
 # Tool catalog profile
 BRAIN_MCP_PROFILE=compact   # compact (default) or native
+
+# Observable delivery MCP mutations; reads and existing completion guards remain active
+BRAIN_DELIVERY_ENABLED=false
 
 LOG_LEVEL=INFO
 ```
@@ -298,13 +337,14 @@ migrations, and attaches both to the GitHub release.
 
 ## Versioning
 
-- The shipped version is **0.4.0**, and it stays `0.x` on purpose: a `1.0.0` would promise
+- The shipped version is **0.5.0**, and it stays `0.x` on purpose: a `1.0.0` would promise
   a stable interface and a way back, and this project has neither yet.
-- **No lossless downgrade is promised, at any version.** Two migrations refuse their own
-  `downgrade`: **037** raises a SQL `EXCEPTION` as soon as a session capture would be lost,
-  and **039** raises unless the operator passes an explicit `-x` opt-in.
-- Rolling a schema back is therefore an operator procedure with a runbook, never a version
-  guarantee — restore from a snapshot instead.
+- **No lossless downgrade is promised, at any version.** Several migrations protect stored
+  history: **037** refuses when a session capture would be lost, **039** requires an explicit
+  operator opt-in, and **053** refuses once delivery workflow history exists.
+- Follow the release's operator runbook for recovery. For **0.5.0**, use the
+  [compatible forward rollback](docs/runbooks/2026-09-07-observable-delivery-workflows.md#compatible-forward-rollback)
+  and keep schema 053 in place.
 
 ## License
 
