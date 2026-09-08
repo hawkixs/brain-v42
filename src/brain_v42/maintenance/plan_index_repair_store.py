@@ -165,13 +165,26 @@ if TYPE_CHECKING:
 # spans THREE unapplied revisions, so the repair refuses to run against production
 # until 050, 051 and 052 are applied. That is the pin working.
 #
+# Bumped to 053 after reviewing the complete migration. 053 creates exactly eight
+# new `delivery_*` tables. Its ALTER statements add constraints only between those
+# new tables, and its sole link to the pre-053 schema is the child foreign key
+# `delivery_workflows.ticket_id -> tickets.id`. It creates no trigger and alters no
+# existing column, constraint or index.
+#
+# Measured against the repair's executable surface, 053 contains zero references to
+# `indexed_plans`, `indexed_plan_chunks`, `project_contexts` or `feature_artifacts`.
+# Its new NOT NULL columns and CHECKs therefore apply only to rows this repair never
+# reads or writes. The migration is inert for inventory, mutation and verification;
+# the strict equality fence must still advance so the repair refuses every schema it
+# has not been reviewed against.
+#
 # The review is written down even when it is short: that is the rule, and a
 # missing review reads exactly like a review that was done. Since ticket
 # 6cc34303 that rule is enforced rather than trusted:
 # `tests/unit/test_plan_index_repair_review_block.py` derives the reviewed set
 # from this block and fails if the constant below outruns it, or if a revision
 # is skipped between the first entry and the head.
-_REQUIRED_ALEMBIC_HEAD = "052"
+_REQUIRED_ALEMBIC_HEAD = "053"
 
 
 class RepairStore:
