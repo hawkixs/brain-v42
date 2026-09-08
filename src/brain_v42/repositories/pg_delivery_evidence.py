@@ -433,7 +433,15 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
                 )
         upstream_receipt_ids = tuple(
             item.receipt.id
-            for item in sorted(inputs.dependencies, key=lambda value: str(value.ticket_id))
+            for item in sorted(
+                inputs.dependencies,
+                key=lambda value: (
+                    str(value.ticket_id),
+                    value.contract_revision,
+                    value.attempt,
+                    value.milestone,
+                ),
+            )
             if item.receipt is not None
         )
         return FrozenReceiptProof(

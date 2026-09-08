@@ -633,7 +633,15 @@ def _assessment_id(
                     "disposition": item.current_disposition,
                     "receipt_id": str(item.receipt.id) if item.receipt is not None else None,
                 }
-                for item in sorted(inputs.dependencies, key=lambda value: str(value.ticket_id))
+                for item in sorted(
+                    inputs.dependencies,
+                    key=lambda value: (
+                        str(value.ticket_id),
+                        value.contract_revision,
+                        value.attempt,
+                        value.milestone,
+                    ),
+                )
             ],
             "integration_receipt": str(inputs.integration_receipt.id)
             if inputs.integration_receipt
