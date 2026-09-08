@@ -28,6 +28,7 @@ from brain_v42.mcp.dream_project_authorization import (
 
 PROJECT_KEY = "sec1b-project"
 AUDIT = DreamProjectAudit(principal="dream-codex-synth", phase="synth")
+REORG_AUDIT = DreamProjectAudit(principal="dream-codex-reorg", phase="reorg")
 DENIAL_REASONS = (
     "invalid_project_claim",
     "policy_missing",
@@ -36,6 +37,8 @@ DENIAL_REASONS = (
     "project_group_forbidden",
     "dream_run_forbidden",
     "ownership_field_forbidden",
+    "field_not_allowed_for_phase",
+    "unarchive_forbidden_for_phase",
     "invalid_reference",
     "object_not_authorized",
     "resolver_failure",
@@ -120,13 +123,14 @@ async def _authorize(
     *,
     resolver: FakeResolver | None = None,
     project_key: str = PROJECT_KEY,
+    audit: DreamProjectAudit = AUDIT,
 ):
     return await authorize_dream_project_request(
         tool_name=tool_name,
         arguments=arguments,
         project_key=project_key,
         resolver=resolver if resolver is not None else FakeResolver(),
-        audit=AUDIT,
+        audit=audit,
     )
 
 
@@ -369,6 +373,91 @@ async def test_update_rejects_ownership_fields(field_name: str) -> None:
             },
         )
     assert caught.value.reason == "ownership_field_forbidden"
+
+
+# Ticket e78409da: REORG is archive-only, and until this lot that was a prompt
+# rule past the ownership refusal. `brain_update`'s Pydantic models accept far
+# more than `tags` and `freshness_status`; the per-phase allowlist below makes
+# the server refuse the rest, by NAME, while capability enforcement is armed.
+_REORG_CONTENT_FIELDS = (
+    "topic",
+    "insight",
+    "title",
+    "description",
+    "reasoning",
+    "status",
+    "source",
+    "confidence",
+)
+
+
+@pytest.mark.parametrize("field_name", _REORG_CONTENT_FIELDS)
+@pytest.mark.asyncio
+async def test_reorg_update_rejects_every_field_outside_its_allowlist(field_name: str) -> None:
+    with pytest.raises(DreamProjectAuthorizationError) as caught:
+        await _authorize(
+            "brain_update",
+            {
+                "entity_type": "learning",
+                "entity_id": str(uuid4()),
+                "fields": {"tags": ["kept"], field_name: "rewritten"},
+            },
+            audit=REORG_AUDIT,
+        )
+    assert caught.value.reason == "field_not_allowed_for_phase"
+
+
+@pytest.mark.parametrize("value", ["fresh", "stale"])
+@pytest.mark.asyncio
+async def test_reorg_update_rejects_un_archival(value: str) -> None:
+    with pytest.raises(DreamProjectAuthorizationError) as caught:
+        await _authorize(
+            "brain_update",
+            {
+                "entity_type": "learning",
+                "entity_id": str(uuid4()),
+                "fields": {"freshness_status": value},
+            },
+            audit=REORG_AUDIT,
+        )
+    assert caught.value.reason == "unarchive_forbidden_for_phase"
+
+
+@pytest.mark.asyncio
+async def test_reorg_update_allows_tags_and_archive_only() -> None:
+    fields = {"tags": ["stale-note"], "freshness_status": "archived"}
+    result = await _authorize(
+        "brain_update",
+        {"entity_type": "learning", "entity_id": str(uuid4()), "fields": dict(fields)},
+        audit=REORG_AUDIT,
+    )
+    assert result.arguments["fields"] == fields
+
+
+@pytest.mark.asyncio
+async def test_reorg_update_ownership_refusal_still_comes_first() -> None:
+    with pytest.raises(DreamProjectAuthorizationError) as caught:
+        await _authorize(
+            "brain_update",
+            {
+                "entity_type": "learning",
+                "entity_id": str(uuid4()),
+                "fields": {"project_key": "forged", "topic": "rewritten"},
+            },
+            audit=REORG_AUDIT,
+        )
+    assert caught.value.reason == "ownership_field_forbidden"
+
+
+@pytest.mark.asyncio
+async def test_non_reorg_phase_update_keeps_content_fields_writable() -> None:
+    fields = {"topic": "renamed", "freshness_status": "fresh"}
+    result = await _authorize(
+        "brain_update",
+        {"entity_type": "learning", "entity_id": str(uuid4()), "fields": dict(fields)},
+        audit=AUDIT,
+    )
+    assert result.arguments["fields"] == fields
 
 
 @pytest.mark.asyncio

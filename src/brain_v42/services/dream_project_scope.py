@@ -11,7 +11,7 @@ from collections import defaultdict
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, Never, Protocol
 from uuid import UUID
@@ -54,6 +54,29 @@ class DreamTypedReferenceRule:
 
 
 @dataclass(frozen=True, slots=True)
+class DreamUpdateFieldRule:
+    """Per-phase bound on the `fields` one scoped `brain_update` may carry.
+
+    Ticket e78409da: REORG is archive-only, and past the ownership refusal that
+    was a prompt rule -- the same call could still rewrite `topic`/`insight`,
+    `status`/`description`/`reasoning`, or set `freshness_status` back to
+    `"fresh"`/`"stale"`. This rule names the only fields a phase may touch and,
+    when set, the only `freshness_status` values it may write. Refused by NAME,
+    whole-call, before the handler runs -- like the ownership fields.
+    """
+
+    allowed_fields: frozenset[str]
+    allowed_freshness_status: frozenset[str] | None = None
+
+
+_NO_UPDATE_FIELD_RULES: Mapping[str, DreamUpdateFieldRule] = MappingProxyType({})
+_REORG_UPDATE_FIELD_RULE = DreamUpdateFieldRule(
+    allowed_fields=frozenset(("tags", "freshness_status")),
+    allowed_freshness_status=frozenset(("archived",)),
+)
+
+
+@dataclass(frozen=True, slots=True)
 class DreamProjectToolPolicy:
     """Immutable request-shape policy for one phase-exposed tool."""
 
@@ -63,6 +86,9 @@ class DreamProjectToolPolicy:
     nested_reference_arguments: tuple[str, ...] = ()
     forbid_dream_run_id: bool = False
     reject_update_ownership_fields: bool = False
+    phase_update_field_rules: Mapping[str, DreamUpdateFieldRule] = field(
+        default_factory=lambda: _NO_UPDATE_FIELD_RULES
+    )
 
 
 _DYNAMIC_RESOURCE = DreamTypedReferenceRule(
@@ -131,6 +157,7 @@ PROJECT_TOOL_POLICIES: Mapping[str, DreamProjectToolPolicy] = MappingProxyType(
             typed_references=(_DYNAMIC_RESOURCE,),
             nested_reference_arguments=("related_to",),
             reject_update_ownership_fields=True,
+            phase_update_field_rules=MappingProxyType({"reorg": _REORG_UPDATE_FIELD_RULE}),
         ),
     }
 )
@@ -461,6 +488,35 @@ async def authorize_dream_project_request(
                 project_key=canonical_project,
                 tool_name=tool_name,
             )
+    update_rule = policy.phase_update_field_rules.get(audit.phase)
+    if update_rule is not None:
+        fields = copied_arguments.get("fields")
+        if not isinstance(fields, Mapping):
+            _deny(
+                reason="invalid_reference",
+                audit=audit,
+                project_key=canonical_project,
+                tool_name=tool_name,
+            )
+        if not update_rule.allowed_fields.issuperset(fields):
+            _deny(
+                reason="field_not_allowed_for_phase",
+                audit=audit,
+                project_key=canonical_project,
+                tool_name=tool_name,
+            )
+        if update_rule.allowed_freshness_status is not None and "freshness_status" in fields:
+            requested = fields["freshness_status"]
+            if (
+                not isinstance(requested, str)
+                or requested not in update_rule.allowed_freshness_status
+            ):
+                _deny(
+                    reason="unarchive_forbidden_for_phase",
+                    audit=audit,
+                    project_key=canonical_project,
+                    tool_name=tool_name,
+                )
 
     typed = _extract_typed_references(copied_arguments, policy.typed_references)
     generic = _extract_generic_references(copied_arguments, policy.generic_reference_arguments)
