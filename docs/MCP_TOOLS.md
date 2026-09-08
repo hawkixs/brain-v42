@@ -108,9 +108,13 @@ PRs and claims executor work; either ticket participant can read or refresh.
 Acceptance records the normalized `X-Brain-Agent` caller label and refuses an
 unknown caller. The header is declared provenance within the admin boundary.
 
-Use `view.assessment.assessment_version` for `expected_workflow_version` and
-`view.assessment.assessment_id` for the claim comparison. Re-read after a conflict;
-do not reuse a claim acquired for an obsolete assessment. Work kinds are
+`expected_workflow_version` is `view.assessment.assessment_version` and the claim
+comparison uses `view.assessment.assessment_id`. That version is the workflow's
+row version, and it advances on every observer poll — about every 60 seconds by
+default (`BRAIN_DELIVERY_POLL_SECONDS`) — even when the poll changed nothing, so a
+minute-old read is already stale: read the view and call `brain_delivery_bind_pr`
+or `brain_delivery_claim` back to back, and on `revision_conflict` re-read the view and retry.
+Do not reuse a claim acquired for an obsolete assessment. Work kinds are
 `implement`, `repair`, `review`, `integrate` and `accept`. Claim TTL is 60–3600
 seconds. Only acquisition returns the raw token; renew/release require its exact
 owner and epoch, and reads/history never expose it. An expired claim does not
