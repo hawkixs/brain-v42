@@ -673,11 +673,9 @@ def _fresh(view: DeliveryView, scope: CanaryScope, now: datetime) -> BindingEvid
         or not _aware_at_or_before(confirmation.collection_started_at, now)
         or not _aware_at_or_before(confirmation.collection_finished_at, now)
         or confirmation.collection_finished_at < confirmation.collection_started_at
-        or not (
-            confirmation.collection_started_at
-            <= evidence.collected_at
-            <= confirmation.collection_finished_at
-        )
+        # A deduplicated snapshot retains its first collection timestamp. The
+        # current successful confirmation, checked above, carries its freshness.
+        or evidence.collected_at > confirmation.collection_finished_at
         or assessment.assessed_at < max(observation_times)
         # The shared evaluator uses the oldest required observation, which may
         # be a pinned repository context collected before the latest PR poll.
