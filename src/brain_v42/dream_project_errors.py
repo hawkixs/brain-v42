@@ -14,6 +14,8 @@ type DreamProjectDenialReason = Literal[
     "project_group_forbidden",
     "dream_run_forbidden",
     "ownership_field_forbidden",
+    "field_not_allowed_for_phase",
+    "unarchive_forbidden_for_phase",
     "invalid_reference",
     "object_not_authorized",
     "resolver_failure",
