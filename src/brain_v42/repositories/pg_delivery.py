@@ -1156,9 +1156,18 @@ async def _validate_dependencies(
         frontier = set(
             (
                 await session.execute(
-                    sa.select(delivery_dependencies.c.upstream_ticket_id).where(
-                        delivery_dependencies.c.ticket_id.in_(frontier)
+                    # Historical revision edges remain immutable, but only the
+                    # current contracts constrain a new dependency graph edit.
+                    sa.select(delivery_dependencies.c.upstream_ticket_id)
+                    .join(
+                        delivery_workflows,
+                        sa.and_(
+                            delivery_workflows.c.ticket_id == delivery_dependencies.c.ticket_id,
+                            delivery_workflows.c.current_revision
+                            == delivery_dependencies.c.contract_revision,
+                        ),
                     )
+                    .where(delivery_dependencies.c.ticket_id.in_(frontier))
                 )
             ).scalars()
         )
