@@ -29,10 +29,12 @@ Two kinds of assertion:
 - Prose-anchored: the section names itself archive-only, restates the two
   allowed mutations, and names the tools/fields it says are unreachable.
 - Enforcement-provenance: the section must say `ownership_field_forbidden` and
-  `tool_not_allowed_for_phase` for what the server does refuse, and must
-  contain the literal phrase "prompt rule, not enforced by `reorg_validate.py`"
-  for what it does not -- so a future edit cannot quietly upgrade a prompt-only
-  rule to a claimed guarantee without this test reddening.
+  `tool_not_allowed_for_phase` for what the server refuses by tool and by
+  ownership field, and -- since ticket e78409da -- `field_not_allowed_for_phase`
+  and `unarchive_forbidden_for_phase` for the per-phase field rule that closed
+  the last prompt-only claim. The allowed field names and the only allowed
+  `freshness_status` value are read from the server policy, so the prose
+  cannot drift from the code without this test reddening.
 """
 
 from __future__ import annotations
@@ -44,7 +46,7 @@ import pytest
 
 from brain_v42.config import Settings
 from brain_v42.mcp.dream_capabilities import DREAM_PHASE_TOOL_ALLOWLISTS
-from brain_v42.services.dream_project_scope import _OWNERSHIP_FIELDS
+from brain_v42.services.dream_project_scope import _OWNERSHIP_FIELDS, PROJECT_TOOL_POLICIES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PHASE_REORG_PROMPT = REPO_ROOT / "scripts" / "dream" / "phase_reorg.md"
@@ -128,15 +130,40 @@ def test_guard_section_names_ownership_field_refusal() -> None:
         )
 
 
-def test_guard_section_flags_the_field_and_unarchive_restriction_as_prompt_only() -> None:
-    """The one claim the code does NOT back must say so, verbatim."""
+def test_guard_section_states_the_field_and_unarchive_restriction_is_enforced() -> None:
+    """Ticket e78409da: the one claim the code did NOT back is now a server refusal.
+
+    The prose must stop calling the tags/freshness_status restriction a prompt
+    rule, must name both denial reasons the policy raises, must keep the
+    enforcement qualifier, and must name exactly the fields and the only
+    `freshness_status` value the server policy allows -- read from the code.
+    """
     section = _guard_section()
-    assert "prompt rule, not enforced by `reorg_validate.py`" in section, (
-        f"phase_reorg.md's '{HEADING}' section must say the restriction to "
-        "tags/freshness_status, and the ban on un-archiving, is a prompt rule "
-        "not enforced by reorg_validate.py -- nothing server-side stops "
-        "`brain_update` from writing `topic`, `insight`, `status`, or "
-        '`freshness_status="fresh"`/`"stale"` in this phase.'
+    assert "prompt rule, not enforced by `reorg_validate.py`" not in section, (
+        f"phase_reorg.md's '{HEADING}' section still calls the restriction to "
+        "tags/freshness_status a prompt rule -- the server refuses it by name "
+        "since ticket e78409da."
+    )
+    for reason in ("field_not_allowed_for_phase", "unarchive_forbidden_for_phase"):
+        assert reason in section, (
+            f"phase_reorg.md's '{HEADING}' section does not name the "
+            f"`{reason}` refusal reason the brain_update project policy raises "
+            "for a reorg-scoped principal."
+        )
+    assert "enforced while capability enforcement is armed" in section, (
+        f"phase_reorg.md's '{HEADING}' section must say the field rule is "
+        "enforced while capability enforcement is armed -- it is conditional "
+        "on the same middleware as the other two refusals."
+    )
+    rule = PROJECT_TOOL_POLICIES["brain_update"].phase_update_field_rules["reorg"]
+    for field in sorted(rule.allowed_fields):
+        assert f"`{field}`" in section, (
+            f"phase_reorg.md's '{HEADING}' section does not name `{field}`, one "
+            "of the only fields the reorg brain_update rule allows."
+        )
+    assert rule.allowed_freshness_status == frozenset({"archived"}), (
+        "the reorg rule allows a freshness_status other than archived -- the "
+        "archive-only guard section would be false."
     )
 
 
