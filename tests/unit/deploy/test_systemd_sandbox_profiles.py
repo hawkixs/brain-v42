@@ -106,6 +106,7 @@ REDUCED_PROFILE = (
 
 EXPECTED_PROFILES = {
     "brain-v42-automation.service.tmpl": STRONG_INTEGRITY_PROFILE,
+    "brain-v42-delivery-observer.service.tmpl": STRONG_INTEGRITY_PROFILE,
     "brain-v42-graph-recon.service.tmpl": STRONG_INTEGRITY_PROFILE,
     "brain-v42-model-liveness.service.tmpl": STRONG_INTEGRITY_PROFILE,
     "brain-mcp-http.service.tmpl": MCP_HTTP_PROFILE,
