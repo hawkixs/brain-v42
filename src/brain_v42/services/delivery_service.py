@@ -219,6 +219,10 @@ class DeliveryService:
                 )
                 if replay is not None:
                     return _contract_from_json(replay)
+                if expected_revision == 0 and ticket["status"] not in {"open", "in_progress"}:
+                    raise DeliveryError(
+                        "ticket_not_contractable", "only active request tickets may hold a contract"
+                    )
                 pinned_context = await self._repo.resolve_context_references(
                     session, unresolved_context
                 )

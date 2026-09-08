@@ -267,6 +267,10 @@ class PgDeliveryRepo(BasePgRepository):
                     raise DeliveryError(
                         "not_allowed", "only the requester may set a delivery contract"
                     )
+                if expected_revision == 0 and ticket["status"] not in {"open", "in_progress"}:
+                    raise DeliveryError(
+                        "ticket_not_contractable", "only active request tickets may hold a contract"
+                    )
                 await _validate_dependencies(sess, contract, actor_project)
                 current = (
                     (
