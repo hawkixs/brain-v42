@@ -76,6 +76,8 @@ class DeliveryService:
         epoch: int,
         ttl_seconds: int = 900,
     ) -> ClaimState:
+        if not self._settings.enabled:
+            raise DeliveryError("delivery_disabled", "delivery workflow operations are disabled")
         async with self._repo._maybe_session(None, write=True) as session:
             return await self._claims_repo.renew(
                 session,
@@ -97,6 +99,8 @@ class DeliveryService:
         claim_token: str,
         epoch: int,
     ) -> ClaimState:
+        if not self._settings.enabled:
+            raise DeliveryError("delivery_disabled", "delivery workflow operations are disabled")
         async with self._repo._maybe_session(None, write=True) as session:
             return await self._claims_repo.release(
                 session,
@@ -367,6 +371,8 @@ class DeliveryService:
         )
 
     async def refresh(self, ticket_id: UUID, *, actor_project: str) -> DeliveryView:
+        if not self._settings.enabled:
+            raise DeliveryError("delivery_disabled", "delivery workflow operations are disabled")
         await self.get(ticket_id, actor_project=actor_project)
         await self._repo.refresh(ticket_id)
         return await self.get(ticket_id, actor_project=actor_project)

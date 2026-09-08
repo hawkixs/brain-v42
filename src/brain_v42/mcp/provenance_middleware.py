@@ -154,8 +154,9 @@ class ProvenanceMiddleware(Middleware):
                 user_agent=user_agent,
                 tool=getattr(getattr(context, "message", None), "name", None),
             )
-        except Exception:
-            logger.debug("provenance.unidentified_probe_failed", exc_info=True)
+        except Exception as exc:
+            # Exception traces can retain raw MCP arguments, including claim tokens.
+            logger.debug("provenance.unidentified_probe_failed", error_type=type(exc).__name__)
 
     def _report(self, actor: str, session: str | None, transport: str | None = None) -> None:
         """Report the call to the metrics sidecar, bounded fire-and-forget.
@@ -176,5 +177,5 @@ class ProvenanceMiddleware(Middleware):
             return
         try:
             reporter.report(actor, session, transport)
-        except Exception:
-            logger.warning("activity_reporter.report_failed", exc_info=True)
+        except Exception as exc:
+            logger.warning("activity_reporter.report_failed", error_type=type(exc).__name__)

@@ -1091,6 +1091,13 @@ class DeliveryView(_StrictModel):
     history: DeliveryHistoryPage | None = None
 
 
+class DeliveryRefreshResult(_StrictModel):
+    """Observation was queued; the returned view describes persisted facts only."""
+
+    status: Literal["queued"] = "queued"
+    view: DeliveryView
+
+
 class DeliveryPage(_StrictModel):
     """Concrete stable page of delivery views."""
 
