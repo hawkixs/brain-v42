@@ -994,7 +994,7 @@ async def _run(
     clock: Callable[[], datetime] | None = None,
 ) -> dict[str, object]:
     time_source = clock or (lambda: datetime.now(UTC))
-    preflight = _deployment_canary(config.deployment_config)
+    preflight = await asyncio.to_thread(_deployment_canary, config.deployment_config)
     raw = await _read_view(config)
     brain_observed_at = time_source()
     if brain_observed_at.utcoffset() is None:

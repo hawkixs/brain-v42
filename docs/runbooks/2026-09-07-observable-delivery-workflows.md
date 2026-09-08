@@ -75,6 +75,47 @@ install -d -m 0700 "$EVIDENCE_DIR"
 readonly VERSION SOURCE_SHA BUILD_PYTHON WINDOW_ID RELEASE_PARENT RELEASE PRIVATE_CONFIG \
   CANONICAL_ENV OBSERVER_ENV MCP_DELIVERY_ENV PREFLIGHT_CONFIG CANARY_PREFLIGHT_CONFIG \
   USER_UNIT_DIR EVIDENCE_DIR
+
+wait_for_mcp_health() {
+  local output="$1"
+  local output_dir
+  local temporary
+  local attempt
+  case "$output" in
+    (/*/*) output_dir="${output%/*}" ;;
+    (/*) output_dir=/ ;;
+    (*) return 2 ;;
+  esac
+  test -d "$output_dir" && test ! -L "$output_dir" || return 1
+  if test -e "$output" || test -L "$output"; then
+    test -f "$output" && test ! -L "$output" || return 1
+  fi
+  temporary="$(mktemp "$output_dir/.mcp-health.XXXXXX")" || return 1
+  if ! chmod 0600 "$temporary"; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+  for attempt in 1 2 3 4 5; do
+    if curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8765/health \
+      --output "$temporary"; then
+      if test -e "$output" || test -L "$output"; then
+        if ! test -f "$output" || test -L "$output"; then
+          rm -f -- "$temporary"
+          return 1
+        fi
+      fi
+      if mv -f -- "$temporary" "$output"; then
+        return 0
+      fi
+      rm -f -- "$temporary"
+      return 1
+    fi
+    sleep 1
+  done
+  rm -f -- "$temporary"
+  return 1
+}
+readonly -f wait_for_mcp_health
 ```
 
 The release layout is:
@@ -210,7 +251,7 @@ to the same bytes in the source archive and maps every retained `scripts/` file
 plus `.mcp.json` to the extracted source tree.
 
 ```bash
-RELEASE="$RELEASE" SOURCE_SHA="$SOURCE_SHA" VERSION="$VERSION" \
+env RELEASE="$RELEASE" SOURCE_SHA="$SOURCE_SHA" VERSION="$VERSION" \
   "$RELEASE/venv/bin/python" -I - <<'PY'
 import hashlib
 import json
@@ -310,7 +351,7 @@ service and proves no production process.
 SMOKE_DIR="$(mktemp -d)"
 (
   cd "$SMOKE_DIR"
-  RELEASE="$RELEASE" "$RELEASE/venv/bin/python" -I - <<'PY'
+  env RELEASE="$RELEASE" "$RELEASE/venv/bin/python" -I - <<'PY'
 import importlib.metadata
 import os
 from pathlib import Path
@@ -548,8 +589,8 @@ unset BRAIN_DELIVERY_OBSERVER_PYTHON BRAIN_DELIVERY_OBSERVER_ENV_FILE
 Create one release drop-in for each writer. Set `PATH_TAIL` to the reviewed,
 literal absolute path suffix required by the existing services; it must retain
 the existing non-Python commands used by Dream. Preserve the reaper's measured
-`--max-age-hours` value. Do not use `UnsetEnvironment`: the preflight rejects
-controlled names in either form.
+`--max-age-hours` value and its measured home working directory. Do not use
+`UnsetEnvironment`: the preflight rejects controlled names in either form.
 
 ```bash
 PATH_TAIL='<reviewed absolute PATH suffix, without the release venv prefix>'
@@ -566,6 +607,8 @@ reaper_age = os.environ["REAPER_MAX_AGE_HOURS"]
 assert release.is_absolute() and re.fullmatch(r"/[A-Za-z0-9._/-]+", str(release))
 assert re.fullmatch(r"/[A-Za-z0-9._/-]+(?::/[A-Za-z0-9._/-]+)*", path_tail)
 assert re.fullmatch(r"[1-9][0-9]*", reaper_age)
+reaper_working_directory = Path.home()
+assert reaper_working_directory == Path("/home/hawixs")
 
 python = release / "venv/bin/python"
 commands = {
@@ -609,6 +652,8 @@ for unit in all_units:
         )
     else:
         lines.append("Environment=PYTHONPATH=")
+    if unit == "brain-mcp-reaper.service":
+        lines.append(f"WorkingDirectory={reaper_working_directory}")
     directory = stage / f"{unit}.d"
     directory.mkdir(mode=0o700)
     target = directory / "90-immutable-release.conf"
@@ -824,11 +869,12 @@ archive preserves owners and ACLs; `--no-owner` and `--no-acl` are forbidden.
 BACKUP="$RECOVERY_DIR/brain-v42-pre053-$SOURCE_SHA.dump"
 GLOBALS="$RECOVERY_DIR/brain-v42-pre053-$SOURCE_SHA.globals.sql"
 BACKUP_TOC="$RECOVERY_DIR/brain-v42-pre053-$SOURCE_SHA.toc"
+BACKUP_SCHEMA="$RECOVERY_DIR/brain-v42-pre053-$SOURCE_SHA.schema.sql"
 
 docker exec "$PG_CONTAINER" pg_dumpall \
   -U "$PG_USER" --database="$PG_DATABASE" --globals-only > "$GLOBALS"
 docker exec "$PG_CONTAINER" pg_dump \
-  -U "$PG_USER" --dbname="$PG_DATABASE" --format=custom --create > "$BACKUP"
+  -U "$PG_USER" --dbname="$PG_DATABASE" --format=custom > "$BACKUP"
 
 LIVE_HEAD_AFTER="$(docker exec "$PG_CONTAINER" psql -X -U "$PG_USER" -d "$PG_DATABASE" -Atq -v ON_ERROR_STOP=1 -c 'SELECT version_num FROM public.alembic_version;')"
 test "$LIVE_HEAD_AFTER" = 052
@@ -838,7 +884,13 @@ test "$(stat -c '%u:%a' "$GLOBALS")" = "$(id -u):600"
 test "$(stat -c '%u:%a' "$BACKUP")" = "$(id -u):600"
 docker exec -i "$PG_CONTAINER" pg_restore --list < "$BACKUP" > "$BACKUP_TOC"
 test -s "$BACKUP_TOC"
-grep -Eq '[[:space:]]DATABASE[[:space:]]+-[[:space:]]+brain[[:space:]]+brain$' "$BACKUP_TOC"
+test ! -e "$BACKUP_SCHEMA" && test ! -L "$BACKUP_SCHEMA"
+docker exec -i "$PG_CONTAINER" pg_restore --create --schema-only --file=- < "$BACKUP" \
+  > "$BACKUP_SCHEMA"
+test -s "$BACKUP_SCHEMA"
+test "$(stat -c '%u:%a' "$BACKUP_SCHEMA")" = "$(id -u):600"
+test "$(grep -Ec '^CREATE DATABASE brain([[:space:]]|;)' "$BACKUP_SCHEMA")" = 1
+test "$(grep -Ec '^ALTER DATABASE brain OWNER TO brain;$' "$BACKUP_SCHEMA")" = 1
 grep -Eq '^CREATE ROLE brain;$' "$GLOBALS"
 grep -Eq '^CREATE ROLE codex_ro;$' "$GLOBALS"
 
@@ -918,11 +970,11 @@ case "$RESTORE_CID" in (????????????????????????????????????????????????????????
 
 docker inspect "$RESTORE_CID" | jq -e \
   --arg cid "$RESTORE_CID" --arg image "$RESTORE_IMAGE" \
-  --arg label "$RESTORE_LABEL" --arg token "$RESTORE_TOKEN" '
+  --arg label_key "$RESTORE_LABEL" --arg token "$RESTORE_TOKEN" '
     length == 1
     and .[0].Id == $cid
     and .[0].Image == $image
-    and .[0].Config.Labels[$label] == $token
+    and .[0].Config.Labels[$label_key] == $token
     and .[0].HostConfig.NetworkMode == "bridge"
     and ((.[0].HostConfig.PortBindings // {}) | length) == 0
     and ((.[0].HostConfig.Binds // []) | length) == 0
@@ -1071,8 +1123,8 @@ RESTORE_HOST="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.I
 case "$RESTORE_HOST" in (*[!0-9.]*|'') exit 2 ;; esac
 test "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$RESTORE_CID")" = bridge
 RESTORE_DSN_FILE="$RECOVERY_DIR/disposable-brain-postgres-url"
-OBSERVER_ENV="$OBSERVER_ENV" RESTORE_HOST="$RESTORE_HOST" \
-RESTORE_DSN_FILE="$RESTORE_DSN_FILE" "$RELEASE_PYTHON" -I - <<'PY'
+env OBSERVER_ENV="$OBSERVER_ENV" RESTORE_HOST="$RESTORE_HOST" \
+  RESTORE_DSN_FILE="$RESTORE_DSN_FILE" "$RELEASE_PYTHON" -I - <<'PY'
 import os
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
@@ -1111,7 +1163,7 @@ async def main() -> None:
         row = await connection.fetchrow(
             """SELECT current_user AS role,
                       current_database() AS database,
-                      inet_server_addr()::text AS host,
+                      host(inet_server_addr()) AS host,
                       inet_server_port() AS port,
                       (SELECT version_num FROM public.alembic_version) AS head"""
         )
@@ -1435,8 +1487,7 @@ systemctl --user daemon-reload
 systemctl --user start brain-mcp-http.service brain-metrics.service
 systemctl --user is-active --quiet brain-mcp-http.service
 systemctl --user is-active --quiet brain-metrics.service
-curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8765/health \
-  > "$EVIDENCE_DIR/mcp-health-dormant.json"
+wait_for_mcp_health "$EVIDENCE_DIR/mcp-health-dormant.json"
 ```
 
 Run a fresh dormant preflight against the effective merged systemd configuration,
@@ -1496,14 +1547,13 @@ chmod 0600 "$MCP_DELIVERY_NEXT"
 mv -f -- "$MCP_DELIVERY_NEXT" "$MCP_DELIVERY_ENV"
 systemctl --user restart brain-mcp-http.service
 systemctl --user is-active --quiet brain-mcp-http.service
-curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8765/health \
-  > "$EVIDENCE_DIR/mcp-health-enabled.json"
+wait_for_mcp_health "$EVIDENCE_DIR/mcp-health-enabled.json"
 systemctl --user start brain-v42-delivery-observer.service
 systemctl --user is-active --quiet brain-v42-delivery-observer.service
 
-PREFLIGHT_CONFIG="$PREFLIGHT_CONFIG" \
-CANARY_PREFLIGHT_CONFIG="$CANARY_PREFLIGHT_CONFIG" \
-CANARY_PR="$CANARY_PR" "$RELEASE/venv/bin/python" -I - <<'PY'
+env PREFLIGHT_CONFIG="$PREFLIGHT_CONFIG" \
+  CANARY_PREFLIGHT_CONFIG="$CANARY_PREFLIGHT_CONFIG" \
+  CANARY_PR="$CANARY_PR" "$RELEASE/venv/bin/python" -I - <<'PY'
 import json
 import os
 from pathlib import Path
@@ -1527,6 +1577,8 @@ PY
 jq -e --arg sha "$SOURCE_SHA" \
   '.status == "ok" and .source_sha == $sha and .schema_revision == "053"' \
   "$EVIDENCE_DIR/deployment-preflight-canary.json" >/dev/null
+systemctl --user enable brain-v42-delivery-observer.service
+systemctl --user is-enabled --quiet brain-v42-delivery-observer.service
 ```
 
 ## Documentation-only delivery canary
@@ -1957,8 +2009,7 @@ systemd-analyze --user verify "$observer_unit"
 systemctl --user start brain-mcp-http.service brain-metrics.service
 systemctl --user is-active --quiet brain-mcp-http.service
 systemctl --user is-active --quiet brain-metrics.service
-curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8765/health \
-  > "$EVIDENCE_DIR/mcp-health-forward-rollback.json"
+wait_for_mcp_health "$EVIDENCE_DIR/mcp-health-forward-rollback.json"
 "$ROLLBACK_RELEASE/venv/bin/python" \
   "$ROLLBACK_RELEASE/brain-v42/scripts/check_delivery_deployment.py" \
   --config "$ROLLBACK_PREFLIGHT" \
