@@ -32,12 +32,29 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator, Iterator
+from uuid import UUID
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.pool import NullPool
 
+from brain_v42.db.tables import (
+    delivery_artifact_bindings,
+    delivery_confirmations,
+    delivery_contract_revisions,
+    delivery_dependencies,
+    delivery_events,
+    delivery_receipts,
+    delivery_snapshots,
+    delivery_workflows,
+)
 from tests.integration.conftest import _get_integration_db_url_or_skip
 from tests.integration.disposable_db import fresh_head_database
 
@@ -99,3 +116,164 @@ async def engine(migration_database_url: str) -> AsyncIterator[AsyncEngine]:
     disposable_engine = create_async_engine(migration_database_url, poolclass=NullPool, echo=False)
     yield disposable_engine
     await disposable_engine.dispose()
+
+
+async def _delivery_workflow_ticket_ids(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> frozenset[UUID]:
+    async with session_factory() as session:
+        ticket_ids = await session.scalars(sa.select(delivery_workflows.c.ticket_id))
+        return frozenset(ticket_ids)
+
+
+async def _delete_delivery_workflow_graphs(
+    session_factory: async_sessionmaker[AsyncSession],
+    ticket_ids: frozenset[UUID],
+) -> None:
+    """Delete only the workflow graphs explicitly owned by one delivery test."""
+    if not ticket_ids:
+        return
+
+    owned_ticket_ids = tuple(ticket_ids)
+    async with session_factory() as session:
+        async with session.begin():
+            binding_ids = tuple(
+                await session.scalars(
+                    sa.select(delivery_artifact_bindings.c.id).where(
+                        delivery_artifact_bindings.c.ticket_id.in_(owned_ticket_ids)
+                    )
+                )
+            )
+            evidence_owner = delivery_snapshots.c.ticket_id.in_(owned_ticket_ids)
+            confirmation_owner = delivery_confirmations.c.ticket_id.in_(owned_ticket_ids)
+            if binding_ids:
+                evidence_owner = sa.or_(
+                    evidence_owner,
+                    delivery_snapshots.c.binding_id.in_(binding_ids),
+                )
+                confirmation_owner = sa.or_(
+                    confirmation_owner,
+                    delivery_confirmations.c.binding_id.in_(binding_ids),
+                )
+
+            await session.execute(
+                delivery_workflows.update()
+                .where(delivery_workflows.c.ticket_id.in_(owned_ticket_ids))
+                .values(
+                    latest_context_success_confirmation_id=None,
+                    latest_context_attempt_confirmation_id=None,
+                )
+            )
+            await session.execute(
+                delivery_artifact_bindings.update()
+                .where(delivery_artifact_bindings.c.ticket_id.in_(owned_ticket_ids))
+                .values(
+                    latest_success_confirmation_id=None,
+                    latest_attempt_confirmation_id=None,
+                )
+            )
+            await session.execute(
+                delivery_receipts.delete().where(
+                    delivery_receipts.c.ticket_id.in_(owned_ticket_ids)
+                )
+            )
+            await session.execute(
+                delivery_events.delete().where(delivery_events.c.ticket_id.in_(owned_ticket_ids))
+            )
+            await session.execute(delivery_confirmations.delete().where(confirmation_owner))
+            await session.execute(delivery_snapshots.delete().where(evidence_owner))
+            await session.execute(
+                delivery_artifact_bindings.delete().where(
+                    delivery_artifact_bindings.c.ticket_id.in_(owned_ticket_ids)
+                )
+            )
+            await session.execute(
+                delivery_dependencies.delete().where(
+                    sa.or_(
+                        delivery_dependencies.c.ticket_id.in_(owned_ticket_ids),
+                        delivery_dependencies.c.upstream_ticket_id.in_(owned_ticket_ids),
+                    )
+                )
+            )
+            # The workflow and its current revision point at each other with
+            # ON DELETE RESTRICT. PostgreSQL can validate their final absence
+            # when both deletes belong to one data-modifying statement.
+            deleted_revisions = (
+                delivery_contract_revisions.delete()
+                .where(delivery_contract_revisions.c.ticket_id.in_(owned_ticket_ids))
+                .cte("deleted_delivery_contract_revisions")
+            )
+            await session.execute(
+                delivery_workflows.delete()
+                .where(delivery_workflows.c.ticket_id.in_(owned_ticket_ids))
+                .add_cte(deleted_revisions)
+            )
+
+    residue_filters = {
+        "delivery_workflows": (
+            delivery_workflows,
+            delivery_workflows.c.ticket_id.in_(owned_ticket_ids),
+        ),
+        "delivery_contract_revisions": (
+            delivery_contract_revisions,
+            delivery_contract_revisions.c.ticket_id.in_(owned_ticket_ids),
+        ),
+        "delivery_dependencies": (
+            delivery_dependencies,
+            sa.or_(
+                delivery_dependencies.c.ticket_id.in_(owned_ticket_ids),
+                delivery_dependencies.c.upstream_ticket_id.in_(owned_ticket_ids),
+            ),
+        ),
+        "delivery_artifact_bindings": (
+            delivery_artifact_bindings,
+            delivery_artifact_bindings.c.ticket_id.in_(owned_ticket_ids),
+        ),
+        "delivery_snapshots": (delivery_snapshots, evidence_owner),
+        "delivery_confirmations": (delivery_confirmations, confirmation_owner),
+        "delivery_receipts": (
+            delivery_receipts,
+            delivery_receipts.c.ticket_id.in_(owned_ticket_ids),
+        ),
+        "delivery_events": (
+            delivery_events,
+            delivery_events.c.ticket_id.in_(owned_ticket_ids),
+        ),
+    }
+    async with session_factory() as session:
+        residue = {
+            name: count
+            for name, (table, owner_filter) in residue_filters.items()
+            if (
+                count := await session.scalar(
+                    sa.select(sa.func.count()).select_from(table).where(owner_filter)
+                )
+            )
+        }
+    assert not residue, f"delivery test cleanup left owned rows: {residue}"
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _isolate_delivery_workflow_history(
+    request: pytest.FixtureRequest,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> AsyncIterator[None]:
+    """Remove history owned by delivery tests while preserving prior rows.
+
+    Migration modules intentionally remove the delivery tables themselves, so
+    their teardown must never issue delivery-table queries. Delivery tests use
+    the stable ``test_delivery_*`` inventory boundary.
+    """
+    if not request.path.name.startswith("test_delivery_"):
+        yield
+        return
+
+    prior_ticket_ids = await _delivery_workflow_ticket_ids(session_factory)
+    try:
+        yield
+    finally:
+        current_ticket_ids = await _delivery_workflow_ticket_ids(session_factory)
+        await _delete_delivery_workflow_graphs(
+            session_factory,
+            current_ticket_ids - prior_ticket_ids,
+        )
