@@ -662,6 +662,83 @@ async def test_each_phase_reruns_preflight_and_positive_phases_collect_github(
 
 
 @pytest.mark.asyncio
+async def test_run_executes_sync_preflight_checker_outside_its_event_loop(
+    canary: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    deployment = _private(
+        tmp_path / "deployment.json",
+        json.dumps(
+            {
+                "mode": "canary",
+                "observer_env_file": str(tmp_path / "observer.env"),
+                "writers": {"brain-v42-delivery-observer.service": {"must_be_active": True}},
+            }
+        ),
+    )
+    token = _private(tmp_path / "mcp.token", "fixture")
+    config = _canary_config(canary, token, "http://127.0.0.1:1/mcp", tmp_path)
+    calls = {"preflight": 0, "read": 0}
+
+    def check(_path: Path) -> dict[str, str]:
+        async def schema_probe() -> str:
+            return "053"
+
+        calls["preflight"] += 1
+        assert asyncio.run(schema_probe()) == "053"
+        return {"source_sha": "7" * 40, "schema_revision": "053"}
+
+    async def read(_config: Any) -> dict[str, Any]:
+        calls["read"] += 1
+        return _view(missing=True)
+
+    monkeypatch.setattr(canary, "_load_preflight_checker", lambda: check)
+    monkeypatch.setattr(canary, "_read_view", read)
+    result = await canary._run(config, "missing-proof", clock=lambda: NOW)
+
+    assert deployment == config.deployment_config
+    assert result["outcome"] == "expected_missing_proof"
+    assert result["source"] == "deployment_preflight_rerun"
+    assert calls == {"preflight": 1, "read": 1}
+
+
+@pytest.mark.asyncio
+async def test_run_stops_before_mcp_or_github_when_real_preflight_fails(
+    canary: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _private(
+        tmp_path / "deployment.json",
+        json.dumps(
+            {
+                "mode": "canary",
+                "observer_env_file": str(tmp_path / "observer.env"),
+                "writers": {"brain-v42-delivery-observer.service": {"must_be_active": True}},
+            }
+        ),
+    )
+    token = _private(tmp_path / "mcp.token", "fixture")
+    config = _canary_config(canary, token, "http://127.0.0.1:1/mcp", tmp_path)
+    calls = {"read": 0, "github": 0}
+
+    def check(_path: Path) -> dict[str, str]:
+        raise RuntimeError("preflight fixture failure")
+
+    async def read(_config: Any) -> dict[str, Any]:
+        calls["read"] += 1
+        return _view()
+
+    async def github(*_args: Any, **_kwargs: Any) -> PullRequestEvidence:
+        calls["github"] += 1
+        return _evidence(_view())
+
+    monkeypatch.setattr(canary, "_load_preflight_checker", lambda: check)
+    monkeypatch.setattr(canary, "_read_view", read)
+    monkeypatch.setattr(canary, "_collect_github", github)
+    with pytest.raises(canary.CanaryFailure, match="running_artifact_unverified"):
+        await canary._run(config, "observed", clock=lambda: NOW)
+    assert calls == {"read": 0, "github": 0}
+
+
+@pytest.mark.asyncio
 async def test_run_samples_time_after_brain_and_github_acquisitions(
     canary: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
