@@ -10,3 +10,7 @@ explicit requester acceptance after integration.
 
 This file does not assert production success. The dated production receipt will
 record the deployed revision, measured observations and acceptance evidence.
+
+Revision H2 provides a second immutable head for the same contract and pull
+request. Its observation must replace H1's current evidence and delivery digest
+before integration and explicit acceptance can be verified.
