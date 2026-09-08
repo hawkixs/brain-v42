@@ -39,6 +39,7 @@ from brain_v42.models.delivery import (
     ContextReference,
     ContractRevision,
     DeliveryError,
+    DeliveryListFilters,
     DeliveryPage,
     DeliveryView,
     DependencyPredicate,
@@ -56,6 +57,12 @@ from brain_v42.models.delivery import (
 from brain_v42.models.delivery_evaluator import evaluate_delivery
 from brain_v42.models.delivery_hashes import canonical_digest, delivery_digest
 from brain_v42.models.ticket import Ticket
+from brain_v42.repositories.delivery_cursor import (
+    decode_list_cursor,
+    encode_list_cursor,
+    list_scope,
+)
+from brain_v42.repositories.delivery_history import load_history
 from brain_v42.repositories.pg_base import BasePgRepository
 
 # Namespaces are fixed and distinct: graph edits must serialize independently
@@ -947,24 +954,32 @@ class PgDeliveryRepo(BasePgRepository):
         feature_enabled: bool,
         freshness_seconds: int,
         session: AsyncSession | None = None,
+        history_limit: int | None = None,
+        history_cursor: str | None = None,
+        assessed_at: datetime | None = None,
     ) -> DeliveryView | None:
-        inputs = await self.load_inputs(
-            ticket_id,
-            feature_enabled=feature_enabled,
-            freshness_seconds=freshness_seconds,
-            session=session,
-        )
-        if inputs is None:
-            return None
-        assessment = evaluate_delivery(inputs, now=datetime.now(UTC))
-        return DeliveryView(
-            contract=inputs.contract,
-            assessment=assessment,
-            bindings=inputs.active_bindings,
-            contexts=inputs.contexts,
-            integration_receipt=inputs.integration_receipt,
-            fulfillment_receipt=inputs.fulfillment_receipt,
-        )
+        async with self._maybe_session(session, write=False) as sess:
+            inputs = await self.load_inputs(
+                ticket_id,
+                feature_enabled=feature_enabled,
+                freshness_seconds=freshness_seconds,
+                session=sess,
+            )
+            if inputs is None:
+                return None
+            assessment = evaluate_delivery(inputs, now=assessed_at or datetime.now(UTC))
+            view = DeliveryView(
+                contract=inputs.contract,
+                assessment=assessment,
+                bindings=inputs.active_bindings,
+                contexts=inputs.contexts,
+                integration_receipt=inputs.integration_receipt,
+                fulfillment_receipt=inputs.fulfillment_receipt,
+            )
+            if history_limit is not None:
+                history = await load_history(sess, view, limit=history_limit, cursor=history_cursor)
+                view = view.model_copy(update={"history": history})
+            return view
 
     async def refresh(self, ticket_id: UUID, *, session: AsyncSession | None = None) -> None:
         """Queue workflow context and active bindings without publishing evidence."""
@@ -993,45 +1008,91 @@ class PgDeliveryRepo(BasePgRepository):
         freshness_seconds: int,
         limit: int = 20,
         cursor: str | None = None,
+        filters: DeliveryListFilters | None = None,
         session: AsyncSession | None = None,
     ) -> DeliveryPage:
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise DeliveryError("invalid_limit", "limit must be between 1 and 100")
+        selected = filters or DeliveryListFilters()
+        selected = DeliveryListFilters.model_validate(selected.model_dump())
+        scope = list_scope(actor_project, selected)
+        after = decode_list_cursor(cursor, scope)
         async with self._maybe_session(session, write=False) as sess:
-            filters: list[sa.ColumnElement[bool]] = [
+            predicates = [
                 sa.or_(
-                    tickets.c.from_project == actor_project,
-                    tickets.c.to_project == actor_project,
+                    tickets.c.from_project == actor_project, tickets.c.to_project == actor_project
                 )
             ]
-            if cursor:
-                filters.append(delivery_workflows.c.ticket_id > UUID(cursor))
-            stmt = (
-                sa.select(delivery_workflows.c.ticket_id)
-                .join(tickets)
-                .where(*filters)
-                .order_by(delivery_workflows.c.ticket_id)
-                .limit(limit + 1)
-            )
-            ids = list((await sess.execute(stmt)).scalars())
-            page_ids = ids[:limit]
-            remaining = await sess.scalar(
-                sa.select(sa.func.count())
-                .select_from(delivery_workflows.join(tickets))
-                .where(*filters)
-            )
-            next_cursor = str(page_ids[-1]) if len(ids) > limit else None
-            views = [
-                await self.get_view(
-                    identifier,
-                    feature_enabled=feature_enabled,
-                    freshness_seconds=freshness_seconds,
-                    session=sess,
+            if after is not None:
+                predicates.append(delivery_workflows.c.ticket_id > after)
+            base = sa.select(delivery_workflows.c.ticket_id).join(tickets).where(*predicates)
+            now = datetime.now(UTC)
+            if selected == DeliveryListFilters():
+                ids = list(
+                    (
+                        await sess.execute(
+                            base.order_by(delivery_workflows.c.ticket_id).limit(limit + 1)
+                        )
+                    ).scalars()
                 )
-                for identifier in page_ids
-            ]
+                remaining = await sess.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(delivery_workflows.join(tickets))
+                    .where(*predicates)
+                )
+                views = [
+                    await self.get_view(
+                        identifier,
+                        feature_enabled=feature_enabled,
+                        freshness_seconds=freshness_seconds,
+                        session=sess,
+                        assessed_at=now,
+                    )
+                    for identifier in ids[:limit]
+                ]
+                return DeliveryPage(
+                    items=tuple(view for view in views if view is not None),
+                    next_cursor=encode_list_cursor(ids[limit - 1], scope)
+                    if len(ids) > limit
+                    else None,
+                    omitted_count=max(0, (remaining or 0) - len(views)),
+                )
+            # Eligibility is computed, not a stored status. Walk all candidates
+            # in bounded batches so matches beyond an unfiltered page are kept.
+            # Retain only the requested page, but count every remaining match.
+            items: list[DeliveryView] = []
+            matches = 0
+            scan_after = after
+            while True:
+                stmt = base
+                if scan_after is not None:
+                    stmt = stmt.where(delivery_workflows.c.ticket_id > scan_after)
+                batch = list(
+                    (
+                        await sess.execute(stmt.order_by(delivery_workflows.c.ticket_id).limit(100))
+                    ).scalars()
+                )
+                for identifier in batch:
+                    view = await self.get_view(
+                        identifier,
+                        feature_enabled=feature_enabled,
+                        freshness_seconds=freshness_seconds,
+                        session=sess,
+                        assessed_at=now,
+                    )
+                    if view is not None and selected.matches(view.assessment):
+                        matches += 1
+                        if len(items) < limit:
+                            items.append(view)
+                if len(batch) < 100:
+                    break
+                scan_after = batch[-1]
             return DeliveryPage(
-                items=tuple(view for view in views if view is not None),
-                next_cursor=next_cursor,
-                omitted_count=max((remaining or 0) - len(page_ids), 0),
+                items=tuple(items),
+                next_cursor=encode_list_cursor(items[-1].contract.ticket_id, scope)
+                if matches > limit
+                else None,
+                omitted_count=max(0, matches - len(items)),
             )
 
 
@@ -1264,9 +1325,10 @@ async def _context_predicates(
         latest = (
             (
                 await session.execute(
-                    sa.select(delivery_confirmations.c.outcome).where(
-                        delivery_confirmations.c.id == latest_id
-                    )
+                    sa.select(
+                        delivery_confirmations.c.outcome,
+                        delivery_confirmations.c.collection_finished_at,
+                    ).where(delivery_confirmations.c.id == latest_id)
                 )
             )
             .mappings()
@@ -1306,6 +1368,8 @@ async def _context_predicates(
                     snapshot_id=None if success is None else success["snapshot_id"],
                     success_confirmation_id=success_id,
                     latest_attempt_confirmation_id=latest_id,
+                    last_attempt_at=None if latest is None else latest["collection_finished_at"],
+                    last_success_at=None if success is None else success["collection_finished_at"],
                     collection_started_at=None
                     if success is None
                     else success["collection_started_at"],

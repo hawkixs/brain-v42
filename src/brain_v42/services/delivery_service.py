@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 import sqlalchemy as sa
+from pydantic import ValidationError
 
 from brain_v42.db.tables import tickets
 from brain_v42.delivery_config import DeliverySettings
@@ -16,6 +17,7 @@ from brain_v42.models.delivery import (
     ContractInput,
     ContractRevision,
     DeliveryError,
+    DeliveryListFilters,
     DeliveryPage,
     DeliveryView,
     MilestoneReceipt,
@@ -141,9 +143,16 @@ class DeliveryService:
         contract: ContractInput,
         expected_revision: int,
         idempotency_key: str,
+        reason: str | None = None,
     ) -> ContractRevision:
         if not self._settings.enabled:
             raise DeliveryError("delivery_disabled", "delivery workflow operations are disabled")
+        if reason is not None and (
+            not isinstance(reason, str) or not 1 <= len(reason) <= 4000 or not reason.strip()
+        ):
+            raise DeliveryError(
+                "invalid_reason", "reason must contain between 1 and 4000 characters"
+            )
         request_digest = canonical_digest(
             {
                 "operation": "set_contract",
@@ -151,6 +160,7 @@ class DeliveryService:
                 "actor_project": actor_project,
                 "expected_revision": expected_revision,
                 "contract": contract.model_dump(mode="json"),
+                "reason": reason,
             },
             domain="request",
         )
@@ -213,7 +223,9 @@ class DeliveryService:
                     contract_revision=expected_revision + 1,
                     author_project=actor_project,
                     created_at=datetime.now(UTC),
-                    amendment_reason=("amendment" if expected_revision else None),
+                    amendment_reason=reason
+                    if reason is not None
+                    else ("amendment" if expected_revision else None),
                     schema_version=contract.schema_version,
                     objective=contract.objective,
                     constraints=contract.constraints,
@@ -296,7 +308,16 @@ class DeliveryService:
                     session=session,
                 )
 
-    async def get(self, ticket_id: UUID, *, actor_project: str) -> DeliveryView:
+    async def get(
+        self,
+        ticket_id: UUID,
+        *,
+        actor_project: str,
+        history_limit: int = 20,
+        history_cursor: str | None = None,
+    ) -> DeliveryView:
+        if type(history_limit) is not int or not 1 <= history_limit <= 100:
+            raise DeliveryError("invalid_limit", "history limit must be between 1 and 100")
         async with self._repo._maybe_session(None, write=False) as session:
             ticket = (
                 (await session.execute(sa.select(tickets).where(tickets.c.id == ticket_id)))
@@ -311,22 +332,38 @@ class DeliveryService:
             ticket_id,
             feature_enabled=self._settings.enabled,
             freshness_seconds=self._settings.freshness_seconds,
+            history_limit=history_limit,
+            history_cursor=history_cursor,
         )
         if view is None:
             raise DeliveryError("contract_not_found", "delivery contract was not found")
         return view
 
     async def list(
-        self, *, actor_project: str, limit: int = 20, cursor: str | None = None
+        self,
+        *,
+        actor_project: str,
+        limit: int = 20,
+        cursor: str | None = None,
+        work: str | None = None,
+        blocker: str | None = None,
+        stage: str | None = None,
     ) -> DeliveryPage:
-        if not 1 <= limit <= 100:
+        if type(limit) is not int or not 1 <= limit <= 100:
             raise DeliveryError("invalid_limit", "limit must be between 1 and 100")
+        try:
+            filters = DeliveryListFilters.model_validate(
+                {"work": work, "blocker": blocker, "stage": stage}
+            )
+        except ValidationError:
+            raise DeliveryError("invalid_filter", "delivery filters are invalid") from None
         return await self._repo.list_views(
             actor_project,
             feature_enabled=self._settings.enabled,
             freshness_seconds=self._settings.freshness_seconds,
             limit=limit,
             cursor=cursor,
+            filters=filters,
         )
 
     async def refresh(self, ticket_id: UUID, *, actor_project: str) -> DeliveryView:

@@ -536,7 +536,13 @@ def _eligible_work(
     if any(
         code.startswith(("context_", "dependency_"))
         or code
-        in {"observation_stale", "observation_error", "observation_missing", "delivery_terminal"}
+        in {
+            "observation_stale",
+            "observation_error",
+            "observation_missing",
+            "delivery_terminal",
+            "reopen_required",
+        }
         for code in codes
     ):
         return ()
@@ -612,6 +618,8 @@ def _assessment_id(
                     if item.latest_attempt_confirmation_id is not None
                     else None,
                     "collection_finished_at": _timestamp(item.collection_finished_at),
+                    "last_attempt_at": _timestamp(item.last_attempt_at),
+                    "last_success_at": _timestamp(item.last_success_at),
                 }
                 for item in sorted(inputs.contexts, key=lambda value: value.reference_identity)
             ],
@@ -688,6 +696,9 @@ def evaluate_delivery(inputs: EvaluationInput, *, now: datetime) -> DeliveryAsse
         raise ValueError("now must be timezone-aware")
     health = _current_health(inputs, now)
     deliverable_findings = _deliverable_findings(inputs)
+    digest = _delivery_digest(inputs)
+    has_integration = _matches(inputs.integration_receipt, "integration", inputs, digest)
+    has_fulfillment = _matches(inputs.fulfillment_receipt, "fulfilled", inputs, digest)
     blockers = (
         list(deliverable_findings)
         + list(_context_findings(inputs))
@@ -714,6 +725,13 @@ def evaluate_delivery(inputs: EvaluationInput, *, now: datetime) -> DeliveryAsse
         )
     if inputs.coordination_status in {"wontfix", "closed", "acked"}:
         blockers.append(_finding("delivery_terminal", "ticket status is terminal"))
+    elif inputs.coordination_status == "resolved" and not has_integration:
+        blockers.append(
+            _finding(
+                "reopen_required",
+                "resolved ticket requires requester reopen before new executor work",
+            )
+        )
     action_valid = (
         inputs.requested_completion_action is None
         or (
@@ -739,9 +757,6 @@ def evaluate_delivery(inputs: EvaluationInput, *, now: datetime) -> DeliveryAsse
     requirements_satisfied = (
         not blockers_tuple and health == "fresh" and inputs.coordination_disposition == "active"
     )
-    digest = _delivery_digest(inputs)
-    has_integration = _matches(inputs.integration_receipt, "integration", inputs, digest)
-    has_fulfillment = _matches(inputs.fulfillment_receipt, "fulfilled", inputs, digest)
     integration_receipt_eligible = stage == "integrated" and requirements_satisfied
     if has_fulfillment:
         acceptance_state: Literal["not_required", "pending", "accepted", "superseded"] = "accepted"

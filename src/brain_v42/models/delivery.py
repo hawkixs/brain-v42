@@ -676,6 +676,8 @@ class ContextPredicate(_StrictModel):
     latest_attempt_confirmation_id: UUIDValue | None = None
     collection_started_at: datetime | None = None
     collection_finished_at: datetime | None = None
+    last_attempt_at: datetime | None = None
+    last_success_at: datetime | None = None
     evidence: RepositoryContextEvidence | None = None
 
     _valid_current = field_validator("current_digest")(
@@ -1028,6 +1030,51 @@ class DeliveryAssessment(_StrictModel):
     _valid_ids = field_validator("assessment_id", "delivery_digest")(_validate_digest)
 
 
+class DeliveryListFilters(_StrictModel):
+    """Validated filters applied to the shared assessment before pagination."""
+
+    work: Literal["implement", "repair", "review", "integrate", "accept"] | None = None
+    blocker: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,99}$")
+    stage: Literal["awaiting_artifact", "proposed", "verified", "integrated"] | None = None
+
+    def matches(self, assessment: DeliveryAssessment) -> bool:
+        return (
+            (self.work is None or any(item.kind == self.work for item in assessment.eligible_work))
+            and (
+                self.blocker is None
+                or any(item.code == self.blocker for item in assessment.blockers)
+            )
+            and (self.stage is None or assessment.delivery_stage == self.stage)
+        )
+
+
+class ContractHistoryEntry(_StrictModel):
+    kind: Literal["contract_revision"] = "contract_revision"
+    contract: ContractRevision
+    superseded: StrictBool
+
+
+class ReceiptHistoryEntry(_StrictModel):
+    kind: Literal["receipt"] = "receipt"
+    receipt: MilestoneReceipt
+    superseded: StrictBool
+
+
+DeliveryHistoryEntry = Annotated[
+    ContractHistoryEntry | ReceiptHistoryEntry, Field(discriminator="kind")
+]
+
+
+class DeliveryHistoryPage(_StrictModel):
+    """Newest-first immutable contract and receipt payloads; no claim events."""
+
+    items: Annotated[tuple[DeliveryHistoryEntry, ...], BeforeValidator(_lists_to_tuples)] = Field(
+        default_factory=tuple, max_length=100
+    )
+    next_cursor: str | None = Field(default=None, min_length=1, max_length=1000)
+    omitted_count: StrictInt = Field(default=0, ge=0)
+
+
 class DeliveryView(_StrictModel):
     """Concrete API read shape for one workflow, its evidence assessment and receipts."""
 
@@ -1041,6 +1088,7 @@ class DeliveryView(_StrictModel):
     )
     integration_receipt: MilestoneReceipt | None = None
     fulfillment_receipt: MilestoneReceipt | None = None
+    history: DeliveryHistoryPage | None = None
 
 
 class DeliveryPage(_StrictModel):
