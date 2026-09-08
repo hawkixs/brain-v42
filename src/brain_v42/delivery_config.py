@@ -39,7 +39,7 @@ class DeliverySettings(BaseSettings):
     request_timeout_seconds: int = Field(default=10, ge=1, le=10)
     max_response_bytes: int = Field(default=4 * 1024 * 1024, ge=1024, le=8 * 1024 * 1024)
     github_api_origin: str = "https://api.github.com"
-    github_api_version: Literal["2026-03-10", "2022-11-28"] = "2026-03-10"
+    github_api_version: Literal["2022-11-28"] = "2022-11-28"
     github_token: SecretStr = Field(default=SecretStr(""), repr=False)
     github_app_id: int | None = Field(default=None, gt=0)
     github_installation_id: int | None = Field(default=None, gt=0)
