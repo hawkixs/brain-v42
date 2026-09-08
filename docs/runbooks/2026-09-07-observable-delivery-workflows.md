@@ -386,6 +386,10 @@ credential mode, writes every required observer key atomically, and proves the
 observer DSN is exactly the parsed canonical value. It never prints either value
 or asks for another credential.
 
+The observer pins GitHub API version `2022-11-28`: version `2026-03-10` no
+longer returns the exact `merge_commit_sha` required for integration evidence.
+[GitHub documents support for `2022-11-28` through 2028-03-10](https://docs.github.com/en/rest/about-the-rest-api/api-versions).
+
 ```bash
 test -f "$CANONICAL_ENV" && test ! -L "$CANONICAL_ENV"
 test "$(stat -c '%u:%a' "$CANONICAL_ENV")" = "$(id -u):600"
@@ -420,7 +424,7 @@ COMMON = {
     "BRAIN_DELIVERY_REQUEST_TIMEOUT_SECONDS": "10",
     "BRAIN_DELIVERY_MAX_RESPONSE_BYTES": "4194304",
     "BRAIN_DELIVERY_GITHUB_API_ORIGIN": "https://api.github.com",
-    "BRAIN_DELIVERY_GITHUB_API_VERSION": "2026-03-10",
+    "BRAIN_DELIVERY_GITHUB_API_VERSION": "2022-11-28",
 }
 TOKEN = {"BRAIN_DELIVERY_GITHUB_TOKEN"}
 APP = {
@@ -454,7 +458,7 @@ def validate(path: Path, desired: dict[str, str], postgres: str) -> None:
     assert settings.request_timeout_seconds == 10
     assert settings.max_response_bytes == 4194304
     assert settings.github_api_origin == "https://api.github.com"
-    assert settings.github_api_version == "2026-03-10"
+    assert settings.github_api_version == "2022-11-28"
 
 
 try:
@@ -545,7 +549,7 @@ BRAIN_DELIVERY_MAX_CONCURRENT_REQUESTS=2
 BRAIN_DELIVERY_REQUEST_TIMEOUT_SECONDS=10
 BRAIN_DELIVERY_MAX_RESPONSE_BYTES=4194304
 BRAIN_DELIVERY_GITHUB_API_ORIGIN=https://api.github.com
-BRAIN_DELIVERY_GITHUB_API_VERSION=2026-03-10
+BRAIN_DELIVERY_GITHUB_API_VERSION=2022-11-28
 BRAIN_DELIVERY_GITHUB_TOKEN=<dedicated observer credential>
 ```
 
@@ -1350,7 +1354,7 @@ REQUIRED = {
     "BRAIN_DELIVERY_REQUEST_TIMEOUT_SECONDS": "10",
     "BRAIN_DELIVERY_MAX_RESPONSE_BYTES": "4194304",
     "BRAIN_DELIVERY_GITHUB_API_ORIGIN": "https://api.github.com",
-    "BRAIN_DELIVERY_GITHUB_API_VERSION": "2026-03-10",
+    "BRAIN_DELIVERY_GITHUB_API_VERSION": "2022-11-28",
 }
 TOKEN = {"BRAIN_DELIVERY_GITHUB_TOKEN"}
 APP = {

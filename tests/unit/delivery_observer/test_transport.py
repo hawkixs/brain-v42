@@ -55,7 +55,7 @@ async def test_explicit_headers_and_auth_override_borrowed_http_defaults():
     assert len(seen) == 1
     assert seen[0].headers["Authorization"] == "Bearer fixture"
     assert seen[0].headers["Accept"] == "application/vnd.github+json"
-    assert seen[0].headers["X-GitHub-Api-Version"] == "2026-03-10"
+    assert seen[0].headers["X-GitHub-Api-Version"] == "2022-11-28"
 
 
 @pytest.mark.parametrize(
