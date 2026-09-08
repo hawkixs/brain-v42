@@ -491,6 +491,89 @@ def test_assessment_identity_is_stable_for_same_predicates_and_changes_at_freshn
     assert first.fresh_until == FIXED_NOW + timedelta(seconds=590)
 
 
+def test_assessment_identity_is_stable_when_dependencies_arrive_in_a_different_order() -> None:
+    from brain_v42.models.delivery import DependencyPredicate
+    from brain_v42.models.delivery_evaluator import evaluate_delivery
+    from tests.delivery_helpers import FIXED_NOW, delivery_inputs
+
+    shared_ticket = UUID("00000000-0000-0000-0000-000000000040")
+    base_inputs = delivery_inputs()
+    inputs = delivery_inputs(
+        contract_dependencies=[
+            {
+                "ticket_id": str(shared_ticket),
+                "contract_revision": 1,
+                "attempt": 1,
+                "milestone": "integrated",
+            },
+            {
+                "ticket_id": str(shared_ticket),
+                "contract_revision": 1,
+                "attempt": 1,
+                "milestone": "accepted",
+            },
+        ]
+    )
+    upstream_assessment = evaluate_delivery(base_inputs, now=FIXED_NOW)
+    contract_digest = base_inputs.contract.content_digest
+    assert contract_digest is not None
+    first_receipt = _receipt(
+        base_inputs,
+        upstream_assessment,
+        "integration",
+        ticket_id=shared_ticket,
+        contract_revision=1,
+        attempt=1,
+        contract_digest=contract_digest,
+    ).model_copy(update={"id": UUID("00000000-0000-0000-0000-000000000041")})
+    second_receipt = _receipt(
+        base_inputs,
+        upstream_assessment,
+        "fulfilled",
+        ticket_id=shared_ticket,
+        contract_revision=1,
+        attempt=1,
+        contract_digest=contract_digest,
+    ).model_copy(update={"id": UUID("00000000-0000-0000-0000-000000000042")})
+    first_dependency = DependencyPredicate(
+        ticket_id=shared_ticket,
+        contract_revision=1,
+        attempt=1,
+        milestone="integrated",
+        current_contract_revision=1,
+        current_attempt=1,
+        current_contract_digest=contract_digest,
+        current_delivery_digest=upstream_assessment.delivery_digest,
+        current_disposition="active",
+        receipt=first_receipt,
+    )
+    second_dependency = DependencyPredicate(
+        ticket_id=shared_ticket,
+        contract_revision=1,
+        attempt=1,
+        milestone="accepted",
+        current_contract_revision=1,
+        current_attempt=1,
+        current_contract_digest=contract_digest,
+        current_delivery_digest=upstream_assessment.delivery_digest,
+        current_disposition="active",
+        receipt=second_receipt,
+    )
+    inputs = inputs.model_copy(update={"dependencies": (first_dependency, second_dependency)})
+
+    forward = evaluate_delivery(inputs, now=FIXED_NOW)
+    reversed_order = evaluate_delivery(
+        inputs.model_copy(update={"dependencies": (second_dependency, first_dependency)}),
+        now=FIXED_NOW,
+    )
+
+    assert forward.requirements_satisfied is True
+    assert forward.blockers == ()
+    assert reversed_order.requirements_satisfied is True
+    assert reversed_order.blockers == ()
+    assert forward.assessment_id == reversed_order.assessment_id
+
+
 def test_receipt_ticket_identity_must_match_its_own_workflow() -> None:
     from brain_v42.models.delivery_evaluator import evaluate_delivery
     from tests.delivery_helpers import FIXED_NOW, delivery_inputs
