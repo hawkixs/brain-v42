@@ -312,6 +312,49 @@ def test_receipts_remain_valid_after_a_newer_same_head_successful_poll(
     assert result["integration_receipt"]["success_confirmation_id"] == str(FROZEN_CONFIRMATION)
 
 
+@pytest.mark.parametrize("phase", ["observed", "verified", "integrated", "accepted"])
+def test_deduplicated_snapshot_keeps_its_original_time_after_a_successful_poll(
+    canary: ModuleType, phase: str
+) -> None:
+    if phase in {"observed", "verified"}:
+        view = _evaluated_context_view(merged=False)
+    else:
+        view = _view(stage="integrated", accepted=phase == "accepted", receipts=True)
+    item = view["bindings"][0]
+    item["snapshot_id"] = str(FROZEN_SNAPSHOT)
+    original_time = (NOW - timedelta(seconds=7)).isoformat()
+    item["confirmation"]["evidence"]["collected_at"] = original_time
+    assert datetime.fromisoformat(original_time) < datetime.fromisoformat(
+        item["confirmation"]["collection_started_at"]
+    )
+    live = _evidence(view).model_copy(update={"collected_at": NOW})
+
+    result = canary.verify_view(view, _scope(view), phase, github_evidence=live, now=NOW)
+
+    assert result["outcome"] == phase
+    assert result["current_confirmation"]["id"] == str(CURRENT_CONFIRMATION)
+    assert result["current_confirmation"]["snapshot_id"] == str(FROZEN_SNAPSHOT)
+    assert item["confirmation"]["evidence"]["collected_at"] == original_time
+    if phase in {"integrated", "accepted"}:
+        assert result["integration_receipt"]["snapshot_id"] == str(FROZEN_SNAPSHOT)
+        assert result["integration_receipt"]["success_confirmation_id"] == str(FROZEN_CONFIRMATION)
+
+
+@pytest.mark.parametrize("mutation", ["snapshot_after_confirmation", "latest_poll_failed"])
+def test_deduplicated_snapshot_still_requires_a_current_successful_confirmation(
+    canary: ModuleType, mutation: str
+) -> None:
+    view = _evaluated_context_view(merged=False)
+    item = view["bindings"][0]
+    item["confirmation"]["evidence"]["collected_at"] = (NOW - timedelta(seconds=7)).isoformat()
+    if mutation == "snapshot_after_confirmation":
+        item["confirmation"]["evidence"]["collected_at"] = (NOW - timedelta(seconds=1)).isoformat()
+    else:
+        item["last_attempt_outcome"] = "error"
+    with pytest.raises(canary.CanaryFailure, match="current_generation_unverified"):
+        _verify(canary, view, "verified")
+
+
 @pytest.mark.parametrize(
     ("path", "value"),
     [
