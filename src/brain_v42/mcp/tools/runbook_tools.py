@@ -45,33 +45,23 @@ def register_runbook_tools(
 ) -> None:
     """Register the runbook MCP tools on the FastMCP server."""
 
-    @mcp.tool(version="1.1", annotations=_HEARTBEAT_ANNOTATIONS)
-    async def brain_create_runbook(
+    def _runbook_create(
         title: str,
         description: str,
         project_key: str,
         trigger: str,
         steps: list[dict],
-        prerequisites: list[str] | None = None,
-        rollback_steps: list[dict] | None = None,
-        estimated_duration: str | None = None,
-        tags: list[str] | None = None,
-        source_learning_id: str | None = None,
-        dream_run_id: int | None = None,
-    ) -> str:
-        """Create (or graduate) an operational runbook.
+        prerequisites: list[str] | None,
+        rollback_steps: list[dict] | None,
+        estimated_duration: str | None,
+        tags: list[str] | None,
+    ) -> RunbookCreate:
+        """The runbook body, identical on both paths — creation and promotion.
 
-        Backwards-compatible: callers that pass only the original kwargs behave
-        exactly as before.
-
-        Dream-agent path: set source_learning_id to graduate a mature insight
-        directly into a runbook via one atomic transaction that also updates
-        the source learning's metadata and writes a dream_promotions audit row.
-        No auto_accept — runbooks have no proposed/accepted state machine.
+        Steps that omit ``order`` are numbered by RunbookBase's validator, so
+        create and update agree on what a valid step is (ticket 2af71e69).
         """
-        # Steps that omit ``order`` are numbered by RunbookBase's validator, so
-        # create and update agree on what a valid step is (ticket 2af71e69).
-        data = RunbookCreate(
+        return RunbookCreate(
             title=title,
             description=description,
             project_key=project_key,
@@ -82,47 +72,55 @@ def register_runbook_tools(
             estimated_duration=estimated_duration,
             tags=tags or [],
         )
-        scope = get_dream_project_scope()
 
-        if source_learning_id is not None:
-            src_uid = parse_uuid(source_learning_id)
-            if src_uid is None:
-                return format_error(f"Invalid UUID: {source_learning_id}")
-            try:
-                if scope is None:
-                    runbook = await runbook_svc.create_with_promotion(
-                        data=data,
-                        source_learning_id=src_uid,
-                        dream_run_id=dream_run_id,
-                    )
-                else:
-                    runbook = await runbook_svc.create_with_promotion(
-                        data=data,
-                        source_learning_id=src_uid,
-                        dream_run_id=dream_run_id,
-                        project_key=scope.project_key,
-                        authorization=cast("RelationAuthorization", scope),
-                    )
-            except SourceLearningNotFound:
-                if scope is None:
-                    raise
-                return format_error("source learning not found")
-            except IntegrityError:
-                return format_error(
-                    f"source_learning_id '{format_id(source_learning_id)}' already "
-                    f"materialized (duplicate promotion blocked by unique index)"
-                )
-            logger.info(
-                "mcp.brain_create_runbook.promoted",
-                runbook_id=str(runbook.id),
-                source_learning_id=source_learning_id,
-            )
-            return format_confirmation(
-                "Runbook created (auto-graduated from learning)",
-                runbook.title,
-                id=str(runbook.id),
-                steps=len(runbook.steps),
-            )
+    @mcp.tool(version="2.0", annotations=_HEARTBEAT_ANNOTATIONS)
+    async def brain_create_runbook(
+        title: str,
+        description: str,
+        project_key: str,
+        trigger: str,
+        steps: list[dict],
+        prerequisites: list[str] | None = None,
+        rollback_steps: list[dict] | None = None,
+        estimated_duration: str | None = None,
+        tags: list[str] | None = None,
+    ) -> str:
+        """Create an operational runbook.
+
+        The Dream promotion path lives in its own tool, `brain_promote_runbook`
+        (ticket c07957ea). Until 2026-09-04 this signature also published
+        `source_learning_id` and `dream_run_id`, with NO guard between them: a
+        call naming `dream_run_id` alone fell into the standard path, which
+        never reads it, and returned a confirmation — the caller believed they
+        were attributing a promotion nothing was recording. Two paths now
+        publish two schemas, so that request can no longer be built.
+
+        Args:
+            title: Short title of the procedure.
+            description: What the runbook is for.
+            project_key: Owning project.
+            trigger: The situation that calls for this procedure.
+            steps: Ordered steps, `{order?, title, command?, verification?}`.
+            prerequisites: What must hold before starting.
+            rollback_steps: How to undo, same step shape.
+            estimated_duration: Free-form duration hint.
+            tags: Free-form tags.
+
+        Returns:
+            Confirmation string naming the runbook and its step count.
+        """
+        data = _runbook_create(
+            title,
+            description,
+            project_key,
+            trigger,
+            steps,
+            prerequisites,
+            rollback_steps,
+            estimated_duration,
+            tags,
+        )
+        scope = get_dream_project_scope()
 
         if scope is None:
             runbook = await runbook_svc.create(data)
@@ -138,6 +136,104 @@ def register_runbook_tools(
         )
         return format_confirmation(
             "Runbook created", runbook.title, id=str(runbook.id), steps=len(runbook.steps)
+        )
+
+    @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)
+    async def brain_promote_runbook(
+        title: str,
+        description: str,
+        project_key: str,
+        trigger: str,
+        steps: list[dict],
+        source_learning_id: str,
+        prerequisites: list[str] | None = None,
+        rollback_steps: list[dict] | None = None,
+        estimated_duration: str | None = None,
+        tags: list[str] | None = None,
+        dream_run_id: int | None = None,
+    ) -> str:
+        """Graduate a mature learning into a runbook (Dream promotion path).
+
+        One atomic transaction creates the runbook, updates the source
+        learning's metadata, and writes a `dream_promotions` audit row.
+
+        `source_learning_id` is required: promoting nothing is not a promotion.
+        There is no `auto_accept` here and there never was — runbooks have no
+        proposed/accepted state machine.
+
+        `dream_run_id` attributes the promotion to an orchestrator run. A scoped
+        Dream principal may not set it (`forbid_dream_run_id` in the scope
+        policy): `dream_runs` rows are written by the orchestrator, never by a
+        phase agent, so an agent naming its own run id could attribute its work
+        to another night's row.
+
+        Args:
+            title: Short title of the procedure.
+            description: What the runbook is for.
+            project_key: Owning project.
+            trigger: The situation that calls for this procedure.
+            steps: Ordered steps, `{order?, title, command?, verification?}`.
+            source_learning_id: UUID of the learning being graduated.
+            prerequisites: What must hold before starting.
+            rollback_steps: How to undo, same step shape.
+            estimated_duration: Free-form duration hint.
+            tags: Free-form tags.
+            dream_run_id: Optional orchestrator run to attribute the promotion to.
+
+        Returns:
+            Confirmation string, or a named error for a bad or duplicate source.
+        """
+        src_uid = parse_uuid(source_learning_id)
+        if src_uid is None:
+            return format_error(f"Invalid UUID: {source_learning_id}")
+
+        data = _runbook_create(
+            title,
+            description,
+            project_key,
+            trigger,
+            steps,
+            prerequisites,
+            rollback_steps,
+            estimated_duration,
+            tags,
+        )
+        scope = get_dream_project_scope()
+
+        try:
+            if scope is None:
+                runbook = await runbook_svc.create_with_promotion(
+                    data=data,
+                    source_learning_id=src_uid,
+                    dream_run_id=dream_run_id,
+                )
+            else:
+                runbook = await runbook_svc.create_with_promotion(
+                    data=data,
+                    source_learning_id=src_uid,
+                    dream_run_id=dream_run_id,
+                    project_key=scope.project_key,
+                    authorization=cast("RelationAuthorization", scope),
+                )
+        except SourceLearningNotFound:
+            if scope is None:
+                raise
+            return format_error("source learning not found")
+        except IntegrityError:
+            return format_error(
+                f"source_learning_id '{format_id(source_learning_id)}' already "
+                f"materialized (duplicate promotion blocked by unique index)"
+            )
+        logger.info(
+            "mcp.brain_promote_runbook.promoted",
+            runbook_id=str(runbook.id),
+            source_learning_id=source_learning_id,
+        )
+        return format_confirmation(
+            "Runbook created (auto-graduated from learning)",
+            runbook.title,
+            id=str(runbook.id),
+            steps=len(runbook.steps),
         )
 
     @mcp.tool(version="1.2", annotations=_READ_ANNOTATIONS)

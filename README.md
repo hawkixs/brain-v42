@@ -149,7 +149,7 @@ parameters; use the plain form above with host, port, username and password all 
 | Decisions | `brain_log_decision`, `brain_supersede_decision`, `brain_get_supersession_chain` |
 | Learnings | `brain_learn`, `brain_validate_learning` |
 | Snippets | `brain_save_snippet`, `brain_use_snippet` |
-| Runbooks | `brain_create_runbook`, `brain_get_runbook`, `brain_execute_runbook` |
+| Runbooks | `brain_create_runbook`, `brain_promote_runbook`, `brain_get_runbook`, `brain_execute_runbook` |
 | ADRs | `brain_propose_adr`, `brain_promote_adr`, `brain_accept_adr`, `brain_deprecate_adr` |
 | Coordination | `brain_ticket_create`, `brain_ticket_reply`, `brain_ticket_transition`, `brain_ticket_list`, `brain_ticket_get` |
 | Observable delivery | `brain_delivery_contract_set`, `brain_delivery_bind_pr`, `brain_delivery_get`, `brain_delivery_list`, `brain_delivery_refresh`, `brain_delivery_claim`, `brain_delivery_claim_renew`, `brain_delivery_claim_release`, `brain_delivery_accept` |

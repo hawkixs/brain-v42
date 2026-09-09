@@ -100,15 +100,11 @@ _MERGE_RESOURCES = DreamTypedReferenceRule(
     id_arguments=("source_id", "target_id"),
     allowed_entity_types=_GRAPH_ENTITY_TYPES,
 )
-_OPTIONAL_LEARNING_SOURCE = DreamTypedReferenceRule(
-    fixed_entity_type="learning",
-    id_arguments=("source_learning_id",),
-    optional=True,
-)
-#: `brain_promote_adr` cannot be called without its source: the tool publishes
-#: `source_learning_id` as a required parameter, so the rule stops being
-#: optional here. `brain_create_runbook` keeps the optional rule — its source is
-#: still an optional kwarg on a dual-purpose tool.
+#: Neither promotion tool can be called without its source: both publish
+#: `source_learning_id` as a REQUIRED parameter, so the reference is required
+#: too. The optional variant this repository used to carry disappeared with the
+#: last dual-purpose tool — a rule no policy names is a rule nobody maintains,
+#: and it would have quietly accepted a promotion of nothing.
 _REQUIRED_LEARNING_SOURCE = DreamTypedReferenceRule(
     fixed_entity_type="learning",
     id_arguments=("source_learning_id",),
@@ -150,7 +146,11 @@ PROJECT_TOOL_POLICIES: Mapping[str, DreamProjectToolPolicy] = MappingProxyType(
         ),
         "brain_create_runbook": DreamProjectToolPolicy(
             inject_project_key=True,
-            typed_references=(_OPTIONAL_LEARNING_SOURCE,),
+            forbid_dream_run_id=True,
+        ),
+        "brain_promote_runbook": DreamProjectToolPolicy(
+            inject_project_key=True,
+            typed_references=(_REQUIRED_LEARNING_SOURCE,),
             forbid_dream_run_id=True,
         ),
         "brain_update": DreamProjectToolPolicy(

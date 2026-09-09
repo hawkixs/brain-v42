@@ -1,7 +1,7 @@
 # MCP Tools — brain_v42
 
 **Updated:** 2026-09-08
-**Repository registry:** 62 always-on + 2 graph-gated = 64 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
+**Repository registry:** 63 always-on + 2 graph-gated = 65 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
 **Default catalog:** Admin clients use `compact` while capability enforcement is disabled: the seven session lifecycle tools plus `brain_find_tool` and `brain_call_tool`; other registered tools remain discoverable through those gateways. `native` exposes every registered tool. An authenticated Dream phase always receives its exact native allowlist, independent of presentation headers, and cannot access either gateway. Experimental `brain_code_mode` takes precedence only while Dream capability enforcement is disabled.
 **Transport:** HTTP loopback `http://127.0.0.1:8765/mcp` (production fleet). Tools are defined as closures capturing injected services — see `src/brain_v42/mcp/server.py` (`build_services()`) and the `register_*_tools()` functions in each module under `src/brain_v42/mcp/tools/`.
 
@@ -178,18 +178,26 @@ Session lifecycle actions remain under exclusive user control on the agent and c
 
 ## UUID error contracts
 
-The 13 legacy string-returning tools listed below normalize malformed UUIDs to:
+The 18 tools listed below reject a malformed UUID through the MCP error channel,
+with this message:
 
 ```
-✗ Invalid UUID: <value>
+Invalid UUID: <value>
 ```
 
-Two implementation paths produce this behaviour:
+Three implementation paths produce this behaviour:
 
-- **`parse_uuid()` from `parsing.py`** (10 call sites across `brain_tools.py`, `runbook_tools.py`, `snippet_tools.py`): `brain_supersede_decision`, `brain_get_supersession_chain`, `brain_validate_learning`, `brain_promote_adr` (source_learning_id path), `brain_accept_adr`, `brain_deprecate_adr`, `brain_create_runbook` (source_learning_id path), `brain_get_runbook` (runbook_id path), `brain_execute_runbook`, `brain_use_snippet`.
-- **Inline `try/except UUID()` in `crud_tools.py`**: `brain_get`, `brain_update`, `brain_delete`.
+- **`parse_uuid()` from `parsing.py`** (10 call sites across `brain_tools.py`, `runbook_tools.py`, `snippet_tools.py`, `ticket_tools.py`): `brain_supersede_decision`, `brain_get_supersession_chain`, `brain_validate_learning`, `brain_promote_adr` (source_learning_id path), `brain_accept_adr`, `brain_deprecate_adr`, `brain_promote_runbook` (source_learning_id path), `brain_use_snippet`, `brain_ticket_reply`, `brain_ticket_transition`.
+- **Inline `UUID()` parsing**: `brain_get`, `brain_update`, `brain_delete` (`crud_tools.py`) and `brain_refresh_entity`, `brain_merge_entities` (`decay_tools.py`).
+- **`resolve_entity_id()` from `entity_ids.py`** (the git-style prefix path, which calls `parse_uuid` itself and returns the same string when the value is neither a UUID nor a usable prefix): `brain_get_runbook`, `brain_execute_runbook`, `brain_ticket_get`. `brain_get` also reaches it, on its non-plan branch, and is counted once under the inline path above.
 
-All 13 tools return the same `✗ Invalid UUID: <value>` message on invalid input. The v4 session tools declare UUID parameters in their FastMCP schemas and therefore use MCP input validation instead of this formatted-string contract.
+All 18 go through `format_error`, which is typed `-> Never` and **raises** `ToolError`: none of them returns a string on this path, and the message is passed through unprefixed. Seventeen emit the malformed VALUE. `brain_merge_entities` is the exception — it formats the `ValueError` instead (`Invalid UUID: badly formed hexadecimal UUID string`), naming neither the value nor which of its two ids was bad.
+
+There is no `✗` in this path. The glyph appears nowhere in `src/`, and in `scripts/` only inside two Dream utilities that print their own console output; earlier versions of this page attributed it to a presentation layer that does not exist.
+
+The count reached 18 by measurement on 2026-09-04, after saying 13 and then 16. Each correction counted the tools reachable through the mechanisms it already knew about, and each guard inherited that scope, so the guard below derives the set from the emitted TEXT and treats the three mechanisms as explanation rather than as the source of the number.
+
+The v4 session tools declare UUID parameters in their FastMCP schemas and therefore use MCP input validation instead of this message.
 
 ## Removed / deprecated (no longer exposed)
 
@@ -262,7 +270,7 @@ Save a reusable snippet keyed by `intention` (the embedded field). Write intenti
 ```
 brain_use_snippet(snippet_id)
 ```
-Increment `use_count`, set `last_used_at = now()`. Returns `✗ Invalid UUID: <value>` if `snippet_id` is malformed.
+Increment `use_count`, set `last_used_at = now()`. Raises `Invalid UUID: <value>` if `snippet_id` is malformed.
 
 ---
 
@@ -305,7 +313,7 @@ Flip `status=proposed` -> `status=accepted`, stamp `decided_at`.
 ```
 brain_deprecate_adr(adr_id, reason=None)
 ```
-Set `status=deprecated`. Optional reason appended to consequences. Returns `✗ Invalid UUID: <value>` if `adr_id` is malformed.
+Set `status=deprecated`. Optional reason appended to consequences. Raises `Invalid UUID: <value>` if `adr_id` is malformed.
 
 Listing ADRs is `brain_list(entity_type="adr")`. The `brain_list_adrs`
 compatibility alias was REMOVED from the catalogue on 2026-09-03 (ticket
@@ -317,23 +325,45 @@ in three places and never called it once.
 
 ---
 
-## Runbooks — 3 tools (`runbook_tools.py`)
+## Runbooks — 4 tools (`runbook_tools.py`)
 
 ### brain_create_runbook
 ```
 brain_create_runbook(title, description, project_key, trigger, steps,
                      prerequisites=None, rollback_steps=None,
-                     estimated_duration=None, tags=None,
-                     source_learning_id=None, dream_run_id=None)
+                     estimated_duration=None, tags=None)
 ```
-`steps` is a list of `{order?, description, command?, verification?}`. Dream-agent path: `source_learning_id` graduates a learning into a runbook atomically (no accept state machine, so no `auto_accept`).
+`steps` is a list of `{order?, description, command?, verification?}`.
+
+The Dream promotion path is `brain_promote_runbook`, a separate tool. Until
+2026-09-04 this signature also published `source_learning_id` and
+`dream_run_id`, with NO guard between them: a call naming `dream_run_id` alone
+fell into the standard path, which never reads it, and returned a confirmation —
+the caller believed they were attributing a promotion nothing was recording
+(ticket c07957ea, the twin of af3b58dd item 2). Callers that passed the pair
+here must move to `brain_promote_runbook`; they now get an unknown-parameter
+error, which is loud, not silent.
+
+### brain_promote_runbook
+```
+brain_promote_runbook(title, description, project_key, trigger, steps,
+                      source_learning_id, prerequisites=None,
+                      rollback_steps=None, estimated_duration=None,
+                      tags=None, dream_run_id=None)
+```
+Graduate a mature learning into a runbook in one transaction, updating the
+source learning's metadata and writing a `dream_promotions` row for audit.
+`source_learning_id` is required. There is no `auto_accept` and there never
+was — runbooks have no proposed/accepted state machine. A scoped Dream
+principal may not pass `dream_run_id` (`forbid_dream_run_id`): `dream_runs`
+rows belong to the orchestrator, never to a phase agent.
 
 ### brain_get_runbook
 ```
 brain_get_runbook(runbook_id=None, title=None, project_key=None, limit=10)
 ```
 Three dispatch modes:
-- `runbook_id` — fetch one runbook by UUID (returns `✗ Invalid UUID` if malformed)
+- `runbook_id` — fetch one runbook by UUID (raises `Invalid UUID: <value>` if malformed)
 - `(title, project_key)` — fetch by exact title match within project
 - `project_key` alone — list all runbooks for project (**limit default 10, max 50**; trailing notice if more exist)
 
@@ -341,7 +371,7 @@ Three dispatch modes:
 ```
 brain_execute_runbook(runbook_id, status="success")
 ```
-Increment `execution_count`, stamp `last_executed_at`, set `last_execution_status` in {success, failed, partial}. Returns `✗ Invalid UUID` if `runbook_id` is malformed.
+Increment `execution_count`, stamp `last_executed_at`, set `last_execution_status` in {success, failed, partial}. Raises `Invalid UUID: <value>` if `runbook_id` is malformed.
 
 ---
 
@@ -588,7 +618,7 @@ segments separated by `-` or `:`; the aliases `brain` and `brain_v42` are canoni
 passed as `false`. A name already present in the same project, after trim and exact
 case-insensitive comparison, is refused. Invalid validation, a missing project, a duplicate, or
 an embedding that is unavailable, non-numeric, non-finite, or of a dimension different from
-`EMBEDDING_DIMENSION` (1536 by default) returns `✗ ...` without creating a feature. The scope of
+`EMBEDDING_DIMENSION` (1536 by default) raises a `ToolError` without creating a feature. The scope of
 uniqueness and the choice of the two writers are documented in the
 [explicit creation decision](superpowers/specs/2026-07-23-explicit-roadmap-feature-creation-design.md).
 
@@ -627,7 +657,7 @@ Work across `entity_type` in {decision, learning, snippet, runbook, adr, plan}.
 ```
 brain_get(entity_type, entity_id, max_chars=8000)
 ```
-Fetch one entity by type + UUID. Returns `✗ Invalid UUID: <value>` if `entity_id` is malformed.
+Fetch one entity by type + UUID. Raises `Invalid UUID: <value>` if `entity_id` is malformed.
 
 For `entity_type="plan"`: renders the plan header + chunk list bounded by `max_chars` (default **8000 chars**). A trailing notice identifies omitted chunks — increase `max_chars` to retrieve more content.
 
@@ -647,13 +677,13 @@ List with per-type filters. `runbook` requires `project_key`. `include_archived=
 ```
 brain_update(entity_type, entity_id, fields, related_to=None)
 ```
-Partial update validated through the per-type `<Entity>Update` Pydantic model. `related_to` adds graph edges when Neo4j is enabled. Returns `✗ Invalid UUID` if `entity_id` is malformed. `plan` is immutable — rerun `brain_reindex_plans`.
+Partial update validated through the per-type `<Entity>Update` Pydantic model. `related_to` adds graph edges when Neo4j is enabled. Raises `Invalid UUID: <value>` if `entity_id` is malformed. `plan` is immutable — rerun `brain_reindex_plans`.
 
 ### brain_delete
 ```
 brain_delete(entity_type, entity_id)
 ```
-Hard delete; no soft-delete here — use `brain_merge_entities` if you want audit + archive. Returns `✗ Invalid UUID` if `entity_id` is malformed.
+Hard delete; no soft-delete here — use `brain_merge_entities` if you want audit + archive. Raises `Invalid UUID: <value>` if `entity_id` is malformed.
 
 ---
 
@@ -856,10 +886,10 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `plan_tools.py` | plan indexing | 1 |
 | `project_context_tools.py` | project + groups | 5 |
 | `roadmap_tools.py` | roadmap | 3 |
-| `runbook_tools.py` | runbooks | 3 |
+| `runbook_tools.py` | runbooks | 4 |
 | `session_lifecycle_tools.py` | persistent session lifecycle | 8 |
 | `snippet_tools.py` | snippets | 2 |
 | `ticket_tools.py` | tickets cross-projet (coordination) | 5 |
 | `workflow_guide_tools.py` | bounded workflow guidance | 1 |
 | `delivery_tools.py` | observable delivery | 9 |
-| **Total** | | **62 always-on + 2 graph-gated = 64** |
+| **Total** | | **63 always-on + 2 graph-gated = 65** |

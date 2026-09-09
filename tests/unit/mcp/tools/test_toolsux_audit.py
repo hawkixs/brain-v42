@@ -735,8 +735,8 @@ class TestUUIDContractSourceLearningId:
         )
 
     @pytest.mark.asyncio
-    async def test_create_runbook_invalid_source_learning_id_returns_error(self) -> None:
-        """brain_create_runbook with an invalid source_learning_id returns a plain error."""
+    async def test_promote_runbook_invalid_source_learning_id_returns_error(self) -> None:
+        """brain_promote_runbook with an invalid source_learning_id returns a plain error."""
         from brain_v42.mcp.tools.runbook_tools import register_runbook_tools
 
         mcp = MockMCP()
@@ -744,7 +744,7 @@ class TestUUIDContractSourceLearningId:
         svc.create = AsyncMock(return_value=None)
         svc.create_with_promotion = AsyncMock(return_value=None)
         register_runbook_tools(mcp, svc)
-        result = await mcp.registered["brain_create_runbook"](
+        result = await mcp.registered["brain_promote_runbook"](
             title="My Runbook",
             description="desc",
             project_key="proj",

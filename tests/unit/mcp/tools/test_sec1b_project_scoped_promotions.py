@@ -146,7 +146,7 @@ def runbook_args(*, dream_run_id: int | None = None) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["brain_promote_adr", "brain_create_runbook"])
+@pytest.mark.parametrize("tool_name", ["brain_promote_adr", "brain_promote_runbook"])
 async def test_scoped_tool_passes_context_project_to_promotion_service(tool_name: str) -> None:
     tools, adr_svc, runbook_svc = registered_tools()
 
@@ -160,7 +160,7 @@ async def test_scoped_tool_passes_context_project_to_promotion_service(tool_name
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["brain_promote_adr", "brain_create_runbook"])
+@pytest.mark.parametrize("tool_name", ["brain_promote_adr", "brain_promote_runbook"])
 async def test_admin_tool_omits_scope_kwarg_and_preserves_dream_run(tool_name: str) -> None:
     tools, adr_svc, runbook_svc = registered_tools()
 
@@ -179,7 +179,7 @@ async def test_admin_tool_omits_scope_kwarg_and_preserves_dream_run(tool_name: s
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["brain_promote_adr", "brain_create_runbook"])
+@pytest.mark.parametrize("tool_name", ["brain_promote_adr", "brain_promote_runbook"])
 async def test_scoped_unavailable_source_returns_same_non_enumerating_error(
     tool_name: str,
 ) -> None:
@@ -198,7 +198,7 @@ async def test_scoped_unavailable_source_returns_same_non_enumerating_error(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["brain_promote_adr", "brain_create_runbook"])
+@pytest.mark.parametrize("tool_name", ["brain_promote_adr", "brain_promote_runbook"])
 async def test_admin_keeps_historical_source_exception(tool_name: str) -> None:
     tools, adr_svc, runbook_svc = registered_tools()
     service = adr_svc if tool_name == "brain_promote_adr" else runbook_svc
@@ -211,7 +211,7 @@ async def test_admin_keeps_historical_source_exception(tool_name: str) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["brain_promote_adr", "brain_create_runbook"])
+@pytest.mark.parametrize("tool_name", ["brain_promote_adr", "brain_promote_runbook"])
 async def test_dream_run_id_remains_denied_before_handler(tool_name: str) -> None:
     with pytest.raises(DreamProjectAuthorizationError) as raised:
         await authorize_dream_project_request(
@@ -260,6 +260,17 @@ def test_public_tool_signatures_have_no_internal_scope_parameter() -> None:
         "rollback_steps",
         "estimated_duration",
         "tags",
+    )
+    assert tuple(inspect.signature(tools["brain_promote_runbook"]).parameters) == (
+        "title",
+        "description",
+        "project_key",
+        "trigger",
+        "steps",
         "source_learning_id",
+        "prerequisites",
+        "rollback_steps",
+        "estimated_duration",
+        "tags",
         "dream_run_id",
     )

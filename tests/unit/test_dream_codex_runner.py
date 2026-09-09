@@ -63,6 +63,7 @@ EXPECTED_PHASE_TOOLS = {
         "brain_propose_adr",
         "brain_promote_adr",
         "brain_create_runbook",
+        "brain_promote_runbook",
         "brain_list",
         "brain_get_neighbors",
         "brain_graph_path",

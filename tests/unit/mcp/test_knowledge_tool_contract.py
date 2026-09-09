@@ -40,6 +40,7 @@ ADDITIVE_WRITE_TOOLS = frozenset(
         "brain_learn",
         "brain_log_decision",
         "brain_promote_adr",
+        "brain_promote_runbook",
         "brain_propose_adr",
         "brain_save_snippet",
         "brain_ticket_create",
@@ -133,7 +134,7 @@ async def test_all_knowledge_tools_publish_exact_safety_annotations() -> None:
         DESTRUCTIVE_TOOLS,
     )
     expected_names = frozenset().union(*groups)
-    assert len(expected_names) == 47
+    assert len(expected_names) == 48
     assert sum(len(group) for group in groups) == len(expected_names)
     assert {tool.name for tool in await server.list_tools()} == expected_names
 
