@@ -287,6 +287,11 @@ manifest = {
     "wheel": record(wheel),
     "uv_lock": record(artifacts / "uv.lock"),
     "interpreter": record(release / "venv/bin/python"),
+    # `venv --copies` copies the binary and NOT the standard library: the venv
+    # ships none, and `pyvenv.cfg` is the file that says which tree `ssl.py` and
+    # `hashlib.py` are loaded from. Hashing it makes a post-build repoint of
+    # that tree a preflight failure instead of a silent one.
+    "pyvenv_cfg": record(release / "venv/pyvenv.cfg"),
     "package_payload": [],
     "source_payload": [],
 }

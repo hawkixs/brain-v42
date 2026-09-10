@@ -1384,3 +1384,88 @@ def test_systemd_reader_treats_an_unset_environment_files_property_as_empty(tmp_
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "ok\n"
+
+
+# --- pyvenv.cfg: the file that names the base interpreter ----------------------
+#
+# Measured 2026-09-10: the release venv ships no standard library. `pyvenv.cfg`
+# is what points `sys.base_prefix` at the tree `ssl.py` and `hashlib.py` are
+# actually loaded from, it is 434 bytes of plain text inside a tree the runtime
+# uid can write, and no manifest hashed it. So a guarded release could be
+# repointed at any interpreter tree with one `sed -i` on the `home =` line while
+# every other manifest digest still matched and the preflight still said ok.
+#
+# Hashing it is only half a fix; the preflight has to compare it. These three
+# tests pin the compare, the tamper, and — the one that matters operationally —
+# that the six releases built before this change keep passing.
+
+
+def test_preflight_accepts_a_manifested_pyvenv_cfg_that_matches(
+    deployment_case: DeploymentCase,
+) -> None:
+    manifest = deployment_case.manifest_document()
+    pyvenv = deployment_case.manifest.parent / "venv" / "pyvenv.cfg"
+    manifest["pyvenv_cfg"] = {"path": "venv/pyvenv.cfg", "sha256": _sha256(pyvenv)}
+    deployment_case.write_manifest(manifest)
+
+    result = deployment_case.run()
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_preflight_refuses_a_pyvenv_cfg_edited_after_the_build(
+    deployment_case: DeploymentCase,
+) -> None:
+    """The post-build edit — the whole reason this entry exists.
+
+    THE TAMPER IS DELIBERATELY BENIGN, and the assertion below the run is why.
+    Rewriting `home =` to a bogus path was the first thing I tried and it made
+    this test a false witness: the interpreter then dies during init with no
+    Python frame, `_validate_interpreter` cannot run its probe, and the run
+    fails on `release_artifact_mismatch` for a completely different reason —
+    green while the digest was never compared. A comment line changes the bytes
+    and nothing else, so the only thing that can refuse it is the compare.
+    """
+    manifest = deployment_case.manifest_document()
+    pyvenv = deployment_case.manifest.parent / "venv" / "pyvenv.cfg"
+    manifest["pyvenv_cfg"] = {"path": "venv/pyvenv.cfg", "sha256": _sha256(pyvenv)}
+    deployment_case.write_manifest(manifest)
+    pyvenv.write_text(
+        pyvenv.read_text(encoding="utf-8") + "# repointed\n",
+        encoding="utf-8",
+    )
+    interpreter = deployment_case.manifest.parent / "venv" / "bin" / "python"
+    probe = subprocess.run(  # noqa: S603
+        [str(interpreter), "-I", "-c", "print('alive')"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert probe.returncode == 0 and "alive" in probe.stdout, (
+        "the tamper broke the interpreter, so a refusal below would prove "
+        "nothing about the pyvenv.cfg digest — pick a benign edit"
+    )
+
+    result = deployment_case.run()
+
+    assert result.returncode != 0
+    assert _receipt(result)["failure"] == "release_artifact_mismatch"
+
+
+def test_preflight_still_accepts_a_release_built_before_pyvenv_cfg_was_hashed(
+    deployment_case: DeploymentCase,
+) -> None:
+    """Backward compatibility is the operational half of this change.
+
+    Six releases exist that carry no `pyvenv_cfg` entry, and one of them is the
+    documented rollback target. Making the key mandatory would turn this
+    hardening into an outage the first time someone rolls back under pressure —
+    the preflight would report `config_schema_invalid` on an artifact that is
+    exactly as trustworthy as it was yesterday.
+    """
+    manifest = deployment_case.manifest_document()
+    assert "pyvenv_cfg" not in manifest
+
+    result = deployment_case.run()
+
+    assert result.returncode == 0, result.stderr

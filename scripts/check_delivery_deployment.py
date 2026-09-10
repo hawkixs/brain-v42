@@ -946,6 +946,19 @@ def check(
     wheel = _release_file(root, manifest.get("wheel"))
     retained_lock = _release_file(root, manifest.get("uv_lock"))
     interpreter = _release_file(root, manifest.get("interpreter"))
+    # `pyvenv.cfg` names the base interpreter, hence where the standard library
+    # is loaded from — the venv ships none of its own. It is a few hundred bytes
+    # of plain text inside a tree the runtime uid can write, so leaving it
+    # unhashed meant a guarded release could be repointed at any interpreter
+    # tree after the build while every other digest still matched.
+    #
+    # OPTIONAL BY DESIGN, and this is the operational half. Releases built
+    # before 2026-09-10 carry no `pyvenv_cfg` entry and one of them is the
+    # documented rollback target; making the key mandatory would turn this
+    # hardening into an outage the first time someone rolls back under
+    # pressure. Absent means "built before the entry existed", never "trusted".
+    if manifest.get("pyvenv_cfg") is not None:
+        _release_file(root, manifest.get("pyvenv_cfg"))
     _validate_payload(root, manifest, source, wheel, retained_lock, interpreter)
     verified_source_paths = {
         _text(_object(item, "config_schema_invalid").get("archive_path"), "config_schema_invalid")

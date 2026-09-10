@@ -55,7 +55,7 @@ class DreamTypedReferenceRule:
 
 @dataclass(frozen=True, slots=True)
 class DreamUpdateFieldRule:
-    """Per-phase bound on the `fields` one scoped `brain_update` may carry.
+    """Per-phase bound on what one scoped `brain_update` may carry.
 
     Ticket e78409da: REORG is archive-only, and past the ownership refusal that
     was a prompt rule -- the same call could still rewrite `topic`/`insight`,
@@ -63,10 +63,27 @@ class DreamUpdateFieldRule:
     `"fresh"`/`"stale"`. This rule names the only fields a phase may touch and,
     when set, the only `freshness_status` values it may write. Refused by NAME,
     whole-call, before the handler runs -- like the ownership fields.
+
+    2026-09-10: the sentence above used to say "the only FIELDS a phase may
+    touch", which was accurate and incomplete. `brain_update` carries a second
+    mutation beside `fields` -- `related_to`, which writes typed graph edges --
+    and it was bounded by nothing but project ownership, reachable with
+    `fields: {}`. A bound that names two field names while a graph write sits
+    unmentioned next to it is worse than no bound, because it is read as
+    exhaustive. `allow_relations` closes that and defaults to DENY.
     """
 
     allowed_fields: frozenset[str]
     allowed_freshness_status: frozenset[str] | None = None
+    #: Whether the phase may also carry `related_to` on the same call. Default
+    #: DENY, and that default is the point: `related_to` writes typed graph
+    #: edges through `_extract_nested_references`, which checks only that the
+    #: targets belong to the project. It is a second write channel sitting
+    #: beside the field allowlist, reachable with `fields: {}` — so a phase
+    #: bounded to two field names could still reshape the graph. An operator
+    #: reading `allowed_fields` concludes the phase can do nothing else; this
+    #: makes that conclusion true. A phase that genuinely needs to link sets it.
+    allow_relations: bool = False
 
 
 _NO_UPDATE_FIELD_RULES: Mapping[str, DreamUpdateFieldRule] = MappingProxyType({})
@@ -500,6 +517,17 @@ async def authorize_dream_project_request(
                 tool_name=tool_name,
             )
         if not update_rule.allowed_fields.issuperset(fields):
+            _deny(
+                reason="field_not_allowed_for_phase",
+                audit=audit,
+                project_key=canonical_project,
+                tool_name=tool_name,
+            )
+        if not update_rule.allow_relations and copied_arguments.get("related_to"):
+            # Refused by NAME and whole-call, like the fields above. The truthy
+            # test is deliberate: `None` is the tool's own default and `[]` adds
+            # no edge, so neither is the mutation being bounded — refusing them
+            # would reject a caller who merely spelled the default out.
             _deny(
                 reason="field_not_allowed_for_phase",
                 audit=audit,
