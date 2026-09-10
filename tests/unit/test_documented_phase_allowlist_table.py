@@ -23,6 +23,13 @@ ORDER IS ASSERTED, NOT ONLY MEMBERSHIP. The constant is a tuple and the table is
 a reading aid; when the two drift apart in order, a reader diffing them by eye
 finds a difference that is not one, and learns to skip the exercise. Pinning the
 order costs one edit per change and buys a table that can be compared by sight.
+
+SINCE 2026-09-10 THE TWO LINES AGREE. Decision D9 retired the last two tools a
+phase was granted without its prompt announcing them, so the paragraphs above
+describe an incident, not a live difference: today copying the prompt would give
+the right answer for PROMOTE too. That is precisely why the last test in this
+file pins the agreement rather than leaving it to luck — the habit of reading the
+constant is what survives the next divergence, not the coincidence.
 """
 
 from __future__ import annotations
@@ -61,33 +68,63 @@ def test_the_documented_row_matches_the_enforced_allowlist(phase: str) -> None:
         f"{phase.upper()} row disagrees with DREAM_PHASE_TOOL_ALLOWLISTS.\n"
         f"  only enforced: {[t for t in enforced if t not in documented]}\n"
         f"  only documented: {[t for t in documented if t not in enforced]}\n"
-        "The table mirrors the CODE. The prompt's `Allowed tools` line says what a "
-        "phase should CALL and is a different, smaller statement — copying it here "
-        "documents a capability the server still grants."
+        "The table mirrors the CODE. Since decision D9 every prompt announces "
+        "exactly its grant, so copying the prompt's `Allowed tools` line happens "
+        "to give the same answer today — which is why the test below pins that "
+        "agreement instead of trusting it. Read the constant, not the prompt."
     )
 
 
-def test_the_table_is_not_a_copy_of_the_prompts() -> None:
-    """The distinction that caused the drift, pinned so it cannot recur quietly.
+@pytest.mark.parametrize("phase", sorted(DREAM_PHASE_TOOL_ALLOWLISTS))
+def test_every_prompt_announces_exactly_what_its_phase_is_granted(phase: str) -> None:
+    """What replaced the strict-subset check, and why it is a stronger statement.
 
-    PROMOTE is the phase where the two differ today: the prompt names the tools
-    the agent is told to call, the allowlist also carries the two plain-creation
-    tools the server still permits. If a future change makes them identical,
-    this test reddens and asks for the comment to be re-read rather than for the
-    assertion to be deleted.
+    This test used to assert that PROMOTE's prompt named a STRICT subset of its
+    allowlist — the prompt listing what to call, the allowlist also carrying the
+    two plain-creation tools the server still permitted. It carried its own
+    instruction for the day that gap closed: reread the comment, do not delete
+    the assertion.
+
+    Decision D9 closed it on 2026-09-10, and PROMOTE was the last phase where the
+    two differed. So the property the old test relied on — some phase, somewhere,
+    granting more than its prompt announces — no longer exists anywhere in the
+    table, and no rewording of it could be green for a real reason.
+
+    What is now true, and worth pinning precisely because it took a decision to
+    reach: every prompt announces exactly its phase's grant. Combined with the
+    row-by-row check above, the three statements agree — documentation, enforced
+    allowlist, and prompt. A future divergence in EITHER direction reddens here:
+    a grant the prompt does not announce, or an announcement the server does not
+    honour.
+
+    Note the reading rule this needs and the earlier version did not. The six
+    prompts do not share a syntax: PROMOTE backticks its tool names, SCAN does
+    not. A regex requiring backticks reads SCAN's section as empty, and an empty
+    set is a subset of anything — green on nothing, which is the false witness
+    this file exists to avoid.
     """
-    prompt = (
-        Path(__file__).resolve().parents[2] / "scripts" / "dream" / "phase_promote.md"
-    ).read_text(encoding="utf-8")
-    listed = next(
-        line for line in prompt.splitlines() if line.startswith("`brain_get`, `brain_search`")
-    )
-    prompt_tools = tuple(re.findall(r"`(brain_[a-z0-9_]+)`", listed))
+    prompt_path = Path(__file__).resolve().parents[2] / "scripts" / "dream" / f"phase_{phase}.md"
+    lines = prompt_path.read_text(encoding="utf-8").splitlines()
 
-    assert set(prompt_tools) < set(DREAM_PHASE_TOOL_ALLOWLISTS["promote"]), (
-        "the PROMOTE prompt no longer names a strict subset of the allowlist; "
-        "either the allowlist was tightened — in which case this table and this "
-        "test are fine and the comment above needs updating — or a tool was "
-        "added to the prompt without being permitted, which the allowlist guard "
-        "will already have caught"
+    start = next(index for index, line in enumerate(lines) if line.strip() == "## Allowed tools")
+    section: list[str] = []
+    for line in lines[start + 1 :]:
+        if line.startswith("## "):
+            break
+        section.append(line)
+
+    announced = set(re.findall(r"\b(brain_[a-z0-9_]+)", "\n".join(section)))
+    granted = set(DREAM_PHASE_TOOL_ALLOWLISTS[phase])
+
+    assert announced, (
+        f"phase {phase}: the `## Allowed tools` section names no tool. Either the "
+        "section moved or the reading rule is stale — do not let this assert on "
+        "the empty set."
+    )
+    assert announced == granted, (
+        f"phase {phase}: prompt and allowlist disagree.\n"
+        f"  granted but not announced: {sorted(granted - announced)}\n"
+        f"  announced but not granted: {sorted(announced - granted)}\n"
+        "A granted tool the prompt hides is a capability nobody decided to give; "
+        "an announced tool the server refuses is a lost night."
     )

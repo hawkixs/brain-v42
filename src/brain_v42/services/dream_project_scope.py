@@ -135,17 +135,9 @@ PROJECT_TOOL_POLICIES: Mapping[str, DreamProjectToolPolicy] = MappingProxyType(
         "brain_graph_path": DreamProjectToolPolicy(
             generic_reference_arguments=("source_id", "target_id")
         ),
-        "brain_propose_adr": DreamProjectToolPolicy(
-            inject_project_key=True,
-            forbid_dream_run_id=True,
-        ),
         "brain_promote_adr": DreamProjectToolPolicy(
             inject_project_key=True,
             typed_references=(_REQUIRED_LEARNING_SOURCE,),
-            forbid_dream_run_id=True,
-        ),
-        "brain_create_runbook": DreamProjectToolPolicy(
-            inject_project_key=True,
             forbid_dream_run_id=True,
         ),
         "brain_promote_runbook": DreamProjectToolPolicy(
@@ -201,8 +193,17 @@ def _safe_principal(audit: DreamProjectAudit) -> str:
     return audit.principal if phase != "unknown" and audit.principal == expected else "<redacted>"
 
 
+# First-party tools no phase may call any more (decision D9). Held here, and not
+# imported from `dream_capabilities`, because this module's independence from the
+# phase table is itself under test. Without them a `policy_missing` denial — the
+# one event the retirement can produce — would be logged as `<redacted>`.
+_RETIRED_TOOL_NAMES = frozenset({"brain_propose_adr", "brain_create_runbook"})
+
+
 def _safe_tool_name(tool_name: str) -> str:
-    return tool_name if tool_name in PROJECT_TOOL_POLICIES else "<redacted>"
+    if tool_name in PROJECT_TOOL_POLICIES or tool_name in _RETIRED_TOOL_NAMES:
+        return tool_name
+    return "<redacted>"
 
 
 def _deny(

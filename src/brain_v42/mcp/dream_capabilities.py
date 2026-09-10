@@ -64,9 +64,7 @@ DREAM_PHASE_TOOL_ALLOWLISTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         "promote": (
             "brain_get",
             "brain_search",
-            "brain_propose_adr",
             "brain_promote_adr",
-            "brain_create_runbook",
             "brain_promote_runbook",
             "brain_list",
             "brain_get_neighbors",
@@ -81,9 +79,19 @@ DREAM_PHASE_TOOL_ALLOWLISTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     }
 )
 
+# First-party tool names that no phase grants any more (decision D9). They are
+# listed so a DENIAL can name them: this set is derived from the allowlists, so
+# retiring the last grant of a tool would otherwise erase its name from the audit
+# vocabulary and record the refusal as `<redacted>` — hiding the single event the
+# retirement can produce. These are our own tool names, never caller-supplied
+# strings, so naming them carries none of the risk the redaction exists to
+# prevent.
+_RETIRED_TOOL_NAMES = frozenset({"brain_propose_adr", "brain_create_runbook"})
+
 _SAFE_AUDIT_TOOL_NAMES = frozenset(
     {tool_name for phase_tools in DREAM_PHASE_TOOL_ALLOWLISTS.values() for tool_name in phase_tools}
     | {"brain_call_tool", "brain_find_tool"}
+    | _RETIRED_TOOL_NAMES
 )
 
 
