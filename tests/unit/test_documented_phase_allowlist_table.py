@@ -23,6 +23,13 @@ ORDER IS ASSERTED, NOT ONLY MEMBERSHIP. The constant is a tuple and the table is
 a reading aid; when the two drift apart in order, a reader diffing them by eye
 finds a difference that is not one, and learns to skip the exercise. Pinning the
 order costs one edit per change and buys a table that can be compared by sight.
+
+SINCE 2026-09-10 THE TWO LINES AGREE. Decision D9 retired the last two tools a
+phase was granted without its prompt announcing them, so the paragraphs above
+describe an incident, not a live difference: today copying the prompt would give
+the right answer for PROMOTE too. That is precisely why the last test in this
+file pins the agreement rather than leaving it to luck — the habit of reading the
+constant is what survives the next divergence, not the coincidence.
 """
 
 from __future__ import annotations
@@ -61,9 +68,10 @@ def test_the_documented_row_matches_the_enforced_allowlist(phase: str) -> None:
         f"{phase.upper()} row disagrees with DREAM_PHASE_TOOL_ALLOWLISTS.\n"
         f"  only enforced: {[t for t in enforced if t not in documented]}\n"
         f"  only documented: {[t for t in documented if t not in enforced]}\n"
-        "The table mirrors the CODE. The prompt's `Allowed tools` line says what a "
-        "phase should CALL and is a different, smaller statement — copying it here "
-        "documents a capability the server still grants."
+        "The table mirrors the CODE. Since decision D9 every prompt announces "
+        "exactly its grant, so copying the prompt's `Allowed tools` line happens "
+        "to give the same answer today — which is why the test below pins that "
+        "agreement instead of trusting it. Read the constant, not the prompt."
     )
 
 

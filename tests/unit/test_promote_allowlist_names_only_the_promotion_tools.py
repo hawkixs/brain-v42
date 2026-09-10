@@ -130,3 +130,29 @@ def test_a_retired_tool_is_still_named_in_the_scope_denial(tool: str) -> None:
         f"a `policy_missing` denial for `{tool}` would be logged as `<redacted>`. "
         "Two layers deny this call; both must be able to say which call it was."
     )
+
+
+def test_the_two_retired_name_sets_and_this_test_agree() -> None:
+    """The seam for a list that exists three times and cannot exist once.
+
+    `dream_capabilities` and `dream_project_scope` each hold their own copy,
+    because the second is under test for NOT importing the first, and this file
+    holds a third to parametrise with. Three copies of a list is how a fourth
+    retirement gets added to one of them and silently not to the others — the
+    tool would keep being named in one denial log and go `<redacted>` in the
+    other.
+
+    A test may import both, which the production modules may not. So the
+    duplication stays and the drift does not.
+    """
+    from brain_v42.mcp import dream_capabilities
+    from brain_v42.services import dream_project_scope
+
+    assert dream_capabilities._RETIRED_TOOL_NAMES == dream_project_scope._RETIRED_TOOL_NAMES, (
+        "the two retired-tool sets disagree; a denial would name the tool in one "
+        "layer's audit log and redact it in the other's."
+    )
+    assert set(RETIRED_FROM_PROMOTE) == dream_capabilities._RETIRED_TOOL_NAMES, (
+        "this file's parametrisation has drifted from the production sets, so the "
+        "tests above are no longer covering every retired tool."
+    )
