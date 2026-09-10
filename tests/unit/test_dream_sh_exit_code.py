@@ -32,7 +32,12 @@ DREAM_SH = REPO_ROOT / "scripts" / "dream.sh"
 # nothing.
 _VERDICT_ANCHOR = "FAIL_TOTAL=$(("
 _EXTRACT_ANCHOR = "if (( extract_rc == 0 )); then"
-_EXTRACT_END_ANCHOR = "# --- ROADMAP"
+# Was "# --- ROADMAP" until 2026-09-10, when that phase was removed from the
+# nightly rail (ADR 45671595). SWEEP is now the block that follows EXTRACT.
+# The anchor must be the NEXT surviving header, never a comment inside the
+# EXTRACT block: `.index()` raises ValueError rather than asserting, so a
+# stale anchor fails as a harness error and reads like a test bug.
+_EXTRACT_END_ANCHOR = "# --- SWEEP"
 _PHASE_CASE_ANCHOR = 'case "$phase_rc" in'
 _PHASE_CASE_END_ANCHOR = "esac"
 

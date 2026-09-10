@@ -50,10 +50,17 @@ def _agent_phase_minutes() -> int:
 
 
 def _global_phase_minutes() -> int:
-    """Sum of the global phases' three `timeout Nm`."""
+    """Sum of the global phases' `timeout Nm`.
+
+    Three until 2026-09-10, when ROADMAP left the nightly rail (ADR 45671595).
+    Its module still exists and is still runnable by hand, so the guard has to
+    read the phases dream.sh actually INVOKES rather than the CLIs that exist:
+    keeping `scripts.roadmap_curate` here would have kept 20 minutes in a
+    ceiling the night can no longer spend.
+    """
     content = DREAM_SH.read_text(encoding="utf-8")
     total = 0
-    for module in ("scripts.ticket_extract", "scripts.roadmap_curate", "session_sweep"):
+    for module in ("scripts.ticket_extract", "session_sweep"):
         match = re.search(rf"timeout (\d+)m uv run python -m [\w.]*{re.escape(module)}", content)
         assert match, f"garde-fou `timeout Nm` introuvable pour {module}"
         total += int(match.group(1))

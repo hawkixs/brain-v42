@@ -25,8 +25,6 @@ dead on 2026-07-27 and discovered on 08-05 after ten green nights.
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -41,28 +39,34 @@ from scripts.roadmap_curate import (
     batch_llm_window,
 )
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
 
-
-def test_the_cli_default_batch_count_is_the_nights() -> None:
-    """The CLI DEFAULT must measure the night's regime, not one 2× gentler.
+def test_the_cli_default_batch_count_stays_at_the_measured_width() -> None:
+    """The CLI DEFAULT must measure at ten batches, not at a gentler width.
 
     Measured on 2026-08-29 (PR 42 review): `--batches 3` gave windows of 120 s
-    growing up to 200 s, where the night at `--limit 10` bounds each attempt to
-    60 s. Under that regime the canary validated a fallback at 74.5 s/batch that
-    would have timed out every one of its attempts in production — the exact
-    repetition of the 2026-08-17 failure this instrument was meant to fix. The
-    default is pinned on the `--limit` dream.sh ACTUALLY passes, not on a
-    retyped 10: if the night changes width, this test forces the canary to
-    follow.
+    growing up to 200 s, where ten batches bound each attempt to 60 s. Under
+    that regime the canary validated a fallback at 74.5 s/batch that would have
+    timed out every one of its attempts in production — the exact repetition of
+    the 2026-08-17 failure this instrument was meant to fix.
+
+    UNTIL 2026-09-10 this was DERIVED, not stated: the default was read from the
+    `--limit` dream.sh actually passed, so a change to the night's width forced
+    the canary to follow. ADR 45671595 took the phase off the nightly rail, so
+    there is no invocation left to derive from and the width is frozen below.
+    The coupling is what disappeared; the value and its reason did not.
     """
     from scripts.canary_roadmap_model import DEFAULT_CANARY_BATCHES
 
-    dream_sh = (_REPO_ROOT / "scripts" / "dream.sh").read_text(encoding="utf-8")
-    limit_match = re.search(r"roadmap_args=\(--limit (\d+)\)", dream_sh)
-
-    assert limit_match, "dream.sh ne déclare plus roadmap_args=(--limit N)"
-    assert DEFAULT_CANARY_BATCHES == int(limit_match.group(1))
+    # DERIVED from dream.sh's `roadmap_args=(--limit N)` until 2026-09-10, when
+    # the nightly roadmap phase left the rail (ADR 45671595). There is no night
+    # regime left to read, so the width is FROZEN here instead.
+    #
+    # 10 is not a fresh choice: it is the value the night passed, and the
+    # docstring above explains why a gentler default makes the canary validate a
+    # model that would time out in production. The CLI is still runnable by hand
+    # for the pending proposals, so the instrument must keep measuring at that
+    # width. If the manual regime ever changes, change it here and say why.
+    assert DEFAULT_CANARY_BATCHES == 10
 
 
 _PRIMARY = "mistralai/mistral-nemotron"

@@ -1,6 +1,6 @@
-"""The three global phases are OUTSIDE the per-project unit — pinned textually.
+"""The global phases are OUTSIDE the per-project unit — pinned textually.
 
-Spec `2026-08-08-dream-project-pool-design.md` §7: `extract`, `roadmap` and
+Spec `2026-08-08-dream-project-pool-design.md` §7: `extract` and
 `sweep` have no project dimension and sit outside the loop. The decisive
 measurement, phase by phase:
 
@@ -10,14 +10,11 @@ measurement, phase by phase:
 - `extract` — `ticket_extract` selects `extraction_status = 'pending'` with no
   project filter. The first pass empties the queue, the next seven consume their
   `--run-budget-seconds 540` all the same.
-- `roadmap` — `roadmap_curate` ALREADY does its own multi-project rotation, and
-  `day_ordinal` is identical across the eight invocations: the same window would
-  be curated eight times, at the night's highest API cost (259.9 s/night
-  measured).
+
 
 §7 requires this to be a **structural guarantee, not a convention**: "a convention
 is lost at the first refactor; a textual anchor fails loudly". Hence this file. It
-does not read a comment, it checks where the three blocks fall relative to the
+does not read a comment, it checks where the blocks fall relative to the
 body of the function that serves one project.
 """
 
@@ -32,7 +29,6 @@ DREAM_SH = REPO_ROOT / "scripts" / "dream.sh"
 # breaks this test with a ValueError, not by leaving it green.
 _PROJECT_FN_OPEN = "run_project_phases() {"
 _EXTRACT_ANCHOR = "# --- EXTRACT:"
-_ROADMAP_ANCHOR = "# --- ROADMAP:"
 _SWEEP_ANCHOR = "# --- SWEEP:"
 
 
@@ -69,12 +65,12 @@ def test_the_six_agent_phases_live_in_a_per_project_function() -> None:
         assert phase in body, f"la phase {phase} a quitté l'unité par projet"
 
 
-def test_extract_roadmap_and_sweep_are_outside_that_function() -> None:
-    """The three global phases fall AFTER the per-project body, not inside it."""
+def test_extract_and_sweep_are_outside_that_function() -> None:
+    """The global phases fall AFTER the per-project body, not inside it."""
     content = _source()
     body = _project_function_body()
 
-    for anchor in (_EXTRACT_ANCHOR, _ROADMAP_ANCHOR, _SWEEP_ANCHOR):
+    for anchor in (_EXTRACT_ANCHOR, _SWEEP_ANCHOR):
         assert anchor in content, f"ancre disparue du script : {anchor}"
         assert anchor not in body, (
             f"{anchor} est entré dans le corps par projet — il tournerait une fois "
@@ -82,7 +78,7 @@ def test_extract_roadmap_and_sweep_are_outside_that_function() -> None:
         )
 
 
-def test_the_three_global_blocks_run_after_the_project_loop() -> None:
+def test_the_global_blocks_run_after_the_project_loop() -> None:
     """Textual order: the project loop closes before the first global phase.
 
     Checking only "not inside the function" would let through a call placed BEFORE
@@ -91,21 +87,21 @@ def test_the_three_global_blocks_run_after_the_project_loop() -> None:
     content = _source()
     loop_end = content.index("done  # fin de la boucle de projets")
 
-    for anchor in (_EXTRACT_ANCHOR, _ROADMAP_ANCHOR, _SWEEP_ANCHOR):
+    for anchor in (_EXTRACT_ANCHOR, _SWEEP_ANCHOR):
         assert content.index(anchor) > loop_end, (
             f"{anchor} précède la fermeture de la boucle de projets"
         )
 
 
 def test_the_global_phase_logs_keep_no_project_component() -> None:
-    """§3.2: the three global phases' logs are NOT projected.
+    """§3.2: the global phases' logs are NOT projected.
 
     Seven templates gain a project component, these do not — projecting them would
     manufacture N empty files for a phase that runs once.
     """
     content = _source()
 
-    for phase in ("extract", "roadmap", "sweep"):
+    for phase in ("extract", "sweep"):
         assert f'"$LOG_DIR/${{TIMESTAMP}}_{phase}.log"' in content, (
             f"le journal de {phase} a été projeté par projet, ou renommé"
         )
