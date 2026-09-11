@@ -43,7 +43,7 @@ _HEADER_ANCHOR = 'MANIFEST_FILE="$LOG_DIR/'
 _HEADER_END_ANCHOR = "manifest_put meta started"
 _TRUNCATE_ANCHOR = ': > "$MANIFEST_FILE"'
 _LOCK_ANCHOR = 'LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/brain-v42-dream.lock"'
-_GLOBAL_PHASES_ANCHOR = "DREAM_GLOBAL_PHASES=(extract roadmap sweep)"
+_GLOBAL_PHASES_ANCHOR = "DREAM_GLOBAL_PHASES=(extract sweep)"
 _LOOP_ANCHOR = 'for phase_spec in "${PHASES[@]}"; do'
 _LOOP_END_ANCHOR = 'manifest_put expected "$name" "$PROJECT_KEY"'
 _EMPTY_POOL_ANCHOR = "if (( record_rc == 0 )); then"
@@ -51,7 +51,6 @@ _EMPTY_POOL_END_ANCHOR = 'SKIPPED_PHASES+=("$PROJECT_KEY/promote")'
 
 _GLOBAL_BLOCKS = {
     "extract": ("# --- EXTRACT:", 'if [[ "$BRAIN_DREAM_EXTRACT_ENABLED"'),
-    "roadmap": ("# --- ROADMAP:", 'if [[ "$BRAIN_DREAM_ROADMAP_ENABLED"'),
     "sweep": ("# --- SWEEP:", 'if [[ "$BRAIN_DREAM_SWEEP_ENABLED"'),
 }
 
@@ -125,7 +124,7 @@ def _run_header(
         "promote:deep:10:50",
         "reorg:deep:10:50",
     ),
-    global_phases: tuple[str, ...] = ("extract", "roadmap", "sweep"),
+    global_phases: tuple[str, ...] = ("extract", "sweep"),
     log_dir: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     directory = log_dir if log_dir is not None else tmp_path / "logs"
@@ -160,7 +159,9 @@ def test_the_header_states_what_the_night_planned_before_running_it(tmp_path: Pa
 
     assert proc.returncode == 0, proc.stderr
     manifest = rm.parse_run_manifest(manifest_path.read_text(encoding="utf-8"))
-    assert manifest.meta["planned_phases"] == "21"
+    # 21 until 2026-09-10: ten projects x 6 phases + extract + roadmap + sweep.
+    # ROADMAP left the rail (ADR 45671595), so the night plans one phase less.
+    assert manifest.meta["planned_phases"] == "20"
     assert manifest.meta["run_date"] == "2026-08-18"
     assert manifest.meta["pool"] == "red,brain-v42,red-lab"
     assert manifest.meta["pool_source"] == "BRAIN_DREAM_PROJECT_POOL"
@@ -171,8 +172,8 @@ def test_the_header_states_what_the_night_planned_before_running_it(tmp_path: Pa
 @pytest.mark.parametrize(
     ("global_phases", "planned"),
     [
-        (("extract", "roadmap", "sweep"), "4"),
-        (("extract", "roadmap", "sweep", "quatrieme"), "5"),
+        (("extract", "sweep"), "3"),
+        (("extract", "sweep", "troisieme"), "4"),
         ((), "1"),
     ],
 )
@@ -196,7 +197,7 @@ def test_the_header_counts_the_global_phases_it_is_GIVEN(
     assert manifest.meta["planned_phases"] == planned
 
 
-def test_the_script_really_declares_the_three_global_phases_the_blocks_implement() -> None:
+def test_the_script_really_declares_the_global_phases_the_blocks_implement() -> None:
     """The harness varies the array; here we pin what the script actually sets.
 
     Without this test, an emptied array in `dream.sh` would leave the
@@ -302,7 +303,7 @@ def _run_lock_then_header(
             "POOL_SOURCE=BRAIN_DREAM_PROJECT_POOL",
             "declare -a PROJECT_POOL=(red)",
             'declare -a PHASES=("scan:fast:5:30")',
-            "declare -a DREAM_GLOBAL_PHASES=(extract roadmap sweep)",
+            "declare -a DREAM_GLOBAL_PHASES=(extract sweep)",
             'log() { printf "%s\\n" "$*"; }',
             "",
             _lock_then_header_block(),
@@ -347,7 +348,7 @@ def test_the_holder_of_the_lock_still_truncates_and_stamps_its_header(
     assert "expected\tscan\tred" not in text, "la nuit précédente a bien été effacée"
     manifest = rm.parse_run_manifest(text)
     assert manifest.meta["run_date"] == "2026-08-18"
-    assert manifest.meta["planned_phases"] == "4"
+    assert manifest.meta["planned_phases"] == "3"
 
 
 # --- The loop: the expectation is emitted AT THE ITERATION ------------------
@@ -416,7 +417,7 @@ def test_a_seventh_phase_extends_the_expected_set_without_touching_the_detector(
 def test_each_global_phase_declares_itself_expected_under_the_sentinel(
     tmp_path: Path, phase: str
 ) -> None:
-    """The three global phases carry `*` — the sentinel crosses the manifest."""
+    """The global phases carry `*` — the sentinel crosses the manifest."""
     out = tmp_path / "manifest.tsv"
     harness = "\n".join(
         [
@@ -560,7 +561,11 @@ def test_the_guard_actually_sees_the_classification_sites() -> None:
     """Harness guard: a test green over zero sites would prove nothing."""
     sites = [line for line in _source().splitlines() if _PUSH.match(line)]
 
-    assert len(sites) >= 15, f"seulement {len(sites)} sites de classement trouvés"
+    # 15 until 2026-09-10; the ROADMAP block carried two classification sites
+    # (SKIPPED on killswitch, FAILED on rc) and left with the phase. This is a
+    # FLOOR on the guard's reach, not a count of phases: lower it only when a
+    # phase is actually removed, never to make a red test green.
+    assert len(sites) >= 13, f"seulement {len(sites)} sites de classement trouvés"
 
 
 def test_the_guard_sees_the_case_arms_too_not_just_the_flush_left_sites() -> None:

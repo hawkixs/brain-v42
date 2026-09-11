@@ -258,5 +258,18 @@ def test_only_an_explicit_false_arms_the_wet_flag() -> None:
         encoding="utf-8"
     )
 
-    assert 'dream_wants_wet BRAIN_DREAM_ROADMAP_DRY_RUN "$BRAIN_DREAM_ROADMAP_DRY_RUN"' in dream_sh
-    assert '"$BRAIN_DREAM_ROADMAP_DRY_RUN" != "true"' not in dream_sh
+    # SUPERSEDED on 2026-09-10, and by removal rather than by a better guard.
+    #
+    # This used to pin that the roadmap wet flag was routed through
+    # `dream_wants_wet`, so only an explicit `false` could arm it. ADR 45671595
+    # took the phase off the nightly rail entirely: dream.sh no longer reads
+    # BRAIN_DREAM_ROADMAP_ENABLED or _DRY_RUN at all, so no unattended path is
+    # left that could arm auto-apply on the configured primary.
+    #
+    # That is a STRONGER statement than the one it replaces, and it is the one
+    # worth pinning: ticket 7511c210's trap needed a nightly invocation to
+    # spring. The CLI survives for the operator, who is a human reading a report
+    # before applying — which is what the ticket asked for. If a nightly
+    # invocation ever comes back, this fails, and whoever brings it back has to
+    # answer the auto-apply question again.
+    assert "BRAIN_DREAM_ROADMAP" not in dream_sh

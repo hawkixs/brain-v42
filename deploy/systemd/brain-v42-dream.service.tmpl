@@ -41,9 +41,14 @@ SyslogIdentifier=brain-v42-dream
 #
 #   10 × 53 min (les six phases agent)   = 530
 #    2 × 15 min (allocation de retries)  =  30
-#        35 min (extract 10 + roadmap 20 + sweep 5, une seule fois) = 35
+#        15 min (extract 10 + sweep 5, une seule fois) = 15
 #                                          ---
-#                                          595 min = 35 700 s
+#                                          575 min = 34 500 s
+#
+# Le poste global valait 35 min (extract 10 + roadmap 20 + sweep 5) jusqu'au
+# 2026-09-10 : la phase roadmap a quitté le rail nocturne (ADR 45671595). Le
+# plafond reste à 36 000 s — la marge passe de 300 s à 1 500 s. Le baisser
+# n'achèterait rien et imposerait un `install.sh` sur l'hôte vivant.
 #
 # Arrondi à 36 000 s (10 h). Très au-dessus de la mesure — 80 min de moyenne et
 # 126,6 min de p90 à huit projets — et c'est assumé : un plafond sert au pire

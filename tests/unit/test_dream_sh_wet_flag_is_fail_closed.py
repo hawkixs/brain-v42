@@ -4,7 +4,7 @@ Measured on 2026-09-03 while writing the 7511c210 test, and it is the reason
 this lot exists. `dream.sh` translated three of its four DRY_RUN killswitches
 with `!= "true"`:
 
-    if [[ "$BRAIN_DREAM_ROADMAP_DRY_RUN" != "true" ]]; then
+    if [[ "$BRAIN_DREAM_EXTRACT_DRY_RUN" != "true" ]]; then
       roadmap_args+=(--wet)
 
 So `false` arms the wet run — and so do `False`, `0`, `flase`, and an EMPTY
@@ -44,11 +44,13 @@ DREAM_SH = Path(__file__).resolve().parents[2] / "scripts" / "dream.sh"
 #: eventually touch the log directory of a real night.
 _FUNCTION = "dream_wants_wet"
 
-#: The four killswitches this helper serves, with the phase each one gates.
+#: The killswitches this helper serves, with the phase each one gates.
+#: BRAIN_DREAM_ROADMAP_DRY_RUN was a fourth until 2026-09-10, when the nightly
+#: roadmap phase was removed from the rail (ADR 45671595). The live drop-in may
+#: still set it; nothing in dream.sh reads it, so it gates nothing.
 KILLSWITCHES = (
     "BRAIN_DREAM_REORG_DRY_RUN",
     "BRAIN_DREAM_EXTRACT_DRY_RUN",
-    "BRAIN_DREAM_ROADMAP_DRY_RUN",
     "BRAIN_DREAM_SWEEP_DRY_RUN",
 )
 
@@ -60,7 +62,7 @@ def _extract_function(name: str = _FUNCTION) -> str:
     return match.group(0)
 
 
-def _run(value: str | None, *, var: str = "BRAIN_DREAM_ROADMAP_DRY_RUN", body: str | None = None):
+def _run(value: str | None, *, var: str = "BRAIN_DREAM_EXTRACT_DRY_RUN", body: str | None = None):
     """Execute the helper in a clean bash, with `log` stubbed onto stdout.
 
     `value=None` means the variable is UNSET, which `set -u` would otherwise
@@ -156,7 +158,7 @@ def test_a_canonical_value_says_nothing(value: str) -> None:
     """A warning printed every night stops being read."""
     result = _run(value)
 
-    assert "BRAIN_DREAM_ROADMAP_DRY_RUN" not in result.stdout.replace("VERDICT=wet", "").replace(
+    assert "BRAIN_DREAM_EXTRACT_DRY_RUN" not in result.stdout.replace("VERDICT=wet", "").replace(
         "VERDICT=dry", ""
     )
 

@@ -79,10 +79,9 @@ def test_the_empty_pool_row_is_recorded_for_a_named_project() -> None:
     ("start", "end"),
     [
         ("--- SWEEP", "=== Dream finished"),
-        ("--- EXTRACT", "--- ROADMAP"),
-        ("--- ROADMAP", "--- SWEEP"),
+        ("--- EXTRACT", "--- SWEEP"),
     ],
-    ids=["sweep", "extract", "roadmap"],
+    ids=["sweep", "extract"],
 )
 def test_the_global_phases_receive_no_project_flag(start: str, end: str) -> None:
     """A global phase has no project to name: its `'*'` sentinel lives in its

@@ -69,13 +69,6 @@ BRAIN_DREAM_REORG_DRY_RUN="${BRAIN_DREAM_REORG_DRY_RUN:-false}"
 # trajectory as REORG before any WET flip.
 BRAIN_DREAM_EXTRACT_ENABLED="${BRAIN_DREAM_EXTRACT_ENABLED:-false}"
 BRAIN_DREAM_EXTRACT_DRY_RUN="${BRAIN_DREAM_EXTRACT_DRY_RUN:-true}"
-# ROADMAP killswitch — nightly roadmap curation (spec 2026-07-04). Ship
-# CLOSED; DRY by default. Aggressive regime since the evening of 2026-07-04
-# (Armand's decision): in WET the CLI applies ALL FOUR ops (merge/rename
-# included, WET_APPLYABLE_OPS = VALID_OPS) and the prompt consolidates granular
-# features into broad subjects — Claude validates the applies at the morning check.
-BRAIN_DREAM_ROADMAP_ENABLED="${BRAIN_DREAM_ROADMAP_ENABLED:-false}"
-BRAIN_DREAM_ROADMAP_DRY_RUN="${BRAIN_DREAM_ROADMAP_DRY_RUN:-true}"
 # SWEEP killswitch — draining the ghost sessions (spec 2026-08-07). Shipped
 # CLOSED and DRY. A deterministic phase, with no model and no network: the
 # threshold lives in brain_v42.models.brain_session.AUTO_STALE_AFTER, never here.
@@ -284,11 +277,14 @@ declare -A PHASE_DEPS=(
   [reorg]="scan synth"
 )
 
-# The three GLOBAL phases, named for the `planned_phases` computation alone.
-# The three blocks stay hand-written OUTSIDE the loop (pinned by
+# The two GLOBAL phases, named for the `planned_phases` computation alone.
+# The two blocks stay hand-written OUTSIDE the loop (pinned by
 # tests/unit/test_dream_sh_global_phases_outside_loop.py): this array does not
 # drive them, it counts them.
-DREAM_GLOBAL_PHASES=(extract roadmap sweep)
+# ROADMAP was the third until 2026-09-10 (ADR 45671595). Its CLI still exists
+# and is still runnable by hand for the ~185 pending proposals; what stopped is
+# the unattended nightly invocation.
+DREAM_GLOBAL_PHASES=(extract sweep)
 
 # OTEL env vars for Claude Code telemetry
 export CLAUDE_CODE_ENABLE_TELEMETRY=1
@@ -1270,40 +1266,8 @@ else
   fi
 fi
 
-# --- ROADMAP: nightly roadmap curation (proposer-only) ---------------------
-# Not a claude -p phase: a direct Python CLI (the extract pattern). Inserts its
-# own dream_runs row (phase='roadmap') for briefing visibility.
-TOTAL_PHASES=$(( TOTAL_PHASES + 1 ))
-manifest_put expected roadmap '*'
-if [[ "$BRAIN_DREAM_ROADMAP_ENABLED" != "true" ]]; then
-  log "SKIP roadmap (killswitch BRAIN_DREAM_ROADMAP_ENABLED=$BRAIN_DREAM_ROADMAP_ENABLED)"
-  SKIPPED_PHASES+=("*/roadmap")
-  SKIPPED_UNWRITTEN=$(( SKIPPED_UNWRITTEN + 1 ))
-  manifest_put skipped roadmap '*' killswitch
-else
-  roadmap_args=(--limit 10)
-  if dream_wants_wet BRAIN_DREAM_ROADMAP_DRY_RUN "$BRAIN_DREAM_ROADMAP_DRY_RUN"; then
-    roadmap_args+=(--wet)
-  fi
-  log "roadmap: roadmap_curate starting (dry_run=$BRAIN_DREAM_ROADMAP_DRY_RUN)"
-  set +e
-  # 20m: the first real run (2026-07-04) hit 597s/600s — zero margin under 10m.
-  # Pinned par tests/unit/test_dream_sh_roadmap.py.
-  timeout 20m uv run python -m scripts.roadmap_curate "${roadmap_args[@]}" \
-    >> "$LOG_DIR/${TIMESTAMP}_roadmap.log" 2>&1
-  roadmap_rc=$?
-  set -e
-  if (( roadmap_rc == 0 )); then
-    log "DONE roadmap"
-  else
-    log "FAIL roadmap (rc=$roadmap_rc) — see ${TIMESTAMP}_roadmap.log"
-    FAILED_PHASES+=("*/roadmap")
-    manifest_put failed roadmap '*'
-  fi
-fi
-
 # --- SWEEP: draining the ghost sessions -------------------------------------
-# Not an agent phase: a direct Python CLI (the extract/roadmap pattern). Inserts
+# Not an agent phase: a direct Python CLI (the extract pattern). Inserts
 # its own dream_runs row (phase='sweep', model NULL) for briefing visibility.
 # The threshold is NOT passed as an argument: one constant only.
 TOTAL_PHASES=$(( TOTAL_PHASES + 1 ))
