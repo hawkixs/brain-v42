@@ -36,6 +36,8 @@ class GitHubAuthorization(Protocol):
 
     async def authorization_headers(self) -> dict[str, str]: ...
 
+    async def invalidate(self, headers: Mapping[str, str]) -> None: ...
+
 
 def _object(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
@@ -115,7 +117,14 @@ class GitHubClient:
         # Installation-token refresh happens before HTTP admission, avoiding a
         # recursive acquisition while an outer request holds a concurrency slot.
         headers = await self.auth.authorization_headers()
-        return await self.transport.request_page("GET", path, headers=headers)
+        try:
+            return await self.transport.request_page("GET", path, headers=headers)
+        except ProviderError as error:
+            # A refused credential must not be presented again for up to an hour;
+            # rate limiting keeps the token, and any retry stays the scheduler's call.
+            if error.code == "provider_forbidden":
+                await self.auth.invalidate(headers)
+            raise
 
     def _deliverable(self, binding: ArtifactBinding, contract: ContractRevision) -> Deliverable:
         candidates = [item for item in contract.deliverables if item.key == binding.deliverable_key]

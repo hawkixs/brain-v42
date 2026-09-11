@@ -62,6 +62,7 @@ class ObserverCase:
         self.drift = False
         self.missing_document = False
         self.block = False
+        self.invalidated: list[dict[str, str]] = []
         self.http_entered, self.allow_http = asyncio.Event(), asyncio.Event()
         self.pr_reads = {}
         self.bindings = []
@@ -212,11 +213,16 @@ class ObserverCase:
         async def headers():
             return {"Authorization": "Bearer fixture"}
 
+        async def invalidate(refused_headers):
+            self.invalidated.append(dict(refused_headers))
+
         async with httpx.AsyncClient(transport=httpx.MockTransport(self.handle)) as http:
             transport = GitHubTransport(
                 http, selected_settings, monotonic=lambda: self.elapsed, sleep=self.sleep
             )
-            auth = SimpleNamespace(transport=transport, authorization_headers=headers)
+            auth = SimpleNamespace(
+                transport=transport, authorization_headers=headers, invalidate=invalidate
+            )
             client = GitHubClient(http, selected_settings, auth, now=lambda: datetime.now(UTC))
             runtime = DeliveryObserverRuntime(
                 settings=selected_settings,

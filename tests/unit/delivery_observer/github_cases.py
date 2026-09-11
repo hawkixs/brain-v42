@@ -194,7 +194,12 @@ class GitHubCase:
             async def headers():
                 return {"Authorization": "Bearer fixture"}
 
-            auth = SimpleNamespace(transport=transport, authorization_headers=headers)
+            async def invalidate(_headers):
+                return None
+
+            auth = SimpleNamespace(
+                transport=transport, authorization_headers=headers, invalidate=invalidate
+            )
             client = GitHubClient(http, settings, auth, now=lambda: NOW)
             return await client.collect(self.binding, self.contract, previous=previous)
 

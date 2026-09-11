@@ -237,3 +237,126 @@ async def test_pat_file_rejects_symlinked_parent_directory(tmp_path):
     ) as http:
         with pytest.raises(DeliveryError, match="provider_forbidden"):
             await _provider(settings, _transport(http)).authorization_headers()
+
+
+def _pem(rsa_key):
+    return rsa_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+
+
+def _app_settings(tmp_path, rsa_key):
+    key_path = _private(tmp_path / "app.pem", _pem(rsa_key))
+    return DeliverySettings(
+        github_app_id=123, github_installation_id=456, github_private_key_path=key_path
+    )
+
+
+def _client(http, settings, auth):
+    from brain_v42.delivery_observer.github import GitHubClient
+
+    return GitHubClient(http, settings, auth)
+
+
+def _exchange(count):
+    return httpx.Response(
+        201,
+        json={"token": f"installation-fixture-{count}", "expires_at": "2026-01-01T01:00:00Z"},
+    )
+
+
+async def test_forbidden_data_request_drops_the_cached_installation_token(tmp_path, rsa_key):
+    settings = _app_settings(tmp_path, rsa_key)
+    exchanges = []
+    data_statuses = iter([200, 401, 200])
+
+    def handler(request):
+        if request.method == "POST":
+            exchanges.append(request)
+            return _exchange(len(exchanges))
+        status = next(data_statuses)
+        return httpx.Response(status, json={"ok": True} if status == 200 else {"message": "x"})
+
+    now = datetime(2026, 1, 1, tzinfo=UTC).timestamp()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        transport = _transport(http, settings=settings)
+        client = _client(http, settings, _provider(settings, transport, now=lambda: now))
+        assert (await client._get("/data")).data == {"ok": True}
+        with pytest.raises(DeliveryError, match="provider_forbidden"):
+            await client._get("/data")
+        assert (await client._get("/data")).data == {"ok": True}
+    # The refused token is dropped, so the next data request performs exactly one new exchange.
+    assert len(exchanges) == 2
+
+
+async def test_rate_limited_403_keeps_the_cached_installation_token(tmp_path, rsa_key):
+    settings = _app_settings(tmp_path, rsa_key)
+    exchanges = []
+    data_statuses = iter([403, 200])
+
+    def handler(request):
+        if request.method == "POST":
+            exchanges.append(request)
+            return _exchange(len(exchanges))
+        status = next(data_statuses)
+        if status == 403:
+            return httpx.Response(403, headers={"Retry-After": "1"}, json={"message": "slow"})
+        return httpx.Response(200, json={"ok": True})
+
+    now = datetime(2026, 1, 1, tzinfo=UTC).timestamp()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        transport = _transport(http, settings=settings)
+        client = _client(http, settings, _provider(settings, transport, now=lambda: now))
+        with pytest.raises(DeliveryError, match="provider_rate_limited"):
+            await client._get("/data")
+        assert (await client._get("/data")).data == {"ok": True}
+    assert len(exchanges) == 1
+
+
+async def test_invalidate_only_drops_the_exact_token_that_failed(tmp_path, rsa_key):
+    settings = _app_settings(tmp_path, rsa_key)
+    instant = 1700000000.0
+    exchanges = []
+
+    def handler(request):
+        exchanges.append(request)
+        return httpx.Response(
+            201,
+            json={
+                "token": f"installation-fixture-{len(exchanges)}",
+                "expires_at": datetime.fromtimestamp(instant + 3600, UTC).isoformat(),
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        auth = _provider(settings, _transport(http), now=lambda: instant)
+        stale = await auth.authorization_headers()
+        instant += 3541
+        fresh = await auth.authorization_headers()
+        assert fresh != stale and len(exchanges) == 2
+        await auth.invalidate(stale)
+        assert await auth.authorization_headers() == fresh
+        assert len(exchanges) == 2
+        await auth.invalidate(fresh)
+        assert (await auth.authorization_headers())[
+            "Authorization"
+        ] == "Bearer installation-fixture-3"
+        assert len(exchanges) == 3
+
+
+async def test_pat_mode_invalidate_is_a_no_op_without_contacting_github(tmp_path):
+    path = _private(
+        tmp_path / "observer.env", "BRAIN_DELIVERY_GITHUB_TOKEN=dedicated-fixture-token\n"
+    )
+    settings = DeliverySettings(observer_env_path=path)
+    seen = []
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda req: seen.append(req) or httpx.Response(200))
+    ) as http:
+        auth = _provider(settings, _transport(http, settings=settings))
+        headers = await auth.authorization_headers()
+        await auth.invalidate(headers)
+        assert await auth.authorization_headers() == headers
+    assert seen == []
