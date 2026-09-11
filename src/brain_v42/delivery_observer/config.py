@@ -37,6 +37,8 @@ def load_observer_settings(path: Path) -> DeliverySettings:
     if any(item is not None for item in app):
         if any(item is None for item in app):
             raise ValueError("observer application credentials are incomplete")
+        if settings.github_token.get_secret_value():
+            raise ValueError("observer credentials are ambiguous")
         assert settings.github_private_key_path is not None
         read_private_file(settings.github_private_key_path)
     else:
