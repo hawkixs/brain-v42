@@ -10,9 +10,9 @@ than copy.
 The observer unit `brain-v42-delivery-observer.service` runs on GitHub App
 `4907416` (`brain-v42-delivery-observer`), installation `160825374` on the
 `hawkixs` account with repository selection `all`, and on the generated
-23-key / 44-entry registry. The fine-grained PAT left the env file and the process
-environment. Nothing was observed before or after the restart: no eligible binding
-exists, so the confirmations table is unchanged by construction.
+23-key / 44-entry registry. The fine-grained PAT left the env file, the process environment and GitHub. A
+same-day canary on a private repository was observed by the live process and
+received an integration receipt (see Completion).
 
 | Step | Measured |
 |---|---|
@@ -27,16 +27,28 @@ exists, so the confirmations table is unchanged by construction.
 | Journal | stop `{"exit_code": 0, "stopped": true}`, then `Started`; no error line |
 | `delivery_confirmations` | 277 `success`, 9 `provider_invalid_response`, 1 `provider_not_found`, 0 `provider_forbidden`, before and after |
 
-## Pending at the time of writing
+## Completion (same day)
 
-- PAT revocation on GitHub by the operator; the 0600 backup is then shredded.
-- The MCP copy of the registry (`delivery-mcp.env`, block 4b) and the restart of
-  `brain-mcp-http`, scheduled for a moment when cutting agent sessions is acceptable.
-- An end-to-end canary with a live contract bound to a pull request; until then the
-  App path is proven by the pre-restart canary on the observer's own transport and
-  by the successful start (the loader reads the key inside the sandbox).
-- Private-key rotation: an App key never expires; Brain self-ticket dated
+| Step | Measured |
+|---|---|
+| PAT revocation | done by the operator on GitHub; the 0600 env backup holding it was shredded |
+| MCP registry (block 4b) | `delivery-mcp.env` rewritten with the 44-entry registry, `brain-mcp-http` restarted at 10:39:45 CEST, `ActiveState=active`, `NRestarts=0`, unauthenticated `POST /mcp` → `401`, process environment carries 44 registry entries and `BRAIN_DELIVERY_ENABLED=true`; journal lines matching "error" were two ASGI stream closures at shutdown, one embedding retry and the probe's own `invalid_token` |
+| End-to-end canary, private repository | self-ticket `fb7f7a38` (red-arena → red-arena, extraction skipped); contract revision 1 on `hawkixs/red-arena` (`1324957236`), target `main`, required check-runs `lint` and `test` from `github-actions`, explicit acceptance; binding `9b792f2c` to PR 4 (merged 2026-09-10) |
+| Observation by the live process | confirmation `c35e900a`, `outcome=success`, collected 08:42:05.74 → 08:42:07.53 UTC, 66 s after binding; evidence: state `merged`, head `9915e5ed…`, base `22142dc6…`, integration `d2e6a887…`, author `hawkixs`, two check-runs `success` (`103087930980` lint, `103087931202` test, provider `15368`), `complete=true` |
+| Assessment | `delivery_stage=integrated`, `observation_health=fresh`, `requirements_satisfied=true`, `blockers=[]`, delivery digest `805bc45a…`; integration receipt `fb37c460` issued by `brain-v42-delivery-observer` (`issuer_kind=observer`) |
+| `delivery_confirmations` after | 278 `success` (was 277), 9 `provider_invalid_response`, 1 `provider_not_found`, 0 `provider_forbidden` |
+| Closure | explicit acceptance by the requester → fulfillment receipt `0cb9106a` (`acceptance_basis=explicit`, issuer kind `requester`); `brain_ticket_transition(action=resolve)` accepted and the self-ticket went straight to `closed` |
+
+This is the first observation of a private repository's check-runs by this
+observer. The MCP side accepted a contract for a repository other than brain-v42
+for the first time as well, which is the proof that its registry copy is live.
+
+## Still open
+
+- Private-key rotation: an App key never expires; Brain self-ticket `4bf3eabd` dated
   2026-12-05, the day the old PAT would have expired.
+- Observer capacity (ticket `bd1879f6`): about five simultaneously active bindings
+  saturate the fixed 40 requests/minute budget.
 
 ## What did not change
 
