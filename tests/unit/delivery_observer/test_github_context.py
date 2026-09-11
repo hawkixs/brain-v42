@@ -59,10 +59,15 @@ class ContextCase:
         async def headers():
             return {"Authorization": "Bearer fixture"}
 
+        async def invalidate(_headers):
+            return None
+
         settings = DeliverySettings(repository_registry={"executor": {RID: "hawkixs/brain-v42"}})
         async with httpx.AsyncClient(transport=httpx.MockTransport(self.handle)) as http:
             auth = SimpleNamespace(
-                transport=GitHubTransport(http, settings), authorization_headers=headers
+                transport=GitHubTransport(http, settings),
+                authorization_headers=headers,
+                invalidate=invalidate,
             )
             client = GitHubClient(http, settings, auth)
             return await client.collect_repository_context(

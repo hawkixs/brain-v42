@@ -162,3 +162,88 @@ def test_lazy_database_graph_exports_keep_the_existing_public_functions():
         assert getattr(db, name) is getattr(graph, name)
     with pytest.raises(AttributeError):
         _ = db.unknown_graph_function
+
+
+@pytest.fixture(scope="module")
+def app_key_pem():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+
+
+def app_config(tmp_path, pem, *, extra=""):
+    key = tmp_path / "app.pem"
+    key.write_text(pem)
+    key.chmod(0o600)
+    path = private_config(
+        tmp_path,
+        f"BRAIN_DELIVERY_ENABLED=true\nBRAIN_DELIVERY_POSTGRES_URL={PG}\n"
+        "BRAIN_DELIVERY_GITHUB_APP_ID=4907416\nBRAIN_DELIVERY_GITHUB_INSTALLATION_ID=160825374\n"
+        f"BRAIN_DELIVERY_GITHUB_PRIVATE_KEY_PATH={key}\n{extra}",
+    )
+    return path, key
+
+
+def test_loader_accepts_a_complete_app_triplet_from_the_private_file(tmp_path, app_key_pem):
+    from brain_v42.delivery_observer.config import load_observer_settings
+
+    path, key = app_config(tmp_path, app_key_pem)
+    settings = load_observer_settings(path)
+    assert settings.github_app_id == 4907416
+    assert settings.github_installation_id == 160825374
+    assert settings.github_private_key_path == key
+    assert settings.github_token.get_secret_value() == ""
+    assert settings.observer_env_path == path
+
+
+def test_loader_names_the_incomplete_app_triplet(tmp_path):
+    from brain_v42.delivery_observer.config import load_observer_settings
+
+    path = private_config(
+        tmp_path,
+        f"BRAIN_DELIVERY_ENABLED=true\nBRAIN_DELIVERY_POSTGRES_URL={PG}\n"
+        "BRAIN_DELIVERY_GITHUB_APP_ID=12\n",
+    )
+    with pytest.raises(ValueError, match="observer application credentials are incomplete"):
+        load_observer_settings(path)
+
+
+@pytest.mark.parametrize("mode", ["public", "symlink"])
+def test_loader_refuses_an_unsafe_app_key_file(tmp_path, app_key_pem, mode):
+    from brain_v42.delivery_observer.config import load_observer_settings
+    from brain_v42.models.delivery import DeliveryError
+
+    path, key = app_config(tmp_path, app_key_pem)
+    if mode == "public":
+        key.chmod(0o644)
+    else:
+        target = tmp_path / "real.pem"
+        key.rename(target)
+        key.symlink_to(target)
+    with pytest.raises(DeliveryError, match="provider_forbidden"):
+        load_observer_settings(path)
+
+
+def test_loader_refuses_a_pat_coexisting_with_app_credentials(tmp_path, app_key_pem):
+    from brain_v42.delivery_observer.config import load_observer_settings
+
+    path, _ = app_config(tmp_path, app_key_pem, extra=f"BRAIN_DELIVERY_GITHUB_TOKEN={TOKEN}\n")
+    with pytest.raises(ValueError, match="observer credentials are ambiguous"):
+        load_observer_settings(path)
+
+
+def test_cli_refuses_a_pat_coexisting_with_complete_app_credentials(tmp_path, app_key_pem):
+    path, _ = app_config(tmp_path, app_key_pem, extra=f"BRAIN_DELIVERY_GITHUB_TOKEN={TOKEN}\n")
+    result = invoke("--once", "--env-file", path)
+    assert result.returncode == 2
+    assert json.loads(result.stdout) == {
+        "exit_code": 2,
+        "error_code": "observer_configuration_invalid",
+    }
+    assert not result.stderr and TOKEN not in result.stdout

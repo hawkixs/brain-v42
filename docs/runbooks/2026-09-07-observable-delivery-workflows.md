@@ -537,9 +537,11 @@ then
 fi
 ```
 
-Use either the dedicated PAT field or all three GitHub App fields; never combine
-partial App credentials with a PAT. The repository registry remains
-numeric-authoritative. The executable preparation attests the following complete
+Use either the dedicated PAT field or all three GitHub App fields. The loader
+refuses a partial App triplet and, since 2026-09-11, a PAT that coexists with App
+fields (`observer credentials are ambiguous`): a half-finished cutover would
+otherwise keep the PAT alive in the process environment while the App path wins
+silently. The repository registry remains numeric-authoritative. The executable preparation attests the following complete
 selected-file shape; ambient variables and loader defaults cannot supply a
 missing key.
 

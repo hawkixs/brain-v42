@@ -111,6 +111,9 @@ async def test_provider_error_retains_success_records_failure_and_schedules_retr
     assert row["latest_success_confirmation_id"] == previous["latest_success_confirmation_id"]
     assert len(confirmations) == 2 and snapshots == 1
     assert confirmations[-1]["error_code"] == code
+    # Only a refused credential is forgotten; rate limiting and outages keep it.
+    expected_invalidations = [{"Authorization": "Bearer fixture"}] if status in {401, 403} else []
+    assert case.invalidated == expected_invalidations
     assert row["due_at"] > datetime.now(UTC)
     assert "private fixture body" not in result.model_dump_json()
     assert (

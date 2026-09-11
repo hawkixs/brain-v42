@@ -6,7 +6,7 @@ import asyncio
 import os
 import stat
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 
@@ -166,3 +166,18 @@ class GitHubAuthProvider:
                 self._installation_token = token
                 self._expires_at = expires.timestamp()
             return {"Authorization": "Bearer " + self._installation_token.get_secret_value()}
+
+    async def invalidate(self, headers: Mapping[str, str]) -> None:
+        """Forget the installation token a data request was refused with.
+
+        Only the exact token that failed is dropped, so a refresh that already
+        replaced it is kept and the next call performs at most one new exchange.
+        The PAT path caches nothing, so this is a no-op there.
+        """
+        async with self._refresh:
+            token = self._installation_token
+            if token is not None and headers.get("Authorization") == (
+                "Bearer " + token.get_secret_value()
+            ):
+                self._installation_token = None
+                self._expires_at = 0.0
