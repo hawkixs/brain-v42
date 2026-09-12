@@ -1,0 +1,31 @@
+{
+  "captured_from": "scripts/dream.sh at c0e48966464f32d7bdc3104ae9698b9b3301839c (templates, verbatim) and the two night logs of 2026-09-12 (examples, timestamp prefix stripped)",
+  "log_prefix_format": "[HH:MM:SS] ",
+  "templates": {
+    "start_agy": "START $name (provider=agy, model=$model, timeout=${timeout}m)",
+    "start_codex": "START $name (provider=codex, model=$model, reasoning=$reasoning_effort, timeout=${timeout}m)",
+    "start_claude": "START $name (provider=claude, model=$model, timeout=${timeout}m, max_turns=$max_turns)",
+    "done": "DONE  $name",
+    "timeout": "TIMEOUT $name (>${timeout}m)",
+    "fail_fallback": "FAIL  $name (exit=$code — aucun appel d'outil Brain abouti)",
+    "fail_other": "FAIL  $name (exit=$code)",
+    "skip_missing_prompt": "SKIP $name — prompt file missing: $prompt_file",
+    "unsupported_tier": "FAIL  $name — unsupported provider/model tier: $BRAIN_DREAM_AGENT_PROVIDER/$model_tier",
+    "warn_otel": "WARN  otel_split failed for $name — leaving raw log in place",
+    "warn_parser_agy": "WARN  agy_dream_parser failed for $name (non-fatal)",
+    "warn_parser_codex": "WARN  codex_dream_parser failed for $name (non-fatal)",
+    "warn_parser_claude": "WARN  dream_parser failed for $name (non-fatal)",
+    "fallback": "FALLBACK $PROJECT_KEY/$name — $provider a échoué sans aucun appel d'outil Brain abouti, bascule vers ${PROVIDER_CHAIN[$index]}",
+    "fallback_end": "FALLBACK-END $PROJECT_KEY/$name — $provider était le dernier maillon de la chaîne",
+    "killswitch": "KILLSWITCH $var_name='$value' is neither 'true' nor 'false' — staying DRY"
+  },
+  "examples": {
+    "start_codex": "START scan (provider=codex, model=gpt-5.6-terra, reasoning=medium, timeout=5m)",
+    "done": "DONE  scan",
+    "fail_other": "FAIL  synth (exit=1)",
+    "fail_fallback": "FAIL  synth (exit=3 — aucun appel d'outil Brain abouti)",
+    "fallback": "FALLBACK brain-v42/synth — codex a échoué sans aucun appel d'outil Brain abouti, bascule vers agy",
+    "start_agy": "START synth (provider=agy, model=gemini-3.1-pro-high, timeout=15m)"
+  },
+  "examples_missing_from_logs": []
+}
