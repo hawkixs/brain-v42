@@ -252,6 +252,28 @@ def test_build_command_is_headless_ephemeral_and_read_only(tmp_path: Path) -> No
     }.issubset(command)
 
 
+@pytest.mark.parametrize("effort", ["max", "ultra"])
+def test_build_command_accepts_the_max_and_ultra_efforts_codex_declares(
+    tmp_path: Path, effort: str
+) -> None:
+    """Codex 0.153 declares ``max`` and ``ultra`` for gpt-6-astra and the gpt-5.6
+    family (``~/.codex/models_cache.json``, measured 2026-09-12); the deep tier
+    runs Astra at ``max``. Refusing them here would fail every deep phase before
+    launch — with no Brain tool call to prove, hence no switchover to the next
+    provider, only a dead night."""
+    runner = _runner()
+
+    command = runner.build_codex_command(
+        phase="synth",
+        model="gpt-6-astra",
+        reasoning_effort=effort,
+        report_log=tmp_path / "synth.log",
+        workspace=tmp_path,
+    )
+
+    assert _toml_value(_config_overrides(command)["model_reasoning_effort"]) == effort
+
+
 def test_build_command_disables_ambient_capabilities_and_requires_chatgpt_auth(
     tmp_path: Path,
 ) -> None:

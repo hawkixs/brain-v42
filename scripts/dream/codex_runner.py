@@ -40,7 +40,13 @@ from scripts.dream._agent_capability import (
 
 PHASE_TOOL_ALLOWLISTS = DREAM_PHASE_TOOL_ALLOWLISTS
 
-_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
+# ``max`` and ``ultra`` are declared by Codex 0.153 for gpt-6-astra and the
+# gpt-5.6 family (``~/.codex/models_cache.json``, measured 2026-09-12); the deep
+# tier runs Astra at ``max``. A value refused here fails the phase BEFORE launch,
+# with no Brain tool call to prove and hence no switchover to the next provider.
+_REASONING_EFFORTS = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+)
 # Codex resolves its own state directory from CODEX_HOME; no other rail needs
 # it, so it extends the shared base allowlist rather than widening it.
 _CODEX_CHILD_ENV_EXTRA = frozenset({"CODEX_HOME"})

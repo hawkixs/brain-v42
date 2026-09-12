@@ -440,18 +440,18 @@ the cockpit endpoint themselves remain available on `:9200`.
 
 ## Dream Mode (nightly maintenance)
 
-`scripts/dream.sh` orchestrates six headless agent phases: **SCAN / CLEAN / CONNECT / SYNTH / PROMOTE / REORG**. Codex is the default provider and authenticates through the active ChatGPT login. The fast tier uses `gpt-5.6-terra` with medium reasoning; the deep tier uses `gpt-5.6-sol` with high reasoning.
+`scripts/dream.sh` orchestrates six headless agent phases: **SCAN / CLEAN / CONNECT / SYNTH / PROMOTE / REORG**. Codex is the default provider and authenticates through the active ChatGPT login. The fast tier (phase 1: SCAN, CLEAN, CONNECT) uses `gpt-5.6-luna` with high reasoning; the deep tier (phase 2: SYNTH, PROMOTE, REORG) uses `gpt-6-astra` with max reasoning. Both defaults were canaried through the live Codex binary on 2026-09-12; `max` requires the runner that accepts it (same day).
 
 The Codex adapter exposes only the Brain MCP tools required by each phase:
 
 | Phase | Default tier | Exact Brain MCP allowlist |
 |-------|--------------|--------------------------|
-| SCAN | `gpt-5.6-terra` / medium | `brain_decay_status`, `brain_consolidation_candidates`, `brain_list`, `brain_search` |
-| CLEAN | `gpt-5.6-terra` / medium | `brain_search`, `brain_get`, `brain_consolidation_candidates`, `brain_decay_status`, `brain_merge_entities`, `brain_delete`, `brain_list` |
-| CONNECT | `gpt-5.6-terra` / medium | `brain_backfill_links_batch`, `brain_list_orphans_for_classification`, `brain_assign_domain` |
-| SYNTH | `gpt-5.6-sol` / high | `brain_get_clusters`, `brain_get`, `brain_learn`, `brain_save_snippet`, `brain_search`, `brain_list`, `brain_get_neighbors`, `brain_graph_path` |
-| PROMOTE | `gpt-5.6-sol` / high | `brain_get`, `brain_search`, `brain_promote_adr`, `brain_promote_runbook`, `brain_list`, `brain_get_neighbors`, `brain_graph_path` |
-| REORG | `gpt-5.6-sol` / high | `brain_search`, `brain_list`, `brain_get`, `brain_update` |
+| SCAN | `gpt-5.6-luna` / high | `brain_decay_status`, `brain_consolidation_candidates`, `brain_list`, `brain_search` |
+| CLEAN | `gpt-5.6-luna` / high | `brain_search`, `brain_get`, `brain_consolidation_candidates`, `brain_decay_status`, `brain_merge_entities`, `brain_delete`, `brain_list` |
+| CONNECT | `gpt-5.6-luna` / high | `brain_backfill_links_batch`, `brain_list_orphans_for_classification`, `brain_assign_domain` |
+| SYNTH | `gpt-6-astra` / max | `brain_get_clusters`, `brain_get`, `brain_learn`, `brain_save_snippet`, `brain_search`, `brain_list`, `brain_get_neighbors`, `brain_graph_path` |
+| PROMOTE | `gpt-6-astra` / max | `brain_get`, `brain_search`, `brain_promote_adr`, `brain_promote_runbook`, `brain_list`, `brain_get_neighbors`, `brain_graph_path` |
+| REORG | `gpt-6-astra` / max | `brain_search`, `brain_list`, `brain_get`, `brain_update` |
 
 `scripts/dream/codex_runner.py` starts each turn in an ephemeral, read-only workspace. It ignores ambient Codex configuration, requires the loopback Brain MCP server, and disables shell, web search, apps, and subagents. The orchestrator checks both ChatGPT authentication and `MCP_HTTP_TOKEN` before maintenance begins. With capability enforcement enabled, it also validates a complete six-phase profile before phase one, passes only that phase's `active` bearer through an allowlisted child environment, removes the full registry, and adds the loopback MCP hosts to `NO_PROXY`. It never falls back to Claude automatically: a failed WET phase may already have committed a mutation, so switching providers mid-run would risk replaying it. Claude remains an explicit operator rollback only after capability enforcement is disabled:
 
@@ -462,10 +462,10 @@ BRAIN_DREAM_AGENT_PROVIDER=claude scripts/dream.sh brain-v42
 Model and reasoning defaults can be overridden without changing the phase policy:
 
 ```bash
-BRAIN_DREAM_CODEX_FAST_MODEL=gpt-5.6-terra \
-BRAIN_DREAM_CODEX_FAST_REASONING=medium \
-BRAIN_DREAM_CODEX_DEEP_MODEL=gpt-5.6-sol \
-BRAIN_DREAM_CODEX_DEEP_REASONING=high \
+BRAIN_DREAM_CODEX_FAST_MODEL=gpt-5.6-luna \
+BRAIN_DREAM_CODEX_FAST_REASONING=high \
+BRAIN_DREAM_CODEX_DEEP_MODEL=gpt-6-astra \
+BRAIN_DREAM_CODEX_DEEP_REASONING=max \
 scripts/dream.sh brain-v42
 ```
 

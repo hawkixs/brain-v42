@@ -34,10 +34,16 @@ BRAIN_DREAM_AGENT_PROVIDERS="${BRAIN_DREAM_AGENT_PROVIDERS:-$BRAIN_DREAM_AGENT_P
 # replay a phase that had already written — doubling its writes, without a word.
 PROVIDER_FALLBACK_EXIT_CODE=3
 BRAIN_DREAM_CAPABILITY_ENFORCEMENT="${BRAIN_DREAM_CAPABILITY_ENFORCEMENT-false}"
-BRAIN_DREAM_CODEX_FAST_MODEL="${BRAIN_DREAM_CODEX_FAST_MODEL:-gpt-5.6-terra}"
-BRAIN_DREAM_CODEX_DEEP_MODEL="${BRAIN_DREAM_CODEX_DEEP_MODEL:-gpt-5.6-sol}"
-BRAIN_DREAM_CODEX_FAST_REASONING="${BRAIN_DREAM_CODEX_FAST_REASONING:-medium}"
-BRAIN_DREAM_CODEX_DEEP_REASONING="${BRAIN_DREAM_CODEX_DEEP_REASONING:-high}"
+# Two tiers, named by the phases they serve (operator grouping of 2026-09-12):
+#   phase 1 = fast = scan, clean, connect  -> Luna at high (price/quality pick)
+#   phase 2 = deep = synth, promote, reorg -> Astra at max
+# Both were canaried through the live Codex binary on 2026-09-12. ``max`` needs
+# a codex_runner.py that accepts it (same day): a release carrying these
+# defaults without that runner would fail every deep phase before launch.
+BRAIN_DREAM_CODEX_FAST_MODEL="${BRAIN_DREAM_CODEX_FAST_MODEL:-gpt-5.6-luna}"
+BRAIN_DREAM_CODEX_DEEP_MODEL="${BRAIN_DREAM_CODEX_DEEP_MODEL:-gpt-6-astra}"
+BRAIN_DREAM_CODEX_FAST_REASONING="${BRAIN_DREAM_CODEX_FAST_REASONING:-high}"
+BRAIN_DREAM_CODEX_DEEP_REASONING="${BRAIN_DREAM_CODEX_DEEP_REASONING:-max}"
 BRAIN_DREAM_CODEX_BIN="${BRAIN_DREAM_CODEX_BIN:-codex}"
 BRAIN_DREAM_CLAUDE_BIN="${BRAIN_DREAM_CLAUDE_BIN:-claude}"
 BRAIN_DREAM_AGY_BIN="${BRAIN_DREAM_AGY_BIN:-agy}"
@@ -45,7 +51,7 @@ BRAIN_DREAM_AGY_BIN="${BRAIN_DREAM_AGY_BIN:-agy}"
 # claude-sonnet-4-6 and claude-opus-4-6-thinking, and taking those would defeat
 # the point of the link — if Anthropic falls, those models fall with it, and the
 # chain would have two correlated links disguised as three.
-BRAIN_DREAM_AGY_FAST_MODEL="${BRAIN_DREAM_AGY_FAST_MODEL:-gemini-3.6-flash-medium}"
+BRAIN_DREAM_AGY_FAST_MODEL="${BRAIN_DREAM_AGY_FAST_MODEL:-gemini-3.8-flash-high}"
 BRAIN_DREAM_AGY_DEEP_MODEL="${BRAIN_DREAM_AGY_DEEP_MODEL:-gemini-3.1-pro-high}"
 # Ship the PROMOTE killswitch CLOSED (false) by default. Flip to true once
 # §8 step 5 of the spec (first live rollout) has been cleared.
