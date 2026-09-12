@@ -293,13 +293,12 @@ class ClaudeProvider:
     name = "claude"
 
     def build_command(self, spec: RunSpec) -> list[str]:
-        raw_path = spec.extra.get("mcp_config_path", "mcp-config.json")
-        mcp_config_path = raw_path if isinstance(raw_path, Path) else Path(str(raw_path))
+        assert spec.mcp_config_path is not None, "RunSpec.mcp_config_path is required for Claude"
         return build_claude_command(
             phase=spec.phase,
             model=spec.model,
             max_turns=spec.max_turns,
-            mcp_config_path=mcp_config_path,
+            mcp_config_path=spec.mcp_config_path,
             claude_executable=spec.executable or "claude",
         )
 
@@ -315,11 +314,12 @@ class ClaudeProvider:
         return brain_tool_call_completed(events_log)
 
     def run(self, spec: RunSpec) -> RunResult:
-        # Claude mixes stdout/stderr into a single raw log (see run_claude's
-        # docstring); RunSpec has no dedicated field for it, so it travels
-        # through events_log (falling back to report_log).
-        raw_log = spec.events_log or spec.report_log
-        assert raw_log is not None, "RunSpec.events_log or report_log is required for Claude"
+        # Mirrors exactly what scripts/dream/claude_runner.py's --raw-log CLI
+        # argument passes to run_claude: one field, no fallback between
+        # events_log/report_log that would invent a mapping the shim does not
+        # make (see RunSpec.raw_log's docstring).
+        assert spec.raw_log is not None, "RunSpec.raw_log is required for Claude"
+        raw_log = spec.raw_log
         start = time.monotonic()
         exit_code = run_claude(
             prompt=spec.prompt,

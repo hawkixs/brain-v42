@@ -11,8 +11,17 @@ not care which rail it is talking to (a future PR reviewer service, for
 instance) can build one value and hand it to any provider.
 
 Not every field applies to every provider -- ``reasoning_effort`` is
-Codex-only, ``max_turns`` is Claude-only, ``workspace`` is Codex-only. Fields
-irrelevant to a given rail are simply left at their default.
+Codex-only, ``max_turns``, ``raw_log`` and ``mcp_config_path`` are
+Claude-only, ``workspace`` is Codex-only. Fields irrelevant to a given rail
+are simply left at their default. ``raw_log`` exists as its own field rather
+than reusing ``events_log`` or ``report_log`` because Claude does not
+distinguish them -- ``run_claude`` mixes stdout/stderr into ONE file, the same
+one ``scripts/dream/claude_runner.py``'s ``--raw-log`` CLI argument names --
+and a fallback between the two would invent a mapping the CLI shim does not
+make. ``mcp_config_path`` is required for the same reason: a silent string
+default (``"mcp-config.json"``) is not "the same input" ``build_claude_command``
+would otherwise receive from ``run_claude``, which always writes it inside its
+own per-run temporary directory.
 """
 
 from __future__ import annotations
@@ -35,7 +44,9 @@ class RunSpec:
     report_log: Path | None = None
     events_log: Path | None = None
     stderr_log: Path | None = None
+    raw_log: Path | None = None
     workspace: Path | None = None
+    mcp_config_path: Path | None = None
     mcp_url: str | None = None
     executable: str | None = None
     extra: dict[str, object] = field(default_factory=dict)

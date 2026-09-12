@@ -349,8 +349,7 @@ class AgyProvider:
 
     def prepare_home(self, spec: RunSpec) -> Path | None:
         assert spec.project_key is not None
-        real_home = Path(environ_home := os.environ.get("HOME", str(Path.home())))
-        _ = environ_home
+        real_home = Path(os.environ.get("HOME", str(Path.home())))
         root = ephemeral_root(os.environ) or Path(tempfile.gettempdir())
         return build_ephemeral_home(
             root=root,

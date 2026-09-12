@@ -42,7 +42,7 @@ from ..capability import (
     preflight_capabilities,
     terminate_process_group,
 )
-from ..result import RunResult, TokenUsage
+from ..result import RunResult
 from ..spec import RunSpec
 
 PHASE_TOOL_ALLOWLISTS = DREAM_PHASE_TOOL_ALLOWLISTS
@@ -460,30 +460,14 @@ class CodexProvider:
             model=spec.model,
             report_path=spec.report_log,
             events_log=spec.events_log,
-            tokens=self._tokens(spec.events_log),
+            # Not measured here: brain_v42.metrics.codex_dream_parser.parse_codex_jsonl
+            # already owns turn.completed token parsing (fresh = input - cached,
+            # thinking = reasoning_output_tokens) for the historical Dream
+            # telemetry pipeline. Reimplementing a second, untested parser here
+            # risked silently disagreeing with it (a prior draft read the wrong
+            # usage key). RunResult.tokens=None means "not measured", never a
+            # fabricated zero -- see the module's docstring.
+            tokens=None,
             duration_seconds=duration,
             tool_call_completed=brain_tool_call_completed(spec.events_log),
         )
-
-    @staticmethod
-    def _tokens(events_log: Path) -> TokenUsage | None:
-        if not events_log.is_file():
-            return None
-        for raw_line in events_log.read_text(encoding="utf-8", errors="replace").splitlines():
-            if not raw_line.strip():
-                continue
-            try:
-                event = json.loads(raw_line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(event, dict) or event.get("type") != "turn.completed":
-                continue
-            usage = event.get("usage")
-            if not isinstance(usage, dict):
-                continue
-            return TokenUsage(
-                fresh=usage.get("input_tokens"),
-                cached=usage.get("cached_input_tokens"),
-                thinking=usage.get("reasoning_tokens"),
-            )
-        return None
