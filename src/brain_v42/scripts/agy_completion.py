@@ -43,11 +43,15 @@ CREDENTIALS. Symlinked from the real HOME's `.gemini/oauth_creds.json` and
 `.gemini/antigravity-cli/antigravity-oauth-token`, never copied — duplicating
 a human's OAuth tokens would make copies to revoke one by one.
 
-NO IMPORT FROM `scripts/`: `src/brain_v42/` must not depend on the top-level
-`scripts/` tree (it is not installed with the package). The ephemeral-home and
-child-environment patterns mirror `scripts/dream/agy_runner.py` and
-`scripts/dream/_agent_capability.py::build_child_environment` in INTENT, not
-by import — a second, smaller statement of the same idea, not a shared one.
+THE EPHEMERAL HOME NOW COMES FROM `brain_v42.agents.sandbox` (lot 1 of the
+agent runtime extraction, Brain ticket c31bad72): `build_toolless_home` here
+is a straight re-export of `sandbox.build_toolless_home`, not a local
+reimplementation. Before this extraction this module built its own HOME with
+a private `_CREDENTIAL_PATHS` tuple that mirrored (but did not share)
+`scripts/dream/agy_runner.py`'s — two statements of the same idea that could
+silently drift. They are now ONE: `sandbox.EXTRACT_AGY_CREDENTIAL_PATHS`.
+`src/brain_v42/` still imports nothing from the top-level `scripts/` tree —
+the shared code lives in the package on both sides now.
 """
 
 from __future__ import annotations
@@ -60,6 +64,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
+from brain_v42.agents.sandbox import build_toolless_home as build_toolless_home
+
 AGY_BIN_ENV = "BRAIN_DREAM_AGY_BIN"
 DEFAULT_AGY_EXECUTABLE = "agy"
 
@@ -67,12 +73,6 @@ DEFAULT_AGY_EXECUTABLE = "agy"
 # it, execve returns E2BIG. Refusing before that point names the cause and the
 # size instead of surfacing an opaque OSError.
 _MAX_PROMPT_BYTES = 120_000
-
-# Credential files read from the real HOME. SYMLINKED, never copied.
-_CREDENTIAL_PATHS = (
-    ".gemini/oauth_creds.json",
-    ".gemini/antigravity-cli/antigravity-oauth-token",
-)
 
 # Bound on the raw stderr embedded in an `AgyLinkError` message, ahead of the
 # caller's own `_safe_error` truncation/redaction: a multi-KB crash dump must
@@ -130,34 +130,6 @@ def build_agy_completion_command(
     if model.strip():
         command.extend(("--model", model))
     return command
-
-
-def build_toolless_home(root: Path, *, real_home: Path | None = None) -> Path:
-    """Compose a tool-less ephemeral HOME: no MCP servers, symlinked credentials.
-
-    ``real_home`` defaults to the process's own ``HOME`` — parametrised so
-    tests never touch the real one.
-    """
-    home = root / "agy-extract-home"
-    config_dir = home / ".gemini" / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    home.chmod(0o700)
-
-    config_path = config_dir / "mcp_config.json"
-    config_path.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
-    config_path.chmod(0o600)
-
-    source_home = (
-        real_home if real_home is not None else Path(os.environ.get("HOME", str(Path.home())))
-    )
-    for relative in _CREDENTIAL_PATHS:
-        source = source_home / relative
-        target = home / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if source.exists() and not target.exists():
-            target.symlink_to(source)
-
-    return home
 
 
 def _child_environment(home: Path) -> dict[str, str]:

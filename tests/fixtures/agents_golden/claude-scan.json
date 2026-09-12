@@ -1,0 +1,44 @@
+{
+  "argv": [
+    "claude",
+    "-p",
+    "-",
+    "--model",
+    "golden-model",
+    "--max-turns",
+    "40",
+    "--permission-mode",
+    "bypassPermissions",
+    "--tools",
+    "",
+    "--allowedTools",
+    "mcp__brain-v42__brain_decay_status,mcp__brain-v42__brain_consolidation_candidates,mcp__brain-v42__brain_list,mcp__brain-v42__brain_search",
+    "--mcp-config",
+    "/golden/workspace/mcp-config.json",
+    "--strict-mcp-config"
+  ],
+  "child_env": {
+    "HOME": "/golden/real-home",
+    "LANG": "C.UTF-8",
+    "MCP_HTTP_TOKEN": "scan-active-token-placeholder",
+    "NO_PROXY": "127.0.0.1,localhost,::1",
+    "PATH": "/usr/bin:/bin",
+    "TERM": "dumb",
+    "no_proxy": "127.0.0.1,localhost,::1"
+  },
+  "mcp_config": {
+    "mcpServers": {
+      "brain-v42": {
+        "headers": {
+          "Authorization": "Bearer ${MCP_HTTP_TOKEN}",
+          "X-Brain-Agent": "dream-claude-scan",
+          "X-Brain-Tool-Profile": "native"
+        },
+        "type": "http",
+        "url": "http://127.0.0.1:8765/mcp"
+      }
+    }
+  },
+  "phase": "scan",
+  "provider": "claude"
+}

@@ -51,15 +51,25 @@ from pathlib import Path
 
 from brain_v42.provenance import UNEXPANDED_ACTOR, UNKNOWN_ACTOR, is_human_actor
 
-_DREAM_DIR = Path(__file__).resolve().parents[2] / "scripts" / "dream"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+# The lot-1 agent runtime extraction (Brain ticket c31bad72) moved the codex
+# and agy header literals into brain_v42.agents.{providers.codex,sandbox};
+# scripts/dream/{codex,agy}_runner.py are now thin shims over that package.
+# Both trees are scanned so this guard keeps re-reading the header wherever it
+# actually lives, not just where it used to.
+_DREAM_SOURCE_DIRS = (
+    _REPO_ROOT / "scripts" / "dream",
+    _REPO_ROOT / "src" / "brain_v42" / "agents",
+)
 _HEADER_LITERAL = re.compile(r'f"(dream-[a-z0-9]+-)\{phase\}"')
 
 
 def _emitted_prefixes() -> set[str]:
     """The actor prefixes the dream runners REALLY emit."""
     found: set[str] = set()
-    for path in sorted(_DREAM_DIR.glob("*.py")):
-        found.update(_HEADER_LITERAL.findall(path.read_text(encoding="utf-8")))
+    for source_dir in _DREAM_SOURCE_DIRS:
+        for path in sorted(source_dir.rglob("*.py")):
+            found.update(_HEADER_LITERAL.findall(path.read_text(encoding="utf-8")))
     return found
 
 
