@@ -18,11 +18,24 @@ def test_codex_is_the_explicit_default_agent_provider() -> None:
 
 
 def test_codex_fast_and_deep_models_are_subscription_backed_defaults() -> None:
+    """Phase 1 (scan, clean, connect) runs Luna, phase 2 (synth, promote, reorg)
+    runs Astra — operator decision of 2026-09-12, both canaried through the live
+    Codex binary that day."""
     content = _content()
-    assert (
-        'BRAIN_DREAM_CODEX_FAST_MODEL="${BRAIN_DREAM_CODEX_FAST_MODEL:-gpt-5.6-terra}"' in content
-    )
-    assert 'BRAIN_DREAM_CODEX_DEEP_MODEL="${BRAIN_DREAM_CODEX_DEEP_MODEL:-gpt-5.6-sol}"' in content
+    assert 'BRAIN_DREAM_CODEX_FAST_MODEL="${BRAIN_DREAM_CODEX_FAST_MODEL:-gpt-5.6-luna}"' in content
+    assert 'BRAIN_DREAM_CODEX_DEEP_MODEL="${BRAIN_DREAM_CODEX_DEEP_MODEL:-gpt-6-astra}"' in content
+
+
+def test_codex_reasoning_defaults_follow_the_tier() -> None:
+    """Luna at ``high`` for the basic phases, Astra at ``max`` for the deep ones.
+
+    ``max`` is declared by Codex for gpt-6-astra (``~/.codex/models_cache.json``,
+    measured 2026-09-12) and must be accepted by ``scripts/dream/codex_runner.py``
+    — a default the runner refuses would fail every deep phase before launch.
+    """
+    content = _content()
+    assert 'BRAIN_DREAM_CODEX_FAST_REASONING="${BRAIN_DREAM_CODEX_FAST_REASONING:-high}"' in content
+    assert 'BRAIN_DREAM_CODEX_DEEP_REASONING="${BRAIN_DREAM_CODEX_DEEP_REASONING:-max}"' in content
 
 
 def test_all_six_agent_phases_use_provider_neutral_model_tiers() -> None:
