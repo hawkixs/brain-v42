@@ -1,0 +1,27 @@
+{
+  "argv": [
+    "agy",
+    "--print",
+    "GOLDEN PROMPT",
+    "--output-format",
+    "stream-json",
+    "--print-timeout",
+    "300s",
+    "--dangerously-skip-permissions",
+    "--disable-slash-commands",
+    "--model",
+    "golden-model"
+  ],
+  "home_files": {
+    ".gemini/antigravity-cli/settings.json": "{\"enableTelemetry\": false, \"trustedWorkspaces\": [\"<redacted-ephemeral-home>\"]}",
+    ".gemini/config/hooks.json": "{\"dream-phase-guard\": {\"PreToolUse\": [{\"matcher\": \"*\", \"hooks\": [{\"type\": \"command\", \"command\": \"<redacted-guard-path>\", \"timeout\": 10}]}]}}",
+    ".gemini/config/mcp_config.json": "{\"mcpServers\": {\"brain-v42\": {\"serverUrl\": \"http://127.0.0.1:8765/mcp\", \"headers\": {\"Authorization\": \"Bearer <redacted-scoped-token>\", \"X-Brain-Agent\": \"dream-agy-synth\", \"X-Brain-Tool-Profile\": \"native\"}, \"trust\": true}}}"
+  },
+  "phase": "synth",
+  "provider": "agy",
+  "redacted": {
+    "guard_path": "agy_tool_guard.sh's absolute path -> '<redacted-guard-path>'",
+    "home": "the ephemeral HOME's own absolute path -> '<redacted-ephemeral-home>'",
+    "token": "the (project, phase) active bearer -> '<redacted-scoped-token>'"
+  }
+}
