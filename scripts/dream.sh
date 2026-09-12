@@ -45,7 +45,7 @@ BRAIN_DREAM_AGY_BIN="${BRAIN_DREAM_AGY_BIN:-agy}"
 # claude-sonnet-4-6 and claude-opus-4-6-thinking, and taking those would defeat
 # the point of the link — if Anthropic falls, those models fall with it, and the
 # chain would have two correlated links disguised as three.
-BRAIN_DREAM_AGY_FAST_MODEL="${BRAIN_DREAM_AGY_FAST_MODEL:-gemini-3.6-flash-medium}"
+BRAIN_DREAM_AGY_FAST_MODEL="${BRAIN_DREAM_AGY_FAST_MODEL:-gemini-3.8-flash-high}"
 BRAIN_DREAM_AGY_DEEP_MODEL="${BRAIN_DREAM_AGY_DEEP_MODEL:-gemini-3.1-pro-high}"
 # Ship the PROMOTE killswitch CLOSED (false) by default. Flip to true once
 # §8 step 5 of the spec (first live rollout) has been cleared.
