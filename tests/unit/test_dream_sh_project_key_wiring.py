@@ -14,9 +14,12 @@ Two properties to prove, and a third to PROTECT:
     blocks that have no project to name.
 """
 
+import inspect
 from pathlib import Path
 
 import pytest
+
+from brain_v42.agents import phase
 
 _DREAM_SH = Path(__file__).parent.parent.parent / "scripts" / "dream.sh"
 _FLAG = '--project-key "$PROJECT_KEY"'
@@ -33,35 +36,66 @@ def _between(content: str, start: str, end: str) -> str:
     return tail.split(end, maxsplit=1)[0]
 
 
-@pytest.fixture
-def parser_block() -> str:
-    return _between(_content(), "local parser_args=(", 'return "$phase_rc"')
+# TRANSPOSED (lot 2, Brain ticket afd56820): the shared `parser_args` bash
+# array these two tests used to slice out of `run_phase` no longer exists --
+# it moved to `brain_v42.agents.phase.parser_argv`, one function every
+# provider goes through. The guarantees below are unchanged: the project key
+# reaches every rail from ONE position, not from per-rail duplicated code.
 
 
-def test_the_flag_enters_the_shared_argument_array(parser_block: str) -> None:
-    """In `parser_args`, hence before the rails diverge.
-
-    It is the only position that serves them ALL in one gesture. The array is
-    built once and consumed once per rail — there were two, there are three since
-    agy arrived, and this position has not had to move.
-    """
-    assignment = parser_block.split("local scan_log=", maxsplit=1)[0]
-
-    assert _FLAG in assignment
+def _sample_paths() -> phase.PhasePaths:
+    return phase.PhasePaths.build(
+        log_dir=Path("/tmp/logs"),
+        timestamp="2026-09-12",
+        project_key="brain-v42",
+        phase="scan",
+        dream_dir=Path("/tmp/dream"),
+    )
 
 
-def test_every_rail_consumes_the_same_array(parser_block: str) -> None:
-    """Proof that the position above is enough: no rail builds its own arguments.
+def test_the_flag_enters_the_shared_argument_array() -> None:
+    """`--project-key` sits in `parser_argv`'s common prefix, built once and
+    shared by every provider before the provider-specific tail is appended --
+    the exact same relative position for all three, proving no rail branches
+    off to build its own."""
+    paths = _sample_paths()
+    positions = set()
+    for provider in ("agy", "codex", "claude"):
+        argv = phase.parser_argv(
+            provider,
+            phase="scan",
+            model="m",
+            timestamp="2026-09-12",
+            status="done",
+            duration=1,
+            project_key="brain-v42",
+            effective_dry_run="false",
+            scan_log=None,
+            paths=paths,
+        )
+        assert "--project-key" in argv
+        index = argv.index("--project-key")
+        assert argv[index + 1] == "brain-v42"
+        positions.add(index)
 
-    The count is derived from the parsers present, not frozen at a number. A
-    fourth rail cobbling together its own arguments would slip under a literal
-    updated by hand — which is exactly what this test must catch.
-    """
-    parsers = ("agy_dream_parser", "codex_dream_parser", "brain_v42.metrics.dream_parser")
-    for parser in parsers:
-        assert parser in parser_block, parser
+    assert len(positions) == 1, f"--project-key moved between rails: {positions}"
 
-    assert parser_block.count('"${parser_args[@]}"') == len(parsers)
+
+def test_every_rail_consumes_the_same_array() -> None:
+    """Proof that the position above is enough: every rail names its own
+    parser module (`phase.parser_module`), and `phase.run_phase` builds and
+    spawns the parser argv from exactly one call site -- no rail forks its
+    own argument-building code."""
+    parsers = {
+        "agy": "brain_v42.metrics.agy_dream_parser",
+        "codex": "brain_v42.metrics.codex_dream_parser",
+        "claude": "brain_v42.metrics.dream_parser",
+    }
+    for provider, module in parsers.items():
+        assert phase.parser_module(provider) == module
+
+    source = inspect.getsource(phase.run_phase)
+    assert source.count("parser_argv(") == 1
 
 
 def test_the_empty_pool_row_is_recorded_for_a_named_project() -> None:

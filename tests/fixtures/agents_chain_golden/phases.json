@@ -1,0 +1,111 @@
+{
+  "captured_from": "scripts/dream.sh at c0e48966464f32d7bdc3104ae9698b9b3301839c",
+  "phase_deps": {
+    "scan": [],
+    "clean": [
+      "scan"
+    ],
+    "connect": [
+      "clean"
+    ],
+    "synth": [
+      "connect"
+    ],
+    "promote": [
+      "synth"
+    ],
+    "reorg": [
+      "scan",
+      "synth"
+    ]
+  },
+  "phases": [
+    {
+      "name": "scan",
+      "tier": "fast",
+      "timeout_minutes": 5,
+      "max_turns": 30
+    },
+    {
+      "name": "clean",
+      "tier": "fast",
+      "timeout_minutes": 5,
+      "max_turns": 25
+    },
+    {
+      "name": "connect",
+      "tier": "fast",
+      "timeout_minutes": 8,
+      "max_turns": 40
+    },
+    {
+      "name": "synth",
+      "tier": "deep",
+      "timeout_minutes": 15,
+      "max_turns": 50
+    },
+    {
+      "name": "promote",
+      "tier": "deep",
+      "timeout_minutes": 10,
+      "max_turns": 50
+    },
+    {
+      "name": "reorg",
+      "tier": "deep",
+      "timeout_minutes": 10,
+      "max_turns": 50
+    }
+  ],
+  "dry_run_derivation": [
+    {
+      "phase": "scan",
+      "dry_run": "false",
+      "reorg_dry_run": "false",
+      "effective": "false",
+      "killswitch_line": null
+    },
+    {
+      "phase": "scan",
+      "dry_run": "true",
+      "reorg_dry_run": "false",
+      "effective": "true",
+      "killswitch_line": null
+    },
+    {
+      "phase": "reorg",
+      "dry_run": "false",
+      "reorg_dry_run": "false",
+      "effective": "false",
+      "killswitch_line": null
+    },
+    {
+      "phase": "reorg",
+      "dry_run": "false",
+      "reorg_dry_run": "true",
+      "effective": "true",
+      "killswitch_line": null
+    },
+    {
+      "phase": "reorg",
+      "dry_run": "true",
+      "reorg_dry_run": "false",
+      "effective": "true",
+      "killswitch_line": null
+    },
+    {
+      "phase": "reorg",
+      "dry_run": "false",
+      "reorg_dry_run": "maybe",
+      "effective": "true",
+      "killswitch_line": "KILLSWITCH BRAIN_DREAM_REORG_DRY_RUN='maybe' is neither 'true' nor 'false' — staying DRY"
+    },
+    {
+      "phase": "synth",
+      "dry_run": "false",
+      "reorg_dry_run": "maybe",
+      "effective": "false",
+      "killswitch_line": null
+    }
+  ]
+}

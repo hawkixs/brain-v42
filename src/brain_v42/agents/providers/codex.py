@@ -12,12 +12,14 @@ log separation and the wall-clock timeout -- lives here now.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from brain_v42.mcp.dream_capabilities import (
@@ -471,3 +473,81 @@ class CodexProvider:
             duration_seconds=duration,
             tool_call_completed=brain_tool_call_completed(spec.events_log),
         )
+
+
+# --- CLI entry point --------------------------------------------------------
+#
+# Moved from scripts/dream/codex_runner.py (lot 2 of the agent runtime
+# extraction, Brain ticket afd56820). The shim there now just calls main()
+# below; its argparse contract and exit codes are unchanged.
+
+_REASONING_EFFORTS = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+)
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run one isolated Dream phase with Codex")
+    parser.add_argument("--preflight-capabilities", action="store_true")
+    parser.add_argument("--project-key")
+    parser.add_argument("--phase", choices=tuple(PHASE_TOOL_ALLOWLISTS))
+    parser.add_argument("--model")
+    parser.add_argument("--reasoning-effort", choices=tuple(_REASONING_EFFORTS))
+    parser.add_argument("--timeout-seconds", type=float)
+    parser.add_argument("--report-log", type=Path)
+    parser.add_argument("--events-log", type=Path)
+    parser.add_argument("--stderr-log", type=Path)
+    parser.add_argument("--workspace", type=Path)
+    parser.add_argument(
+        "--codex-executable", default=os.environ.get("BRAIN_DREAM_CODEX_BIN", "codex")
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    if args.preflight_capabilities:
+        if args.project_key is None:
+            parser.error("--project-key is required with --preflight-capabilities")
+        try:
+            preflight_capabilities(args.project_key, os.environ)
+        except DreamCapabilityConfigurationError:
+            print(_CAPABILITY_CONFIGURATION_ERROR, file=sys.stderr)
+            return 1
+        return 0
+
+    required_arguments = {
+        "--phase": args.phase,
+        "--model": args.model,
+        "--reasoning-effort": args.reasoning_effort,
+        "--timeout-seconds": args.timeout_seconds,
+        "--report-log": args.report_log,
+        "--events-log": args.events_log,
+        "--stderr-log": args.stderr_log,
+    }
+    missing = [name for name, value in required_arguments.items() if value is None]
+    if missing:
+        parser.error(f"the following arguments are required: {', '.join(missing)}")
+
+    prompt = sys.stdin.read()
+    if not prompt.strip():
+        print("Dream Codex prompt is empty", file=sys.stderr)
+        return 1
+    return run_codex(
+        prompt=prompt,
+        phase=args.phase,
+        project_key=args.project_key,
+        model=args.model,
+        reasoning_effort=args.reasoning_effort,
+        timeout_seconds=args.timeout_seconds,
+        report_log=args.report_log,
+        events_log=args.events_log,
+        stderr_log=args.stderr_log,
+        codex_executable=args.codex_executable,
+        workspace=args.workspace,
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

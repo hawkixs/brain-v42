@@ -27,12 +27,14 @@ make it succeed blind, which is worse.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from brain_v42.mcp.dream_capabilities import (
@@ -49,6 +51,7 @@ from ..capability import (
     PROVIDER_FALLBACK_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
     build_child_environment,
+    preflight_capabilities,
     terminate_process_group,
 )
 from ..result import RunResult
@@ -342,3 +345,69 @@ class ClaudeProvider:
             duration_seconds=duration,
             tool_call_completed=brain_tool_call_completed(raw_log),
         )
+
+
+# --- CLI entry point --------------------------------------------------------
+#
+# Moved from scripts/dream/claude_runner.py (lot 2 of the agent runtime
+# extraction, Brain ticket afd56820). The shim there now just calls main()
+# below; its argparse contract and exit codes are unchanged.
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run one isolated Dream phase with Claude")
+    parser.add_argument("--preflight-capabilities", action="store_true")
+    parser.add_argument("--project-key")
+    parser.add_argument("--phase", choices=tuple(PHASE_TOOL_ALLOWLISTS))
+    parser.add_argument("--model")
+    parser.add_argument("--max-turns", type=int)
+    parser.add_argument("--timeout-seconds", type=float)
+    parser.add_argument("--raw-log", type=Path)
+    parser.add_argument(
+        "--claude-executable", default=os.environ.get("BRAIN_DREAM_CLAUDE_BIN", "claude")
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    if args.preflight_capabilities:
+        if args.project_key is None:
+            parser.error("--project-key is required with --preflight-capabilities")
+        try:
+            preflight_capabilities(args.project_key, os.environ)
+        except DreamCapabilityConfigurationError:
+            print(CAPABILITY_CONFIGURATION_ERROR, file=sys.stderr)
+            return 1
+        return 0
+
+    required_arguments = {
+        "--phase": args.phase,
+        "--model": args.model,
+        "--max-turns": args.max_turns,
+        "--timeout-seconds": args.timeout_seconds,
+        "--raw-log": args.raw_log,
+    }
+    missing = [name for name, value in required_arguments.items() if value is None]
+    if missing:
+        parser.error(f"the following arguments are required: {', '.join(missing)}")
+
+    prompt = sys.stdin.read()
+    if not prompt.strip():
+        print("Dream Claude prompt is empty", file=sys.stderr)
+        return 1
+    return run_claude(
+        prompt=prompt,
+        phase=args.phase,
+        project_key=args.project_key,
+        model=args.model,
+        max_turns=args.max_turns,
+        timeout_seconds=args.timeout_seconds,
+        raw_log=args.raw_log,
+        claude_executable=args.claude_executable,
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

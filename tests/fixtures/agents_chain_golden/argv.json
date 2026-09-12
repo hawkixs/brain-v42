@@ -1,0 +1,146 @@
+{
+  "captured_from": "scripts/dream.sh at c0e48966464f32d7bdc3104ae9698b9b3301839c, run_phase and run_phase_chain, quoted before deletion",
+  "runner": {
+    "agy": [
+      "--phase",
+      "$name",
+      "--project-key",
+      "$PROJECT_KEY",
+      "--model",
+      "$model",
+      "--timeout-seconds",
+      "$(( timeout * 60 ))",
+      "--events-log",
+      "$events_log",
+      "--report-log",
+      "$report_log",
+      "--stderr-log",
+      "$stderr_log",
+      "--agy-executable",
+      "$BRAIN_DREAM_AGY_BIN"
+    ],
+    "codex": [
+      "--phase",
+      "$name",
+      "--project-key",
+      "$PROJECT_KEY",
+      "--model",
+      "$model",
+      "--reasoning-effort",
+      "$reasoning_effort",
+      "--timeout-seconds",
+      "$(( timeout * 60 ))",
+      "--report-log",
+      "$report_log",
+      "--events-log",
+      "$events_log",
+      "--stderr-log",
+      "$stderr_log",
+      "--codex-executable",
+      "$BRAIN_DREAM_CODEX_BIN"
+    ],
+    "claude": [
+      "--phase",
+      "$name",
+      "--project-key",
+      "$PROJECT_KEY",
+      "--model",
+      "$model",
+      "--max-turns",
+      "$max_turns",
+      "--timeout-seconds",
+      "$(( timeout * 60 ))",
+      "--raw-log",
+      "$raw_log",
+      "--claude-executable",
+      "$BRAIN_DREAM_CLAUDE_BIN"
+    ]
+  },
+  "runner_module": {
+    "agy": "scripts.dream.agy_runner",
+    "codex": "scripts.dream.codex_runner",
+    "claude": "scripts.dream.claude_runner"
+  },
+  "parser_base": [
+    "--phase",
+    "$name",
+    "--model",
+    "$model",
+    "--date",
+    "$TIMESTAMP",
+    "--status",
+    "$status",
+    "--duration",
+    "$duration",
+    "--project-key",
+    "$PROJECT_KEY",
+    "--phase-dry-run",
+    "$effective_dry_run"
+  ],
+  "parser_raw_log_option": [
+    "--raw-log",
+    "$scan_log"
+  ],
+  "parser_tail": {
+    "agy": [
+      "--report-log",
+      "$report_log",
+      "$events_log"
+    ],
+    "codex": [
+      "--report-log",
+      "$report_log",
+      "$events_log"
+    ],
+    "claude": [
+      "$otel_log"
+    ]
+  },
+  "parser_module": {
+    "agy": "brain_v42.metrics.agy_dream_parser",
+    "codex": "brain_v42.metrics.codex_dream_parser",
+    "claude": "brain_v42.metrics.dream_parser"
+  },
+  "otel_split": {
+    "module": "brain_v42.metrics.otel_split",
+    "argv": [
+      "$raw_log",
+      "--report",
+      "$report_log",
+      "--otel",
+      "$otel_log"
+    ]
+  },
+  "files": {
+    "raw_log": "$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.raw.log",
+    "report_log": "$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.log",
+    "otel_log": "$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.otel.log",
+    "events_log": "$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.events.jsonl",
+    "stderr_log": "$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.stderr.log",
+    "err_log_claude": "$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.err.log",
+    "prompt_file": "$DREAM_DIR/phase_${name}.md",
+    "main_log": "$LOG_DIR/$TIMESTAMP.log"
+  },
+  "exit_code_mapping": {
+    "0": {
+      "status": "done",
+      "phase_rc": 0
+    },
+    "124": {
+      "status": "timeout",
+      "phase_rc": 2
+    },
+    "3": {
+      "status": "fail",
+      "phase_rc": 3
+    },
+    "other": {
+      "status": "fail",
+      "phase_rc": 1
+    }
+  },
+  "chain_rules": {
+    "advance_only_on": 3,
+    "last_link_fallback_rc": 1
+  }
+}

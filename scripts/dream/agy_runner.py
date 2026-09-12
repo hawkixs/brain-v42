@@ -1,10 +1,13 @@
 """An isolated ``agy`` adapter for one Dream phase -- CLI entry point.
 
 Moved to :mod:`brain_v42.agents.providers.agy` (lot 1 of the agent runtime
-extraction, Brain ticket c31bad72). This file keeps the ``argparse`` CLI and
-``main()`` that ``dream.sh`` invokes, plus ``GUARD_PATH`` -- the absolute path
-to the versioned tool-use guard (``scripts/dream/agy_tool_guard.sh``), which
-the package does not hardcode: ``build_ephemeral_home`` there takes
+extraction, Brain ticket c31bad72). The ``argparse`` CLI and ``main()`` moved
+there too in lot 2 (Brain ticket afd56820): ``run_phase`` no longer shells
+out to this module by name, it invokes ``brain_v42.agents.providers.agy``
+directly (which resolves its own guard path -- see that module's CLI
+section). This file keeps ``GUARD_PATH`` -- the absolute path to the
+versioned tool-use guard (``scripts/dream/agy_tool_guard.sh``), which the
+package does not hardcode: ``build_ephemeral_home`` there takes
 ``guard_path`` as an explicit parameter instead (see
 ``brain_v42.agents.sandbox``'s module docstring). ``build_ephemeral_home`` and
 ``guard_denies_machine_tools`` below are thin wrappers that supply this
@@ -14,16 +17,10 @@ signature ``tests/unit/test_dream_agy_runner.py`` calls.
 
 from __future__ import annotations
 
-import argparse
 import os
-import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from pathlib import Path
 
-from brain_v42.agents.capability import (
-    CAPABILITY_CONFIGURATION_ERROR,
-    preflight_capabilities,
-)
 from brain_v42.agents.providers.agy import (
     PHASE_TOOL_ALLOWLISTS as PHASE_TOOL_ALLOWLISTS,
 )
@@ -40,6 +37,9 @@ from brain_v42.agents.providers.agy import (
     guard_denies_machine_tools as _package_guard_denies_machine_tools,
 )
 from brain_v42.agents.providers.agy import (
+    main as _package_main,
+)
+from brain_v42.agents.providers.agy import (
     run_agy as _package_run_agy,
 )
 from brain_v42.agents.sandbox import (
@@ -48,7 +48,6 @@ from brain_v42.agents.sandbox import (
 from brain_v42.agents.sandbox import (
     ephemeral_root as ephemeral_root,
 )
-from brain_v42.mcp.dream_capabilities import DreamCapabilityConfigurationError
 
 GUARD_PATH = Path(__file__).resolve().parent / "agy_tool_guard.sh"
 
@@ -105,64 +104,15 @@ def run_agy(
     )
 
 
-def _build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Jouer une phase de Dream avec agy")
-    parser.add_argument("--preflight-capabilities", action="store_true")
-    parser.add_argument("--project-key")
-    parser.add_argument("--phase", choices=tuple(PHASE_TOOL_ALLOWLISTS))
-    parser.add_argument("--model", default="")
-    parser.add_argument("--timeout-seconds", type=float)
-    parser.add_argument("--events-log", type=Path)
-    parser.add_argument("--report-log", type=Path)
-    parser.add_argument("--stderr-log", type=Path)
-    parser.add_argument("--agy-executable", default=os.environ.get("BRAIN_DREAM_AGY_BIN", "agy"))
-    return parser
+def main(argv: list[str] | None = None) -> int:
+    """The CLI entry point, guard anchored to THIS file's directory as before.
 
-
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = _build_arg_parser()
-    args = parser.parse_args(argv)
-
-    if args.preflight_capabilities:
-        if args.project_key is None:
-            parser.error("--project-key est requis avec --preflight-capabilities")
-        if not guard_denies_machine_tools():
-            print("garde d'outils agy absente ou permissive", file=sys.stderr)
-            return 1
-        try:
-            preflight_capabilities(args.project_key, os.environ)
-        except DreamCapabilityConfigurationError:
-            print(CAPABILITY_CONFIGURATION_ERROR, file=sys.stderr)
-            return 1
-        return 0
-
-    required = {
-        "--phase": args.phase,
-        "--project-key": args.project_key,
-        "--timeout-seconds": args.timeout_seconds,
-        "--events-log": args.events_log,
-        "--report-log": args.report_log,
-        "--stderr-log": args.stderr_log,
-    }
-    missing = [name for name, value in required.items() if value is None]
-    if missing:
-        parser.error(f"arguments requis manquants : {', '.join(missing)}")
-
-    prompt = sys.stdin.read()
-    if not prompt.strip():
-        print("prompt de phase agy vide", file=sys.stderr)
-        return 1
-    return run_agy(
-        prompt=prompt,
-        phase=args.phase,
-        project_key=args.project_key,
-        model=args.model,
-        timeout_seconds=args.timeout_seconds,
-        events_log=args.events_log,
-        report_log=args.report_log,
-        stderr_log=args.stderr_log,
-        agy_executable=args.agy_executable,
-    )
+    The package entry point refuses to guess the guard from the working
+    directory; this shim supplies the pre-extraction resolution (the file next
+    to it) unless the caller already named one.
+    """
+    os.environ.setdefault("BRAIN_DREAM_AGY_GUARD_PATH", str(GUARD_PATH))
+    return _package_main(argv)
 
 
 if __name__ == "__main__":

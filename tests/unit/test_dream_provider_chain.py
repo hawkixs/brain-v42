@@ -224,6 +224,7 @@ def test_the_fallback_exit_code_agrees_between_the_shell_and_the_runners() -> No
 
 def _sandbox(tmp_path: Path, runner_exit_code: int) -> tuple[Path, dict[str, str]]:
     import subprocess
+    import sys
 
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir()
@@ -255,21 +256,52 @@ def _sandbox(tmp_path: Path, runner_exit_code: int) -> tuple[Path, dict[str, str
     )
     stub.chmod(0o755)
 
-    # The stub returns the chosen code for ANY agent runner, and fails otel_split
-    # to take the WARN branch that materialises the logs.
+    # Since lot 2 (Brain ticket afd56820), `run_phase`/`run_phase_chain` are
+    # Python: dream.sh's call site shells out ONCE to
+    # `uv run python -m brain_v42.agents.run_phase_chain`, which does its own
+    # subprocessing for the runner, the parser and otel_split -- via
+    # `sys.executable` by default, `BRAIN_AGENTS_SUBPROCESS_PYTHON` in tests.
+    # This stub forwards that single call to the REAL interpreter running
+    # this test (so brain_v42 imports for real), pointed at a second fake
+    # "python" for the three subprocess kinds run_phase spawns -- the direct
+    # transposition of the old stub's `*claude_runner*|*codex_runner*` and
+    # `*otel_split*` case arms, now keyed on `-m <module>` instead of on a
+    # substring of the whole command line.
+    fake_python = mock_bin / "fake-agents-python"
+    fake_python.write_text(
+        "#!/usr/bin/env bash\n"
+        "cat >/dev/null 2>&1 || true\n"
+        'module=""\n'
+        'raw_log=""\n'
+        "while (($#)); do\n"
+        '  case "$1" in\n'
+        '    -m) module="$2"; shift 2 ;;\n'
+        '    --raw-log) raw_log="$2"; shift 2 ;;\n'
+        "    *) shift ;;\n"
+        "  esac\n"
+        "done\n"
+        'case "$module" in\n'
+        "  brain_v42.agents.providers.*)\n"
+        '    [[ -n "$raw_log" ]] && printf "mock phase output\\n" >> "$raw_log"\n'
+        f"    exit {runner_exit_code}\n"
+        "    ;;\n"
+        "  brain_v42.metrics.otel_split) exit 1 ;;\n"
+        "  brain_v42.metrics.*) exit 0 ;;\n"
+        "esac\n"
+        "exit 0\n"
+    )
+    fake_python.chmod(0o755)
+
     uv_stub = mock_bin / "uv"
     uv_stub.write_text(
         "#!/usr/bin/env bash\n"
         "cat >/dev/null 2>&1 || true\n"
         'case "$*" in\n'
-        "  *otel_split*) exit 1 ;;\n"
-        "  *claude_runner*|*codex_runner*)\n"
-        '    _raw=""\n'
-        "    while (($#)); do\n"
-        "      if [[ $1 == --raw-log ]]; then _raw=$2; shift 2; else shift; fi\n"
-        "    done\n"
-        '    [[ -n "$_raw" ]] && printf "mock phase output\\n" >> "$_raw"\n'
-        f"    exit {runner_exit_code}\n"
+        "  *brain_v42.agents.run_phase_chain*)\n"
+        "    shift 2\n"
+        f'    exec env PYTHONPATH="{REPO_ROOT / "src"}" '
+        f'BRAIN_AGENTS_SUBPROCESS_PYTHON="{fake_python}" '
+        f'"{sys.executable}" "$@"\n'
         "    ;;\n"
         "esac\n"
         "exit 0\n"
@@ -431,16 +463,19 @@ def test_every_rail_persists_its_dream_run_row() -> None:
     dictate an absurd chain order: claude placed before agy to preserve the
     dream_runs rows, hence the subscription we wanted to spare put in the front
     line. A tooling gap must not decide a cost trade-off.
-    """
-    content = _dream_sh()
 
-    for parser in (
-        "brain_v42.metrics.agy_dream_parser",
-        "brain_v42.metrics.codex_dream_parser",
-        "brain_v42.metrics.dream_parser",
-    ):
-        assert parser in content, parser
-    assert "ligne dream_runs NON enregistrée" not in content
+    TRANSPOSED (lot 2, Brain ticket afd56820): the parser wiring moved from
+    inline dream.sh text to ``brain_v42.agents.phase.parser_module`` --
+    ``brain_v42.agents.phase.run_phase`` is what now invokes it, once per
+    phase, for whichever provider ran. The guarantee (every rail names its
+    parser) is unchanged; only where it is asserted moved with the code.
+    """
+    from brain_v42.agents import phase
+
+    assert phase.parser_module("agy") == "brain_v42.metrics.agy_dream_parser"
+    assert phase.parser_module("codex") == "brain_v42.metrics.codex_dream_parser"
+    assert phase.parser_module("claude") == "brain_v42.metrics.dream_parser"
+    assert "ligne dream_runs NON enregistrée" not in _dream_sh()
 
 
 def test_the_agy_preflight_proves_its_tool_guard_before_the_night() -> None:
