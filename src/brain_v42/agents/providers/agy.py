@@ -34,12 +34,14 @@ Named here so it is not rediscovered by accident.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from brain_v42.mcp.dream_capabilities import (
@@ -52,6 +54,7 @@ from ..capability import (
     PROVIDER_FALLBACK_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
     capability_enforcement_enabled,
+    preflight_capabilities,
     terminate_process_group,
 )
 from ..result import RunResult
@@ -393,3 +396,94 @@ class AgyProvider:
             duration_seconds=duration,
             tool_call_completed=brain_tool_call_completed(spec.events_log),
         )
+
+
+# --- CLI entry point --------------------------------------------------------
+#
+# Moved from scripts/dream/agy_runner.py (lot 2 of the agent runtime
+# extraction, Brain ticket afd56820). The shim there keeps its own GUARD_PATH
+# and wrapper functions (build_ephemeral_home, guard_denies_machine_tools,
+# run_agy) for its existing tests, which call them in-process. This CLI is
+# what `brain_v42.agents.phase.run_phase` now invokes as a subprocess
+# (`python -m brain_v42.agents.providers.agy`), so it must resolve the guard
+# on its own -- WITHOUT importing `scripts.dream` (this package must not
+# depend on the top-level `scripts/` tree, see `brain_v42.agents.protocol`).
+#
+# Every Dream process that reaches this CLI runs with its working directory
+# at the repository root (or the release checkout that mirrors it) -- the
+# same assumption `scripts/dream.sh`'s own `python3 -m scripts.dream.*`
+# invocations already make. `BRAIN_DREAM_AGY_GUARD_PATH` overrides it for a
+# caller that cannot rely on that cwd.
+
+
+def _default_guard_path() -> Path:
+    override = os.environ.get("BRAIN_DREAM_AGY_GUARD_PATH")
+    if override:
+        return Path(override)
+    return Path.cwd() / "scripts" / "dream" / "agy_tool_guard.sh"
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Jouer une phase de Dream avec agy")
+    parser.add_argument("--preflight-capabilities", action="store_true")
+    parser.add_argument("--project-key")
+    parser.add_argument("--phase", choices=tuple(PHASE_TOOL_ALLOWLISTS))
+    parser.add_argument("--model", default="")
+    parser.add_argument("--timeout-seconds", type=float)
+    parser.add_argument("--events-log", type=Path)
+    parser.add_argument("--report-log", type=Path)
+    parser.add_argument("--stderr-log", type=Path)
+    parser.add_argument("--agy-executable", default=os.environ.get("BRAIN_DREAM_AGY_BIN", "agy"))
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    guard_path = _default_guard_path()
+
+    if args.preflight_capabilities:
+        if args.project_key is None:
+            parser.error("--project-key est requis avec --preflight-capabilities")
+        if not guard_denies_machine_tools(guard_path):
+            print("garde d'outils agy absente ou permissive", file=sys.stderr)
+            return 1
+        try:
+            preflight_capabilities(args.project_key, os.environ)
+        except DreamCapabilityConfigurationError:
+            print(CAPABILITY_CONFIGURATION_ERROR, file=sys.stderr)
+            return 1
+        return 0
+
+    required = {
+        "--phase": args.phase,
+        "--project-key": args.project_key,
+        "--timeout-seconds": args.timeout_seconds,
+        "--events-log": args.events_log,
+        "--report-log": args.report_log,
+        "--stderr-log": args.stderr_log,
+    }
+    missing = [name for name, value in required.items() if value is None]
+    if missing:
+        parser.error(f"arguments requis manquants : {', '.join(missing)}")
+
+    prompt = sys.stdin.read()
+    if not prompt.strip():
+        print("prompt de phase agy vide", file=sys.stderr)
+        return 1
+    return run_agy(
+        prompt=prompt,
+        phase=args.phase,
+        project_key=args.project_key,
+        model=args.model,
+        timeout_seconds=args.timeout_seconds,
+        events_log=args.events_log,
+        report_log=args.report_log,
+        stderr_log=args.stderr_log,
+        guard_path=guard_path,
+        agy_executable=args.agy_executable,
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
