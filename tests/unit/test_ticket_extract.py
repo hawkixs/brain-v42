@@ -2792,3 +2792,611 @@ class TestAFallbackIdenticalToThePrimaryIsNotAFallback:
         )
 
         assert resolved == "mistralai/mistral-nemotron"
+
+
+class TestTheRunLevelSwitchToTheAgyLink:
+    """When BOTH NVIDIA links are gone, extract used to abort with `FATAL
+    extract: plus aucun modèle vivant`. With a THIRD, agy-backed link
+    configured, the run switches to it instead and keeps going -- the same
+    shape as the existing NVIDIA primary→fallback switch, one hop further.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_run_switches_to_agy_and_keeps_going(self) -> None:
+        from scripts.domain_backfill import ModelGoneError
+
+        threads = [_thread(), _thread()]
+        nvidia_calls: list[str] = []
+        agy_calls: list[str] = []
+
+        async def extract(client, model, thread, **kw):
+            nvidia_calls.append(model)
+            raise ModelGoneError(model, 410)
+
+        async def extract_via_agy(agy_model, agy_executable, thread, **kw):
+            agy_calls.append(agy_model)
+            return ThreadOutcome(thread=thread, drafts=[])
+
+        args = SimpleNamespace(
+            apply_ids=None,
+            limit=20,
+            wet=False,
+            run_budget_seconds=600.0,
+            ticket_budget_seconds=180.0,
+        )
+        record = AsyncMock()
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=threads),
+            ),
+            patch("scripts.ticket_extract._extract_thread_with_budget", extract),
+            patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", extract_via_agy),
+            patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
+            patch("scripts.ticket_extract.persist_proposals", AsyncMock(return_value=[])),
+            patch("scripts.ticket_extract.record_dream_run", record),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            exit_code = await _run(
+                args,
+                "secret",
+                "primaire-mort",
+                "https://llm.test",
+                fallback_model=None,
+                agy_model="gemini-3.8-flash-high",
+                agy_executable="agy",
+            )
+
+        assert nvidia_calls == ["primaire-mort"], "un seul essai NVIDIA avant la bascule"
+        assert agy_calls == ["gemini-3.8-flash-high", "gemini-3.8-flash-high"], (
+            "les deux tickets restants sont servis par agy après la bascule"
+        )
+        assert exit_code == 0
+        assert record.await_args.kwargs["status"] == "done"
+        assert record.await_args.kwargs["model"] == "agy/gemini-3.8-flash-high", (
+            "le transport doit être visible dans la ligne dream_runs"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_disabled_agy_link_still_fails_loudly_like_before(self) -> None:
+        """No `agy_model` (the disabled default): byte-for-byte the old FATAL
+        path, and agy must never even be looked at."""
+        from scripts.domain_backfill import ModelGoneError
+
+        async def extract(client, model, thread, **kw):
+            raise ModelGoneError(model, 410)
+
+        agy_probe = AsyncMock()
+        args = SimpleNamespace(
+            apply_ids=None,
+            limit=20,
+            wet=False,
+            run_budget_seconds=600.0,
+            ticket_budget_seconds=180.0,
+        )
+        record = AsyncMock()
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[_thread()]),
+            ),
+            patch("scripts.ticket_extract._extract_thread_with_budget", extract),
+            patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", agy_probe),
+            patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
+            patch("scripts.ticket_extract.record_dream_run", record),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            exit_code = await _run(
+                args,
+                "secret",
+                "primaire-mort",
+                "https://llm.test",
+                fallback_model="secours-mort-aussi",
+            )
+
+        agy_probe.assert_not_called()
+        assert exit_code == 1
+        assert record.await_args.kwargs["status"] == "fail"
+
+    @pytest.mark.asyncio
+    async def test_a_dead_agy_link_too_still_fails_loudly(self) -> None:
+        """agy enabled but ALSO exhausted: nothing left to degrade to."""
+        from scripts.domain_backfill import ModelGoneError
+        from scripts.ticket_extract import ThreadOutcome as _Outcome
+
+        async def extract(client, model, thread, **kw):
+            raise ModelGoneError(model, 410)
+
+        async def extract_via_agy(agy_model, agy_executable, thread, **kw):
+            return _Outcome(thread=thread, drafts=[], failed=True, error="AgyLinkError: dead")
+
+        args = SimpleNamespace(
+            apply_ids=None,
+            limit=20,
+            wet=False,
+            run_budget_seconds=600.0,
+            ticket_budget_seconds=180.0,
+        )
+        record = AsyncMock()
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[_thread()]),
+            ),
+            patch("scripts.ticket_extract._extract_thread_with_budget", extract),
+            patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", extract_via_agy),
+            patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
+            patch("scripts.ticket_extract.record_dream_run", record),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            exit_code = await _run(
+                args,
+                "secret",
+                "primaire-mort",
+                "https://llm.test",
+                fallback_model=None,
+                agy_model="gemini-3.8-flash-high",
+                agy_executable="agy",
+            )
+
+        assert exit_code == 1
+        assert record.await_args.kwargs["status"] == "fail"
+
+
+class TestTheTicketLevelAgyRescue:
+    """A ticket that fails on an NVIDIA link for a TRANSPORT reason gets ONE
+    retry on agy, within the ticket's own remaining slice, before it is
+    recorded as failed. A ticket NVIDIA served must never touch agy.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_transport_failure_is_rescued_by_agy(self) -> None:
+        thread = _thread()
+        draft = _draft(ticket_id=thread.id)
+
+        async def extract(client, model, thread, **kw):
+            return ThreadOutcome(thread=thread, drafts=[], failed=True, error="ReadTimeout: boom")
+
+        async def extract_via_agy(agy_model, agy_executable, thread, **kw):
+            return ThreadOutcome(thread=thread, drafts=[draft])
+
+        args = SimpleNamespace(
+            apply_ids=None,
+            limit=20,
+            wet=False,
+            run_budget_seconds=600.0,
+            ticket_budget_seconds=180.0,
+        )
+        persisted = AsyncMock(return_value=[41])
+        record = AsyncMock()
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[thread]),
+            ),
+            patch("scripts.ticket_extract._extract_thread_with_budget", extract),
+            patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", extract_via_agy),
+            patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
+            patch(
+                "scripts.ticket_extract.deduplicate_drafts",
+                new=AsyncMock(return_value=DedupResult(kept=[draft])),
+            ),
+            patch(
+                "brain_v42.services.embedding_factory.build_embedding_service",
+                return_value=MagicMock(close=AsyncMock()),
+            ),
+            patch("scripts.ticket_extract.persist_proposals", persisted),
+            patch("scripts.ticket_extract.record_dream_run", record),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            exit_code = await _run(
+                args,
+                "secret",
+                "primaire-vivant",
+                "https://llm.test",
+                fallback_model=None,
+                agy_model="gemini-3.8-flash-high",
+                agy_executable="agy",
+            )
+
+        assert exit_code == 0
+        persisted.assert_awaited_once()
+        assert record.await_args.kwargs["status"] == "done"
+
+    @pytest.mark.asyncio
+    async def test_a_ticket_nvidia_served_never_touches_agy(self) -> None:
+        thread = _thread()
+
+        async def extract(client, model, thread, **kw):
+            return ThreadOutcome(thread=thread, drafts=[])
+
+        agy_probe = AsyncMock()
+        args = SimpleNamespace(
+            apply_ids=None,
+            limit=20,
+            wet=False,
+            run_budget_seconds=600.0,
+            ticket_budget_seconds=180.0,
+        )
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[thread]),
+            ),
+            patch("scripts.ticket_extract._extract_thread_with_budget", extract),
+            patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", agy_probe),
+            patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
+            patch("scripts.ticket_extract.record_dream_run", AsyncMock()),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            await _run(
+                args,
+                "secret",
+                "primaire-vivant",
+                "https://llm.test",
+                fallback_model=None,
+                agy_model="gemini-3.8-flash-high",
+                agy_executable="agy",
+            )
+
+        agy_probe.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_rescue_that_also_fails_is_recorded_as_the_agy_failure(self) -> None:
+        thread = _thread()
+
+        async def extract(client, model, thread, **kw):
+            return ThreadOutcome(thread=thread, drafts=[], failed=True, error="ReadTimeout: boom")
+
+        async def extract_via_agy(agy_model, agy_executable, thread, **kw):
+            return ThreadOutcome(
+                thread=thread, drafts=[], failed=True, error="AgyLinkError: also dead"
+            )
+
+        attempt = AsyncMock()
+        args = SimpleNamespace(
+            apply_ids=None,
+            limit=20,
+            wet=False,
+            run_budget_seconds=600.0,
+            ticket_budget_seconds=180.0,
+        )
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[thread]),
+            ),
+            patch("scripts.ticket_extract._extract_thread_with_budget", extract),
+            patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", extract_via_agy),
+            patch("scripts.ticket_extract.record_ticket_attempt", attempt),
+            patch("scripts.ticket_extract.record_dream_run", AsyncMock()),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            exit_code = await _run(
+                args,
+                "secret",
+                "primaire-vivant",
+                "https://llm.test",
+                fallback_model=None,
+                agy_model="gemini-3.8-flash-high",
+                agy_executable="agy",
+            )
+
+        assert exit_code == 1
+        recorded_error = attempt.await_args.kwargs.get("error") or attempt.await_args.args[-1]
+        assert "also dead" in str(recorded_error)
+
+    @pytest.mark.asyncio
+    async def test_a_disabled_agy_link_never_rescues(self) -> None:
+        thread = _thread()
+
+        async def extract(client, model, thread, **kw):
+            return ThreadOutcome(thread=thread, drafts=[], failed=True, error="ReadTimeout: boom")
+
+        agy_probe = AsyncMock()
+        args = SimpleNamespace(
+            apply_ids=None,
+            limit=20,
+            wet=False,
+            run_budget_seconds=600.0,
+            ticket_budget_seconds=180.0,
+        )
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[thread]),
+            ),
+            patch("scripts.ticket_extract._extract_thread_with_budget", extract),
+            patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", agy_probe),
+            patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
+            patch("scripts.ticket_extract.record_dream_run", AsyncMock()),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            await _run(args, "secret", "primaire-vivant", "https://llm.test")
+
+        agy_probe.assert_not_called()
+
+
+class TestAgyObservabilityCounters:
+    """`extract_phase_summary` names how many tickets each rescue path served,
+    and progress lines announce a rescue/switch the same way the fallback ones
+    already do."""
+
+    @pytest.mark.asyncio
+    async def test_the_summary_carries_agy_rescued_and_agy_served(self) -> None:
+        from scripts.domain_backfill import ModelGoneError
+
+        threads = [_thread(), _thread(), _thread()]
+        calls = {"n": 0}
+
+        async def extract(client, model, thread, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return ThreadOutcome(
+                    thread=thread, drafts=[], failed=True, error="ReadTimeout: boom"
+                )
+            raise ModelGoneError(model, 410)
+
+        async def extract_via_agy(agy_model, agy_executable, thread, **kw):
+            return ThreadOutcome(thread=thread, drafts=[])
+
+        args = SimpleNamespace(
+            apply_ids=None,
+            limit=20,
+            wet=False,
+            run_budget_seconds=600.0,
+            ticket_budget_seconds=180.0,
+        )
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=threads),
+            ),
+            patch("scripts.ticket_extract._extract_thread_with_budget", extract),
+            patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", extract_via_agy),
+            patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
+            patch("scripts.ticket_extract.record_dream_run", AsyncMock()),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            with capture_logs() as logs:
+                await _run(
+                    args,
+                    "secret",
+                    "primaire-mort",
+                    "https://llm.test",
+                    fallback_model=None,
+                    agy_model="gemini-3.8-flash-high",
+                    agy_executable="agy",
+                )
+
+        (summary,) = [log for log in logs if log["event"] == "extract_phase_summary"]
+        assert summary["agy_rescued"] == 1, "le premier ticket est sauvé après un échec transport"
+        assert summary["agy_served"] == 2, (
+            "les deux tickets suivants sont servis par agy après la bascule de run"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_nominal_run_reports_zero_agy_counters(self) -> None:
+        thread = _thread()
+
+        async def extract(client, model, thread, **kw):
+            return ThreadOutcome(thread=thread, drafts=[])
+
+        args = SimpleNamespace(
+            apply_ids=None,
+            limit=20,
+            wet=False,
+            run_budget_seconds=600.0,
+            ticket_budget_seconds=180.0,
+        )
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[thread]),
+            ),
+            patch("scripts.ticket_extract._extract_thread_with_budget", extract),
+            patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
+            patch("scripts.ticket_extract.record_dream_run", AsyncMock()),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            with capture_logs() as logs:
+                await _run(args, "secret", "primaire-vivant", "https://llm.test")
+
+        (summary,) = [log for log in logs if log["event"] == "extract_phase_summary"]
+        assert summary["agy_rescued"] == 0
+        assert summary["agy_served"] == 0
+
+    @pytest.mark.asyncio
+    async def test_the_run_level_switch_prints_a_progress_line(self, capsys) -> None:
+        from scripts.domain_backfill import ModelGoneError
+
+        async def extract(client, model, thread, **kw):
+            raise ModelGoneError(model, 410)
+
+        async def extract_via_agy(agy_model, agy_executable, thread, **kw):
+            return ThreadOutcome(thread=thread, drafts=[])
+
+        args = SimpleNamespace(
+            apply_ids=None,
+            limit=20,
+            wet=False,
+            run_budget_seconds=600.0,
+            ticket_budget_seconds=180.0,
+        )
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[_thread()]),
+            ),
+            patch("scripts.ticket_extract._extract_thread_with_budget", extract),
+            patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", extract_via_agy),
+            patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
+            patch("scripts.ticket_extract.record_dream_run", AsyncMock()),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            await _run(
+                args,
+                "secret",
+                "primaire-mort",
+                "https://llm.test",
+                fallback_model=None,
+                agy_model="gemini-3.8-flash-high",
+                agy_executable="agy",
+            )
+
+        out = capsys.readouterr().out
+        assert "agy" in out
+        assert "bascule" in out
+
+    @pytest.mark.asyncio
+    async def test_the_ticket_level_rescue_prints_a_progress_line(self, capsys) -> None:
+        thread = _thread()
+
+        async def extract(client, model, thread, **kw):
+            return ThreadOutcome(thread=thread, drafts=[], failed=True, error="ReadTimeout: boom")
+
+        async def extract_via_agy(agy_model, agy_executable, thread, **kw):
+            return ThreadOutcome(thread=thread, drafts=[])
+
+        args = SimpleNamespace(
+            apply_ids=None,
+            limit=20,
+            wet=False,
+            run_budget_seconds=600.0,
+            ticket_budget_seconds=180.0,
+        )
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[thread]),
+            ),
+            patch("scripts.ticket_extract._extract_thread_with_budget", extract),
+            patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", extract_via_agy),
+            patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
+            patch("scripts.ticket_extract.record_dream_run", AsyncMock()),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            await _run(
+                args,
+                "secret",
+                "primaire-vivant",
+                "https://llm.test",
+                fallback_model=None,
+                agy_model="gemini-3.8-flash-high",
+                agy_executable="agy",
+            )
+
+        out = capsys.readouterr().out
+        assert "secours" in out
+        assert "agy" in out
+
+
+class TestTheAgyCliAndEnvResolution:
+    """`main()` resolves `--agy-model` / `BRAIN_EXTRACT_AGY_MODEL` the same way
+    it resolves `--fallback-model` -- CLI wins, then env, then the default. An
+    explicit empty string disables the link entirely."""
+
+    @staticmethod
+    def _resolved_agy(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> str | None:
+        from scripts import ticket_extract as te
+
+        captured: dict[str, str | None] = {}
+
+        async def _fake_run(*_args: object, **kwargs: object) -> int:
+            captured["agy_model"] = kwargs.get("agy_model")  # type: ignore[assignment]
+            return 0
+
+        monkeypatch.setattr(te, "_run", _fake_run)
+        monkeypatch.setattr(te, "load_env_file", lambda *_a, **_k: None)
+        monkeypatch.setattr(te.sys, "argv", ["ticket_extract"])
+        for key in (
+            "BRAIN_NVIDIA_MODEL",
+            "BRAIN_NVIDIA_FALLBACK_MODEL",
+            "BRAIN_NVIDIA_BASE_URL",
+            "BRAIN_EXTRACT_AGY_MODEL",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("BRAIN_NVIDIA_API_KEY", "unused-in-this-path")
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+
+        assert te.main() == 0
+        return captured["agy_model"]
+
+    def test_the_default_enables_the_agy_link(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from scripts.ticket_extract import DEFAULT_EXTRACT_AGY_MODEL
+
+        assert self._resolved_agy(monkeypatch, {}) == DEFAULT_EXTRACT_AGY_MODEL
+
+    def test_an_explicit_empty_env_string_disables_the_link(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert self._resolved_agy(monkeypatch, {"BRAIN_EXTRACT_AGY_MODEL": ""}) is None
+
+    def test_the_env_var_overrides_the_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert (
+            self._resolved_agy(monkeypatch, {"BRAIN_EXTRACT_AGY_MODEL": "gemini-3.9-pro"})
+            == "gemini-3.9-pro"
+        )
+
+    def test_the_cli_flag_overrides_the_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from scripts import ticket_extract as te
+
+        captured: dict[str, str | None] = {}
+
+        async def _fake_run(*_args: object, **kwargs: object) -> int:
+            captured["agy_model"] = kwargs.get("agy_model")  # type: ignore[assignment]
+            return 0
+
+        monkeypatch.setattr(te, "_run", _fake_run)
+        monkeypatch.setattr(te, "load_env_file", lambda *_a, **_k: None)
+        monkeypatch.setattr(
+            te.sys, "argv", ["ticket_extract", "--agy-model", "gemini-cli-override"]
+        )
+        monkeypatch.setenv("BRAIN_NVIDIA_API_KEY", "unused-in-this-path")
+        monkeypatch.setenv("BRAIN_EXTRACT_AGY_MODEL", "gemini-env")
+
+        assert te.main() == 0
+        assert captured["agy_model"] == "gemini-cli-override"
+
+    def test_an_explicit_empty_cli_flag_disables_the_link(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from scripts import ticket_extract as te
+
+        captured: dict[str, str | None] = {}
+
+        async def _fake_run(*_args: object, **kwargs: object) -> int:
+            captured["agy_model"] = kwargs.get("agy_model")  # type: ignore[assignment]
+            return 0
+
+        monkeypatch.setattr(te, "_run", _fake_run)
+        monkeypatch.setattr(te, "load_env_file", lambda *_a, **_k: None)
+        monkeypatch.setattr(te.sys, "argv", ["ticket_extract", "--agy-model", ""])
+        monkeypatch.setenv("BRAIN_NVIDIA_API_KEY", "unused-in-this-path")
+        monkeypatch.setenv("BRAIN_EXTRACT_AGY_MODEL", "gemini-env")
+
+        assert te.main() == 0
+        assert captured["agy_model"] is None
