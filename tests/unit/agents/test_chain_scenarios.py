@@ -43,7 +43,10 @@ def _fake_spawn(
     calls: list[list[str]] | None = None,
 ) -> Callable[..., subprocess.CompletedProcess[str]]:
     def _spawn(
-        argv: Sequence[str], *, input: str | None = None
+        argv: Sequence[str],
+        *,
+        input: str | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         argv = list(argv)
         if calls is not None:

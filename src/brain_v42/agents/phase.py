@@ -280,7 +280,7 @@ def make_logger(main_log: Path) -> Callable[[str], None]:
 
     def _log(line: str) -> None:
         rendered = lines.prefixed(line, datetime.now().time())
-        print(rendered)
+        print(rendered, flush=True)
         with main_log.open("a", encoding="utf-8") as fh:
             fh.write(rendered + "\n")
 
@@ -296,12 +296,19 @@ def _python_executable() -> str:
     return os.environ.get("BRAIN_AGENTS_SUBPROCESS_PYTHON", sys.executable)
 
 
-def spawn(argv: Sequence[str], *, input: str | None = None) -> subprocess.CompletedProcess[str]:
+def spawn(
+    argv: Sequence[str],
+    *,
+    input: str | None = None,
+    env: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     """The single seam that launches a runner/parser/otel_split subprocess.
 
     Combined stdout+stderr is always captured as text so post-processing can
     decide whether to replay it (``tee``, for the parsers) or only file it
-    (a plain append, for ``otel_split``). Tests monkeypatch this function.
+    (a plain append, for ``otel_split``). ``env`` replaces the inherited
+    environment when given (the runner launch adds the agy guard path to it).
+    Tests monkeypatch this function.
     """
     return subprocess.run(
         list(argv),
@@ -310,6 +317,7 @@ def spawn(argv: Sequence[str], *, input: str | None = None) -> subprocess.Comple
         stderr=subprocess.STDOUT,
         text=True,
         check=False,
+        env=dict(env) if env is not None else None,
     )
 
 
@@ -319,19 +327,19 @@ def _select_model(
     if provider == "codex":
         if model_tier == "fast":
             return (
-                environ["BRAIN_DREAM_CODEX_FAST_MODEL"],
-                environ["BRAIN_DREAM_CODEX_FAST_REASONING"],
+                environ.get("BRAIN_DREAM_CODEX_FAST_MODEL", ""),
+                environ.get("BRAIN_DREAM_CODEX_FAST_REASONING", ""),
             )
         if model_tier == "deep":
             return (
-                environ["BRAIN_DREAM_CODEX_DEEP_MODEL"],
-                environ["BRAIN_DREAM_CODEX_DEEP_REASONING"],
+                environ.get("BRAIN_DREAM_CODEX_DEEP_MODEL", ""),
+                environ.get("BRAIN_DREAM_CODEX_DEEP_REASONING", ""),
             )
     elif provider == "agy":
         if model_tier == "fast":
-            return environ["BRAIN_DREAM_AGY_FAST_MODEL"], None
+            return environ.get("BRAIN_DREAM_AGY_FAST_MODEL", ""), None
         if model_tier == "deep":
-            return environ["BRAIN_DREAM_AGY_DEEP_MODEL"], None
+            return environ.get("BRAIN_DREAM_AGY_DEEP_MODEL", ""), None
     elif provider == "claude":
         if model_tier == "fast":
             return "sonnet", None
@@ -368,7 +376,7 @@ def _append_to_main_log(main_log: Path, text: str) -> None:
 def _tee_to_main_log(main_log: Path, text: str) -> None:
     if not text:
         return
-    print(text, end="")
+    print(text, end="", flush=True)
     _append_to_main_log(main_log, text)
 
 
@@ -451,12 +459,16 @@ def run_phase(
         project_key=project_key,
         date=timestamp,
         dry_run=effective,
-        candidate_pool_json=environ.get("PROMOTE_CANDIDATE_POOL_JSON", "[]"),
-        recent_promotions_json=environ.get("PROMOTE_RECENT_PROMOTIONS_JSON", "[]"),
+        candidate_pool_json=environ.get("PROMOTE_CANDIDATE_POOL_JSON") or "[]",
+        recent_promotions_json=environ.get("PROMOTE_RECENT_PROMOTIONS_JSON") or "[]",
     )
+    # bash captured the renderer through $(...), which strips every trailing
+    # newline: no prompt the night ever sent ended with one.
+    prompt = prompt.rstrip("\n")
     prompt = _inject_dependency_reports(prompt, phase, log_dir, timestamp, project_key)
 
-    executable = environ[f"BRAIN_DREAM_{provider.upper()}_BIN"]
+    # bash expanded an unset variable to "" and let the runner refuse it.
+    executable = environ.get(f"BRAIN_DREAM_{provider.upper()}_BIN", "")
     log(
         lines.start_line(
             provider,
@@ -484,10 +496,17 @@ def run_phase(
             executable=executable,
         ),
     ]
+    # The agy entry point takes its tool guard from this variable, never from
+    # the working directory: the dream unit runs with the mutable repository
+    # as cwd while the code and the guard live in the immutable release tree,
+    # which ``dream_dir`` (``$DREAM_DIR``) points at.
+    runner_env = {
+        **os.environ,
+        "BRAIN_DREAM_AGY_GUARD_PATH": str(paths.prompt_file.parent / "agy_tool_guard.sh"),
+    }
     phase_start = time.monotonic()
-    result = spawn(argv, input=prompt)
+    result = spawn(argv, input=prompt, env=runner_env)
     code = result.returncode
-    duration = int(time.monotonic() - phase_start)
 
     status, phase_rc = map_exit_code(code)
     if status == "done":
@@ -496,6 +515,7 @@ def run_phase(
         log(lines.timeout_line(phase, timeout_minutes))
     else:
         log(lines.fail_line(phase, code, fallback=(code == PROVIDER_FALLBACK_EXIT_CODE)))
+    duration = int(time.monotonic() - phase_start)
 
     err_log = _postprocess(provider, status, phase, paths, log)
 

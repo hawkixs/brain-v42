@@ -17,6 +17,7 @@ signature ``tests/unit/test_dream_agy_runner.py`` calls.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -36,7 +37,7 @@ from brain_v42.agents.providers.agy import (
     guard_denies_machine_tools as _package_guard_denies_machine_tools,
 )
 from brain_v42.agents.providers.agy import (
-    main as main,
+    main as _package_main,
 )
 from brain_v42.agents.providers.agy import (
     run_agy as _package_run_agy,
@@ -101,6 +102,17 @@ def run_agy(
         guard_path=GUARD_PATH,
         agy_executable=agy_executable,
     )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """The CLI entry point, guard anchored to THIS file's directory as before.
+
+    The package entry point refuses to guess the guard from the working
+    directory; this shim supplies the pre-extraction resolution (the file next
+    to it) unless the caller already named one.
+    """
+    os.environ.setdefault("BRAIN_DREAM_AGY_GUARD_PATH", str(GUARD_PATH))
+    return _package_main(argv)
 
 
 if __name__ == "__main__":

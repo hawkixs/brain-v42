@@ -353,6 +353,8 @@ _run_phase_chain_python() {
   export PROMOTE_CANDIDATE_POOL_JSON PROMOTE_RECENT_PROMOTIONS_JSON
 
   local result_json="$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.chain.json"
+  # A RETRY reuses the same path: never let a stale first attempt speak for it.
+  rm -f -- "$result_json"
   uv run python -m brain_v42.agents.run_phase_chain \
     --phase "$name" \
     --tier "$model_tier" \
@@ -368,9 +370,16 @@ _run_phase_chain_python() {
     --result-json "$result_json"
   local rc=$?
 
-  if jq -e '(.fallbacks // []) | length > 0' "$result_json" >/dev/null 2>&1; then
-    FALLBACK_PHASES+=("$PROJECT_KEY/$name")
+  # One entry per switchover, as the bash chain appended inside its loop.
+  local fallback_count
+  if ! fallback_count=$(jq -r '(.fallbacks // []) | length' "$result_json"); then
+    log "WARN  chain result unreadable for $name — replis non comptés ($result_json)"
+    fallback_count=0
   fi
+  local _i
+  for (( _i = 0; _i < fallback_count; _i++ )); do
+    FALLBACK_PHASES+=("$PROJECT_KEY/$name")
+  done
 
   return "$rc"
 }

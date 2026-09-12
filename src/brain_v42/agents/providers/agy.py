@@ -409,18 +409,25 @@ class AgyProvider:
 # on its own -- WITHOUT importing `scripts.dream` (this package must not
 # depend on the top-level `scripts/` tree, see `brain_v42.agents.protocol`).
 #
-# Every Dream process that reaches this CLI runs with its working directory
-# at the repository root (or the release checkout that mirrors it) -- the
-# same assumption `scripts/dream.sh`'s own `python3 -m scripts.dream.*`
-# invocations already make. `BRAIN_DREAM_AGY_GUARD_PATH` overrides it for a
-# caller that cannot rely on that cwd.
 
 
 def _default_guard_path() -> Path:
+    """The tool guard the CLI wires into the ephemeral HOME.
+
+    Only ``BRAIN_DREAM_AGY_GUARD_PATH`` names it. The working directory is
+    NEVER consulted: the dream unit runs with the mutable repository as cwd
+    while the code lives in an immutable release tree, so a cwd-relative guess
+    would enforce whatever branch the checkout happens to be on. The shim
+    ``scripts/dream/agy_runner.py`` sets the variable from its own location;
+    ``brain_v42.agents.phase.run_phase`` sets it from ``dream_dir``.
+    """
     override = os.environ.get("BRAIN_DREAM_AGY_GUARD_PATH")
     if override:
         return Path(override)
-    return Path.cwd() / "scripts" / "dream" / "agy_tool_guard.sh"
+    raise SystemExit(
+        "BRAIN_DREAM_AGY_GUARD_PATH is not set: the agy entry point does not "
+        "guess its tool guard from the working directory"
+    )
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
