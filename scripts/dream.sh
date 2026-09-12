@@ -273,15 +273,9 @@ PHASES=(
   "reorg:deep:10:50"
 )
 
-# Phase dependencies: which previous phase logs to inject
-declare -A PHASE_DEPS=(
-  [scan]=""
-  [clean]="scan"
-  [connect]="clean"
-  [synth]="connect"
-  [promote]="synth"
-  [reorg]="scan synth"
-)
+# Phase dependencies (which previous phase logs to inject) moved to
+# brain_v42.agents.phase.PHASE_DEPS, read by run_phase (lot 2, Brain ticket
+# afd56820) -- no longer read from bash.
 
 # The two GLOBAL phases, named for the `planned_phases` computation alone.
 # The two blocks stay hand-written OUTSIDE the loop (pinned by
@@ -341,313 +335,43 @@ dream_wants_wet() {
   esac
 }
 
-#
-# Exit codes from run_phase:
-#   0 → phase succeeded (DONE)
-#   1 → phase hard-failed (non-zero exit, not a timeout)
-#   2 → phase timed out (exit 124 from `timeout`)
-run_phase() {
+# run_phase / run_phase_chain moved to brain_v42.agents.phase.run_phase and
+# brain_v42.agents.chain.run_chain (lot 2 of the agent runtime extraction,
+# Brain ticket afd56820). This wraps the call site both invocations below
+# share (the normal call and the RETRY, unchanged): it exports the env vars
+# the Python side reads with no defaults, runs
+# `python -m brain_v42.agents.run_phase_chain`, and folds a non-empty
+# `fallbacks` array from its result JSON into FALLBACK_PHASES -- what bash's
+# own run_phase_chain used to log inline at the switchover.
+_run_phase_chain_python() {
   local name="$1" model_tier="$2" timeout="$3" max_turns="$4"
-  local prompt_file="$DREAM_DIR/phase_${name}.md"
-  # §3.2: these paths carry the project. codex_runner opens `events` and
-  # `stderr` in "w" and calls `report_log.write_text("")` — TRUNCATION, not
-  # append. Without a project component, only the LAST project's logs would
-  # survive till morning, and §3.3's dependency injection would re-read the
-  # previous project's report.
-  local raw_log="$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.raw.log"
-  local report_log="$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.log"
-  local otel_log="$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.otel.log"
-  local events_log="$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.events.jsonl"
-  local stderr_log="$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.stderr.log"
 
-  local model reasoning_effort=""
-  case "$BRAIN_DREAM_AGENT_PROVIDER:$model_tier" in
-    codex:fast)
-      model="$BRAIN_DREAM_CODEX_FAST_MODEL"
-      reasoning_effort="$BRAIN_DREAM_CODEX_FAST_REASONING"
-      ;;
-    codex:deep)
-      model="$BRAIN_DREAM_CODEX_DEEP_MODEL"
-      reasoning_effort="$BRAIN_DREAM_CODEX_DEEP_REASONING"
-      ;;
-    claude:fast) model="sonnet" ;;
-    claude:deep) model="opus" ;;
-    agy:fast) model="$BRAIN_DREAM_AGY_FAST_MODEL" ;;
-    agy:deep) model="$BRAIN_DREAM_AGY_DEEP_MODEL" ;;
-    *)
-      log "FAIL  $name — unsupported provider/model tier: $BRAIN_DREAM_AGENT_PROVIDER/$model_tier"
-      return 1
-      ;;
-  esac
+  export BRAIN_DREAM_CODEX_FAST_MODEL BRAIN_DREAM_CODEX_DEEP_MODEL
+  export BRAIN_DREAM_CODEX_FAST_REASONING BRAIN_DREAM_CODEX_DEEP_REASONING
+  export BRAIN_DREAM_AGY_FAST_MODEL BRAIN_DREAM_AGY_DEEP_MODEL
+  export BRAIN_DREAM_CODEX_BIN BRAIN_DREAM_AGY_BIN BRAIN_DREAM_CLAUDE_BIN
+  export PROMOTE_CANDIDATE_POOL_JSON PROMOTE_RECENT_PROMOTIONS_JSON
 
-  if [[ ! -f "$prompt_file" ]]; then
-    log "SKIP $name — prompt file missing: $prompt_file"
-    return 0
+  local result_json="$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.chain.json"
+  uv run python -m brain_v42.agents.run_phase_chain \
+    --phase "$name" \
+    --tier "$model_tier" \
+    --timeout-minutes "$timeout" \
+    --max-turns "$max_turns" \
+    --project-key "$PROJECT_KEY" \
+    --timestamp "$TIMESTAMP" \
+    --log-dir "$LOG_DIR" \
+    --dream-dir "$DREAM_DIR" \
+    --providers "$(IFS=,; echo "${PROVIDER_CHAIN[*]}")" \
+    --dry-run "$DRY_RUN" \
+    --reorg-dry-run "$BRAIN_DREAM_REORG_DRY_RUN" \
+    --result-json "$result_json"
+  local rc=$?
+
+  if jq -e '(.fallbacks // []) | length > 0' "$result_json" >/dev/null 2>&1; then
+    FALLBACK_PHASES+=("$PROJECT_KEY/$name")
   fi
 
-  local prompt
-  # Per-phase DRY_RUN override: REORG soaks dry while PROMOTE runs WET.
-  # The override only fires when REORG is enabled — disabled phases never
-  # reach the renderer (they `continue` above).
-  local effective_dry_run="$DRY_RUN"
-  if [[ "$name" == "reorg" ]] \
-    && ! dream_wants_wet BRAIN_DREAM_REORG_DRY_RUN "$BRAIN_DREAM_REORG_DRY_RUN"; then
-    effective_dry_run="true"
-  fi
-  # Delegate to scripts/dream/_render_prompt.py — sed used to break here
-  # when the candidate pool JSON contained `|`, `&`, or `\` (all have
-  # special meaning in sed's s/// replacement). On 2026-04-19 a `|` in a
-  # topic string produced an empty prompt and the validator flagged a
-  # missing PROMOTE REPORT.
-  prompt=$(python3 -m scripts.dream._render_prompt \
-    "$prompt_file" "$PROJECT_KEY" "$TIMESTAMP" "$effective_dry_run" \
-    "${PROMOTE_CANDIDATE_POOL_JSON:-[]}" \
-    "${PROMOTE_RECENT_PROMOTIONS_JSON:-[]}")
-
-  # Inject dependency phase outputs into the prompt.
-  # PREPENDED (not appended) so the phase prompt's own output-format
-  # instructions are the LAST thing the model sees. When deps were
-  # appended, the prose style of the SYNTH log (markdown candidate
-  # reports) primed PROMOTE to emit prose + empty markers — the
-  # "last example sticks" failure mode caught on 2026-04-20 runs.
-  local deps="${PHASE_DEPS[$name]:-}"
-  if [[ -n "$deps" ]]; then
-    local dep_section=""
-    for dep in $deps; do
-      local dep_log="$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${dep}.log"
-      if [[ -f "$dep_log" && -s "$dep_log" ]]; then
-        dep_section+="
-### ${dep^^} phase output
-$(cat "$dep_log")
-"
-      fi
-    done
-    if [[ -n "$dep_section" ]]; then
-      prompt="## Previous Phase Reports (reference context — do not mimic style)
-The orchestrator has injected the output from dependency phases below.
-$dep_section
-
----
-
-$prompt"
-    fi
-  fi
-
-  if [[ "$BRAIN_DREAM_AGENT_PROVIDER" == "agy" ]]; then
-    log "START $name (provider=agy, model=$model, timeout=${timeout}m)"
-  elif [[ "$BRAIN_DREAM_AGENT_PROVIDER" == "codex" ]]; then
-    log "START $name (provider=codex, model=$model, reasoning=$reasoning_effort, timeout=${timeout}m)"
-  else
-    log "START $name (provider=claude, model=$model, timeout=${timeout}m, max_turns=$max_turns)"
-  fi
-
-  local phase_start=$SECONDS
-  local status="done"
-  local phase_rc=0
-
-  # The prompt always travels through stdin to avoid ARG_MAX when dependency
-  # reports are large. Codex writes final report, JSONL events, and stderr to
-  # separate files. The Claude rollback keeps its historical mixed OTEL path.
-  local code=0
-  if [[ "$BRAIN_DREAM_AGENT_PROVIDER" == "agy" ]]; then
-    # agy takes no configuration on the command line: its runner composes an
-    # ephemeral HOME for it, carrying the scoped bearer AND the tool guard. See
-    # scripts/dream/agy_runner.py — the only rail whose bearer touches a file,
-    # confined to a tmpfs and destroyed with the HOME.
-    if printf '%s' "$prompt" | uv run python -m scripts.dream.agy_runner \
-      --phase "$name" \
-      --project-key "$PROJECT_KEY" \
-      --model "$model" \
-      --timeout-seconds "$(( timeout * 60 ))" \
-      --events-log "$events_log" \
-      --report-log "$report_log" \
-      --stderr-log "$stderr_log" \
-      --agy-executable "$BRAIN_DREAM_AGY_BIN"; then
-      code=0
-    else
-      code=$?
-    fi
-  elif [[ "$BRAIN_DREAM_AGENT_PROVIDER" == "codex" ]]; then
-    if printf '%s' "$prompt" | uv run python -m scripts.dream.codex_runner \
-      --phase "$name" \
-      --project-key "$PROJECT_KEY" \
-      --model "$model" \
-      --reasoning-effort "$reasoning_effort" \
-      --timeout-seconds "$(( timeout * 60 ))" \
-      --report-log "$report_log" \
-      --events-log "$events_log" \
-      --stderr-log "$stderr_log" \
-      --codex-executable "$BRAIN_DREAM_CODEX_BIN"; then
-      code=0
-    else
-      code=$?
-    fi
-  else
-    # The claude rail has gone through its isolated runner since 2026-08-11.
-    # It replaces the `mcp__brain-v42__*` wildcard with the phase's exact
-    # allowlist and substitutes the (project, phase) bearer for the admin token.
-    # The mixed stream still lands in $raw_log: otel_split reads it right after.
-    if printf '%s' "$prompt" | uv run python -m scripts.dream.claude_runner \
-      --phase "$name" \
-      --project-key "$PROJECT_KEY" \
-      --model "$model" \
-      --max-turns "$max_turns" \
-      --timeout-seconds "$(( timeout * 60 ))" \
-      --raw-log "$raw_log" \
-      --claude-executable "$BRAIN_DREAM_CLAUDE_BIN"; then
-      code=0
-    else
-      code=$?
-    fi
-  fi
-
-  if [[ $code -eq 0 ]]; then
-    log "DONE  $name"
-  else
-    if [[ $code -eq 124 ]]; then
-      status="timeout"
-      phase_rc=2
-      log "TIMEOUT $name (>${timeout}m)"
-    elif [[ $code -eq $PROVIDER_FALLBACK_EXIT_CODE ]]; then
-      # A failure PROVEN to have written nothing. It is a failure for the
-      # metrics as for the unit — `status` stays `fail` — but the code must
-      # REACH run_phase_chain unchanged, the only place that knows whether a
-      # next link exists. Squashing it to 1 here, as the original version did,
-      # made the chain inert: it never saw its
-      # condition de bascule.
-      status="fail"
-      phase_rc=$PROVIDER_FALLBACK_EXIT_CODE
-      log "FAIL  $name (exit=$code — aucun appel d'outil Brain abouti)"
-    else
-      status="fail"
-      phase_rc=1
-      log "FAIL  $name (exit=$code)"
-    fi
-  fi
-
-  local duration=$(( SECONDS - phase_start ))
-
-  local err_log=""
-  if [[ "$BRAIN_DREAM_AGENT_PROVIDER" == "claude" ]]; then
-    # Preserve the failed mixed stream before otel_split removes it.
-    if [[ "$status" != "done" && -f "$raw_log" ]]; then
-      err_log="$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.err.log"
-      cp "$raw_log" "$err_log"
-    fi
-
-    if uv run python -m brain_v42.metrics.otel_split \
-        "$raw_log" --report "$report_log" --otel "$otel_log" \
-        >> "$LOG_DIR/$TIMESTAMP.log" 2>&1; then
-      rm -f "$raw_log"
-    else
-      log "WARN  otel_split failed for $name — leaving raw log in place"
-      [[ -f "$raw_log" ]] && cp "$raw_log" "$report_log"
-      : > "$otel_log"
-    fi
-  else
-    # The runner already separated the streams. Always leave a readable report
-    # path for dependency injection and validators, including failed phases.
-    [[ -f "$report_log" ]] || : > "$report_log"
-    err_log="$stderr_log"
-  fi
-
-  # --project-key lands in the SHARED array, before the codex/claude fork, so
-  # both rails receive it from one edit. Teaching it to a single parser would
-  # hand the other an unknown argument: argparse exits 2, pipefail propagates,
-  # and the WARN below swallows it — the night silently loses its six
-  # per-project rows while the test suite stays green.
-  local parser_args=(--phase "$name" --model "$model" --date "$TIMESTAMP"
-                     --status "$status" --duration "$duration"
-                     --project-key "$PROJECT_KEY")
-  parser_args+=(--phase-dry-run "$effective_dry_run")
-  local scan_log="$err_log"
-  if [[ -z "$scan_log" && -f "$report_log" ]]; then
-    scan_log="$report_log"
-  fi
-  if [[ -n "$scan_log" ]]; then
-    parser_args+=(--raw-log "$scan_log")
-  fi
-  if [[ "$BRAIN_DREAM_AGENT_PROVIDER" == "agy" ]]; then
-    if uv run python -m brain_v42.metrics.agy_dream_parser \
-      "${parser_args[@]}" --report-log "$report_log" "$events_log" \
-      2>&1 | tee -a "$LOG_DIR/$TIMESTAMP.log"; then
-      :
-    else
-      log "WARN  agy_dream_parser failed for $name (non-fatal)"
-    fi
-  elif [[ "$BRAIN_DREAM_AGENT_PROVIDER" == "codex" ]]; then
-    if uv run python -m brain_v42.metrics.codex_dream_parser \
-      "${parser_args[@]}" --report-log "$report_log" "$events_log" \
-      2>&1 | tee -a "$LOG_DIR/$TIMESTAMP.log"; then
-      :
-    else
-      log "WARN  codex_dream_parser failed for $name (non-fatal)"
-    fi
-  else
-    if uv run python -m brain_v42.metrics.dream_parser \
-      "${parser_args[@]}" "$otel_log" 2>&1 | tee -a "$LOG_DIR/$TIMESTAMP.log"; then
-      :
-    else
-      log "WARN  dream_parser failed for $name (non-fatal)"
-    fi
-  fi
-
-  return "$phase_rc"
-}
-
-#
-# Runs one phase across the provider CHAIN.
-#
-# It advances to the next link on the single code PROVIDER_FALLBACK_EXIT_CODE,
-# which means "failed, and I can prove no Brain tool call succeeded". An
-# ordinary failure (1) and a timeout (2) stop where they fell: neither proves
-# nothing was written, and replaying a phase that mutated would make it write
-# twice.
-#
-# The return codes are identical to run_phase (0 / 1 / 2), so that every caller
-# — the night's retry, the validators, the counters — stays unchanged. The chain
-# is a layer ABOVE the existing contract, not a change to that contract.
-run_phase_chain() {
-  local name="$1" model_tier="$2" timeout="$3" max_turns="$4"
-  local nominal_provider="$BRAIN_DREAM_AGENT_PROVIDER"
-  local rc=0
-  local index=0
-
-  for provider in "${PROVIDER_CHAIN[@]}"; do
-    index=$(( index + 1 ))
-    BRAIN_DREAM_AGENT_PROVIDER="$provider"
-    # Above all NO `set +e` / `set -e` here: a `set -e` placed inside a
-    # function survives its `return`, and the errexit thus restored would exit
-    # the script on the final `return $rc` — the night would stop at the first
-    # failed phase, before even its summary. `|| rc=$?` captures the code without
-    # toucher au mode du shell.
-    rc=0
-    run_phase "$name" "$model_tier" "$timeout" "$max_turns" || rc=$?
-
-    if (( rc != PROVIDER_FALLBACK_EXIT_CODE )); then
-      break
-    fi
-
-    if (( index < ${#PROVIDER_CHAIN[@]} )); then
-      # Name the abandoned link AND the proof that authorises it. A mute
-      # switchover would make "codex worked" and "codex died, claude saved the
-      # night" indistinguishable — yet that is exactly what has to be visible in
-      # the morning to know whether a subscription is still alive.
-      log "FALLBACK $PROJECT_KEY/$name — $provider a échoué sans aucun appel d'outil Brain abouti, bascule vers ${PROVIDER_CHAIN[$index]}"
-      # Aggregated for the closing summary. Recorded at the SWITCHOVER, not at
-      # the next link's success: what we want to measure is the primary's death,
-      # whether or not a standby catches it. If nobody catches it, the phase
-      # joins FAILED_PHASES below and will be counted on both grounds.
-      FALLBACK_PHASES+=("$PROJECT_KEY/$name")
-    else
-      # Last link: nobody left behind it. The phase becomes an ordinary
-      # failure again, so the unit turns red as before.
-      log "FALLBACK-END $PROJECT_KEY/$name — $provider était le dernier maillon de la chaîne"
-      rc=1
-    fi
-  done
-
-  BRAIN_DREAM_AGENT_PROVIDER="$nominal_provider"
   return "$rc"
 }
 
@@ -1058,7 +782,7 @@ run_project_phases() {
     # return is expected on phase failure and MUST NOT abort the script — we
     # want every phase to run for diagnostic completeness).
     set +e
-    run_phase_chain "$name" "$model_tier" "$timeout" "$max_turns"
+    _run_phase_chain_python "$name" "$model_tier" "$timeout" "$max_turns"
     phase_rc=$?
     # Retry once on hard-fail (exit 1) — NOT on timeout (2), because timeouts
     # already burned the full budget and retrying would double the wall-clock
@@ -1076,7 +800,7 @@ run_project_phases() {
       if (( RETRY_BUDGET_LEFT > 0 )); then
         RETRY_BUDGET_LEFT=$(( RETRY_BUDGET_LEFT - 1 ))
         log "RETRY $PROJECT_KEY/$name (first attempt failed, re-running once; night budget left=$RETRY_BUDGET_LEFT)"
-        run_phase_chain "$name" "$model_tier" "$timeout" "$max_turns"
+        _run_phase_chain_python "$name" "$model_tier" "$timeout" "$max_turns"
         phase_rc=$?
       else
         # Not a silent failure: the phase keeps its rc=1 and reddens the unit

@@ -86,14 +86,57 @@ def test_promote_smoke_uses_the_same_provider_boundary_as_the_night() -> None:
     assert "$ROOT/.mcp.json" not in content
 
 
-def test_both_codex_entries_use_the_project_uv_environment_and_project_key() -> None:
-    dream_content = _content()
+def test_promote_smoke_codex_entry_uses_the_project_uv_environment_and_project_key() -> None:
+    """`_promote_smoke.sh` is a standalone harness, untouched by lot 2 (Brain
+    ticket afd56820, which only moved dream.sh's own call site to Python) --
+    it still shells out to the codex runner module directly."""
     smoke_content = PROMOTE_SMOKE.read_text(encoding="utf-8")
 
-    for content in (dream_content, smoke_content):
-        assert "uv run python -m scripts.dream.codex_runner" in content
-        assert "python3 -m scripts.dream.codex_runner" not in content
-        assert '--project-key "$PROJECT_KEY"' in content
+    assert "uv run python -m scripts.dream.codex_runner" in smoke_content
+    assert "python3 -m scripts.dream.codex_runner" not in smoke_content
+    assert '--project-key "$PROJECT_KEY"' in smoke_content
+
+
+def test_dream_sh_project_key_flows_into_the_python_chain_and_the_codex_runner_argv() -> None:
+    """TRANSPOSED (lot 2, Brain ticket afd56820): `run_phase`/`run_phase_chain`
+    moved to `brain_v42.agents.phase`/`chain`, and dream.sh's call site no
+    longer names `scripts.dream.codex_runner` -- it shells out once to
+    `brain_v42.agents.run_phase_chain`, which runs `phase.run_phase` per
+    provider. The guarantee (the codex rail carries the project key) is
+    unchanged; only where it is asserted moved with the code:
+    `--project-key "$PROJECT_KEY"` must reach the Python chain from dream.sh,
+    and `phase.runner_argv` must carry it into the codex runner's own argv
+    (pinned byte for byte by tests/unit/agents/test_chain_golden.py; this test
+    only proves it is *reachable* through the codex tier, not the exact
+    bytes)."""
+    from pathlib import Path as _Path
+
+    from brain_v42.agents import phase
+
+    assert "uv run python -m scripts.dream.codex_runner" not in _content()
+    assert "uv run python -m brain_v42.agents.run_phase_chain" in _content()
+    assert '--project-key "$PROJECT_KEY"' in _content()
+
+    paths = phase.PhasePaths.build(
+        log_dir=_Path("/tmp/logs"),
+        timestamp="2026-09-12",
+        project_key="brain-v42",
+        phase="scan",
+        dream_dir=_Path("/tmp/dream"),
+    )
+    argv = phase.runner_argv(
+        "codex",
+        phase="scan",
+        project_key="brain-v42",
+        model="gpt-5.6-luna",
+        reasoning="high",
+        timeout_minutes=5,
+        max_turns=30,
+        paths=paths,
+        executable="codex",
+    )
+    assert "--project-key" in argv
+    assert argv[argv.index("--project-key") + 1] == "brain-v42"
 
 
 def test_both_entry_points_still_read_the_capability_enforcement_killswitch() -> None:
@@ -112,11 +155,21 @@ def test_claude_rail_is_scoped_rather_than_refused_under_enforcement() -> None:
     again — green logs, six unscoped phases, nothing saying so. So the contract
     is the *replacement*: the rail must delegate to the runner that carries a
     per-(project, phase) bearer, and the old refusal must be gone.
+
+    TRANSPOSED (lot 2, Brain ticket afd56820): dream.sh no longer names
+    `scripts.dream.claude_runner` directly -- it shells out to
+    `brain_v42.agents.run_phase_chain`, whose `phase.runner_module("claude")`
+    is what still carries the scoped, per-(project, phase) runner. The
+    guarantee (project key reaches the claude rail, no wildcard tool list) is
+    unchanged; only where it is asserted moved with the code.
     """
+    from brain_v42.agents import phase
+
     content = _content()
 
     assert "Dream capability enforcement requires the Codex provider" not in content
-    assert "uv run python -m scripts.dream.claude_runner" in content
+    assert "uv run python -m scripts.dream.claude_runner" not in content
+    assert phase.runner_module("claude") == "brain_v42.agents.providers.claude"
     assert '--project-key "$PROJECT_KEY"' in content
     # The wildcard was the other half of the hole: a scoped bearer with an
     # unrestricted tool list is only half a firewall.

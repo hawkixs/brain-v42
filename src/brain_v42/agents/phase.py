@@ -10,10 +10,17 @@ The argv and paths here are quoted verbatim from ``scripts/dream.sh`` at
 ``c0e48966`` (see ``tests/fixtures/agents_chain_golden/argv.json`` and
 ``phases.json``); the golden test in
 ``tests/unit/agents/test_chain_golden.py`` pins them byte for byte.
+
+``BRAIN_AGENTS_SUBPROCESS_PYTHON`` is a TEST SEAM, read once per
+:func:`run_phase` call: the interpreter used to launch the runner, parser and
+``otel_split`` subprocesses defaults to ``sys.executable`` and is never set by
+the nightly Dream unit -- it exists so a test can point those subprocess
+launches at a fake dispatcher instead of a real venv interpreter.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -280,6 +287,15 @@ def make_logger(main_log: Path) -> Callable[[str], None]:
     return _log
 
 
+def _python_executable() -> str:
+    """The interpreter that launches runner/parser/otel_split subprocesses.
+
+    ``BRAIN_AGENTS_SUBPROCESS_PYTHON`` is a test seam only -- see the module
+    docstring. Production never sets it, so this is ``sys.executable``.
+    """
+    return os.environ.get("BRAIN_AGENTS_SUBPROCESS_PYTHON", sys.executable)
+
+
 def spawn(argv: Sequence[str], *, input: str | None = None) -> subprocess.CompletedProcess[str]:
     """The single seam that launches a runner/parser/otel_split subprocess.
 
@@ -369,7 +385,9 @@ def _postprocess(
             err_log = paths.err_log
             shutil.copyfile(paths.raw_log, err_log)
 
-        otel_result = spawn([sys.executable, "-m", OTEL_SPLIT_MODULE, *otel_split_argv(paths)])
+        otel_result = spawn(
+            [_python_executable(), "-m", OTEL_SPLIT_MODULE, *otel_split_argv(paths)]
+        )
         _append_to_main_log(paths.main_log, otel_result.stdout or "")
         if otel_result.returncode == 0:
             paths.raw_log.unlink(missing_ok=True)
@@ -451,7 +469,7 @@ def run_phase(
     )
 
     argv = [
-        sys.executable,
+        _python_executable(),
         "-m",
         runner_module(provider),
         *runner_argv(
@@ -487,7 +505,7 @@ def run_phase(
 
     parser_result = spawn(
         [
-            sys.executable,
+            _python_executable(),
             "-m",
             parser_module(provider),
             *parser_argv(

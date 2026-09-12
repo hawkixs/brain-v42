@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -69,24 +70,54 @@ def _sandbox(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     # takes the WARN branch — real code — which copies the raw log into the report
     # and touches the otel one. The three projected paths then exist on disk,
     # built by the script and not by the test.
-    # The claude rail goes through scripts.dream.claude_runner since 2026-08-11.
-    # The raw log is therefore no longer created by a dream.sh redirection but by
-    # the runner itself: the stub must reproduce that observable contract,
-    # otherwise otel_split's WARN branch has nothing to copy and the test fails on
-    # an absence production does not produce.
+    #
+    # TRANSPOSED (lot 2, Brain ticket afd56820): `run_phase`/`run_phase_chain`
+    # moved to Python. dream.sh's call site now shells out ONCE to
+    # `uv run python -m brain_v42.agents.run_phase_chain`, which does its own
+    # subprocessing for the runner and otel_split -- via `sys.executable` by
+    # default, `BRAIN_AGENTS_SUBPROCESS_PYTHON` in tests. This stub forwards
+    # that single call to the REAL interpreter running this test (so
+    # brain_v42 imports for real), pointed at a second fake "python" for the
+    # runner/otel_split subprocess kinds run_phase spawns. The claude rail's
+    # raw log is still written by that fake runner, never by a dream.sh
+    # redirection: the stub must reproduce that observable contract,
+    # otherwise otel_split's WARN branch has nothing to copy and the test
+    # fails on an absence production does not produce.
+    fake_python = mock_bin / "fake-agents-python"
+    fake_python.write_text(
+        "#!/usr/bin/env bash\n"
+        "cat >/dev/null 2>&1 || true\n"
+        'module=""\n'
+        'raw_log=""\n'
+        "while (($#)); do\n"
+        '  case "$1" in\n'
+        '    -m) module="$2"; shift 2 ;;\n'
+        '    --raw-log) raw_log="$2"; shift 2 ;;\n'
+        "    *) shift ;;\n"
+        "  esac\n"
+        "done\n"
+        'case "$module" in\n'
+        "  brain_v42.agents.providers.*)\n"
+        '    [[ -n "$raw_log" ]] && printf "mock claude phase output\\n" >> "$raw_log"\n'
+        "    exit 0\n"
+        "    ;;\n"
+        "  brain_v42.metrics.otel_split) exit 1 ;;\n"
+        "  brain_v42.metrics.*) exit 0 ;;\n"
+        "esac\n"
+        "exit 0\n"
+    )
+    fake_python.chmod(0o755)
+
     uv_stub = mock_bin / "uv"
     uv_stub.write_text(
         "#!/usr/bin/env bash\n"
         "cat >/dev/null 2>&1 || true\n"
         'case "$*" in\n'
-        "  *otel_split*) exit 1 ;;\n"
-        "  *claude_runner*)\n"
-        '    _raw=""\n'
-        "    while (($#)); do\n"
-        "      if [[ $1 == --raw-log ]]; then _raw=$2; shift 2; else shift; fi\n"
-        "    done\n"
-        '    [[ -n "$_raw" ]] && printf "mock claude phase output\\n" >> "$_raw"\n'
-        "    exit 0\n"
+        "  *brain_v42.agents.run_phase_chain*)\n"
+        "    shift 2\n"
+        f'    exec env PYTHONPATH="{REPO_ROOT / "src"}" '
+        f'BRAIN_AGENTS_SUBPROCESS_PYTHON="{fake_python}" '
+        f'"{sys.executable}" "$@"\n'
         "    ;;\n"
         "esac\n"
         "exit 0\n"
