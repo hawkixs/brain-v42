@@ -529,11 +529,19 @@ functions that otherwise forward to the package unchanged. The guard script itse
 at `scripts/dream/agy_tool_guard.sh`, with its own tests
 (`tests/unit/test_dream_agy_guard.py`) -- it is not duplicated into the package.
 
-`scripts/dream/{codex,agy,claude}_runner.py` and `_agent_capability.py` are now thin shims: each
-keeps its `argparse` CLI and `main()` (what `dream.sh` invokes) and re-exports, by name, every
-symbol its pre-existing unit tests import -- so
+`scripts/dream/{codex,agy,claude}_runner.py` and `_agent_capability.py` are now thin shims that
+re-export, by name, every symbol their pre-existing unit tests import -- so
 `tests/unit/test_dream_{codex,agy,claude}_runner.py`, `test_dream_agy_guard.py`,
-`test_dream_provider_chain.py` and `test_dream_sh_agent_provider.py` all pass unmodified.
+`test_dream_provider_chain.py` and `test_dream_sh_agent_provider.py` all pass unmodified. As of
+lot 2 (below), the `argparse` CLI and `main()` that `dream.sh` used to invoke through these shims
+moved into `providers/{codex,agy,claude}.py` themselves -- `phase.runner_module()` now names the
+package module directly, so the process `dream.sh` starts is
+`python -m brain_v42.agents.providers.codex`, not the shim. `agy.py`'s `main()` resolves its own
+tool-use guard path (`BRAIN_DREAM_AGY_GUARD_PATH`, defaulting to `cwd() / scripts/dream/agy_tool_guard.sh`)
+without importing `scripts.dream`, preserving the "package must not depend on `scripts/`" rule;
+the shim keeps its own `__file__`-relative `GUARD_PATH` and wrapper functions for tests that call
+them in-process.
+
 `tests/unit/agents/test_golden_commands.py` holds the package to fixtures
 (`tests/fixtures/agents_golden/`) captured from the pre-extraction runners, proving the argv and
 child environment the package builds are byte-for-byte identical to what shipped before, for every
@@ -546,6 +554,52 @@ method adapts a `RunSpec` to that function instead of replacing it. Consumers to
 Dream orchestrator (via the `scripts/dream/` shims) and the extract rescue link (via
 `sandbox.build_toolless_home`). A PR reviewer service, which needs the same headless-agent sandbox
 without any of Dream's phase machinery, is the next planned consumer.
+
+### The provider chain (`brain_v42.agents.{lines,prompt,phase,chain,run_phase_chain}`)
+
+Lot 2 of the agent runtime extraction (Brain ticket `afd56820`, 2026-09) moves `scripts/dream.sh`'s
+`run_phase` and `run_phase_chain` -- one phase against one provider, and the loop that falls back
+across the configured provider chain -- to Python, byte-identical to what the bash produced (see
+`tests/unit/agents/test_chain_golden.py` and its fixtures under
+`tests/fixtures/agents_chain_golden/`, captured from `scripts/dream.sh` before deletion).
+
+```
+src/brain_v42/agents/
+    lines.py             # every log-line template (START/DONE/FAIL/FALLBACK/...), byte-identical
+    prompt.py            # render()/render_file() -- moved from scripts/dream/_render_prompt.py
+    phase.py             # PHASE_DEPS, PhasePaths, runner/parser/otel argv, run_phase
+    chain.py             # run_chain -- the provider fallback state machine
+    run_phase_chain.py   # `python -m brain_v42.agents.run_phase_chain` CLI
+```
+
+`phase.run_phase` reproduces bash's `run_phase` exactly: model/reasoning-tier selection from the
+`BRAIN_DREAM_{CODEX,AGY}_{FAST,DEEP}_{MODEL,REASONING}` environment variables (no defaults --
+dream.sh keeps those, exporting them before it calls the CLI) and the `BRAIN_DREAM_{CODEX,AGY,
+CLAUDE}_BIN` executables; the SKIP-on-missing-prompt and unsupported-tier short circuits;
+`effective_dry_run` (the `dream_wants_wet` semantics for the REORG override, including its
+KILLSWITCH log line); dependency-report injection with the same header text; and the runner,
+`otel_split` and parser subprocesses, run as `[interpreter, "-m", module, *argv]` with the prompt
+on stdin -- no shell. `phase.spawn` is the single seam that launches all three subprocess kinds;
+`phase._python_executable()` resolves the interpreter from `BRAIN_AGENTS_SUBPROCESS_PYTHON` (a
+test-only seam, unset in production) falling back to `sys.executable`. Every log line is written
+through a `log: Callable[[str], None]` the caller supplies -- `phase.make_logger()` builds the
+production one (`[HH:MM:SS]` prefix, prints, appends to the night's main log), matching bash's
+`log() { echo ... | tee -a ...; }`.
+
+`chain.run_chain` is the fallback state machine alone: it advances to the next provider only on
+the fallback exit code (`PROVIDER_FALLBACK_EXIT_CODE`, "failed and proved no Brain tool call
+succeeded"), logging `FALLBACK`/`FALLBACK-END` exactly as bash did, and returns a frozen
+`ChainResult(provider, rc, fallbacks)`.
+
+`run_phase_chain.py`'s CLI is the seam `dream.sh` now calls once per phase (the normal call and its
+RETRY, unchanged): it builds `PhasePaths` and a logger, runs the configured provider chain via
+`run_chain(providers, run_one=lambda p: phase.run_phase(p, ...), ...)`, and writes
+`{"provider", "rc", "status", "fallbacks"}` to `--result-json`. `dream.sh`'s
+`_run_phase_chain_python` helper exports the model/executable/PROMOTE JSON environment variables,
+runs the CLI, takes its exit code as `phase_rc` (identical contract to the old bash `run_phase_chain`
+return value), and reads `fallbacks` out of the result JSON with `jq` to append
+`$PROJECT_KEY/$name` to `FALLBACK_PHASES` -- the one piece of state the shell still aggregates for
+its closing summary.
 
 ### Future capability firewall rollout
 
