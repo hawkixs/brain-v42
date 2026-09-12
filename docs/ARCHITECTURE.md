@@ -488,6 +488,65 @@ is not a side-effect-free preview. On 24 July 2026 only `brain-mcp-http.service`
 live, including kernel enforcement and authenticated E2E. The five Dream, graph-recon and
 automation fragments have not yet been rolled out.
 
+### Shared agent runtime (`brain_v42.agents`)
+
+Before lot 1 of the agent runtime extraction (Brain ticket c31bad72, 2026-09), the codex, agy and
+Claude adapters above lived only in `scripts/dream/{codex,agy,claude}_runner.py` and
+`scripts/dream/_agent_capability.py` -- private to Dream and outside the wheel. When the extract
+rescue link (`src/brain_v42/scripts/agy_completion.py`) needed the same ephemeral-HOME pattern for
+its own agy fallback, it had to reimplement it a third time rather than depend on `scripts/`,
+which `src/brain_v42/` must never import from.
+
+`src/brain_v42/agents/` now holds that runtime as an installable package, with the same rule
+enforced the other direction: `scripts/dream/` depends on it, never the reverse.
+
+```
+src/brain_v42/agents/
+    capability.py       # (project, phase) bearer, child-env allowlist, process-group termination
+    sandbox.py          # ephemeral-HOME construction: the Dream agy variant and the tool-less one
+    spec.py              # RunSpec -- one agent invocation, fields any rail may or may not use
+    result.py            # RunResult / TokenUsage -- one rail-agnostic outcome shape
+    protocol.py           # AgentProvider -- the structural protocol the three adapters satisfy
+    providers/
+        codex.py, agy.py, claude.py   # the moved build_*_command / run_* functions + a Provider class
+```
+
+`capability.py` is a verbatim port of the former `_agent_capability.py`: capability enforcement,
+loopback validation, the scoped child environment, and `terminate_process_group`. `sandbox.py`
+builds on it to compose an ephemeral `HOME` for agy, which -- unlike codex and Claude -- takes no
+per-invocation configuration flag and therefore needs a throwaway `HOME` to scope its MCP config,
+bearer and tool-use guard to one phase. Two variants ship: `build_ephemeral_home` (the nightly
+Dream rail, wiring a scoped Brain MCP server and a `PreToolUse` guard) and `build_toolless_home`
+(the extract rescue link, no MCP servers, no guard). Both read their credential symlink list --
+`DREAM_AGY_CREDENTIAL_PATHS` / `EXTRACT_AGY_CREDENTIAL_PATHS` -- from `sandbox.py` itself, closing
+the drift risk between what used to be two independently maintained tuples.
+
+`build_ephemeral_home` takes `guard_path` as an explicit parameter rather than resolving
+`scripts/dream/agy_tool_guard.sh` from `__file__`, since the package must not assume anything
+about where a caller's guard file lives. `scripts/dream/agy_runner.py` is the one caller that
+needs the guard today; it keeps its own `GUARD_PATH` constant and passes it through thin wrapper
+functions that otherwise forward to the package unchanged. The guard script itself stays versioned
+at `scripts/dream/agy_tool_guard.sh`, with its own tests
+(`tests/unit/test_dream_agy_guard.py`) -- it is not duplicated into the package.
+
+`scripts/dream/{codex,agy,claude}_runner.py` and `_agent_capability.py` are now thin shims: each
+keeps its `argparse` CLI and `main()` (what `dream.sh` invokes) and re-exports, by name, every
+symbol its pre-existing unit tests import -- so
+`tests/unit/test_dream_{codex,agy,claude}_runner.py`, `test_dream_agy_guard.py`,
+`test_dream_provider_chain.py` and `test_dream_sh_agent_provider.py` all pass unmodified.
+`tests/unit/agents/test_golden_commands.py` holds the package to fixtures
+(`tests/fixtures/agents_golden/`) captured from the pre-extraction runners, proving the argv and
+child environment the package builds are byte-for-byte identical to what shipped before, for every
+provider and every Dream phase.
+
+`RunSpec` / `RunResult` / `AgentProvider` are the seam for a caller that does not want to know
+which rail it is talking to. The three pre-existing `run_*` functions keep their own, differently
+shaped keyword signatures (moved unchanged, so their tests keep passing); each provider's `run()`
+method adapts a `RunSpec` to that function instead of replacing it. Consumers today: the nightly
+Dream orchestrator (via the `scripts/dream/` shims) and the extract rescue link (via
+`sandbox.build_toolless_home`). A PR reviewer service, which needs the same headless-agent sandbox
+without any of Dream's phase machinery, is the next planned consumer.
+
 ### Future capability firewall rollout
 
 The repository ships SEC1a and SEC1b dormant. While

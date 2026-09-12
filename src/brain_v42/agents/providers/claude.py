@@ -1,0 +1,344 @@
+"""Isolated ``claude -p`` adapter for one Dream phase.
+
+Moved unchanged from ``scripts/dream/claude_runner.py`` (lot 1 of the agent
+runtime extraction, Brain ticket c31bad72): the CLI entry point stays in that
+file, now a thin shim that imports the functions below and re-exports the
+names its existing tests import by name
+(``tests/unit/test_dream_claude_runner.py``,
+``tests/unit/test_dream_provider_chain.py``).
+
+The Claude rail predates the capability firewall. It ran through the
+repository's static ``.mcp.json``, whose ``Authorization`` header expands
+``${MCP_HTTP_TOKEN}`` -- the ADMIN token -- and through the
+``mcp__brain-v42__*`` wildcard. Under enforcement that combination is exactly
+what the firewall exists to forbid, so ``dream.sh`` refused the provider
+outright instead.
+
+This module makes the refusal unnecessary. It renders a per-phase MCP client
+configuration (scoped agent header, no wildcard) and hands the child process
+the ``(project, phase)`` bearer under the name the configuration references.
+The secret is therefore never written to disk and never appears in ``argv`` --
+the same trade ``codex_runner`` makes.
+
+The five ``dream.sh`` exports that belong to this rail travel through
+``_CLAUDE_CHILD_ENV_EXTRA``. Dropping them would not fail the phase; it would
+make it succeed blind, which is worse.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import tempfile
+import time
+from collections.abc import Mapping
+from pathlib import Path
+
+from brain_v42.mcp.dream_capabilities import (
+    DREAM_PHASE_TOOL_ALLOWLISTS,
+    DreamCapabilityConfigurationError,
+    dream_phase_tool_allowlist,
+)
+
+from ..capability import (
+    CAPABILITY_CONFIGURATION_ERROR,
+    DEFAULT_MCP_URL,
+    MCP_TOKEN_ENV,
+    MCP_URL_ENV,
+    PROVIDER_FALLBACK_EXIT_CODE,
+    TIMEOUT_EXIT_CODE,
+    build_child_environment,
+    terminate_process_group,
+)
+from ..result import RunResult
+from ..spec import RunSpec
+
+PHASE_TOOL_ALLOWLISTS = DREAM_PHASE_TOOL_ALLOWLISTS
+
+# Exported by dream.sh for this rail only.
+#
+# The three OTEL variables are what otel_split consumes; without them a phase
+# still exits 0 but its metrics row loses every token count.
+#
+# MCP_CONNECTION_NONBLOCKING and MCP_CONNECT_TIMEOUT_MS are the fix for
+# regression 27430ae1: `claude -p` otherwise snapshots the turn's tool list
+# ~450ms after init, while the brain-v42 server needs longer to register its
+# tools. The phase then runs with NO brain tools and reports success -- the
+# false-green failure this project has now paid for twice.
+_CLAUDE_CHILD_ENV_EXTRA = frozenset(
+    {
+        "CLAUDE_CODE_ENABLE_TELEMETRY",
+        "OTEL_LOGS_EXPORTER",
+        "OTEL_METRICS_EXPORTER",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_PROTOCOL",
+        "MCP_CONNECTION_NONBLOCKING",
+        "MCP_CONNECT_TIMEOUT_MS",
+        "CLAUDE_CONFIG_DIR",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+    }
+)
+
+
+def claude_child_environment(
+    *,
+    project_key: str | None,
+    phase: str,
+    environ: Mapping[str, str],
+) -> dict[str, str] | None:
+    """Return the phase-scoped child environment, or ``None`` if unenforced."""
+    return build_child_environment(
+        project_key=project_key,
+        phase=phase,
+        environ=environ,
+        extra_allowlist=_CLAUDE_CHILD_ENV_EXTRA,
+    )
+
+
+def build_claude_mcp_config(*, phase: str, mcp_url: str) -> dict[str, object]:
+    """Render the per-phase MCP client configuration for ``claude -p``.
+
+    ``dream_phase_tool_allowlist`` raises on an unknown phase, which keeps an
+    unrecognised phase from silently producing a config with no restriction.
+    """
+    dream_phase_tool_allowlist(phase)
+    return {
+        "mcpServers": {
+            "brain-v42": {
+                "type": "http",
+                "url": mcp_url,
+                "headers": {
+                    "X-Brain-Agent": f"dream-claude-{phase}",
+                    "X-Brain-Tool-Profile": "native",
+                    # Expanded by the client from the child environment, where
+                    # the scoped bearer has replaced the admin token.
+                    "Authorization": f"Bearer ${{{MCP_TOKEN_ENV}}}",
+                },
+            }
+        }
+    }
+
+
+def build_claude_command(
+    *,
+    phase: str,
+    model: str,
+    max_turns: int,
+    mcp_config_path: Path,
+    claude_executable: str = "claude",
+) -> list[str]:
+    """Build the hardened non-interactive Claude command for one phase."""
+    if not model.strip():
+        raise ValueError("Claude model must not be empty")
+    if max_turns <= 0:
+        raise ValueError("max_turns must be positive")
+
+    # The exact per-phase allowlist replaces the historical
+    # `mcp__brain-v42__*` wildcard: the wildcard is what the capability
+    # firewall exists to remove, and leaving it here would make the scoped
+    # bearer the only line of defence.
+    allowed_tools = ",".join(
+        f"mcp__brain-v42__{tool}" for tool in dream_phase_tool_allowlist(phase)
+    )
+    return [
+        claude_executable,
+        "-p",
+        "-",
+        "--model",
+        model,
+        "--max-turns",
+        str(max_turns),
+        "--permission-mode",
+        "bypassPermissions",
+        "--tools",
+        "",
+        "--allowedTools",
+        allowed_tools,
+        "--mcp-config",
+        str(mcp_config_path),
+        "--strict-mcp-config",
+    ]
+
+
+def brain_tool_call_completed(raw_log: Path) -> bool:
+    """Did a Brain tool call SUCCEED in this OTEL telemetry?
+
+    The counterpart of ``codex_runner``'s predicate, on the only source the
+    claude rail exposes: the OTEL console stream mixed into ``raw_log``.
+
+    A shape MEASURED on 2026-08-11 against claude 2.1.226, not from a doc:
+
+        body: "claude_code.tool_result"
+        attributes: { tool_name: "mcp_tool", success: "true", ... }
+
+    ``tool_name`` is generically ``mcp_tool`` -- it does NOT name the tool.
+    That is no gap here: the runner declares brain-v42 alone and sets
+    ``--strict-mcp-config``, so any successful MCP result is necessarily a
+    Brain call. The day a second MCP server is declared on this rail, the
+    reasoning falls and this predicate must be tightened.
+    """
+    if not raw_log.is_file():
+        return False
+    content = raw_log.read_text(encoding="utf-8", errors="replace")
+    # The console stream is multi-line pseudo-JSON, not JSON: we split on the
+    # record rather than parsing it.
+    for record in content.split('body: "claude_code.tool_result"')[1:]:
+        window = record[:2000]
+        if 'tool_name: "mcp_tool"' in window and 'success: "true"' in window:
+            return True
+    return False
+
+
+def run_claude(
+    *,
+    prompt: str,
+    phase: str,
+    project_key: str | None = None,
+    model: str,
+    max_turns: int,
+    timeout_seconds: float,
+    raw_log: Path,
+    claude_executable: str = "claude",
+) -> int:
+    """Run one Claude phase and return its exit code (``124`` on timeout).
+
+    The mixed stdout/stderr stream keeps landing in ``raw_log`` because
+    ``dream.sh`` still feeds it to ``otel_split``; separating the streams here
+    would silently deprive the metrics rail of its telemetry.
+    """
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    try:
+        child_environment = claude_child_environment(
+            project_key=project_key,
+            phase=phase,
+            environ=os.environ,
+        )
+    except DreamCapabilityConfigurationError:
+        raw_log.parent.mkdir(parents=True, exist_ok=True)
+        with raw_log.open("a", encoding="utf-8") as stream:
+            stream.write(f"{CAPABILITY_CONFIGURATION_ERROR}\n")
+        return 1
+
+    if child_environment is None and not os.environ.get(MCP_TOKEN_ENV):
+        raw_log.parent.mkdir(parents=True, exist_ok=True)
+        with raw_log.open("a", encoding="utf-8") as stream:
+            stream.write(f"missing required environment variable: {MCP_TOKEN_ENV}\n")
+        return 1
+
+    raw_log = raw_log.resolve()
+    raw_log.parent.mkdir(parents=True, exist_ok=True)
+    mcp_url = os.environ.get(MCP_URL_ENV, DEFAULT_MCP_URL)
+
+    with tempfile.TemporaryDirectory(prefix=f"brain-v42-dream-claude-{phase}-") as temp_dir:
+        runtime_dir = Path(temp_dir)
+        mcp_config_path = runtime_dir / "mcp-config.json"
+        mcp_config_path.write_text(
+            json.dumps(build_claude_mcp_config(phase=phase, mcp_url=mcp_url)),
+            encoding="utf-8",
+        )
+        command = build_claude_command(
+            phase=phase,
+            model=model,
+            max_turns=max_turns,
+            mcp_config_path=mcp_config_path,
+            claude_executable=claude_executable,
+        )
+
+        with raw_log.open("a", encoding="utf-8") as raw_stream:
+            try:
+                process = subprocess.Popen(
+                    command,
+                    stdin=subprocess.PIPE,
+                    stdout=raw_stream,
+                    stderr=subprocess.STDOUT,
+                    cwd=runtime_dir,
+                    env=child_environment,
+                    text=True,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                raw_stream.write(f"unable to start Claude: {exc}\n")
+                # Claude did not start: nothing could have been written.
+                return PROVIDER_FALLBACK_EXIT_CODE
+
+            try:
+                process.communicate(input=prompt, timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                terminate_process_group(process)
+                # A timeout proves NOTHING: the phase may have written and
+                # then hung. Never a switchover here.
+                return 124
+
+    exit_code = int(process.returncode or 0)
+    if exit_code == 0:
+        return 0
+    if exit_code == TIMEOUT_EXIT_CODE:
+        return TIMEOUT_EXIT_CODE
+    # The claude rail cannot prove the absence of a write other than through
+    # its telemetry: without the OTEL_* exported by dream.sh, raw_log holds no
+    # tool event at all and the predicate returns False. That is the right
+    # default -- it allows the switchover on a rail that plainly did nothing --
+    # and it is also why those variables live in _CLAUDE_CHILD_ENV_EXTRA.
+    if brain_tool_call_completed(raw_log):
+        return exit_code
+    return PROVIDER_FALLBACK_EXIT_CODE
+
+
+class ClaudeProvider:
+    """:class:`~brain_v42.agents.protocol.AgentProvider` adapter over Claude."""
+
+    name = "claude"
+
+    def build_command(self, spec: RunSpec) -> list[str]:
+        raw_path = spec.extra.get("mcp_config_path", "mcp-config.json")
+        mcp_config_path = raw_path if isinstance(raw_path, Path) else Path(str(raw_path))
+        return build_claude_command(
+            phase=spec.phase,
+            model=spec.model,
+            max_turns=spec.max_turns,
+            mcp_config_path=mcp_config_path,
+            claude_executable=spec.executable or "claude",
+        )
+
+    def child_environment(self, spec: RunSpec, environ: Mapping[str, str]) -> dict[str, str] | None:
+        return claude_child_environment(
+            project_key=spec.project_key, phase=spec.phase, environ=environ
+        )
+
+    def prepare_home(self, spec: RunSpec) -> Path | None:
+        return None
+
+    def tool_call_completed(self, events_log: Path) -> bool:
+        return brain_tool_call_completed(events_log)
+
+    def run(self, spec: RunSpec) -> RunResult:
+        # Claude mixes stdout/stderr into a single raw log (see run_claude's
+        # docstring); RunSpec has no dedicated field for it, so it travels
+        # through events_log (falling back to report_log).
+        raw_log = spec.events_log or spec.report_log
+        assert raw_log is not None, "RunSpec.events_log or report_log is required for Claude"
+        start = time.monotonic()
+        exit_code = run_claude(
+            prompt=spec.prompt,
+            phase=spec.phase,
+            project_key=spec.project_key,
+            model=spec.model,
+            max_turns=spec.max_turns,
+            timeout_seconds=spec.timeout_seconds,
+            raw_log=raw_log,
+            claude_executable=spec.executable or "claude",
+        )
+        duration = time.monotonic() - start
+        return RunResult(
+            exit_code=exit_code,
+            provider=self.name,
+            model=spec.model,
+            report_path=raw_log,
+            events_log=raw_log,
+            tokens=None,
+            duration_seconds=duration,
+            tool_call_completed=brain_tool_call_completed(raw_log),
+        )
