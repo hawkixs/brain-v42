@@ -33,6 +33,7 @@ from brain_v42.db.tables import MIN_COMPARABLE_EMBEDDING_NORM
 from brain_v42.dream_degradation import DEGRADED_PREFIX
 from brain_v42.dream_run_project_key import GLOBAL_PHASE_PROJECT_KEY
 from brain_v42.models.project_key import canonicalize_project_key
+from brain_v42.scripts.agy_completion import DEFAULT_AGY_EXECUTABLE, agy_chat_completion
 from brain_v42.scripts.domain_backfill import (
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
@@ -47,6 +48,16 @@ from brain_v42.scripts.domain_backfill import (
 _ENV_FILE = Path.home() / ".config" / "brain-v42" / "nvidia.env"
 _API_KEY_VAR = "BRAIN_NVIDIA_API_KEY"
 _FALLBACK_MODEL_VAR = "BRAIN_NVIDIA_FALLBACK_MODEL"
+_AGY_MODEL_VAR = "BRAIN_EXTRACT_AGY_MODEL"
+#: The THIRD link, on a transport independent of NVIDIA entirely: the agy CLI
+#: (subscription-backed Gemini), tool-less headless print mode. Reached only
+#: when BOTH NVIDIA links are gone (run-level switch) or when a single ticket
+#: fails on whichever NVIDIA link is active for a TRANSPORT reason
+#: (ticket-level rescue) — never when NVIDIA served the ticket successfully.
+#: An empty string (`--agy-model ""` or `BRAIN_EXTRACT_AGY_MODEL=""`) disables
+#: the link entirely; `_run` then behaves byte-for-byte as it did before this
+#: link existed.
+DEFAULT_EXTRACT_AGY_MODEL = "gemini-3.8-flash-high"
 #: Fallback for when the provider retires the primary.
 #:
 #: A REAL SECOND LINK since 2026-08-29. It had been cancelled (set equal to the
@@ -563,17 +574,23 @@ class ThreadOutcome:
     thinking_tokens: int | None = None
 
 
-async def extract_thread(
-    client: httpx.AsyncClient,
-    model: str,
+async def _extract_via(
     thread: TicketThread,
-    sleep: Any = asyncio.sleep,
+    call: Any,
 ) -> ThreadOutcome:
-    """Call LLM once; on parse error, one corrective re-prompt; fail → outcome failed."""
+    """Shared body of ``extract_thread`` and ``extract_thread_via_agy``.
+
+    ``call`` is ``async (messages) -> (content, usage)`` — the ONLY thing that
+    differs between the NVIDIA transport (`_post_chat`) and the agy transport
+    (`agy_chat_completion`). Everything else — the corrective re-prompt, the
+    reasoning-token fold, the failure shape — is transport-agnostic and must
+    not be duplicated per link (parse_and_validate has exactly one caller
+    shape to honour).
+    """
     messages = build_messages(thread)
     thinking_tokens: int | None = None
     try:
-        content, usage = await _post_chat(client, model, messages, sleep)
+        content, usage = await call(messages)
         thinking_tokens = thinking_tokens_from_usage(usage)
         try:
             drafts = parse_and_validate(content, thread)
@@ -592,7 +609,7 @@ async def extract_thread(
                     "content": f"{_REPROMPT_INSTRUCTION}\nErreur précise : {first_error}",
                 },
             ]
-            content2, usage2 = await _post_chat(client, model, corrective, sleep)
+            content2, usage2 = await call(corrective)
             thinking_tokens = combine_thinking_tokens(
                 thinking_tokens, thinking_tokens_from_usage(usage2)
             )
@@ -616,7 +633,8 @@ async def extract_thread(
         # `thinking_tokens` may already hold the first call's measurement (a
         # parse error triggered the corrective re-prompt, which then failed at
         # the transport level) — keep it, rather than silently dropping a real
-        # measurement because the SECOND call never answered.
+        # measurement because the SECOND call never answered. `AgyLinkError`
+        # is a `RuntimeError`, so the agy transport is caught here too.
         return ThreadOutcome(
             thread=thread,
             drafts=[],
@@ -625,6 +643,44 @@ async def extract_thread(
             thinking_tokens=thinking_tokens,
         )
     return ThreadOutcome(thread=thread, drafts=drafts, thinking_tokens=thinking_tokens)
+
+
+async def extract_thread(
+    client: httpx.AsyncClient,
+    model: str,
+    thread: TicketThread,
+    sleep: Any = asyncio.sleep,
+) -> ThreadOutcome:
+    """Call the NVIDIA LLM once; on parse error, one corrective re-prompt."""
+
+    async def call(messages: list[dict[str, str]]) -> tuple[str, dict[str, Any]]:
+        return await _post_chat(client, model, messages, sleep)
+
+    return await _extract_via(thread, call)
+
+
+async def extract_thread_via_agy(
+    thread: TicketThread,
+    model: str,
+    agy_executable: str,
+    timeout_seconds: float,
+) -> ThreadOutcome:
+    """The same extraction, over the agy (Gemini) link instead of NVIDIA.
+
+    Never raises `ModelGoneError`: agy has no notion of a retired model in
+    this contract, so a transport failure always comes back as a failed
+    `ThreadOutcome` — there is nothing further to switch to.
+    """
+
+    async def call(messages: list[dict[str, str]]) -> tuple[str, dict[str, Any] | None]:
+        return await agy_chat_completion(
+            model=model,
+            messages=messages,
+            agy_executable=agy_executable,
+            timeout_seconds=timeout_seconds,
+        )
+
+    return await _extract_via(thread, call)
 
 
 def _safe_error(value: str | None) -> str | None:
@@ -653,6 +709,35 @@ async def _extract_thread_with_budget(
             drafts=[],
             failed=True,
             error=f"ticket timeout after {timeout_seconds:g}s",
+        )
+
+
+async def _extract_thread_via_agy_with_budget(
+    agy_model: str,
+    agy_executable: str,
+    thread: TicketThread,
+    *,
+    timeout_seconds: float,
+    extract: Any | None = None,
+) -> ThreadOutcome:
+    """The agy-link counterpart of `_extract_thread_with_budget`.
+
+    Symmetric bound: whether the run switched to agy or a single ticket is
+    being rescued on it, the same remaining slice governs both the agy
+    process's own `--print-timeout` and this watchdog.
+    """
+    extraction = extract or extract_thread_via_agy
+    try:
+        return await asyncio.wait_for(
+            extraction(thread, agy_model, agy_executable, timeout_seconds),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError:
+        return ThreadOutcome(
+            thread=thread,
+            drafts=[],
+            failed=True,
+            error=f"ticket timeout after {timeout_seconds:g}s (agy)",
         )
 
 
@@ -874,8 +959,12 @@ def _degradation_notice(
     switched: bool,
     served: int,
     cause: str | None,
+    agy_model: str | None = None,
+    agy_switched: bool = False,
+    agy_served: int = 0,
+    agy_rescued: int = 0,
 ) -> str | None:
-    """Degradation sentence when the standby served the run, else None.
+    """Degradation sentence when a standby link served the run, else None.
 
     Ticket 455e5bf7, residue of e7006388. `extract` has a fallback --
     `BRAIN_NVIDIA_FALLBACK_MODEL` -- and it has used it: eight nights of
@@ -883,7 +972,7 @@ def _degradation_notice(
     `status='done'`, `model=NULL`, `error_message=NULL`. Silent on exactly the
     night the morning rubric should speak.
 
-    Speaks only when the standby ACTUALLY served: an alarm that fires every night
+    Speaks only when a standby ACTUALLY served: an alarm that fires every night
     stops being read (Dream postmortem 08-04).
 
     The difference from roadmap is worth keeping in the words. Roadmap falls back
@@ -898,14 +987,40 @@ def _degradation_notice(
     the switch that did NOT fail -- never the tickets the primary served
     before the 410, and never a ticket the fallback also failed on (fixed
     2026-09-07, same overcount class as roadmap's `fallback_batches`).
+
+    ``agy_switched``/``agy_served``/``agy_rescued`` name the THIRD link (agy,
+    a transport independent of NVIDIA). ``agy_switched`` takes precedence over
+    the NVIDIA fallback sentence: a run-level switch to agy means BOTH NVIDIA
+    links are gone, which is a stronger fact than "the standby served". A
+    ticket-level rescue (``agy_rescued``) with no run-level switch is appended
+    to whichever NVIDIA sentence already applies, or produces its own when
+    neither the primary was withdrawn nor a fallback ran -- a primary that
+    stayed nominally alive but needed agy on some tickets is still a fact this
+    mark exists to surface.
     """
-    if not switched or not fallback:
-        return None
-    reason = cause or "cause non capturée"
-    return (
-        f"{DEGRADED_PREFIX} : {served} tickets servis par le modèle de SECOURS "
-        f"{fallback}, le primaire {primary} a été retiré — {reason}"
-    )
+    if agy_switched and agy_model:
+        agy_label = agy_model if agy_model.startswith("agy/") else f"agy/{agy_model}"
+        reason = cause or "cause non capturée"
+        chain = f"{primary} puis {fallback}" if switched and fallback else primary
+        return (
+            f"{DEGRADED_PREFIX} : {agy_served} tickets servis par le lien de SECOURS "
+            f"{agy_label}, plus aucun modèle NVIDIA vivant ({chain}) — {reason}"
+        )
+    if switched and fallback:
+        reason = cause or "cause non capturée"
+        base = (
+            f"{DEGRADED_PREFIX} : {served} tickets servis par le modèle de SECOURS "
+            f"{fallback}, le primaire {primary} a été retiré — {reason}"
+        )
+        if agy_rescued and agy_model:
+            base += f" ; {agy_rescued} ticket(s) en plus sauvé(s) par agy/{agy_model}"
+        return base
+    if agy_rescued and agy_model:
+        return (
+            f"{DEGRADED_PREFIX} : {agy_rescued} ticket(s) sauvé(s) par le lien de "
+            f"SECOURS agy/{agy_model} après un échec transport du primaire {primary}"
+        )
+    return None
 
 
 async def record_dream_run(
@@ -1097,6 +1212,15 @@ def main() -> int:
         default=None,
         help=f"défaut: env BRAIN_NVIDIA_BASE_URL puis {DEFAULT_BASE_URL}",
     )
+    parser.add_argument(
+        "--agy-model",
+        default=None,
+        help=(
+            "modèle agy (Gemini) de troisième lien, sur un transport indépendant "
+            "de NVIDIA ; chaîne vide désactive le lien ; "
+            f"défaut: env {_AGY_MODEL_VAR} puis {DEFAULT_EXTRACT_AGY_MODEL}"
+        ),
+    )
     args = parser.parse_args()
 
     if args.wet and args.apply_ids is not None:
@@ -1125,7 +1249,28 @@ def main() -> int:
         # suggest a chain where there is a single point of failure.
         fallback_model = None
 
-    return asyncio.run(_run(args, api_key, model, base_url, fallback_model=fallback_model))
+    # An explicit "" (CLI flag or env var) disables the link — distinct from
+    # "not set at all", which resolves to the default. `args.agy_model` stays
+    # `None` only when `--agy-model` was never passed.
+    agy_model_raw = (
+        args.agy_model
+        if args.agy_model is not None
+        else os.environ.get(_AGY_MODEL_VAR, DEFAULT_EXTRACT_AGY_MODEL)
+    )
+    agy_model = agy_model_raw or None
+    agy_executable = os.environ.get("BRAIN_DREAM_AGY_BIN") or DEFAULT_AGY_EXECUTABLE
+
+    return asyncio.run(
+        _run(
+            args,
+            api_key,
+            model,
+            base_url,
+            fallback_model=fallback_model,
+            agy_model=agy_model,
+            agy_executable=agy_executable,
+        )
+    )
 
 
 async def _run(
@@ -1135,6 +1280,8 @@ async def _run(
     base_url: str,
     *,
     fallback_model: str | None = None,
+    agy_model: str | None = None,
+    agy_executable: str = DEFAULT_AGY_EXECUTABLE,
 ) -> int:
     from pydantic import ValidationError  # noqa: PLC0415
 
@@ -1207,15 +1354,31 @@ async def _run(
     # switch and ones that failed on the SECOURS too. Only a ticket processed
     # AFTER the switch, and not failed, was actually SERVED by the fallback.
     fallback_served = 0
+    # Tickets served by the agy (Gemini) link, on its own transport. Two
+    # distinct routes reach it, counted apart because they answer different
+    # operator questions: "how often is a single ticket flaky" versus "how
+    # often is NVIDIA entirely gone".
+    #   - `agy_rescued`: a TICKET-level retry, after ONE ticket failed on
+    #     whichever NVIDIA link was active for a transport reason. NVIDIA
+    #     stays the active model for the rest of the run.
+    #   - `agy_served`: a RUN-level switch, once both NVIDIA links (primary
+    #     and, if configured, fallback) are gone. Every ticket from that point
+    #     on goes straight to agy, this one included.
+    agy_rescued = 0
+    agy_served = 0
     # None until a real call measures something (including a real zero); see
     # `combine_thinking_tokens`. Must reach `record_dream_run` as-is — a run
     # where nothing measured anything writes NULL, never 0.
     thinking_tokens_total: int | None = None
     # The model actually served, which is no longer necessarily the one asked
     # for: an end of life at the provider switches the whole RUN to the
-    # fallback.
+    # fallback (or, if that is gone too, to agy).
     active_model = model
     switched_to_fallback = False
+    # Run-level switch to the agy link: BOTH NVIDIA links are gone. Once set,
+    # every remaining ticket is served by agy — no NVIDIA call is attempted
+    # again this run.
+    switched_to_agy = False
     # Kept for the dream_runs row: the withdrawn model and WHY, so the
     # morning rubric names what died rather than only what replaced it.
     withdrawn_model: str | None = None
@@ -1267,6 +1430,17 @@ async def _run(
             ticket_started = time.monotonic()
             ticket_deadline = ticket_started + ticket_slice_seconds
             while True:
+                if switched_to_agy:
+                    # Both NVIDIA links are gone for the rest of the run: no
+                    # NVIDIA call is attempted again, ever, this run.
+                    assert agy_model is not None  # switched_to_agy implies it was set
+                    outcome = await _extract_thread_via_agy_with_budget(
+                        agy_model,
+                        agy_executable,
+                        thread,
+                        timeout_seconds=ticket_slice_seconds,
+                    )
+                    break
                 try:
                     outcome = await _extract_thread_with_budget(
                         http_client,
@@ -1280,6 +1454,20 @@ async def _run(
                     # this state, the next 19 tickets would each pay the same
                     # 410 again to learn the same thing.
                     if switched_to_fallback or not fallback_model:
+                        if agy_model:
+                            # Both NVIDIA links are gone but a third,
+                            # independent transport is configured: switch to
+                            # it rather than aborting the run.
+                            print(
+                                "progress: plus aucun modèle NVIDIA vivant "
+                                f"(HTTP {exc.status_code}) — bascule sur le lien "
+                                f"agy/{agy_model} pour la suite du run"
+                            )
+                            withdrawn_model = withdrawn_model or exc.model
+                            withdrawal_cause = withdrawal_cause or f"HTTP {exc.status_code}"
+                            active_model = f"agy/{agy_model}"
+                            switched_to_agy = True
+                            continue
                         model_gone = _exc_str(exc)
                         print(f"FATAL extract: plus aucun modèle vivant — {model_gone}")
                         break
@@ -1298,8 +1486,41 @@ async def _run(
             thinking_tokens_total = combine_thinking_tokens(
                 thinking_tokens_total, outcome.thinking_tokens
             )
-            if switched_to_fallback and not outcome.failed:
+            if switched_to_fallback and not switched_to_agy and not outcome.failed:
                 fallback_served += 1
+            if switched_to_agy and not outcome.failed:
+                agy_served += 1
+
+            if outcome.failed and agy_model and not switched_to_agy:
+                # Ticket-level rescue: this ticket failed on whichever NVIDIA
+                # link was active, for a TRANSPORT reason (httpx error, ticket
+                # timeout, HTTP 5xx/RuntimeError from `_post_chat`, or
+                # unparseable after the corrective re-prompt — everything
+                # `_extract_thread_with_budget` can return as `failed=True`).
+                # Retried ONCE on agy, within whatever remains of THIS
+                # ticket's own slice — never the reserve, and the run stays on
+                # NVIDIA for the next ticket: this is not a run-level switch.
+                remaining_ticket_slice = ticket_slice_seconds - (time.monotonic() - ticket_started)
+                if remaining_ticket_slice > 0:
+                    print(
+                        f"progress: ticket {thread.id} échec transport "
+                        f"({_safe_error(outcome.error)}) — tentative de secours "
+                        f"sur agy/{agy_model}"
+                    )
+                    rescued_outcome = await _extract_thread_via_agy_with_budget(
+                        agy_model,
+                        agy_executable,
+                        thread,
+                        timeout_seconds=remaining_ticket_slice,
+                    )
+                    thinking_tokens_total = combine_thinking_tokens(
+                        thinking_tokens_total, rescued_outcome.thinking_tokens
+                    )
+                    if not rescued_outcome.failed:
+                        agy_rescued += 1
+                    outcome = rescued_outcome
+                    ticket_duration = time.monotonic() - ticket_started
+
             if outcome.failed:
                 is_timeout = "timeout" in (outcome.error or "").lower()
                 attempt_status = "timeout" if is_timeout else "failed"
@@ -1469,6 +1690,8 @@ async def _run(
         failed=failed,
         timed_out=timed_out,
         deferred_count=deferred_count,
+        agy_rescued=agy_rescued,
+        agy_served=agy_served,
         phase_duration_s=round(time.monotonic() - t0, 3),
     )
     print(
@@ -1536,6 +1759,10 @@ async def _run(
         switched=switched_to_fallback,
         served=fallback_served,
         cause=withdrawal_cause,
+        agy_model=agy_model,
+        agy_switched=switched_to_agy,
+        agy_served=agy_served,
+        agy_rescued=agy_rescued,
     )
     if degraded:
         # The `! ` belongs to the JOURNAL and to it alone; the column stores the
