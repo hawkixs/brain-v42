@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "headless-agents"
+# Provisional name (Brain decision 1800f901): the definitive one is chosen if
+# and when this member is split into its own repository.
+version = "0.1.0"
+description = "Run headless CLI agents (claude -p, codex exec, agy --print) under a caller-supplied capability profile"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+    {name = "Hawixs", email = "armandasm@gmail.com"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+# The whole point of a separate distribution: a consumer whose invariant is
+# "no database" (red-arena) must not inherit sqlalchemy, asyncpg, neo4j,
+# pgvector, fastmcp or uvicorn from brain_v42. tests/unit/headless_agents/
+# test_package_boundary.py refuses anything beyond these two.
+dependencies = [
+    "pydantic>=2.0",
+    "structlog>=24.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/hawkixs/brain-v42"
+Repository = "https://github.com/hawkixs/brain-v42"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/headless_agents"]

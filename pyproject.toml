@@ -49,6 +49,11 @@ dependencies = [
     # Reranker — uses shared unified HTTP service on :8003 (no local model deps)
     # Graph (optional Neo4j relationship index — disabled by default)
     "neo4j>=5.0,<7",
+    # Shared agent runtime (uv workspace member under packages/, Brain ticket
+    # b2a2d1a5). brain_v42.agents is the Dream-side adapter over it; the
+    # runtime itself must never import brain_v42 (guarded by
+    # tests/unit/headless_agents/test_package_boundary.py).
+    "headless-agents",
 ]
 
 [project.urls]
@@ -157,14 +162,14 @@ faulthandler_exit_on_timeout = true
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-src = ["src", "tests"]
+src = ["src", "tests", "packages/headless-agents/src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4"]
 ignore = ["E501"]  # Line length handled separately
 
 [tool.ruff.lint.isort]
-known-first-party = ["brain_v42"]
+known-first-party = ["brain_v42", "headless_agents"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -188,3 +193,14 @@ exclude_lines = [
 dev = [
     "aiosqlite>=0.22.1",
 ]
+
+# The shared agent runtime is a workspace member: `uv sync` installs it
+# editable next to brain_v42, `uv build` at the root still builds only
+# brain_v42, and a consumer outside this repository installs the member alone
+# by git URL + subdirectory. The release script builds and installs BOTH
+# wheels (`uv export --no-emit-workspace`), see docs/runbooks.
+[tool.uv.workspace]
+members = ["packages/headless-agents"]
+
+[tool.uv.sources]
+headless-agents = { workspace = true }
