@@ -66,7 +66,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --no-dev --extra dev
       - name: Check types
-        run: .venv/bin/mypy src/
+        run: .venv/bin/mypy src/ packages/headless-agents/src/
 
   # tests/unit/ is not database-free: eight of its files opt into a real PostgreSQL
   # through require_test_db_url() (tests/conftest.py) and skip when
@@ -182,7 +182,7 @@ jobs:
         run: .venv/bin/alembic upgrade head
       - name: Measure coverage
         run: >-
-          .venv/bin/pytest tests/unit/ --cov=brain_v42 --cov-report=term-missing
+          .venv/bin/pytest tests/unit/ --cov=brain_v42 --cov=headless_agents --cov-report=term-missing
           --cov-report=xml:coverage.xml --cov-fail-under=60
           --junitxml=coverage-junit.xml
       # THE INVERTED WITNESS, and it is the deliverable — not the percentage.
@@ -274,10 +274,15 @@ jobs:
         run: pip install "uv==$UV_VERSION"
       - name: Install dependencies
         run: uv sync --locked --no-dev --extra dev
+      # --no-emit-workspace, not --no-emit-project: the headless-agents
+      # workspace member would otherwise land as an unhashable
+      # `-e ./packages/headless-agents` line, which pip-audit refuses under
+      # --require-hashes. Neither workspace member is an audited third-party
+      # distribution; their dependencies still are, and are still exported.
       - name: Export the audited lock
         run: >-
           uv export --locked --no-dev --extra dev --format requirements-txt
-          --no-emit-project -o requirements-audit.txt
+          --no-emit-workspace -o requirements-audit.txt
       - name: Audit dependencies
         run: >-
           .venv/bin/pip-audit -r requirements-audit.txt --require-hashes --disable-pip
@@ -347,7 +352,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --no-dev --extra dev
       - name: Scan sources
-        run: .venv/bin/bandit -ll -r src/
+        run: .venv/bin/bandit -ll -r src/ packages/headless-agents/src/
 
   # Secret scanning. `dir` scans the checked-out tree: gitleaks 8.30 dropped the
   # `detect` subcommand, and a filesystem scan is correct under the shallow clone

@@ -1,43 +1,28 @@
-"""An isolated ``agy`` adapter for one Dream phase.
+"""The Dream's ``agy`` rail: a phase-scoped profile over the runtime.
 
-Moved unchanged from ``scripts/dream/agy_runner.py`` (lot 1 of the agent
-runtime extraction, Brain ticket c31bad72), save for one deliberate seam:
-``build_ephemeral_home`` here takes ``guard_path`` as an explicit parameter
-instead of resolving it from ``__file__`` -- see
-``brain_v42.agents.sandbox``'s module docstring for why. The CLI entry point
-stays in ``scripts/dream/agy_runner.py``, now a thin shim that supplies its own
-``GUARD_PATH`` (``scripts/dream/agy_tool_guard.sh``) and re-exports the names
-its existing tests import by name.
-
-agy takes NO configuration on the command line: no ``--mcp-config``, no tool
-allowlist, no equivalent of claude's ``--tools ""``. Its bundled documentation
-(``docs/mcp_servers.md``) knows only two locations, both global, and a
-project-level ``.agents/hooks.json`` is NOT discovered -- measured 2026-08-11,
-in a trusted workspace and a git repository.
-
-Hence the ephemeral HOME: it is the only route that gives per-invocation
-control. agy finds ``.gemini/config/{mcp_config.json,hooks.json}`` there and
-authenticates through credentials symlinked from the real HOME.
+Since Brain ticket b2a2d1a5 the command line, the ephemeral HOME, the guard
+probe and the exit-code discipline live in
+:mod:`headless_agents.providers.agy` and :mod:`headless_agents.sandbox`. What
+stays here is what only the Dream knows: the ``(project, phase)`` bearer
+written into the HOME, the phase's Brain tool allowlist, the versioned guard
+under ``scripts/dream/agy_tool_guard.sh`` (named by
+``BRAIN_DREAM_AGY_GUARD_PATH``), the ``BRAIN_DREAM_CAPABILITY_ENFORCEMENT``
+requirement, and the argv contract ``dream.sh`` invokes through
+``python -m brain_v42.agents.providers.agy``. Every public name, signature
+and exit code is unchanged from lot 1/2; the golden fixtures pin the argv
+and the HOME's files byte for byte.
 
 TWO PROTECTIONS, TWO PERIMETERS, never to be confused:
 - ``agy_tool_guard.sh``, wired as a ``PreToolUse`` hook, protects the MACHINE;
 - the ``(project, phase)`` bearer protects the CORPUS, and the server is what
   enforces it.
-
-THE RAIL'S ONLY DEVIATION. agy's ``Authorization`` is a literal: its
-documentation describes no ``${VAR}`` interpolation, unlike the ``.mcp.json``
-claude reads. The bearer is therefore WRITTEN to a file where the other two
-rails pass it through the environment. It is confined to a 0700 HOME under
-``XDG_RUNTIME_DIR`` -- a tmpfs, never persistent disk -- and destroyed with it.
-Named here so it is not rediscovered by accident.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import subprocess
+import subprocess  # noqa: F401  (re-exported: tests monkeypatch runner.subprocess.Popen)
 import sys
 import tempfile
 import time
@@ -47,6 +32,19 @@ from pathlib import Path
 from brain_v42.mcp.dream_capabilities import (
     DREAM_PHASE_TOOL_ALLOWLISTS,
     DreamCapabilityConfigurationError,
+)
+from headless_agents.providers import agy as _runtime
+from headless_agents.providers.agy import (
+    MAX_PROMPT_BYTES as _MAX_PROMPT_BYTES,
+)
+from headless_agents.providers.agy import (
+    extract_report as extract_report,
+)
+from headless_agents.providers.agy import (
+    guard_denies_machine_tools as guard_denies_machine_tools,
+)
+from headless_agents.providers.agy import (
+    tool_call_completed as brain_tool_call_completed,
 )
 
 from ..capability import (
@@ -58,14 +56,24 @@ from ..capability import (
     terminate_process_group,
 )
 from ..result import RunResult
-from ..sandbox import build_ephemeral_home, ephemeral_root
+from ..sandbox import build_ephemeral_home, dream_agy_home_name, dream_agy_profile, ephemeral_root
 from ..spec import RunSpec
 
 PHASE_TOOL_ALLOWLISTS = DREAM_PHASE_TOOL_ALLOWLISTS
 
-# Kernel limit on a SINGLE argument (MAX_ARG_STRLEN = 32 pages). Beyond it,
-# execve returns E2BIG. We keep a margin for the rest of the command line.
-_MAX_PROMPT_BYTES = 120_000
+__all__ = [
+    "PHASE_TOOL_ALLOWLISTS",
+    "PROVIDER_FALLBACK_EXIT_CODE",
+    "TIMEOUT_EXIT_CODE",
+    "AgyProvider",
+    "brain_tool_call_completed",
+    "build_agy_command",
+    "extract_report",
+    "guard_denies_machine_tools",
+    "main",
+    "run_agy",
+    "terminate_process_group",
+]
 
 
 def build_agy_command(
@@ -75,141 +83,17 @@ def build_agy_command(
     agy_executable: str = "agy",
     timeout_seconds: float = 300.0,
 ) -> list[str]:
-    """The headless command line of one phase.
-
-    THE PROMPT GOES IN ARGV, and that is not a choice. Measured 2026-08-11: agy
-    IGNORES stdin -- ``--print ""`` with the prompt on stdin returns an empty
-    answer, and a prompt in an argument plus context on stdin answers without
-    the context. The other two rails deliberately go through stdin to dodge
-    ARG_MAX; agy leaves no such option.
-
-    The failure mode if you get it wrong is treacherous: agy answers all the
-    same, with a greeting, and the phase exits 0 with an off-topic report.
-
-    No secret travels through argv: the bearer lives in the ephemeral HOME's
-    ``mcp_config.json``. The prompt is visible there -- it is phase instructions
-    and previous reports, not a secret.
-
-    ``--dangerously-skip-permissions`` is REQUIRED: without it, agy waits in
-    headless mode for an approval that will never come. It is not what bounds
-    the phase -- that is the ``PreToolUse`` guard, which survives this flag.
-    """
-    prompt_bytes = len(prompt.encode("utf-8"))
-    if prompt_bytes > _MAX_PROMPT_BYTES:
-        # Refuse BEFORE execve: an E2BIG deep inside a Popen is an opaque
-        # OSError, where this names the cause and its size.
+    """The headless command line of one phase. THE PROMPT GOES IN ARGV: agy
+    ignores stdin (measured 2026-08-11) -- see the runtime's docstring."""
+    try:
+        return _runtime.build_agy_command(
+            model=model, prompt=prompt, executable=agy_executable, timeout_seconds=timeout_seconds
+        )
+    except ValueError:
+        prompt_bytes = len(prompt.encode("utf-8"))
         raise ValueError(
             f"prompt trop long pour argv : {prompt_bytes} octets > {_MAX_PROMPT_BYTES}"
-        )
-    command = [
-        agy_executable,
-        "--print",
-        prompt,
-        "--output-format",
-        "stream-json",
-        "--print-timeout",
-        f"{int(timeout_seconds)}s",
-        "--dangerously-skip-permissions",
-        "--disable-slash-commands",
-    ]
-    if model.strip():
-        command.extend(("--model", model))
-    return command
-
-
-def brain_tool_call_completed(events_log: Path) -> bool:
-    """Did a Brain tool call SUCCEED in this stream-json flow?
-
-    The counterpart of codex's and claude's predicates. ``False`` proves no
-    mutation was committed, hence that replaying the phase elsewhere carries no
-    risk.
-
-    Only ``call_mcp_tool`` counts: it is the gateway through which agy reaches
-    brain-v42, and the guard refuses everything else. A REFUSED ``run_command``
-    does produce a tool step -- counting it would block the switchover on a
-    phase that plainly wrote nothing.
-    """
-    if not events_log.is_file():
-        return False
-    for raw_line in events_log.read_text(encoding="utf-8", errors="replace").splitlines():
-        if not raw_line.strip():
-            continue
-        try:
-            event = json.loads(raw_line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict):
-            continue
-        step = event.get("step_update")
-        if not isinstance(step, dict):
-            continue
-        if (
-            step.get("step_type") == "tool"
-            and step.get("state") == "DONE"
-            and step.get("tool_name") == "call_mcp_tool"
-        ):
-            return True
-    return False
-
-
-def guard_denies_machine_tools(guard: Path) -> bool:
-    """PROVE the guard refuses, instead of noting that it exists.
-
-    The guard is the only wall between a nightly phase and a shell. Checking it
-    is present would let through a guard that is empty, non-executable,
-    misnamed or made permissive by an edit -- all states in which the file
-    exists. So we submit a real payload to it and demand the refusal.
-    """
-    if not guard.is_file():
-        return False
-    probes = (
-        ("run_command", "deny"),
-        ("write_to_file", "deny"),
-        ("call_mcp_tool", "allow"),
-    )
-    for tool_name, expected in probes:
-        payload = json.dumps({"toolCall": {"name": tool_name, "args": {}}, "stepIdx": 0})
-        try:
-            result = subprocess.run(
-                ["bash", str(guard)],
-                input=payload,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            decision = json.loads(result.stdout).get("decision")
-        except (OSError, ValueError, subprocess.SubprocessError):
-            return False
-        if decision != expected:
-            return False
-    return True
-
-
-def extract_report(events_log: Path, report_log: Path) -> None:
-    """Rebuild the phase report from the event stream.
-
-    The final answer lives under ``{"event":"result","result":{"response":...}}``.
-    Looking for it elsewhere produces an EMPTY report, and dream.sh injects this
-    file into the next phase then hands it to its validators: the dependency
-    chain would break without an error, the phase exiting 0.
-    """
-    if not events_log.is_file():
-        return
-    response = ""
-    for raw_line in events_log.read_text(encoding="utf-8", errors="replace").splitlines():
-        if not raw_line.strip():
-            continue
-        try:
-            event = json.loads(raw_line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict) or event.get("event") != "result":
-            continue
-        result = event.get("result")
-        if isinstance(result, dict) and isinstance(result.get("response"), str):
-            response = result["response"]
-    if response.strip():
-        report_log.write_text(response, encoding="utf-8")
+        ) from None
 
 
 def run_agy(
@@ -248,87 +132,52 @@ def run_agy(
         )
         return 1
 
-    real_home = Path(os.environ.get("HOME", str(Path.home())))
-    root = ephemeral_root(os.environ)
+    try:
+        profile = dream_agy_profile(
+            phase=phase, project_key=project_key, environ=os.environ, guard_path=guard_path
+        )
+    except DreamCapabilityConfigurationError:
+        stderr_log.write_text(f"{CAPABILITY_CONFIGURATION_ERROR}\n", encoding="utf-8")
+        return 1
 
-    def _run(base: Path) -> int:
-        try:
-            home = build_ephemeral_home(
-                root=base,
-                phase=phase,
-                project_key=project_key,
-                environ=os.environ,
-                real_home=real_home,
-                guard_path=guard_path,
-            )
-        except DreamCapabilityConfigurationError:
-            stderr_log.write_text(f"{CAPABILITY_CONFIGURATION_ERROR}\n", encoding="utf-8")
-            return 1
-
-        child_environment = {
-            "HOME": str(home),
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "LANG": os.environ.get("LANG", "C.UTF-8"),
-            "TERM": "dumb",
-        }
-        try:
-            command = build_agy_command(
-                model=model,
-                prompt=prompt,
-                agy_executable=agy_executable,
-                timeout_seconds=timeout_seconds,
-            )
-        except ValueError as exc:
-            stderr_log.write_text(f"{exc}\n", encoding="utf-8")
-            return PROVIDER_FALLBACK_EXIT_CODE
-
-        with (
-            events_log.open("w", encoding="utf-8") as events_stream,
-            stderr_log.open("w", encoding="utf-8") as stderr_stream,
-        ):
-            try:
-                process = subprocess.Popen(
-                    command,
-                    stdin=subprocess.DEVNULL,
-                    stdout=events_stream,
-                    stderr=stderr_stream,
-                    cwd=home,
-                    env=child_environment,
-                    text=True,
-                    start_new_session=True,
-                )
-            except OSError as exc:
-                stderr_stream.write(f"impossible de démarrer agy : {exc}\n")
-                return PROVIDER_FALLBACK_EXIT_CODE
-            try:
-                process.communicate(timeout=timeout_seconds)
-            except subprocess.TimeoutExpired:
-                terminate_process_group(process)
-                return TIMEOUT_EXIT_CODE
-
-        extract_report(events_log, report_log)
-        exit_code = int(process.returncode or 0)
-        if exit_code == 0:
-            return 0
-        if exit_code == TIMEOUT_EXIT_CODE:
-            return TIMEOUT_EXIT_CODE
-        if brain_tool_call_completed(events_log):
-            return exit_code
+    try:
+        build_agy_command(
+            model=model,
+            prompt=prompt,
+            agy_executable=agy_executable,
+            timeout_seconds=timeout_seconds,
+        )
+    except ValueError as exc:
+        stderr_log.write_text(f"{exc}\n", encoding="utf-8")
         return PROVIDER_FALLBACK_EXIT_CODE
 
-    if root is not None:
-        with tempfile.TemporaryDirectory(prefix="brain-v42-dream-", dir=str(root)) as temporary:
-            return _run(Path(temporary))
-    with tempfile.TemporaryDirectory(prefix="brain-v42-dream-") as temporary:
-        return _run(Path(temporary))
+    real_home = Path(os.environ.get("HOME", str(Path.home())))
+    return _runtime.run_agy(
+        prompt=prompt,
+        name=dream_agy_home_name(project_key, phase),
+        model=model,
+        timeout_seconds=timeout_seconds,
+        events_log=events_log,
+        report_log=report_log,
+        stderr_log=stderr_log,
+        profile=profile,
+        real_home=real_home,
+        environment=os.environ,
+        executable=agy_executable,
+        ephemeral_root=ephemeral_root(os.environ),
+        temp_prefix="brain-v42-dream-",
+        # Probed above, with the Dream's own refusal line: the runtime would
+        # otherwise spawn the three probe shells a second time.
+        guard_proven=True,
+    )
 
 
 class AgyProvider:
     """:class:`~brain_v42.agents.protocol.AgentProvider` adapter over agy.
 
-    ``guard_path`` is required: this package ships no guard of its own -- see
-    ``brain_v42.agents.sandbox``'s module docstring. Callers that need the
-    nightly Dream guard pass ``scripts/dream/agy_tool_guard.sh``.
+    ``guard_path`` is required: this package ships no guard of its own.
+    Callers that need the nightly Dream guard pass
+    ``scripts/dream/agy_tool_guard.sh``.
     """
 
     name = "agy"
@@ -347,7 +196,7 @@ class AgyProvider:
     def child_environment(self, spec: RunSpec, environ: Mapping[str, str]) -> dict[str, str] | None:
         # agy's own child environment is not the capability-scoped allowlist:
         # the bearer travels through the ephemeral HOME's mcp_config.json
-        # instead. See run_agy's inline child_environment construction.
+        # instead.
         return None
 
     def prepare_home(self, spec: RunSpec) -> Path | None:
@@ -402,13 +251,10 @@ class AgyProvider:
 #
 # Moved from scripts/dream/agy_runner.py (lot 2 of the agent runtime
 # extraction, Brain ticket afd56820). The shim there keeps its own GUARD_PATH
-# and wrapper functions (build_ephemeral_home, guard_denies_machine_tools,
-# run_agy) for its existing tests, which call them in-process. This CLI is
-# what `brain_v42.agents.phase.run_phase` now invokes as a subprocess
+# and wrapper functions for its existing tests, which call them in-process.
+# This CLI is what `brain_v42.agents.phase.run_phase` invokes as a subprocess
 # (`python -m brain_v42.agents.providers.agy`), so it must resolve the guard
-# on its own -- WITHOUT importing `scripts.dream` (this package must not
-# depend on the top-level `scripts/` tree, see `brain_v42.agents.protocol`).
-#
+# on its own -- WITHOUT importing `scripts.dream`.
 
 
 def _default_guard_path() -> Path:
@@ -417,9 +263,7 @@ def _default_guard_path() -> Path:
     Only ``BRAIN_DREAM_AGY_GUARD_PATH`` names it. The working directory is
     NEVER consulted: the dream unit runs with the mutable repository as cwd
     while the code lives in an immutable release tree, so a cwd-relative guess
-    would enforce whatever branch the checkout happens to be on. The shim
-    ``scripts/dream/agy_runner.py`` sets the variable from its own location;
-    ``brain_v42.agents.phase.run_phase`` sets it from ``dream_dir``.
+    would enforce whatever branch the checkout happens to be on.
     """
     override = os.environ.get("BRAIN_DREAM_AGY_GUARD_PATH")
     if override:

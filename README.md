@@ -337,14 +337,17 @@ migrations, and attaches both to the GitHub release.
 
 ## Versioning
 
-- The shipped version is **0.5.0**, and it stays `0.x` on purpose: a `1.0.0` would promise
+- The shipped version is **0.6.0**, and it stays `0.x` on purpose: a `1.0.0` would promise
   a stable interface and a way back, and this project has neither yet.
 - **No lossless downgrade is promised, at any version.** Several migrations protect stored
   history: **037** refuses when a session capture would be lost, **039** requires an explicit
   operator opt-in, and **053** refuses once delivery workflow history exists.
-- Follow the release's operator runbook for recovery. For **0.5.0**, use the
+- Follow the release's operator runbook for recovery. For **0.6.0** (as for 0.5.0), use the
   [compatible forward rollback](docs/runbooks/2026-09-07-observable-delivery-workflows.md#compatible-forward-rollback)
   and keep schema 053 in place.
+- **0.6.0** ships the `headless-agents` workspace member (`packages/headless-agents/`,
+  version `0.1.0`) as a second distribution that `brain_v42` depends on; its own version
+  moves independently of this one.
 
 ## License
 

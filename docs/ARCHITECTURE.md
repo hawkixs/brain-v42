@@ -488,72 +488,81 @@ is not a side-effect-free preview. On 24 July 2026 only `brain-mcp-http.service`
 live, including kernel enforcement and authenticated E2E. The five Dream, graph-recon and
 automation fragments have not yet been rolled out.
 
-### Shared agent runtime (`brain_v42.agents`)
+### Shared agent runtime (`headless_agents`) and the Dream's adapters (`brain_v42.agents`)
 
 Before lot 1 of the agent runtime extraction (Brain ticket c31bad72, 2026-09), the codex, agy and
 Claude adapters above lived only in `scripts/dream/{codex,agy,claude}_runner.py` and
 `scripts/dream/_agent_capability.py` -- private to Dream and outside the wheel. When the extract
 rescue link (`src/brain_v42/scripts/agy_completion.py`) needed the same ephemeral-HOME pattern for
 its own agy fallback, it had to reimplement it a third time rather than depend on `scripts/`,
-which `src/brain_v42/` must never import from.
+which `src/brain_v42/` must never import from. Lot 1 moved that code into `src/brain_v42/agents/`;
+lot 2 (ticket afd56820) moved the phase chain after it.
 
-`src/brain_v42/agents/` now holds that runtime as an installable package, with the same rule
-enforced the other direction: `scripts/dream/` depends on it, never the reverse.
+Brain ticket b2a2d1a5 (decision 3c5c56e1, 2026-09-14) then split the package in two, because
+the same mechanics were being rewritten in every ReD project that runs an agent CLI and a
+consumer whose invariant is "no database" cannot import `brain_v42` (a dry import loads
+sqlalchemy, neo4j, pgvector, fastmcp and uvicorn):
 
 ```
-src/brain_v42/agents/
-    capability.py       # (project, phase) bearer, child-env allowlist, process-group termination
-    sandbox.py          # ephemeral-HOME construction: the Dream agy variant and the tool-less one
-    spec.py              # RunSpec -- one agent invocation, fields any rail may or may not use
-    result.py            # RunResult / TokenUsage -- one rail-agnostic outcome shape
-    protocol.py           # AgentProvider -- the structural protocol the three adapters satisfy
-    providers/
-        codex.py, agy.py, claude.py   # the moved build_*_command / run_* functions + a Provider class
+packages/headless-agents/            # uv workspace member, distribution `headless-agents`
+    src/headless_agents/
+        profile.py       # CapabilityProfile: McpServer, ToolGuard, Credentials
+        capability.py    # exit codes 3/124, child-env allowlist, NO_PROXY, loopback, killpg
+        sandbox.py       # ephemeral HOMEs from a profile, credentials (symlink | 0600 copy)
+        spec.py, result.py, protocol.py   # RunSpec / RunResult / AgentProvider
+        chain.py         # the fallback state machine, reporting through callbacks
+        envelope.py      # pure unwrap of claude/codex/agy JSON envelopes (model, tokens, cost)
+        providers/codex.py, agy.py, claude.py   # build_*_command / run_* over an McpServer|None
+
+src/brain_v42/agents/                # the Dream's POLICY over the runtime
+    capability.py        # BRAIN_DREAM_* variables, registry, (project, phase) bearer, brain_mcp_server()
+    sandbox.py           # the two Dream HOMEs (agy phase, tool-less extract) and their credential lists
+    providers/*.py       # the historical run_*/build_* signatures and the CLIs dream.sh invokes
+    lines.py, prompt.py, phase.py, chain.py, run_phase_chain.py   # phase orchestration (below)
 ```
 
-`capability.py` is a verbatim port of the former `_agent_capability.py`: capability enforcement,
-loopback validation, the scoped child environment, and `terminate_process_group`. `sandbox.py`
-builds on it to compose an ephemeral `HOME` for agy, which -- unlike codex and Claude -- takes no
-per-invocation configuration flag and therefore needs a throwaway `HOME` to scope its MCP config,
-bearer and tool-use guard to one phase. Two variants ship: `build_ephemeral_home` (the nightly
-Dream rail, wiring a scoped Brain MCP server and a `PreToolUse` guard) and `build_toolless_home`
-(the extract rescue link, no MCP servers, no guard). Both read their credential symlink list --
-`DREAM_AGY_CREDENTIAL_PATHS` / `EXTRACT_AGY_CREDENTIAL_PATHS` -- from `sandbox.py` itself, closing
-the drift risk between what used to be two independently maintained tuples.
+The runtime executes; it never decides. Everything the Dream used to resolve for itself from
+`brain_v42.mcp.dream_capabilities` -- which MCP server, with which bearer and which exact tool
+allowlist, which `PreToolUse` guard, which credential files -- arrives as one
+`CapabilityProfile` value. `McpServer` carries the server name the CLI declares, its loopback-
+validated URL (a remote URL needs `require_loopback=False` by name), the bearer as a value (for
+the rail that writes it literally, agy) and/or the variable name it travels under (codex and
+claude read it from their environment), the extra headers and the tools. `mcp=None` is a run that
+may reach no server at all: codex declares no `mcp_servers`, claude gets `{"mcpServers": {}}`
+under `--strict-mcp-config` and no `--allowedTools`, agy an empty `mcp_config.json`. A profile
+without a guard is refused by the agy rail: the guard is the only wall between agy and a shell.
 
-`build_ephemeral_home` takes `guard_path` as an explicit parameter rather than resolving
-`scripts/dream/agy_tool_guard.sh` from `__file__`, since the package must not assume anything
-about where a caller's guard file lives. `scripts/dream/agy_runner.py` is the one caller that
-needs the guard today; it keeps its own `GUARD_PATH` constant and passes it through thin wrapper
-functions that otherwise forward to the package unchanged. The guard script itself stays versioned
-at `scripts/dream/agy_tool_guard.sh`, with its own tests
-(`tests/unit/test_dream_agy_guard.py`) -- it is not duplicated into the package.
+Two rules hold the boundary. `headless_agents` never imports `brain_v42` or `scripts`, and its
+dependencies are `pydantic` and `structlog` only -- `tests/unit/headless_agents/
+test_package_boundary.py` scans the AST, dry-imports every runtime module in a fresh `-I`
+interpreter and refuses the six heavy modules, and checks both `pyproject.toml` files. And the
+Dream's behaviour did not move: `brain_v42.agents` keeps every public name, signature, CLI
+argument, log line and exit code of lots 1 and 2, builds the profile from the phase allowlists
+and the `MCP_HTTP_DREAM_TOKENS` registry, and hands it down. `tests/unit/agents/
+test_golden_commands.py` still holds the argv, the child environment and the agy HOME's files to
+the fixtures captured from the pre-extraction runners, byte for byte, for every provider and
+every phase; the fixtures were not touched by the split.
 
-`scripts/dream/{codex,agy,claude}_runner.py` and `_agent_capability.py` are now thin shims that
-re-export, by name, every symbol their pre-existing unit tests import -- so
-`tests/unit/test_dream_{codex,agy,claude}_runner.py`, `test_dream_agy_guard.py`,
-`test_dream_provider_chain.py` and `test_dream_sh_agent_provider.py` all pass unmodified. As of
-lot 2 (below), the `argparse` CLI and `main()` that `dream.sh` used to invoke through these shims
-moved into `providers/{codex,agy,claude}.py` themselves -- `phase.runner_module()` now names the
-package module directly, so the process `dream.sh` starts is
-`python -m brain_v42.agents.providers.codex`, not the shim. `agy.py`'s `main()` resolves its own
-tool-use guard path (`BRAIN_DREAM_AGY_GUARD_PATH`, defaulting to `cwd() / scripts/dream/agy_tool_guard.sh`)
-without importing `scripts.dream`, preserving the "package must not depend on `scripts/`" rule;
-the shim keeps its own `__file__`-relative `GUARD_PATH` and wrapper functions for tests that call
-them in-process.
+The member installs on its own from another project:
 
-`tests/unit/agents/test_golden_commands.py` holds the package to fixtures
-(`tests/fixtures/agents_golden/`) captured from the pre-extraction runners, proving the argv and
-child environment the package builds are byte-for-byte identical to what shipped before, for every
-provider and every Dream phase.
+```sh
+uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@<tag>#subdirectory=packages/headless-agents"
+```
 
-`RunSpec` / `RunResult` / `AgentProvider` are the seam for a caller that does not want to know
-which rail it is talking to. The three pre-existing `run_*` functions keep their own, differently
-shaped keyword signatures (moved unchanged, so their tests keep passing); each provider's `run()`
-method adapts a `RunSpec` to that function instead of replacing it. Consumers today: the nightly
-Dream orchestrator (via the `scripts/dream/` shims) and the extract rescue link (via
-`sandbox.build_toolless_home`). A PR reviewer service, which needs the same headless-agent sandbox
-without any of Dream's phase machinery, is the next planned consumer.
+Inside this repository `uv sync` installs it editable next to `brain_v42`; `uv build` at the
+root still builds `brain_v42` alone, so the immutable release builds and installs TWO wheels
+(`uv export --no-emit-workspace` for the third-party requirements, then both wheels with
+`--no-deps`) and `scripts/check_delivery_deployment.py` attests the member under
+`workspace_wheels` exactly like the main wheel -- an installed member the manifest does not
+declare fails the preflight.
+
+What the runtime offers beyond what the Dream uses today, for the red-arena pilot (ticket
+e9087e13): `sandbox.sandbox_environment()` (a rebuilt `HOME`/`TMPDIR`/`PATH`/`LANG`/`LC_ALL`
+environment that inherits nothing else), `Credentials(mode="copy")` (a `0600` copy for a sandbox
+that must not point back at the real HOME), `RunSpec.deadline` (a monotonic instant every link of
+a chain can share), and `envelope.unwrap()` (the model the CLI REPORTED, its token counts and its
+cost, never raising -- an unreadable envelope yields the raw text). agy still takes its prompt in
+argv, not on stdin: measured 2026-08-11, it ignores stdin.
 
 ### The provider chain (`brain_v42.agents.{lines,prompt,phase,chain,run_phase_chain}`)
 
@@ -568,7 +577,7 @@ src/brain_v42/agents/
     lines.py             # every log-line template (START/DONE/FAIL/FALLBACK/...), byte-identical
     prompt.py            # render()/render_file() -- moved from scripts/dream/_render_prompt.py
     phase.py             # PHASE_DEPS, PhasePaths, runner/parser/otel argv, run_phase
-    chain.py             # run_chain -- the provider fallback state machine
+    chain.py             # run_chain -- the Dream's FALLBACK lines over headless_agents.chain
     run_phase_chain.py   # `python -m brain_v42.agents.run_phase_chain` CLI
 ```
 
@@ -586,10 +595,12 @@ through a `log: Callable[[str], None]` the caller supplies -- `phase.make_logger
 production one (`[HH:MM:SS]` prefix, prints, appends to the night's main log), matching bash's
 `log() { echo ... | tee -a ...; }`.
 
-`chain.run_chain` is the fallback state machine alone: it advances to the next provider only on
-the fallback exit code (`PROVIDER_FALLBACK_EXIT_CODE`, "failed and proved no Brain tool call
-succeeded"), logging `FALLBACK`/`FALLBACK-END` exactly as bash did, and returns a frozen
-`ChainResult(provider, rc, fallbacks)`.
+`chain.run_chain` keeps the signature `run_phase_chain` calls and the `FALLBACK`/`FALLBACK-END`
+lines exactly as bash wrote them; the state machine itself is `headless_agents.chain.run_chain`,
+which advances to the next provider only on the fallback exit code
+(`PROVIDER_FALLBACK_EXIT_CODE`, "failed and proved no tool call succeeded"), reports through
+`on_fallback`/`on_exhausted` callbacks, and returns a frozen `ChainResult(provider, rc,
+fallbacks)`.
 
 `run_phase_chain.py`'s CLI is the seam `dream.sh` now calls once per phase (the normal call and its
 RETRY, unchanged): it builds `PhasePaths` and a logger, runs the configured provider chain via

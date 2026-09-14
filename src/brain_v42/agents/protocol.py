@@ -1,4 +1,10 @@
-"""``AgentProvider`` -- the common protocol implemented by the three adapters.
+"""``AgentProvider`` -- the DREAM-shaped protocol of the three Dream provider adapters.
+
+Not the runtime's: :class:`headless_agents.protocol.AgentProvider` takes the
+runtime's ``RunSpec`` and reads the server off its profile
+(``tool_call_completed(spec)``), where this one takes the Dream ``RunSpec``
+of :mod:`brain_v42.agents.spec` and an events log path. The two are not
+interchangeable.
 
 Structural (``typing.Protocol``), not a base class: ``providers/codex.py``,
 ``providers/agy.py`` and ``providers/claude.py`` each expose a class that

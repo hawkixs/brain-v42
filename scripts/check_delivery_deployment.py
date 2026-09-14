@@ -8,12 +8,14 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import shlex
 import ssl
 import stat
 import subprocess
 import tarfile
 import time
+import tomllib
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -707,9 +709,177 @@ def _validate_payload(
             }
             if "brain-v42/.mcp.json" not in actual_source or actual_source != declared_source:
                 _fail("release_artifact_mismatch")
+            _validate_workspace_wheels(
+                root, manifest, archive, archive_members, _required_distributions(wheel_metadata)
+            )
             _validate_interpreter(interpreter.path, package_root, manifest.get("version"))
     except (OSError, tarfile.TarError, zipfile.BadZipFile):
         _fail("release_artifact_mismatch")
+
+
+_WORKSPACE_MEMBER = re.compile(r"^brain-v42/(packages/[^/]+)/src/([A-Za-z_][A-Za-z0-9_]*)/")
+
+
+def _normalized_distribution(name: str) -> str:
+    """PEP 503 normalisation: ``Headless_Agents`` and ``headless-agents`` are one name."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _required_distributions(wheel_metadata: str) -> frozenset[str]:
+    """The distributions the main wheel's METADATA says it needs (``Requires-Dist``)."""
+    names: set[str] = set()
+    for line in wheel_metadata.splitlines():
+        if not line.startswith("Requires-Dist:"):
+            continue
+        requirement = line.split(":", 1)[1].strip()
+        match = re.match(r"([A-Za-z0-9][A-Za-z0-9._-]*)", requirement)
+        if match is not None:
+            names.add(_normalized_distribution(match.group(1)))
+    return frozenset(names)
+
+
+def _archived_member_project(
+    archive: tarfile.TarFile,
+    archive_members: dict[str, tarfile.TarInfo],
+    member_dir: str,
+) -> dict[str, Any]:
+    """The ``[project]`` table of an archived workspace member's ``pyproject.toml``."""
+    project = archive_members.get(f"brain-v42/{member_dir}/pyproject.toml")
+    stream = archive.extractfile(project) if project is not None else None
+    if stream is None:
+        _fail("release_artifact_mismatch")
+    try:
+        document = tomllib.loads(stream.read().decode("utf-8"))
+    except (UnicodeError, tomllib.TOMLDecodeError):
+        _fail("release_artifact_mismatch")
+    return _object(document.get("project"), "release_artifact_mismatch")
+
+
+def _archived_workspace_members(archive_members: dict[str, tarfile.TarInfo]) -> dict[str, str]:
+    """``{import package: member directory}`` for every uv workspace member the
+    archive carries under ``packages/<dir>/src/<package>/``."""
+    members: dict[str, str] = {}
+    for name in archive_members:
+        match = _WORKSPACE_MEMBER.match(name)
+        if match is None:
+            continue
+        member_dir, package = match.group(1), match.group(2)
+        if members.get(package, member_dir) != member_dir:
+            _fail("release_artifact_mismatch")
+        members[package] = member_dir
+    return members
+
+
+def _validate_workspace_wheels(
+    root: Path,
+    manifest: dict[str, Any],
+    archive: tarfile.TarFile,
+    archive_members: dict[str, tarfile.TarInfo],
+    required_distributions: frozenset[str],
+) -> None:
+    """Attest every workspace member the release installs beside ``brain_v42``.
+
+    Since Brain ticket b2a2d1a5 the release carries a second wheel, the
+    ``headless_agents`` workspace member ``brain_v42`` depends on. The rule is
+    read off the ARCHIVE, not off the manifest: every ``packages/<dir>/src/<pkg>``
+    the source tree declares must either be absent from the venv or be
+    declared under ``workspace_wheels`` and checked exactly like the main
+    wheel -- archive bytes, wheel bytes and installed bytes under one digest,
+    the wheel's METADATA and the member's ``pyproject.toml`` agreeing on the
+    version, and nothing installed beyond the declared files. A manifest
+    without the key is a release without members, and is refused the moment
+    the venv says otherwise -- or the moment the main wheel's ``Requires-Dist``
+    names a member the manifest does not declare: a venv carrying ``brain_v42``
+    without the member it imports would pass every other digest and die at
+    night on ``ModuleNotFoundError``.
+    """
+    members = _archived_workspace_members(archive_members)
+    declared_raw = manifest.get("workspace_wheels", [])
+    if not isinstance(declared_raw, list):
+        _fail("config_schema_invalid")
+    site_packages = root / "venv" / "lib" / "python3.12" / "site-packages"
+    declared_packages: set[str] = set()
+    for value in declared_raw:
+        item = _object(value, "config_schema_invalid")
+        package = _text(item.get("package"), "config_schema_invalid", limit=128)
+        member_dir = _text(item.get("member"), "config_schema_invalid", limit=256)
+        version = _text(item.get("version"), "config_schema_invalid", limit=64)
+        if package in declared_packages or members.get(package) != member_dir:
+            _fail("release_artifact_mismatch")
+        declared_packages.add(package)
+        wheel = _release_file(root, item.get("wheel"))
+        payload = item.get("package_payload")
+        if not isinstance(payload, list) or not payload:
+            _fail("config_schema_invalid")
+        project_table = _archived_member_project(archive, archive_members, member_dir)
+        if project_table.get("version") != version:
+            _fail("release_artifact_mismatch")
+        with zipfile.ZipFile(wheel.path) as distribution:
+            wheel_members = set(distribution.namelist())
+            metadata_names = {
+                name for name in wheel_members if name.endswith(".dist-info/METADATA")
+            }
+            if len(metadata_names) != 1:
+                _fail("release_artifact_mismatch")
+            wheel_metadata = distribution.read(metadata_names.pop()).decode("utf-8")
+            if f"Version: {version}\n" not in wheel_metadata:
+                _fail("release_artifact_mismatch")
+            installed: set[Path] = set()
+            declared_wheel: set[str] = set()
+            prefix = f"{package}/"
+            for entry in payload:
+                file_item = _object(entry, "config_schema_invalid")
+                source_name = _text(file_item.get("source_path"), "config_schema_invalid")
+                wheel_name = _text(file_item.get("wheel_path"), "config_schema_invalid")
+                installed_path = _release_path(root, file_item.get("installed_path"))
+                digest = _sha(file_item.get("sha256"), "config_schema_invalid")
+                if not wheel_name.startswith(prefix):
+                    _fail("release_artifact_mismatch")
+                if source_name != f"brain-v42/{member_dir}/src/{wheel_name}":
+                    _fail("release_artifact_mismatch")
+                member = archive_members.get(source_name)
+                if member is None or wheel_name not in wheel_members:
+                    _fail("release_artifact_mismatch")
+                declared_wheel.add(wheel_name)
+                source_bytes = archive.extractfile(member)
+                if source_bytes is None:
+                    _fail("release_artifact_mismatch")
+                if (
+                    hashlib.sha256(source_bytes.read()).hexdigest() != digest
+                    or hashlib.sha256(distribution.read(wheel_name)).hexdigest() != digest
+                ):
+                    _fail("release_artifact_mismatch")
+                _safe_regular(installed_path)
+                if _digest(installed_path) != digest:
+                    _fail("release_artifact_mismatch")
+                installed.add(installed_path)
+            actual_wheel = {
+                name for name in wheel_members if name.startswith(prefix) and not name.endswith("/")
+            }
+            if actual_wheel != declared_wheel:
+                _fail("release_artifact_mismatch")
+        package_root = site_packages / package
+        actual = {
+            path.resolve()
+            for path in package_root.rglob("*")
+            if path.is_file()
+            and not (
+                "__pycache__" in path.relative_to(package_root).parts and path.suffix == ".pyc"
+            )
+        }
+        if actual != installed:
+            _fail("installed_package_unexpected")
+    for package, member_dir in members.items():
+        if package in declared_packages:
+            continue
+        if (site_packages / package).exists():
+            _fail("installed_package_unexpected")
+        distribution = _archived_member_project(archive, archive_members, member_dir).get("name")
+        if (
+            isinstance(distribution, str)
+            and _normalized_distribution(distribution) in required_distributions
+        ):
+            _fail("release_artifact_mismatch")
 
 
 def _validate_interpreter(interpreter: Path, package_root: Path, version: object) -> None:
