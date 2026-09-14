@@ -66,7 +66,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --no-dev --extra dev
       - name: Check types
-        run: .venv/bin/mypy src/
+        run: .venv/bin/mypy src/ packages/headless-agents/src/
 
   # tests/unit/ is not database-free: eight of its files opt into a real PostgreSQL
   # through require_test_db_url() (tests/conftest.py) and skip when
@@ -182,7 +182,7 @@ jobs:
         run: .venv/bin/alembic upgrade head
       - name: Measure coverage
         run: >-
-          .venv/bin/pytest tests/unit/ --cov=brain_v42 --cov-report=term-missing
+          .venv/bin/pytest tests/unit/ --cov=brain_v42 --cov=headless_agents --cov-report=term-missing
           --cov-report=xml:coverage.xml --cov-fail-under=60
           --junitxml=coverage-junit.xml
       # THE INVERTED WITNESS, and it is the deliverable — not the percentage.
@@ -347,7 +347,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --no-dev --extra dev
       - name: Scan sources
-        run: .venv/bin/bandit -ll -r src/
+        run: .venv/bin/bandit -ll -r src/ packages/headless-agents/src/
 
   # Secret scanning. `dir` scans the checked-out tree: gitleaks 8.30 dropped the
   # `detect` subcommand, and a filesystem scan is correct under the shallow clone

@@ -179,7 +179,7 @@ disallow_untyped_defs = true
 ignore_missing_imports = true
 
 [tool.coverage.run]
-source = ["src/brain_v42"]
+source = ["src/brain_v42", "packages/headless-agents/src/headless_agents"]
 branch = true
 
 [tool.coverage.report]
