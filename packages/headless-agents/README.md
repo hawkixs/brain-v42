@@ -33,6 +33,83 @@ The package knows nothing about the Brain MCP server, about the nightly
 Dream's phases, or about any project. It must never import `brain_v42`; a
 test guards that boundary.
 
+## Usage
+
+One run of `codex exec` that may call two tools on one loopback MCP server,
+with the bearer scoped into the child environment and nothing else inherited
+beyond the base allowlist:
+
+```python
+from pathlib import Path
+import os
+
+from headless_agents.capability import scoped_environment
+from headless_agents.profile import CapabilityProfile, McpServer
+from headless_agents.providers.codex import CHILD_ENV_PASSTHROUGH, CodexProvider
+from headless_agents.spec import RunSpec
+
+server = McpServer(
+    name="example",
+    url="http://127.0.0.1:8765/mcp",
+    bearer_env_var="EXAMPLE_TOKEN",
+    headers={"X-Agent": "example-run"},
+    tools=("example_search", "example_get"),
+)
+spec = RunSpec(
+    prompt="Summarise what changed since yesterday.",
+    model="<model>",
+    profile=CapabilityProfile(mcp=server),
+    environment=scoped_environment(
+        os.environ,
+        passthrough=CHILD_ENV_PASSTHROUGH,
+        overrides={"EXAMPLE_TOKEN": "<the scoped bearer>"},
+    ),
+    report_log=Path("out/report.log"),
+    events_log=Path("out/events.jsonl"),
+    stderr_log=Path("out/stderr.log"),
+)
+result = CodexProvider().run(spec)
+# result.exit_code: 0 done, 1 failed, 124 timed out,
+# 3 failed AND proved no tool call succeeded (safe to replay elsewhere)
+```
+
+An isolated seat -- no server, no user-level configuration, credentials
+copied `0600` into a throwaway HOME -- runs `claude -p` under a rebuilt
+environment:
+
+```python
+import tempfile
+
+from headless_agents.profile import CapabilityProfile, Credentials
+from headless_agents.sandbox import build_toolless_home, ephemeral_root, sandbox_environment
+from headless_agents.providers.claude import ClaudeProvider
+
+home = build_toolless_home(
+    root=ephemeral_root(os.environ) or Path(tempfile.gettempdir()),  # a tmpfs by preference
+    name="seat-1",
+    real_home=Path.home(),
+    credentials=Credentials(paths=(".claude/.credentials.json",), mode="copy"),
+)
+spec = RunSpec(
+    prompt="...",
+    model="<model>",
+    profile=CapabilityProfile(),  # reaches nothing
+    environment=sandbox_environment(home, environ=os.environ),
+    raw_log=home / "raw.log",
+)
+result = ClaudeProvider().run(spec)
+```
+
+`headless_agents.envelope.unwrap(provider, stdout)` turns a CLI's JSON
+envelope into the text it answered, the model it *reported*, its token
+counts and its cost -- and never raises: an unreadable envelope yields the
+raw text.
+
+The `agy` rail takes its prompt in `argv`, not on stdin (measured: it
+ignores stdin), and refuses to run without a `ToolGuard` whose script
+provably denies machine tools -- the guard is the only wall between agy and
+a shell.
+
 ## Licence
 
 Apache-2.0, same as the repository that hosts it.
