@@ -441,12 +441,13 @@ def test_timeout_kills_a_child_that_ignores_term_after_the_leader_exits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner = _runner()
-    # terminate_process_group lives in brain_v42.agents.capability (lot 1 of
-    # the agent runtime extraction); scripts.dream._agent_capability only
-    # re-exports a VALUE copy of TERMINATION_GRACE_SECONDS, so patching it
+    # terminate_process_group lives in headless_agents.capability (Brain
+    # ticket b2a2d1a5; lot 1 had it in brain_v42.agents.capability);
+    # scripts.dream._agent_capability and brain_v42.agents.capability only
+    # re-export a VALUE copy of TERMINATION_GRACE_SECONDS, so patching it
     # there would not reach the global terminate_process_group actually
     # reads. Patch it where the consumer lives.
-    capability = importlib.import_module("brain_v42.agents.capability")
+    capability = importlib.import_module("headless_agents.capability")
     monkeypatch.setenv("MCP_HTTP_TOKEN", "test-only-token")
     monkeypatch.setattr(capability, "TERMINATION_GRACE_SECONDS", 0.05)
     pid_file = tmp_path / "forked-pids"
@@ -587,7 +588,7 @@ def test_run_rejects_completed_turn_without_a_completed_brain_tool_call(
 
     # Zero successful tool calls: the phase is replayable elsewhere.
     assert return_code == PROVIDER_FALLBACK_EXIT_CODE
-    assert "no completed Brain MCP tool call" in stderr_log.read_text(encoding="utf-8")
+    assert "no completed MCP tool call on brain-v42" in stderr_log.read_text(encoding="utf-8")
 
 
 def test_run_rejects_a_failed_brain_tool_call_with_no_error_payload(
@@ -630,7 +631,7 @@ def test_run_rejects_a_failed_brain_tool_call_with_no_error_payload(
 
     # The call FAILED, so nothing was committed — replayable elsewhere.
     assert return_code == PROVIDER_FALLBACK_EXIT_CODE
-    assert "no completed Brain MCP tool call" in stderr_log.read_text(encoding="utf-8")
+    assert "no completed MCP tool call on brain-v42" in stderr_log.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(

@@ -17,6 +17,7 @@ import tempfile
 import time
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from ..capability import (
     PROVIDER_FALLBACK_EXIT_CODE,
@@ -273,8 +274,11 @@ def run_codex(
     """
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
-    child_environment = dict(environment) if environment is not None else dict(os.environ)
-    if mcp is not None and not child_environment.get(mcp.bearer_env_var):
+    # ``None`` inherits: Popen is then called WITHOUT ``env`` at all, which is
+    # the historical rollback path some callers pin in their tests.
+    child_environment = dict(environment) if environment is not None else None
+    visible = child_environment if child_environment is not None else os.environ
+    if mcp is not None and not visible.get(mcp.bearer_env_var):
         stderr_log.parent.mkdir(parents=True, exist_ok=True)
         stderr_log.write_text(
             f"missing required environment variable: {mcp.bearer_env_var}\n", encoding="utf-8"
@@ -305,6 +309,9 @@ def run_codex(
             events_log.open("w", encoding="utf-8") as events_stream,
             stderr_log.open("w", encoding="utf-8") as stderr_stream,
         ):
+            popen_kwargs: dict[str, Any] = {}
+            if child_environment is not None:
+                popen_kwargs["env"] = child_environment
             try:
                 process = subprocess.Popen(
                     command,
@@ -312,9 +319,9 @@ def run_codex(
                     stdout=events_stream,
                     stderr=stderr_stream,
                     cwd=runtime_dir,
-                    env=child_environment,
                     text=True,
                     start_new_session=True,
+                    **popen_kwargs,
                 )
             except OSError as exc:
                 stderr_stream.write(f"unable to start Codex: {exc}\n")

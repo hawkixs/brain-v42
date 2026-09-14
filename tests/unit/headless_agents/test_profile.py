@@ -98,9 +98,10 @@ class TestToolGuard:
         assert guard.hook_name == "tool-guard"
         assert guard.timeout_seconds == 10
 
-    def test_refuses_a_relative_path(self) -> None:
-        with pytest.raises(ValidationError, match="absolute"):
-            ToolGuard(path=Path("guard.sh"))
+    def test_keeps_the_path_as_given(self) -> None:
+        # Not normalised, not required absolute: callers pin the written
+        # hooks.json against placeholder paths (see the class docstring).
+        assert ToolGuard(path=Path("guard.sh")).path == Path("guard.sh")
 
 
 class TestCredentials:

@@ -86,7 +86,12 @@ class ToolGuard(BaseModel):
     """A ``PreToolUse`` hook script the CLI must consult before every tool call.
 
     The runtime ships no guard of its own: the script is versioned and tested
-    by the caller, who passes its absolute path.
+    by the caller, who passes its path. Pass it ABSOLUTE: the CLI resolves the
+    hook command from its own working directory (the ephemeral HOME), where a
+    relative path names nothing -- and the probe that proves the guard denies
+    runs from the parent's, so it would not notice. The shape is not enforced
+    here only because callers pin the written ``hooks.json`` with placeholder
+    paths in their golden fixtures.
     """
 
     model_config = _FROZEN
@@ -94,13 +99,6 @@ class ToolGuard(BaseModel):
     path: Path
     hook_name: str = Field(default="tool-guard", min_length=1)
     timeout_seconds: int = Field(default=10, gt=0)
-
-    @field_validator("path")
-    @classmethod
-    def _absolute(cls, value: Path) -> Path:
-        if not value.is_absolute():
-            raise ValueError("guard path must be absolute")
-        return value
 
 
 class Credentials(BaseModel):

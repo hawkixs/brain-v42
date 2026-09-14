@@ -172,8 +172,10 @@ def run_claude(
     """
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
-    child_environment = dict(environment) if environment is not None else dict(os.environ)
-    if mcp is not None and not child_environment.get(mcp.bearer_env_var):
+    # ``None`` inherits: Popen is then called with ``env=None``.
+    child_environment = dict(environment) if environment is not None else None
+    visible = child_environment if child_environment is not None else os.environ
+    if mcp is not None and not visible.get(mcp.bearer_env_var):
         raw_log.parent.mkdir(parents=True, exist_ok=True)
         with raw_log.open("a", encoding="utf-8") as stream:
             stream.write(f"missing required environment variable: {mcp.bearer_env_var}\n")
