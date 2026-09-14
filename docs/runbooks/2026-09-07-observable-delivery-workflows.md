@@ -1,6 +1,7 @@
 # Immutable delivery release and production canary
 
-This runbook prepares and deploys brain-v42 `0.5.0` from one immutable source
+This runbook prepares and deploys brain-v42 (`0.5.0` when written, `0.6.0` and
+later with the `headless-agents` workspace member) from one immutable source
 revision. It covers artifact construction, recovery proof, all-writer cutover,
 schema 053, the delivery observer, and a documentation-only production canary.
 
@@ -37,7 +38,7 @@ set -Eeuo pipefail
 set +x
 umask 077
 
-VERSION=0.5.0
+VERSION='<the version pyproject.toml carries at SOURCE_SHA, e.g. 0.6.0>'
 SOURCE_SHA='<full merged and CI-tested 40-hex SHA>'
 BUILD_PYTHON='<absolute path to the selected Python 3.12 interpreter>'
 WINDOW_ID='<unique UTC timestamp or change-record ID>'
@@ -124,7 +125,8 @@ The release layout is:
 ~/.local/share/brain-v42/releases/<full-source-sha>/
 ├── artifacts/
 │   ├── brain-v42.tar.gz
-│   ├── brain_v42-0.5.0-py3-none-any.whl
+│   ├── brain_v42-<version>-py3-none-any.whl
+│   ├── headless_agents-<member version>-py3-none-any.whl   (0.6.0 and later)
 │   ├── runtime-requirements.txt
 │   └── uv.lock
 ├── brain-v42/                     retained source from the same SHA
@@ -203,7 +205,7 @@ into a receipt or issue.
 
 ## Build the exact release
 
-Run this section from a clean checkout at `SOURCE_SHA`. Version `0.5.0` must
+Run this section from a clean checkout at `SOURCE_SHA`. `VERSION` must
 already be committed in `pyproject.toml` and the root editable entry in `uv.lock`.
 The operator must not edit metadata after the source revision is chosen.
 
@@ -231,27 +233,41 @@ git archive --format=tar --prefix=brain-v42/ "$SOURCE_SHA" \
 cd "$RELEASE/brain-v42"
 install -m 0600 uv.lock "$RELEASE/artifacts/uv.lock"
 
-uv export --locked --no-dev --no-emit-project --format requirements-txt \
+# `--no-emit-workspace`, not `--no-emit-project`: since 0.6.0 (Brain ticket
+# b2a2d1a5) brain_v42 depends on the `headless-agents` workspace member under
+# packages/, which `--no-emit-project` would emit as an unhashable
+# `-e ./packages/headless-agents` line and break `--require-hashes`. The
+# member is built and installed as its own wheel below, and attested by the
+# preflight under `workspace_wheels`.
+uv export --locked --no-dev --no-emit-workspace --format requirements-txt \
   -o "$RELEASE/artifacts/runtime-requirements.txt"
 uv build --wheel --python "$BUILD_PYTHON" --out-dir "$RELEASE/artifacts"
-WHEEL="$RELEASE/artifacts/brain_v42-0.5.0-py3-none-any.whl"
+uv build --wheel --package headless-agents --python "$BUILD_PYTHON" \
+  --out-dir "$RELEASE/artifacts"
+WHEEL="$RELEASE/artifacts/brain_v42-${VERSION}-py3-none-any.whl"
+MEMBER_VERSION=$(python3 -c 'import tomllib,sys; print(tomllib.load(open("packages/headless-agents/pyproject.toml","rb"))["project"]["version"])')
+MEMBER_WHEEL="$RELEASE/artifacts/headless_agents-${MEMBER_VERSION}-py3-none-any.whl"
 test -f "$WHEEL" && test ! -L "$WHEEL"
+test -f "$MEMBER_WHEEL" && test ! -L "$MEMBER_WHEEL"
 
 "$BUILD_PYTHON" -m venv --copies "$RELEASE/venv"
 test -x "$RELEASE/venv/bin/python" && test ! -L "$RELEASE/venv/bin/python"
 uv pip sync --python "$RELEASE/venv/bin/python" --require-hashes \
   --link-mode copy "$RELEASE/artifacts/runtime-requirements.txt"
 uv pip install --python "$RELEASE/venv/bin/python" --no-deps \
-  --link-mode copy "$WHEEL"
-readonly WHEEL
+  --link-mode copy "$MEMBER_WHEEL" "$WHEEL"
+readonly WHEEL MEMBER_WHEEL MEMBER_VERSION
 ```
 
 Generate the complete manifest. It maps every installed `brain_v42/` wheel file
-to the same bytes in the source archive and maps every retained `scripts/` file
-plus `.mcp.json` to the extracted source tree.
+to the same bytes in the source archive, does the same for every workspace
+member wheel under `workspace_wheels` (the `headless_agents` member since
+0.6.0), and maps every retained `scripts/` file plus `.mcp.json` to the
+extracted source tree.
 
 ```bash
 env RELEASE="$RELEASE" SOURCE_SHA="$SOURCE_SHA" VERSION="$VERSION" \
+  MEMBER_VERSION="$MEMBER_VERSION" \
   "$RELEASE/venv/bin/python" -I - <<'PY'
 import hashlib
 import json
@@ -264,7 +280,9 @@ release = Path(os.environ["RELEASE"])
 source_sha = os.environ["SOURCE_SHA"]
 version = os.environ["VERSION"]
 artifacts = release / "artifacts"
-wheel = artifacts / "brain_v42-0.5.0-py3-none-any.whl"
+wheel = artifacts / f"brain_v42-{version}-py3-none-any.whl"
+member_version = os.environ["MEMBER_VERSION"]
+member_wheel = artifacts / f"headless_agents-{member_version}-py3-none-any.whl"
 
 
 def digest(body: bytes) -> str:
@@ -294,6 +312,7 @@ manifest = {
     "pyvenv_cfg": record(release / "venv/pyvenv.cfg"),
     "package_payload": [],
     "source_payload": [],
+    "workspace_wheels": [],
 }
 
 with (
@@ -328,6 +347,38 @@ with (
                 "sha256": digest(wheel_body),
             }
         )
+    # The workspace member: same three-way digest (archive, wheel, installed)
+    # per file, under its own entry so the preflight can validate it apart.
+    member_entry = {
+        "package": "headless_agents",
+        "member": "packages/headless-agents",
+        "version": member_version,
+        "wheel": record(member_wheel),
+        "package_payload": [],
+    }
+    with zipfile.ZipFile(member_wheel) as member_distribution:
+        for wheel_path in sorted(
+            name
+            for name in member_distribution.namelist()
+            if name.startswith("headless_agents/") and not name.endswith("/")
+        ):
+            source_path = "brain-v42/packages/headless-agents/src/" + wheel_path
+            source_stream = source.extractfile(members[source_path])
+            assert source_stream is not None
+            source_body = source_stream.read()
+            wheel_body = member_distribution.read(wheel_path)
+            assert source_body == wheel_body
+            installed_path = Path("venv/lib/python3.12/site-packages") / wheel_path
+            assert (release / installed_path).read_bytes() == wheel_body
+            member_entry["package_payload"].append(
+                {
+                    "source_path": source_path,
+                    "wheel_path": wheel_path,
+                    "installed_path": str(installed_path),
+                    "sha256": digest(wheel_body),
+                }
+            )
+    manifest["workspace_wheels"].append(member_entry)
     for archive_path, member in sorted(members.items()):
         if archive_path.startswith("brain-v42/scripts/") or archive_path == "brain-v42/.mcp.json":
             source_stream = source.extractfile(member)
@@ -356,7 +407,8 @@ service and proves no production process.
 SMOKE_DIR="$(mktemp -d)"
 (
   cd "$SMOKE_DIR"
-  env RELEASE="$RELEASE" "$RELEASE/venv/bin/python" -I - <<'PY'
+  env RELEASE="$RELEASE" VERSION="$VERSION" MEMBER_VERSION="$MEMBER_VERSION" \
+    "$RELEASE/venv/bin/python" -I - <<'PY'
 import importlib.metadata
 import os
 from pathlib import Path
@@ -367,7 +419,8 @@ from brain_v42.release import shipped_alembic_head
 release = Path(os.environ["RELEASE"]).resolve()
 module = Path(brain_v42.__file__).resolve()
 assert module.is_relative_to(release / "venv")
-assert importlib.metadata.version("brain_v42") == "0.5.0"
+assert importlib.metadata.version("brain_v42") == os.environ["VERSION"]
+assert importlib.metadata.version("headless_agents") == os.environ["MEMBER_VERSION"]
 assert shipped_alembic_head() == "053"
 PY
   "$RELEASE/venv/bin/python" -m brain_v42.delivery_observer --help
