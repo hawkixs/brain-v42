@@ -165,6 +165,10 @@ def run_agy(
         environment=os.environ,
         executable=agy_executable,
         ephemeral_root=ephemeral_root(os.environ),
+        temp_prefix="brain-v42-dream-",
+        # Probed above, with the Dream's own refusal line: the runtime would
+        # otherwise spawn the three probe shells a second time.
+        guard_proven=True,
     )
 
 

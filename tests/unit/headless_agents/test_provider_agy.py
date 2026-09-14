@@ -298,6 +298,49 @@ class TestRunAgy:
             _run(tmp_path, timeout_seconds=0)
 
 
+class TestRefusalsBeforeLaunch:
+    def test_a_relative_guard_path_is_refused_even_if_the_probe_would_pass(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The probe runs the script from the parent's cwd, agy resolves the hook
+        # from the ephemeral HOME: a relative path can pass the first and name
+        # nothing in the second.
+        captured = _install(monkeypatch, _FakeProcess(returncode=0))
+        relative = _profile(tmp_path, guard=ToolGuard(path=Path("guard.sh")))
+        assert _run(tmp_path, profile=relative) == 1
+        assert "absolute" in (tmp_path / "out" / "stderr.log").read_text(encoding="utf-8")
+        assert "command" not in captured
+
+    def test_a_server_without_a_bearer_value_is_refused_with_a_line_not_a_traceback(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        captured = _install(monkeypatch, _FakeProcess(returncode=0))
+        server = McpServer(name="example", url=URL, bearer=None, tools=("example_search",))
+        assert _run(tmp_path, profile=_profile(tmp_path, mcp=server)) == 1
+        assert "bearer" in (tmp_path / "out" / "stderr.log").read_text(encoding="utf-8")
+        assert "command" not in captured
+
+    def test_guard_proven_skips_the_probe(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        probes: list[Path] = []
+        _install(monkeypatch, _FakeProcess(returncode=0))
+        monkeypatch.setattr(
+            agy, "guard_denies_machine_tools", lambda path: probes.append(path) or True
+        )
+        assert _run(tmp_path, guard_proven=True) == 0
+        assert probes == []
+
+    def test_the_temp_prefix_is_the_callers_when_given(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        captured = _install(monkeypatch, _FakeProcess(returncode=0))
+        assert _run(tmp_path, temp_prefix="caller-") == 0
+        kwargs = captured["kwargs"]
+        assert isinstance(kwargs, dict)
+        assert Path(str(kwargs["cwd"])).parent.name.startswith("caller-")
+
+
 class TestAgyProvider:
     def test_prepare_home_and_run(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         real_home = tmp_path / "rh"

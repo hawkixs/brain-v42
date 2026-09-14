@@ -1102,6 +1102,72 @@ def _add_workspace_member(
     case.write_manifest(manifest)
 
 
+def _main_wheel_requires(case: DeploymentCase, requirement: str) -> None:
+    """Rewrite the brain_v42 wheel so its METADATA declares ``requirement``."""
+    manifest = case.manifest_document()
+    wheel = case.manifest.parent / manifest["wheel"]["path"]
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("brain_v42/__init__.py", '__version__ = "9.0.0"\n')
+        archive.writestr(
+            "brain_v42/alembic.ini", "[alembic]\nscript_location = brain_v42:alembic\n"
+        )
+        archive.writestr("brain_v42/alembic/versions/053_delivery.py", 'revision = "053"\n')
+        archive.writestr(
+            "brain_v42-9.0.0.dist-info/METADATA",
+            f"Name: brain-v42\nVersion: 9.0.0\nRequires-Dist: {requirement}\n",
+        )
+    wheel.chmod(0o644)
+    manifest["wheel"]["sha256"] = _sha256(wheel)
+    case.write_manifest(manifest)
+
+
+def test_preflight_refuses_a_release_whose_main_wheel_requires_an_uninstalled_member(
+    deployment_case: DeploymentCase,
+) -> None:
+    """brain_v42 0.6.0 depends on headless-agents: a venv that carries the main
+    wheel but not the member would pass every digest and die at night on
+    ``ModuleNotFoundError``. The archive names the member, the wheel requires
+    it, so the manifest must declare it."""
+    _add_workspace_member(deployment_case, declare=False)
+    shutil.rmtree(
+        deployment_case.manifest.parent / "venv/lib/python3.12/site-packages/headless_agents"
+    )
+    _main_wheel_requires(deployment_case, "headless-agents")
+
+    result = deployment_case.run()
+
+    assert result.returncode != 0
+    assert _receipt(result)["failure"] == "release_artifact_mismatch"
+
+
+def test_preflight_attests_a_declared_workspace_wheel_the_main_wheel_requires(
+    deployment_case: DeploymentCase,
+) -> None:
+    _add_workspace_member(deployment_case)
+    _main_wheel_requires(deployment_case, "headless-agents>=0.1")
+
+    result = deployment_case.run()
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_preflight_reads_the_member_version_from_the_project_table_not_a_substring(
+    deployment_case: DeploymentCase,
+) -> None:
+    _add_workspace_member(
+        deployment_case,
+        archived_version=(
+            b'[project]\nname = "headless-agents"\nversion = "0.2.0"\n'
+            b'dependencies = ["other == 0.1.0"]\n# version = "0.1.0"\n'
+        ),
+    )
+
+    result = deployment_case.run()
+
+    assert result.returncode != 0
+    assert _receipt(result)["failure"] == "release_artifact_mismatch"
+
+
 def test_preflight_attests_a_declared_workspace_wheel(deployment_case: DeploymentCase) -> None:
     _add_workspace_member(deployment_case)
 

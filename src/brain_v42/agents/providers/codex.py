@@ -8,7 +8,9 @@ call, which ``(project, phase)`` bearer scopes it, and the argv contract
 Every public name, signature and exit code of this module is unchanged from
 lot 1/2 (tickets c31bad72, afd56820): the golden fixtures under
 ``tests/fixtures/agents_golden`` pin the argv and child environment byte for
-byte, and ``tests/unit/test_dream_codex_runner.py`` keeps passing unmodified.
+byte, and ``tests/unit/test_dream_codex_runner.py`` keeps passing with its
+assertions untouched (one test patches ``TERMINATION_GRACE_SECONDS`` where
+``terminate_process_group`` now lives, ``headless_agents.capability``).
 """
 
 from __future__ import annotations
@@ -119,13 +121,22 @@ def build_codex_command(
     )
 
 
+# The fail-closed line the Dream's stderr logs and tests have always carried
+# for a turn that completed without touching the Brain.
+_MISSING_BRAIN_CALL_MESSAGE = "Codex completed with no completed Brain MCP tool call"
+
+
 def brain_tool_call_completed(events_log: Path) -> bool:
     """Did a Brain tool call SUCCEED anywhere in this event stream?"""
     return _runtime.tool_call_completed(events_log, server=BRAIN_MCP_SERVER_NAME)
 
 
 def _event_stream_error(events_log: Path) -> str | None:
-    return _runtime.event_stream_error(events_log, server=BRAIN_MCP_SERVER_NAME)
+    return _runtime.event_stream_error(
+        events_log,
+        server=BRAIN_MCP_SERVER_NAME,
+        missing_call_message=_MISSING_BRAIN_CALL_MESSAGE,
+    )
 
 
 def run_codex(
@@ -168,6 +179,8 @@ def run_codex(
         environment=child_environment,
         executable=codex_executable,
         workspace=workspace,
+        temp_prefix=f"brain-v42-dream-{phase}-",
+        missing_call_message=_MISSING_BRAIN_CALL_MESSAGE,
     )
 
 

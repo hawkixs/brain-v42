@@ -225,6 +225,8 @@ def run_agy(
     executable: str = "agy",
     ephemeral_root: Path | None = None,
     deadline: float | None = None,
+    temp_prefix: str = "headless-agents-",
+    guard_proven: bool = False,
 ) -> int:
     """Run one agy invocation and return its code (``124`` on deadline, ``3`` if replayable).
 
@@ -232,7 +234,9 @@ def run_agy(
     the profile's passthrough variables from; the child gets a rebuilt one
     whose ``HOME`` is the ephemeral directory. ``real_home`` defaults to the
     ambient ``HOME``; ``ephemeral_root`` to ``XDG_RUNTIME_DIR`` when it exists,
-    else the system temporary directory.
+    else the system temporary directory. ``guard_proven=True`` skips the probe
+    for a caller that has just run :func:`guard_denies_machine_tools` on the
+    same path itself -- the path checks below still apply.
     """
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
@@ -244,10 +248,26 @@ def run_agy(
 
     # Fail-closed BEFORE launching anything: without a proven guard, an agy
     # run would have a free shell. Refusing to start is the only safe choice,
-    # and it is logged.
-    if profile.guard is None or not guard_denies_machine_tools(profile.guard.path):
+    # and it is logged. The path must be ABSOLUTE: the probe runs the script
+    # from this process's working directory while agy resolves the hook
+    # command from the ephemeral HOME, so a relative path can pass the first
+    # and name nothing in the second.
+    if profile.guard is None or not profile.guard.path.is_absolute():
+        stderr_log.write_text(
+            "agy tool guard absent or not an absolute path: run refused\n", encoding="utf-8"
+        )
+        return 1
+    if not guard_proven and not guard_denies_machine_tools(profile.guard.path):
         stderr_log.write_text(
             "agy tool guard absent or permissive: run refused\n", encoding="utf-8"
+        )
+        return 1
+    if profile.mcp is not None and profile.mcp.bearer is None:
+        # agy writes the bearer literally into its HOME: a server declared
+        # without the value cannot be reached, and the run must say so instead
+        # of raising after the guard probe.
+        stderr_log.write_text(
+            "agy needs the MCP bearer VALUE (McpServer.bearer): run refused\n", encoding="utf-8"
         )
         return 1
 
@@ -304,9 +324,9 @@ def run_agy(
         return PROVIDER_FALLBACK_EXIT_CODE
 
     if root is not None:
-        with tempfile.TemporaryDirectory(prefix="headless-agents-", dir=str(root)) as temporary:
+        with tempfile.TemporaryDirectory(prefix=temp_prefix, dir=str(root)) as temporary:
             return _run(Path(temporary))
-    with tempfile.TemporaryDirectory(prefix="headless-agents-") as temporary:
+    with tempfile.TemporaryDirectory(prefix=temp_prefix) as temporary:
         return _run(Path(temporary))
 
 

@@ -163,6 +163,7 @@ def run_claude(
     environment: Mapping[str, str] | None = None,
     executable: str = "claude",
     deadline: float | None = None,
+    temp_prefix: str = "headless-agents-claude-",
 ) -> int:
     """Run one Claude invocation and return its exit code (``124`` on timeout).
 
@@ -184,7 +185,7 @@ def run_claude(
     raw_log = raw_log.resolve()
     raw_log.parent.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="headless-agents-claude-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix=temp_prefix) as temp_dir:
         runtime_dir = Path(temp_dir)
         mcp_config_path = runtime_dir / "mcp-config.json"
         mcp_config_path.write_text(json.dumps(build_claude_mcp_config(mcp)), encoding="utf-8")

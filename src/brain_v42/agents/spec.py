@@ -1,4 +1,10 @@
-"""``RunSpec`` -- the common input shape across the three agent providers.
+"""``RunSpec`` -- the DREAM-shaped input across the three Dream provider adapters.
+
+Not the runtime's: :class:`headless_agents.spec.RunSpec` carries a
+``CapabilityProfile``, a ``name``, a ``deadline`` and an ``environment`` where
+this one carries a ``phase``, a ``project_key`` and an ``mcp_url`` that the
+Dream resolves into a profile itself. The two are not interchangeable; a
+Dream adapter takes this one and builds the runtime's inputs from it.
 
 The three rails (Codex, agy, Claude) predate this abstraction and keep their
 own, differently-shaped ``run_*`` functions in

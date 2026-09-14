@@ -185,12 +185,18 @@ def tool_call_completed(events_log: Path, *, server: str) -> bool:
     return False
 
 
-def event_stream_error(events_log: Path, *, server: str | None) -> str | None:
+def event_stream_error(
+    events_log: Path,
+    *,
+    server: str | None,
+    missing_call_message: str | None = None,
+) -> str | None:
     """Return a fail-closed validation error for a Codex JSONL event stream.
 
     With ``server`` set, a run that completed without one successful call on
     it is an error: a run that was given a server and never used it did not do
-    its job, however clean its exit code.
+    its job, however clean its exit code. ``missing_call_message`` lets a
+    caller keep the wording its own logs and tests read for that case.
     """
     if not events_log.is_file():
         return "Codex produced no JSONL event stream"
@@ -233,7 +239,9 @@ def event_stream_error(events_log: Path, *, server: str | None) -> str | None:
     if not completed:
         return "Codex exited 0 without a turn.completed event"
     if server is not None and not completed_server_call:
-        return f"Codex completed with no completed MCP tool call on {server}"
+        return (
+            missing_call_message or f"Codex completed with no completed MCP tool call on {server}"
+        )
     return None
 
 
@@ -264,13 +272,16 @@ def run_codex(
     executable: str = "codex",
     workspace: Path | None = None,
     deadline: float | None = None,
+    temp_prefix: str = "headless-agents-codex-",
+    missing_call_message: str | None = None,
 ) -> int:
     """Run one Codex invocation and return its exit code (``124`` on timeout).
 
     ``environment`` is the child environment; ``None`` inherits this process's.
     When ``mcp`` names a bearer variable, that environment must carry it: the
     run refuses to start otherwise, so a scoped bearer can never be silently
-    replaced by an ambient one.
+    replaced by an ambient one. ``temp_prefix`` names the throwaway workspace
+    when the caller gives none (it is visible in argv, after ``-C``).
     """
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
@@ -350,7 +361,9 @@ def run_codex(
             with stderr_log.open("a", encoding="utf-8") as stderr_stream:
                 stderr_stream.write("Codex exited 0 without a final report\n")
             return _failure_exit_code(events_log, 1, server)
-        event_error = event_stream_error(events_log, server=server)
+        event_error = event_stream_error(
+            events_log, server=server, missing_call_message=missing_call_message
+        )
         if event_error is not None:
             with stderr_log.open("a", encoding="utf-8") as stderr_stream:
                 stderr_stream.write(f"{event_error}\n")
@@ -359,7 +372,7 @@ def run_codex(
 
     if workspace is not None:
         return _run(workspace.resolve())
-    with tempfile.TemporaryDirectory(prefix="headless-agents-codex-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix=temp_prefix) as temp_dir:
         return _run(Path(temp_dir))
 
 

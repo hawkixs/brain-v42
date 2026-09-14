@@ -1108,14 +1108,10 @@ version = "0.1.0"
 source = { editable = "packages/headless-agents" }
 dependencies = [
     { name = "pydantic" },
-    { name = "structlog" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "pydantic", specifier = ">=2.0" },
-    { name = "structlog", specifier = ">=24.1" },
-]
+requires-dist = [{ name = "pydantic", specifier = ">=2.0" }]
 
 [[package]]
 name = "httpcore"

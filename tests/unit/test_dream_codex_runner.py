@@ -588,7 +588,7 @@ def test_run_rejects_completed_turn_without_a_completed_brain_tool_call(
 
     # Zero successful tool calls: the phase is replayable elsewhere.
     assert return_code == PROVIDER_FALLBACK_EXIT_CODE
-    assert "no completed MCP tool call on brain-v42" in stderr_log.read_text(encoding="utf-8")
+    assert "no completed Brain MCP tool call" in stderr_log.read_text(encoding="utf-8")
 
 
 def test_run_rejects_a_failed_brain_tool_call_with_no_error_payload(
@@ -631,7 +631,7 @@ def test_run_rejects_a_failed_brain_tool_call_with_no_error_payload(
 
     # The call FAILED, so nothing was committed — replayable elsewhere.
     assert return_code == PROVIDER_FALLBACK_EXIT_CODE
-    assert "no completed MCP tool call on brain-v42" in stderr_log.read_text(encoding="utf-8")
+    assert "no completed Brain MCP tool call" in stderr_log.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(

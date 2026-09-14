@@ -148,6 +148,7 @@ def run_claude(
         mcp=mcp,
         environment=child_environment,
         executable=claude_executable,
+        temp_prefix=f"brain-v42-dream-claude-{phase}-",
     )
 
 

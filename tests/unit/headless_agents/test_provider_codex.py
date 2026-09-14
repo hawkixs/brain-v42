@@ -362,6 +362,31 @@ class TestRunCodex:
         assert seen == [2.5]
 
 
+class TestCallerWording:
+    def test_the_missing_call_message_is_the_callers_when_given(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path]
+    ) -> None:
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+        _install(monkeypatch, fake, logs["report_log"])
+        # No completed call on the server: the run failed AND proved it wrote
+        # nothing, so the chain may replay it elsewhere.
+        assert (
+            _run(logs, missing_call_message="no completed Brain MCP tool call")
+            == PROVIDER_FALLBACK_EXIT_CODE
+        )
+        assert "no completed Brain MCP tool call" in logs["stderr_log"].read_text(encoding="utf-8")
+
+    def test_the_temp_prefix_is_the_callers_when_given(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path]
+    ) -> None:
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+        captured = _install(monkeypatch, fake, logs["report_log"])
+        assert _run(logs, mcp=None, workspace=None, temp_prefix="caller-prefix-") == 0
+        kwargs = captured["kwargs"]
+        assert isinstance(kwargs, dict)
+        assert Path(str(kwargs["cwd"])).name.startswith("caller-prefix-")
+
+
 class TestCodexProvider:
     def test_build_command_reads_the_profile(self, tmp_path: Path) -> None:
         spec = RunSpec(

@@ -94,8 +94,10 @@ jobs:
             ls -1 dist >&2
             exit 1
           fi
-          MEMBER_WHEEL=$(ls dist/headless_agents-*-py3-none-any.whl)
-          if [ ! -f "$MEMBER_WHEEL" ]; then
+          # `|| true`: under `bash -e` an unmatched glob would abort the step
+          # before the message below, which is the one that names the cause.
+          MEMBER_WHEEL=$(ls dist/headless_agents-*-py3-none-any.whl 2>/dev/null || true)
+          if [ -z "$MEMBER_WHEEL" ] || [ ! -f "$MEMBER_WHEEL" ]; then
             echo "the headless-agents wheel was not built" >&2
             ls -1 dist >&2
             exit 1

@@ -40,8 +40,8 @@ SOURCE_DIR = PACKAGE_DIR / "src" / "headless_agents"
 
 FORBIDDEN_IMPORT_ROOTS = ("brain_v42", "scripts")
 # The six the ticket names, plus ``brain_v42`` itself. ``pydantic`` and
-# ``structlog`` are the two the runtime MAY depend on and are deliberately
-# absent from this list.
+# ``structlog`` are the two the ticket lets the runtime depend on and are
+# deliberately absent from this list; today it needs pydantic alone.
 HEAVY_MODULES = ("brain_v42", "sqlalchemy", "asyncpg", "neo4j", "pgvector", "fastmcp", "uvicorn")
 ALLOWED_RUNTIME_DEPENDENCIES = frozenset({"pydantic", "structlog"})
 

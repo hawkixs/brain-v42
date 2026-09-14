@@ -223,6 +223,19 @@ class TestRunClaude:
             _run(tmp_path, timeout_seconds=-1)
 
 
+class TestCallerWording:
+    def test_the_temp_prefix_is_the_callers_when_given(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        captured = _install(monkeypatch, _FakeProcess(returncode=0, output="ok\n"))
+        assert (
+            _run(tmp_path, mcp=None, environment={"PATH": "/usr/bin"}, temp_prefix="caller-") == 0
+        )
+        kwargs = captured["kwargs"]
+        assert isinstance(kwargs, dict)
+        assert Path(str(kwargs["cwd"])).name.startswith("caller-")
+
+
 class TestClaudeProvider:
     def test_run_forwards_and_reports(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
