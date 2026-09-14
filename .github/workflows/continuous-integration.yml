@@ -274,10 +274,15 @@ jobs:
         run: pip install "uv==$UV_VERSION"
       - name: Install dependencies
         run: uv sync --locked --no-dev --extra dev
+      # --no-emit-workspace, not --no-emit-project: the headless-agents
+      # workspace member would otherwise land as an unhashable
+      # `-e ./packages/headless-agents` line, which pip-audit refuses under
+      # --require-hashes. Neither workspace member is an audited third-party
+      # distribution; their dependencies still are, and are still exported.
       - name: Export the audited lock
         run: >-
           uv export --locked --no-dev --extra dev --format requirements-txt
-          --no-emit-project -o requirements-audit.txt
+          --no-emit-workspace -o requirements-audit.txt
       - name: Audit dependencies
         run: >-
           .venv/bin/pip-audit -r requirements-audit.txt --require-hashes --disable-pip
