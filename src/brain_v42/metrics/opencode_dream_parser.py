@@ -54,42 +54,60 @@ def _usage_int(usage: object, key: str) -> int:
     return 0
 
 
+def _step_finish_parts(content: str) -> list[dict[str, object]]:
+    """One ``step_finish`` part per id, last version wins: opencode re-emits a
+    part on every update, and counting each emission would double every figure."""
+    parts: dict[str, dict[str, object]] = {}
+    for index, event in enumerate(_events(content)):
+        if event.get("type") != "step_finish":
+            continue
+        part = _part(event)
+        part_id = part.get("id")
+        parts[part_id if isinstance(part_id, str) else f"#{index}"] = part
+    return list(parts.values())
+
+
 def parse_opencode_jsonl(content: str) -> PhaseTelemetry:
     """Map opencode step usage and Brain tool calls to the historical Dream schema.
 
-    ``api_calls`` counts the ``step_finish`` events: one per model call.
-    ``thinking_tokens`` is measured only when a step reports ``reasoning``;
-    a stream that never does stays ``NULL`` ("not measured"), never 0.
+    ``api_calls`` counts the ``step_finish`` parts: one per model call.
+    ``thinking_tokens``, ``cache_creation_tokens`` and ``cost_usd`` are
+    measured only when a step reports ``reasoning``, ``cache.write`` and
+    ``cost`` respectively; a stream that never does stays ``NULL`` ("not
+    measured"), never 0 -- "measured as free" is the figure this column must
+    never carry. ``tool_calls`` counts COMPLETED Brain calls, the agy
+    convention (codex counts every attempted one): a failed call did not
+    touch the corpus.
     """
-    telemetry = PhaseTelemetry(cache_creation_tokens=0, cost_usd=0.0, api_calls=0)
+    telemetry = PhaseTelemetry(cache_creation_tokens=None, cost_usd=None, api_calls=0)
     measured = False
-    reasoning_reported = False
+
+    for part in _step_finish_parts(content):
+        tokens = part.get("tokens")
+        if not isinstance(tokens, dict):
+            raise ValueError("step_finish event has no tokens object")
+        cache = tokens.get("cache")
+        telemetry.input_tokens += _usage_int(tokens, "input")
+        telemetry.output_tokens += _usage_int(tokens, "output")
+        telemetry.cache_read_tokens += _usage_int(cache, "read")
+        if isinstance(cache, dict) and "write" in cache:
+            telemetry.cache_creation_tokens = (telemetry.cache_creation_tokens or 0) + _usage_int(
+                cache, "write"
+            )
+        if "reasoning" in tokens:
+            telemetry.thinking_tokens = (telemetry.thinking_tokens or 0) + _usage_int(
+                tokens, "reasoning"
+            )
+        cost = part.get("cost")
+        if isinstance(cost, int | float) and not isinstance(cost, bool):
+            telemetry.cost_usd = (telemetry.cost_usd or 0.0) + float(cost)
+        telemetry.api_calls = (telemetry.api_calls or 0) + 1
+        measured = True
 
     for event in _events(content):
         event_type = event.get("type")
         part = _part(event)
-        if event_type == "step_finish":
-            tokens = part.get("tokens")
-            if not isinstance(tokens, dict):
-                raise ValueError("step_finish event has no tokens object")
-            cache = tokens.get("cache")
-            telemetry.input_tokens += _usage_int(tokens, "input")
-            telemetry.output_tokens += _usage_int(tokens, "output")
-            telemetry.cache_read_tokens += _usage_int(cache, "read")
-            telemetry.cache_creation_tokens = (telemetry.cache_creation_tokens or 0) + _usage_int(
-                cache, "write"
-            )
-            if "reasoning" in tokens:
-                reasoning_reported = True
-                telemetry.thinking_tokens = (telemetry.thinking_tokens or 0) + _usage_int(
-                    tokens, "reasoning"
-                )
-            cost = part.get("cost")
-            if isinstance(cost, int | float) and not isinstance(cost, bool):
-                telemetry.cost_usd = (telemetry.cost_usd or 0.0) + float(cost)
-            telemetry.api_calls = (telemetry.api_calls or 0) + 1
-            measured = True
-        elif event_type == "tool_use":
+        if event_type == "tool_use":
             tool = part.get("tool")
             state = part.get("state")
             if (
@@ -102,8 +120,6 @@ def parse_opencode_jsonl(content: str) -> PhaseTelemetry:
 
     if not measured:
         raise ValueError("event stream has no step_finish usage")
-    if not reasoning_reported:
-        telemetry.thinking_tokens = None
     return telemetry
 
 

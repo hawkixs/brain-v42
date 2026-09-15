@@ -34,7 +34,12 @@ of packages plus a 90 MiB npm cache, measured, even under ``--pure`` and
 the two package files into the ephemeral HOME; opencode finds them satisfied
 and installs nothing (footprint 936 KiB). A real HOME WITHOUT them refuses
 the run rather than let it reach the network: the operator seeds them by
-running opencode once by hand.
+running opencode once by hand. The limit of that guarantee, to read before
+feeling protected: the check is PRESENCE, not freshness. An opencode upgrade
+whose dependency manifest changed would make the next run install THROUGH
+the symlink -- into the operator's ``~/.config/opencode``, from npm -- until
+the operator runs the new binary by hand once. Nothing here can tell a stale
+manifest from a fresh one without knowing opencode's own versioning.
 
 ``--auto`` approves what the config does not explicitly deny; with every
 built-in tool removed there is nothing left to approve but MCP calls, which
@@ -155,15 +160,22 @@ def build_opencode_command(
     variant: str | None = None,
     title: str | None = None,
 ) -> list[str]:
-    """The headless command line of one run. The prompt is the last argument."""
+    """The headless command line of one run. The prompt is the last argument.
+
+    The model is REQUIRED. Without ``-m`` opencode picks its own default among
+    the authenticated providers, and on OpenCode Go that can be a
+    ``muse-spark-*-contributor`` model, which Meta trains on: a caller that
+    names no model does not get a run.
+    """
+    if not model.strip():
+        raise ValueError("opencode model must not be empty: opencode would pick its own")
     prompt_bytes = len(prompt.encode("utf-8"))
     if prompt_bytes > MAX_PROMPT_BYTES:
         # Refuse BEFORE execve: an E2BIG deep inside a Popen is an opaque
         # OSError, where this names the cause and its size.
         raise ValueError(f"prompt too long for argv: {prompt_bytes} bytes > {MAX_PROMPT_BYTES}")
     command = [executable, "run", "--dir", str(home), "--auto", "--pure", "--format", "json"]
-    if model.strip():
-        command.extend(("-m", model))
+    command.extend(("-m", model))
     if variant and variant.strip():
         command.extend(("--variant", variant))
     if title and title.strip():
@@ -333,20 +345,36 @@ def _int(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
-def telemetry(events_log: Path) -> tuple[TokenUsage | None, float | None]:
-    """Sum every ``step_finish``: fresh input, cached input, output, reasoning, cost.
+def step_finish_parts(events_log: Path) -> list[Mapping[str, object]]:
+    """The ``step_finish`` parts of a stream, ONE per part id, last version wins.
 
-    ``(None, None)`` when the stream measured nothing: absent is not zero.
-    opencode's ``tokens.input`` EXCLUDES the cache reads, so ``input`` here
-    is their sum and ``fresh`` is what the CLI called input.
+    opencode re-emits a part on every update (``extract_report`` dedupes the
+    ``text`` parts for the same reason); counting each emission would double
+    every token and cost figure. A part without an id keeps its own slot.
     """
-    fresh = cached = output = thinking = 0
-    cost = 0.0
-    measured = False
-    for event in _events(events_log):
+    parts: dict[str, Mapping[str, object]] = {}
+    for index, event in enumerate(_events(events_log)):
         if event.get("type") != "step_finish":
             continue
         part = _part(event)
+        part_id = part.get("id")
+        parts[part_id if isinstance(part_id, str) else f"#{index}"] = part
+    return list(parts.values())
+
+
+def telemetry(events_log: Path) -> tuple[TokenUsage | None, float | None]:
+    """Sum every ``step_finish``: fresh input, cached input, output, reasoning, cost.
+
+    ``(None, None)`` when the stream measured nothing, and a ``None`` cost
+    when no step carried one: absent is not zero, "measured as free" is the
+    one figure that must never be persisted. opencode's ``tokens.input``
+    EXCLUDES the cache reads, so ``input`` here is their sum and ``fresh`` is
+    what the CLI called input.
+    """
+    fresh = cached = output = thinking = 0
+    cost: float | None = None
+    measured = False
+    for part in step_finish_parts(events_log):
         tokens = part.get("tokens")
         if not isinstance(tokens, dict):
             continue
@@ -358,7 +386,7 @@ def telemetry(events_log: Path) -> tuple[TokenUsage | None, float | None]:
         thinking += _int(tokens.get("reasoning"))
         part_cost = part.get("cost")
         if isinstance(part_cost, (int, float)) and not isinstance(part_cost, bool):
-            cost += float(part_cost)
+            cost = (cost or 0.0) + float(part_cost)
     if not measured:
         return None, None
     return (
@@ -456,7 +484,12 @@ def run_opencode(
     )
     # Fail-closed BEFORE launching anything: a HOME without the runtime cache
     # would send the run to npm, and a server without a reachable bearer
-    # would answer 401 on every call.
+    # would answer 401 on every call. The two refusals do not carry the same
+    # code. The cache is a HOST fact that can flip under a chain (an opencode
+    # upgrade, a cleaned HOME): nothing was launched, nothing was written, so
+    # the run is provably replayable and says so with ``3``. The bearer is a
+    # CONFIGURATION fact: advancing a chain on it would hide a broken
+    # registry behind the next link, so it keeps the ``1`` every rail uses.
     if not runtime_cache_present(source_home):
         stderr_log.write_text(
             "opencode runtime cache absent from the real HOME "
@@ -464,7 +497,7 @@ def run_opencode(
             "run opencode once by hand to seed it\n",
             encoding="utf-8",
         )
-        return 1
+        return PROVIDER_FALLBACK_EXIT_CODE
     bearer = _bearer_value(profile.mcp, ambient)
     if profile.mcp is not None and bearer is None:
         stderr_log.write_text(

@@ -46,6 +46,7 @@ from .capability import (
     MCP_URL_ENV,
     active_capability_token,
     brain_mcp_server,
+    canonical_capability_project_key,
     validate_loopback_mcp_url,
 )
 
@@ -119,11 +120,13 @@ def dream_opencode_profile(
     The bearer is NOT resolved here: it travels under ``MCP_HTTP_TOKEN`` in
     the child environment (scoped by ``build_child_environment`` under
     enforcement, ambient otherwise), and the runtime's inline config names
-    that variable. ``project_key`` is validated against the registry's
-    canonical keys so an unknown project fails here, before any launch.
+    that variable. ``project_key`` is canonicalized here so a malformed key
+    fails before any launch even without enforcement -- the only path on this
+    rail that would otherwise let a raw string reach ``dream_runs``.
     """
     dream_phase_tool_allowlist(phase)
     validate_loopback_mcp_url(environ)
+    canonical_capability_project_key(project_key)
     server_url = mcp_url or environ.get(MCP_URL_ENV, DEFAULT_MCP_URL)
     return CapabilityProfile(
         mcp=brain_mcp_server(agent=f"dream-opencode-{phase}", phase=phase, url=server_url),

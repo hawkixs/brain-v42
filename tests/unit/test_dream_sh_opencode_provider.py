@@ -56,7 +56,15 @@ def test_the_opencode_preflight_checks_binary_credentials_and_runtime_cache() ->
     assert 'opencode) binary="$BRAIN_DREAM_OPENCODE_BIN"' in content
     assert 'runner="brain_v42.agents.providers.opencode"' in content
     assert '"$HOME/.local/share/opencode/auth.json"' in content
-    assert '"$HOME/.config/opencode/node_modules"' in content
+    # The same three paths the runtime's runtime_cache_present() requires:
+    # a weaker preflight would let the link pass, then refuse every phase.
+    for relative in (
+        ".config/opencode/node_modules",
+        ".config/opencode/package.json",
+        ".config/opencode/package-lock.json",
+    ):
+        assert f'"$HOME/{relative}"' in content, relative
+    assert "command -v jq" in content
 
 
 def test_the_python_chain_receives_the_opencode_variables() -> None:

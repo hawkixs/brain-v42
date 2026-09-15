@@ -197,12 +197,29 @@ def test_a_missing_project_profile_is_refused_before_popen(
     assert "kwargs" not in captured
 
 
+def test_a_malformed_project_key_is_refused_even_without_enforcement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Without enforcement no registry lookup validates the key; the profile
+    # canonicalizes it itself so the parser never writes garbage into
+    # dream_runs.project_key.
+    _environment(monkeypatch, tmp_path, enforcement="false")
+    captured = _capture_popen(monkeypatch)
+    assert _run(tmp_path, project_key="not a key!") == 1
+    assert "kwargs" not in captured
+    # A known alias is accepted (validated, not rewritten: dream.sh canonicalizes
+    # upstream, and the HOME name follows what it passed, as on the agy rail).
+    assert _run(tmp_path, project_key="brain_v42") == PROVIDER_FALLBACK_EXIT_CODE
+    assert "kwargs" in captured
+
+
 def test_a_real_home_without_the_runtime_cache_is_refused_before_popen(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _environment(monkeypatch, tmp_path, cache=False)
     captured = _capture_popen(monkeypatch)
-    assert _run(tmp_path) == 1
+    # Nothing launched, nothing written: the chain may hand the phase on.
+    assert _run(tmp_path) == PROVIDER_FALLBACK_EXIT_CODE
     assert "kwargs" not in captured
     assert "node_modules" in (tmp_path / "out" / "scan.stderr.log").read_text(encoding="utf-8")
 
@@ -298,6 +315,35 @@ def test_the_executable_defaults_to_the_dream_bin_variable(
     assert parser.parse_args([]).opencode_executable == "/x/opencode"
 
 
+def test_main_refuses_a_missing_or_blank_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _environment(monkeypatch, tmp_path)
+    monkeypatch.setattr("sys.stdin", io.StringIO("PROMPT"))
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(rail, "run_opencode", lambda **kwargs: calls.append(kwargs) or 0)
+    base = [
+        "--phase",
+        "scan",
+        "--project-key",
+        "brain-v42",
+        "--timeout-seconds",
+        "1",
+        "--events-log",
+        str(tmp_path / "e"),
+        "--report-log",
+        str(tmp_path / "r"),
+        "--stderr-log",
+        str(tmp_path / "s"),
+    ]
+    with pytest.raises(SystemExit):
+        rail.main(base)
+    with pytest.raises(SystemExit):
+        rail.main([*base, "--model", "  "])
+    assert calls == []
+    assert "--model" in capsys.readouterr().err
+
+
 def test_provider_adapter_delegates_to_the_rail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -337,3 +383,7 @@ def test_provider_adapter_delegates_to_the_rail(
     assert calls[0]["variant"] == "high"
     assert provider.prepare_home(spec) is not None
     assert provider.build_command(spec)[:2] == ["opencode", "run"]
+    # The wall (inline config, ephemeral HOME) is composed inside run_opencode:
+    # a consumer pairing build_command with child_environment must not get an
+    # environment that would launch opencode against the real HOME.
+    assert provider.child_environment(spec, dict(__import__("os").environ)) is None

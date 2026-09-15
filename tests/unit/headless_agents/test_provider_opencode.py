@@ -65,10 +65,17 @@ class TestBuildOpenCodeCommand:
             "P",
         ]
 
-    def test_blank_model_variant_and_title_add_no_flag(self) -> None:
-        command = opencode.build_opencode_command(model=" ", prompt="P", home=Path("/h"))
-        assert "-m" not in command and "--variant" not in command and "--title" not in command
+    def test_blank_variant_and_title_add_no_flag(self) -> None:
+        command = opencode.build_opencode_command(model="m", prompt="P", home=Path("/h"))
+        assert "--variant" not in command and "--title" not in command
         assert command[-1] == "P"
+
+    def test_a_blank_model_is_refused_before_execve(self) -> None:
+        # Without -m opencode picks its own default among the authenticated
+        # providers -- on OpenCode Go that can be a contributor model Meta
+        # trains on. The caller names the model or the run does not start.
+        with pytest.raises(ValueError, match="model"):
+            opencode.build_opencode_command(model=" ", prompt="P", home=Path("/h"))
 
     def test_an_oversized_prompt_is_refused_before_execve(self) -> None:
         with pytest.raises(ValueError, match="argv"):
@@ -258,6 +265,26 @@ class TestTelemetry:
         log.write_text(_events(_text("x")), encoding="utf-8")
         assert opencode.telemetry(log) == (None, None)
 
+    def test_a_step_without_a_cost_leaves_the_cost_unmeasured(self, tmp_path: Path) -> None:
+        log = tmp_path / "events.jsonl"
+        step = _step_finish(input=1, output=1, cache_read=0)
+        del step["part"]["cost"]  # type: ignore[index]
+        log.write_text(_events(step), encoding="utf-8")
+        tokens, cost = opencode.telemetry(log)
+        assert tokens is not None and cost is None
+
+    def test_a_re_emitted_step_finish_part_counts_once(self, tmp_path: Path) -> None:
+        # opencode re-emits a part on every update; the last version wins.
+        log = tmp_path / "events.jsonl"
+        first = _step_finish(input=10, output=1, cache_read=0, cost=0.001)
+        first["part"]["id"] = "prt_s1"  # type: ignore[index]
+        again = _step_finish(input=12, output=2, cache_read=0, cost=0.002)
+        again["part"]["id"] = "prt_s1"  # type: ignore[index]
+        log.write_text(_events(first, again), encoding="utf-8")
+        tokens, cost = opencode.telemetry(log)
+        assert tokens is not None and (tokens.fresh, tokens.output) == (12, 2)
+        assert cost == pytest.approx(0.002)
+
 
 class _FakeProcess:
     def __init__(self, *, returncode: int, events: str = "", hang: bool = False) -> None:
@@ -418,12 +445,13 @@ class TestRunOpenCode:
         assert isinstance(kwargs, dict)
         assert not Path(kwargs["cwd"]).exists()
 
-    def test_refuses_to_start_without_the_borrowed_runtime_cache(
+    def test_a_missing_runtime_cache_is_replayable_elsewhere(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
+        # Nothing was launched, so nothing was written: the chain may move on.
         captured = _install(monkeypatch, _FakeProcess(returncode=0, events=GOOD_EVENTS))
         bare = _real_home(tmp_path, cache=False, name="bare-home")
-        assert _run(tmp_path, real_home=bare) == 1
+        assert _run(tmp_path, real_home=bare) == PROVIDER_FALLBACK_EXIT_CODE
         assert "node_modules" in (tmp_path / "out" / "stderr.log").read_text(encoding="utf-8")
         assert "command" not in captured
 
@@ -484,7 +512,7 @@ class TestRunOpenCode:
         _install(monkeypatch, _FakeProcess(returncode=0, events=events))
         assert _run(tmp_path) == 1
 
-    def test_an_oversized_prompt_is_replayable_elsewhere(
+    def test_an_oversized_prompt_or_a_blank_model_is_replayable_elsewhere(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         captured = _install(monkeypatch, _FakeProcess(returncode=0))
@@ -492,6 +520,9 @@ class TestRunOpenCode:
             _run(tmp_path, prompt="x" * (opencode.MAX_PROMPT_BYTES + 1))
             == PROVIDER_FALLBACK_EXIT_CODE
         )
+        assert "command" not in captured
+        assert _run(tmp_path, model="") == PROVIDER_FALLBACK_EXIT_CODE
+        assert "model" in (tmp_path / "out" / "stderr.log").read_text(encoding="utf-8")
         assert "command" not in captured
 
     def test_timeouts(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

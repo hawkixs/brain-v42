@@ -207,6 +207,9 @@ TIMESTAMP=$(date +%Y-%m-%d)
 
 case "$BRAIN_DREAM_AGENT_PROVIDER" in
   codex|claude|agy) ;;
+    # A separate arm, on purpose: the literal `codex|claude|agy)` above is
+    # pinned by tests/unit/test_dream_provider_chain.py and the fourth link
+    # must not rewrite it.
     opencode) ;;
   *)
     echo "Unsupported BRAIN_DREAM_AGENT_PROVIDER: $BRAIN_DREAM_AGENT_PROVIDER" >&2
@@ -231,6 +234,7 @@ for _provider in "${_provider_parts[@]}"; do
   fi
   case "$_provider" in
     codex|claude|agy) ;;
+    # Same separate arm as above, for the same pin.
     opencode) ;;
     *)
       echo "Unsupported provider in BRAIN_DREAM_AGENT_PROVIDERS: $_provider" >&2
@@ -554,14 +558,27 @@ preflight_provider() {
   # reason, before the night rather than at its first phase. Both are host
   # facts, checked whether enforcement is on or not.
   if [[ "$provider" == "opencode" ]]; then
+    if ! command -v jq >/dev/null 2>&1; then
+      log "FAIL $label preflight — jq is required to read the opencode credential store"
+      return 1
+    fi
     if ! jq -e '."opencode-go"' "$HOME/.local/share/opencode/auth.json" >/dev/null 2>&1; then
       log "FAIL $label preflight — no opencode-go credential in ~/.local/share/opencode/auth.json"
       return 1
     fi
-    if [[ ! -d "$HOME/.config/opencode/node_modules" ]]; then
-      log "FAIL $label preflight — ~/.config/opencode/node_modules absent: a phase would install from npm (run opencode once by hand)"
-      return 1
-    fi
+    # The SAME three paths headless_agents.providers.opencode.RUNTIME_CACHE_PATHS
+    # requires: a weaker check here would let the link pass its preflight and
+    # then refuse every phase.
+    local _opencode_cache_path
+    for _opencode_cache_path in \
+      "$HOME/.config/opencode/node_modules" \
+      "$HOME/.config/opencode/package.json" \
+      "$HOME/.config/opencode/package-lock.json"; do
+      if [[ ! -e "$_opencode_cache_path" ]]; then
+        log "FAIL $label preflight — $_opencode_cache_path absent: a phase would install from npm (run opencode once by hand)"
+        return 1
+      fi
+    done
   fi
 
   log "PREFLIGHT $label — ready"

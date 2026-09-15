@@ -120,9 +120,11 @@ def run_opencode(
     real_home = _real_home()
     # Fail-closed BEFORE launching anything, with the Dream's own line: the
     # runtime would refuse too, but this is the wording the night's logs read.
+    # ``3``, not ``1``: nothing launched, nothing written, the chain may hand
+    # the phase to the next link (see the runtime's ``run_opencode``).
     if not runtime_cache_present(real_home):
         stderr_log.write_text(f"{_runtime_cache_error()}\n", encoding="utf-8")
-        return 1
+        return PROVIDER_FALLBACK_EXIT_CODE
 
     try:
         child_environment = build_child_environment(
@@ -180,9 +182,11 @@ class OpenCodeProvider:
         )
 
     def child_environment(self, spec: RunSpec, environ: Mapping[str, str]) -> dict[str, str] | None:
-        return build_child_environment(
-            project_key=spec.project_key, phase=spec.phase, environ=environ
-        )
+        # Not the capability-scoped allowlist: opencode's wall (the inline
+        # config, the ephemeral HOME) is composed inside run_opencode, and an
+        # environment handed out here without it would launch opencode against
+        # the operator's real HOME with every built-in tool. Same answer as agy.
+        return None
 
     def prepare_home(self, spec: RunSpec) -> Path | None:
         assert spec.project_key is not None
@@ -247,7 +251,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--preflight-capabilities", action="store_true")
     parser.add_argument("--project-key")
     parser.add_argument("--phase", choices=tuple(PHASE_TOOL_ALLOWLISTS))
-    parser.add_argument("--model", default="")
+    parser.add_argument("--model")
     parser.add_argument("--variant", default="")
     parser.add_argument("--timeout-seconds", type=float)
     parser.add_argument("--events-log", type=Path)
@@ -279,6 +283,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     required = {
         "--phase": args.phase,
         "--project-key": args.project_key,
+        "--model": args.model if args.model and args.model.strip() else None,
         "--timeout-seconds": args.timeout_seconds,
         "--events-log": args.events_log,
         "--report-log": args.report_log,

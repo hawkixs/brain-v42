@@ -126,6 +126,29 @@ def test_parse_opencode_jsonl_ignores_blank_malformed_and_unknown_lines() -> Non
     assert telemetry.api_calls == 1
 
 
+def test_cost_and_cache_writes_stay_null_when_no_step_reports_them() -> None:
+    parser = _parser()
+    step = _step_finish(input=5, output=1, cache_read=4)
+    del step["part"]["cost"]  # type: ignore[index]
+    del step["part"]["tokens"]["cache"]  # type: ignore[index]
+    telemetry = parser.parse_opencode_jsonl(_jsonl(step))
+    assert telemetry.cost_usd is None
+    assert telemetry.cache_creation_tokens is None
+    assert telemetry.cache_read_tokens == 0
+
+
+def test_a_re_emitted_step_finish_part_counts_once() -> None:
+    parser = _parser()
+    first = _step_finish(input=10, output=1, cache_read=0, cost=0.001)
+    first["part"]["id"] = "prt_s1"  # type: ignore[index]
+    again = _step_finish(input=12, output=2, cache_read=0, cost=0.002)
+    again["part"]["id"] = "prt_s1"  # type: ignore[index]
+    telemetry = parser.parse_opencode_jsonl(_jsonl(first, again))
+    assert (telemetry.input_tokens, telemetry.output_tokens) == (12, 2)
+    assert telemetry.api_calls == 1
+    assert telemetry.cost_usd == pytest.approx(0.002)
+
+
 def test_parse_opencode_jsonl_rejects_a_stream_without_usage() -> None:
     parser = _parser()
     with pytest.raises(ValueError, match="step_finish"):
