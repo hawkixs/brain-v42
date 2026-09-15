@@ -546,7 +546,7 @@ every phase; the fixtures were not touched by the split.
 The member installs on its own from another project:
 
 ```sh
-uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@<tag>#subdirectory=packages/headless-agents"
+uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.2.0#subdirectory=packages/headless-agents"
 ```
 
 Inside this repository `uv sync` installs it editable next to `brain_v42`; `uv build` at the

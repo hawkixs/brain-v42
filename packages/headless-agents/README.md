@@ -8,10 +8,12 @@ workspace member of the [brain-v42](https://github.com/hawkixs/brain-v42)
 repository and installable on its own:
 
 ```sh
-uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@<tag>#subdirectory=packages/headless-agents"
+uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.2.0#subdirectory=packages/headless-agents"
 ```
 
-Its dependencies are `pydantic` and `structlog` -- nothing else. Importing it
+Versions are tagged `headless-agents-vX.Y.Z` on this repository; `CHANGELOG.md` lists the
+surface under contract and every breaking change. Its dependencies are `pydantic` and
+`structlog` -- nothing else. Importing it
 pulls no database driver, no MCP server framework and no HTTP server.
 
 ## What it does, and what it refuses to decide
