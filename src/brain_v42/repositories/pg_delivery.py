@@ -811,7 +811,6 @@ class PgDeliveryRepo(BasePgRepository):
                     owner=workflow["claim_owner"],
                     expires_at=workflow["claim_expires_at"],
                 ),
-                executor_identity=ticket["to_project"],
             )
 
     async def lock_decision_scope(
