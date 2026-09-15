@@ -1,7 +1,7 @@
 # headless-agents
 
-Run headless CLI agents (`claude -p`, `codex exec`, `agy --print`) under a
-capability profile the caller supplies.
+Run headless CLI agents (`claude -p`, `codex exec`, `agy --print`,
+`opencode run`) under a capability profile the caller supplies.
 
 This package is the shared agent runtime of the ReD ecosystem, hosted as a uv
 workspace member of the [brain-v42](https://github.com/hawkixs/brain-v42)
@@ -109,6 +109,17 @@ The `agy` rail takes its prompt in `argv`, not on stdin (measured: it
 ignores stdin), and refuses to run without a `ToolGuard` whose script
 provably denies machine tools -- the guard is the only wall between agy and
 a shell.
+
+The `opencode` rail needs no guard script: its wall is the inline config's
+`tools` map, a fail-closed ALLOWLIST (`{"*": false, "<server>_<tool>": true}`)
+that removes every built-in tool before the model sees it. The config travels
+in `OPENCODE_CONFIG_CONTENT` and references the bearer as `{env:<var>}`, so
+this rail writes no secret to disk. It borrows the operator's
+`~/.config/opencode/node_modules` into the ephemeral HOME (a fresh HOME would
+otherwise `bun install` from npm on every run) and refuses to start when the
+real HOME has none. `spec.reasoning_effort` becomes `--variant`; `spec.name`
+becomes the session title. The subscription credential to declare is
+`.local/share/opencode/auth.json`.
 
 ## Licence
 
