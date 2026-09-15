@@ -296,7 +296,7 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
     # pre-053 schema is the child FK `delivery_workflows.ticket_id -> tickets.id`.
     # It changes no column, CHECK, index or trigger on `tickets`, so the shape at
     # 031 remains intact while the live METADATA table set must exclude the eight.
-    assert script.get_heads() == ["053"]
+    assert script.get_heads() == ["054"]
     post_contract_tables = {
         # 050's table. `table_set` is DERIVED from live METADATA, so any new
         # table moves it, and a contract describing revision 031 must not claim
@@ -325,6 +325,11 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
         "delivery_receipts",
         "delivery_snapshots",
         "delivery_workflows",
+        # 054's table, and it belongs here for the same reason as 053's eight and
+        # no other: `table_set` is DERIVED from live METADATA, so a table added
+        # twenty-three revisions after 031 must not appear in a contract that
+        # describes 031. It is the SET, not the shape, that moves.
+        "delivery_attestations",
         "brain_session_artifacts",
         "brain_sessions",
         "projects",
