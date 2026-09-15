@@ -77,6 +77,55 @@ def _agy_update(entity_id: str, tool: str = "brain_update") -> str:
     )
 
 
+def _opencode_update(
+    entity_id: str, tool: str = "brain_update", status: str = "completed", part_id: str = "prt_1"
+) -> str:
+    """Shape measured on the canary stream of 2026-09-15 (release 60f4e807):
+    a `tool_use` part named `<server>_<tool>`, its arguments under
+    `state.input`, re-emitted as it goes from `running` to `completed`."""
+    return json.dumps(
+        {
+            "type": "tool_use",
+            "sessionID": "ses_1",
+            "part": {
+                "id": part_id,
+                "type": "tool",
+                "tool": f"brain-v42_{tool}",
+                "state": {"status": status, "input": {"entity_id": entity_id, "tags": ["x"]}},
+            },
+        }
+    )
+
+
+def test_opencode_updates_are_observed_once_per_part() -> None:
+    content = "\n".join(
+        [
+            _opencode_update(_LID, status="running", part_id="prt_a"),
+            _opencode_update(_LID, status="completed", part_id="prt_a"),
+            _opencode_update(_DID, part_id="prt_b"),
+        ]
+    )
+    scan = scan_events(content)
+    assert scan.updated_ids == {_LID, _DID}
+    assert scan.opencode_events == 2
+    assert scan.codex_events == 0 and scan.agy_events == 0
+    assert scan.recognised is True
+
+
+def test_an_opencode_call_that_errored_is_not_a_mutation() -> None:
+    scan = scan_events(_opencode_update(_LID, status="error"))
+    assert scan.updated_ids == set()
+    assert scan.opencode_events == 0
+    assert scan.recognised is False
+
+
+def test_an_opencode_call_on_another_server_is_not_ours() -> None:
+    event = json.loads(_opencode_update(_LID))
+    event["part"]["tool"] = "other_brain_update"
+    scan = scan_events(json.dumps(event))
+    assert scan.recognised is False and scan.updated_ids == set()
+
+
 def test_codex_updates_are_observed() -> None:
     scan = scan_events("\n".join([_codex_update(_LID), _codex_update(_DID)]))
 

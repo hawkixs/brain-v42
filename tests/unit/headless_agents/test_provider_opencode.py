@@ -199,6 +199,34 @@ class TestExtractReport:
         opencode.extract_report(log, report)
         assert report.read_text(encoding="utf-8") == "first\n\n=== REPORT ===\nfinal"
 
+    def test_a_fence_around_the_whole_report_is_the_envelope_not_the_report(
+        self, tmp_path: Path
+    ) -> None:
+        # Measured on the canary of 2026-09-15: glm-5.3-flash wrapped its two
+        # CONNECT lines in ``` fences and the strict validator counted four lines.
+        log = tmp_path / "events.jsonl"
+        report = tmp_path / "report.log"
+        log.write_text(
+            _events(_text("```\nSTEP_A: a=1\nSTEP_B: b=2\n```")),
+            encoding="utf-8",
+        )
+        opencode.extract_report(log, report)
+        assert report.read_text(encoding="utf-8") == "STEP_A: a=1\nSTEP_B: b=2"
+
+        log.write_text(_events(_text("```text\nline\n```\n")), encoding="utf-8")
+        opencode.extract_report(log, report)
+        assert report.read_text(encoding="utf-8") == "line"
+
+    def test_an_inner_fence_is_kept(self, tmp_path: Path) -> None:
+        # Only a fence around EVERYTHING is an envelope; a fenced trailer inside
+        # prose is the report's own formatting and the validators read through it.
+        log = tmp_path / "events.jsonl"
+        report = tmp_path / "report.log"
+        text = 'Summary.\n```json\n{"updated": []}\n```'
+        log.write_text(_events(_text(text)), encoding="utf-8")
+        opencode.extract_report(log, report)
+        assert report.read_text(encoding="utf-8") == text
+
     def test_an_empty_or_absent_text_writes_nothing(self, tmp_path: Path) -> None:
         log = tmp_path / "events.jsonl"
         report = tmp_path / "report.log"
