@@ -260,13 +260,29 @@ def tool_call_completed(events_log: Path, *, server: str) -> bool:
     return any(_is_completed_call(event, server) for event in _events(events_log))
 
 
+def _unwrap_fence(report: str) -> str:
+    """Drop a markdown fence that wraps the WHOLE report, and only that one.
+
+    Measured on the canary of 2026-09-15: asked for two report lines,
+    glm-5.3-flash answered them inside ``` fences, and the strict validator
+    downstream counted four lines. A fence around everything is the model's
+    envelope, not its report; a fence INSIDE prose is the report's own
+    formatting and is kept as written.
+    """
+    lines = report.strip("\n").split("\n")
+    if len(lines) >= 2 and lines[0].startswith("```") and lines[-1].strip() == "```":
+        return "\n".join(lines[1:-1])
+    return report
+
+
 def extract_report(events_log: Path, report_log: Path) -> None:
     """Rebuild the run's report from the ``text`` parts, in order.
 
     A part may be emitted more than once as it grows: the LAST version of
     each part id wins, at the position of its first appearance. Every part
     is kept, not just the final one, so a machine-readable trailer the agent
-    printed in a message of its own survives.
+    printed in a message of its own survives. A fence around the whole
+    report is removed (see :func:`_unwrap_fence`).
     """
     texts: dict[str, str] = {}
     for index, event in enumerate(_events(events_log)):
@@ -279,7 +295,7 @@ def extract_report(events_log: Path, report_log: Path) -> None:
         part_id = part.get("id")
         key = part_id if isinstance(part_id, str) else f"#{index}"
         texts[key] = text
-    report = "\n\n".join(text for text in texts.values() if text.strip())
+    report = _unwrap_fence("\n\n".join(text for text in texts.values() if text.strip()))
     if report.strip():
         report_log.write_text(report, encoding="utf-8")
 

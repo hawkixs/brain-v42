@@ -7,16 +7,20 @@ case, a ``brain_update`` emitted for an id the report never mentions. The second
 direction is invisible today, and it is the worse of the two: a mutation nobody
 holds a record of.
 
-TWO DIALECTS, and the requirement is hard. The live rail is codex
-(``BRAIN_DREAM_AGENT_PROVIDER=codex`` by default); agy is the fallback. A
-single-dialect parser would report "0 writes observed" on every fallback night —
-a false negative shaped exactly like good news, which nobody would question.
-"Nothing recognised" must therefore stay a DIFFERENT fact from "nothing called".
+THREE DIALECTS, and the requirement is hard. The live rail is codex
+(``BRAIN_DREAM_AGENT_PROVIDER=codex`` by default); opencode and agy are the
+fallbacks, in that order since 2026-09-15. A single-dialect parser would report
+"0 writes observed" on every fallback night — a false negative shaped exactly
+like good news, which nobody would question. "Nothing recognised" must
+therefore stay a DIFFERENT fact from "nothing called".
 
-Both shapes are MEASURED on real streams in this repo, not assumed. The agy one
-in particular cannot be guessed: tool arguments live under
+All three shapes are MEASURED on real streams in this repo, not assumed. The
+agy one in particular cannot be guessed: tool arguments live under
 ``tool_info.parameters.Arguments`` while the tool name lives under ``ToolName``,
-``tool_name`` being invariably ``call_mcp_tool``.
+``tool_name`` being invariably ``call_mcp_tool``. The opencode one names the
+tool ``<server>_<tool>`` on a ``tool_use`` part whose arguments live under
+``state.input``, and RE-EMITS that part as it goes from ``running`` to
+``completed``: only the completed state is a call, and a part id is counted once.
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ class EventScan:
     updated_ids: set[str] = field(default_factory=set)
     codex_events: int = 0
     agy_events: int = 0
+    opencode_events: int = 0
 
     @property
     def recognised(self) -> bool:
@@ -52,7 +57,7 @@ class EventScan:
         other command all yield the same empty set, and calling that a clean
         night would be a lie the checker told itself.
         """
-        return bool(self.codex_events or self.agy_events)
+        return bool(self.codex_events or self.agy_events or self.opencode_events)
 
 
 def _lines(content: str) -> Iterator[dict]:
@@ -83,8 +88,24 @@ def _entity_id(arguments: object) -> str | None:
 def scan_events(content: str) -> EventScan:
     """Return the brain-v42 mutations observed in a phase event stream."""
     scan = EventScan()
+    opencode_parts: dict[str, dict] = {}
 
-    for event in _lines(content):
+    for index, event in enumerate(_lines(content)):
+        # ── opencode: {"type": "tool_use", "part": {"tool": "brain-v42_<tool>", ...}} ──
+        if event.get("type") == "tool_use":
+            part = event.get("part")
+            if not isinstance(part, dict):
+                continue
+            tool = part.get("tool")
+            state = part.get("state")
+            if not isinstance(tool, str) or not tool.startswith(f"{_SERVER}_"):
+                continue
+            if not isinstance(state, dict) or state.get("status") != "completed":
+                continue
+            part_id = part.get("id")
+            opencode_parts[part_id if isinstance(part_id, str) else f"#{index}"] = part
+            continue
+
         # ── codex: {"type": "item.completed", "item": {...mcp_tool_call...}} ──
         if event.get("type") == "item.completed":
             item = event.get("item")
@@ -113,5 +134,13 @@ def scan_events(content: str) -> EventScan:
                 entity_id = _entity_id(parameters.get("Arguments"))
                 if entity_id is not None:
                     scan.updated_ids.add(entity_id)
+
+    for part in opencode_parts.values():
+        scan.opencode_events += 1
+        if part.get("tool") == f"{_SERVER}_{_MUTATING_TOOL}":
+            state = part.get("state")
+            entity_id = _entity_id(state.get("input")) if isinstance(state, dict) else None
+            if entity_id is not None:
+                scan.updated_ids.add(entity_id)
 
     return scan
