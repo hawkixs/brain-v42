@@ -47,11 +47,17 @@ PHASE_DEPS: dict[str, tuple[str, ...]] = {
 
 OTEL_SPLIT_MODULE = "brain_v42.metrics.otel_split"
 
-_RUNNER_MODULE_SUFFIX = {"agy": "agy", "codex": "codex", "claude": "claude"}
+_RUNNER_MODULE_SUFFIX = {
+    "agy": "agy",
+    "codex": "codex",
+    "claude": "claude",
+    "opencode": "opencode",
+}
 _PARSER_MODULE = {
     "agy": "brain_v42.metrics.agy_dream_parser",
     "codex": "brain_v42.metrics.codex_dream_parser",
     "claude": "brain_v42.metrics.dream_parser",
+    "opencode": "brain_v42.metrics.opencode_dream_parser",
 }
 
 
@@ -179,6 +185,29 @@ def runner_argv(
             "--claude-executable",
             executable,
         ]
+    if provider == "opencode":
+        # ``reasoning`` is opencode's ``--variant``; an empty one reaches the
+        # rail as "" and adds no flag there (the rail's argparse default).
+        return [
+            "--phase",
+            phase,
+            "--project-key",
+            project_key,
+            "--model",
+            model,
+            "--variant",
+            reasoning or "",
+            "--timeout-seconds",
+            timeout_seconds,
+            "--events-log",
+            str(paths.events_log),
+            "--report-log",
+            str(paths.report_log),
+            "--stderr-log",
+            str(paths.stderr_log),
+            "--opencode-executable",
+            executable,
+        ]
     raise ValueError(f"unknown provider: {provider}")
 
 
@@ -213,7 +242,7 @@ def parser_argv(
     ]
     if scan_log is not None:
         argv += ["--raw-log", str(scan_log)]
-    if provider in ("agy", "codex"):
+    if provider in ("agy", "codex", "opencode"):
         argv += ["--report-log", str(paths.report_log), str(paths.events_log)]
     elif provider == "claude":
         argv += [str(paths.otel_log)]
@@ -345,6 +374,19 @@ def _select_model(
             return "sonnet", None
         if model_tier == "deep":
             return "opus", None
+    elif provider == "opencode":
+        # No default here either: dream.sh owns them and exports them, as it
+        # does for codex and agy. The second element is the ``--variant``.
+        if model_tier == "fast":
+            return (
+                environ.get("BRAIN_DREAM_OPENCODE_FAST_MODEL", ""),
+                environ.get("BRAIN_DREAM_OPENCODE_FAST_VARIANT", ""),
+            )
+        if model_tier == "deep":
+            return (
+                environ.get("BRAIN_DREAM_OPENCODE_DEEP_MODEL", ""),
+                environ.get("BRAIN_DREAM_OPENCODE_DEEP_VARIANT", ""),
+            )
     raise UnsupportedTierError(provider, model_tier)
 
 
@@ -406,7 +448,7 @@ def _postprocess(
             paths.otel_log.write_text("", encoding="utf-8")
         return err_log
 
-    # codex / agy: the runner already separated the streams. Always leave a
+    # codex / agy / opencode: the runner already separated the streams. Always leave a
     # readable report path for dependency injection and validators, including
     # failed phases.
     if not paths.report_log.exists():

@@ -23,6 +23,7 @@ _PARSER_WARN_LABEL = {
     "agy": "agy_dream_parser",
     "codex": "codex_dream_parser",
     "claude": "dream_parser",
+    "opencode": "opencode_dream_parser",
 }
 
 
@@ -41,6 +42,11 @@ def start_line(
         return (
             f"START {name} (provider=codex, model={model}, "
             f"reasoning={reasoning}, timeout={timeout_minutes}m)"
+        )
+    if provider == "opencode":
+        variant = f"variant={reasoning}, " if reasoning else ""
+        return (
+            f"START {name} (provider=opencode, model={model}, {variant}timeout={timeout_minutes}m)"
         )
     return (
         f"START {name} (provider=claude, model={model}, "
