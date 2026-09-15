@@ -137,6 +137,18 @@ def test_cost_and_cache_writes_stay_null_when_no_step_reports_them() -> None:
     assert telemetry.cache_read_tokens == 0
 
 
+def test_a_re_emitted_completed_tool_part_counts_once() -> None:
+    parser = _parser()
+    pending = _tool_use("brain-v42_brain_list", status="running")
+    pending["part"]["id"] = "prt_t1"  # type: ignore[index]
+    done = _tool_use("brain-v42_brain_list")
+    done["part"]["id"] = "prt_t1"  # type: ignore[index]
+    again = _tool_use("brain-v42_brain_list")
+    again["part"]["id"] = "prt_t1"  # type: ignore[index]
+    content = _jsonl(pending, done, again, _step_finish(input=1, output=1, cache_read=0))
+    assert parser.parse_opencode_jsonl(content).tool_calls == 1
+
+
 def test_a_re_emitted_step_finish_part_counts_once() -> None:
     parser = _parser()
     first = _step_finish(input=10, output=1, cache_read=0, cost=0.001)

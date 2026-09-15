@@ -54,12 +54,16 @@ def _usage_int(usage: object, key: str) -> int:
     return 0
 
 
-def _step_finish_parts(content: str) -> list[dict[str, object]]:
-    """One ``step_finish`` part per id, last version wins: opencode re-emits a
-    part on every update, and counting each emission would double every figure."""
+def _parts(content: str, event_type: str) -> list[dict[str, object]]:
+    """The parts of one event type, ONE per part id, last version wins.
+
+    opencode re-emits a part on every update; counting each emission would
+    double every figure -- the token sums of ``step_finish`` as much as the
+    ``tool_calls`` of ``tool_use``. A part without an id keeps its own slot.
+    """
     parts: dict[str, dict[str, object]] = {}
     for index, event in enumerate(_events(content)):
-        if event.get("type") != "step_finish":
+        if event.get("type") != event_type:
             continue
         part = _part(event)
         part_id = part.get("id")
@@ -82,7 +86,7 @@ def parse_opencode_jsonl(content: str) -> PhaseTelemetry:
     telemetry = PhaseTelemetry(cache_creation_tokens=None, cost_usd=None, api_calls=0)
     measured = False
 
-    for part in _step_finish_parts(content):
+    for part in _parts(content, "step_finish"):
         tokens = part.get("tokens")
         if not isinstance(tokens, dict):
             raise ValueError("step_finish event has no tokens object")
@@ -104,19 +108,16 @@ def parse_opencode_jsonl(content: str) -> PhaseTelemetry:
         telemetry.api_calls = (telemetry.api_calls or 0) + 1
         measured = True
 
-    for event in _events(content):
-        event_type = event.get("type")
-        part = _part(event)
-        if event_type == "tool_use":
-            tool = part.get("tool")
-            state = part.get("state")
-            if (
-                isinstance(tool, str)
-                and tool.startswith(BRAIN_TOOL_PREFIX)
-                and isinstance(state, dict)
-                and state.get("status") == "completed"
-            ):
-                telemetry.tool_calls += 1
+    for part in _parts(content, "tool_use"):
+        tool = part.get("tool")
+        state = part.get("state")
+        if (
+            isinstance(tool, str)
+            and tool.startswith(BRAIN_TOOL_PREFIX)
+            and isinstance(state, dict)
+            and state.get("status") == "completed"
+        ):
+            telemetry.tool_calls += 1
 
     if not measured:
         raise ValueError("event stream has no step_finish usage")

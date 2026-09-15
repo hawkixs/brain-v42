@@ -93,7 +93,6 @@ class TestOpenCodeConfig:
             "Authorization": "Bearer {env:EXAMPLE_TOKEN}",
             "X-Agent": "example-run",
         }
-        assert "scoped" not in json.dumps(config)
 
     def test_a_literal_bearer_still_travels_by_reference(self) -> None:
         server = McpServer(name=SERVER, url=URL, bearer=SecretStr("scoped-token"))

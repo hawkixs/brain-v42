@@ -78,7 +78,7 @@ def test_the_python_chain_receives_the_opencode_variables() -> None:
 
 
 def _sandbox(
-    tmp_path: Path, exit_codes: dict[str, int], *, seed_home: bool
+    tmp_path: Path, exit_codes: dict[str, int], *, seed_auth: bool, seed_cache: bool
 ) -> tuple[Path, dict[str, str]]:
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir()
@@ -92,11 +92,12 @@ def _sandbox(
 
     home = tmp_path / "home"
     home.mkdir()
-    if seed_home:
+    if seed_auth:
         (home / ".local/share/opencode").mkdir(parents=True)
         (home / ".local/share/opencode/auth.json").write_text(
             json.dumps({"opencode-go": {"type": "api", "key": "x"}}), encoding="utf-8"
         )
+    if seed_cache:
         (home / ".config/opencode/node_modules").mkdir(parents=True)
         (home / ".config/opencode/package.json").write_text("{}", encoding="utf-8")
         (home / ".config/opencode/package-lock.json").write_text("{}", encoding="utf-8")
@@ -169,8 +170,14 @@ def _sandbox(
     return dream_copy, env
 
 
-def _run_night(tmp_path: Path, exit_codes: dict[str, int], *, seed_home: bool) -> str:
-    dream_copy, env = _sandbox(tmp_path, exit_codes, seed_home=seed_home)
+def _run_night(
+    tmp_path: Path,
+    exit_codes: dict[str, int],
+    *,
+    seed_auth: bool = True,
+    seed_cache: bool = True,
+) -> str:
+    dream_copy, env = _sandbox(tmp_path, exit_codes, seed_auth=seed_auth, seed_cache=seed_cache)
     subprocess.run(
         [str(dream_copy), "test-project"],
         capture_output=True,
@@ -186,7 +193,7 @@ def _run_night(tmp_path: Path, exit_codes: dict[str, int], *, seed_home: bool) -
 
 
 def test_codex_dying_without_a_write_hands_the_phase_to_opencode(tmp_path: Path) -> None:
-    log = _run_night(tmp_path, {"codex": 3, "opencode": 0, "claude": 0}, seed_home=True)
+    log = _run_night(tmp_path, {"codex": 3, "opencode": 0, "claude": 0})
 
     assert "PREFLIGHT OpenCode — ready" in log
     assert "Providers (3) prêts, dans l'ordre : codex opencode claude" in log
@@ -200,10 +207,23 @@ def test_codex_dying_without_a_write_hands_the_phase_to_opencode(tmp_path: Path)
 def test_a_host_without_the_runtime_cache_drops_the_link_before_the_night(
     tmp_path: Path,
 ) -> None:
-    log = _run_night(tmp_path, {"codex": 3, "opencode": 0, "claude": 0}, seed_home=False)
+    # The credential IS there: the refusal must come from the cache loop.
+    log = _run_night(tmp_path, {"codex": 3, "opencode": 0, "claude": 0}, seed_cache=False)
 
     assert "FAIL OpenCode preflight" in log
+    assert "node_modules absent: a phase would install from npm" in log
+    assert "no opencode-go credential" not in log
     assert "DROP opencode" in log
     assert "Providers (2) prêts, dans l'ordre : codex claude" in log
     assert "provider=opencode" not in log
     assert "bascule vers claude" in log
+
+
+def test_a_host_without_the_credential_drops_the_link_before_the_night(
+    tmp_path: Path,
+) -> None:
+    log = _run_night(tmp_path, {"codex": 3, "opencode": 0, "claude": 0}, seed_auth=False)
+
+    assert "FAIL OpenCode preflight — no opencode-go credential" in log
+    assert "DROP opencode" in log
+    assert "provider=opencode" not in log

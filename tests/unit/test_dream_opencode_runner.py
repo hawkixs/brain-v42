@@ -338,10 +338,11 @@ def test_main_refuses_a_missing_or_blank_model(
     ]
     with pytest.raises(SystemExit):
         rail.main(base)
+    assert "the following arguments are required: --model" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         rail.main([*base, "--model", "  "])
+    assert "the following arguments are required: --model" in capsys.readouterr().err
     assert calls == []
-    assert "--model" in capsys.readouterr().err
 
 
 def test_provider_adapter_delegates_to_the_rail(
