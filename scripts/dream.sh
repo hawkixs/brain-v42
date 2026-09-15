@@ -47,6 +47,25 @@ BRAIN_DREAM_CODEX_DEEP_REASONING="${BRAIN_DREAM_CODEX_DEEP_REASONING:-max}"
 BRAIN_DREAM_CODEX_BIN="${BRAIN_DREAM_CODEX_BIN:-codex}"
 BRAIN_DREAM_CLAUDE_BIN="${BRAIN_DREAM_CLAUDE_BIN:-claude}"
 BRAIN_DREAM_AGY_BIN="${BRAIN_DREAM_AGY_BIN:-agy}"
+# The opencode link (opencode.ai CLI, OpenCode Go subscription): the second
+# link of the chain since 2026-09-15, between codex and agy. Installed under
+# ~/.opencode/bin by default -- name it in the drop-in, the unit's PATH does
+# not carry it.
+BRAIN_DREAM_OPENCODE_BIN="${BRAIN_DREAM_OPENCODE_BIN:-opencode}"
+# Models of the opencode link, `provider/model` as `opencode models` lists
+# them. ONE model for both tiers, by quota arithmetic rather than taste: Go
+# caps each model per WEEK at half its monthly cap (learning f60b35cd), the
+# night runs 60 phases when codex is down, and the tool-heavy deep phases
+# replay 1-2 M cached tokens each -- so the model must be a 60 $-cap one with a
+# cheap cache read, and glm-5.3-flash is the one of those that answered every
+# probe on 2026-09-15 (deepseek-v4.1-flash, stronger and cheaper, was down
+# server-side that day). Never a `muse-spark-*-contributor`: Meta trains on
+# those prompts. The deep tier asks for the `high` variant, a no-op on models
+# that ignore it.
+BRAIN_DREAM_OPENCODE_FAST_MODEL="${BRAIN_DREAM_OPENCODE_FAST_MODEL:-opencode-go/glm-5.3-flash}"
+BRAIN_DREAM_OPENCODE_DEEP_MODEL="${BRAIN_DREAM_OPENCODE_DEEP_MODEL:-opencode-go/glm-5.3-flash}"
+BRAIN_DREAM_OPENCODE_FAST_VARIANT="${BRAIN_DREAM_OPENCODE_FAST_VARIANT:-}"
+BRAIN_DREAM_OPENCODE_DEEP_VARIANT="${BRAIN_DREAM_OPENCODE_DEEP_VARIANT:-high}"
 # Models of the Google link. GEMINI, deliberately: agy also exposes
 # claude-sonnet-4-6 and claude-opus-4-6-thinking, and taking those would defeat
 # the point of the link — if Anthropic falls, those models fall with it, and the
@@ -188,6 +207,10 @@ TIMESTAMP=$(date +%Y-%m-%d)
 
 case "$BRAIN_DREAM_AGENT_PROVIDER" in
   codex|claude|agy) ;;
+    # A separate arm, on purpose: the literal `codex|claude|agy)` above is
+    # pinned by tests/unit/test_dream_provider_chain.py and the fourth link
+    # must not rewrite it.
+    opencode) ;;
   *)
     echo "Unsupported BRAIN_DREAM_AGENT_PROVIDER: $BRAIN_DREAM_AGENT_PROVIDER" >&2
     exit 2
@@ -211,6 +234,8 @@ for _provider in "${_provider_parts[@]}"; do
   fi
   case "$_provider" in
     codex|claude|agy) ;;
+    # Same separate arm as above, for the same pin.
+    opencode) ;;
     *)
       echo "Unsupported provider in BRAIN_DREAM_AGENT_PROVIDERS: $_provider" >&2
       exit 2
@@ -349,7 +374,9 @@ _run_phase_chain_python() {
   export BRAIN_DREAM_CODEX_FAST_MODEL BRAIN_DREAM_CODEX_DEEP_MODEL
   export BRAIN_DREAM_CODEX_FAST_REASONING BRAIN_DREAM_CODEX_DEEP_REASONING
   export BRAIN_DREAM_AGY_FAST_MODEL BRAIN_DREAM_AGY_DEEP_MODEL
-  export BRAIN_DREAM_CODEX_BIN BRAIN_DREAM_AGY_BIN BRAIN_DREAM_CLAUDE_BIN
+  export BRAIN_DREAM_OPENCODE_FAST_MODEL BRAIN_DREAM_OPENCODE_DEEP_MODEL
+  export BRAIN_DREAM_OPENCODE_FAST_VARIANT BRAIN_DREAM_OPENCODE_DEEP_VARIANT
+  export BRAIN_DREAM_CODEX_BIN BRAIN_DREAM_AGY_BIN BRAIN_DREAM_CLAUDE_BIN BRAIN_DREAM_OPENCODE_BIN
   export PROMOTE_CANDIDATE_POOL_JSON PROMOTE_RECENT_PROMOTIONS_JSON
 
   local result_json="$LOG_DIR/${TIMESTAMP}_${PROJECT_KEY}_${name}.chain.json"
@@ -469,6 +496,7 @@ preflight_provider() {
     codex)  binary="$BRAIN_DREAM_CODEX_BIN";  runner="scripts.dream.codex_runner";  label="Codex" ;;
     claude) binary="$BRAIN_DREAM_CLAUDE_BIN"; runner="scripts.dream.claude_runner"; label="Claude" ;;
     agy)    binary="$BRAIN_DREAM_AGY_BIN";    runner="scripts.dream.agy_runner";    label="Agy" ;;
+    opencode) binary="$BRAIN_DREAM_OPENCODE_BIN"; runner="brain_v42.agents.providers.opencode"; label="OpenCode" ;;
     *)
       log "FAIL $provider preflight — unsupported provider"
       return 1
@@ -521,6 +549,36 @@ preflight_provider() {
       log "FAIL $label preflight — ChatGPT login is not active"
       return 1
     fi
+  fi
+
+  # opencode reads its subscription from auth.json and, on a HOME without
+  # ~/.config/opencode/node_modules, runs `bun install` against npm on every
+  # run (measured 2026-09-15: 150 MiB per phase). The rail borrows the real
+  # HOME's copy and refuses without it; the link is dropped here for the same
+  # reason, before the night rather than at its first phase. Both are host
+  # facts, checked whether enforcement is on or not.
+  if [[ "$provider" == "opencode" ]]; then
+    if ! command -v jq >/dev/null 2>&1; then
+      log "FAIL $label preflight — jq is required to read the opencode credential store"
+      return 1
+    fi
+    if ! jq -e '."opencode-go"' "$HOME/.local/share/opencode/auth.json" >/dev/null 2>&1; then
+      log "FAIL $label preflight — no opencode-go credential in ~/.local/share/opencode/auth.json"
+      return 1
+    fi
+    # The SAME three paths headless_agents.providers.opencode.RUNTIME_CACHE_PATHS
+    # requires: a weaker check here would let the link pass its preflight and
+    # then refuse every phase.
+    local _opencode_cache_path
+    for _opencode_cache_path in \
+      "$HOME/.config/opencode/node_modules" \
+      "$HOME/.config/opencode/package.json" \
+      "$HOME/.config/opencode/package-lock.json"; do
+      if [[ ! -e "$_opencode_cache_path" ]]; then
+        log "FAIL $label preflight — $_opencode_cache_path absent: a phase would install from npm (run opencode once by hand)"
+        return 1
+      fi
+    done
   fi
 
   log "PREFLIGHT $label — ready"

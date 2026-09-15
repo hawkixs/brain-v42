@@ -512,11 +512,11 @@ packages/headless-agents/            # uv workspace member, distribution `headle
         spec.py, result.py, protocol.py   # RunSpec / RunResult / AgentProvider
         chain.py         # the fallback state machine, reporting through callbacks
         envelope.py      # pure unwrap of claude/codex/agy JSON envelopes (model, tokens, cost)
-        providers/codex.py, agy.py, claude.py   # build_*_command / run_* over an McpServer|None
+        providers/codex.py, agy.py, claude.py, opencode.py   # build_*_command / run_* over an McpServer|None
 
 src/brain_v42/agents/                # the Dream's POLICY over the runtime
     capability.py        # BRAIN_DREAM_* variables, registry, (project, phase) bearer, brain_mcp_server()
-    sandbox.py           # the two Dream HOMEs (agy phase, tool-less extract) and their credential lists
+    sandbox.py           # the Dream HOMEs (agy phase, opencode phase, tool-less extract) and their credential lists
     providers/*.py       # the historical run_*/build_* signatures and the CLIs dream.sh invokes
     lines.py, prompt.py, phase.py, chain.py, run_phase_chain.py   # phase orchestration (below)
 ```
@@ -564,7 +564,34 @@ a chain can share), and `envelope.unwrap()` (the model the CLI REPORTED, its tok
 cost, never raising -- an unreadable envelope yields the raw text). agy still takes its prompt in
 argv, not on stdin: measured 2026-08-11, it ignores stdin.
 
+The fourth adapter, `providers/opencode.py` (2026-09-15, headless-agents 0.2.0), runs
+`opencode run --format json` under the OpenCode Go subscription and is the rail that writes no
+secret to disk: its configuration travels inline in `OPENCODE_CONFIG_CONTENT` and references the
+bearer as `{env:<var>}`, which opencode substitutes from the child environment (measured on
+1.18.30, headers included). Its tool wall is not a guard script but the config's `tools` map, a
+fail-closed ALLOWLIST -- `{"*": false, "<server>_<tool>": true}` -- that removes every built-in
+tool before the model sees it; asked to list its tools, the model names the scoped MCP tools and
+reports `bash` as absent, not denied. It still needs an ephemeral HOME, because opencode persists
+every session into `~/.local/share/opencode/opencode.db` and reads its credential from
+`auth.json` there. The cost nobody documents: a fresh HOME makes opencode `bun install` 150 MiB
+from npm on every run, even under `--pure`; the adapter symlinks the operator's
+`~/.config/opencode/node_modules` into the HOME (footprint 936 KiB, no network) and refuses to
+start when the real HOME has none. `step_finish` events are summed into `RunResult.tokens` and
+`cost_usd` -- this rail is the only one whose CLI states a per-run cost.
+
 ### The provider chain (`brain_v42.agents.{lines,prompt,phase,chain,run_phase_chain}`)
+
+Since 2026-09-15 the chain has four links and the intended order is
+`BRAIN_DREAM_AGENT_PROVIDERS=codex,opencode,agy,claude`: opencode sits between codex and agy so a
+night that loses the ChatGPT quota falls onto the Go subscription before the Google one. The
+opencode link reads `BRAIN_DREAM_OPENCODE_{FAST,DEEP}_MODEL` and `_{FAST,DEEP}_VARIANT` (the
+`--variant`, opencode's reasoning effort) with `dream.sh` owning the defaults -- one 60 $-cap Go
+model for both tiers, by weekly-quota arithmetic -- and `BRAIN_DREAM_OPENCODE_BIN`, which the
+drop-in must name because `~/.opencode/bin` is not on the unit's `PATH`. Its preflight drops the
+link before the night when the host lacks an `opencode-go` credential or
+`~/.config/opencode/node_modules`; unlike agy it does not require capability enforcement, since
+its tool wall is rendered on every run. `brain_v42.metrics.opencode_dream_parser` persists its
+`dream_runs` row, `cost_usd` included.
 
 Lot 2 of the agent runtime extraction (Brain ticket `afd56820`, 2026-09) moves `scripts/dream.sh`'s
 `run_phase` and `run_phase_chain` -- one phase against one provider, and the loop that falls back

@@ -1,4 +1,4 @@
-"""The Dream's two ephemeral HOMEs, composed by the shared runtime.
+"""The Dream's ephemeral HOMEs, composed by the shared runtime.
 
 Since Brain ticket b2a2d1a5 the directory layout, the credential handling
 and the guard wiring live in :mod:`headless_agents.sandbox`; this module only
@@ -13,6 +13,11 @@ credential files -- and keeps the two signatures its callers and tests use:
 - :func:`build_toolless_home` -- the extract rescue link
   (``src/brain_v42/scripts/agy_completion.py``): no MCP servers at all, no
   guard, because extract gives agy nothing to call.
+- :func:`dream_opencode_profile` -- the nightly Dream opencode rail
+  (``brain_v42.agents.providers.opencode``): the same scoped Brain server,
+  referenced by its bearer VARIABLE (opencode reads ``{env:MCP_HTTP_TOKEN}``
+  from its inline config), the subscription credential symlinked in, and no
+  guard -- that rail's wall is its config's tool allowlist.
 
 The guard is intentionally NOT bundled into either package: it is a versioned
 file that lives with its own tests (``scripts/dream/agy_tool_guard.sh`` and
@@ -41,6 +46,7 @@ from .capability import (
     MCP_URL_ENV,
     active_capability_token,
     brain_mcp_server,
+    canonical_capability_project_key,
     validate_loopback_mcp_url,
 )
 
@@ -64,6 +70,10 @@ EXTRACT_AGY_CREDENTIAL_PATHS = (
 
 # The hook key agy reads in ``hooks.json``. Pinned by the golden fixtures.
 DREAM_GUARD_HOOK_NAME = "dream-phase-guard"
+
+# The one credential file the opencode rail reads from the real HOME: the
+# subscription's auth store. SYMLINKED, never copied.
+DREAM_OPENCODE_CREDENTIAL_PATHS = (".local/share/opencode/auth.json",)
 
 
 def dream_agy_profile(
@@ -96,6 +106,36 @@ def dream_agy_profile(
 
 def dream_agy_home_name(project_key: str, phase: str) -> str:
     return f"agy-{project_key.replace(':', '-')}-{phase}"
+
+
+def dream_opencode_profile(
+    *,
+    phase: str,
+    project_key: str,
+    environ: Mapping[str, str],
+    mcp_url: str | None = None,
+) -> CapabilityProfile:
+    """The capability profile of one Dream opencode ``(project, phase)`` run.
+
+    The bearer is NOT resolved here: it travels under ``MCP_HTTP_TOKEN`` in
+    the child environment (scoped by ``build_child_environment`` under
+    enforcement, ambient otherwise), and the runtime's inline config names
+    that variable. ``project_key`` is canonicalized here so a malformed key
+    fails before any launch even without enforcement -- the only path on this
+    rail that would otherwise let a raw string reach ``dream_runs``.
+    """
+    dream_phase_tool_allowlist(phase)
+    validate_loopback_mcp_url(environ)
+    canonical_capability_project_key(project_key)
+    server_url = mcp_url or environ.get(MCP_URL_ENV, DEFAULT_MCP_URL)
+    return CapabilityProfile(
+        mcp=brain_mcp_server(agent=f"dream-opencode-{phase}", phase=phase, url=server_url),
+        credentials=Credentials(paths=DREAM_OPENCODE_CREDENTIAL_PATHS),
+    )
+
+
+def dream_opencode_home_name(project_key: str, phase: str) -> str:
+    return f"opencode-{project_key.replace(':', '-')}-{phase}"
 
 
 def build_ephemeral_home(
