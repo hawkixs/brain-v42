@@ -139,6 +139,14 @@ Concurrent contract or observation updates can produce a transiently stale or
 mixed view. Claims and completion decisions reload their inputs under database
 locks and reject stale expectations; re-read before retrying.
 
+Assessment blockers and per-deliverable findings carry a `code` drawn from a
+closed vocabulary, published as
+`brain_v42.models.delivery_evaluator.DELIVERY_FINDING_CODES` and mirrored as data
+in `docs/contracts/delivery_finding_codes.json` for consumers that must not
+import `brain_v42`. Adding or removing a code is a contract change:
+`tests/unit/models/test_delivery_finding_codes.py` keeps the constant, the JSON
+file and every `_finding(` emitter equal.
+
 Business failures are MCP errors with stable codes such as `not_allowed`,
 `revision_conflict`, `claim_stale`, `claim_fenced`, `generation_conflict` and
 `delivery_requirements_unsatisfied`. Invalid transport inputs report
