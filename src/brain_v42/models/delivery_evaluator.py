@@ -251,7 +251,6 @@ def _review_findings(
         for review in evidence.reviews
         if review.head_sha == evidence.head_sha
         and review.reviewer != evidence.author_id
-        and review.reviewer != inputs.executor_identity
         and (not policy.allowed_reviewers or review.reviewer in policy.allowed_reviewers)
     ]
     latest: dict[str, ReviewEvidence] = {}

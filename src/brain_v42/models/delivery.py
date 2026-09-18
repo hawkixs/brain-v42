@@ -1148,7 +1148,6 @@ class EvaluationInput(_StrictModel):
     feature_enabled: StrictBool
     freshness_seconds: StrictInt = Field(ge=1, le=86400)
     claim: ClaimState | None = None
-    executor_identity: str = Field(default="executor-project", min_length=1, max_length=200)
     requested_completion_action: (
         Literal[
             "cross_resolve", "cross_confirm", "self_resolve_pending", "self_resolve", "self_confirm"
