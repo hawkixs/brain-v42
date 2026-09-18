@@ -103,14 +103,31 @@ after the gesture it guards, and each is corrected in the runbook by this pull r
 
 ## Pin for red-rail
 
-`SOURCE_SHA` `9bdb38122fb7603927f18d1aaec8544ae4b1300d`; contract path at that commit
-`docs/contracts/delivery_attestations.json`; the reference client's bearer is a private file
-whose absolute path is the `mcp_token_file` key of its JSON configuration, read raw and
-trimmed, never an environment variable and never in a repository. **Tag: pending the
-operator's decision** between a `pyproject` bump to `0.7.0` with tag `v0.7.0` (the release
-rail refuses a tag that does not name the built version) and a contract-only tag convention
-outside the `v*` pattern; the cross-session message to red-rail is sent after that decision,
-and red-rail writes nothing against the API before it.
+Three things, sent to the `red-rail` session at 14:41 CEST (cross-session message
+`86bc2623`) and copied to the thread of ticket `04bc1f4a` for the durable trace:
+
+- `SOURCE_SHA` `9bdb38122fb7603927f18d1aaec8544ae4b1300d`, the merge of PR #151 and the
+  immutable release running on the eight writers.
+- Tag **`delivery-attestations-v1.0`**, annotated (`81dfab87`), on that exact commit, pushed
+  to `hawkixs/brain-v42`. Operator's decision of 14:38 CEST between a `pyproject` bump to
+  `0.7.0` with `v0.7.0` (the release rail refuses a tag that does not name the built
+  version, and the tag would not have pointed at the deployed commit) and a contract tag
+  outside the `v*` pattern: the contract tag, on the convention `headless-agents-v0.2.0`
+  set on 2026-09-15. It names the contract's version (`contract_version` 1, tools 1.0),
+  never the package's (`0.6.0` unchanged), and moves only on a breaking change. No release
+  run was triggered.
+- Contract path at that tag: `docs/contracts/delivery_attestations.json`, SHA-256
+  `b654b9a3479f02c3d80baf1d49777fb93356b5d34a7cd17b70e5e2205fd9a3fe`, verified identical
+  through the GitHub API at `?ref=delivery-attestations-v1.0` — readable without Brain
+  network access, which is what red-rail's boundary test needs.
+
+And how the reference client holds its bearer: a private file whose absolute path is the
+`mcp_token_file` key of its JSON configuration, read raw and trimmed (`0600`, owner-only,
+printable ASCII, no trailing newline), never an environment variable, never in a repository,
+never a command argument; headers `Authorization: Bearer`, `X-Brain-Tool-Profile: native` and
+`X-Brain-Agent` (refused `invalid_issuer` without it; it becomes `issuer_identity`, while
+`issuer_project` is the participant `actor_project`). red-rail may write against the API
+from this message on.
 
 ## Rollback
 
