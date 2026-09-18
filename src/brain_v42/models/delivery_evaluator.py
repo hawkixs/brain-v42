@@ -24,6 +24,63 @@ from brain_v42.models.delivery import (
 )
 from brain_v42.models.delivery_hashes import canonical_digest, delivery_digest
 
+# The closed vocabulary of finding codes this evaluator can emit.  It is a
+# published contract: downstream consumers freeze a copy of it and read it as
+# data from docs/contracts/delivery_finding_codes.json without importing
+# brain_v42.  Adding or removing a code is a contract change, not a refactor —
+# tests/unit/models/test_delivery_finding_codes.py fails until the constant,
+# the JSON file and the emitters agree again.  The only dynamic family,
+# ``check_<conclusion>``, is closed by the CheckAttempt.conclusion Literal: the
+# observer maps a handful of provider conclusions to ``failure`` and rejects
+# the rest before a CheckAttempt exists.
+DELIVERY_FINDING_CODES = frozenset(
+    {
+        "base_mismatch",
+        "binding_identity_invalid",
+        "binding_identity_mismatch",
+        "binding_missing",
+        "binding_unobserved",
+        "check_cancelled",
+        "check_failed",
+        "check_missing",
+        "check_neutral",
+        "check_pending",
+        "check_skipped",
+        "completion_action_invalid",
+        "context_changed",
+        "context_digest_missing",
+        "context_error",
+        "context_missing",
+        "context_predicate_duplicate",
+        "context_predicate_missing",
+        "context_predicate_unexpected",
+        "context_proof_invalid",
+        "delivery_disabled",
+        "delivery_disposition_terminal",
+        "delivery_terminal",
+        "dependency_generation_mismatch",
+        "dependency_predicate_duplicate",
+        "dependency_predicate_missing",
+        "dependency_predicate_unexpected",
+        "dependency_receipt_mismatch",
+        "dependency_receipt_missing",
+        "dependency_unsuccessful",
+        "head_mismatch",
+        "integration_identity_missing",
+        "merge_conflict",
+        "mergeability_unknown",
+        "observation_error",
+        "observation_incomplete",
+        "observation_missing",
+        "observation_stale",
+        "pr_draft",
+        "pr_not_merged",
+        "reopen_required",
+        "review_approval_missing",
+        "review_changes_requested",
+    }
+)
+
 _TECHNICAL_CHECK_CODES = frozenset(
     {
         "binding_missing",
