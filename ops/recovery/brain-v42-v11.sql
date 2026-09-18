@@ -2006,13 +2006,13 @@ expected_table_indexes(table_name, index_name, definition_md5) AS (
      ),
      (
          'delivery_attestations',
-         'ix_delivery_attestations_issuer_kind_emitted',
-         '58df70bb214ffc9f267ece058b0a9861'
+         'ix_delivery_attestations_issuer_emitted',
+         '3c0f8e6e2cad0ef304e3cde2a333fab0'
      ),
      (
          'delivery_attestations',
-         'ix_delivery_attestations_ticket_kind_emitted',
-         '967de71331b89c8c0b7b2e0bbb0ab3fc'
+         'ix_delivery_attestations_ticket_emitted',
+         '8c6b9002cef0cc291422472b033968a0'
      ),
      (
          'delivery_attestations',

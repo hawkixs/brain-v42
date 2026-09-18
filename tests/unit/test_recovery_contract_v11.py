@@ -29,8 +29,8 @@ V10_ASSETS = {
 }
 V11_ASSETS = {
     "brain-v42-v11.json": "b7022b4a981d1c9805bf6ea4259b4727ed284784320a77e8ae78c5657ad509c4",
-    "brain-v42-v11.sql": "f186dbec997a47c8c9c26113048a81e48f2135ba5dcf38042fc51908772a4916",
-    "brain-v42-v11-pgrestore.sql": "2cb803c78ed1b3c46bba1dd407695fd6b6ab44cca09bb405d22f7df7fce2c1ac",
+    "brain-v42-v11.sql": "0cabf7945dba8fdccc84d29b64a61304621537d17b75dc88d6792851df84a61c",
+    "brain-v42-v11-pgrestore.sql": "f2c05ac82665aef5e103ed7224727867f449dfba9a063e301c979f16cc7dbb40",
     "brain-v42-v11-acl.sql": "767e89573bca09bb821468bfb6cfe616e96c7d6a81774fd2a5df3c82e871e2d2",
     "brain-v42-v11-acl.json": "bbff3fad6b7756a29f80097ae9451ebbe5e306c32169f1d43cae17b9323183e9",
     "brain-v42-v11-acl-pgrestore.sql": "3e434e425080afa625dd6f163bc27f06d1a37602b0aa51b12df918df95e37de7",
@@ -75,8 +75,8 @@ ATTESTATION_OBJECTS = {
     "delivery_attestations_digest_valid",
     "delivery_attestations_ticket_id_fkey",
     "delivery_attestations_ticket_id_contract_revision_fkey",
-    "ix_delivery_attestations_ticket_kind_emitted",
-    "ix_delivery_attestations_issuer_kind_emitted",
+    "ix_delivery_attestations_ticket_emitted",
+    "ix_delivery_attestations_issuer_emitted",
 }
 #: v10 froze 46 foreign keys and 156 indexes at head 053; 054 adds two foreign
 #: keys (`ticket_id`, and the composite one to the contract revision) and four
