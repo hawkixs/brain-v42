@@ -54,12 +54,15 @@ def upgrade() -> None:
       FOREIGN KEY (ticket_id, contract_revision) REFERENCES delivery_contract_revisions(ticket_id, contract_revision) ON DELETE RESTRICT
     )""")
     op.execute(
-        "CREATE INDEX ix_delivery_attestations_ticket_kind_emitted ON delivery_attestations (ticket_id, kind, emitted_at DESC, id DESC)"
+        "CREATE INDEX ix_delivery_attestations_ticket_emitted ON delivery_attestations (ticket_id, emitted_at DESC, id DESC)"
     )
     # The second read scope: one issuer project across its tickets, which is how
-    # red-rail computes a project's metrics without walking every ticket.
+    # red-rail computes a project's metrics without walking every ticket. Both
+    # indexes put the scope column first and the sort keys next, with no `kind`
+    # between them: the unfiltered newest-first read of a scope is then an ordered
+    # index scan, and a kind filter is a cheap predicate on that same scan.
     op.execute(
-        "CREATE INDEX ix_delivery_attestations_issuer_kind_emitted ON delivery_attestations (issuer_project, kind, emitted_at DESC, id DESC)"
+        "CREATE INDEX ix_delivery_attestations_issuer_emitted ON delivery_attestations (issuer_project, emitted_at DESC, id DESC)"
     )
 
 
@@ -91,6 +94,6 @@ def downgrade() -> None:
         $$
         """
     )
-    op.execute("DROP INDEX IF EXISTS ix_delivery_attestations_issuer_kind_emitted")
-    op.execute("DROP INDEX IF EXISTS ix_delivery_attestations_ticket_kind_emitted")
+    op.execute("DROP INDEX IF EXISTS ix_delivery_attestations_issuer_emitted")
+    op.execute("DROP INDEX IF EXISTS ix_delivery_attestations_ticket_emitted")
     op.execute("DROP TABLE IF EXISTS delivery_attestations")

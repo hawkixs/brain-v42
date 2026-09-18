@@ -24,6 +24,7 @@ from brain_v42.models.delivery import (
     DeliveryView,
     MilestoneReceipt,
     RepositoryDocumentReference,
+    parse_window_bound,
     validate_attestation_form,
     validate_attestation_kind,
 )
@@ -154,7 +155,7 @@ class DeliveryService:
         kind: str,
         payload: dict[str, object],
         idempotency_key: str,
-        emitted_at: datetime,
+        emitted_at: datetime | str,
         contract_revision: int | None = None,
     ) -> DeliveryAttestation:
         """Record one issuer-declared fact; a mutation, refused while the feature is disabled.
@@ -164,7 +165,9 @@ class DeliveryService:
         """
         if not self._settings.enabled:
             raise DeliveryError("delivery_disabled", "delivery workflow operations are disabled")
-        validate_attestation_form(kind=kind, payload=payload, emitted_at=emitted_at)
+        emitted_at = validate_attestation_form(
+            kind=kind, payload=payload, emitted_at=emitted_at, contract_revision=contract_revision
+        )
         async with self._repo._maybe_session(None, write=True) as session:
             return await self._attestations_repo.attest(
                 session,
@@ -185,8 +188,8 @@ class DeliveryService:
         actor_project: str,
         issuer_project: str | None = None,
         kind: str | None = None,
-        since: datetime | None = None,
-        until: datetime | None = None,
+        since: datetime | str | None = None,
+        until: datetime | str | None = None,
         limit: int = 20,
         cursor: str | None = None,
     ) -> DeliveryAttestationPage:
@@ -200,6 +203,8 @@ class DeliveryService:
             raise DeliveryError("invalid_limit", "attestation limit must be between 1 and 100")
         if kind is not None:
             validate_attestation_kind(kind)
+        since = parse_window_bound(since, "since")
+        until = parse_window_bound(until, "until")
         if ticket_id is None:
             if issuer_project is None:
                 raise DeliveryError(

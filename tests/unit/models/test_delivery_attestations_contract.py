@@ -51,7 +51,7 @@ def _emitted_codes() -> set[str]:
         ),
         _function_sources(
             ROOT / "src/brain_v42/models/delivery.py",
-            {"validate_attestation_form", "validate_attestation_kind"},
+            {"validate_attestation_form", "validate_attestation_kind", "parse_window_bound"},
         ),
     ]
     return {code for source in sources for code in _ERROR_LITERAL.findall(source)}
@@ -79,9 +79,13 @@ def test_kind_rules_are_the_code_constants() -> None:
 
 
 def test_payload_bounds_are_the_code_constants() -> None:
-    from brain_v42.models.delivery import MAX_ATTESTATION_PAYLOAD_BYTES
+    from brain_v42.models.delivery import (
+        MAX_ATTESTATION_PAYLOAD_BYTES,
+        MAX_ATTESTATION_PAYLOAD_DEPTH,
+    )
 
     assert CONTRACT["payload"]["max_canonical_bytes"] == MAX_ATTESTATION_PAYLOAD_BYTES
+    assert CONTRACT["payload"]["max_depth"] == MAX_ATTESTATION_PAYLOAD_DEPTH
     assert CONTRACT["payload"]["object_only"] is True
     assert CONTRACT["payload"]["floats"] == "refused"
     assert CONTRACT["payload"]["unicode_surrogates"] == "refused"
@@ -142,6 +146,8 @@ def test_identity_replay_and_list_rules() -> None:
         "emitted_at",
     ]
     assert CONTRACT["timestamps"]["emitted_at"]["timezone"] == "required"
+    assert CONTRACT["timestamps"]["window"]["violation"] == "invalid_window"
+    assert CONTRACT["contract_revision"]["max"] == 2**31 - 1
     assert CONTRACT["list"]["order"] == ["emitted_at DESC", "id DESC"]
     assert CONTRACT["list"]["limit"] == [1, 100]
     assert set(CONTRACT["list"]["scopes"]) == {"ticket", "issuer_project"}

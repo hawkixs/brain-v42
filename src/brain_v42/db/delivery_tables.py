@@ -517,16 +517,14 @@ def register_delivery_tables(metadata: sa.MetaData) -> dict[str, sa.Table]:
         ),
         sa.CheckConstraint("digest ~ '^[0-9a-f]{64}$'", name="delivery_attestations_digest_valid"),
         sa.Index(
-            "ix_delivery_attestations_ticket_kind_emitted",
+            "ix_delivery_attestations_ticket_emitted",
             "ticket_id",
-            "kind",
             sa.desc("emitted_at"),
             sa.desc("id"),
         ),
         sa.Index(
-            "ix_delivery_attestations_issuer_kind_emitted",
+            "ix_delivery_attestations_issuer_emitted",
             "issuer_project",
-            "kind",
             sa.desc("emitted_at"),
             sa.desc("id"),
         ),

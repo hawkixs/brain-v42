@@ -531,3 +531,175 @@ async def test_equal_emission_instants_page_without_repeating_or_skipping(sessio
 
     assert len(seen) == 3
     assert set(seen) == written
+
+
+def _nested_payload(depth: int) -> dict[str, object]:
+    payload: dict[str, object] = {"leaf": 1}
+    for _ in range(depth):
+        payload = {"k": payload}
+    return payload
+
+
+async def test_mcp_transport_shapes_for_instants_revisions_depth_and_limits(
+    delivery_mcp,  # noqa: F811 - imported fixture
+    session_factory,
+    monkeypatch,
+):
+    """Second review: every permanent fault must reach the caller as a stable code.
+
+    A number for an instant, a revision beyond int32, a payload nested past the
+    bound, a zero limit and a naive window bound each used to reach the caller as
+    `delivery_unavailable` (retryable) or silently as a Unix timestamp.
+    """
+    from brain_v42.mcp import provenance_middleware
+
+    ticket, _binding, service = await _workflow(session_factory)
+    base = {
+        "ticket_id": str(ticket.id),
+        "actor_project": "requester",
+        "kind": "gate_passed",
+        "payload": dict(_PAYLOAD),
+        "idempotency_key": "mcp-shape-key",
+        "emitted_at": _EMITTED.isoformat(),
+    }
+    async with Client(delivery_mcp) as client:
+        monkeypatch.setattr(
+            provenance_middleware,
+            "get_http_headers",
+            lambda **_kw: {"x-brain-agent": "mcp-attester"},
+        )
+        for arguments, code in (
+            ({**base, "emitted_at": 1789000000}, "invalid_arguments"),
+            (
+                {**base, "emitted_at": "2026-09-16T10:00:00+00:00", "contract_revision": 2**40},
+                "invalid_arguments",
+            ),
+            ({**base, "contract_revision": 2**31 - 1}, "revision_not_found"),
+            ({**base, "payload": _nested_payload(200)}, "invalid_payload"),
+        ):
+            result = await client.call_tool(
+                "brain_delivery_attest", arguments, raise_on_error=False
+            )
+            assert result.is_error and code in str(result.content), (code, str(result.content))
+        for arguments, code in (
+            (
+                {"ticket_id": str(ticket.id), "actor_project": "requester", "limit": 0},
+                "invalid_limit",
+            ),
+            (
+                {"ticket_id": str(ticket.id), "actor_project": "requester", "limit": 101},
+                "invalid_limit",
+            ),
+            (
+                {
+                    "ticket_id": str(ticket.id),
+                    "actor_project": "requester",
+                    "since": "2026-09-16T10:00:00",
+                },
+                "invalid_window",
+            ),
+            (
+                {"ticket_id": str(ticket.id), "actor_project": "requester", "until": 1789000000},
+                "invalid_arguments",
+            ),
+        ):
+            result = await client.call_tool(
+                "brain_delivery_attestation_list", arguments, raise_on_error=False
+            )
+            assert result.is_error and code in str(result.content), (code, str(result.content))
+    assert await _rows(session_factory, ticket.id) == []
+
+
+async def test_unfiltered_project_wide_read_spans_kinds_and_refuses_foreign_or_stale_cursors(
+    session_factory,
+):
+    """The production shape of `rail audit`: one project's facts, every kind, newest first."""
+    import base64
+    import json
+
+    project = f"proj-{uuid4().hex[:10]}"
+    first, _b1, service = await _workflow(session_factory, requester=project)
+    second, _b2, _s2 = await _workflow(session_factory, requester=project)
+    rows = []
+    for index, (ticket_id, kind) in enumerate(
+        ((first.id, "deployed"), (second.id, "gate_passed"), (first.id, "incident_detected"))
+    ):
+        rows.append(
+            await _attest(
+                service,
+                ticket_id,
+                actor_project=project,
+                kind=kind,
+                payload={"index": index},
+                idempotency_key=f"unfiltered-{index}",
+                emitted_at=_EMITTED + timedelta(minutes=index),
+            )
+        )
+
+    page = await service.list_attestations(
+        None, actor_project=project, issuer_project=project, limit=2
+    )
+    assert [item.kind for item in page.items] == ["incident_detected", "gate_passed"]
+    assert page.omitted_count == 1 and page.next_cursor is not None
+    rest = await service.list_attestations(
+        None, actor_project=project, issuer_project=project, limit=2, cursor=page.next_cursor
+    )
+    assert [item.kind for item in rest.items] == ["deployed"]
+
+    ticket_page = await service.list_attestations(first.id, actor_project=project, limit=1)
+    assert ticket_page.next_cursor is not None
+    with pytest.raises(DeliveryError, match="invalid_cursor"):
+        await service.list_attestations(
+            None, actor_project=project, issuer_project=project, cursor=ticket_page.next_cursor
+        )
+
+    stale = (
+        base64.urlsafe_b64encode(
+            json.dumps(
+                {
+                    "v": 1,
+                    "ticket": str(first.id),
+                    "at": _EMITTED.isoformat(),
+                    "id": str(rows[0].id),
+                },
+                separators=(",", ":"),
+            ).encode()
+        )
+        .decode()
+        .rstrip("=")
+    )
+    with pytest.raises(DeliveryError, match="invalid_cursor"):
+        await service.list_attestations(first.id, actor_project=project, cursor=stale)
+
+
+async def test_both_indexes_serve_their_newest_first_reads_without_a_sort(session_factory):
+    """Second review: with `kind` between the scope column and the sort keys, the
+    unfiltered newest-first read of a scope needed a Sort node over the whole scope."""
+    import json
+
+    project = f"proj-{uuid4().hex[:10]}"
+    ticket, _binding, service = await _workflow(session_factory, requester=project)
+    await _attest(service, ticket.id, actor_project=project)
+
+    shapes = {
+        "ix_delivery_attestations_issuer_emitted": (
+            "SELECT * FROM delivery_attestations WHERE issuer_project = :scope "
+            "ORDER BY emitted_at DESC, id DESC LIMIT 21",
+            project,
+        ),
+        "ix_delivery_attestations_ticket_emitted": (
+            "SELECT * FROM delivery_attestations WHERE ticket_id = CAST(:scope AS uuid) "
+            "ORDER BY emitted_at DESC, id DESC LIMIT 21",
+            str(ticket.id),
+        ),
+    }
+    async with session_factory() as session:
+        async with session.begin():
+            await session.execute(sa.text("SET LOCAL enable_seqscan = off"))
+            for index_name, (query, scope) in shapes.items():
+                raw = await session.scalar(
+                    sa.text(f"EXPLAIN (FORMAT JSON) {query}"), {"scope": scope}
+                )
+                plan = json.dumps(raw if isinstance(raw, list | dict) else json.loads(raw))
+                assert '"Node Type": "Sort"' not in plan, (index_name, plan)
+                assert index_name in plan, (index_name, plan)

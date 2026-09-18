@@ -22,13 +22,17 @@ from pydantic import (
     model_validator,
 )
 
+from brain_v42.models.delivery_hashes import MAX_CANONICAL_JSON_DEPTH, _reject_invalid_json_value
+
 _MAX_CONTRACT_BYTES = 256 * 1024
 #: Attestation FORM, the whole of what Brain enforces on an issuer-declared fact
 #: (ticket 04bc1f4a). The kind vocabulary is documentation for consumers, never an
 #: allowlist: `reserved` names the milestones that are receipts in Brain, not
 #: attestations, and even those are stored if declared — Brain does not judge kinds.
 MAX_ATTESTATION_PAYLOAD_BYTES = 65_536
-_MAX_ATTESTATION_PAYLOAD_BYTES = MAX_ATTESTATION_PAYLOAD_BYTES
+MAX_ATTESTATION_PAYLOAD_DEPTH = MAX_CANONICAL_JSON_DEPTH
+#: PostgreSQL INTEGER: a revision beyond it cannot exist and must not reach the driver.
+MAX_CONTRACT_REVISION = 2_147_483_647
 ATTESTATION_KIND_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
 _ATTESTATION_KIND_RE = re.compile(ATTESTATION_KIND_PATTERN)
 DOCUMENTED_ATTESTATION_KINDS: tuple[str, ...] = (
@@ -56,6 +60,7 @@ DELIVERY_ATTESTATION_ERROR_CODES: frozenset[str] = frozenset(
         "invalid_limit",
         "invalid_payload",
         "invalid_scope",
+        "invalid_window",
         "not_allowed",
         "revision_not_found",
         "ticket_not_found",
@@ -974,16 +979,15 @@ def canonical_attestation_payload(value: object) -> bytes:
     """The canonical JSON bytes the attestation digest is computed over.
 
     Raises ValueError, with the reason, for anything outside the canonical domain:
-    a non-object, a float, a Unicode surrogate, a non-string key, or more than
+    a non-object, a float, a Unicode surrogate, a NUL character, a non-string key,
+    nesting past `MAX_ATTESTATION_PAYLOAD_DEPTH`, or more than
     `MAX_ATTESTATION_PAYLOAD_BYTES` once canonicalised.
     """
-    from brain_v42.models.delivery_hashes import _reject_invalid_json_value
-
     if not isinstance(value, Mapping):
         raise ValueError("attestation payload must be a JSON object")
     _reject_invalid_json_value(value)
     encoded = json.dumps(
-        value,
+        dict(value),
         sort_keys=True,
         ensure_ascii=False,
         separators=(",", ":"),
@@ -1002,21 +1006,65 @@ def validate_attestation_kind(kind: object) -> None:
         raise DeliveryError("invalid_kind", f"kind must match {ATTESTATION_KIND_PATTERN}")
 
 
-def validate_attestation_form(*, kind: object, payload: object, emitted_at: object) -> None:
+def _parse_instant(value: object) -> datetime:
+    """An ISO 8601 string with an offset, or an aware datetime; nothing else.
+
+    A number is refused on purpose: pydantic would read it as a Unix timestamp with
+    a seconds-versus-milliseconds heuristic, and an issuer's clock stored under the
+    wrong unit in an append-only ledger cannot be corrected.
+    """
+    if isinstance(value, datetime):
+        instant = value
+    elif isinstance(value, str):
+        instant = datetime.fromisoformat(value)
+    else:
+        raise ValueError("an instant must be an ISO 8601 string or a datetime")
+    if instant.utcoffset() is None:
+        raise ValueError("an instant must carry a UTC offset")
+    return instant
+
+
+def parse_window_bound(value: object, name: str) -> datetime | None:
+    """A list window bound, parsed like an instant, refused with `invalid_window`."""
+    if value is None:
+        return None
+    try:
+        return _parse_instant(value)
+    except (ValueError, TypeError) as error:
+        raise DeliveryError(
+            "invalid_window", f"{name} must be an ISO 8601 instant with an offset: {error}"
+        ) from None
+
+
+def validate_attestation_form(
+    *,
+    kind: object,
+    payload: object,
+    emitted_at: object,
+    contract_revision: object = None,
+) -> datetime:
     """Validate the FORM of an attestation with stable codes, before any write.
 
     red-rail request B on ticket 04bc1f4a: a consumer's boundary test must see
     `invalid_kind`, `invalid_payload` or `invalid_emitted_at`, never a framework
     error. The `DeliveryAttestation` model repeats the same checks as a last line;
-    this function is the one that names the field.
+    this function is the one that names the field, and it returns the parsed
+    emission instant so that every caller stores the same value.
     """
     validate_attestation_kind(kind)
     try:
         canonical_attestation_payload(payload)
-    except ValueError as error:
+    except (ValueError, TypeError) as error:
         raise DeliveryError("invalid_payload", str(error)) from None
-    if not isinstance(emitted_at, datetime) or emitted_at.tzinfo is None:
-        raise DeliveryError("invalid_emitted_at", "emitted_at must be a timezone-aware instant")
+    try:
+        instant = _parse_instant(emitted_at)
+    except (ValueError, TypeError) as error:
+        raise DeliveryError("invalid_emitted_at", str(error)) from None
+    if contract_revision is not None and (
+        type(contract_revision) is not int or not 1 <= contract_revision <= MAX_CONTRACT_REVISION
+    ):
+        raise DeliveryError("revision_not_found", "delivery contract revision was not found")
+    return instant
 
 
 class DeliveryAttestation(_StoredModel):

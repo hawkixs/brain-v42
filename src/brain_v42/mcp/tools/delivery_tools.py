@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastmcp import FastMCP
-from pydantic import AwareDatetime, Field, SecretStr
+from pydantic import Field, SecretStr
 
 from brain_v42.mcp.delivery_transport import _DeliveryRegistry
 from brain_v42.mcp.tools.tool_annotations import (
@@ -16,6 +15,7 @@ from brain_v42.mcp.tools.tool_annotations import (
     _WRITE_ANNOTATIONS,
 )
 from brain_v42.models.delivery import (
+    MAX_CONTRACT_REVISION,
     ArtifactBinding,
     ClaimResult,
     ClaimState,
@@ -45,6 +45,11 @@ Key = Annotated[str, Field(strict=True, min_length=1, max_length=200, pattern=r"
 #: Bounded at the transport only; the shape itself is judged by the service so that a
 #: violation reaches the caller as `invalid_kind`, never as a framework error.
 Kind = Annotated[str, Field(strict=True, min_length=1, max_length=200)]
+#: An instant travels as a STRING: a number would be read as a Unix timestamp with a
+#: unit heuristic, and the service names the fault (`invalid_emitted_at`, `invalid_window`).
+Instant = Annotated[str, Field(strict=True, min_length=1, max_length=64)]
+#: PostgreSQL INTEGER; beyond it the driver would fail after the locks were taken.
+Revision32 = Annotated[int, Field(strict=True, gt=0, le=MAX_CONTRACT_REVISION)]
 Reason = Annotated[str, Field(strict=True, min_length=1, max_length=4000, pattern=r"\S")]
 Positive = Annotated[int, Field(strict=True, gt=0)]
 Revision = Annotated[int, Field(strict=True, ge=0)]
@@ -250,8 +255,8 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
         kind: Kind,
         payload: dict[str, Any],
         idempotency_key: Key,
-        emitted_at: datetime,
-        contract_revision: Positive | None = None,
+        emitted_at: Instant,
+        contract_revision: Revision32 | None = None,
     ) -> DeliveryAttestation:
         """Record one issuer-declared delivery fact; Brain stores its shape and never judges its kind.
 
@@ -283,9 +288,10 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
         ticket_id: TicketId | None = None,
         issuer_project: Project | None = None,
         kind: Kind | None = None,
-        since: AwareDatetime | None = None,
-        until: AwareDatetime | None = None,
-        limit: Limit = 20,
+        since: Instant | None = None,
+        until: Instant | None = None,
+        # Judged by the service (`invalid_limit`), like `kind`; strict int only.
+        limit: Annotated[int, Field(strict=True)] = 20,
         cursor: Cursor | None = None,
     ) -> DeliveryAttestationPage:
         """List attestations newest first in one scope, filtered by kind and emission window.

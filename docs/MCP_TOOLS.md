@@ -125,8 +125,11 @@ values `released`, `deployed`, `rolled_back`, `incident_detected`, `restored`,
 `review_verdict` and `gate_passed` are documentation, not an allowlist, and
 `integrated` and `fulfilled` are reserved for receipts — declared anyway, they are
 stored); `invalid_payload` when the JSON object carries a float, a Unicode
-surrogate, a NUL character or more than 64 KiB of canonical JSON (a non-object is refused earlier by
-the transport as `invalid_arguments`); `invalid_emitted_at` for a naive instant.
+surrogate, a NUL character, nesting deeper than 64 levels or more than 64 KiB of
+canonical JSON (a non-object is refused earlier by the transport as
+`invalid_arguments`); `invalid_emitted_at` when the instant, always a string, is
+naive or unparsable; `revision_not_found` for a `contract_revision` unknown to the
+ticket, including one outside PostgreSQL's INTEGER range.
 The server computes the digest and the issuer never supplies it:
 `sha256("brain-delivery-attestation:v1\n" + canonical payload)`, canonical meaning
 `json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"),
@@ -149,9 +152,11 @@ scopes: with `ticket_id`, either ticket participant reads that ticket's facts an
 `issuer_project` is an optional filter; without it, `issuer_project` is required
 (`invalid_scope`) and must equal `actor_project` (`not_allowed`), so a project reads
 its own facts across its tickets without walking them. Filters are an exact `kind`
-and inclusive `since`/`until` bounds on `emitted_at`; the keyset cursor belongs to
-the scope that minted it (`invalid_cursor` elsewhere); `omitted_count` counts the
-rows matching the same filters beyond the page. The read stays available while
+and inclusive `since`/`until` bounds on `emitted_at`, strings with an offset
+(`invalid_window` otherwise); `limit` outside 1–100 is `invalid_limit`; the keyset
+cursor belongs to the scope that minted it (`invalid_cursor` elsewhere) and carries
+no filter, so the caller keeps the same filters across pages; `omitted_count` counts
+the rows matching the same filters beyond the page. The read stays available while
 `BRAIN_DELIVERY_ENABLED=false` pauses the mutation. `brain_delivery_get` carries the
 newest `history_limit` attestations with their digest in `view.attestations`, so a
 consumer can spot a local receipt without its attestation; `brain_delivery_list`

@@ -110,11 +110,13 @@ class PgDeliveryAttestationsRepo(BasePgRepository):
         kind: str,
         payload: dict[str, object],
         idempotency_key: str,
-        emitted_at: datetime,
+        emitted_at: datetime | str,
         contract_revision: int | None,
     ) -> DeliveryAttestation:
         """Store one declared fact under a per-ticket lock, replay-safe by idempotency key."""
-        validate_attestation_form(kind=kind, payload=payload, emitted_at=emitted_at)
+        emitted_at = validate_attestation_form(
+            kind=kind, payload=payload, emitted_at=emitted_at, contract_revision=contract_revision
+        )
         async with lock_workflows(session, (ticket_id,)):
             ticket = (
                 (await session.execute(sa.select(tickets).where(tickets.c.id == ticket_id)))
@@ -254,6 +256,9 @@ class PgDeliveryAttestationsRepo(BasePgRepository):
             .mappings()
             .all()
         )
+        # A second statement in the same READ COMMITTED transaction: a concurrent
+        # insert between the two can leave omitted_count > 0 with no next_cursor.
+        # Cosmetic for an append-only ledger, and the same regime as history pages.
         remaining = await session.scalar(
             sa.select(sa.func.count()).select_from(delivery_attestations).where(*filters)
         )

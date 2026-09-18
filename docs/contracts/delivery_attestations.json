@@ -54,6 +54,7 @@
   "payload": {
     "object_only": true,
     "max_canonical_bytes": 65536,
+    "max_depth": 64,
     "floats": "refused",
     "unicode_surrogates": "refused",
     "nul_characters": "refused",
@@ -112,16 +113,31 @@
   "timestamps": {
     "emitted_at": {
       "declared_by": "issuer",
-      "format": "ISO 8601 with offset",
+      "format": "ISO 8601 with offset, as a JSON string",
       "timezone": "required",
-      "naive_refused_with": "invalid_emitted_at",
+      "naive_or_unparsable": "invalid_emitted_at",
+      "non_string_at_transport": "invalid_arguments",
       "compared_as": "instants at microsecond precision, never as strings"
     },
     "recorded_at": {
       "set_by": "server clock at insert"
+    },
+    "window": {
+      "since": "inclusive lower bound on emitted_at",
+      "until": "inclusive upper bound on emitted_at",
+      "format": "ISO 8601 with offset, as a JSON string",
+      "violation": "invalid_window",
+      "non_string_at_transport": "invalid_arguments"
     }
   },
-  "contract_revision": "optional; null means no particular revision; a revision unknown to the ticket is refused with revision_not_found",
+  "contract_revision": {
+    "optional": true,
+    "null_means": "the issuer attests about no particular revision",
+    "min": 1,
+    "max": 2147483647,
+    "unknown_or_out_of_range": "revision_not_found",
+    "non_integer_at_transport": "invalid_arguments"
+  },
   "uniqueness": [
     "ticket_id",
     "issuer_project",
@@ -164,10 +180,11 @@
       1,
       100
     ],
-    "cursor": "opaque keyset bound to the scope that minted it; another scope or a malformed value is refused with invalid_cursor",
+    "cursor": "opaque keyset bound to the scope that minted it, carrying position and scope only; the caller keeps the same filters (kind, since, until, issuer_project) across pages; another scope, an older cursor version or a malformed value is refused with invalid_cursor",
     "omitted_count": "rows matching the same filters beyond the returned page",
     "in_delivery_get": "view.attestations carries the newest history_limit rows of the ticket",
-    "in_delivery_list": "attestations is null"
+    "in_delivery_list": "attestations is null",
+    "limit_violation": "invalid_limit"
   },
   "error_codes": {
     "tool": [
@@ -181,6 +198,7 @@
       "invalid_limit",
       "invalid_payload",
       "invalid_scope",
+      "invalid_window",
       "not_allowed",
       "revision_not_found",
       "ticket_not_found"
