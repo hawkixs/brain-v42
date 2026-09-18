@@ -45,7 +45,7 @@ unless a line below says otherwise. Read it whole before the window opens.
 
 ```bash
 RECOVERY_ASSETS="$RELEASE/brain-v42/ops/recovery"
-test "$(sha256sum -- "$RECOVERY_ASSETS/brain-v42-v11-pgrestore.sql" | awk '{print $1}')" = 2cb803c78ed1b3c46bba1dd407695fd6b6ab44cca09bb405d22f7df7fce2c1ac
+test "$(sha256sum -- "$RECOVERY_ASSETS/brain-v42-v11-pgrestore.sql" | awk '{print $1}')" = f2c05ac82665aef5e103ed7224727867f449dfba9a063e301c979f16cc7dbb40
 test "$(sha256sum -- "$RECOVERY_ASSETS/brain-v42-v11.json" | awk '{print $1}')" = b7022b4a981d1c9805bf6ea4259b4727ed284784320a77e8ae78c5657ad509c4
 test "$(sha256sum -- "$RECOVERY_ASSETS/brain-v42-v11-acl-pgrestore.sql" | awk '{print $1}')" = 3e434e425080afa625dd6f163bc27f06d1a37602b0aa51b12df918df95e37de7
 test "$(jq -r '.contract_id + ":" + (.schema_version|tostring) + ":" + ((.checks|length)|tostring)' "$RECOVERY_ASSETS/brain-v42-v11.json")" = 'brain-v42/postgresql-recovery/v11:11:30'
