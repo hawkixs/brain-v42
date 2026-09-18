@@ -1833,6 +1833,7 @@ __all__ = [
     "delivery_confirmations",
     "delivery_receipts",
     "delivery_events",
+    "delivery_attestations",
 ]
 
 _delivery_tables = register_delivery_tables(METADATA)
@@ -1844,6 +1845,7 @@ delivery_snapshots = _delivery_tables["delivery_snapshots"]
 delivery_confirmations = _delivery_tables["delivery_confirmations"]
 delivery_receipts = _delivery_tables["delivery_receipts"]
 delivery_events = _delivery_tables["delivery_events"]
+delivery_attestations = _delivery_tables["delivery_attestations"]
 
 
 # The audit trail migration 050 lays down: one row per persisted revision of

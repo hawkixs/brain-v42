@@ -97,6 +97,11 @@ _RECOVERY_ASSETS_WITH_PREDICATE = frozenset(
         # paramétré ci-dessous garde leur accord avec `_KEBAB`.
         "brain-v42-v10.sql",
         "brain-v42-v10-pgrestore.sql",
+        # Added on 2026-09-18 by the v11 mint (054): v10 plus pure insertions for
+        # `delivery_attestations`, so both authorities inherit the predicate exactly
+        # as written. Seventh reddening of this friction.
+        "brain-v42-v11.sql",
+        "brain-v42-v11-pgrestore.sql",
     }
 )
 
@@ -184,9 +189,10 @@ def test_every_recovery_attestation_asset_checks_the_python_source_of_truth(
 def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     """Non-vacuity guard: count the surfaces, so none escapes in silence.
 
-    TWENTY guardians besides `_KEBAB` (1 metadata + 2 migrations + 17 assets) since
-    the v10 mint of 2026-09-07 — it was eight when this anchor was written, fourteen at
-    the v7 mint and eighteen at the v9 mint. This count deliberately includes NO document:
+    TWENTY-TWO guardians besides `_KEBAB` (1 metadata + 2 migrations + 19 assets) since
+    the v11 mint of 2026-09-18 — it was eight when this anchor was written, fourteen at
+    the v7 mint, eighteen at the v9 mint and twenty at the v10 mint. This count
+    deliberately includes NO document:
     `docs/design/` is not tracked, and a test counting prose would fail depending on the
     working tree.
     """
@@ -205,9 +211,9 @@ def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     )
     recovery_sites = sum(len(patterns) for patterns in _recovery_assets().values())
 
-    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 17), (
+    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 19), (
         "la ventilation des surfaces d'application a changé "
         f"(métadonnées={metadata_sites}, migrations={migration_sites}, "
-        f"attestation={recovery_sites} ; attendu 1/2/17). Recenser avant de corriger le "
+        f"attestation={recovery_sites} ; attendu 1/2/19). Recenser avant de corriger le "
         "compte : c'est ce recensement qui a été faux trois fois."
     )

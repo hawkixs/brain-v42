@@ -33,6 +33,28 @@ async def _call(app, profile, name, arguments):
 
 
 @pytest.mark.parametrize("profile", ["native", "compact"])
+async def test_both_attestation_tools_are_published_as_version_one(profile):
+    service = AsyncMock()
+    app = await _app(service, profile)
+    async with Client(app) as client:
+        tools = {tool.name: tool for tool in await client.list_tools()}
+        if profile == "native":
+            for name in ("brain_delivery_attest", "brain_delivery_attestation_list"):
+                assert tools[name].meta["fastmcp"]["version"] == "1.0"
+                required = tools[name].inputSchema["required"]
+                assert "actor_project" in required
+                # The list reads one ticket OR one project: its ticket is optional.
+                assert ("ticket_id" in required) == (name == "brain_delivery_attest")
+        else:
+            assert "brain_delivery_attest" not in tools
+            found: set[str] = set()
+            for name in ("brain_delivery_attest", "brain_delivery_attestation_list"):
+                result = await client.call_tool("brain_find_tool", {"query": name})
+                found.update(item["name"] for item in result.data)
+            assert {"brain_delivery_attest", "brain_delivery_attestation_list"} <= found
+
+
+@pytest.mark.parametrize("profile", ["native", "compact"])
 @pytest.mark.parametrize("operation", ["renew", "release"])
 async def test_missing_argument_never_echoes_the_claim_token(profile, operation, caplog):
     service = AsyncMock()

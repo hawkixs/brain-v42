@@ -1,0 +1,357 @@
+"""Acceptance boundaries for issuer-declared delivery attestations.
+
+Ticket 04bc1f4a. Brain is the LEDGER: it validates the FORM of an attestation —
+the kind vocabulary shape, a JSON-object payload, the surrogate-free strings and
+the canonical digest recipe — and it NEVER judges the kind. These tests pin the
+boundaries a stored row must not cross and the published digest vector a
+consumer recomputes.
+"""
+
+from __future__ import annotations
+
+from uuid import uuid4
+
+import pytest
+from pydantic import ValidationError
+
+
+def _attestation(**overrides: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "id": str(uuid4()),
+        "ticket_id": str(uuid4()),
+        "contract_revision": 1,
+        "kind": "gate_passed",
+        "payload": {"gate": "unit"},
+        "digest": "a" * 64,
+        "issuer_project": "brain-v42",
+        "issuer_identity": "delivery-observer",
+        "idempotency_key": "gate-key-1",
+        "emitted_at": "2026-09-16T10:00:00+00:00",
+        "recorded_at": "2026-09-16T10:00:01+00:00",
+    }
+    values.update(overrides)
+    return values
+
+
+def test_attestation_digest_preserves_the_published_vector() -> None:
+    """The server computes this recipe; a consumer must be able to recompute it."""
+    from brain_v42.models.delivery_hashes import canonical_digest
+
+    assert canonical_digest({"gate": "unit"}, domain="attestation") == (
+        "7fdcbddf961e6f3efc75d3edfbc198efd9d830200da818c75f6500c35d7e95d7"
+    )
+
+
+def test_the_attestation_domain_is_declared() -> None:
+    from brain_v42.models.delivery_hashes import _DIGEST_DOMAINS
+
+    assert "attestation" in _DIGEST_DOMAINS
+
+
+def test_a_stored_attestation_validates_and_keeps_its_nullable_revision() -> None:
+    from brain_v42.models.delivery import DeliveryAttestation
+
+    attestation = DeliveryAttestation.model_validate(_attestation(contract_revision=None))
+
+    assert attestation.kind == "gate_passed"
+    assert attestation.contract_revision is None
+    assert attestation.payload == {"gate": "unit"}
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["Gate_passed", "gate-passed", "1gate", "", "a" * 65, "gate passed"],
+)
+def test_kind_must_match_the_lowercase_shape(kind: str) -> None:
+    from brain_v42.models.delivery import DeliveryAttestation
+
+    with pytest.raises(ValidationError, match="kind"):
+        DeliveryAttestation.model_validate(_attestation(kind=kind))
+
+
+@pytest.mark.parametrize("kind", ["released", "deployed", "an_unknown_but_valid_kind"])
+def test_well_known_and_unknown_but_valid_kinds_are_both_accepted(kind: str) -> None:
+    """The kind vocabulary is documentation, never an enforced allowlist."""
+    from brain_v42.models.delivery import DeliveryAttestation
+
+    assert DeliveryAttestation.model_validate(_attestation(kind=kind)).kind == kind
+
+
+def test_payload_must_be_a_json_object() -> None:
+    from brain_v42.models.delivery import DeliveryAttestation
+
+    with pytest.raises(ValidationError, match="payload"):
+        DeliveryAttestation.model_validate(_attestation(payload=["not", "an", "object"]))
+
+
+def test_payload_rejects_floats() -> None:
+    from brain_v42.models.delivery import DeliveryAttestation
+
+    with pytest.raises(ValidationError, match="float"):
+        DeliveryAttestation.model_validate(_attestation(payload={"ratio": 1.5}))
+
+
+def test_payload_is_bounded_to_sixty_four_kibibytes() -> None:
+    from brain_v42.models.delivery import DeliveryAttestation
+
+    oversized = {"blob": "x" * (65536 + 1)}
+    with pytest.raises(ValidationError, match="65536"):
+        DeliveryAttestation.model_validate(_attestation(payload=oversized))
+
+    accepted = {"blob": "x" * 65000}
+    assert DeliveryAttestation.model_validate(_attestation(payload=accepted)).payload == accepted
+
+
+def test_payload_rejects_unicode_surrogates() -> None:
+    from brain_v42.models.delivery import DeliveryAttestation
+
+    with pytest.raises(ValidationError, match="surrogate"):
+        DeliveryAttestation.model_validate(_attestation(payload={"label": "\ud800"}))
+
+
+@pytest.mark.parametrize("field", ["issuer_project", "issuer_identity", "idempotency_key"])
+def test_string_fields_reject_unicode_surrogates(field: str) -> None:
+    from brain_v42.models.delivery import DeliveryAttestation
+
+    with pytest.raises(ValidationError, match="surrogate|unicode"):
+        DeliveryAttestation.model_validate(_attestation(**{field: "bad\ud800label"}))
+
+
+@pytest.mark.parametrize("digest", ["a" * 63, "A" * 64, "z" * 64, "a" * 65])
+def test_digest_must_be_sixty_four_lowercase_hex(digest: str) -> None:
+    from brain_v42.models.delivery import DeliveryAttestation
+
+    with pytest.raises(ValidationError, match="digest"):
+        DeliveryAttestation.model_validate(_attestation(digest=digest))
+
+
+def test_delivery_view_defaults_attestations_to_not_loaded() -> None:
+    from brain_v42.models.delivery import DeliveryView
+
+    assert "attestations" in DeliveryView.model_fields
+    assert DeliveryView.model_fields["attestations"].default is None
+
+
+def test_attestation_page_has_the_history_page_shape() -> None:
+    from brain_v42.models.delivery import (
+        DeliveryAttestation,
+        DeliveryAttestationPage,
+    )
+
+    item = DeliveryAttestation.model_validate(_attestation())
+    page = DeliveryAttestationPage(
+        items=(item,),
+        next_cursor="opaque-cursor",
+        omitted_count=3,
+    )
+
+    assert page.items == (item,)
+    assert page.next_cursor == "opaque-cursor"
+    assert page.omitted_count == 3
+    assert DeliveryAttestationPage().omitted_count == 0
+
+
+def test_form_validation_names_the_field_it_refuses() -> None:
+    """The service-level guard behind `invalid_kind`, `invalid_payload`, `invalid_emitted_at`."""
+    from datetime import UTC, datetime
+
+    from brain_v42.models.delivery import DeliveryError, validate_attestation_form
+
+    emitted = datetime(2026, 9, 16, 10, tzinfo=UTC)
+    validate_attestation_form(kind="gate_passed", payload={"gate": "unit"}, emitted_at=emitted)
+
+    for overrides, code in (
+        ({"kind": "Gate_passed"}, "invalid_kind"),
+        ({"kind": ""}, "invalid_kind"),
+        ({"kind": "a" * 65}, "invalid_kind"),
+        ({"payload": {"ratio": 1.5}}, "invalid_payload"),
+        ({"payload": {"blob": "x" * 65_537}}, "invalid_payload"),
+        ({"payload": {"label": "\ud800"}}, "invalid_payload"),
+        ({"payload": ["not", "an", "object"]}, "invalid_payload"),
+        ({"emitted_at": emitted.replace(tzinfo=None)}, "invalid_emitted_at"),
+    ):
+        arguments: dict[str, object] = {
+            "kind": "gate_passed",
+            "payload": {"gate": "unit"},
+            "emitted_at": emitted,
+        }
+        arguments.update(overrides)
+        with pytest.raises(DeliveryError) as excinfo:
+            validate_attestation_form(**arguments)  # type: ignore[arg-type]
+        assert excinfo.value.code == code, (overrides, excinfo.value)
+
+
+def test_the_documented_and_reserved_kinds_are_published_and_well_formed() -> None:
+    import re
+
+    from brain_v42.models.delivery import (
+        ATTESTATION_KIND_PATTERN,
+        DOCUMENTED_ATTESTATION_KINDS,
+        RESERVED_ATTESTATION_KINDS,
+    )
+
+    assert DOCUMENTED_ATTESTATION_KINDS == (
+        "released",
+        "deployed",
+        "rolled_back",
+        "incident_detected",
+        "restored",
+        "review_verdict",
+        "gate_passed",
+    )
+    assert RESERVED_ATTESTATION_KINDS == ("integrated", "fulfilled")
+    for kind in DOCUMENTED_ATTESTATION_KINDS + RESERVED_ATTESTATION_KINDS:
+        assert re.fullmatch(ATTESTATION_KIND_PATTERN, kind)
+
+
+def test_payload_rejects_nul_bytes_that_jsonb_cannot_store() -> None:
+    """A NUL inside a string passes JSON but not PostgreSQL's jsonb: refuse it up front.
+
+    Independent review finding: without this, the INSERT raised
+    `UntranslatableCharacterError` and the caller read `delivery_unavailable`, an
+    availability error it would retry forever.
+    """
+    from brain_v42.models.delivery import DeliveryAttestation
+    from brain_v42.models.delivery_hashes import canonical_digest
+
+    with pytest.raises(ValidationError, match="NUL"):
+        DeliveryAttestation.model_validate(_attestation(payload={"log": "a\x00b"}))
+    with pytest.raises(ValueError, match="NUL"):
+        canonical_digest({"log": "a\x00b"}, domain="attestation")
+    with pytest.raises(ValueError, match="NUL"):
+        canonical_digest({"a\x00b": "key"}, domain="attestation")
+
+
+def _nested(depth: int) -> dict[str, object]:
+    payload: dict[str, object] = {"leaf": 1}
+    for _ in range(depth):
+        payload = {"k": payload}
+    return payload
+
+
+def test_payload_depth_is_bounded_without_recursion() -> None:
+    """Second review: a deep payload raised RecursionError, which is not a ValueError,
+    and reached the caller as `delivery_unavailable` — retryable, for a permanent fault."""
+    from datetime import UTC, datetime
+
+    from brain_v42.models.delivery import (
+        MAX_ATTESTATION_PAYLOAD_DEPTH,
+        DeliveryError,
+        validate_attestation_form,
+    )
+    from brain_v42.models.delivery_hashes import canonical_digest
+
+    emitted = datetime(2026, 9, 16, 10, tzinfo=UTC)
+    assert MAX_ATTESTATION_PAYLOAD_DEPTH == 64
+    validate_attestation_form(
+        kind="gate_passed", payload=_nested(MAX_ATTESTATION_PAYLOAD_DEPTH - 1), emitted_at=emitted
+    )
+    for depth in (MAX_ATTESTATION_PAYLOAD_DEPTH, 8000):
+        with pytest.raises(DeliveryError) as excinfo:
+            validate_attestation_form(
+                kind="gate_passed", payload=_nested(depth), emitted_at=emitted
+            )
+        assert excinfo.value.code == "invalid_payload"
+        with pytest.raises(ValueError, match="deep"):
+            canonical_digest(_nested(depth), domain="attestation")
+
+
+def test_instants_are_parsed_from_iso_strings_and_refused_otherwise() -> None:
+    """Second review: `emitted_at` accepted a number as a Unix timestamp with a unit heuristic."""
+    from datetime import UTC, datetime, timedelta, tzinfo
+
+    from brain_v42.models.delivery import DeliveryError, validate_attestation_form
+
+    class _Offsetless(tzinfo):
+        def utcoffset(self, dt):  # noqa: ANN001 - tzinfo protocol
+            return None
+
+    parsed = validate_attestation_form(
+        kind="gate_passed", payload={"gate": "unit"}, emitted_at="2026-09-16T10:00:00Z"
+    )
+    assert parsed == datetime(2026, 9, 16, 10, tzinfo=UTC)
+    with_offset = validate_attestation_form(
+        kind="gate_passed", payload={"gate": "unit"}, emitted_at="2026-09-16T12:00:00.250000+02:00"
+    )
+    assert with_offset == datetime(2026, 9, 16, 10, 0, 0, 250000, tzinfo=UTC)
+    assert with_offset.utcoffset() == timedelta(hours=2)
+    as_datetime = validate_attestation_form(
+        kind="gate_passed",
+        payload={"gate": "unit"},
+        emitted_at=datetime(2026, 9, 16, 10, tzinfo=UTC),
+    )
+    assert as_datetime == datetime(2026, 9, 16, 10, tzinfo=UTC)
+
+    for value in (
+        "2026-09-16T10:00:00",
+        "not-a-date",
+        1789000000,
+        1789000000.5,
+        None,
+        datetime(2026, 9, 16, 10, tzinfo=_Offsetless()),
+    ):
+        with pytest.raises(DeliveryError) as excinfo:
+            validate_attestation_form(
+                kind="gate_passed", payload={"gate": "unit"}, emitted_at=value
+            )
+        assert excinfo.value.code == "invalid_emitted_at", value
+
+
+def test_a_contract_revision_outside_int32_is_unknown_before_any_query() -> None:
+    from datetime import UTC, datetime
+
+    from brain_v42.models.delivery import DeliveryError, validate_attestation_form
+
+    emitted = datetime(2026, 9, 16, 10, tzinfo=UTC)
+    validate_attestation_form(
+        kind="gate_passed",
+        payload={"gate": "unit"},
+        emitted_at=emitted,
+        contract_revision=2**31 - 1,
+    )
+    for revision in (2**31, 2**40, 0, -1):
+        with pytest.raises(DeliveryError) as excinfo:
+            validate_attestation_form(
+                kind="gate_passed",
+                payload={"gate": "unit"},
+                emitted_at=emitted,
+                contract_revision=revision,
+            )
+        assert excinfo.value.code == "revision_not_found", revision
+
+
+def test_any_mapping_payload_is_canonicalised_like_a_dict() -> None:
+    from datetime import UTC, datetime
+    from types import MappingProxyType
+
+    from brain_v42.models.delivery import validate_attestation_form
+
+    validate_attestation_form(
+        kind="gate_passed",
+        payload=MappingProxyType({"gate": "unit"}),
+        emitted_at=datetime(2026, 9, 16, 10, tzinfo=UTC),
+    )
+
+
+@pytest.mark.parametrize("domain", ["contract", "request", "result", "assessment", "attestation"])
+def test_nul_is_refused_in_every_digest_domain(domain: str) -> None:
+    from brain_v42.models.delivery_hashes import canonical_digest
+
+    with pytest.raises(ValueError, match="NUL"):
+        canonical_digest({"log": "a\x00b"}, domain=domain)  # type: ignore[arg-type]
+
+
+def test_window_bounds_are_parsed_with_their_own_code() -> None:
+    from datetime import UTC, datetime
+
+    from brain_v42.models.delivery import DeliveryError, parse_window_bound
+
+    assert parse_window_bound(None, "since") is None
+    assert parse_window_bound("2026-09-16T10:00:00+00:00", "since") == datetime(
+        2026, 9, 16, 10, tzinfo=UTC
+    )
+    for value in ("2026-09-16T10:00:00", 1789000000, "soon"):
+        with pytest.raises(DeliveryError) as excinfo:
+            parse_window_bound(value, "until")
+        assert excinfo.value.code == "invalid_window"
+        assert "until" in excinfo.value.message

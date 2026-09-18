@@ -21,11 +21,12 @@ DELIVERY_TABLE_NAMES: Final[tuple[str, ...]] = (
     "delivery_confirmations",
     "delivery_receipts",
     "delivery_events",
+    "delivery_attestations",
 )
 
 
 def register_delivery_tables(metadata: sa.MetaData) -> dict[str, sa.Table]:
-    """Register the eight workflow tables on the supplied metadata exactly once."""
+    """Register the nine workflow tables on the supplied metadata exactly once."""
     existing = {
         name: metadata.tables[name] for name in DELIVERY_TABLE_NAMES if name in metadata.tables
     }
@@ -468,6 +469,66 @@ def register_delivery_tables(metadata: sa.MetaData) -> dict[str, sa.Table]:
             "operation", "actor_project", "idempotency_key", name="uq_delivery_event_idempotency"
         ),
     )
+    attestations = sa.Table(
+        "delivery_attestations",
+        metadata,
+        sa.Column(
+            "id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")
+        ),
+        sa.Column(
+            "ticket_id",
+            UUID(as_uuid=True),
+            sa.ForeignKey("delivery_workflows.ticket_id", ondelete="RESTRICT"),
+            nullable=False,
+        ),
+        sa.Column("contract_revision", sa.Integer),
+        sa.Column("kind", sa.String(64), nullable=False),
+        sa.Column("payload", JSONB, nullable=False),
+        sa.Column("digest", sa.String(64), nullable=False),
+        sa.Column("issuer_project", sa.String(50), nullable=False),
+        sa.Column("issuer_identity", sa.String(200), nullable=False),
+        sa.Column("idempotency_key", sa.String(200), nullable=False),
+        sa.Column("emitted_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column(
+            "recorded_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
+        sa.UniqueConstraint(
+            "ticket_id",
+            "issuer_project",
+            "idempotency_key",
+            name="uq_delivery_attestation_idempotency",
+        ),
+        sa.ForeignKeyConstraint(
+            ["ticket_id", "contract_revision"],
+            [
+                "delivery_contract_revisions.ticket_id",
+                "delivery_contract_revisions.contract_revision",
+            ],
+            ondelete="RESTRICT",
+        ),
+        sa.CheckConstraint(
+            "kind ~ '^[a-z][a-z0-9_]{0,63}$'", name="delivery_attestations_kind_valid"
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(payload) = 'object'", name="delivery_attestations_payload_object"
+        ),
+        sa.CheckConstraint("digest ~ '^[0-9a-f]{64}$'", name="delivery_attestations_digest_valid"),
+        sa.Index(
+            "ix_delivery_attestations_ticket_emitted",
+            "ticket_id",
+            sa.desc("emitted_at"),
+            sa.desc("id"),
+        ),
+        sa.Index(
+            "ix_delivery_attestations_issuer_emitted",
+            "issuer_project",
+            sa.desc("emitted_at"),
+            sa.desc("id"),
+        ),
+    )
     return {
         table.name: table
         for table in (
@@ -479,5 +540,6 @@ def register_delivery_tables(metadata: sa.MetaData) -> dict[str, sa.Table]:
             confirmations,
             receipts,
             events,
+            attestations,
         )
     }

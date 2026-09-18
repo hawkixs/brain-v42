@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastmcp import FastMCP
@@ -15,11 +15,14 @@ from brain_v42.mcp.tools.tool_annotations import (
     _WRITE_ANNOTATIONS,
 )
 from brain_v42.models.delivery import (
+    MAX_CONTRACT_REVISION,
     ArtifactBinding,
     ClaimResult,
     ClaimState,
     ContractInput,
     ContractRevision,
+    DeliveryAttestation,
+    DeliveryAttestationPage,
     DeliveryError,
     DeliveryPage,
     DeliveryRefreshResult,
@@ -39,6 +42,14 @@ TicketId = Annotated[
 Project = Annotated[str, Field(strict=True, min_length=1, max_length=200, pattern=r"\S")]
 Owner = Annotated[str, Field(strict=True, min_length=1, max_length=200, pattern=r"\S")]
 Key = Annotated[str, Field(strict=True, min_length=1, max_length=200, pattern=r"\S")]
+#: Bounded at the transport only; the shape itself is judged by the service so that a
+#: violation reaches the caller as `invalid_kind`, never as a framework error.
+Kind = Annotated[str, Field(strict=True, min_length=1, max_length=200)]
+#: An instant travels as a STRING: a number would be read as a Unix timestamp with a
+#: unit heuristic, and the service names the fault (`invalid_emitted_at`, `invalid_window`).
+Instant = Annotated[str, Field(strict=True, min_length=1, max_length=64)]
+#: PostgreSQL INTEGER; beyond it the driver would fail after the locks were taken.
+Revision32 = Annotated[int, Field(strict=True, gt=0, le=MAX_CONTRACT_REVISION)]
 Reason = Annotated[str, Field(strict=True, min_length=1, max_length=4000, pattern=r"\S")]
 Positive = Annotated[int, Field(strict=True, gt=0)]
 Revision = Annotated[int, Field(strict=True, ge=0)]
@@ -52,7 +63,7 @@ Stage = Literal["awaiting_artifact", "proposed", "verified", "integrated"]
 
 
 def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None:
-    """Register nine versioned operations backed by one role-aware PG service."""
+    """Register eleven versioned operations backed by one role-aware PG service."""
     delivery = _DeliveryRegistry(mcp)
 
     @delivery.tool(version="1.0", annotations=_WRITE_ANNOTATIONS)
@@ -235,4 +246,68 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
             expected_revision=expected_revision,
             expected_attempt=expected_attempt,
             expected_delivery_digest=expected_delivery_digest,
+        )
+
+    @delivery.tool(version="1.0", annotations=_WRITE_ANNOTATIONS)
+    async def brain_delivery_attest(
+        ticket_id: TicketId,
+        actor_project: Project,
+        kind: Kind,
+        payload: dict[str, Any],
+        idempotency_key: Key,
+        emitted_at: Instant,
+        contract_revision: Revision32 | None = None,
+    ) -> DeliveryAttestation:
+        """Record one issuer-declared delivery fact; Brain stores its shape and never judges its kind.
+
+        `actor_project` is the ticket participant on whose behalf the fact is declared.
+        The issuer identity is the X-Brain-Agent caller label (declared provenance within
+        the admin boundary, as for brain_delivery_accept); an unknown caller is refused.
+        Form violations carry stable codes: `invalid_kind`, `invalid_payload` (a float, a
+        Unicode surrogate, a NUL character, more than 64 KiB of canonical JSON) and `invalid_emitted_at`
+        (a naive instant). Replaying the same idempotency_key with identical content
+        returns the stored row; different content is refused with `idempotency_key_reused`.
+        """
+        caller = get_current_actor()
+        if not caller.strip() or caller in {UNKNOWN_ACTOR, UNEXPANDED_ACTOR}:
+            raise DeliveryError("invalid_issuer", "a declared issuer caller is required")
+        return await delivery_svc.attest(
+            UUID(ticket_id),
+            actor_project=actor_project,
+            caller_identity=caller,
+            kind=kind,
+            payload=payload,
+            idempotency_key=idempotency_key,
+            emitted_at=emitted_at,
+            contract_revision=contract_revision,
+        )
+
+    @delivery.tool(version="1.0", annotations=_READ_ANNOTATIONS)
+    async def brain_delivery_attestation_list(
+        actor_project: Project,
+        ticket_id: TicketId | None = None,
+        issuer_project: Project | None = None,
+        kind: Kind | None = None,
+        since: Instant | None = None,
+        until: Instant | None = None,
+        # Judged by the service (`invalid_limit`), like `kind`; strict int only.
+        limit: Annotated[int, Field(strict=True)] = 20,
+        cursor: Cursor | None = None,
+    ) -> DeliveryAttestationPage:
+        """List attestations newest first in one scope, filtered by kind and emission window.
+
+        With `ticket_id`, either ticket participant reads that ticket's facts and
+        `issuer_project` is an optional filter. Without it, `issuer_project` is required
+        and must equal `actor_project`: a project reads its own facts across its tickets.
+        A cursor belongs to the scope that minted it.
+        """
+        return await delivery_svc.list_attestations(
+            UUID(ticket_id) if ticket_id is not None else None,
+            actor_project=actor_project,
+            issuer_project=issuer_project,
+            kind=kind,
+            since=since,
+            until=until,
+            limit=limit,
+            cursor=cursor,
         )

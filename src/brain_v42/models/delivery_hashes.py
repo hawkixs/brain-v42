@@ -11,32 +11,60 @@ if TYPE_CHECKING:
     from brain_v42.models.delivery import BindingEvidence, ContractRevision
 
 
-DigestDomain = Literal["contract", "request", "result", "assessment"]
-_DIGEST_DOMAINS: frozenset[str] = frozenset({"contract", "request", "result", "assessment"})
+DigestDomain = Literal["contract", "request", "result", "assessment", "attestation"]
+_DIGEST_DOMAINS: frozenset[str] = frozenset(
+    {"contract", "request", "result", "assessment", "attestation"}
+)
+
+
+#: The deepest nesting a canonical payload may carry. 64 is the bound the embedding
+#: shim already applies to JSON; a ledger fact has no business nesting deeper.
+MAX_CANONICAL_JSON_DEPTH = 64
 
 
 def _reject_invalid_json_value(value: object) -> None:
-    """Reject values outside the deliberately small canonical JSON domain."""
-    if value is None or type(value) in {bool, int}:  # bool is deliberately not an integer here.
-        return
-    if isinstance(value, float):
-        raise ValueError("canonical digest payload cannot contain floats")
-    if isinstance(value, str):
-        if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
-            raise ValueError("canonical digest payload cannot contain Unicode surrogates")
-        return
-    if isinstance(value, Mapping):
-        for key, nested_value in value.items():
-            if not isinstance(key, str):
-                raise ValueError("canonical digest payload requires string keys")
-            _reject_invalid_json_value(key)
-            _reject_invalid_json_value(nested_value)
-        return
-    if isinstance(value, (list, tuple)):
-        for nested_value in value:
-            _reject_invalid_json_value(nested_value)
-        return
-    raise ValueError(f"canonical digest payload has unsupported value type {type(value).__name__}")
+    """Reject values outside the deliberately small canonical JSON domain.
+
+    Iterative on purpose: a payload nested past the bound must surface as a
+    ValueError the callers convert into a stable code, never as a RecursionError
+    they cannot — which reached the caller as a retryable availability error.
+    """
+    stack: list[tuple[object, int]] = [(value, 0)]
+    while stack:
+        current, depth = stack.pop()
+        if current is None or type(current) in {
+            bool,
+            int,
+        }:  # bool is deliberately not an integer here.
+            continue
+        if isinstance(current, float):
+            raise ValueError("canonical digest payload cannot contain floats")
+        if isinstance(current, str):
+            # JSON allows U+0000; PostgreSQL jsonb does not, and the INSERT would fail
+            # AFTER every validator passed, as an availability error a caller retries.
+            if "\x00" in current:
+                raise ValueError("canonical digest payload cannot contain NUL characters")
+            if any(0xD800 <= ord(character) <= 0xDFFF for character in current):
+                raise ValueError("canonical digest payload cannot contain Unicode surrogates")
+            continue
+        if isinstance(current, Mapping | list | tuple):
+            if depth >= MAX_CANONICAL_JSON_DEPTH:
+                raise ValueError(
+                    "canonical digest payload nests too deep "
+                    f"(more than {MAX_CANONICAL_JSON_DEPTH} levels)"
+                )
+            if isinstance(current, Mapping):
+                for key, nested_value in current.items():
+                    if not isinstance(key, str):
+                        raise ValueError("canonical digest payload requires string keys")
+                    stack.append((key, depth + 1))
+                    stack.append((nested_value, depth + 1))
+            else:
+                stack.extend((nested_value, depth + 1) for nested_value in current)
+            continue
+        raise ValueError(
+            f"canonical digest payload has unsupported value type {type(current).__name__}"
+        )
 
 
 def canonical_digest(payload: Mapping[str, Any], *, domain: DigestDomain) -> str:

@@ -47,6 +47,7 @@ from sqlalchemy.pool import NullPool
 
 from brain_v42.db.tables import (
     delivery_artifact_bindings,
+    delivery_attestations,
     delivery_confirmations,
     delivery_contract_revisions,
     delivery_dependencies,
@@ -180,6 +181,13 @@ async def _delete_delivery_workflow_graphs(
             await session.execute(
                 delivery_events.delete().where(delivery_events.c.ticket_id.in_(owned_ticket_ids))
             )
+            # Attestations reference BOTH the workflow and, when pinned, a
+            # contract revision: they must go before either parent.
+            await session.execute(
+                delivery_attestations.delete().where(
+                    delivery_attestations.c.ticket_id.in_(owned_ticket_ids)
+                )
+            )
             await session.execute(delivery_confirmations.delete().where(confirmation_owner))
             await session.execute(delivery_snapshots.delete().where(evidence_owner))
             await session.execute(
@@ -238,6 +246,10 @@ async def _delete_delivery_workflow_graphs(
         "delivery_events": (
             delivery_events,
             delivery_events.c.ticket_id.in_(owned_ticket_ids),
+        ),
+        "delivery_attestations": (
+            delivery_attestations,
+            delivery_attestations.c.ticket_id.in_(owned_ticket_ids),
         ),
     }
     async with session_factory() as session:

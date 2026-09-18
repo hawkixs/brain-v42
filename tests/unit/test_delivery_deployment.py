@@ -127,8 +127,8 @@ class DeploymentCase:
                 )
 
             dependencies = module.PreflightDependencies(
-                schema_revision=lambda _: "053",
-                health=lambda _: {{"version": "9.0.0", "alembic_head": "053"}},
+                schema_revision=lambda _: "054",
+                health=lambda _: {{"version": "9.0.0", "alembic_head": "054"}},
                 systemd_properties=lambda unit: runtime["units"][unit],
                 process_identity=process_identity,
                 manager_environment=lambda: runtime["manager_environment"],
@@ -182,7 +182,7 @@ class DeploymentCase:
                 )
             dependencies = module.PreflightDependencies(
                 schema_revision=lambda _: sys.argv[3],
-                health=lambda _: {"version": "9.0.0", "alembic_head": "053"},
+                health=lambda _: {"version": "9.0.0", "alembic_head": "054"},
                 systemd_properties=lambda unit: runtime["units"][unit],
                 process_identity=process_identity,
                 manager_environment=lambda: runtime["manager_environment"],
@@ -269,8 +269,8 @@ class DeploymentCase:
                 )
 
             dependencies = module.PreflightDependencies(
-                schema_revision=lambda _: "053",
-                health=lambda _: {"version": "9.0.0", "alembic_head": "053"},
+                schema_revision=lambda _: "054",
+                health=lambda _: {"version": "9.0.0", "alembic_head": "054"},
                 systemd_properties=lambda unit: fixture["units"][unit],
                 process_identity=process_identity,
                 manager_environment=lambda: fixture["manager_environment"],
@@ -499,7 +499,7 @@ def deployment_case(tmp_path: Path) -> DeploymentCase:
         "release_manifest": str(manifest),
         "observer_env_file": str(observer_env),
         "health_endpoint": "http://127.0.0.1:18742/health",
-        "required_schema_revision": "053",
+        "required_schema_revision": "054",
         "repository": {"id": 1337360966, "slug": "hawkixs/brain-v42"},
         "probe_pull_request": 42,
         "mode": "dormant",
@@ -625,7 +625,7 @@ def test_preflight_accepts_a_complete_guarded_release_configuration(
     receipt = _receipt(result)
     assert receipt["status"] == "ok"
     assert receipt["source_sha"] == SOURCE_SHA
-    assert receipt["schema_revision"] == "053"
+    assert receipt["schema_revision"] == "054"
     assert SECRET not in result.stdout + result.stderr
 
 
@@ -774,8 +774,8 @@ def test_preflight_refuses_a_health_response_for_a_different_release(
             )
 
         dependencies = module.PreflightDependencies(
-            schema_revision=lambda _: "053",
-            health=lambda _: {"version": "wrong", "alembic_head": "053"},
+            schema_revision=lambda _: "054",
+            health=lambda _: {"version": "wrong", "alembic_head": "054"},
             systemd_properties=lambda unit: runtime["units"][unit],
             process_identity=process_identity,
             manager_environment=lambda: {},

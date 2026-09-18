@@ -29,9 +29,15 @@ DELIVERY_TOOLS = frozenset(
         "brain_delivery_claim_renew",
         "brain_delivery_claim_release",
         "brain_delivery_accept",
+        "brain_delivery_attest",
+        "brain_delivery_attestation_list",
     }
 )
-MUTATING_DELIVERY_TOOLS = DELIVERY_TOOLS - {"brain_delivery_get", "brain_delivery_list"}
+MUTATING_DELIVERY_TOOLS = DELIVERY_TOOLS - {
+    "brain_delivery_get",
+    "brain_delivery_list",
+    "brain_delivery_attestation_list",
+}
 
 
 @pytest_asyncio.fixture
@@ -117,7 +123,7 @@ async def _profile(client: Client) -> bool:
 
 
 @pytest.mark.parametrize("delivery_mcp", ["native", "compact"], indirect=True)
-async def test_catalogues_publish_schema_and_dispatch_the_nine_delivery_tools(delivery_mcp):
+async def test_catalogues_publish_schema_and_dispatch_the_eleven_delivery_tools(delivery_mcp):
     """Tool registration is proved by FastMCP dispatch, never ``hasattr``."""
     async with Client(delivery_mcp) as client:
         tools = {tool.name: tool for tool in await client.list_tools()}
@@ -135,7 +141,9 @@ async def test_catalogues_publish_schema_and_dispatch_the_nine_delivery_tools(de
                 schema = tools[name].inputSchema
                 required = set(schema["required"])
                 assert "actor_project" in required
-                if name != "brain_delivery_list":
+                # Two reads take no ticket: the workflow list, and the attestation
+                # list, which reads one ticket OR one issuer project.
+                if name not in {"brain_delivery_list", "brain_delivery_attestation_list"}:
                     assert "ticket_id" in required
                 assert tools[name].meta["fastmcp"]["version"] == "1.0"
                 assert tools[name].outputSchema["type"] == "object"

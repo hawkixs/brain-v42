@@ -982,6 +982,16 @@ class PgDeliveryRepo(BasePgRepository):
             if history_limit is not None:
                 history = await load_history(sess, view, limit=history_limit, cursor=history_cursor)
                 view = view.model_copy(update={"history": history})
+                # Local import on purpose: that module imports lock_workflows from
+                # this one, so a top-level import would close a cycle.
+                from brain_v42.repositories.pg_delivery_attestations import (
+                    PgDeliveryAttestationsRepo,
+                )
+
+                attestations = await PgDeliveryAttestationsRepo(
+                    self._session_factory
+                ).list_attestations(sess, ticket_id=ticket_id, limit=history_limit)
+                view = view.model_copy(update={"attestations": attestations})
             return view
 
     async def refresh(self, ticket_id: UUID, *, session: AsyncSession | None = None) -> None:

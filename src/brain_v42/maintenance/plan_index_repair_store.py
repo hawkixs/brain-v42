@@ -178,13 +178,26 @@ if TYPE_CHECKING:
 # the strict equality fence must still advance so the repair refuses every schema it
 # has not been reviewed against.
 #
+# Bumped to 054 after reviewing the complete migration. 054 creates exactly ONE
+# new table, `delivery_attestations`, and one index on it. Its two foreign keys
+# point at 053's `delivery_workflows` and `delivery_contract_revisions`; it alters
+# no existing column, constraint or index and creates no trigger.
+#
+# Measured the same way as 053's entry, 054 contains zero references to
+# `indexed_plans`, `indexed_plan_chunks`, `project_contexts` or `feature_artifacts`.
+# INERT.
+#
+# The consequence named at 050 and repeated at 051, 052 and 053 holds a fifth
+# time: production measured at 053 on 2026-09-16, so the repair refuses to run
+# against it until 054 is applied. That is the pin working.
+#
 # The review is written down even when it is short: that is the rule, and a
 # missing review reads exactly like a review that was done. Since ticket
 # 6cc34303 that rule is enforced rather than trusted:
 # `tests/unit/test_plan_index_repair_review_block.py` derives the reviewed set
 # from this block and fails if the constant below outruns it, or if a revision
 # is skipped between the first entry and the head.
-_REQUIRED_ALEMBIC_HEAD = "053"
+_REQUIRED_ALEMBIC_HEAD = "054"
 
 
 class RepairStore:

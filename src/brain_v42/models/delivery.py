@@ -22,7 +22,50 @@ from pydantic import (
     model_validator,
 )
 
+from brain_v42.models.delivery_hashes import MAX_CANONICAL_JSON_DEPTH, _reject_invalid_json_value
+
 _MAX_CONTRACT_BYTES = 256 * 1024
+#: Attestation FORM, the whole of what Brain enforces on an issuer-declared fact
+#: (ticket 04bc1f4a). The kind vocabulary is documentation for consumers, never an
+#: allowlist: `reserved` names the milestones that are receipts in Brain, not
+#: attestations, and even those are stored if declared — Brain does not judge kinds.
+MAX_ATTESTATION_PAYLOAD_BYTES = 65_536
+MAX_ATTESTATION_PAYLOAD_DEPTH = MAX_CANONICAL_JSON_DEPTH
+#: PostgreSQL INTEGER: a revision beyond it cannot exist and must not reach the driver.
+MAX_CONTRACT_REVISION = 2_147_483_647
+ATTESTATION_KIND_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
+_ATTESTATION_KIND_RE = re.compile(ATTESTATION_KIND_PATTERN)
+DOCUMENTED_ATTESTATION_KINDS: tuple[str, ...] = (
+    "released",
+    "deployed",
+    "rolled_back",
+    "incident_detected",
+    "restored",
+    "review_verdict",
+    "gate_passed",
+)
+RESERVED_ATTESTATION_KINDS: tuple[str, ...] = ("integrated", "fulfilled")
+#: Every stable code the attestation tools raise themselves; the transport adds
+#: `invalid_arguments` and `delivery_unavailable`. Published as data in
+#: `docs/contracts/delivery_attestations.json`, kept equal by test.
+DELIVERY_ATTESTATION_ERROR_CODES: frozenset[str] = frozenset(
+    {
+        "contract_not_found",
+        "delivery_disabled",
+        "idempotency_key_reused",
+        "invalid_cursor",
+        "invalid_emitted_at",
+        "invalid_issuer",
+        "invalid_kind",
+        "invalid_limit",
+        "invalid_payload",
+        "invalid_scope",
+        "invalid_window",
+        "not_allowed",
+        "revision_not_found",
+        "ticket_not_found",
+    }
+)
 _SHA_RE = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
@@ -932,6 +975,129 @@ class MilestoneReceipt(_StoredModel):
         return self
 
 
+def canonical_attestation_payload(value: object) -> bytes:
+    """The canonical JSON bytes the attestation digest is computed over.
+
+    Raises ValueError, with the reason, for anything outside the canonical domain:
+    a non-object, a float, a Unicode surrogate, a NUL character, a non-string key,
+    nesting past `MAX_ATTESTATION_PAYLOAD_DEPTH`, or more than
+    `MAX_ATTESTATION_PAYLOAD_BYTES` once canonicalised.
+    """
+    if not isinstance(value, Mapping):
+        raise ValueError("attestation payload must be a JSON object")
+    _reject_invalid_json_value(value)
+    encoded = json.dumps(
+        dict(value),
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    if len(encoded) > MAX_ATTESTATION_PAYLOAD_BYTES:
+        raise ValueError(
+            f"attestation payload exceeds {MAX_ATTESTATION_PAYLOAD_BYTES} bytes of canonical JSON"
+        )
+    return encoded
+
+
+def validate_attestation_kind(kind: object) -> None:
+    """Refuse a kind outside the published shape with the stable `invalid_kind` code."""
+    if not isinstance(kind, str) or _ATTESTATION_KIND_RE.fullmatch(kind) is None:
+        raise DeliveryError("invalid_kind", f"kind must match {ATTESTATION_KIND_PATTERN}")
+
+
+def _parse_instant(value: object) -> datetime:
+    """An ISO 8601 string with an offset, or an aware datetime; nothing else.
+
+    A number is refused on purpose: pydantic would read it as a Unix timestamp with
+    a seconds-versus-milliseconds heuristic, and an issuer's clock stored under the
+    wrong unit in an append-only ledger cannot be corrected.
+    """
+    if isinstance(value, datetime):
+        instant = value
+    elif isinstance(value, str):
+        instant = datetime.fromisoformat(value)
+    else:
+        raise ValueError("an instant must be an ISO 8601 string or a datetime")
+    if instant.utcoffset() is None:
+        raise ValueError("an instant must carry a UTC offset")
+    return instant
+
+
+def parse_window_bound(value: object, name: str) -> datetime | None:
+    """A list window bound, parsed like an instant, refused with `invalid_window`."""
+    if value is None:
+        return None
+    try:
+        return _parse_instant(value)
+    except (ValueError, TypeError) as error:
+        raise DeliveryError(
+            "invalid_window", f"{name} must be an ISO 8601 instant with an offset: {error}"
+        ) from None
+
+
+def validate_attestation_form(
+    *,
+    kind: object,
+    payload: object,
+    emitted_at: object,
+    contract_revision: object = None,
+) -> datetime:
+    """Validate the FORM of an attestation with stable codes, before any write.
+
+    red-rail request B on ticket 04bc1f4a: a consumer's boundary test must see
+    `invalid_kind`, `invalid_payload` or `invalid_emitted_at`, never a framework
+    error. The `DeliveryAttestation` model repeats the same checks as a last line;
+    this function is the one that names the field, and it returns the parsed
+    emission instant so that every caller stores the same value.
+    """
+    validate_attestation_kind(kind)
+    try:
+        canonical_attestation_payload(payload)
+    except (ValueError, TypeError) as error:
+        raise DeliveryError("invalid_payload", str(error)) from None
+    try:
+        instant = _parse_instant(emitted_at)
+    except (ValueError, TypeError) as error:
+        raise DeliveryError("invalid_emitted_at", str(error)) from None
+    if contract_revision is not None and (
+        type(contract_revision) is not int or not 1 <= contract_revision <= MAX_CONTRACT_REVISION
+    ):
+        raise DeliveryError("revision_not_found", "delivery contract revision was not found")
+    return instant
+
+
+class DeliveryAttestation(_StoredModel):
+    """One append-only, issuer-declared fact about a delivery; Brain stores it and never judges it."""
+
+    id: UUIDValue = Field(default_factory=uuid4)
+    ticket_id: UUIDValue
+    contract_revision: StrictInt | None = Field(default=None, gt=0)
+    kind: str = Field(min_length=1, max_length=64, pattern=ATTESTATION_KIND_PATTERN)
+    payload: Mapping[str, Any]
+    digest: str = Field(min_length=64, max_length=64)
+    issuer_project: str = Field(min_length=1, max_length=50)
+    issuer_identity: str = Field(min_length=1, max_length=200)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    emitted_at: StoredAwareDatetime
+    recorded_at: StoredAwareDatetime
+
+    _valid_digest = field_validator("digest")(_validate_digest)
+    _no_surrogates = field_validator("issuer_project", "issuer_identity", "idempotency_key")(
+        _reject_surrogates
+    )
+
+    @field_validator("payload")
+    @classmethod
+    def _valid_payload(cls, value: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Accept only the canonical JSON domain the digest recipe is defined over."""
+        try:
+            canonical_attestation_payload(value)
+        except ValueError as error:
+            raise ValueError(str(error)) from error
+        return value
+
+
 class DependencyPredicate(_StrictModel):
     """Current upstream generation and immutable receipt available to this contract."""
 
@@ -1074,6 +1240,16 @@ class DeliveryHistoryPage(_StrictModel):
     omitted_count: StrictInt = Field(default=0, ge=0)
 
 
+class DeliveryAttestationPage(_StrictModel):
+    """Newest-first issuer-declared facts for one ticket; never a judgement on them."""
+
+    items: Annotated[tuple[DeliveryAttestation, ...], BeforeValidator(_lists_to_tuples)] = Field(
+        default_factory=tuple, max_length=100
+    )
+    next_cursor: str | None = Field(default=None, min_length=1, max_length=1000)
+    omitted_count: StrictInt = Field(default=0, ge=0)
+
+
 class DeliveryView(_StrictModel):
     """Concrete API read shape for one workflow, its evidence assessment and receipts."""
 
@@ -1088,6 +1264,7 @@ class DeliveryView(_StrictModel):
     integration_receipt: MilestoneReceipt | None = None
     fulfillment_receipt: MilestoneReceipt | None = None
     history: DeliveryHistoryPage | None = None
+    attestations: DeliveryAttestationPage | None = None
 
 
 class DeliveryRefreshResult(_StrictModel):
