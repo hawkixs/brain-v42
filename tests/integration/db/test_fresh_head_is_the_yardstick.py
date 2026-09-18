@@ -22,7 +22,7 @@ it too, and the exception is removed instead of surviving.
 
 **The module now points at the v11 candidate for head 054.** The candidate is
 v10 plus pure insertions — `delivery_attestations`, its seven constraints and
-three indexes — measured on a disposable chain-built database and on a real
+four indexes — measured on a disposable chain-built database and on a real
 custom-format dump/restore of it, rather than from a production attestation.
 `PINNED_ASSET_DRIFT` gains nothing across the move: the yardstick therefore
 rejects every structural gap instead of accepting the nine delivery tables as

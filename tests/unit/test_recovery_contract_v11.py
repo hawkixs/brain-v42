@@ -2,7 +2,7 @@
 
 The generation is immutable lineage, not a production receipt.  Its base and
 ``pg_restore`` variants are v10 plus pure insertions — `delivery_attestations`,
-its seven constraints and three indexes — measured with the asset's own recipes
+its seven constraints and four indexes — measured with the asset's own recipes
 on a disposable chain-built database at head 054 and on a real custom-format
 dump/restore of that database, where the new table's fingerprints proved
 identical; the executable yardstick separately proves that those fingerprints
@@ -28,9 +28,9 @@ V10_ASSETS = {
     "brain-v42-v10-acl-pgrestore.json": "27d30015ab5789666f4aef462686355d3712a7f29cd2836601fe8c49b0aeb294",
 }
 V11_ASSETS = {
-    "brain-v42-v11.json": "7f4d26653347c3f8f3657ced4b7bb40f3fd050b7e680ce5163445a8714992ee3",
-    "brain-v42-v11.sql": "0932e5e7b4db839fad79922ae36197e7e4952854c28d399872888dfe7f3636eb",
-    "brain-v42-v11-pgrestore.sql": "c5040339c8019cb9f5b5f0bbcedca28cca90907240fea3f342c6ddcb96caf16f",
+    "brain-v42-v11.json": "b7022b4a981d1c9805bf6ea4259b4727ed284784320a77e8ae78c5657ad509c4",
+    "brain-v42-v11.sql": "f186dbec997a47c8c9c26113048a81e48f2135ba5dcf38042fc51908772a4916",
+    "brain-v42-v11-pgrestore.sql": "2cb803c78ed1b3c46bba1dd407695fd6b6ab44cca09bb405d22f7df7fce2c1ac",
     "brain-v42-v11-acl.sql": "767e89573bca09bb821468bfb6cfe616e96c7d6a81774fd2a5df3c82e871e2d2",
     "brain-v42-v11-acl.json": "bbff3fad6b7756a29f80097ae9451ebbe5e306c32169f1d43cae17b9323183e9",
     "brain-v42-v11-acl-pgrestore.sql": "3e434e425080afa625dd6f163bc27f06d1a37602b0aa51b12df918df95e37de7",
@@ -76,13 +76,15 @@ ATTESTATION_OBJECTS = {
     "delivery_attestations_ticket_id_fkey",
     "delivery_attestations_ticket_id_contract_revision_fkey",
     "ix_delivery_attestations_ticket_kind_emitted",
+    "ix_delivery_attestations_issuer_kind_emitted",
 }
 #: v10 froze 46 foreign keys and 156 indexes at head 053; 054 adds two foreign
-#: keys (`ticket_id`, and the composite one to the contract revision) and three
-#: indexes (primary key, unique idempotency key, the newest-first read index).
+#: keys (`ticket_id`, and the composite one to the contract revision) and four
+#: indexes (primary key, unique idempotency key, and the two newest-first read
+#: indexes of the ticket and issuer-project scopes).
 EXPECTED_CATALOG = {
     "foreign_keys": 48,
-    "indexes": 159,
+    "indexes": 160,
     "invalid_indexes": 0,
     "unvalidated_constraints": 0,
 }

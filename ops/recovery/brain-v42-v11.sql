@@ -2006,6 +2006,11 @@ expected_table_indexes(table_name, index_name, definition_md5) AS (
      ),
      (
          'delivery_attestations',
+         'ix_delivery_attestations_issuer_kind_emitted',
+         '58df70bb214ffc9f267ece058b0a9861'
+     ),
+     (
+         'delivery_attestations',
          'ix_delivery_attestations_ticket_kind_emitted',
          '967de71331b89c8c0b7b2e0bbb0ab3fc'
      ),
@@ -2142,7 +2147,7 @@ catalog_counts AS (
  SELECT
      jsonb_build_object(
          'foreign_keys', 48,
-         'indexes', 159,
+         'indexes', 160,
          'invalid_indexes', 0,
          'unvalidated_constraints', 0
      ) AS expected,
