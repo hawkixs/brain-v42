@@ -225,6 +225,5 @@ class GitHubCase:
             active_bindings=(BindingEvidence(binding=binding, confirmation=confirmation),),
             feature_enabled=True,
             freshness_seconds=600,
-            executor_identity="executor",
         )
         return evaluate_delivery(inputs, now=NOW)

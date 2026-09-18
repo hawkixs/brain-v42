@@ -685,6 +685,41 @@ def test_contract_required_context_and_dependency_cannot_be_omitted_from_predica
     }
 
 
+def test_only_the_pull_request_author_and_the_contract_exclude_a_reviewer() -> None:
+    """A reviewer login equal to the executor project key is not an author.
+
+    Ticket e31f9ad6: the evaluator used to compare the GitHub login of a
+    reviewer with the executor PROJECT KEY and drop the review on equality.
+    Self-approval is excluded by the pull-request author, and "not the
+    producer's provider" is a contract policy expressed by `allowed_reviewers`.
+    Nothing else in Brain may silently discard an allowed approval.
+    """
+    from brain_v42.models.delivery import ReviewEvidence
+    from brain_v42.models.delivery_evaluator import evaluate_delivery
+    from tests.delivery_helpers import FIXED_NOW, delivery_inputs
+
+    same_login_as_executor_key = ReviewEvidence(
+        record_id=9010,
+        provider_id=91,
+        reviewer="executor-project",
+        head_sha="a" * 40,
+        decision="approved",
+        submitted_at=FIXED_NOW - timedelta(seconds=20),
+    )
+    result = evaluate_delivery(
+        delivery_inputs(
+            merged=False,
+            author_id="github-author",
+            required_approvals=1,
+            allowed_reviewers=["executor-project"],
+            reviews=(same_login_as_executor_key,),
+        ),
+        now=FIXED_NOW,
+    )
+
+    assert "review_approval_missing" not in {item.code for item in result.blockers}
+
+
 def test_pr_author_approval_and_commented_review_cannot_bypass_effective_review() -> None:
     from brain_v42.models.delivery import ReviewEvidence
     from brain_v42.models.delivery_evaluator import evaluate_delivery
