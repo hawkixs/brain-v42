@@ -1790,7 +1790,7 @@ def test_environment_assignment_parser_preserves_duplicates_and_indentation() ->
     assert assignments == ["GRAPH_PROJECTOR_ENABLED", "GRAPH_PROJECTOR_ENABLED"]
 
 
-def test_repository_head_053_is_documented_without_claiming_a_deployed_head() -> None:
+def test_repository_head_054_is_documented_without_claiming_a_deployed_head() -> None:
     """The repository head is a fact this repository owns. The deployed head is not.
 
     Until 2026-08-04 these docs asserted a production head of `037` while the
@@ -1800,7 +1800,15 @@ def test_repository_head_053_is_documented_without_claiming_a_deployed_head() ->
 
     The head in this test's NAME is deliberate: bumping the repository head cannot
     be done without renaming the guard, which is what stops it from drifting
-    silently. Bumped to 051 on 2026-09-02 — M-C, the session checkpoint ledger,
+    silently. Bumped to 054 on 2026-09-18 — `delivery_attestations`, the append-only
+    attestation ledger of ticket 04bc1f4a, applied to DISPOSABLE chain-built
+    databases only (the 054 migration test replays the fail-closed refusal and the
+    opt-in round trip; the attestation surface is proved on the session's disposable
+    head). PRODUCTION UNTOUCHED, and the shared `brain_test` too: both measured at
+    053 the same day. Applying 054 is an operator gesture inside the merge window,
+    and until then the deployment preflight and the plan-index repair refuse to run
+    against production — the pin working as designed. Previously bumped to 051 on
+    2026-09-02 — M-C, the session checkpoint ledger,
     applied to the shared `brain_test` only (chain replayed 050→051, the
     append-only trigger proved by a refused UPDATE and a refused DELETE naming
     their session and seq, the `ON DELETE RESTRICT` indelibility proved, downgrade
@@ -1832,7 +1840,7 @@ def test_repository_head_053_is_documented_without_claiming_a_deployed_head() ->
     in the same breath.
     """
     head = _repository_head()
-    assert head == "053"
+    assert head == "054"
 
     # Everything below is DERIVED from that measured head. It used to be COPIED,
     # and that is precisely how `SCHEMA.md` came to announce 049 while the chain

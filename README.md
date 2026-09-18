@@ -152,7 +152,7 @@ parameters; use the plain form above with host, port, username and password all 
 | Runbooks | `brain_create_runbook`, `brain_promote_runbook`, `brain_get_runbook`, `brain_execute_runbook` |
 | ADRs | `brain_propose_adr`, `brain_promote_adr`, `brain_accept_adr`, `brain_deprecate_adr` |
 | Coordination | `brain_ticket_create`, `brain_ticket_reply`, `brain_ticket_transition`, `brain_ticket_list`, `brain_ticket_get` |
-| Observable delivery | `brain_delivery_contract_set`, `brain_delivery_bind_pr`, `brain_delivery_get`, `brain_delivery_list`, `brain_delivery_refresh`, `brain_delivery_claim`, `brain_delivery_claim_renew`, `brain_delivery_claim_release`, `brain_delivery_accept` |
+| Observable delivery | `brain_delivery_contract_set`, `brain_delivery_bind_pr`, `brain_delivery_get`, `brain_delivery_list`, `brain_delivery_refresh`, `brain_delivery_claim`, `brain_delivery_claim_renew`, `brain_delivery_claim_release`, `brain_delivery_accept`, `brain_delivery_attest`, `brain_delivery_attestation_list` |
 | Dream / graph | `brain_get_clusters`, `brain_backfill_links_batch`, `brain_consolidation_candidates`, `brain_merge_entities`, `brain_refresh_entity`, `brain_reindex_plans`, `brain_list_orphans_for_classification`, `brain_assign_domain`, `brain_list_curation_proposals`, `brain_reject_curation_proposals`, `brain_apply_curation_proposal` |
 | Roadmap & decay | `brain_get_roadmap`, `brain_feature_create`, `brain_feature_update`, `brain_decay_status` |
 | Workflow guidance | `brain_workflow_guide` |
@@ -275,7 +275,7 @@ Details: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
 
 ## Production state
 
-The repository migration target is migration 053. No page in this repository proves a
+The repository migration target is migration 054. No page in this repository proves a
 live schema head — **measure it, do not read it here**:
 
 ```bash
@@ -341,7 +341,8 @@ migrations, and attaches both to the GitHub release.
   a stable interface and a way back, and this project has neither yet.
 - **No lossless downgrade is promised, at any version.** Several migrations protect stored
   history: **037** refuses when a session capture would be lost, **039** requires an explicit
-  operator opt-in, and **053** refuses once delivery workflow history exists.
+  operator opt-in, **053** refuses once delivery workflow history exists, and **054** refuses
+  once a delivery attestation exists.
 - Follow the release's operator runbook for recovery. For **0.6.0** (as for 0.5.0), use the
   [compatible forward rollback](docs/runbooks/2026-09-07-observable-delivery-workflows.md#compatible-forward-rollback)
   and keep schema 053 in place.
