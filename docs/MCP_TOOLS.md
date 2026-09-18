@@ -103,7 +103,7 @@ catalog gateways.
 | `brain_delivery_claim_release` | `ticket_id`, `owner_key`, `claim_token`, `epoch` | `ClaimState` |
 | `brain_delivery_accept` | `ticket_id`, `rationale`, `expected_revision`, `expected_attempt`, `expected_delivery_digest` | `MilestoneReceipt` |
 | `brain_delivery_attest` | `ticket_id`, `kind`, `payload`, `idempotency_key`, `emitted_at`, `contract_revision=None` | `DeliveryAttestation` |
-| `brain_delivery_attestation_list` | `ticket_id`, `kind=None`, `since=None`, `until=None`, `limit=20`, `cursor=None` | `DeliveryAttestationPage` |
+| `brain_delivery_attestation_list` | `ticket_id=None`, `issuer_project=None`, `kind=None`, `since=None`, `until=None`, `limit=20`, `cursor=None` | `DeliveryAttestationPage` |
 
 The requester sets/amends contracts and accepts deliveries. The executor binds
 PRs and claims executor work; either ticket participant can read or refresh.
@@ -113,30 +113,45 @@ unknown caller. The header is declared provenance within the admin boundary.
 Attestations are the ledger's issuer-declared facts (Brain ticket 04bc1f4a, the
 ledger/policy boundary agreed with red-rail: Brain stores facts and proofs, red-rail
 owns policy). `brain_delivery_attest` records one fact about a ticket's delivery
-workflow, optionally about one contract revision, from either ticket participant
+workflow, optionally about one contract revision, on behalf of a ticket participant
+(`actor_project`; by agreed convention the executor, `to_project`, for every kind)
 and with no ticket-status restriction — `incident_detected` and `rolled_back`
-legitimately arrive after a ticket closed. Brain validates the FORM and never
-judges the kind: `kind` matches `^[a-z][a-z0-9_]{0,63}$`, and the well-known
+legitimately arrive after a ticket closed. The issuer identity is the normalized
+`X-Brain-Agent` caller label, refused when empty, unknown or unexpanded
+(`invalid_issuer`); there is no registry of labels. Brain validates the FORM and
+never judges the kind, and every form violation carries a stable code:
+`invalid_kind` when `kind` does not match `^[a-z][a-z0-9_]{0,63}$` (the well-known
 values `released`, `deployed`, `rolled_back`, `incident_detected`, `restored`,
-`review_verdict` and `gate_passed` are documentation, not an allowlist; `payload`
-is a JSON object of at most 64 KiB of canonical JSON, floats and unicode
-surrogates refused; the issuer is `actor_project` plus the `X-Brain-Agent` caller
-label, refused when unknown, as for acceptance. The server computes the digest
-and the issuer never supplies it: `sha256("brain-delivery-attestation:v1\n" +
-canonical payload)`, canonical meaning `json.dumps(payload, sort_keys=True,
-ensure_ascii=False, separators=(",", ":"), allow_nan=False)` encoded as UTF-8 —
-`{"gate": "unit"}` digests to
-`7fdcbddf961e6f3efc75d3edfbc198efd9d830200da818c75f6500c35d7e95d7`, the vector
-`tests/unit/models/test_delivery_attestations.py` freezes for consumers that
-recompute it. `idempotency_key` is unique per `(ticket, issuer project)`: replaying
-it with identical content returns the stored row, different content is refused
-with `idempotency_key_reused`. Attestations are never updated or deleted, and no
-completion refusal is derived from them — red-rail computes its DORA metrics by
-reading them.
+`review_verdict` and `gate_passed` are documentation, not an allowlist, and
+`integrated` and `fulfilled` are reserved for receipts — declared anyway, they are
+stored); `invalid_payload` when the JSON object carries a float, a Unicode
+surrogate, a NUL character or more than 64 KiB of canonical JSON (a non-object is refused earlier by
+the transport as `invalid_arguments`); `invalid_emitted_at` for a naive instant.
+The server computes the digest and the issuer never supplies it:
+`sha256("brain-delivery-attestation:v1\n" + canonical payload)`, canonical meaning
+`json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+allow_nan=False)` encoded as UTF-8, rendered as 64 lowercase hexadecimal characters
+without prefix — `{"gate": "unit"}` digests to
+`7fdcbddf961e6f3efc75d3edfbc198efd9d830200da818c75f6500c35d7e95d7`.
+`idempotency_key` is unique per `(ticket, issuer project)`: replaying it with
+identical content (kind, digest, issuer identity, contract revision, emitted
+instant compared at microsecond precision) returns the stored row, different
+content is refused with `idempotency_key_reused`. Attestations are never updated or
+deleted, and no completion refusal is derived from them — red-rail computes its
+DORA metrics by reading them. The whole API is published as data in
+`docs/contracts/delivery_attestations.json` (kinds, bounds, digest recipe with its
+vectors and negative example, codes, list rules), kept equal to the code by
+`tests/unit/models/test_delivery_attestations_contract.py` for consumers that must
+not import `brain_v42`.
 
-`brain_delivery_attestation_list` reads newest first by emission time, with an
-exact `kind` filter, inclusive `since`/`until` bounds on `emitted_at` and a keyset
-cursor bound to its ticket; the read stays available while
+`brain_delivery_attestation_list` reads newest first by emission time in one of two
+scopes: with `ticket_id`, either ticket participant reads that ticket's facts and
+`issuer_project` is an optional filter; without it, `issuer_project` is required
+(`invalid_scope`) and must equal `actor_project` (`not_allowed`), so a project reads
+its own facts across its tickets without walking them. Filters are an exact `kind`
+and inclusive `since`/`until` bounds on `emitted_at`; the keyset cursor belongs to
+the scope that minted it (`invalid_cursor` elsewhere); `omitted_count` counts the
+rows matching the same filters beyond the page. The read stays available while
 `BRAIN_DELIVERY_ENABLED=false` pauses the mutation. `brain_delivery_get` carries the
 newest `history_limit` attestations with their digest in `view.attestations`, so a
 consumer can spot a local receipt without its attestation; `brain_delivery_list`

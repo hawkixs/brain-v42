@@ -24,6 +24,10 @@ def _reject_invalid_json_value(value: object) -> None:
     if isinstance(value, float):
         raise ValueError("canonical digest payload cannot contain floats")
     if isinstance(value, str):
+        # JSON allows U+0000; PostgreSQL jsonb does not, and the INSERT would fail
+        # AFTER every validator passed, as an availability error a caller retries.
+        if "\x00" in value:
+            raise ValueError("canonical digest payload cannot contain NUL characters")
         if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
             raise ValueError("canonical digest payload cannot contain Unicode surrogates")
         return

@@ -24,6 +24,8 @@ from brain_v42.models.delivery import (
     DeliveryView,
     MilestoneReceipt,
     RepositoryDocumentReference,
+    validate_attestation_form,
+    validate_attestation_kind,
 )
 from brain_v42.models.delivery_hashes import canonical_digest
 from brain_v42.repositories.pg_delivery import PgDeliveryRepo, _contract_from_json, lock_workflows
@@ -155,9 +157,14 @@ class DeliveryService:
         emitted_at: datetime,
         contract_revision: int | None = None,
     ) -> DeliveryAttestation:
-        """Record one issuer-declared fact; a mutation, refused while the feature is disabled."""
+        """Record one issuer-declared fact; a mutation, refused while the feature is disabled.
+
+        Form violations are named before any session opens: `invalid_kind`,
+        `invalid_payload`, `invalid_emitted_at` (red-rail request B, ticket 04bc1f4a).
+        """
         if not self._settings.enabled:
             raise DeliveryError("delivery_disabled", "delivery workflow operations are disabled")
+        validate_attestation_form(kind=kind, payload=payload, emitted_at=emitted_at)
         async with self._repo._maybe_session(None, write=True) as session:
             return await self._attestations_repo.attest(
                 session,
@@ -173,32 +180,50 @@ class DeliveryService:
 
     async def list_attestations(
         self,
-        ticket_id: UUID,
+        ticket_id: UUID | None,
         *,
         actor_project: str,
+        issuer_project: str | None = None,
         kind: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
         limit: int = 20,
         cursor: str | None = None,
     ) -> DeliveryAttestationPage:
-        """Read one ticket's facts; a read, still available while the feature is disabled."""
+        """Read facts in one scope; a read, still available while the feature is disabled.
+
+        With a ticket, either participant reads and `issuer_project` only filters.
+        Without one, `issuer_project` is required and must be the caller's own
+        project: a project reads its own facts across its tickets, nobody else's.
+        """
         if type(limit) is not int or not 1 <= limit <= 100:
             raise DeliveryError("invalid_limit", "attestation limit must be between 1 and 100")
+        if kind is not None:
+            validate_attestation_kind(kind)
+        if ticket_id is None:
+            if issuer_project is None:
+                raise DeliveryError(
+                    "invalid_scope", "issuer_project is required without a ticket_id"
+                )
+            if issuer_project != actor_project:
+                raise DeliveryError(
+                    "not_allowed", "a project reads only its own attestations across tickets"
+                )
         async with self._repo._maybe_session(None, write=False) as session:
-            ticket = (
-                (await session.execute(sa.select(tickets).where(tickets.c.id == ticket_id)))
-                .mappings()
-                .one_or_none()
-            )
-        if ticket is None:
-            raise DeliveryError("ticket_not_found", "ticket was not found")
-        if actor_project not in {ticket["from_project"], ticket["to_project"]}:
-            raise DeliveryError("not_allowed", "actor is not a ticket participant")
-        async with self._repo._maybe_session(None, write=False) as session:
-            return await self._attestations_repo.list_for_ticket(
+            if ticket_id is not None:
+                ticket = (
+                    (await session.execute(sa.select(tickets).where(tickets.c.id == ticket_id)))
+                    .mappings()
+                    .one_or_none()
+                )
+                if ticket is None:
+                    raise DeliveryError("ticket_not_found", "ticket was not found")
+                if actor_project not in {ticket["from_project"], ticket["to_project"]}:
+                    raise DeliveryError("not_allowed", "actor is not a ticket participant")
+            return await self._attestations_repo.list_attestations(
                 session,
-                ticket_id,
+                ticket_id=ticket_id,
+                issuer_project=issuer_project,
                 kind=kind,
                 since=since,
                 until=until,

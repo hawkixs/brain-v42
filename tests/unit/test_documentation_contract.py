@@ -1804,8 +1804,10 @@ def test_repository_head_054_is_documented_without_claiming_a_deployed_head() ->
     attestation ledger of ticket 04bc1f4a, applied to DISPOSABLE chain-built
     databases only (the 054 migration test replays the fail-closed refusal and the
     opt-in round trip; the attestation surface is proved on the session's disposable
-    head). PRODUCTION UNTOUCHED, and the shared `brain_test` too: both measured at
-    053 the same day. Applying 054 is an operator gesture inside the merge window,
+    head). PRODUCTION UNTOUCHED, measured at 053 the same day; the shared
+    `brain_test` was upgraded 053→054 the same day, because the integration guard
+    refuses a shared database that lags the repository head. Applying 054 to
+    production is an operator gesture inside the merge window,
     and until then the deployment preflight and the plan-index repair refuse to run
     against production — the pin working as designed. Previously bumped to 051 on
     2026-09-02 — M-C, the session checkpoint ledger,

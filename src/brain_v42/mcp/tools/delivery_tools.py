@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
@@ -41,6 +42,9 @@ TicketId = Annotated[
 Project = Annotated[str, Field(strict=True, min_length=1, max_length=200, pattern=r"\S")]
 Owner = Annotated[str, Field(strict=True, min_length=1, max_length=200, pattern=r"\S")]
 Key = Annotated[str, Field(strict=True, min_length=1, max_length=200, pattern=r"\S")]
+#: Bounded at the transport only; the shape itself is judged by the service so that a
+#: violation reaches the caller as `invalid_kind`, never as a framework error.
+Kind = Annotated[str, Field(strict=True, min_length=1, max_length=200)]
 Reason = Annotated[str, Field(strict=True, min_length=1, max_length=4000, pattern=r"\S")]
 Positive = Annotated[int, Field(strict=True, gt=0)]
 Revision = Annotated[int, Field(strict=True, ge=0)]
@@ -243,18 +247,21 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
     async def brain_delivery_attest(
         ticket_id: TicketId,
         actor_project: Project,
-        kind: Annotated[str, Field(strict=True, pattern=r"^[a-z][a-z0-9_]{0,63}$")],
+        kind: Kind,
         payload: dict[str, Any],
         idempotency_key: Key,
-        emitted_at: AwareDatetime,
+        emitted_at: datetime,
         contract_revision: Positive | None = None,
     ) -> DeliveryAttestation:
         """Record one issuer-declared delivery fact; Brain stores its shape and never judges its kind.
 
+        `actor_project` is the ticket participant on whose behalf the fact is declared.
         The issuer identity is the X-Brain-Agent caller label (declared provenance within
         the admin boundary, as for brain_delivery_accept); an unknown caller is refused.
-        Replaying the same idempotency_key with identical content returns the stored row;
-        different content is refused with `idempotency_key_reused`.
+        Form violations carry stable codes: `invalid_kind`, `invalid_payload` (a float, a
+        Unicode surrogate, a NUL character, more than 64 KiB of canonical JSON) and `invalid_emitted_at`
+        (a naive instant). Replaying the same idempotency_key with identical content
+        returns the stored row; different content is refused with `idempotency_key_reused`.
         """
         caller = get_current_actor()
         if not caller.strip() or caller in {UNKNOWN_ACTOR, UNEXPANDED_ACTOR}:
@@ -272,18 +279,26 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
 
     @delivery.tool(version="1.0", annotations=_READ_ANNOTATIONS)
     async def brain_delivery_attestation_list(
-        ticket_id: TicketId,
         actor_project: Project,
-        kind: Annotated[str, Field(strict=True, pattern=r"^[a-z][a-z0-9_]{0,63}$")] | None = None,
+        ticket_id: TicketId | None = None,
+        issuer_project: Project | None = None,
+        kind: Kind | None = None,
         since: AwareDatetime | None = None,
         until: AwareDatetime | None = None,
         limit: Limit = 20,
         cursor: Cursor | None = None,
     ) -> DeliveryAttestationPage:
-        """List a ticket's attestations newest first, filtered by kind and emission window."""
+        """List attestations newest first in one scope, filtered by kind and emission window.
+
+        With `ticket_id`, either ticket participant reads that ticket's facts and
+        `issuer_project` is an optional filter. Without it, `issuer_project` is required
+        and must equal `actor_project`: a project reads its own facts across its tickets.
+        A cursor belongs to the scope that minted it.
+        """
         return await delivery_svc.list_attestations(
-            UUID(ticket_id),
+            UUID(ticket_id) if ticket_id is not None else None,
             actor_project=actor_project,
+            issuer_project=issuer_project,
             kind=kind,
             since=since,
             until=until,

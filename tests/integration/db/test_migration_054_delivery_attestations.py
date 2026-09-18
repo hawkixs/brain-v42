@@ -201,7 +201,7 @@ class TestTheDowngradeIsAFence:
             # `head`, never a literal: this bench shares its disposable database
             # with every test that runs after it. The delivered attestations were
             # dropped by the opt-in downgrade, so this only restores the schema.
-            subprocess.run(
+            restored = subprocess.run(
                 [sys.executable, "-m", "alembic", "upgrade", "head"],
                 env={**os.environ, "POSTGRES_URL": db_url},
                 cwd=str(_PROJECT_ROOT),
@@ -209,4 +209,7 @@ class TestTheDowngradeIsAFence:
                 text=True,
                 timeout=120,
             )
+            # Unchecked, a failed restore would leave the shared disposable database
+            # at 053 and every later test would fail with an unrelated error.
+            assert restored.returncode == 0, restored.stderr
             await _cleanup(engine, ticket_id)

@@ -56,6 +56,11 @@ def upgrade() -> None:
     op.execute(
         "CREATE INDEX ix_delivery_attestations_ticket_kind_emitted ON delivery_attestations (ticket_id, kind, emitted_at DESC, id DESC)"
     )
+    # The second read scope: one issuer project across its tickets, which is how
+    # red-rail computes a project's metrics without walking every ticket.
+    op.execute(
+        "CREATE INDEX ix_delivery_attestations_issuer_kind_emitted ON delivery_attestations (issuer_project, kind, emitted_at DESC, id DESC)"
+    )
 
 
 def downgrade() -> None:
@@ -86,5 +91,6 @@ def downgrade() -> None:
         $$
         """
     )
+    op.execute("DROP INDEX IF EXISTS ix_delivery_attestations_issuer_kind_emitted")
     op.execute("DROP INDEX IF EXISTS ix_delivery_attestations_ticket_kind_emitted")
     op.execute("DROP TABLE IF EXISTS delivery_attestations")

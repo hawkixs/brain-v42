@@ -523,6 +523,13 @@ def register_delivery_tables(metadata: sa.MetaData) -> dict[str, sa.Table]:
             sa.desc("emitted_at"),
             sa.desc("id"),
         ),
+        sa.Index(
+            "ix_delivery_attestations_issuer_kind_emitted",
+            "issuer_project",
+            "kind",
+            sa.desc("emitted_at"),
+            sa.desc("id"),
+        ),
     )
     return {
         table.name: table

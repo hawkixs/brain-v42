@@ -1,0 +1,193 @@
+{
+  "contract_version": 1,
+  "ticket": "04bc1f4a-3c21-48eb-86bb-c3f3279a9c9f",
+  "boundary": "Brain is the ledger: it stores issuer-declared delivery facts and validates their form; it never judges a kind, derives no completion refusal from an attestation and computes no metric. Policy and DORA metrics belong to red-rail, which reads.",
+  "tools": {
+    "brain_delivery_attest": "1.0",
+    "brain_delivery_attestation_list": "1.0"
+  },
+  "record_fields": [
+    "id",
+    "ticket_id",
+    "contract_revision",
+    "kind",
+    "payload",
+    "digest",
+    "issuer_project",
+    "issuer_identity",
+    "idempotency_key",
+    "emitted_at",
+    "recorded_at"
+  ],
+  "issuer": {
+    "actor_project": "a participant of the ticket, from_project or to_project; by agreed convention the executor, to_project, for every kind",
+    "issuer_project": "equals actor_project",
+    "issuer_identity": "the normalized X-Brain-Agent caller label; empty, unknown or unexpanded is refused with invalid_issuer",
+    "normalization": [
+      "trim",
+      "empty -> unknown (refused)",
+      "contains ${ -> _unexpanded (refused)",
+      "absolute path -> its basename",
+      "truncated to 64 characters"
+    ],
+    "registry": "none; any other label is accepted as declared provenance"
+  },
+  "kind": {
+    "pattern": "^[a-z][a-z0-9_]{0,63}$",
+    "documented": [
+      "released",
+      "deployed",
+      "rolled_back",
+      "incident_detected",
+      "restored",
+      "review_verdict",
+      "gate_passed"
+    ],
+    "reserved": [
+      "integrated",
+      "fulfilled"
+    ],
+    "reserved_meaning": "milestones that are receipts in Brain, read from the ticket, never attestations; still stored if declared, because Brain does not judge kinds",
+    "enforced_vocabulary": false,
+    "violation": "invalid_kind"
+  },
+  "payload": {
+    "object_only": true,
+    "max_canonical_bytes": 65536,
+    "floats": "refused",
+    "unicode_surrogates": "refused",
+    "nul_characters": "refused",
+    "non_string_keys": "refused",
+    "violation": "invalid_payload",
+    "non_object_at_transport": "invalid_arguments"
+  },
+  "digest": {
+    "algorithm": "sha256",
+    "computed_by": "server; never supplied by the issuer",
+    "domain_prefix": "brain-delivery-attestation:v1\n",
+    "canonical_json": {
+      "sort_keys": true,
+      "separators": [
+        ",",
+        ":"
+      ],
+      "ensure_ascii": false,
+      "allow_nan": false,
+      "encoding": "utf-8"
+    },
+    "format": "64 lowercase hexadecimal characters, no prefix",
+    "vectors": [
+      {
+        "payload": {
+          "gate": "unit"
+        },
+        "digest": "7fdcbddf961e6f3efc75d3edfbc198efd9d830200da818c75f6500c35d7e95d7"
+      },
+      {
+        "payload": {},
+        "digest": "83ab630ce5a131b89960890abf965fcd944cd1e60fce59d166a691754e87cd86"
+      },
+      {
+        "payload": {
+          "note": "déployé"
+        },
+        "digest": "bcbe874d6afd302fd88f2797c2284ffb8f8e7a9f3c0f8447bc35e6680af950a4"
+      },
+      {
+        "payload": {
+          "sha": "d7a11a99a91964073be0af7d0ec7399b475f9f0a",
+          "independent": true,
+          "verdict": "approve"
+        },
+        "digest": "14ee79580e19df07c76872b75c4cd797422243ee8236f9cd49061285521c0af8"
+      }
+    ],
+    "negative_example": {
+      "payload": {
+        "ratio": 1.5
+      },
+      "error_code": "invalid_payload"
+    }
+  },
+  "timestamps": {
+    "emitted_at": {
+      "declared_by": "issuer",
+      "format": "ISO 8601 with offset",
+      "timezone": "required",
+      "naive_refused_with": "invalid_emitted_at",
+      "compared_as": "instants at microsecond precision, never as strings"
+    },
+    "recorded_at": {
+      "set_by": "server clock at insert"
+    }
+  },
+  "contract_revision": "optional; null means no particular revision; a revision unknown to the ticket is refused with revision_not_found",
+  "uniqueness": [
+    "ticket_id",
+    "issuer_project",
+    "idempotency_key"
+  ],
+  "replay_equality": [
+    "kind",
+    "digest",
+    "issuer_identity",
+    "contract_revision",
+    "emitted_at"
+  ],
+  "replay": {
+    "identical_content": "returns the stored row",
+    "different_content": "idempotency_key_reused"
+  },
+  "immutability": "append-only by code path: no update and no delete exist",
+  "issuance_preconditions": {
+    "ticket_exists": "ticket_not_found",
+    "actor_is_participant": "not_allowed",
+    "ticket_has_a_delivery_workflow": "contract_not_found",
+    "ticket_status": "unrestricted; incident_detected and rolled_back may follow closure",
+    "feature_enabled": "delivery_disabled pauses the mutation, never the read"
+  },
+  "list": {
+    "scopes": {
+      "ticket": "ticket_id given: either ticket participant reads; issuer_project is an optional exact filter",
+      "issuer_project": "ticket_id omitted: issuer_project is required (invalid_scope) and must equal actor_project (not_allowed)"
+    },
+    "filters": {
+      "kind": "exact",
+      "since": "inclusive lower bound on emitted_at",
+      "until": "inclusive upper bound on emitted_at"
+    },
+    "order": [
+      "emitted_at DESC",
+      "id DESC"
+    ],
+    "limit": [
+      1,
+      100
+    ],
+    "cursor": "opaque keyset bound to the scope that minted it; another scope or a malformed value is refused with invalid_cursor",
+    "omitted_count": "rows matching the same filters beyond the returned page",
+    "in_delivery_get": "view.attestations carries the newest history_limit rows of the ticket",
+    "in_delivery_list": "attestations is null"
+  },
+  "error_codes": {
+    "tool": [
+      "contract_not_found",
+      "delivery_disabled",
+      "idempotency_key_reused",
+      "invalid_cursor",
+      "invalid_emitted_at",
+      "invalid_issuer",
+      "invalid_kind",
+      "invalid_limit",
+      "invalid_payload",
+      "invalid_scope",
+      "not_allowed",
+      "revision_not_found",
+      "ticket_not_found"
+    ],
+    "transport": [
+      "invalid_arguments",
+      "delivery_unavailable"
+    ]
+  }
+}

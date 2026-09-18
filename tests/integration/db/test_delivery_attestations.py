@@ -261,11 +261,29 @@ async def test_mcp_attest_requires_a_declared_caller(
         assert stored.structured_content["issuer_identity"] == "mcp-attester"
 
 
-async def test_dream_scoped_token_is_denied_on_attestation(
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        (
+            "brain_delivery_attest",
+            {
+                "actor_project": "requester",
+                "kind": "gate_passed",
+                "payload": dict(_PAYLOAD),
+                "idempotency_key": "denied",
+                "emitted_at": _EMITTED.isoformat(),
+            },
+        ),
+        ("brain_delivery_attestation_list", {"actor_project": "requester"}),
+    ],
+)
+async def test_dream_scoped_token_is_denied_on_both_attestation_tools(
     delivery_mcp,  # noqa: F811 - imported fixture
     monkeypatch,
+    tool,
+    arguments,
 ):
-    """The mutation goes through `_DeliveryRegistry`, so the phase bound covers it."""
+    """Both tools go through `_DeliveryRegistry`, so the phase bound covers the read too."""
     from brain_v42.mcp import dream_capabilities, tool_catalog
 
     access = AccessToken(
@@ -284,15 +302,232 @@ async def test_dream_scoped_token_is_denied_on_attestation(
     delivery_mcp.add_middleware(dream_capabilities.DreamCapabilityMiddleware())
     async with Client(delivery_mcp) as client:
         result = await client.call_tool(
-            "brain_delivery_attest",
+            tool, {"ticket_id": str(uuid4()), **arguments}, raise_on_error=False
+        )
+    assert result.is_error and "Dream capability authorization denied" in str(result.content)
+
+
+def _unique_kind() -> str:
+    """A kind no other test shares: project-wide reads span the shared database."""
+    return f"wide_{uuid4().hex[:10]}"
+
+
+async def test_form_violations_are_refused_with_stable_codes_before_any_write(session_factory):
+    """red-rail request B on ticket 04bc1f4a: a boundary test needs a code, never a traceback."""
+    ticket, _binding, service = await _workflow(session_factory)
+
+    for overrides, code in (
+        ({"kind": "Gate-Passed"}, "invalid_kind"),
+        ({"payload": {"ratio": 1.5}}, "invalid_payload"),
+        ({"payload": {"blob": "x" * 65_537}}, "invalid_payload"),
+        ({"payload": {"label": "\ud800"}}, "invalid_payload"),
+        ({"emitted_at": _EMITTED.replace(tzinfo=None)}, "invalid_emitted_at"),
+    ):
+        with pytest.raises(DeliveryError) as excinfo:
+            await _attest(service, ticket.id, **overrides)
+        assert excinfo.value.code == code, (overrides, excinfo.value)
+    with pytest.raises(DeliveryError, match="invalid_kind"):
+        await service.list_attestations(ticket.id, actor_project="requester", kind="Gate-Passed")
+
+    assert await _rows(session_factory, ticket.id) == []
+
+
+async def test_mcp_form_violations_reach_the_caller_as_stable_codes(
+    delivery_mcp,  # noqa: F811 - imported fixture
+    session_factory,
+    monkeypatch,
+):
+    """Through the transport: the service codes for form, `invalid_arguments` for shape."""
+    from brain_v42.mcp import provenance_middleware
+
+    ticket, _binding, _service_instance = await _workflow(session_factory)
+    base = {
+        "ticket_id": str(ticket.id),
+        "actor_project": "requester",
+        "kind": "gate_passed",
+        "payload": dict(_PAYLOAD),
+        "idempotency_key": "mcp-form-key",
+        "emitted_at": _EMITTED.isoformat(),
+    }
+    async with Client(delivery_mcp) as client:
+        monkeypatch.setattr(
+            provenance_middleware,
+            "get_http_headers",
+            lambda **_kw: {"x-brain-agent": "mcp-attester"},
+        )
+        for arguments, code in (
+            ({**base, "payload": {"ratio": 1.5}}, "invalid_payload"),
+            ({**base, "kind": "Gate-Passed"}, "invalid_kind"),
+            ({**base, "emitted_at": "2026-09-16T10:00:00"}, "invalid_emitted_at"),
+            ({**base, "payload": ["not", "an", "object"]}, "invalid_arguments"),
+        ):
+            result = await client.call_tool(
+                "brain_delivery_attest", arguments, raise_on_error=False
+            )
+            assert result.is_error and code in str(result.content), (code, str(result.content))
+    assert await _rows(session_factory, ticket.id) == []
+
+
+async def test_mcp_list_returns_complete_rows_in_both_scopes(
+    delivery_mcp,  # noqa: F811 - imported fixture
+    session_factory,
+):
+    """red-rail request A: the issuer fields travel with every item, in both scopes."""
+    ticket, _binding, service = await _workflow(session_factory)
+    kind = _unique_kind()
+    stored = await _attest(service, ticket.id, kind=kind, idempotency_key="mcp-list-key")
+
+    async with Client(delivery_mcp) as client:
+        by_ticket = await client.call_tool(
+            "brain_delivery_attestation_list",
+            {"ticket_id": str(ticket.id), "actor_project": "requester"},
+            raise_on_error=False,
+        )
+        assert not by_ticket.is_error, str(by_ticket.content)
+        items = by_ticket.structured_content["items"]
+        assert [item["id"] for item in items] == [str(stored.id)]
+        assert items[0]["ticket_id"] == str(ticket.id)
+        assert items[0]["issuer_project"] == "requester"
+        assert items[0]["issuer_identity"] == "attester-client"
+        assert items[0]["digest"] == stored.digest
+        assert items[0]["emitted_at"] and items[0]["recorded_at"]
+
+        project_wide = await client.call_tool(
+            "brain_delivery_attestation_list",
+            {"actor_project": "requester", "issuer_project": "requester", "kind": kind},
+            raise_on_error=False,
+        )
+        assert not project_wide.is_error, str(project_wide.content)
+        assert [item["id"] for item in project_wide.structured_content["items"]] == [str(stored.id)]
+
+        # A cursor minted over the wire is accepted back over the wire, with the
+        # window bounds travelling as ISO strings.
+        later = await _attest(
+            service,
+            ticket.id,
+            kind=kind,
+            payload={"second": True},
+            idempotency_key="mcp-list-key-2",
+            emitted_at=_EMITTED + timedelta(minutes=1),
+        )
+        window = {
+            "since": _EMITTED.isoformat(),
+            "until": (_EMITTED + timedelta(minutes=1)).isoformat(),
+        }
+        first = await client.call_tool(
+            "brain_delivery_attestation_list",
+            {"ticket_id": str(ticket.id), "actor_project": "requester", "limit": 1, **window},
+            raise_on_error=False,
+        )
+        assert not first.is_error, str(first.content)
+        assert [item["id"] for item in first.structured_content["items"]] == [str(later.id)]
+        assert first.structured_content["omitted_count"] == 1
+        second = await client.call_tool(
+            "brain_delivery_attestation_list",
             {
-                "ticket_id": str(uuid4()),
+                "ticket_id": str(ticket.id),
                 "actor_project": "requester",
-                "kind": "gate_passed",
-                "payload": dict(_PAYLOAD),
-                "idempotency_key": "denied",
-                "emitted_at": _EMITTED.isoformat(),
+                "limit": 1,
+                "cursor": first.structured_content["next_cursor"],
+                **window,
             },
             raise_on_error=False,
         )
-    assert result.is_error and "Dream capability authorization denied" in str(result.content)
+        assert not second.is_error, str(second.content)
+        assert [item["id"] for item in second.structured_content["items"]] == [str(stored.id)]
+        assert second.structured_content["next_cursor"] is None
+
+
+async def test_project_wide_reads_span_tickets_and_bind_their_cursor_to_the_scope(
+    session_factory,
+):
+    """red-rail request 2: `rail metrics` reads one project's facts across its tickets."""
+    first, _first_binding, service = await _workflow(session_factory)
+    second, _second_binding, _other = await _workflow(session_factory)
+    kind = _unique_kind()
+    rows = []
+    for index, ticket_id in enumerate((first.id, second.id, first.id)):
+        rows.append(
+            await _attest(
+                service,
+                ticket_id,
+                kind=kind,
+                payload={"index": index},
+                idempotency_key=f"wide-{index}",
+                emitted_at=_EMITTED + timedelta(minutes=index),
+            )
+        )
+
+    page = await service.list_attestations(
+        None, actor_project="requester", issuer_project="requester", kind=kind, limit=2
+    )
+    assert [item.id for item in page.items] == [rows[2].id, rows[1].id]
+    assert {item.ticket_id for item in page.items} == {first.id, second.id}
+    assert page.omitted_count == 1
+    assert page.next_cursor is not None
+
+    rest = await service.list_attestations(
+        None,
+        actor_project="requester",
+        issuer_project="requester",
+        kind=kind,
+        limit=2,
+        cursor=page.next_cursor,
+    )
+    assert [item.id for item in rest.items] == [rows[0].id]
+    assert rest.omitted_count == 0
+    assert rest.next_cursor is None
+
+    with pytest.raises(DeliveryError, match="invalid_cursor"):
+        await service.list_attestations(
+            first.id, actor_project="requester", cursor=page.next_cursor
+        )
+    with pytest.raises(DeliveryError, match="invalid_scope"):
+        await service.list_attestations(None, actor_project="requester")
+    with pytest.raises(DeliveryError, match="not_allowed"):
+        await service.list_attestations(None, actor_project="requester", issuer_project="executor")
+
+    filtered = await service.list_attestations(
+        first.id, actor_project="executor", issuer_project="requester", kind=kind
+    )
+    assert [item.id for item in filtered.items] == [rows[2].id, rows[0].id]
+    none = await service.list_attestations(
+        first.id, actor_project="executor", issuer_project="executor", kind=kind
+    )
+    assert none.items == ()
+
+
+async def test_equal_emission_instants_page_without_repeating_or_skipping(session_factory):
+    """Issuers batch: three facts at the SAME second are the normal case, not the exotic one.
+
+    Independent review finding: every other paging case spaced rows a minute apart, so
+    the `(emitted_at, id)` tiebreaker was never exercised and a "simplification" to
+    `emitted_at < at` would have passed the suite while dropping or repeating rows.
+    """
+    ticket, _binding, service = await _workflow(session_factory)
+    written = {
+        (
+            await _attest(
+                service,
+                ticket.id,
+                payload={"index": index},
+                idempotency_key=f"same-instant-{index}",
+            )
+        ).id
+        for index in range(3)
+    }
+
+    seen: list[UUID] = []
+    cursor = None
+    for _page in range(3):
+        page = await service.list_attestations(
+            ticket.id, actor_project="requester", limit=2, cursor=cursor
+        )
+        seen.extend(item.id for item in page.items)
+        assert all(item.emitted_at == _EMITTED for item in page.items)
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+
+    assert len(seen) == 3
+    assert set(seen) == written

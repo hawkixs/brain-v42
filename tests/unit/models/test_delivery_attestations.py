@@ -149,3 +149,74 @@ def test_attestation_page_has_the_history_page_shape() -> None:
     assert page.next_cursor == "opaque-cursor"
     assert page.omitted_count == 3
     assert DeliveryAttestationPage().omitted_count == 0
+
+
+def test_form_validation_names_the_field_it_refuses() -> None:
+    """The service-level guard behind `invalid_kind`, `invalid_payload`, `invalid_emitted_at`."""
+    from datetime import UTC, datetime
+
+    from brain_v42.models.delivery import DeliveryError, validate_attestation_form
+
+    emitted = datetime(2026, 9, 16, 10, tzinfo=UTC)
+    validate_attestation_form(kind="gate_passed", payload={"gate": "unit"}, emitted_at=emitted)
+
+    for overrides, code in (
+        ({"kind": "Gate_passed"}, "invalid_kind"),
+        ({"kind": ""}, "invalid_kind"),
+        ({"kind": "a" * 65}, "invalid_kind"),
+        ({"payload": {"ratio": 1.5}}, "invalid_payload"),
+        ({"payload": {"blob": "x" * 65_537}}, "invalid_payload"),
+        ({"payload": {"label": "\ud800"}}, "invalid_payload"),
+        ({"payload": ["not", "an", "object"]}, "invalid_payload"),
+        ({"emitted_at": emitted.replace(tzinfo=None)}, "invalid_emitted_at"),
+    ):
+        arguments: dict[str, object] = {
+            "kind": "gate_passed",
+            "payload": {"gate": "unit"},
+            "emitted_at": emitted,
+        }
+        arguments.update(overrides)
+        with pytest.raises(DeliveryError) as excinfo:
+            validate_attestation_form(**arguments)  # type: ignore[arg-type]
+        assert excinfo.value.code == code, (overrides, excinfo.value)
+
+
+def test_the_documented_and_reserved_kinds_are_published_and_well_formed() -> None:
+    import re
+
+    from brain_v42.models.delivery import (
+        ATTESTATION_KIND_PATTERN,
+        DOCUMENTED_ATTESTATION_KINDS,
+        RESERVED_ATTESTATION_KINDS,
+    )
+
+    assert DOCUMENTED_ATTESTATION_KINDS == (
+        "released",
+        "deployed",
+        "rolled_back",
+        "incident_detected",
+        "restored",
+        "review_verdict",
+        "gate_passed",
+    )
+    assert RESERVED_ATTESTATION_KINDS == ("integrated", "fulfilled")
+    for kind in DOCUMENTED_ATTESTATION_KINDS + RESERVED_ATTESTATION_KINDS:
+        assert re.fullmatch(ATTESTATION_KIND_PATTERN, kind)
+
+
+def test_payload_rejects_nul_bytes_that_jsonb_cannot_store() -> None:
+    """A NUL inside a string passes JSON but not PostgreSQL's jsonb: refuse it up front.
+
+    Independent review finding: without this, the INSERT raised
+    `UntranslatableCharacterError` and the caller read `delivery_unavailable`, an
+    availability error it would retry forever.
+    """
+    from brain_v42.models.delivery import DeliveryAttestation
+    from brain_v42.models.delivery_hashes import canonical_digest
+
+    with pytest.raises(ValidationError, match="NUL"):
+        DeliveryAttestation.model_validate(_attestation(payload={"log": "a\x00b"}))
+    with pytest.raises(ValueError, match="NUL"):
+        canonical_digest({"log": "a\x00b"}, domain="attestation")
+    with pytest.raises(ValueError, match="NUL"):
+        canonical_digest({"a\x00b": "key"}, domain="attestation")

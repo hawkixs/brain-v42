@@ -23,7 +23,44 @@ from pydantic import (
 )
 
 _MAX_CONTRACT_BYTES = 256 * 1024
-_MAX_ATTESTATION_PAYLOAD_BYTES = 65_536
+#: Attestation FORM, the whole of what Brain enforces on an issuer-declared fact
+#: (ticket 04bc1f4a). The kind vocabulary is documentation for consumers, never an
+#: allowlist: `reserved` names the milestones that are receipts in Brain, not
+#: attestations, and even those are stored if declared — Brain does not judge kinds.
+MAX_ATTESTATION_PAYLOAD_BYTES = 65_536
+_MAX_ATTESTATION_PAYLOAD_BYTES = MAX_ATTESTATION_PAYLOAD_BYTES
+ATTESTATION_KIND_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
+_ATTESTATION_KIND_RE = re.compile(ATTESTATION_KIND_PATTERN)
+DOCUMENTED_ATTESTATION_KINDS: tuple[str, ...] = (
+    "released",
+    "deployed",
+    "rolled_back",
+    "incident_detected",
+    "restored",
+    "review_verdict",
+    "gate_passed",
+)
+RESERVED_ATTESTATION_KINDS: tuple[str, ...] = ("integrated", "fulfilled")
+#: Every stable code the attestation tools raise themselves; the transport adds
+#: `invalid_arguments` and `delivery_unavailable`. Published as data in
+#: `docs/contracts/delivery_attestations.json`, kept equal by test.
+DELIVERY_ATTESTATION_ERROR_CODES: frozenset[str] = frozenset(
+    {
+        "contract_not_found",
+        "delivery_disabled",
+        "idempotency_key_reused",
+        "invalid_cursor",
+        "invalid_emitted_at",
+        "invalid_issuer",
+        "invalid_kind",
+        "invalid_limit",
+        "invalid_payload",
+        "invalid_scope",
+        "not_allowed",
+        "revision_not_found",
+        "ticket_not_found",
+    }
+)
 _SHA_RE = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
@@ -933,13 +970,62 @@ class MilestoneReceipt(_StoredModel):
         return self
 
 
+def canonical_attestation_payload(value: object) -> bytes:
+    """The canonical JSON bytes the attestation digest is computed over.
+
+    Raises ValueError, with the reason, for anything outside the canonical domain:
+    a non-object, a float, a Unicode surrogate, a non-string key, or more than
+    `MAX_ATTESTATION_PAYLOAD_BYTES` once canonicalised.
+    """
+    from brain_v42.models.delivery_hashes import _reject_invalid_json_value
+
+    if not isinstance(value, Mapping):
+        raise ValueError("attestation payload must be a JSON object")
+    _reject_invalid_json_value(value)
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    if len(encoded) > MAX_ATTESTATION_PAYLOAD_BYTES:
+        raise ValueError(
+            f"attestation payload exceeds {MAX_ATTESTATION_PAYLOAD_BYTES} bytes of canonical JSON"
+        )
+    return encoded
+
+
+def validate_attestation_kind(kind: object) -> None:
+    """Refuse a kind outside the published shape with the stable `invalid_kind` code."""
+    if not isinstance(kind, str) or _ATTESTATION_KIND_RE.fullmatch(kind) is None:
+        raise DeliveryError("invalid_kind", f"kind must match {ATTESTATION_KIND_PATTERN}")
+
+
+def validate_attestation_form(*, kind: object, payload: object, emitted_at: object) -> None:
+    """Validate the FORM of an attestation with stable codes, before any write.
+
+    red-rail request B on ticket 04bc1f4a: a consumer's boundary test must see
+    `invalid_kind`, `invalid_payload` or `invalid_emitted_at`, never a framework
+    error. The `DeliveryAttestation` model repeats the same checks as a last line;
+    this function is the one that names the field.
+    """
+    validate_attestation_kind(kind)
+    try:
+        canonical_attestation_payload(payload)
+    except ValueError as error:
+        raise DeliveryError("invalid_payload", str(error)) from None
+    if not isinstance(emitted_at, datetime) or emitted_at.tzinfo is None:
+        raise DeliveryError("invalid_emitted_at", "emitted_at must be a timezone-aware instant")
+
+
 class DeliveryAttestation(_StoredModel):
     """One append-only, issuer-declared fact about a delivery; Brain stores it and never judges it."""
 
     id: UUIDValue = Field(default_factory=uuid4)
     ticket_id: UUIDValue
     contract_revision: StrictInt | None = Field(default=None, gt=0)
-    kind: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    kind: str = Field(min_length=1, max_length=64, pattern=ATTESTATION_KIND_PATTERN)
     payload: Mapping[str, Any]
     digest: str = Field(min_length=64, max_length=64)
     issuer_project: str = Field(min_length=1, max_length=50)
@@ -957,24 +1043,10 @@ class DeliveryAttestation(_StoredModel):
     @classmethod
     def _valid_payload(cls, value: Mapping[str, Any]) -> Mapping[str, Any]:
         """Accept only the canonical JSON domain the digest recipe is defined over."""
-        from brain_v42.models.delivery_hashes import _reject_invalid_json_value
-
         try:
-            _reject_invalid_json_value(value)
-            encoded = json.dumps(
-                value,
-                sort_keys=True,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                allow_nan=False,
-            ).encode("utf-8")
+            canonical_attestation_payload(value)
         except ValueError as error:
             raise ValueError(str(error)) from error
-        if len(encoded) > _MAX_ATTESTATION_PAYLOAD_BYTES:
-            raise ValueError(
-                f"attestation payload exceeds {_MAX_ATTESTATION_PAYLOAD_BYTES} bytes "
-                "of canonical JSON"
-            )
         return value
 
 

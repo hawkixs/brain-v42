@@ -41,8 +41,10 @@ async def test_both_attestation_tools_are_published_as_version_one(profile):
         if profile == "native":
             for name in ("brain_delivery_attest", "brain_delivery_attestation_list"):
                 assert tools[name].meta["fastmcp"]["version"] == "1.0"
-                assert "actor_project" in tools[name].inputSchema["required"]
-                assert "ticket_id" in tools[name].inputSchema["required"]
+                required = tools[name].inputSchema["required"]
+                assert "actor_project" in required
+                # The list reads one ticket OR one project: its ticket is optional.
+                assert ("ticket_id" in required) == (name == "brain_delivery_attest")
         else:
             assert "brain_delivery_attest" not in tools
             found: set[str] = set()

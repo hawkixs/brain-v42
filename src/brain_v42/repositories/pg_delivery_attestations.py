@@ -3,6 +3,11 @@
 Ticket 04bc1f4a. Brain is the LEDGER: this repository stores a declared fact and
 its server-computed digest, and it never evaluates the kind. There is no UPDATE
 and no DELETE path, exactly like `delivery_receipts`.
+
+Reads have two SCOPES, and a cursor belongs to the scope that minted it: one
+ticket, which either participant reads, or one issuer project across its
+tickets, so that `rail metrics` and `rail audit` read a project's facts without
+walking every ticket.
 """
 
 from __future__ import annotations
@@ -26,14 +31,27 @@ from brain_v42.models.delivery import (
     DeliveryAttestation,
     DeliveryAttestationPage,
     DeliveryError,
+    validate_attestation_form,
+    validate_attestation_kind,
 )
 from brain_v42.models.delivery_hashes import canonical_digest
 from brain_v42.repositories.pg_base import BasePgRepository
 from brain_v42.repositories.pg_delivery import lock_workflows
 
+_CURSOR_VERSION = 2
 
-def attestation_position(cursor: str, ticket_id: UUID) -> tuple[datetime, UUID]:
-    """Reject malformed or cross-ticket cursors without reflecting their values."""
+
+def read_scope(ticket_id: UUID | None, issuer_project: str | None) -> str:
+    """The scope a read and its cursor are bound to; a ticket wins when both are given."""
+    if ticket_id is not None:
+        return f"ticket:{ticket_id}"
+    if issuer_project is None:
+        raise DeliveryError("invalid_scope", "a ticket_id or an issuer_project is required")
+    return f"issuer:{issuer_project}"
+
+
+def attestation_position(cursor: str, scope: str) -> tuple[datetime, UUID]:
+    """Reject malformed or cross-scope cursors without reflecting their values."""
     try:
         if not isinstance(cursor, str) or not 1 <= len(cursor) <= 1000:
             raise ValueError
@@ -42,10 +60,10 @@ def attestation_position(cursor: str, ticket_id: UUID) -> tuple[datetime, UUID]:
         )
         if (
             not isinstance(value, dict)
-            or set(value) != {"v", "ticket", "at", "id"}
+            or set(value) != {"v", "scope", "at", "id"}
             or type(value["v"]) is not int
-            or value["v"] != 1
-            or value["ticket"] != str(ticket_id)
+            or value["v"] != _CURSOR_VERSION
+            or value["scope"] != scope
         ):
             raise ValueError
         at, identifier = datetime.fromisoformat(value["at"]), value["id"]
@@ -58,13 +76,13 @@ def attestation_position(cursor: str, ticket_id: UUID) -> tuple[datetime, UUID]:
         raise DeliveryError("invalid_cursor", "delivery attestation cursor is invalid") from None
 
 
-def _page_cursor(ticket_id: UUID, emitted_at: datetime, identifier: UUID) -> str:
+def _page_cursor(scope: str, emitted_at: datetime, identifier: UUID) -> str:
     return (
         base64.urlsafe_b64encode(
             json.dumps(
                 {
-                    "v": 1,
-                    "ticket": str(ticket_id),
+                    "v": _CURSOR_VERSION,
+                    "scope": scope,
                     "at": emitted_at.isoformat(),
                     "id": str(identifier),
                 },
@@ -96,6 +114,7 @@ class PgDeliveryAttestationsRepo(BasePgRepository):
         contract_revision: int | None,
     ) -> DeliveryAttestation:
         """Store one declared fact under a per-ticket lock, replay-safe by idempotency key."""
+        validate_attestation_form(kind=kind, payload=payload, emitted_at=emitted_at)
         async with lock_workflows(session, (ticket_id,)):
             ticket = (
                 (await session.execute(sa.select(tickets).where(tickets.c.id == ticket_id)))
@@ -163,6 +182,8 @@ class PgDeliveryAttestationsRepo(BasePgRepository):
                 issuer_identity=caller_identity,
                 idempotency_key=idempotency_key,
                 emitted_at=emitted_at,
+                # The model requires a value; the ROW keeps the server's now(), which
+                # is why recorded_at is excluded from the INSERT below.
                 recorded_at=datetime.now(UTC),
             )
             row = (
@@ -178,21 +199,34 @@ class PgDeliveryAttestationsRepo(BasePgRepository):
             )
             return DeliveryAttestation.model_validate(dict(row))
 
-    async def list_for_ticket(
+    async def list_attestations(
         self,
         session: AsyncSession,
-        ticket_id: UUID,
         *,
+        ticket_id: UUID | None = None,
+        issuer_project: str | None = None,
         kind: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
         limit: int = 20,
         cursor: str | None = None,
     ) -> DeliveryAttestationPage:
-        """Read one ticket's facts newest first, filtered and keyset-paginated."""
+        """Read facts newest first within one scope, filtered and keyset-paginated.
+
+        `omitted_count` is the number of rows matching the same filters beyond the
+        returned page, counted in the same read — never rows hidden for another
+        reason, because the access bound applies to the whole call.
+        """
         if type(limit) is not int or not 1 <= limit <= 100:
             raise DeliveryError("invalid_limit", "attestation limit must be between 1 and 100")
-        filters = [delivery_attestations.c.ticket_id == ticket_id]
+        if kind is not None:
+            validate_attestation_kind(kind)
+        scope = read_scope(ticket_id, issuer_project)
+        filters = []
+        if ticket_id is not None:
+            filters.append(delivery_attestations.c.ticket_id == ticket_id)
+        if issuer_project is not None:
+            filters.append(delivery_attestations.c.issuer_project == issuer_project)
         if kind is not None:
             filters.append(delivery_attestations.c.kind == kind)
         if since is not None:
@@ -200,7 +234,7 @@ class PgDeliveryAttestationsRepo(BasePgRepository):
         if until is not None:
             filters.append(delivery_attestations.c.emitted_at <= until)
         if cursor is not None:
-            at, identifier = attestation_position(cursor, ticket_id)
+            at, identifier = attestation_position(cursor, scope)
             filters.append(
                 sa.tuple_(delivery_attestations.c.emitted_at, delivery_attestations.c.id)
                 < sa.tuple_(sa.literal(at), sa.literal(identifier))
@@ -227,7 +261,7 @@ class PgDeliveryAttestationsRepo(BasePgRepository):
         next_cursor = None
         if len(rows) > limit:
             last = selected[-1]
-            next_cursor = _page_cursor(ticket_id, last["emitted_at"], last["id"])
+            next_cursor = _page_cursor(scope, last["emitted_at"], last["id"])
         return DeliveryAttestationPage(
             items=tuple(DeliveryAttestation.model_validate(dict(row)) for row in selected),
             next_cursor=next_cursor,
