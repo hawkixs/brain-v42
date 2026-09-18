@@ -11,8 +11,10 @@ if TYPE_CHECKING:
     from brain_v42.models.delivery import BindingEvidence, ContractRevision
 
 
-DigestDomain = Literal["contract", "request", "result", "assessment"]
-_DIGEST_DOMAINS: frozenset[str] = frozenset({"contract", "request", "result", "assessment"})
+DigestDomain = Literal["contract", "request", "result", "assessment", "attestation"]
+_DIGEST_DOMAINS: frozenset[str] = frozenset(
+    {"contract", "request", "result", "assessment", "attestation"}
+)
 
 
 def _reject_invalid_json_value(value: object) -> None:

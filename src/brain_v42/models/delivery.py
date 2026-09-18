@@ -23,6 +23,7 @@ from pydantic import (
 )
 
 _MAX_CONTRACT_BYTES = 256 * 1024
+_MAX_ATTESTATION_PAYLOAD_BYTES = 65_536
 _SHA_RE = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
@@ -932,6 +933,51 @@ class MilestoneReceipt(_StoredModel):
         return self
 
 
+class DeliveryAttestation(_StoredModel):
+    """One append-only, issuer-declared fact about a delivery; Brain stores it and never judges it."""
+
+    id: UUIDValue = Field(default_factory=uuid4)
+    ticket_id: UUIDValue
+    contract_revision: StrictInt | None = Field(default=None, gt=0)
+    kind: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    payload: Mapping[str, Any]
+    digest: str = Field(min_length=64, max_length=64)
+    issuer_project: str = Field(min_length=1, max_length=50)
+    issuer_identity: str = Field(min_length=1, max_length=200)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    emitted_at: StoredAwareDatetime
+    recorded_at: StoredAwareDatetime
+
+    _valid_digest = field_validator("digest")(_validate_digest)
+    _no_surrogates = field_validator("issuer_project", "issuer_identity", "idempotency_key")(
+        _reject_surrogates
+    )
+
+    @field_validator("payload")
+    @classmethod
+    def _valid_payload(cls, value: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Accept only the canonical JSON domain the digest recipe is defined over."""
+        from brain_v42.models.delivery_hashes import _reject_invalid_json_value
+
+        try:
+            _reject_invalid_json_value(value)
+            encoded = json.dumps(
+                value,
+                sort_keys=True,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        except ValueError as error:
+            raise ValueError(str(error)) from error
+        if len(encoded) > _MAX_ATTESTATION_PAYLOAD_BYTES:
+            raise ValueError(
+                f"attestation payload exceeds {_MAX_ATTESTATION_PAYLOAD_BYTES} bytes "
+                "of canonical JSON"
+            )
+        return value
+
+
 class DependencyPredicate(_StrictModel):
     """Current upstream generation and immutable receipt available to this contract."""
 
@@ -1075,6 +1121,16 @@ class DeliveryHistoryPage(_StrictModel):
     omitted_count: StrictInt = Field(default=0, ge=0)
 
 
+class DeliveryAttestationPage(_StrictModel):
+    """Newest-first issuer-declared facts for one ticket; never a judgement on them."""
+
+    items: Annotated[tuple[DeliveryAttestation, ...], BeforeValidator(_lists_to_tuples)] = Field(
+        default_factory=tuple, max_length=100
+    )
+    next_cursor: str | None = Field(default=None, min_length=1, max_length=1000)
+    omitted_count: StrictInt = Field(default=0, ge=0)
+
+
 class DeliveryView(_StrictModel):
     """Concrete API read shape for one workflow, its evidence assessment and receipts."""
 
@@ -1089,6 +1145,7 @@ class DeliveryView(_StrictModel):
     integration_receipt: MilestoneReceipt | None = None
     fulfillment_receipt: MilestoneReceipt | None = None
     history: DeliveryHistoryPage | None = None
+    attestations: DeliveryAttestationPage | None = None
 
 
 class DeliveryRefreshResult(_StrictModel):

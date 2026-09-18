@@ -71,6 +71,7 @@ class TestMetadataAndTablePresence:
             "delivery_confirmations",
             "delivery_receipts",
             "delivery_events",
+            "delivery_attestations",
         }
         assert expected_tables == set(METADATA.tables.keys())
 

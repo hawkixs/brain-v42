@@ -16,6 +16,8 @@ from brain_v42.models.delivery import (
     ClaimState,
     ContractInput,
     ContractRevision,
+    DeliveryAttestation,
+    DeliveryAttestationPage,
     DeliveryError,
     DeliveryListFilters,
     DeliveryPage,
@@ -25,6 +27,7 @@ from brain_v42.models.delivery import (
 )
 from brain_v42.models.delivery_hashes import canonical_digest
 from brain_v42.repositories.pg_delivery import PgDeliveryRepo, _contract_from_json, lock_workflows
+from brain_v42.repositories.pg_delivery_attestations import PgDeliveryAttestationsRepo
 from brain_v42.repositories.pg_delivery_claims import PgDeliveryClaimsRepo
 from brain_v42.repositories.pg_delivery_evidence import PgDeliveryEvidenceRepo
 
@@ -41,6 +44,7 @@ class DeliveryService:
         self._settings = settings
         self._evidence_repo = evidence_repo or PgDeliveryEvidenceRepo(repo._session_factory)
         self._claims_repo = PgDeliveryClaimsRepo(repo._session_factory)
+        self._attestations_repo = PgDeliveryAttestationsRepo(repo._session_factory)
 
     async def claim(
         self,
@@ -137,6 +141,69 @@ class DeliveryService:
                 expected_revision=expected_revision,
                 expected_attempt=expected_attempt,
                 expected_delivery_digest=expected_delivery_digest,
+            )
+
+    async def attest(
+        self,
+        ticket_id: UUID,
+        *,
+        actor_project: str,
+        caller_identity: str,
+        kind: str,
+        payload: dict[str, object],
+        idempotency_key: str,
+        emitted_at: datetime,
+        contract_revision: int | None = None,
+    ) -> DeliveryAttestation:
+        """Record one issuer-declared fact; a mutation, refused while the feature is disabled."""
+        if not self._settings.enabled:
+            raise DeliveryError("delivery_disabled", "delivery workflow operations are disabled")
+        async with self._repo._maybe_session(None, write=True) as session:
+            return await self._attestations_repo.attest(
+                session,
+                ticket_id,
+                actor_project=actor_project,
+                caller_identity=caller_identity,
+                kind=kind,
+                payload=payload,
+                idempotency_key=idempotency_key,
+                emitted_at=emitted_at,
+                contract_revision=contract_revision,
+            )
+
+    async def list_attestations(
+        self,
+        ticket_id: UUID,
+        *,
+        actor_project: str,
+        kind: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+    ) -> DeliveryAttestationPage:
+        """Read one ticket's facts; a read, still available while the feature is disabled."""
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise DeliveryError("invalid_limit", "attestation limit must be between 1 and 100")
+        async with self._repo._maybe_session(None, write=False) as session:
+            ticket = (
+                (await session.execute(sa.select(tickets).where(tickets.c.id == ticket_id)))
+                .mappings()
+                .one_or_none()
+            )
+        if ticket is None:
+            raise DeliveryError("ticket_not_found", "ticket was not found")
+        if actor_project not in {ticket["from_project"], ticket["to_project"]}:
+            raise DeliveryError("not_allowed", "actor is not a ticket participant")
+        async with self._repo._maybe_session(None, write=False) as session:
+            return await self._attestations_repo.list_for_ticket(
+                session,
+                ticket_id,
+                kind=kind,
+                since=since,
+                until=until,
+                limit=limit,
+                cursor=cursor,
             )
 
     async def set_contract(

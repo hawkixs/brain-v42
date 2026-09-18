@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastmcp import FastMCP
-from pydantic import Field, SecretStr
+from pydantic import AwareDatetime, Field, SecretStr
 
 from brain_v42.mcp.delivery_transport import _DeliveryRegistry
 from brain_v42.mcp.tools.tool_annotations import (
@@ -20,6 +20,8 @@ from brain_v42.models.delivery import (
     ClaimState,
     ContractInput,
     ContractRevision,
+    DeliveryAttestation,
+    DeliveryAttestationPage,
     DeliveryError,
     DeliveryPage,
     DeliveryRefreshResult,
@@ -52,7 +54,7 @@ Stage = Literal["awaiting_artifact", "proposed", "verified", "integrated"]
 
 
 def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None:
-    """Register nine versioned operations backed by one role-aware PG service."""
+    """Register eleven versioned operations backed by one role-aware PG service."""
     delivery = _DeliveryRegistry(mcp)
 
     @delivery.tool(version="1.0", annotations=_WRITE_ANNOTATIONS)
@@ -235,4 +237,56 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
             expected_revision=expected_revision,
             expected_attempt=expected_attempt,
             expected_delivery_digest=expected_delivery_digest,
+        )
+
+    @delivery.tool(version="1.0", annotations=_WRITE_ANNOTATIONS)
+    async def brain_delivery_attest(
+        ticket_id: TicketId,
+        actor_project: Project,
+        kind: Annotated[str, Field(strict=True, pattern=r"^[a-z][a-z0-9_]{0,63}$")],
+        payload: dict[str, Any],
+        idempotency_key: Key,
+        emitted_at: AwareDatetime,
+        contract_revision: Positive | None = None,
+    ) -> DeliveryAttestation:
+        """Record one issuer-declared delivery fact; Brain stores its shape and never judges its kind.
+
+        The issuer identity is the X-Brain-Agent caller label (declared provenance within
+        the admin boundary, as for brain_delivery_accept); an unknown caller is refused.
+        Replaying the same idempotency_key with identical content returns the stored row;
+        different content is refused with `idempotency_key_reused`.
+        """
+        caller = get_current_actor()
+        if not caller.strip() or caller in {UNKNOWN_ACTOR, UNEXPANDED_ACTOR}:
+            raise DeliveryError("invalid_issuer", "a declared issuer caller is required")
+        return await delivery_svc.attest(
+            UUID(ticket_id),
+            actor_project=actor_project,
+            caller_identity=caller,
+            kind=kind,
+            payload=payload,
+            idempotency_key=idempotency_key,
+            emitted_at=emitted_at,
+            contract_revision=contract_revision,
+        )
+
+    @delivery.tool(version="1.0", annotations=_READ_ANNOTATIONS)
+    async def brain_delivery_attestation_list(
+        ticket_id: TicketId,
+        actor_project: Project,
+        kind: Annotated[str, Field(strict=True, pattern=r"^[a-z][a-z0-9_]{0,63}$")] | None = None,
+        since: AwareDatetime | None = None,
+        until: AwareDatetime | None = None,
+        limit: Limit = 20,
+        cursor: Cursor | None = None,
+    ) -> DeliveryAttestationPage:
+        """List a ticket's attestations newest first, filtered by kind and emission window."""
+        return await delivery_svc.list_attestations(
+            UUID(ticket_id),
+            actor_project=actor_project,
+            kind=kind,
+            since=since,
+            until=until,
+            limit=limit,
+            cursor=cursor,
         )
