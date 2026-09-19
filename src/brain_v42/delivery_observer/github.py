@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -37,6 +38,33 @@ class GitHubAuthorization(Protocol):
     async def authorization_headers(self) -> dict[str, str]: ...
 
     async def invalidate(self, headers: Mapping[str, str]) -> None: ...
+
+
+_FIELD_NAME = re.compile(r"[a-z_][a-z0-9_]{0,31}")
+
+
+def _diagnostic(error: BaseException) -> str:
+    """``KeyError 'url' in _review`` — class, missing field name, adapter frame.
+
+    A field name is schema, not data. A ``KeyError`` can also come from a
+    lookup keyed by a provider VALUE (an unknown review state such as
+    ``WEIRD``), so only a snake_case field name is kept; everything else a
+    provider could have put in the exception is dropped. The frame is the
+    innermost one of this module.
+    """
+    # walk_tb reads code objects only: no linecache, no file IO in a process
+    # that runs under ProtectSystem=strict. Comprehension frames (``<genexpr>``)
+    # are skipped so the line names the adapter function that owns them.
+    here = [
+        frame.f_code.co_name
+        for frame, _ in traceback.walk_tb(error.__traceback__)
+        if frame.f_code.co_filename == __file__ and not frame.f_code.co_name.startswith("<")
+    ]
+    where = f" in {here[-1]}" if here else ""
+    key = error.args[0] if isinstance(error, KeyError) and error.args else None
+    if isinstance(key, str) and _FIELD_NAME.fullmatch(key):
+        return f"{type(error).__name__} '{key}'{where}"
+    return f"{type(error).__name__}{where}"
 
 
 def _object(value: Any) -> dict[str, Any]:
@@ -328,8 +356,18 @@ class GitHubClient:
             "DISMISSED": "dismissed",
             "COMMENTED": "commented",
         }
+        # Refused here, not by the dict lookup below: a KeyError keyed by a
+        # provider VALUE would hand that value to the diagnostic.
+        if raw["state"] not in states:
+            raise ProviderError("provider_invalid_response")
         user = _object(raw["user"])
         identity = _positive(raw["id"])
+        # A review object carries no top-level ``url`` (check-run objects do,
+        # and this parser once assumed the same; the first contract requiring
+        # an approval failed every observation on 2026-09-19, ticket 731ab364).
+        # The fence is ``pull_request_url``: the review must belong to THIS pull
+        # request, and the record address is the review endpoint under it.
+        pull_request_url = self._record_url(raw["pull_request_url"], f"{root}/pulls/{pr_number}")
         return ReviewEvidence.model_validate(
             {
                 "record_id": identity,
@@ -338,9 +376,7 @@ class GitHubClient:
                 "head_sha": _sha(raw["commit_id"]),
                 "decision": states[raw["state"]],
                 "submitted_at": _time(raw["submitted_at"]),
-                "record_url": self._record_url(
-                    raw["url"], f"{root}/pulls/{pr_number}/reviews/{identity}"
-                ),
+                "record_url": f"{pull_request_url}/reviews/{identity}",
             }
         )
 
@@ -354,9 +390,12 @@ class GitHubClient:
         """Return complete facts only after the closing PR identity fence passes."""
         try:
             return await self._collect(binding, contract, previous=previous)
-        except (KeyError, TypeError, ValueError, ValidationError, OverflowError):
-            # Arbitrary provider bodies or validation input never escape the adapter.
-            raise ProviderError("provider_invalid_response") from None
+        except (KeyError, TypeError, ValueError, ValidationError, OverflowError) as error:
+            # Arbitrary provider bodies or validation input never escape the adapter;
+            # the frame that refused them does, so the journal says WHERE, not what.
+            raise ProviderError(
+                "provider_invalid_response", diagnostic=_diagnostic(error)
+            ) from None
 
     async def _collect(
         self,

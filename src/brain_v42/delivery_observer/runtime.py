@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import sys
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -40,6 +42,31 @@ class ObservationRunResult(BaseModel):
 class _Outcome:
     status: Literal["collected", "failed", "deferred"]
     finished_at: datetime | None = None
+
+
+def _diagnose(
+    job: ObservationJob, code: str, *, provider_code: str | None, diagnostic: str | None
+) -> None:
+    """One JSON line on stderr per failed observation.
+
+    stdout is the process's result protocol and the journal held nothing per
+    observation: on 2026-09-19 a binding failed every minute for an hour with
+    only ``provider_invalid_response`` to read (ticket 731ab364). The line
+    carries the subject and codes, never a provider payload.
+    """
+    line = {
+        "event": "observation_error",
+        "subject": job.identity,
+        "error_code": code,
+        "provider_code": provider_code,
+        "diagnostic": diagnostic,
+    }
+    # A diagnostic must never break the observation it describes (the
+    # client-activity emitter had that defect, ticket 1c40c36a): a closed or
+    # broken stderr is the journal's problem, not the attempt's.
+    with suppress(OSError, ValueError):
+        sys.stderr.write(json.dumps(line) + "\n")
+        sys.stderr.flush()
 
 
 class DeliveryObserverRuntime:
@@ -218,8 +245,10 @@ class DeliveryObserverRuntime:
                 else "provider_invalid_response"
             )
             retry = max(error.retry_after_seconds, min(300.0, 5.0 * 2 ** min(job.failure_count, 6)))
-        except Exception:
+            _diagnose(job, code, provider_code=error.code, diagnostic=error.diagnostic)
+        except Exception as error:
             code, retry = "provider_unavailable", min(300.0, 5.0 * 2 ** min(job.failure_count, 6))
+            _diagnose(job, code, provider_code=None, diagnostic=type(error).__name__)
         finished_at = max(started_at, datetime.now(UTC))
         try:
             async with self.owner.transaction() as session:

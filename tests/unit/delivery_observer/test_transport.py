@@ -328,3 +328,12 @@ async def test_response_encoding_and_length_cannot_bypass_body_bound(encoding):
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         with pytest.raises(DeliveryError, match="provider_invalid_response"):
             await _transport(http).request_json("GET", "/data")
+
+
+def test_provider_error_diagnostic_is_bounded_and_optional():
+    from brain_v42.delivery_observer.transport import ProviderError
+
+    assert ProviderError("provider_invalid_response").diagnostic is None
+    assert ProviderError("provider_invalid_response", diagnostic="").diagnostic is None
+    long = "x" * 500
+    assert ProviderError("provider_invalid_response", diagnostic=long).diagnostic == "x" * 120
