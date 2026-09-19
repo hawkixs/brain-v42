@@ -429,14 +429,69 @@ async def test_checks_and_statuses_together_cannot_overflow_evidence_record_boun
     assert failure.value.code == "provider_invalid_response"
 
 
-@pytest.mark.parametrize("family", ["review", "status"])
 @pytest.mark.asyncio
-async def test_record_url_cannot_borrow_another_pull_request_or_revision(family):
-    case = GitHubCase(approvals=int(family == "review"), statuses=family == "status")
-    if family == "review":
-        case.reviews[0][0]["url"] = f"https://api.github.com{ROOT}/pulls/{PR + 1}/reviews/9101"
-    else:
-        case.statuses[H][0][0]["url"] = f"https://api.github.com{ROOT}/statuses/{X}"
+async def test_review_objects_are_read_in_the_shape_github_serves():
+    """A pull-request review object carries no top-level ``url``.
+
+    Measured 2026-09-19 on ``GET /repos/hawkixs/red-rail/pulls/3/reviews``
+    (ticket 731ab364): the keys are exactly ``_links, author_association,
+    body, commit_id, html_url, id, node_id, pull_request_url, state,
+    submitted_at, user``. Check-run objects do carry ``url``; the review
+    parser had copied that assumption, and the first production contract
+    requiring an approval failed every observation with
+    ``provider_invalid_response``. This case is the provider's shape, no
+    more and no less — a fixture that adds a key the provider never sends
+    proves nothing about the provider.
+    """
+    case = GitHubCase(approvals=1)
+    case.reviews = [
+        [
+            {
+                "_links": {
+                    "html": {"href": f"https://github.com{ROOT}/pull/{PR}#pullrequestreview-9101"},
+                    "pull_request": {"href": f"https://api.github.com{ROOT}/pulls/{PR}"},
+                },
+                "author_association": "NONE",
+                "body": "",
+                "commit_id": H,
+                "html_url": f"https://github.com{ROOT}/pull/{PR}#pullrequestreview-9101",
+                "id": 9101,
+                "node_id": "PRR_kwDOAAAAAAAAAAA",
+                "pull_request_url": f"https://api.github.com{ROOT}/pulls/{PR}",
+                "state": "APPROVED",
+                "submitted_at": "2026-09-07T11:59:41Z",
+                "user": {"id": 901, "login": "reviewer", "type": "Bot"},
+            }
+        ]
+    ]
+    result = await case.collect()
+    assert len(result.reviews) == 1
+    assert result.reviews[0].decision == "approved"
+    assert result.reviews[0].record_url == f"https://api.github.com{ROOT}/pulls/{PR}/reviews/9101"
+    assert case.assess(result).integration_receipt_eligible
+
+
+@pytest.mark.parametrize(
+    "pull_request_url",
+    [
+        f"https://api.github.com{ROOT}/pulls/{PR + 1}",
+        f"https://api.github.com/repos/hawkixs/other/pulls/{PR}",
+        f"https://api.github.com{ROOT}/pulls/{PR}/reviews/9101",
+    ],
+)
+@pytest.mark.asyncio
+async def test_review_cannot_borrow_another_pull_request(pull_request_url):
+    case = GitHubCase(approvals=1)
+    case.reviews[0][0]["pull_request_url"] = pull_request_url
+    with pytest.raises(ProviderError) as failure:
+        await case.collect()
+    assert failure.value.code == "provider_invalid_response"
+
+
+@pytest.mark.asyncio
+async def test_status_record_url_cannot_borrow_another_revision():
+    case = GitHubCase(statuses=True)
+    case.statuses[H][0][0]["url"] = f"https://api.github.com{ROOT}/statuses/{X}"
     with pytest.raises(ProviderError) as failure:
         await case.collect()
     assert failure.value.code == "provider_invalid_response"
