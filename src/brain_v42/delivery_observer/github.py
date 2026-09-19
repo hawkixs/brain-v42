@@ -330,6 +330,12 @@ class GitHubClient:
         }
         user = _object(raw["user"])
         identity = _positive(raw["id"])
+        # A review object carries no top-level ``url`` (check-run objects do,
+        # and this parser once assumed the same; the first contract requiring
+        # an approval failed every observation on 2026-09-19, ticket 731ab364).
+        # The fence is ``pull_request_url``: the review must belong to THIS pull
+        # request, and the record address is the review endpoint under it.
+        pull_request_url = self._record_url(raw["pull_request_url"], f"{root}/pulls/{pr_number}")
         return ReviewEvidence.model_validate(
             {
                 "record_id": identity,
@@ -338,9 +344,7 @@ class GitHubClient:
                 "head_sha": _sha(raw["commit_id"]),
                 "decision": states[raw["state"]],
                 "submitted_at": _time(raw["submitted_at"]),
-                "record_url": self._record_url(
-                    raw["url"], f"{root}/pulls/{pr_number}/reviews/{identity}"
-                ),
+                "record_url": f"{pull_request_url}/reviews/{identity}",
             }
         )
 
