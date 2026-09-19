@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -435,3 +436,29 @@ async def test_failed_observation_writes_one_diagnostic_line_to_stderr(
         }
     ]
     assert "private fixture body" not in captured.err
+
+
+async def test_a_broken_stderr_never_breaks_the_observation_it_describes(
+    engine, session_factory, monkeypatch
+):
+    """The client-activity emitter had this exact defect (ticket 1c40c36a): a
+    diagnostic that raises breaks the work it observes. A closed or broken
+    stderr must leave the failed attempt persisted and rescheduled."""
+
+    class _Broken:
+        def write(self, _text):
+            raise OSError(32, "Broken pipe")
+
+        def flush(self):
+            raise ValueError("I/O operation on closed file")
+
+    case = ObserverCase(engine, session_factory)
+    _, binding, _ = await case.create()
+    case.drift = True
+    monkeypatch.setattr(sys, "stderr", _Broken())
+    async with case.runtime() as runtime:
+        result = await runtime.run_once()
+    row, confirmations, snapshots, _ = await case.state(binding)
+    assert result.failed == 1 and result.exit_code == 1
+    assert snapshots == 0 and confirmations[0]["error_code"] == "provider_invalid_response"
+    assert row["due_at"] > datetime.now(UTC)

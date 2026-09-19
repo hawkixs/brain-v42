@@ -61,8 +61,12 @@ def _diagnose(
         "provider_code": provider_code,
         "diagnostic": diagnostic,
     }
-    sys.stderr.write(json.dumps(line) + "\n")
-    sys.stderr.flush()
+    # A diagnostic must never break the observation it describes (the
+    # client-activity emitter had that defect, ticket 1c40c36a): a closed or
+    # broken stderr is the journal's problem, not the attempt's.
+    with suppress(OSError, ValueError):
+        sys.stderr.write(json.dumps(line) + "\n")
+        sys.stderr.flush()
 
 
 class DeliveryObserverRuntime:
