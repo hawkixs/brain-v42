@@ -1,8 +1,10 @@
 # Measured facts and claims
 
-**Date:** 2026-09-19 — **revision 3 on 2026-09-20**. Revision 2 answered the review of
-revision 1 (`…-review-codex-astra.md`, verdict REWORK); revision 3 answers the review of
-revision 2 (`…-review-2-codex-terra.md`: lot A PATCH_THEN_SHIP, lot B REWORK, ten findings)
+**Date:** 2026-09-19 — **revision 4 on 2026-09-20**. Revision 2 answered the review of
+revision 1 (`…-review-codex-astra.md`, verdict REWORK); revision 3 answered the review of
+revision 2 (`…-review-2-codex-terra.md`: lot A PATCH_THEN_SHIP, lot B REWORK, ten findings);
+revision 4 answers the confirmation review of revision 3 (`…-review-3-codex-terra.md`: lot A
+PATCH_THEN_SHIP, lot B REWORK, four findings)
 
 **Status:** proposed specification for ADR #27 (`fb9b75bd`, accepted 2026-09-19); lot A is
 specified to implementation depth, lot B to data-model depth; nothing here is implemented
@@ -47,7 +49,7 @@ adjustment: the loud threshold becomes a **declared, versioned policy** on the f
 
 | Finding | Answer | Section |
 | --- | --- | --- |
-| P0-1 — the expected identity came from the same DSN the probe connects with: self-confirming | the expected identity of `production` is **declared independently by the operator** (`BRAIN_FACTS_PRODUCTION_IDENTITY`: database name, port, database OID), never derived from the DSN; absent → no production probe ships; every declared field is compared | §5.3 rule 4 |
+| P0-1 — the expected identity came from the same DSN the probe connects with: self-confirming | the expected identity of `production` is **declared independently by the operator** (`BRAIN_FACTS_PRODUCTION_IDENTITY`; revision 3 used the database OID, revision 4 replaced it with the cluster system identifier and made the address mandatory), never derived from the DSN; absent → no production probe ships; every declared field is compared | §5.3 rule 4 |
 | P0-2 — "read-only autocommit" cannot give one snapshot for value and identity | one explicit `session.begin()` + `SET TRANSACTION READ ONLY, ISOLATION LEVEL REPEATABLE READ` covering the probe query, the identity query and the Alembic read, as the precedent does (`plan_index_repair_store.py:222-225`); a real `INSERT` is refused by PostgreSQL in the test | §5.3 |
 | P1-3 — a `probe` claim (inline) could never be verified | inline probes leave lot B: `fact_name` is NOT NULL, the `probe` column does not exist; lot C may reintroduce them with server-resolved descriptors | §6.1 |
 | P1-4 — a claim's `project_key` could name another project than its anchor | the trigger enforces `entity_type` **and** `project_key` equality with `brain_entities`, and `scope_kind = 'project'` | §6.1 |
@@ -62,6 +64,15 @@ Revision 1's §6.1 `replaces_id` and revision 2's optional `replaces` were in te
 3 of the second review, "partially lifted"): revision 3 settles it — a re-assertion after
 retirement **must** name its predecessor, and the server refuses a predecessor that is not a
 retired occurrence of the same entity (§6.5).
+
+### Revision 4 — the four findings of the confirmation review
+
+| Finding | Answer | Section |
+| --- | --- | --- |
+| P0 — a database OID is a catalogue identifier, not an instance identity; the address was optional | the declared identity is the **cluster system identifier** (`pg_control_system().system_identifier`, 64-bit, assigned at `initdb`, measured `7612696091383607335` on production on 2026-09-20), the database name, the server address and the port — **all four mandatory, all four compared**; `pg_control_system()` not executable → `identity_unreadable`, no production fact | §5.3 rule 4 |
+| P1 — lot D needs the historical fact definition, not only the resolved values | lot B adds an immutable `knowledge_fact_definitions` table keyed by `(fact_name, definition_version)`, written at server start by insert-if-absent and refused on digest drift; claims reference it by FK | §6.0, §6.1, §6.8 |
+| P1 — the fingerprint was an outcome fingerprint, computed after measuring | `request_fingerprint` is computed from the immutable inputs **before** measuring and looked up first; the outcome fingerprint is kept separately for audit | §6.2, §6.3 |
+| P1 — `replaces` accepted any retired same-key occurrence | the trigger accepts only the **latest** retired occurrence of `(entity, key)` as predecessor: the chain can neither fork nor skip | §6.1, §6.5 |
 
 ## 1. Purpose
 
@@ -284,9 +295,9 @@ The registry, not the probe, opens the source. `SourceSession` is what the compo
 built for the target: for PostgreSQL targets it wraps an `AsyncSession` inside **one explicit
 transaction** — `async with session.begin(): SET TRANSACTION READ ONLY, ISOLATION LEVEL
 REPEATABLE READ` — exactly the shape of the precedent (`plan_index_repair_store.py:222-225`).
-The probe's query, the identity query (`current_database()`, `inet_server_addr()`,
-`inet_server_port()`, the database OID from `pg_database`) and the `alembic_version` read all
-run inside that transaction, so value and identity come from one connection and **one
+The probe's query, the identity query (`pg_control_system().system_identifier`,
+`current_database()`, `inet_server_addr()`, `inet_server_port()`) and the `alembic_version`
+read all run inside that transaction, so value and identity come from one connection and **one
 snapshot**; a probe that tried to write fails with PostgreSQL's read-only error, not with a
 mock. The transaction is rolled back on exit; nothing is committed.
 
@@ -310,24 +321,29 @@ Rules, all of them tested:
 4. **Verified target, declared independently.** The identity a target must have is **not
    derived from the DSN the probe connects with** — that would let a wrong DSN confirm itself
    (second review, P0-1). For `production` the operator declares it once, as a non-secret
-   setting, `BRAIN_FACTS_PRODUCTION_IDENTITY="<database>:<port>:<database OID>"` (the OID from
-   `SELECT oid FROM pg_database WHERE datname = current_database()`, stable for the life of a
-   database and changed by a restore — which is the point: a restored database is a new
-   instance the operator re-declares, and the DR runbook gains that line). The registry
-   compares **every declared field** with the measured identity after every run; the measured
-   server address is carried in `source` and compared too when the setting declares it (a
-   container address may move, so it is optional). A mismatch is
-   `Unreadable(error_code="target_mismatch")`, logged once at warning level (database name,
-   port and OID only). An identity that could not be read is `identity_unreadable`. **When the
-   setting is absent or malformed, no `production` probe can be registered**
-   (`UnverifiableTargetError` at composition, so the service starts without production facts
-   and says so in the journal rather than measuring an unverified database). The same rule
-   holds for every other target kind: `host` and `live_release` identities are `hostname`
-   (declared in `BRAIN_FACTS_HOST_IDENTITY`) + release SHA parsed from `brain_v42.__file__`
-   (`releases/<sha>/`) + `package_version()`; `github` identity is the API origin plus the
-   authenticated principal returned by the credential's own endpoint; `provider` identity is
-   the endpoint origin plus the `/healthz` body's identity fields — each declared before its
-   first probe ships. Slice 1 needs only `production`.
+   setting with **four mandatory fields**,
+   `BRAIN_FACTS_PRODUCTION_IDENTITY="<system_identifier>:<database>:<server_addr>:<server_port>"`:
+   the cluster's `pg_control_system().system_identifier` (a 64-bit identifier assigned at
+   `initdb`, collision-resistant, kept by a physical restore and changed by a logical restore
+   into a fresh cluster — measured `7612696091383607335` on production on 2026-09-20), the
+   database name, and the server address and port as PostgreSQL sees the connection
+   (`inet_server_addr()`, `inet_server_port()` — the container's own address and port, not the
+   published one; `NULL` on a Unix socket, which the declaration may not use). The registry
+   compares **all four** after every run; nothing is optional (third review, P0). A mismatch
+   is `Unreadable(error_code="target_mismatch")`, logged once at warning level with the four
+   measured fields. An identity that could not be read — including `pg_control_system()` not
+   executable by the role — is `identity_unreadable`. **When the setting is absent or
+   malformed, no `production` probe can be registered** (`UnverifiableTargetError` at
+   composition, so the service starts without production facts and says so in the journal
+   rather than measuring an unverified database). The DR runbook gains the line: a logical
+   restore into a new cluster, or a container recreated on another address, changes the
+   identity and the operator re-declares it — the facts fail closed until then, visibly. The
+   same rule holds for every other target kind: `host` and `live_release` identities are
+   `hostname` (declared in `BRAIN_FACTS_HOST_IDENTITY`) + release SHA parsed from
+   `brain_v42.__file__` (`releases/<sha>/`) + `package_version()`; `github` identity is the API
+   origin plus the authenticated principal returned by the credential's own endpoint;
+   `provider` identity is the endpoint origin plus the `/healthz` body's identity fields — each
+   declared before its first probe ships. Slice 1 needs only `production`.
 5. **Raising is the failure protocol.** A probe that cannot measure raises; the registry turns
    the exception into `Unreadable(error_code="probe_error", where=...)` with the PR #155
    convention (class name + function, never a message), and logs it at warning level once per
@@ -546,6 +562,29 @@ reviewer verified with the layering script that the proposed edges add no cycle;
 
 ## 6. Lot B — claims and verdicts (data model)
 
+### 6.0 `knowledge_fact_definitions`: the immutable history of the catalogue
+
+Lot A keeps one live definition per fact in code. Lot B's claims and lot D's nodes need the
+definition a claim was written against to stay readable after the catalogue moves (third
+review, P1). The table is written by the **server at start**, never by a caller:
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `fact_name`, `definition_version` | text, int — PK | |
+| `target` | text CHECK in the `FactTarget` values | |
+| `ttl_seconds`, `timeout_seconds` | int | |
+| `policies` | jsonb object | the declared policies of that version |
+| `value_keys` | jsonb array | the keys of the value and their JSON types, so a stored `expected.path` can be checked against the shape it was written for |
+| `digest` | char(64) | canonical digest of the row's content |
+| `registered_at` | timestamptz, `now()` | first time this version was seen |
+
+At start, for every registered probe, the server inserts the row if absent; if a row exists
+for `(fact_name, definition_version)` with a **different digest**, the server refuses to start
+(`fact_definition_drift`): a definition changed without a version bump is the drift this
+design exists to make impossible. `BEFORE UPDATE OR DELETE` trigger: refuse always; the
+application role holds `SELECT, INSERT` only. Claims reference it by FK
+`(fact_name, definition_version)`; lot D projects its rows as the `fact` nodes.
+
 ### 6.1 `knowledge_claims`: keys and occurrences
 
 A **claim key** is the content identity of a claim: `sha256` of the canonical JSON of
@@ -564,8 +603,8 @@ key by one entry, with its own lifecycle.
 | `claim_key` | char(64) | content identity, §6.1 |
 | `statement` | text, 1–500 chars | for humans |
 | `fact_name` | text NOT NULL | a catalogue name, checked against the registry at write time. **No inline probes in lot B** (second review, P1-3): a claim that the registry cannot measure cannot be written; lot C may add inline probes with server-resolved, versioned descriptors |
-| `definition_version` | int | the fact definition the claim was written against |
-| `target` | text CHECK in the `FactTarget` values | copied from the catalogue at write time |
+| `definition_version` | int | the fact definition the claim was written against; FK `(fact_name, definition_version)` → `knowledge_fact_definitions` |
+| `target` | text CHECK in the `FactTarget` values | copied from the catalogue at write time; equal to the definition's by trigger |
 | `expected` | jsonb object, bounded (§6.5) | `{"path": "/lag_seconds", "op": "lte", "value": 300}` or `{"path": "/lag_seconds", "op": "lte", "policy": "late_after_seconds"}` — `op` in (`eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `exists`); `regex` is gone; `exists` means "path present with a non-null value" |
 | `expected_resolved` | jsonb object | the `expected` with any `policy` reference **resolved at write time** from the descriptor of `definition_version`; verification reads this column, never the live descriptor (second review, P1-5) |
 | `validity_seconds` | int NOT NULL | how long a `holds` may be presented as current without a newer reading; materialised at write time from the input or from the descriptor's TTL × 4, never resolved later |
@@ -573,7 +612,7 @@ key by one entry, with its own lifecycle.
 | `declared_by` | varchar(64) | the `X-Brain-Agent` identity or the human label — **declared** |
 | `declared_at`, `recorded_at` | timestamptz | author's instant; server's `now()` |
 | `retired_at` | timestamptz, nullable | the only column an UPDATE may touch, NULL → value, once |
-| `replaces_id` | uuid FK → `knowledge_claims.id`, nullable | the occurrence this one supersedes (the `SUPERSEDES` material for lot D); **required** when the same key was previously asserted by the same entity and retired, and it must then name a retired occurrence of that entity (trigger) — a re-assertion never floats free of its history |
+| `replaces_id` | uuid FK → `knowledge_claims.id`, nullable | the occurrence this one supersedes (the `SUPERSEDES` material for lot D); **required** when the same key was previously asserted by the same entity and retired, and it must then be **the latest retired occurrence** of `(entity_ref_id, claim_key)` — the one with the greatest `seq` — enforced by trigger, so a chain can neither fork nor skip (third review, P1) |
 
 Constraints: unique partial index `(entity_ref_id, claim_key) WHERE retired_at IS NULL` — the
 same key is asserted at most once **at a time** by one entry, and re-asserting after
@@ -600,8 +639,9 @@ application role.
 | `observation_id` | uuid | from the measurement; unique with `claim_id`: one reading yields at most one verdict row per claim |
 | `issuer_identity` | varchar(200) | who **asked** for the verdict: `mcp:<X-Brain-Agent>`, `dream:verify:<run_id>`, `human:<label>` — declared |
 | `issuer_kind` | text CHECK in (`robot`, `human`) | |
-| `request_fingerprint` | char(64) | `sha256` of the canonical JSON of `{claim_id, verdict, reason, measurement}` — defined for every row, unreadable included (second review, P1-7) |
-| `idempotency_key` | varchar(200) | issuer-chosen; a replayed request with the same key and the same `request_fingerprint` returns the existing row; the same key with a different fingerprint is refused with `idempotency_conflict`, as `pg_delivery_attestations.py:150` does — the comparison never depends on `measurement_digest`, which is NULL for an unreadable |
+| `request_fingerprint` | char(64) | `sha256` of the canonical JSON of the **immutable inputs** `{claim_id, issuer_identity, idempotency_key, expected_resolved, definition_version, validity_seconds}` — computable by a retrying caller **before** any measurement (third review, P1) |
+| `outcome_fingerprint` | char(64) | `sha256` of the canonical JSON of `{verdict, reason, measurement}` — audit only, never part of idempotency |
+| `idempotency_key` | varchar(200) | issuer-chosen; the service looks up `(claim_id, issuer_identity, idempotency_key)` **first**: found with the same `request_fingerprint` → the existing row is returned and nothing is measured; found with a different one → `idempotency_conflict`, as `pg_delivery_attestations.py:150` does; absent → measure, then insert. Unreadable rows replay exactly like the others |
 | `emitted_at` | timestamptz | the measurement's instant; **refused if later than `now() + 60 s`** |
 | `recorded_at` | timestamptz, `now()` | |
 
@@ -615,7 +655,8 @@ verdict rows it would destroy, after the 047/048 pattern.
 There is no tool that accepts a measurement JSON. `brain_claim_verify(claim_id)` (lot B) and
 the lot C phase both call the same service, which:
 
-1. loads the occurrence and refuses if `retired_at` is set;
+1. loads the occurrence and refuses if `retired_at` is set; computes the `request_fingerprint`
+   and resolves the idempotency lookup of §6.2 — a replay returns here, before any probe runs;
 2. measures through the registry (`max_age` = the claim's `validity_seconds`, so a fresh cache
    entry is acceptable evidence and a stale one is re-read) — the measurement is therefore
    always **produced by the server**; `issuer_identity` records who asked, and that is all a
@@ -702,6 +743,8 @@ in lot B.
 
 ### 6.8 Migration and delivery constraints
 
+- Tables of the migration: `knowledge_fact_definitions`, `knowledge_claims`,
+  `knowledge_claim_verdicts`, their triggers, grants and the `knowledge_claim_current` view.
 - Number: the next free revision at merge time, 055 or later. The head pin
   (`_REQUIRED_ALEMBIC_HEAD`), the DR contract (v12: tables, FKs, indexes, triggers), the
   documentation contract and the delivery preflight's pins
@@ -775,9 +818,13 @@ Integration, against the test database (`tests/integration/db`):
 - Lease expired (`leased_until` in the past) → `lease_active is False`; `recovery_id` set →
   `recovery_active is True`; exhausted rows only → loud line with `pending == 0`.
 - The identity read on `brain_test` **differs** from the production identity declared in the
-  test's registry (database name, port, OID — declared by the test, not derived from the DSN)
-  → `target_mismatch`: the 2026-09-12 failure mode, reproduced and refused; a registry built
-  without the declared identity refuses the production probe at registration.
+  test's registry (system identifier, database name, address, port — declared by the test, not
+  derived from the DSN) → `target_mismatch`: the 2026-09-12 failure mode, reproduced and
+  refused; a registry built without the declared identity refuses the production probe at
+  registration. Collision cases by table, on the comparison function: same cluster and port
+  with another database name (`brain_test_optout` exists on the same server), same name and
+  port on another cluster (system identifier differs), same everything on another address —
+  each `target_mismatch`; `pg_control_system()` revoked from the role → `identity_unreadable`.
 - Value, identity and Alembic head are read in **one** `REPEATABLE READ` read-only
   transaction: a row inserted by a second connection between the probe's query and the identity
   query is invisible to the probe (snapshot proof); an injected `INSERT` in a test probe fails
@@ -828,7 +875,7 @@ Rollback: the previous release's drop-ins; nothing to restore in the database.
 - **A `last_verdict` column on the claim.** Rejected (finding 2): a mutable "current" is the
   thing that would be rewritten; the three reads of §6.4 are derived from the append-only rows.
 
-## 9. Questions for the third review
+## 9. Questions for the fourth review
 
 The six questions of revision 2 were answered by the second review and the answers are
 adopted: the expected identity is declared independently (§5.3); buckets are per fact and per
@@ -838,13 +885,18 @@ request a re-measurement and never drives archiving (§6.4); the active-set comp
 covers `[]` and no revision counter is added (§6.5); mismatch and the inability to obtain one
 read-only observation transaction fail closed (§5.3).
 
-1. §5.3 rule 4 uses the database OID as the instance marker. Is a restore-changes-the-identity
-   semantics acceptable operationally (one declared line to update in the DR runbook), or is a
-   marker that survives a restore preferable, at the cost of not distinguishing a restored
-   copy from the original?
-2. §6.1 stores `expected_resolved` and `validity_seconds` on the occurrence instead of keeping
-   descriptor snapshots. Is anything lost for lot D's projection of facts as nodes keyed by
-   `(fact_name, definition_version)`?
+The three questions of revision 3 were answered by the confirmation review and adopted:
+the cluster system identifier replaces the OID and all four identity fields are mandatory
+(§5.3); `knowledge_fact_definitions` keeps the historical definitions for lot D (§6.0); the
+collision cases are tested by table (§7.1).
+
+1. §5.3 rule 4 declares the server address as PostgreSQL sees it (the container's). A container
+   recreated on another address fails every production fact closed until the operator
+   re-declares. Is that the right trade, or should the address be pinned in the Compose
+   network so the declaration never moves?
+2. §6.0 refuses to start the server on a definition digest drift. Is fail-closed at start the
+   right severity, or should the server start with the drifting fact marked `unreadable
+   (definition_drift)` and every other fact alive?
 3. What, in §5.2–§5.5, still lets the first fact lie rather than say `unreadable`?
 
 ## 10. Sources
