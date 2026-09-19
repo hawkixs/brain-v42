@@ -64,13 +64,15 @@ def status(record_id=8101, *, sha=H, state="success"):
 
 
 def review(record_id=9101, *, state="APPROVED", sha=H):
+    # The shape GitHub serves (measured 2026-09-19): no top-level ``url``.
     return {
         "id": record_id,
         "user": {"id": 901, "login": "reviewer"},
         "state": state,
         "commit_id": sha,
         "submitted_at": f"2026-09-07T11:59:{record_id % 60:02d}Z",
-        "url": f"https://api.github.com{ROOT}/pulls/{PR}/reviews/{record_id}",
+        "html_url": f"https://github.com{ROOT}/pull/{PR}#pullrequestreview-{record_id}",
+        "pull_request_url": f"https://api.github.com{ROOT}/pulls/{PR}",
     }
 
 

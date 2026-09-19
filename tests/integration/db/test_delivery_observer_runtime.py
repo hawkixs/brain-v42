@@ -1,6 +1,8 @@
 """Persisted scheduling through actual GitHub HTTP, fenced owner and PG publisher."""
 
 import asyncio
+import json
+import sys
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -399,3 +401,102 @@ async def test_repeated_provider_failure_uses_persisted_bounded_backoff(engine, 
             assert (await runtime.run_once()).failed == 1
         row, _, _, _ = await case.state(binding)
         assert minimum <= (row["due_at"] - before).total_seconds() < 3601
+
+
+async def test_failed_observation_writes_one_diagnostic_line_to_stderr(
+    engine, session_factory, capsys
+):
+    """The observer's stdout is its JSON protocol and its journal held no line
+    per observation: on 2026-09-19 a binding failed every minute for an hour
+    with nothing to read but ``provider_invalid_response`` in the database
+    (ticket 731ab364). A failed observation now writes exactly one JSON line to
+    stderr — subject, persisted code, adapter code, diagnostic — and no payload.
+    """
+    case = ObserverCase(engine, session_factory)
+    _, binding, _ = await case.create()
+    case.drift = True
+    async with case.runtime() as runtime:
+        result = await runtime.run_once()
+    assert result.failed == 1
+    captured = capsys.readouterr()
+    # stdout stays the JSON protocol of the process: the diagnostic never lands there.
+    assert "observation_error" not in captured.out
+    lines = [
+        json.loads(line)
+        for line in captured.err.splitlines()
+        if line.startswith('{"event": "observation_error"')
+    ]
+    assert lines == [
+        {
+            "event": "observation_error",
+            "subject": f"artifact_binding:{binding.id}",
+            "error_code": "provider_invalid_response",
+            "provider_code": "provider_revision_changed",
+            "diagnostic": None,
+        }
+    ]
+    assert "private fixture body" not in captured.err
+
+
+async def test_a_broken_stderr_never_breaks_the_observation_it_describes(
+    engine, session_factory, monkeypatch
+):
+    """The client-activity emitter had this exact defect (ticket 1c40c36a): a
+    diagnostic that raises breaks the work it observes. A closed or broken
+    stderr must leave the failed attempt persisted and rescheduled."""
+
+    class _Broken:
+        def write(self, _text):
+            raise OSError(32, "Broken pipe")
+
+        def flush(self):
+            raise ValueError("I/O operation on closed file")
+
+    case = ObserverCase(engine, session_factory)
+    _, binding, _ = await case.create()
+    case.drift = True
+    monkeypatch.setattr(sys, "stderr", _Broken())
+    async with case.runtime() as runtime:
+        result = await runtime.run_once()
+    row, confirmations, snapshots, _ = await case.state(binding)
+    assert result.failed == 1 and result.exit_code == 1
+    assert snapshots == 0 and confirmations[0]["error_code"] == "provider_invalid_response"
+    assert row["due_at"] > datetime.now(UTC)
+
+
+async def test_diagnostic_is_written_after_the_failed_attempt_is_persisted(
+    engine, session_factory, monkeypatch
+):
+    """stderr is synchronous: a journal that stalls would delay whatever comes
+    after the write. The persisted attempt and its reschedule come first, so a
+    stalled diagnostic can only delay the NEXT observation, never the record of
+    this one."""
+    order: list[str] = []
+
+    class _Recording:
+        def write(self, _text):
+            order.append("stderr")
+
+        def flush(self):
+            pass
+
+    case = ObserverCase(engine, session_factory)
+    _, binding, _ = await case.create()
+    case.drift = True
+    monkeypatch.setattr(sys, "stderr", _Recording())
+    async with case.runtime() as runtime:
+        recorded = runtime.evidence_repository.record_observation_error
+
+        async def record_then_note(*args, **kwargs):
+            result = await recorded(*args, **kwargs)
+            order.append("persisted")
+            return result
+
+        monkeypatch.setattr(
+            runtime.evidence_repository, "record_observation_error", record_then_note
+        )
+        result = await runtime.run_once()
+    assert result.failed == 1
+    assert order == ["persisted", "stderr"]
+    _, confirmations, _, _ = await case.state(binding)
+    assert confirmations[0]["error_code"] == "provider_invalid_response"
