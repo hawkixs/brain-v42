@@ -1,10 +1,13 @@
 # Measured facts and claims
 
-**Date:** 2026-09-19 — **revision 4 on 2026-09-20**. Revision 2 answered the review of
+**Date:** 2026-09-19 — **revision 5 on 2026-09-20**. Revision 2 answered the review of
 revision 1 (`…-review-codex-astra.md`, verdict REWORK); revision 3 answered the review of
 revision 2 (`…-review-2-codex-terra.md`: lot A PATCH_THEN_SHIP, lot B REWORK, ten findings);
-revision 4 answers the confirmation review of revision 3 (`…-review-3-codex-terra.md`: lot A
-PATCH_THEN_SHIP, lot B REWORK, four findings)
+revision 4 answered the confirmation review of revision 3 (`…-review-3-codex-terra.md`: lot A
+PATCH_THEN_SHIP, lot B REWORK, four findings); revision 5 answers the confirmation review of
+revision 4 (`…-review-4-codex-terra.md`: **both lots PATCH_THEN_SHIP**, four findings, all
+mechanical — applied below and the review loop closed; the next review reads the pull
+request with its tests)
 
 **Status:** proposed specification for ADR #27 (`fb9b75bd`, accepted 2026-09-19); lot A is
 specified to implementation depth, lot B to data-model depth; nothing here is implemented
@@ -73,6 +76,21 @@ retired occurrence of the same entity (§6.5).
 | P1 — lot D needs the historical fact definition, not only the resolved values | lot B adds an immutable `knowledge_fact_definitions` table keyed by `(fact_name, definition_version)`, written at server start by insert-if-absent and refused on digest drift; claims reference it by FK | §6.0, §6.1, §6.8 |
 | P1 — the fingerprint was an outcome fingerprint, computed after measuring | `request_fingerprint` is computed from the immutable inputs **before** measuring and looked up first; the outcome fingerprint is kept separately for audit | §6.2, §6.3 |
 | P1 — `replaces` accepted any retired same-key occurrence | the trigger accepts only the **latest** retired occurrence of `(entity, key)` as predecessor: the chain can neither fork nor skip | §6.1, §6.5 |
+
+### Revision 5 — the four findings of the fourth review
+
+| Finding | Answer | Section |
+| --- | --- | --- |
+| P1 — §5.1 and §5.3 defined the PostgreSQL identity differently; a colon-delimited setting is ambiguous for IPv6 | one typed `SourceIdentity` for PostgreSQL: `system_identifier`, `database`, `server_addr`, `server_port` — the Alembic revision is a **fact**, not an identity field; the setting is a JSON object with four validated keys | §5.1, §5.3 rule 4 |
+| P1 — the definition digest had no payload recipe; `value_keys` could not be built without measuring | `Probe.value_schema` is declared on the probe (keys → JSON types); the definition row's digest is the canonical digest (§5.2 recipe, domain `brain-v42-fact-definition:v1`) of `{fact_name, definition_version, target, ttl_seconds, timeout_seconds, policies, value_schema}`, `registered_at` excluded | §5.3, §6.0 |
+| P2 — the precedent uses `READ ONLY` only, not `REPEATABLE READ` | citation corrected: the precedent gives the shape (`session.begin()` + `SET TRANSACTION READ ONLY`); this design adds `ISOLATION LEVEL REPEATABLE READ` explicitly | §4, §5.3 |
+| P3 — migration 033 backfills seven entity kinds, not five | claims are intentionally limited to the five knowledge kinds; `feature` and `plan` are excluded and the reason is stated | §4, §6.1 |
+
+Answers of the fourth review adopted: a changed container address fails production facts
+closed until re-declared, no Compose pin for that reason alone; a definition digest drift
+disables **that fact only** (`unreadable (definition_drift)`, its claims refused) with a
+high-severity journal event, the server starts (§6.0); a physical clone that keeps all four
+identity fields and takes over the endpoint is a documented root-of-trust limit (§5.3).
 
 ## 1. Purpose
 
@@ -165,12 +183,12 @@ claims revision 1 made about them (marked ►).
 | ► Killswitch state | `DreamRunService.killswitch_state`, `src/brain_v42/services/dream_run_service.py:29,113,136` | **Not a probe as is**: it masks an unreadable file with history and returns disabled flags when no recent night exists. §5.6 specifies the adapter |
 | Graph outbox and projector statistics | `MetricsCollector`, `src/brain_v42/metrics/collector.py:587-742` | Its SQL is the probe of `graph_projection_lag`; extracted into the repository layer and shared; ► `healthy` is computed in Python at `:742`, not in SQL, and stays a shared Python predicate |
 | Projection inventory | `PgGraphLedger.projection_inventory`, `src/brain_v42/repositories/pg_graph_ledger.py:764` | Same table, recovery-oriented; the shared query lands next to it |
-| Verified database identity | `plan_index_repair_store.py:222-225,291-298` (`session.begin()` then `SET TRANSACTION READ ONLY`; `current_database()`, `inet_server_addr()`, `inet_server_port()` read inside that read-only snapshot transaction) | The precedent for the source identity **and** the transaction shape of PostgreSQL probes (§5.3) |
+| Verified database identity | `plan_index_repair_store.py:222-225,291-298` (`session.begin()` then `SET TRANSACTION READ ONLY`; `current_database()`, `inet_server_addr()`, `inet_server_port()` read inside that read-only transaction) | The precedent for the source identity and for the shape `begin()` + `SET TRANSACTION READ ONLY`; this design **adds** `ISOLATION LEVEL REPEATABLE READ` for a single snapshot, which the precedent does not use (§5.3) |
 | ► Shipped Alembic head and package version | `brain_v42.release` (`shipped_alembic_head`, `package_version`, `head_of_versions`) | `package_version` is a distribution version, never a SHA; `head_of_versions` skips unreadable files. §5.6 specifies strict variants |
 | ► Model liveness | `scripts/probe_model_liveness.py:146,161` (POST inference, 90 s, verdicts ALIVE/GONE/BUSY/OTHER) | **Leaves lot A**: it calls a model and spends quota. Lot C sonde with an explicit inference budget; BUSY and OTHER map to unreadable |
 | Canonical digest recipe | `src/brain_v42/models/delivery_hashes.py:25,70,82` (no floats, string keys, depth ≤ 64, NUL and surrogates refused, domain prefix `brain-delivery-<domain>:v1\n`) | The measurement recipe of §5.2 follows the same rules under its own domain prefix; **integers only** |
 | Append-only evidence with idempotency | `delivery_attestations`, `src/brain_v42/db/delivery_tables.py:472`; replay compares content, `pg_delivery_attestations.py:150` | The template of `knowledge_claim_verdicts` (§6.2); ► append-only there is by code path (`054_delivery_attestations.py:11`), here it is by trigger and grant |
-| Durable entity anchor with tombstones | `brain_entities` (migration 033): `id`, `entity_type`, `entity_key`, `source_uuid`, `project_key`, `lifecycle` (active/archived/deleted), `revision`, `deleted_at` — coverage measured 2026-09-20: 3815 learnings, 1267 decisions, 119 ADRs, 176 runbooks, 191 snippets, equal to the five knowledge tables | The FK anchor of `knowledge_claims` (§6.1) |
+| Durable entity anchor with tombstones | `brain_entities` (migration 033, `033_graph_relation_ledger.py:16-24` backfills **seven** kinds: the five knowledge kinds plus `feature` and `plan`): `id`, `entity_type`, `entity_key`, `source_uuid`, `project_key`, `lifecycle` (active/archived/deleted), `revision`, `deleted_at` — coverage measured 2026-09-20: 3815 learnings, 1267 decisions, 119 ADRs, 176 runbooks, 191 snippets, equal to the five knowledge tables; 919 features and 207 plans also anchored | The FK anchor of `knowledge_claims` (§6.1); claims are limited to the five knowledge kinds — a `feature` is on its way out (ADR #25) and a `plan` is an indexed document, not an assertion |
 | Bounded diagnostic on a refused payload | `ProviderError.diagnostic`, `src/brain_v42/delivery_observer/transport.py`; `_diagnostic()` in `github.py` (PR #155) | The `Unreadable.error_code` / `where` convention of §5.2 |
 | Briefing technical section | `_section_technical_state`, `session_tools.py:412`; fixture `tests/fixtures/briefing_full.md` | Gains one line per briefing fact; the fixture is unchanged when no registry is wired |
 | Capability scope per Dream phase | `src/brain_v42/mcp/dream_capabilities.py`, `test_dream_prompts_match_phase_allowlists.py` | New tools are absent from every phase allowlist until lot C names them; `X-Brain-Agent` is declared, not verified (`dream_capabilities.py:280`) |
@@ -197,10 +215,12 @@ claims revision 1 made about them (marked ►).
   `host` (files and units on the host), `github`, `provider` (a model or embedding endpoint).
   A probe names exactly one target — and the registry **verifies** it (§5.3).
 - **Source identity**: the measured, non-secret identity of what a probe actually read, taken
-  in the same round trip as the value and compared with what the composition root declared for
-  the target. For PostgreSQL targets: `current_database()`, `inet_server_addr()`,
-  `inet_server_port()`, and the stamped Alembic revision. The 2026-09-12 incident that
-  motivates it: a probe pointed at `brain_test` (then at 052) would have falsified a true
+  in the same transaction as the value and compared with what the composition root declared for
+  the target. One typed `SourceIdentity` per target kind; for PostgreSQL:
+  `system_identifier` (`pg_control_system()`), `database` (`current_database()`),
+  `server_addr` (`inet_server_addr()`), `server_port` (`inet_server_port()`). The stamped
+  Alembic revision is **not** an identity field — it is the fact `alembic_head` and changes
+  legitimately. The 2026-09-12 incident that motivates the identity: a probe pointed at `brain_test` (then at 052) would have falsified a true
   statement about production; with an identity check it says `unreadable (target_mismatch)`.
 - **Probe**: the single read-only, bounded reader of a fact.
 - **Measurement**: either a `Measured` or an `Unreadable` (§5.2). Never a third thing.
@@ -288,13 +308,23 @@ class Probe(Protocol):
     timeout: timedelta        # hard bound the registry applies to measure()
     briefing: bool            # rendered in the session briefing (cheap probes only)
     policies: Mapping[str, int]   # declared, versioned by definition_version
+    value_schema: Mapping[str, Literal["int", "bool", "string", "null|int"]]   # every key of the value and its JSON type, declared
     async def measure(self, source: SourceSession) -> Mapping[str, JSON]: ...
+```
+
+`value_schema` is declared, not inferred: the registry refuses a measured value whose keys or
+types differ from it (`Unreadable(error_code="value_not_canonical", where=...)`), and lot B's
+definition rows (§6.0) carry it without measuring anything.
+
+```python
 ```
 
 The registry, not the probe, opens the source. `SourceSession` is what the composition root
 built for the target: for PostgreSQL targets it wraps an `AsyncSession` inside **one explicit
-transaction** — `async with session.begin(): SET TRANSACTION READ ONLY, ISOLATION LEVEL
-REPEATABLE READ` — exactly the shape of the precedent (`plan_index_repair_store.py:222-225`).
+transaction** — `async with session.begin():` then
+`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY` — the shape of the precedent
+(`plan_index_repair_store.py:222-225`, which sets `READ ONLY` only) plus the isolation level
+this design needs for one snapshot.
 The probe's query, the identity query (`pg_control_system().system_identifier`,
 `current_database()`, `inet_server_addr()`, `inet_server_port()`) and the `alembic_version`
 read all run inside that transaction, so value and identity come from one connection and **one
@@ -321,9 +351,11 @@ Rules, all of them tested:
 4. **Verified target, declared independently.** The identity a target must have is **not
    derived from the DSN the probe connects with** — that would let a wrong DSN confirm itself
    (second review, P0-1). For `production` the operator declares it once, as a non-secret
-   setting with **four mandatory fields**,
-   `BRAIN_FACTS_PRODUCTION_IDENTITY="<system_identifier>:<database>:<server_addr>:<server_port>"`:
-   the cluster's `pg_control_system().system_identifier` (a 64-bit identifier assigned at
+   setting with **four mandatory fields**, a JSON object so an IPv6 address cannot be
+   misread (fourth review, P1):
+   `BRAIN_FACTS_PRODUCTION_IDENTITY='{"system_identifier": "7612696091383607335", "database": "brain", "server_addr": "172.18.0.2", "server_port": 5432}'`
+   — validated key by key at composition (a 64-bit unsigned decimal string, an identifier, an
+   IP address literal, a port): the cluster's `pg_control_system().system_identifier` (a 64-bit identifier assigned at
    `initdb`, collision-resistant, kept by a physical restore and changed by a logical restore
    into a fresh cluster — measured `7612696091383607335` on production on 2026-09-20), the
    database name, and the server address and port as PostgreSQL sees the connection
@@ -337,8 +369,11 @@ Rules, all of them tested:
    composition, so the service starts without production facts and says so in the journal
    rather than measuring an unverified database). The DR runbook gains the line: a logical
    restore into a new cluster, or a container recreated on another address, changes the
-   identity and the operator re-declares it — the facts fail closed until then, visibly. The
-   same rule holds for every other target kind: `host` and `live_release` identities are
+   identity and the operator re-declares it — the facts fail closed until then, visibly.
+   **Root-of-trust limit, stated:** a physical clone of the cluster that keeps all four fields
+   and takes over the endpoint is indistinguishable from the original by this check; detecting
+   that is deployment control's job, not a probe's. The same rule holds for every other target
+   kind: `host` and `live_release` identities are
    `hostname` (declared in `BRAIN_FACTS_HOST_IDENTITY`) + release SHA parsed from
    `brain_v42.__file__` (`releases/<sha>/`) + `package_version()`; `github` identity is the API
    origin plus the authenticated principal returned by the credential's own endpoint;
@@ -574,14 +609,17 @@ review, P1). The table is written by the **server at start**, never by a caller:
 | `target` | text CHECK in the `FactTarget` values | |
 | `ttl_seconds`, `timeout_seconds` | int | |
 | `policies` | jsonb object | the declared policies of that version |
-| `value_keys` | jsonb array | the keys of the value and their JSON types, so a stored `expected.path` can be checked against the shape it was written for |
-| `digest` | char(64) | canonical digest of the row's content |
-| `registered_at` | timestamptz, `now()` | first time this version was seen |
+| `value_schema` | jsonb object | the probe's declared `value_schema` (§5.3), so a stored `expected.path` can be checked against the shape it was written for |
+| `digest` | char(64) | canonical digest (§5.2 recipe, domain prefix `brain-v42-fact-definition:v1\n`) of `{fact_name, definition_version, target, ttl_seconds, timeout_seconds, policies, value_schema}` — `registered_at` is **excluded** |
+| `registered_at` | timestamptz, `now()` | first time this version was seen; not part of the digest |
 
 At start, for every registered probe, the server inserts the row if absent; if a row exists
-for `(fact_name, definition_version)` with a **different digest**, the server refuses to start
-(`fact_definition_drift`): a definition changed without a version bump is the drift this
-design exists to make impossible. `BEFORE UPDATE OR DELETE` trigger: refuse always; the
+for `(fact_name, definition_version)` with a **different digest**, the server starts but
+**that fact alone** is disabled — every read answers `Unreadable(error_code="definition_drift")`,
+its claims refuse new verdicts with reason `definition_drift`, and a high-severity journal
+event names the fact (fourth review, answer 2): a definition changed without a version bump is
+the drift this design exists to make impossible, and one drifting fact must not take the
+briefing's other facts down with it. `BEFORE UPDATE OR DELETE` trigger: refuse always; the
 application role holds `SELECT, INSERT` only. Claims reference it by FK
 `(fact_name, definition_version)`; lot D projects its rows as the `fact` nodes.
 
@@ -875,7 +913,7 @@ Rollback: the previous release's drop-ins; nothing to restore in the database.
 - **A `last_verdict` column on the claim.** Rejected (finding 2): a mutable "current" is the
   thing that would be rewritten; the three reads of §6.4 are derived from the append-only rows.
 
-## 9. Questions for the fourth review
+## 9. Open questions carried to the pull request
 
 The six questions of revision 2 were answered by the second review and the answers are
 adopted: the expected identity is declared independently (§5.3); buckets are per fact and per
@@ -890,14 +928,17 @@ the cluster system identifier replaces the OID and all four identity fields are 
 (§5.3); `knowledge_fact_definitions` keeps the historical definitions for lot D (§6.0); the
 collision cases are tested by table (§7.1).
 
-1. §5.3 rule 4 declares the server address as PostgreSQL sees it (the container's). A container
-   recreated on another address fails every production fact closed until the operator
-   re-declares. Is that the right trade, or should the address be pinned in the Compose
-   network so the declaration never moves?
-2. §6.0 refuses to start the server on a definition digest drift. Is fail-closed at start the
-   right severity, or should the server start with the drifting fact marked `unreadable
-   (definition_drift)` and every other fact alive?
-3. What, in §5.2–§5.5, still lets the first fact lie rather than say `unreadable`?
+The three questions of revision 4 were answered by the fourth review and adopted (revision
+5 table above). The review loop on the document closes here: four independent readings
+(Astra, then Terra three times) took the findings from eleven to four, the last four
+mechanical. The next independent reading is of the pull request of lot A, with its tests,
+under the rule of the current focus.
+
+1. Whether the `brain` role should keep superuser rights (measured `rolsuper = t` on
+   2026-09-20) is outside this design but decides how `pg_control_system()` is granted; the
+   design assumes an explicit `GRANT EXECUTE` to a non-superuser role.
+2. Whether the metrics collector should expose the fact's `source` identity in `/metrics` as
+   well, so the sidecar and the registry can be compared from outside.
 
 ## 10. Sources
 
