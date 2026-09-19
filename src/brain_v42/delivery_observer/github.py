@@ -52,9 +52,15 @@ def _diagnostic(error: BaseException) -> str:
     provider could have put in the exception is dropped. The frame is the
     innermost one of this module.
     """
-    frames = traceback.extract_tb(error.__traceback__)
-    here = [frame for frame in frames if frame.filename == __file__]
-    where = f" in {here[-1].name}" if here else ""
+    # walk_tb reads code objects only: no linecache, no file IO in a process
+    # that runs under ProtectSystem=strict. Comprehension frames (``<genexpr>``)
+    # are skipped so the line names the adapter function that owns them.
+    here = [
+        frame.f_code.co_name
+        for frame, _ in traceback.walk_tb(error.__traceback__)
+        if frame.f_code.co_filename == __file__ and not frame.f_code.co_name.startswith("<")
+    ]
+    where = f" in {here[-1]}" if here else ""
     key = error.args[0] if isinstance(error, KeyError) and error.args else None
     if isinstance(key, str) and _FIELD_NAME.fullmatch(key):
         return f"{type(error).__name__} '{key}'{where}"
@@ -350,6 +356,10 @@ class GitHubClient:
             "DISMISSED": "dismissed",
             "COMMENTED": "commented",
         }
+        # Refused here, not by the dict lookup below: a KeyError keyed by a
+        # provider VALUE would hand that value to the diagnostic.
+        if raw["state"] not in states:
+            raise ProviderError("provider_invalid_response")
         user = _object(raw["user"])
         identity = _positive(raw["id"])
         # A review object carries no top-level ``url`` (check-run objects do,

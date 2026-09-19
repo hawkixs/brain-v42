@@ -502,7 +502,8 @@ async def test_status_record_url_cannot_borrow_another_revision():
     [
         (lambda review: review.pop("pull_request_url"), "KeyError 'pull_request_url' in _review"),
         (lambda review: review.__setitem__("state", ["APPROVED"]), "TypeError in _review"),
-        (lambda review: review.__setitem__("state", "WEIRD"), "KeyError in _review"),
+        (lambda review: review.__setitem__("state", "WEIRD"), None),
+        (lambda review: review.__setitem__("state", "my_secret_value"), None),
     ],
 )
 @pytest.mark.asyncio
@@ -512,9 +513,10 @@ async def test_rejected_provider_payload_names_the_adapter_frame_not_the_payload
     answered something the adapter refused, and nothing said where. The error
     now carries a bounded diagnostic — exception class, the offending key when
     it is a snake_case field name, and the adapter function — never a value
-    from the provider body: a review state the adapter does not know
-    (``WEIRD``) is looked up in a dict and would surface as the key, so
-    anything that is not a lowercase field name is dropped.
+    from the provider body. A review state the adapter does not know is refused
+    by the adapter itself before any dict lookup, so it can never surface as a
+    key, whatever its case; the field-name filter of ``_diagnostic`` is the
+    second line for any lookup a future edit might key by a provider value.
     """
     case = GitHubCase(approvals=1)
     mutate(case.reviews[0][0])
@@ -533,3 +535,14 @@ async def test_provider_errors_raised_by_the_adapter_itself_carry_no_diagnostic(
         await case.collect()
     assert failure.value.code == "provider_revision_changed"
     assert failure.value.diagnostic is None
+
+
+@pytest.mark.asyncio
+async def test_frame_of_a_rejected_payload_is_a_function_not_a_genexpr():
+    """``_pr`` reads head/base/user inside a generator expression: the frame the
+    diagnostic names must be the adapter function, never ``<genexpr>``."""
+    case = GitHubCase(approvals=1)
+    del case.pr["head"]
+    with pytest.raises(ProviderError) as failure:
+        await case.collect()
+    assert failure.value.diagnostic == "KeyError 'head' in _pr"
