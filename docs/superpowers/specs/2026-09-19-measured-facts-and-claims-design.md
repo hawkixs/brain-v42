@@ -1,7 +1,8 @@
 # Measured facts and claims
 
-**Date:** 2026-09-19 — **revision 2 on 2026-09-20**, answering the independent review of
-revision 1 (`2026-09-19-measured-facts-and-claims-review-codex-astra.md`, verdict REWORK)
+**Date:** 2026-09-19 — **revision 3 on 2026-09-20**. Revision 2 answered the review of
+revision 1 (`…-review-codex-astra.md`, verdict REWORK); revision 3 answers the review of
+revision 2 (`…-review-2-codex-terra.md`: lot A PATCH_THEN_SHIP, lot B REWORK, ten findings)
 
 **Status:** proposed specification for ADR #27 (`fb9b75bd`, accepted 2026-09-19); lot A is
 specified to implementation depth, lot B to data-model depth; nothing here is implemented
@@ -41,6 +42,26 @@ could lie. Each is answered in the section named below; the finding numbers are 
 The review's answers to the seven questions of revision 1 are adopted as written, with one
 adjustment: the loud threshold becomes a **declared, versioned policy** on the fact descriptor
 (§5.5) shared by the renderer and by lot B, not a renderer constant.
+
+### Revision 3 — the ten findings of the second review
+
+| Finding | Answer | Section |
+| --- | --- | --- |
+| P0-1 — the expected identity came from the same DSN the probe connects with: self-confirming | the expected identity of `production` is **declared independently by the operator** (`BRAIN_FACTS_PRODUCTION_IDENTITY`: database name, port, database OID), never derived from the DSN; absent → no production probe ships; every declared field is compared | §5.3 rule 4 |
+| P0-2 — "read-only autocommit" cannot give one snapshot for value and identity | one explicit `session.begin()` + `SET TRANSACTION READ ONLY, ISOLATION LEVEL REPEATABLE READ` covering the probe query, the identity query and the Alembic read, as the precedent does (`plan_index_repair_store.py:222-225`); a real `INSERT` is refused by PostgreSQL in the test | §5.3 |
+| P1-3 — a `probe` claim (inline) could never be verified | inline probes leave lot B: `fact_name` is NOT NULL, the `probe` column does not exist; lot C may reintroduce them with server-resolved descriptors | §6.1 |
+| P1-4 — a claim's `project_key` could name another project than its anchor | the trigger enforces `entity_type` **and** `project_key` equality with `brain_entities`, and `scope_kind = 'project'` | §6.1 |
+| P1-5 — historical claims depended on the mutable current descriptor | policies and the validity bound are **resolved at write time and stored on the occurrence**; verification reads the stored values; a definition bump yields `definition_changed` | §6.1, §6.4 |
+| P1-6 — `claims: []` bypassed compare-and-swap | every destructive `claims` mutation, `[]` included, requires `expected_active_claim_ids` | §6.5 |
+| P1-7 — replay of an unreadable verdict had nothing to compare | every verdict row stores a `request_fingerprint` over the whole canonical request; replays compare it, unreadable included | §6.2 |
+| P2-8 — claim JSON and pointers unbounded | a closed `ClaimInput` validator with byte, depth, pointer and array bounds, refused before any write | §6.5 |
+| P2-9 — `measure_many` accepted an unbounded iterable | a bounded, duplicate-free sequence of at most 32 names; the briefing passes `briefing_names()` only | §5.4 |
+| P3-10 — the precedent was cited as a mutation transaction | corrected: it is a read-only snapshot transaction | §4 |
+
+Revision 1's §6.1 `replaces_id` and revision 2's optional `replaces` were in tension (finding
+3 of the second review, "partially lifted"): revision 3 settles it — a re-assertion after
+retirement **must** name its predecessor, and the server refuses a predecessor that is not a
+retired occurrence of the same entity (§6.5).
 
 ## 1. Purpose
 
@@ -133,7 +154,7 @@ claims revision 1 made about them (marked ►).
 | ► Killswitch state | `DreamRunService.killswitch_state`, `src/brain_v42/services/dream_run_service.py:29,113,136` | **Not a probe as is**: it masks an unreadable file with history and returns disabled flags when no recent night exists. §5.6 specifies the adapter |
 | Graph outbox and projector statistics | `MetricsCollector`, `src/brain_v42/metrics/collector.py:587-742` | Its SQL is the probe of `graph_projection_lag`; extracted into the repository layer and shared; ► `healthy` is computed in Python at `:742`, not in SQL, and stays a shared Python predicate |
 | Projection inventory | `PgGraphLedger.projection_inventory`, `src/brain_v42/repositories/pg_graph_ledger.py:764` | Same table, recovery-oriented; the shared query lands next to it |
-| Verified database identity | `plan_index_repair_store.py:291` (`current_database()`, `inet_server_addr()`, `inet_server_port()` read inside the mutation transaction) | The precedent for the source identity of PostgreSQL targets (§5.3) |
+| Verified database identity | `plan_index_repair_store.py:222-225,291-298` (`session.begin()` then `SET TRANSACTION READ ONLY`; `current_database()`, `inet_server_addr()`, `inet_server_port()` read inside that read-only snapshot transaction) | The precedent for the source identity **and** the transaction shape of PostgreSQL probes (§5.3) |
 | ► Shipped Alembic head and package version | `brain_v42.release` (`shipped_alembic_head`, `package_version`, `head_of_versions`) | `package_version` is a distribution version, never a SHA; `head_of_versions` skips unreadable files. §5.6 specifies strict variants |
 | ► Model liveness | `scripts/probe_model_liveness.py:146,161` (POST inference, 90 s, verdicts ALIVE/GONE/BUSY/OTHER) | **Leaves lot A**: it calls a model and spends quota. Lot C sonde with an explicit inference budget; BUSY and OTHER map to unreadable |
 | Canonical digest recipe | `src/brain_v42/models/delivery_hashes.py:25,70,82` (no floats, string keys, depth ≤ 64, NUL and surrogates refused, domain prefix `brain-delivery-<domain>:v1\n`) | The measurement recipe of §5.2 follows the same rules under its own domain prefix; **integers only** |
@@ -260,12 +281,14 @@ class Probe(Protocol):
 ```
 
 The registry, not the probe, opens the source. `SourceSession` is what the composition root
-built for the target: for PostgreSQL targets it wraps an `AsyncSession` opened in **read-only
-autocommit** mode (`SET TRANSACTION READ ONLY` is issued by the registry before the probe runs,
-so a probe that tried to write would fail in PostgreSQL, not in a code review) and it exposes
-`identity()` — the query of the precedent at `plan_index_repair_store.py:291` plus
-`alembic_version`, executed in the same session immediately after the probe's own query, so
-the identity and the value come from one connection and one moment.
+built for the target: for PostgreSQL targets it wraps an `AsyncSession` inside **one explicit
+transaction** — `async with session.begin(): SET TRANSACTION READ ONLY, ISOLATION LEVEL
+REPEATABLE READ` — exactly the shape of the precedent (`plan_index_repair_store.py:222-225`).
+The probe's query, the identity query (`current_database()`, `inet_server_addr()`,
+`inet_server_port()`, the database OID from `pg_database`) and the `alembic_version` read all
+run inside that transaction, so value and identity come from one connection and **one
+snapshot**; a probe that tried to write fails with PostgreSQL's read-only error, not with a
+mock. The transaction is rolled back on exit; nothing is committed.
 
 Rules, all of them tested:
 
@@ -284,17 +307,27 @@ Rules, all of them tested:
    thread is not a probe of this registry.
 3. **One probe per fact.** A second registration under a name already registered raises
    `DuplicateFactError`, whatever the definition version.
-4. **Verified target.** The composition root declares, per target, the identity it expects —
-   for `production`: database name and server port from `settings.postgres_url`, never a
-   secret — and the registry compares the measured identity with it after every run. A
-   mismatch is `Unreadable(error_code="target_mismatch")` and the measured identity is logged
-   once at warning level (database name and port only). A measured identity that could not be
-   read is `identity_unreadable`. **No probe on a target whose identity the registry cannot
-   measure ships**: `host` and `live_release` identities are `hostname` + release SHA parsed
-   from `brain_v42.__file__` (`releases/<sha>/`) and `package_version()`; `github` identity is
-   the API origin plus the authenticated principal returned by the credential's own endpoint,
-   read once per process and refreshed with the token; `provider` identity is the endpoint
-   origin plus the `/healthz` body's identity fields. Slice 1 needs only `production`.
+4. **Verified target, declared independently.** The identity a target must have is **not
+   derived from the DSN the probe connects with** — that would let a wrong DSN confirm itself
+   (second review, P0-1). For `production` the operator declares it once, as a non-secret
+   setting, `BRAIN_FACTS_PRODUCTION_IDENTITY="<database>:<port>:<database OID>"` (the OID from
+   `SELECT oid FROM pg_database WHERE datname = current_database()`, stable for the life of a
+   database and changed by a restore — which is the point: a restored database is a new
+   instance the operator re-declares, and the DR runbook gains that line). The registry
+   compares **every declared field** with the measured identity after every run; the measured
+   server address is carried in `source` and compared too when the setting declares it (a
+   container address may move, so it is optional). A mismatch is
+   `Unreadable(error_code="target_mismatch")`, logged once at warning level (database name,
+   port and OID only). An identity that could not be read is `identity_unreadable`. **When the
+   setting is absent or malformed, no `production` probe can be registered**
+   (`UnverifiableTargetError` at composition, so the service starts without production facts
+   and says so in the journal rather than measuring an unverified database). The same rule
+   holds for every other target kind: `host` and `live_release` identities are `hostname`
+   (declared in `BRAIN_FACTS_HOST_IDENTITY`) + release SHA parsed from `brain_v42.__file__`
+   (`releases/<sha>/`) + `package_version()`; `github` identity is the API origin plus the
+   authenticated principal returned by the credential's own endpoint; `provider` identity is
+   the endpoint origin plus the `/healthz` body's identity fields — each declared before its
+   first probe ships. Slice 1 needs only `production`.
 5. **Raising is the failure protocol.** A probe that cannot measure raises; the registry turns
    the exception into `Unreadable(error_code="probe_error", where=...)` with the PR #155
    convention (class name + function, never a message), and logs it at warning level once per
@@ -318,8 +351,9 @@ class FactRegistry:
     def describe(self, name: str) -> FactDescriptor  # name, definition_version, target, ttl, timeout, briefing, policies
     def briefing_names(self) -> tuple[str, ...]
     async def measure(self, name: str, *, max_age: timedelta | None = None) -> Measurement
-    async def measure_many(self, names: Iterable[str], *, max_age: timedelta | None = None,
+    async def measure_many(self, names: Sequence[str], *, max_age: timedelta | None = None,
                            budget: timedelta | None = None) -> dict[str, Measurement]
+        # at most 32 names, no duplicates, every name registered — else ValueError before any task
     async def aclose(self) -> None
 ```
 
@@ -342,10 +376,16 @@ Semantics:
   reading, and one is being taken). Negative → `ValueError` before anything runs. Zero is
   charged to the refresh budget (below); a positive `max_age` that misses the cache is charged
   too; a cache hit is free.
-- **Refresh budget.** A per-process token bucket per fact, `per_fact_per_minute` (10 by
-  default), charged by every probe run that a caller forced (`max_age` shorter than the TTL).
-  Saturation returns `Unreadable(error_code="refresh_budget")` immediately — **never a cached
-  value presented as fresh**. The briefing's own reads use `max_age=None` and are not charged.
+- **Refresh budget.** Two token buckets per process: one per fact (`per_fact_per_minute`,
+  10 by default) and one per **target** (`per_target_per_minute`, 30 by default — the shared
+  database pays for every fact on it), both charged by every probe run a caller forced
+  (`max_age` shorter than the TTL). Saturation of either returns
+  `Unreadable(error_code="refresh_budget")` immediately — **never a cached value presented as
+  fresh**. Buckets are never keyed by a caller header: `X-Brain-Agent` is declared and
+  spoofable. The briefing's own reads use `max_age=None` and are not charged.
+- **Bounded batches.** `measure_many` takes a sequence of at most 32 distinct registered
+  names and refuses anything else with `ValueError` before creating a task; the briefing
+  passes `briefing_names()` and nothing a caller supplied.
 - **Single flight, owned by the registry.** A stale fact triggers one `asyncio.Task` created
   and held by the registry in `_inflight[name]`; every reader awaits `asyncio.shield(task)`,
   so a cancelled reader (a client that disconnected mid-briefing) never cancels the
@@ -498,7 +538,8 @@ row), not the transport's.
 New package `src/brain_v42/facts/` with `model.py`, `canonical.py`, `sources.py` (the source
 factories and identity queries), `registry.py`, `render.py` (the French lines), and
 `probes/graph_projection_lag.py`. Imports allowed: `brain_v42.db`, `brain_v42.repositories`,
-`brain_v42.release`, `brain_v42.services.schema_state_service`, the standard library.
+`brain_v42.release`, `brain_v42.services.schema_state_service`, `brain_v42.config` (for the
+declared identities), the standard library.
 `brain_v42.mcp` and `brain_v42.metrics` import `facts`; `facts` never imports them. The
 reviewer verified with the layering script that the proposed edges add no cycle; the
 `facts → services` edge is a single module and is named in the test that pins it.
@@ -508,9 +549,9 @@ reviewer verified with the layering script that the proposed edges add no cycle;
 ### 6.1 `knowledge_claims`: keys and occurrences
 
 A **claim key** is the content identity of a claim: `sha256` of the canonical JSON of
-`{statement, fact_name | probe, params, expected, target, definition_version}` — the target
-and the definition version are part of it (revision 1 left them out, so a catalogue change
-would have silently re-keyed nothing). A **claim occurrence** is a row: the assertion of one
+`{statement, fact_name, expected, target, definition_version}` — the target and the definition
+version are part of it (revision 1 left them out, so a catalogue change would have silently
+re-keyed nothing). A **claim occurrence** is a row: the assertion of one
 key by one entry, with its own lifecycle.
 
 | Column | Type | Notes |
@@ -518,22 +559,21 @@ key by one entry, with its own lifecycle.
 | `id` | uuid PK | the occurrence |
 | `seq` | bigint, identity, unique | server insertion order |
 | `entity_ref_id` | uuid FK → `brain_entities.id` ON DELETE RESTRICT | the durable anchor; coverage is complete (§4). The claim write path resolves the anchor through the ledger's existing entity upsert inside the same transaction; a knowledge entity cannot be deleted while it has occurrences — the delete paths (`pg_learning.py:184` and its siblings) retire them first, in the same transaction |
-| `entity_type` | text CHECK in (`learning`, `decision`, `adr`, `runbook`, `snippet`) | denormalised from the anchor, checked by trigger against it |
-| `project_key` | varchar(50) FK → `projects` | denormalised for scope filtering; canonical form |
+| `entity_type` | text CHECK in (`learning`, `decision`, `adr`, `runbook`, `snippet`) | denormalised from the anchor; a `BEFORE INSERT` trigger refuses a row whose `entity_type` or `project_key` differs from the anchor's, or whose anchor is not `scope_kind = 'project'` and `lifecycle = 'active'` (second review, P1-4) |
+| `project_key` | varchar(50) FK → `projects` | denormalised for scope filtering; canonical form; equal to the anchor's by trigger |
 | `claim_key` | char(64) | content identity, §6.1 |
 | `statement` | text, 1–500 chars | for humans |
-| `fact_name` | text, nullable | a catalogue name, checked against the registry at write time |
-| `probe` | jsonb, nullable | inline probe `{kind, params}` from a closed set of kinds (lot C); exactly one of `fact_name`, `probe` non-null (CHECK) |
-| `params` | jsonb object | probe parameters (empty object for catalogue facts) |
+| `fact_name` | text NOT NULL | a catalogue name, checked against the registry at write time. **No inline probes in lot B** (second review, P1-3): a claim that the registry cannot measure cannot be written; lot C may add inline probes with server-resolved, versioned descriptors |
 | `definition_version` | int | the fact definition the claim was written against |
 | `target` | text CHECK in the `FactTarget` values | copied from the catalogue at write time |
-| `expected` | jsonb object | `{"path": "/lag_seconds", "op": "lte", "value": 300}` or `{"path": "/lag_seconds", "op": "lte", "policy": "late_after_seconds"}` — `op` in (`eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `exists`); `regex` is gone; `exists` means "path present with a non-null value" |
-| `validity_seconds` | int, nullable | how long a `holds` may be presented as current without a newer reading; `null` → the fact's TTL × 4 |
+| `expected` | jsonb object, bounded (§6.5) | `{"path": "/lag_seconds", "op": "lte", "value": 300}` or `{"path": "/lag_seconds", "op": "lte", "policy": "late_after_seconds"}` — `op` in (`eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `exists`); `regex` is gone; `exists` means "path present with a non-null value" |
+| `expected_resolved` | jsonb object | the `expected` with any `policy` reference **resolved at write time** from the descriptor of `definition_version`; verification reads this column, never the live descriptor (second review, P1-5) |
+| `validity_seconds` | int NOT NULL | how long a `holds` may be presented as current without a newer reading; materialised at write time from the input or from the descriptor's TTL × 4, never resolved later |
 | `provenance` | text CHECK in (`measured`, `declared`) | whether the author obtained a server verdict at write time |
 | `declared_by` | varchar(64) | the `X-Brain-Agent` identity or the human label — **declared** |
 | `declared_at`, `recorded_at` | timestamptz | author's instant; server's `now()` |
 | `retired_at` | timestamptz, nullable | the only column an UPDATE may touch, NULL → value, once |
-| `replaces_id` | uuid FK → `knowledge_claims.id`, nullable | the occurrence this one supersedes (the `SUPERSEDES` material for lot D) |
+| `replaces_id` | uuid FK → `knowledge_claims.id`, nullable | the occurrence this one supersedes (the `SUPERSEDES` material for lot D); **required** when the same key was previously asserted by the same entity and retired, and it must then name a retired occurrence of that entity (trigger) — a re-assertion never floats free of its history |
 
 Constraints: unique partial index `(entity_ref_id, claim_key) WHERE retired_at IS NULL` — the
 same key is asserted at most once **at a time** by one entry, and re-asserting after
@@ -560,7 +600,8 @@ application role.
 | `observation_id` | uuid | from the measurement; unique with `claim_id`: one reading yields at most one verdict row per claim |
 | `issuer_identity` | varchar(200) | who **asked** for the verdict: `mcp:<X-Brain-Agent>`, `dream:verify:<run_id>`, `human:<label>` — declared |
 | `issuer_kind` | text CHECK in (`robot`, `human`) | |
-| `idempotency_key` | varchar(200) | issuer-chosen; a replayed request with the same key and the same `measurement` digest returns the existing row; the same key with a different measurement is refused with `idempotency_conflict`, as `pg_delivery_attestations.py:150` does |
+| `request_fingerprint` | char(64) | `sha256` of the canonical JSON of `{claim_id, verdict, reason, measurement}` — defined for every row, unreadable included (second review, P1-7) |
+| `idempotency_key` | varchar(200) | issuer-chosen; a replayed request with the same key and the same `request_fingerprint` returns the existing row; the same key with a different fingerprint is refused with `idempotency_conflict`, as `pg_delivery_attestations.py:150` does — the comparison never depends on `measurement_digest`, which is NULL for an unreadable |
 | `emitted_at` | timestamptz | the measurement's instant; **refused if later than `now() + 60 s`** |
 | `recorded_at` | timestamptz, `now()` | |
 
@@ -598,9 +639,9 @@ downgraded to `declared` in the response, explicitly.
 1. `Unreadable` → `unreadable`, reason `probe:<error_code>`.
 2. `expected.path` is a JSON pointer into `measured.value`; absent → `unreadable`
    (`path_absent`). `exists` is the only op for which absence is a `falsified`.
-3. `expected.value` or `expected.policy` (resolved against the descriptor's policies for the
-   claim's definition version) gives the right-hand side; a type mismatch between the resolved
-   value and the operator's domain → `unreadable` (`type_mismatch`), never `falsified`.
+3. `expected_resolved` — resolved and stored at write time, never re-resolved against the
+   live descriptor — gives the right-hand side; a type mismatch between it and the operator's
+   domain → `unreadable` (`type_mismatch`), never `falsified`.
 4. Otherwise `holds` or `falsified`.
 
 Three reads, never confused:
@@ -623,13 +664,24 @@ written in one transaction with the entry.
 
 - `claims` **absent** → the entry's claims are unchanged.
 - `claims: []` → every active occurrence of the entry is retired (`retired_at = now()`), with
-  the response naming them.
-- `claims: [...]` → a **controlled replacement** under compare-and-swap: the request carries
-  `expected_active_claim_ids` (the set the caller saw); if the current active set differs, the
-  request is refused with `claims_conflict` and nothing changes. Otherwise: an input whose key
-  matches an active occurrence keeps it; an input with a new key creates an occurrence whose
-  `replaces_id` is the retired occurrence the caller named in `replaces` (optional); active
-  occurrences absent from the input are retired.
+  the response naming them — **under the same compare-and-swap as a replacement**: the request
+  carries `expected_active_claim_ids`, and a set that differs refuses the retirement with
+  `claims_conflict` (second review, P1-6: an empty list is the most destructive mutation, not
+  an exception to the guard).
+- `claims: [...]` → a **controlled replacement** under compare-and-swap: `expected_active_claim_ids`
+  must equal the current active set or the request is refused with `claims_conflict` and
+  nothing changes. Otherwise: an input whose key matches an active occurrence keeps it; an
+  input with a new key creates an occurrence — and when that key was asserted before by this
+  entity and retired, the input **must** name the retired occurrence in `replaces`, which
+  becomes `replaces_id` (refused otherwise, `replacement_required`); active occurrences absent
+  from the input are retired.
+
+Every input passes a closed `ClaimInput` validator before any write (second review, P2-8):
+`statement` 1–500 characters; `expected` ≤ 1024 bytes of canonical JSON, depth ≤ 4; `path` a
+JSON pointer of ≤ 8 segments of ≤ 64 characters each, `~0`/`~1` escapes honoured; `value` a
+scalar or an array of ≤ 32 scalars; `in` requires an array; `policy` must name a policy of the
+descriptor; `validity_seconds` between 60 and 31 536 000; at most 10 inputs per entry. A
+refused input names the rule; nothing is written.
 
 ### 6.6 Read paths
 
@@ -723,9 +775,16 @@ Integration, against the test database (`tests/integration/db`):
 - Lease expired (`leased_until` in the past) → `lease_active is False`; `recovery_id` set →
   `recovery_active is True`; exhausted rows only → loud line with `pending == 0`.
 - The identity read on `brain_test` **differs** from the production identity declared in the
-  test's registry → `target_mismatch`: the 2026-09-12 failure mode, reproduced and refused.
-- The probe issues no statement other than `SELECT` and runs in a read-only transaction (an
-  injected `INSERT` in a test probe fails with PostgreSQL's read-only error, not with a mock).
+  test's registry (database name, port, OID — declared by the test, not derived from the DSN)
+  → `target_mismatch`: the 2026-09-12 failure mode, reproduced and refused; a registry built
+  without the declared identity refuses the production probe at registration.
+- Value, identity and Alembic head are read in **one** `REPEATABLE READ` read-only
+  transaction: a row inserted by a second connection between the probe's query and the identity
+  query is invisible to the probe (snapshot proof); an injected `INSERT` in a test probe fails
+  with PostgreSQL's `cannot execute INSERT in a read-only transaction`, not with a mock.
+- `brain_session_start` and `brain_session_resume` both render the fact line through the
+  shared loader; a Dream-scoped principal calling `brain_fact_get` is refused by the phase
+  allowlist (no phase lists it in slice 1).
 - Shutdown during a running probe: `aclose()` returns, the connection is released, the engine
   disposes cleanly.
 
@@ -769,22 +828,24 @@ Rollback: the previous release's drop-ins; nothing to restore in the database.
 - **A `last_verdict` column on the claim.** Rejected (finding 2): a mutable "current" is the
   thing that would be rewritten; the three reads of §6.4 are derived from the append-only rows.
 
-## 9. Questions for the second review
+## 9. Questions for the third review
 
-1. §5.3 rule 4 makes the expected identity of `production` a value derived from
-   `settings.postgres_url` at composition: is deriving it from the same setting the probe's
-   connection uses enough, or should the operator declare it independently (a second source
-   that would catch a wrong DSN, at the cost of one more private literal to keep true)?
-2. §5.4 charges a forced refresh to a per-fact token bucket of 10 per minute per process. Is
-   per fact the right granularity, or should the bucket be per caller identity as well?
-3. §6.1 puts the `entity_type` CHECK on the claims table and verifies it against the anchor by
-   trigger. Is the denormalisation worth the trigger, or should reads join `brain_entities`?
-4. §6.4 renders a `holds` older than `validity_seconds` as `périmé`. Should a stale `holds`
-   also count as "not holding" for REORG's proposal input, or only for display?
-5. §6.5's compare-and-swap uses the set of active occurrence ids. Is that sufficient against a
-   concurrent `claims: []` followed by a replacement, or is a per-entity claims revision
-   counter (one more column on five tables) needed after all?
-6. What, in §5.2–§5.5, still lets the first fact lie rather than say `unreadable`?
+The six questions of revision 2 were answered by the second review and the answers are
+adopted: the expected identity is declared independently (§5.3); buckets are per fact and per
+target, never per caller header (§5.4); `entity_type` stays denormalised with a trigger that
+also enforces the project (§6.1); a stale `holds` is neither holding nor falsified — it may
+request a re-measurement and never drives archiving (§6.4); the active-set compare-and-swap
+covers `[]` and no revision counter is added (§6.5); mismatch and the inability to obtain one
+read-only observation transaction fail closed (§5.3).
+
+1. §5.3 rule 4 uses the database OID as the instance marker. Is a restore-changes-the-identity
+   semantics acceptable operationally (one declared line to update in the DR runbook), or is a
+   marker that survives a restore preferable, at the cost of not distinguishing a restored
+   copy from the original?
+2. §6.1 stores `expected_resolved` and `validity_seconds` on the occurrence instead of keeping
+   descriptor snapshots. Is anything lost for lot D's projection of facts as nodes keyed by
+   `(fact_name, definition_version)`?
+3. What, in §5.2–§5.5, still lets the first fact lie rather than say `unreadable`?
 
 ## 10. Sources
 
