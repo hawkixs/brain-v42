@@ -154,9 +154,21 @@ async def cli_case(engine, factory, tmp_path, *, legacy_pg=False):
 
     async def finish(process):
         stdout, stderr = await asyncio.wait_for(process.communicate(), 15)
-        assert not stderr, stderr.decode()
-        assert TOKEN.encode() not in stdout and pg_url.encode() not in stdout
-        assert b"private fixture body" not in stdout
+        # stderr carries at most the one-line observation diagnostics of the
+        # runtime: no traceback, no warning, no secret, no provider body.
+        for line in stderr.decode().splitlines():
+            diagnostic = json.loads(line)
+            assert diagnostic["event"] == "observation_error", stderr.decode()
+            assert set(diagnostic) == {
+                "event",
+                "subject",
+                "error_code",
+                "provider_code",
+                "diagnostic",
+            }
+        for channel in (stdout, stderr):
+            assert TOKEN.encode() not in channel and pg_url.encode() not in channel
+            assert b"private fixture body" not in channel
         payload = json.loads(stdout)
         if "collected" in payload:
             ObservationRunResult.model_validate(payload)

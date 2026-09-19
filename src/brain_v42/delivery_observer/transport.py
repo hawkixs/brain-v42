@@ -22,15 +22,27 @@ from brain_v42.models.delivery import DeliveryError
 JsonData = dict[str, Any] | list[Any]
 
 
+#: A diagnostic names an adapter frame and an exception class, never a value
+#: read from the provider; the bound keeps a mistaken caller from smuggling one.
+_DIAGNOSTIC_MAX_CHARS = 120
+
+
 class ProviderError(DeliveryError):
-    """Only a stable code, HTTP status and bounded retry delay cross this boundary."""
+    """Only a stable code, HTTP status, bounded retry delay and a bounded
+    diagnostic naming the adapter frame cross this boundary — never provider data."""
 
     def __init__(
-        self, code: str, *, status_code: int | None = None, retry_after_seconds: float = 30
+        self,
+        code: str,
+        *,
+        status_code: int | None = None,
+        retry_after_seconds: float = 30,
+        diagnostic: str | None = None,
     ) -> None:
         super().__init__(code, "GitHub observation could not be confirmed")
         self.status_code = status_code
         self.retry_after_seconds = retry_after_seconds
+        self.diagnostic = diagnostic[:_DIAGNOSTIC_MAX_CHARS] if diagnostic else None
 
 
 @dataclass(frozen=True, slots=True)

@@ -495,3 +495,41 @@ async def test_status_record_url_cannot_borrow_another_revision():
     with pytest.raises(ProviderError) as failure:
         await case.collect()
     assert failure.value.code == "provider_invalid_response"
+
+
+@pytest.mark.parametrize(
+    "mutate,expected",
+    [
+        (lambda review: review.pop("pull_request_url"), "KeyError 'pull_request_url' in _review"),
+        (lambda review: review.__setitem__("state", ["APPROVED"]), "TypeError in _review"),
+        (lambda review: review.__setitem__("state", "WEIRD"), "KeyError in _review"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_rejected_provider_payload_names_the_adapter_frame_not_the_payload(mutate, expected):
+    """``provider_invalid_response`` alone cost an hour of out-of-band reproduction
+    on 2026-09-19 (ticket 731ab364): the confirmation row said the provider
+    answered something the adapter refused, and nothing said where. The error
+    now carries a bounded diagnostic — exception class, the offending key when
+    it is a snake_case field name, and the adapter function — never a value
+    from the provider body: a review state the adapter does not know
+    (``WEIRD``) is looked up in a dict and would surface as the key, so
+    anything that is not a lowercase field name is dropped.
+    """
+    case = GitHubCase(approvals=1)
+    mutate(case.reviews[0][0])
+    with pytest.raises(ProviderError) as failure:
+        await case.collect()
+    assert failure.value.code == "provider_invalid_response"
+    assert failure.value.diagnostic == expected
+
+
+@pytest.mark.asyncio
+async def test_provider_errors_raised_by_the_adapter_itself_carry_no_diagnostic():
+    case = GitHubCase(approvals=1)
+    case.after = deepcopy(case.pr)
+    case.after["head"]["sha"] = X
+    with pytest.raises(ProviderError) as failure:
+        await case.collect()
+    assert failure.value.code == "provider_revision_changed"
+    assert failure.value.diagnostic is None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -37,6 +38,27 @@ class GitHubAuthorization(Protocol):
     async def authorization_headers(self) -> dict[str, str]: ...
 
     async def invalidate(self, headers: Mapping[str, str]) -> None: ...
+
+
+_FIELD_NAME = re.compile(r"[a-z_][a-z0-9_]{0,31}")
+
+
+def _diagnostic(error: BaseException) -> str:
+    """``KeyError 'url' in _review`` — class, missing field name, adapter frame.
+
+    A field name is schema, not data. A ``KeyError`` can also come from a
+    lookup keyed by a provider VALUE (an unknown review state such as
+    ``WEIRD``), so only a snake_case field name is kept; everything else a
+    provider could have put in the exception is dropped. The frame is the
+    innermost one of this module.
+    """
+    frames = traceback.extract_tb(error.__traceback__)
+    here = [frame for frame in frames if frame.filename == __file__]
+    where = f" in {here[-1].name}" if here else ""
+    key = error.args[0] if isinstance(error, KeyError) and error.args else None
+    if isinstance(key, str) and _FIELD_NAME.fullmatch(key):
+        return f"{type(error).__name__} '{key}'{where}"
+    return f"{type(error).__name__}{where}"
 
 
 def _object(value: Any) -> dict[str, Any]:
@@ -358,9 +380,12 @@ class GitHubClient:
         """Return complete facts only after the closing PR identity fence passes."""
         try:
             return await self._collect(binding, contract, previous=previous)
-        except (KeyError, TypeError, ValueError, ValidationError, OverflowError):
-            # Arbitrary provider bodies or validation input never escape the adapter.
-            raise ProviderError("provider_invalid_response") from None
+        except (KeyError, TypeError, ValueError, ValidationError, OverflowError) as error:
+            # Arbitrary provider bodies or validation input never escape the adapter;
+            # the frame that refused them does, so the journal says WHERE, not what.
+            raise ProviderError(
+                "provider_invalid_response", diagnostic=_diagnostic(error)
+            ) from None
 
     async def _collect(
         self,
