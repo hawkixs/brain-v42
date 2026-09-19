@@ -79,8 +79,18 @@ test "$(jq -r '.contract_id + ":" + (.schema_version|tostring) + ":" + ((.checks
 Identical to "Apply additive schema 053" with the revision moved forward. The
 pre-check refuses a head that is not `053`; the Python block is the one of that
 section with `command.upgrade(Config(os.environ["ALEMBIC_INI"]), "054")` and the
-evidence files renamed `alembic-053-to-054.private.stdout` / `.stderr`; the
-post-checks are:
+evidence files renamed `alembic-053-to-054.private.stdout` / `.stderr`, with one
+correction measured on 2026-09-18: that block pins
+`BRAIN_DELIVERY_REPOSITORY_REGISTRY` to the single-project literal of 2026-09-08,
+and the [GitHub App cutover of 2026-09-11](2026-09-11-delivery-observer-github-app-cutover.md)
+extended the registry to every ReD repository, identically in the observer env
+and the MCP env. Drop the literal from `REQUIRED`, keep the key in the required
+set, and require instead that the parsed registry carries
+`"brain-v42": {"1337360966": "hawkixs/brain-v42"}` and equals the parsed
+registry of `~/.config/brain-v42/delivery-mcp.env` (whose key set is exactly
+`BRAIN_DELIVERY_ENABLED=true` and the registry). Run the attestation once WITHOUT
+the upgrade before the window — the refusal is cheap there and expensive between
+the quiesce and the start. The post-checks are:
 
 ```bash
 test "$(docker exec brain_v42_postgres psql -X -U brain -d brain -Atq \
@@ -103,13 +113,32 @@ post-check fails, keep writers stopped and diagnose. Do not downgrade to 053.
 Subject: ticket `78fc643a-f3ca-45fe-8a0d-497283ac7d5d` (a `brain-v42` delivery
 workflow with a contract), `actor_project` `brain-v42`. The client is the one
 `scripts/verify_delivery_canary.py` uses: Streamable HTTP on the loopback MCP,
-the bearer read from the private token file named by `mcp_token_file` in the
-canary's configuration, and the two headers `X-Brain-Tool-Profile: native` and
-`X-Brain-Agent`. Run it from the release venv, after activation:
+the bearer read raw from the private token file
+`~/.config/brain-v42/delivery-canary-mcp-token-<SOURCE_SHA>` — prepared from
+`MCP_HTTP_TOKEN` as the 2026-09-07 runbook's "canary verifier interface" section
+prescribes, `0600`, never printed and never a command argument — and the two
+headers `X-Brain-Tool-Profile: native` and `X-Brain-Agent`. There is no fixed
+canary JSON: the configuration is a **per-invocation** private `0600` file with
+the two keys `mcp_url` and `mcp_token_file`, written under the evidence directory
+and retained beside the result. Run it from the release venv, after activation:
 
 ```bash
-CANARY_CONFIG=~/.config/brain-v42/delivery-canary.private.json   # the canary's private JSON
 SOURCE_SHA=<merge commit>
+CANARY_MCP_TOKEN=~/.config/brain-v42/delivery-canary-mcp-token-$SOURCE_SHA
+test -f "$CANARY_MCP_TOKEN" && test ! -L "$CANARY_MCP_TOKEN"
+test "$(stat -c '%u:%a' "$CANARY_MCP_TOKEN")" = "$(id -u):600"
+CANARY_CONFIG="$EVIDENCE_DIR/attestation-canary.config.private.json"
+test ! -e "$CANARY_CONFIG"
+env CANARY_CONFIG="$CANARY_CONFIG" CANARY_MCP_TOKEN="$CANARY_MCP_TOKEN" \
+  "$RELEASE/venv/bin/python" -I - <<'PY'
+import json, os
+from pathlib import Path
+
+config = {"mcp_url": "http://127.0.0.1:8765/mcp", "mcp_token_file": os.environ["CANARY_MCP_TOKEN"]}
+fd = os.open(Path(os.environ["CANARY_CONFIG"]), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as stream:
+    json.dump(config, stream, sort_keys=True, indent=2)
+PY
 "$RELEASE/venv/bin/python" - "$CANARY_CONFIG" "$SOURCE_SHA" <<'PY'
 import asyncio, json, sys
 from datetime import UTC, datetime
@@ -168,9 +197,12 @@ async def main() -> None:
 asyncio.run(main())
 PY
 test "$(docker exec brain_v42_postgres psql -X -U brain -d brain -Atq -v ON_ERROR_STOP=1 \
-  -c "SELECT count(*) || '|' || (min(id) = max(id)) FROM delivery_attestations \
-      WHERE idempotency_key = 'canary-054:$SOURCE_SHA';")" = '1|t'
+  -c "SELECT count(*) || '|' || count(DISTINCT id) FROM delivery_attestations \
+      WHERE idempotency_key = 'canary-054:$SOURCE_SHA';")" = '1|1'
 ```
+
+PostgreSQL defines no `min`/`max` aggregate on `uuid`; `count(DISTINCT id)` carries the
+same proof (measured on 2026-09-18, the first form errored after a green canary).
 
 The canary proves, live, the four things the ticket and red-rail froze: a replay
 lands on the same row, a reused key with other content is refused with its code,
@@ -181,7 +213,9 @@ about this release.
 ## Production receipt
 
 `docs/receipts/<date>-delivery-attestations-054.md`, published through the normal
-pull-request path, carrying: `SOURCE_SHA` and the tag; the writer and trigger
+pull-request path — the 2026-09-18 window's is
+[`2026-09-18-delivery-attestations-054.md`](../receipts/2026-09-18-delivery-attestations-054.md) —
+carrying: `SOURCE_SHA` and the tag; the writer and trigger
 states before and after; the Alembic 053→054 timestamps; the `pre054` dump name
 and SHA-256 and the two clone replays (v10 as restored, v11 after migration) with
 their receipt hashes; the dormant and active preflight JSON hashes; the canary's
