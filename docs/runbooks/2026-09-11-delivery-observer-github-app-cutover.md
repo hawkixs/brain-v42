@@ -154,6 +154,17 @@ These three steps cannot be scripted for a user account.
    is answered; if the wording does not say "current and future", a new repository
    is one checkbox on the installation page.
 
+   **Answered by measurement on 2026-09-19** (registration of `hawkixs/red-rail`
+   for the `red-rail` project, Brain runbook `434dc417`, learning `19c7be26`): the
+   installation made on 2026-09-11 lists `hawkixs/red-rail` and `hawkixs/red-store`,
+   both created after that day, under `GET /installation/repositories` (28 seen,
+   registry missing `[]`), and `check-runs` on `red-rail` answers `200` with
+   `checks=read`. "All repositories" covers repositories created later; adding one
+   really is block 0 plus the two restarts of step 4 and 4b, with no GitHub gesture.
+   What would make this false, and no test watches it: the installation's
+   `repository_selection` moving from `all` to `selected`. Re-measure with block 3
+   before trusting a regenerated registry after any change on the GitHub side.
+
 Hand the App ID and the key path to the operator shell. The installation id is
 discovered below; it also appears in the URL after step 3
 (`https://github.com/settings/installations/<installation_id>`).
