@@ -462,3 +462,41 @@ async def test_a_broken_stderr_never_breaks_the_observation_it_describes(
     assert result.failed == 1 and result.exit_code == 1
     assert snapshots == 0 and confirmations[0]["error_code"] == "provider_invalid_response"
     assert row["due_at"] > datetime.now(UTC)
+
+
+async def test_diagnostic_is_written_after_the_failed_attempt_is_persisted(
+    engine, session_factory, monkeypatch
+):
+    """stderr is synchronous: a journal that stalls would delay whatever comes
+    after the write. The persisted attempt and its reschedule come first, so a
+    stalled diagnostic can only delay the NEXT observation, never the record of
+    this one."""
+    order: list[str] = []
+
+    class _Recording:
+        def write(self, _text):
+            order.append("stderr")
+
+        def flush(self):
+            pass
+
+    case = ObserverCase(engine, session_factory)
+    _, binding, _ = await case.create()
+    case.drift = True
+    monkeypatch.setattr(sys, "stderr", _Recording())
+    async with case.runtime() as runtime:
+        recorded = runtime.evidence_repository.record_observation_error
+
+        async def record_then_note(*args, **kwargs):
+            result = await recorded(*args, **kwargs)
+            order.append("persisted")
+            return result
+
+        monkeypatch.setattr(
+            runtime.evidence_repository, "record_observation_error", record_then_note
+        )
+        result = await runtime.run_once()
+    assert result.failed == 1
+    assert order == ["persisted", "stderr"]
+    _, confirmations, _, _ = await case.state(binding)
+    assert confirmations[0]["error_code"] == "provider_invalid_response"

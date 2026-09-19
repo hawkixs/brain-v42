@@ -63,7 +63,9 @@ def _diagnose(
     }
     # A diagnostic must never break the observation it describes (the
     # client-activity emitter had that defect, ticket 1c40c36a): a closed or
-    # broken stderr is the journal's problem, not the attempt's.
+    # broken stderr is the journal's problem, not the attempt's. The write is
+    # synchronous, like the stdout protocol of this process; the caller runs
+    # it only once the attempt is persisted.
     with suppress(OSError, ValueError):
         sys.stderr.write(json.dumps(line) + "\n")
         sys.stderr.flush()
@@ -227,6 +229,8 @@ class DeliveryObserverRuntime:
         evidence: PullRequestEvidence | RepositoryContextEvidence | None = None
         code: str | None = None
         retry = 0.0
+        provider_code: str | None = None
+        diagnostic: str | None = None
         try:
             if job.binding is not None:
                 evidence = await self.client.collect(
@@ -245,10 +249,10 @@ class DeliveryObserverRuntime:
                 else "provider_invalid_response"
             )
             retry = max(error.retry_after_seconds, min(300.0, 5.0 * 2 ** min(job.failure_count, 6)))
-            _diagnose(job, code, provider_code=error.code, diagnostic=error.diagnostic)
+            provider_code, diagnostic = error.code, error.diagnostic
         except Exception as error:
             code, retry = "provider_unavailable", min(300.0, 5.0 * 2 ** min(job.failure_count, 6))
-            _diagnose(job, code, provider_code=None, diagnostic=type(error).__name__)
+            diagnostic = type(error).__name__
         finished_at = max(started_at, datetime.now(UTC))
         try:
             async with self.owner.transaction() as session:
@@ -294,6 +298,11 @@ class DeliveryObserverRuntime:
                     expected_version=job.version + 1,
                     delay_seconds=min(86400, max(self.settings.poll_seconds, retry)),
                 )
+            if code is not None:
+                # After the attempt is persisted and rescheduled: stderr is
+                # synchronous, and a journal that stalls may delay only what
+                # comes next, never the record of this attempt.
+                _diagnose(job, code, provider_code=provider_code, diagnostic=diagnostic)
             return _Outcome(
                 "collected" if code is None else "failed", finished_at if code is None else None
             )
