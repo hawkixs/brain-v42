@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import UTC, date, datetime
+from collections.abc import Sequence
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -419,6 +420,7 @@ def _section_technical_state(
     focus_length: int | None = None,
     focus_octets: int | None = None,
     now: datetime | None = None,
+    fact_lines: Sequence[str] = (),
 ) -> str:
     """The ``### État technique (mesuré)`` briefing section.
 
@@ -454,6 +456,9 @@ def _section_technical_state(
         lines.append("- Schéma : indisponible")
     elif revision:
         lines.append(f"- Schéma : {revision}")
+    # The registry's facts, already rendered (brain_v42.facts.render): one line
+    # each, right after the schema, before the focus prose they may contradict.
+    lines.extend(fact_lines)
     if focus_tracked:
         age = (
             _format_focus_age(focus_updated_at, now or datetime.now(UTC))
@@ -489,6 +494,7 @@ def _format_session_briefing(
     schema_unavailable: bool = False,
     checkpoints: list[Any] | None = None,
     delivery_briefing: str = "",
+    fact_lines: Sequence[str] = (),
 ) -> str:
     blockers = list(getattr(ctx, "blockers", []) or []) if ctx else []
     sections = [
@@ -512,6 +518,7 @@ def _format_session_briefing(
             focus_octets=(
                 len(ctx.current_focus.encode("utf-8")) if ctx and ctx.current_focus else None
             ),
+            fact_lines=fact_lines,
         ),
         _section_focus(ctx),
         _section_blockers(blockers),
@@ -522,6 +529,39 @@ def _format_session_briefing(
         _section_drill_in_hint(),
     ]
     return "\n\n".join(s for s in sections if s)
+
+
+#: The briefing's budget for its facts: admission stops when it elapses and the
+#: facts not started render `illisible (briefing_budget)`. Runs already admitted
+#: complete, so the honest bound is this plus one deadline, not this alone.
+BRIEFING_FACTS_BUDGET = timedelta(seconds=4)
+
+
+async def _render_briefing_facts(registry: Any) -> list[str]:
+    """The registry's briefing facts as rendered lines — a failure renders, never vanishes.
+
+    Unlike the other optional sections, a registry failure does NOT degrade
+    to "lines omitted": that silence would send the reader back to the focus
+    prose, the stale claim the technical section exists to contradict.
+    """
+    from brain_v42.facts.render import render_fact_line  # noqa: PLC0415
+
+    names = tuple(registry.briefing_names())
+    if not names:
+        return []
+    try:
+        measurements = await registry.measure_many(names, budget=BRIEFING_FACTS_BUDGET)
+        return [
+            render_fact_line(
+                measurements[name],
+                registry.describe(name),
+                age_seconds=registry.cached_age_seconds(name),
+            )
+            for name in names
+        ]
+    except Exception as exc:
+        logger.warning("brain_session_briefing_facts_failed", error=str(exc))
+        return ["- Faits : illisibles (registre indisponible)"]
 
 
 def make_session_briefing_loader(
@@ -536,6 +576,7 @@ def make_session_briefing_loader(
     ticket_svc: Any | None = None,
     schema_state_svc: Any | None = None,
     delivery_svc: Any | None = None,
+    fact_registry: Any | None = None,
 ) -> BriefingLoader:
     """Build the shared, read-only session briefing loader without lifecycle effects."""
 
@@ -636,6 +677,10 @@ def make_session_briefing_loader(
         except Exception as exc:
             logger.warning("brain_session_briefing_checkpoints_failed", error=str(exc))
 
+        fact_lines: list[str] = []
+        if fact_registry is not None:
+            fact_lines = await _render_briefing_facts(fact_registry)
+
         delivery_briefing = ""
         if delivery_svc is not None:
             try:
@@ -665,6 +710,7 @@ def make_session_briefing_loader(
             schema_unavailable=schema_unavailable,
             checkpoints=checkpoints,
             delivery_briefing=delivery_briefing,
+            fact_lines=fact_lines,
         )
 
     return load_briefing
@@ -683,6 +729,7 @@ def register_session_tools(
     ticket_svc: Any | None = None,
     schema_state_svc: Any | None = None,
     delivery_svc: Any | None = None,
+    fact_registry: Any | None = None,
 ) -> None:
     """Register explicit lifecycle tools with the shared action-forward loader."""
     load_briefing = make_session_briefing_loader(
@@ -696,5 +743,6 @@ def register_session_tools(
         ticket_svc=ticket_svc,
         schema_state_svc=schema_state_svc,
         delivery_svc=delivery_svc,
+        fact_registry=fact_registry,
     )
     register_session_lifecycle_tools(mcp, brain_session_svc, load_briefing)

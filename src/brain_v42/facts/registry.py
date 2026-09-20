@@ -202,6 +202,19 @@ class FactRegistry:
         """Return only cheap, explicitly declared briefing facts in catalogue order."""
         return tuple(name for name, descriptor in self._descriptors.items() if descriptor.briefing)
 
+    def cached_age_seconds(self, name: str) -> float | None:
+        """Monotonic age of the cached reading of a fact, or None when nothing is cached.
+
+        A renderer that wants to say "mesuré il y a 3 min" asks here rather
+        than subtracting `measured_at` from a wall clock: the wall clock may
+        step, the monotonic one does not.
+        """
+        self.describe(name)
+        entry = self._cache.get(name)
+        if entry is None:
+            return None
+        return max(0.0, self._monotonic() - entry.measured_mono)
+
     async def measure(self, name: str, *, max_age: timedelta | None = None) -> Measurement:
         """Serve a valid immutable cache entry or join/start exactly one producer task."""
         if self._closed:
