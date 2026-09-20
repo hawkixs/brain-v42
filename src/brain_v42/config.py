@@ -16,6 +16,7 @@ var, pydantic-settings maps it automatically.
 
 from __future__ import annotations
 
+import json
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -32,6 +33,8 @@ from pydantic import (
     model_validator,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from brain_v42.facts.model import SourceIdentity
 
 
 def _is_loopback_host(value: str | None) -> bool:
@@ -60,6 +63,17 @@ PGVECTOR_HNSW_MAX_DIMENSIONS = 2000
 # instruction prefix worth having ends in a space ("query: ", "passage: "), and
 # that space is what separates the prefix from the text. These fields opt out.
 _UnstrippedStr = Annotated[str, StringConstraints(strip_whitespace=False)]
+
+
+def _parse_source_identity(raw: str) -> SourceIdentity:
+    """A JSON object with exactly the four identity keys, each validated by the model."""
+    try:
+        payload = json.loads(raw)
+    except ValueError as exc:
+        raise ValueError("not a JSON document") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("must be a JSON object with four keys")
+    return SourceIdentity.from_mapping(payload)
 
 
 def _brain_alias(legacy_env: str) -> AliasChoices:
@@ -331,6 +345,19 @@ class Settings(BaseSettings):
         validation_alias=_brain_alias("CLIENT_ACTIVITY_URL"),
     )
 
+    # The identity the facts registry requires of the `production` target
+    # (spec 2026-09-19 measured facts and claims, §5.3 rule 4): the cluster's
+    # system identifier, the database, and the server address and port as
+    # PostgreSQL sees the connection — declared by the operator, NEVER derived
+    # from POSTGRES_URL (a wrong DSN would confirm itself). Absent means no
+    # production fact can register: the service starts without them and says
+    # so, rather than measuring an unverified database. A JSON object, not a
+    # colon-delimited string, so an IPv6 literal cannot be misread.
+    facts_production_identity_json: str | None = Field(
+        default=None,
+        validation_alias=_brain_alias("FACTS_PRODUCTION_IDENTITY"),
+    )
+
     # Auto-opening of an `agent` tracer session per HTTP connection, the signed
     # shape `ae0d0475` / ADR §0ter. Shipped CLOSED, like every new capability —
     # and here the reason is harder than elsewhere: armed, this flag makes the
@@ -404,6 +431,24 @@ class Settings(BaseSettings):
     otel_endpoint: str = Field(
         default="http://127.0.0.1:4318/v1/traces", validation_alias=_brain_alias("OTEL_ENDPOINT")
     )
+
+    @field_validator("facts_production_identity_json")
+    @classmethod
+    def _validate_facts_production_identity(cls, v: str | None) -> str | None:
+        """Fail closed at composition: a malformed declaration never reaches a probe."""
+        if v is None:
+            return None
+        try:
+            _parse_source_identity(v)
+        except ValueError as exc:
+            raise ValueError(f"BRAIN_FACTS_PRODUCTION_IDENTITY is invalid: {exc}") from exc
+        return v
+
+    def facts_production_identity(self) -> SourceIdentity | None:
+        """The declared identity of the production target, or None when undeclared."""
+        if self.facts_production_identity_json is None:
+            return None
+        return _parse_source_identity(self.facts_production_identity_json)
 
     @field_validator("otel_endpoint")
     @classmethod
