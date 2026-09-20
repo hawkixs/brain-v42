@@ -1060,6 +1060,12 @@ def build_server() -> BuiltServer:
 
     register_delivery_tools(mcp, delivery_svc=services["delivery_svc"])
 
+    # Measured facts (spec 2026-09-19, lot A): two read-only tools over the
+    # frozen catalogue; a fact name resolves to a live value here.
+    from brain_v42.mcp.tools.fact_tools import register_fact_tools  # noqa: PLC0415
+
+    register_fact_tools(mcp, registry=services["fact_registry"])
+
     if settings.brain_code_mode:
         server = maybe_apply_code_mode(mcp, settings)
     else:
