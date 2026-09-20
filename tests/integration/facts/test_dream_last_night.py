@@ -8,6 +8,7 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from brain_v42.db.tables import dream_runs
 from brain_v42.facts import FactRegistry, FactTarget, Measured, SourceIdentity
 from brain_v42.facts.probes.dream_last_night import DreamLastNightProbe
 from brain_v42.facts.sources import PostgresSourceFactory
@@ -30,28 +31,28 @@ async def _insert_test_rows(
     """Insert the one latest night and its older control row, retaining only owned identifiers."""
     rows = (
         {
-            "run_date": date(2026, 9, 19),
+            "run_date": date(2999, 1, 2),
             "phase": "factsdone",
             "status": "done",
             "phase_dry_run": False,
             "project_key": "facts-dream-last-night-a",
         },
         {
-            "run_date": date(2026, 9, 19),
+            "run_date": date(2999, 1, 2),
             "phase": "factsfail",
             "status": "fail",
             "phase_dry_run": True,
             "project_key": "facts-dream-last-night-b",
         },
         {
-            "run_date": date(2026, 9, 19),
+            "run_date": date(2999, 1, 2),
             "phase": "factstime",
             "status": "timeout",
-            "phase_dry_run": None,
+            "phase_dry_run": False,
             "project_key": "facts-dream-last-night-a",
         },
         {
-            "run_date": date(2026, 9, 18),
+            "run_date": date(2999, 1, 1),
             "phase": "factsold",
             "status": "done",
             "phase_dry_run": False,
@@ -95,14 +96,14 @@ async def test_latest_night_aggregates_and_caches_through_the_verified_registry(
             night = await read_last_night(session)
 
         assert night is not None
-        assert night.run_date == date(2026, 9, 19)
+        assert night.run_date == date(2999, 1, 2)
         assert night.rows == 3
         assert night.done == 1
         assert night.fail == 1
         assert night.timeout == 1
         assert night.partial == 0
         assert night.other == 0
-        assert night.wet == 1
+        assert night.wet == 2
         assert night.dry == 1
         assert night.projects == 2
 
@@ -129,6 +130,16 @@ async def test_latest_night_aggregates_and_caches_through_the_verified_registry(
 async def test_empty_dream_runs_table_has_no_last_night(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """A fresh test database must leave the aggregate absent instead of fabricating zeros."""
-    async with session_factory() as session:
-        assert await read_last_night(session) is None
+    """A database with no night leaves the aggregate absent instead of fabricating zeros.
+
+    ``brain_test`` is shared and already holds nights (992 rows on 2026-09-20),
+    so emptiness is staged INSIDE one transaction that is rolled back: the
+    DELETE is visible to the read that follows it and to nobody else, and
+    nothing is committed.
+    """
+    async with session_factory() as session, session.begin() as transaction:
+        try:
+            await session.execute(sa.delete(dream_runs))
+            assert await read_last_night(session) is None
+        finally:
+            await transaction.rollback()

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class LastNight:
-    """The scalar aggregate of one run date, excluding legacy NULL dry-run flags from modes."""
+    """The scalar aggregate of one run date: rows by status and by dry flag."""
 
     run_date: date
     rows: int
@@ -39,8 +39,8 @@ _DONE, _FAIL, _TIMEOUT, _PARTIAL = _STATUS_COUNTS
 _ROWS = sa.func.count()
 
 # One statement keeps the choice of latest date and every aggregate in the
-# source transaction the registry opened. Legacy NULL `phase_dry_run` values
-# predate that column and must not be inferred as wet or dry.
+# source transaction the registry opened. `phase_dry_run` is NOT NULL with a
+# server default of false (tables.py), so `wet + dry == rows` by construction.
 _LAST_NIGHT_SQL = (
     sa.select(
         dream_runs.c.run_date,
