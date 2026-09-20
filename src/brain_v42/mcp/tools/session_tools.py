@@ -663,7 +663,13 @@ def make_session_briefing_loader(
         # prose, which is the stale claim this section exists to contradict.
         schema_revision: str | None = None
         schema_unavailable = False
-        if schema_state_svc is not None:
+        # Two `Schéma` lines would make the reader ask which one is measured;
+        # the fact's is bound to the verified production identity, the legacy
+        # one is not.
+        has_registered_alembic_head = (
+            fact_registry is not None and "alembic_head" in fact_registry.names()
+        )
+        if schema_state_svc is not None and not has_registered_alembic_head:
             try:
                 schema_revision = await schema_state_svc.current_revision()
                 schema_unavailable = schema_revision is None

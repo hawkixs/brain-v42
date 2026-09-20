@@ -32,6 +32,18 @@ _DESCRIPTOR = FactDescriptor(
     policies={"late_after_seconds": 300},
     value_schema={"pending": "int"},
 )
+_ALEMBIC_DESCRIPTOR = FactDescriptor(
+    name="alembic_head",
+    definition_version=1,
+    target=FactTarget.PRODUCTION,
+    ttl_seconds=60,
+    timeout_seconds=3,
+    queue_timeout_seconds=2,
+    deadline_seconds=5,
+    briefing=True,
+    policies={},
+    value_schema={"revision": "string"},
+)
 
 _DREAM_DESCRIPTOR = FactDescriptor(
     name="dream_killswitches_declared",
@@ -138,6 +150,37 @@ def _unreadable(code: str) -> Unreadable:
         measured_at=_NOW,
         duration_ms=3000,
         ttl_seconds=15,
+        source_kind="probe",
+    )
+
+
+def _alembic_measured() -> Measured:
+    """Build a stamped schema measurement with the production identity."""
+    return Measured.from_value(
+        fact="alembic_head",
+        definition_version=1,
+        target=FactTarget.PRODUCTION,
+        source=_IDENTITY,
+        value={"revision": "054"},
+        observation_id=uuid4(),
+        measured_at=_NOW,
+        duration_ms=12,
+        ttl_seconds=60,
+    )
+
+
+def _alembic_unreadable(code: str) -> Unreadable:
+    """Build a failed schema measurement without replacing its error code."""
+    return Unreadable(
+        fact="alembic_head",
+        definition_version=1,
+        target=FactTarget.PRODUCTION,
+        error_code=code,
+        where=None,
+        observation_id=uuid4(),
+        measured_at=_NOW,
+        duration_ms=3000,
+        ttl_seconds=60,
         source_kind="probe",
     )
 
@@ -364,3 +407,21 @@ def test_release_fact_unreadable_lines_name_their_subject(
     )
 
     assert render_fact_line(unreadable, descriptor, age_seconds=None) == expected
+
+
+@pytest.mark.parametrize(
+    ("measurement", "expected"),
+    [
+        (_alembic_measured(), "- Schéma : 054"),
+        (_alembic_unreadable("timeout"), "- Schéma : illisible (timeout)"),
+        (
+            _alembic_unreadable("target_mismatch"),
+            "- Schéma : illisible (cible inattendue)",
+        ),
+    ],
+)
+def test_alembic_head_renders_the_legacy_schema_line_or_its_visible_failure(
+    measurement: Measured | Unreadable, expected: str
+) -> None:
+    """The fact replaces one legacy line without changing a reader's wording."""
+    assert render_fact_line(measurement, _ALEMBIC_DESCRIPTOR, age_seconds=None) == expected

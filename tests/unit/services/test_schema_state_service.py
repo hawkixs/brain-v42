@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from brain_v42.services.schema_state_service import SchemaStateService
+from brain_v42.services.schema_state_service import SchemaStateService, read_current_revision
 
 
 def _session_factory(scalar_value: object) -> MagicMock:
@@ -25,9 +25,40 @@ def _session_factory(scalar_value: object) -> MagicMock:
 
 class TestCurrentRevision:
     @pytest.mark.asyncio
+    async def test_shared_reader_uses_the_callers_session(self) -> None:
+        """The production probe must keep its read in the verified source snapshot."""
+        session = MagicMock()
+        session.execute = AsyncMock(return_value=MagicMock(scalar=MagicMock(return_value="054")))
+
+        assert await read_current_revision(session) == "054"
+
+    @pytest.mark.asyncio
+    async def test_shared_reader_returns_none_for_an_empty_table(self) -> None:
+        """The probe must distinguish an unstamped database from a failed read."""
+        session = MagicMock()
+        session.execute = AsyncMock(return_value=MagicMock(scalar=MagicMock(return_value=None)))
+
+        assert await read_current_revision(session) is None
+
+    @pytest.mark.asyncio
     async def test_returns_the_revision_in_force(self) -> None:
         svc = SchemaStateService(_session_factory("039"))
         assert await svc.current_revision() == "039"
+
+    @pytest.mark.asyncio
+    async def test_opens_its_own_session_before_delegating_to_the_shared_reader(self) -> None:
+        """Legacy callers still get the service-owned session boundary."""
+        session = MagicMock()
+        session.execute = AsyncMock(return_value=MagicMock(scalar=MagicMock(return_value="054")))
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=session)
+        context.__aexit__ = AsyncMock(return_value=False)
+        session_factory = MagicMock(return_value=context)
+
+        assert await SchemaStateService(session_factory).current_revision() == "054"
+        session_factory.assert_called_once_with()
+        context.__aenter__.assert_awaited_once_with()
+        session.execute.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_returns_none_when_the_table_is_empty(self) -> None:

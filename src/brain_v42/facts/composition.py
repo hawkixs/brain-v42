@@ -25,6 +25,7 @@ from brain_v42.facts.model import (
     SourceIdentity,
 )
 from brain_v42.facts.probe import Probe
+from brain_v42.facts.probes.alembic_head import AlembicHeadProbe
 from brain_v42.facts.probes.alembic_head_shipped import AlembicHeadShippedProbe
 from brain_v42.facts.probes.dream_killswitches_declared import DreamKillswitchesDeclaredProbe
 from brain_v42.facts.probes.dream_last_night import DreamLastNightProbe
@@ -45,7 +46,7 @@ def _catalogue() -> tuple[Probe, ...]:
     # alembic_head_shipped, dream_killswitches_declared, dream_last_night.
     return (
         GraphProjectionLagProbe(),
-        # Task T9 inserts AlembicHeadProbe here.
+        AlembicHeadProbe(),
         LiveReleaseShaProbe(),
         AlembicHeadShippedProbe(),
         DreamKillswitchesDeclaredProbe(),

@@ -33,6 +33,7 @@ _UNREADABLE_LABELS: Mapping[str, str] = {"target_mismatch": "cible inattendue"}
 #: renders under its catalogue name. Catalogue order.
 _SUBJECTS: Mapping[str, str] = {
     "graph_projection_lag": "Projection graphe",
+    "alembic_head": "Schéma",
     "live_release_sha": "Release vivante",
     "alembic_head_shipped": "Tête Alembic livrée",
     "dream_killswitches_declared": "Killswitches déclarés",
@@ -146,8 +147,14 @@ def _render_alembic_head_shipped(measured: Measured, descriptor: FactDescriptor)
     return f"- Tête Alembic livrée : {measured.value['revision']}"
 
 
+def _render_alembic_head(measured: Measured, descriptor: FactDescriptor) -> str:
+    """Keep the schema line byte-identical while its evidence becomes verified."""
+    return f"- Schéma : {measured.value.get('revision')}"
+
+
 _RENDERERS: Mapping[str, Callable[[Measured, FactDescriptor], str]] = {
     "graph_projection_lag": _render_graph_projection_lag,
+    "alembic_head": _render_alembic_head,
     "live_release_sha": _render_live_release_sha,
     "alembic_head_shipped": _render_alembic_head_shipped,
     "dream_killswitches_declared": _render_dream_killswitches_declared,
