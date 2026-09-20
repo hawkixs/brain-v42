@@ -34,8 +34,6 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from brain_v42.facts.model import SourceIdentity
-
 
 def _is_loopback_host(value: str | None) -> bool:
     """The one definition every bind and every egress URL of this file shares.
@@ -65,15 +63,39 @@ PGVECTOR_HNSW_MAX_DIMENSIONS = 2000
 _UnstrippedStr = Annotated[str, StringConstraints(strip_whitespace=False)]
 
 
-def _parse_source_identity(raw: str) -> SourceIdentity:
-    """A JSON object with exactly the four identity keys, each validated by the model."""
+#: The four keys of a declared PostgreSQL identity and the JSON type of each.
+#: Only the SHAPE is checked here: the deep validation (a 64-bit identifier, an
+#: IP literal, a port range) belongs to `brain_v42.facts.model.SourceIdentity`,
+#: which the composition root builds from this mapping. `config` must not import
+#: `facts`: `facts` imports `repositories`, which imports `db`, which imports
+#: this module — the layering DAG would close on itself.
+_PRODUCTION_IDENTITY_KEYS: dict[str, type] = {
+    "system_identifier": str,
+    "database": str,
+    "server_addr": str,
+    "server_port": int,
+}
+
+
+def _parse_production_identity(raw: str) -> dict[str, object]:
+    """A JSON object with exactly the four identity keys, each of the declared JSON type."""
     try:
         payload = json.loads(raw)
     except ValueError as exc:
         raise ValueError("not a JSON document") from exc
     if not isinstance(payload, dict):
         raise ValueError("must be a JSON object with four keys")
-    return SourceIdentity.from_mapping(payload)
+    keys = set(payload)
+    expected = set(_PRODUCTION_IDENTITY_KEYS)
+    if keys != expected:
+        raise ValueError(
+            f"missing keys {sorted(expected - keys)!r}, extra keys {sorted(keys - expected)!r}"
+        )
+    for key, kind in _PRODUCTION_IDENTITY_KEYS.items():
+        value = payload[key]
+        if type(value) is not kind:  # bool is not an int here, on purpose
+            raise ValueError(f"{key} must be a JSON {kind.__name__}")
+    return dict(payload)
 
 
 def _brain_alias(legacy_env: str) -> AliasChoices:
@@ -439,16 +461,21 @@ class Settings(BaseSettings):
         if v is None:
             return None
         try:
-            _parse_source_identity(v)
+            _parse_production_identity(v)
         except ValueError as exc:
             raise ValueError(f"BRAIN_FACTS_PRODUCTION_IDENTITY is invalid: {exc}") from exc
         return v
 
-    def facts_production_identity(self) -> SourceIdentity | None:
-        """The declared identity of the production target, or None when undeclared."""
+    def facts_production_identity(self) -> dict[str, object] | None:
+        """The declared identity of the production target as a mapping, or None.
+
+        The composition root turns it into a `SourceIdentity`, whose own
+        validation may still refuse it (a malformed IP literal, a port out of
+        range): that refusal is `UnverifiableTargetError` at registration.
+        """
         if self.facts_production_identity_json is None:
             return None
-        return _parse_source_identity(self.facts_production_identity_json)
+        return _parse_production_identity(self.facts_production_identity_json)
 
     @field_validator("otel_endpoint")
     @classmethod

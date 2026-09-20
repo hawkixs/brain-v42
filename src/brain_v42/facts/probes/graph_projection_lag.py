@@ -1,49 +1,24 @@
-"""Read the PostgreSQL projection state as the graph lag fact."""
+"""Read the PostgreSQL projection state as the graph lag fact.
+
+The query and the health predicate are the ones the metrics collector uses
+(`pg_graph_ledger.read_projection_state`, `projection_health`): one source,
+two readers, so the briefing, the tool and a claim of lot B agree on what
+"healthy" means. The dependency is a plain import — the layering DAG must SEE
+the edge `facts -> repositories`, which is allowed; hiding it behind a
+dynamic import would hide it from the fitness function that keeps the graph
+acyclic.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import timedelta
-from importlib import import_module
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import cast
 
 from brain_v42.facts.model import FactTarget
 from brain_v42.facts.probe import SourceSession
-
-if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
-
-
-class _PostgresSource(SourceSession, Protocol):
-    """Narrow the generic source protocol only at the PostgreSQL probe boundary."""
-
-    session: AsyncSession
-
-
-class _ProjectionState(Protocol):
-    """State fields the fact reads without taking ownership of repository types."""
-
-    pending: int
-    ready: int
-    claimed: int
-    exhausted: int
-    oldest_pending_age_seconds: float
-    generation: int | None
-    armed: bool
-    lease_active: bool
-    recovery_active: bool
-
-
-async def _read_projection_state(session: AsyncSession) -> _ProjectionState:
-    """Resolve the repository reader only while measuring to preserve package layering."""
-    reader = import_module("brain_v42.repositories.pg_graph_ledger")
-    return cast(_ProjectionState, await reader.read_projection_state(session))
-
-
-def _projection_health(state: _ProjectionState) -> bool:
-    """Resolve the shared predicate with its reader, after the probe has started."""
-    reader = import_module("brain_v42.repositories.pg_graph_ledger")
-    return cast(bool, reader.projection_health(state))
+from brain_v42.facts.sources import PostgresSourceSession
+from brain_v42.repositories.pg_graph_ledger import projection_health, read_projection_state
 
 
 class GraphProjectionLagProbe:
@@ -71,7 +46,7 @@ class GraphProjectionLagProbe:
 
     async def measure(self, source: SourceSession) -> Mapping[str, object]:
         """Translate the shared snapshot without concealing a failed database read."""
-        state = await _read_projection_state(cast(_PostgresSource, source).session)
+        state = await read_projection_state(cast(PostgresSourceSession, source).session)
         return {
             "pending": state.pending,
             "ready": state.ready,
@@ -82,5 +57,5 @@ class GraphProjectionLagProbe:
             "armed": state.armed,
             "lease_active": state.lease_active,
             "recovery_active": state.recovery_active,
-            "healthy": _projection_health(state),
+            "healthy": projection_health(state),
         }

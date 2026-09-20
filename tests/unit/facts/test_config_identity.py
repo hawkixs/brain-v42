@@ -31,11 +31,13 @@ def test_production_identity_is_absent_by_default(monkeypatch: pytest.MonkeyPatc
     assert _settings(monkeypatch, None).facts_production_identity() is None
 
 
-def test_production_identity_is_parsed_into_a_source_identity(
+def test_production_identity_is_parsed_into_the_four_declared_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    identity = _settings(monkeypatch, json.dumps(_IDENTITY)).facts_production_identity()
-    assert identity == SourceIdentity(**_IDENTITY)
+    declared = _settings(monkeypatch, json.dumps(_IDENTITY)).facts_production_identity()
+    assert declared == _IDENTITY
+    # The composition root builds the model from the mapping; the round trip holds.
+    assert SourceIdentity.from_mapping(declared) == SourceIdentity(**_IDENTITY)
 
 
 @pytest.mark.parametrize(
@@ -45,7 +47,7 @@ def test_production_identity_is_parsed_into_a_source_identity(
         json.dumps({**_IDENTITY, "server_port": "5432"}),
         json.dumps({k: v for k, v in _IDENTITY.items() if k != "server_addr"}),
         json.dumps({**_IDENTITY, "extra": 1}),
-        json.dumps({**_IDENTITY, "system_identifier": "abc"}),
+        json.dumps({**_IDENTITY, "server_port": True}),
         json.dumps([1, 2, 3]),
     ],
 )
@@ -55,3 +57,15 @@ def test_a_malformed_production_identity_is_refused_at_settings_load(
     """A malformed declaration fails closed at composition, not at the first probe."""
     with pytest.raises(ValueError, match="BRAIN_FACTS_PRODUCTION_IDENTITY"):
         _settings(monkeypatch, raw)
+
+
+def test_deep_validation_is_the_models_job_not_the_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Settings check the shape; a value the model refuses is refused at composition."""
+    declared = _settings(
+        monkeypatch, json.dumps({**_IDENTITY, "system_identifier": "abc"})
+    ).facts_production_identity()
+    assert declared is not None
+    with pytest.raises(ValueError, match="system_identifier"):
+        SourceIdentity.from_mapping(declared)

@@ -37,7 +37,7 @@ async def test_probe_declares_and_measures_the_complete_integer_value_shape(
         return state
 
     monkeypatch.setattr(
-        "brain_v42.facts.probes.graph_projection_lag._read_projection_state",
+        "brain_v42.facts.probes.graph_projection_lag.read_projection_state",
         read_state,
     )
     probe = GraphProjectionLagProbe()
