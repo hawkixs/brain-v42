@@ -465,7 +465,8 @@ async def test_aclose_cancels_a_held_run_and_refuses_new_work() -> None:
     await fact_registry.aclose()
     result = await reader
     assert isinstance(result, Unreadable)
-    assert (result.error_code, result.where) == ("timeout", "cancelled")
+    # §5.2: `where` names a frame for probe_error and value_not_canonical only.
+    assert (result.error_code, result.where) == ("timeout", None)
     with pytest.raises(RegistryClosedError):
         await fact_registry.measure("shutdown")
     await fact_registry.aclose()

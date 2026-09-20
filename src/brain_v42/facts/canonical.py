@@ -11,6 +11,10 @@ MAX_CANONICAL_BYTES = 4096
 MEASUREMENT_DIGEST_PREFIX = b"brain-v42-fact-measurement:v1\n"
 
 
+class ValueTooLargeError(ValueError):
+    """The value is canonical but over the byte bound: a fact is a number, not a corpus."""
+
+
 def _validate_string(value: str) -> None:
     """Reject strings PostgreSQL or UTF-8 cannot carry after a probe has succeeded."""
     if "\x00" in value:
@@ -88,7 +92,9 @@ def canonical_json(value: Mapping[str, object]) -> str:
         allow_nan=False,
     ).encode("utf-8")
     if len(encoded) > MAX_CANONICAL_BYTES:
-        raise ValueError(f"canonical measurement value exceeds {MAX_CANONICAL_BYTES} UTF-8 bytes")
+        raise ValueTooLargeError(
+            f"canonical measurement value exceeds {MAX_CANONICAL_BYTES} UTF-8 bytes"
+        )
     return encoded.decode("utf-8")
 
 

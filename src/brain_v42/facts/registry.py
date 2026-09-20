@@ -14,6 +14,7 @@ from uuid import uuid4
 
 import structlog
 
+from brain_v42.facts.canonical import ValueTooLargeError
 from brain_v42.facts.model import (
     FactTarget,
     Measured,
@@ -119,6 +120,8 @@ class FactRegistry:
         if type(concurrency) is not int or concurrency < 1:
             raise ValueError("concurrency must be a positive integer")
         self._queue_timeout_seconds = _whole_seconds(queue_timeout, field="queue_timeout")
+        if self._queue_timeout_seconds < 1:
+            raise ValueError("queue_timeout must be at least one second")
         self._sources = dict(sources)
         self._expected = dict(expected)
         self._monotonic = monotonic
@@ -153,6 +156,8 @@ class FactRegistry:
             raise ValueError("definition_version must be a positive integer")
         ttl_seconds = _whole_seconds(probe.ttl, field="ttl")
         timeout_seconds = _whole_seconds(probe.timeout, field="timeout")
+        if timeout_seconds < 1:
+            raise ValueError("timeout must be at least one second")
         if probe.briefing and timeout_seconds > 3:
             raise ValueError("briefing probes must have a timeout of at most 3 seconds")
         if not isinstance(probe.policies, Mapping) or not isinstance(probe.value_schema, Mapping):
@@ -213,7 +218,7 @@ class FactRegistry:
             forced = max_age_seconds is not None and max_age_seconds < descriptor.ttl_seconds
             if forced and not self._charge_refresh(name, descriptor.target, now):
                 return self._unreadable(descriptor, "refresh_budget", duration_ms=0)
-            task = asyncio.create_task(self._run(name), name=f"fact:{name}")
+            task = asyncio.create_task(self._run(name, forced=forced), name=f"fact:{name}")
             self._inflight[name] = task
 
             def cleanup(done: asyncio.Task[Measurement], *, fact: str = name) -> None:
@@ -251,22 +256,31 @@ class FactRegistry:
         active: dict[asyncio.Task[Measurement], str] = {}
         results: dict[str, Measurement] = {}
 
-        while pending or active:
-            while pending and len(active) < self._concurrency:
-                if (
-                    budget_seconds is not None
-                    and self._monotonic() - started_mono >= budget_seconds
-                ):
+        try:
+            while pending or active:
+                while pending and len(active) < self._concurrency:
+                    if (
+                        budget_seconds is not None
+                        and self._monotonic() - started_mono >= budget_seconds
+                    ):
+                        break
+                    name = pending.pop(0)
+                    task = asyncio.create_task(self.measure(name, max_age=max_age))
+                    active[task] = name
+                if not active:
                     break
-                name = pending.pop(0)
-                task = asyncio.create_task(self.measure(name, max_age=max_age))
-                active[task] = name
-            if not active:
-                break
-            done, _ = await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                name = active.pop(task)
-                results[name] = await task
+                done, _ = await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    name = active.pop(task)
+                    results[name] = await task
+        except BaseException:
+            # The batch's own reader tasks must not outlive a cancelled caller;
+            # the registry-owned runs they were shielding survive untouched.
+            for task in active:
+                task.cancel()
+            if active:
+                await asyncio.gather(*active, return_exceptions=True)
+            raise
 
         for name in pending:
             results[name] = self._unreadable(
@@ -329,6 +343,17 @@ class FactRegistry:
         target_bucket.tokens -= 1
         return True
 
+    def _refund_refresh(self, name: str, target: FactTarget) -> None:
+        """Give back the tokens of a forced run the registry itself refused."""
+        fact_bucket = self._fact_buckets.get(name)
+        if fact_bucket is not None:
+            limit = float(self._refresh_budget.per_fact_per_minute)
+            fact_bucket.tokens = min(limit, fact_bucket.tokens + 1)
+        target_bucket = self._target_buckets.get(target)
+        if target_bucket is not None:
+            limit = float(self._refresh_budget.per_target_per_minute)
+            target_bucket.tokens = min(limit, target_bucket.tokens + 1)
+
     @staticmethod
     def _refill_bucket(
         buckets: dict[_BucketKey, _Bucket], key: _BucketKey, limit: int, now: float
@@ -344,32 +369,48 @@ class FactRegistry:
             bucket.updated_mono = now
         return bucket
 
-    async def _run(self, name: str) -> Measurement:
-        """Run one producer under capacity and turn every untrusted outcome into data."""
+    async def _run(self, name: str, *, forced: bool) -> Measurement:
+        """Run one producer under capacity and turn every untrusted outcome into data.
+
+        Nothing but a `BaseException` that is not an `Exception` leaves this
+        task: a reader must receive a `Measurement`, never a third state.
+        """
         descriptor = self._descriptors[name]
         probe = self._probes[name]
-        started_mono = self._monotonic()
         result: Measurement
+        cache_it = True
         try:
             try:
                 await self._await_timeout(self._semaphore.acquire(), self._queue_timeout_seconds)
             except TimeoutError:
+                # A refusal of the registry, not a verdict on the target: not
+                # cached, and the forced refresh it never spent is refunded.
                 result = self._unreadable(descriptor, "capacity_timeout", duration_ms=0)
                 self._record_failure(result)
+                cache_it = False
+                if forced:
+                    self._refund_refresh(name, descriptor.target)
             else:
+                # The duration is the probe's, measured once the slot is held;
+                # the wait for capacity is not a property of the target.
+                started_mono = self._monotonic()
                 try:
                     result = await self._run_with_slot(probe, descriptor, started_mono)
+                except Exception as exc:
+                    result = self._unreadable(
+                        descriptor,
+                        "probe_error",
+                        where=self._exception_where(exc, probe),
+                        duration_ms=self._duration_ms(started_mono),
+                    )
+                    self._record_failure(result)
                 finally:
                     self._semaphore.release()
         except asyncio.CancelledError:
-            result = self._unreadable(
-                descriptor,
-                "timeout",
-                where="cancelled",
-                duration_ms=self._duration_ms(started_mono),
-            )
+            result = self._unreadable(descriptor, "timeout", duration_ms=0)
             self._record_failure(result)
-        self._cache[name] = _CacheEntry(result, self._monotonic())
+        if cache_it:
+            self._cache[name] = _CacheEntry(result, self._monotonic())
         return result
 
     async def _run_with_slot(
@@ -394,6 +435,17 @@ class FactRegistry:
             result = self._unreadable(
                 descriptor,
                 "identity_unreadable",
+                duration_ms=self._duration_ms(started_mono),
+            )
+            self._record_failure(result)
+            return result
+        except _SourceOpenFailure as exc:
+            # The probe never ran: the diagnostic must not say it did.
+            cause = exc.__cause__ if isinstance(exc.__cause__, Exception) else exc
+            result = self._unreadable(
+                descriptor,
+                "probe_error",
+                where=f"{type(cause).__name__} in source_open"[:120],
                 duration_ms=self._duration_ms(started_mono),
             )
             self._record_failure(result)
@@ -437,11 +489,16 @@ class FactRegistry:
                 duration_ms=self._duration_ms(started_mono),
                 ttl_seconds=descriptor.ttl_seconds,
             )
-        except ValueError as exc:
-            code = "value_too_large" if "UTF-8 bytes" in str(exc) else "value_not_canonical"
+        except ValueTooLargeError:
+            result = self._unreadable(
+                descriptor, "value_too_large", duration_ms=self._duration_ms(started_mono)
+            )
+            self._record_failure(result)
+            return result
+        except ValueError:
             result = self._unreadable(
                 descriptor,
-                code,
+                "value_not_canonical",
                 where="ValueError in Measured.from_value",
                 duration_ms=self._duration_ms(started_mono),
             )
@@ -466,8 +523,19 @@ class FactRegistry:
         self, factory: SourceFactory, probe: Probe
     ) -> tuple[Mapping[str, object], SourceIdentity]:
         """Include source opening and cleanup in the same deadline as the probe itself."""
-        async with factory() as source:
-            return await self._measure_and_identify(probe, source)
+        context = factory()
+        try:
+            source = await context.__aenter__()
+        except Exception as exc:
+            raise _SourceOpenFailure(exc) from exc
+        try:
+            outcome = await self._measure_and_identify(probe, source)
+        except BaseException:
+            await context.__aexit__(*_exc_info())
+            raise
+        if await context.__aexit__(None, None, None):  # pragma: no cover - never swallows
+            pass
+        return outcome
 
     async def _await_timeout(self, awaitable: Awaitable[_Result], seconds: float) -> _Result:
         """Centralise the timeout seam while asyncio supplies cancellation-safe producers."""
@@ -519,13 +587,17 @@ class FactRegistry:
             exc = exc.__cause__ if isinstance(exc.__cause__, Exception) else exc
         if isinstance(exc, _IdentityFailure):
             return "identity unreadable"
-        function = getattr(probe.measure, "__qualname__", "measure")
+        owner = type(probe).__name__
+        function = f"{owner}.measure"
         module = inspect.getmodule(probe.measure)
         module_file = getattr(module, "__file__", None)
         if module_file is not None:
-            for frame in reversed(traceback.extract_tb(exc.__traceback__)):
-                if frame.filename == module_file:
-                    function = frame.name
+            # walk_tb reads code objects only: no linecache, no file IO on the
+            # event loop for every failed run.
+            frames = [frame for frame, _ in traceback.walk_tb(exc.__traceback__)]
+            for frame in reversed(frames):
+                if frame.f_code.co_filename == module_file:
+                    function = f"{owner}.{frame.f_code.co_name}"
                     break
         return f"{type(exc).__name__} in {function}"[:120]
 
@@ -533,6 +605,17 @@ class FactRegistry:
         """Do not let an old task callback delete a newer task for the same fact."""
         if self._inflight.get(name) is task:
             self._inflight.pop(name, None)
+
+
+def _exc_info() -> tuple[type[BaseException] | None, BaseException | None, Any]:
+    """The current exception triple, for a manual ``__aexit__`` during unwinding."""
+    import sys
+
+    return sys.exc_info()
+
+
+class _SourceOpenFailure(Exception):
+    """The source could not be opened: the probe never ran, and the diagnostic says so."""
 
 
 class _ProbeFailure(Exception):

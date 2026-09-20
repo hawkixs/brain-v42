@@ -102,8 +102,12 @@ class SourceIdentity:
             or not self.system_identifier.isascii()
             or not self.system_identifier.isdigit()
             or len(self.system_identifier) > 20
+            or (len(self.system_identifier) > 1 and self.system_identifier.startswith("0"))
             or int(self.system_identifier) > (2**64 - 1)
         ):
+            # A leading zero is refused rather than normalised: two spellings of
+            # one identifier must not exist, and "007" is not how PostgreSQL
+            # prints one.
             raise ValueError("system_identifier must be a 64-bit unsigned decimal string")
         if (
             not isinstance(self.database, str)
@@ -113,15 +117,19 @@ class SourceIdentity:
         if not isinstance(self.server_addr, str):
             raise ValueError("server_addr must be an IP address literal")
         address = self.server_addr
+        # PostgreSQL prints inet_server_addr() with a full-length prefix; only
+        # that suffix is stripped — a real network prefix is not an address.
         if address.endswith("/32") or address.endswith("/128"):
             address = address.rsplit("/", maxsplit=1)[0]
         try:
-            ipaddress.ip_address(address)
+            parsed = ipaddress.ip_address(address)
         except ValueError as exc:
             raise ValueError("server_addr must be an IP address literal") from exc
         if type(self.server_port) is not int or not 1 <= self.server_port <= 65535:
             raise ValueError("server_port must be between 1 and 65535")
-        object.__setattr__(self, "server_addr", address)
+        # Canonical spelling: `::1`, `0:0:0:0:0:0:0:1` and the zero-padded form
+        # are one address and must compare equal.
+        object.__setattr__(self, "server_addr", str(parsed))
 
     def as_dict(self) -> dict[str, str | int]:
         """Return plain scalar data for comparison and JSON API serialization."""

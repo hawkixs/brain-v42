@@ -63,6 +63,10 @@ class FactDescriptor:
 
 def check_value_schema(value: Mapping[str, object], schema: Mapping[str, ValueType]) -> None:
     """Reject values whose shape differs from the declaration persisted with the fact."""
+    if not isinstance(value, Mapping):
+        # A probe that returns None or a scalar has not measured an object; a
+        # TypeError escaping here would be the third state §5.1 forbids.
+        raise ValueError(f"value must be an object, not {type(value).__name__}")
     actual_keys = frozenset(value)
     expected_keys = frozenset(schema)
     missing = expected_keys - actual_keys
