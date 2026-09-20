@@ -72,6 +72,9 @@ class FakeRegistry:
     def cached_age_seconds(self, name: str) -> float | None:
         return 0.0
 
+    def refusals(self) -> dict[str, str]:
+        return {}
+
     async def measure_many(self, names, *, max_age=None, budget=None):  # type: ignore[no-untyped-def]
         self.calls.append((tuple(names), budget))
         if self._fail:
@@ -180,3 +183,53 @@ async def test_an_unreadable_fact_renders_as_unreadable() -> None:
 def test_the_pinned_fixture_still_matches_without_a_registry() -> None:
     fixture = Path("tests/fixtures/briefing_full.md").read_text(encoding="utf-8")
     assert "Projection graphe" not in fixture
+
+
+@pytest.mark.asyncio
+async def test_the_age_suffix_belongs_to_the_rendered_reading_only() -> None:
+    """A refusal of the registry is not the cached reading: no `(mesuré il y a …)` on it."""
+    from brain_v42.mcp.tools.session_tools import _render_briefing_facts
+
+    refused = Unreadable(
+        fact="graph_projection_lag",
+        definition_version=1,
+        target=FactTarget.PRODUCTION,
+        error_code="capacity_timeout",
+        where=None,
+        observation_id=uuid4(),
+        measured_at=_NOW,
+        duration_ms=0,
+        ttl_seconds=15,
+        source_kind="probe",
+    )
+
+    class StaleCacheRegistry(FakeRegistry):
+        def cached_age_seconds(self, name: str) -> float | None:
+            return 180.0  # an older, different reading sits in the cache
+
+    lines = await _render_briefing_facts(StaleCacheRegistry(refused))
+    assert lines == ["- Projection graphe : illisible (capacity_timeout)"]
+
+    from brain_v42.facts.model import with_source_kind
+
+    served = with_source_kind(_quiet(), "cache")
+    lines = await _render_briefing_facts(StaleCacheRegistry(served))
+    assert lines[0].endswith(" (mesuré il y a 3 min)")
+
+
+@pytest.mark.asyncio
+async def test_a_fact_refused_at_registration_is_named_in_the_briefing() -> None:
+    """An empty catalogue is never silent: the reader learns what was not registered and why."""
+    from brain_v42.mcp.tools.session_tools import _render_briefing_facts
+
+    class RefusingRegistry(FakeRegistry):
+        def briefing_names(self) -> tuple[str, ...]:
+            return ()
+
+        def refusals(self) -> dict[str, str]:
+            return {"graph_projection_lag": "unverifiable_target"}
+
+    lines = await _render_briefing_facts(RefusingRegistry(_quiet()))
+    assert lines == [
+        "- Faits : graph_projection_lag non enregistré (cible production non vérifiable)"
+    ]

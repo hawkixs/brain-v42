@@ -76,3 +76,44 @@ async def test_probe_declares_and_measures_the_complete_integer_value_shape(
         "healthy": False,
     }
     check_value_schema(value, probe.value_schema)
+
+
+async def test_the_probe_issues_read_statements_only_and_floors_a_negative_lag() -> None:
+    """§7.1: no statement other than a read; clock skew can make the age negative."""
+    from types import SimpleNamespace
+
+    from brain_v42.facts.probes.graph_projection_lag import GraphProjectionLagProbe
+
+    statements: list[str] = []
+
+    class RecordingSession:
+        async def execute(self, statement, *args, **kwargs):  # type: ignore[no-untyped-def]
+            statements.append(str(statement).strip())
+            row = SimpleNamespace(
+                pending=0,
+                ready=0,
+                claimed=0,
+                exhausted=0,
+                oldest_pending_age_seconds=-7.0,
+                generation=93,
+                armed=True,
+                lease_active=True,
+                recovery_active=False,
+            )
+
+            class _Result:
+                def one(self):  # type: ignore[no-untyped-def]
+                    return (0, 0, 0, 0, -7.0, 93, True, True, False)
+
+                def mappings(self):  # type: ignore[no-untyped-def]
+                    return self
+
+                def first(self):  # type: ignore[no-untyped-def]
+                    return row.__dict__
+
+            return _Result()
+
+    value = await GraphProjectionLagProbe().measure(SimpleNamespace(session=RecordingSession()))  # type: ignore[arg-type]
+    assert statements, "the probe must read"
+    assert all(s.upper().startswith(("SELECT", "WITH")) for s in statements), statements
+    assert value["lag_seconds"] == 0

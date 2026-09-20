@@ -51,12 +51,14 @@ def test_production_identity_is_parsed_into_the_four_declared_keys(
         json.dumps([1, 2, 3]),
     ],
 )
-def test_a_malformed_production_identity_is_refused_at_settings_load(
+def test_a_malformed_production_identity_loads_but_is_refused_when_read(
     monkeypatch: pytest.MonkeyPatch, raw: str
 ) -> None:
-    """A malformed declaration fails closed at composition, not at the first probe."""
+    """§5.3 rule 4: malformed is treated like absent at composition, said in the journal —
+    the service starts without production facts, it does not go down on a typo."""
+    settings = _settings(monkeypatch, raw)
     with pytest.raises(ValueError, match="BRAIN_FACTS_PRODUCTION_IDENTITY"):
-        _settings(monkeypatch, raw)
+        settings.facts_production_identity()
 
 
 def test_deep_validation_is_the_models_job_not_the_settings(

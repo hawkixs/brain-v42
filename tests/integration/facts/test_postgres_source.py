@@ -112,21 +112,25 @@ async def test_a_declared_identity_that_matches_yields_a_measured_value(session_
     assert result.source == identity
 
 
-@pytest.mark.parametrize(
-    "field,other",
-    [
-        ("database", "brain_test_optout"),
-        ("server_port", 5433),
-        ("system_identifier", "1"),
-        ("server_addr", "10.0.0.1"),
-    ],
-)
+def _differing(identity: SourceIdentity, field: str) -> object:
+    """A value that differs from the measured one whatever the host reports."""
+    measured = identity.as_dict()[field]
+    if field == "server_port":
+        return int(measured) + 1  # type: ignore[call-overload]
+    if field == "system_identifier":
+        return str(int(str(measured)) + 1)
+    if field == "server_addr":
+        return "10.255.255.254" if measured != "10.255.255.254" else "10.255.255.253"
+    return "brain_test_optout" if measured != "brain_test_optout" else "brain_test"
+
+
+@pytest.mark.parametrize("field", ["database", "server_port", "system_identifier", "server_addr"])
 async def test_a_declared_identity_that_differs_on_one_field_is_a_target_mismatch(
-    session_factory, field: str, other: object
+    session_factory, field: str
 ) -> None:
     """The 2026-09-12 failure mode: the wrong database can never be measured as production."""
     identity = await _measured_identity(session_factory)
-    declared = SourceIdentity(**{**identity.as_dict(), field: other})
+    declared = SourceIdentity(**{**identity.as_dict(), field: _differing(identity, field)})
     registry = _registry(session_factory, declared)
     try:
         result = await registry.measure("one")

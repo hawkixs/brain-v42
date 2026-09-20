@@ -454,28 +454,23 @@ class Settings(BaseSettings):
         default="http://127.0.0.1:4318/v1/traces", validation_alias=_brain_alias("OTEL_ENDPOINT")
     )
 
-    @field_validator("facts_production_identity_json")
-    @classmethod
-    def _validate_facts_production_identity(cls, v: str | None) -> str | None:
-        """Fail closed at composition: a malformed declaration never reaches a probe."""
-        if v is None:
-            return None
-        try:
-            _parse_production_identity(v)
-        except ValueError as exc:
-            raise ValueError(f"BRAIN_FACTS_PRODUCTION_IDENTITY is invalid: {exc}") from exc
-        return v
-
     def facts_production_identity(self) -> dict[str, object] | None:
         """The declared identity of the production target as a mapping, or None.
 
-        The composition root turns it into a `SourceIdentity`, whose own
-        validation may still refuse it (a malformed IP literal, a port out of
-        range): that refusal is `UnverifiableTargetError` at registration.
+        A malformed declaration raises here, at composition — never at settings
+        load: spec §5.3 rule 4 wants the service UP without production facts and
+        the refusal said in the journal, not a process that refuses to start on
+        a typo in a drop-in. The composition root turns the mapping into a
+        `SourceIdentity`, whose own validation may still refuse it (a malformed
+        IP literal, a port out of range): that refusal is
+        `UnverifiableTargetError` at registration.
         """
         if self.facts_production_identity_json is None:
             return None
-        return _parse_production_identity(self.facts_production_identity_json)
+        try:
+            return _parse_production_identity(self.facts_production_identity_json)
+        except ValueError as exc:
+            raise ValueError(f"BRAIN_FACTS_PRODUCTION_IDENTITY is invalid: {exc}") from exc
 
     @field_validator("otel_endpoint")
     @classmethod

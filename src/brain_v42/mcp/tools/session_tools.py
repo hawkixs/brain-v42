@@ -546,19 +546,22 @@ async def _render_briefing_facts(registry: Any) -> list[str]:
     """
     from brain_v42.facts.render import render_fact_line  # noqa: PLC0415
 
-    names = tuple(registry.briefing_names())
-    if not names:
-        return []
+    lines: list[str] = []
     try:
+        for name, reason in registry.refusals().items():
+            label = "cible production non vérifiable" if reason == "unverifiable_target" else reason
+            lines.append(f"- Faits : {name} non enregistré ({label})")
+        names = tuple(registry.briefing_names())
+        if not names:
+            return lines
         measurements = await registry.measure_many(names, budget=BRIEFING_FACTS_BUDGET)
-        return [
-            render_fact_line(
-                measurements[name],
-                registry.describe(name),
-                age_seconds=registry.cached_age_seconds(name),
-            )
-            for name in names
-        ]
+        for name in names:
+            measurement = measurements[name]
+            # The age suffix belongs to the cached reading only: a refusal of the
+            # registry (capacity, budget) is a fresh observation, not the memory.
+            age = registry.cached_age_seconds(name) if measurement.source_kind == "cache" else None
+            lines.append(render_fact_line(measurement, registry.describe(name), age_seconds=age))
+        return lines
     except Exception as exc:
         logger.warning("brain_session_briefing_facts_failed", error=str(exc))
         return ["- Faits : illisibles (registre indisponible)"]

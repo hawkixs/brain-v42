@@ -3,24 +3,16 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Literal
 
 from fastmcp import FastMCP
 
 from brain_v42.facts.model import Measurement, measurement_to_json
 from brain_v42.facts.registry import FactRegistry, UnknownFactError
+from brain_v42.mcp.fact_errors import ECHO_MAX_CHARS, FactToolError
 from brain_v42.mcp.facts_transport import _FactsRegistry
 from brain_v42.mcp.tools.tool_annotations import _READ_ANNOTATIONS
 
-type FactToolErrorCode = Literal["invalid_argument", "unknown_fact"]
-
-
-class FactToolError(Exception):
-    """Carry only safe, operator-actionable errors across the masked MCP boundary."""
-
-    def __init__(self, code: FactToolErrorCode, detail: str) -> None:
-        self.code = code
-        super().__init__(f"{code}: {detail}")
+__all__ = ["FactToolError", "register_fact_tools"]
 
 
 def _last_measurement(measurement: Measurement | None) -> dict[str, object] | None:
@@ -71,7 +63,8 @@ def register_fact_tools(mcp: FastMCP, registry: FactRegistry) -> None:
             measurement = await registry.measure(name, max_age=max_age)
         except UnknownFactError:
             catalogue = ", ".join(registry.names())
+            echoed = name if len(name) <= ECHO_MAX_CHARS else name[:ECHO_MAX_CHARS] + "…"
             raise FactToolError(
-                "unknown_fact", f"{name!r} is not registered; available facts: {catalogue}"
+                "unknown_fact", f"{echoed!r} is not registered; available facts: {catalogue}"
             ) from None
         return measurement_to_json(measurement)

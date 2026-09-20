@@ -71,6 +71,7 @@ def build_fact_registry(
             registry.register(probe)
         except UnverifiableTargetError as exc:
             logger.warning("facts.probe_not_registered", fact=probe.name, error=str(exc))
+            registry.note_refusal(probe.name, "unverifiable_target")
     registry.freeze()
     logger.info("facts.registry_frozen", facts=list(registry.names()))
     return registry

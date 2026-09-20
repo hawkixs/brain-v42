@@ -52,7 +52,9 @@ class GraphProjectionLagProbe:
             "ready": state.ready,
             "claimed": state.claimed,
             "exhausted": state.exhausted,
-            "lag_seconds": int(state.oldest_pending_age_seconds),
+            # Whole seconds, never negative: clock skew between `created_at` and
+            # the server's `now` must not render as a lead.
+            "lag_seconds": max(0, int(state.oldest_pending_age_seconds)),
             "generation": state.generation,
             "armed": state.armed,
             "lease_active": state.lease_active,

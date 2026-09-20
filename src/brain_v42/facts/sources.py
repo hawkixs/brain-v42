@@ -65,6 +65,10 @@ class PostgresSourceSession:
         ``pg_control_system()`` raises; the registry turns that into
         ``identity_unreadable``, never into a measured value.
         """
+        if not self.session.in_transaction():
+            # A probe that ended the transaction would let the identity run in
+            # a fresh one: value and identity would no longer be one snapshot.
+            raise ValueError("source identity must be read inside the source transaction")
         row = (await self.session.execute(_IDENTITY_SQL)).mappings().one()
         if row["server_addr"] is None:
             raise ValueError("source identity has no server address (Unix socket connection)")
@@ -91,12 +95,13 @@ class PostgresSourceFactory:
 
     @asynccontextmanager
     async def _open(self) -> AsyncIterator[PostgresSourceSession]:
-        async with self._session_factory() as session:
+        async with self._session_factory() as session, session.begin() as transaction:
             try:
-                # Autobegin: this is the transaction's first statement.
+                # The transaction's first statement, as the precedent does it.
                 await session.execute(_BEGIN_READ_ONLY_SNAPSHOT)
                 yield PostgresSourceSession(session)
             finally:
                 # Nothing a source reads is ever committed, even a read-only
-                # transaction: the snapshot ends here, whatever happened inside.
-                await session.rollback()
+                # transaction: the snapshot ends here, whatever happened inside,
+                # and the `begin()` context finds nothing left to commit.
+                await transaction.rollback()

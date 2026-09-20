@@ -137,6 +137,7 @@ class FactRegistry:
         self._target_buckets: dict[FactTarget, _Bucket] = {}
         self._frozen = False
         self._closed = False
+        self._refusals: dict[str, str] = {}
         # This seam preserves asyncio's normal timeout behaviour in production while
         # allowing deterministic capacity tests without sleeping a real clock.
         self._wait_for: Any = asyncio.wait_for
@@ -182,6 +183,20 @@ class FactRegistry:
             policies=probe.policies,
             value_schema=probe.value_schema,
         )
+
+    def note_refusal(self, name: str, reason: str) -> None:
+        """Record a probe the composition root could not register, for the briefing.
+
+        An empty catalogue must never be silent: the reader learns which fact
+        is missing and why, instead of inferring it from an absent line.
+        """
+        if self._frozen:
+            raise RegistryFrozenError("fact registry is frozen")
+        self._refusals[validate_fact_name(name)] = reason
+
+    def refusals(self) -> dict[str, str]:
+        """The probes refused at registration, by name, with the reason."""
+        return dict(self._refusals)
 
     def freeze(self) -> None:
         """Close composition so runtime callers cannot install arbitrary readers."""

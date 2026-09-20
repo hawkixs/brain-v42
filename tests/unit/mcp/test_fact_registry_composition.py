@@ -46,6 +46,11 @@ def test_without_a_verifiable_identity_no_production_fact_registers_and_the_serv
         registry.register(MagicMock(name="late", target=FactTarget.PRODUCTION))
 
 
+def test_a_refused_probe_is_recorded_with_its_reason_for_the_briefing() -> None:
+    registry = build_fact_registry(None, session_factory=MagicMock())
+    assert registry.refusals() == {"graph_projection_lag": "unverifiable_target"}
+
+
 def test_build_services_exposes_the_registry() -> None:
     session_factory = MagicMock()
     mock_settings = MagicMock(

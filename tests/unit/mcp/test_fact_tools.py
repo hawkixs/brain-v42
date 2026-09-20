@@ -284,3 +284,24 @@ async def test_compact_catalogue_search_finds_both_fact_tools() -> None:
             found.update(item["name"] for item in result.data)
 
     assert {"brain_fact_list", "brain_fact_get"} <= found
+
+
+def test_the_error_family_lives_outside_the_tools_module() -> None:
+    """business_errors must not import a FastMCP tools module: the family has its own home."""
+    from brain_v42.mcp.fact_errors import FactToolError
+
+    error = FactToolError("unknown_fact", "x")
+    assert str(error) == "unknown_fact: x"
+
+
+@pytest.mark.parametrize("profile", ["native", "compact"])
+async def test_an_unknown_name_is_echoed_bounded(profile: str) -> None:
+    registry = FakeFactRegistry()
+    app = await _app(registry, profile)
+    huge = "z" * 10_000
+    result = await _call(app, profile, "brain_fact_get", {"name": huge})
+    assert result.is_error
+    text = str(result.content)
+    assert "unknown_fact" in text
+    assert huge not in text
+    assert "z" * 64 in text

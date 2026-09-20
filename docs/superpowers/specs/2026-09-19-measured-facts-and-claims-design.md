@@ -367,7 +367,10 @@ Rules, all of them tested:
    executable by the role — is `identity_unreadable`. **When the setting is absent or
    malformed, no `production` probe can be registered** (`UnverifiableTargetError` at
    composition, so the service starts without production facts and says so in the journal
-   rather than measuring an unverified database). The DR runbook gains the line: a logical
+   rather than measuring an unverified database). The settings model loads a malformed declaration without
+   refusing it — the refusal happens when the composition root reads it, so a typo in a
+   drop-in degrades the catalogue and never takes the service down (implementation note,
+   2026-09-20); the briefing then names the fact that was not registered and why. The DR runbook gains the line: a logical
    restore into a new cluster, or a container recreated on another address, changes the
    identity and the operator re-declares it — the facts fail closed until then, visibly.
    **Root-of-trust limit, stated:** a physical clone of the cluster that keeps all four fields
@@ -452,9 +455,11 @@ Semantics:
   `queue_timeout + timeout`, stated in the descriptor.
 - **Briefing budget.** `measure_many(..., budget=...)` runs the facts under the global bound
   and stops handing out new runs once the budget elapses; facts not started render
-  `Unreadable(error_code="briefing_budget")`. The briefing passes a 4 s budget. The honest
-  bound is therefore "the briefing adds at most about 4 s", not "the slowest probe": with more
-  facts than slots there are waves, and revision 1's claim was false.
+  `Unreadable(error_code="briefing_budget")`. The briefing passes a 4 s budget. Runs already
+  admitted complete, so the honest bound is "the briefing adds at most the budget plus one
+  deadline (queue wait + timeout)", about 9 s with the slice-1 defaults — not "the slowest
+  probe", and not the budget alone: with more facts than slots there are waves, and revision
+  1's claim was false (implementation note, 2026-09-20).
 - **Shutdown.** `aclose()` cancels the in-flight tasks, awaits their completion (each swallows
   its own `CancelledError` into `Unreadable`), and refuses new measurements afterwards
   (`RegistryClosedError`). The composition root calls it in the server's existing shutdown
