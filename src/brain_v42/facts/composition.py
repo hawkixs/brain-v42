@@ -27,6 +27,7 @@ from brain_v42.facts.model import (
 from brain_v42.facts.probe import Probe
 from brain_v42.facts.probes.alembic_head_shipped import AlembicHeadShippedProbe
 from brain_v42.facts.probes.dream_killswitches_declared import DreamKillswitchesDeclaredProbe
+from brain_v42.facts.probes.dream_last_night import DreamLastNightProbe
 from brain_v42.facts.probes.graph_projection_lag import GraphProjectionLagProbe
 from brain_v42.facts.probes.live_release_sha import LiveReleaseShaProbe
 from brain_v42.facts.registry import FactRegistry, UnverifiableTargetError
@@ -48,6 +49,7 @@ def _catalogue() -> tuple[Probe, ...]:
         LiveReleaseShaProbe(),
         AlembicHeadShippedProbe(),
         DreamKillswitchesDeclaredProbe(),
+        DreamLastNightProbe(),
     )
 
 

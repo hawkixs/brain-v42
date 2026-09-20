@@ -20,11 +20,12 @@ _DECLARED = {
 }
 _RELEASE_DECLARED = {"release_sha": "a" * 40, "package_version": "0.6.0"}
 _HOST_DECLARED = {"hostname": "host-a"}
+_PRODUCTION_FACTS = ("graph_projection_lag", "dream_last_night")
 
 
 def test_with_a_declared_identity_the_first_fact_is_registered_and_the_catalogue_frozen() -> None:
     registry = build_fact_registry(_DECLARED, session_factory=MagicMock())
-    assert registry.names() == ("graph_projection_lag",)
+    assert registry.names() == _PRODUCTION_FACTS
     assert registry.briefing_names() == ("graph_projection_lag",)
     # Only the production identity is declared: every other target's facts are
     # refused, named, and the service still starts.
@@ -33,6 +34,7 @@ def test_with_a_declared_identity_the_first_fact_is_registered_and_the_catalogue
         "alembic_head_shipped": "unverifiable_target",
         "dream_killswitches_declared": "unverifiable_target",
     }
+    assert "dream_last_night" not in registry.briefing_names()
     assert registry.describe("graph_projection_lag").target is FactTarget.PRODUCTION
     with pytest.raises(RegistryFrozenError):
         registry.register(MagicMock(name="late", target=FactTarget.PRODUCTION))
@@ -50,8 +52,9 @@ def test_a_declared_host_identity_registers_the_dream_killswitch_fact() -> None:
         "live_release_sha",
         "alembic_head_shipped",
         "dream_killswitches_declared",
+        "dream_last_night",
     )
-    assert registry.briefing_names() == registry.names()
+    assert registry.briefing_names() == registry.names()[:-1]
     assert registry.describe("dream_killswitches_declared").target is FactTarget.HOST
 
 
@@ -79,7 +82,7 @@ def test_new_identity_declarations_log_refusals_but_keep_service_up(
         registry = build_fact_registry(
             _DECLARED, session_factory=MagicMock(), **{keyword: declared}
         )
-    assert registry.names() == ("graph_projection_lag",)
+    assert registry.names() == _PRODUCTION_FACTS
     assert any(record["event"] == event for record in logs)
 
 
@@ -108,6 +111,7 @@ def test_a_refused_probe_is_recorded_with_its_reason_for_the_briefing() -> None:
         "live_release_sha": "unverifiable_target",
         "alembic_head_shipped": "unverifiable_target",
         "dream_killswitches_declared": "unverifiable_target",
+        "dream_last_night": "unverifiable_target",
     }
 
 
@@ -116,7 +120,11 @@ def test_undeclared_live_release_refuses_its_facts_while_production_still_regist
         _DECLARED, session_factory=MagicMock(), declared_host_identity=_HOST_DECLARED
     )
 
-    assert registry.names() == ("graph_projection_lag", "dream_killswitches_declared")
+    assert registry.names() == (
+        "graph_projection_lag",
+        "dream_killswitches_declared",
+        "dream_last_night",
+    )
     assert registry.refusals() == {
         "live_release_sha": "unverifiable_target",
         "alembic_head_shipped": "unverifiable_target",
@@ -155,7 +163,7 @@ def test_build_services_exposes_the_registry() -> None:
 
             services = build_services()
     assert isinstance(services["fact_registry"], FactRegistry)
-    assert services["fact_registry"].names() == ("graph_projection_lag",)
+    assert services["fact_registry"].names() == _PRODUCTION_FACTS
     assert {record["event"] for record in logs} >= {
         "facts.live_release_identity_unreadable",
         "facts.host_identity_unreadable",

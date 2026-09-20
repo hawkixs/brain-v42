@@ -36,6 +36,7 @@ _SUBJECTS: Mapping[str, str] = {
     "live_release_sha": "Release vivante",
     "alembic_head_shipped": "Tête Alembic livrée",
     "dream_killswitches_declared": "Killswitches déclarés",
+    "dream_last_night": "Dernière nuit Dream",
 }
 
 
