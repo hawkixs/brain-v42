@@ -75,6 +75,18 @@ async def test_identity_inside_the_transaction_is_the_four_measured_fields() -> 
     }
 
 
+def test_release_sha_from_path_accepts_a_release_nested_under_another_releases_directory() -> None:
+    """Only the `releases` component followed by a 40-hex segment names the release;
+    an earlier `releases` directory in the path (a mirror, a backup root) does not
+    make the process a checkout."""
+    nested = Path(
+        "/srv/releases/home/hawixs/.local/share/brain-v42/releases/"
+        + "c" * 40
+        + "/venv/lib/python3.12/site-packages/brain_v42/__init__.py"
+    )
+    assert release_sha_from_path(nested) == "c" * 40
+
+
 @pytest.mark.parametrize(
     "path",
     [
@@ -177,6 +189,43 @@ def test_read_text_under_preserves_missing_file_oserror(tmp_path: Path) -> None:
         read_text_under(tmp_path, "missing.conf")
 
 
+def test_read_text_under_refuses_a_directory_with_a_policy_error(tmp_path: Path) -> None:
+    """Only a regular file is a readable host source; a directory is refused, not opened."""
+    (tmp_path / "a-directory").mkdir()
+    with pytest.raises(ValueError, match="regular file"):
+        read_text_under(tmp_path, "a-directory")
+
+
+def test_read_text_under_refuses_a_fifo_without_blocking(tmp_path: Path) -> None:
+    """A FIFO with no writer blocks a plain open() forever, and a blocked probe
+    cannot be cancelled by the registry's deadline: the reader must refuse it
+    before reading (fd opened non-blocking, fstat before any read)."""
+    import queue
+    import threading
+
+    fifo = tmp_path / "pipe.conf"
+    os.mkfifo(fifo)
+    outcome: queue.Queue[object] = queue.Queue()
+
+    def _attempt() -> None:
+        try:
+            outcome.put(read_text_under(tmp_path, "pipe.conf"))
+        except BaseException as exc:  # noqa: BLE001 - the thread reports, the test judges
+            outcome.put(exc)
+
+    # A daemon thread, so a reader that does block cannot hang the interpreter.
+    threading.Thread(target=_attempt, daemon=True).start()
+    try:
+        result = outcome.get(timeout=2)
+    except queue.Empty:
+        # Unblock the stuck open() by lending it a writer, then fail loudly.
+        writer = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(writer)
+        pytest.fail("read_text_under blocked on a FIFO instead of refusing it")
+    assert isinstance(result, ValueError)
+    assert "regular file" in str(result)
+
+
 @pytest.mark.asyncio
 async def test_host_source_session_exposes_only_host_identity_and_restricted_reader(
     tmp_path: Path,
@@ -193,3 +242,20 @@ async def test_host_source_factory_binds_the_declared_root(tmp_path: Path) -> No
     async with factory() as session:
         assert session.root == tmp_path
         assert await session.identity() == HostIdentity("host-a")
+
+
+@pytest.mark.asyncio
+async def test_release_source_session_reports_every_malformed_identity_as_unreadable(
+    tmp_path: Path,
+) -> None:
+    """Whatever makes the release identity unbuildable — a `dev` version, a
+    70-character version, a non-printable one — is one condition for the
+    registry: `identity_unreadable`, on the registry's own call and on the
+    `live_release_sha` probe's call alike. A bare ValueError would split it in two."""
+    package_file = tmp_path / "releases" / ("d" * 40) / "brain_v42" / "__init__.py"
+    package_file.parent.mkdir(parents=True)
+    package_file.touch()
+    for version in ("dev", "v" * 70, "0.6.0\x00"):
+        session = ReleaseSourceSession(package_file, lambda v=version: v)
+        with pytest.raises(IdentityUnreadableError):
+            await session.identity()

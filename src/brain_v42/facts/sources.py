@@ -23,6 +23,7 @@ who authored a file read beneath the restricted root.
 
 from __future__ import annotations
 
+import os
 import re
 import socket
 import stat
@@ -67,18 +68,34 @@ _MAX_HOST_FILE_BYTES = 65536
 
 
 def release_sha_from_path(path: Path) -> str:
-    """Read the release SHA from the immutable release layout that imported a module."""
+    """Read the release SHA from the immutable release layout that imported a module.
+
+    The release is the ``releases`` component followed by a 40-hex segment; an
+    earlier ``releases`` directory in the path (a mirror, a backup root) is not
+    it and does not turn the process into a checkout.
+    """
     parts = path.resolve().parts
-    for index, part in enumerate(parts):
-        if part == "releases":
-            if index + 1 >= len(parts) or _RELEASE_SHA.fullmatch(parts[index + 1]) is None:
-                raise ValueError("path has no immutable release SHA")
+    for index, part in enumerate(parts[:-1]):
+        if part == "releases" and _RELEASE_SHA.fullmatch(parts[index + 1]) is not None:
             return parts[index + 1]
     raise ValueError("path has no immutable release SHA")
 
 
 def read_text_under(root: Path, relative: str) -> tuple[str, int]:
-    """Read one small UTF-8 regular file without following a relative symlink."""
+    """Read one small UTF-8 regular file under ``root`` without following a symlink.
+
+    The read goes through ONE file descriptor: opened ``O_NOFOLLOW`` (a symlink
+    swapped in for the last component after the walk fails the open, not the
+    check), ``O_NONBLOCK`` (a FIFO with no writer would otherwise block the
+    open, and a blocked probe cannot be cancelled by the registry's deadline),
+    ``fstat``-ed before anything is read (only a regular file is a host source;
+    a directory, a FIFO or a device is refused, never read), and read at most
+    one byte past the bound so a file grown between the stat and the read is
+    still refused. The per-component symlink walk stays as a first, cheaper
+    refusal; an intermediate directory swapped for a symlink between the walk
+    and the open is the residual an ``openat`` walk would close — the root is
+    operator-owned, and that residual is accepted.
+    """
     relative_path = Path(relative)
     if not relative or relative_path.is_absolute() or ".." in relative_path.parts:
         raise ValueError("relative path must be non-empty, relative, and contain no '..'")
@@ -93,10 +110,25 @@ def read_text_under(root: Path, relative: str) -> tuple[str, int]:
     if resolved_root not in resolved.parents:
         raise ValueError("relative path must resolve strictly inside root")
 
-    metadata = unresolved.stat()
-    if stat.S_ISREG(metadata.st_mode) and metadata.st_size > _MAX_HOST_FILE_BYTES:
+    descriptor = os.open(unresolved, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("host source must be a regular file")
+        chunks: list[bytes] = []
+        remaining = _MAX_HOST_FILE_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    finally:
+        os.close(descriptor)
+    body = b"".join(chunks)
+    if len(body) > _MAX_HOST_FILE_BYTES:
         raise ValueError("regular file must be at most 65536 bytes")
-    return unresolved.read_text(encoding="utf-8", errors="strict"), int(metadata.st_mtime)
+    return body.decode("utf-8", errors="strict"), int(metadata.st_mtime)
 
 
 class PostgresSourceSession:
@@ -166,22 +198,29 @@ class ReleaseSourceSession:
         self._version = version
 
     async def identity(self) -> ReleaseIdentity:
-        """Return immutable release evidence or raise when this process is a checkout."""
+        """Return immutable release evidence, or say the identity is unreadable.
+
+        Every way the identity can fail to exist — a checkout path without a
+        release segment, a ``dev`` version, a version the model refuses — is
+        ONE condition for the registry, ``identity_unreadable``, whether the
+        registry asked after the probe or the ``live_release_sha`` probe asked
+        itself; a bare ``ValueError`` would split it into two codes.
+        """
         try:
-            release_sha = release_sha_from_path(self._package_file)
+            return ReleaseIdentity(release_sha_from_path(self._package_file), self._version())
+        except IdentityUnreadableError:
+            raise
         except ValueError as exc:
             raise IdentityUnreadableError(str(exc)) from exc
-        package_version = self._version()
-        try:
-            return ReleaseIdentity(release_sha, package_version)
-        except ValueError as exc:
-            if package_version == "dev":
-                raise IdentityUnreadableError(str(exc)) from exc
-            raise
 
 
 class ReleaseSourceFactory:
-    """Open a release source without I/O; imported package paths are resolved at use time."""
+    """Open a release source: nothing to connect to, the identity is the process's own path.
+
+    The only I/O is ``Path.resolve()`` on the package file (a readlink walk)
+    when the identity is measured; the package path and the version reader are
+    resolved at use time so the package importing itself is never a cycle.
+    """
 
     __slots__ = ("_package_file", "_version")
 

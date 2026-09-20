@@ -159,3 +159,30 @@ async def test_live_release_probes_refuse_a_development_package_path(
 
     assert isinstance(result, Unreadable)
     assert result.error_code == "identity_unreadable"
+
+
+@pytest.mark.parametrize("name", ["live_release_sha", "alembic_head_shipped"])
+async def test_live_release_probes_refuse_the_same_sha_with_another_declared_version(
+    tmp_path: Path, name: str
+) -> None:
+    """The identity is the pair: a comparison on the SHA alone would let a
+    re-installed package of another version pass as the declared release."""
+    package_file = _release_path(tmp_path)
+    clock = Clock()
+    registry = FactRegistry(
+        sources={
+            FactTarget.LIVE_RELEASE: ReleaseSourceFactory(
+                package_file=package_file, version=lambda: _VERSION
+            )
+        },
+        expected={FactTarget.LIVE_RELEASE: ReleaseIdentity(_SHA, _VERSION + ".post1")},
+        monotonic=clock.monotonic,
+        wall=clock.now,
+    )
+    registry.register(LiveReleaseShaProbe())
+    registry.register(AlembicHeadShippedProbe(head=lambda: "054"))
+
+    result = await registry.measure(name)
+
+    assert isinstance(result, Unreadable)
+    assert result.error_code == "target_mismatch"

@@ -206,3 +206,25 @@ def test_the_reporting_module_carries_no_revision_literal() -> None:
     source = (REPO_ROOT / "src" / "brain_v42" / "release.py").read_text(encoding="utf-8")
 
     assert _authoritative_head() not in source
+
+
+def test_strict_shipped_head_never_caches_a_failure_and_keeps_a_success_for_the_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`functools.cache` memoises return values only: a first unreadable read is
+    retried on the next probe run, and a good read is served for the rest of
+    the process — the two halves a release-lifetime fact relies on."""
+    good = tmp_path / "good"
+    good.mkdir()
+    _write_revision(good, "001", None)
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    (bad / "broken.py").write_text("this is not python (", encoding="utf-8")
+
+    monkeypatch.setattr(release, "_versions_directory", lambda: bad)
+    with pytest.raises(ValueError):
+        release.shipped_alembic_head_strict()
+    monkeypatch.setattr(release, "_versions_directory", lambda: good)
+    assert release.shipped_alembic_head_strict() == "001"
+    monkeypatch.setattr(release, "_versions_directory", lambda: bad)
+    assert release.shipped_alembic_head_strict() == "001"

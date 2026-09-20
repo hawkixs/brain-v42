@@ -139,3 +139,23 @@ async def test_registry_measures_the_fact_without_including_it_in_the_briefing()
     assert isinstance(measurement, Measured)
     assert measurement.value["run_date"] == "2026-09-19"
     assert registry.briefing_names() == ()
+
+
+async def test_a_night_without_a_timestamp_is_unreadable_not_an_epoch_zero() -> None:
+    """`created_at` is nullable in the table: a night whose rows all lack it has
+    no `finished_at`, and the probe must raise rather than publish a zero."""
+
+    class _NoTimestampSession:
+        async def execute(self, statement: object) -> _MappingResult:
+            del statement
+            return _MappingResult({**_ROW, "finished_at": None})
+
+    class _NoTimestampSource:
+        def __init__(self) -> None:
+            self.session = _NoTimestampSession()
+
+        async def identity(self) -> SourceIdentity:
+            return _IDENTITY
+
+    with pytest.raises(ValueError, match="timestamp"):
+        await DreamLastNightProbe().measure(_NoTimestampSource())  # type: ignore[arg-type]

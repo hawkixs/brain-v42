@@ -52,6 +52,23 @@ async def _insert_test_rows(
             "project_key": "facts-dream-last-night-a",
         },
         {
+            # The global phases (extract, roadmap, sweep) write the '*' sentinel:
+            # a row of the night, never a project.
+            "run_date": date(2999, 1, 2),
+            "phase": "factsglob",
+            "status": "done",
+            "phase_dry_run": False,
+            "project_key": "*",
+        },
+        {
+            # A pre-042 row: no project at all, and a status outside the four.
+            "run_date": date(2999, 1, 2),
+            "phase": "factsodd",
+            "status": "weird",
+            "phase_dry_run": True,
+            "project_key": None,
+        },
+        {
             "run_date": date(2999, 1, 1),
             "phase": "factsold",
             "status": "done",
@@ -97,14 +114,15 @@ async def test_latest_night_aggregates_and_caches_through_the_verified_registry(
 
         assert night is not None
         assert night.run_date == date(2999, 1, 2)
-        assert night.rows == 3
-        assert night.done == 1
+        assert night.rows == 5
+        assert night.done == 2
         assert night.fail == 1
         assert night.timeout == 1
         assert night.partial == 0
-        assert night.other == 0
-        assert night.wet == 2
-        assert night.dry == 1
+        assert night.other == 1
+        assert night.wet == 3
+        assert night.dry == 2
+        # Two real projects: the '*' sentinel and the NULL key are not projects.
         assert night.projects == 2
 
         expected = await _measured_identity(session_factory)
@@ -121,7 +139,7 @@ async def test_latest_night_aggregates_and_caches_through_the_verified_registry(
             await registry.aclose()
 
         assert isinstance(measured, Measured)
-        assert measured.value["rows"] == 3
+        assert measured.value["rows"] == 5
         assert cached.source_kind == "cache"
     finally:
         await _delete_test_rows(session_factory, inserted)

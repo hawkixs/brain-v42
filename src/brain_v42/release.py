@@ -177,7 +177,15 @@ def shipped_alembic_head_strict() -> str:
     """Return the one Alembic head shipped with this package, never a partial answer.
 
     The facts probe must fail closed: skipping one bad revision could make an
-    older head look like the release's shipped schema capability.
+    older head look like the release's shipped schema capability. Memoised for
+    the process lifetime, which is the release's: ``functools.cache`` keeps
+    return values only, so a failure is retried on the next probe run (the
+    registry's own cache bounds that to one attempt per 30 s) and a success is
+    served without re-reading the directory. Any stray ``*.py`` in
+    ``alembic/versions/`` (a helper, an ``__init__.py``) makes this fact
+    unreadable for the whole release while the lenient ``/health`` head stays
+    green — intended: the strict reader announces the doubt, the lenient one
+    keeps the service describing itself.
     """
     directory = _versions_directory()
     if directory is None:

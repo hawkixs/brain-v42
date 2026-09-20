@@ -41,6 +41,8 @@ class DreamLastNightProbe:
         night = await read_last_night(cast(PostgresSourceSession, source).session)
         if night is None:
             raise ValueError("dream_runs has no night")
+        if night.finished_at is None:
+            raise ValueError("dream_runs night has no timestamp")
         return {
             "run_date": night.run_date.isoformat(),
             "rows": night.rows,

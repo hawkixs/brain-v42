@@ -425,3 +425,23 @@ def test_alembic_head_renders_the_legacy_schema_line_or_its_visible_failure(
 ) -> None:
     """The fact replaces one legacy line without changing a reader's wording."""
     assert render_fact_line(measurement, _ALEMBIC_DESCRIPTOR, age_seconds=None) == expected
+
+
+def test_a_long_raw_killswitch_value_is_cut_in_the_line() -> None:
+    """A 3 000-character typo is the operator's problem to fix, not the briefing's
+    to reproduce: the raw value is shown, cut to 40 characters, with an ellipsis."""
+    line = render_fact_line(
+        _dream_measured(reorg_dry="T" * 100), _DREAM_DESCRIPTOR, age_seconds=None
+    )
+    assert "'" + "T" * 40 + "…' (illisible → dry)" in line
+    assert "T" * 41 not in line
+
+
+def test_an_absurd_drop_in_mtime_renders_as_unreadable_date_not_an_exception() -> None:
+    """`datetime.fromtimestamp` overflows on an epoch far in the future; a
+    renderer that raised would take every other fact line down with it."""
+    line = render_fact_line(
+        _dream_measured(file_mtime_epoch=99_999_999_999_999), _DREAM_DESCRIPTOR, age_seconds=None
+    )
+    assert line.startswith("- Killswitches déclarés : PROMOTE on, REORG on wet")
+    assert line.endswith("(drop-in modifié à une date illisible)")

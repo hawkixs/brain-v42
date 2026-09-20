@@ -94,9 +94,21 @@ def _render_graph_projection_lag(measured: Measured, descriptor: FactDescriptor)
     return f"- Projection graphe : {head} — {', '.join(details)}"
 
 
+#: A raw drop-in value is shown so a typo is visible, and cut there so a
+#: 3 000-character one is the operator's problem to fix, not the briefing's to reproduce.
+RAW_VALUE_CHARS = 40
+
+
 def _string(value: object) -> str:
     """The declared schema carries strings; a corrupt value renders as unreadable words."""
     return value if isinstance(value, str) else ""
+
+
+def _raw(value: str) -> str:
+    """The operator's own spelling, quoted, cut past `RAW_VALUE_CHARS`."""
+    if len(value) > RAW_VALUE_CHARS:
+        return repr(value[:RAW_VALUE_CHARS] + "…")
+    return repr(value)
 
 
 def _render_killswitch_phase(value: Mapping[str, object], phase: str, dry_key: str | None) -> str:
@@ -108,7 +120,7 @@ def _render_killswitch_phase(value: Mapping[str, object], phase: str, dry_key: s
     elif enabled == "false":
         rendered = f"{label} off"
     else:
-        return f"{label} off {enabled!r} (illisible → off)"
+        return f"{label} off {_raw(enabled)} (illisible → off)"
     if dry_key is None or enabled != "true":
         return rendered
     dry = _string(value.get(dry_key))
@@ -116,7 +128,7 @@ def _render_killswitch_phase(value: Mapping[str, object], phase: str, dry_key: s
         return f"{rendered} wet"
     if dry == "true":
         return f"{rendered} dry"
-    return f"{rendered} {dry!r} (illisible → dry)"
+    return f"{rendered} {_raw(dry)} (illisible → dry)"
 
 
 def _render_dream_killswitches_declared(measured: Measured, descriptor: FactDescriptor) -> str:
@@ -129,11 +141,15 @@ def _render_dream_killswitches_declared(measured: Measured, descriptor: FactDesc
         _render_killswitch_phase(value, "roadmap", "roadmap_dry"),
         _render_killswitch_phase(value, "sweep", "sweep_dry"),
     )
-    modified_at = datetime.fromtimestamp(_int(value.get("file_mtime_epoch")), UTC)
-    return (
-        f"- Killswitches déclarés : {', '.join(phases)} "
-        f"(drop-in modifié le {modified_at:%Y-%m-%d %H:%M UTC})"
-    )
+    try:
+        modified_at = datetime.fromtimestamp(_int(value.get("file_mtime_epoch")), UTC)
+    except (OverflowError, OSError, ValueError):
+        # An epoch the platform cannot place (a `touch -d @99999999999999`) is
+        # said, not raised: a renderer that raised would take the line down.
+        stamp = "à une date illisible"
+    else:
+        stamp = f"le {modified_at:%Y-%m-%d %H:%M UTC}"
+    return f"- Killswitches déclarés : {', '.join(phases)} (drop-in modifié {stamp})"
 
 
 def _render_live_release_sha(measured: Measured, descriptor: FactDescriptor) -> str:
