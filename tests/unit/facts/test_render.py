@@ -445,3 +445,17 @@ def test_an_absurd_drop_in_mtime_renders_as_unreadable_date_not_an_exception() -
     )
     assert line.startswith("- Killswitches déclarés : PROMOTE on, REORG on wet")
     assert line.endswith("(drop-in modifié à une date illisible)")
+
+
+def test_an_undeclared_killswitch_key_renders_as_undeclared_not_as_a_typo() -> None:
+    """Measured on the live drop-in (2026-09-20): the ROADMAP keys are absent since
+    the phase retired on 2026-09-10, so the fact carries `""` for them. Absent is
+    not illegible — dream.sh then runs the code default — and the line must say so."""
+    line = render_fact_line(
+        _dream_measured(roadmap="", roadmap_dry=""), _DREAM_DESCRIPTOR, age_seconds=None
+    )
+    assert "ROADMAP off (non déclaré)" in line
+    assert "illisible → off" not in line
+    # An undeclared dry key on an enabled phase reads the same way.
+    line = render_fact_line(_dream_measured(reorg_dry=""), _DREAM_DESCRIPTOR, age_seconds=None)
+    assert "REORG on (mode non déclaré → dry)" in line
