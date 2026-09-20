@@ -453,7 +453,7 @@ The Codex adapter exposes only the Brain MCP tools required by each phase:
 | PROMOTE | `gpt-6-astra` / max | `brain_get`, `brain_search`, `brain_promote_adr`, `brain_promote_runbook`, `brain_list`, `brain_get_neighbors`, `brain_graph_path` |
 | REORG | `gpt-6-astra` / max | `brain_search`, `brain_list`, `brain_get`, `brain_update` |
 
-`scripts/dream/codex_runner.py` starts each turn in an ephemeral, read-only workspace. It ignores ambient Codex configuration, requires the loopback Brain MCP server, and disables shell, web search, apps, and subagents. The orchestrator checks both ChatGPT authentication and `MCP_HTTP_TOKEN` before maintenance begins. With capability enforcement enabled, it also validates a complete six-phase profile before phase one, passes only that phase's `active` bearer through an allowlisted child environment, removes the full registry, and adds the loopback MCP hosts to `NO_PROXY`. It never falls back to Claude automatically: a failed WET phase may already have committed a mutation, so switching providers mid-run would risk replaying it. Claude remains an explicit operator rollback only after capability enforcement is disabled:
+`scripts/dream/codex_runner.py` starts each turn in an ephemeral, read-only workspace. It ignores ambient Codex configuration, requires the loopback Brain MCP server, and disables shell, web search, apps, and subagents. The orchestrator checks both ChatGPT authentication and `MCP_HTTP_TOKEN` before maintenance begins. With capability enforcement enabled, it also validates a complete six-phase profile before phase one, passes only that phase's `active` bearer through an allowlisted child environment, removes the full registry, and adds the loopback MCP hosts to `NO_PROXY`. It never falls back automatically on a failure it cannot read: a failed WET phase may already have committed a mutation, so switching providers mid-run would risk replaying it. The chain (`BRAIN_DREAM_AGENT_PROVIDERS`) advances on two codes only, both a proof that no Brain tool call succeeded — `3` (failed, no completed call) and `4` (the runner's own deadline on a stream where no call ever started; the link is then retired for the rest of the night, `LINK DOWN` in the log — from the first immutable release that ships headless-agents 0.3.0). Claude remains an explicit operator rollback only after capability enforcement is disabled:
 
 ```bash
 BRAIN_DREAM_AGENT_PROVIDER=claude scripts/dream.sh brain-v42
@@ -507,7 +507,7 @@ sqlalchemy, neo4j, pgvector, fastmcp and uvicorn):
 packages/headless-agents/            # uv workspace member, distribution `headless-agents`
     src/headless_agents/
         profile.py       # CapabilityProfile: McpServer, ToolGuard, Credentials
-        capability.py    # exit codes 3/124, child-env allowlist, NO_PROXY, loopback, killpg
+        capability.py    # exit codes 3/4/124, child-env allowlist, NO_PROXY, loopback, killpg
         sandbox.py       # ephemeral HOMEs from a profile, credentials (symlink | 0600 copy)
         spec.py, result.py, protocol.py   # RunSpec / RunResult / AgentProvider
         chain.py         # the fallback state machine, reporting through callbacks
@@ -546,7 +546,7 @@ every phase; the fixtures were not touched by the split.
 The member installs on its own from another project:
 
 ```sh
-uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.2.0#subdirectory=packages/headless-agents"
+uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.3.0#subdirectory=packages/headless-agents"
 ```
 
 Inside this repository `uv sync` installs it editable next to `brain_v42`; `uv build` at the

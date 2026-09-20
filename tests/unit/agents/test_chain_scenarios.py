@@ -110,6 +110,7 @@ def _run_one_phase(
         ("codex", 1, 1, lines.fail_line("scan", 1, fallback=False)),
         ("codex", 3, 3, lines.fail_line("scan", 3, fallback=True)),
         ("codex", 124, 2, lines.timeout_line("scan", 5)),
+        ("codex", 4, 4, lines.timeout_replayable_line("scan", 5)),
         ("agy", 0, 0, lines.done_line("scan")),
         ("claude", 0, 0, lines.done_line("scan")),
     ],
@@ -131,6 +132,47 @@ def test_run_phase_maps_every_exit_code(
     assert rc == expected_rc
     assert expects in logged
     assert logged[0].startswith("START scan")
+
+
+def test_a_replayable_timeout_is_still_a_timeout_for_the_parser(
+    dirs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The chain reads the 4 as "advance"; the dream_runs row must still read
+    it as what happened to the link -- a deadline, tool_calls=0 -- or the
+    morning report would show a dead link as an ordinary failure."""
+    log_dir, dream_dir = dirs
+    calls: list[list[str]] = []
+    monkeypatch.setattr(phase, "spawn", _fake_spawn({"opencode": 4}, calls=calls))
+    logged: list[str] = []
+    environ = {
+        **REQUIRED_ENVIRON,
+        "BRAIN_DREAM_OPENCODE_FAST_MODEL": "opencode-go/glm-5.3-flash",
+        "BRAIN_DREAM_OPENCODE_FAST_VARIANT": "",
+        "BRAIN_DREAM_OPENCODE_BIN": "opencode",
+    }
+    _write_prompt(dream_dir, "scan")
+
+    rc = phase.run_phase(
+        "opencode",
+        phase="scan",
+        model_tier="fast",
+        timeout_minutes=5,
+        max_turns=30,
+        project_key="brain-v42",
+        timestamp="2026-09-12",
+        log_dir=log_dir,
+        dream_dir=dream_dir,
+        dry_run="false",
+        reorg_dry_run="false",
+        environ=environ,
+        log=logged.append,
+    )
+
+    assert rc == 4
+    parser_calls = [argv for argv in calls if "brain_v42.metrics." in " ".join(argv)]
+    assert len(parser_calls) == 1
+    status_index = parser_calls[0].index("--status")
+    assert parser_calls[0][status_index + 1] == "timeout"
 
 
 def test_run_phase_skips_when_prompt_file_is_missing(
@@ -294,6 +336,7 @@ def test_cli_runs_the_chain_and_writes_the_result_json(
         "rc": 0,
         "status": "done",
         "fallbacks": ["codex"],
+        "dead_links": [],
     }
 
     main_log = log_dir / "2026-09-12.log"
@@ -344,4 +387,67 @@ def test_cli_returns_the_chain_rc_on_a_failing_chain(
 
     assert rc == 1
     payload = json.loads(result_json.read_text())
-    assert payload == {"provider": "codex", "rc": 1, "status": "fail", "fallbacks": []}
+    assert payload == {
+        "provider": "codex",
+        "rc": 1,
+        "status": "fail",
+        "fallbacks": [],
+        "dead_links": [],
+    }
+
+
+def test_cli_names_the_dead_links_for_the_shell(
+    dirs: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``dream.sh`` reads ``dead_links`` to retire a link for the rest of the
+    night; the journal says, in the FALLBACK line, that the link expired
+    rather than failed."""
+    log_dir, dream_dir = dirs
+    _write_prompt(dream_dir, "scan")
+    for key, value in REQUIRED_ENVIRON.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(phase, "spawn", _fake_spawn({"codex": 4, "agy": 0}))
+
+    result_json = log_dir / "2026-09-12_brain-v42_scan.chain.json"
+    rc = cli.main(
+        [
+            "--phase",
+            "scan",
+            "--tier",
+            "fast",
+            "--timeout-minutes",
+            "5",
+            "--max-turns",
+            "30",
+            "--project-key",
+            "brain-v42",
+            "--timestamp",
+            "2026-09-12",
+            "--log-dir",
+            str(log_dir),
+            "--dream-dir",
+            str(dream_dir),
+            "--providers",
+            "codex,agy",
+            "--dry-run",
+            "false",
+            "--reorg-dry-run",
+            "false",
+            "--result-json",
+            str(result_json),
+        ]
+    )
+
+    assert rc == 0
+    payload = json.loads(result_json.read_text())
+    assert payload == {
+        "provider": "agy",
+        "rc": 0,
+        "status": "done",
+        "fallbacks": ["codex"],
+        "dead_links": ["codex"],
+    }
+    log_text = (log_dir / "2026-09-12.log").read_text()
+    assert lines.timeout_replayable_line("scan", 5) in log_text
+    assert lines.dead_link_fallback_line("brain-v42", "scan", "codex", "agy") in log_text
+    assert lines.fallback_line("brain-v42", "scan", "codex", "agy") not in log_text

@@ -390,8 +390,18 @@ def test_timeout_terminates_the_whole_codex_process_group(
     monkeypatch.setenv("MCP_HTTP_TOKEN", "test-only-token")
     pid_file = tmp_path / "pids"
     fake_codex = tmp_path / "fake-codex"
+    # The fake hangs MID-CALL: an ``item.started`` mcp_tool_call on the stream
+    # is what keeps this a plain 124 -- a hang with an empty stream is the
+    # replayable timeout (4) since 2026-09-20, tested with the runtime.
+    started_call = json.dumps(
+        {
+            "type": "item.started",
+            "item": {"type": "mcp_tool_call", "server": "brain-v42", "status": "in_progress"},
+        }
+    )
     fake_codex.write_text(
         "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' {shlex.quote(started_call)}\n"
         "sleep 2 &\n"
         "child=$!\n"
         f'printf \'%s %s\\n\' "$$" "$child" > {shlex.quote(str(pid_file))}\n'
@@ -452,9 +462,13 @@ def test_timeout_kills_a_child_that_ignores_term_after_the_leader_exits(
     monkeypatch.setattr(capability, "TERMINATION_GRACE_SECONDS", 0.05)
     pid_file = tmp_path / "forked-pids"
     fake_codex = tmp_path / "fake-codex-fork"
+    # Hangs mid-call, like the bash fake above: a started call keeps the 124.
     fake_codex.write_text(
         "#!/usr/bin/env python3\n"
-        "import os, signal, time\n"
+        "import os, signal, sys, time\n"
+        'sys.stdout.write(\'{"type": "item.started", "item": {"type": "mcp_tool_call",'
+        ' "server": "brain-v42", "status": "in_progress"}}\\n\')\n'
+        "sys.stdout.flush()\n"
         "child = os.fork()\n"
         "if child == 0:\n"
         "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"

@@ -31,7 +31,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import lines
-from .capability import PROVIDER_FALLBACK_EXIT_CODE
+from .capability import PROVIDER_FALLBACK_EXIT_CODE, TIMEOUT_REPLAYABLE_EXIT_CODE
 from .prompt import render_file as _render_prompt_file
 
 # Phase dependencies: which previous phase logs to inject -- the exact map
@@ -283,10 +283,20 @@ def effective_dry_run(
 
 
 def map_exit_code(code: int) -> tuple[str, int]:
+    """Runner exit code -> (parser status, phase rc).
+
+    The status is what the ``dream_runs`` row and the journal read; the rc is
+    what the chain reads. They part company on one code: a replayable timeout
+    (4) is a ``timeout`` for the row -- the link ran to its deadline, with
+    ``tool_calls=0`` -- and a switchover for the chain, which advances on it
+    as on 3.
+    """
     if code == 0:
         return "done", 0
     if code == 124:
         return "timeout", 2
+    if code == TIMEOUT_REPLAYABLE_EXIT_CODE:
+        return "timeout", TIMEOUT_REPLAYABLE_EXIT_CODE
     if code == PROVIDER_FALLBACK_EXIT_CODE:
         return "fail", PROVIDER_FALLBACK_EXIT_CODE
     return "fail", 1
@@ -472,8 +482,9 @@ def run_phase(
     environ: Mapping[str, str],
     log: Callable[[str], None],
 ) -> int:
-    """Run one phase with one provider. Returns the phase rc (0/1/2/3), the
-    exact contract bash's ``run_phase`` returned to ``run_phase_chain``."""
+    """Run one phase with one provider. Returns the phase rc (0/1/2/3/4): the
+    exact contract bash's ``run_phase`` returned to ``run_phase_chain``, plus
+    the replayable timeout (4) the runners learned on 2026-09-19."""
     paths = PhasePaths.build(
         log_dir=log_dir,
         timestamp=timestamp,
@@ -553,6 +564,8 @@ def run_phase(
     status, phase_rc = map_exit_code(code)
     if status == "done":
         log(lines.done_line(phase))
+    elif status == "timeout" and phase_rc == TIMEOUT_REPLAYABLE_EXIT_CODE:
+        log(lines.timeout_replayable_line(phase, timeout_minutes))
     elif status == "timeout":
         log(lines.timeout_line(phase, timeout_minutes))
     else:

@@ -17,7 +17,11 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
-from headless_agents.capability import PROVIDER_FALLBACK_EXIT_CODE, TIMEOUT_EXIT_CODE
+from headless_agents.capability import (
+    PROVIDER_FALLBACK_EXIT_CODE,
+    TIMEOUT_EXIT_CODE,
+    TIMEOUT_REPLAYABLE_EXIT_CODE,
+)
 from headless_agents.profile import CapabilityProfile, Credentials, McpServer
 from headless_agents.providers import opencode
 from headless_agents.spec import RunSpec
@@ -167,6 +171,39 @@ ERROR_EVENT: dict[str, object] = {
     "type": "error",
     "error": {"name": "UnknownError", "data": {"message": "Unexpected server error", "ref": "e"}},
 }
+
+
+class TestToolCallStarted:
+    """What the stream proves at the moment the runner's deadline fires.
+
+    Measured on opencode 1.18.30 (`run --format json`): a ``tool_use`` event
+    is written in its TERMINAL state only (``completed``/``error``), so a call
+    in flight leaves nothing -- but the ``step_start`` of the step that issued
+    it is written first. No step ever started is the only proof that no call
+    could be running.
+    """
+
+    def test_an_empty_stream_proves_no_call_started(self, tmp_path: Path) -> None:
+        log = tmp_path / "events.jsonl"
+        log.write_text("", encoding="utf-8")
+        assert opencode.tool_call_started(log, server="example") is False
+
+    def test_a_started_step_may_hide_a_call_in_flight(self, tmp_path: Path) -> None:
+        log = tmp_path / "events.jsonl"
+        log.write_text(_events({"type": "step_start", "part": {}}), encoding="utf-8")
+        assert opencode.tool_call_started(log, server="example") is True
+
+    def test_any_tool_event_on_the_server_counts_whatever_its_state(self, tmp_path: Path) -> None:
+        log = tmp_path / "events.jsonl"
+        for status in ("pending", "running", "completed", "error"):
+            log.write_text(_events(_tool_use(status=status)), encoding="utf-8")
+            assert opencode.tool_call_started(log, server="example") is True, status
+
+    def test_an_absent_or_unreadable_stream_proves_nothing(self, tmp_path: Path) -> None:
+        assert opencode.tool_call_started(tmp_path / "absent.jsonl", server="example") is True
+        log = tmp_path / "events.jsonl"
+        log.write_text("{not json\n", encoding="utf-8")
+        assert opencode.tool_call_started(log, server="example") is True
 
 
 class TestToolCallCompleted:
@@ -327,9 +364,12 @@ class _FakeProcess:
     def communicate(
         self, input: str | None = None, timeout: float | None = None
     ) -> tuple[None, None]:
+        # A hang writes what it had produced so far, THEN stalls: that is
+        # what the runner sees on disk when its own deadline fires.
+        self._stream.write(self._events)  # type: ignore[attr-defined]
+        self._stream.flush()  # type: ignore[attr-defined]
         if self._hang:
             raise subprocess.TimeoutExpired(cmd="opencode", timeout=timeout or 0)
-        self._stream.write(self._events)  # type: ignore[attr-defined]
         self.returncode = self._returncode
         return None, None
 
@@ -517,6 +557,28 @@ class TestRunOpenCode:
         _install(monkeypatch, _FakeProcess(returncode=9, events=_events(_tool_use())))
         assert _run(tmp_path) == 9
 
+    def test_a_childs_own_fallback_code_after_a_completed_call_never_advances_a_chain(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """opencode exiting 3 or 4 by itself after writing must be an ordinary
+        failure, or the chain would replay a run that provably wrote."""
+        for code in (PROVIDER_FALLBACK_EXIT_CODE, TIMEOUT_REPLAYABLE_EXIT_CODE):
+            _install(monkeypatch, _FakeProcess(returncode=code, events=_events(_tool_use())))
+            assert _run(tmp_path) == 1, code
+
+    def test_an_already_expired_deadline_is_a_timeout_and_launches_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A caller's budget already spent must not read as a dead link: launching
+        would kill the child at once on an empty stream and return 4, then the
+        next link would do the same, and the chain would condemn every link in
+        seconds. Nothing is launched; the plain 124 stops the chain."""
+        captured = _install(monkeypatch, _FakeProcess(returncode=0, events=GOOD_EVENTS))
+        monkeypatch.setattr(opencode.time, "monotonic", lambda: 1000.0)
+        assert _run(tmp_path, timeout_seconds=60.0, deadline=999.0) == TIMEOUT_EXIT_CODE
+        assert "command" not in captured
+        assert "deadline" in (tmp_path / "out" / "stderr.log").read_text(encoding="utf-8")
+
     def test_a_clean_exit_without_a_report_or_without_a_call_is_a_failure(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -552,13 +614,41 @@ class TestRunOpenCode:
         assert "model" in (tmp_path / "out" / "stderr.log").read_text(encoding="utf-8")
         assert "command" not in captured
 
-    def test_timeouts(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        _install(monkeypatch, _FakeProcess(returncode=0, hang=True))
+    def test_a_timeout_after_a_started_step_is_never_a_switchover(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The run may have written and then hung: the chain must stay still."""
+        step = _events({"type": "step_start", "part": {}})
+        _install(monkeypatch, _FakeProcess(returncode=0, events=step, hang=True))
         assert _run(tmp_path) == TIMEOUT_EXIT_CODE
+        _install(monkeypatch, _FakeProcess(returncode=0, events=_events(_tool_use()), hang=True))
+        assert _run(tmp_path) == TIMEOUT_EXIT_CODE
+        # A child exiting 124 by itself is read as a timeout, empty stream or not.
         _install(monkeypatch, _FakeProcess(returncode=124))
         assert _run(tmp_path) == TIMEOUT_EXIT_CODE
         with pytest.raises(ValueError, match="timeout"):
             _run(tmp_path, timeout_seconds=0)
+
+    def test_a_timeout_on_an_empty_stream_is_replayable_elsewhere(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The night of 2026-09-19: a quota-dead link blocked for the whole
+        deadline without one byte of events. Nothing started, nothing could
+        have been written -- the chain may hand the run to the next link, and
+        stderr says why the deadline was read that way."""
+        _install(monkeypatch, _FakeProcess(returncode=0, hang=True))
+        assert _run(tmp_path) == TIMEOUT_REPLAYABLE_EXIT_CODE
+        stderr = (tmp_path / "out" / "stderr.log").read_text(encoding="utf-8")
+        assert "deadline" in stderr and "no step started" in stderr
+
+    def test_a_timeout_without_a_server_is_replayable_elsewhere(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """No server declared, no tool at all: a hang can have written nothing,
+        whatever the stream says."""
+        step = _events({"type": "step_start", "part": {}})
+        _install(monkeypatch, _FakeProcess(returncode=0, events=step, hang=True))
+        assert _run(tmp_path, profile=_profile(mcp=None)) == TIMEOUT_REPLAYABLE_EXIT_CODE
 
     def test_the_temp_prefix_is_the_callers_when_given(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

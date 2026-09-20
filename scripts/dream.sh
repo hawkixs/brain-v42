@@ -14,8 +14,9 @@ MCP_CONFIG="$SCRIPT_DIR/../.mcp.json"
 DRY_RUN="${DRY_RUN:-false}"
 # Agent provider for SCAN/CLEAN/CONNECT/SYNTH/PROMOTE/REORG. Codex is the
 # subscription-backed default; Claude remains an explicit operator rollback.
-# There is deliberately no automatic fallback after a phase starts because a
-# WET MCP call may already have committed a mutation.
+# There is deliberately no automatic fallback after a phase starts UNLESS the
+# runner can prove no Brain tool call started: a WET MCP call may already have
+# committed a mutation, and replaying it elsewhere would write twice.
 BRAIN_DREAM_AGENT_PROVIDER="${BRAIN_DREAM_AGENT_PROVIDER:-codex}"
 # THE CHAIN. An ORDERED list of providers, comma-separated — the same
 # transport constraint as the pool, and for the same reason: systemd's
@@ -30,7 +31,14 @@ BRAIN_DREAM_AGENT_PROVIDERS="${BRAIN_DREAM_AGENT_PROVIDERS:-$BRAIN_DREAM_AGENT_P
 # tool call succeeded. It lives in scripts/dream/_agent_capability.py;
 # tests/unit/test_dream_provider_chain.py keeps the two in agreement.
 #
-# It alone advances the chain. Widening to `!= 0` would make the night able to
+# It advances the chain, together with ONE other code the shell never reads
+# by number: the runner's own deadline on a stream that proves no Brain call
+# ever started (TIMEOUT_REPLAYABLE_EXIT_CODE, 4, in headless_agents). The
+# Python chain advances on both; the shell learns the second through the
+# `dead_links` of the chain result and retires the link for the rest of the
+# night (ticket f4277a90 — 2026-09-19: a quota-dead opencode blocked for the
+# full deadline of 37 phases with zero bytes of events, and agy and claude
+# were never tried). Widening either to `!= 0` would make the night able to
 # replay a phase that had already written — doubling its writes, without a word.
 PROVIDER_FALLBACK_EXIT_CODE=3
 BRAIN_DREAM_CAPABILITY_ENFORCEMENT="${BRAIN_DREAM_CAPABILITY_ENFORCEMENT-false}"
@@ -408,7 +416,43 @@ _run_phase_chain_python() {
     FALLBACK_PHASES+=("$PROJECT_KEY/$name")
   done
 
+  # A link that ran to its deadline with an empty stream is OUT for the rest
+  # of the night. Not charged to the retry budget, as ticket f4277a90 first
+  # asked: a budget, once spent, would hand every later phase back to the dead
+  # link at the full deadline each — exactly the night of 2026-09-19 with a
+  # delay. Retiring the link bounds the loss to ONE deadline per dead link per
+  # night, and a fully dead chain empties itself in minutes instead of running
+  # into TimeoutStartSec. The cost of a false positive is one night without
+  # that link, which the next links exist to absorb.
+  local dead_links_json
+  if dead_links_json=$(jq -r '(.dead_links // []) | .[]' "$result_json" 2>/dev/null); then
+    local _dead
+    for _dead in $dead_links_json; do
+      retire_dead_link "$_dead" "$name" "$timeout"
+    done
+  fi
+
   return "$rc"
+}
+
+# Removes one provider from PROVIDER_CHAIN for the rest of the night and says
+# so. A provider no longer in the chain is left alone, without a line: the
+# LINK DOWN line is written once, at the phase that retired it.
+retire_dead_link() {
+  local provider="$1" phase_name="$2" timeout="$3"
+  local -a kept=()
+  local _p found=false
+  for _p in "${PROVIDER_CHAIN[@]}"; do
+    if [[ "$_p" == "$provider" ]]; then
+      found=true
+    else
+      kept+=("$_p")
+    fi
+  done
+  [[ "$found" == true ]] || return 0
+  PROVIDER_CHAIN=("${kept[@]}")
+  DEAD_LINKS+=("$provider")
+  log "LINK DOWN $provider — expiré (${timeout}m) sans un seul appel d'outil Brain commencé sur $PROJECT_KEY/$phase_name : retiré de la chaîne pour le reste de la nuit (maillons restants : ${PROVIDER_CHAIN[*]:-aucun})"
 }
 
 # --- Main ---
@@ -646,6 +690,9 @@ SKIPPED_UNWRITTEN=0
 # `run_phase_chain` already logs per phase but that nothing aggregated, for six
 # nights running.
 declare -a FALLBACK_PHASES=()
+# Links retired for the night by retire_dead_link, in order of death. Read by
+# the empty-chain guard of the phase loop and by the summary.
+declare -a DEAD_LINKS=()
 TOTAL_PHASES=0
 
 # --- Pre-flight gate: skip the costly deep phases (synth/promote/reorg) when
@@ -819,6 +866,20 @@ run_project_phases() {
       fi
     fi
 
+    # Every link has expired empty tonight: there is nothing left to launch
+    # the phase on. Failed, not skipped — the phase was owed and nobody served
+    # it — and failed WITHOUT a launch, so that a fully dead chain costs the
+    # night one deadline per link and not one per phase. The killswitch and
+    # preparation checks above keep their own verdicts: a phase cut off by
+    # its switch is still `skipped`, whatever the chain's state. Placed
+    # BEFORE the reorg snapshot: a phase that will not launch owes no query.
+    if (( ${#PROVIDER_CHAIN[@]} == 0 )); then
+      log "FAIL  $name — plus aucun maillon vivant dans la chaîne (LINK DOWN : ${DEAD_LINKS[*]}) ; phase non lancée"
+      FAILED_PHASES+=("$PROJECT_KEY/$name")
+      manifest_put failed "$name" "$PROJECT_KEY"
+      continue
+    fi
+
     # --- REORG: pre-phase tags snapshot ------------------------------------
     # The post-phase validator compares the tags of the entities declared
     # mutated against those from BEFORE. It is the only observed "before": the
@@ -864,7 +925,12 @@ run_project_phases() {
     # eligible minutes PER PROJECT, that is +344 minutes of ceiling at eight. A
     # night-wide allocation brings the configured worst case from 803 min to ~489.
     if (( phase_rc == 1 )) && [[ "$name" != "promote" ]]; then
-      if (( RETRY_BUDGET_LEFT > 0 )); then
+      if (( ${#PROVIDER_CHAIN[@]} == 0 )); then
+        # The chain emptied itself DURING this phase (its last links expired
+        # empty): a retry would launch nothing, and the Python side refuses an
+        # empty chain. The budget is left alone.
+        log "NO-RETRY $PROJECT_KEY/$name — plus aucun maillon vivant dans la chaîne (LINK DOWN : ${DEAD_LINKS[*]})"
+      elif (( RETRY_BUDGET_LEFT > 0 )); then
         RETRY_BUDGET_LEFT=$(( RETRY_BUDGET_LEFT - 1 ))
         log "RETRY $PROJECT_KEY/$name (first attempt failed, re-running once; night budget left=$RETRY_BUDGET_LEFT)"
         _run_phase_chain_python "$name" "$model_tier" "$timeout" "$max_turns"
@@ -1129,6 +1195,11 @@ fi
 # dream_runs counts attempts, and only the summary is read in the morning.
 if (( ${#FALLBACK_PHASES[@]} > 0 )); then
   summary+=", ${#FALLBACK_PHASES[@]} repliées sur un secours (${FALLBACK_PHASES[*]})"
+fi
+# A link retired for the night is the morning's first question — is its quota
+# back? — so it is named here, not only at the LINK DOWN line deep in the log.
+if (( ${#DEAD_LINKS[@]} > 0 )); then
+  summary+=", ${#DEAD_LINKS[@]} maillon(s) retiré(s) pour la nuit (LINK DOWN ${DEAD_LINKS[*]})"
 fi
 log "=== Dream finished: $summary ==="
 

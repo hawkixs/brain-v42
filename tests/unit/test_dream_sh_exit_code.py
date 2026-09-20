@@ -119,6 +119,7 @@ def _run_verdict(
             f"declare -a SKIPPED_PHASES=({_bash_array(skipped)})",
             "SKIPPED_UNWRITTEN=0",
             f"declare -a FALLBACK_PHASES=({_bash_array(fallbacks)})",
+            "declare -a DEAD_LINKS=()",
             f"ALERT_CALLS={shlex.quote(str(alert_calls))}",
             'log() { printf "%s\\n" "$*"; }',
             # A HARNESS stub, not behaviour: the extracted blocks now

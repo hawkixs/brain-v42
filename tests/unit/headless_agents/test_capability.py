@@ -18,9 +18,36 @@ import pytest
 from headless_agents import capability
 
 
-def test_exit_codes_are_the_two_the_chain_is_written_around() -> None:
+def test_exit_codes_are_the_three_the_chain_is_written_around() -> None:
     assert capability.PROVIDER_FALLBACK_EXIT_CODE == 3
     assert capability.TIMEOUT_EXIT_CODE == 124
+    # The night of 2026-09-19: a link that timed out with an empty stream was
+    # read as an ordinary timeout, so the chain never moved past it. This code
+    # says both things at once -- the deadline fired AND nothing could have
+    # been written -- and only the second half is what lets the chain advance.
+    assert capability.TIMEOUT_REPLAYABLE_EXIT_CODE == 4
+    assert capability.FALLBACK_EXIT_CODES == frozenset({3, 4})
+    # Distinct from every code a runner already returns, and from timeout(1)'s
+    # own 124-127 band.
+    assert capability.TIMEOUT_REPLAYABLE_EXIT_CODE not in {
+        0,
+        1,
+        2,
+        capability.PROVIDER_FALLBACK_EXIT_CODE,
+        capability.TIMEOUT_EXIT_CODE,
+        125,
+        126,
+        127,
+    }
+
+
+def test_a_childs_own_fallback_code_after_a_write_is_an_ordinary_failure() -> None:
+    """A CLI that exits 3 or 4 by itself, after a completed tool call, must not
+    be read as a proof of no write: the chain would replay a run that wrote."""
+    for code in capability.FALLBACK_EXIT_CODES:
+        assert capability.failure_code_after_a_write(code) == 1
+    for code in (1, 2, 9, 125):
+        assert capability.failure_code_after_a_write(code) == code
 
 
 def test_base_allowlist_carries_locale_tls_proxy_and_paths_only() -> None:

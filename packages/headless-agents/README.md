@@ -8,7 +8,7 @@ workspace member of the [brain-v42](https://github.com/hawkixs/brain-v42)
 repository and installable on its own:
 
 ```sh
-uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.2.0#subdirectory=packages/headless-agents"
+uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.3.0#subdirectory=packages/headless-agents"
 ```
 
 Versions are tagged `headless-agents-vX.Y.Z` on this repository; `CHANGELOG.md` lists the
@@ -72,7 +72,11 @@ spec = RunSpec(
 )
 result = CodexProvider().run(spec)
 # result.exit_code: 0 done, 1 failed, 124 timed out,
-# 3 failed AND proved no tool call succeeded (safe to replay elsewhere)
+# 3 failed AND proved no tool call succeeded (safe to replay elsewhere),
+# 4 timed out AND proved no tool call ever started (safe to replay elsewhere,
+#   and the link did not answer for a whole deadline: chain.run_chain names it
+#   in ChainResult.dead_links). claude never returns 4: its OTEL telemetry is
+#   exported on an interval, so an empty log cannot prove an empty run.
 ```
 
 An isolated seat -- no server, no user-level configuration, credentials

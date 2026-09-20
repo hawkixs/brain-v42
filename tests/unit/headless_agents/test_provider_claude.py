@@ -9,7 +9,11 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
-from headless_agents.capability import PROVIDER_FALLBACK_EXIT_CODE, TIMEOUT_EXIT_CODE
+from headless_agents.capability import (
+    PROVIDER_FALLBACK_EXIT_CODE,
+    TIMEOUT_EXIT_CODE,
+    TIMEOUT_REPLAYABLE_EXIT_CODE,
+)
 from headless_agents.profile import CapabilityProfile, McpServer
 from headless_agents.providers import claude
 from headless_agents.spec import RunSpec
@@ -214,9 +218,23 @@ class TestRunClaude:
         _install(monkeypatch, _FakeProcess(returncode=5, output=output))
         assert _run(tmp_path) == 5
 
+    def test_a_childs_own_fallback_code_after_a_completed_call_never_advances_a_chain(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """claude exiting 3 or 4 by itself after writing must be an ordinary
+        failure, or the chain would replay a run that provably wrote."""
+        output = 'body: "claude_code.tool_result"\nattributes: { tool_name: "mcp_tool", success: "true" }\n'
+        for code in (PROVIDER_FALLBACK_EXIT_CODE, TIMEOUT_REPLAYABLE_EXIT_CODE):
+            _install(monkeypatch, _FakeProcess(returncode=code, output=output))
+            assert _run(tmp_path) == 1, code
+
     def test_timeouts(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """This rail never returns the replayable timeout: its only witness is
+        the OTEL console stream, flushed on an interval, so an empty raw_log at
+        the kill does not prove an empty run."""
         _install(monkeypatch, _FakeProcess(returncode=0, hang=True))
         assert _run(tmp_path) == TIMEOUT_EXIT_CODE
+        assert _run(tmp_path) != TIMEOUT_REPLAYABLE_EXIT_CODE
         _install(monkeypatch, _FakeProcess(returncode=124))
         assert _run(tmp_path) == TIMEOUT_EXIT_CODE
         with pytest.raises(ValueError, match="timeout"):

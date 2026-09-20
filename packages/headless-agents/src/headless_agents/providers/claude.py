@@ -25,6 +25,7 @@ from pathlib import Path
 from ..capability import (
     PROVIDER_FALLBACK_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
+    failure_code_after_a_write,
     terminate_process_group,
 )
 from ..profile import McpServer
@@ -220,8 +221,14 @@ def run_claude(
                 )
             except subprocess.TimeoutExpired:
                 terminate_process_group(process)
-                # A timeout proves NOTHING: the run may have written and then
-                # hung. Never a switchover here.
+                # A timeout proves NOTHING here, and this rail cannot make it
+                # prove more: its only witness is the OTEL console stream,
+                # which a batch exporter flushes on an interval, so an empty
+                # raw_log at the kill does not show an empty run -- the first
+                # tool call may sit unflushed. The three JSON rails write their
+                # events as they happen and can return
+                # TIMEOUT_REPLAYABLE_EXIT_CODE on a stream that never started;
+                # claude keeps the plain 124. Never a switchover here.
                 return TIMEOUT_EXIT_CODE
 
     exit_code = int(process.returncode or 0)
@@ -236,7 +243,7 @@ def run_claude(
     # did nothing -- and it is also why those variables sit in
     # CHILD_ENV_PASSTHROUGH.
     if tool_call_completed(raw_log):
-        return exit_code
+        return failure_code_after_a_write(exit_code)
     return PROVIDER_FALLBACK_EXIT_CODE
 
 

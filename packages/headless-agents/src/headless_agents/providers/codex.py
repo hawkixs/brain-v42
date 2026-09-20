@@ -22,6 +22,8 @@ from typing import Any
 from ..capability import (
     PROVIDER_FALLBACK_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
+    TIMEOUT_REPLAYABLE_EXIT_CODE,
+    failure_code_after_a_write,
     terminate_process_group,
 )
 from ..profile import McpServer
@@ -158,6 +160,52 @@ def _is_completed_call(event: object, server: str) -> bool:
     )
 
 
+def _is_call_on_server(event: object, server: str) -> bool:
+    if not isinstance(event, dict) or event.get("type") not in ("item.started", "item.completed"):
+        return False
+    item = event.get("item")
+    return (
+        isinstance(item, dict)
+        and item.get("type") == "mcp_tool_call"
+        and item.get("server") == server
+    )
+
+
+def tool_call_started(events_log: Path, *, server: str) -> bool:
+    """Could a tool call on ``server`` have STARTED in this run?
+
+    The question the runner's own deadline asks, stricter than
+    :func:`tool_call_completed`: a call in flight when the process is killed
+    may still commit on the server after the kill.
+
+    Measured on the live stream (2026-09-20): Codex writes an ``item.started``
+    for an ``mcp_tool_call`` (``status: in_progress``) BEFORE the call
+    executes, one JSON line per event. A stream with no ``mcp_tool_call`` item
+    on the server, in any state, therefore shows a run that never issued one
+    -- a turn still streaming its message, or a link that never answered.
+
+    Fail-closed the other way round from :func:`tool_call_completed`: an
+    absent or unreadable stream cannot prove the negative and answers
+    ``True``.
+    """
+    if not events_log.is_file():
+        return True
+    try:
+        raw_lines = events_log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return True
+    for raw_line in raw_lines:
+        if not raw_line.strip():
+            continue
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            return True
+        if _is_call_on_server(event, server):
+            return True
+    return False
+
+
 def tool_call_completed(events_log: Path, *, server: str) -> bool:
     """Did a tool call on ``server`` SUCCEED anywhere in this event stream?
 
@@ -245,10 +293,28 @@ def event_stream_error(
     return None
 
 
+def _deadline_exit_code(
+    events_log: Path, stderr_log: Path, server: str | None, timeout_seconds: float
+) -> int:
+    """The code of the runner's OWN deadline: 124, or 4 when the stream proves
+    no call on ``server`` ever started (see :func:`tool_call_started`). Without
+    a server there is nothing a run could have written through, so a hang is
+    replayable whatever the stream says."""
+    if server is not None and tool_call_started(events_log, server=server):
+        return TIMEOUT_EXIT_CODE
+    with stderr_log.open("a", encoding="utf-8") as stderr_stream:
+        stderr_stream.write(
+            f"Codex reached its deadline ({int(timeout_seconds)} s) with no tool call started"
+            f" on {server or 'any server'} in its event stream:"
+            " nothing was written, the run is replayable elsewhere\n"
+        )
+    return TIMEOUT_REPLAYABLE_EXIT_CODE
+
+
 def _failure_exit_code(events_log: Path, default: int, server: str | None) -> int:
     """Translate a failure into "replayable elsewhere" or not, never success."""
     if server is not None and tool_call_completed(events_log, server=server):
-        return default
+        return failure_code_after_a_write(default)
     return PROVIDER_FALLBACK_EXIT_CODE
 
 
@@ -316,6 +382,18 @@ def run_codex(
             mcp=mcp,
             executable=executable,
         )
+        # A caller's deadline that has already passed is a TIMEOUT, not a dead
+        # link: launching would kill the child at once on an empty stream and
+        # read a 4 out of the caller's exhausted budget -- then the next link's,
+        # and the next -- so nothing is launched and the plain 124 is returned.
+        remaining = _effective_timeout(timeout_seconds, deadline)
+        if remaining <= 0:
+            stderr_log.write_text(
+                "Codex not launched: the caller's deadline had already expired\n",
+                encoding="utf-8",
+            )
+            return TIMEOUT_EXIT_CODE
+
         with (
             events_log.open("w", encoding="utf-8") as events_stream,
             stderr_log.open("w", encoding="utf-8") as stderr_stream,
@@ -340,14 +418,18 @@ def run_codex(
                 return PROVIDER_FALLBACK_EXIT_CODE
 
             try:
-                process.communicate(
-                    input=prompt, timeout=_effective_timeout(timeout_seconds, deadline)
-                )
+                process.communicate(input=prompt, timeout=remaining)
             except subprocess.TimeoutExpired:
                 terminate_process_group(process)
-                # A timeout proves NOTHING: the run may have written and then
-                # hung. Never a switchover here.
-                return TIMEOUT_EXIT_CODE
+                # A timeout proves nothing BY ITSELF: the run may have written
+                # and then hung. The stream decides, after the kill, whether a
+                # call could even have started -- see _deadline_exit_code.
+                timed_out = True
+            else:
+                timed_out = False
+
+        if timed_out:
+            return _deadline_exit_code(events_log, stderr_log, server, timeout_seconds)
 
         if process.returncode != 0:
             child_code = int(process.returncode or 1)

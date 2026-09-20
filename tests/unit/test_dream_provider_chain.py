@@ -222,7 +222,7 @@ def test_the_fallback_exit_code_agrees_between_the_shell_and_the_runners() -> No
 # we choose, and observe the log.
 
 
-def _sandbox(tmp_path: Path, runner_exit_code: int) -> tuple[Path, dict[str, str]]:
+def _sandbox(tmp_path: Path, runner_exit_code: int | dict[str, int]) -> tuple[Path, dict[str, str]]:
     import subprocess
     import sys
 
@@ -281,9 +281,17 @@ def _sandbox(tmp_path: Path, runner_exit_code: int) -> tuple[Path, dict[str, str
         "  esac\n"
         "done\n"
         'case "$module" in\n'
-        "  brain_v42.agents.providers.*)\n"
+        # One exit code for every rail, or one per rail: the second form is
+        # what lets a test kill ONE link and watch the night route around it.
+        + "".join(
+            f"  brain_v42.agents.providers.{provider}) exit {code} ;;\n"
+            for provider, code in (
+                runner_exit_code.items() if isinstance(runner_exit_code, dict) else ()
+            )
+        )
+        + "  brain_v42.agents.providers.*)\n"
         '    [[ -n "$raw_log" ]] && printf "mock phase output\\n" >> "$raw_log"\n'
-        f"    exit {runner_exit_code}\n"
+        f"    exit {runner_exit_code if isinstance(runner_exit_code, int) else 1}\n"
         "    ;;\n"
         "  brain_v42.metrics.otel_split) exit 1 ;;\n"
         "  brain_v42.metrics.*) exit 0 ;;\n"
@@ -318,7 +326,7 @@ def _sandbox(tmp_path: Path, runner_exit_code: int) -> tuple[Path, dict[str, str
     return dream_copy, env
 
 
-def _run_night(tmp_path: Path, runner_exit_code: int) -> str:
+def _run_night(tmp_path: Path, runner_exit_code: int | dict[str, int]) -> str:
     import subprocess
 
     dream_copy, env = _sandbox(tmp_path, runner_exit_code)
@@ -378,6 +386,64 @@ def test_a_timeout_never_falls_back(tmp_path: Path) -> None:
 
     assert "FALLBACK" not in log, log
     assert "provider=claude" not in log, log
+
+
+# The exit code a runner returns when its OWN deadline fired on a stream that
+# proves no tool call ever started (headless_agents.capability
+# .TIMEOUT_REPLAYABLE_EXIT_CODE). The night of 2026-09-19 is the measure: a
+# quota-dead opencode blocked for the full deadline of 37 phases with zero
+# bytes of events, and the chain -- reading a timeout -- never tried agy or
+# claude. Seven projects were lost to a link that had never spoken.
+REPLAYABLE_TIMEOUT = 4
+
+
+def test_a_replayable_timeout_falls_through_and_retires_the_link_for_the_night(
+    tmp_path: Path,
+) -> None:
+    """The link is tried ONCE. The first phase pays one deadline, the FALLBACK
+    line says the link expired rather than failed, LINK DOWN says it is out
+    for the night, and every later phase starts on the next link directly.
+    Not charged to the retry budget: a dead link removed costs one deadline a
+    night, where a budget, once spent, would hand the night back to it."""
+    log = _run_night(tmp_path, {"codex": REPLAYABLE_TIMEOUT, "claude": 0})
+
+    assert "TIMEOUT scan (>5m — aucun appel d'outil Brain commencé" in log, log
+    assert "FALLBACK test-project/scan — codex a expiré" in log, log
+    assert "bascule vers claude" in log, log
+    assert "LINK DOWN codex" in log, log
+    # Announced ONCE as an event; the closing summary names it again on purpose.
+    assert log.count("LINK DOWN codex — expiré") == 1, log
+    assert "maillon(s) retiré(s) pour la nuit (LINK DOWN codex)" in log, log
+    assert log.count("(provider=codex") == 1, log
+    assert "provider=claude" in log, log
+    assert "Dream finished" in log, log
+    # The retry budget is untouched: nothing here is a retry.
+    assert "RETRY " not in log, log
+
+
+def test_a_chain_with_every_link_dead_fails_fast_and_still_signs_off(tmp_path: Path) -> None:
+    """Every link expires empty on the first phase: each is retired after ONE
+    deadline, the remaining phases fail without launching anything, and the
+    night still reaches its summary. Before this, a fully dead chain burned
+    the full deadline of every phase -- 43 minutes a project -- and the
+    10 h TimeoutStartSec, not the night, decided where it stopped."""
+    log = _run_night(tmp_path, {"codex": REPLAYABLE_TIMEOUT, "claude": REPLAYABLE_TIMEOUT})
+
+    assert "LINK DOWN codex" in log and "LINK DOWN claude" in log, log
+    assert log.count("(provider=codex") == 1, log
+    assert log.count("(provider=claude") == 1, log
+    # The phase that emptied the chain is not retried (a retry would launch an
+    # empty chain), and every later phase fails WITHOUT a launch -- two
+    # distinct lines, two distinct guards.
+    assert "NO-RETRY test-project/scan — plus aucun maillon vivant" in log, log
+    assert "RETRY test-project" not in log.replace("NO-RETRY test-project", ""), log
+    assert log.count("phase non lancée") == 3, log  # clean, connect, synth
+    assert (
+        "4 failed (test-project/scan test-project/clean test-project/connect test-project/synth)"
+        in log
+    ), log
+    assert "Dream finished" in log, log
+    assert "Traceback" not in log, log
 
 
 def test_a_capability_configuration_error_must_not_advance_the_chain(
