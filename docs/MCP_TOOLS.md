@@ -1,7 +1,7 @@
 # MCP Tools — brain_v42
 
 **Updated:** 2026-09-18
-**Repository registry:** 65 always-on + 2 graph-gated = 67 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
+**Repository registry:** 67 always-on + 2 graph-gated = 69 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
 **Default catalog:** Admin clients use `compact` while capability enforcement is disabled: the seven session lifecycle tools plus `brain_find_tool` and `brain_call_tool`; other registered tools remain discoverable through those gateways. `native` exposes every registered tool. An authenticated Dream phase always receives its exact native allowlist, independent of presentation headers, and cannot access either gateway. Experimental `brain_code_mode` takes precedence only while Dream capability enforcement is disabled.
 **Transport:** HTTP loopback `http://127.0.0.1:8765/mcp` (production fleet). Tools are defined as closures capturing injected services — see `src/brain_v42/mcp/server.py` (`build_services()`) and the `register_*_tools()` functions in each module under `src/brain_v42/mcp/tools/`.
 
@@ -77,6 +77,41 @@ rollout, and rollback are documented in
 | Refresh bounded workflow guidance | `brain_workflow_guide` |
 
 `brain_learn` is the last-resort tool, never the default.
+
+## Measured facts
+
+The version 1.0 fact tools expose the closed, independently verified fact
+catalogue. They are read-only for MCP clients: a caller can inspect declarations
+and evidence, but cannot install a probe or choose its source.
+
+| Operation | Arguments | Result |
+| --- | --- | --- |
+| `brain_fact_list` | none | Ordered descriptors and their last cached observation, if any |
+| `brain_fact_get` | `name`, `max_age_seconds=None` | One measured or unreadable observation |
+
+### brain_fact_list (`fact_tools.py`)
+
+```
+brain_fact_list()
+```
+
+Lists descriptors in catalogue registration order: name, definition version,
+target, TTL, timeout and deadline, briefing eligibility, policies, and the
+last cached observation. It measures nothing, so it never starts a probe or
+consumes a refresh-budget token.
+
+### brain_fact_get (`fact_tools.py`)
+
+```
+brain_fact_get(name, max_age_seconds=None)
+```
+
+Reads one registered fact through the registry. `max_age_seconds=None` uses the
+fact TTL; a non-negative value requests that maximum age. In particular,
+`max_age_seconds=0` forces a probe and is charged to the shared refresh budget.
+The operation never bypasses a probe timeout. An unreadable measurement is a
+normal structured result; an unknown fact returns `unknown_fact`, and a negative
+age returns `invalid_argument`.
 
 ## Observable delivery workflows
 
@@ -954,4 +989,5 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `ticket_tools.py` | tickets cross-projet (coordination) | 5 |
 | `workflow_guide_tools.py` | bounded workflow guidance | 1 |
 | `delivery_tools.py` | observable delivery | 11 |
-| **Total** | | **65 always-on + 2 graph-gated = 67** |
+| `fact_tools.py` | measured facts (registered by later server composition) | 2 |
+| **Total** | | **67 always-on + 2 graph-gated = 69** |

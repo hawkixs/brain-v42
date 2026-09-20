@@ -16,6 +16,7 @@ var, pydantic-settings maps it automatically.
 
 from __future__ import annotations
 
+import json
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -60,6 +61,41 @@ PGVECTOR_HNSW_MAX_DIMENSIONS = 2000
 # instruction prefix worth having ends in a space ("query: ", "passage: "), and
 # that space is what separates the prefix from the text. These fields opt out.
 _UnstrippedStr = Annotated[str, StringConstraints(strip_whitespace=False)]
+
+
+#: The four keys of a declared PostgreSQL identity and the JSON type of each.
+#: Only the SHAPE is checked here: the deep validation (a 64-bit identifier, an
+#: IP literal, a port range) belongs to `brain_v42.facts.model.SourceIdentity`,
+#: which the composition root builds from this mapping. `config` must not import
+#: `facts`: `facts` imports `repositories`, which imports `db`, which imports
+#: this module — the layering DAG would close on itself.
+_PRODUCTION_IDENTITY_KEYS: dict[str, type] = {
+    "system_identifier": str,
+    "database": str,
+    "server_addr": str,
+    "server_port": int,
+}
+
+
+def _parse_production_identity(raw: str) -> dict[str, object]:
+    """A JSON object with exactly the four identity keys, each of the declared JSON type."""
+    try:
+        payload = json.loads(raw)
+    except ValueError as exc:
+        raise ValueError("not a JSON document") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("must be a JSON object with four keys")
+    keys = set(payload)
+    expected = set(_PRODUCTION_IDENTITY_KEYS)
+    if keys != expected:
+        raise ValueError(
+            f"missing keys {sorted(expected - keys)!r}, extra keys {sorted(keys - expected)!r}"
+        )
+    for key, kind in _PRODUCTION_IDENTITY_KEYS.items():
+        value = payload[key]
+        if type(value) is not kind:  # bool is not an int here, on purpose
+            raise ValueError(f"{key} must be a JSON {kind.__name__}")
+    return dict(payload)
 
 
 def _brain_alias(legacy_env: str) -> AliasChoices:
@@ -331,6 +367,19 @@ class Settings(BaseSettings):
         validation_alias=_brain_alias("CLIENT_ACTIVITY_URL"),
     )
 
+    # The identity the facts registry requires of the `production` target
+    # (spec 2026-09-19 measured facts and claims, §5.3 rule 4): the cluster's
+    # system identifier, the database, and the server address and port as
+    # PostgreSQL sees the connection — declared by the operator, NEVER derived
+    # from POSTGRES_URL (a wrong DSN would confirm itself). Absent means no
+    # production fact can register: the service starts without them and says
+    # so, rather than measuring an unverified database. A JSON object, not a
+    # colon-delimited string, so an IPv6 literal cannot be misread.
+    facts_production_identity_json: str | None = Field(
+        default=None,
+        validation_alias=_brain_alias("FACTS_PRODUCTION_IDENTITY"),
+    )
+
     # Auto-opening of an `agent` tracer session per HTTP connection, the signed
     # shape `ae0d0475` / ADR §0ter. Shipped CLOSED, like every new capability —
     # and here the reason is harder than elsewhere: armed, this flag makes the
@@ -404,6 +453,24 @@ class Settings(BaseSettings):
     otel_endpoint: str = Field(
         default="http://127.0.0.1:4318/v1/traces", validation_alias=_brain_alias("OTEL_ENDPOINT")
     )
+
+    def facts_production_identity(self) -> dict[str, object] | None:
+        """The declared identity of the production target as a mapping, or None.
+
+        A malformed declaration raises here, at composition — never at settings
+        load: spec §5.3 rule 4 wants the service UP without production facts and
+        the refusal said in the journal, not a process that refuses to start on
+        a typo in a drop-in. The composition root turns the mapping into a
+        `SourceIdentity`, whose own validation may still refuse it (a malformed
+        IP literal, a port out of range): that refusal is
+        `UnverifiableTargetError` at registration.
+        """
+        if self.facts_production_identity_json is None:
+            return None
+        try:
+            return _parse_production_identity(self.facts_production_identity_json)
+        except ValueError as exc:
+            raise ValueError(f"BRAIN_FACTS_PRODUCTION_IDENTITY is invalid: {exc}") from exc
 
     @field_validator("otel_endpoint")
     @classmethod

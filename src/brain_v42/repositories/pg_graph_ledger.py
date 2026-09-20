@@ -134,6 +134,95 @@ class ProjectionInventory:
     pending_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectionState:
+    """One snapshot of the outbox and lease state that governs projection health."""
+
+    pending: int
+    ready: int
+    claimed: int
+    exhausted: int
+    oldest_pending_age_seconds: float
+    generation: int | None
+    armed: bool
+    lease_active: bool
+    recovery_active: bool
+
+
+# One observed instant keeps every outbox and lease classification in the same
+# PostgreSQL snapshot. Facts and metrics consume this literal query so their
+# readings cannot drift into separate definitions of projection state.
+_PROJECTION_STATE_SQL = sa.text(
+    "WITH observed AS MATERIALIZED ("
+    "SELECT clock_timestamp() AS now"
+    "), outbox AS ("
+    "SELECT "
+    "COUNT(*) FILTER ("
+    "WHERE delivered_at IS NULL "
+    "AND last_error_code IS DISTINCT FROM 'max_attempts'"
+    ") AS pending, "
+    "COUNT(*) FILTER ("
+    "WHERE delivered_at IS NULL "
+    "AND last_error_code IS DISTINCT FROM 'max_attempts' "
+    "AND available_at <= (SELECT now FROM observed) "
+    "AND (leased_until IS NULL "
+    "OR leased_until <= (SELECT now FROM observed))"
+    ") AS ready, "
+    "COUNT(*) FILTER ("
+    "WHERE delivered_at IS NULL "
+    "AND last_error_code IS DISTINCT FROM 'max_attempts' "
+    "AND lease_owner IS NOT NULL "
+    "AND leased_until > (SELECT now FROM observed)"
+    ") AS claimed, "
+    "COUNT(*) FILTER ("
+    "WHERE delivered_at IS NULL "
+    "AND last_error_code = 'max_attempts'"
+    ") AS exhausted, "
+    "COALESCE(EXTRACT(EPOCH FROM ("
+    "(SELECT now FROM observed) - MIN(created_at) FILTER ("
+    "WHERE delivered_at IS NULL "
+    "AND last_error_code IS DISTINCT FROM 'max_attempts'"
+    ")"
+    ")), 0) AS oldest_pending_age_seconds "
+    "FROM graph_outbox WHERE delivered_at IS NULL"
+    "), projector AS ("
+    "SELECT generation, "
+    "neo4j_armed_generation = generation AS armed, "
+    "owner IS NOT NULL "
+    "AND leased_until > (SELECT now FROM observed) AS lease_active, "
+    "recovery_id IS NOT NULL AS recovery_active "
+    "FROM graph_projection_leases "
+    "WHERE slot = 'neo4j'"
+    ") "
+    "SELECT outbox.pending, outbox.ready, outbox.claimed, "
+    "outbox.exhausted, outbox.oldest_pending_age_seconds, "
+    "projector.generation, projector.armed, "
+    "projector.lease_active, projector.recovery_active "
+    "FROM outbox LEFT JOIN projector ON TRUE"
+)
+
+
+async def read_projection_state(session: AsyncSession) -> ProjectionState:
+    """Read the shared state directly so probe failures remain visible to the registry."""
+    row = (await session.execute(_PROJECTION_STATE_SQL)).one()
+    return ProjectionState(
+        pending=int(row[0] or 0),
+        ready=int(row[1] or 0),
+        claimed=int(row[2] or 0),
+        exhausted=int(row[3] or 0),
+        oldest_pending_age_seconds=float(row[4] or 0),
+        generation=None if row[5] is None else int(row[5]),
+        armed=bool(row[6]),
+        lease_active=bool(row[7]),
+        recovery_active=bool(row[8]),
+    )
+
+
+def projection_health(state: ProjectionState) -> bool:
+    """Keep every consumer on the one conservative definition of projector health."""
+    return state.armed and state.lease_active and not state.recovery_active
+
+
 def canonicalize_relation_endpoints(
     source_id: UUID,
     target_id: UUID,

@@ -64,6 +64,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.tools.function_tool import FunctionTool
 
+from brain_v42.mcp.fact_errors import FactToolError
 from brain_v42.models.brain_session import BrainSessionError
 from brain_v42.models.delivery import DeliveryError
 from brain_v42.services.consolidation import ConsolidationEntityNotFoundError
@@ -87,6 +88,7 @@ SURFACED_BUSINESS_ERRORS: tuple[type[Exception], ...] = (
     ProjectFocusError,
     UnknownEntityTypeError,
     ConsolidationEntityNotFoundError,
+    FactToolError,
 )
 
 _SURFACED_MARKER = "__brain_business_errors_surfaced__"

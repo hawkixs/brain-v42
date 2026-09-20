@@ -221,6 +221,11 @@ async def app_lifecycle(
     # then unwinds every earlier resource even when startup fails before yield.
     async with AsyncExitStack() as cleanup:
         cleanup.push_async_callback(dispose_engine)
+        # LIFO: the registry closes BEFORE the engine is disposed, so no probe
+        # task outlives its connection factory (spec §5.4, shutdown).
+        fact_registry = services.get("fact_registry")
+        if fact_registry is not None:
+            cleanup.push_async_callback(fact_registry.aclose)
         cleanup.push_async_callback(close_neo4j_driver, services["neo4j_driver"])
         # d5e4bd73, second hole: without this close, in-flight activity POSTs
         # died at shutdown without being counted. LIFO: it runs before
@@ -650,6 +655,18 @@ def build_services() -> dict[str, Any]:
 
     delivery_svc = DeliveryService(PgDeliveryRepo(session_factory), settings=DeliverySettings())
 
+    # Measured facts (spec 2026-09-19, lot A): the closed catalogue, frozen
+    # here, verified against the identity the operator declared — never against
+    # the DSN the probes connect with.
+    from brain_v42.facts.composition import build_fact_registry  # noqa: PLC0415
+
+    declared_identity: object = None
+    try:
+        declared_identity = settings.facts_production_identity()
+    except Exception as exc:  # a settings double without the method, or a refused value
+        logger.warning("facts.production_identity_unreadable", error=str(exc))
+    fact_registry = build_fact_registry(declared_identity, session_factory=session_factory)
+
     logger.info("brain_v42.server.services_initialized")
 
     return {
@@ -681,6 +698,7 @@ def build_services() -> dict[str, Any]:
         "auto_linker": auto_linker,
         "ticket_svc": ticket_svc,
         "delivery_svc": delivery_svc,
+        "fact_registry": fact_registry,
     }
 
 
@@ -982,6 +1000,7 @@ def build_server() -> BuiltServer:
         ticket_svc=services["ticket_svc"],
         schema_state_svc=SchemaStateService(_session_factory),
         delivery_svc=services["delivery_svc"],
+        fact_registry=services.get("fact_registry"),
     )
 
     # Roadmap tools
@@ -1040,6 +1059,12 @@ def build_server() -> BuiltServer:
     from brain_v42.mcp.tools.delivery_tools import register_delivery_tools  # noqa: PLC0415
 
     register_delivery_tools(mcp, delivery_svc=services["delivery_svc"])
+
+    # Measured facts (spec 2026-09-19, lot A): two read-only tools over the
+    # frozen catalogue; a fact name resolves to a live value here.
+    from brain_v42.mcp.tools.fact_tools import register_fact_tools  # noqa: PLC0415
+
+    register_fact_tools(mcp, registry=services["fact_registry"])
 
     if settings.brain_code_mode:
         server = maybe_apply_code_mode(mcp, settings)

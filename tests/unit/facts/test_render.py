@@ -1,0 +1,179 @@
+"""The French briefing lines of a fact: policy-driven, never more than the probe proved."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from uuid import uuid4
+
+import pytest
+
+from brain_v42.facts.model import FactTarget, Measured, SourceIdentity, Unreadable
+from brain_v42.facts.probe import FactDescriptor
+from brain_v42.facts.render import render_fact_line
+
+_NOW = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+_IDENTITY = SourceIdentity("7612696091383607335", "brain", "172.31.0.4", 5432)
+_DESCRIPTOR = FactDescriptor(
+    name="graph_projection_lag",
+    definition_version=1,
+    target=FactTarget.PRODUCTION,
+    ttl_seconds=15,
+    timeout_seconds=3,
+    queue_timeout_seconds=2,
+    deadline_seconds=5,
+    briefing=True,
+    policies={"late_after_seconds": 300},
+    value_schema={"pending": "int"},
+)
+
+
+def _measured(**overrides: object) -> Measured:
+    value: dict[str, object] = {
+        "pending": 0,
+        "ready": 0,
+        "claimed": 0,
+        "exhausted": 0,
+        "lag_seconds": 0,
+        "generation": 93,
+        "armed": True,
+        "lease_active": True,
+        "recovery_active": False,
+        "healthy": True,
+    }
+    value.update(overrides)
+    return Measured.from_value(
+        fact="graph_projection_lag",
+        definition_version=1,
+        target=FactTarget.PRODUCTION,
+        source=_IDENTITY,
+        value=value,
+        observation_id=uuid4(),
+        measured_at=_NOW,
+        duration_ms=12,
+        ttl_seconds=15,
+    )
+
+
+def _unreadable(code: str) -> Unreadable:
+    return Unreadable(
+        fact="graph_projection_lag",
+        definition_version=1,
+        target=FactTarget.PRODUCTION,
+        error_code=code,
+        where=None,
+        observation_id=uuid4(),
+        measured_at=_NOW,
+        duration_ms=3000,
+        ttl_seconds=15,
+        source_kind="probe",
+    )
+
+
+def test_a_quiet_projection_says_what_was_proved_and_nothing_more() -> None:
+    """Outbox and lease, not Neo4j content: 'à jour' never appears."""
+    line = render_fact_line(_measured(), _DESCRIPTOR, age_seconds=None)
+    assert line == (
+        "- Projection graphe : aucun retard observé dans l'outbox — "
+        "0 en attente, génération 93 armée, bail tenu"
+    )
+    assert "à jour" not in line
+
+
+@pytest.mark.parametrize(
+    "overrides,expected",
+    [
+        (
+            {
+                "pending": 114,
+                "lag_seconds": 4 * 86400 + 2 * 3600,
+                "armed": False,
+                "healthy": False,
+                "generation": 70,
+            },
+            "- Projection graphe : EN RETARD de 4j 2h — 114 en attente, génération 70 NON armée, bail tenu",
+        ),
+        (
+            {"pending": 3, "lag_seconds": 301, "generation": 93},
+            "- Projection graphe : EN RETARD de 5 min — 3 en attente, génération 93 armée, bail tenu",
+        ),
+        (
+            {"exhausted": 3},
+            "- Projection graphe : EN RETARD — 0 en attente, génération 93 armée, bail tenu, 3 épuisées",
+        ),
+        (
+            {"lease_active": False, "healthy": False},
+            "- Projection graphe : EN RETARD — 0 en attente, génération 93 armée, bail perdu",
+        ),
+        (
+            {"generation": None, "armed": False, "lease_active": False, "healthy": False},
+            "- Projection graphe : EN RETARD — 0 en attente, sans bail",
+        ),
+        (
+            {"recovery_active": True, "healthy": False},
+            "- Projection graphe : EN RETARD — 0 en attente, génération 93 armée, bail tenu, "
+            "récupération en cours",
+        ),
+    ],
+)
+def test_the_loud_form_is_driven_by_the_declared_policy_and_by_health(
+    overrides: dict[str, object], expected: str
+) -> None:
+    assert render_fact_line(_measured(**overrides), _DESCRIPTOR, age_seconds=None) == expected
+
+
+def test_lag_at_the_policy_bound_is_quiet_and_one_second_over_is_loud() -> None:
+    quiet = render_fact_line(_measured(lag_seconds=300, pending=1), _DESCRIPTOR, age_seconds=None)
+    loud = render_fact_line(_measured(lag_seconds=301, pending=1), _DESCRIPTOR, age_seconds=None)
+    assert quiet.startswith("- Projection graphe : aucun retard observé")
+    assert loud.startswith("- Projection graphe : EN RETARD de 5 min")
+
+
+@pytest.mark.parametrize(
+    "code,expected",
+    [
+        ("timeout", "- Projection graphe : illisible (timeout)"),
+        ("target_mismatch", "- Projection graphe : illisible (cible inattendue)"),
+        ("identity_unreadable", "- Projection graphe : illisible (identity_unreadable)"),
+    ],
+)
+def test_unreadable_renders_and_names_the_one_case_that_is_never_transient(
+    code: str, expected: str
+) -> None:
+    assert render_fact_line(_unreadable(code), _DESCRIPTOR, age_seconds=None) == expected
+
+
+def test_a_cached_reading_older_than_a_minute_says_its_age() -> None:
+    fresh = render_fact_line(_measured(), _DESCRIPTOR, age_seconds=59)
+    old = render_fact_line(_measured(), _DESCRIPTOR, age_seconds=180)
+    assert not fresh.endswith(")")
+    assert old.endswith(" (mesuré il y a 3 min)")
+
+
+def test_an_unknown_fact_renders_generically_and_bounded() -> None:
+    other = FactDescriptor(
+        name="something_else",
+        definition_version=1,
+        target=FactTarget.PRODUCTION,
+        ttl_seconds=15,
+        timeout_seconds=3,
+        queue_timeout_seconds=2,
+        deadline_seconds=5,
+        briefing=True,
+        policies={},
+        value_schema={"k": "string"},
+    )
+    measured = Measured.from_value(
+        fact="something_else",
+        definition_version=1,
+        target=FactTarget.PRODUCTION,
+        source=_IDENTITY,
+        value={"k": "x" * 300},
+        observation_id=uuid4(),
+        measured_at=_NOW,
+        duration_ms=1,
+        ttl_seconds=15,
+    )
+    line = render_fact_line(measured, other, age_seconds=None)
+    assert line.startswith("- something_else : {")
+    assert len(line) <= len("- something_else : ") + 120 + 1
+    assert line.endswith("…")
