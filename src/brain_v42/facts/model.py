@@ -52,6 +52,15 @@ class InvalidFactNameError(ValueError):
     """Raised when a fact key cannot be a stable catalogue identifier."""
 
 
+class IdentityUnreadableError(ValueError):
+    """Signal an unreadable source identity so the registry preserves its trust meaning.
+
+    A bare ``ValueError`` could instead be a probe failure; this dedicated
+    type lets the registry report ``identity_unreadable`` even when a probe's
+    value is the identity itself.
+    """
+
+
 def validate_fact_name(name: str) -> str:
     """Return a valid fact name so all measurement types share one vocabulary check."""
     if not isinstance(name, str) or FACT_NAME.fullmatch(name) is None:

@@ -26,7 +26,13 @@ def test_with_a_declared_identity_the_first_fact_is_registered_and_the_catalogue
     registry = build_fact_registry(_DECLARED, session_factory=MagicMock())
     assert registry.names() == ("graph_projection_lag",)
     assert registry.briefing_names() == ("graph_projection_lag",)
-    assert registry.refusals() == {"dream_killswitches_declared": "unverifiable_target"}
+    # Only the production identity is declared: every other target's facts are
+    # refused, named, and the service still starts.
+    assert registry.refusals() == {
+        "live_release_sha": "unverifiable_target",
+        "alembic_head_shipped": "unverifiable_target",
+        "dream_killswitches_declared": "unverifiable_target",
+    }
     assert registry.describe("graph_projection_lag").target is FactTarget.PRODUCTION
     with pytest.raises(RegistryFrozenError):
         registry.register(MagicMock(name="late", target=FactTarget.PRODUCTION))
@@ -39,8 +45,13 @@ def test_a_declared_host_identity_registers_the_dream_killswitch_fact() -> None:
         declared_live_release_identity=_RELEASE_DECLARED,
         declared_host_identity=_HOST_DECLARED,
     )
-    assert registry.names() == ("graph_projection_lag", "dream_killswitches_declared")
-    assert registry.briefing_names() == ("graph_projection_lag", "dream_killswitches_declared")
+    assert registry.names() == (
+        "graph_projection_lag",
+        "live_release_sha",
+        "alembic_head_shipped",
+        "dream_killswitches_declared",
+    )
+    assert registry.briefing_names() == registry.names()
     assert registry.describe("dream_killswitches_declared").target is FactTarget.HOST
 
 
@@ -94,7 +105,21 @@ def test_a_refused_probe_is_recorded_with_its_reason_for_the_briefing() -> None:
     registry = build_fact_registry(None, session_factory=MagicMock())
     assert registry.refusals() == {
         "graph_projection_lag": "unverifiable_target",
+        "live_release_sha": "unverifiable_target",
+        "alembic_head_shipped": "unverifiable_target",
         "dream_killswitches_declared": "unverifiable_target",
+    }
+
+
+def test_undeclared_live_release_refuses_its_facts_while_production_still_registers() -> None:
+    registry = build_fact_registry(
+        _DECLARED, session_factory=MagicMock(), declared_host_identity=_HOST_DECLARED
+    )
+
+    assert registry.names() == ("graph_projection_lag", "dream_killswitches_declared")
+    assert registry.refusals() == {
+        "live_release_sha": "unverifiable_target",
+        "alembic_head_shipped": "unverifiable_target",
     }
 
 

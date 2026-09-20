@@ -25,8 +25,10 @@ from brain_v42.facts.model import (
     SourceIdentity,
 )
 from brain_v42.facts.probe import Probe
+from brain_v42.facts.probes.alembic_head_shipped import AlembicHeadShippedProbe
 from brain_v42.facts.probes.dream_killswitches_declared import DreamKillswitchesDeclaredProbe
 from brain_v42.facts.probes.graph_projection_lag import GraphProjectionLagProbe
+from brain_v42.facts.probes.live_release_sha import LiveReleaseShaProbe
 from brain_v42.facts.registry import FactRegistry, UnverifiableTargetError
 from brain_v42.facts.sources import HostSourceFactory, PostgresSourceFactory, ReleaseSourceFactory
 
@@ -38,10 +40,15 @@ logger = structlog.get_logger(__name__)
 
 def _catalogue() -> tuple[Probe, ...]:
     """The closed catalogue, in the order the briefing renders it."""
-    # Final revision 6 order: graph_projection_lag, alembic_head,
-    # live_release_sha, alembic_head_shipped, dream_killswitches_declared,
-    # dream_last_night.  The preceding probes arrive in T8/T9.
-    return (GraphProjectionLagProbe(), DreamKillswitchesDeclaredProbe())
+    # Revision 6 order: graph_projection_lag, alembic_head, live_release_sha,
+    # alembic_head_shipped, dream_killswitches_declared, dream_last_night.
+    return (
+        GraphProjectionLagProbe(),
+        # Task T9 inserts AlembicHeadProbe here.
+        LiveReleaseShaProbe(),
+        AlembicHeadShippedProbe(),
+        DreamKillswitchesDeclaredProbe(),
+    )
 
 
 def build_fact_registry(

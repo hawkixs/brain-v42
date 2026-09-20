@@ -18,6 +18,7 @@ from brain_v42.facts.canonical import ValueTooLargeError
 from brain_v42.facts.model import (
     FactTarget,
     Identity,
+    IdentityUnreadableError,
     Measured,
     Measurement,
     Unreadable,
@@ -545,6 +546,8 @@ class FactRegistry:
         """Run identity after the value so both remain inside the source's transaction."""
         try:
             value = await probe.measure(source)
+        except IdentityUnreadableError as exc:
+            raise _IdentityFailure(exc) from exc
         except Exception as exc:
             raise _ProbeFailure(exc) from exc
         try:

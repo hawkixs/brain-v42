@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from typing import cast
 
 from brain_v42.facts.model import Measured, Measurement, Unreadable
 from brain_v42.facts.probe import FactDescriptor
@@ -28,8 +29,12 @@ GENERIC_VALUE_CHARS = 120
 
 #: The one unreadable case a reader must never mistake for a transient.
 _UNREADABLE_LABELS: Mapping[str, str] = {"target_mismatch": "cible inattendue"}
+#: The subject of a fact's line, in the reader's words; a fact without one
+#: renders under its catalogue name. Catalogue order.
 _SUBJECTS: Mapping[str, str] = {
     "graph_projection_lag": "Projection graphe",
+    "live_release_sha": "Release vivante",
+    "alembic_head_shipped": "Tête Alembic livrée",
     "dream_killswitches_declared": "Killswitches déclarés",
 }
 
@@ -129,8 +134,21 @@ def _render_dream_killswitches_declared(measured: Measured, descriptor: FactDesc
     )
 
 
+def _render_live_release_sha(measured: Measured, descriptor: FactDescriptor) -> str:
+    value = measured.value
+    release_sha = cast(str, value["release_sha"])
+    package_version = cast(str, value["package_version"])
+    return f"- Release vivante : {release_sha[:8]} (paquet {package_version})"
+
+
+def _render_alembic_head_shipped(measured: Measured, descriptor: FactDescriptor) -> str:
+    return f"- Tête Alembic livrée : {measured.value['revision']}"
+
+
 _RENDERERS: Mapping[str, Callable[[Measured, FactDescriptor], str]] = {
     "graph_projection_lag": _render_graph_projection_lag,
+    "live_release_sha": _render_live_release_sha,
+    "alembic_head_shipped": _render_alembic_head_shipped,
     "dream_killswitches_declared": _render_dream_killswitches_declared,
 }
 

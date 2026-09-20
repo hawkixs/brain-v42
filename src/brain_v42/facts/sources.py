@@ -33,7 +33,12 @@ from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 
-from brain_v42.facts.model import HostIdentity, ReleaseIdentity, SourceIdentity
+from brain_v42.facts.model import (
+    HostIdentity,
+    IdentityUnreadableError,
+    ReleaseIdentity,
+    SourceIdentity,
+)
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
@@ -162,7 +167,17 @@ class ReleaseSourceSession:
 
     async def identity(self) -> ReleaseIdentity:
         """Return immutable release evidence or raise when this process is a checkout."""
-        return ReleaseIdentity(release_sha_from_path(self._package_file), self._version())
+        try:
+            release_sha = release_sha_from_path(self._package_file)
+        except ValueError as exc:
+            raise IdentityUnreadableError(str(exc)) from exc
+        package_version = self._version()
+        try:
+            return ReleaseIdentity(release_sha, package_version)
+        except ValueError as exc:
+            if package_version == "dev":
+                raise IdentityUnreadableError(str(exc)) from exc
+            raise
 
 
 class ReleaseSourceFactory:

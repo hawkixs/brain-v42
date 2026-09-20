@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from brain_v42.facts.model import HostIdentity, ReleaseIdentity
+from brain_v42.facts.model import HostIdentity, IdentityUnreadableError, ReleaseIdentity
 from brain_v42.facts.sources import (
     HostSourceFactory,
     HostSourceSession,
@@ -121,7 +121,7 @@ async def test_release_source_session_measures_the_injected_release_identity() -
 async def test_release_source_session_refuses_unreadable_identity(
     path: Path, version: object
 ) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(IdentityUnreadableError):
         await ReleaseSourceSession(path, version).identity()  # type: ignore[arg-type]
 
 
