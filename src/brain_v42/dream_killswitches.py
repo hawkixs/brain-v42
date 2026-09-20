@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
+from types import MappingProxyType
 
 KILLSWITCHES_PATH = (
     Path.home() / ".config" / "systemd" / "user" / "brain-v42-dream.service.d" / "killswitches.conf"
@@ -22,6 +23,9 @@ _KS_KEYS = {
     "BRAIN_DREAM_SWEEP_DRY_RUN": "sweep_dry",
 }
 
+#: Public read-only vocabulary so other readers preserve the Dream parser's keys.
+KILLSWITCH_SHORT_NAMES: Mapping[str, str] = MappingProxyType(_KS_KEYS)
+
 
 # A LIST-VALUED key, deliberately outside `_KS_KEYS`. That dictionary returns a
 # `dict[str, bool]` and coerces through `value == "true"`: a project list
@@ -35,7 +39,7 @@ PROJECT_POOL_KEY = "BRAIN_DREAM_PROJECT_POOL"
 _DRY_RUN_KEYS = frozenset(key for key in _KS_KEYS if key.endswith("_DRY_RUN"))
 
 
-def _iter_settings(content: str) -> Iterator[tuple[str, str]]:
+def iter_killswitch_settings(content: str) -> Iterator[tuple[str, str]]:
     """Yield ``(key, value)`` for every ``Environment=`` assignment this file owns."""
     for raw in content.splitlines():
         line = raw.strip()
@@ -45,6 +49,10 @@ def _iter_settings(content: str) -> Iterator[tuple[str, str]]:
             key, sep, value = token.partition("=")
             if sep and key in _KS_KEYS:
                 yield key, value.strip('"')
+
+
+#: Backwards-compatible private spelling for existing parser consumers.
+_iter_settings = iter_killswitch_settings
 
 
 def parse_killswitches(content: str) -> dict[str, bool]:

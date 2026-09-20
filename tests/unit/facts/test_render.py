@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from brain_v42.facts.model import FactTarget, Measured, SourceIdentity, Unreadable
+from brain_v42.facts.model import FactTarget, HostIdentity, Measured, SourceIdentity, Unreadable
 from brain_v42.facts.probe import FactDescriptor
 from brain_v42.facts.render import render_fact_line
 
@@ -25,6 +25,72 @@ _DESCRIPTOR = FactDescriptor(
     policies={"late_after_seconds": 300},
     value_schema={"pending": "int"},
 )
+
+_DREAM_DESCRIPTOR = FactDescriptor(
+    name="dream_killswitches_declared",
+    definition_version=1,
+    target=FactTarget.HOST,
+    ttl_seconds=60,
+    timeout_seconds=1,
+    queue_timeout_seconds=2,
+    deadline_seconds=3,
+    briefing=True,
+    policies={},
+    value_schema={
+        "promote": "string",
+        "reorg": "string",
+        "reorg_dry": "string",
+        "extract": "string",
+        "extract_dry": "string",
+        "roadmap": "string",
+        "roadmap_dry": "string",
+        "sweep": "string",
+        "sweep_dry": "string",
+        "file_mtime_epoch": "int",
+    },
+)
+
+
+def _dream_measured(**overrides: object) -> Measured:
+    value: dict[str, object] = {
+        "promote": "true",
+        "reorg": "true",
+        "reorg_dry": "false",
+        "extract": "true",
+        "extract_dry": "false",
+        "roadmap": "false",
+        "roadmap_dry": "true",
+        "sweep": "true",
+        "sweep_dry": "false",
+        "file_mtime_epoch": int(datetime(2026, 9, 15, 14, 10, tzinfo=UTC).timestamp()),
+    }
+    value.update(overrides)
+    return Measured.from_value(
+        fact="dream_killswitches_declared",
+        definition_version=1,
+        target=FactTarget.HOST,
+        source=HostIdentity("host-a"),
+        value=value,
+        observation_id=uuid4(),
+        measured_at=_NOW,
+        duration_ms=1,
+        ttl_seconds=60,
+    )
+
+
+def _dream_unreadable(code: str) -> Unreadable:
+    return Unreadable(
+        fact="dream_killswitches_declared",
+        definition_version=1,
+        target=FactTarget.HOST,
+        error_code=code,
+        where=None,
+        observation_id=uuid4(),
+        measured_at=_NOW,
+        duration_ms=1,
+        ttl_seconds=60,
+        source_kind="probe",
+    )
 
 
 def _measured(**overrides: object) -> Measured:
@@ -177,3 +243,29 @@ def test_an_unknown_fact_renders_generically_and_bounded() -> None:
     assert line.startswith("- something_else : {")
     assert len(line) <= len("- something_else : ") + 120 + 1
     assert line.endswith("…")
+
+
+def test_declared_dream_killswitches_render_the_canonical_phase_words() -> None:
+    """The line distinguishes enabled phases from their wet execution mode."""
+    assert render_fact_line(_dream_measured(), _DREAM_DESCRIPTOR, age_seconds=None) == (
+        "- Killswitches déclarés : PROMOTE on, REORG on wet, EXTRACT on wet, "
+        "ROADMAP off, SWEEP on wet (drop-in modifié le 2026-09-15 14:10 UTC)"
+    )
+
+
+def test_declared_dream_killswitches_keep_a_noncanonical_dry_value_visible() -> None:
+    """A typo is safe because the rail runs dry, but must not look intentional."""
+    assert render_fact_line(
+        _dream_measured(reorg_dry="True"), _DREAM_DESCRIPTOR, age_seconds=None
+    ) == (
+        "- Killswitches déclarés : PROMOTE on, REORG on 'True' (illisible → dry), "
+        "EXTRACT on wet, ROADMAP off, SWEEP on wet "
+        "(drop-in modifié le 2026-09-15 14:10 UTC)"
+    )
+
+
+def test_an_unreadable_dream_killswitch_drop_in_uses_its_operator_subject() -> None:
+    """An absent fact line must name its domain instead of disappearing into a generic label."""
+    assert render_fact_line(
+        _dream_unreadable("probe_error"), _DREAM_DESCRIPTOR, age_seconds=None
+    ) == ("- Killswitches déclarés : illisible (probe_error)")
