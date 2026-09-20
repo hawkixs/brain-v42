@@ -11,6 +11,7 @@ import pytest
 import structlog
 
 from brain_v42.facts import FactTarget, Measured, SourceIdentity, Unreadable
+from brain_v42.facts.model import IdentityUnreadableError
 from brain_v42.facts.registry import (
     DuplicateFactError,
     FactRegistry,
@@ -409,6 +410,25 @@ async def test_untrusted_run_outcomes_are_returned_as_closed_codes(
     result = await registry(probe, source=source).measure(probe.name)
     assert isinstance(result, Unreadable)
     assert result.error_code == code
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_code"),
+    [
+        (IdentityUnreadableError("release identity unavailable"), "identity_unreadable"),
+        (ValueError("probe value is invalid"), "probe_error"),
+    ],
+)
+async def test_probe_identity_failures_remain_distinct_from_probe_errors(
+    error: Exception, expected_code: str
+) -> None:
+    """A value probe can report its own unreadable identity without masking other faults."""
+    probe = FakeProbe("identity_value", error=error)
+
+    result = await registry(probe).measure(probe.name)
+
+    assert isinstance(result, Unreadable)
+    assert result.error_code == expected_code
 
 
 async def test_measure_many_validates_before_starting_and_honours_zero_budget() -> None:

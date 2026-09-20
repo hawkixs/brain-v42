@@ -659,8 +659,9 @@ the existing non-Python commands used by Dream. Preserve the reaper's measured
 ```bash
 PATH_TAIL='<reviewed absolute PATH suffix, without the release venv prefix>'
 REAPER_MAX_AGE_HOURS='<preserved positive integer>'
-export RELEASE PATH_TAIL REAPER_MAX_AGE_HOURS
+export RELEASE PATH_TAIL REAPER_MAX_AGE_HOURS SOURCE_SHA VERSION
 "$RELEASE/venv/bin/python" -I - <<'PY'
+import json
 import os
 import re
 from pathlib import Path
@@ -668,6 +669,9 @@ from pathlib import Path
 release = Path(os.environ["RELEASE"])
 path_tail = os.environ["PATH_TAIL"]
 reaper_age = os.environ["REAPER_MAX_AGE_HOURS"]
+source_sha = os.environ["SOURCE_SHA"]
+version = os.environ["VERSION"]
+assert re.fullmatch(r"[0-9a-f]{40}", source_sha) and re.fullmatch(r"[A-Za-z0-9._+-]{1,64}", version)
 assert release.is_absolute() and re.fullmatch(r"/[A-Za-z0-9._/-]+", str(release))
 assert re.fullmatch(r"/[A-Za-z0-9._/-]+(?::/[A-Za-z0-9._/-]+)*", path_tail)
 assert re.fullmatch(r"[1-9][0-9]*", reaper_age)
@@ -718,6 +722,16 @@ for unit in all_units:
         lines.append("Environment=PYTHONPATH=")
     if unit == "brain-mcp-reaper.service":
         lines.append(f"WorkingDirectory={reaper_working_directory}")
+    if unit == "brain-mcp-http.service":
+        # The declared identity of the `live_release` facts target (measured
+        # facts design, §5.3 rule 4 and revision 6): the release SHA and the
+        # package version this very drop-in pins, rendered next to the path so
+        # the two cannot drift apart. Non-secret. A process started from a
+        # checkout has no such declaration and registers no live_release fact.
+        identity = json.dumps(
+            {"release_sha": source_sha, "package_version": version}, separators=(",", ":")
+        )
+        lines.append(f"Environment='BRAIN_FACTS_LIVE_RELEASE_IDENTITY={identity}'")
     directory = stage / f"{unit}.d"
     directory.mkdir(mode=0o700)
     target = directory / "90-immutable-release.conf"
@@ -726,6 +740,20 @@ for unit in all_units:
 PY
 unset PATH_TAIL REAPER_MAX_AGE_HOURS
 ```
+
+The block reads `source_sha` and `version` from the environment the build
+exported (`SOURCE_SHA`, `VERSION`) and imports `json`; from the first release
+that ships lot A slice 2 (six facts), `brain-mcp-http`'s drop-in carries one
+more line than the other seven. The two other identities the facts registry
+verifies are declared once by the operator, outside the release, in
+`~/.config/systemd/user/brain-mcp-http.service.d/92-facts-identity.conf`:
+`BRAIN_FACTS_PRODUCTION_IDENTITY` (measured through the application's DSN:
+`pg_control_system().system_identifier`, `current_database()`,
+`inet_server_addr()`, `inet_server_port()`) and `BRAIN_FACTS_HOST_IDENTITY`
+(`socket.gethostname()`), both as single-quoted compact JSON. The deployment
+preflight ignores these keys (it validates the six controlled runtime keys
+only) but parses the unit's whole `Environment` property, so keep the JSON
+compact and the property under 8 KiB.
 
 Review the rendered unit and all eight drop-ins. Effective private environment
 files must not assign the six controlled runtime keys: `PATH`,

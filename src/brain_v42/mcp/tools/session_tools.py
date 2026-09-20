@@ -556,15 +556,43 @@ async def _render_briefing_facts(registry: Any) -> list[str]:
             return lines
         measurements = await registry.measure_many(names, budget=BRIEFING_FACTS_BUDGET)
         for name in names:
-            measurement = measurements[name]
-            # The age suffix belongs to the cached reading only: a refusal of the
-            # registry (capacity, budget) is a fresh observation, not the memory.
-            age = registry.cached_age_seconds(name) if measurement.source_kind == "cache" else None
-            lines.append(render_fact_line(measurement, registry.describe(name), age_seconds=age))
+            # Each line on its own: one renderer that raises names its fact and
+            # leaves the other facts readable, instead of taking the section down.
+            try:
+                measurement = measurements[name]
+                # The age suffix belongs to the cached reading only: a refusal of
+                # the registry (capacity, budget) is a fresh observation, not the
+                # memory.
+                age = (
+                    registry.cached_age_seconds(name)
+                    if measurement.source_kind == "cache"
+                    else None
+                )
+                lines.append(
+                    render_fact_line(measurement, registry.describe(name), age_seconds=age)
+                )
+            except Exception as exc:
+                logger.warning(
+                    "brain_session_briefing_fact_unrenderable", fact=name, error=str(exc)
+                )
+                lines.append(f"- {name} : illisible (rendu)")
         return lines
     except Exception as exc:
         logger.warning("brain_session_briefing_facts_failed", error=str(exc))
         return ["- Faits : illisibles (registre indisponible)"]
+
+
+def _registry_renders_schema(registry: Any) -> bool:
+    """Does the catalogue carry `alembic_head`, whose line replaces the legacy `Schéma` read?
+
+    Part of the facts section, whose failures render and never propagate: a
+    registry double without `names()` must not take the briefing down.
+    """
+    try:
+        return "alembic_head" in registry.names()
+    except Exception as exc:
+        logger.warning("brain_session_briefing_registry_names_failed", error=str(exc))
+        return False
 
 
 def make_session_briefing_loader(
@@ -661,16 +689,6 @@ def make_session_briefing_loader(
         # Unlike the other optional sections, a failure does NOT degrade to
         # "section omitted": silence would send the reader back to the focus
         # prose, which is the stale claim this section exists to contradict.
-        schema_revision: str | None = None
-        schema_unavailable = False
-        if schema_state_svc is not None:
-            try:
-                schema_revision = await schema_state_svc.current_revision()
-                schema_unavailable = schema_revision is None
-            except Exception as exc:
-                logger.warning("brain_session_start_schema_state_failed", error=str(exc))
-                schema_unavailable = True
-
         # Bounded read, and best-effort like every other optional section: a
         # briefing that failed because a checkpoint query hiccuped would hide the
         # focus, the tickets and the roadmap over the least critical block.
@@ -683,6 +701,28 @@ def make_session_briefing_loader(
         fact_lines: list[str] = []
         if fact_registry is not None:
             fact_lines = await _render_briefing_facts(fact_registry)
+
+        # The `Schéma` line: from the `alembic_head` fact when the catalogue
+        # carries it — bound to the verified production identity, which the
+        # legacy read is not — and from the legacy read otherwise. Two lines
+        # would make the reader ask which one is measured; ZERO lines is the
+        # silence this section exists to prevent, so the legacy read also runs
+        # when the fact is registered but its line did not come back (a
+        # registry failure, a renderer failure).
+        schema_revision: str | None = None
+        schema_unavailable = False
+        fact_renders_schema = (
+            fact_registry is not None
+            and _registry_renders_schema(fact_registry)
+            and any(line.startswith("- Schéma :") for line in fact_lines)
+        )
+        if schema_state_svc is not None and not fact_renders_schema:
+            try:
+                schema_revision = await schema_state_svc.current_revision()
+                schema_unavailable = schema_revision is None
+            except Exception as exc:
+                logger.warning("brain_session_start_schema_state_failed", error=str(exc))
+                schema_unavailable = True
 
         delivery_briefing = ""
         if delivery_svc is not None:

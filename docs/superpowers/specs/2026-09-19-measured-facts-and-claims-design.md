@@ -1,6 +1,6 @@
 # Measured facts and claims
 
-**Date:** 2026-09-19 — **revision 5 on 2026-09-20**. Revision 2 answered the review of
+**Date:** 2026-09-19 — **revision 6 on 2026-09-20** (slice 2 implementation notes, below revision 5). Revision 2 answered the review of
 revision 1 (`…-review-codex-astra.md`, verdict REWORK); revision 3 answered the review of
 revision 2 (`…-review-2-codex-terra.md`: lot A PATCH_THEN_SHIP, lot B REWORK, ten findings);
 revision 4 answered the confirmation review of revision 3 (`…-review-3-codex-terra.md`: lot A
@@ -10,7 +10,9 @@ mechanical — applied below and the review loop closed; the next review reads t
 request with its tests)
 
 **Status:** proposed specification for ADR #27 (`fb9b75bd`, accepted 2026-09-19); lot A is
-specified to implementation depth, lot B to data-model depth; nothing here is implemented
+specified to implementation depth, lot B to data-model depth. Slice 1 of lot A (§5.5, the
+registry, the tools, the briefing line) is merged (PR #158, 2026-09-20) and awaits its release;
+slice 2 (§5.6, five facts on three targets) is under implementation on `feat/facts-slice-2`
 
 **Project:** `brain-v42`
 
@@ -91,6 +93,26 @@ closed until re-declared, no Compose pin for that reason alone; a definition dig
 disables **that fact only** (`unreadable (definition_drift)`, its claims refused) with a
 high-severity journal event, the server starts (§6.0); a physical clone that keeps all four
 identity fields and takes over the endpoint is a documented root-of-trust limit (§5.3).
+
+### Revision 6 — slice 2 implementation notes (2026-09-20)
+
+Slice 1 shipped one target (`production`) and one typed identity. Slice 2 adds the two target
+kinds §5.6 needs and settles what §5.3 rule 4 left open for them — "each declared before its
+first probe ships":
+
+| Point | Decision | Section |
+| --- | --- | --- |
+| Identity of `live_release` | `ReleaseIdentity(release_sha, package_version)`. **Measured** from the running process: `release_sha` is the 40-hex segment of `brain_v42.__file__`'s resolved path matching `/releases/<sha>/`, `package_version` is `brain_v42.release.package_version()`. A process that does not run from a release (development, `dev`) has no readable identity — `identity_unreadable`, never a `"dev"` value. **Declared** by the release tooling as `BRAIN_FACTS_LIVE_RELEASE_IDENTITY='{"release_sha":"<40 hex>","package_version":"<version>"}'`, rendered into `brain-mcp-http`'s `90-immutable-release.conf` next to the path it pins — one file, one SHA, no second drop-in to drift. Undeclared → the two `live_release` facts are refused at composition and the briefing says so, exactly as for `production`. | §5.3 rule 4, §5.6 |
+| Identity of `host` | `HostIdentity(hostname)`. Measured with `socket.gethostname()`; declared once by the operator as `BRAIN_FACTS_HOST_IDENTITY='{"hostname":"<name>"}'` in `92-facts-identity.conf`, beside the production declaration. | §5.3 rule 4, §5.6 |
+| `Measured.source` | the union `Identity = SourceIdentity \| ReleaseIdentity \| HostIdentity`; every identity exposes `as_dict()` (the JSON the tools serve) and `from_mapping()` (the declaration parser, every key mandatory, deep validation in the model); the registry compares whole identities, never a subset. | §5.2, §5.4 |
+| `host` reader | `read_text_under(root, relative)`: refuses an absolute or `..` path, a path whose resolved form leaves `root`, a symlink anywhere under `root`, and a file over 64 KiB; returns text and the file's mtime as whole epoch seconds. The `host` source session exposes it and nothing else. | §5.3 rule 1 |
+| `alembic_head` | value `{"revision": "<stamped>"}`; a database with no `alembic_version` row raises (unreadable), it is not a value. The briefing line is byte-identical to today's `- Schéma : 054`; when the fact is registered the briefing renders it **instead of** the `SchemaStateService` read, so the section carries one `Schéma` line, now bound to the verified production identity; when it is not registered the legacy read stays. `SchemaStateService.current_revision` and the probe share `read_current_revision(session)`. Unreadable renders `- Schéma : illisible (<code>)`. | §5.6, §5.7 |
+| `alembic_head_shipped` | value `{"revision": "<head>"}` from `head_of_versions_strict(directory)`: a missing directory, an unreadable or unparsable revision file, a file over the size bound, or a chain with zero or several heads **raises**; memoised per process. TTL is the process lifetime (declared as 3650 days), timeout 1 s. Line `- Tête Alembic livrée : 054`. | §5.6, §5.7 |
+| `live_release_sha` | value `{"release_sha": "<40 hex>", "package_version": "<version>"}` — the measured identity, published as a fact so a claim can name it. TTL process lifetime, timeout 1 s. Line `- Release vivante : b4f7194d (paquet 0.6.0)` (the SHA cut to eight characters in prose only). | §5.6, §5.7 |
+| `dream_killswitches_declared` | value: the nine keys `brain_v42.dream_killswitches._KS_KEYS` names (`promote`, `reorg`, `reorg_dry`, `extract`, `extract_dry`, `roadmap`, `roadmap_dry`, `sweep`, `sweep_dry`) each carrying the **raw string** the drop-in holds (`""` when absent — a typo like `True` must stay visible, a boolean would hide it), plus `file_mtime_epoch` (int). Read only through the `host` reader, root `~/.config/systemd/user`, relative `brain-v42-dream.service.d/killswitches.conf`; a missing or unreadable file raises. `briefing=True`, line `- Killswitches déclarés : PROMOTE on, REORG on wet, EXTRACT on wet, ROADMAP off, SWEEP on wet (drop-in modifié le 2026-09-15 14:10 UTC)`; a value neither `true` nor `false` renders raw, `REORG_DRY_RUN='True' (illisible → dry)`. The DB-derived history stays a separate fact. | §5.6, §5.7 |
+| `dream_last_night` | value: the aggregate of the latest `run_date` in `dream_runs` — `run_date` (ISO string), `rows`, `done`, `fail`, `timeout`, `partial`, `other` (rows whose status is none of the four), `wet` (`phase_dry_run` false), `dry`, `projects` (distinct `project_key`), `finished_at_epoch` (max `created_at`); no night at all raises. `value_schema` is scalars only, so per-phase detail stays with the Dream tools. `briefing=False`: the briefing already renders the night from the same table. | §5.6 |
+| Layering | one more named edge, `facts → brain_v42.dream_killswitches` (a leaf module: the parser of the drop-in, shared with the DB-derived state so the two readers agree on the key table). | §5.10 |
+| Catalogue order | `graph_projection_lag`, `alembic_head`, `live_release_sha`, `alembic_head_shipped`, `dream_killswitches_declared`, `dream_last_night`. | §5.7 |
 
 ## 1. Purpose
 
@@ -525,11 +547,11 @@ the first session after 14:00 CEST.
 
 | Fact | Target | TTL / timeout | Adapter, and what it must stop doing | Slice |
 | --- | --- | --- | --- | --- |
-| `alembic_head` | production | 60 s / 3 s | `SchemaStateService.current_revision` inside a `SourceSession`; the identity query already carries the revision, so the probe and the identity agree by construction | 2 |
-| `alembic_head_shipped` | live_release | process lifetime / — | a **strict** `head_of_versions`: any unreadable or unparsable revision file → raise (today's version skips it and may return an older head, `release.py:90`); memoised once per process; the identity is the release SHA + `package_version()` | 2 |
-| `live_release_sha` | live_release | process lifetime / — | parsed from the running package's own path (`releases/<sha>/`); `unreadable` when the process does not run from a release (development), never `"dev"` as a value | 2 |
-| `dream_killswitches_declared` | host | 60 s / 1 s | reads **only** the drop-in file through the restricted reader and returns the parsed flags plus the file's mtime; a missing or unreadable file is `unreadable`, never a set of disabled flags; the DB-derived history (`last_run_date`, clean dry nights) is a **separate** fact `dream_last_night` on `production`, so "declared on disk" and "what the last night did" never blend into one value as `killswitch_state` blends them today (`dream_run_service.py:29,113,136`) | 2 |
-| `dream_last_night` | production | 60 s / 3 s | `dream_runs` of the latest `run_date`: per phase status and dry flag; absence of any night is `unreadable`, not "all disabled" | 2 |
+| `alembic_head` | production | 60 s / 3 s | `SchemaStateService.current_revision` inside a `SourceSession` (the shared `read_current_revision(session)`); value `{"revision"}`, no row → unreadable; the briefing's `Schéma` line comes from this fact when it is registered (revision 6) | 2 |
+| `alembic_head_shipped` | live_release | process lifetime / 1 s | a **strict** `head_of_versions`: any unreadable or unparsable revision file → raise (today's version skips it and may return an older head, `release.py:90`); memoised once per process; the identity is `ReleaseIdentity` (revision 6) | 2 |
+| `live_release_sha` | live_release | process lifetime / 1 s | parsed from the running package's own path (`releases/<sha>/`); `unreadable` when the process does not run from a release (development), never `"dev"` as a value; value `{"release_sha", "package_version"}` (revision 6) | 2 |
+| `dream_killswitches_declared` | host | 60 s / 1 s | reads **only** the drop-in file through the restricted reader and returns the raw flag strings plus the file's mtime (revision 6); a missing or unreadable file is `unreadable`, never a set of disabled flags; the DB-derived history (`last_run_date`, clean dry nights) is a **separate** fact `dream_last_night` on `production`, so "declared on disk" and "what the last night did" never blend into one value as `killswitch_state` blends them today (`dream_run_service.py:29,113,136`) | 2 |
+| `dream_last_night` | production | 60 s / 3 s | `dream_runs` of the latest `run_date`: the night's aggregate by status and dry flag (revision 6 — scalars only, per-phase detail stays with the Dream tools); absence of any night is `unreadable`, not "all disabled" | 2 |
 | `delivery_observer_collection` | production | 60 s / 3 s | `max(collection_finished_at)` of `delivery_confirmations` and the count of `error` outcomes in the last hour; the observer's own liveness as a fact | 3 |
 | `embedding_endpoint` | provider | 60 s / 2 s | `GET /healthz` of the shim; identity = origin + the body's identity fields | 3 |
 | `model_liveness` | provider | — | **not a lot A fact**: `probe_model_liveness.py` POSTs an inference (90 s, quota). Lot C sonde with an inference budget; ALIVE → holds, GONE → falsified, BUSY and OTHER → unreadable | C |
@@ -595,7 +617,8 @@ New package `src/brain_v42/facts/` with `model.py`, `canonical.py`, `sources.py`
 factories and identity queries), `registry.py`, `render.py` (the French lines), and
 `probes/graph_projection_lag.py`. Imports allowed: `brain_v42.db`, `brain_v42.repositories`,
 `brain_v42.release`, `brain_v42.services.schema_state_service`, `brain_v42.config` (for the
-declared identities), the standard library.
+declared identities), `brain_v42.dream_killswitches` (slice 2, the drop-in parser), the
+standard library.
 `brain_v42.mcp` and `brain_v42.metrics` import `facts`; `facts` never imports them. The
 reviewer verified with the layering script that the proposed edges add no cycle; the
 `facts → services` edge is a single module and is named in the test that pins it.

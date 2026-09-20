@@ -29,6 +29,8 @@ class FactTarget(StrEnum):
 
 FACT_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _POSTGRES_IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]{0,62}")
+_RELEASE_SHA = re.compile(r"[0-9a-f]{40}")
+_HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 _SOURCE_KINDS = frozenset({"probe", "cache"})
 ERROR_CODES = frozenset(
     {
@@ -48,6 +50,15 @@ ERROR_CODES = frozenset(
 
 class InvalidFactNameError(ValueError):
     """Raised when a fact key cannot be a stable catalogue identifier."""
+
+
+class IdentityUnreadableError(ValueError):
+    """Signal an unreadable source identity so the registry preserves its trust meaning.
+
+    A bare ``ValueError`` could instead be a probe failure; this dedicated
+    type lets the registry report ``identity_unreadable`` even when a probe's
+    value is the identity itself.
+    """
 
 
 def validate_fact_name(name: str) -> str:
@@ -160,13 +171,103 @@ class SourceIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class ReleaseIdentity:
+    """Release fields that prove which immutable package the process imported.
+
+    A checkout has no release identity: its version function returns ``dev``.
+    Refusing that value avoids presenting development source as a shipped release.
+    """
+
+    release_sha: str
+    package_version: str
+
+    def __post_init__(self) -> None:
+        """Reject release values that cannot identify one immutable shipped package."""
+        if (
+            not isinstance(self.release_sha, str)
+            or _RELEASE_SHA.fullmatch(self.release_sha) is None
+        ):
+            raise ValueError("release_sha must be exactly 40 lowercase hexadecimal characters")
+        if (
+            not isinstance(self.package_version, str)
+            or not self.package_version
+            or len(self.package_version) > 64
+            or not self.package_version.isascii()
+            or not self.package_version.isprintable()
+            or self.package_version == "dev"
+        ):
+            raise ValueError(
+                "package_version must be printable ASCII, at most 64 characters, and not dev"
+            )
+
+    def as_dict(self) -> dict[str, str]:
+        """Return plain scalar data for comparison and JSON API serialization."""
+        return {"release_sha": self.release_sha, "package_version": self.package_version}
+
+    @classmethod
+    def from_mapping(cls, mapping: Mapping[str, object]) -> ReleaseIdentity:
+        """Require every identity field so omitted evidence cannot silently compare equal."""
+        expected = frozenset({"release_sha", "package_version"})
+        actual = frozenset(mapping)
+        missing = expected - actual
+        extra = actual - expected
+        if missing:
+            raise ValueError(f"source identity has missing keys: {sorted(missing)!r}")
+        if extra:
+            raise ValueError(f"source identity has extra keys: {sorted(extra)!r}")
+        return cls(
+            release_sha=cast(str, mapping["release_sha"]),
+            package_version=cast(str, mapping["package_version"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class HostIdentity:
+    """Hostname the process sees, not evidence of who authored a local file."""
+
+    hostname: str
+
+    def __post_init__(self) -> None:
+        """Canonicalize a hostname because DNS hostnames compare without case."""
+        if (
+            not isinstance(self.hostname, str)
+            or not self.hostname
+            or len(self.hostname) > 253
+            or not self.hostname.isascii()
+            or any(_HOST_LABEL.fullmatch(label) is None for label in self.hostname.split("."))
+        ):
+            raise ValueError("hostname must be a DNS hostname of at most 253 ASCII characters")
+        object.__setattr__(self, "hostname", self.hostname.lower())
+
+    def as_dict(self) -> dict[str, str]:
+        """Return plain scalar data for comparison and JSON API serialization."""
+        return {"hostname": self.hostname}
+
+    @classmethod
+    def from_mapping(cls, mapping: Mapping[str, object]) -> HostIdentity:
+        """Require every identity field so omitted evidence cannot silently compare equal."""
+        expected = frozenset({"hostname"})
+        actual = frozenset(mapping)
+        missing = expected - actual
+        extra = actual - expected
+        if missing:
+            raise ValueError(f"source identity has missing keys: {sorted(missing)!r}")
+        if extra:
+            raise ValueError(f"source identity has extra keys: {sorted(extra)!r}")
+        return cls(hostname=cast(str, mapping["hostname"]))
+
+
+Identity = SourceIdentity | ReleaseIdentity | HostIdentity
+
+
+@dataclass(frozen=True, slots=True)
 class Measured:
     """A successful immutable observation whose value text and digest prove each other."""
 
     fact: str
     definition_version: int
     target: FactTarget
-    source: SourceIdentity
+    source: Identity
     value_json: str
     digest: str
     observation_id: UUID
@@ -187,8 +288,8 @@ class Measured:
             ttl_seconds=self.ttl_seconds,
             source_kind=self.source_kind,
         )
-        if not isinstance(self.source, SourceIdentity):
-            raise ValueError("source must be a SourceIdentity")
+        if not isinstance(self.source, (SourceIdentity, ReleaseIdentity, HostIdentity)):
+            raise ValueError("source must be an identity")
         if not isinstance(self.value_json, str):
             raise ValueError("value_json must be canonical JSON")
         try:
@@ -218,7 +319,7 @@ class Measured:
         fact: str,
         definition_version: int,
         target: FactTarget,
-        source: SourceIdentity,
+        source: Identity,
         value: Mapping[str, object],
         observation_id: UUID,
         measured_at: datetime,

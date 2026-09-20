@@ -22,6 +22,12 @@ if TYPE_CHECKING:
 _CURRENT_REVISION_SQL = sa.text("SELECT version_num FROM alembic_version")
 
 
+async def read_current_revision(session: AsyncSession) -> str | None:
+    """Read the stamp in a caller-owned session so a probe keeps its snapshot."""
+    revision = (await session.execute(_CURRENT_REVISION_SQL)).scalar()
+    return None if revision is None else str(revision)
+
+
 class SchemaStateService:
     """Reads the migration revision the running database is stamped with."""
 
@@ -37,5 +43,4 @@ class SchemaStateService:
         section exists to remove.
         """
         async with self._sf() as session:
-            revision = (await session.execute(_CURRENT_REVISION_SQL)).scalar()
-        return None if revision is None else str(revision)
+            return await read_current_revision(session)

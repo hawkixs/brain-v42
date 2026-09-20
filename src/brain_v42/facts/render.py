@@ -16,6 +16,8 @@ the prose this section exists to contradict.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
+from typing import cast
 
 from brain_v42.facts.model import Measured, Measurement, Unreadable
 from brain_v42.facts.probe import FactDescriptor
@@ -27,6 +29,16 @@ GENERIC_VALUE_CHARS = 120
 
 #: The one unreadable case a reader must never mistake for a transient.
 _UNREADABLE_LABELS: Mapping[str, str] = {"target_mismatch": "cible inattendue"}
+#: The subject of a fact's line, in the reader's words; a fact without one
+#: renders under its catalogue name. Catalogue order.
+_SUBJECTS: Mapping[str, str] = {
+    "graph_projection_lag": "Projection graphe",
+    "alembic_head": "Schéma",
+    "live_release_sha": "Release vivante",
+    "alembic_head_shipped": "Tête Alembic livrée",
+    "dream_killswitches_declared": "Killswitches déclarés",
+    "dream_last_night": "Dernière nuit Dream",
+}
 
 
 def _int(value: object) -> int:
@@ -82,8 +94,86 @@ def _render_graph_projection_lag(measured: Measured, descriptor: FactDescriptor)
     return f"- Projection graphe : {head} — {', '.join(details)}"
 
 
+#: A raw drop-in value is shown so a typo is visible, and cut there so a
+#: 3 000-character one is the operator's problem to fix, not the briefing's to reproduce.
+RAW_VALUE_CHARS = 40
+
+
+def _string(value: object) -> str:
+    """The declared schema carries strings; a corrupt value renders as unreadable words."""
+    return value if isinstance(value, str) else ""
+
+
+def _raw(value: str) -> str:
+    """The operator's own spelling, quoted, cut past `RAW_VALUE_CHARS`."""
+    if len(value) > RAW_VALUE_CHARS:
+        return repr(value[:RAW_VALUE_CHARS] + "…")
+    return repr(value)
+
+
+def _render_killswitch_phase(value: Mapping[str, object], phase: str, dry_key: str | None) -> str:
+    """Say the raw declaration beside the safe rule when systemd would not accept it."""
+    enabled = _string(value.get(phase))
+    label = phase.upper()
+    if enabled == "true":
+        rendered = f"{label} on"
+    elif enabled == "false":
+        rendered = f"{label} off"
+    else:
+        return f"{label} off {_raw(enabled)} (illisible → off)"
+    if dry_key is None or enabled != "true":
+        return rendered
+    dry = _string(value.get(dry_key))
+    if dry == "false":
+        return f"{rendered} wet"
+    if dry == "true":
+        return f"{rendered} dry"
+    return f"{rendered} {_raw(dry)} (illisible → dry)"
+
+
+def _render_dream_killswitches_declared(measured: Measured, descriptor: FactDescriptor) -> str:
+    """Render executable polarity without collapsing the third, malformed state."""
+    value = measured.value
+    phases = (
+        _render_killswitch_phase(value, "promote", None),
+        _render_killswitch_phase(value, "reorg", "reorg_dry"),
+        _render_killswitch_phase(value, "extract", "extract_dry"),
+        _render_killswitch_phase(value, "roadmap", "roadmap_dry"),
+        _render_killswitch_phase(value, "sweep", "sweep_dry"),
+    )
+    try:
+        modified_at = datetime.fromtimestamp(_int(value.get("file_mtime_epoch")), UTC)
+    except (OverflowError, OSError, ValueError):
+        # An epoch the platform cannot place (a `touch -d @99999999999999`) is
+        # said, not raised: a renderer that raised would take the line down.
+        stamp = "à une date illisible"
+    else:
+        stamp = f"le {modified_at:%Y-%m-%d %H:%M UTC}"
+    return f"- Killswitches déclarés : {', '.join(phases)} (drop-in modifié {stamp})"
+
+
+def _render_live_release_sha(measured: Measured, descriptor: FactDescriptor) -> str:
+    value = measured.value
+    release_sha = cast(str, value["release_sha"])
+    package_version = cast(str, value["package_version"])
+    return f"- Release vivante : {release_sha[:8]} (paquet {package_version})"
+
+
+def _render_alembic_head_shipped(measured: Measured, descriptor: FactDescriptor) -> str:
+    return f"- Tête Alembic livrée : {measured.value['revision']}"
+
+
+def _render_alembic_head(measured: Measured, descriptor: FactDescriptor) -> str:
+    """Keep the schema line byte-identical while its evidence becomes verified."""
+    return f"- Schéma : {measured.value.get('revision')}"
+
+
 _RENDERERS: Mapping[str, Callable[[Measured, FactDescriptor], str]] = {
     "graph_projection_lag": _render_graph_projection_lag,
+    "alembic_head": _render_alembic_head,
+    "live_release_sha": _render_live_release_sha,
+    "alembic_head_shipped": _render_alembic_head_shipped,
+    "dream_killswitches_declared": _render_dream_killswitches_declared,
 }
 
 
@@ -96,7 +186,7 @@ def _render_generic(measured: Measured, descriptor: FactDescriptor) -> str:
 
 def _render_unreadable(unreadable: Unreadable, descriptor: FactDescriptor) -> str:
     label = _UNREADABLE_LABELS.get(unreadable.error_code, unreadable.error_code)
-    subject = "Projection graphe" if descriptor.name == "graph_projection_lag" else descriptor.name
+    subject = _SUBJECTS.get(descriptor.name, descriptor.name)
     return f"- {subject} : illisible ({label})"
 
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal, Self
@@ -75,27 +76,37 @@ _PRODUCTION_IDENTITY_KEYS: dict[str, type] = {
     "server_addr": str,
     "server_port": int,
 }
+_LIVE_RELEASE_IDENTITY_KEYS: dict[str, type] = {
+    "release_sha": str,
+    "package_version": str,
+}
+_HOST_IDENTITY_KEYS: dict[str, type] = {"hostname": str}
 
 
-def _parse_production_identity(raw: str) -> dict[str, object]:
-    """A JSON object with exactly the four identity keys, each of the declared JSON type."""
+def _parse_identity_json(raw: str, keys: Mapping[str, type], *, label: str) -> dict[str, object]:
+    """Parse exactly the identity shape declared for one independently verified target."""
     try:
         payload = json.loads(raw)
     except ValueError as exc:
         raise ValueError("not a JSON document") from exc
     if not isinstance(payload, dict):
-        raise ValueError("must be a JSON object with four keys")
-    keys = set(payload)
-    expected = set(_PRODUCTION_IDENTITY_KEYS)
-    if keys != expected:
+        raise ValueError(f"{label} must be a JSON object with {len(keys)} keys")
+    actual = set(payload)
+    expected = set(keys)
+    if actual != expected:
         raise ValueError(
-            f"missing keys {sorted(expected - keys)!r}, extra keys {sorted(keys - expected)!r}"
+            f"missing keys {sorted(expected - actual)!r}, extra keys {sorted(actual - expected)!r}"
         )
-    for key, kind in _PRODUCTION_IDENTITY_KEYS.items():
+    for key, kind in keys.items():
         value = payload[key]
         if type(value) is not kind:  # bool is not an int here, on purpose
             raise ValueError(f"{key} must be a JSON {kind.__name__}")
     return dict(payload)
+
+
+def _parse_production_identity(raw: str) -> dict[str, object]:
+    """Keep the production parser stable while the generic declaration parser expands."""
+    return _parse_identity_json(raw, _PRODUCTION_IDENTITY_KEYS, label="production identity")
 
 
 def _brain_alias(legacy_env: str) -> AliasChoices:
@@ -379,6 +390,16 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=_brain_alias("FACTS_PRODUCTION_IDENTITY"),
     )
+    # These declarations stay strings until composition so a typo leaves the
+    # service available and merely refuses facts whose target cannot be proved.
+    facts_live_release_identity_json: str | None = Field(
+        default=None,
+        validation_alias=_brain_alias("FACTS_LIVE_RELEASE_IDENTITY"),
+    )
+    facts_host_identity_json: str | None = Field(
+        default=None,
+        validation_alias=_brain_alias("FACTS_HOST_IDENTITY"),
+    )
 
     # Auto-opening of an `agent` tracer session per HTTP connection, the signed
     # shape `ae0d0475` / ADR §0ter. Shipped CLOSED, like every new capability —
@@ -471,6 +492,40 @@ class Settings(BaseSettings):
             return _parse_production_identity(self.facts_production_identity_json)
         except ValueError as exc:
             raise ValueError(f"BRAIN_FACTS_PRODUCTION_IDENTITY is invalid: {exc}") from exc
+
+    def facts_live_release_identity(self) -> dict[str, object] | None:
+        """Return the declared release identity without making a bad drop-in fatal at load.
+
+        The process must start even if this declaration is malformed: composition
+        logs the refusal and does not register facts that would overstate trust.
+        """
+        if self.facts_live_release_identity_json is None:
+            return None
+        try:
+            return _parse_identity_json(
+                self.facts_live_release_identity_json,
+                _LIVE_RELEASE_IDENTITY_KEYS,
+                label="live release identity",
+            )
+        except ValueError as exc:
+            raise ValueError(f"BRAIN_FACTS_LIVE_RELEASE_IDENTITY is invalid: {exc}") from exc
+
+    def facts_host_identity(self) -> dict[str, object] | None:
+        """Return the declared host identity without making a bad drop-in fatal at load.
+
+        The process must start even if this declaration is malformed: composition
+        logs the refusal and does not register facts that would overstate trust.
+        """
+        if self.facts_host_identity_json is None:
+            return None
+        try:
+            return _parse_identity_json(
+                self.facts_host_identity_json,
+                _HOST_IDENTITY_KEYS,
+                label="host identity",
+            )
+        except ValueError as exc:
+            raise ValueError(f"BRAIN_FACTS_HOST_IDENTITY is invalid: {exc}") from exc
 
     @field_validator("otel_endpoint")
     @classmethod

@@ -1,4 +1,4 @@
-"""Sources a probe reads through: one read-only snapshot, the identity measured inside it.
+"""Sources a probe reads through: PostgreSQL, the imported release, and restricted host files.
 
 A probe never opens its own connection. The registry opens a source for the
 probe's target, runs the probe inside it, then reads the source's identity
@@ -14,17 +14,32 @@ transaction opened with ``SET TRANSACTION … READ ONLY`` — plus the isolation
 level this design needs for a single snapshot. A probe that tried to write
 fails with PostgreSQL's own read-only error, not with a mock; nothing is ever
 committed, the transaction is rolled back on exit.
+
+A PostgreSQL identity proves the cluster that answered in the same snapshot. A
+release identity proves which release the process imported, not what that
+release contains. A host identity proves the hostname the process sees, not
+who authored a file read beneath the restricted root.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import os
+import re
+import socket
+import stat
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 
-from brain_v42.facts.model import SourceIdentity
+from brain_v42.facts.model import (
+    HostIdentity,
+    IdentityUnreadableError,
+    ReleaseIdentity,
+    SourceIdentity,
+)
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
@@ -48,6 +63,72 @@ _IDENTITY_SQL = sa.text(
     "inet_server_addr()::text AS server_addr, "
     "inet_server_port() AS server_port"
 )
+_RELEASE_SHA = re.compile(r"[0-9a-f]{40}")
+_MAX_HOST_FILE_BYTES = 65536
+
+
+def release_sha_from_path(path: Path) -> str:
+    """Read the release SHA from the immutable release layout that imported a module.
+
+    The release is the ``releases`` component followed by a 40-hex segment; an
+    earlier ``releases`` directory in the path (a mirror, a backup root) is not
+    it and does not turn the process into a checkout.
+    """
+    parts = path.resolve().parts
+    for index, part in enumerate(parts[:-1]):
+        if part == "releases" and _RELEASE_SHA.fullmatch(parts[index + 1]) is not None:
+            return parts[index + 1]
+    raise ValueError("path has no immutable release SHA")
+
+
+def read_text_under(root: Path, relative: str) -> tuple[str, int]:
+    """Read one small UTF-8 regular file under ``root`` without following a symlink.
+
+    The read goes through ONE file descriptor: opened ``O_NOFOLLOW`` (a symlink
+    swapped in for the last component after the walk fails the open, not the
+    check), ``O_NONBLOCK`` (a FIFO with no writer would otherwise block the
+    open, and a blocked probe cannot be cancelled by the registry's deadline),
+    ``fstat``-ed before anything is read (only a regular file is a host source;
+    a directory, a FIFO or a device is refused, never read), and read at most
+    one byte past the bound so a file grown between the stat and the read is
+    still refused. The per-component symlink walk stays as a first, cheaper
+    refusal; an intermediate directory swapped for a symlink between the walk
+    and the open is the residual an ``openat`` walk would close — the root is
+    operator-owned, and that residual is accepted.
+    """
+    relative_path = Path(relative)
+    if not relative or relative_path.is_absolute() or ".." in relative_path.parts:
+        raise ValueError("relative path must be non-empty, relative, and contain no '..'")
+
+    unresolved = root
+    for component in relative_path.parts:
+        unresolved = unresolved / component
+        if unresolved.is_symlink():
+            raise ValueError("relative path must not contain a symlink")
+    resolved_root = root.resolve()
+    resolved = unresolved.resolve()
+    if resolved_root not in resolved.parents:
+        raise ValueError("relative path must resolve strictly inside root")
+
+    descriptor = os.open(unresolved, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("host source must be a regular file")
+        chunks: list[bytes] = []
+        remaining = _MAX_HOST_FILE_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    finally:
+        os.close(descriptor)
+    body = b"".join(chunks)
+    if len(body) > _MAX_HOST_FILE_BYTES:
+        raise ValueError("regular file must be at most 65536 bytes")
+    return body.decode("utf-8", errors="strict"), int(metadata.st_mtime)
 
 
 class PostgresSourceSession:
@@ -105,3 +186,102 @@ class PostgresSourceFactory:
                 # transaction: the snapshot ends here, whatever happened inside,
                 # and the `begin()` context finds nothing left to commit.
                 await transaction.rollback()
+
+
+class ReleaseSourceSession:
+    """Read the release identity of the package that is executing this process."""
+
+    __slots__ = ("_package_file", "_version")
+
+    def __init__(self, package_file: Path, version: Callable[[], str]) -> None:
+        self._package_file = package_file
+        self._version = version
+
+    async def identity(self) -> ReleaseIdentity:
+        """Return immutable release evidence, or say the identity is unreadable.
+
+        Every way the identity can fail to exist — a checkout path without a
+        release segment, a ``dev`` version, a version the model refuses — is
+        ONE condition for the registry, ``identity_unreadable``, whether the
+        registry asked after the probe or the ``live_release_sha`` probe asked
+        itself; a bare ``ValueError`` would split it into two codes.
+        """
+        try:
+            return ReleaseIdentity(release_sha_from_path(self._package_file), self._version())
+        except IdentityUnreadableError:
+            raise
+        except ValueError as exc:
+            raise IdentityUnreadableError(str(exc)) from exc
+
+
+class ReleaseSourceFactory:
+    """Open a release source: nothing to connect to, the identity is the process's own path.
+
+    The only I/O is ``Path.resolve()`` on the package file (a readlink walk)
+    when the identity is measured; the package path and the version reader are
+    resolved at use time so the package importing itself is never a cycle.
+    """
+
+    __slots__ = ("_package_file", "_version")
+
+    def __init__(
+        self,
+        package_file: Path | None = None,
+        version: Callable[[], str] | None = None,
+    ) -> None:
+        self._package_file = package_file
+        self._version = version
+
+    def __call__(self) -> AbstractAsyncContextManager[ReleaseSourceSession]:
+        return self._open()
+
+    @asynccontextmanager
+    async def _open(self) -> AsyncIterator[ReleaseSourceSession]:
+        package_file = self._package_file
+        version = self._version
+        if package_file is None or version is None:
+            import brain_v42
+            from brain_v42.release import package_version
+
+            if package_file is None:
+                if brain_v42.__file__ is None:
+                    raise ValueError("brain_v42 has no package file")
+                package_file = Path(brain_v42.__file__)
+            if version is None:
+                version = package_version
+        yield ReleaseSourceSession(package_file, version)
+
+
+class HostSourceSession:
+    """Expose only restricted text reads and the hostname the process reports."""
+
+    __slots__ = ("root", "_hostname")
+
+    def __init__(self, root: Path, hostname: Callable[[], str]) -> None:
+        self.root = root
+        self._hostname = hostname
+
+    def read_text(self, relative: str) -> tuple[str, int]:
+        """Read a bounded local configuration file under the fixed source root."""
+        return read_text_under(self.root, relative)
+
+    async def identity(self) -> HostIdentity:
+        """Return the hostname the process observes, normalized by the identity model."""
+        return HostIdentity(self._hostname())
+
+
+class HostSourceFactory:
+    """Open a host source tied to the one root composition chose."""
+
+    __slots__ = ("_root", "_hostname")
+
+    def __init__(self, root: Path, hostname: Callable[[], str] = socket.gethostname) -> None:
+        self._root = root
+        self._hostname = hostname
+
+    def __call__(self) -> AbstractAsyncContextManager[HostSourceSession]:
+        return self._open()
+
+    @asynccontextmanager
+    async def _open(self) -> AsyncIterator[HostSourceSession]:
+        yield HostSourceSession(self._root, self._hostname)
