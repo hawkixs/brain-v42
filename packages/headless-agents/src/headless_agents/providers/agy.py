@@ -38,6 +38,7 @@ from pathlib import Path
 from ..capability import (
     PROVIDER_FALLBACK_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
+    TIMEOUT_REPLAYABLE_EXIT_CODE,
     terminate_process_group,
 )
 from ..profile import CapabilityProfile
@@ -96,6 +97,52 @@ def build_agy_command(
     if model.strip():
         command.extend(("--model", model))
     return command
+
+
+def _is_mcp_tool_step(event: object) -> bool:
+    if not isinstance(event, dict):
+        return False
+    step = event.get("step_update")
+    return (
+        isinstance(step, dict)
+        and step.get("step_type") == "tool"
+        and step.get("tool_name") == "call_mcp_tool"
+    )
+
+
+def tool_call_started(events_log: Path) -> bool:
+    """Could an MCP tool call have STARTED in this stream-json flow?
+
+    The question the runner's own deadline asks, stricter than
+    :func:`tool_call_completed`: a call in flight when the process is killed
+    may still commit on the server after the kill.
+
+    Measured on the live stream (2026-09-14): agy writes a ``step_update`` of
+    ``step_type: tool`` in state ``ACTIVE`` BEFORE the tool executes, then
+    ``DONE`` or ``ERROR``. A ``call_mcp_tool`` step in ANY state is therefore
+    a call that may have reached the server; a stream without one shows a run
+    that never issued one. Built-in tool steps do not count, as in
+    :func:`tool_call_completed`: the guard refuses them before anything runs.
+
+    Fail-closed the other way round: an absent or unreadable stream cannot
+    prove the negative and answers ``True``.
+    """
+    if not events_log.is_file():
+        return True
+    try:
+        raw_lines = events_log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return True
+    for raw_line in raw_lines:
+        if not raw_line.strip():
+            continue
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            return True
+        if _is_mcp_tool_step(event):
+            return True
+    return False
 
 
 def tool_call_completed(events_log: Path) -> bool:
@@ -311,7 +358,23 @@ def run_agy(
                 process.communicate(timeout=_effective_timeout(timeout_seconds, deadline))
             except subprocess.TimeoutExpired:
                 terminate_process_group(process)
+                # A timeout proves nothing BY ITSELF: the run may have written
+                # and then hung. The stream decides, after the kill, whether a
+                # call could even have started.
+                timed_out = True
+            else:
+                timed_out = False
+
+        if timed_out:
+            if tool_call_started(events_log):
                 return TIMEOUT_EXIT_CODE
+            with stderr_log.open("a", encoding="utf-8") as stderr_stream:
+                stderr_stream.write(
+                    f"agy reached its deadline ({int(timeout_seconds)} s) with no MCP tool"
+                    " step started in its event stream: nothing was written, the run is"
+                    " replayable elsewhere\n"
+                )
+            return TIMEOUT_REPLAYABLE_EXIT_CODE
 
         extract_report(events_log, report_log)
         exit_code = int(process.returncode or 0)

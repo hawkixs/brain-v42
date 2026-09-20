@@ -11,7 +11,11 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
-from headless_agents.capability import PROVIDER_FALLBACK_EXIT_CODE, TIMEOUT_EXIT_CODE
+from headless_agents.capability import (
+    PROVIDER_FALLBACK_EXIT_CODE,
+    TIMEOUT_EXIT_CODE,
+    TIMEOUT_REPLAYABLE_EXIT_CODE,
+)
 from headless_agents.profile import CapabilityProfile, McpServer
 from headless_agents.providers import codex
 from headless_agents.spec import RunSpec
@@ -207,9 +211,12 @@ class _FakeProcess:
     def communicate(
         self, input: str | None = None, timeout: float | None = None
     ) -> tuple[None, None]:
+        # A hang writes what it had produced so far, THEN stalls: that is
+        # what the runner sees on disk when its own deadline fires.
+        self._events_stream.write(self._events)  # type: ignore[attr-defined]
+        self._events_stream.flush()  # type: ignore[attr-defined]
         if self._hang:
             raise subprocess.TimeoutExpired(cmd="codex", timeout=timeout or 0)
-        self._events_stream.write(self._events)  # type: ignore[attr-defined]
         if self._report:
             self._report_log.write_text(self._report, encoding="utf-8")
         self.returncode = self._returncode
@@ -326,11 +333,53 @@ class TestRunCodex:
         assert _run(logs) == 1
         assert "without a final report" in logs["stderr_log"].read_text(encoding="utf-8")
 
-    def test_a_timeout_terminates_the_group_and_is_never_a_switchover(
+    def test_a_timeout_after_a_started_call_is_never_a_switchover(
         self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path]
     ) -> None:
-        _install(monkeypatch, _FakeProcess(returncode=0, hang=True), logs["report_log"])
+        """``item.started`` precedes the call's execution (measured on the
+        live stream, 2026-09-20): a call in flight is visible, and a stream
+        that shows one may have written."""
+        started = _events(
+            {
+                "type": "item.started",
+                "item": {
+                    "id": "item_1",
+                    "type": "mcp_tool_call",
+                    "server": "example",
+                    "tool": "example_search",
+                    "status": "in_progress",
+                },
+            }
+        )
+        _install(
+            monkeypatch, _FakeProcess(returncode=0, events=started, hang=True), logs["report_log"]
+        )
         assert _run(logs) == TIMEOUT_EXIT_CODE
+        completed = _events(_completed_call("example"))
+        _install(
+            monkeypatch, _FakeProcess(returncode=0, events=completed, hang=True), logs["report_log"]
+        )
+        assert _run(logs) == TIMEOUT_EXIT_CODE
+
+    def test_a_timeout_without_a_started_call_is_replayable_elsewhere(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path]
+    ) -> None:
+        """An empty stream, or a turn that never reached a tool item: no call
+        was issued to the server, so the run may be handed to the next link."""
+        _install(monkeypatch, _FakeProcess(returncode=0, hang=True), logs["report_log"])
+        assert _run(logs) == TIMEOUT_REPLAYABLE_EXIT_CODE
+        stderr = logs["stderr_log"].read_text(encoding="utf-8")
+        assert "deadline" in stderr and "no tool call started" in stderr
+
+        chatter = _events(
+            {"type": "thread.started", "thread_id": "t"},
+            {"type": "turn.started"},
+            {"type": "item.completed", "item": {"id": "m", "type": "agent_message", "text": "hm"}},
+        )
+        _install(
+            monkeypatch, _FakeProcess(returncode=0, events=chatter, hang=True), logs["report_log"]
+        )
+        assert _run(logs) == TIMEOUT_REPLAYABLE_EXIT_CODE
 
     def test_a_child_exiting_124_is_read_as_a_timeout(
         self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path]

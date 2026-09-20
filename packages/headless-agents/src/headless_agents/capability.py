@@ -44,6 +44,22 @@ PROVIDER_FALLBACK_EXIT_CODE = 3
 # may have written.
 TIMEOUT_EXIT_CODE = 124
 
+# The runner's own deadline fired AND its event stream proves that no tool
+# call ever STARTED -- not "none succeeded" (a call in flight may still commit
+# after the kill) but "none was issued". Measured 2026-09-19: a quota-dead
+# opencode blocked for the full deadline of 37 Dream phases with zero bytes of
+# events, and a chain reading 124 never tried the two links behind it. This
+# code keeps both facts apart: it is a timeout for the journal and the run's
+# row, and a proof of no write for the chain, which advances on it as on 3.
+# Each rail owns the predicate, because each stream orders its events
+# differently; a rail whose telemetry cannot prove the absence (claude, whose
+# OTEL export is asynchronous) never returns it.
+TIMEOUT_REPLAYABLE_EXIT_CODE = 4
+
+# The codes a chain advances on. Anything else -- 1, 2, 124, a child's own
+# code -- stops where it fell.
+FALLBACK_EXIT_CODES = frozenset({PROVIDER_FALLBACK_EXIT_CODE, TIMEOUT_REPLAYABLE_EXIT_CODE})
+
 # Variables every rail needs to run at all: locale, TLS trust, proxy policy and
 # the paths a CLI resolves against. Rail-specific additions go through
 # ``passthrough``, never in here.

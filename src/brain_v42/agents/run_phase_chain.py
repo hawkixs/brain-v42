@@ -9,7 +9,9 @@ value before.
 
 The result JSON lets the shell learn which providers fell back without
 parsing the log: ``dream.sh`` appends ``$PROJECT_KEY/$name`` to
-``FALLBACK_PHASES`` when ``fallbacks`` is non-empty.
+``FALLBACK_PHASES`` when ``fallbacks`` is non-empty, and retires every
+provider named in ``dead_links`` -- a link whose deadline fired on an empty
+stream -- from the chain for the rest of the night.
 """
 
 from __future__ import annotations
@@ -86,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
                 "rc": result.rc,
                 "status": phase_module.status_for_rc(result.rc),
                 "fallbacks": list(result.fallbacks),
+                "dead_links": list(result.dead_links),
             }
         ),
         encoding="utf-8",

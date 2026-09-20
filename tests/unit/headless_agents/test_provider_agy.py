@@ -11,7 +11,11 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
-from headless_agents.capability import PROVIDER_FALLBACK_EXIT_CODE, TIMEOUT_EXIT_CODE
+from headless_agents.capability import (
+    PROVIDER_FALLBACK_EXIT_CODE,
+    TIMEOUT_EXIT_CODE,
+    TIMEOUT_REPLAYABLE_EXIT_CODE,
+)
 from headless_agents.profile import CapabilityProfile, Credentials, McpServer, ToolGuard
 from headless_agents.providers import agy
 from headless_agents.spec import RunSpec
@@ -139,9 +143,12 @@ class _FakeProcess:
     def communicate(
         self, input: str | None = None, timeout: float | None = None
     ) -> tuple[None, None]:
+        # A hang writes what it had produced so far, THEN stalls: that is
+        # what the runner sees on disk when its own deadline fires.
+        self._stream.write(self._events)  # type: ignore[attr-defined]
+        self._stream.flush()  # type: ignore[attr-defined]
         if self._hang:
             raise subprocess.TimeoutExpired(cmd="agy", timeout=timeout or 0)
-        self._stream.write(self._events)  # type: ignore[attr-defined]
         self.returncode = self._returncode
         return None, None
 
@@ -289,13 +296,39 @@ class TestRunAgy:
         )
         assert "command" not in captured
 
-    def test_timeouts(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        _install(monkeypatch, _FakeProcess(returncode=0, hang=True))
-        assert _run(tmp_path) == TIMEOUT_EXIT_CODE
+    def test_a_timeout_after_a_started_mcp_step_is_never_a_switchover(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An ``ACTIVE`` ``call_mcp_tool`` step precedes the call's execution
+        (measured on the live stream of 2026-09-14): whatever its final state,
+        the run may have written."""
+        for state in ("ACTIVE", "DONE", "ERROR"):
+            events = _events(_mcp_step(state))
+            _install(monkeypatch, _FakeProcess(returncode=0, events=events, hang=True))
+            assert _run(tmp_path) == TIMEOUT_EXIT_CODE, state
         _install(monkeypatch, _FakeProcess(returncode=124))
         assert _run(tmp_path) == TIMEOUT_EXIT_CODE
         with pytest.raises(ValueError, match="timeout"):
             _run(tmp_path, timeout_seconds=0)
+
+    def test_a_timeout_without_a_started_mcp_step_is_replayable_elsewhere(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An empty stream, or a response that never reached an MCP step: no
+        call was issued, so the run may be handed to the next link. A refused
+        built-in tool step is not an MCP call either -- the guard stops it
+        before anything can be written."""
+        _install(monkeypatch, _FakeProcess(returncode=0, hang=True))
+        assert _run(tmp_path) == TIMEOUT_REPLAYABLE_EXIT_CODE
+        stderr = (tmp_path / "out" / "stderr.log").read_text(encoding="utf-8")
+        assert "deadline" in stderr and "no MCP tool step started" in stderr
+
+        chatter = _events(
+            {"step_update": {"step_type": "agent_response", "state": "ACTIVE"}},
+            _mcp_step("ERROR", "run_command"),
+        )
+        _install(monkeypatch, _FakeProcess(returncode=0, events=chatter, hang=True))
+        assert _run(tmp_path) == TIMEOUT_REPLAYABLE_EXIT_CODE
 
 
 class TestRefusalsBeforeLaunch:

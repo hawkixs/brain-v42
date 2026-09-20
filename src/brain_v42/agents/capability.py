@@ -54,6 +54,9 @@ from headless_agents.capability import (
     TIMEOUT_EXIT_CODE as TIMEOUT_EXIT_CODE,
 )
 from headless_agents.capability import (
+    TIMEOUT_REPLAYABLE_EXIT_CODE as TIMEOUT_REPLAYABLE_EXIT_CODE,
+)
+from headless_agents.capability import (
     merged_no_proxy as merged_no_proxy,
 )
 from headless_agents.capability import (

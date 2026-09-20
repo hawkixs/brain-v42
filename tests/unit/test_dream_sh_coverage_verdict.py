@@ -70,6 +70,7 @@ def _run_verdict(
             "declare -a SKIPPED_PHASES=()",
             "SKIPPED_UNWRITTEN=0",
             "declare -a FALLBACK_PHASES=()",
+            "declare -a DEAD_LINKS=()",
             "manifest_put() { :; }",
             'log() { printf "%s\\n" "$*" | tee -a "$LOG_DIR/$TIMESTAMP.log"; }',
             f"ALERT_CALLS={shlex.quote(str(alert_calls))}",

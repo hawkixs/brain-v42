@@ -62,6 +62,16 @@ def timeout_line(name: str, timeout_minutes: int) -> str:
     return f"TIMEOUT {name} (>{timeout_minutes}m)"
 
 
+def timeout_replayable_line(name: str, timeout_minutes: int) -> str:
+    """The runner's deadline on a stream that proves no Brain call started
+    (``TIMEOUT_REPLAYABLE_EXIT_CODE``): still a TIMEOUT for the reader and
+    the ``dream_runs`` row, with the reason the chain may move on."""
+    return (
+        f"TIMEOUT {name} (>{timeout_minutes}m — aucun appel d'outil Brain commencé, "
+        "phase rejouable)"
+    )
+
+
 def fail_line(name: str, code: int, *, fallback: bool) -> str:
     if fallback:
         return f"FAIL  {name} (exit={code} — aucun appel d'outil Brain abouti)"
@@ -92,6 +102,16 @@ def fallback_line(project_key: str, name: str, provider: str, next_provider: str
     return (
         f"FALLBACK {project_key}/{name} — {provider} a échoué sans aucun appel "
         f"d'outil Brain abouti, bascule vers {next_provider}"
+    )
+
+
+def dead_link_fallback_line(project_key: str, name: str, provider: str, next_provider: str) -> str:
+    """The switchover after a replayable timeout: the link did not fail, it
+    never answered. ``dream.sh`` retires it for the night on the ``dead_links``
+    of the chain result; this line is what the reader sees at the switch."""
+    return (
+        f"FALLBACK {project_key}/{name} — {provider} a expiré sans un seul appel "
+        f"d'outil Brain commencé, bascule vers {next_provider}"
     )
 
 

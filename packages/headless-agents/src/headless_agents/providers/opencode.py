@@ -63,6 +63,7 @@ from pathlib import Path
 from ..capability import (
     PROVIDER_FALLBACK_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
+    TIMEOUT_REPLAYABLE_EXIT_CODE,
     terminate_process_group,
 )
 from ..profile import CapabilityProfile, McpServer
@@ -249,6 +250,56 @@ def _is_completed_call(event: Mapping[str, object], server: str) -> bool:
     )
 
 
+def _is_step_start(event: object) -> bool:
+    return isinstance(event, dict) and event.get("type") == "step_start"
+
+
+def _is_call_on_server(event: object, server: str) -> bool:
+    if not isinstance(event, dict) or event.get("type") != "tool_use":
+        return False
+    tool = _part(event).get("tool")
+    return isinstance(tool, str) and tool.startswith(f"{server}_")
+
+
+def tool_call_started(events_log: Path, *, server: str) -> bool:
+    """Could a tool call on ``server`` have STARTED in this run?
+
+    The question the runner's own deadline asks, and it is stricter than
+    :func:`tool_call_completed`: a call in flight when the process is killed
+    may still commit on the server after the kill, so "none succeeded" is not
+    enough to replay the run elsewhere.
+
+    Measured on opencode 1.18.30 (``run --format json``, event emitter read
+    from the binary): a ``tool_use`` event is written in its TERMINAL state
+    only (``completed``/``error``), so a running call leaves no line -- but the
+    ``step_start`` of the step that issues it is written first, as it happens.
+    Hence the proof is the absence of any step: no ``step_start`` and no
+    ``tool_use`` on the server means the model never began a turn, and nothing
+    could have been issued. A quota-dead link that blocks before its first
+    step (2026-09-19: zero bytes for the whole deadline) reads exactly so.
+
+    Fail-closed the other way round from :func:`tool_call_completed`: an
+    absent or unreadable stream cannot prove the negative, so it answers
+    ``True`` ("a call may have started") and refuses the switchover.
+    """
+    if not events_log.is_file():
+        return True
+    try:
+        raw_lines = events_log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return True
+    for raw_line in raw_lines:
+        if not raw_line.strip():
+            continue
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            return True
+        if _is_step_start(event) or _is_call_on_server(event, server):
+            return True
+    return False
+
+
 def tool_call_completed(events_log: Path, *, server: str) -> bool:
     """Did a tool call on ``server`` SUCCEED anywhere in this event stream?
 
@@ -420,6 +471,25 @@ def _failure_exit_code(events_log: Path, default: int, server: str | None) -> in
     return PROVIDER_FALLBACK_EXIT_CODE
 
 
+def _deadline_exit_code(
+    events_log: Path, stderr_log: Path, server: str | None, timeout_seconds: float
+) -> int:
+    """The code of the runner's OWN deadline: 124, or 4 when the stream proves
+    no call on ``server`` ever started (see :func:`tool_call_started`). Without
+    a server there is nothing a run could have written through, so a hang is
+    replayable whatever the stream says. The reading is written to stderr:
+    the deadline itself is not the news, the reason it was read as empty is."""
+    if server is not None and tool_call_started(events_log, server=server):
+        return TIMEOUT_EXIT_CODE
+    with stderr_log.open("a", encoding="utf-8") as stderr_stream:
+        stderr_stream.write(
+            f"opencode reached its deadline ({int(timeout_seconds)} s) with no step started"
+            f" and no {server or 'tool'} call in its event stream:"
+            " nothing was written, the run is replayable elsewhere\n"
+        )
+    return TIMEOUT_REPLAYABLE_EXIT_CODE
+
+
 def _effective_timeout(timeout_seconds: float, deadline: float | None) -> float:
     if deadline is None:
         return timeout_seconds
@@ -478,7 +548,8 @@ def run_opencode(
     temp_prefix: str = "headless-agents-",
     missing_call_message: str | None = None,
 ) -> int:
-    """Run one opencode invocation and return its code (``124`` on deadline, ``3`` if replayable).
+    """Run one opencode invocation and return its code (``124`` on deadline,
+    ``4`` on a deadline the stream proves empty, ``3`` if replayable).
 
     ``environment`` is the AMBIENT environment to read ``PATH``/``LANG``, the
     bearer variable and the profile's passthrough variables from; the child
@@ -562,9 +633,15 @@ def run_opencode(
                 process.communicate(timeout=_effective_timeout(timeout_seconds, deadline))
             except subprocess.TimeoutExpired:
                 terminate_process_group(process)
-                # A timeout proves NOTHING: the run may have written and then
-                # hung. Never a switchover here.
-                return TIMEOUT_EXIT_CODE
+                # A timeout proves nothing BY ITSELF: the run may have written
+                # and then hung. The stream decides, after the kill, whether a
+                # call could even have started -- see _deadline_exit_code.
+                timed_out = True
+            else:
+                timed_out = False
+
+        if timed_out:
+            return _deadline_exit_code(events_log, stderr_log, server, timeout_seconds)
 
         extract_report(events_log, report_log)
         exit_code = int(process.returncode or 0)

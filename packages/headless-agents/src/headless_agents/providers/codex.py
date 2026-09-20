@@ -22,6 +22,7 @@ from typing import Any
 from ..capability import (
     PROVIDER_FALLBACK_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
+    TIMEOUT_REPLAYABLE_EXIT_CODE,
     terminate_process_group,
 )
 from ..profile import McpServer
@@ -158,6 +159,52 @@ def _is_completed_call(event: object, server: str) -> bool:
     )
 
 
+def _is_call_on_server(event: object, server: str) -> bool:
+    if not isinstance(event, dict) or event.get("type") not in ("item.started", "item.completed"):
+        return False
+    item = event.get("item")
+    return (
+        isinstance(item, dict)
+        and item.get("type") == "mcp_tool_call"
+        and item.get("server") == server
+    )
+
+
+def tool_call_started(events_log: Path, *, server: str) -> bool:
+    """Could a tool call on ``server`` have STARTED in this run?
+
+    The question the runner's own deadline asks, stricter than
+    :func:`tool_call_completed`: a call in flight when the process is killed
+    may still commit on the server after the kill.
+
+    Measured on the live stream (2026-09-20): Codex writes an ``item.started``
+    for an ``mcp_tool_call`` (``status: in_progress``) BEFORE the call
+    executes, one JSON line per event. A stream with no ``mcp_tool_call`` item
+    on the server, in any state, therefore shows a run that never issued one
+    -- a turn still streaming its message, or a link that never answered.
+
+    Fail-closed the other way round from :func:`tool_call_completed`: an
+    absent or unreadable stream cannot prove the negative and answers
+    ``True``.
+    """
+    if not events_log.is_file():
+        return True
+    try:
+        raw_lines = events_log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return True
+    for raw_line in raw_lines:
+        if not raw_line.strip():
+            continue
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            return True
+        if _is_call_on_server(event, server):
+            return True
+    return False
+
+
 def tool_call_completed(events_log: Path, *, server: str) -> bool:
     """Did a tool call on ``server`` SUCCEED anywhere in this event stream?
 
@@ -243,6 +290,24 @@ def event_stream_error(
             missing_call_message or f"Codex completed with no completed MCP tool call on {server}"
         )
     return None
+
+
+def _deadline_exit_code(
+    events_log: Path, stderr_log: Path, server: str | None, timeout_seconds: float
+) -> int:
+    """The code of the runner's OWN deadline: 124, or 4 when the stream proves
+    no call on ``server`` ever started (see :func:`tool_call_started`). Without
+    a server there is nothing a run could have written through, so a hang is
+    replayable whatever the stream says."""
+    if server is not None and tool_call_started(events_log, server=server):
+        return TIMEOUT_EXIT_CODE
+    with stderr_log.open("a", encoding="utf-8") as stderr_stream:
+        stderr_stream.write(
+            f"Codex reached its deadline ({int(timeout_seconds)} s) with no tool call started"
+            f" on {server or 'any server'} in its event stream:"
+            " nothing was written, the run is replayable elsewhere\n"
+        )
+    return TIMEOUT_REPLAYABLE_EXIT_CODE
 
 
 def _failure_exit_code(events_log: Path, default: int, server: str | None) -> int:
@@ -345,9 +410,15 @@ def run_codex(
                 )
             except subprocess.TimeoutExpired:
                 terminate_process_group(process)
-                # A timeout proves NOTHING: the run may have written and then
-                # hung. Never a switchover here.
-                return TIMEOUT_EXIT_CODE
+                # A timeout proves nothing BY ITSELF: the run may have written
+                # and then hung. The stream decides, after the kill, whether a
+                # call could even have started -- see _deadline_exit_code.
+                timed_out = True
+            else:
+                timed_out = False
+
+        if timed_out:
+            return _deadline_exit_code(events_log, stderr_log, server, timeout_seconds)
 
         if process.returncode != 0:
             child_code = int(process.returncode or 1)
