@@ -16,7 +16,7 @@ from datetime import timedelta
 from typing import cast
 
 from brain_v42.facts.model import FactTarget
-from brain_v42.facts.probe import SourceSession
+from brain_v42.facts.probe import SourceSession, ValueType
 from brain_v42.facts.sources import PostgresSourceSession
 from brain_v42.repositories.pg_graph_ledger import projection_health, read_projection_state
 
@@ -24,14 +24,14 @@ from brain_v42.repositories.pg_graph_ledger import projection_health, read_proje
 class GraphProjectionLagProbe:
     """Publish one stable projection value so readers share its health semantics."""
 
-    name = "graph_projection_lag"
-    definition_version = 1
-    target = FactTarget.PRODUCTION
-    ttl = timedelta(seconds=15)
-    timeout = timedelta(seconds=3)
-    briefing = True
+    name: str = "graph_projection_lag"
+    definition_version: int = 1
+    target: FactTarget = FactTarget.PRODUCTION
+    ttl: timedelta = timedelta(seconds=15)
+    timeout: timedelta = timedelta(seconds=3)
+    briefing: bool = True
     policies: Mapping[str, int] = {"late_after_seconds": 300}
-    value_schema = {
+    value_schema: Mapping[str, ValueType] = {
         "pending": "int",
         "ready": "int",
         "claimed": "int",
