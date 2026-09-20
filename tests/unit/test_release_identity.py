@@ -13,6 +13,7 @@ fabricated chain nothing in the repository knows about.
 from __future__ import annotations
 
 import importlib.metadata
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -31,9 +32,14 @@ def _clear_identity_caches() -> Iterator[None]:
     """Both reads are memoised: isolate each test from the previous ones."""
     release.package_version.cache_clear()
     release.shipped_alembic_head.cache_clear()
+    strict = getattr(release, "shipped_alembic_head_strict", None)
+    if strict is not None:
+        strict.cache_clear()
     yield
     release.package_version.cache_clear()
     release.shipped_alembic_head.cache_clear()
+    if strict is not None:
+        strict.cache_clear()
 
 
 def _authoritative_head() -> str:
@@ -108,6 +114,82 @@ def test_head_of_a_forked_chain_is_unknown(tmp_path: Path) -> None:
     _write_revision(tmp_path, "003", "001")
 
     assert release.head_of_versions(tmp_path) is None
+
+
+def test_strict_head_follows_a_clean_two_file_chain(tmp_path: Path) -> None:
+    _write_revision(tmp_path, "001", None)
+    _write_revision(tmp_path, "002", "001")
+
+    assert release.head_of_versions_strict(tmp_path) == "002"
+
+
+def test_strict_head_refuses_an_unparsable_file_that_lenient_reading_skips(tmp_path: Path) -> None:
+    _write_revision(tmp_path, "001", None)
+    (tmp_path / "bad_revision.py").write_text("revision =", encoding="utf-8")
+
+    assert release.head_of_versions(tmp_path) == "001"
+    with pytest.raises(ValueError, match="bad_revision.py"):
+        release.head_of_versions_strict(tmp_path)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read chmod 000 files")
+def test_strict_head_refuses_an_unreadable_file(tmp_path: Path) -> None:
+    _write_revision(tmp_path, "001", None)
+    unreadable = tmp_path / "unreadable_revision.py"
+    unreadable.write_text('revision = "002"\ndown_revision = "001"\n', encoding="utf-8")
+    unreadable.chmod(0)
+    try:
+        with pytest.raises(ValueError, match="unreadable_revision.py"):
+            release.head_of_versions_strict(tmp_path)
+    finally:
+        unreadable.chmod(0o600)
+
+
+def test_strict_head_refuses_a_file_over_the_size_bound_that_lenient_reading_skips(
+    tmp_path: Path,
+) -> None:
+    _write_revision(tmp_path, "001", None)
+    oversized = tmp_path / "oversized_revision.py"
+    oversized.write_bytes(b"x" * (release._MAX_REVISION_BYTES + 1))
+
+    assert release.head_of_versions(tmp_path) == "001"
+    with pytest.raises(ValueError, match="oversized_revision.py"):
+        release.head_of_versions_strict(tmp_path)
+
+
+def test_strict_head_refuses_a_fork_where_lenient_reading_returns_none(tmp_path: Path) -> None:
+    _write_revision(tmp_path, "001", None)
+    _write_revision(tmp_path, "002", "001")
+    _write_revision(tmp_path, "003", "001")
+
+    assert release.head_of_versions(tmp_path) is None
+    with pytest.raises(ValueError, match="several heads"):
+        release.head_of_versions_strict(tmp_path)
+
+
+def test_strict_head_refuses_an_empty_directory(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="zero heads"):
+        release.head_of_versions_strict(tmp_path)
+
+
+def test_strict_head_refuses_a_missing_directory(tmp_path: Path) -> None:
+    missing = tmp_path / "missing"
+    with pytest.raises(ValueError, match="does not exist"):
+        release.head_of_versions_strict(missing)
+
+
+def test_strict_head_refuses_a_file_without_a_revision(tmp_path: Path) -> None:
+    (tmp_path / "missing_revision.py").write_text('down_revision = "001"\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="missing_revision.py"):
+        release.head_of_versions_strict(tmp_path)
+
+
+def test_strict_shipped_head_matches_the_lenient_head_on_the_real_tree() -> None:
+    strict_head = release.shipped_alembic_head_strict()
+
+    assert strict_head == release.shipped_alembic_head()
+    assert strict_head
 
 
 def test_shipped_head_is_unknown_when_no_revision_ships(

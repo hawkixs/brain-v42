@@ -102,6 +102,50 @@ def head_of_versions(directory: Path) -> str | None:
     return heads.pop() if len(heads) == 1 else None
 
 
+def head_of_versions_strict(directory: Path) -> str:
+    """Return the one shipped revision head or explain why the package is invalid.
+
+    A probe that skipped an unparsable revision file could announce an older
+    head as shipped — the lie called out at ``release.py:90``. Strict readers
+    therefore reject every unreadable revision instead of silently omitting it.
+    """
+    if not directory.exists():
+        raise ValueError(f"versions directory does not exist: {directory}")
+    if not directory.is_dir():
+        raise ValueError(f"versions path is not a directory: {directory}")
+
+    revisions: set[str] = set()
+    parents: set[str] = set()
+    for path in sorted(directory.glob("*.py")):
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            raise ValueError(f"cannot stat revision file {path.name}") from exc
+        if size > _MAX_REVISION_BYTES:
+            raise ValueError(f"revision file {path.name} exceeds {_MAX_REVISION_BYTES} bytes")
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"cannot read revision file {path.name}") from exc
+        except UnicodeError as exc:
+            raise ValueError(f"revision file {path.name} is not UTF-8") from exc
+        try:
+            revision, declared_parents = _declared_fields(source)
+        except (SyntaxError, ValueError) as exc:
+            raise ValueError(f"cannot parse revision file {path.name}") from exc
+        if revision is None:
+            raise ValueError(f"revision file {path.name} declares no single revision")
+        revisions.add(revision)
+        parents |= declared_parents
+
+    heads = revisions - parents
+    if len(heads) == 1:
+        return heads.pop()
+    if not heads:
+        raise ValueError("revision chain has zero heads")
+    raise ValueError(f"revision chain has several heads: {sorted(heads)!r}")
+
+
 def _versions_directory() -> Path | None:
     """Locate the revisions in the two possible layouts.
 
@@ -126,3 +170,16 @@ def shipped_alembic_head() -> str | None:
     """
     directory = _versions_directory()
     return head_of_versions(directory) if directory is not None else None
+
+
+@cache
+def shipped_alembic_head_strict() -> str:
+    """Return the one Alembic head shipped with this package, never a partial answer.
+
+    The facts probe must fail closed: skipping one bad revision could make an
+    older head look like the release's shipped schema capability.
+    """
+    directory = _versions_directory()
+    if directory is None:
+        raise ValueError("shipped Alembic versions directory is unavailable")
+    return head_of_versions_strict(directory)
