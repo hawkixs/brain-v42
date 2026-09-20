@@ -57,8 +57,21 @@ TIMEOUT_EXIT_CODE = 124
 TIMEOUT_REPLAYABLE_EXIT_CODE = 4
 
 # The codes a chain advances on. Anything else -- 1, 2, 124, a child's own
-# code -- stops where it fell.
+# code -- stops where it fell. (The Dream's ticket_extract CLI also exits 4,
+# for "deferred, nominal"; it is a different process on a different path, read
+# by dream.sh alone, and the two never meet.)
 FALLBACK_EXIT_CODES = frozenset({PROVIDER_FALLBACK_EXIT_CODE, TIMEOUT_REPLAYABLE_EXIT_CODE})
+
+
+def failure_code_after_a_write(child_code: int) -> int:
+    """The code a runner reports for a child that failed AFTER a tool call
+    completed: the child's own code, unless that code is one of the chain's
+    proofs of no write. A CLI that happened to exit 3 or 4 after writing would
+    otherwise be read as "nothing was written" and replayed on the next link,
+    doubling its writes; it is reported as an ordinary failure (1) instead.
+    Nothing is lost -- stderr keeps the child's own words."""
+    return 1 if child_code in FALLBACK_EXIT_CODES else child_code
+
 
 # Variables every rail needs to run at all: locale, TLS trust, proxy policy and
 # the paths a CLI resolves against. Rail-specific additions go through

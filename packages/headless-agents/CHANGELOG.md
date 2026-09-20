@@ -47,6 +47,16 @@ time the member rode a brain-v42 tag.
   last link included. A `3` is never counted as dead — it can be transient. The chain
   itself remembers nothing across runs; the caller decides what to do with a dead link
   (the Dream retires it for the rest of the night).
+- `capability.failure_code_after_a_write(child_code)`: every rail now reports a child that
+  exited **3 or 4 by itself after a completed tool call** as an ordinary failure (`1`),
+  never as the child's own code. Before, the child's code was passed through and a chain
+  would have replayed a run that provably wrote. `1`, `2` and any other code still pass
+  through unchanged.
+- `providers/opencode.py`, `providers/codex.py`, `providers/agy.py`: a `RunSpec.deadline`
+  that has **already expired at launch** returns `TIMEOUT_EXIT_CODE` (124) without
+  launching the child, with the reason in `stderr_log`. Before, the child was launched
+  with a zero budget, killed at once on an empty stream, and — with `4` — every remaining
+  link of a chain would have been condemned in seconds for the caller's spent budget.
 
 ### Unchanged
 - `RunSpec`, `RunResult`, `TokenUsage`, `CapabilityProfile`, `McpServer`, `ToolGuard`,

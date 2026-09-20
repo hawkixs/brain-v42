@@ -64,6 +64,7 @@ from ..capability import (
     PROVIDER_FALLBACK_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
     TIMEOUT_REPLAYABLE_EXIT_CODE,
+    failure_code_after_a_write,
     terminate_process_group,
 )
 from ..profile import CapabilityProfile, McpServer
@@ -272,11 +273,19 @@ def tool_call_started(events_log: Path, *, server: str) -> bool:
     Measured on opencode 1.18.30 (``run --format json``, event emitter read
     from the binary): a ``tool_use`` event is written in its TERMINAL state
     only (``completed``/``error``), so a running call leaves no line -- but the
-    ``step_start`` of the step that issues it is written first, as it happens.
-    Hence the proof is the absence of any step: no ``step_start`` and no
-    ``tool_use`` on the server means the model never began a turn, and nothing
-    could have been issued. A quota-dead link that blocks before its first
-    step (2026-09-19: zero bytes for the whole deadline) reads exactly so.
+    ``step_start`` of the step that issues it is written first, as it happens,
+    through ``process.stdout.write`` inside the event loop. Whether that line
+    is ON DISK when the process is killed is what the proof rests on, and it
+    was measured (2026-09-20) rather than assumed: Bun 1.3.11 standalone --
+    opencode embeds 1.3.14, same line -- writes ``process.stdout.write`` to a
+    regular file synchronously; the line survives a SIGKILL 1.5 s later from a
+    busy loop that never yields, from a pending ``await``, and from the
+    ``for await`` writer loop the emitter uses. Hence the proof is the absence
+    of any step: no ``step_start`` and no ``tool_use`` on the server means the
+    model never began a turn, and nothing could have been issued. A quota-dead
+    link that blocks before its first step (2026-09-19: zero bytes for the
+    whole deadline) reads exactly so. Still owed: the same kill on the opencode
+    binary itself mid-generation, once the opencode-go quota is back.
 
     Fail-closed the other way round from :func:`tool_call_completed`: an
     absent or unreadable stream cannot prove the negative, so it answers
@@ -467,7 +476,7 @@ def telemetry(events_log: Path) -> tuple[TokenUsage | None, float | None]:
 def _failure_exit_code(events_log: Path, default: int, server: str | None) -> int:
     """Translate a failure into "replayable elsewhere" or not, never success."""
     if server is not None and tool_call_completed(events_log, server=server):
-        return default
+        return failure_code_after_a_write(default)
     return PROVIDER_FALLBACK_EXIT_CODE
 
 
@@ -611,6 +620,18 @@ def run_opencode(
             stderr_log.write_text(f"{exc}\n", encoding="utf-8")
             return PROVIDER_FALLBACK_EXIT_CODE
 
+        # A caller's deadline that has already passed is a TIMEOUT, not a dead
+        # link: launching would kill the child at once on an empty stream and
+        # read a 4 out of the caller's exhausted budget -- then the next link's,
+        # and the next -- so nothing is launched and the plain 124 is returned.
+        remaining = _effective_timeout(timeout_seconds, deadline)
+        if remaining <= 0:
+            stderr_log.write_text(
+                "opencode not launched: the caller's deadline had already expired\n",
+                encoding="utf-8",
+            )
+            return TIMEOUT_EXIT_CODE
+
         with (
             events_log.open("w", encoding="utf-8") as events_stream,
             stderr_log.open("w", encoding="utf-8") as stderr_stream,
@@ -630,7 +651,7 @@ def run_opencode(
                 stderr_stream.write(f"unable to start opencode: {exc}\n")
                 return PROVIDER_FALLBACK_EXIT_CODE
             try:
-                process.communicate(timeout=_effective_timeout(timeout_seconds, deadline))
+                process.communicate(timeout=remaining)
             except subprocess.TimeoutExpired:
                 terminate_process_group(process)
                 # A timeout proves nothing BY ITSELF: the run may have written

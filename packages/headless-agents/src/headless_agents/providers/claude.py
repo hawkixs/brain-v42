@@ -25,6 +25,7 @@ from pathlib import Path
 from ..capability import (
     PROVIDER_FALLBACK_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
+    failure_code_after_a_write,
     terminate_process_group,
 )
 from ..profile import McpServer
@@ -242,7 +243,7 @@ def run_claude(
     # did nothing -- and it is also why those variables sit in
     # CHILD_ENV_PASSTHROUGH.
     if tool_call_completed(raw_log):
-        return exit_code
+        return failure_code_after_a_write(exit_code)
     return PROVIDER_FALLBACK_EXIT_CODE
 
 

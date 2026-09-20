@@ -23,6 +23,7 @@ from ..capability import (
     PROVIDER_FALLBACK_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
     TIMEOUT_REPLAYABLE_EXIT_CODE,
+    failure_code_after_a_write,
     terminate_process_group,
 )
 from ..profile import McpServer
@@ -313,7 +314,7 @@ def _deadline_exit_code(
 def _failure_exit_code(events_log: Path, default: int, server: str | None) -> int:
     """Translate a failure into "replayable elsewhere" or not, never success."""
     if server is not None and tool_call_completed(events_log, server=server):
-        return default
+        return failure_code_after_a_write(default)
     return PROVIDER_FALLBACK_EXIT_CODE
 
 
@@ -381,6 +382,18 @@ def run_codex(
             mcp=mcp,
             executable=executable,
         )
+        # A caller's deadline that has already passed is a TIMEOUT, not a dead
+        # link: launching would kill the child at once on an empty stream and
+        # read a 4 out of the caller's exhausted budget -- then the next link's,
+        # and the next -- so nothing is launched and the plain 124 is returned.
+        remaining = _effective_timeout(timeout_seconds, deadline)
+        if remaining <= 0:
+            stderr_log.write_text(
+                "Codex not launched: the caller's deadline had already expired\n",
+                encoding="utf-8",
+            )
+            return TIMEOUT_EXIT_CODE
+
         with (
             events_log.open("w", encoding="utf-8") as events_stream,
             stderr_log.open("w", encoding="utf-8") as stderr_stream,
@@ -405,9 +418,7 @@ def run_codex(
                 return PROVIDER_FALLBACK_EXIT_CODE
 
             try:
-                process.communicate(
-                    input=prompt, timeout=_effective_timeout(timeout_seconds, deadline)
-                )
+                process.communicate(input=prompt, timeout=remaining)
             except subprocess.TimeoutExpired:
                 terminate_process_group(process)
                 # A timeout proves nothing BY ITSELF: the run may have written

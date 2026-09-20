@@ -557,6 +557,28 @@ class TestRunOpenCode:
         _install(monkeypatch, _FakeProcess(returncode=9, events=_events(_tool_use())))
         assert _run(tmp_path) == 9
 
+    def test_a_childs_own_fallback_code_after_a_completed_call_never_advances_a_chain(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """opencode exiting 3 or 4 by itself after writing must be an ordinary
+        failure, or the chain would replay a run that provably wrote."""
+        for code in (PROVIDER_FALLBACK_EXIT_CODE, TIMEOUT_REPLAYABLE_EXIT_CODE):
+            _install(monkeypatch, _FakeProcess(returncode=code, events=_events(_tool_use())))
+            assert _run(tmp_path) == 1, code
+
+    def test_an_already_expired_deadline_is_a_timeout_and_launches_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A caller's budget already spent must not read as a dead link: launching
+        would kill the child at once on an empty stream and return 4, then the
+        next link would do the same, and the chain would condemn every link in
+        seconds. Nothing is launched; the plain 124 stops the chain."""
+        captured = _install(monkeypatch, _FakeProcess(returncode=0, events=GOOD_EVENTS))
+        monkeypatch.setattr(opencode.time, "monotonic", lambda: 1000.0)
+        assert _run(tmp_path, timeout_seconds=60.0, deadline=999.0) == TIMEOUT_EXIT_CODE
+        assert "command" not in captured
+        assert "deadline" in (tmp_path / "out" / "stderr.log").read_text(encoding="utf-8")
+
     def test_a_clean_exit_without_a_report_or_without_a_call_is_a_failure(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

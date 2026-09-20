@@ -432,7 +432,16 @@ def test_a_chain_with_every_link_dead_fails_fast_and_still_signs_off(tmp_path: P
     assert "LINK DOWN codex" in log and "LINK DOWN claude" in log, log
     assert log.count("(provider=codex") == 1, log
     assert log.count("(provider=claude") == 1, log
-    assert "plus aucun maillon vivant" in log, log
+    # The phase that emptied the chain is not retried (a retry would launch an
+    # empty chain), and every later phase fails WITHOUT a launch -- two
+    # distinct lines, two distinct guards.
+    assert "NO-RETRY test-project/scan — plus aucun maillon vivant" in log, log
+    assert "RETRY test-project" not in log.replace("NO-RETRY test-project", ""), log
+    assert log.count("phase non lancée") == 3, log  # clean, connect, synth
+    assert (
+        "4 failed (test-project/scan test-project/clean test-project/connect test-project/synth)"
+        in log
+    ), log
     assert "Dream finished" in log, log
     assert "Traceback" not in log, log
 

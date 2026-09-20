@@ -185,6 +185,52 @@ class TestEventStreamError:
         assert error is not None and fragment in error
 
 
+class TestToolCallStarted:
+    """What the stream proves at the moment the runner's deadline fires.
+
+    Fail-closed the other way round from ``tool_call_completed``: whatever
+    cannot be read answers "a call may have started".
+    """
+
+    def test_an_empty_stream_or_a_turn_without_a_tool_item_proves_no_call(
+        self, tmp_path: Path
+    ) -> None:
+        log = tmp_path / "events.jsonl"
+        log.write_text("", encoding="utf-8")
+        assert codex.tool_call_started(log, server="example") is False
+        chatter = _events(
+            {"type": "thread.started", "thread_id": "t"},
+            {"type": "turn.started"},
+            {"type": "item.completed", "item": {"id": "m", "type": "agent_message", "text": "x"}},
+        )
+        log.write_text(chatter, encoding="utf-8")
+        assert codex.tool_call_started(log, server="example") is False
+
+    def test_a_tool_item_on_the_server_counts_in_any_state(self, tmp_path: Path) -> None:
+        log = tmp_path / "events.jsonl"
+        started = {
+            "type": "item.started",
+            "item": {"type": "mcp_tool_call", "server": "example", "status": "in_progress"},
+        }
+        log.write_text(_events(started), encoding="utf-8")
+        assert codex.tool_call_started(log, server="example") is True
+        log.write_text(_events(_completed_call("example")), encoding="utf-8")
+        assert codex.tool_call_started(log, server="example") is True
+
+    def test_a_tool_item_on_another_server_does_not_count(self, tmp_path: Path) -> None:
+        log = tmp_path / "events.jsonl"
+        log.write_text(_events(_completed_call("elsewhere")), encoding="utf-8")
+        assert codex.tool_call_started(log, server="example") is False
+
+    def test_an_absent_or_truncated_stream_proves_nothing(self, tmp_path: Path) -> None:
+        """A line cut by the kill (``{"type":"item.sta``) is exactly the moment a
+        call may be leaving: it must read as "started", never as empty."""
+        assert codex.tool_call_started(tmp_path / "absent.jsonl", server="example") is True
+        log = tmp_path / "events.jsonl"
+        log.write_text('{"type":"turn.started"}\n{"type":"item.sta', encoding="utf-8")
+        assert codex.tool_call_started(log, server="example") is True
+
+
 class _FakeProcess:
     """Stands in for ``subprocess.Popen``: writes what the test dictates."""
 
@@ -386,6 +432,27 @@ class TestRunCodex:
     ) -> None:
         _install(monkeypatch, _FakeProcess(returncode=124), logs["report_log"])
         assert _run(logs) == TIMEOUT_EXIT_CODE
+
+    def test_a_childs_own_fallback_code_after_a_completed_call_never_advances_a_chain(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path]
+    ) -> None:
+        """Codex exiting 3 or 4 by itself after writing must be an ordinary
+        failure, or the chain would replay a run that provably wrote."""
+        for code in (PROVIDER_FALLBACK_EXIT_CODE, TIMEOUT_REPLAYABLE_EXIT_CODE):
+            fake = _FakeProcess(returncode=code, events=_events(_completed_call("example")))
+            _install(monkeypatch, fake, logs["report_log"])
+            assert _run(logs) == 1, code
+
+    def test_an_already_expired_deadline_is_a_timeout_and_launches_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path]
+    ) -> None:
+        """See the opencode twin: an exhausted budget is not a dead link."""
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+        captured = _install(monkeypatch, fake, logs["report_log"])
+        monkeypatch.setattr(codex.time, "monotonic", lambda: 1000.0)
+        assert _run(logs, timeout_seconds=60.0, deadline=999.0) == TIMEOUT_EXIT_CODE
+        assert "command" not in captured
+        assert "deadline" in logs["stderr_log"].read_text(encoding="utf-8")
 
     def test_a_non_positive_timeout_is_refused_before_launch(self, logs: dict[str, Path]) -> None:
         with pytest.raises(ValueError, match="timeout"):
