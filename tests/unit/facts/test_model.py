@@ -10,8 +10,10 @@ import pytest
 
 from brain_v42.facts.model import (
     FactTarget,
+    HostIdentity,
     InvalidFactNameError,
     Measured,
+    ReleaseIdentity,
     SourceIdentity,
     Unreadable,
     measurement_to_json,
@@ -29,6 +31,10 @@ def _source() -> SourceIdentity:
         server_addr="172.18.0.2",
         server_port=5432,
     )
+
+
+def _release() -> ReleaseIdentity:
+    return ReleaseIdentity(release_sha="a" * 40, package_version="0.6.0")
 
 
 def _measured(**overrides: object) -> Measured:
@@ -96,11 +102,76 @@ def test_source_identity_mapping_requires_exactly_its_four_keys() -> None:
         SourceIdentity.from_mapping({**mapping, "revision": "052"})
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"release_sha": "a" * 39, "package_version": "0.6.0"},
+        {"release_sha": "A" * 40, "package_version": "0.6.0"},
+        {"release_sha": "a" * 40, "package_version": ""},
+        {"release_sha": "a" * 40, "package_version": "x" * 65},
+        {"release_sha": "a" * 40, "package_version": "v\u00e9rsion"},
+        {"release_sha": "a" * 40, "package_version": "dev"},
+    ],
+)
+def test_release_identity_refuses_ambiguous_release_evidence(kwargs: dict[str, str]) -> None:
+    """A live release must identify an immutable shipped package, never a checkout."""
+    with pytest.raises(ValueError):
+        ReleaseIdentity(**kwargs)
+
+
+def test_release_identity_round_trips_and_requires_exact_mapping_keys() -> None:
+    identity = _release()
+    assert ReleaseIdentity.from_mapping(identity.as_dict()) == identity
+    with pytest.raises(ValueError, match="missing"):
+        ReleaseIdentity.from_mapping({"release_sha": "a" * 40})
+    with pytest.raises(ValueError, match="extra"):
+        ReleaseIdentity.from_mapping({**identity.as_dict(), "extra": "x"})
+
+
+@pytest.mark.parametrize(
+    "hostname",
+    ["", "a" * 254, "a" * 64, "-host", "host-", "host_name", "h\u00f4te"],
+)
+def test_host_identity_refuses_non_dns_hostnames(hostname: str) -> None:
+    """A declared host has one case-insensitive DNS spelling for comparison."""
+    with pytest.raises(ValueError):
+        HostIdentity(hostname)
+
+
+def test_host_identity_normalizes_and_requires_exact_mapping_keys() -> None:
+    identity = HostIdentity("HawixsPC")
+    assert identity == HostIdentity("hawixspc")
+    assert HostIdentity.from_mapping(identity.as_dict()) == identity
+    with pytest.raises(ValueError, match="missing"):
+        HostIdentity.from_mapping({})
+    with pytest.raises(ValueError, match="extra"):
+        HostIdentity.from_mapping({"hostname": "hawixspc", "extra": "x"})
+
+
+def test_identity_kinds_are_never_interchangeable() -> None:
+    """Registry comparison must fail closed across independently typed targets."""
+    assert _release() != HostIdentity("hawixspc")
+    assert _release() != _source()
+    assert HostIdentity("hawixspc") != _source()
+
+
 def test_measured_from_value_stores_canonical_json_and_its_digest() -> None:
     """Callers cannot accidentally retain an unordered object beside its digest."""
     measured = _measured(value={"z": 1, "a": True})
     assert measured.value_json == '{"a":true,"z":1}'
     assert measured.digest == "38f6fbfe500b3f47bb8876e871422399399067186be5a97d2bce97f7300d7599"
+
+
+@pytest.mark.parametrize("source", [_release(), HostIdentity("HawixsPC")])
+def test_measured_accepts_every_typed_identity(source: object) -> None:
+    """Successful observations retain the target-specific evidence they verified."""
+    assert _measured(source=source).source == source
+
+
+def test_measured_refuses_an_untyped_source_mapping() -> None:
+    """A mapping has not undergone identity validation and cannot attest a measurement."""
+    with pytest.raises(ValueError, match="identity"):
+        _measured(source=_source().as_dict())
 
 
 @pytest.mark.parametrize("value_json", ['{"b":1,"a":2}', '{"a": 2}'])
@@ -222,6 +293,12 @@ def test_measurement_to_json_emits_measured_and_unreadable_shapes() -> None:
     assert unreadable_json["status"] == "unreadable"
     assert unreadable_json["error_code"] == "timeout"
     assert unreadable_json["measured_at"] == "2026-09-20T12:34:56Z"
+
+
+@pytest.mark.parametrize("source", [_source(), _release(), HostIdentity("HawixsPC")])
+def test_measurement_to_json_renders_each_identity_as_plain_data(source: object) -> None:
+    """The wire shape exposes evidence without leaking an identity object."""
+    assert measurement_to_json(_measured(source=source))["source"] == source.as_dict()  # type: ignore[union-attr]
 
 
 def test_with_source_kind_changes_only_the_cache_provenance() -> None:

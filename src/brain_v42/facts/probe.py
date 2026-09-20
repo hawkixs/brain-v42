@@ -9,7 +9,7 @@ from datetime import timedelta
 from types import MappingProxyType
 from typing import Literal, Protocol
 
-from brain_v42.facts.model import FactTarget, SourceIdentity
+from brain_v42.facts.model import FactTarget, Identity
 
 ValueType = Literal["int", "bool", "string", "null|int"]
 
@@ -17,7 +17,7 @@ ValueType = Literal["int", "bool", "string", "null|int"]
 class SourceSession(Protocol):
     """Expose identity beside a probe read from the same source transaction."""
 
-    async def identity(self) -> SourceIdentity:
+    async def identity(self) -> Identity:
         """Return the source identity that makes this observation trustworthy."""
 
 

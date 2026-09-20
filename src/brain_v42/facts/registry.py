@@ -17,9 +17,9 @@ import structlog
 from brain_v42.facts.canonical import ValueTooLargeError
 from brain_v42.facts.model import (
     FactTarget,
+    Identity,
     Measured,
     Measurement,
-    SourceIdentity,
     Unreadable,
     validate_fact_name,
     with_source_kind,
@@ -109,7 +109,7 @@ class FactRegistry:
         self,
         *,
         sources: Mapping[FactTarget, SourceFactory],
-        expected: Mapping[FactTarget, SourceIdentity],
+        expected: Mapping[FactTarget, Identity],
         monotonic: Callable[[], float] = time.monotonic,
         wall: Callable[[], datetime] = _utcnow,
         concurrency: int = 4,
@@ -541,7 +541,7 @@ class FactRegistry:
 
     async def _measure_and_identify(
         self, probe: Probe, source: SourceSession
-    ) -> tuple[Mapping[str, object], SourceIdentity]:
+    ) -> tuple[Mapping[str, object], Identity]:
         """Run identity after the value so both remain inside the source's transaction."""
         try:
             value = await probe.measure(source)
@@ -555,7 +555,7 @@ class FactRegistry:
 
     async def _open_measure_and_identify(
         self, factory: SourceFactory, probe: Probe
-    ) -> tuple[Mapping[str, object], SourceIdentity]:
+    ) -> tuple[Mapping[str, object], Identity]:
         """Include source opening and cleanup in the same deadline as the probe itself."""
         context = factory()
         try:
@@ -601,9 +601,7 @@ class FactRegistry:
         """Derive a non-negative duration without ever consulting the publication clock."""
         return max(0, int((self._monotonic() - started_mono) * 1000))
 
-    def _record_failure(
-        self, result: Unreadable, *, identity: SourceIdentity | None = None
-    ) -> None:
+    def _record_failure(self, result: Unreadable, *, identity: Identity | None = None) -> None:
         """Log one redacted warning from the producer, never once for each waiting reader."""
         fields: dict[str, object] = {
             "fact": result.fact,
