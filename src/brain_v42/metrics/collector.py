@@ -17,6 +17,7 @@ from brain_v42.config import get_settings
 from brain_v42.metrics.collector_db import _DbCollectorsMixin
 from brain_v42.metrics.collector_dream import _DreamCollectorsMixin
 from brain_v42.metrics.collector_nightly import _NightlyCollectorsMixin
+from brain_v42.repositories.pg_graph_ledger import projection_health, read_projection_state
 
 logger = structlog.get_logger(__name__)
 
@@ -666,80 +667,32 @@ class MetricsCollector(_DbCollectorsMixin, _DreamCollectorsMixin, _NightlyCollec
                         worker_last_24h[name] = int(value)
 
                 try:
-                    outbox_row = (
-                        await session.execute(
-                            text(
-                                "WITH observed AS MATERIALIZED ("
-                                "SELECT clock_timestamp() AS now"
-                                "), outbox AS ("
-                                "SELECT "
-                                "COUNT(*) FILTER ("
-                                "WHERE delivered_at IS NULL "
-                                "AND last_error_code IS DISTINCT FROM 'max_attempts'"
-                                ") AS pending, "
-                                "COUNT(*) FILTER ("
-                                "WHERE delivered_at IS NULL "
-                                "AND last_error_code IS DISTINCT FROM 'max_attempts' "
-                                "AND available_at <= (SELECT now FROM observed) "
-                                "AND (leased_until IS NULL "
-                                "OR leased_until <= (SELECT now FROM observed))"
-                                ") AS ready, "
-                                "COUNT(*) FILTER ("
-                                "WHERE delivered_at IS NULL "
-                                "AND last_error_code IS DISTINCT FROM 'max_attempts' "
-                                "AND lease_owner IS NOT NULL "
-                                "AND leased_until > (SELECT now FROM observed)"
-                                ") AS claimed, "
-                                "COUNT(*) FILTER ("
-                                "WHERE delivered_at IS NULL "
-                                "AND last_error_code = 'max_attempts'"
-                                ") AS exhausted, "
-                                "COALESCE(EXTRACT(EPOCH FROM ("
-                                "(SELECT now FROM observed) - MIN(created_at) FILTER ("
-                                "WHERE delivered_at IS NULL "
-                                "AND last_error_code IS DISTINCT FROM 'max_attempts'"
-                                ")"
-                                ")), 0) AS oldest_pending_age_seconds "
-                                "FROM graph_outbox WHERE delivered_at IS NULL"
-                                "), projector AS ("
-                                "SELECT generation, "
-                                "neo4j_armed_generation = generation AS armed, "
-                                "owner IS NOT NULL "
-                                "AND leased_until > (SELECT now FROM observed) AS lease_active, "
-                                "recovery_id IS NOT NULL AS recovery_active "
-                                "FROM graph_projection_leases "
-                                "WHERE slot = 'neo4j'"
-                                ") "
-                                "SELECT outbox.pending, outbox.ready, outbox.claimed, "
-                                "outbox.exhausted, outbox.oldest_pending_age_seconds, "
-                                "projector.generation, projector.armed, "
-                                "projector.lease_active, projector.recovery_active "
-                                "FROM outbox LEFT JOIN projector ON TRUE"
-                            )
-                        )
-                    ).one()
+                    projection_state = await read_projection_state(session)
                 except Exception as exc:
                     logger.debug(
                         "metrics.collect_graph_outbox_stats.unavailable",
                         error_type=type(exc).__name__,
                     )
                 else:
-                    armed = bool(outbox_row[6])
-                    lease_active = bool(outbox_row[7])
-                    recovery_active = bool(outbox_row[8])
                     graph_outbox_stats = {
                         "available": True,
-                        "pending": int(outbox_row[0] or 0),
-                        "ready": int(outbox_row[1] or 0),
-                        "claimed": int(outbox_row[2] or 0),
-                        "exhausted": int(outbox_row[3] or 0),
-                        "oldest_pending_age_seconds": round(float(outbox_row[4] or 0), 1),
+                        "pending": projection_state.pending,
+                        "ready": projection_state.ready,
+                        "claimed": projection_state.claimed,
+                        "exhausted": projection_state.exhausted,
+                        "oldest_pending_age_seconds": round(
+                            projection_state.oldest_pending_age_seconds, 1
+                        ),
                         "projector": {
-                            "generation": -1 if outbox_row[5] is None else int(outbox_row[5]),
-                            "armed": armed,
-                            "lease_active": lease_active,
-                            "recovery_active": recovery_active,
-                            "healthy": armed and lease_active and not recovery_active,
+                            "generation": (
+                                -1
+                                if projection_state.generation is None
+                                else projection_state.generation
+                            ),
+                            "armed": projection_state.armed,
+                            "lease_active": projection_state.lease_active,
+                            "recovery_active": projection_state.recovery_active,
+                            "healthy": projection_health(projection_state),
                         },
                     }
 
