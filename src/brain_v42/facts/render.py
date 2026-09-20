@@ -119,6 +119,10 @@ def _render_killswitch_phase(value: Mapping[str, object], phase: str, dry_key: s
         rendered = f"{label} on"
     elif enabled == "false":
         rendered = f"{label} off"
+    elif enabled == "":
+        # Absent from the drop-in (the ROADMAP keys since the phase retired on
+        # 2026-09-10): dream.sh runs its code default, off. Not a typo.
+        return f"{label} off (non déclaré)"
     else:
         return f"{label} off {_raw(enabled)} (illisible → off)"
     if dry_key is None or enabled != "true":
@@ -128,6 +132,8 @@ def _render_killswitch_phase(value: Mapping[str, object], phase: str, dry_key: s
         return f"{rendered} wet"
     if dry == "true":
         return f"{rendered} dry"
+    if dry == "":
+        return f"{rendered} (mode non déclaré → dry)"
     return f"{rendered} {_raw(dry)} (illisible → dry)"
 
 
