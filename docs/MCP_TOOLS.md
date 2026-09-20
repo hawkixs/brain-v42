@@ -78,6 +78,41 @@ rollout, and rollback are documented in
 
 `brain_learn` is the last-resort tool, never the default.
 
+## Measured facts
+
+The version 1.0 fact tools expose the closed, independently verified fact
+catalogue. They are read-only for MCP clients: a caller can inspect declarations
+and evidence, but cannot install a probe or choose its source.
+
+| Operation | Arguments | Result |
+| --- | --- | --- |
+| `brain_fact_list` | none | Ordered descriptors and their last cached observation, if any |
+| `brain_fact_get` | `name`, `max_age_seconds=None` | One measured or unreadable observation |
+
+### brain_fact_list (`fact_tools.py`)
+
+```
+brain_fact_list()
+```
+
+Lists descriptors in catalogue registration order: name, definition version,
+target, TTL, timeout and deadline, briefing eligibility, policies, and the
+last cached observation. It measures nothing, so it never starts a probe or
+consumes a refresh-budget token.
+
+### brain_fact_get (`fact_tools.py`)
+
+```
+brain_fact_get(name, max_age_seconds=None)
+```
+
+Reads one registered fact through the registry. `max_age_seconds=None` uses the
+fact TTL; a non-negative value requests that maximum age. In particular,
+`max_age_seconds=0` forces a probe and is charged to the shared refresh budget.
+The operation never bypasses a probe timeout. An unreadable measurement is a
+normal structured result; an unknown fact returns `unknown_fact`, and a negative
+age returns `invalid_argument`.
+
 ## Observable delivery workflows
 
 The eleven `brain_delivery_*` operations are version 1.0 and return structured
@@ -954,4 +989,5 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `ticket_tools.py` | tickets cross-projet (coordination) | 5 |
 | `workflow_guide_tools.py` | bounded workflow guidance | 1 |
 | `delivery_tools.py` | observable delivery | 11 |
+| `fact_tools.py` | measured facts (registered by later server composition) | 2 |
 | **Total** | | **65 always-on + 2 graph-gated = 67** |

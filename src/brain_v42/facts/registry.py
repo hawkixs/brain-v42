@@ -198,6 +198,12 @@ class FactRegistry:
         except KeyError as exc:
             raise UnknownFactError(name) from exc
 
+    def cached(self, name: str) -> Measurement | None:
+        """Return the stored observation without changing cache age or starting a probe."""
+        self.describe(name)
+        entry = self._cache.get(name)
+        return None if entry is None else entry.measurement
+
     def briefing_names(self) -> tuple[str, ...]:
         """Return only cheap, explicitly declared briefing facts in catalogue order."""
         return tuple(name for name, descriptor in self._descriptors.items() if descriptor.briefing)
