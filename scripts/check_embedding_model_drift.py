@@ -48,25 +48,28 @@ from brain_v42.services.embedding_factory import (
 from brain_v42.services.embedding_text import EmbeddingEntityType, embedding_text_from_row
 from brain_v42.services.gpu_embedding_service import EmbeddingUnavailable, GPUEmbeddingService
 
-#: The five knowledge tables `embedding_text_from_row` can recompose.
-#: The five knowledge tables `embedding_text_from_row` can recompose.
+#: The six vector tables `embedding_text_from_row` can recompose from the row
+#: alone. `features` joined them on 2026-09-21: its bulk reindex redefined the
+#: column as embed(description), which is what made it reproducible -- and a
+#: reproducible column is exactly what this check needs to sample.
 SAMPLED_TABLES: dict[EmbeddingEntityType, tuple[str, tuple[str, ...]]] = {
     "decision": ("decisions", ("title", "description", "reasoning")),
     "learning": ("learnings", ("topic", "insight")),
     "snippet": ("snippets", ("intention",)),
     "runbook": ("runbooks", ("title", "description", "trigger")),
     "adr": ("adrs", ("title", "context", "decision")),
+    "feature": ("features", ("description",)),
 }
 
-#: The four remaining vector tables. They compose their text elsewhere, so the
+#: The three remaining vector tables. They compose their text elsewhere, so the
 #: sample cannot reach them -- and that is not a detail: measured 2026-09-21
-#: they hold 3159 of 8811 embedded rows (features 920, indexed_plan_chunks
-#: 1792, indexed_plans 208, gitlab_events 239), `scripts/regen_embeddings.py`
-#: reindexes NONE of them, and `indexed_plan_chunks` is served by brain_search
-#: while `features` drives semantic dedup in cluster_guard. A switch reindexed
-#: with today's tooling therefore leaves a third of the corpus written by the
-#: old model while this check reports MATCH. Every run says so out loud.
-UNSAMPLED_VECTOR_TABLES = ("features", "indexed_plans", "indexed_plan_chunks", "gitlab_events")
+#: they hold 2239 of 8811 embedded rows (indexed_plan_chunks 1792, indexed_plans
+#: 208, gitlab_events 239) and `indexed_plan_chunks` is served by brain_search.
+#: Plans are rewritten by re-running plan indexing after marking them stale, not
+#: by `regen_embeddings.py`, so a switch can leave them behind while this check
+#: reports MATCH. `gitlab_events` is dead by decision `218028c7` and stale
+#: vectors there cost nothing. Every run says the blind spot out loud.
+UNSAMPLED_VECTOR_TABLES = ("indexed_plans", "indexed_plan_chunks", "gitlab_events")
 
 
 async def count_unchecked(conn: asyncpg.Connection | None) -> list[dict[str, object]]:

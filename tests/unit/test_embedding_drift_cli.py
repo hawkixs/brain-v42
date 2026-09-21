@@ -66,19 +66,34 @@ def test_stdout_carries_nothing_but_the_document() -> None:
 def test_the_report_names_the_vector_tables_it_did_not_check() -> None:
     """A MATCH must never read as "the whole corpus is fine".
 
-    Nine tables carry a vector; the sample covers the five whose text
-    `embedding_text_from_row` can recompose. The other four hold 3159 of 8811
-    embedded rows (measured 2026-09-21) and `scripts/regen_embeddings.py`
-    reindexes none of them — so after a switch the sampled five can be freshly
-    written while a third of the corpus is still the old model's. The blind
-    spot is stated on every run rather than left for the operator to infer.
+    Nine tables carry a vector; the sample covers the six whose text
+    `embedding_text_from_row` can recompose. The other three hold 2239 of 8811
+    embedded rows (measured 2026-09-21) — so after a switch the sampled six can
+    be freshly written while a quarter of the corpus is still the old model's.
+    The blind spot is stated on every run rather than left for the operator to
+    infer.
     """
     result = _run("--json")
     payload = json.loads(result.stdout)
 
     assert {entry["table"] for entry in payload["unchecked"]} == {
-        "features",
         "indexed_plans",
         "indexed_plan_chunks",
         "gitlab_events",
     }
+
+
+def test_features_is_checked_now_that_it_has_a_reindex_path() -> None:
+    """The table that corrupts a decision rather than a search result is not a blind spot.
+
+    `features` was unsampled for one honest reason: nothing could reindex it, so
+    naming it as unchecked was the whole truth. `regen_embeddings.py` now rewrites
+    it from `description`, which makes it reproducible from the row alone — and a
+    check that keeps ignoring it cannot fail on it, which is precisely how a
+    post-switch verification returns a false green on the 920 rows that drive
+    `cluster_guard`'s semantic dedup at COSINE_LINK = 0.70.
+    """
+    result = _run("--json")
+    payload = json.loads(result.stdout)
+
+    assert "features" not in {entry["table"] for entry in payload["unchecked"]}
