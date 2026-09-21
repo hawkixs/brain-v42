@@ -5,11 +5,13 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
+from fastmcp.exceptions import ToolError
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -32,6 +34,7 @@ from brain_v42.facts.probe import SourceSession
 from brain_v42.facts.registry import FactRegistry
 from brain_v42.mcp.tools import claim_writes
 from brain_v42.mcp.tools.claim_writes import persist_claims, resolve_claim_inputs
+from brain_v42.mcp.tools.crud_tools import register_crud_tools
 from brain_v42.models.adr import ADRCreate
 from brain_v42.models.learning import LearningCreate, LearningUpdate
 from brain_v42.repositories.pg_adr import PgADRRepo
@@ -67,6 +70,20 @@ class _EmbeddingService:
 
     async def embed(self, text: str) -> list[float]:
         return [0.125] * _EMBEDDING_DIM
+
+
+class _MCP:
+    """Keep the integration test on the registered tool closure without a transport dependency."""
+
+    def __init__(self) -> None:
+        self.registered: dict[str, Any] = {}
+
+    def tool(self, **kwargs: Any) -> Any:
+        def decorator(function: Any) -> Any:
+            self.registered[function.__name__] = function
+            return function
+
+        return decorator
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +186,75 @@ def _adr_service(session_factory: async_sessionmaker[AsyncSession]) -> ADRServic
         embedding_svc=_EmbeddingService(),
         project_context_repo=PgProjectContextRepo(session_factory),
     )
+
+
+def _brain_update_tool(
+    service: LearningService,
+    registry: FactRegistry,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> Any:
+    """Register only the generic tool while its real learning service owns the database write."""
+    mcp = _MCP()
+    register_crud_tools(
+        mcp,
+        decision_svc=MagicMock(),
+        learning_svc=service,
+        snippet_svc=MagicMock(),
+        runbook_svc=MagicMock(),
+        adr_svc=MagicMock(),
+        session_factory=session_factory,
+        fact_registry=registry,
+    )
+    return mcp.registered["brain_update"]
+
+
+async def _learning_with_claims(
+    session_factory: async_sessionmaker[AsyncSession],
+    registry: FactRegistry,
+    *statements: str,
+) -> tuple[LearningService, Any, list[UUID]]:
+    """Create a separate project entry with active declarations for one replacement scenario."""
+    project_key = f"claim-update-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+    service = _service(session_factory)
+    data = LearningCreate(
+        topic=f"Claim update witness {uuid4()}",
+        insight="The initial field value must survive failed claim replacements.",
+        project_key=project_key,
+    )
+    resolved = await resolve_claim_inputs(registry, [_claim(statement) for statement in statements])
+    async with session_factory() as session, session.begin():
+        learning = await service.create(data, session=session)
+        claim_ids = await persist_claims(
+            session,
+            entry_id=learning.id,
+            entity_type="learning",
+            project_key=project_key,
+            resolved=resolved,
+            declared_by="integration-test",
+            declared_at=datetime.now(UTC),
+        )
+    return service, learning, claim_ids
+
+
+async def _claim_rows(
+    session_factory: async_sessionmaker[AsyncSession], learning_id: UUID
+) -> list[Any]:
+    """Read every occurrence, including retired ones, to prove append-only replacement semantics."""
+    async with session_factory() as session:
+        return list(
+            (
+                await session.execute(
+                    sa.select(knowledge_claims)
+                    .join(
+                        brain_entities,
+                        knowledge_claims.c.entity_ref_id == brain_entities.c.id,
+                    )
+                    .where(brain_entities.c.source_uuid == learning_id)
+                    .order_by(knowledge_claims.c.seq)
+                )
+            ).mappings()
+        )
 
 
 async def test_learning_update_in_caller_transaction_rolls_back_with_the_caller(
@@ -383,3 +469,234 @@ async def test_claim_persistence_failure_rolls_back_the_learning_too(
             )
             == 0
         )
+
+
+async def test_update_empty_claims_retires_every_active_occurrence_under_matching_cas(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """An empty replacement is the shared guarded algorithm, not an unguarded exception."""
+    registry = _registry()
+    await register_fact_definitions(registry, session_factory)
+    service, learning, claim_ids = await _learning_with_claims(
+        session_factory, registry, "First active claim.", "Second active claim."
+    )
+
+    result = await _brain_update_tool(service, registry, session_factory)(
+        entity_type="learning",
+        entity_id=str(learning.id),
+        fields={"insight": "The fields and retiring claims share one transaction."},
+        claims=[],
+        expected_active_claim_ids=[str(claim_ids[1]), str(claim_ids[0])],
+    )
+
+    assert "kept:0" in result
+    assert "created:0" in result
+    assert "retired:2" in result
+    rows = await _claim_rows(session_factory, learning.id)
+    assert {row["id"] for row in rows} == set(claim_ids)
+    assert all(row["retired_at"] is not None for row in rows)
+
+
+async def test_update_empty_claims_with_stale_cas_changes_nothing(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A stale destructive request leaves both the entry field and claim lifecycle untouched."""
+    registry = _registry()
+    await register_fact_definitions(registry, session_factory)
+    service, learning, claim_ids = await _learning_with_claims(
+        session_factory, registry, "Active claim."
+    )
+
+    with pytest.raises(ToolError, match="claims_conflict"):
+        await _brain_update_tool(service, registry, session_factory)(
+            entity_type="learning",
+            entity_id=str(learning.id),
+            fields={"insight": "This field update must be rolled back."},
+            claims=[],
+            expected_active_claim_ids=[str(uuid4())],
+        )
+
+    rows = await _claim_rows(session_factory, learning.id)
+    assert rows[0]["id"] == claim_ids[0]
+    assert rows[0]["retired_at"] is None
+    async with session_factory() as session:
+        assert await session.scalar(
+            sa.select(learnings.c.insight).where(learnings.c.id == learning.id)
+        ) == ("The initial field value must survive failed claim replacements.")
+
+
+async def test_update_replacement_keeps_creates_and_retires_in_one_transaction(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A complete replacement preserves same keys while changing only the two set differences."""
+    registry = _registry()
+    await register_fact_definitions(registry, session_factory)
+    service, learning, claim_ids = await _learning_with_claims(
+        session_factory, registry, "Kept claim.", "Dropped claim."
+    )
+
+    result = await _brain_update_tool(service, registry, session_factory)(
+        entity_type="learning",
+        entity_id=str(learning.id),
+        fields={"insight": "Replacement completes with the field update."},
+        claims=[_claim("Kept claim."), _claim("Created claim.")],
+        expected_active_claim_ids=[str(claim_ids[1]), str(claim_ids[0])],
+    )
+
+    assert "kept:1" in result
+    assert "created:1" in result
+    assert "retired:1" in result
+    rows = await _claim_rows(session_factory, learning.id)
+    assert len(rows) == 3
+    kept = next(row for row in rows if row["id"] == claim_ids[0])
+    dropped = next(row for row in rows if row["id"] == claim_ids[1])
+    created = next(row for row in rows if row["id"] not in set(claim_ids))
+    assert kept["retired_at"] is None
+    assert dropped["retired_at"] is not None
+    assert created["retired_at"] is None
+
+
+async def test_update_reassertion_without_replaces_is_refused(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """An old key cannot become active again unless the caller names its predecessor."""
+    registry = _registry()
+    await register_fact_definitions(registry, session_factory)
+    service, learning, claim_ids = await _learning_with_claims(
+        session_factory, registry, "Retired key."
+    )
+    tool = _brain_update_tool(service, registry, session_factory)
+    await tool(
+        entity_type="learning",
+        entity_id=str(learning.id),
+        fields={"insight": "Retire before reassertion."},
+        claims=[],
+        expected_active_claim_ids=[str(claim_ids[0])],
+    )
+
+    with pytest.raises(ToolError, match="replacement_required"):
+        await tool(
+            entity_type="learning",
+            entity_id=str(learning.id),
+            fields={"insight": "Missing predecessor is refused."},
+            claims=[_claim("Retired key.")],
+            expected_active_claim_ids=[],
+        )
+
+
+async def test_update_reassertion_with_wrong_predecessor_is_refused(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Naming a different retired occurrence cannot fork a claim's supersession chain."""
+    registry = _registry()
+    await register_fact_definitions(registry, session_factory)
+    service, learning, claim_ids = await _learning_with_claims(
+        session_factory, registry, "Retired key."
+    )
+    tool = _brain_update_tool(service, registry, session_factory)
+    await tool(
+        entity_type="learning",
+        entity_id=str(learning.id),
+        fields={"insight": "Retire before reassertion."},
+        claims=[],
+        expected_active_claim_ids=[str(claim_ids[0])],
+    )
+
+    wrong = _claim("Retired key.")
+    wrong["replaces"] = str(uuid4())
+    with pytest.raises(ToolError, match="replacement_required"):
+        await tool(
+            entity_type="learning",
+            entity_id=str(learning.id),
+            fields={"insight": "Wrong predecessor is refused."},
+            claims=[wrong],
+            expected_active_claim_ids=[],
+        )
+
+
+async def test_update_reassertion_with_latest_predecessor_succeeds(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A correctly named retired occurrence becomes the immutable predecessor of the new row."""
+    registry = _registry()
+    await register_fact_definitions(registry, session_factory)
+    service, learning, claim_ids = await _learning_with_claims(
+        session_factory, registry, "Retired key."
+    )
+    tool = _brain_update_tool(service, registry, session_factory)
+    await tool(
+        entity_type="learning",
+        entity_id=str(learning.id),
+        fields={"insight": "Retire before reassertion."},
+        claims=[],
+        expected_active_claim_ids=[str(claim_ids[0])],
+    )
+
+    replacement = _claim("Retired key.")
+    replacement["replaces"] = str(claim_ids[0])
+    result = await tool(
+        entity_type="learning",
+        entity_id=str(learning.id),
+        fields={"insight": "Correct predecessor succeeds."},
+        claims=[replacement],
+        expected_active_claim_ids=[],
+    )
+
+    assert "created:1" in result
+    rows = await _claim_rows(session_factory, learning.id)
+    assert len(rows) == 2
+    assert rows[1]["replaces_id"] == claim_ids[0]
+    assert rows[1]["retired_at"] is None
+
+
+async def test_update_replacement_of_an_active_same_key_keeps_that_occurrence(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Keeping an active key avoids an insert that would violate the active-key unique index."""
+    registry = _registry()
+    await register_fact_definitions(registry, session_factory)
+    service, learning, claim_ids = await _learning_with_claims(
+        session_factory, registry, "Same key."
+    )
+
+    result = await _brain_update_tool(service, registry, session_factory)(
+        entity_type="learning",
+        entity_id=str(learning.id),
+        fields={"insight": "The existing occurrence remains active."},
+        claims=[_claim("Same key.")],
+        expected_active_claim_ids=[str(claim_ids[0])],
+    )
+
+    assert "kept:1" in result
+    assert "created:0" in result
+    assert "retired:0" in result
+    rows = await _claim_rows(session_factory, learning.id)
+    assert len(rows) == 1
+    assert rows[0]["id"] == claim_ids[0]
+
+
+async def test_update_claim_failure_rolls_back_the_field_update_too(
+    monkeypatch: pytest.MonkeyPatch, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """A claim insert failure cannot commit the preceding service update from the same transaction."""
+    registry = _registry()
+    await register_fact_definitions(registry, session_factory)
+    service, learning, _claim_ids = await _learning_with_claims(session_factory, registry)
+
+    async def fail_insert(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("forced replacement insert failure")
+
+    monkeypatch.setattr(claim_writes, "insert_claim", fail_insert)
+    with pytest.raises(RuntimeError, match="forced replacement insert failure"):
+        await _brain_update_tool(service, registry, session_factory)(
+            entity_type="learning",
+            entity_id=str(learning.id),
+            fields={"insight": "This update must roll back with the failed claim."},
+            claims=[_claim("New declaration after rollback.")],
+            expected_active_claim_ids=[],
+        )
+
+    async with session_factory() as session:
+        assert await session.scalar(
+            sa.select(learnings.c.insight).where(learnings.c.id == learning.id)
+        ) == ("The initial field value must survive failed claim replacements.")

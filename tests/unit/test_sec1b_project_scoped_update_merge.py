@@ -348,6 +348,8 @@ def test_mcp_tool_signatures_remain_publicly_unchanged() -> None:
         "entity_id",
         "fields",
         "related_to",
+        "claims",
+        "expected_active_claim_ids",
     ]
     assert update_signature.parameters["related_to"].default is None
     assert list(merge_signature.parameters) == ["entity_type", "source_id", "target_id"]

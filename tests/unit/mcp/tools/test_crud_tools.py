@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+import sqlalchemy as sa
 
 from brain_v42.models.adr import ADR
 from brain_v42.models.decision import Decision
@@ -16,6 +17,7 @@ from brain_v42.models.indexed_plan import IndexedPlan
 from brain_v42.models.learning import Learning
 from brain_v42.models.runbook import Runbook, RunbookStep
 from brain_v42.models.snippet import Snippet
+from brain_v42.repositories.pg_knowledge_claims import ClaimRow
 from tests.unit.mcp._tool_error_adapter import capture_tool_errors
 
 # ---------------------------------------------------------------------------
@@ -443,6 +445,125 @@ class TestBrainUpdate:
         assert isinstance(result, str)
         assert result.startswith("ok Updated")
         assert "type:decision" in result
+
+    @pytest.mark.asyncio
+    async def test_claims_none_preserves_the_legacy_update_path(
+        self,
+        tools: dict[str, Any],
+        services: dict[str, Any],
+    ) -> None:
+        """An omitted claim patch must not open a claim transaction or change update dispatch."""
+        updated = _make_decision(title="Updated Title")
+        services["decision_svc"].update.return_value = updated
+        entity_id = str(uuid4())
+
+        result = await tools["brain_update"](
+            entity_type="decision",
+            entity_id=entity_id,
+            fields={"title": "Updated Title"},
+            claims=None,
+        )
+
+        assert result.startswith("ok Updated")
+        services["decision_svc"].update.assert_awaited_once()
+        assert "session" not in services["decision_svc"].update.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_claim_patch_requires_an_expected_active_set(
+        self,
+        tools: dict[str, Any],
+        services: dict[str, Any],
+    ) -> None:
+        """A destructive claim patch cannot silently accept an unknown active set."""
+        result = await tools["brain_update"](
+            entity_type="decision",
+            entity_id=str(uuid4()),
+            fields={"title": "Updated Title"},
+            claims=[],
+        )
+
+        assert "expected_active_claim_ids is required" in result
+        services["decision_svc"].update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_claim_patch_refuses_a_stale_active_set_before_any_claim_write(
+        self, services: dict[str, Any]
+    ) -> None:
+        """CAS compares ids as a set and leaves the session with only its active-set read."""
+        from brain_v42.mcp.tools.crud_tools import register_crud_tools
+
+        entity_id = uuid4()
+        anchor_id = uuid4()
+        active_id = uuid4()
+        services["decision_svc"].update.return_value = _make_decision(id=entity_id)
+        active = ClaimRow(
+            id=active_id,
+            seq=1,
+            claim_key="a" * 64,
+            statement="Active declaration.",
+            fact_name="claim_write_lag",
+            definition_version=1,
+            target="production",
+            expected={"path": "/lag_seconds", "op": "lte", "value": 300},
+            expected_resolved={"path": "/lag_seconds", "op": "lte", "value": 300},
+            validity_seconds=60,
+            provenance="declared",
+            declared_by="test",
+            declared_at=datetime.now(UTC),
+            recorded_at=datetime.now(UTC),
+            replaces_id=None,
+        )
+        session = MagicMock()
+        session.scalar = AsyncMock(return_value=anchor_id)
+        result = MagicMock()
+        result.mappings.return_value = [
+            {
+                "id": active.id,
+                "seq": active.seq,
+                "claim_key": active.claim_key,
+                "statement": active.statement,
+                "fact_name": active.fact_name,
+                "definition_version": active.definition_version,
+                "target": active.target,
+                "expected": active.expected,
+                "expected_resolved": active.expected_resolved,
+                "validity_seconds": active.validity_seconds,
+                "provenance": active.provenance,
+                "declared_by": active.declared_by,
+                "declared_at": active.declared_at,
+                "recorded_at": active.recorded_at,
+                "replaces_id": active.replaces_id,
+            }
+        ]
+        session.execute = AsyncMock(return_value=result)
+        transaction = AsyncMock()
+        transaction.__aenter__.return_value = None
+        transaction.__aexit__.return_value = False
+        session.begin.return_value = transaction
+        context = AsyncMock()
+        context.__aenter__.return_value = session
+        context.__aexit__.return_value = False
+        session_factory = MagicMock(return_value=context)
+        mcp = MockMCP()
+        register_crud_tools(
+            mcp,
+            **services,
+            session_factory=session_factory,
+            fact_registry=MagicMock(),
+        )
+
+        result_text = await mcp.registered["brain_update"](
+            entity_type="decision",
+            entity_id=str(entity_id),
+            fields={"title": "Updated Title"},
+            claims=[],
+            expected_active_claim_ids=[str(uuid4())],
+        )
+
+        assert "claims_conflict" in result_text
+        statements = [call.args[0] for call in session.execute.await_args_list]
+        assert len(statements) == 1
+        assert isinstance(statements[0], sa.sql.Select)
 
     @pytest.mark.asyncio
     async def test_update_not_found(self, tools: dict[str, Any], services: dict[str, Any]) -> None:
