@@ -193,3 +193,28 @@ class TestTheTokenNeverLeaks:
         client = build_reranker_client(_settings(brain_embedding_token_file=_token_file(tmp_path)))
         assert TOKEN not in repr(service)
         assert TOKEN not in repr(client)
+
+
+def test_a_tilde_in_the_token_file_path_is_expanded(tmp_path: Path, monkeypatch) -> None:
+    """`~` is what an operator writes, and pydantic's `Path` does not expand it.
+
+    The provider-switch runbook prescribed
+    `BRAIN_EMBEDDING_TOKEN_FILE=~/.config/brain-v42/<provider>.key`. Taken
+    literally that is a relative directory named `~` under the working
+    directory, so the client fails to build and the reindex and every writer die
+    at construction -- loud, but it kills the window at its first gesture. Two
+    independent reviews found it on the same day; expanding here fixes the
+    runbook and every other place a `~` can be written.
+    """
+    home = tmp_path / "home"
+    (home / ".config" / "brain-v42").mkdir(parents=True)
+    key = home / ".config" / "brain-v42" / "provider.key"
+    key.write_text(TOKEN, encoding="utf-8")
+    key.chmod(0o600)
+    monkeypatch.setenv("HOME", str(home))
+
+    service = build_embedding_service(
+        _settings(brain_embedding_token_file=Path("~/.config/brain-v42/provider.key"))
+    )
+
+    assert service._get_client().headers["Authorization"] == f"Bearer {TOKEN}"

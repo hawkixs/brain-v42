@@ -104,7 +104,11 @@ def _resolve_shim_bearer(settings: Settings, api_key: str) -> str:
             "brain_embedding_token_file is set and an api key is configured; "
             "clear one of them"
         )
-    path = Path(token_file)
+    # `~` is what an operator writes and what the switch runbook prescribed;
+    # pydantic's `Path` field does not expand it, so the literal string would be
+    # read as a relative directory named `~` under the working directory and
+    # every writer would fail to build.
+    path = Path(token_file).expanduser()
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError as exc:
