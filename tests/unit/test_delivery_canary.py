@@ -680,7 +680,7 @@ async def test_each_phase_reruns_preflight_and_positive_phases_collect_github(
         calls["preflight"] += 1
         return canary.PreflightReceipt(
             source_sha="7" * 40,
-            schema_revision="054",
+            schema_revision="055",
             observer_env=tmp_path / "observer.env",
         )
 
@@ -699,7 +699,7 @@ async def test_each_phase_reruns_preflight_and_positive_phases_collect_github(
         selected_phase = phase
         receipt = await canary._run(config, phase, clock=lambda: NOW)
         assert receipt["source_sha"] == "7" * 40
-        assert receipt["schema_revision"] == "054"
+        assert receipt["schema_revision"] == "055"
         assert receipt["source"] == "deployment_preflight_rerun"
     assert calls == {"preflight": 5, "read": 5, "github": 4}
 
@@ -724,11 +724,11 @@ async def test_run_executes_sync_preflight_checker_outside_its_event_loop(
 
     def check(_path: Path) -> dict[str, str]:
         async def schema_probe() -> str:
-            return "054"
+            return "055"
 
         calls["preflight"] += 1
-        assert asyncio.run(schema_probe()) == "054"
-        return {"source_sha": "7" * 40, "schema_revision": "054"}
+        assert asyncio.run(schema_probe()) == "055"
+        return {"source_sha": "7" * 40, "schema_revision": "055"}
 
     async def read(_config: Any) -> dict[str, Any]:
         calls["read"] += 1
@@ -812,7 +812,7 @@ async def test_run_samples_time_after_brain_and_github_acquisitions(
         "_deployment_canary",
         lambda _path: canary.PreflightReceipt(
             source_sha="7" * 40,
-            schema_revision="054",
+            schema_revision="055",
             observer_env=tmp_path / "observer.env",
         ),
     )
@@ -890,7 +890,7 @@ def test_cli_emits_one_utc_json_without_private_paths_or_tokens(
             "outcome": "observed",
             "source": "deployment_preflight_rerun",
             "source_sha": "7" * 40,
-            "schema_revision": "054",
+            "schema_revision": "055",
         }
 
     monkeypatch.setattr(canary, "_load_config", lambda _path: config)
