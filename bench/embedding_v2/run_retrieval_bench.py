@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import statistics
@@ -63,6 +64,7 @@ REPO_ROOT = BENCH_V2.parents[1]
 sys.path.insert(0, str(BENCH_V1))
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from pydantic import SecretStr  # noqa: E402
 from run_bench import compute_metrics, load_queries  # noqa: E402
 
 from brain_v42.config import Settings  # noqa: E402
@@ -124,6 +126,11 @@ TOP_K = 50
 #: 4 chars each — an order of magnitude, never an invoice.
 PRICE_PER_MTOK = {"codestral-embed-2505": 0.15, "mistral-embed": 0.10}
 
+#: Attempts per query before a leg is declared failed, and the base delay
+#: between them. Generous on purpose: the pool is already paid for by then.
+QUERY_RETRIES = 5
+QUERY_BACKOFF_SECONDS = 2.0
+
 
 @dataclass
 class CandidateSpec:
@@ -145,6 +152,8 @@ class CandidateResult:
     latency_p50_ms: float = 0.0
     latency_p95_ms: float = 0.0
     corpus_seconds: float = 0.0
+    #: Query embeds that had to back off (429 / 503) before succeeding.
+    throttled: int = 0
     estimated_tokens: int = 0
     estimated_usd: float = 0.0
     headline: dict[str, float] = field(default_factory=dict)
@@ -202,13 +211,45 @@ def build_service(spec: CandidateSpec, base_settings: Settings) -> object:
         overrides["embedding_model"] = spec.model
     key_file = os.environ.get("BRAIN_BENCH_API_KEY_FILE", "")
     if key_file and spec.kind == "openai":
-        overrides["embedding_api_key"] = Path(key_file).expanduser().read_text().strip()
+        # Go through the TOKEN FILE, not `embedding_api_key`. Two reasons.
+        # The factory refuses two sources for one Authorization header, and
+        # the repository .env already declares a token file for the shim, so
+        # injecting a key here dies fail-closed after the pool is embedded --
+        # the expensive moment to learn it. And it is the mechanism the switch
+        # runbook tells an operator to use, so the bench exercises the path
+        # production will actually run.
+        overrides["brain_embedding_token_file"] = Path(key_file).expanduser()
+        overrides["embedding_api_key"] = SecretStr("")
+
     return build_embedding_service(base_settings.model_copy(update=overrides))
 
 
+def pool_cache_path(model: str, ids: list[str]) -> Path:
+    """One cache file per (model, exact pool). Renaming a model or adding a
+    row invalidates it, because both change the answer."""
+    digest = hashlib.sha256(("\n".join(ids)).encode()).hexdigest()[:16]
+    safe = model.replace("/", "_") or "default"
+    return BENCH_V2 / f"pool_{safe}_{digest}.npy"
+
+
 async def embed_pool(
-    svc: object, texts: list[str], batch: int, result: CandidateResult
+    svc: object,
+    texts: list[str],
+    batch: int,
+    result: CandidateResult,
+    cache: Path | None = None,
 ) -> np.ndarray | None:
+    """Embed the pool, reusing a cached matrix when one matches exactly.
+
+    The pool is the expensive half -- 8145 rows, ~1.8 M tokens, real money on
+    a hosted provider -- and the cheap half can still fail: a first codestral
+    run embedded the whole pool and then lost the leg to HTTP 429 on the
+    single-query phase, throwing the paid work away. Caching turns that into a
+    retry that costs the queries alone.
+    """
+    if cache is not None and cache.is_file():
+        print(f"  pool cache hit: {cache.name}", flush=True)
+        return np.load(cache)
     started = time.monotonic()
     vectors: list[list[float]] = []
     for index in range(0, len(texts), batch):
@@ -222,7 +263,11 @@ async def embed_pool(
         if index and index % (batch * 50) == 0:
             print(f"    {index}/{len(texts)} pooled", flush=True)
     result.corpus_seconds = time.monotonic() - started
-    return _normalise(np.asarray(vectors, dtype=np.float32))
+    matrix = _normalise(np.asarray(vectors, dtype=np.float32))
+    if cache is not None:
+        np.save(cache, matrix)
+        print(f"  pool cached -> {cache.name}", flush=True)
+    return matrix
 
 
 def _normalise(matrix: np.ndarray) -> np.ndarray:
@@ -242,23 +287,39 @@ async def run_vector_candidate(
     result.pool_size = len(pool)
     svc = build_service(spec, settings)
 
+    pool_ids = [entity_id for _, entity_id, _ in pool]
+    cache = pool_cache_path(spec.model or spec.kind, pool_ids)
+
     print(f"  embedding pool ({len(pool)} rows) …", flush=True)
-    pool_matrix = await embed_pool(svc, [text for _, _, text in pool], batch, result)
+    pool_matrix = await embed_pool(svc, [text for _, _, text in pool], batch, result, cache=cache)
     if pool_matrix is None:
         return result
-
-    pool_ids = [entity_id for _, entity_id, _ in pool]
     latencies: list[float] = []
     ranks: list[tuple[dict, int]] = []
 
     print(f"  embedding {len(queries)} queries …", flush=True)
     for query in queries:
         started = time.monotonic()
-        try:
-            vector = await svc.embed_query(query["query"])  # type: ignore[attr-defined]
-        except EmbeddingUnavailable as exc:
+        # A hosted provider rate-limits the query phase long before the pool
+        # phase: single texts fired back to back are pure RPS, while batches
+        # are not. Measured 2026-09-21 on Mistral free mode -- 8145 pooled
+        # rows went through, then 429 on the queries. Backing off here keeps
+        # a cheap, transient limit from discarding an expensive leg.
+        vector = None
+        for attempt in range(QUERY_RETRIES):
+            try:
+                vector = await svc.embed_query(query["query"])  # type: ignore[attr-defined]
+                break
+            except EmbeddingUnavailable as exc:
+                if attempt == QUERY_RETRIES - 1:
+                    result.ok = False
+                    result.failure = f"query embedding failed after {QUERY_RETRIES} tries: {exc}"
+                    return result
+                result.throttled += 1
+                await asyncio.sleep(QUERY_BACKOFF_SECONDS * (2**attempt))
+        if vector is None:
             result.ok = False
-            result.failure = f"query embedding failed: {exc}"
+            result.failure = "query embedding returned no vector"
             return result
         latencies.append((time.monotonic() - started) * 1000)
 
