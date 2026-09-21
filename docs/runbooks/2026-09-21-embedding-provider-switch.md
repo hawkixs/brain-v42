@@ -141,6 +141,18 @@ tractable:
   then re-run plan indexing; chunks follow through
   `upsert_plan_with_chunks`, so no duplicate row is created. This is the
   `plan` type `brain_search` serves, so it is not optional.
+
+  Re-running it does **not** reopen the plans' feature assignments. Since
+  2026-09-21 the indexer separates a vector refresh from a new signal: a file
+  whose stored `content_hash` still matches is re-embedded and upserted, and
+  `cluster_guard.resolve()` is not called for it at all. Without that
+  separation this step was the switch's real hazard — `signal_type="plan"` is
+  in `CREATING_SIGNALS`, so link-only mode does not stop it, and a reindexed
+  `features` column moves scores across `COSINE_LINK`. Measured on the 239
+  already-linked plans, a third of them fell out of the direct-link band and
+  into the reranker's grey zone. The run reports `linked=0` for such files and
+  logs `plan_indexer.resolution_skipped`; that zero means no link was MADE,
+  not that the plan is unlinked.
 - **`features` (920 rows) — was the real gap, now closed, and the closure
   redefined the column.** `features.embedding` used to be written only on
   create and update by `feature_linker` and `cluster_guard`, with no bulk
@@ -215,6 +227,7 @@ time-sensitive work.
 python scripts/regen_embeddings.py            # the six covered tables (6572 rows)
 # mark plans stale, THEN re-run plan indexing       (indexed_plans + chunks, 2000 rows)
 #   UPDATE indexed_plans SET freshness_status = 'stale';   -- else every file is skipped
+#   feature assignments are NOT reopened: unchanged content skips resolve()
 # gitlab_events (239 rows) is dead: leave it stale, deliberately
 ```
 

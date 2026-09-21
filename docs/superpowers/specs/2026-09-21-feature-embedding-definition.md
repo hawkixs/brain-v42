@@ -1,6 +1,6 @@
 # What does a feature's embedding encode?
 
-**Status: open question, gating the codestral-embed provider switch.**
+**Status: option E taken 2026-09-21 and its core shipped; the recipe question stays open.**
 Written 2026-09-21 after a review of the switch's reindex path found that reindexing
 `features` changes how the roadmap links its artifacts.
 
@@ -124,7 +124,26 @@ signals. This option was raised by the independent review and is the one it woul
 with aligning the writers on a versioned row-derived recipe — `name + description` being a
 reasonable starting candidate.
 
-## The question
+## Decision, 2026-09-21
+
+**Option E was taken**, on the operator's call, after the independent review.
+
+The part that gated the switch is shipped: the plan indexer now separates a vector refresh
+from a new signal. A file whose stored `content_hash` still matches is re-embedded and
+upserted, and `cluster_guard.resolve()` is not called for it. That unconditional call was an
+implementation choice, exactly as the review said — not a constraint of the operation.
+
+This removes the hazard instead of encaging it, and it is narrower than A or B: no writer
+changes meaning, no constant is bent for the duration of a window, and nothing has to be
+undone afterwards.
+
+What it deliberately does **not** settle: which row-derived recipe `features.embedding`
+should standardise on, and how to validate the whole resolver — candidate eligibility,
+links, merges and creations, against judged matches and hard negatives — instead of retuning
+a threshold on historical positives. That work stays open, and it is no longer in the
+switch's path.
+
+## The question that stays open
 
 Should a feature's vector be **verifiable** — reconstructible from its own row, which is what a
 drift check requires — or **faithful** to the space of the signals that interrogate it, which is
