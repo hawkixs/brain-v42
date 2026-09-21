@@ -483,7 +483,7 @@ async def test_index_path_indexes_when_existing_duplicate_file_gone(mock_deps, t
 
 
 @pytest.mark.asyncio
-async def test_is_unchanged_exact_path_lookup_is_project_scoped(mock_deps, tmp_path):
+async def test_reindex_verdict_exact_path_lookup_is_project_scoped(mock_deps, tmp_path):
     """Removing project ownership from the exact lookup must make this test fail."""
     exact_result = MagicMock()
     exact_result.fetchone.return_value = None
@@ -492,13 +492,14 @@ async def test_is_unchanged_exact_path_lookup_is_project_scoped(mock_deps, tmp_p
     mock_deps["session"].execute = AsyncMock(side_effect=[exact_result, duplicate_result])
     indexer = _build_indexer(mock_deps)
 
-    unchanged = await indexer._is_unchanged(
+    verdict = await indexer._reindex_verdict(
         str(tmp_path / "owned-design.md"),
         "content-hash",
         "red-phone",
     )
 
-    assert unchanged is False
+    assert verdict.skip is False
+    assert verdict.content_identical is False, "a path with no row is a new signal"
     exact_stmt = mock_deps["session"].execute.await_args_list[0].args[0]
     exact_sql = str(
         exact_stmt.compile(
@@ -511,7 +512,7 @@ async def test_is_unchanged_exact_path_lookup_is_project_scoped(mock_deps, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_is_unchanged_ignores_live_relative_duplicate(mock_deps, tmp_path, monkeypatch):
+async def test_reindex_verdict_ignores_live_relative_duplicate(mock_deps, tmp_path, monkeypatch):
     """Treating a live relative legacy row as canonical must make this test fail."""
     primary_dir = tmp_path / "legacy"
     primary_dir.mkdir()
@@ -528,13 +529,14 @@ async def test_is_unchanged_ignores_live_relative_duplicate(mock_deps, tmp_path,
     mock_deps["session"].execute = AsyncMock(side_effect=[exact_result, duplicate_result])
     indexer = _build_indexer(mock_deps)
 
-    unchanged = await indexer._is_unchanged(
+    verdict = await indexer._reindex_verdict(
         str((tmp_path / "canonical" / "owned-design.md").resolve()),
         "content-hash",
         "red-phone",
     )
 
-    assert unchanged is False
+    assert verdict.skip is False
+    assert verdict.content_identical is False, "a replaced duplicate is a new signal"
 
 
 @pytest.mark.asyncio
@@ -1137,3 +1139,72 @@ async def test_a_clean_run_reports_no_failures_at_all(mock_deps, tmp_path):
 
     assert stats["errors"] == 0
     assert stats["failures"] == []
+
+
+# ── provider refresh must not reopen a feature assignment ──────────────
+
+
+@pytest.mark.asyncio
+async def test_a_stale_plan_with_identical_content_is_re_embedded_without_resolving(
+    mock_deps, tmp_path
+):
+    """The provider switch marks every plan stale to force a re-embed. That is a
+    vector refresh, not a new signal: the file is byte-identical, so its feature
+    assignment cannot have changed and must not be reopened.
+
+    Reopening it is not a cosmetic difference. `signal_type="plan"` is in
+    CREATING_SIGNALS, so `resolve()` may create or merge; and a reindex
+    necessarily redefines `features.embedding`, which moves scores across
+    COSINE_LINK. Measured 2026-09-21 on the 239 already-linked plans, a third
+    would fall from a direct link into the reranker's grey zone — a decision the
+    switch has no business reopening for a file nobody edited.
+    """
+    spec_file = tmp_path / "2026-03-14-auth-design.md"
+    content = "# Auth Design\n\nUnchanged since the last run"
+    spec_file.write_text(content)
+
+    stale_row = MagicMock()
+    stale_row.content_hash = PlanIndexer._content_hash(content)
+    stale_row.freshness_status = "stale"
+    stale_row.id = uuid.uuid4()
+    lookup = MagicMock()
+    lookup.fetchone.return_value = stale_row
+    # A spare result so the assertion below is what fails when the exemption is
+    # absent, rather than the mock running dry on the link insert.
+    link = MagicMock()
+    mock_deps["session"].execute = AsyncMock(side_effect=[lookup, link])
+
+    indexer = _build_indexer(mock_deps)
+    with _patch_repo_upsert(mock_deps):
+        stats = await indexer.index_path(str(tmp_path), "brain_v42")
+
+    assert stats["indexed"] >= 1, "a stale row must still be re-embedded"
+    mock_deps["embedding_svc"].embed_texts.assert_awaited()
+    mock_deps["cluster_guard"].resolve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_plan_whose_content_changed_still_resolves(mock_deps, tmp_path):
+    """The refresh exemption keys on the content hash, never on staleness alone.
+
+    An edited file is a genuine new signal and must still reach ClusterGuard,
+    otherwise the exemption would silently freeze every feature assignment.
+    """
+    spec_file = tmp_path / "2026-03-14-auth-design.md"
+    spec_file.write_text("# Auth Design v2\n\nEdited")
+
+    edited_row = MagicMock()
+    edited_row.content_hash = "a-hash-from-the-previous-content"
+    edited_row.freshness_status = "fresh"
+    edited_row.id = uuid.uuid4()
+    lookup = MagicMock()
+    lookup.fetchone.return_value = edited_row
+    link = MagicMock()
+    mock_deps["session"].execute = AsyncMock(side_effect=[lookup, link])
+
+    indexer = _build_indexer(mock_deps)
+    with _patch_repo_upsert(mock_deps):
+        stats = await indexer.index_path(str(tmp_path), "brain_v42")
+
+    assert stats["indexed"] >= 1
+    mock_deps["cluster_guard"].resolve.assert_awaited()

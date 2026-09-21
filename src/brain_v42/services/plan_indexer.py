@@ -19,7 +19,7 @@ import hashlib
 import os
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import sqlalchemy as sa
 import structlog
@@ -38,6 +38,20 @@ if TYPE_CHECKING:
     from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
 
 logger = structlog.get_logger(__name__)
+
+
+class ReindexVerdict(NamedTuple):
+    """Why a plan file is or is not reprocessed.
+
+    ``content_identical`` exists so the caller can separate a vector refresh
+    from a new signal. Without it the two are indistinguishable at the call
+    site, and a provider switch -- which marks every plan stale precisely to
+    force a re-embed -- looks exactly like 208 edited files.
+    """
+
+    skip: bool
+    content_identical: bool
+
 
 # Glob patterns to match plan/spec files
 _DESIGN_SUFFIX = "-design.md"
@@ -186,7 +200,7 @@ class PlanIndexer:
 
         This is a one-shot cleanup for plans that were indexed twice from
         mirrored scan paths (e.g. a primary repo + a monorepo mirror) before
-        the duplicate-by-hash guard in ``_is_unchanged`` was added.
+        the duplicate-by-hash guard in ``_reindex_verdict`` was added.
 
         Returns:
             Number of plan rows deleted.
@@ -293,7 +307,8 @@ class PlanIndexer:
                     return (0, 0, 0, 1, 0)
                 content_hash = self._content_hash(content)
 
-                if await self._is_unchanged(str(file_path), content_hash, project_key):
+                verdict = await self._reindex_verdict(str(file_path), content_hash, project_key)
+                if verdict.skip:
                     return (0, 1, 0, 0, 0)
 
                 # Chunk the markdown content
@@ -373,6 +388,23 @@ class PlanIndexer:
                     )
 
                 linked = 0
+                if verdict.content_identical:
+                    # Provider refresh: the file is byte-identical to what was
+                    # indexed, so this is a new vector for an old signal, not a
+                    # new signal. Reopening the feature assignment here would let
+                    # a provider switch create and merge features for files
+                    # nobody edited -- and `signal_type="plan"` is in
+                    # CREATING_SIGNALS, so link-only mode would not stop it.
+                    # The existing link is untouched: `_link_plan_to_feature`
+                    # inserts with on_conflict_do_nothing and deletes nothing.
+                    # `linked` stays 0 because no link was MADE this run; it does
+                    # not mean the plan is unlinked.
+                    logger.info(
+                        "plan_indexer.resolution_skipped",
+                        file_path=str(file_path),
+                        reason="content_identical",
+                    )
+                    return (1, 0, 0, 0, len(chunks))
                 try:
                     feature, action = await self._cluster_guard.resolve(
                         text=title,
@@ -563,10 +595,17 @@ class PlanIndexer:
             return "spec"
         return "plan"
 
-    async def _is_unchanged(self, file_path: str, content_hash: str, project_key: str) -> bool:
-        """Check whether this file should be skipped on the next reindex.
+    async def _reindex_verdict(
+        self, file_path: str, content_hash: str, project_key: str
+    ) -> ReindexVerdict:
+        """Decide whether to reprocess this file, and whether its text changed.
 
-        Returns ``True`` (skip) when:
+        The second half of that answer is what lets a provider-driven vector
+        refresh be told apart from a new signal. Both reach this method with
+        ``skip=False``; only one of them is a reason to reopen a feature
+        assignment.
+
+        ``skip=True`` when:
           - the file is already indexed at this exact ``file_path`` with the
             same hash and is not stale, OR
           - another row in the same project shares the same ``content_hash``
@@ -574,15 +613,20 @@ class PlanIndexer:
             other path already covers this content, so re-indexing it under a
             different ``file_path`` would just duplicate the row).
 
-        Returns ``False`` (force reindex) when:
+        ``skip=False`` when:
           - no row exists for this file_path AND no live duplicate-by-hash
             covers the same content, OR
           - the stored content_hash differs (file edited), OR
           - the stored row is marked stale (migration 014 backfill sets
             ``freshness_status='stale'`` on all pre-chunking rows so they are
-            re-chunked on the next reindex run), OR
+            re-chunked on the next reindex run; a provider switch does the same
+            to force a re-embed), OR
           - a duplicate-by-hash row exists but its ``file_path`` is gone from
             disk (treat the new file as the canonical replacement).
+
+        ``content_identical=True`` only for the exact-path row whose stored hash
+        equals this file's. It is deliberately false for every other branch: a
+        new path, an edited file and a replaced duplicate are all new signals.
         """
         async with self._sf() as session:
             # 1. Exact-path lookup (existing behaviour).
@@ -599,10 +643,10 @@ class PlanIndexer:
 
             if row is not None:
                 if row.content_hash != content_hash:
-                    return False
+                    return ReindexVerdict(skip=False, content_identical=False)
                 if row.freshness_status == "stale":
-                    return False
-                return True
+                    return ReindexVerdict(skip=False, content_identical=True)
+                return ReindexVerdict(skip=True, content_identical=True)
 
             # 2. Mirror-path duplicate check: another file in the same project
             # already carries this exact content. Skip iff that file still
@@ -619,14 +663,14 @@ class PlanIndexer:
             dup_row = dup_result.fetchone()
 
         if dup_row is None:
-            return False
+            return ReindexVerdict(skip=False, content_identical=False)
 
         existing_path = dup_row.file_path
         if not isinstance(existing_path, str):
-            return False
+            return ReindexVerdict(skip=False, content_identical=False)
         existing_file = Path(existing_path)
         if not existing_file.is_absolute() or not existing_file.is_file():
-            return False
+            return ReindexVerdict(skip=False, content_identical=False)
 
         logger.info(
             "plan_indexer.duplicate_content_skipped",
@@ -634,7 +678,7 @@ class PlanIndexer:
             existing_path=existing_path,
             content_hash=content_hash[:16],
         )
-        return True
+        return ReindexVerdict(skip=True, content_identical=False)
 
     async def _link_plan_to_feature(
         self,
