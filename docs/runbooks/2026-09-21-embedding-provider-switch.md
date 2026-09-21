@@ -9,10 +9,10 @@ a hosted embedding provider instead of the GPU on the PC server.
   no hook and no agent may arm one.
 - Never cut over while `brain-v42-dream` is running.
 - Forbidden windows: 06:00–09:00 and 13:00 (operator decision, 2026-09-20).
-- **Stop before step 1 while `features` has no bulk re-embed.** Of the 3159
-  rows outside `regen_embeddings.py`, that is the only one with no path at
-  all, and stale vectors there corrupt `cluster_guard`'s deduplication rather
-  than merely a search result. See the coverage section.
+- **Do not restart the writers until every line of the step 4 checklist is
+  done.** Between arming and the end of the reindex the corpus does not match
+  the configured model; a partial reindex leaves two models' vectors in one
+  column, which is the failure this runbook exists to prevent.
 
 ## Why this is planned and never a failover
 
@@ -104,7 +104,7 @@ falls as it does.
 
 ## Coverage gap — read before anything else
 
-`scripts/regen_embeddings.py` reindexes **five** of the nine vector tables.
+`scripts/regen_embeddings.py` reindexes **six** of the nine vector tables.
 Measured 2026-09-21:
 
 | Table | Embedded rows | Reindex tool |
@@ -114,12 +114,12 @@ Measured 2026-09-21:
 | snippets | 195 | `regen_embeddings.py` |
 | runbooks | 181 | `regen_embeddings.py` |
 | adrs | 122 | `regen_embeddings.py` |
+| features | 920 | `regen_embeddings.py` (since 2026-09-21) |
 | **indexed_plan_chunks** | **1792** | **none** |
-| **features** | **920** | **none** |
 | **gitlab_events** | **239** | **none** |
 | **indexed_plans** | **208** | **none** |
 
-3159 rows of 8811 — 36 % of the corpus — are outside `regen_embeddings.py`.
+2239 rows of 8811 — 25 % of the corpus — are outside `regen_embeddings.py`.
 They are not all the same problem, and the difference is what makes this
 tractable:
 
@@ -141,19 +141,29 @@ tractable:
   then re-run plan indexing; chunks follow through
   `upsert_plan_with_chunks`, so no duplicate row is created. This is the
   `plan` type `brain_search` serves, so it is not optional.
-- **`features` (920 rows) — the real gap.** `features.embedding` is written
-  only on create and update, by `feature_linker` and `cluster_guard`. There is
-  no bulk path at all. It is also the one that silently corrupts a decision
-  rather than a search result: `cluster_guard` deduplicates semantically, so
-  stale feature vectors mean dedup comparing two models' vectors and merging
-  or splitting on noise.
+- **`features` (920 rows) — was the real gap, now closed, and the closure
+  redefined the column.** `features.embedding` used to be written only on
+  create and update by `feature_linker` and `cluster_guard`, with no bulk
+  path. It is the table that silently corrupts a decision rather than a
+  search result: `cluster_guard` links at `COSINE_LINK = 0.70` and across two
+  models cosine sits near zero, so a stale corpus would link nothing and mint
+  a fresh feature per signal — the pseudo-feature flood whose tap has been
+  shut since 2026-08-03. `regen_embeddings.py` now rewrites it from
+  `description`. Read that as a redefinition, not a restoration: measured on
+  60 random rows the stored vector matched `embed(description)` on 3 % of
+  them (median similarity 0.81), because `_create_feature` stored the
+  caller's embedding, computed from the originating artifact's text, which no
+  column records. `description` is the only text reproducible from the row
+  alone — which is what makes the column verifiable by
+  `check_embedding_model_drift.py` instead of unverifiable forever.
 - **`gitlab_events` (239 rows) — dead, leave it.** Last row processed
   2026-06-24 and the GitLab rail was retired 2026-08-18 (decision
   `218028c7`). No search path reads it. Stale vectors there cost nothing;
   say so rather than build a tool for it.
 
-So the blocker before a switch is **one table**: a bulk re-embed for
-`features`. Everything else is a step to schedule or a non-issue to declare.
+Nothing blocks a switch any more. What remains is one step to schedule
+(plans, through the staleness flag) and one non-issue to declare
+(`gitlab_events`).
 
 ## Sequence
 
@@ -202,15 +212,16 @@ Every table, in one window. The batch API halves the price and this is not
 time-sensitive work.
 
 ```bash
-python scripts/regen_embeddings.py            # the five covered tables (5652 rows)
+python scripts/regen_embeddings.py            # the six covered tables (6572 rows)
 # mark plans stale, THEN re-run plan indexing       (indexed_plans + chunks, 2000 rows)
 #   UPDATE indexed_plans SET freshness_status = 'stale';   -- else every file is skipped
-# then the features bulk re-embed                   (920 rows — tool to be written)
 # gitlab_events (239 rows) is dead: leave it stale, deliberately
 ```
 
-The order does not matter, but the completeness does. Track the four as a
-checklist and do not restart the writers until every line is done.
+The order does not matter, but the completeness does. Track the three as a
+checklist and do not restart the writers until every line is done. Plan
+indexing restarts on its own when the MCP starts, so step 6 covers it — but
+only if the rows were marked stale first.
 
 ### 5. Verify
 
@@ -220,9 +231,10 @@ python bench/embedding_v2/run_retrieval_bench.py --candidate openai \
   --base-url https://api.mistral.ai --model codestral-embed-2505
 ```
 
-Exit 0 on the drift check proves the sampled five tables were rewritten by the
-configured model. It proves nothing about the other four — check those by the
-means chosen when closing the coverage gap.
+Exit 0 on the drift check proves the sampled six tables were rewritten by the
+configured model — `features` among them since 2026-09-21. It proves nothing
+about the other three: plans and their chunks are covered by the re-run of plan
+indexing, and `gitlab_events` is declared dead rather than checked.
 
 The bench proves quality did not collapse. Compare against the qodo row of the
 same report, on the same pool: a number from a different pool size is not a
@@ -246,8 +258,8 @@ match the old model in one move. That is why step 2 is not optional.
 
 ## What would make this document false, and is watched by no test
 
-- A reindex tool appearing for the four uncovered tables, which would retire
-  the coverage-gap section.
+- A reindex tool appearing for plans or their chunks outside the indexer,
+  which would shrink the coverage-gap section again.
 - A model column landing in the schema, which would turn the empirical drift
   check into a declared one.
 - Provider pricing moving, which changes only the cost sentences.
