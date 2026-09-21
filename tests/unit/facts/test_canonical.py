@@ -9,9 +9,13 @@ from dataclasses import replace
 import pytest
 
 from brain_v42.facts.canonical import (
+    CLAIM_KEY_PREFIX,
+    FACT_DEFINITION_DIGEST_PREFIX,
     MAX_CANONICAL_BYTES,
     ValueTooLargeError,
+    assert_expected_within_bounds,
     canonical_json,
+    claim_key,
     definition_digest,
     measurement_digest,
 )
@@ -215,3 +219,123 @@ def test_definition_digest_propagates_canonical_size_errors() -> None:
 
     with pytest.raises(ValueTooLargeError):
         definition_digest(descriptor)
+
+
+def _claim_inputs() -> dict[str, object]:
+    """Return a literal claim payload distinct enough to expose omitted key fields."""
+    return {
+        "statement": "The graph projection lag stays bounded.",
+        "fact_name": "graph_projection_lag",
+        "expected": {"path": "/lag_seconds", "op": "lte", "value": 300},
+        "target": FactTarget.PRODUCTION,
+        "definition_version": 3,
+    }
+
+
+def _claim_payload(inputs: dict[str, object]) -> dict[str, object]:
+    """Spell the claim-key payload independently of the production helper."""
+    target = inputs["target"]
+    assert isinstance(target, FactTarget | str)
+    expected = inputs["expected"]
+    assert isinstance(expected, dict)
+    return {
+        "statement": inputs["statement"],
+        "fact_name": inputs["fact_name"],
+        "expected": dict(expected),
+        "target": target.value if isinstance(target, FactTarget) else target,
+        "definition_version": inputs["definition_version"],
+    }
+
+
+def test_claim_key_is_stable_and_pinned() -> None:
+    """A claim content identity must retain one explicit, reviewable digest value."""
+    inputs = _claim_inputs()
+
+    assert (
+        claim_key(
+            statement=inputs["statement"],  # type: ignore[arg-type]
+            fact_name=inputs["fact_name"],  # type: ignore[arg-type]
+            expected=inputs["expected"],  # type: ignore[arg-type]
+            target=inputs["target"],  # type: ignore[arg-type]
+            definition_version=inputs["definition_version"],  # type: ignore[arg-type]
+        )
+        == "75631c937223c1f99b2374c78de6fa8fd5f92fb531a1a1e2803c50cfb6247594"
+    )
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        lambda inputs: {**inputs, "statement": "A different statement."},
+        lambda inputs: {**inputs, "fact_name": "another_fact"},
+        lambda inputs: {**inputs, "expected": {"path": "/lag_seconds", "op": "lte", "value": 301}},
+        lambda inputs: {**inputs, "target": FactTarget.REPOSITORY},
+        lambda inputs: {**inputs, "definition_version": 4},
+    ],
+    ids=["statement", "fact_name", "expected", "target", "definition_version"],
+)
+def test_claim_key_includes_each_declared_field(
+    changed: Callable[[dict[str, object]], dict[str, object]],
+) -> None:
+    """Every persisted claim-key input changes the content identity when changed."""
+    reference = _claim_inputs()
+    changed_inputs = changed(reference)
+
+    assert claim_key(**_claim_payload(reference)) != claim_key(**_claim_payload(changed_inputs))
+
+
+def test_claim_key_accepts_enum_and_string_target_identically() -> None:
+    """Stored target spelling and the descriptor enum identify the same claim."""
+    inputs = _claim_inputs()
+    string_target = {**inputs, "target": FactTarget.PRODUCTION.value}
+
+    assert claim_key(**_claim_payload(inputs)) == claim_key(**_claim_payload(string_target))
+
+
+def test_claim_key_has_its_own_digest_domain() -> None:
+    """Domain prefixes prevent another digest purpose from sharing a claim key."""
+    payload = _claim_payload(_claim_inputs())
+    text = canonical_json(payload)
+    key = claim_key(**payload)
+    definition_domain_digest = hashlib.sha256(
+        FACT_DEFINITION_DIGEST_PREFIX + text.encode("utf-8")
+    ).hexdigest()
+
+    assert key == hashlib.sha256(CLAIM_KEY_PREFIX + text.encode("utf-8")).hexdigest()
+    assert key != measurement_digest(text)
+    assert key != definition_domain_digest
+
+
+def _expected_with_depth(depth: int) -> dict[str, object]:
+    """Build mappings whose root object counts as the first JSON depth level."""
+    value: dict[str, object] = {"leaf": 1}
+    for _ in range(depth - 1):
+        value = {"child": value}
+    return value
+
+
+def test_expected_canonical_bounds_accept_exact_byte_limit() -> None:
+    """The claim-specific byte boundary is measured on canonical UTF-8 text."""
+    expected = {"value": "x" * 1012}
+    assert len(canonical_json(expected).encode("utf-8")) == 1024
+
+    assert_expected_within_bounds(expected)
+
+
+def test_expected_canonical_bounds_refuse_one_byte_past_limit() -> None:
+    """A 1025-byte declared expectation is rejected before a claim can be written."""
+    expected = {"value": "x" * 1013}
+
+    with pytest.raises(ValueError, match="expected byte-size rule.*1025"):
+        assert_expected_within_bounds(expected)
+
+
+def test_expected_canonical_bounds_accept_depth_four() -> None:
+    """The root object plus three nested containers is within the claim depth rule."""
+    assert_expected_within_bounds(_expected_with_depth(4))
+
+
+def test_expected_canonical_bounds_refuse_depth_five() -> None:
+    """One extra container must name the tighter claim depth rule, not the envelope."""
+    with pytest.raises(ValueError, match="expected depth rule.*5"):
+        assert_expected_within_bounds(_expected_with_depth(5))

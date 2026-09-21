@@ -200,6 +200,7 @@ class DecisionService:
         data: DecisionUpdate,
         *,
         project_key: str | None = None,
+        session: AsyncSession | None = None,
     ) -> Decision | None:
         """Partial update for a decision.
 
@@ -210,6 +211,7 @@ class DecisionService:
         changed_fields = set(data.model_dump(exclude_none=True).keys())
         embedding: list[float] | None = None
 
+        # With a caller-owned session, holding a PostgreSQL transaction across the GPU HTTP call lengthens the lock window, so if it ever bites the caller must compute the embedding before opening its transaction rather than reordering service writes.
         if changed_fields & _TEXT_FIELDS:
             if project_key is None:
                 current = await self._repo.get_by_id(decision_id)
@@ -225,7 +227,19 @@ class DecisionService:
                 embedding = await self._embedding_svc.embed(text)
 
         if project_key is None:
+            if session is not None:
+                return await self._repo.update(
+                    decision_id, data, embedding=embedding, session=session
+                )
             return await self._repo.update(decision_id, data, embedding=embedding)
+        if session is not None:
+            return await self._repo.update(
+                decision_id,
+                data,
+                embedding=embedding,
+                project_key=project_key,
+                session=session,
+            )
         return await self._repo.update(
             decision_id,
             data,

@@ -985,6 +985,8 @@ def build_server() -> BuiltServer:
         roadmap_svc=services["roadmap_svc"],
         graph_svc=services["graph_service"],
         access_logger=usage_access_logger,
+        fact_registry=services["fact_registry"],
+        session_factory=get_session_factory(),
     )
 
     # Session tools
@@ -1060,6 +1062,7 @@ def build_server() -> BuiltServer:
         adr_svc=services["adr_svc"],
         session_factory=get_session_factory(),
         access_logger=usage_access_logger,
+        fact_registry=services.get("fact_registry"),
     )
 
     # Dream tools (backfill links, clusters)

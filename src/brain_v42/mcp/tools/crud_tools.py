@@ -18,6 +18,7 @@ from brain_v42.mcp.dream_project_authorization import (
     DreamProjectAuthorizationError,
     get_dream_project_scope,
 )
+from brain_v42.mcp.tools.claim_writes import ClaimMutationError, replace_claims
 from brain_v42.mcp.tools.formatters import (
     clamp_list_limit,
     format_adr_detail,
@@ -53,6 +54,7 @@ from brain_v42.provenance import get_current_actor, is_human_actor
 from brain_v42.services.graph_helpers import graph_create_relation_logged
 
 if TYPE_CHECKING:
+    from brain_v42.facts.registry import FactRegistry
     from brain_v42.services.access_logger import AccessLogger
     from brain_v42.services.adr_service import ADRService
     from brain_v42.services.decision_service import DecisionService
@@ -192,6 +194,7 @@ def register_crud_tools(
     adr_svc: ADRService,
     session_factory: async_sessionmaker[AsyncSession],
     access_logger: AccessLogger | None = None,
+    fact_registry: FactRegistry | None = None,
 ) -> None:
     """Register generic CRUD MCP tools (brain_get, brain_delete, brain_update, brain_list)."""
 
@@ -352,6 +355,8 @@ def register_crud_tools(
         entity_id: str,
         fields: dict,
         related_to: list[dict] | None = None,
+        claims: list[dict] | None = None,
+        expected_active_claim_ids: list[str] | None = None,
     ) -> str:
         """Update an entity by type and UUID with partial fields.
 
@@ -362,6 +367,8 @@ def register_crud_tools(
             related_to: Optional list of graph relations to add/update.
                 Each item must have keys ``id`` (UUID string) and ``type``
                 (one of: MOTIVATED_BY, IMPLEMENTS, DOCUMENTS, USES, RELATED_TO).
+            claims: Optional complete replacement for this entry's active claims.
+            expected_active_claim_ids: Active claim ids observed by the caller.
         """
         if entity_type not in ALL_TYPES:
             return format_error(f"Unknown entity type: {entity_type}. Use: {', '.join(ALL_TYPES)}")
@@ -375,6 +382,9 @@ def register_crud_tools(
             uid = UUID(entity_id)
         except ValueError:
             return format_error(f"Invalid UUID: {entity_id}")
+
+        if claims is not None and expected_active_claim_ids is None:
+            return format_error("expected_active_claim_ids is required when claims is provided")
 
         update_cls = _update_models[entity_type]
         forged = _SERVER_ONLY_UPDATE_FIELDS.intersection(fields)
@@ -441,10 +451,41 @@ def register_crud_tools(
                 [uid, *(UUID(relation["id"]) for relation in validated_relations)]
             )
 
-        if scope is None:
-            updated = await svc.update(uid, update_data)
+        claim_replacement = None
+        if claims is None:
+            if scope is None:
+                updated = await svc.update(uid, update_data)
+            else:
+                updated = await svc.update(uid, update_data, project_key=scope.project_key)
         else:
-            updated = await svc.update(uid, update_data, project_key=scope.project_key)
+            if fact_registry is None:
+                return format_error("claims unavailable: fact registry is not configured")
+            assert expected_active_claim_ids is not None
+            try:
+                async with session_factory() as session, session.begin():
+                    if scope is None:
+                        updated = await svc.update(uid, update_data, session=session)
+                    else:
+                        updated = await svc.update(
+                            uid,
+                            update_data,
+                            project_key=scope.project_key,
+                            session=session,
+                        )
+                    if updated is None:
+                        return format_error(f"{entity_type} {entity_id} not found")
+                    claim_replacement = await replace_claims(
+                        session,
+                        entry_id=updated.id,
+                        entity_type=entity_type,
+                        project_key=updated.project_key,
+                        registry=fact_registry,
+                        claims=claims,
+                        expected_active_claim_ids=expected_active_claim_ids,
+                        declared_by=get_current_actor(),
+                    )
+            except (ClaimMutationError, ValueError) as exc:
+                return format_error(str(exc))
 
         if updated is None:
             return format_error(f"{entity_type} {entity_id} not found")
@@ -480,7 +521,19 @@ def register_crud_tools(
                     )
 
         logger.info("brain_update", entity_type=entity_type, entity_id=entity_id)
-        return format_confirmation("Updated", "", id=str(entity_id), type=entity_type)
+        if claim_replacement is None:
+            return format_confirmation("Updated", "", id=str(entity_id), type=entity_type)
+        created_ids = ", ".join(str(claim_id) for claim_id in claim_replacement.created_ids)
+        return format_confirmation(
+            "Updated",
+            "",
+            id=str(entity_id),
+            type=entity_type,
+            claims=(
+                f"kept:{claim_replacement.kept}, created:{len(claim_replacement.created_ids)} "
+                f"[{created_ids}], retired:{claim_replacement.retired}"
+            ),
+        )
 
     # ── brain_list ────────────────────────────────────────────────────────
 
