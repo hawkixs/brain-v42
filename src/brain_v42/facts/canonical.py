@@ -5,10 +5,15 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable, Mapping
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from brain_v42.facts.probe import FactDescriptor
 
 MAX_CANONICAL_DEPTH = 8
 MAX_CANONICAL_BYTES = 4096
 MEASUREMENT_DIGEST_PREFIX = b"brain-v42-fact-measurement:v1\n"
+FACT_DEFINITION_DIGEST_PREFIX = b"brain-v42-fact-definition:v1\n"
 
 
 class ValueTooLargeError(ValueError):
@@ -101,3 +106,21 @@ def canonical_json(value: Mapping[str, object]) -> str:
 def measurement_digest(value_json: str) -> str:
     """Hash canonical text with its recipe version to make recipe drift explicit."""
     return hashlib.sha256(MEASUREMENT_DIGEST_PREFIX + value_json.encode("utf-8")).hexdigest()
+
+
+def definition_digest(descriptor: FactDescriptor) -> str:
+    """Hash the fixed persisted fields so later descriptor additions do not rewrite history."""
+    # FactTarget is a StrEnum today, but its value is made explicit so an enum
+    # base-class change cannot silently alter the persisted definition recipe.
+    target = descriptor.target if type(descriptor.target) is str else descriptor.target.value
+    payload = {
+        "fact_name": descriptor.name,
+        "definition_version": descriptor.definition_version,
+        "target": target,
+        "ttl_seconds": descriptor.ttl_seconds,
+        "timeout_seconds": descriptor.timeout_seconds,
+        "policies": dict(descriptor.policies),
+        "value_schema": dict(descriptor.value_schema),
+    }
+    value_json = canonical_json(payload)
+    return hashlib.sha256(FACT_DEFINITION_DIGEST_PREFIX + value_json.encode("utf-8")).hexdigest()
