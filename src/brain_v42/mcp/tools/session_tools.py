@@ -551,6 +551,9 @@ async def _render_briefing_facts(registry: Any) -> list[str]:
         for name, reason in registry.refusals().items():
             label = "cible production non vérifiable" if reason == "unverifiable_target" else reason
             lines.append(f"- Faits : {name} non enregistré ({label})")
+        for name, reason in getattr(registry, "disabled", lambda: {})().items():
+            label = "dérive de définition" if reason == "definition_drift" else reason
+            lines.append(f"- Faits : {name} désactivé ({label})")
         names = tuple(registry.briefing_names())
         if not names:
             return lines

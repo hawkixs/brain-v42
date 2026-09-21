@@ -330,7 +330,7 @@ def _deployment_canary(path: Path) -> PreflightReceipt:
             not isinstance(source_sha, str)
             or len(source_sha) != 40
             or set(source_sha) - _SHA
-            or schema_revision != "054"
+            or schema_revision != "055"
         ):
             raise ValueError
         return PreflightReceipt(source_sha, schema_revision, observer_env)

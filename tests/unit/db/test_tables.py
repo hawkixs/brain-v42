@@ -25,7 +25,13 @@ class TestMetadataAndTablePresence:
         assert isinstance(METADATA, sa.MetaData)
 
     def test_all_tables_in_metadata(self) -> None:
-        """All 30 tables are registered in METADATA (session provenance added in 037)."""
+        """Every table this package declares is registered on the shared METADATA.
+
+        The set is spelled out rather than counted: a docstring saying "all N
+        tables" drifts silently as tables are added — this one said 30 while the
+        metadata held 46 — whereas a missing NAME fails the assertion below and
+        names itself.
+        """
         from brain_v42.db.tables import METADATA
 
         expected_tables = {
@@ -72,6 +78,9 @@ class TestMetadataAndTablePresence:
             "delivery_receipts",
             "delivery_events",
             "delivery_attestations",
+            "knowledge_fact_definitions",
+            "knowledge_claims",
+            "knowledge_claim_verdicts",
         }
         assert expected_tables == set(METADATA.tables.keys())
 

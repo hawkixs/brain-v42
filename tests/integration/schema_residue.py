@@ -57,6 +57,9 @@ DOWNGRADING_TEST_FILES: tuple[str, ...] = (
     "tests/integration/db/test_migration_052_access_log_daily.py",
     # 054's refusal and opt-in round-trip downgrade the shared database too.
     "tests/integration/db/test_migration_054_delivery_attestations.py",
+    # 055 round-trips the three claim ledgers: the refusal names each non-empty
+    # table, and the opt-in path drops them. It takes the fence like the others.
+    "tests/integration/db/test_migration_055_claims.py",
 )
 
 # Tables probed for leftover rows, in the order the message lists them.

@@ -1083,7 +1083,7 @@ def check(
     if config.get("schema_version") != 1:
         _fail("config_schema_invalid")
     _validate_writers(config)
-    if config.get("required_schema_revision") != "054":
+    if config.get("required_schema_revision") != "055":
         _fail("schema_capability_unavailable")
     observer_env = Path(_text(config.get("observer_env_file"), "config_schema_invalid"))
     try:
@@ -1096,7 +1096,7 @@ def check(
         if dependencies.schema_revision is not None
         else _schema_revision(settings)
     )
-    if actual_revision != "054":
+    if actual_revision != "055":
         _fail("schema_capability_unavailable")
     manifest_path = Path(_text(config.get("release_manifest"), "config_schema_invalid"))
     _safe_regular(manifest_path)
@@ -1143,7 +1143,7 @@ def check(
         if dependencies.health is not None
         else _health(health_endpoint)
     )
-    if health.get("version") != manifest.get("version") or health.get("alembic_head") != "054":
+    if health.get("version") != manifest.get("version") or health.get("alembic_head") != "055":
         _fail("service_health_unavailable")
     repository = _object(config.get("repository"), "config_schema_invalid")
     probe_pull_request = config.get("probe_pull_request")
@@ -1161,7 +1161,7 @@ def check(
         _fail("guarded_revision_unverified")
     if relation not in {"identical", "ahead"}:
         _fail("guarded_revision_unverified")
-    return {"source_sha": source_sha, "schema_revision": "054"}
+    return {"source_sha": source_sha, "schema_revision": "055"}
 
 
 def _emit(status: str, **values: str) -> None:
