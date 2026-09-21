@@ -8,12 +8,14 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from brain_v42.facts.model import FactTarget
     from brain_v42.facts.probe import FactDescriptor
 
 MAX_CANONICAL_DEPTH = 8
 MAX_CANONICAL_BYTES = 4096
 MEASUREMENT_DIGEST_PREFIX = b"brain-v42-fact-measurement:v1\n"
 FACT_DEFINITION_DIGEST_PREFIX = b"brain-v42-fact-definition:v1\n"
+CLAIM_KEY_PREFIX = b"brain-v42-claim-key:v1\n"
 
 
 class ValueTooLargeError(ValueError):
@@ -124,3 +126,71 @@ def definition_digest(descriptor: FactDescriptor) -> str:
     }
     value_json = canonical_json(payload)
     return hashlib.sha256(FACT_DEFINITION_DIGEST_PREFIX + value_json.encode("utf-8")).hexdigest()
+
+
+def claim_key(
+    *,
+    statement: str,
+    fact_name: str,
+    expected: Mapping[str, object],
+    target: FactTarget | str,
+    definition_version: int,
+) -> str:
+    """Hash immutable claim content with the recipe's third, purpose-specific domain.
+
+    This deliberately follows the same fixed-field and defensive-copy rules as
+    ``definition_digest``; see that function for why those rules are load-bearing.
+    """
+    target_value = target if isinstance(target, str) else target.value
+    payload = {
+        "statement": statement,
+        "fact_name": fact_name,
+        "expected": dict(expected),
+        "target": target_value,
+        "definition_version": definition_version,
+    }
+    text = canonical_json(payload)
+    return hashlib.sha256(CLAIM_KEY_PREFIX + text.encode("utf-8")).hexdigest()
+
+
+def _canonical_depth(value: Mapping[str, object]) -> int:
+    """Count JSON containers iteratively so a hostile expectation cannot recurse."""
+    maximum = 1
+    stack: list[tuple[object, int]] = [(value, 1)]
+    while stack:
+        current, depth = stack.pop()
+        maximum = max(maximum, depth)
+        if isinstance(current, Mapping):
+            stack.extend(
+                (nested, depth + 1)
+                for nested in current.values()
+                if isinstance(nested, Mapping | list | tuple)
+            )
+        elif isinstance(current, list | tuple):
+            stack.extend(
+                (nested, depth + 1)
+                for nested in current
+                if isinstance(nested, Mapping | list | tuple)
+            )
+    return maximum
+
+
+def assert_expected_within_bounds(expected: Mapping[str, object]) -> None:
+    """Reject a declared expectation beyond the smaller claim-specific envelope."""
+    depth = _canonical_depth(expected)
+    if depth > 4:
+        raise ValueError(f"expected depth rule exceeds 4 levels (measured {depth})")
+
+    # canonical_json's 8-level / 4096-byte envelope protects all fact values.
+    # Claims are deliberately tighter, so callers see the claim rule instead.
+    try:
+        text = canonical_json(expected)
+    except ValueTooLargeError as exc:
+        raise ValueError(
+            "expected byte-size rule exceeds 1024 UTF-8 bytes (measured more than 4096 bytes)"
+        ) from exc
+    byte_count = len(text.encode("utf-8"))
+    if byte_count > 1024:
+        raise ValueError(
+            f"expected byte-size rule exceeds 1024 UTF-8 bytes (measured {byte_count})"
+        )
