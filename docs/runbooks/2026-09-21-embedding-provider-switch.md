@@ -189,6 +189,25 @@ Requires exit 0. Exit 2 means the run was incomplete — a saturated endpoint
 answers 503 and the check refuses to call four fifths of an answer a pass.
 Retry when the endpoint is idle rather than lowering `--per-type`.
 
+**Read the per-type lines, not only the verdict.** The sample is spread across
+the six covered types, so a type written entirely by another model is a
+minority of the rows: the global median does not move and the check says
+MATCH. Since 2026-09-21 the report breaks the sample down per type and flags
+any whose median is below the threshold.
+
+One of them is expected to be flagged today, and only one: `feature`. Measured
+2026-09-21, median 0.7937 with 8 of 8 below threshold, while every other type
+sat at 1.0000. That is not model drift — the column was never
+`embed(description)`, so the check cannot reproduce what is stored until the
+reindex redefines it. **Any other type below threshold is a real finding and
+stops the window.** After step 5, `feature` must join the others.
+
+The verdict itself still reads the global median. Gating on per-type medians
+would fail this preflight today, on that known and expected condition, which is
+how a check becomes one nobody runs. Making the instrument tell
+"unverifiable-by-construction" apart from "written by another model" is real
+work and is not done.
+
 Note the reported `NOT CHECKED` line: it names the rows this check cannot see.
 
 ### 2. Dump
@@ -196,7 +215,32 @@ Note the reported `NOT CHECKED` line: it names the rows this check cannot see.
 Take and verify a dump before touching anything, as for a migration. The
 vectors are the expensive part to rebuild, not the rows.
 
-### 3. Arm the provider
+### 3. Stop the writers
+
+Nothing above this line touched production. Everything below it does.
+
+```bash
+# The watchdog timer FIRST. It probes /health every 30 s and restarts the MCP,
+# so stopping the server before the timer resurrects it within half a minute.
+systemctl --user stop brain-mcp-http-watchdog.timer
+systemctl --user stop brain-mcp-http.service
+systemctl --user show brain-mcp-http.service -p MainPID --value   # must print 0
+```
+
+Measured 2026-09-21: four systemd units build an embedding client — the MCP,
+`brain-metrics`, `brain-v42-automation` and `brain-v42-dream` — and all four
+have the repository checkout as their working directory, which is how they read
+the `.env` armed in the next step. Check which of them are active and stop those
+too; on that date only the MCP and `brain-metrics` were. `brain-v42-dream`
+triggers at 06:00, so a window that ends before then does not need to fight it,
+but the forbidden-window rule above is what keeps that true.
+
+The reason is not the `.env`: a running process loaded its settings at startup
+and will not re-read them. The reason is that a live writer embeds with the OLD
+model while the reindex is sweeping, and any row it writes afterwards is a qodo
+vector in a codestral corpus that no checklist line would catch.
+
+### 4. Arm the provider
 
 Nothing in the code needs to change. `OpenAIWire` ships and is deployed, so
 the switch is configuration:
@@ -205,8 +249,12 @@ the switch is configuration:
 BRAIN_EMBEDDING_BACKEND=openai
 BRAIN_EMBEDDING_SERVICE_URL=https://api.mistral.ai
 BRAIN_EMBEDDING_MODEL=codestral-embed-2505
-BRAIN_EMBEDDING_TOKEN_FILE=~/.config/brain-v42/<provider>.key
+BRAIN_EMBEDDING_TOKEN_FILE=/home/hawixs/.config/brain-v42/<provider>.key
 ```
+
+Write the path absolute. `~` is expanded since 2026-09-21, but the existing
+`.env` uses absolute paths and a token file is not the place to rely on a
+recent fix.
 
 The key goes in a file, never in an inline environment value — same rule as
 the MCP bearer. `codestral-embed-2505` is the model that fits: 1536 dimensions
@@ -218,7 +266,16 @@ change measured at the same time as the first.
 the corpus does not match the configured model, and that is precisely the
 state `check_embedding_model_drift.py` exists to refuse.
 
-### 4. Reindex
+One consequence of the token file worth knowing before writing it:
+`_resolve_shim_bearer` resolves it for **both** clients, the embedding one and
+the reranker one. `BRAIN_EMBEDDING_API_KEY` is per-client; the file is not. So
+pointing it at the hosted provider's key also presents that key to the local
+reranker shim on every search. Measured 2026-09-21: the shim accepts any
+bearer, including none, so nothing breaks — but a paid key travels to a service
+that neither needs nor validates it, on a port the SEC2 note describes as
+reachable from `brain-net` without a token.
+
+### 5. Reindex
 
 Every table, in one window. The batch API halves the price and this is not
 time-sensitive work.
@@ -233,10 +290,17 @@ python scripts/regen_embeddings.py            # the six covered tables (6572 row
 
 The order does not matter, but the completeness does. Track the three as a
 checklist and do not restart the writers until every line is done. Plan
-indexing restarts on its own when the MCP starts, so step 6 covers it — but
+indexing restarts on its own when the MCP starts, so step 7 covers it — but
 only if the rows were marked stale first.
 
-### 5. Verify
+**`regen_embeddings.py` must exit 0.** It does not stop on a failing batch: it
+counts the rows, prints the error and carries on, so a single 429 drops up to
+`--batch-size` rows and the run still reaches its summary. The exit code is the
+only completeness signal, the script is idempotent, and a re-run costs cents.
+A drift check will not rescue you here — a handful of stale rows does not move
+a median.
+
+### 6. Verify
 
 ```bash
 python scripts/check_embedding_model_drift.py --per-type 8   # must exit 0
@@ -253,7 +317,7 @@ The bench proves quality did not collapse. Compare against the qodo row of the
 same report, on the same pool: a number from a different pool size is not a
 comparison.
 
-### 6. Restart the writers
+### 7. Restart the writers
 
 Only now. Then confirm `brain_search` returns sane results on a handful of
 known queries.
