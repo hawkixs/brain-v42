@@ -197,6 +197,17 @@ def render(
             f"  min / max          : {report.minimum:.4f} / {report.maximum:.4f}",
             f"  rows below thresh. : {report.outliers}",
         ]
+    for breakdown in report.by_type:
+        flag = (
+            "  <-- below threshold"
+            if (breakdown.median is not None and breakdown.median < report.threshold)
+            else ""
+        )
+        median = "n/a" if breakdown.median is None else f"{breakdown.median:.4f}"
+        lines.append(
+            f"    {breakdown.entity_type:<9} n={breakdown.sampled:<3} median={median}"
+            f"  below={breakdown.outliers}{flag}"
+        )
     lines.append(f"  VERDICT            : {report.verdict.value.upper()}")
     if report.verdict.value == "drift":
         lines.append(
@@ -265,6 +276,15 @@ async def run(args: argparse.Namespace) -> int:
                     "median": report.median,
                     "minimum": report.minimum,
                     "maximum": report.maximum,
+                    "by_type": [
+                        {
+                            "entity_type": b.entity_type,
+                            "sampled": b.sampled,
+                            "median": b.median,
+                            "outliers": b.outliers,
+                        }
+                        for b in report.by_type
+                    ],
                     "problems": problems,
                     "unchecked": unchecked,
                 },

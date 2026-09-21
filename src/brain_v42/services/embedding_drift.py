@@ -63,6 +63,21 @@ class SampleComparison:
 
 
 @dataclass(frozen=True)
+class TypeBreakdown:
+    """One sampled entity type, measured on its own.
+
+    The sample is spread across the covered types, so a type written entirely by
+    a different model is a minority of the rows and never moves the global
+    median. Reporting each type separately is what makes that case visible.
+    """
+
+    entity_type: str
+    sampled: int
+    median: float | None
+    outliers: int
+
+
+@dataclass(frozen=True)
 class DriftReport:
     """The verdict plus the numbers an operator has to read before switching."""
 
@@ -73,6 +88,7 @@ class DriftReport:
     median: float | None
     minimum: float | None
     maximum: float | None
+    by_type: tuple[TypeBreakdown, ...] = ()
 
     @property
     def exit_code(self) -> int:
@@ -136,11 +152,16 @@ def classify_drift(
             median=None,
             minimum=None,
             maximum=None,
+            by_type=(),
         )
 
     similarities = [s.similarity for s in samples]
     median = statistics.median(similarities)
     verdict = DriftVerdict.MATCH if median >= threshold else DriftVerdict.DRIFT
+
+    per_type: dict[str, list[float]] = {}
+    for sample in samples:
+        per_type.setdefault(sample.entity_type, []).append(sample.similarity)
 
     return DriftReport(
         verdict=verdict,
@@ -150,4 +171,13 @@ def classify_drift(
         median=median,
         minimum=min(similarities),
         maximum=max(similarities),
+        by_type=tuple(
+            TypeBreakdown(
+                entity_type=entity_type,
+                sampled=len(values),
+                median=statistics.median(values),
+                outliers=sum(1 for v in values if v < threshold),
+            )
+            for entity_type, values in sorted(per_type.items())
+        ),
     )
