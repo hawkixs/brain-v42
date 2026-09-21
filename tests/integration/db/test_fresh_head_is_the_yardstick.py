@@ -20,7 +20,7 @@ value and their ticket — never tolerated as a band: a drift that grows (049 ad
 an index) breaks the pin, a drift that heals (the asset brought up to date) breaks
 it too, and the exception is removed instead of surviving.
 
-**The module now points at the v11 candidate for head 054.** The candidate is
+**The module now points at the v12 candidate for head 055.** The candidate is
 v10 plus pure insertions — `delivery_attestations`, its seven constraints and
 four indexes — measured on a disposable chain-built database and on a real
 custom-format dump/restore of it, rather than from a production attestation.
@@ -79,9 +79,9 @@ from tests.integration.disposable_db import (
 pytestmark = pytest.mark.integration
 
 PROJECT_ROOT = Path(__file__).parents[3]
-V11_SQL = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v11.sql"
-V11_JSON = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v11.json"
-V11_PGRESTORE = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v11-pgrestore.sql"
+V12_SQL = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v12.sql"
+V12_JSON = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v12.json"
+V12_PGRESTORE = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v12-pgrestore.sql"
 
 #: The contract checks that attest the DATA carried by a restoration. A fresh
 #: database is empty by construction: they cannot pass here and that is not a
@@ -327,7 +327,7 @@ async def test_a_create_all_bench_accepts_what_production_accepts(
 async def test_the_recovery_asset_passes_against_a_fresh_head_database(
     fresh_head_db_url: str,
 ) -> None:
-    """Replays `brain-v42-v11.sql` against the head-054 yardstick.
+    """Replays `brain-v42-v12.sql` against the head-055 yardstick.
 
     Every check of the receipt must pass, except:
     * the DATA checks (`DATA_CHECK_KINDS`) — a fresh database is empty;
@@ -350,11 +350,11 @@ async def test_the_recovery_asset_passes_against_a_fresh_head_database(
     appears on a live replay, a manual gesture" — is closed by this automatic
     replay.
     """
-    failures = await _replay(fresh_head_db_url, V11_SQL)
+    failures = await _replay(fresh_head_db_url, V12_SQL)
 
     # The receipt does not carry `kind`; each check's nature lives in the JSON
     # contract, the same source as red-backup's DSL engine.
-    contract = json.loads(V11_JSON.read_text(encoding="utf-8"))
+    contract = json.loads(V12_JSON.read_text(encoding="utf-8"))
     kinds = {check["id"]: check.get("kind") for check in contract["checks"]}
     unexplained = {
         check_id: failure
@@ -364,7 +364,7 @@ async def test_the_recovery_asset_passes_against_a_fresh_head_database(
         and check_id != "extension_versions"
     }
     assert not unexplained, (
-        "the v11 candidate and the alembic chain disagree beyond the pinned drift:\n"
+        "the v12 candidate and the alembic chain disagree beyond the pinned drift:\n"
         + json.dumps(unexplained, indent=2, default=str)
     )
 
@@ -415,9 +415,9 @@ async def test_the_pgrestore_twin_diverges_from_a_fresh_head_by_exactly_one_inde
     What this test still does not prove: the `pg_dump`/`pg_restore` round-trip
     itself. That needs a bench.
     """
-    failures = await _replay(fresh_head_db_url, V11_PGRESTORE)
+    failures = await _replay(fresh_head_db_url, V12_PGRESTORE)
 
-    contract = json.loads(V11_JSON.read_text(encoding="utf-8"))
+    contract = json.loads(V12_JSON.read_text(encoding="utf-8"))
     kinds = {check["id"]: check.get("kind") for check in contract["checks"]}
     unexplained = {
         check_id: failure
@@ -426,7 +426,7 @@ async def test_the_pgrestore_twin_diverges_from_a_fresh_head_by_exactly_one_inde
         and check_id not in {"table_shape", "brain_runtime_032_036_037"}
     }
     assert not unexplained, (
-        "the v11 -pgrestore twin disagrees with the alembic chain somewhere other "
+        "the v12 -pgrestore twin disagrees with the alembic chain somewhere other "
         "than its one re-serialized index:\n" + json.dumps(unexplained, indent=2, default=str)
     )
 
