@@ -73,6 +73,22 @@ Nothing regressed: April ranked against 305 documents and this ranks against
 8137. It is the same model measured on a harder, realistic pool — which is
 why an April figure must never be quoted against a v2 one.
 
+By query shape, recall@5 — this is the number that decides operational
+guidance during an outage:
+
+| Gold variant | `fts` | `shim` | FTS recovers |
+|---|---:|---:|---:|
+| `keyword-bag` | 0.410 | 0.911 | 45 % |
+| `literal-paraphrase` | 0.201 | 0.915 | 22 % |
+| `abstract-question` | **0.003** | 0.676 | **0.5 %** |
+
+The degraded mode does not degrade evenly, it collapses by query shape. On a
+natural question — the way an agent actually searches a memory — FTS finds
+the right document three times in a thousand. **During an endpoint outage the
+only usable strategy is keyword queries**, and even then you get under half of
+what vectors give. Say this to whoever is on call; "search is degraded" does
+not convey it.
+
 Two structural limits of the degraded path, not tuning issues:
 
 - `features` is the one pooled table with **no `search_vector` column**. The

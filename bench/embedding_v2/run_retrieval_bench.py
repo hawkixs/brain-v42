@@ -150,6 +150,12 @@ class CandidateResult:
     headline: dict[str, float] = field(default_factory=dict)
     all_types: dict[str, float] = field(default_factory=dict)
     per_type: dict[str, dict[str, float]] = field(default_factory=dict)
+    per_variant: dict[str, dict[str, float]] = field(default_factory=dict)
+    #: One row per scored query. Persisted so a breakdown nobody thought of
+    #: today is a re-analysis of this file rather than another full re-embed
+    #: of the corpus -- which costs ten minutes on the GPU and real money on a
+    #: hosted provider.
+    ranks: list[dict[str, object]] = field(default_factory=list)
 
 
 # ──────────────────────────── corpus + gold ──────────────────────────────
@@ -341,9 +347,21 @@ def _finish(result: CandidateResult, ranks: list[tuple[dict, int]], latencies: l
         as_results([p for p in ranks if p[0]["gold_type"] in SERVED_TYPES])
     )
     by_type: dict[str, list[tuple[dict, int]]] = {}
+    by_variant: dict[str, list[tuple[dict, int]]] = {}
     for query, rank in ranks:
         by_type.setdefault(query["gold_type"], []).append((query, rank))
+        by_variant.setdefault(query["variant"], []).append((query, rank))
     result.per_type = {k: compute_metrics(as_results(v)) for k, v in by_type.items()}
+    result.per_variant = {k: compute_metrics(as_results(v)) for k, v in by_variant.items()}
+    result.ranks = [
+        {
+            "query_id": q["query_id"],
+            "gold_type": q["gold_type"],
+            "variant": q["variant"],
+            "rank": rank,
+        }
+        for q, rank in ranks
+    ]
 
     if latencies:
         ordered = sorted(latencies)
