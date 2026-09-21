@@ -239,33 +239,71 @@ async def embed_pool(
     result: CandidateResult,
     cache: Path | None = None,
 ) -> np.ndarray | None:
-    """Embed the pool, reusing a cached matrix when one matches exactly.
+    """Embed the pool, resuming from whatever was already paid for.
 
     The pool is the expensive half -- 8145 rows, ~1.8 M tokens, real money on
-    a hosted provider -- and the cheap half can still fail: a first codestral
-    run embedded the whole pool and then lost the leg to HTTP 429 on the
-    single-query phase, throwing the paid work away. Caching turns that into a
-    retry that costs the queries alone.
+    a hosted provider -- and it is also where a rate limit lands once the
+    batches get small enough. Measured 2026-09-21 against Mistral: a first run
+    embedded the whole pool and then died on 429 during the queries; a second,
+    at batch 32, died on 429 at pool row 3968. Both threw away everything
+    paid for, because the cache only wrote on complete success.
+
+    So progress is checkpointed as it is made, and a resumed run pays only for
+    the rows it still lacks. The checkpoint holds RAW vectors -- normalisation
+    is applied once at the end, so a partial file stays concatenable.
     """
     if cache is not None and cache.is_file():
         print(f"  pool cache hit: {cache.name}", flush=True)
         return np.load(cache)
-    started = time.monotonic()
+
+    partial = cache.with_name(cache.stem + ".partial.npy") if cache is not None else None
     vectors: list[list[float]] = []
-    for index in range(0, len(texts), batch):
+    if partial is not None and partial.is_file():
+        stored = np.load(partial)
+        if len(stored) <= len(texts):
+            vectors = [row.tolist() for row in stored]
+            print(f"  resuming pool from {len(vectors)}/{len(texts)} already embedded", flush=True)
+
+    def checkpoint() -> None:
+        if partial is not None and vectors:
+            np.save(partial, np.asarray(vectors, dtype=np.float32))
+
+    started = time.monotonic()
+    while len(vectors) < len(texts):
+        index = len(vectors)
         chunk = texts[index : index + batch]
-        try:
-            vectors.extend(await svc.embed_texts(chunk))  # type: ignore[attr-defined]
-        except EmbeddingUnavailable as exc:
+        embedded: list[list[float]] | None = None
+        for attempt in range(QUERY_RETRIES):
+            try:
+                embedded = await svc.embed_texts(chunk)  # type: ignore[attr-defined]
+                break
+            except EmbeddingUnavailable as exc:
+                if attempt == QUERY_RETRIES - 1:
+                    checkpoint()
+                    result.ok = False
+                    result.failure = (
+                        f"corpus embedding failed at {index} after {QUERY_RETRIES} tries: {exc}"
+                    )
+                    return None
+                result.throttled += 1
+                await asyncio.sleep(QUERY_BACKOFF_SECONDS * (2**attempt))
+        if embedded is None:  # pragma: no cover - defensive
+            checkpoint()
             result.ok = False
-            result.failure = f"corpus embedding failed at {index}: {exc}"
+            result.failure = f"corpus embedding returned nothing at {index}"
             return None
-        if index and index % (batch * 50) == 0:
-            print(f"    {index}/{len(texts)} pooled", flush=True)
+        vectors.extend(embedded)
+        if len(vectors) % (batch * 20) < batch:
+            checkpoint()
+        if len(vectors) % (batch * 50) < batch:
+            print(f"    {len(vectors)}/{len(texts)} pooled", flush=True)
+
     result.corpus_seconds = time.monotonic() - started
     matrix = _normalise(np.asarray(vectors, dtype=np.float32))
     if cache is not None:
         np.save(cache, matrix)
+        if partial is not None:
+            partial.unlink(missing_ok=True)
         print(f"  pool cached -> {cache.name}", flush=True)
     return matrix
 
