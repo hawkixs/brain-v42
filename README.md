@@ -22,6 +22,10 @@ consolidated every night by an agent pipeline.
   cross-project tickets.
 - **Observable delivery** — versioned delivery contracts bind addressed work to a
   pull request, persisted CI evidence, integration, and policy-governed fulfillment.
+- **Measured facts, not remembered ones** — a closed catalogue of named probes reads
+  live state (schema head, running release, declared killswitches) against a source
+  identity the operator declared independently, so a briefing states what *is* rather
+  than what someone last wrote down.
 
 ## Architecture
 
@@ -108,8 +112,8 @@ this does not affect you.
 
 ```bash
 git clone https://github.com/hawkixs/brain-v42 && cd brain-v42
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+uv sync --extra dev --python 3.12      # creates .venv; see "Development" for why not pip
+source .venv/bin/activate
 
 # 1. Local Neo4j secret (skip if you run without the graph)
 install -d -m 0700 .secrets
@@ -178,6 +182,30 @@ push commits, merge pull requests, or deploy releases. External orchestrators ke
 those responsibilities. Delivery reads use persisted observations and make no
 GitHub calls. With `BRAIN_DELIVERY_ENABLED=false`, mutations pause while reads and
 the completion guard for existing contracts remain active.
+
+### Ledger and policy: the boundary with red-rail
+
+Brain is the **ledger**; [red-rail](https://github.com/hawkixs) is **policy**. The
+split is deliberate and it is the reason attestations exist as a separate table
+(ticket `04bc1f4a`).
+
+`brain_delivery_attest` records one issuer-declared fact about a ticket's delivery
+workflow — `released`, `deployed`, `rolled_back`, `incident_detected`, `gate_passed`
+and their kin. Brain validates the **form** and nothing else: the kind must match
+`^[a-z][a-z0-9_]{0,63}$`, the payload must be a bounded JSON object, and the server —
+never the issuer — computes the digest. Brain never judges what a kind *means*, never
+derives a completion refusal from an attestation, and never updates or deletes one.
+The well-known kinds above are documentation, not an allowlist.
+
+That restraint is what makes the rows usable: red-rail reads them to compute DORA
+metrics under its own policy, which can change without a schema migration here.
+Attestations also arrive legitimately after a ticket has closed — an incident or a
+rollback does not wait for a workflow state — so no ticket-status restriction applies.
+
+For consumers that must not import `brain_v42`, the whole API is published as data in
+[`docs/contracts/delivery_attestations.json`](docs/contracts/delivery_attestations.json)
+— kinds, bounds, the digest recipe with its test vectors, the stable error codes and
+the list scopes — and a unit test keeps that file equal to the code.
 
 The observer is a separate process with separate credentials. Its dedicated
 `~/.config/brain-v42/delivery-observer.env` must be an owned, regular, non-symlink
@@ -270,7 +298,19 @@ MCP port — to the Internet. Repository code alone does not prove a live firewa
 Nightly agent pipeline (`scripts/dream.sh`: scan → clean → connect → synth → promote →
 reorg) plus server-side ticket-extraction, roadmap-curation and session-sweep jobs.
 Every mutating phase sits behind a killswitch and every killswitch ships closed;
-dry-run is the shipped default. Each phase runs under an exact MCP tool allowlist.
+dry-run is the shipped default. Each phase runs under an exact MCP tool allowlist,
+and each phase holds a capability bearer scoped to its `(project, phase)` pair, so a
+phase sees only the project it was started for.
+
+Phases run on an **ordered chain of agent providers** (`BRAIN_DREAM_AGENT_PROVIDERS`),
+each preflighted before the night starts. When a link is exhausted or unreachable the
+run falls through to the next rather than failing the phase, and a link that dies
+before any Brain call is replayable — it is retired for the night and not charged to
+the retry budget, because a provider that never reached Brain performed no work to
+redo. Every phase writes which link served it, and what it fell through, to
+`logs/dream/<date>_<project>_<phase>.chain.json`. Read that file rather than assuming
+the first link ran: a night can be entirely green on one provider and prove nothing
+about the fallthrough.
 Details: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
 [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
@@ -287,6 +327,38 @@ The running build names itself: `GET /health` returns `version` (the installed
 distribution) and `alembic_head` (the revision shipped with it), both measured, never
 written by hand.
 
+## Measured facts
+
+The sentence above — *measure it, do not read it here* — is the rule. The facts
+registry is the mechanism that enforces it, so the session briefing can state the
+live schema head, the running release and the declared Dream killswitches without
+anyone retyping them into a document.
+
+A **fact** is a named, versioned reader. Each one declares its target, its TTL, its
+timeout, its policies and the exact shape of the value it returns, and the catalogue
+is closed: probes are registered once at composition and then frozen, so no runtime
+caller can install a reader of its own.
+
+What makes a reading trustworthy is not the probe but the **source identity**, and the
+identity a probe is checked against is declared *independently by the operator* —
+never derived from the connection the probe uses. A PostgreSQL reading must match a
+cluster system identifier, database, address and port the operator wrote down; a
+`live_release` reading must match the release SHA and package version the release
+tooling rendered; a `host` reading must match a declared hostname. Undeclared means no
+fact: the probe is refused at registration and the briefing says which one is missing
+and why, rather than leaving a silent gap. This closes the obvious hole — a probe that
+reports its own DSN back to you proves nothing about which database it reached.
+
+A measurement has exactly two shapes and no third: `Measured`, carrying a bounded
+canonical JSON value and a digest over it, or `Unreadable`, carrying a closed
+`error_code`. A timeout, an unexpected identity or an over-large value each produce an
+`Unreadable` that renders as such — never a stale value dressed up as current.
+
+Three targets ship today (`production`, `live_release`, `host`) and the catalogue is
+declared in `src/brain_v42/facts/composition.py`. Read it with `brain_fact_list` and
+`brain_fact_get`; facts declared `briefing=true` also render as lines in the session
+briefing. Design: [`docs/superpowers/specs/2026-09-19-measured-facts-and-claims-design.md`](docs/superpowers/specs/2026-09-19-measured-facts-and-claims-design.md).
+
 ## Development
 
 ```bash
@@ -300,8 +372,16 @@ mypy src/
   Pydantic 2, structlog.
 - **TDD is mandatory** — red, green, refactor; tests are never edited to make code pass.
 - **Coverage floor**: 60% (CI blocks below).
-- The dev toolchain is pinned exactly (`pip install -e ".[dev]"`) so local always
-  matches CI.
+- **Install with `uv sync --extra dev --python 3.12`, not with pip.** `pip install -e ".[dev]"`
+  fails on this layout and always has: `headless-agents` is a uv *workspace member*
+  (`[tool.uv.workspace]` + `[tool.uv.sources]` in `pyproject.toml`), not a published
+  distribution, so pip looks for it on PyPI and stops with `No matching distribution
+  found for headless-agents`. The dev toolchain is pinned exactly in `uv.lock`, so a
+  synced environment resolves to the versions CI runs.
+- **Pin `--python 3.12` explicitly.** `requires-python` is `>=3.12`, so a bare
+  `uv sync` on a fresh clone picks the newest interpreter it can find — measured
+  3.14 — while every CI job, the release job and `[tool.mypy]` target 3.12. Matching
+  CI is the whole point of the lock; an unpinned interpreter quietly gives it up.
 
 ## Project layout
 
@@ -346,7 +426,10 @@ migrations, and attaches both to the GitHub release.
   once a delivery attestation exists.
 - Follow the release's operator runbook for recovery. For **0.6.0** (as for 0.5.0), use the
   [compatible forward rollback](docs/runbooks/2026-09-07-observable-delivery-workflows.md#compatible-forward-rollback)
-  and keep schema 053 in place.
+  and keep the repository's migration target in place — 054 since revision 054 shipped.
+  Rollback means selecting a release that supports that head or deploying a forward fix;
+  it never means `alembic downgrade`, and never means restoring an older dump over a live
+  database.
 - **0.6.0** ships the `headless-agents` workspace member (`packages/headless-agents/`,
   version `0.1.0`) as a second distribution that `brain_v42` depends on; its own version
   moves independently of this one.
