@@ -369,3 +369,79 @@ class TestBrainMergeEntities:
     @pytest.mark.asyncio
     async def test_tool_registered(self, tools_with_consolidation: dict[str, Any]) -> None:
         assert "brain_merge_entities" in tools_with_consolidation
+
+
+class TestTheDeletionClockIsAContentClock:
+    """`updated_at` is bumped by a trigger on every write, vectors included.
+
+    Measured 2026-09-21: `trg_learnings_updated` is an unconditional BEFORE
+    UPDATE on the whole row, so an update that touches nothing but `embedding`
+    moves `updated_at` while leaving `content_updated_at` untouched. The schema
+    already separates "row written" from "text changed"; this query was reading
+    the wrong one of the two.
+
+    The consequence is quiet and expensive: the embedding reindex a provider
+    switch requires rewrites every row, which restarts the 180-day clock on the
+    whole corpus. Measured the same day, 21 archived-and-never-read learnings
+    would have been pushed out by six months, 9 of them within a month of
+    qualifying.
+
+    `content_updated_at` alone is not the fix either: measured, it is set on
+    fewer than 1 % of rows (11 learnings of 3879), because it only stamps on a
+    real edit. Coalescing to `created_at` is what makes the clock mean
+    "untouched since" for a row nobody ever edited.
+    """
+
+    @pytest.mark.asyncio
+    async def test_candidates_are_aged_on_content_not_on_the_row_being_written(
+        self, tools: dict[str, Any], session: AsyncMock
+    ) -> None:
+        from sqlalchemy.dialects import postgresql
+
+        mock_result = MagicMock()
+        mock_result.mappings.return_value.all.return_value = []
+        mock_scalar = MagicMock()
+        mock_scalar.scalar_one.return_value = 0
+        session.execute = AsyncMock(side_effect=[mock_result, mock_scalar] * 6)
+
+        await tools["brain_decay_status"]()
+
+        deletion_stmt = session.execute.await_args_list[1].args[0]
+        sql = str(
+            deletion_stmt.compile(
+                dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+            )
+        )
+        assert "coalesce" in sql.lower(), "an unedited row has no content_updated_at"
+        assert "content_updated_at" in sql
+        assert "created_at" in sql
+        assert "decisions.updated_at" not in sql, (
+            "updated_at is bumped by a trigger on any write, so it cannot age anything"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_table_without_the_content_column_falls_back_to_creation(
+        self, tools: dict[str, Any], session: AsyncMock
+    ) -> None:
+        """`indexed_plans` carries no `content_updated_at`, and must not COALESCE on it.
+
+        A blanket coalesce would raise rather than degrade, which is how a fix
+        for five tables breaks the sixth.
+        """
+        from sqlalchemy.dialects import postgresql
+
+        mock_result = MagicMock()
+        mock_result.mappings.return_value.all.return_value = []
+        mock_scalar = MagicMock()
+        mock_scalar.scalar_one.return_value = 0
+        session.execute = AsyncMock(side_effect=[mock_result, mock_scalar] * 6)
+
+        await tools["brain_decay_status"]()
+
+        plan_stmt = session.execute.await_args_list[11].args[0]
+        sql = str(
+            plan_stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+        )
+        assert "indexed_plans" in sql
+        assert "indexed_plans.created_at <" in sql
+        assert "indexed_plans.updated_at" not in sql

@@ -45,6 +45,28 @@ _DECAY_ENTITY_TABLES: dict[str, sa.Table] = {
 }
 
 
+def _content_clock(table: sa.Table) -> sa.ColumnElement[Any]:
+    """The stamp that moves only when the text changes.
+
+    `updated_at` cannot age anything: an unconditional BEFORE UPDATE trigger
+    bumps it on every write, so rewriting nothing but `embedding` makes the row
+    look freshly edited. The embedding reindex a provider switch requires would
+    therefore restart the 180-day deletion clock on the whole corpus.
+
+    `content_updated_at` is stamped only on a real edit, which is exactly right
+    -- and exactly why it is null for the vast majority of rows (measured
+    2026-09-21: 11 of 3879 learnings). Coalescing to `created_at` makes the
+    clock read "untouched since" for a row nobody ever edited.
+
+    `indexed_plans` carries no `content_updated_at`; its creation date is the
+    oldest honest stamp it has.
+    """
+    content = table.c.get("content_updated_at")
+    if content is None:
+        return table.c.created_at
+    return sa.func.coalesce(content, table.c.created_at)
+
+
 def register_decay_tools(
     mcp: FastMCP,
     session_factory: async_sessionmaker[AsyncSession],
@@ -91,7 +113,7 @@ def register_decay_tools(
                         sa.and_(
                             table.c.freshness_status == "archived",
                             table.c.access_count == 0,
-                            table.c.updated_at < cutoff,
+                            _content_clock(table) < cutoff,
                         )
                     )
                 )
