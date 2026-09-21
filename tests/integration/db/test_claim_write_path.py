@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+import pytest_asyncio
 import sqlalchemy as sa
 from sqlalchemy import event
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.pool import NullPool
 
 from brain_v42.db.tables import (
     _EMBEDDING_DIM,
@@ -29,6 +36,8 @@ from brain_v42.models.learning import LearningCreate, LearningUpdate
 from brain_v42.repositories.pg_learning import PgLearningRepo
 from brain_v42.repositories.pg_project_context import PgProjectContextRepo
 from brain_v42.services.learning_service import LearningService
+from tests.integration.conftest import _get_integration_db_url_or_skip
+from tests.integration.disposable_db import fresh_head_database
 
 pytestmark = pytest.mark.integration
 
@@ -54,6 +63,49 @@ class _EmbeddingService:
 
     async def embed(self, text: str) -> list[float]:
         return [0.125] * _EMBEDDING_DIM
+
+
+# ---------------------------------------------------------------------------
+# This module owns its database, and that is not a preference.
+#
+# `tests/integration/db/` shares ONE disposable database for the whole session
+# (`migration_database_url`, scope="session"). The tests below COMMIT claim rows,
+# and `knowledge_claims` is append-only: migration 055 installs a BEFORE DELETE
+# trigger that refuses every deletion. So these rows cannot be cleaned up in a
+# `finally` — not because someone forgot, but because the schema forbids it.
+#
+# Left in the shared database they break every migration-downgrade test below
+# 055, because those downgrades must transit through it and 055's fail-closed
+# fence fires on the rows: measured 2026-09-21, 19 failures across the 051, 052
+# and 054 fences, each reporting `cannot downgrade 055: knowledge_claims holds
+# 2 row(s)`. The fence was right; the leak was here.
+#
+# Shadowing `migration_database_url` and `engine` IN THIS MODULE gives this file its
+# own database. The scope stays `session` to match the fixtures they shadow — a
+# module scope raises `ScopeMismatch`, because a session-scoped fixture consumes
+# `engine`. Module-local definitions are only visible here, so "session" buys a
+# second database, not a shared one. `session_factory` is function-scoped and
+# follows `engine` without being named, and the parent's autouse environment
+# rebind is function-scoped and follows too.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def migration_database_url() -> Iterator[str]:
+    """A database for this file alone, thrown away with its un-deletable rows."""
+    shared_url = _get_integration_db_url_or_skip()
+    with fresh_head_database(shared_url, prefix="brain_claims") as disposable_url:
+        yield disposable_url
+
+
+@pytest_asyncio.fixture(scope="session")
+async def engine(migration_database_url: str) -> AsyncIterator[AsyncEngine]:
+    """Bind to this module's database rather than the directory's shared one."""
+    disposable_engine = create_async_engine(migration_database_url, poolclass=NullPool, echo=False)
+    try:
+        yield disposable_engine
+    finally:
+        await disposable_engine.dispose()
 
 
 def _registry() -> FactRegistry:
