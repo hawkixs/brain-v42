@@ -296,7 +296,13 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
     # pre-053 schema is the child FK `delivery_workflows.ticket_id -> tickets.id`.
     # It changes no column, CHECK, index or trigger on `tickets`, so the shape at
     # 031 remains intact while the live METADATA table set must exclude the eight.
-    assert script.get_heads() == ["054"]
+    # Re-read at 055: it ADDS three tables (`knowledge_fact_definitions`,
+    # `knowledge_claims`, `knowledge_claim_verdicts`) and one view. Its only links
+    # to the pre-055 schema are the child foreign keys
+    # `knowledge_claims.entity_ref_id -> brain_entities.id` and
+    # `knowledge_claims.project_key -> projects.project_key`; it changes no column,
+    # CHECK or index on either parent, so the shape at 031 remains intact.
+    assert script.get_heads() == ["055"]
     post_contract_tables = {
         # 050's table. `table_set` is DERIVED from live METADATA, so any new
         # table moves it, and a contract describing revision 031 must not claim
@@ -330,6 +336,13 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
         # twenty-three revisions after 031 must not appear in a contract that
         # describes 031. It is the SET, not the shape, that moves.
         "delivery_attestations",
+        # 055's three tables, and they belong here for the same reason as 054's
+        # table: `table_set` is DERIVED from live METADATA, so tables added after
+        # 031 must not appear in a contract that describes 031. The view adds no
+        # metadata table; it is the SET, not the shape, that moves.
+        "knowledge_fact_definitions",
+        "knowledge_claims",
+        "knowledge_claim_verdicts",
         "brain_session_artifacts",
         "brain_sessions",
         "projects",

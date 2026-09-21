@@ -187,6 +187,17 @@ if TYPE_CHECKING:
 # `indexed_plans`, `indexed_plan_chunks`, `project_contexts` or `feature_artifacts`.
 # INERT.
 #
+# Bumped to 055 after reviewing the complete migration. 055 creates three tables
+# (`knowledge_fact_definitions`, `knowledge_claims`, and
+# `knowledge_claim_verdicts`) and one view. Its only links to the pre-055 schema
+# are `knowledge_claims.entity_ref_id -> brain_entities.id` and
+# `knowledge_claims.project_key -> projects.project_key`; its triggers attach only
+# to its new tables, and it alters no existing table, constraint or index.
+#
+# Measured against the repair's mutating surface, 055 contains zero references to
+# `indexed_plans`, `indexed_plan_chunks`, `project_contexts` or `feature_artifacts`.
+# INERT.
+#
 # The consequence named at 050 and repeated at 051, 052 and 053 holds a fifth
 # time: production measured at 053 on 2026-09-16, so the repair refuses to run
 # against it until 054 is applied. That is the pin working.
@@ -197,7 +208,7 @@ if TYPE_CHECKING:
 # `tests/unit/test_plan_index_repair_review_block.py` derives the reviewed set
 # from this block and fails if the constant below outruns it, or if a revision
 # is skipped between the first entry and the head.
-_REQUIRED_ALEMBIC_HEAD = "054"
+_REQUIRED_ALEMBIC_HEAD = "055"
 
 
 class RepairStore:

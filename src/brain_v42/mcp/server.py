@@ -41,6 +41,7 @@ from starlette.responses import JSONResponse
 from brain_v42.config import Settings, get_settings
 from brain_v42.db.engine import dispose_engine, get_session_factory
 from brain_v42.db.neo4j import close_neo4j_driver, create_neo4j_driver
+from brain_v42.facts.definitions_startup import register_fact_definitions
 from brain_v42.mcp.activity_reporter import close_activity_reporter
 from brain_v42.mcp.business_errors import surface_business_errors
 from brain_v42.mcp.dream_capabilities import (
@@ -244,6 +245,11 @@ async def app_lifecycle(
             if graph_ledger_repo is None:
                 raise RuntimeError("graph projector requires the PostgreSQL graph ledger")
             await graph_ledger_repo.assert_schema_ready()
+
+        if fact_registry is not None:
+            await register_fact_definitions(fact_registry, get_session_factory())
+
+        if graph_outbox_projector is not None:
             await ensure_graph_projection_schema(services["neo4j_driver"])
             cleanup.push_async_callback(graph_outbox_projector.stop)
             await graph_outbox_projector.start()
@@ -979,6 +985,8 @@ def build_server() -> BuiltServer:
         roadmap_svc=services["roadmap_svc"],
         graph_svc=services["graph_service"],
         access_logger=usage_access_logger,
+        fact_registry=services["fact_registry"],
+        session_factory=get_session_factory(),
     )
 
     # Session tools
@@ -1054,6 +1062,7 @@ def build_server() -> BuiltServer:
         adr_svc=services["adr_svc"],
         session_factory=get_session_factory(),
         access_logger=usage_access_logger,
+        fact_registry=services.get("fact_registry"),
     )
 
     # Dream tools (backfill links, clusters)

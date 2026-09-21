@@ -10,6 +10,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 import structlog
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.models.snippet import Snippet, SnippetCreate, SnippetUpdate
 from brain_v42.repositories.pg_snippet import PgSnippetRepo
@@ -81,6 +82,7 @@ class SnippetService:
         related_to: list[dict] | None = None,
         *,
         authorization: RelationAuthorization | None = None,
+        session: AsyncSession | None = None,
     ) -> Snippet:
         """Create a durable snippet, then enrich its embedding when possible.
 
@@ -99,9 +101,29 @@ class SnippetService:
             title_length=len(data.title),
             language_supplied=bool(data.language),
         )
-        await require_known_project(self._project_context_repo, data.project_key)
+        await require_known_project(self._project_context_repo, data.project_key, session=session)
+
+        if session is not None:
+            return await self._repo.create(data, embedding=None, session=session)
 
         result = await self._repo.create(data, embedding=None)
+
+        return await self.enrich_created(
+            result,
+            data,
+            related_to=related_to,
+            authorization=authorization,
+        )
+
+    async def enrich_created(
+        self,
+        result: Snippet,
+        data: SnippetCreate,
+        related_to: list[dict] | None = None,
+        *,
+        authorization: RelationAuthorization | None = None,
+    ) -> Snippet:
+        """Run derived graph and embedding work after the PG transaction commits."""
 
         await graph_upsert_entity(
             self._graph,
@@ -173,6 +195,7 @@ class SnippetService:
         data: SnippetUpdate,
         *,
         project_key: str | None = None,
+        session: AsyncSession | None = None,
     ) -> Snippet | None:
         """Partial update a snippet, regenerating embedding only if intention changed.
 
@@ -185,10 +208,21 @@ class SnippetService:
         """
         logger.debug("snippet_service.update", id=str(id))
         embedding: list[float] | None = None
+        # With a caller-owned session, holding a PostgreSQL transaction across the GPU HTTP call lengthens the lock window, so if it ever bites the caller must compute the embedding before opening its transaction rather than reordering service writes.
         if data.intention is not None and self._embedding_svc is not None:
             embedding = await self._embedding_svc.embed(snippet_embedding_text(data.intention))
         if project_key is None:
+            if session is not None:
+                return await self._repo.update(id, data, embedding=embedding, session=session)
             return await self._repo.update(id, data, embedding=embedding)
+        if session is not None:
+            return await self._repo.update(
+                id,
+                data,
+                embedding=embedding,
+                project_key=project_key,
+                session=session,
+            )
         return await self._repo.update(
             id,
             data,

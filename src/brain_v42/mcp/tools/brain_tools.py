@@ -26,6 +26,7 @@ Removed tools (replaced by brain_search params):
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
@@ -33,6 +34,7 @@ import structlog
 from sqlalchemy.exc import IntegrityError
 
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
+from brain_v42.mcp.tools.claim_writes import persist_claims, resolve_claim_inputs
 from brain_v42.mcp.tools.tool_annotations import (
     _DESTRUCTIVE_ANNOTATIONS,
     _HEARTBEAT_ANNOTATIONS,
@@ -44,12 +46,16 @@ from brain_v42.models.decision import DecisionCreate
 from brain_v42.models.learning import Confidence, LearningCreate, SourceType
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.models.relation import RelationInput
+from brain_v42.provenance import get_current_actor
 from brain_v42.repositories.promotion import SourceLearningNotFound
 from brain_v42.services.brain_service import _TYPE_TO_PLURAL
+from brain_v42.services.embedding_text import adr_embedding_text
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from brain_v42.facts.registry import FactRegistry
     from brain_v42.services.access_logger import AccessLogger
     from brain_v42.services.adr_service import ADRService
     from brain_v42.services.brain_service import BrainService
@@ -79,6 +85,8 @@ from brain_v42.mcp.tools.workflow_guide_tools import register_workflow_guide_too
 
 logger = structlog.get_logger(__name__)
 
+_CLAIM_VERIFICATION_REASON = "verification_unavailable"
+
 
 def register_tools(
     mcp: FastMCP,
@@ -94,6 +102,8 @@ def register_tools(
     roadmap_svc: Any | None = None,
     graph_svc: Any | None = None,
     access_logger: AccessLogger | None = None,
+    fact_registry: FactRegistry | None = None,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> None:
     """Register all brain_* tools on the FastMCP instance.
 
@@ -102,18 +112,38 @@ def register_tools(
     """
     logger.info("brain_v42.tools.register_tools.called")
 
+    def claim_write_dependencies() -> tuple[FactRegistry, async_sessionmaker[AsyncSession]]:
+        """Fail loudly only on the opt-in path when composition omitted a required writer input."""
+        if fact_registry is None or session_factory is None:
+            raise RuntimeError("declared claims require the fact registry and a session factory")
+        return fact_registry, session_factory
+
     # Metrics are no longer installed here. They are applied after registration
     # by brain_v42.metrics.tool_instrumentation, from _run_mcp (ticket
     # c352eaaa): no more mutation of mcp.tool, no more dependence on declaration
     # order, and the compact profile's gateways are excluded by construction.
     register_workflow_guide_tools(mcp)
+    claim_write_arguments: dict[str, Any] = {}
+    if fact_registry is not None or session_factory is not None:
+        # Preserve the historical child-registration call when no claim writer
+        # dependencies exist; only the opt-in claims path needs either input.
+        claim_write_arguments = {
+            "fact_registry": fact_registry,
+            "session_factory": session_factory,
+        }
     register_snippet_tools(
         mcp,
         snippet_svc,
         metrics_collector=metrics_collector,
         access_logger=access_logger,
+        **claim_write_arguments,
     )
-    register_runbook_tools(mcp, runbook_svc, access_logger=access_logger)
+    register_runbook_tools(
+        mcp,
+        runbook_svc,
+        access_logger=access_logger,
+        **claim_write_arguments,
+    )
     register_project_context_tools(mcp, project_context_svc, roadmap_svc=roadmap_svc)
 
     # ── Feature #629: Decision tools ─────────────────────────────────────────
@@ -129,6 +159,7 @@ def register_tools(
         project_key: str | None = None,
         tags: list[str] | None = None,
         related_to: list[dict] | None = None,
+        claims: list[dict] | None = None,
     ) -> str:
         """Log a technical/architectural decision (the WHY, not just the WHAT).
 
@@ -151,13 +182,48 @@ def register_tools(
         validated_relations = None
         if related_to:
             validated_relations = [RelationInput(**r).model_dump() for r in related_to]
-        decision = await decision_svc.create(data, related_to=validated_relations)
-        logger.info("mcp.brain_log_decision", title=title, project_key=project_key)
+        if not claims:
+            decision = await decision_svc.create(data, related_to=validated_relations)
+            logger.info("mcp.brain_log_decision", title=title, project_key=project_key)
+            return format_confirmation(
+                "Decision logged",
+                title,
+                id=str(decision.id),
+                project=project_key,
+            )
+
+        registry, claim_session_factory = claim_write_dependencies()
+        resolved = await resolve_claim_inputs(registry, claims)
+        if project_key is None:
+            raise ValueError("declared claims require project_key")
+        declared_at = datetime.now(UTC)
+        async with claim_session_factory() as session, session.begin():
+            decision = await decision_svc.create(data, session=session)
+            claim_ids = await persist_claims(
+                session,
+                entry_id=decision.id,
+                entity_type="decision",
+                project_key=project_key,
+                resolved=resolved,
+                declared_by=get_current_actor(),
+                declared_at=declared_at,
+            )
+        decision = await decision_svc.enrich_created(decision, data, related_to=validated_relations)
+        logger.info(
+            "mcp.brain_log_decision",
+            title=title,
+            project_key=project_key,
+            claim_count=len(claim_ids),
+            claim_verification_reason=_CLAIM_VERIFICATION_REASON,
+        )
         return format_confirmation(
             "Decision logged",
             title,
             id=str(decision.id),
             project=project_key,
+            claims=(
+                f"{len(claim_ids)} recorded (declared; verification arrives with the verdict path)"
+            ),
         )
 
     @mcp.tool(version="1.0", annotations=_DESTRUCTIVE_ANNOTATIONS)
@@ -351,6 +417,7 @@ def register_tools(
         project_key: str | None = None,
         tags: list[str] | None = None,
         related_to: list[dict] | None = None,
+        claims: list[dict] | None = None,
     ) -> str:
         """Record an insight, gotcha, or discovery (last-resort tool).
 
@@ -377,22 +444,68 @@ def register_tools(
         validated_relations = None
         if related_to:
             validated_relations = [RelationInput(**r).model_dump() for r in related_to]
-        scope = get_dream_project_scope()
-        if scope is None:
-            learning = await learning_svc.create(data, related_to=validated_relations)
-        else:
-            learning = await learning_svc.create(
-                data,
-                related_to=validated_relations,
-                authorization=cast("RelationAuthorization", scope),
+        if not claims:
+            scope = get_dream_project_scope()
+            if scope is None:
+                learning = await learning_svc.create(data, related_to=validated_relations)
+            else:
+                learning = await learning_svc.create(
+                    data,
+                    related_to=validated_relations,
+                    authorization=cast("RelationAuthorization", scope),
+                )
+            # A degraded related_to relation (e.g. an endpoint not yet registered
+            # in the graph ledger) never raises past learning_svc.create() — the
+            # row is already committed by then. Surface it here so the agent
+            # sees it, instead of a silent success (2026-09-06 incident).
+            extra: dict[str, object] = {}
+            if learning.graph_warnings:
+                extra["warnings"] = "; ".join(learning.graph_warnings)
+            return format_confirmation(
+                "Learned",
+                topic,
+                id=str(learning.id),
+                project=project_key,
+                **extra,
             )
-        # A degraded related_to relation (e.g. an endpoint not yet registered
-        # in the graph ledger) never raises past learning_svc.create() — the
-        # row is already committed by then. Surface it here so the agent
-        # sees it, instead of a silent success (2026-09-06 incident).
-        extra: dict[str, object] = {}
+
+        registry, claim_session_factory = claim_write_dependencies()
+        resolved = await resolve_claim_inputs(registry, claims)
+        if project_key is None:
+            raise ValueError("declared claims require project_key")
+        scope = get_dream_project_scope()
+        declared_at = datetime.now(UTC)
+        async with claim_session_factory() as session, session.begin():
+            learning = await learning_svc.create(data, session=session)
+            claim_ids = await persist_claims(
+                session,
+                entry_id=learning.id,
+                entity_type="learning",
+                project_key=project_key,
+                resolved=resolved,
+                declared_by=get_current_actor(),
+                declared_at=declared_at,
+            )
+        learning = await learning_svc.enrich_created(
+            learning,
+            data,
+            related_to=validated_relations,
+            authorization=cast("RelationAuthorization", scope) if scope is not None else None,
+        )
+        extra = {
+            "claims": (
+                f"{len(claim_ids)} recorded (declared; verification arrives with the verdict path)"
+            )
+        }
         if learning.graph_warnings:
             extra["warnings"] = "; ".join(learning.graph_warnings)
+        logger.info(
+            "mcp.brain_learn",
+            topic=topic,
+            project_key=project_key,
+            claim_count=len(claim_ids),
+            claim_verification_reason=_CLAIM_VERIFICATION_REASON,
+        )
         return format_confirmation(
             "Learned",
             topic,
@@ -449,6 +562,7 @@ def register_tools(
         project_key: str,
         alternatives_considered: list[AlternativeConsidered] | None = None,
         tags: list[str] | None = None,
+        claims: list[dict] | None = None,
     ) -> str:
         """Propose an Architecture Decision Record (ADR) in status='proposed'.
 
@@ -480,20 +594,57 @@ def register_tools(
             tags,
         )
         scope = get_dream_project_scope()
-
-        if scope is None:
-            adr = await adr_svc.create(data)
-        else:
-            adr = await adr_svc.create(
-                data,
-                authorization=cast("RelationAuthorization", scope),
+        if not claims:
+            if scope is None:
+                adr = await adr_svc.create(data)
+            else:
+                adr = await adr_svc.create(
+                    data,
+                    authorization=cast("RelationAuthorization", scope),
+                )
+            logger.info("mcp.brain_propose_adr", adr_id=str(adr.id), project_key=project_key)
+            return format_confirmation(
+                f"ADR #{adr.number} proposed",
+                title,
+                id=str(adr.id),
+                project=project_key,
             )
-        logger.info("mcp.brain_propose_adr", adr_id=str(adr.id), project_key=project_key)
+
+        registry, claim_session_factory = claim_write_dependencies()
+        resolved = await resolve_claim_inputs(registry, claims)
+        declared_at = datetime.now(UTC)
+        async with claim_session_factory() as session, session.begin():
+            adr = await adr_svc.create(data, session=session)
+            claim_ids = await persist_claims(
+                session,
+                entry_id=adr.id,
+                entity_type="adr",
+                project_key=project_key,
+                resolved=resolved,
+                declared_by=get_current_actor(),
+                declared_at=declared_at,
+            )
+        adr = await adr_svc.enrich_created(
+            adr,
+            data,
+            adr_embedding_text(data.title, data.context, data.decision),
+            authorization=cast("RelationAuthorization", scope) if scope is not None else None,
+        )
+        logger.info(
+            "mcp.brain_propose_adr",
+            adr_id=str(adr.id),
+            project_key=project_key,
+            claim_count=len(claim_ids),
+            claim_verification_reason=_CLAIM_VERIFICATION_REASON,
+        )
         return format_confirmation(
             f"ADR #{adr.number} proposed",
             title,
             id=str(adr.id),
             project=project_key,
+            claims=(
+                f"{len(claim_ids)} recorded (declared; verification arrives with the verdict path)"
+            ),
         )
 
     @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)

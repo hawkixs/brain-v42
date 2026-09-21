@@ -16,15 +16,22 @@ gate.
 
 ```bash
 git clone https://github.com/hawkixs/brain-v42 && cd brain-v42
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+uv sync --extra dev --python 3.12
+source .venv/bin/activate
 ```
 
-The dev toolchain is pinned **exactly** in `pyproject.toml`
-(`[project.optional-dependencies].dev`) — pytest, ruff, mypy and the
-security scanners all resolve to the same versions CI runs. Installing via
-`pip install -e ".[dev]"` is what keeps local results predictable; a
-floating version is how a change looks green locally and red in CI.
+**Use `uv`, not pip.** `pip install -e ".[dev]"` fails here: `headless-agents`
+is a uv *workspace member* (`[tool.uv.workspace]` and `[tool.uv.sources]` in
+`pyproject.toml`), not a published distribution, so pip looks for it on PyPI
+and stops with `No matching distribution found for headless-agents`.
+
+Pin `--python 3.12`: `requires-python` is `>=3.12`, so a bare `uv sync` takes the
+newest interpreter on the machine, while every CI job and `[tool.mypy]` target 3.12.
+
+The dev toolchain is pinned **exactly** in `uv.lock` — pytest, ruff, mypy and
+the security scanners all resolve to the same versions CI runs. That pin is
+what keeps local results predictable; a floating version is how a change looks
+green locally and red in CI.
 
 ## TDD is mandatory
 

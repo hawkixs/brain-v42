@@ -6,16 +6,22 @@ Tests verify behavior of ADRService as a thin orchestration layer.
 
 from __future__ import annotations
 
+import inspect
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.models.adr import ADR, ADRCreate, ADRUpdate
 from brain_v42.models.project_context import ProjectContext
 from brain_v42.repositories.pg_project_context import PgProjectContextRepo
 from brain_v42.services.adr_service import ADRService
+from brain_v42.services.decision_service import DecisionService
 from brain_v42.services.gpu_embedding_service import EmbeddingUnavailable
+from brain_v42.services.learning_service import LearningService
+from brain_v42.services.runbook_service import RunbookService
+from brain_v42.services.snippet_service import SnippetService
 from brain_v42.services.ticket_service import UnknownProjectError
 
 # ---------------------------------------------------------------------------
@@ -106,6 +112,93 @@ def make_adr_create(**kwargs) -> ADRCreate:
 
 
 class TestCreate:
+    async def test_create_with_session_only_persists_the_adr(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_repo: MagicMock,
+    ) -> None:
+        """A caller-owned transaction defers graph and embedding side effects."""
+        adr = make_adr()
+        data = make_adr_create()
+        session = MagicMock(spec=AsyncSession)
+        mock_repo.create.return_value = adr
+        enrich_created = AsyncMock(return_value=adr)
+        graph = AsyncMock(return_value=[])
+        service = ADRService(pg_repo=mock_repo)
+        monkeypatch.setattr(service, "enrich_created", enrich_created, raising=False)
+        monkeypatch.setattr("brain_v42.services.adr_service.graph_upsert_entity", graph)
+
+        result = await service.create(data, session=session)
+
+        assert result is adr
+        mock_repo.create.assert_awaited_once_with(data, embedding=None, session=session)
+        graph.assert_not_awaited()
+        enrich_created.assert_not_awaited()
+
+    async def test_create_default_path_keeps_derived_work_order(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_repo: MagicMock,
+    ) -> None:
+        """The committed ADR is projected and enriched in its established order."""
+        events: list[str] = []
+        adr = make_adr()
+        data = make_adr_create()
+        mock_repo.create.side_effect = lambda *args, **kwargs: events.append("create") or adr
+        mock_repo.set_embedding_if_current.side_effect = lambda *args, **kwargs: (
+            events.append("store") or None
+        )
+        embedding_svc = MagicMock()
+
+        async def embed(text: str) -> list[float]:
+            events.append("embed")
+            return [0.1] * 1536
+
+        async def graph(*args: object, **kwargs: object) -> list[str]:
+            events.append("graph")
+            return []
+
+        embedding_svc.embed = AsyncMock(side_effect=embed)
+        monkeypatch.setattr("brain_v42.services.adr_service.graph_upsert_entity", graph)
+
+        await ADRService(pg_repo=mock_repo, embedding_svc=embedding_svc).create(data)
+
+        assert events == ["create", "graph", "embed", "store"]
+
+    async def test_enrich_created_performs_the_deferred_adr_work(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_repo: MagicMock,
+    ) -> None:
+        """A committed ADR receives the same graph and embedding work on demand."""
+        events: list[str] = []
+        adr = make_adr()
+        data = make_adr_create()
+        mock_repo.set_embedding_if_current.side_effect = lambda *args, **kwargs: (
+            events.append("store") or None
+        )
+        embedding_svc = MagicMock()
+
+        async def embed(text: str) -> list[float]:
+            events.append("embed")
+            return [0.1] * 1536
+
+        async def graph(*args: object, **kwargs: object) -> list[str]:
+            events.append("graph")
+            return []
+
+        embedding_svc.embed = AsyncMock(side_effect=embed)
+        monkeypatch.setattr("brain_v42.services.adr_service.graph_upsert_entity", graph)
+
+        result = await ADRService(pg_repo=mock_repo, embedding_svc=embedding_svc).enrich_created(
+            adr,
+            data,
+            "Use PostgreSQL Need a persistent store Use PostgreSQL with pgvector",
+        )
+
+        assert result is adr
+        assert events == ["graph", "embed", "store"]
+
     async def test_create_without_embedding_svc_calls_repo_with_none_embedding(
         self,
         service: ADRService,
@@ -206,6 +299,31 @@ class TestCreate:
 
         assert result.number == 5
         assert result.title == "Custom ADR"
+
+
+@pytest.mark.parametrize(
+    "service_class",
+    [LearningService, DecisionService, ADRService, RunbookService, SnippetService],
+)
+def test_all_knowledge_services_expose_only_public_created_enrichment(
+    service_class: type[object],
+) -> None:
+    """Atomic callers need one stable public post-commit entry point."""
+    assert hasattr(service_class, "enrich_created")
+    assert not any(name.startswith("_enrich_created") for name in vars(service_class))
+
+
+@pytest.mark.parametrize(
+    "service_class",
+    [LearningService, DecisionService, ADRService, RunbookService, SnippetService],
+)
+def test_all_knowledge_services_update_accepts_caller_session(
+    service_class: type[object],
+) -> None:
+    """Every knowledge update exposes the atomic caller-owned transaction seam."""
+    parameter = inspect.signature(service_class.update).parameters["session"]
+
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
 
 
 # ---------------------------------------------------------------------------
@@ -679,6 +797,45 @@ class TestDelete:
 
 
 class TestUpdate:
+    async def test_update_default_path_preserves_collaborator_order(
+        self,
+        service: ADRService,
+        mock_repo: MagicMock,
+    ) -> None:
+        """The implicit ``session=None`` path still delegates directly to the repo."""
+        calls: list[str] = []
+
+        async def update(*args: object, **kwargs: object) -> ADR:
+            calls.append("repo.update")
+            return make_adr()
+
+        mock_repo.update.side_effect = update
+
+        await service.update(uuid.uuid4(), ADRUpdate(tags=["new-tag"]))
+
+        assert calls == ["repo.update"]
+
+    async def test_update_with_session_forwards_it_without_committing(
+        self,
+        service: ADRService,
+        mock_repo: MagicMock,
+    ) -> None:
+        """A caller-owned session reaches the repository and keeps commit ownership."""
+        session = MagicMock(spec=AsyncSession)
+        adr_id = uuid.uuid4()
+        data = ADRUpdate(tags=["new-tag"])
+        mock_repo.update.return_value = make_adr()
+
+        await service.update(adr_id, data, session=session)
+
+        mock_repo.update.assert_awaited_once_with(
+            adr_id,
+            data,
+            embedding=None,
+            session=session,
+        )
+        session.commit.assert_not_called()
+
     async def test_update_without_embedding_svc_delegates_with_no_embedding(
         self,
         service: ADRService,

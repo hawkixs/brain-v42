@@ -1,6 +1,15 @@
 """Pure vocabulary and canonical representation for measured facts."""
 
-from brain_v42.facts.canonical import canonical_json, measurement_digest
+from brain_v42.facts.canonical import (
+    CLAIM_KEY_PREFIX,
+    FACT_DEFINITION_DIGEST_PREFIX,
+    assert_expected_within_bounds,
+    canonical_json,
+    claim_key,
+    definition_digest,
+    measurement_digest,
+)
+from brain_v42.facts.claims import ResolvedClaim, resolve_claim
 from brain_v42.facts.model import (
     ERROR_CODES,
     FACT_NAME,
@@ -36,6 +45,8 @@ from brain_v42.facts.registry import (
 
 __all__ = [
     "ERROR_CODES",
+    "CLAIM_KEY_PREFIX",
+    "FACT_DEFINITION_DIGEST_PREFIX",
     "FACT_NAME",
     "FactTarget",
     "FactDescriptor",
@@ -48,6 +59,7 @@ __all__ = [
     "Measurement",
     "Probe",
     "ReleaseIdentity",
+    "ResolvedClaim",
     "RefreshBudget",
     "RegistryClosedError",
     "RegistryFrozenError",
@@ -58,9 +70,13 @@ __all__ = [
     "UnknownFactError",
     "UnverifiableTargetError",
     "canonical_json",
+    "assert_expected_within_bounds",
     "check_value_schema",
+    "definition_digest",
+    "claim_key",
     "measurement_digest",
     "measurement_to_json",
+    "resolve_claim",
     "validate_fact_name",
     "with_source_kind",
 ]

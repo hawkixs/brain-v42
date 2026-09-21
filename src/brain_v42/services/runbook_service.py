@@ -15,6 +15,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 import structlog
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.models.runbook import (
     ExecutionStatus,
@@ -93,13 +94,17 @@ class RunbookService:
         data: RunbookCreate,
         *,
         authorization: RelationAuthorization | None = None,
+        session: AsyncSession | None = None,
     ) -> Runbook:
         """Create a durable runbook, then attempt bounded embedding enrichment.
 
         PostgreSQL stores a null vector first so embedding availability cannot
         decide whether the Runbook exists.
         """
-        await require_known_project(self._project_context_repo, data.project_key)
+        await require_known_project(self._project_context_repo, data.project_key, session=session)
+
+        if session is not None:
+            return await self._repo.create(data, embedding=None, session=session)
 
         embedding_text = runbook_embedding_text(data.title, data.description, data.trigger)
         runbook = await self._repo.create(data, embedding=None)
@@ -109,15 +114,7 @@ class RunbookService:
             step_count=len(runbook.steps),
         )
 
-        await graph_upsert_entity(
-            self._graph,
-            "Runbook",
-            runbook.id,
-            {"project_key": data.project_key, "title": data.title},
-            project_key=data.project_key,
-            authorization=authorization,
-        )
-        return await self._enrich_created_runbook(
+        return await self.enrich_created(
             runbook,
             data,
             embedding_text,
@@ -163,6 +160,22 @@ class RunbookService:
             source_learning_id=str(source_learning_id),
         )
 
+        return await self.enrich_created(
+            runbook,
+            data,
+            embedding_text,
+            authorization=authorization,
+        )
+
+    async def enrich_created(
+        self,
+        runbook: Runbook,
+        data: RunbookCreate,
+        embedding_text: str,
+        *,
+        authorization: RelationAuthorization | None = None,
+    ) -> Runbook:
+        """Run derived graph and embedding work after the PG transaction commits."""
         await graph_upsert_entity(
             self._graph,
             "Runbook",
@@ -171,22 +184,6 @@ class RunbookService:
             project_key=data.project_key,
             authorization=authorization,
         )
-        return await self._enrich_created_runbook(
-            runbook,
-            data,
-            embedding_text,
-            authorization=authorization,
-        )
-
-    async def _enrich_created_runbook(
-        self,
-        runbook: Runbook,
-        data: RunbookCreate,
-        embedding_text: str,
-        *,
-        authorization: RelationAuthorization | None = None,
-    ) -> Runbook:
-        """Enrich and link a Runbook whose authoritative transaction committed."""
         if self._embedding_enricher is None:
             return runbook
 
@@ -285,10 +282,12 @@ class RunbookService:
         data: RunbookUpdate,
         *,
         project_key: str | None = None,
+        session: AsyncSession | None = None,
     ) -> Runbook | None:
         """Update a runbook partially (PATCH semantics). Returns None if not found."""
         # Optionally refresh embedding if title/description changed
         embedding: list[float] | None = None
+        # With a caller-owned session, holding a PostgreSQL transaction across the GPU HTTP call lengthens the lock window, so if it ever bites the caller must compute the embedding before opening its transaction rather than reordering service writes.
         if self._embedding_svc is not None and (
             data.title is not None or data.description is not None
         ):
@@ -304,7 +303,17 @@ class RunbookService:
                     runbook_embedding_text(new_title, new_desc, new_trigger)
                 )
         if project_key is None:
+            if session is not None:
+                return await self._repo.update(id, data, embedding=embedding, session=session)
             return await self._repo.update(id, data, embedding=embedding)
+        if session is not None:
+            return await self._repo.update(
+                id,
+                data,
+                embedding=embedding,
+                project_key=project_key,
+                session=session,
+            )
         return await self._repo.update(
             id,
             data,
