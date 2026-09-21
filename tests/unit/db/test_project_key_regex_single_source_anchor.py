@@ -8,7 +8,7 @@ spread over three registers that never read each other —
   2. the `CheckConstraint` `projects_key_format_valid` declared in `db/tables.py`;
   3. two SQL `CHECK`s in migrations: **012** (`chk_project_key_format` on
      `project_contexts`) and **033** (`projects_key_format_valid` on `projects`);
-  4. **seventeen recovery attestation assets** (`ops/recovery/*.sql`), where the pattern
+  4. **twenty-one recovery attestation assets** (`ops/recovery/*.sql`), where the pattern
      appears in its NEGATED form (`!~`) to count non-conforming keys.
 
 **No test linked them** — surveyed on 2026-08-20 through three independent angles:
@@ -55,7 +55,7 @@ _MIGRATIONS = {
     "033_graph_relation_ledger.py": "projects_key_format_valid",
 }
 
-#: The seventeen attestation assets that carry the predicate today. Pinned DELIBERATELY:
+#: The twenty-one attestation assets that carry the predicate today. Pinned DELIBERATELY:
 #: each new authority must either reuse the pattern or force an explicit decision here.
 #: `brain-v42-v1.sql` predates the constraint and does not
 #: carry it.
@@ -102,6 +102,14 @@ _RECOVERY_ASSETS_WITH_PREDICATE = frozenset(
         # as written. Seventh reddening of this friction.
         "brain-v42-v11.sql",
         "brain-v42-v11-pgrestore.sql",
+        # Added on 2026-09-21 by the v12 mint (055): both were produced from v11
+        # by a delta MEASURED against a chain-built database, never retyped, so
+        # they inherit the predicate byte for byte -- verified before touching
+        # this set, one occurrence each and the same pattern as v11. Eighth
+        # reddening of this friction, and it did its job: the census is checked,
+        # not incremented.
+        "brain-v42-v12.sql",
+        "brain-v42-v12-pgrestore.sql",
     }
 )
 
@@ -211,9 +219,9 @@ def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     )
     recovery_sites = sum(len(patterns) for patterns in _recovery_assets().values())
 
-    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 19), (
+    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 21), (
         "la ventilation des surfaces d'application a changé "
         f"(métadonnées={metadata_sites}, migrations={migration_sites}, "
-        f"attestation={recovery_sites} ; attendu 1/2/19). Recenser avant de corriger le "
+        f"attestation={recovery_sites} ; attendu 1/2/21). Recenser avant de corriger le "
         "compte : c'est ce recensement qui a été faux trois fois."
     )
