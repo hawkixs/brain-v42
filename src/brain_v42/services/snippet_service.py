@@ -195,6 +195,7 @@ class SnippetService:
         data: SnippetUpdate,
         *,
         project_key: str | None = None,
+        session: AsyncSession | None = None,
     ) -> Snippet | None:
         """Partial update a snippet, regenerating embedding only if intention changed.
 
@@ -207,10 +208,21 @@ class SnippetService:
         """
         logger.debug("snippet_service.update", id=str(id))
         embedding: list[float] | None = None
+        # With a caller-owned session, holding a PostgreSQL transaction across the GPU HTTP call lengthens the lock window, so if it ever bites the caller must compute the embedding before opening its transaction rather than reordering service writes.
         if data.intention is not None and self._embedding_svc is not None:
             embedding = await self._embedding_svc.embed(snippet_embedding_text(data.intention))
         if project_key is None:
+            if session is not None:
+                return await self._repo.update(id, data, embedding=embedding, session=session)
             return await self._repo.update(id, data, embedding=embedding)
+        if session is not None:
+            return await self._repo.update(
+                id,
+                data,
+                embedding=embedding,
+                project_key=project_key,
+                session=session,
+            )
         return await self._repo.update(
             id,
             data,

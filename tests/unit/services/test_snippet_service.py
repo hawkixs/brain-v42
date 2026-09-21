@@ -420,6 +420,45 @@ class TestGetById:
 
 
 class TestUpdate:
+    async def test_update_default_path_preserves_collaborator_order(
+        self,
+        snippet_service: SnippetService,
+        mock_repo: AsyncMock,
+    ) -> None:
+        """The implicit ``session=None`` path still delegates directly to the repo."""
+        calls: list[str] = []
+
+        async def update(*args: object, **kwargs: object) -> Snippet:
+            calls.append("repo.update")
+            return make_snippet()
+
+        mock_repo.update.side_effect = update
+
+        await snippet_service.update(uuid.uuid4(), SnippetUpdate(code="updated = True"))
+
+        assert calls == ["repo.update"]
+
+    async def test_update_with_session_forwards_it_without_committing(
+        self,
+        snippet_service: SnippetService,
+        mock_repo: AsyncMock,
+    ) -> None:
+        """A caller-owned session reaches the repository and keeps commit ownership."""
+        session = MagicMock(spec=AsyncSession)
+        snippet_id = uuid.uuid4()
+        data = SnippetUpdate(code="updated = True")
+        mock_repo.update.return_value = make_snippet()
+
+        await snippet_service.update(snippet_id, data, session=session)
+
+        mock_repo.update.assert_awaited_once_with(
+            snippet_id,
+            data,
+            embedding=None,
+            session=session,
+        )
+        session.commit.assert_not_called()
+
     async def test_update_regenerates_embedding_when_intention_changes(
         self,
         snippet_service: SnippetService,

@@ -282,10 +282,12 @@ class RunbookService:
         data: RunbookUpdate,
         *,
         project_key: str | None = None,
+        session: AsyncSession | None = None,
     ) -> Runbook | None:
         """Update a runbook partially (PATCH semantics). Returns None if not found."""
         # Optionally refresh embedding if title/description changed
         embedding: list[float] | None = None
+        # With a caller-owned session, holding a PostgreSQL transaction across the GPU HTTP call lengthens the lock window, so if it ever bites the caller must compute the embedding before opening its transaction rather than reordering service writes.
         if self._embedding_svc is not None and (
             data.title is not None or data.description is not None
         ):
@@ -301,7 +303,17 @@ class RunbookService:
                     runbook_embedding_text(new_title, new_desc, new_trigger)
                 )
         if project_key is None:
+            if session is not None:
+                return await self._repo.update(id, data, embedding=embedding, session=session)
             return await self._repo.update(id, data, embedding=embedding)
+        if session is not None:
+            return await self._repo.update(
+                id,
+                data,
+                embedding=embedding,
+                project_key=project_key,
+                session=session,
+            )
         return await self._repo.update(
             id,
             data,

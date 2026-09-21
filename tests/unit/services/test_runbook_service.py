@@ -632,6 +632,44 @@ class TestRecordExecution:
 
 
 class TestUpdate:
+    async def test_update_default_path_preserves_collaborator_order(
+        self,
+        svc: RunbookService,
+        mock_repo: MagicMock,
+    ) -> None:
+        """The implicit ``session=None`` path still delegates directly to the repo."""
+        calls: list[str] = []
+
+        async def update(*args: object, **kwargs: object) -> Runbook:
+            calls.append("repo.update")
+            return make_runbook()
+
+        mock_repo.update.side_effect = update
+
+        await svc.update(uuid.uuid4(), RunbookUpdate(tags=["new-tag"]))
+
+        assert calls == ["repo.update"]
+
+    async def test_update_with_session_forwards_it_without_committing(
+        self,
+        svc: RunbookService,
+        mock_repo: MagicMock,
+    ) -> None:
+        """A caller-owned session reaches the repository and keeps commit ownership."""
+        session = MagicMock(spec=AsyncSession)
+        runbook_id = uuid.uuid4()
+        data = RunbookUpdate(tags=["new-tag"])
+
+        await svc.update(runbook_id, data, session=session)
+
+        mock_repo.update.assert_awaited_once_with(
+            runbook_id,
+            data,
+            embedding=None,
+            session=session,
+        )
+        session.commit.assert_not_called()
+
     async def test_update_without_embedding_svc_passes_none_embedding(
         self,
         svc: RunbookService,

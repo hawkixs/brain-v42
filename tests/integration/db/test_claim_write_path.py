@@ -25,7 +25,7 @@ from brain_v42.facts.probe import SourceSession
 from brain_v42.facts.registry import FactRegistry
 from brain_v42.mcp.tools import claim_writes
 from brain_v42.mcp.tools.claim_writes import persist_claims, resolve_claim_inputs
-from brain_v42.models.learning import LearningCreate
+from brain_v42.models.learning import LearningCreate, LearningUpdate
 from brain_v42.repositories.pg_learning import PgLearningRepo
 from brain_v42.repositories.pg_project_context import PgProjectContextRepo
 from brain_v42.services.learning_service import LearningService
@@ -104,6 +104,42 @@ def _service(session_factory: async_sessionmaker[AsyncSession]) -> LearningServi
         embedding_svc=_EmbeddingService(),
         project_context_repo=PgProjectContextRepo(session_factory),
     )
+
+
+async def test_learning_update_in_caller_transaction_rolls_back_with_the_caller(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A service update must not commit a caller-owned transaction on its behalf."""
+    project_key = f"claim-update-rollback-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+    original_insight = "The caller owns the transaction boundary."
+    learning = await _service(session_factory).create(
+        LearningCreate(
+            topic=f"Caller rollback witness {uuid4()}",
+            insight=original_insight,
+            project_key=project_key,
+        )
+    )
+    service = LearningService(PgLearningRepo(session_factory))
+
+    async with session_factory() as session:
+        await session.begin()
+        updated = await service.update(
+            learning.id,
+            LearningUpdate(insight="This update must be rolled back."),
+            session=session,
+        )
+
+        assert updated is not None
+        assert updated.insight == "This update must be rolled back."
+        await session.rollback()
+
+    async with session_factory() as session:
+        insight = await session.scalar(
+            sa.select(learnings.c.insight).where(learnings.c.id == learning.id)
+        )
+
+    assert insight == original_insight
 
 
 async def test_learning_and_two_claims_commit_together_then_enrich(

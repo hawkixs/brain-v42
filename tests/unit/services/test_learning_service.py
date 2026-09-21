@@ -551,6 +551,37 @@ class TestLearningServiceListAll:
 
 
 class TestLearningServiceUpdate:
+    async def test_update_default_path_preserves_collaborator_order(self) -> None:
+        """The implicit ``session=None`` path still delegates directly to the repo."""
+        svc, mock_repo, _ = _make_service(with_embedding_svc=False)
+        calls: list[str] = []
+
+        async def update(*args: object, **kwargs: object) -> Learning:
+            calls.append("repo.update")
+            return SAMPLE_LEARNING
+
+        mock_repo.update.side_effect = update
+
+        await svc.update(FIXED_UUID, LearningUpdate(confidence="low"))
+
+        assert calls == ["repo.update"]
+
+    async def test_update_with_session_forwards_it_without_committing(self) -> None:
+        """A caller-owned session reaches the repository and keeps commit ownership."""
+        svc, mock_repo, _ = _make_service(with_embedding_svc=False)
+        session = MagicMock(spec=AsyncSession)
+        data = LearningUpdate(confidence="low")
+
+        await svc.update(FIXED_UUID, data, session=session)
+
+        mock_repo.update.assert_awaited_once_with(
+            FIXED_UUID,
+            data,
+            embedding=None,
+            session=session,
+        )
+        session.commit.assert_not_called()
+
     async def test_update_without_embedding_service(self) -> None:
         """update() works without embedding_svc — no embedding regeneration."""
         svc, mock_repo, _ = _make_service(with_embedding_svc=False)

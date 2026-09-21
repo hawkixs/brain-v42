@@ -398,6 +398,38 @@ class TestListAll:
 
 
 class TestUpdate:
+    async def test_update_default_path_preserves_collaborator_order(self) -> None:
+        """The implicit ``session=None`` path still delegates directly to the repo."""
+        svc, repo, _ = _make_service()
+        calls: list[str] = []
+
+        async def update(*args: object, **kwargs: object) -> Decision:
+            calls.append("repo.update")
+            return _make_decision()
+
+        repo.update = AsyncMock(side_effect=update)
+
+        await svc.update(FIXED_UUID, DecisionUpdate(status="deprecated"))
+
+        assert calls == ["repo.update"]
+
+    async def test_update_with_session_forwards_it_without_committing(self) -> None:
+        """A caller-owned session reaches the repository and keeps commit ownership."""
+        svc, repo, _ = _make_service()
+        session = MagicMock(spec=AsyncSession)
+        data = DecisionUpdate(status="deprecated")
+        repo.update = AsyncMock(return_value=_make_decision())
+
+        await svc.update(FIXED_UUID, data, session=session)
+
+        repo.update.assert_awaited_once_with(
+            FIXED_UUID,
+            data,
+            embedding=None,
+            session=session,
+        )
+        session.commit.assert_not_called()
+
     async def test_update_regenerates_embedding_when_text_fields_changed(self) -> None:
         """update() calls embedding_svc.embed() when title/description/reasoning changes."""
         svc, repo, embedding_svc = _make_service()

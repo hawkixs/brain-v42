@@ -6,6 +6,7 @@ Tests verify behavior of ADRService as a thin orchestration layer.
 
 from __future__ import annotations
 
+import inspect
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
@@ -310,6 +311,19 @@ def test_all_knowledge_services_expose_only_public_created_enrichment(
     """Atomic callers need one stable public post-commit entry point."""
     assert hasattr(service_class, "enrich_created")
     assert not any(name.startswith("_enrich_created") for name in vars(service_class))
+
+
+@pytest.mark.parametrize(
+    "service_class",
+    [LearningService, DecisionService, ADRService, RunbookService, SnippetService],
+)
+def test_all_knowledge_services_update_accepts_caller_session(
+    service_class: type[object],
+) -> None:
+    """Every knowledge update exposes the atomic caller-owned transaction seam."""
+    parameter = inspect.signature(service_class.update).parameters["session"]
+
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
 
 
 # ---------------------------------------------------------------------------
@@ -783,6 +797,45 @@ class TestDelete:
 
 
 class TestUpdate:
+    async def test_update_default_path_preserves_collaborator_order(
+        self,
+        service: ADRService,
+        mock_repo: MagicMock,
+    ) -> None:
+        """The implicit ``session=None`` path still delegates directly to the repo."""
+        calls: list[str] = []
+
+        async def update(*args: object, **kwargs: object) -> ADR:
+            calls.append("repo.update")
+            return make_adr()
+
+        mock_repo.update.side_effect = update
+
+        await service.update(uuid.uuid4(), ADRUpdate(tags=["new-tag"]))
+
+        assert calls == ["repo.update"]
+
+    async def test_update_with_session_forwards_it_without_committing(
+        self,
+        service: ADRService,
+        mock_repo: MagicMock,
+    ) -> None:
+        """A caller-owned session reaches the repository and keeps commit ownership."""
+        session = MagicMock(spec=AsyncSession)
+        adr_id = uuid.uuid4()
+        data = ADRUpdate(tags=["new-tag"])
+        mock_repo.update.return_value = make_adr()
+
+        await service.update(adr_id, data, session=session)
+
+        mock_repo.update.assert_awaited_once_with(
+            adr_id,
+            data,
+            embedding=None,
+            session=session,
+        )
+        session.commit.assert_not_called()
+
     async def test_update_without_embedding_svc_delegates_with_no_embedding(
         self,
         service: ADRService,

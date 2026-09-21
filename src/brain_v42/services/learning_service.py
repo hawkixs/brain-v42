@@ -211,6 +211,7 @@ class LearningService:
         data: LearningUpdate,
         *,
         project_key: str | None = None,
+        session: AsyncSession | None = None,
     ) -> Learning | None:
         """Partial update for a learning.
 
@@ -227,6 +228,7 @@ class LearningService:
         """
         embedding: list[float] | None = None
 
+        # With a caller-owned session, holding a PostgreSQL transaction across the GPU HTTP call lengthens the lock window, so if it ever bites the caller must compute the embedding before opening its transaction rather than reordering service writes.
         if self._embedding_svc is not None and (data.topic is not None or data.insight is not None):
             if project_key is None:
                 current = await self._repo.get_by_id(learning_id)
@@ -239,7 +241,19 @@ class LearningService:
                 embedding = await self._embedding_svc.embed(text)
 
         if project_key is None:
+            if session is not None:
+                return await self._repo.update(
+                    learning_id, data, embedding=embedding, session=session
+                )
             return await self._repo.update(learning_id, data, embedding=embedding)
+        if session is not None:
+            return await self._repo.update(
+                learning_id,
+                data,
+                embedding=embedding,
+                project_key=project_key,
+                session=session,
+            )
         return await self._repo.update(
             learning_id,
             data,
