@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from enum import StrEnum
-from importlib import import_module
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
@@ -48,10 +46,20 @@ class DefinitionOutcome(StrEnum):
 
 
 async def register_definition(
-    session: AsyncSession, descriptor: FactDescriptor
-) -> DefinitionOutcome:
-    """Insert an immutable definition or compare its first-seen digest without updating it."""
-    digest = _definition_digest(descriptor)
+    session: AsyncSession, descriptor: FactDescriptor, *, digest: str
+) -> tuple[DefinitionOutcome, str | None]:
+    """Insert an immutable definition, or compare its first-seen digest without updating it.
+
+    The digest is an INPUT, computed by the caller in the `facts` layer. Computing
+    it here would make `repositories` depend on `facts`, and the only way to hide
+    that from `scripts/check_module_layering.py` is a runtime import the static
+    check cannot see — which bypasses the gate instead of satisfying it. Taking the
+    value as a parameter keeps the dependency genuinely one-way.
+
+    Returns the outcome and, on drift only, the digest already stored. Returning it
+    spares the caller a second SELECT on the conflict path without smuggling the
+    value through `session.info`.
+    """
     inserted_digest = (
         await session.execute(
             insert(knowledge_fact_definitions)
@@ -75,7 +83,7 @@ async def register_definition(
         )
     ).scalar_one_or_none()
     if inserted_digest is not None:
-        return DefinitionOutcome.INSERTED
+        return DefinitionOutcome.INSERTED, None
 
     stored_digest = (
         await session.execute(
@@ -86,16 +94,5 @@ async def register_definition(
         )
     ).scalar_one()
     if stored_digest == digest:
-        return DefinitionOutcome.MATCHED
-    # Startup emits the drift event after the transaction closes. Retain the
-    # value already read here so that observability does not add a second SELECT
-    # to the immutable conflict path.
-    session.info["brain_v42.fact_definition.stored_digest"] = stored_digest
-    return DefinitionOutcome.DRIFTED
-
-
-def _definition_digest(descriptor: FactDescriptor) -> str:
-    """Use the facts-owned recipe only at runtime to keep repository layering one-way."""
-    codec = cast(Any, import_module("brain_v42.facts.canonical"))
-    digest = cast(Callable[[FactDescriptor], str], codec.definition_digest)
-    return digest(descriptor)
+        return DefinitionOutcome.MATCHED, None
+    return DefinitionOutcome.DRIFTED, str(stored_digest)

@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from brain_v42.facts.registry import FactRegistry
 
 logger = structlog.get_logger(__name__)
-_STORED_DIGEST_KEY = "brain_v42.fact_definition.stored_digest"
 
 
 async def register_fact_definitions(
@@ -27,18 +26,20 @@ async def register_fact_definitions(
     try:
         for name in registry.names():
             descriptor = registry.describe(name)
+            computed_digest = definition_digest(descriptor)
             async with session_factory() as session, session.begin():
-                outcome = await register_definition(session, descriptor)
-                stored_digest = session.info.get(_STORED_DIGEST_KEY)
+                outcome, stored_digest = await register_definition(
+                    session, descriptor, digest=computed_digest
+                )
             if outcome is DefinitionOutcome.INSERTED:
                 logger.info(
                     "facts.definition_registered",
                     fact=name,
                     definition_version=descriptor.definition_version,
-                    digest=definition_digest(descriptor),
+                    digest=computed_digest,
                 )
             elif outcome is DefinitionOutcome.DRIFTED:
-                drifted.append((name, str(stored_digest), definition_digest(descriptor)))
+                drifted.append((name, str(stored_digest), computed_digest))
     except Exception:
         # An unreachable database already makes the probes unreadable. Failing
         # startup here would convert that degraded read path into an outage.
