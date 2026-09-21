@@ -9,6 +9,7 @@ from brain_v42.facts.canonical import (
     definition_digest,
     measurement_digest,
 )
+from brain_v42.facts.claims import ResolvedClaim, resolve_claim
 from brain_v42.facts.model import (
     ERROR_CODES,
     FACT_NAME,
@@ -58,6 +59,7 @@ __all__ = [
     "Measurement",
     "Probe",
     "ReleaseIdentity",
+    "ResolvedClaim",
     "RefreshBudget",
     "RegistryClosedError",
     "RegistryFrozenError",
@@ -74,6 +76,7 @@ __all__ = [
     "claim_key",
     "measurement_digest",
     "measurement_to_json",
+    "resolve_claim",
     "validate_fact_name",
     "with_source_kind",
 ]
