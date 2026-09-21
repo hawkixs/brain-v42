@@ -38,7 +38,7 @@ from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
 # ─── Entity type definitions ──────────────────────────────────────────────────
 
 # Tables with embedding columns (project_contexts has no embedding)
-ENTITY_TYPES = ["decisions", "learnings", "snippets", "runbooks", "adrs"]
+ENTITY_TYPES = ["decisions", "learnings", "snippets", "runbooks", "adrs", "features"]
 
 # Text fields to compose for embedding, per entity type.
 # The SQL query selects these columns and they are concatenated with spaces.
@@ -48,6 +48,25 @@ TEXT_FIELDS: dict[str, list[str]] = {
     "snippets": ["title", "intention"],
     "runbooks": ["title", "description", "trigger"],
     "adrs": ["title", "context", "decision"],
+    # `features` is the odd one, and deliberately so. Measured on 60 random
+    # rows 2026-09-21: the stored vector matches embed(description) on only
+    # 3% of them (median 0.81), and editing does not explain it -- rows never
+    # re-edited sit at 0.808. The column never WAS embed(description):
+    # `cluster_guard._create_feature` stores the caller's embedding, computed
+    # from the originating artifact's text, while `description` holds a far
+    # shorter title. That source text is recorded nowhere on the row, so no
+    # faithful re-embed exists and any reindex necessarily redefines the
+    # column. `description` is the redefinition chosen: it is what
+    # `_absorb` already re-embeds, and the only text reproducible from the row
+    # alone -- which is what lets check_embedding_model_drift.py verify this
+    # column from now on.
+    #
+    # Leaving features out is not the safe option. cluster_guard links a new
+    # signal to a feature at COSINE_LINK = 0.70; across two models similarity
+    # is near zero, so stale vectors would link nothing and every
+    # CREATING_SIGNAL would mint a new feature -- the pseudo-feature flood
+    # shut off on 2026-08-03.
+    "features": ["description"],
 }
 
 
