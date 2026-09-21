@@ -80,9 +80,19 @@ async def test_scoped_decay_status_counts_only_owned_rows_and_cleans_up(
                                 "project_key": project_key,
                                 "freshness_status": freshness,
                                 "access_count": 0,
-                                "updated_at": updated_at,
+                                # The deletion clock is the CONTENT clock since
+                                # 2026-09-21: `updated_at` is bumped by an
+                                # unconditional trigger on every write, so a row
+                                # backdated only there would be aged by something
+                                # any embedding reindex resets. `created_at`
+                                # carries the age here, and `updated_at` is left
+                                # at NOW on purpose -- that is the shape a
+                                # reindexed row has in production, and it must
+                                # still count as old.
+                                "created_at": aged_at,
+                                "updated_at": datetime.now(UTC),
                             }
-                            for name, project_key, freshness, updated_at in rows
+                            for name, project_key, freshness, aged_at in rows
                         ]
                     )
                     .returning(learnings.c.id)
