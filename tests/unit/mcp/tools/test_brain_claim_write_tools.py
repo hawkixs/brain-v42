@@ -7,8 +7,11 @@ from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID
 
-from brain_v42.mcp.tools import brain_tools
+import pytest
+
+from brain_v42.mcp.tools import brain_tools, runbook_tools, snippet_tools
 from brain_v42.mcp.tools.brain_tools import register_tools
 from brain_v42.models.decision import Decision
 from brain_v42.models.learning import Learning
@@ -86,10 +89,39 @@ def _decision() -> Decision:
     )
 
 
+def _adr() -> Any:
+    """Build the ADR fields consumed by the real confirmation formatter."""
+    return MagicMock(
+        id=UUID("12345678-1234-5678-1234-567812345678"),
+        number=7,
+    )
+
+
+def _runbook() -> Any:
+    """Build the runbook fields consumed by the real confirmation formatter."""
+    return MagicMock(
+        id=UUID("12345678-1234-5678-1234-567812345678"),
+        title="Atomic runbook",
+        steps=[MagicMock()],
+    )
+
+
+def _snippet() -> Any:
+    """Build the snippet fields consumed by the real confirmation formatter."""
+    return MagicMock(
+        id=UUID("12345678-1234-5678-1234-567812345678"),
+        title="Atomic snippet",
+        language="python",
+    )
+
+
 def _registered_tools(
     *,
     learning_svc: MagicMock | None = None,
     decision_svc: MagicMock | None = None,
+    adr_svc: MagicMock | None = None,
+    runbook_svc: MagicMock | None = None,
+    snippet_svc: MagicMock | None = None,
     session_factory: _SessionFactory | None = None,
 ) -> dict[str, Any]:
     """Register the real closures while replacing only database persistence below them."""
@@ -108,9 +140,9 @@ def _registered_tools(
         mcp,
         decision_svc=decision_svc or MagicMock(),
         learning_svc=learning_svc or MagicMock(),
-        snippet_svc=MagicMock(),
-        runbook_svc=MagicMock(),
-        adr_svc=MagicMock(),
+        snippet_svc=snippet_svc or MagicMock(),
+        runbook_svc=runbook_svc or MagicMock(),
+        adr_svc=adr_svc or MagicMock(),
         project_context_svc=MagicMock(),
         brain_svc=MagicMock(),
         fact_registry=MagicMock(),
@@ -219,9 +251,192 @@ async def test_claims_none_keeps_learning_and_decision_on_the_existing_path() ->
     assert decision_svc.create.call_args.kwargs == {"related_to": None}
 
 
-async def test_other_writers_do_not_expose_claims_yet() -> None:
-    """B2-T9b must deliberately widen the three writers that cannot yet commit atomically."""
+@pytest.mark.parametrize(
+    "name",
+    (
+        "brain_log_decision",
+        "brain_learn",
+        "brain_propose_adr",
+        "brain_create_runbook",
+        "brain_save_snippet",
+    ),
+)
+async def test_all_five_writers_expose_claims(name: str) -> None:
+    """Removing claims from any writer would make declared facts silently inconsistent."""
     tools = _registered_tools()
 
-    for name in ("brain_propose_adr", "brain_create_runbook", "brain_save_snippet"):
-        assert "claims" not in inspect.signature(tools[name]).parameters
+    assert "claims" in inspect.signature(tools[name]).parameters
+
+
+async def test_claims_none_keeps_adr_on_the_existing_path() -> None:
+    """Adding declarations must not make normal ADR writes open a transaction."""
+    adr_svc = MagicMock()
+    adr_svc.create = AsyncMock(return_value=_adr())
+    adr_svc.enrich_created = AsyncMock(return_value=_adr())
+    session_factory = _SessionFactory()
+    tools = _registered_tools(adr_svc=adr_svc, session_factory=session_factory)
+
+    await tools["brain_propose_adr"](
+        title="Atomic claims",
+        context="No declarations supplied.",
+        decision="Keep the existing path.",
+        consequences="No transaction is needed.",
+        project_key="brain-v42",
+        claims=None,
+    )
+
+    assert session_factory.calls == 0
+    adr_svc.create.assert_awaited_once()
+    assert adr_svc.create.call_args.kwargs == {}
+    adr_svc.enrich_created.assert_not_awaited()
+
+
+async def test_claims_none_keeps_runbook_on_the_existing_path() -> None:
+    """Adding declarations must not make normal runbook writes open a transaction."""
+    runbook_svc = MagicMock()
+    runbook_svc.create = AsyncMock(return_value=_runbook())
+    runbook_svc.enrich_created = AsyncMock(return_value=_runbook())
+    session_factory = _SessionFactory()
+    tools = _registered_tools(runbook_svc=runbook_svc, session_factory=session_factory)
+
+    await tools["brain_create_runbook"](
+        title="Atomic claims",
+        description="No declarations supplied.",
+        project_key="brain-v42",
+        trigger="A write occurs.",
+        steps=[{"title": "Observe"}],
+        claims=None,
+    )
+
+    assert session_factory.calls == 0
+    runbook_svc.create.assert_awaited_once()
+    assert runbook_svc.create.call_args.kwargs == {}
+    runbook_svc.enrich_created.assert_not_awaited()
+
+
+async def test_claims_none_keeps_snippet_on_the_existing_path() -> None:
+    """Adding declarations must not make normal snippet writes open a transaction."""
+    snippet_svc = MagicMock()
+    snippet_svc.create = AsyncMock(return_value=_snippet())
+    snippet_svc.enrich_created = AsyncMock(return_value=_snippet())
+    session_factory = _SessionFactory()
+    tools = _registered_tools(snippet_svc=snippet_svc, session_factory=session_factory)
+
+    await tools["brain_save_snippet"](
+        title="Atomic claims",
+        intention="No declarations supplied.",
+        code="pass",
+        language="python",
+        project_key="brain-v42",
+        claims=None,
+    )
+
+    assert session_factory.calls == 0
+    snippet_svc.create.assert_awaited_once()
+    assert snippet_svc.create.call_args.kwargs == {"related_to": None}
+    snippet_svc.enrich_created.assert_not_awaited()
+
+
+async def test_adr_with_claims_uses_one_transaction_then_enriches(
+    monkeypatch: Any,
+) -> None:
+    """Skipping ADR enrichment after commit would leave declared ADRs unsearchable."""
+    adr_svc = MagicMock()
+    adr_svc.create = AsyncMock(return_value=_adr())
+    adr_svc.enrich_created = AsyncMock(return_value=_adr())
+    session_factory = _SessionFactory()
+    persist = AsyncMock(return_value=[MagicMock()])
+    monkeypatch.setattr(
+        brain_tools, "resolve_claim_inputs", AsyncMock(return_value=[MagicMock()]), raising=False
+    )
+    monkeypatch.setattr(brain_tools, "persist_claims", persist, raising=False)
+    tools = _registered_tools(adr_svc=adr_svc, session_factory=session_factory)
+
+    response = await tools["brain_propose_adr"](
+        title="Atomic claims",
+        context="Claims commit with the ADR.",
+        decision="Use one transaction.",
+        consequences="No partial declarations.",
+        project_key="brain-v42",
+        claims=[{"fact_name": "graph_projection_lag"}],
+    )
+
+    assert session_factory.calls == 1
+    assert session_factory.session.transactions == 1
+    adr_svc.create.assert_awaited_once_with(
+        adr_svc.create.call_args.args[0], session=session_factory.session
+    )
+    persist.assert_awaited_once()
+    adr_svc.enrich_created.assert_awaited_once()
+    assert "claims:1 recorded (declared; verification arrives with the verdict path)" in response
+
+
+async def test_runbook_with_claims_uses_one_transaction_then_enriches(
+    monkeypatch: Any,
+) -> None:
+    """Skipping runbook enrichment after commit would leave declared runbooks unsearchable."""
+    runbook_svc = MagicMock()
+    runbook_svc.create = AsyncMock(return_value=_runbook())
+    runbook_svc.enrich_created = AsyncMock(return_value=_runbook())
+    session_factory = _SessionFactory()
+    persist = AsyncMock(return_value=[MagicMock(), MagicMock()])
+    monkeypatch.setattr(
+        runbook_tools,
+        "resolve_claim_inputs",
+        AsyncMock(return_value=[MagicMock(), MagicMock()]),
+        raising=False,
+    )
+    monkeypatch.setattr(runbook_tools, "persist_claims", persist, raising=False)
+    tools = _registered_tools(runbook_svc=runbook_svc, session_factory=session_factory)
+
+    response = await tools["brain_create_runbook"](
+        title="Atomic claims",
+        description="Claims commit with the runbook.",
+        project_key="brain-v42",
+        trigger="A write occurs.",
+        steps=[{"title": "Observe"}],
+        claims=[{"fact_name": "graph_projection_lag"}],
+    )
+
+    assert session_factory.calls == 1
+    assert session_factory.session.transactions == 1
+    runbook_svc.create.assert_awaited_once_with(
+        runbook_svc.create.call_args.args[0], session=session_factory.session
+    )
+    persist.assert_awaited_once()
+    runbook_svc.enrich_created.assert_awaited_once()
+    assert "claims:2 recorded (declared; verification arrives with the verdict path)" in response
+
+
+async def test_snippet_with_claims_uses_one_transaction_then_enriches(
+    monkeypatch: Any,
+) -> None:
+    """Skipping snippet enrichment after commit would leave declared snippets unsearchable."""
+    snippet_svc = MagicMock()
+    snippet_svc.create = AsyncMock(return_value=_snippet())
+    snippet_svc.enrich_created = AsyncMock(return_value=_snippet())
+    session_factory = _SessionFactory()
+    persist = AsyncMock(return_value=[MagicMock()])
+    monkeypatch.setattr(
+        snippet_tools, "resolve_claim_inputs", AsyncMock(return_value=[MagicMock()]), raising=False
+    )
+    monkeypatch.setattr(snippet_tools, "persist_claims", persist, raising=False)
+    tools = _registered_tools(snippet_svc=snippet_svc, session_factory=session_factory)
+
+    response = await tools["brain_save_snippet"](
+        title="Atomic claims",
+        intention="Claims commit with the snippet.",
+        code="pass",
+        language="python",
+        project_key="brain-v42",
+        claims=[{"fact_name": "graph_projection_lag"}],
+    )
+
+    assert session_factory.calls == 1
+    assert session_factory.session.transactions == 1
+    snippet_svc.create.assert_awaited_once_with(
+        snippet_svc.create.call_args.args[0], session=session_factory.session
+    )
+    persist.assert_awaited_once()
+    snippet_svc.enrich_created.assert_awaited_once()
+    assert "claims:1 recorded (declared; verification arrives with the verdict path)" in response

@@ -32,9 +32,13 @@ from brain_v42.facts.probe import SourceSession
 from brain_v42.facts.registry import FactRegistry
 from brain_v42.mcp.tools import claim_writes
 from brain_v42.mcp.tools.claim_writes import persist_claims, resolve_claim_inputs
+from brain_v42.models.adr import ADRCreate
 from brain_v42.models.learning import LearningCreate, LearningUpdate
+from brain_v42.repositories.pg_adr import PgADRRepo
 from brain_v42.repositories.pg_learning import PgLearningRepo
 from brain_v42.repositories.pg_project_context import PgProjectContextRepo
+from brain_v42.services.adr_service import ADRService
+from brain_v42.services.embedding_text import adr_embedding_text
 from brain_v42.services.learning_service import LearningService
 from tests.integration.conftest import _get_integration_db_url_or_skip
 from tests.integration.disposable_db import fresh_head_database
@@ -158,6 +162,15 @@ def _service(session_factory: async_sessionmaker[AsyncSession]) -> LearningServi
     )
 
 
+def _adr_service(session_factory: async_sessionmaker[AsyncSession]) -> ADRService:
+    """Wire the real ADR path so its post-commit enrichment is observable."""
+    return ADRService(
+        PgADRRepo(session_factory),
+        embedding_svc=_EmbeddingService(),
+        project_context_repo=PgProjectContextRepo(session_factory),
+    )
+
+
 async def test_learning_update_in_caller_transaction_rolls_back_with_the_caller(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -250,6 +263,75 @@ async def test_learning_and_two_claims_commit_together_then_enrich(
         )
 
     enriched = await service.enrich_created(learning, data)
+    assert enriched.embedding is not None
+
+
+async def test_adr_and_claim_commit_together_then_enrich(
+    engine: AsyncEngine, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """An ADR claim write must share the entry transaction before derived work starts."""
+    registry = _registry()
+    await register_fact_definitions(registry, session_factory)
+    project_key = f"claim-adr-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+    data = ADRCreate(
+        title=f"Atomic ADR claims {uuid4()}",
+        context="The ADR and its declaration must commit together.",
+        decision="Use the caller-owned transaction.",
+        consequences="No ADR can survive a failed claim batch.",
+        project_key=project_key,
+    )
+    resolved = await resolve_claim_inputs(registry, [_claim("ADR declaration.")])
+    service = _adr_service(session_factory)
+    commits = 0
+
+    def record_commit(connection: Any) -> None:
+        nonlocal commits
+        commits += 1
+
+    event.listen(engine.sync_engine, "commit", record_commit)
+    try:
+        async with session_factory() as session, session.begin():
+            adr = await service.create(data, session=session)
+            claim_ids = await persist_claims(
+                session,
+                entry_id=adr.id,
+                entity_type="adr",
+                project_key=project_key,
+                resolved=resolved,
+                declared_by="integration-test",
+                declared_at=datetime.now(UTC),
+            )
+    finally:
+        event.remove(engine.sync_engine, "commit", record_commit)
+
+    assert commits == 1
+    assert len(claim_ids) == 1
+    async with session_factory() as session:
+        anchor_id = await session.scalar(
+            sa.select(brain_entities.c.id).where(brain_entities.c.source_uuid == adr.id)
+        )
+        assert isinstance(anchor_id, UUID)
+        assert (
+            await session.scalar(
+                sa.select(sa.func.count())
+                .select_from(knowledge_claims)
+                .where(knowledge_claims.c.entity_ref_id == anchor_id)
+            )
+            == 1
+        )
+        assert (
+            await session.scalar(
+                sa.select(brain_entities.c.entity_type).where(brain_entities.c.id == anchor_id)
+            )
+            == "adr"
+        )
+
+    enriched = await service.enrich_created(
+        adr,
+        data,
+        adr_embedding_text(data.title, data.context, data.decision),
+    )
     assert enriched.embedding is not None
 
 

@@ -238,6 +238,7 @@ def test_public_tool_signatures_have_no_internal_scope_parameter() -> None:
         "project_key",
         "alternatives_considered",
         "tags",
+        "claims",
     )
     assert tuple(inspect.signature(tools["brain_promote_adr"]).parameters) == (
         "title",
@@ -260,6 +261,7 @@ def test_public_tool_signatures_have_no_internal_scope_parameter() -> None:
         "rollback_steps",
         "estimated_duration",
         "tags",
+        "claims",
     )
     assert tuple(inspect.signature(tools["brain_promote_runbook"]).parameters) == (
         "title",

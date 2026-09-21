@@ -5,12 +5,14 @@ Note: brain_search_runbooks has been removed. Use brain_search(types=["runbook"]
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 from sqlalchemy.exc import IntegrityError
 
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
+from brain_v42.mcp.tools.claim_writes import persist_claims, resolve_claim_inputs
 from brain_v42.mcp.tools.formatters import (
     format_confirmation,
     format_error,
@@ -26,14 +28,20 @@ from brain_v42.mcp.tools.tool_annotations import (
 )
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.models.runbook import ExecutionStatus, RunbookCreate
+from brain_v42.provenance import get_current_actor
 from brain_v42.repositories.promotion import SourceLearningNotFound
+from brain_v42.services.embedding_text import runbook_embedding_text
 from brain_v42.services.runbook_service import RunbookService
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from brain_v42.facts.registry import FactRegistry
     from brain_v42.services.access_logger import AccessLogger
     from brain_v42.services.graph_helpers import RelationAuthorization
 
 _RUNBOOK_LIST_LIMIT_MAX = 50
+_CLAIM_VERIFICATION_REASON = "verification_unavailable"
 
 logger = structlog.get_logger(__name__)
 
@@ -42,6 +50,8 @@ def register_runbook_tools(
     mcp: Any,
     runbook_svc: RunbookService,
     access_logger: AccessLogger | None = None,
+    fact_registry: FactRegistry | None = None,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> None:
     """Register the runbook MCP tools on the FastMCP server."""
 
@@ -84,6 +94,7 @@ def register_runbook_tools(
         rollback_steps: list[dict] | None = None,
         estimated_duration: str | None = None,
         tags: list[str] | None = None,
+        claims: list[dict] | None = None,
     ) -> str:
         """Create an operational runbook.
 
@@ -122,20 +133,59 @@ def register_runbook_tools(
         )
         scope = get_dream_project_scope()
 
-        if scope is None:
-            runbook = await runbook_svc.create(data)
-        else:
-            runbook = await runbook_svc.create(
-                data,
-                authorization=cast("RelationAuthorization", scope),
+        if not claims:
+            if scope is None:
+                runbook = await runbook_svc.create(data)
+            else:
+                runbook = await runbook_svc.create(
+                    data,
+                    authorization=cast("RelationAuthorization", scope),
+                )
+            logger.info(
+                "mcp.brain_create_runbook",
+                title_length=len(title),
+                step_count=len(runbook.steps),
             )
+            return format_confirmation(
+                "Runbook created", runbook.title, id=str(runbook.id), steps=len(runbook.steps)
+            )
+
+        if fact_registry is None or session_factory is None:
+            raise RuntimeError("declared claims require the fact registry and a session factory")
+        resolved = await resolve_claim_inputs(fact_registry, claims)
+        declared_at = datetime.now(UTC)
+        async with session_factory() as session, session.begin():
+            runbook = await runbook_svc.create(data, session=session)
+            claim_ids = await persist_claims(
+                session,
+                entry_id=runbook.id,
+                entity_type="runbook",
+                project_key=project_key,
+                resolved=resolved,
+                declared_by=get_current_actor(),
+                declared_at=declared_at,
+            )
+        runbook = await runbook_svc.enrich_created(
+            runbook,
+            data,
+            runbook_embedding_text(data.title, data.description, data.trigger),
+            authorization=cast("RelationAuthorization", scope) if scope is not None else None,
+        )
         logger.info(
             "mcp.brain_create_runbook",
             title_length=len(title),
             step_count=len(runbook.steps),
+            claim_count=len(claim_ids),
+            claim_verification_reason=_CLAIM_VERIFICATION_REASON,
         )
         return format_confirmation(
-            "Runbook created", runbook.title, id=str(runbook.id), steps=len(runbook.steps)
+            "Runbook created",
+            runbook.title,
+            id=str(runbook.id),
+            steps=len(runbook.steps),
+            claims=(
+                f"{len(claim_ids)} recorded (declared; verification arrives with the verdict path)"
+            ),
         )
 
     @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)

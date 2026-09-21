@@ -49,6 +49,7 @@ from brain_v42.models.relation import RelationInput
 from brain_v42.provenance import get_current_actor
 from brain_v42.repositories.promotion import SourceLearningNotFound
 from brain_v42.services.brain_service import _TYPE_TO_PLURAL
+from brain_v42.services.embedding_text import adr_embedding_text
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -122,13 +123,27 @@ def register_tools(
     # c352eaaa): no more mutation of mcp.tool, no more dependence on declaration
     # order, and the compact profile's gateways are excluded by construction.
     register_workflow_guide_tools(mcp)
+    claim_write_arguments: dict[str, Any] = {}
+    if fact_registry is not None or session_factory is not None:
+        # Preserve the historical child-registration call when no claim writer
+        # dependencies exist; only the opt-in claims path needs either input.
+        claim_write_arguments = {
+            "fact_registry": fact_registry,
+            "session_factory": session_factory,
+        }
     register_snippet_tools(
         mcp,
         snippet_svc,
         metrics_collector=metrics_collector,
         access_logger=access_logger,
+        **claim_write_arguments,
     )
-    register_runbook_tools(mcp, runbook_svc, access_logger=access_logger)
+    register_runbook_tools(
+        mcp,
+        runbook_svc,
+        access_logger=access_logger,
+        **claim_write_arguments,
+    )
     register_project_context_tools(mcp, project_context_svc, roadmap_svc=roadmap_svc)
 
     # ── Feature #629: Decision tools ─────────────────────────────────────────
@@ -547,6 +562,7 @@ def register_tools(
         project_key: str,
         alternatives_considered: list[AlternativeConsidered] | None = None,
         tags: list[str] | None = None,
+        claims: list[dict] | None = None,
     ) -> str:
         """Propose an Architecture Decision Record (ADR) in status='proposed'.
 
@@ -578,20 +594,57 @@ def register_tools(
             tags,
         )
         scope = get_dream_project_scope()
-
-        if scope is None:
-            adr = await adr_svc.create(data)
-        else:
-            adr = await adr_svc.create(
-                data,
-                authorization=cast("RelationAuthorization", scope),
+        if not claims:
+            if scope is None:
+                adr = await adr_svc.create(data)
+            else:
+                adr = await adr_svc.create(
+                    data,
+                    authorization=cast("RelationAuthorization", scope),
+                )
+            logger.info("mcp.brain_propose_adr", adr_id=str(adr.id), project_key=project_key)
+            return format_confirmation(
+                f"ADR #{adr.number} proposed",
+                title,
+                id=str(adr.id),
+                project=project_key,
             )
-        logger.info("mcp.brain_propose_adr", adr_id=str(adr.id), project_key=project_key)
+
+        registry, claim_session_factory = claim_write_dependencies()
+        resolved = await resolve_claim_inputs(registry, claims)
+        declared_at = datetime.now(UTC)
+        async with claim_session_factory() as session, session.begin():
+            adr = await adr_svc.create(data, session=session)
+            claim_ids = await persist_claims(
+                session,
+                entry_id=adr.id,
+                entity_type="adr",
+                project_key=project_key,
+                resolved=resolved,
+                declared_by=get_current_actor(),
+                declared_at=declared_at,
+            )
+        adr = await adr_svc.enrich_created(
+            adr,
+            data,
+            adr_embedding_text(data.title, data.context, data.decision),
+            authorization=cast("RelationAuthorization", scope) if scope is not None else None,
+        )
+        logger.info(
+            "mcp.brain_propose_adr",
+            adr_id=str(adr.id),
+            project_key=project_key,
+            claim_count=len(claim_ids),
+            claim_verification_reason=_CLAIM_VERIFICATION_REASON,
+        )
         return format_confirmation(
             f"ADR #{adr.number} proposed",
             title,
             id=str(adr.id),
             project=project_key,
+            claims=(
+                f"{len(claim_ids)} recorded (declared; verification arrives with the verdict path)"
+            ),
         )
 
     @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)
