@@ -294,6 +294,23 @@ async def test_a_fact_refused_at_registration_is_named_in_the_briefing() -> None
 
 
 @pytest.mark.asyncio
+async def test_a_definition_drift_disabled_fact_is_distinct_from_a_refused_fact() -> None:
+    """Drift disables a registered reader; composition refusal never registered one."""
+    from brain_v42.mcp.tools.session_tools import _render_briefing_facts
+
+    class DisabledRegistry(FakeRegistry):
+        def briefing_names(self) -> tuple[str, ...]:
+            return ()
+
+        def disabled(self) -> dict[str, str]:
+            return {"graph_projection_lag": "definition_drift"}
+
+    lines = await _render_briefing_facts(DisabledRegistry(_quiet()))
+
+    assert lines == ["- Faits : graph_projection_lag désactivé (dérive de définition)"]
+
+
+@pytest.mark.asyncio
 async def test_a_registered_alembic_fact_replaces_the_legacy_schema_read() -> None:
     """Two schema lines would leave the reader unsure which one was measured."""
 

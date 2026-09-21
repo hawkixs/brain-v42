@@ -139,6 +139,7 @@ class FactRegistry:
         self._frozen = False
         self._closed = False
         self._refusals: dict[str, str] = {}
+        self._disabled: dict[str, str] = {}
         # This seam preserves asyncio's normal timeout behaviour in production while
         # allowing deterministic capacity tests without sleeping a real clock.
         self._wait_for: Any = asyncio.wait_for
@@ -199,6 +200,20 @@ class FactRegistry:
         """The probes refused at registration, by name, with the reason."""
         return dict(self._refusals)
 
+    def disable(self, name: str, reason: str) -> None:
+        """Narrow a registered fact after freeze without installing a reader.
+
+        ``freeze`` exists so runtime callers cannot install arbitrary readers.
+        Disabling installs nothing and only narrows what the registry will
+        answer, so it cannot become an escalation path.
+        """
+        self.describe(name)
+        self._disabled[name] = reason
+
+    def disabled(self) -> dict[str, str]:
+        """The registered facts disabled after composition, by name and reason."""
+        return dict(self._disabled)
+
     def freeze(self) -> None:
         """Close composition so runtime callers cannot install arbitrary readers."""
         self._frozen = True
@@ -242,6 +257,14 @@ class FactRegistry:
         if self._closed:
             raise RegistryClosedError("fact registry is closed")
         descriptor = self.describe(name)
+        disabled_reason = self._disabled.get(name)
+        if disabled_reason is not None:
+            return self._unreadable(
+                descriptor,
+                disabled_reason,
+                where=name,
+                duration_ms=0,
+            )
         max_age_seconds = self._max_age_seconds(max_age)
         cached = self._cache.get(name)
         now = self._monotonic()
