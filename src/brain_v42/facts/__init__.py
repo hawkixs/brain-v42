@@ -1,6 +1,11 @@
 """Pure vocabulary and canonical representation for measured facts."""
 
-from brain_v42.facts.canonical import canonical_json, measurement_digest
+from brain_v42.facts.canonical import (
+    FACT_DEFINITION_DIGEST_PREFIX,
+    canonical_json,
+    definition_digest,
+    measurement_digest,
+)
 from brain_v42.facts.model import (
     ERROR_CODES,
     FACT_NAME,
@@ -36,6 +41,7 @@ from brain_v42.facts.registry import (
 
 __all__ = [
     "ERROR_CODES",
+    "FACT_DEFINITION_DIGEST_PREFIX",
     "FACT_NAME",
     "FactTarget",
     "FactDescriptor",
@@ -59,6 +65,7 @@ __all__ = [
     "UnverifiableTargetError",
     "canonical_json",
     "check_value_schema",
+    "definition_digest",
     "measurement_digest",
     "measurement_to_json",
     "validate_fact_name",
