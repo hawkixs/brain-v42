@@ -34,6 +34,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 
+from brain_v42.db.claim_tables import register_claim_tables
 from brain_v42.db.delivery_tables import register_delivery_tables
 
 _EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIMENSION", "1536"))
@@ -1825,6 +1826,9 @@ __all__ = [
     "ticket_extraction_attempts",
     "roadmap_curation_proposals",
     "brain_session_checkpoints",
+    "knowledge_fact_definitions",
+    "knowledge_claims",
+    "knowledge_claim_verdicts",
     "delivery_workflows",
     "delivery_contract_revisions",
     "delivery_dependencies",
@@ -1835,6 +1839,11 @@ __all__ = [
     "delivery_events",
     "delivery_attestations",
 ]
+
+_claim_tables = register_claim_tables(METADATA)
+knowledge_fact_definitions = _claim_tables["knowledge_fact_definitions"]
+knowledge_claims = _claim_tables["knowledge_claims"]
+knowledge_claim_verdicts = _claim_tables["knowledge_claim_verdicts"]
 
 _delivery_tables = register_delivery_tables(METADATA)
 delivery_workflows = _delivery_tables["delivery_workflows"]
