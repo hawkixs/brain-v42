@@ -61,3 +61,24 @@ def test_stdout_carries_nothing_but_the_document() -> None:
 
     assert result.stdout.lstrip().startswith("{")
     assert "[info" not in result.stdout
+
+
+def test_the_report_names_the_vector_tables_it_did_not_check() -> None:
+    """A MATCH must never read as "the whole corpus is fine".
+
+    Nine tables carry a vector; the sample covers the five whose text
+    `embedding_text_from_row` can recompose. The other four hold 3159 of 8811
+    embedded rows (measured 2026-09-21) and `scripts/regen_embeddings.py`
+    reindexes none of them — so after a switch the sampled five can be freshly
+    written while a third of the corpus is still the old model's. The blind
+    spot is stated on every run rather than left for the operator to infer.
+    """
+    result = _run("--json")
+    payload = json.loads(result.stdout)
+
+    assert {entry["table"] for entry in payload["unchecked"]} == {
+        "features",
+        "indexed_plans",
+        "indexed_plan_chunks",
+        "gitlab_events",
+    }

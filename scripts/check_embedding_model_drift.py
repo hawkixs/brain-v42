@@ -39,6 +39,7 @@ from brain_v42.services.embedding_drift import (
     DriftReport,
     SampleComparison,
     classify_drift,
+    final_exit_code,
 )
 from brain_v42.services.embedding_factory import (
     build_embedding_service,
@@ -47,10 +48,8 @@ from brain_v42.services.embedding_factory import (
 from brain_v42.services.embedding_text import EmbeddingEntityType, embedding_text_from_row
 from brain_v42.services.gpu_embedding_service import EmbeddingUnavailable, GPUEmbeddingService
 
-#: The five knowledge tables `embedding_text_from_row` can recompose. features,
-#: indexed_plans, indexed_plan_chunks and gitlab_events also carry vectors but
-#: compose their text elsewhere; a sample drawn from these five answers the
-#: model question for the whole corpus, since one model writes all nine.
+#: The five knowledge tables `embedding_text_from_row` can recompose.
+#: The five knowledge tables `embedding_text_from_row` can recompose.
 SAMPLED_TABLES: dict[EmbeddingEntityType, tuple[str, tuple[str, ...]]] = {
     "decision": ("decisions", ("title", "description", "reasoning")),
     "learning": ("learnings", ("topic", "insight")),
@@ -58,6 +57,29 @@ SAMPLED_TABLES: dict[EmbeddingEntityType, tuple[str, tuple[str, ...]]] = {
     "runbook": ("runbooks", ("title", "description", "trigger")),
     "adr": ("adrs", ("title", "context", "decision")),
 }
+
+#: The four remaining vector tables. They compose their text elsewhere, so the
+#: sample cannot reach them -- and that is not a detail: measured 2026-09-21
+#: they hold 3159 of 8811 embedded rows (features 920, indexed_plan_chunks
+#: 1792, indexed_plans 208, gitlab_events 239), `scripts/regen_embeddings.py`
+#: reindexes NONE of them, and `indexed_plan_chunks` is served by brain_search
+#: while `features` drives semantic dedup in cluster_guard. A switch reindexed
+#: with today's tooling therefore leaves a third of the corpus written by the
+#: old model while this check reports MATCH. Every run says so out loud.
+UNSAMPLED_VECTOR_TABLES = ("features", "indexed_plans", "indexed_plan_chunks", "gitlab_events")
+
+
+async def count_unchecked(conn: asyncpg.Connection | None) -> list[dict[str, object]]:
+    """Embedded-row counts for the tables the sample cannot reach."""
+    entries: list[dict[str, object]] = []
+    for table in UNSAMPLED_VECTOR_TABLES:
+        embedded: int | None = None
+        if conn is not None:
+            embedded = await conn.fetchval(
+                f"SELECT count(*) FROM {table} WHERE embedding IS NOT NULL"  # noqa: S608
+            )
+        entries.append({"table": table, "embedded_rows": embedded})
+    return entries
 
 
 def parse_pgvector(raw: str) -> list[float]:
@@ -152,7 +174,13 @@ async def compare(
     return comparisons, problems
 
 
-def render(report: DriftReport, problems: list[str], backend: str, model: str) -> str:
+def render(
+    report: DriftReport,
+    problems: list[str],
+    backend: str,
+    model: str,
+    unchecked: list[dict[str, object]],
+) -> str:
     lines = [
         "brain_v42 — embedding model drift check",
         f"  configured backend : {backend}",
@@ -175,6 +203,17 @@ def render(report: DriftReport, problems: list[str], backend: str, model: str) -
     if report.verdict.value == "unmeasurable":
         lines.append("  → nothing was measured; this is not a pass.")
     lines += [f"  ! {problem}" for problem in problems]
+    total_unchecked = sum(
+        int(entry["embedded_rows"] or 0) for entry in unchecked if entry["embedded_rows"]
+    )
+    lines.append(
+        f"  NOT CHECKED        : {total_unchecked} embedded rows in "
+        + ", ".join(str(entry["table"]) for entry in unchecked)
+    )
+    lines.append(
+        "                       (these compose their text elsewhere and "
+        "regen_embeddings.py does not reindex them)"
+    )
     return "\n".join(lines)
 
 
@@ -192,6 +231,7 @@ async def run(args: argparse.Namespace) -> int:
 
     comparisons: list[SampleComparison] = []
     problems: list[str] = []
+    unchecked = await count_unchecked(None)
 
     # An unreachable database is reported THROUGH the report, not instead of it:
     # a runbook branching on `--json` must still receive a document saying
@@ -203,6 +243,7 @@ async def run(args: argparse.Namespace) -> int:
     else:
         try:
             comparisons, problems = await compare(conn, embedding_svc, args.per_type)
+            unchecked = await count_unchecked(conn)
         finally:
             await conn.close()
 
@@ -222,14 +263,19 @@ async def run(args: argparse.Namespace) -> int:
                     "minimum": report.minimum,
                     "maximum": report.maximum,
                     "problems": problems,
+                    "unchecked": unchecked,
                 },
                 indent=2,
             )
         )
     else:
-        print(render(report, problems, settings.embedding_backend, settings.embedding_model))
+        print(
+            render(
+                report, problems, settings.embedding_backend, settings.embedding_model, unchecked
+            )
+        )
 
-    return report.exit_code
+    return final_exit_code(report, problems)
 
 
 def main() -> int:

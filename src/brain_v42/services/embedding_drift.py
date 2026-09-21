@@ -84,6 +84,25 @@ class DriftReport:
         return 2
 
 
+def final_exit_code(report: DriftReport, problems: list[str]) -> int:
+    """The process exit code, once collection problems are taken into account.
+
+    `DriftReport.exit_code` judges the rows that answered. This judges the RUN.
+    A sample where one type failed entirely still produces a MATCH on the rest,
+    and a provider-switch preflight that exits 0 on four fifths of a question
+    is a gate that does not gate -- measured 2026-09-21, when a concurrent
+    bench saturated the shim and one whole batch came back 503.
+
+    Proven drift still wins: it is a finding, and downgrading it to "could not
+    measure" would discard the one fact worth acting on.
+    """
+    if report.verdict is DriftVerdict.DRIFT:
+        return 1
+    if problems:
+        return 2
+    return report.exit_code
+
+
 def classify_drift(
     samples: list[SampleComparison],
     threshold: float = DEFAULT_THRESHOLD,

@@ -16,6 +16,7 @@ from brain_v42.services.embedding_drift import (
     DriftVerdict,
     SampleComparison,
     classify_drift,
+    final_exit_code,
 )
 
 
@@ -88,3 +89,28 @@ def test_a_similarity_outside_the_cosine_range_is_refused() -> None:
     """A parsing bug that yields 12.0 must not be averaged into a pass."""
     with pytest.raises(ValueError, match="similarity"):
         classify_drift(_samples(0.99, 12.0), threshold=0.95)
+
+
+def test_a_clean_match_exits_zero() -> None:
+    report = classify_drift(_samples(0.999, 0.998), threshold=0.95)
+
+    assert final_exit_code(report, problems=[]) == 0
+
+
+def test_a_match_measured_on_a_broken_run_is_not_a_pass() -> None:
+    """Measured 2026-09-21: a concurrent bench saturated the shim and one of
+    the five types answered 503 for its whole batch. The remaining rows still
+    produced a MATCH. A switch preflight that exits 0 there is a gate that
+    passes on four fifths of a question, so an incomplete run degrades to
+    UNMEASURABLE's code instead."""
+    report = classify_drift(_samples(0.999, 0.998), threshold=0.95)
+
+    assert final_exit_code(report, problems=["decision: endpoint unavailable (gpu_busy)"]) == 2
+
+
+def test_proven_drift_outranks_an_incomplete_run() -> None:
+    """Drift measured on the rows that DID answer is a finding, not a gap:
+    reporting it as merely unmeasurable would lose the one fact that matters."""
+    report = classify_drift(_samples(0.02, 0.03), threshold=0.95)
+
+    assert final_exit_code(report, problems=["adr: endpoint unavailable (gpu_busy)"]) == 1
