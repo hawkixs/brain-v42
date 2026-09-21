@@ -107,12 +107,24 @@ Measured 2026-09-21:
 They are not all the same problem, and the difference is what makes this
 tractable:
 
-- **`indexed_plans` + `indexed_plan_chunks` (2000 rows) — a step, not a gap.**
-  `plan_indexer.index_path()` embeds both when it runs, so re-running plan
-  indexing over the scanned paths rewrites them with the configured model. It
-  re-reads the source files rather than re-embedding stored rows, which is
-  slower but correct. This is the `plan` type `brain_search` serves, so it is
-  not optional.
+- **`indexed_plans` + `indexed_plan_chunks` (2000 rows) — a step, but not the
+  obvious one.** `plan_indexer.index_path()` embeds both when it processes a
+  file, so re-running plan indexing looks like the answer. It is not, by
+  itself: `_is_unchanged` skips any file whose SHA256 still matches the stored
+  `content_hash`, and after a provider switch every plan file is unchanged.
+  A plain re-run would report `skipped` for all 208 plans and rewrite nothing,
+  which is the worst outcome — a green run that did nothing.
+
+  The intended lever is the staleness flag, the same one migration 014 used to
+  force re-chunking. Measured 2026-09-21: all 208 rows are `fresh`.
+
+  ```sql
+  UPDATE indexed_plans SET freshness_status = 'stale';
+  ```
+
+  then re-run plan indexing; chunks follow through
+  `upsert_plan_with_chunks`, so no duplicate row is created. This is the
+  `plan` type `brain_search` serves, so it is not optional.
 - **`features` (920 rows) — the real gap.** `features.embedding` is written
   only on create and update, by `feature_linker` and `cluster_guard`. There is
   no bulk path at all. It is also the one that silently corrupts a decision
@@ -175,7 +187,8 @@ time-sensitive work.
 
 ```bash
 python scripts/regen_embeddings.py            # the five covered tables (5652 rows)
-# then re-run plan indexing over the scanned paths  (indexed_plans + chunks, 2000 rows)
+# mark plans stale, THEN re-run plan indexing       (indexed_plans + chunks, 2000 rows)
+#   UPDATE indexed_plans SET freshness_status = 'stale';   -- else every file is skipped
 # then the features bulk re-embed                   (920 rows — tool to be written)
 # gitlab_events (239 rows) is dead: leave it stale, deliberately
 ```
