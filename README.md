@@ -108,8 +108,8 @@ this does not affect you.
 
 ```bash
 git clone https://github.com/hawkixs/brain-v42 && cd brain-v42
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+uv sync --extra dev --python 3.12      # creates .venv; see "Development" for why not pip
+source .venv/bin/activate
 
 # 1. Local Neo4j secret (skip if you run without the graph)
 install -d -m 0700 .secrets
@@ -300,8 +300,16 @@ mypy src/
   Pydantic 2, structlog.
 - **TDD is mandatory** — red, green, refactor; tests are never edited to make code pass.
 - **Coverage floor**: 60% (CI blocks below).
-- The dev toolchain is pinned exactly (`pip install -e ".[dev]"`) so local always
-  matches CI.
+- **Install with `uv sync --extra dev --python 3.12`, not with pip.** `pip install -e ".[dev]"`
+  fails on this layout and always has: `headless-agents` is a uv *workspace member*
+  (`[tool.uv.workspace]` + `[tool.uv.sources]` in `pyproject.toml`), not a published
+  distribution, so pip looks for it on PyPI and stops with `No matching distribution
+  found for headless-agents`. The dev toolchain is pinned exactly in `uv.lock`, so a
+  synced environment resolves to the versions CI runs.
+- **Pin `--python 3.12` explicitly.** `requires-python` is `>=3.12`, so a bare
+  `uv sync` on a fresh clone picks the newest interpreter it can find — measured
+  3.14 — while every CI job, the release job and `[tool.mypy]` target 3.12. Matching
+  CI is the whole point of the lock; an unpinned interpreter quietly gives it up.
 
 ## Project layout
 
@@ -346,7 +354,10 @@ migrations, and attaches both to the GitHub release.
   once a delivery attestation exists.
 - Follow the release's operator runbook for recovery. For **0.6.0** (as for 0.5.0), use the
   [compatible forward rollback](docs/runbooks/2026-09-07-observable-delivery-workflows.md#compatible-forward-rollback)
-  and keep schema 053 in place.
+  and keep the repository's migration target in place — 054 since revision 054 shipped.
+  Rollback means selecting a release that supports that head or deploying a forward fix;
+  it never means `alembic downgrade`, and never means restoring an older dump over a live
+  database.
 - **0.6.0** ships the `headless-agents` workspace member (`packages/headless-agents/`,
   version `0.1.0`) as a second distribution that `brain_v42` depends on; its own version
   moves independently of this one.
