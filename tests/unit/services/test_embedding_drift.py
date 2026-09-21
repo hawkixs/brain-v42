@@ -114,3 +114,54 @@ def test_proven_drift_outranks_an_incomplete_run() -> None:
     report = classify_drift(_samples(0.02, 0.03), threshold=0.95)
 
     assert final_exit_code(report, problems=["adr: endpoint unavailable (gpu_busy)"]) == 1
+
+
+class TestThePerTypeBreakdown:
+    """A global median can hide a type that is entirely the old model's.
+
+    The sample is spread across the covered types, so one type wholly written by
+    a different model is a minority of the rows. With eight types' worth of
+    matching rows around it, the median never moves and the check reports MATCH
+    on a corpus a quarter of which is stale. The breakdown makes that visible
+    before the verdict rule has to decide anything.
+    """
+
+    def test_each_sampled_type_is_reported_separately(self) -> None:
+        samples = [
+            SampleComparison(entity_type="learning", entity_id=f"l{i}", similarity=0.99)
+            for i in range(8)
+        ] + [
+            SampleComparison(entity_type="snippet", entity_id=f"s{i}", similarity=0.21)
+            for i in range(8)
+        ]
+
+        report = classify_drift(samples, threshold=0.95)
+
+        by_type = {b.entity_type: b for b in report.by_type}
+        assert set(by_type) == {"learning", "snippet"}
+        assert by_type["learning"].sampled == 8
+        assert by_type["snippet"].sampled == 8
+        assert by_type["learning"].median == pytest.approx(0.99)
+        assert by_type["snippet"].median == pytest.approx(0.21)
+        assert by_type["snippet"].outliers == 8
+
+    def test_the_global_median_alone_would_have_called_this_a_match(self) -> None:
+        """The exact shape this breakdown exists to expose, stated as a number."""
+        samples = [
+            SampleComparison(entity_type="learning", entity_id=f"l{i}", similarity=0.99)
+            for i in range(40)
+        ] + [
+            SampleComparison(entity_type="snippet", entity_id=f"s{i}", similarity=0.21)
+            for i in range(8)
+        ]
+
+        report = classify_drift(samples, threshold=0.95)
+
+        assert report.median is not None and report.median >= 0.95
+        snippet = next(b for b in report.by_type if b.entity_type == "snippet")
+        assert snippet.median is not None and snippet.median < 0.95
+
+    def test_an_empty_sample_reports_no_types_rather_than_inventing_one(self) -> None:
+        report = classify_drift([], threshold=0.95)
+
+        assert report.by_type == ()

@@ -97,3 +97,20 @@ def test_features_is_checked_now_that_it_has_a_reindex_path() -> None:
     payload = json.loads(result.stdout)
 
     assert "features" not in {entry["table"] for entry in payload["unchecked"]}
+
+
+def test_the_report_breaks_the_sample_down_by_type() -> None:
+    """A global median cannot fail on a type it averages away.
+
+    The sample is spread across the six covered types, so one type wholly
+    written by another model is a minority of the rows: the median does not
+    move and the check says MATCH. The breakdown is what an operator reads to
+    see it. Measured against production on 2026-09-21, this is not theoretical
+    -- `feature` sat at median 0.7937 with 8 of 8 below threshold while the
+    global median was 0.9999.
+    """
+    result = _run("--json")
+    payload = json.loads(result.stdout)
+
+    assert "by_type" in payload, "the verdict must not be the only per-type signal"
+    assert payload["by_type"] == [], "an unmeasurable run has no type to break down"
