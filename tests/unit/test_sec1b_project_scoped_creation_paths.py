@@ -563,10 +563,10 @@ def test_internal_authorization_parameters_are_keyword_only_with_admin_default()
         SnippetService.create,
         RunbookService.create,
         RunbookService.create_with_promotion,
-        RunbookService._enrich_created_runbook,
+        RunbookService.enrich_created,
         ADRService.create,
         ADRService.create_with_promotion,
-        ADRService._enrich_created_adr,
+        ADRService.enrich_created,
     )
 
     for method in methods:

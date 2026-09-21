@@ -10,6 +10,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.models.project_context import ProjectContext
 from brain_v42.models.runbook import (
@@ -104,6 +105,116 @@ def svc_with_embedding(mock_repo: MagicMock, mock_embedding_svc: MagicMock) -> R
 
 
 class TestCreate:
+    async def test_create_default_path_keeps_derived_work_order(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_repo: MagicMock,
+    ) -> None:
+        """The committed Runbook is projected and enriched in its established order."""
+        events: list[str] = []
+        runbook = make_runbook()
+        data = RunbookCreate(
+            title="Deploy App",
+            description="Deploy the application.",
+            project_key="my-proj",
+            trigger="On release tag",
+        )
+
+        async def create(*args: object, **kwargs: object) -> Runbook:
+            events.append("create")
+            return runbook
+
+        async def store(*args: object, **kwargs: object) -> None:
+            events.append("store")
+            return None
+
+        async def embed(text: str) -> list[float]:
+            events.append("embed")
+            return [0.1] * 1536
+
+        async def graph(*args: object, **kwargs: object) -> list[str]:
+            events.append("graph")
+            return []
+
+        embedding_svc = MagicMock()
+        embedding_svc.embed = AsyncMock(side_effect=embed)
+        mock_repo.create.side_effect = create
+        mock_repo.set_embedding_if_current.side_effect = store
+        monkeypatch.setattr("brain_v42.services.runbook_service.graph_upsert_entity", graph)
+
+        await RunbookService(pg_repo=mock_repo, embedding_svc=embedding_svc).create(data)
+
+        assert events == ["create", "graph", "embed", "store"]
+
+    async def test_create_with_session_only_persists_the_runbook(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_repo: MagicMock,
+    ) -> None:
+        """A caller-owned transaction defers graph and embedding side effects."""
+        runbook = make_runbook()
+        data = RunbookCreate(
+            title="Deploy App",
+            description="Deploy the application.",
+            project_key="my-proj",
+            trigger="On release tag",
+        )
+        session = MagicMock(spec=AsyncSession)
+        mock_repo.create.return_value = runbook
+        enrich_created = AsyncMock(return_value=runbook)
+        graph = AsyncMock(return_value=[])
+        service = RunbookService(pg_repo=mock_repo)
+        monkeypatch.setattr(service, "enrich_created", enrich_created, raising=False)
+        monkeypatch.setattr("brain_v42.services.runbook_service.graph_upsert_entity", graph)
+
+        result = await service.create(data, session=session)
+
+        assert result is runbook
+        mock_repo.create.assert_awaited_once_with(data, embedding=None, session=session)
+        graph.assert_not_awaited()
+        enrich_created.assert_not_awaited()
+
+    async def test_enrich_created_performs_the_deferred_runbook_work(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_repo: MagicMock,
+    ) -> None:
+        """A committed Runbook receives the same graph and embedding work on demand."""
+        events: list[str] = []
+        runbook = make_runbook()
+        data = RunbookCreate(
+            title="Deploy App",
+            description="Deploy the application.",
+            project_key="my-proj",
+            trigger="On release tag",
+        )
+        mock_repo.set_embedding_if_current.side_effect = lambda *args, **kwargs: (
+            events.append("store") or None
+        )
+        embedding_svc = MagicMock()
+
+        async def embed(text: str) -> list[float]:
+            events.append("embed")
+            return [0.1] * 1536
+
+        async def graph(*args: object, **kwargs: object) -> list[str]:
+            events.append("graph")
+            return []
+
+        embedding_svc.embed = AsyncMock(side_effect=embed)
+        monkeypatch.setattr("brain_v42.services.runbook_service.graph_upsert_entity", graph)
+
+        result = await RunbookService(
+            pg_repo=mock_repo, embedding_svc=embedding_svc
+        ).enrich_created(
+            runbook,
+            data,
+            "Deploy App Deploy the application. On release tag",
+        )
+
+        assert result is runbook
+        assert events == ["graph", "embed", "store"]
+
     async def test_create_without_embedding_svc_passes_none_embedding(
         self,
         svc: RunbookService,

@@ -10,6 +10,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.models.project_context import ProjectContext
 from brain_v42.models.snippet import Snippet, SnippetCreate, SnippetUpdate
@@ -74,6 +75,113 @@ def snippet_service(mock_repo: AsyncMock, mock_embedding_svc: MagicMock) -> Snip
 
 
 class TestCreate:
+    async def test_create_default_path_keeps_derived_work_order(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_repo: AsyncMock,
+    ) -> None:
+        """The committed Snippet is projected and enriched in its established order."""
+        events: list[str] = []
+        snippet = make_snippet()
+        data = SnippetCreate(
+            title="Test",
+            intention="Parse JSON",
+            code="json.loads(s)",
+            language="python",
+        )
+
+        async def create(*args: object, **kwargs: object) -> Snippet:
+            events.append("create")
+            return snippet
+
+        async def store(*args: object, **kwargs: object) -> None:
+            events.append("store")
+            return None
+
+        async def embed(text: str) -> list[float]:
+            events.append("embed")
+            return [0.1] * 1536
+
+        async def graph(*args: object, **kwargs: object) -> list[str]:
+            events.append("graph")
+            return []
+
+        embedding_svc = MagicMock()
+        embedding_svc.embed = AsyncMock(side_effect=embed)
+        mock_repo.create.side_effect = create
+        mock_repo.set_embedding_if_current.side_effect = store
+        monkeypatch.setattr("brain_v42.services.snippet_service.graph_upsert_entity", graph)
+
+        await SnippetService(repo=mock_repo, embedding_svc=embedding_svc).create(data)
+
+        assert events == ["create", "graph", "embed", "store"]
+
+    async def test_create_with_session_only_persists_the_snippet(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_repo: AsyncMock,
+    ) -> None:
+        """A caller-owned transaction defers graph and embedding side effects."""
+        snippet = make_snippet()
+        data = SnippetCreate(
+            title="Test",
+            intention="Parse JSON",
+            code="json.loads(s)",
+            language="python",
+        )
+        session = MagicMock(spec=AsyncSession)
+        mock_repo.create.return_value = snippet
+        enrich_created = AsyncMock(return_value=snippet)
+        graph = AsyncMock(return_value=[])
+        service = SnippetService(repo=mock_repo)
+        monkeypatch.setattr(service, "enrich_created", enrich_created, raising=False)
+        monkeypatch.setattr("brain_v42.services.snippet_service.graph_upsert_entity", graph)
+
+        result = await service.create(data, session=session)
+
+        assert result is snippet
+        mock_repo.create.assert_awaited_once_with(data, embedding=None, session=session)
+        graph.assert_not_awaited()
+        enrich_created.assert_not_awaited()
+
+    async def test_enrich_created_performs_the_deferred_snippet_work(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_repo: AsyncMock,
+    ) -> None:
+        """A committed Snippet receives the same graph and embedding work on demand."""
+        events: list[str] = []
+        snippet = make_snippet()
+        data = SnippetCreate(
+            title="Test",
+            intention="Parse JSON",
+            code="json.loads(s)",
+            language="python",
+        )
+        mock_repo.set_embedding_if_current.side_effect = lambda *args, **kwargs: (
+            events.append("store") or None
+        )
+        embedding_svc = MagicMock()
+
+        async def embed(text: str) -> list[float]:
+            events.append("embed")
+            return [0.1] * 1536
+
+        async def graph(*args: object, **kwargs: object) -> list[str]:
+            events.append("graph")
+            return []
+
+        embedding_svc.embed = AsyncMock(side_effect=embed)
+        monkeypatch.setattr("brain_v42.services.snippet_service.graph_upsert_entity", graph)
+
+        result = await SnippetService(repo=mock_repo, embedding_svc=embedding_svc).enrich_created(
+            snippet,
+            data,
+        )
+
+        assert result is snippet
+        assert events == ["graph", "embed", "store"]
+
     async def test_create_embeds_intention_and_calls_repo(
         self,
         snippet_service: SnippetService,

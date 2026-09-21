@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import structlog
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.models.adr import ADR, ADRCreate, ADRUpdate
 from brain_v42.repositories.pg_adr import PgADRRepo
@@ -88,6 +89,7 @@ class ADRService:
         data: ADRCreate,
         *,
         authorization: RelationAuthorization | None = None,
+        session: AsyncSession | None = None,
     ) -> ADR:
         """Create a durable ADR, then attempt bounded embedding enrichment.
 
@@ -100,7 +102,10 @@ class ADRService:
         Returns:
             The created ADR (with id, number, timestamps).
         """
-        await require_known_project(self._project_context_repo, data.project_key)
+        await require_known_project(self._project_context_repo, data.project_key, session=session)
+
+        if session is not None:
+            return await self._repo.create(data, embedding=None, session=session)
 
         embed_text = adr_embedding_text(data.title, data.context, data.decision)
         adr = await self._repo.create(data, embedding=None)
@@ -111,15 +116,7 @@ class ADRService:
             project_key=data.project_key,
         )
 
-        await graph_upsert_entity(
-            self._graph,
-            "ADR",
-            adr.id,
-            {"project_key": data.project_key, "title": data.title},
-            project_key=data.project_key,
-            authorization=authorization,
-        )
-        return await self._enrich_created_adr(
+        return await self.enrich_created(
             adr,
             data,
             embed_text,
@@ -169,6 +166,22 @@ class ADRService:
             auto_accept=auto_accept,
         )
 
+        return await self.enrich_created(
+            adr,
+            data,
+            embed_text,
+            authorization=authorization,
+        )
+
+    async def enrich_created(
+        self,
+        adr: ADR,
+        data: ADRCreate,
+        embed_text: str,
+        *,
+        authorization: RelationAuthorization | None = None,
+    ) -> ADR:
+        """Run derived graph and embedding work after the PG transaction commits."""
         await graph_upsert_entity(
             self._graph,
             "ADR",
@@ -177,22 +190,6 @@ class ADRService:
             project_key=data.project_key,
             authorization=authorization,
         )
-        return await self._enrich_created_adr(
-            adr,
-            data,
-            embed_text,
-            authorization=authorization,
-        )
-
-    async def _enrich_created_adr(
-        self,
-        adr: ADR,
-        data: ADRCreate,
-        embed_text: str,
-        *,
-        authorization: RelationAuthorization | None = None,
-    ) -> ADR:
-        """Enrich and link an ADR whose authoritative transaction committed."""
         if self._embedding_enricher is None:
             return adr
 
