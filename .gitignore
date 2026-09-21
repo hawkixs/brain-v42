@@ -77,3 +77,6 @@ AGENTS.md
 # Mesures régénérées à chaque rejeu de docs/design/**/baseline/snapshot.py.
 # Le README de baseline/ dit « ne jamais recopier un snapshot : le rejouer ».
 docs/design/**/snapshot-*.json
+
+# Bench pool embeddings: 50 MB of derived vectors, rebuildable and provider-priced
+bench/embedding_v2/*.npy

@@ -1,0 +1,5415 @@
+{
+  "bench_version": "v2",
+  "pool_size": 8145,
+  "gold_queries": 879,
+  "gold_dropped": 36,
+  "served_types": [
+    "decision",
+    "learning",
+    "snippet",
+    "runbook",
+    "adr",
+    "plan"
+  ],
+  "candidates": [
+    {
+      "name": "codestral-embed-2505",
+      "kind": "openai",
+      "model": "codestral-embed-2505",
+      "ok": true,
+      "failure": "",
+      "pool_size": 8145,
+      "scored_queries": 879,
+      "latency_p50_ms": 229.75210199365392,
+      "latency_p95_ms": 742.2943440033123,
+      "corpus_seconds": 170.99778952699853,
+      "throttled": 0,
+      "estimated_tokens": 1788762,
+      "estimated_usd": 0.2683143,
+      "headline": {
+        "recall@1": 0.5905172413793104,
+        "recall@5": 0.8405172413793104,
+        "recall@10": 0.8908045977011494,
+        "mrr": 0.7044781835746887,
+        "ndcg@10": 0.7476427136312156,
+        "n": 696
+      },
+      "all_types": {
+        "recall@1": 0.6177474402730375,
+        "recall@5": 0.8498293515358362,
+        "recall@10": 0.8976109215017065,
+        "mrr": 0.7234766008579216,
+        "ndcg@10": 0.7635833750961635,
+        "n": 879
+      },
+      "per_type": {
+        "learning": {
+          "recall@1": 0.5785837651122625,
+          "recall@5": 0.8272884283246977,
+          "recall@10": 0.8808290155440415,
+          "mrr": 0.6931634064581481,
+          "ndcg@10": 0.736539184799774,
+          "n": 579
+        },
+        "feature": {
+          "recall@1": 0.8431372549019608,
+          "recall@5": 0.9509803921568627,
+          "recall@10": 0.9509803921568627,
+          "mrr": 0.8877858610830747,
+          "ndcg@10": 0.9021176655294516,
+          "n": 102
+        },
+        "plan_chunk": {
+          "recall@1": 0.5679012345679012,
+          "recall@5": 0.8024691358024691,
+          "recall@10": 0.8888888888888888,
+          "mrr": 0.6798143031562498,
+          "ndcg@10": 0.7261043967678694,
+          "n": 81
+        },
+        "runbook": {
+          "recall@1": 0.6666666666666666,
+          "recall@5": 0.6666666666666666,
+          "recall@10": 1.0,
+          "mrr": 0.7041666666666666,
+          "ndcg@10": 0.7674216171839361,
+          "n": 6
+        },
+        "decision": {
+          "recall@1": 0.6533333333333333,
+          "recall@5": 0.9066666666666666,
+          "recall@10": 0.92,
+          "mrr": 0.7693302737104365,
+          "ndcg@10": 0.8050109779845988,
+          "n": 75
+        },
+        "plan": {
+          "recall@1": 0.3333333333333333,
+          "recall@5": 0.8333333333333334,
+          "recall@10": 0.9166666666666666,
+          "mrr": 0.5333694083694084,
+          "ndcg@10": 0.6213788297185862,
+          "n": 12
+        },
+        "adr": {
+          "recall@1": 0.6666666666666666,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 0.8,
+          "ndcg@10": 0.8498569238197174,
+          "n": 9
+        },
+        "snippet": {
+          "recall@1": 0.8666666666666667,
+          "recall@5": 1.0,
+          "recall@10": 1.0,
+          "mrr": 0.8966666666666666,
+          "ndcg@10": 0.9211686243538624,
+          "n": 15
+        }
+      },
+      "per_variant": {
+        "literal-paraphrase": {
+          "recall@1": 0.7406143344709898,
+          "recall@5": 0.9556313993174061,
+          "recall@10": 0.9761092150170648,
+          "mrr": 0.8393788161676828,
+          "ndcg@10": 0.8731635915579595,
+          "n": 293
+        },
+        "abstract-question": {
+          "recall@1": 0.4232081911262799,
+          "recall@5": 0.6860068259385665,
+          "recall@10": 0.7610921501706485,
+          "mrr": 0.5421850740772028,
+          "ndcg@10": 0.5893571900683267,
+          "n": 293
+        },
+        "keyword-bag": {
+          "recall@1": 0.689419795221843,
+          "recall@5": 0.9078498293515358,
+          "recall@10": 0.9556313993174061,
+          "mrr": 0.7888659123288795,
+          "ndcg@10": 0.8282293436622039,
+          "n": 293
+        }
+      },
+      "ranks": [
+        {
+          "query_id": "lea-lite-6b5418ff",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-6b5418ff",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-6b5418ff",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-dd7d18e6",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-dd7d18e6",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-dd7d18e6",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-96d5da63",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-96d5da63",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-96d5da63",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-71202d2f",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-71202d2f",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-71202d2f",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 7
+        },
+        {
+          "query_id": "lea-lite-3879337e",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-3879337e",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-3879337e",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-bbeba58e",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-abst-bbeba58e",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-keyw-bbeba58e",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "run-lite-a050e6ec",
+          "gold_type": "runbook",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "run-abst-a050e6ec",
+          "gold_type": "runbook",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "run-keyw-a050e6ec",
+          "gold_type": "runbook",
+          "variant": "keyword-bag",
+          "rank": 10
+        },
+        {
+          "query_id": "lea-lite-3afce350",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 8
+        },
+        {
+          "query_id": "lea-abst-3afce350",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-3afce350",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 0
+        },
+        {
+          "query_id": "dec-lite-743c79c9",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "dec-abst-743c79c9",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "dec-keyw-743c79c9",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-acfb4a25",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-acfb4a25",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 4
+        },
+        {
+          "query_id": "lea-keyw-acfb4a25",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-1421509b",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 15
+        },
+        {
+          "query_id": "pla-abst-1421509b",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 10
+        },
+        {
+          "query_id": "pla-keyw-1421509b",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-6ba8c14d",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-6ba8c14d",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-6ba8c14d",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 13
+        },
+        {
+          "query_id": "lea-lite-7a6aea54",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-7a6aea54",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 3
+        },
+        {
+          "query_id": "lea-keyw-7a6aea54",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-04920fce",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-04920fce",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 4
+        },
+        {
+          "query_id": "lea-keyw-04920fce",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 3
+        },
+        {
+          "query_id": "lea-lite-7c7ec59a",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-7c7ec59a",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-7c7ec59a",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-8fdeb8ae",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-8fdeb8ae",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 14
+        },
+        {
+          "query_id": "lea-keyw-8fdeb8ae",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-0cc82186",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-0cc82186",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-0cc82186",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-148f9682",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-148f9682",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-148f9682",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-466f88a8",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-abst-466f88a8",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 4
+        },
+        {
+          "query_id": "pla-keyw-466f88a8",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-fa8941a0",
+          "gold_type": "plan",
+          "variant": "literal-paraphrase",
+          "rank": 4
+        },
+        {
+          "query_id": "pla-abst-fa8941a0",
+          "gold_type": "plan",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "pla-keyw-fa8941a0",
+          "gold_type": "plan",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-lite-9e00f5c1",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "dec-abst-9e00f5c1",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 3
+        },
+        {
+          "query_id": "dec-keyw-9e00f5c1",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "adr-lite-d9f98048",
+          "gold_type": "adr",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "adr-abst-d9f98048",
+          "gold_type": "adr",
+          "variant": "abstract-question",
+          "rank": 5
+        },
+        {
+          "query_id": "adr-keyw-d9f98048",
+          "gold_type": "adr",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-98371450",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-98371450",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-98371450",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-d00e6388",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-d00e6388",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-d00e6388",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-e2d6e216",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-e2d6e216",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-e2d6e216",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-96063b74",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-96063b74",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 41
+        },
+        {
+          "query_id": "lea-keyw-96063b74",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-0d61aea3",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-abst-0d61aea3",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-keyw-0d61aea3",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-9c3c58eb",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 3
+        },
+        {
+          "query_id": "lea-abst-9c3c58eb",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-9c3c58eb",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-45c47cea",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-45c47cea",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-45c47cea",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 5
+        },
+        {
+          "query_id": "fea-lite-15dea349",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 13
+        },
+        {
+          "query_id": "fea-abst-15dea349",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "fea-keyw-15dea349",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 28
+        },
+        {
+          "query_id": "lea-lite-6441f537",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-6441f537",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-6441f537",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "pla-lite-5f57af14",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "pla-abst-5f57af14",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 4
+        },
+        {
+          "query_id": "pla-keyw-5f57af14",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-75a0ddc4",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 4
+        },
+        {
+          "query_id": "lea-abst-75a0ddc4",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-75a0ddc4",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "adr-lite-649059b1",
+          "gold_type": "adr",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "adr-abst-649059b1",
+          "gold_type": "adr",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "adr-keyw-649059b1",
+          "gold_type": "adr",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-8cad8e01",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-8cad8e01",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 8
+        },
+        {
+          "query_id": "lea-keyw-8cad8e01",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 5
+        },
+        {
+          "query_id": "lea-lite-e6e3a83d",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-e6e3a83d",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-e6e3a83d",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-0d73ae18",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-0d73ae18",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 3
+        },
+        {
+          "query_id": "lea-keyw-0d73ae18",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-b0d9c5db",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-b0d9c5db",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-b0d9c5db",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-6137acba",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-6137acba",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-6137acba",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 10
+        },
+        {
+          "query_id": "lea-lite-fb39920f",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-fb39920f",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 47
+        },
+        {
+          "query_id": "lea-keyw-fb39920f",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-32ed1246",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-32ed1246",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-32ed1246",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-73581904",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-73581904",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-73581904",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-90284336",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 4
+        },
+        {
+          "query_id": "pla-abst-90284336",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 43
+        },
+        {
+          "query_id": "pla-keyw-90284336",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 10
+        },
+        {
+          "query_id": "dec-lite-2ee7003b",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-abst-2ee7003b",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "dec-keyw-2ee7003b",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-34bf50be",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-34bf50be",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-34bf50be",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "adr-lite-5f952a2f",
+          "gold_type": "adr",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "adr-abst-5f952a2f",
+          "gold_type": "adr",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "adr-keyw-5f952a2f",
+          "gold_type": "adr",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-eeaf2a71",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-eeaf2a71",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 37
+        },
+        {
+          "query_id": "lea-keyw-eeaf2a71",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-f12287e5",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-f12287e5",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-f12287e5",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 27
+        },
+        {
+          "query_id": "lea-lite-4b566cde",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-4b566cde",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-4b566cde",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-e3254bdb",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-e3254bdb",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-e3254bdb",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-3b01cb66",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-abst-3b01cb66",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-keyw-3b01cb66",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-def17e76",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-def17e76",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-def17e76",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-b8960161",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-b8960161",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-b8960161",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-9a451e45",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-9a451e45",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 5
+        },
+        {
+          "query_id": "lea-keyw-9a451e45",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-eed0f20d",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-eed0f20d",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-eed0f20d",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-67c89a43",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-67c89a43",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "fea-keyw-67c89a43",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-fb6471eb",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-fb6471eb",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-fb6471eb",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-a3df0caf",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-a3df0caf",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 10
+        },
+        {
+          "query_id": "lea-keyw-a3df0caf",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-fc187abf",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-fc187abf",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-fc187abf",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-960cb984",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-960cb984",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-960cb984",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-3b20e119",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 35
+        },
+        {
+          "query_id": "lea-abst-3b20e119",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-3b20e119",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 31
+        },
+        {
+          "query_id": "lea-lite-2b8f9d93",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-2b8f9d93",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-2b8f9d93",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-32ff1f2c",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-abst-32ff1f2c",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-keyw-32ff1f2c",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-4399d319",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-4399d319",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-4399d319",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-732f3b8f",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-732f3b8f",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-732f3b8f",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-700fb666",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 3
+        },
+        {
+          "query_id": "lea-abst-700fb666",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-700fb666",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-0a245fca",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-0a245fca",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-0a245fca",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-070bc41f",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-abst-070bc41f",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "pla-keyw-070bc41f",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "fea-lite-41a3a5e4",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-41a3a5e4",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-41a3a5e4",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-lite-13b2c88f",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-abst-13b2c88f",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 13
+        },
+        {
+          "query_id": "dec-keyw-13b2c88f",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-796a8f36",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-796a8f36",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 4
+        },
+        {
+          "query_id": "lea-keyw-796a8f36",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-ca045a55",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-ca045a55",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 5
+        },
+        {
+          "query_id": "lea-keyw-ca045a55",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 4
+        },
+        {
+          "query_id": "lea-lite-e0eb0fd8",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-e0eb0fd8",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-e0eb0fd8",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-a51b4c4b",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-a51b4c4b",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 18
+        },
+        {
+          "query_id": "lea-keyw-a51b4c4b",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "pla-lite-a28fa112",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-abst-a28fa112",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-keyw-a28fa112",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-ec06cdf1",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 3
+        },
+        {
+          "query_id": "lea-abst-ec06cdf1",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-ec06cdf1",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-1474f2af",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-1474f2af",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-1474f2af",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-a9ba0263",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-a9ba0263",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-a9ba0263",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-6dba7be0",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-6dba7be0",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-6dba7be0",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 0
+        },
+        {
+          "query_id": "fea-lite-818d931a",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-818d931a",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-818d931a",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-3d7635e6",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "pla-abst-3d7635e6",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 21
+        },
+        {
+          "query_id": "pla-keyw-3d7635e6",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-662b54a8",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 6
+        },
+        {
+          "query_id": "lea-abst-662b54a8",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-662b54a8",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 7
+        },
+        {
+          "query_id": "dec-lite-772dfa4e",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-abst-772dfa4e",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 3
+        },
+        {
+          "query_id": "dec-keyw-772dfa4e",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-3370bd5c",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-3370bd5c",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 6
+        },
+        {
+          "query_id": "lea-keyw-3370bd5c",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-5cf14c16",
+          "gold_type": "plan",
+          "variant": "literal-paraphrase",
+          "rank": 3
+        },
+        {
+          "query_id": "pla-abst-5cf14c16",
+          "gold_type": "plan",
+          "variant": "abstract-question",
+          "rank": 7
+        },
+        {
+          "query_id": "pla-keyw-5cf14c16",
+          "gold_type": "plan",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-07653bb2",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-07653bb2",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-07653bb2",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-48bddcea",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-48bddcea",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-48bddcea",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 8
+        },
+        {
+          "query_id": "lea-lite-666641fa",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 10
+        },
+        {
+          "query_id": "lea-abst-666641fa",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 12
+        },
+        {
+          "query_id": "lea-keyw-666641fa",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 3
+        },
+        {
+          "query_id": "lea-lite-4923ae64",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-4923ae64",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 10
+        },
+        {
+          "query_id": "lea-keyw-4923ae64",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "pla-lite-03bc7181",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "pla-abst-03bc7181",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 7
+        },
+        {
+          "query_id": "pla-keyw-03bc7181",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-5e9eee8c",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 3
+        },
+        {
+          "query_id": "lea-abst-5e9eee8c",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-5e9eee8c",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 10
+        },
+        {
+          "query_id": "lea-lite-cc4a59ff",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-cc4a59ff",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 4
+        },
+        {
+          "query_id": "lea-keyw-cc4a59ff",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-951a04d3",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-951a04d3",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-951a04d3",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-c8a6d950",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-c8a6d950",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-c8a6d950",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-a1c5a143",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-a1c5a143",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-a1c5a143",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "pla-lite-d16daba9",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-abst-d16daba9",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-keyw-d16daba9",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-786e536a",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-786e536a",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-786e536a",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-e1b365c2",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 6
+        },
+        {
+          "query_id": "lea-abst-e1b365c2",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 13
+        },
+        {
+          "query_id": "lea-keyw-e1b365c2",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 6
+        },
+        {
+          "query_id": "lea-lite-302df59b",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-302df59b",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-302df59b",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-1bf564ae",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 6
+        },
+        {
+          "query_id": "lea-abst-1bf564ae",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-1bf564ae",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 10
+        },
+        {
+          "query_id": "pla-lite-783f9ebb",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-abst-783f9ebb",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 7
+        },
+        {
+          "query_id": "pla-keyw-783f9ebb",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-627cc4cd",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-627cc4cd",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 26
+        },
+        {
+          "query_id": "lea-keyw-627cc4cd",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-62bc8d30",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-62bc8d30",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-62bc8d30",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-fb8eba86",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-fb8eba86",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 14
+        },
+        {
+          "query_id": "lea-keyw-fb8eba86",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 6
+        },
+        {
+          "query_id": "fea-lite-c437a912",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-c437a912",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 19
+        },
+        {
+          "query_id": "fea-keyw-c437a912",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-8d4bbce3",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-8d4bbce3",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-8d4bbce3",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-e00a661f",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-e00a661f",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-e00a661f",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 18
+        },
+        {
+          "query_id": "dec-lite-458a1c4c",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-abst-458a1c4c",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "dec-keyw-458a1c4c",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "run-lite-ef00e6e9",
+          "gold_type": "runbook",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "run-abst-ef00e6e9",
+          "gold_type": "runbook",
+          "variant": "abstract-question",
+          "rank": 8
+        },
+        {
+          "query_id": "run-keyw-ef00e6e9",
+          "gold_type": "runbook",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-e4f9e94d",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-e4f9e94d",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-e4f9e94d",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-f4d7e61f",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-f4d7e61f",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 10
+        },
+        {
+          "query_id": "lea-keyw-f4d7e61f",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 42
+        },
+        {
+          "query_id": "lea-lite-fd885269",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-fd885269",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-fd885269",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-d9338fd8",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-d9338fd8",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-d9338fd8",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-d1bb6d9a",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-d1bb6d9a",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-d1bb6d9a",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-fcf0147d",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-fcf0147d",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-fcf0147d",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-d9107ab1",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-abst-d9107ab1",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-keyw-d9107ab1",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-3c993bbb",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-3c993bbb",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-3c993bbb",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-bab35671",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-bab35671",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-bab35671",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-33a0b275",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-33a0b275",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 6
+        },
+        {
+          "query_id": "lea-keyw-33a0b275",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-48a5563c",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-48a5563c",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-48a5563c",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-bf0bb60d",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-bf0bb60d",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-bf0bb60d",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "fea-lite-6556e77a",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-6556e77a",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "fea-keyw-6556e77a",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-lite-425ea97b",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-abst-425ea97b",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-keyw-425ea97b",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-369c44fb",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-369c44fb",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 8
+        },
+        {
+          "query_id": "lea-keyw-369c44fb",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-e767ba8d",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-e767ba8d",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-e767ba8d",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-6bb31e77",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 5
+        },
+        {
+          "query_id": "lea-abst-6bb31e77",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 34
+        },
+        {
+          "query_id": "lea-keyw-6bb31e77",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-25552d40",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-25552d40",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-25552d40",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-b1d2b4f4",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-abst-b1d2b4f4",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 4
+        },
+        {
+          "query_id": "pla-keyw-b1d2b4f4",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-bafe063f",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-bafe063f",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-bafe063f",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-0d5d5de9",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-0d5d5de9",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-0d5d5de9",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-29f65e45",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-29f65e45",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-29f65e45",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-c37522ae",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-c37522ae",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-c37522ae",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-e6f1cab8",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-e6f1cab8",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 4
+        },
+        {
+          "query_id": "lea-keyw-e6f1cab8",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-b73b4956",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-b73b4956",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-b73b4956",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-lite-e0c8901c",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-abst-e0c8901c",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 6
+        },
+        {
+          "query_id": "dec-keyw-e0c8901c",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 4
+        },
+        {
+          "query_id": "sni-lite-3d48ef15",
+          "gold_type": "snippet",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "sni-abst-3d48ef15",
+          "gold_type": "snippet",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "sni-keyw-3d48ef15",
+          "gold_type": "snippet",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-lite-6f763f0b",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-abst-6f763f0b",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "dec-keyw-6f763f0b",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-20f44e85",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-20f44e85",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-20f44e85",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-0d93ab3d",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-0d93ab3d",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 27
+        },
+        {
+          "query_id": "lea-keyw-0d93ab3d",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-9e106e29",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-9e106e29",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-9e106e29",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "fea-lite-126dd519",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-126dd519",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 18
+        },
+        {
+          "query_id": "fea-keyw-126dd519",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-270cec3b",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-270cec3b",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 10
+        },
+        {
+          "query_id": "lea-keyw-270cec3b",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-faf84d0f",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 0
+        },
+        {
+          "query_id": "pla-abst-faf84d0f",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-keyw-faf84d0f",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 9
+        },
+        {
+          "query_id": "lea-lite-3b3db3b2",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-3b3db3b2",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-3b3db3b2",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-cb7315fc",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-cb7315fc",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-cb7315fc",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-693ebb57",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-693ebb57",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-693ebb57",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 24
+        },
+        {
+          "query_id": "lea-lite-338e0f8a",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-338e0f8a",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-338e0f8a",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-ec2c21dd",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-ec2c21dd",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-ec2c21dd",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 3
+        },
+        {
+          "query_id": "fea-lite-c149e602",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-c149e602",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-c149e602",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-lite-60b4f475",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-abst-60b4f475",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "dec-keyw-60b4f475",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-lite-206dc427",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "dec-abst-206dc427",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 32
+        },
+        {
+          "query_id": "dec-keyw-206dc427",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-84dd76b4",
+          "gold_type": "plan",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-abst-84dd76b4",
+          "gold_type": "plan",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "pla-keyw-84dd76b4",
+          "gold_type": "plan",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-6f017478",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-6f017478",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-6f017478",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-ad9bb224",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-ad9bb224",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 4
+        },
+        {
+          "query_id": "lea-keyw-ad9bb224",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-8529c835",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-8529c835",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 9
+        },
+        {
+          "query_id": "lea-keyw-8529c835",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-a52498dc",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-a52498dc",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 3
+        },
+        {
+          "query_id": "fea-keyw-a52498dc",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-3a0a3c0b",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-3a0a3c0b",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 8
+        },
+        {
+          "query_id": "lea-keyw-3a0a3c0b",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-dcf27117",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-abst-dcf27117",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-keyw-dcf27117",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-a00c4a32",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 3
+        },
+        {
+          "query_id": "lea-abst-a00c4a32",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-a00c4a32",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 3
+        },
+        {
+          "query_id": "lea-lite-eb78489c",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-eb78489c",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-eb78489c",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-cfba7549",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-cfba7549",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-cfba7549",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-b5b12fba",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-b5b12fba",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 25
+        },
+        {
+          "query_id": "lea-keyw-b5b12fba",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-cea76fe7",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-cea76fe7",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 4
+        },
+        {
+          "query_id": "lea-keyw-cea76fe7",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-lite-702b5ed4",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-abst-702b5ed4",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-keyw-702b5ed4",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-747a3288",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-747a3288",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-747a3288",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-84df1fc9",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-84df1fc9",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 3
+        },
+        {
+          "query_id": "lea-keyw-84df1fc9",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-f4f58621",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-f4f58621",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-f4f58621",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-67ee67d8",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-67ee67d8",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 43
+        },
+        {
+          "query_id": "lea-keyw-67ee67d8",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 4
+        },
+        {
+          "query_id": "pla-lite-f92e25d8",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 35
+        },
+        {
+          "query_id": "pla-abst-f92e25d8",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "pla-keyw-f92e25d8",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-890642a8",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-890642a8",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-890642a8",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-3c04ee02",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-3c04ee02",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "fea-keyw-3c04ee02",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-d2fc06bf",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-d2fc06bf",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-d2fc06bf",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-3efb3fd7",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-3efb3fd7",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-3efb3fd7",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-f3ceaf7b",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-f3ceaf7b",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-f3ceaf7b",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-daa3fc84",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-daa3fc84",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 3
+        },
+        {
+          "query_id": "lea-keyw-daa3fc84",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "dec-lite-a8d8d8c2",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-abst-a8d8d8c2",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-keyw-a8d8d8c2",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-73f60716",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-73f60716",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-73f60716",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-lite-adaf5d67",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 3
+        },
+        {
+          "query_id": "dec-abst-adaf5d67",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-keyw-adaf5d67",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "sni-lite-3a7f6d4f",
+          "gold_type": "snippet",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "sni-abst-3a7f6d4f",
+          "gold_type": "snippet",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "sni-keyw-3a7f6d4f",
+          "gold_type": "snippet",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-2e5a100f",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-2e5a100f",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 4
+        },
+        {
+          "query_id": "lea-keyw-2e5a100f",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-29173cc7",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-29173cc7",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-29173cc7",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-eeea8444",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-eeea8444",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-eeea8444",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-00195700",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-00195700",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-00195700",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-9df1a9fb",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-9df1a9fb",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 12
+        },
+        {
+          "query_id": "lea-keyw-9df1a9fb",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-5ecbfb27",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-5ecbfb27",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 13
+        },
+        {
+          "query_id": "lea-keyw-5ecbfb27",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "pla-lite-f829084d",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-abst-f829084d",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-keyw-f829084d",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-afed01fd",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-afed01fd",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 31
+        },
+        {
+          "query_id": "lea-keyw-afed01fd",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-0172620b",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-0172620b",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-0172620b",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "fea-lite-672299ec",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-672299ec",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-672299ec",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-ffc5f774",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-ffc5f774",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-ffc5f774",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-47e88532",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-47e88532",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-47e88532",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-lite-f8963b5e",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-abst-f8963b5e",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-keyw-f8963b5e",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-ead56500",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-ead56500",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-ead56500",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-1168db72",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-1168db72",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 13
+        },
+        {
+          "query_id": "lea-keyw-1168db72",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 36
+        },
+        {
+          "query_id": "lea-lite-9a480200",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-9a480200",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 29
+        },
+        {
+          "query_id": "lea-keyw-9a480200",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-0818c930",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-0818c930",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-0818c930",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 5
+        },
+        {
+          "query_id": "fea-lite-6ae3f5b2",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-6ae3f5b2",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 3
+        },
+        {
+          "query_id": "fea-keyw-6ae3f5b2",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-a03cefba",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-a03cefba",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-a03cefba",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-0201ad5f",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-abst-0201ad5f",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 15
+        },
+        {
+          "query_id": "pla-keyw-0201ad5f",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-25de1805",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-25de1805",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 3
+        },
+        {
+          "query_id": "lea-keyw-25de1805",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-5aae83fe",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-5aae83fe",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-5aae83fe",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-5656db1e",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-5656db1e",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-5656db1e",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-0d84be6f",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-0d84be6f",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-0d84be6f",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-8d01b3db",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-8d01b3db",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 4
+        },
+        {
+          "query_id": "lea-keyw-8d01b3db",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 4
+        },
+        {
+          "query_id": "dec-lite-0415e5ae",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-abst-0415e5ae",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-keyw-0415e5ae",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-lite-40d63a94",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-abst-40d63a94",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-keyw-40d63a94",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 5
+        },
+        {
+          "query_id": "pla-lite-2f3f0a6c",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-abst-2f3f0a6c",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 5
+        },
+        {
+          "query_id": "pla-keyw-2f3f0a6c",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-d6352c76",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-d6352c76",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-d6352c76",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-68727dea",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 4
+        },
+        {
+          "query_id": "lea-abst-68727dea",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 8
+        },
+        {
+          "query_id": "lea-keyw-68727dea",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-8147ffb9",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-8147ffb9",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-8147ffb9",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 8
+        },
+        {
+          "query_id": "lea-lite-b9db8ba4",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-b9db8ba4",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-b9db8ba4",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-50264d14",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 3
+        },
+        {
+          "query_id": "lea-abst-50264d14",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-50264d14",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-98bd28b2",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-abst-98bd28b2",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "pla-keyw-98bd28b2",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-860b8362",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-860b8362",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-860b8362",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-c6cf8675",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 3
+        },
+        {
+          "query_id": "lea-abst-c6cf8675",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-c6cf8675",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 3
+        },
+        {
+          "query_id": "lea-lite-d324cde8",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-d324cde8",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 6
+        },
+        {
+          "query_id": "lea-keyw-d324cde8",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 15
+        },
+        {
+          "query_id": "lea-lite-706168b2",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-706168b2",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-706168b2",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-4480a9e5",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-4480a9e5",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-4480a9e5",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-71c7fa1a",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-71c7fa1a",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-71c7fa1a",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-lite-20fbe5f4",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "dec-abst-20fbe5f4",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-keyw-20fbe5f4",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-f6270d35",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-f6270d35",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 13
+        },
+        {
+          "query_id": "lea-keyw-f6270d35",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "sni-lite-5eea9ec7",
+          "gold_type": "snippet",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "sni-abst-5eea9ec7",
+          "gold_type": "snippet",
+          "variant": "abstract-question",
+          "rank": 5
+        },
+        {
+          "query_id": "sni-keyw-5eea9ec7",
+          "gold_type": "snippet",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "sni-lite-00b24dff",
+          "gold_type": "snippet",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "sni-abst-00b24dff",
+          "gold_type": "snippet",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "sni-keyw-00b24dff",
+          "gold_type": "snippet",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-cdda6ce8",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-cdda6ce8",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-cdda6ce8",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-5e6ad9a1",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-5e6ad9a1",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-5e6ad9a1",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-7db60753",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-7db60753",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 14
+        },
+        {
+          "query_id": "lea-keyw-7db60753",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 12
+        },
+        {
+          "query_id": "lea-lite-7470c03e",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-7470c03e",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-7470c03e",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-22000554",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-22000554",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-22000554",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-36516da0",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-36516da0",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 14
+        },
+        {
+          "query_id": "lea-keyw-36516da0",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-5ad700c0",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-5ad700c0",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 22
+        },
+        {
+          "query_id": "lea-keyw-5ad700c0",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-4b60e0d4",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-4b60e0d4",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-4b60e0d4",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-3509c2de",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-3509c2de",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-3509c2de",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-a520ce58",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-a520ce58",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-a520ce58",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-45318fbd",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "pla-abst-45318fbd",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 12
+        },
+        {
+          "query_id": "pla-keyw-45318fbd",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 3
+        },
+        {
+          "query_id": "dec-lite-cb151fc8",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "dec-abst-cb151fc8",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-keyw-cb151fc8",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-49c460c4",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 4
+        },
+        {
+          "query_id": "lea-abst-49c460c4",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 5
+        },
+        {
+          "query_id": "lea-keyw-49c460c4",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 4
+        },
+        {
+          "query_id": "lea-lite-c67929fd",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-c67929fd",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-c67929fd",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-f807e524",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-f807e524",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 5
+        },
+        {
+          "query_id": "lea-keyw-f807e524",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 4
+        },
+        {
+          "query_id": "lea-lite-46cd98d5",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-46cd98d5",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-46cd98d5",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-21478c57",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-21478c57",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-21478c57",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-b76a14db",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 29
+        },
+        {
+          "query_id": "lea-abst-b76a14db",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 16
+        },
+        {
+          "query_id": "lea-keyw-b76a14db",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 8
+        },
+        {
+          "query_id": "lea-lite-9a1b5bc8",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-9a1b5bc8",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-9a1b5bc8",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-f606ab69",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 9
+        },
+        {
+          "query_id": "pla-abst-f606ab69",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 6
+        },
+        {
+          "query_id": "pla-keyw-f606ab69",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 4
+        },
+        {
+          "query_id": "lea-lite-03cbbbbb",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-03cbbbbb",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 11
+        },
+        {
+          "query_id": "lea-keyw-03cbbbbb",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-daecf548",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-daecf548",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-daecf548",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-9cefb2c3",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-9cefb2c3",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 10
+        },
+        {
+          "query_id": "lea-keyw-9cefb2c3",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-6f95265c",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-6f95265c",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-6f95265c",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-lite-30d68a55",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-abst-30d68a55",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 11
+        },
+        {
+          "query_id": "dec-keyw-30d68a55",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-lite-5603ae26",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-abst-5603ae26",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 47
+        },
+        {
+          "query_id": "dec-keyw-5603ae26",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-5a7683a3",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-5a7683a3",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 4
+        },
+        {
+          "query_id": "fea-keyw-5a7683a3",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 3
+        },
+        {
+          "query_id": "lea-lite-80fdc338",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-80fdc338",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 3
+        },
+        {
+          "query_id": "lea-keyw-80fdc338",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-e1030e78",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-e1030e78",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-e1030e78",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-605f6b53",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-605f6b53",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-605f6b53",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-b70ba41a",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-b70ba41a",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 5
+        },
+        {
+          "query_id": "lea-keyw-b70ba41a",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-57c379ac",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-57c379ac",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "fea-keyw-57c379ac",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-95dc6228",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-abst-95dc6228",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 11
+        },
+        {
+          "query_id": "pla-keyw-95dc6228",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-c2a88b50",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-c2a88b50",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-c2a88b50",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-e4dfbe8b",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-e4dfbe8b",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-e4dfbe8b",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-a2a9286b",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-a2a9286b",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-a2a9286b",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-4cdeaa06",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 3
+        },
+        {
+          "query_id": "lea-abst-4cdeaa06",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 7
+        },
+        {
+          "query_id": "lea-keyw-4cdeaa06",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 4
+        },
+        {
+          "query_id": "fea-lite-51acedb9",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-51acedb9",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-51acedb9",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-412e7aed",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-412e7aed",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-412e7aed",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-b3b9e279",
+          "gold_type": "plan",
+          "variant": "literal-paraphrase",
+          "rank": 3
+        },
+        {
+          "query_id": "pla-abst-b3b9e279",
+          "gold_type": "plan",
+          "variant": "abstract-question",
+          "rank": 11
+        },
+        {
+          "query_id": "pla-keyw-b3b9e279",
+          "gold_type": "plan",
+          "variant": "keyword-bag",
+          "rank": 4
+        },
+        {
+          "query_id": "dec-lite-e9ac50a4",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-abst-e9ac50a4",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 34
+        },
+        {
+          "query_id": "dec-keyw-e9ac50a4",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-6ba01be1",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-6ba01be1",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-6ba01be1",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-60f6815f",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-60f6815f",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-60f6815f",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "fea-lite-e7779d8d",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-e7779d8d",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 4
+        },
+        {
+          "query_id": "fea-keyw-e7779d8d",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-2da74cf0",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-2da74cf0",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-2da74cf0",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-ea8a5135",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-ea8a5135",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-ea8a5135",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-lite-1df95f90",
+          "gold_type": "plan_chunk",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-abst-1df95f90",
+          "gold_type": "plan_chunk",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "pla-keyw-1df95f90",
+          "gold_type": "plan_chunk",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-8ce920db",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-8ce920db",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 26
+        },
+        {
+          "query_id": "lea-keyw-8ce920db",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-4fef5f52",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-4fef5f52",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 9
+        },
+        {
+          "query_id": "lea-keyw-4fef5f52",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 8
+        },
+        {
+          "query_id": "lea-lite-0b619eb3",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-0b619eb3",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 27
+        },
+        {
+          "query_id": "lea-keyw-0b619eb3",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-9a0533e3",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-9a0533e3",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-keyw-9a0533e3",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-4a1334c1",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-4a1334c1",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-4a1334c1",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-lite-4bc0f804",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-abst-4bc0f804",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 3
+        },
+        {
+          "query_id": "dec-keyw-4bc0f804",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-230b4733",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-230b4733",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-230b4733",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-lite-d9861c87",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-abst-d9861c87",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-keyw-d9861c87",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-b62d9590",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-b62d9590",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-b62d9590",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-08f206c5",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 4
+        },
+        {
+          "query_id": "lea-abst-08f206c5",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 4
+        },
+        {
+          "query_id": "lea-keyw-08f206c5",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 4
+        },
+        {
+          "query_id": "fea-lite-4c3e812b",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-4c3e812b",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-4c3e812b",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-334406c0",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-334406c0",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-334406c0",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-db0e62cf",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-db0e62cf",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-keyw-db0e62cf",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-ec5f9cc2",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-ec5f9cc2",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-ec5f9cc2",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-d6a8d6df",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-d6a8d6df",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-d6a8d6df",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-76c7d408",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-76c7d408",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-76c7d408",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-lite-ff80dd9c",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-abst-ff80dd9c",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 0
+        },
+        {
+          "query_id": "lea-keyw-ff80dd9c",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 23
+        },
+        {
+          "query_id": "lea-lite-c118344a",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-c118344a",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-c118344a",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-ed2bd116",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-abst-ed2bd116",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-keyw-ed2bd116",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-lite-ef675386",
+          "gold_type": "feature",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "fea-abst-ef675386",
+          "gold_type": "feature",
+          "variant": "abstract-question",
+          "rank": 3
+        },
+        {
+          "query_id": "fea-keyw-ef675386",
+          "gold_type": "feature",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-lite-8303c24e",
+          "gold_type": "decision",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-abst-8303c24e",
+          "gold_type": "decision",
+          "variant": "abstract-question",
+          "rank": 1
+        },
+        {
+          "query_id": "dec-keyw-8303c24e",
+          "gold_type": "decision",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "sni-lite-dc8f77c5",
+          "gold_type": "snippet",
+          "variant": "literal-paraphrase",
+          "rank": 1
+        },
+        {
+          "query_id": "sni-abst-dc8f77c5",
+          "gold_type": "snippet",
+          "variant": "abstract-question",
+          "rank": 4
+        },
+        {
+          "query_id": "sni-keyw-dc8f77c5",
+          "gold_type": "snippet",
+          "variant": "keyword-bag",
+          "rank": 1
+        },
+        {
+          "query_id": "lea-lite-472ade99",
+          "gold_type": "learning",
+          "variant": "literal-paraphrase",
+          "rank": 2
+        },
+        {
+          "query_id": "lea-abst-472ade99",
+          "gold_type": "learning",
+          "variant": "abstract-question",
+          "rank": 4
+        },
+        {
+          "query_id": "lea-keyw-472ade99",
+          "gold_type": "learning",
+          "variant": "keyword-bag",
+          "rank": 4
+        }
+      ]
+    }
+  ]
+}
