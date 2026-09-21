@@ -36,7 +36,8 @@ def _expected_checks() -> list[dict[str, Any]]:
             for name in METADATA.tables
             # `project_focus_history` arrives with 050, `brain_session_checkpoints`
             # with 051, `access_log_daily` with 052, the eight `delivery_*` tables
-            # with 053 and `delivery_attestations` with 054 — all long after the 035
+            # with 053, `delivery_attestations` with 054 and the three
+            # `knowledge_*` claim ledgers with 055 — all long after the 035
             # this asset describes. See the revision-by-revision review in
             # test_recovery_contract.py.
             if name
@@ -50,6 +51,9 @@ def _expected_checks() -> list[dict[str, Any]]:
                 "delivery_contract_revisions",
                 "delivery_dependencies",
                 "delivery_events",
+                "knowledge_claim_verdicts",
+                "knowledge_claims",
+                "knowledge_fact_definitions",
                 "delivery_receipts",
                 "delivery_snapshots",
                 "delivery_workflows",
