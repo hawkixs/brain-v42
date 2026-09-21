@@ -33,6 +33,7 @@ from brain_v42.services.embedding_factory import (
     build_embedding_service,
     settings_for_standalone_script,
 )
+from brain_v42.services.embedding_text import EmbeddingEntityType, embedding_text_from_row
 from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
 
 # ─── Entity type definitions ──────────────────────────────────────────────────
@@ -45,7 +46,7 @@ ENTITY_TYPES = ["decisions", "learnings", "snippets", "runbooks", "adrs", "featu
 TEXT_FIELDS: dict[str, list[str]] = {
     "decisions": ["title", "description", "reasoning"],
     "learnings": ["topic", "insight"],
-    "snippets": ["title", "intention"],
+    "snippets": ["intention"],
     "runbooks": ["title", "description", "trigger"],
     "adrs": ["title", "context", "decision"],
     # `features` is the odd one, and deliberately so. Measured on 60 random
@@ -82,11 +83,29 @@ def _bounded_batch_size(value: str) -> int:
     return batch_size
 
 
+#: Table name -> the canonical entity type `embedding_text_from_row` knows.
+#: The mapping exists so the reindex cannot compose its own text. It already
+#: had: snippets were joined as `title + intention` here while the write path,
+#: the canonical composer and `check_embedding_model_drift.py` all used
+#: `intention` alone, so a reindex would have redefined 195 rows in silence and
+#: the drift check would have reported the mismatch as its own outliers.
+CANONICAL_ENTITY_TYPE: dict[str, EmbeddingEntityType] = {
+    "decisions": "decision",
+    "learnings": "learning",
+    "snippets": "snippet",
+    "runbooks": "runbook",
+    "adrs": "adr",
+    "features": "feature",
+}
+
+
 def compose_text(entity_type: str, row: asyncpg.Record) -> str:
-    """Compose the text to embed from a database row."""
-    fields = TEXT_FIELDS[entity_type]
-    parts = [str(row[f] or "") for f in fields]
-    return " ".join(parts).strip()
+    """Compose the text to embed through the one composer the write path uses.
+
+    `TEXT_FIELDS` still names the columns to SELECT, and nothing else. Keeping a
+    second recipe here is what let the two disagree.
+    """
+    return embedding_text_from_row(CANONICAL_ENTITY_TYPE[entity_type], row).strip()
 
 
 # ─── Database helpers ──────────────────────────────────────────────────────────

@@ -62,3 +62,53 @@ def test_features_embed_their_description_alone() -> None:
     column verifiable by check_embedding_model_drift.py from now on.
     """
     assert regen_embeddings.TEXT_FIELDS["features"] == ["description"]
+
+
+# ── the reindex may not invent its own text ────────────────────────────
+
+
+def test_every_type_composes_the_canonical_text_and_nothing_else():
+    """A reindex that composes its own text writes a second vector population.
+
+    `regen_embeddings.py` carried a parallel field table, and it had already
+    drifted: snippets were composed as `title + intention` while the live write
+    path, `embedding_text_from_row` and `check_embedding_model_drift.py` all use
+    `intention` alone. Reindexing would have redefined 195 rows in silence, and
+    the drift check would have reported self-inflicted outliers on them.
+
+    Delegating removes the possibility rather than fixing the instance.
+    """
+    from scripts.regen_embeddings import CANONICAL_ENTITY_TYPE, ENTITY_TYPES, compose_text
+
+    from brain_v42.services.embedding_text import embedding_text_from_row
+
+    row = {
+        "title": "T",
+        "description": "D",
+        "reasoning": "R",
+        "topic": "TO",
+        "insight": "I",
+        "intention": "IN",
+        "trigger": "TR",
+        "context": "C",
+        "decision": "DE",
+    }
+
+    assert set(CANONICAL_ENTITY_TYPE) == set(ENTITY_TYPES), (
+        "every reindexed table needs a canonical entity type, or it composes its own text"
+    )
+    for table in ENTITY_TYPES:
+        assert compose_text(table, row) == embedding_text_from_row(
+            CANONICAL_ENTITY_TYPE[table], row
+        ), f"{table} composes a different text than the write path"
+
+
+def test_the_selected_columns_are_exactly_what_the_canonical_text_reads():
+    """Selecting a column the composer ignores is how the two drifted apart.
+
+    `snippets` selected `title` and no longer uses it. A column list wider than
+    the recipe is an invitation to reintroduce it.
+    """
+    from scripts.regen_embeddings import TEXT_FIELDS
+
+    assert TEXT_FIELDS["snippets"] == ["intention"]
