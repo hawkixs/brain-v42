@@ -276,7 +276,7 @@ Details: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
 
 ## Production state
 
-The repository migration target is migration 054. No page in this repository proves a
+The repository migration target is migration 055. No page in this repository proves a
 live schema head — **measure it, do not read it here**:
 
 ```bash
