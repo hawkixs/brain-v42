@@ -60,6 +60,7 @@ DOWNGRADING_TEST_FILES: tuple[str, ...] = (
     # 055 round-trips the three claim ledgers: the refusal names each non-empty
     # table, and the opt-in path drops them. It takes the fence like the others.
     "tests/integration/db/test_migration_055_claims.py",
+    "tests/integration/db/test_migration_056_project_archival.py",
 )
 
 # Tables probed for leftover rows, in the order the message lists them.

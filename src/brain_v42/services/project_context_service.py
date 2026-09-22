@@ -60,6 +60,14 @@ class ProjectContextService:
         logger.debug("project_context_service.update_focus", project_key=project_key)
         return await self.repo.update_focus(project_key, focus, blockers)
 
+    async def archive(self, project_key: str, *, reason: str) -> ProjectContext | None:
+        """Take a project out of the default views. Deletes nothing."""
+        return await self.repo.archive(project_key, reason=reason)
+
+    async def unarchive(self, project_key: str) -> ProjectContext | None:
+        """Put it back in the default views."""
+        return await self.repo.unarchive(project_key)
+
     async def list_all(self, project_group: str | None = None) -> list[ProjectContext]:
         """Return all project contexts, optionally filtered by group."""
         logger.debug("project_context_service.list_all", project_group=project_group)

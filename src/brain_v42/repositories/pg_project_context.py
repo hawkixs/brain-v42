@@ -326,6 +326,65 @@ class PgProjectContextRepo(BasePgRepository):
                 logger.info("project_context.upserted", project_key=data.project_key)
                 return ProjectContext.model_validate(dict(row))
 
+    async def archive(self, project_key: str, *, reason: str) -> ProjectContext | None:
+        """Mark a project archived, writing the marker and nothing else.
+
+        Deliberately NOT routed through `update()` or the context upsert.
+        `brain_set_project_context` is not a PATCH: it writes the whole row, so
+        archiving through it would overwrite focus, blockers, group and
+        metadata with whatever the caller happened to omit. That trap has been
+        paid for once already (ticket 44ee7643, message 1).
+
+        Archiving deletes nothing — not a learning, not a plan, not this row.
+        A project whose repository is gone from disk keeps every byte it ever
+        contributed; it simply stops appearing in the default views.
+
+        Returns None for an unknown key rather than creating a context: a typo
+        must not mint a project.
+        """
+        return await self._set_archival(
+            project_key,
+            # COALESCE, not NOW(): the column answers "archived since when", and
+            # overwriting it on a repeat would make it answer "when did someone
+            # last re-run this" instead. It also makes the verb idempotent, which
+            # is what its MCP annotation claims.
+            archived_at=sa.func.coalesce(project_contexts.c.archived_at, datetime.now(UTC)),
+            archived_reason=reason,
+        )
+
+    async def unarchive(self, project_key: str) -> ProjectContext | None:
+        """Clear the marker, both halves of it.
+
+        The reason describes a state that has ended; leaving it behind would
+        make the next reader believe the project is still archived.
+        """
+        return await self._set_archival(project_key, archived_at=None, archived_reason=None)
+
+    async def _set_archival(
+        self,
+        project_key: str,
+        *,
+        archived_at: Any,
+        archived_reason: str | None,
+    ) -> ProjectContext | None:
+        async with self.get_session() as session:
+            async with session.begin():
+                stmt = (
+                    sa.update(project_contexts)
+                    .where(project_contexts.c.project_key == project_key)
+                    .values(
+                        archived_at=archived_at,
+                        archived_reason=archived_reason,
+                        updated_at=datetime.now(UTC),
+                    )
+                    .returning(*project_contexts.c)
+                )
+                result = await session.execute(stmt)
+                row = result.mappings().first()
+                if row is None:
+                    return None
+                return ProjectContext.model_validate(dict(row))
+
     async def update_focus(
         self,
         project_key: str,
