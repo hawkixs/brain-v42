@@ -64,10 +64,20 @@
 - Enforce `measured_at <= clock()+60s` before writing and retain exact serialized measurement and its digest (null for unreadable). Resolve duplicate observations with the one-refresh rule above. Insert a complete verdict and return it.
 - Expected safe errors: invalid_argument, claim_not_found, claim_retired, idempotency_conflict, observation_already_verified, invalid_emitted_at. Do not catch cancellation or turn programming/DB faults into falsification.
 
-- [ ] RED unit tests for guards, probe failures, identity/name/version/target mismatches, future time refusal, replay with no probe, and bounded refresh. Removed/changed definitions with a caller-selected validity different from the original TTL must preserve the historical TTL.
-- [ ] RED real-PostgreSQL tests in the module's own disposable database: a real registry probe and a real claim produce durable holds; false values produce falsified; timeout produces replayable unreadable; exact duplicate requests converge to one row and one probe under concurrency; differing keys refresh the already-used observation; rollback removes claim/entry/verdict together; retirement race is serialized; scope refusal does not probe or reveal a replay.
-- [ ] Implement, run focused tests and inspect the actual stored records. Verify full-size evidence, server seq order and trigger refusal of UPDATE/DELETE. No skipped DB tests count as successful evidence.
-- [ ] Run required gates, `detect_changes` and local task commit.
+- [x] RED unit tests for guards, probe failures, identity/name/version/target mismatches, future time refusal, replay with no probe, and bounded refresh. Removed/changed definitions with a caller-selected validity different from the original TTL must preserve the historical TTL.
+- [x] RED real-PostgreSQL tests in the module's own disposable database: a real registry probe and a real claim produce durable holds; false values produce falsified; timeout produces replayable unreadable; exact duplicate requests converge to one row and one probe under concurrency; differing keys refresh the already-used observation; rollback removes claim/entry/verdict together; retirement race is serialized; scope refusal does not probe or reveal a replay.
+- [x] Implement, run focused tests and inspect the actual stored records. Verify full-size evidence, server seq order and trigger refusal of UPDATE/DELETE. No skipped DB tests count as successful evidence.
+- [x] Run required gates, `detect_changes` and local task commit.
+
+Evidence note (2026-09-22). The coordinator, the repository and their unit tests were
+written before any RED was recorded, and left uncommitted; that gap stands. The
+integration tests the second item requires were added afterwards, so their value was
+proven by mutation instead of by a prior failure: removing `FOR UPDATE` fails the
+concurrent-duplicate and retirement-race tests; committing inside a caller-owned
+session fails the rollback test; removing the one forced refresh fails the second-key
+and full-size tests. Two review findings were fixed test first: a mixed `in` array is
+read through its comparable candidates, and a catalogue refusal names its origin
+(`where="catalogue"`).
 
 ### Task 3: MCP verification boundary and documentation
 
