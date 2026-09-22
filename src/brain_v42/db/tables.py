@@ -786,6 +786,11 @@ project_contexts = Table(
         "project_key ~ '^[a-z0-9]+([:-][a-z0-9]+)*$'",
         name="chk_project_key_format",
     ),
+    # 056: a reason without a date describes nothing.
+    sa.CheckConstraint(
+        "archived_reason IS NULL OR archived_at IS NOT NULL",
+        name="ck_project_contexts_archived_reason_needs_a_date",
+    ),
 )
 
 # ─── brain_sessions (explicit agent session lifecycle) ──────────────────────
