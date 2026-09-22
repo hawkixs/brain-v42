@@ -236,6 +236,18 @@ class GPUEmbeddingService:
             kind="unreachable",
         ) from last_error
 
+    def _record_usage(self, payload: object) -> None:
+        """Count provider-reported usage; never let the accounting decide the call.
+
+        Usage is observability. A wire whose usage parser raises must neither
+        turn a response whose vectors are fine into a failure, nor let a raw
+        exception escape the single-exception contract of this class.
+        """
+        try:
+            record_embedding_usage(self._wire.parse_usage(payload))
+        except Exception:
+            logger.warning("embedding.usage_unparseable", exc_info=True)
+
     @staticmethod
     def _parsed(parse: Callable[[], _T]) -> _T:
         """Run a wire parse, converting a malformed payload into unavailability.
@@ -288,7 +300,7 @@ class GPUEmbeddingService:
         path, body = self._wire.single_request(self._document_prefix + text)
         response = await self._request_with_retry("POST", path, json=body)
         payload = self._parsed(response.json)
-        record_embedding_usage(self._wire.parse_usage(payload))
+        self._record_usage(payload)
         return self._parsed(lambda: self._wire.parse_single(payload))
 
     async def embed_query(self, text: str) -> list[float]:
@@ -308,7 +320,7 @@ class GPUEmbeddingService:
         path, body = self._wire.single_request(self._query_prefix + text)
         response = await self._request_with_retry("POST", path, json=body)
         payload = self._parsed(response.json)
-        record_embedding_usage(self._wire.parse_usage(payload))
+        self._record_usage(payload)
         return self._parsed(lambda: self._wire.parse_single(payload))
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
@@ -328,7 +340,7 @@ class GPUEmbeddingService:
         path, body = self._wire.batch_request([self._document_prefix + t for t in texts])
         response = await self._request_with_retry("POST", path, json=body)
         payload = self._parsed(response.json)
-        record_embedding_usage(self._wire.parse_usage(payload))
+        self._record_usage(payload)
         return self._parsed(lambda: self._wire.parse_batch(payload, expected=len(texts)))
 
     def similarity(self, vec_a: list[float], vec_b: list[float]) -> float:

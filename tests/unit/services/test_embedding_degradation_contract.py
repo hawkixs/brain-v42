@@ -16,7 +16,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from brain_v42.services.embedding_wire import OpenAIWire
+from brain_v42.services.embedding_wire import OpenAIWire, ShimWire
 from brain_v42.services.gpu_embedding_service import EmbeddingUnavailable, GPUEmbeddingService
 
 
@@ -104,3 +104,45 @@ class TestHealthyResponsesStillWork:
         )
 
         assert await service.embed_query("q") == [0.6, 0.8]
+
+
+class _UsageParserThatRaises(ShimWire):
+    """A wire whose usage accounting is broken while its vectors are fine."""
+
+    def parse_usage(self, payload: object) -> None:
+        raise RuntimeError("usage shape changed upstream")
+
+
+class TestUsageAccountingNeverDecidesAnEmbedding:
+    """Usage is observability. A healthy embedding must not die of its accounting.
+
+    `parse_usage` runs on every successful response, outside the `_parsed`
+    conversion. Left bare, a wire whose usage parser raises would let a raw
+    exception escape a call whose vectors were perfectly usable -- breaking the
+    single-exception contract above, and failing a search for a counter.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_single_document_still_embeds(self) -> None:
+        service = _service(
+            lambda request: httpx.Response(200, json=[0.6, 0.8]), wire=_UsageParserThatRaises()
+        )
+
+        assert await service.embed("a document") == [0.6, 0.8]
+
+    @pytest.mark.asyncio
+    async def test_a_query_still_embeds(self) -> None:
+        service = _service(
+            lambda request: httpx.Response(200, json=[0.6, 0.8]), wire=_UsageParserThatRaises()
+        )
+
+        assert await service.embed_query("q") == [0.6, 0.8]
+
+    @pytest.mark.asyncio
+    async def test_a_batch_still_embeds(self) -> None:
+        service = _service(
+            lambda request: httpx.Response(200, json=[[0.6, 0.8], [1.0, 0.0]]),
+            wire=_UsageParserThatRaises(),
+        )
+
+        assert await service.embed_texts(["a", "b"]) == [[0.6, 0.8], [1.0, 0.0]]
