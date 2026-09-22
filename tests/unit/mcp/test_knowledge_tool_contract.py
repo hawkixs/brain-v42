@@ -32,6 +32,12 @@ READ_ONLY_TOOLS = frozenset(
     }
 )
 IDEMPOTENT_ADDITIVE_TOOLS = frozenset({"brain_assign_domain"})
+#: Same annotation shape, different nature: these change a project's lifecycle
+#: rather than add anything. They are NOT destructive — archiving deletes no
+#: knowledge and `brain_project_unarchive` puts every view back — and they ARE
+#: idempotent, because `archived_at` is set with COALESCE and a repeat is a
+#: no-op. Their own group, so neither existing set name has to lie.
+IDEMPOTENT_LIFECYCLE_TOOLS = frozenset({"brain_project_archive", "brain_project_unarchive"})
 ADDITIVE_WRITE_TOOLS = frozenset(
     {
         "brain_backfill_links_batch",
@@ -129,12 +135,13 @@ async def test_all_knowledge_tools_publish_exact_safety_annotations() -> None:
     groups = (
         READ_ONLY_TOOLS,
         IDEMPOTENT_ADDITIVE_TOOLS,
+        IDEMPOTENT_LIFECYCLE_TOOLS,
         ADDITIVE_WRITE_TOOLS,
         IDEMPOTENT_DESTRUCTIVE_TOOLS,
         DESTRUCTIVE_TOOLS,
     )
     expected_names = frozenset().union(*groups)
-    assert len(expected_names) == 48
+    assert len(expected_names) == 50
     assert sum(len(group) for group in groups) == len(expected_names)
     assert {tool.name for tool in await server.list_tools()} == expected_names
 
@@ -147,6 +154,15 @@ async def test_all_knowledge_tools_publish_exact_safety_annotations() -> None:
                 openWorldHint=False,
             )
             for name in READ_ONLY_TOOLS
+        },
+        **{
+            name: ToolAnnotations(
+                readOnlyHint=False,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            )
+            for name in IDEMPOTENT_LIFECYCLE_TOOLS
         },
         **{
             name: ToolAnnotations(
