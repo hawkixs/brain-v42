@@ -1,8 +1,11 @@
 # brain_v42 - GitHub Actions, delivery rail (ADR #4).
 #
-# Only pushes to main reach [self-hosted, Linux, X64, red-ci]. That runner is
-# started on demand (runnerctl start brain-v42) and stopped afterwards, so a run
-# queued while it is off simply waits: being offline is the normal state.
+# Pushes to main build the image on a GitHub-hosted runner and publish it to
+# GHCR with the workflow's own token. Until 2026-09-23 this rail targeted the
+# self-hosted red-ci runner and the internal registry;
+# GitHub deleted that runner after fourteen days offline, the registry has been
+# off since 2026-09-21, and a public repository must not run Docker as root on a
+# VM it shares with private ones (ticket 03846021).
 #
 # This rail builds and pushes an image. It does NOT roll anything out: brain-v42
 # has no rollout stage on either CI system, and moving a pushed digest onto PC
@@ -10,8 +13,8 @@
 # machinery (VPS access, persistence preflight, smoke, promote, rollback) has no
 # object here and is deliberately absent.
 #
-# Required repository secrets, both created by the operator out of band:
-#   REGISTRY_USER, REGISTRY_PASSWORD - registry.hawkixs.local credentials.
+# No repository secret: `github.token`, with `packages: write` granted to this job
+# alone, is the only credential, and it expires with the run.
 
 name: Continuous delivery
 
@@ -29,14 +32,17 @@ concurrency:
 
 env:
   UV_VERSION: "0.10.7"
-  CI_REGISTRY: "registry.hawkixs.local"
-  CI_REGISTRY_IMAGE: "registry.hawkixs.local/hawkixs_project/brain_v42"
+  CI_REGISTRY: "ghcr.io"
+  CI_REGISTRY_IMAGE: "ghcr.io/hawkixs/brain-v42"
   ENV_PREFIX: "prod"
 
 jobs:
   build-docker:
-    runs-on: [self-hosted, Linux, X64, red-ci]
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -49,15 +55,15 @@ jobs:
       - name: Build, smoke and publish the image
         env:
           CI_COMMIT_SHA: ${{ github.sha }}
-          # Per-run credential store, removed below: the red-ci runner is a
-          # persistent VM and must not keep a registry login between runs.
+          # Per-run credential store, removed below even on a hosted runner: the
+          # token must not outlive the step that uses it.
           DOCKER_CONFIG: ${{ runner.temp }}/brain-v42-docker-${{ github.run_id }}
-          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
-          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ github.token }}
         run: |
           echo "$REGISTRY_PASSWORD" | docker login -u "$REGISTRY_USER" --password-stdin $CI_REGISTRY
           export SHORT_SHA=$(echo $CI_COMMIT_SHA | cut -c1-8)
-          docker build --cache-from $CI_REGISTRY_IMAGE:${ENV_PREFIX}-latest --build-arg UV_VERSION=$UV_VERSION --build-arg BUILDKIT_INLINE_CACHE=1 -t $CI_REGISTRY_IMAGE:${ENV_PREFIX}-latest -t $CI_REGISTRY_IMAGE:${ENV_PREFIX}-${SHORT_SHA} -t brain-v42-ci-smoke:${CI_COMMIT_SHA} -f Dockerfile .
+          docker build --cache-from $CI_REGISTRY_IMAGE:${ENV_PREFIX}-latest --build-arg UV_VERSION=$UV_VERSION --build-arg BUILDKIT_INLINE_CACHE=1 --label org.opencontainers.image.source=https://github.com/hawkixs/brain-v42 -t $CI_REGISTRY_IMAGE:${ENV_PREFIX}-latest -t $CI_REGISTRY_IMAGE:${ENV_PREFIX}-${SHORT_SHA} -t brain-v42-ci-smoke:${CI_COMMIT_SHA} -f Dockerfile .
           docker run --pull=never --rm brain-v42-ci-smoke:${CI_COMMIT_SHA} python -c 'import os, pathlib, sys; import brain_v42.mcp.server; venv = pathlib.Path("/app/.venv"); entrypoint = pathlib.Path(brain_v42.mcp.server.__file__); assert sys.executable == "/app/.venv/bin/python"; assert os.geteuid() == 1000; assert venv.stat().st_uid == 0; assert entrypoint.stat().st_uid == 0; assert not os.access(venv, os.W_OK); assert not os.access(entrypoint, os.W_OK)'
           docker push $CI_REGISTRY_IMAGE:${ENV_PREFIX}-latest
           docker push $CI_REGISTRY_IMAGE:${ENV_PREFIX}-${SHORT_SHA}

@@ -4,8 +4,12 @@ The dual-rail era of ADR #4 ended when the GitLab rail was retired (decision
 218028c7, 2026-08-18): `.gitlab-ci.yml` left the tree and these tests stopped
 asserting parity against it. What they hold instead is the boundary that made the
 split worthwhile in the first place: pull requests gate on GitHub-hosted runners so
-they stay verifiable while the on-demand ``red-ci`` runner is stopped, and only
-pushes to main reach that runner.
+they stay verifiable with no runner of ours online.
+
+Since 2026-09-23 (ticket 03846021) NO rail reaches the self-hosted ``red-ci``
+runner: GitHub deleted it after fourteen days offline, and a public repository has
+no business running Docker as root on a VM it shares with private ones. Delivery
+publishes to GHCR from a hosted runner with the workflow's own token.
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ KNOWN_WORKFLOWS = {
 }
 
 HOSTED_RUNNER = "ubuntu-24.04"
-DELIVERY_RUNNER = ["self-hosted", "Linux", "X64", "red-ci"]
+DELIVERY_IMAGE = "ghcr.io/hawkixs/brain-v42"
 ON_DEMAND_RUNNER_LABEL = "red-ci"
 
 # The full pull-request gate, pinned as a literal. This roster used to be derived
@@ -94,18 +98,17 @@ def test_the_workflow_directory_holds_exactly_the_known_rails() -> None:
     assert present == KNOWN_WORKFLOWS
 
 
-def test_only_the_delivery_rail_reaches_the_on_demand_runner() -> None:
+def test_no_rail_reaches_the_on_demand_runner() -> None:
     """The runner boundary held over the WHOLE directory, not over two files.
 
     Measured on 2026-08-14: 19 delivery runs, 19 `cancelled`, 0 successes. A job
-    placed on this runner does not have "a latency" — it does not run.
+    placed on this runner does not have "a latency" — it does not run. Since
+    2026-09-23 the runner does not exist at all (ticket 03846021).
     """
     for path in sorted(WORKFLOW_DIRECTORY.iterdir()):
         if not path.is_file() or path.suffix not in {".yml", ".yaml"}:
             continue
         for name, job in _load(path)["jobs"].items():
-            if path == CD_WORKFLOW_PATH:
-                continue
             assert ON_DEMAND_RUNNER_LABEL not in str(job["runs-on"]), (
                 f"{path.name}:{name} vise le runner à la demande, hors ligne par conception"
             )
@@ -142,11 +145,27 @@ def test_pull_request_rail_carries_the_full_pinned_gate(ci_workflow: dict[Any, A
     assert set(ci_workflow["jobs"]) == EXPECTED_CI_JOBS
 
 
-def test_delivery_rail_only_builds_and_pushes_on_the_red_ci_runner(
+def test_delivery_rail_only_builds_and_pushes_on_a_hosted_runner(
     cd_workflow: dict[Any, Any],
 ) -> None:
     assert set(cd_workflow["jobs"]) == {"build-docker"}
-    assert cd_workflow["jobs"]["build-docker"]["runs-on"] == DELIVERY_RUNNER
+    assert cd_workflow["jobs"]["build-docker"]["runs-on"] == HOSTED_RUNNER
+
+
+def test_delivery_rail_publishes_to_ghcr_with_the_workflow_token(
+    cd_workflow: dict[Any, Any],
+) -> None:
+    """GHCR through `github.token`, scoped to this job: no credential to rotate.
+
+    The internal registry this rail pushed to has been off since 2026-09-21.
+    """
+    job = cd_workflow["jobs"]["build-docker"]
+    assert job["permissions"] == {"contents": "read", "packages": "write"}
+    assert cd_workflow["permissions"] == {"contents": "read"}
+    body = CD_WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert f'"{DELIVERY_IMAGE}"' in body
+    assert "${{ github.token }}" in body
+    assert "registry.hawkixs.local" not in body
 
 
 def test_delivery_rail_carries_no_deployment_machinery(cd_workflow: dict[Any, Any]) -> None:
@@ -166,12 +185,11 @@ def test_delivery_rail_carries_no_deployment_machinery(cd_workflow: dict[Any, An
         assert forbidden not in body
 
 
-def test_delivery_rail_consumes_only_the_two_registry_secrets(
+def test_delivery_rail_consumes_no_repository_secret(
     cd_workflow: dict[Any, Any],
 ) -> None:
     body = CD_WORKFLOW_PATH.read_text(encoding="utf-8")
-    secrets = {fragment.split("}}")[0].strip() for fragment in body.split("${{ secrets.")[1:]}
-    assert secrets == {"REGISTRY_USER", "REGISTRY_PASSWORD"}
+    assert "${{ secrets." not in body
 
 
 def test_no_job_tolerates_failure() -> None:
