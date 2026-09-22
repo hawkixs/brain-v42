@@ -57,13 +57,19 @@ def _validate_arguments(
 
 
 def _historical_unreadable(claim: ScopedClaim, *, now: datetime) -> Unreadable:
-    """Keep a removed live definition auditable with its stored historical TTL."""
+    """Keep a removed live definition auditable with its stored historical TTL.
+
+    No probe runs: the catalogue refuses. The observation follows the registry's own
+    refusal convention (`FactRegistry._unreadable`: `source_kind="probe"`, zero
+    duration, as for a disabled fact or an exhausted refresh budget) and names its
+    origin in `where`, so the ledger never passes it off as a probe attempt.
+    """
     return Unreadable(
         fact=claim.fact_name,
         definition_version=claim.definition_version,
         target=FactTarget(claim.target),
         error_code="definition_drift",
-        where=None,
+        where="catalogue",
         observation_id=uuid4(),
         measured_at=now,
         duration_ms=0,

@@ -416,3 +416,33 @@ async def test_duplicate_observation_gets_one_fresh_measurement_then_refuses(
     # forced fresh measurement, then refuses -- neither an unbounded retry nor a
     # refusal without trying.
     assert ages == [timedelta(seconds=600), timedelta(seconds=600), timedelta(0)]
+
+
+@pytest.mark.parametrize("change", ["removed", "version_moved"])
+async def test_a_catalogue_refusal_says_that_no_probe_ran(
+    monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """A removed or re-versioned definition is refused by the catalogue, not by a probe.
+
+    The observation keeps the registry's own refusal convention -- `source_kind`
+    stays in its closed `probe`/`cache` vocabulary, `duration_ms` is 0, as for a
+    disabled fact or an exhausted refresh budget -- and names its origin in `where`,
+    so an audit of the ledger cannot count it as a probe attempt that never ran.
+    """
+    probe = _Probe(definition_version=2) if change == "version_moved" else _Probe()
+    service = _service(_registry(probe))
+    claim = _claim(fact="removed_definition") if change == "removed" else _claim()
+    await _memory_repository(monkeypatch, claim)
+
+    verdict = await service.verify(
+        claim.id,
+        issuer_identity="mcp:codex",
+        issuer_kind="robot",
+        idempotency_key="request-1",
+        session=SimpleNamespace(),
+    )
+
+    assert verdict.measurement["error_code"] == "definition_drift"
+    assert verdict.measurement["where"] == "catalogue"
+    assert verdict.measurement["duration_ms"] == 0
+    assert probe.runs == 0
