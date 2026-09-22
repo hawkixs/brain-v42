@@ -1333,3 +1333,95 @@ async def test_an_unowned_plan_is_indexed_normally(mock_deps, tmp_path):
 
     assert stats["indexed"] == 1
     assert stats["errors"] == 0
+
+
+# ── repeated scan-path failures ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_scan_path_failure_is_warned_once(mock_deps):
+    """A standing configuration error must not scale with the sweep frequency.
+
+    At startup a broken `plan_scan_paths` cost one warning per restart. On a
+    15-minute period it would cost 96 a day, per path, forever — and a log
+    nobody can read is a log nobody reads. The first occurrence still warns;
+    the identical repeat drops to debug. The RESULT is unchanged: `failures`
+    names the path on every single run.
+    """
+    ctx_row = MagicMock()
+    ctx_row.plan_scan_paths = ["/safe/missing"]
+
+    def _fresh_result():
+        result_set = MagicMock()
+        result_set.fetchone.return_value = ctx_row
+        return result_set
+
+    mock_deps["session"].execute = AsyncMock(side_effect=lambda *a, **k: _fresh_result())
+    indexer = _build_indexer(mock_deps)
+
+    with capture_logs() as logs:
+        first = await indexer.index_project("red-phone")
+        second = await indexer.index_project("red-phone")
+
+    invalid = [log for log in logs if log["event"] == "plan_indexer.invalid_scan_path"]
+    assert [log["log_level"] for log in invalid] == ["warning", "debug"]
+    assert (
+        first["failures"]
+        == second["failures"]
+        == [{"file_path": "/safe/missing", "error_type": "PlanScanPathError:missing"}]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_new_reason_on_the_same_path_warns_again(mock_deps, tmp_path):
+    """Suppression keys on the reason too: a path failing differently is news."""
+    ctx_row = MagicMock()
+    ctx_row.plan_scan_paths = ["/safe/missing"]
+
+    def _fresh_result():
+        result_set = MagicMock()
+        result_set.fetchone.return_value = ctx_row
+        return result_set
+
+    mock_deps["session"].execute = AsyncMock(side_effect=lambda *a, **k: _fresh_result())
+    indexer = _build_indexer(mock_deps)
+
+    with capture_logs() as logs:
+        await indexer.index_project("red-phone")
+        with patch.object(
+            PlanIndexer,
+            "_canonical_scan_path",
+            side_effect=PlanScanPathError("/safe/missing", "unreadable"),
+        ):
+            await indexer.index_project("red-phone")
+
+    invalid = [log for log in logs if log["event"] == "plan_indexer.invalid_scan_path"]
+    assert [(log["reason_code"], log["log_level"]) for log in invalid] == [
+        ("missing", "warning"),
+        ("unreadable", "warning"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_another_project_failing_the_same_way_warns_on_its_own(mock_deps):
+    """Suppression is per (project, path, reason): a second victim is not a repeat."""
+    ctx_row = MagicMock()
+    ctx_row.plan_scan_paths = ["/safe/missing"]
+
+    def _fresh_result():
+        result_set = MagicMock()
+        result_set.fetchone.return_value = ctx_row
+        return result_set
+
+    mock_deps["session"].execute = AsyncMock(side_effect=lambda *a, **k: _fresh_result())
+    indexer = _build_indexer(mock_deps)
+
+    with capture_logs() as logs:
+        await indexer.index_project("red-phone")
+        await indexer.index_project("red-quant")
+
+    invalid = [log for log in logs if log["event"] == "plan_indexer.invalid_scan_path"]
+    assert [(log["project_key"], log["log_level"]) for log in invalid] == [
+        ("red-phone", "warning"),
+        ("red-quant", "warning"),
+    ]

@@ -100,6 +100,10 @@ _EMBED_INPUT_MAX_CHARS = 15000
 # A batch size of 2 keeps peak memory bounded while still benefiting from
 # batching on small inputs.
 _EMBED_BATCH_SIZE = 2
+# Cap on the set of already-warned scan-path failures. One entry per
+# (project, path, reason) and there are a few dozen configured paths, so the
+# cap is a bound against a pathological configuration, never a working limit.
+_MAX_REMEMBERED_SCAN_FAILURES = 512
 _SCAN_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _SCAN_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
 
@@ -178,6 +182,11 @@ class PlanIndexer:
         self._sf = session_factory
         self._embedding_svc = embedding_svc
         self._cluster_guard = cluster_guard
+        # (project_key, path, reason_code) already warned about in this process.
+        # A broken scan path is a standing configuration error: it fails again
+        # on every sweep, and on a period that turns one warning per restart
+        # into a permanent flood. The repeat still happens, at debug.
+        self._warned_scan_failures: set[tuple[str, str, str]] = set()
 
     @staticmethod
     def _canonical_scan_path(scan_path: str) -> str:
@@ -524,7 +533,12 @@ class PlanIndexer:
             try:
                 stats = await self.index_path(path, project_key)
             except PlanScanPathError as exc:
-                logger.warning(
+                signature = (project_key, exc.path, exc.reason_code)
+                first_time = signature not in self._warned_scan_failures
+                if first_time and len(self._warned_scan_failures) < _MAX_REMEMBERED_SCAN_FAILURES:
+                    self._warned_scan_failures.add(signature)
+                emit = logger.warning if first_time else logger.debug
+                emit(
                     "plan_indexer.invalid_scan_path",
                     project_key=project_key,
                     file_path=exc.path,
