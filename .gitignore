@@ -70,10 +70,6 @@ Thumbs.db
 logs/
 .gitnexus
 
-# Agent instruction files are operator-local, never published
-CLAUDE.md
-AGENTS.md
-
 # Mesures régénérées à chaque rejeu de docs/design/**/baseline/snapshot.py.
 # Le README de baseline/ dit « ne jamais recopier un snapshot : le rejouer ».
 docs/design/**/snapshot-*.json

@@ -48,11 +48,13 @@ def test_a_conforming_document_says_nothing(tmp_path: Path) -> None:
 
 
 def test_a_missing_document_is_not_a_failure(tmp_path: Path) -> None:
-    """`CLAUDE.md` is gitignored since the open-source publication.
+    """An absent `CLAUDE.md` says nothing about what the document claims.
 
-    On a clean checkout — CI, a fresh clone — the file simply is not there. That
-    is the documented state, not a red: a block shouting about an absence would
-    be noise on every machine that never had the file.
+    The file is tracked since 2026-09-22, but the claims module resolves it next
+    to its own location, and a report run from an installed package has no
+    checkout there. Its absence is a separate defect with its own red
+    (`test_instruction_files_are_tracked.py`); this block stays silent on it
+    rather than shouting on every machine where the path does not exist.
     """
     assert _block(tmp_path / "CLAUDE.md") == []
 
