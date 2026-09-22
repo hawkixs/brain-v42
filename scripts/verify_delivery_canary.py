@@ -45,6 +45,7 @@ from brain_v42.models.delivery import (
 )
 from brain_v42.models.delivery_evaluator import _select_check
 from brain_v42.models.delivery_hashes import delivery_digest
+from brain_v42.release import shipped_alembic_head
 
 _PHASES = ("missing-proof", "observed", "verified", "integrated", "accepted")
 _MAX_RESPONSE_BYTES = 256 * 1024
@@ -330,7 +331,7 @@ def _deployment_canary(path: Path) -> PreflightReceipt:
             not isinstance(source_sha, str)
             or len(source_sha) != 40
             or set(source_sha) - _SHA
-            or schema_revision != "055"
+            or schema_revision != shipped_alembic_head()
         ):
             raise ValueError
         return PreflightReceipt(source_sha, schema_revision, observer_env)

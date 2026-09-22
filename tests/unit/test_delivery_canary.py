@@ -46,6 +46,7 @@ from brain_v42.models.delivery import (
 )
 from brain_v42.models.delivery_evaluator import evaluate_delivery
 from brain_v42.models.delivery_hashes import delivery_digest
+from brain_v42.release import shipped_alembic_head
 
 SCRIPT = Path(__file__).parents[2] / "scripts" / "verify_delivery_canary.py"
 TICKET = UUID("11111111-1111-1111-1111-111111111111")
@@ -57,6 +58,9 @@ FROZEN_SNAPSHOT = UUID("14141414-1414-1414-1414-141414141414")
 ASSESSMENT = "a" * 64
 FROZEN_ASSESSMENT = "1" * 64
 HEAD = "d" * 40
+#: Derived, never copied: the canary must follow the head this tree ships, so a
+#: migration that leaves it behind turns this suite red in its own PR.
+SCHEMA_HEAD = shipped_alembic_head()
 BASE = "e" * 40
 MERGE = "f" * 40
 SYNTHETIC = "9" * 40
@@ -680,7 +684,7 @@ async def test_each_phase_reruns_preflight_and_positive_phases_collect_github(
         calls["preflight"] += 1
         return canary.PreflightReceipt(
             source_sha="7" * 40,
-            schema_revision="055",
+            schema_revision=SCHEMA_HEAD,
             observer_env=tmp_path / "observer.env",
         )
 
@@ -699,7 +703,7 @@ async def test_each_phase_reruns_preflight_and_positive_phases_collect_github(
         selected_phase = phase
         receipt = await canary._run(config, phase, clock=lambda: NOW)
         assert receipt["source_sha"] == "7" * 40
-        assert receipt["schema_revision"] == "055"
+        assert receipt["schema_revision"] == SCHEMA_HEAD
         assert receipt["source"] == "deployment_preflight_rerun"
     assert calls == {"preflight": 5, "read": 5, "github": 4}
 
@@ -724,11 +728,11 @@ async def test_run_executes_sync_preflight_checker_outside_its_event_loop(
 
     def check(_path: Path) -> dict[str, str]:
         async def schema_probe() -> str:
-            return "055"
+            return SCHEMA_HEAD
 
         calls["preflight"] += 1
-        assert asyncio.run(schema_probe()) == "055"
-        return {"source_sha": "7" * 40, "schema_revision": "055"}
+        assert asyncio.run(schema_probe()) == SCHEMA_HEAD
+        return {"source_sha": "7" * 40, "schema_revision": SCHEMA_HEAD}
 
     async def read(_config: Any) -> dict[str, Any]:
         calls["read"] += 1
@@ -812,7 +816,7 @@ async def test_run_samples_time_after_brain_and_github_acquisitions(
         "_deployment_canary",
         lambda _path: canary.PreflightReceipt(
             source_sha="7" * 40,
-            schema_revision="055",
+            schema_revision=SCHEMA_HEAD,
             observer_env=tmp_path / "observer.env",
         ),
     )
@@ -890,7 +894,7 @@ def test_cli_emits_one_utc_json_without_private_paths_or_tokens(
             "outcome": "observed",
             "source": "deployment_preflight_rerun",
             "source_sha": "7" * 40,
-            "schema_revision": "055",
+            "schema_revision": SCHEMA_HEAD,
         }
 
     monkeypatch.setattr(canary, "_load_config", lambda _path: config)
