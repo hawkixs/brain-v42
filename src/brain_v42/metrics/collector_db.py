@@ -196,8 +196,15 @@ class _DbCollectorsMixin:
                     agg_emb["unreachable_errors"] += emb_stats.get("unreachable_errors", 0)
                     agg_emb["total_latency"] += emb_stats.get("total_latency", 0.0)
                     agg_emb["recent_errors"] += emb_stats.get("recent_errors", 0)
+                    # A malformed usage value costs its own row, not the whole
+                    # aggregate: the enclosing fallback would blank tools and agents.
+                    usage_by_intent = emb_stats.get("usage")
+                    if not isinstance(usage_by_intent, dict):
+                        usage_by_intent = {}
                     for intent in ("read", "write"):
-                        usage = emb_stats.get("usage", {}).get(intent, {})
+                        usage = usage_by_intent.get(intent)
+                        if not isinstance(usage, dict):
+                            continue
                         agg_emb["usage"][intent]["total_tokens"] += usage.get("total_tokens", 0)
                         agg_emb["usage"][intent]["reported_requests"] += usage.get(
                             "reported_requests", 0
