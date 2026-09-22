@@ -21,6 +21,7 @@ from brain_v42.mcp.tools.session_lifecycle_tools import NEXT_FOCUS_MAX_LENGTH
 from brain_v42.mcp.tools.tool_annotations import (
     _DESTRUCTIVE_ANNOTATIONS,
     _READ_ANNOTATIONS,
+    _WRITE_ANNOTATIONS,
 )
 from brain_v42.models.project_context import ProjectContextCreate
 from brain_v42.models.project_key import canonicalize_project_key
@@ -206,6 +207,51 @@ def register_project_context_tools(
         )
         await project_context_svc.get_or_create(data)
         return format_confirmation("Project context set", "", project_key=project_key)
+
+    @mcp.tool(version="1.0", annotations=_WRITE_ANNOTATIONS)
+    async def brain_project_archive(project_key: str, reason: str) -> str:
+        """Take a project out of the default views without deleting anything.
+
+        An archived project keeps every learning, decision, snippet, runbook,
+        ADR and plan it ever had. It stops appearing in the session briefing,
+        the roadmap and an unscoped `brain_search`, and it stays fully readable
+        through `brain_search(project_key=...)`. Use it when a repository
+        leaves the disk.
+
+        This writes `archived_at` and `archived_reason` and nothing else. It
+        deliberately does NOT go through `brain_set_project_context`, which is
+        not a PATCH and would overwrite focus, blockers, group and metadata.
+
+        Args:
+            project_key: The project to archive.
+            reason: Why. Required — an archive nobody can explain outlives the
+                reason it was archived for.
+        """
+        project_key = canonicalize_project_key(project_key)
+        context = await project_context_svc.archive(project_key, reason=reason)
+        if context is None:
+            return f"No project context named '{project_key}' — nothing archived, nothing created."
+        return (
+            f"Project '{project_key}' archived. No knowledge was deleted: its learnings, "
+            f"decisions, snippets, runbooks, ADRs and plans are unchanged and stay "
+            f"reachable with brain_search(project_key='{project_key}')."
+        )
+
+    @mcp.tool(version="1.0", annotations=_WRITE_ANNOTATIONS)
+    async def brain_project_unarchive(project_key: str) -> str:
+        """Put an archived project back into the default views.
+
+        Clears both `archived_at` and `archived_reason`: the reason describes a
+        state that has ended.
+
+        Args:
+            project_key: The project to bring back.
+        """
+        project_key = canonicalize_project_key(project_key)
+        context = await project_context_svc.unarchive(project_key)
+        if context is None:
+            return f"No project context named '{project_key}' — nothing unarchived."
+        return f"Project '{project_key}' is active again and back in the default views."
 
     @mcp.tool(version="1.0", annotations=_READ_ANNOTATIONS)
     async def brain_list_projects(

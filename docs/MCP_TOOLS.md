@@ -1,13 +1,13 @@
 # MCP Tools — brain_v42
 
 **Updated:** 2026-09-18
-**Repository registry:** 67 always-on + 2 graph-gated = 69 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
+**Repository registry:** 69 always-on + 2 graph-gated = 71 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
 **Default catalog:** Admin clients use `compact` while capability enforcement is disabled: the seven session lifecycle tools plus `brain_find_tool` and `brain_call_tool`; other registered tools remain discoverable through those gateways. `native` exposes every registered tool. An authenticated Dream phase always receives its exact native allowlist, independent of presentation headers, and cannot access either gateway. Experimental `brain_code_mode` takes precedence only while Dream capability enforcement is disabled.
 **Transport:** HTTP loopback `http://127.0.0.1:8765/mcp` (production fleet). Tools are defined as closures capturing injected services — see `src/brain_v42/mcp/server.py` (`build_services()`) and the `register_*_tools()` functions in each module under `src/brain_v42/mcp/tools/`.
 
 Most tools return formatted markdown strings. The seven v4 session lifecycle tools return structured Pydantic results. Their repository contract is documented below. Lifecycle v4 has run in production since 24 July 2026, after revision 036, explicit schema proof and a restart-last MCP cutover with authenticated E2E canaries.
 
-Migration 055 is the repository target: it adds the three claim ledgers of lot B (`knowledge_fact_definitions`, `knowledge_claims`, `knowledge_claim_verdicts`), their SQL-enforced immutability and the deterministic `knowledge_claim_current` view; no MCP tool reads them yet. Migration 054 adds `delivery_attestations`, the append-only ledger of issuer-declared delivery facts behind `brain_delivery_attest`, whose fail-closed downgrade names the rows it would destroy. Migration 053 adds the eight durable delivery tables for workflows, versioned contracts, dependencies, artifact bindings, confirmations, snapshots, events, and immutable receipts. Migration 052 adds `access_log_daily`, the durable access journal that keeps the ACTOR STRING per (entity, day) so an `is_human_actor` requalification stays replayable after the 300 s flush (ticket b93e32be). Migration 051 adds `brain_session_checkpoints` (M-C), the append-only ledger behind `brain_session_checkpoint`, guarded by a trigger and reachable only by INSERT. Migration 050 adds `project_focus_history` (M-D), the append-only audit trail of every focus revision, plus a deferred constraint trigger on `project_contexts` shipped disabled. Migration 049 it adds the sweep's per-night `closed_inactive_count`, the agy rail's `thinking_tokens`, and widens the `freshness_source` vocabulary (`manual_update`, `plan_reindex`). Migration 048 adds `brain_session_artifacts.attribution_mode`,
+Migration 056 is the repository target: it gives `project_contexts` its first lifecycle — `archived_at` and `archived_reason`, nullable with no backfill, so `archived_at IS NULL` IS active — behind `brain_project_archive` and `brain_project_unarchive`, which delete nothing. Migration 055 adds the three claim ledgers of lot B (`knowledge_fact_definitions`, `knowledge_claims`, `knowledge_claim_verdicts`), their SQL-enforced immutability and the deterministic `knowledge_claim_current` view; no MCP tool reads them yet. Migration 054 adds `delivery_attestations`, the append-only ledger of issuer-declared delivery facts behind `brain_delivery_attest`, whose fail-closed downgrade names the rows it would destroy. Migration 053 adds the eight durable delivery tables for workflows, versioned contracts, dependencies, artifact bindings, confirmations, snapshots, events, and immutable receipts. Migration 052 adds `access_log_daily`, the durable access journal that keeps the ACTOR STRING per (entity, day) so an `is_human_actor` requalification stays replayable after the 300 s flush (ticket b93e32be). Migration 051 adds `brain_session_checkpoints` (M-C), the append-only ledger behind `brain_session_checkpoint`, guarded by a trigger and reachable only by INSERT. Migration 050 adds `project_focus_history` (M-D), the append-only audit trail of every focus revision, plus a deferred constraint trigger on `project_contexts` shipped disabled. Migration 049 it adds the sweep's per-night `closed_inactive_count`, the agy rail's `thinking_tokens`, and widens the `freshness_source` vocabulary (`manual_update`, `plan_reindex`). Migration 048 adds `brain_session_artifacts.attribution_mode`,
 so a reader can tell a PROVEN attribution (`derived_connection`, same connection) from a DEDUCED
 one (`derived_window`, sole covering session at the instant of creation) — and undo the second
 kind. Migration 047 removes the closing XOR, so a session whose ledger
@@ -605,7 +605,7 @@ brain_session_checkpoint(session_id, expected_client_key, seq, progress, next_st
 ```
 Publish one semantic checkpoint of an `open` session, in a single call, into the append-only `brain_session_checkpoints` table (migration 052). It records JUDGMENT — where the work stands, what blocks it, what comes next — published together so a reader can tell a complete snapshot from a partial one.
 
-The repository migration target is migration 055; this does not enable delivery operations in MCP.
+The repository migration target is migration 056; this does not enable delivery operations in MCP.
 
 It is **not** a lifecycle command and **not** a presence signal: it writes no `last_heartbeat_at`, touches no focus or `focus_revision`, attributes no artifact, and neither opens nor closes a session. Liveness already comes from the observation stamped by every tool call, which is why the checkpoint carries no heartbeat effect at all — on a real checkpoint or on a replay.
 
@@ -694,6 +694,26 @@ brain_focus_history(project_key, limit=20, offset=0)
 One project's focus revisions, newest first, with the characters added and
 removed against the revision below. An erased focus reads `(erased)`. Read-only;
 the trail itself is append-only (migration 050).
+
+### brain_project_archive (`project_context_tools.py`)
+```
+brain_project_archive(project_key, reason)
+```
+Take a project out of the default views without deleting anything. It keeps
+every learning, decision, snippet, runbook, ADR and plan; it stops appearing in
+the session briefing, the roadmap and an unscoped `brain_search`, and stays
+fully readable through `brain_search(project_key=...)`. Writes `archived_at` and
+`archived_reason` and nothing else — deliberately NOT through
+`brain_set_project_context`, which is not a PATCH and would overwrite focus,
+blockers, group and metadata. `reason` is required. Idempotent: `archived_at`
+records when the project was archived, not when the command was last re-run.
+
+### brain_project_unarchive (`project_context_tools.py`)
+```
+brain_project_unarchive(project_key)
+```
+Put an archived project back into the default views. Clears both `archived_at`
+and `archived_reason`, because the reason describes a state that has ended.
 
 ### brain_list_project_groups (`project_context_tools.py`)
 ```
@@ -998,7 +1018,7 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `decay_tools.py` | decay + consolidation | 4 |
 | `dream_tools.py` | dream-phase maintenance | 7 |
 | `plan_tools.py` | plan indexing | 1 |
-| `project_context_tools.py` | project + groups | 5 |
+| `project_context_tools.py` | project + groups + archival | 7 |
 | `roadmap_tools.py` | roadmap | 3 |
 | `runbook_tools.py` | runbooks | 4 |
 | `session_lifecycle_tools.py` | persistent session lifecycle | 8 |
@@ -1007,4 +1027,4 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `workflow_guide_tools.py` | bounded workflow guidance | 1 |
 | `delivery_tools.py` | observable delivery | 11 |
 | `fact_tools.py` | measured facts (registered by later server composition) | 2 |
-| **Total** | | **67 always-on + 2 graph-gated = 69** |
+| **Total** | | **69 always-on + 2 graph-gated = 71** |

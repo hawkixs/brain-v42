@@ -302,7 +302,13 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
     # `knowledge_claims.entity_ref_id -> brain_entities.id` and
     # `knowledge_claims.project_key -> projects.project_key`; it changes no column,
     # CHECK or index on either parent, so the shape at 031 remains intact.
-    assert script.get_heads() == ["055"]
+    # Re-read at 056: it adds NO table, so `table_set` does not move — the first
+    # revision since 049 for which that is true. Two nullable columns on
+    # `project_contexts` (`archived_at`, `archived_reason`), one CHECK binding
+    # ONLY that new pair, and one partial index on the same table. The contract
+    # describes neither that table's column set nor its indexes at 031, and the
+    # rest of this test passing is the measurement that says so.
+    assert script.get_heads() == ["056"]
     post_contract_tables = {
         # 050's table. `table_set` is DERIVED from live METADATA, so any new
         # table moves it, and a contract describing revision 031 must not claim

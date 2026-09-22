@@ -105,6 +105,13 @@ class ProjectContext(ProjectContextBase, TimestampMixin):
     # Read-only: set by the focus write paths, never supplied by a caller.
     # None means the focus was never written since migration 040 landed.
     focus_updated_at: datetime | None = None
+    # Read-only, and deliberately NOT on ProjectContextBase: putting it there
+    # would put it on Create and Update, and `brain_set_project_context` is not
+    # a PATCH — a caller omitting the field would silently un-archive the
+    # project. The archive verb owns these two columns and nothing else writes
+    # them. None means active.
+    archived_at: datetime | None = None
+    archived_reason: str | None = None
     decisions_count: int = 0
     learnings_count: int = 0
     snippets_count: int = 0

@@ -198,6 +198,24 @@ if TYPE_CHECKING:
 # `indexed_plans`, `indexed_plan_chunks`, `project_contexts` or `feature_artifacts`.
 # INERT.
 #
+# Bumped to 056 after reviewing the complete migration, and this one is NOT
+# inert by table: 056 touches `project_contexts`, which this file UPDATEs. It is
+# inert by BEHAVIOUR, which is a narrower claim and the one that had to be
+# checked.
+#
+# It adds `archived_at` and `archived_reason`, both NULLABLE with no default and
+# no backfill, so an UPDATE that names neither still succeeds and an INSERT would
+# too. Its CHECK binds ONLY that new pair
+# (`archived_reason IS NULL OR archived_at IS NOT NULL`), and the repair writes
+# neither column — its two UPDATEs set `plan_scan_paths` and `updated_at` — so
+# the constraint cannot fire on anything this repair issues. Its index is partial
+# on `project_key WHERE archived_at IS NOT NULL`: maintenance only, no behaviour.
+# It creates NO trigger, unlike 050, and adds NO NOT NULL column anywhere.
+#
+# Measured the same way as the entries above: 056 contains zero references to
+# `indexed_plans`, `indexed_plan_chunks` or `feature_artifacts`
+# (`grep -c` → 0). The third table is the one it touches, harmlessly.
+#
 # The consequence named at 050 and repeated at 051, 052 and 053 holds a fifth
 # time: production measured at 053 on 2026-09-16, so the repair refuses to run
 # against it until 054 is applied. That is the pin working.
@@ -208,7 +226,7 @@ if TYPE_CHECKING:
 # `tests/unit/test_plan_index_repair_review_block.py` derives the reviewed set
 # from this block and fails if the constant below outruns it, or if a revision
 # is skipped between the first entry and the head.
-_REQUIRED_ALEMBIC_HEAD = "055"
+_REQUIRED_ALEMBIC_HEAD = "056"
 
 
 class RepairStore:
