@@ -34,7 +34,11 @@ import structlog
 from sqlalchemy.exc import IntegrityError
 
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
-from brain_v42.mcp.tools.claim_writes import persist_claims, resolve_claim_inputs
+from brain_v42.mcp.tools.claim_writes import (
+    claims_confirmation,
+    persist_claims,
+    resolve_claim_inputs,
+)
 from brain_v42.mcp.tools.tool_annotations import (
     _DESTRUCTIVE_ANNOTATIONS,
     _HEARTBEAT_ANNOTATIONS,
@@ -221,9 +225,7 @@ def register_tools(
             title,
             id=str(decision.id),
             project=project_key,
-            claims=(
-                f"{len(claim_ids)} recorded (declared; verification arrives with the verdict path)"
-            ),
+            claims=claims_confirmation(claim_ids),
         )
 
     @mcp.tool(version="1.0", annotations=_DESTRUCTIVE_ANNOTATIONS)
@@ -492,11 +494,7 @@ def register_tools(
             related_to=validated_relations,
             authorization=cast("RelationAuthorization", scope) if scope is not None else None,
         )
-        extra = {
-            "claims": (
-                f"{len(claim_ids)} recorded (declared; verification arrives with the verdict path)"
-            )
-        }
+        extra = {"claims": claims_confirmation(claim_ids)}
         if learning.graph_warnings:
             extra["warnings"] = "; ".join(learning.graph_warnings)
         logger.info(
@@ -642,9 +640,7 @@ def register_tools(
             title,
             id=str(adr.id),
             project=project_key,
-            claims=(
-                f"{len(claim_ids)} recorded (declared; verification arrives with the verdict path)"
-            ),
+            claims=claims_confirmation(claim_ids),
         )
 
     @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)

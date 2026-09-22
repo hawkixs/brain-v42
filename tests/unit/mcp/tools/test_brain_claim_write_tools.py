@@ -17,6 +17,11 @@ from brain_v42.models.decision import Decision
 from brain_v42.models.learning import Learning
 from tests.unit.mcp._tool_error_adapter import capture_tool_errors
 
+#: Occurrence ids the fake persistence returns: a writer must hand them back in
+#: full, because `brain_claim_verify` names a claim by its canonical UUID alone.
+CLAIM_A = UUID("7d0b1f53-4c55-4c2e-9e57-a5b1b8d0c001")
+CLAIM_B = UUID("7d0b1f53-4c55-4c2e-9e57-a5b1b8d0c002")
+
 
 class _Transaction(AbstractAsyncContextManager[None]):
     """Record that the claims path owns exactly one explicit transaction."""
@@ -160,7 +165,7 @@ async def test_learning_with_claims_uses_one_transaction_then_enriches(
     learning_svc.enrich_created = AsyncMock(return_value=_learning())
     session_factory = _SessionFactory()
     resolved = [MagicMock(), MagicMock()]
-    persist = AsyncMock(return_value=[MagicMock(), MagicMock()])
+    persist = AsyncMock(return_value=[CLAIM_A, CLAIM_B])
     monkeypatch.setattr(
         brain_tools, "resolve_claim_inputs", AsyncMock(return_value=resolved), raising=False
     )
@@ -181,7 +186,10 @@ async def test_learning_with_claims_uses_one_transaction_then_enriches(
     )
     persist.assert_awaited_once()
     learning_svc.enrich_created.assert_awaited_once()
-    assert "claims:2 recorded (declared; verification arrives with the verdict path)" in response
+    assert (
+        f"claims:2 recorded as declared [{CLAIM_A} {CLAIM_B}]; brain_claim_verify measures one"
+        in response
+    )
 
 
 async def test_decision_with_claims_uses_one_transaction_then_enriches(
@@ -192,7 +200,7 @@ async def test_decision_with_claims_uses_one_transaction_then_enriches(
     decision_svc.create = AsyncMock(return_value=_decision())
     decision_svc.enrich_created = AsyncMock(return_value=_decision())
     session_factory = _SessionFactory()
-    persist = AsyncMock(return_value=[MagicMock()])
+    persist = AsyncMock(return_value=[CLAIM_A])
     monkeypatch.setattr(
         brain_tools, "resolve_claim_inputs", AsyncMock(return_value=[MagicMock()]), raising=False
     )
@@ -215,7 +223,7 @@ async def test_decision_with_claims_uses_one_transaction_then_enriches(
     )
     persist.assert_awaited_once()
     decision_svc.enrich_created.assert_awaited_once()
-    assert "claims:1 recorded (declared; verification arrives with the verdict path)" in response
+    assert f"claims:1 recorded as declared [{CLAIM_A}]; brain_claim_verify measures one" in response
 
 
 async def test_claims_none_keeps_learning_and_decision_on_the_existing_path() -> None:
@@ -345,7 +353,7 @@ async def test_adr_with_claims_uses_one_transaction_then_enriches(
     adr_svc.create = AsyncMock(return_value=_adr())
     adr_svc.enrich_created = AsyncMock(return_value=_adr())
     session_factory = _SessionFactory()
-    persist = AsyncMock(return_value=[MagicMock()])
+    persist = AsyncMock(return_value=[CLAIM_A])
     monkeypatch.setattr(
         brain_tools, "resolve_claim_inputs", AsyncMock(return_value=[MagicMock()]), raising=False
     )
@@ -368,7 +376,7 @@ async def test_adr_with_claims_uses_one_transaction_then_enriches(
     )
     persist.assert_awaited_once()
     adr_svc.enrich_created.assert_awaited_once()
-    assert "claims:1 recorded (declared; verification arrives with the verdict path)" in response
+    assert f"claims:1 recorded as declared [{CLAIM_A}]; brain_claim_verify measures one" in response
 
 
 async def test_runbook_with_claims_uses_one_transaction_then_enriches(
@@ -379,7 +387,7 @@ async def test_runbook_with_claims_uses_one_transaction_then_enriches(
     runbook_svc.create = AsyncMock(return_value=_runbook())
     runbook_svc.enrich_created = AsyncMock(return_value=_runbook())
     session_factory = _SessionFactory()
-    persist = AsyncMock(return_value=[MagicMock(), MagicMock()])
+    persist = AsyncMock(return_value=[CLAIM_A, CLAIM_B])
     monkeypatch.setattr(
         runbook_tools,
         "resolve_claim_inputs",
@@ -405,7 +413,10 @@ async def test_runbook_with_claims_uses_one_transaction_then_enriches(
     )
     persist.assert_awaited_once()
     runbook_svc.enrich_created.assert_awaited_once()
-    assert "claims:2 recorded (declared; verification arrives with the verdict path)" in response
+    assert (
+        f"claims:2 recorded as declared [{CLAIM_A} {CLAIM_B}]; brain_claim_verify measures one"
+        in response
+    )
 
 
 async def test_snippet_with_claims_uses_one_transaction_then_enriches(
@@ -416,7 +427,7 @@ async def test_snippet_with_claims_uses_one_transaction_then_enriches(
     snippet_svc.create = AsyncMock(return_value=_snippet())
     snippet_svc.enrich_created = AsyncMock(return_value=_snippet())
     session_factory = _SessionFactory()
-    persist = AsyncMock(return_value=[MagicMock()])
+    persist = AsyncMock(return_value=[CLAIM_A])
     monkeypatch.setattr(
         snippet_tools, "resolve_claim_inputs", AsyncMock(return_value=[MagicMock()]), raising=False
     )
@@ -439,4 +450,4 @@ async def test_snippet_with_claims_uses_one_transaction_then_enriches(
     )
     persist.assert_awaited_once()
     snippet_svc.enrich_created.assert_awaited_once()
-    assert "claims:1 recorded (declared; verification arrives with the verdict path)" in response
+    assert f"claims:1 recorded as declared [{CLAIM_A}]; brain_claim_verify measures one" in response

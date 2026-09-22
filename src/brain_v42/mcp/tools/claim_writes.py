@@ -40,6 +40,17 @@ class ClaimReplacement:
     retired: int
 
 
+def claims_confirmation(claim_ids: Sequence[UUID]) -> str:
+    """Name every recorded occurrence in full, and the tool that verifies one.
+
+    `brain_claim_verify` names a claim by its canonical UUID alone, so a writer that
+    only counted its claims would leave the caller nothing to verify. No comma: the
+    confirmation line separates its own fields with commas.
+    """
+    ids = " ".join(str(claim_id) for claim_id in claim_ids)
+    return f"{len(claim_ids)} recorded as declared [{ids}]; brain_claim_verify measures one"
+
+
 async def _claim_anchor_id(session: AsyncSession, entry_id: UUID, entity_type: str) -> UUID:
     """Find the ledger-created anchor so entry and claim writes share one transaction."""
     entity_ref_id = await session.scalar(

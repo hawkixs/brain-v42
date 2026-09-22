@@ -11,7 +11,11 @@ from typing import TYPE_CHECKING, Any, cast
 import structlog
 
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
-from brain_v42.mcp.tools.claim_writes import persist_claims, resolve_claim_inputs
+from brain_v42.mcp.tools.claim_writes import (
+    claims_confirmation,
+    persist_claims,
+    resolve_claim_inputs,
+)
 from brain_v42.mcp.tools.formatters import (
     format_confirmation,
     format_error,
@@ -143,9 +147,7 @@ def register_snippet_tools(
             snippet.title,
             id=str(snippet.id),
             lang=snippet.language,
-            claims=(
-                f"{len(claim_ids)} recorded (declared; verification arrives with the verdict path)"
-            ),
+            claims=claims_confirmation(claim_ids),
         )
 
     @mcp.tool(version="1.0", annotations=_DESTRUCTIVE_ANNOTATIONS)
