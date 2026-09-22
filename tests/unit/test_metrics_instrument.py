@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from brain_v42.mcp.dream_project_authorization import DreamProjectAuthorizationError
@@ -16,6 +18,8 @@ from brain_v42.metrics.instrument import (
     InstrumentedReranker,
     instrument_tool,
 )
+from brain_v42.services.embedding_wire import OpenAIWire
+from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
 
 
 class TestInstrumentTool:
@@ -193,6 +197,120 @@ class TestInstrumentedEmbeddingService:
         assert collector._embedding_stats["total_requests"] == 1
         assert collector._embedding_stats["total_errors"] == 0
 
+    async def test_provider_usage_reaches_the_collector_by_intent(
+        self, collector: MetricsCollector
+    ) -> None:
+        """Provider totals are the only source for the read/write usage counters."""
+
+        async def respond(request: httpx.Request) -> httpx.Response:
+            inputs = json.loads(request.content)["input"]
+            total = {"query": 3, "document": 5, "first": 7}[inputs[0]]
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"index": index, "embedding": [3.0, 4.0]} for index, _ in enumerate(inputs)
+                    ],
+                    "usage": {"total_tokens": total},
+                },
+            )
+
+        inner = GPUEmbeddingService(
+            base_url="http://embed.test", max_retries=0, wire=OpenAIWire(model="fixture")
+        )
+        inner._client = httpx.AsyncClient(
+            base_url="http://embed.test", transport=httpx.MockTransport(respond)
+        )
+        wrapped = InstrumentedEmbeddingService(inner, collector)
+        try:
+            assert await wrapped.embed_query("query") == [0.6, 0.8]
+            assert await wrapped.embed("document") == [0.6, 0.8]
+            assert await wrapped.embed_texts(["first", "second"]) == [[0.6, 0.8], [0.6, 0.8]]
+        finally:
+            await inner.close()
+
+        usage = collector.get_metrics()["embedding_service"]["usage"]
+        assert usage == {
+            "read": {"total_tokens": 3, "reported_requests": 1},
+            "write": {"total_tokens": 12, "reported_requests": 2},
+        }
+
+    async def test_usage_capture_is_isolated_between_concurrent_intents(
+        self, collector: MetricsCollector
+    ) -> None:
+        from brain_v42.services.embedding_usage import record_embedding_usage
+
+        class _Inner:
+            async def embed(self, text: str) -> list[float]:
+                await asyncio.sleep(0)
+                record_embedding_usage(5)
+                return [1.0]
+
+            async def embed_query(self, text: str) -> list[float]:
+                record_embedding_usage(3)
+                await asyncio.sleep(0)
+                return [2.0]
+
+        wrapped = InstrumentedEmbeddingService(_Inner(), collector)
+        assert await asyncio.gather(wrapped.embed("document"), wrapped.embed_query("query")) == [
+            [1.0],
+            [2.0],
+        ]
+        assert collector.get_metrics()["embedding_service"]["usage"] == {
+            "read": {"total_tokens": 3, "reported_requests": 1},
+            "write": {"total_tokens": 5, "reported_requests": 1},
+        }
+
+    async def test_zero_report_is_counted_and_absent_usage_does_not_leak(
+        self, collector: MetricsCollector
+    ) -> None:
+        from brain_v42.services.embedding_usage import record_embedding_usage
+
+        class _Inner:
+            async def embed(self, text: str) -> list[float]:
+                if text == "zero":
+                    record_embedding_usage(0)
+                return [1.0]
+
+        wrapped = InstrumentedEmbeddingService(_Inner(), collector)
+        assert await wrapped.embed("zero") == [1.0]
+        assert await wrapped.embed("absent") == [1.0]
+        assert collector.get_metrics()["embedding_service"]["usage"]["write"] == {
+            "total_tokens": 0,
+            "reported_requests": 1,
+        }
+
+    async def test_usage_is_kept_when_vector_validation_fails(
+        self, collector: MetricsCollector
+    ) -> None:
+        from brain_v42.services.gpu_embedding_service import EmbeddingUnavailable
+
+        async def respond(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "data": [{"index": 0, "embedding": "not-a-vector"}],
+                    "usage": {"total_tokens": 9},
+                },
+            )
+
+        inner = GPUEmbeddingService(
+            base_url="http://embed.test", max_retries=0, wire=OpenAIWire(model="fixture")
+        )
+        inner._client = httpx.AsyncClient(
+            base_url="http://embed.test", transport=httpx.MockTransport(respond)
+        )
+        try:
+            with pytest.raises(EmbeddingUnavailable):
+                await InstrumentedEmbeddingService(inner, collector).embed("document")
+        finally:
+            await inner.close()
+
+        assert collector.get_metrics()["embedding_service"]["usage"]["write"] == {
+            "total_tokens": 9,
+            "reported_requests": 1,
+        }
+
     async def test_embed_records_error(self, collector: MetricsCollector) -> None:
         inner = MagicMock()
 
@@ -268,6 +386,64 @@ class TestEmbedTextsEmptyMetrics:
         inner.embed_texts.assert_awaited_once_with([])
         collector.record_embedding_request.assert_called_once()
         assert collector.record_embedding_request.call_args[1]["error"] is False
+
+    async def test_empty_batch_skips_http_and_does_not_report_usage(self) -> None:
+        requests: list[httpx.Request] = []
+
+        async def reject_request(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(500)
+
+        collector = MetricsCollector(engine=MagicMock(), session_factory=MagicMock())
+        inner = GPUEmbeddingService(
+            base_url="http://embed.test", max_retries=0, wire=OpenAIWire(model="fixture")
+        )
+        inner._client = httpx.AsyncClient(
+            base_url="http://embed.test", transport=httpx.MockTransport(reject_request)
+        )
+        try:
+            assert await InstrumentedEmbeddingService(inner, collector).embed_texts([]) == []
+        finally:
+            await inner.close()
+
+        assert requests == []
+        assert collector.get_metrics()["embedding_service"]["usage"]["write"] == {
+            "total_tokens": 0,
+            "reported_requests": 0,
+        }
+
+
+class TestEmbeddingUsageCancellation:
+    async def test_cancelled_call_resets_usage_before_the_next_call(self) -> None:
+        from brain_v42.services.embedding_usage import (
+            capture_embedding_usage,
+            record_embedding_usage,
+        )
+
+        class _Inner:
+            async def embed(self, text: str) -> list[float]:
+                if text == "cancel":
+                    record_embedding_usage(4)
+                    task = asyncio.current_task()
+                    assert task is not None
+                    task.cancel()
+                    await asyncio.sleep(0)
+                return [1.0]
+
+        collector = MetricsCollector(engine=MagicMock(), session_factory=MagicMock())
+        wrapped = InstrumentedEmbeddingService(_Inner(), collector)
+
+        with capture_embedding_usage() as outer:
+            with pytest.raises(asyncio.CancelledError):
+                await wrapped.embed("cancel")
+            assert await wrapped.embed("absent") == [1.0]
+            record_embedding_usage(2)
+            assert outer == type(outer)(total_tokens=2, reported_requests=1)
+
+        assert collector.get_metrics()["embedding_service"]["usage"]["write"] == {
+            "total_tokens": 4,
+            "reported_requests": 1,
+        }
 
 
 class TestInstrumentedReranker:

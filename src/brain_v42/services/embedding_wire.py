@@ -51,6 +51,10 @@ class EmbeddingWire(Protocol):
         """Parse a single-text response into one vector."""
         ...
 
+    def parse_usage(self, payload: Any) -> int | None:
+        """Return an optional provider-reported total token count."""
+        ...
+
 
 class ShimWire:
     """The private contract: POST /embed and POST /embed/query.
@@ -72,6 +76,9 @@ class ShimWire:
 
     def parse_single(self, payload: Any) -> list[float]:
         return payload  # type: ignore[no-any-return]
+
+    def parse_usage(self, payload: Any) -> None:
+        return None
 
 
 def _l2_normalize(vec: list[float]) -> list[float]:
@@ -145,6 +152,15 @@ class OpenAIWire:
 
     def parse_single(self, payload: Any) -> list[float]:
         return self.parse_batch(payload, expected=1)[0]
+
+    def parse_usage(self, payload: Any) -> int | None:
+        try:
+            total_tokens = payload["usage"]["total_tokens"]
+        except (TypeError, KeyError):
+            return None
+        if isinstance(total_tokens, bool) or not isinstance(total_tokens, int) or total_tokens < 0:
+            return None
+        return total_tokens
 
 
 def _validate_vector(embedding: Any) -> list[float]:

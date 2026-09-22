@@ -387,6 +387,21 @@ All are optional via settings (`metrics_enabled`, `decay_enabled`, `graph_enable
 
 Instrumentation is opt-in: `InstrumentedEmbeddingService`, `InstrumentedGraphService`, `InstrumentedReranker`, and `instrument_tool()` wrap the real services when `metrics_enabled=true`.
 
+The `embedding_service.usage` block carries only provider-reported totals, split into
+the fixed `read` and `write` intents. Each intent has `total_tokens` and
+`reported_requests`; an absent provider usage value contributes neither field, while a
+reported zero counts as one request. The wrapper captures these integer aggregates for
+one embedding call, and the flusher persists them in the `_process` row. The sidecar
+aggregates only those process rows, so agent rows cannot double-count usage. These are
+observability counters, not a billing ledger: request text, provider payloads and prices
+are not retained, and the totals reset with the process that holds them.
+
+Only a backend whose responses carry a `usage` object feeds these counters. The default
+`shim` backend reports none, so on it both intents stay at zero for good:
+`reported_requests = 0` means *unknown*, never *free*. Which backend a process runs is
+set by `EMBEDDING_BACKEND`; read it in the live process environment rather than inferring
+it from this paragraph.
+
 `record_search_latency` is called before every DB INSERT in `record_search_log`, so the in-memory p50/p95 histogram is always populated regardless of DB availability.
 
 When legacy automation is enabled, metrics gives PostgreSQL lease acquisition two seconds.

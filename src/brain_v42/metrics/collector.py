@@ -7,7 +7,7 @@ import time
 from collections import deque
 from collections.abc import Iterable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 from sqlalchemy import text
@@ -48,6 +48,10 @@ class MetricsCollector(_DbCollectorsMixin, _DreamCollectorsMixin, _NightlyCollec
             "gpu_busy_errors": 0,
             "unreachable_errors": 0,
             "total_latency": 0.0,
+            "usage": {
+                "read": {"total_tokens": 0, "reported_requests": 0},
+                "write": {"total_tokens": 0, "reported_requests": 0},
+            },
         }
         self._search_stats: dict[str, Any] = {
             "searches_total": 0,
@@ -310,6 +314,27 @@ class MetricsCollector(_DbCollectorsMixin, _DreamCollectorsMixin, _NightlyCollec
             elif error_kind == "unreachable":
                 self._embedding_stats["unreachable_errors"] += 1
 
+    def record_embedding_usage(
+        self,
+        intent: Literal["read", "write"],
+        total_tokens: int,
+        reported_requests: int,
+    ) -> None:
+        """Add provider-reported usage without altering request/error counters."""
+        usage = self._embedding_stats["usage"][intent]
+        usage["total_tokens"] += total_tokens
+        usage["reported_requests"] += reported_requests
+
+    def _embedding_usage_snapshot(self) -> dict[str, dict[str, int]]:
+        usage = self._embedding_stats["usage"]
+        return {
+            intent: {
+                "total_tokens": int(stats["total_tokens"]),
+                "reported_requests": int(stats["reported_requests"]),
+            }
+            for intent, stats in usage.items()
+        }
+
     def record_search(self, similarity_score: float, result_count: int) -> None:
         self._search_stats["searches_total"] += 1
         self._search_stats["total_score"] += similarity_score
@@ -414,6 +439,7 @@ class MetricsCollector(_DbCollectorsMixin, _DreamCollectorsMixin, _NightlyCollec
                 "unreachable_errors": self._embedding_stats["unreachable_errors"],
                 "recent_errors": self._count_recent(self._embedding_error_times),
                 "total_latency": self._embedding_stats["total_latency"],
+                "usage": self._embedding_usage_snapshot(),
             },
             "reranker": {
                 "total_calls": self._reranker_stats["total_calls"],
@@ -491,6 +517,7 @@ class MetricsCollector(_DbCollectorsMixin, _DreamCollectorsMixin, _NightlyCollec
             "gpu_busy_errors": self._embedding_stats["gpu_busy_errors"],
             "unreachable_errors": self._embedding_stats["unreachable_errors"],
             "recent_errors": self._count_recent(self._embedding_error_times),
+            "usage": self._embedding_usage_snapshot(),
         }
 
         # Search quality

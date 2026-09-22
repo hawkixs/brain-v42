@@ -379,6 +379,22 @@ class TestGraphAvgLatency:
 
 
 class TestGetFlushData:
+    def test_embedding_usage_has_independent_read_write_snapshots(self) -> None:
+        collector = MetricsCollector(engine=MagicMock(), session_factory=MagicMock())
+        collector.record_embedding_usage("read", 3, 1)
+        collector.record_embedding_usage("write", 0, 1)
+
+        metrics = collector.get_metrics()
+        flushed = collector.get_flush_data()
+        assert metrics["embedding_service"]["usage"] == {
+            "read": {"total_tokens": 3, "reported_requests": 1},
+            "write": {"total_tokens": 0, "reported_requests": 1},
+        }
+        assert flushed["_process"]["embedding"]["usage"] == metrics["embedding_service"]["usage"]
+
+        metrics["embedding_service"]["usage"]["read"]["total_tokens"] = 999
+        assert collector.get_metrics()["embedding_service"]["usage"]["read"]["total_tokens"] == 3
+
     def test_get_flush_data_includes_tool_stats(self) -> None:
         collector = MetricsCollector(engine=MagicMock(), session_factory=MagicMock())
         collector.record_tool_call("brain_search", latency_ms=100.0)

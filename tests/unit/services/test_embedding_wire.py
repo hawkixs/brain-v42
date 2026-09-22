@@ -30,6 +30,9 @@ class TestShimWireIsTodaysContract:
         assert wire.parse_batch([[1.0], [2.0]], expected=2) == [[1.0], [2.0]]
         assert wire.parse_single([1.0, 2.0]) == [1.0, 2.0]
 
+    def test_usage_is_not_invented_for_the_private_wire(self) -> None:
+        assert ShimWire().parse_usage({"usage": {"total_tokens": 15}}) is None
+
 
 class TestOpenAIWireSpeaksV1Embeddings:
     def test_batch_posts_model_and_input(self) -> None:
@@ -103,3 +106,23 @@ class TestOpenAIWireParsingIsIndexFaithful:
     def test_single_unwraps_the_one_vector(self) -> None:
         payload = self._payload([[3.0, 4.0]])
         assert OpenAIWire(model="m").parse_single(payload) == [0.6, 0.8]
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {},
+            {"usage": {}},
+            {"usage": {"total_tokens": True}},
+            {"usage": {"total_tokens": 1.0}},
+            {"usage": {"total_tokens": "1"}},
+            {"usage": {"total_tokens": -1}},
+            {"usage": None},
+        ],
+    )
+    def test_usage_ignores_missing_or_invalid_provider_totals(self, payload: object) -> None:
+        assert OpenAIWire(model="fixture-model").parse_usage(payload) is None
+
+    def test_usage_preserves_a_nonnegative_provider_total(self) -> None:
+        wire = OpenAIWire(model="fixture-model")
+        assert wire.parse_usage({"usage": {"total_tokens": 0}}) == 0
+        assert wire.parse_usage({"usage": {"total_tokens": 15}}) == 15
