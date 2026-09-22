@@ -91,10 +91,16 @@ UNVERIFIABLE_ROWS: dict[str, tuple[str, str]] = {
 }
 
 
-async def count_unverifiable(conn: asyncpg.Connection | None) -> list[dict[str, object]]:
+async def count_unverifiable(
+    conn: asyncpg.Connection | None,
+    *,
+    exclude_gitlab_events: bool = False,
+) -> list[dict[str, object]]:
     """Rows the checker refuses to judge, with the reason it refuses."""
     entries: list[dict[str, object]] = []
     for table, (query, reason) in UNVERIFIABLE_ROWS.items():
+        if exclude_gitlab_events and table == "gitlab_events":
+            continue
         rows: int | None = None
         if conn is not None:
             rows = await conn.fetchval(query)
@@ -150,12 +156,16 @@ async def compare(
     conn: asyncpg.Connection,
     embedding_svc: GPUEmbeddingService,
     per_type: int,
+    *,
+    exclude_gitlab_events: bool = False,
 ) -> tuple[list[SampleComparison], list[str]]:
     """Re-embed each sampled row and score it against its stored vector."""
     comparisons: list[SampleComparison] = []
     problems: list[str] = []
 
     for entity_type in SAMPLED_TABLES:
+        if exclude_gitlab_events and entity_type == "gitlab_event":
+            continue
         rows = await fetch_sample(conn, entity_type, per_type)
         if not rows:
             continue
@@ -212,6 +222,8 @@ def render(
     backend: str,
     model: str,
     unverifiable: list[dict[str, object]],
+    *,
+    excluded_tables: list[str],
 ) -> str:
     lines = [
         "brain_v42 — embedding model drift check",
@@ -255,6 +267,9 @@ def render(
         lines.append("                       (a wider column would close this, not a better check)")
     else:
         lines.append("  UNVERIFIABLE       : none — every embedded row can reproduce its input")
+    if excluded_tables:
+        lines.append("  EXCLUDED           : " + ", ".join(excluded_tables))
+        lines.append("                       (explicitly excluded by --exclude-gitlab-events)")
     return "\n".join(lines)
 
 
@@ -272,7 +287,8 @@ async def run(args: argparse.Namespace) -> int:
 
     comparisons: list[SampleComparison] = []
     problems: list[str] = []
-    unverifiable = await count_unverifiable(None)
+    excluded_tables = ["gitlab_events"] if args.exclude_gitlab_events else []
+    unverifiable = await count_unverifiable(None, exclude_gitlab_events=args.exclude_gitlab_events)
 
     # An unreachable database is reported THROUGH the report, not instead of it:
     # a runbook branching on `--json` must still receive a document saying
@@ -283,8 +299,15 @@ async def run(args: argparse.Namespace) -> int:
         problems.append(f"cannot reach PostgreSQL: {exc}")
     else:
         try:
-            comparisons, problems = await compare(conn, embedding_svc, args.per_type)
-            unverifiable = await count_unverifiable(conn)
+            comparisons, problems = await compare(
+                conn,
+                embedding_svc,
+                args.per_type,
+                exclude_gitlab_events=args.exclude_gitlab_events,
+            )
+            unverifiable = await count_unverifiable(
+                conn, exclude_gitlab_events=args.exclude_gitlab_events
+            )
         finally:
             await conn.close()
 
@@ -314,6 +337,7 @@ async def run(args: argparse.Namespace) -> int:
                     ],
                     "problems": problems,
                     "unverifiable": unverifiable,
+                    "excluded_tables": excluded_tables,
                 },
                 indent=2,
             )
@@ -326,6 +350,7 @@ async def run(args: argparse.Namespace) -> int:
                 settings.embedding_backend,
                 settings.embedding_model,
                 unverifiable,
+                excluded_tables=excluded_tables,
             )
         )
 
@@ -343,10 +368,15 @@ def main() -> int:
         "--per-type",
         type=int,
         default=8,
-        help="Rows sampled per knowledge type (default 8, so 40 rows over five types).",
+        help="Rows sampled per vector type (default 8, including GitLab unless excluded).",
     )
     parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD)
     parser.add_argument("--json", action="store_true", help="Emit a machine-readable report.")
+    parser.add_argument(
+        "--exclude-gitlab-events",
+        action="store_true",
+        help="Exclude the retired, partly unreproducible gitlab_events table from this run.",
+    )
     return asyncio.run(run(parser.parse_args()))
 
 

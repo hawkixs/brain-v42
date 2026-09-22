@@ -116,6 +116,34 @@ def test_proven_drift_outranks_an_incomplete_run() -> None:
     assert final_exit_code(report, problems=["adr: endpoint unavailable (gpu_busy)"]) == 1
 
 
+def test_a_drifting_sampled_type_fails_even_when_the_global_median_matches() -> None:
+    """The switch gate covers every sampled type, not their weighted average.
+
+    Six fresh types can numerically hide stale plans and plan chunks.  That
+    would green-light a switch while two vector tables still use the old model.
+    """
+    samples = [
+        SampleComparison(kind, str(i), similarity)
+        for kind, similarity in [
+            ("learning", 0.999),
+            ("decision", 0.999),
+            ("snippet", 0.999),
+            ("runbook", 0.999),
+            ("adr", 0.999),
+            ("feature", 0.999),
+            ("plan", 0.01),
+            ("plan_chunk", 0.01),
+        ]
+        for i in range(8)
+    ]
+
+    report = classify_drift(samples, threshold=0.95)
+
+    assert report.median is not None and report.median > 0.95
+    assert report.verdict is DriftVerdict.DRIFT
+    assert final_exit_code(report, problems=[]) == 1
+
+
 class TestThePerTypeBreakdown:
     """A global median can hide a type that is entirely the old model's.
 

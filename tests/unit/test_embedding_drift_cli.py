@@ -17,6 +17,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from brain_v42.services.embedding_drift import classify_drift
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "check_embedding_model_drift.py"
 
@@ -154,3 +158,62 @@ def test_the_report_breaks_the_sample_down_by_type() -> None:
 
     assert "by_type" in payload, "the verdict must not be the only per-type signal"
     assert payload["by_type"] == [], "an unmeasurable run has no type to break down"
+
+
+def test_json_report_names_the_explicit_gitlab_exclusion() -> None:
+    result = _run("--json", "--exclude-gitlab-events")
+
+    payload = json.loads(result.stdout)
+    assert payload["excluded_tables"] == ["gitlab_events"]
+
+
+@pytest.mark.asyncio
+async def test_gitlab_events_are_only_excluded_by_the_explicit_switch() -> None:
+    """The retired table is fail-closed by default, but may be named out.
+
+    A 500-character title is a known truncation, so it cannot reproduce the
+    vector input.  The default run reports that gap; the opt-in exclusion does
+    not fetch the retired table and returns no collection problem for it.
+    """
+    from scripts_under_test import SAMPLED_TABLES, compare, render  # noqa: PLC0415
+
+    class Connection:
+        def __init__(self) -> None:
+            self.tables: list[str] = []
+
+        async def fetch(self, query: str, _per_type: int) -> list[dict[str, str]]:
+            table = next(table for table, _columns in SAMPLED_TABLES.values() if table in query)
+            self.tables.append(table)
+            if table == "gitlab_events":
+                return [{"id": "retired", "title": "x" * 500, "stored": "[1.0]"}]
+            return []
+
+    class EmbeddingService:
+        async def embed_texts(self, _texts: list[str]) -> list[list[float]]:
+            raise AssertionError("the truncated row must not be embedded")
+
+    default_conn = Connection()
+    _comparisons, default_problems = await compare(default_conn, EmbeddingService(), per_type=1)
+    assert default_problems == [
+        "gitlab_event: 1 of 1 sampled rows cannot reproduce their own embedding input"
+    ]
+    assert "gitlab_events" in default_conn.tables
+
+    excluded_conn = Connection()
+    comparisons, problems = await compare(
+        excluded_conn, EmbeddingService(), per_type=1, exclude_gitlab_events=True
+    )
+    assert comparisons == []
+    assert problems == []
+    assert "gitlab_events" not in excluded_conn.tables
+
+    human_report = render(
+        classify_drift([], threshold=0.95),
+        [],
+        "openai",
+        "codestral-embed-2505",
+        [],
+        excluded_tables=["gitlab_events"],
+    )
+    assert "EXCLUDED" in human_report
+    assert "gitlab_events" in human_report

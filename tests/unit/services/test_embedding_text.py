@@ -1,5 +1,7 @@
 """Canonical embedding text shared by request and backfill paths."""
 
+import pytest
+
 from brain_v42.services.embedding_text import (
     adr_embedding_text,
     decision_embedding_text,
@@ -218,3 +220,88 @@ class TestPlanEmbedTruncation:
 
         assert truncate_plan_embed_input(long_text) == "y" * PLAN_EMBED_INPUT_MAX_CHARS
         assert truncate_plan_embed_input("short") == "short"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_parent", "expected_chunks"),
+    [
+        (
+            "---\ntitle: Frontmatter title\n---\n\n# Ignored H1\n\nIntro.\n\n## Section\n\nBody.",
+            "Frontmatter title\n\nIntro.",
+            ["## Section\n\nBody."],
+        ),
+        (
+            "# H1 title\n\nBody without a section heading.",
+            "H1 title\n\n# H1 title\n\nBody without a section heading.",
+            [],
+        ),
+        (
+            "# Title\n\n```markdown\n## This is code, not a section\n```\n\nPreamble.",
+            "Title\n\n# Title\n\n```markdown\n## This is code, not a section\n```\n\nPreamble.",
+            [],
+        ),
+    ],
+)
+def test_persisted_plan_columns_reproduce_the_real_chunker_inputs(
+    source: str,
+    expected_parent: str,
+    expected_chunks: list[str],
+) -> None:
+    """Derive expectations from markdown, then use the persisted row shape.
+
+    Frontmatter/H1 precedence, no-H2 files and headings inside fenced code each
+    take a distinct `chunk_markdown` path.  The parent and chunk columns are
+    precisely what the drift checker sees after persistence.
+    """
+    from brain_v42.services.embedding_text import reproducible_embedding_text
+    from brain_v42.services.plan_chunker import chunk_markdown
+
+    parent, chunks = chunk_markdown(source)
+    persisted_parent = {"title": parent.title, "summary": parent.summary, "content": parent.content}
+
+    assert reproducible_embedding_text("plan", persisted_parent) == expected_parent
+    assert [
+        reproducible_embedding_text("plan_chunk", {"content": chunk.content}) for chunk in chunks
+    ] == expected_chunks
+
+
+def test_a_long_preamble_is_reproduced_with_the_write_path_truncation() -> None:
+    """The row stores a long body; its plan vector stores only the shared prefix."""
+    from brain_v42.services.embedding_text import (
+        PLAN_EMBED_INPUT_MAX_CHARS,
+        reproducible_embedding_text,
+    )
+    from brain_v42.services.plan_chunker import chunk_markdown
+
+    body = "# Long preamble\n\n" + "x" * PLAN_EMBED_INPUT_MAX_CHARS
+    parent, chunks = chunk_markdown(body)
+    persisted_parent = {"title": parent.title, "summary": parent.summary, "content": parent.content}
+
+    assert chunks == []
+    assert (
+        reproducible_embedding_text("plan", persisted_parent)
+        == ("Long preamble\n\n# Long preamble\n\n" + "x" * PLAN_EMBED_INPUT_MAX_CHARS)[
+            :PLAN_EMBED_INPUT_MAX_CHARS
+        ]
+    )
+
+
+def test_a_long_nested_h2_chunk_reproduces_its_literal_truncated_prefix() -> None:
+    """The persisted chunk is direct input, including nested H3 markdown."""
+    from brain_v42.services.embedding_text import (
+        PLAN_EMBED_INPUT_MAX_CHARS,
+        reproducible_embedding_text,
+    )
+    from brain_v42.services.plan_chunker import chunk_markdown
+
+    section = "## Delivery\n\n### Rollout\n\n" + "word " * PLAN_EMBED_INPUT_MAX_CHARS
+    parent, chunks = chunk_markdown("# Provider Switch\n\n" + section)
+
+    assert parent.title == "Provider Switch"
+    assert len(chunks) == 1
+    assert chunks[0].section_path == "Delivery > Rollout"
+    assert chunks[0].content == section.rstrip("\n")
+    assert (
+        reproducible_embedding_text("plan_chunk", {"content": chunks[0].content})
+        == section[:PLAN_EMBED_INPUT_MAX_CHARS]
+    )
