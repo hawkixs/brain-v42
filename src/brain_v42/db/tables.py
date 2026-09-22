@@ -755,6 +755,14 @@ project_contexts = Table(
     Column("plan_scan_paths", ARRAY(Text), nullable=False, server_default=sa.text("'{}'")),
     Column("gitlab_project_path", String(200)),
     Column("project_group", String(50), nullable=True),
+    # Lifecycle, and the only one this table has. Nullable with no default and
+    # no backfill: `archived_at IS NULL` IS the definition of active, so every
+    # existing project stays active without a migration touching a single row.
+    # It is a column and not prose in `current_phase` because a default view
+    # has to filter on it, and `project_group` is a grouping — reusing it would
+    # destroy the real group.
+    Column("archived_at", DateTime(timezone=True), nullable=True),
+    Column("archived_reason", Text, nullable=True),
     Column(
         "created_at",
         DateTime(timezone=True),
