@@ -149,13 +149,17 @@ class _DbCollectorsMixin:
                 ).all()
 
             agg_tools: dict[str, dict[str, Any]] = {}
-            agg_emb = {
+            agg_emb: dict[str, Any] = {
                 "total_requests": 0,
                 "total_errors": 0,
                 "gpu_busy_errors": 0,
                 "unreachable_errors": 0,
                 "recent_errors": 0,
                 "total_latency": 0.0,
+                "usage": {
+                    "read": {"total_tokens": 0, "reported_requests": 0},
+                    "write": {"total_tokens": 0, "reported_requests": 0},
+                },
             }
             total_rss = 0
 
@@ -192,6 +196,12 @@ class _DbCollectorsMixin:
                     agg_emb["unreachable_errors"] += emb_stats.get("unreachable_errors", 0)
                     agg_emb["total_latency"] += emb_stats.get("total_latency", 0.0)
                     agg_emb["recent_errors"] += emb_stats.get("recent_errors", 0)
+                    for intent in ("read", "write"):
+                        usage = emb_stats.get("usage", {}).get(intent, {})
+                        agg_emb["usage"][intent]["total_tokens"] += usage.get("total_tokens", 0)
+                        agg_emb["usage"][intent]["reported_requests"] += usage.get(
+                            "reported_requests", 0
+                        )
                     total_rss += rss
                 else:
                     # Real agent: accumulate per-agent breakdown from its tool_stats
@@ -261,6 +271,7 @@ class _DbCollectorsMixin:
                     "avg_latency_ms": round(agg_emb["total_latency"] / emb_total, 1)
                     if emb_total
                     else 0.0,
+                    "usage": agg_emb["usage"],
                 },
                 "by_agent": by_agent,
             }
@@ -278,6 +289,10 @@ class _DbCollectorsMixin:
                     "unreachable_errors": 0,
                     "recent_errors": 0,
                     "avg_latency_ms": 0.0,
+                    "usage": {
+                        "read": {"total_tokens": 0, "reported_requests": 0},
+                        "write": {"total_tokens": 0, "reported_requests": 0},
+                    },
                 },
                 "by_agent": {},
             }

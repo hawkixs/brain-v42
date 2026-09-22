@@ -492,6 +492,13 @@ class MetricsServer:
             metrics["embedding_service"]["total_errors"] = emb_agg["total_errors"]
             metrics["embedding_service"]["recent_errors"] = emb_agg["recent_errors"]
             metrics["embedding_service"]["avg_latency_ms"] = emb_agg["avg_latency_ms"]
+            metrics["embedding_service"]["usage"] = emb_agg.get(
+                "usage",
+                {
+                    "read": {"total_tokens": 0, "reported_requests": 0},
+                    "write": {"total_tokens": 0, "reported_requests": 0},
+                },
+            )
 
         metrics["cross_process"] = process_agg
 

@@ -12,6 +12,7 @@ from fastmcp.exceptions import AuthorizationError
 
 from brain_v42.metrics.collector import MetricsCollector
 from brain_v42.provenance import get_current_actor, normalize_agent
+from brain_v42.services.embedding_usage import capture_embedding_usage
 from brain_v42.services.gpu_embedding_service import EmbeddingUnavailable
 from brain_v42.tracing import finish_tool_span, start_tool_span
 
@@ -95,52 +96,70 @@ class InstrumentedEmbeddingService:
         start = time.monotonic()
         error = False
         error_kind: str | None = None
-        try:
-            return await self._inner.embed(text)  # type: ignore[no-any-return]
-        except EmbeddingUnavailable as exc:
-            error = True
-            error_kind = exc.kind
-            raise
-        except Exception:
-            error = True
-            raise
-        finally:
-            latency_ms = (time.monotonic() - start) * 1000
-            self._collector.record_embedding_request(latency_ms, error=error, error_kind=error_kind)
+        with capture_embedding_usage() as usage:
+            try:
+                return await self._inner.embed(text)  # type: ignore[no-any-return]
+            except EmbeddingUnavailable as exc:
+                error = True
+                error_kind = exc.kind
+                raise
+            except Exception:
+                error = True
+                raise
+            finally:
+                latency_ms = (time.monotonic() - start) * 1000
+                self._collector.record_embedding_request(
+                    latency_ms, error=error, error_kind=error_kind
+                )
+                self._collector.record_embedding_usage(
+                    "write", usage.total_tokens, usage.reported_requests
+                )
 
     async def embed_query(self, text: str) -> list[float]:
         start = time.monotonic()
         error = False
         error_kind: str | None = None
-        try:
-            return await self._inner.embed_query(text)  # type: ignore[no-any-return]
-        except EmbeddingUnavailable as exc:
-            error = True
-            error_kind = exc.kind
-            raise
-        except Exception:
-            error = True
-            raise
-        finally:
-            latency_ms = (time.monotonic() - start) * 1000
-            self._collector.record_embedding_request(latency_ms, error=error, error_kind=error_kind)
+        with capture_embedding_usage() as usage:
+            try:
+                return await self._inner.embed_query(text)  # type: ignore[no-any-return]
+            except EmbeddingUnavailable as exc:
+                error = True
+                error_kind = exc.kind
+                raise
+            except Exception:
+                error = True
+                raise
+            finally:
+                latency_ms = (time.monotonic() - start) * 1000
+                self._collector.record_embedding_request(
+                    latency_ms, error=error, error_kind=error_kind
+                )
+                self._collector.record_embedding_usage(
+                    "read", usage.total_tokens, usage.reported_requests
+                )
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         start = time.monotonic()
         error = False
         error_kind: str | None = None
-        try:
-            return await self._inner.embed_texts(texts)  # type: ignore[no-any-return]
-        except EmbeddingUnavailable as exc:
-            error = True
-            error_kind = exc.kind
-            raise
-        except Exception:
-            error = True
-            raise
-        finally:
-            latency_ms = (time.monotonic() - start) * 1000
-            self._collector.record_embedding_request(latency_ms, error=error, error_kind=error_kind)
+        with capture_embedding_usage() as usage:
+            try:
+                return await self._inner.embed_texts(texts)  # type: ignore[no-any-return]
+            except EmbeddingUnavailable as exc:
+                error = True
+                error_kind = exc.kind
+                raise
+            except Exception:
+                error = True
+                raise
+            finally:
+                latency_ms = (time.monotonic() - start) * 1000
+                self._collector.record_embedding_request(
+                    latency_ms, error=error, error_kind=error_kind
+                )
+                self._collector.record_embedding_usage(
+                    "write", usage.total_tokens, usage.reported_requests
+                )
 
     def similarity(self, vec_a: list[float], vec_b: list[float]) -> float:
         return self._inner.similarity(vec_a, vec_b)  # type: ignore[no-any-return]

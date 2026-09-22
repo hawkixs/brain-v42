@@ -26,6 +26,7 @@ from typing import TypeVar
 import httpx
 import structlog
 
+from brain_v42.services.embedding_usage import record_embedding_usage
 from brain_v42.services.embedding_wire import EmbeddingWire, ShimWire
 
 logger = structlog.get_logger(__name__)
@@ -286,7 +287,9 @@ class GPUEmbeddingService:
         """
         path, body = self._wire.single_request(self._document_prefix + text)
         response = await self._request_with_retry("POST", path, json=body)
-        return self._parsed(lambda: self._wire.parse_single(response.json()))
+        payload = self._parsed(response.json)
+        record_embedding_usage(self._wire.parse_usage(payload))
+        return self._parsed(lambda: self._wire.parse_single(payload))
 
     async def embed_query(self, text: str) -> list[float]:
         """Embed a SEARCH QUERY into a vector.
@@ -304,7 +307,9 @@ class GPUEmbeddingService:
         """
         path, body = self._wire.single_request(self._query_prefix + text)
         response = await self._request_with_retry("POST", path, json=body)
-        return self._parsed(lambda: self._wire.parse_single(response.json()))
+        payload = self._parsed(response.json)
+        record_embedding_usage(self._wire.parse_usage(payload))
+        return self._parsed(lambda: self._wire.parse_single(payload))
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of DOCUMENTS into vectors.
@@ -322,7 +327,9 @@ class GPUEmbeddingService:
 
         path, body = self._wire.batch_request([self._document_prefix + t for t in texts])
         response = await self._request_with_retry("POST", path, json=body)
-        return self._parsed(lambda: self._wire.parse_batch(response.json(), expected=len(texts)))
+        payload = self._parsed(response.json)
+        record_embedding_usage(self._wire.parse_usage(payload))
+        return self._parsed(lambda: self._wire.parse_batch(payload, expected=len(texts)))
 
     def similarity(self, vec_a: list[float], vec_b: list[float]) -> float:
         """Compute dot product similarity between two vectors.
