@@ -23,6 +23,10 @@ import structlog
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from brain_v42.db.tables import feature_artifacts, gitlab_events
+from brain_v42.services.embedding_text import (
+    GITLAB_EVENT_EMBED_MAX_CHARS,
+    GITLAB_EVENT_TITLE_MAX_CHARS,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -88,7 +92,7 @@ class GitLabIngestor:
 
         # 4. Embed
         try:
-            embedding = await self._embedding_svc.embed(text[:2000])
+            embedding = await self._embedding_svc.embed(text[:GITLAB_EVENT_EMBED_MAX_CHARS])
         except Exception:
             logger.warning("gitlab_ingestor.embed_failed", exc_info=True)
             embedding = None
@@ -116,7 +120,11 @@ class GitLabIngestor:
             event_type=event_type,
             project_key=project_key,
             ref=self._extract_ref(payload),
-            title=text[:500],
+            # SHORTER than what was embedded, on purpose and at a cost: the
+            # row cannot reproduce its own vector past this point, so the
+            # drift check refuses to verify it rather than guess. Both numbers
+            # live together in `embedding_text` so the gap stays visible.
+            title=text[:GITLAB_EVENT_TITLE_MAX_CHARS],
             embedding=embedding,
             feature_id=feature_id,
         )

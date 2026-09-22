@@ -29,6 +29,11 @@ from brain_v42.db.tables import feature_artifacts, indexed_plans, project_contex
 from brain_v42.models.indexed_plan import IndexedPlanCreate
 from brain_v42.models.indexed_plan_chunk import IndexedPlanChunkCreate
 from brain_v42.repositories.pg_indexed_plan_repo import PgIndexedPlanRepo
+from brain_v42.services.embedding_text import (
+    indexed_plan_chunk_embedding_text,
+    indexed_plan_embedding_text,
+    truncate_plan_embed_input,
+)
 from brain_v42.services.plan_chunker import chunk_markdown
 
 if TYPE_CHECKING:
@@ -68,11 +73,6 @@ _H1_RE = re.compile(r"^#\s+(.+)$", re.MULTILINE)
 # Regex for date prefix in filenames (e.g., 2026-03-14-)
 _DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-")
 
-# Max character count for any single embedding input. The GPU embedding
-# service accepts inputs up to roughly 6000 words before returning 500;
-# 15000 chars ~= 2500 words provides comfortable headroom.
-_EMBED_INPUT_MAX_CHARS = 15000
-
 # Max batch size per embed_texts call. The Qodo-Embed-1-1.5B model on a
 # 6 GiB GPU runs out of memory on large batches when inputs are large.
 # A batch size of 2 keeps peak memory bounded while still benefiting from
@@ -89,13 +89,6 @@ class PlanScanPathError(ValueError):
         super().__init__(reason_code)
         self.path = path
         self.reason_code = reason_code
-
-
-def _truncate_for_embed(text: str) -> str:
-    """Truncate embedding input to stay within the service's token budget."""
-    if len(text) <= _EMBED_INPUT_MAX_CHARS:
-        return text
-    return text[:_EMBED_INPUT_MAX_CHARS]
 
 
 async def _embed_in_batches(embedding_svc: Any, inputs: list[str]) -> list[list[float]]:
@@ -321,20 +314,19 @@ class PlanIndexer:
 
                 plan_type = self._detect_plan_type(str(file_path))
 
-                # Build embed inputs: parent first, then each chunk
-                parent_embed_input = title
-                if parent.summary:
-                    parent_embed_input = f"{title}\n\n{parent.summary}"
-                elif parent.preamble:
-                    parent_embed_input = f"{title}\n\n{parent.preamble}"
-
-                # Truncate embedding inputs to stay under the GPU service's
-                # token budget. The full content is still stored in the DB;
-                # only the embedding uses the truncated version. ~15000 chars
-                # is ~2500 words — well below the observed ~6000-word failure
-                # threshold of the embedding service.
-                embed_inputs = [_truncate_for_embed(parent_embed_input)] + [
-                    _truncate_for_embed(c.content) for c in chunks
+                # Build embed inputs: parent first, then each chunk. Both go
+                # through the shared composers in `embedding_text`, so the
+                # drift checker recomposes them with the SAME code -- a checker
+                # composing its own way reports drift on a column nothing
+                # touched. Only the embedding is truncated; the DB keeps the
+                # full content.
+                embed_inputs = [
+                    truncate_plan_embed_input(
+                        indexed_plan_embedding_text(title, parent.summary, parent.preamble)
+                    )
+                ] + [
+                    truncate_plan_embed_input(indexed_plan_chunk_embedding_text(c.content))
+                    for c in chunks
                 ]
 
                 try:

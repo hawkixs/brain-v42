@@ -165,6 +165,27 @@ def _apply_min_max_rules(chunks: list[ChunkData]) -> list[ChunkData]:
     return merged
 
 
+def preamble_from_body(body: str) -> str:
+    """The text before the first H2, as `chunk_markdown` computes it.
+
+    Extracted so the drift checker can recompose an `indexed_plans` parent
+    vector from the stored `content` column -- which IS this function's input,
+    since `PlanParentData.content` is the frontmatter-stripped body. A checker
+    that re-derived the preamble its own way would report drift on a vector
+    nobody had touched.
+    """
+    if not body:
+        return ""
+    body = _normalize_line_endings(body)
+    scrubbed = _strip_fenced_code_blocks(body)
+    h2_positions = _find_h2_positions(scrubbed)
+    if not h2_positions:
+        return body
+    preamble_raw = body[: h2_positions[0][0]]
+    preamble_lines = [line for line in preamble_raw.splitlines() if not line.startswith("# ")]
+    return "\n".join(preamble_lines).strip()
+
+
 def chunk_markdown(content: str) -> tuple[PlanParentData, list[ChunkData]]:
     """Split markdown into (parent, chunks)."""
     if not content:
@@ -188,13 +209,10 @@ def chunk_markdown(content: str) -> tuple[PlanParentData, list[ChunkData]]:
     scrubbed = _strip_fenced_code_blocks(content_no_fm)
     h2_positions = _find_h2_positions(scrubbed)
 
+    preamble = preamble_from_body(content_no_fm)
     if not h2_positions:
-        preamble = content_no_fm
         chunks: list[ChunkData] = []
     else:
-        preamble_raw = content_no_fm[: h2_positions[0][0]]
-        preamble_lines = [line for line in preamble_raw.splitlines() if not line.startswith("# ")]
-        preamble = "\n".join(preamble_lines).strip()
         chunks = _build_chunks(content_no_fm, scrubbed, h2_positions)
         chunks = _apply_min_max_rules(chunks)
 
