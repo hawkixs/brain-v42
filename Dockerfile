@@ -23,6 +23,12 @@ RUN pip install --no-cache-dir "uv==${UV_VERSION}"
 FROM base AS deps
 
 COPY pyproject.toml uv.lock README.md ./
+# The uv workspace member `brain_v42` depends on (`[tool.uv.workspace]`). It is a
+# dependency, not application source: without it `uv sync --locked` refuses with
+# "references a workspace in tool.uv.sources, but is not a workspace member", and
+# the image had not built since 0.6.0 introduced the member — unnoticed while the
+# delivery rail waited on a runner that never came (ticket 03846021).
+COPY packages/headless-agents/ ./packages/headless-agents/
 # Install dependencies only (no --editable src yet — src/ not copied here).
 # The placeholder src stub below satisfies the "package must exist" requirement
 # of uv's editable project install without polluting the cache with real source files.
