@@ -121,15 +121,20 @@ main() {
     head_commit="$(git rev-parse HEAD)"
     echo "=== HEAD before analyze: ${head_commit:-<unknown>} ==="
 
-    # --no-stats, not --skip-agents-md: the gitnexus:* block in CLAUDE.md/AGENTS.md
-    # is allowed to refresh, but without the volatile symbol/relationship counters
-    # that made every reindex produce a diff. --skip-agents-md froze the block
-    # instead, which let it drift (it still claimed 19448 symbols against 19482).
+    # --index-only: refresh the index and write NOTHING into the checkout
+    # (ticket 07b9e892). Without it, analyze also copied six standard skills
+    # into .claude/skills/ and .agents/skills/ every night, reinstalling the
+    # skills pruned on 2026-09-22, and rewrote the generated section of
+    # CLAUDE.md/AGENTS.md -- two files git now tracks, so each template change
+    # would have dirtied the canonical checkout by morning. Their GitNexus
+    # section is hand-written instead, with no counters to drift: the drift
+    # that once argued for refreshing it (a frozen block claiming 19448
+    # symbols against 19482) came from the counters, not from the rules.
     # --wal-checkpoint-threshold 67108864: without it, analyze has exited 0 twice
     # while the index did not actually advance (learning cb7d7164, incl. a
     # duplicate CodeEmbedding primary key on 2026-08-05) — the exit code is not
     # trusted here, see the index-freshness check below.
-    "$GITNEXUS_BIN" analyze --embeddings --no-stats --wal-checkpoint-threshold 67108864 . 2>&1
+    "$GITNEXUS_BIN" analyze --embeddings --index-only --wal-checkpoint-threshold 67108864 . 2>&1
     status=$?
     echo "=== analyze exit status: $status ==="
 

@@ -807,7 +807,7 @@ def build_degraded_block(run_date: dt.date, degraded: Sequence[DegradedPhase]) -
     return lines
 
 
-CLAUDE_MD_HEADING = "### CLAUDE.md (gitignoré)"
+CLAUDE_MD_HEADING = "### CLAUDE.md"
 
 
 def build_claude_md_block(path: Path | None = None) -> list[str]:
@@ -825,9 +825,10 @@ def build_claude_md_block(path: Path | None = None) -> list[str]:
     can never hold two copies of one fragment.
 
     Returns `[]` in two cases, and the second is not a failure: a conforming
-    document, and an ABSENT one. `CLAUDE.md` is gitignored since the open-source
-    publication, so a clean checkout simply has no file — a block shouting about
-    that absence would be noise on every machine that never had it.
+    document, and an ABSENT one. `CLAUDE.md` is tracked since 2026-09-22, but the
+    claims module resolves it next to its own location, and a run from an
+    installed package has no checkout there — a block shouting about that
+    absence would be noise on every such machine.
     """
     document = path or CLAUDE_MD
     try:
