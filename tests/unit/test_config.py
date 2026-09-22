@@ -107,6 +107,18 @@ def test_settings_postgres_url_rejects_sync_scheme():
         Settings(postgres_url="postgresql://brain:brain@localhost:5433/brain")
 
 
+@pytest.mark.parametrize("interval", [0, -1])
+def test_plan_index_refresh_interval_must_be_strictly_positive(interval: int) -> None:
+    from brain_v42.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(
+            postgres_url="postgresql+asyncpg://brain:brain@localhost:5433/brain",
+            plan_index_refresh_interval_seconds=interval,
+            _env_file=None,  # type: ignore[call-arg]
+        )
+
+
 def test_invalid_postgres_scheme_does_not_render_credentials() -> None:
     """Startup validation must not echo a malformed secret-bearing DSN."""
     from brain_v42.config import Settings
