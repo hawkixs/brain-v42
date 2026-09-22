@@ -2050,14 +2050,16 @@ def test_documented_network_boundary_matches_tracked_bindings() -> None:
         assert contract in OPERATIONS
     if CLAUDE:
         claude_normalized = " ".join(CLAUDE.split())
-        assert "le runtime automation dédié sont contraints au loopback" in claude_normalized
+        assert "the dedicated automation runtime are constrained to loopback" in claude_normalized
         assert (
-            "Les métriques y sont liées par défaut mais leur bind reste configurable"
+            "Metrics are bound there by default but their bind stays configurable"
             in claude_normalized
         )
-        assert "sa route `/gitlab/webhook` partage ce bind" in claude_normalized
+        assert "its `/gitlab/webhook` route shares that bind" in claude_normalized
+        # The retired wording put automation back under the configurable bind.
         assert (
-            "métriques et automation y sont liées par défaut mais restent" not in claude_normalized
+            "metrics and automation are bound there by default but remain"
+            not in claude_normalized.lower()
         )
 
 
@@ -2127,7 +2129,7 @@ def test_post_037_production_truth_is_consistent_and_fail_closed() -> None:
     schema_normalized = " ".join(SCHEMA.split())
     if CLAUDE:
         claude_normalized = " ".join(CLAUDE.split())
-        assert "Il est actif en production depuis le 24 juillet 2026" in claude_normalized
+        assert "It has been active in production since 24 July 2026" in claude_normalized
     assert (
         "The v4 lifecycle it carries has been running in production since 24 July 2026"
         in schema_normalized
@@ -2327,10 +2329,10 @@ def test_post_037_production_truth_is_consistent_and_fail_closed() -> None:
     assert "no downgrade is authorized" in dr_b2_normalized
 
     stale_live_claims = (
-        "Il n'est pas encore déployé sur le Brain live",
-        "Il n'est pas encore déployé live",
+        "It is not yet deployed on the live Brain",
+        "It is not yet deployed live",
         "This document does not assert that migrations 036–037 are applied live",
-        "L'instance live observée le 21 juillet 2026 reste au head 032",
+        "The live instance observed on 21 July 2026 stays at head 032",
     )
     live_documents = "\n".join((README, CLAUDE, ARCHITECTURE, MCP_TOOLS, SCHEMA))
     for claim in stale_live_claims:
@@ -2471,7 +2473,7 @@ def _unfenced(document: str) -> str:
     """Drop every fenced code block, keeping the surrounding line structure.
 
     A doctrinal sentence deleted from its blockquote and re-emitted inside a
-    ```text fence introduced by « sans portée normative » satisfies a naive
+    ```text fence introduced by a "not normative" disclaimer satisfies a naive
     substring pin while the doctrine an agent actually reads has disappeared.
     Fenced content is example material, so it is removed before any doctrinal
     statement is looked up.
@@ -2514,7 +2516,7 @@ def _section(document: str, heading: str) -> str:
     lines = _unfenced(document).splitlines()
     rank = len(heading) - len(heading.lstrip("#"))
     start = next((index for index, line in enumerate(lines) if line.strip() == heading), None)
-    assert start is not None, f"section introuvable, la doctrine a été déplacée: {heading}"
+    assert start is not None, f"section not found, the doctrine has moved: {heading}"
     for end in range(start + 1, len(lines)):
         candidate = lines[end].strip()
         depth = len(candidate) - len(candidate.lstrip("#"))
@@ -2534,7 +2536,7 @@ def _blockquote_holding(document: str, marker: str) -> str:
         ),
         None,
     )
-    assert hit is not None, f"blockquote introuvable, la doctrine a été déplacée: {marker}"
+    assert hit is not None, f"blockquote not found, the doctrine has moved: {marker}"
     start, end = hit, hit + 1
     while start > 0 and lines[start - 1].lstrip().startswith(">"):
         start -= 1
@@ -2545,47 +2547,61 @@ def _blockquote_holding(document: str, marker: str) -> str:
 
 # An auto-closure concession brings together three traits: the sentence speaks of
 # a session, it closes it, and it does so without a user command. Looking for a
-# literal vocabulary (« ferme automatiquement ») only detects the phrasing the
+# literal vocabulary ("closes automatically") only detects the phrasing the
 # guard's author had in mind; the conjunction of the three traits also detects
-# « clore », « abandonner de lui-même » or « auto-close ».
+# "ends", "abandons of its own accord" or "auto-close".
+#
+# The vocabulary is BILINGUAL on purpose. CLAUDE.md moved to English on
+# 2026-09-22 (ticket 5081f3ff), and every document scanned here is English, but
+# the English-only rule is watched by no gate: a concession written in French
+# must not slip past this scan because of its language. The French half is still
+# exercised by the French rewordings below.
 _MENTIONS_A_SESSION = re.compile(r"session", re.IGNORECASE)
 _CLOSES_THE_SESSION = re.compile(
-    r"ferm\w*|cl[oô](?:re|s\w*|t\w*)|abandon\w*|balay\w*|sweep|brain_session_(?:end|abandon)",
+    r"ferm\w*|cl[oô](?:re|s\w*|t\w*)|abandon\w*|balay\w*|sweep|brain_session_(?:end|abandon)"
+    r"|\bend(?:s|ed|ing)?\b|terminat\w*|expir\w*",
     re.IGNORECASE,
 )
 _WITHOUT_A_USER_COMMAND = re.compile(
     r"auto-close\w*|auto_stale_7d|automatiq\w*|automatic\w*"
     r"|sans (?:commande|demande|instruction|attendre|activité|signe de vie)"
     r"|de lui-même|d'elle-même|de sa propre initiative|de son propre chef"
-    r"|hook|background|nocturne|timer|cron|livraison|fin de réponse"
-    r"|without an explicit command|without being asked|on its own|by itself"
+    r"|hook|background|nocturne|nightly|timer|cron|livraison|fin de réponse"
+    # "delivery" alone would match every `brain_delivery_*` tool name in a table.
+    r"|\bdeliver(?:ed|s|ing)?\b|work delivery|delivery of (?:the )?work"
+    r"|end of (?:the |a )?(?:response|reply|turn)"
+    r"|without (?:an? |any )?(?:explicit |user )?"
+    r"(?:command|request|instruction|asking|waiting|activity|sign of life)"
+    r"|without being asked|on (?:its|their) own|by (?:itself|themselves)"
+    r"|of (?:its|their) own accord"
     r"|côté serveur|server-side|agents?\b",
     re.IGNORECASE,
 )
 
 _SESSION_CLOSURE_PROHIBITION = (
-    "Aucun hook, auto-close, livraison de travail ou fin de réponse ne ferme une session "
-    "côté agent ou client."
+    "No hook, auto-close, work delivery or end of response closes a session on the agent "
+    "or client side."
 )
-# « sans heartbeat », not « sans signe de vie »: the sweep's predicate bears on
+# "no heartbeat", not "no sign of life": the sweep's predicate bears on
 # `last_heartbeat_at`, which only `capture` and `heartbeat` refresh. A daily
 # `resume` is a sign of life and yet does not push back the abandonment.
 _SERVER_SIDE_SWEEP_EXCEPTION = (
-    "la phase Dream `sweep` — livrée fermée et dry (`BRAIN_DREAM_SWEEP_ENABLED=false`, "
-    "`BRAIN_DREAM_SWEEP_DRY_RUN=true`) — abandonne une session ouverte sans heartbeat "
-    "depuis 7 jours, avec `abandonment_reason='auto_stale_7d'`."
+    "the Dream `sweep` phase — shipped disabled and dry (`BRAIN_DREAM_SWEEP_ENABLED=false`, "
+    "`BRAIN_DREAM_SWEEP_DRY_RUN=true`) — abandons an open session with no heartbeat for "
+    "7 days, with `abandonment_reason='auto_stale_7d'`."
 )
+_CLAUDE_SWEEP_EXCEPTION = f"**Only exception, server-side:** {_SERVER_SIDE_SWEEP_EXCEPTION}"
 _SWEEP_LEAVES_THE_FOCUS_ALONE = (
-    "Elle n'écrit ni summary ni `next_focus` et ne touche jamais le focus du projet."
+    "It writes neither a summary nor a `next_focus` and never touches the project focus."
 )
-_SWEEP_GRANTS_NOTHING_TO_THE_CLIENT = "Aucun agent, aucun hook et aucun client ne gagne ce droit"
+_SWEEP_GRANTS_NOTHING_TO_THE_CLIENT = "No agent, no hook and no client gains this right"
 _SESSION_COMMANDS_STAY_EXPLICIT = (
-    "`start`, `resume`, `end` et `abandon` restent des commandes explicites de l'utilisateur."
+    "`start`, `resume`, `end` and `abandon` remain explicit user commands."
 )
 _THRESHOLD_DISAMBIGUATION = (
-    "seul le balayage serveur de 7 jours abandonne une session sans commande explicite."
+    "only the 7-day server-side sweep abandons a session without an explicit command."
 )
-_CLAUDE_THRESHOLD_SENTENCE = f"Le statut reste `open`, et {_THRESHOLD_DISAMBIGUATION}"
+_CLAUDE_THRESHOLD_SENTENCE = f"The status stays `open`, and {_THRESHOLD_DISAMBIGUATION}"
 
 # README.md became the English open-source draft (ticket bdc4db73); its short
 # "## Sessions" section keeps two doctrinal sentences verbatim, the full
@@ -2648,23 +2664,20 @@ _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
     *(
         (
             (
-                "CLAUDE.md#exception-stricte",
-                _blockquote_holding(CLAUDE, "**Exception stricte — cycle de session :**"),
+                "CLAUDE.md#strict-exception",
+                _blockquote_holding(CLAUDE, "**Strict exception — session lifecycle:**"),
                 (
                     ("prohibition", _SESSION_CLOSURE_PROHIBITION),
-                    (
-                        "exception",
-                        f"**Seule exception, côté serveur :** {_SERVER_SIDE_SWEEP_EXCEPTION}",
-                    ),
+                    ("exception", _CLAUDE_SWEEP_EXCEPTION),
                     ("focus-intact", _SWEEP_LEAVES_THE_FOCUS_ALONE),
-                    ("aucun-droit-client", _SWEEP_GRANTS_NOTHING_TO_THE_CLIENT),
-                    ("commandes-explicites", _SESSION_COMMANDS_STAY_EXPLICIT),
+                    ("no-client-right", _SWEEP_GRANTS_NOTHING_TO_THE_CLIENT),
+                    ("explicit-commands", _SESSION_COMMANDS_STAY_EXPLICIT),
                 ),
             ),
             (
-                "CLAUDE.md#cycle-de-session-explicite",
-                _section(CLAUDE, "### Cycle de session explicite"),
-                (("seuils-24h-vs-7j", _CLAUDE_THRESHOLD_SENTENCE),),
+                "CLAUDE.md#explicit-session-lifecycle",
+                _section(CLAUDE, "### Explicit session lifecycle"),
+                (("thresholds-24h-vs-7d", _CLAUDE_THRESHOLD_SENTENCE),),
             ),
         )
         if CLAUDE
@@ -2675,7 +2688,7 @@ _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
         _section(README, "## Sessions"),
         (
             ("user-control", _README_SESSION_BOUNDARY_SENTENCE),
-            ("seuils-24h-vs-7j", _README_STALE_THRESHOLD_SENTENCE),
+            ("thresholds-24h-vs-7d", _README_STALE_THRESHOLD_SENTENCE),
         ),
     ),
     (
@@ -2686,7 +2699,7 @@ _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
             ("hooks-never-close", _HOOKS_AND_AGENTS_NEVER_CLOSE),
             ("sweep-exception", _ARCHITECTURE_SWEEP_EXCEPTION),
             ("stale-closes-nothing", _ARCHITECTURE_STALENESS_CLOSES_NOTHING),
-            ("seuils-24h-vs-7j", _ENGLISH_THRESHOLD_DISAMBIGUATION),
+            ("thresholds-24h-vs-7d", _ENGLISH_THRESHOLD_DISAMBIGUATION),
         ),
     ),
     (
@@ -2704,7 +2717,7 @@ _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
         (
             ("stale-flag", _ENGLISH_STALE_FLAG),
             ("stale-closes-nothing", _ENGLISH_STALE_CLOSES_NOTHING),
-            ("seuils-24h-vs-7j", _ENGLISH_THRESHOLD_DISAMBIGUATION),
+            ("thresholds-24h-vs-7d", _ENGLISH_THRESHOLD_DISAMBIGUATION),
         ),
     ),
     (
@@ -2717,7 +2730,7 @@ _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
             ("hooks-never-close", _HOOKS_AND_AGENTS_NEVER_CLOSE),
             ("sweep-exception", _ARCHITECTURE_SWEEP_EXCEPTION),
             ("stale-closes-nothing", _ARCHITECTURE_STALENESS_CLOSES_NOTHING),
-            ("seuils-24h-vs-7j", _ENGLISH_THRESHOLD_DISAMBIGUATION),
+            ("thresholds-24h-vs-7d", _ENGLISH_THRESHOLD_DISAMBIGUATION),
         ),
     ),
 )
@@ -2732,7 +2745,7 @@ _DOCTRINE_DOCUMENTS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
                 CLAUDE,
                 (
                     _SESSION_CLOSURE_PROHIBITION,
-                    f"**Seule exception, côté serveur :** {_SERVER_SIDE_SWEEP_EXCEPTION}",
+                    _CLAUDE_SWEEP_EXCEPTION,
                     _CLAUDE_THRESHOLD_SENTENCE,
                 ),
             ),
@@ -2807,6 +2820,21 @@ _REWORDED_CLOSURE_GRANTS = (
     "Le client ferme la session de lui-même à la fin de la réponse.",
     "A background job may abandon any open session it judges idle.",
     "A client hook may auto-close a session automatically when the task is delivered.",
+    # The same eight rewordings in English, now that CLAUDE.md is English: each
+    # one has to be caught by the English half of the vocabulary on its own.
+    "An end-of-response hook may close an inactive session after three days.",
+    "The agent abandons a delivered session of its own accord.",
+    "The client closes the session as soon as the work is delivered.",
+    "The sweep phase may also be triggered by the agent on a live session.",
+    "The agent may abandon a session without a request from the user.",
+    "The server may also close an open session after 48 hours without activity.",
+    "An end-of-response hook may call `brain_session_end` as soon as the task is delivered, "
+    "without waiting for the user's request.",
+    "The client closes the session by itself at the end of the response.",
+    # Closure verbs and triggers the French vocabulary never needed.
+    "A nightly job may end any session left open.",
+    "Sessions expire on their own after a week.",
+    "The server terminates a session without an explicit request.",
 )
 
 
@@ -2814,7 +2842,7 @@ def _sentences(document: str) -> list[str]:
     """Split narrative prose into sentences, block by block.
 
     Flattening the whole file first turns a table without a full stop into one
-    monstrous « sentence » that matches almost anything. Paragraph boundaries
+    monstrous "sentence" that matches almost anything. Paragraph boundaries
     are sentence boundaries too.
     """
     collected: list[str] = []
@@ -2880,7 +2908,7 @@ def test_no_other_passage_grants_automatic_session_closure(
 
     for statement in _automatic_closure_statements(document):
         assert statement in sanctioned, (
-            f"{name} accorde une fermeture automatique hors de l'amendement borné: {statement}"
+            f"{name} grants an automatic closure outside the bounded amendment: {statement}"
         )
 
 
@@ -2888,10 +2916,10 @@ def test_no_other_passage_grants_automatic_session_closure(
 def test_a_reworded_grant_of_automatic_closure_is_still_detected(grant: str) -> None:
     """The scan must key on meaning, not on the phrasing its author had in mind.
 
-    A guard that only recognises « ferme automatiquement » proves nothing about
-    « clore », « abandonner de lui-même » or « auto-close ». Each rewording is
-    appended to the real CLAUDE.md and must come back from the scan, so that
-    the anti-widening gate above would reject it.
+    A guard that only recognises "closes automatically" proves nothing about
+    "ends", "abandons of its own accord" or "auto-close". Each rewording, French
+    or English, is appended to the real CLAUDE.md and must come back from the
+    scan, so that the anti-widening gate above would reject it.
     """
     widened = f"{CLAUDE}\n\n{grant}\n"
 
@@ -2908,7 +2936,7 @@ def test_sweep_killswitches_are_documented_in_the_shared_environment() -> None:
     assert "BRAIN_DREAM_SWEEP_DRY_RUN=true" in shared_config
     documented_keys = _environment_assignment_keys(shared_config)
     assert len(documented_keys) == len(set(documented_keys)), (
-        f"clé d'environnement dupliquée dans le .env partagé: {sorted(documented_keys)}"
+        f"duplicated environment key in the shared .env: {sorted(documented_keys)}"
     )
 
 
