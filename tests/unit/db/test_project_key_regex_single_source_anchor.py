@@ -8,7 +8,7 @@ spread over three registers that never read each other —
   2. the `CheckConstraint` `projects_key_format_valid` declared in `db/tables.py`;
   3. two SQL `CHECK`s in migrations: **012** (`chk_project_key_format` on
      `project_contexts`) and **033** (`projects_key_format_valid` on `projects`);
-  4. **twenty-one recovery attestation assets** (`ops/recovery/*.sql`), where the pattern
+  4. **twenty-three recovery attestation assets** (`ops/recovery/*.sql`), where the pattern
      appears in its NEGATED form (`!~`) to count non-conforming keys.
 
 **No test linked them** — surveyed on 2026-08-20 through three independent angles:
@@ -55,7 +55,7 @@ _MIGRATIONS = {
     "033_graph_relation_ledger.py": "projects_key_format_valid",
 }
 
-#: The twenty-one attestation assets that carry the predicate today. Pinned DELIBERATELY:
+#: The twenty-three attestation assets that carry the predicate today. Pinned DELIBERATELY:
 #: each new authority must either reuse the pattern or force an explicit decision here.
 #: `brain-v42-v1.sql` predates the constraint and does not
 #: carry it.
@@ -110,6 +110,12 @@ _RECOVERY_ASSETS_WITH_PREDICATE = frozenset(
         # not incremented.
         "brain-v42-v12.sql",
         "brain-v42-v12-pgrestore.sql",
+        # Added on 2026-09-22 by the v13 mint (056): measured from v12 by a delta
+        # that touches only `project_contexts`' column fingerprint, one CHECK and
+        # one index -- the predicate line is untouched, verified before this set
+        # was: one occurrence each, byte-identical to v12's. Ninth reddening.
+        "brain-v42-v13.sql",
+        "brain-v42-v13-pgrestore.sql",
     }
 )
 
@@ -197,9 +203,10 @@ def test_every_recovery_attestation_asset_checks_the_python_source_of_truth(
 def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     """Non-vacuity guard: count the surfaces, so none escapes in silence.
 
-    TWENTY-TWO guardians besides `_KEBAB` (1 metadata + 2 migrations + 19 assets) since
-    the v11 mint of 2026-09-18 — it was eight when this anchor was written, fourteen at
-    the v7 mint, eighteen at the v9 mint and twenty at the v10 mint. This count
+    TWENTY-SIX guardians besides `_KEBAB` (1 metadata + 2 migrations + 23 assets) since
+    the v13 mint of 2026-09-22 — it was eight when this anchor was written, fourteen at
+    the v7 mint, eighteen at the v9 mint, twenty at the v10 mint, twenty-two at the v11
+    mint and twenty-four at the v12 mint. This count
     deliberately includes NO document:
     `docs/design/` is not tracked, and a test counting prose would fail depending on the
     working tree.
@@ -219,9 +226,9 @@ def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     )
     recovery_sites = sum(len(patterns) for patterns in _recovery_assets().values())
 
-    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 21), (
+    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 23), (
         "la ventilation des surfaces d'application a changé "
         f"(métadonnées={metadata_sites}, migrations={migration_sites}, "
-        f"attestation={recovery_sites} ; attendu 1/2/21). Recenser avant de corriger le "
+        f"attestation={recovery_sites} ; attendu 1/2/23). Recenser avant de corriger le "
         "compte : c'est ce recensement qui a été faux trois fois."
     )
