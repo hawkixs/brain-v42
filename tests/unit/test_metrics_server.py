@@ -131,6 +131,39 @@ async def test_metrics_endpoint_includes_embedding_status(
     assert data["embedding_service"]["status"] == "up"
 
 
+async def test_metrics_endpoint_uses_cross_process_embedding_usage(
+    aiohttp_client: Any, collector: MetricsCollector, mock_embedding_svc: MagicMock
+) -> None:
+    collector.collect_process_metrics = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "active_processes": 1,
+            "active_agents": 0,
+            "total_memory_rss_bytes": 0,
+            "tools": {},
+            "embedding": {
+                "total_requests": 2,
+                "total_errors": 0,
+                "gpu_busy_errors": 0,
+                "unreachable_errors": 0,
+                "recent_errors": 0,
+                "avg_latency_ms": 4.0,
+                "usage": {
+                    "read": {"total_tokens": 3, "reported_requests": 1},
+                    "write": {"total_tokens": 12, "reported_requests": 2},
+                },
+            },
+        }
+    )
+    server = MetricsServer(collector, mock_embedding_svc, port=0, host="127.0.0.1")
+    client = await aiohttp_client(server._build_app())
+
+    data = await (await client.get("/metrics")).json()
+    assert data["embedding_service"]["usage"] == {
+        "read": {"total_tokens": 3, "reported_requests": 1},
+        "write": {"total_tokens": 12, "reported_requests": 2},
+    }
+
+
 async def test_metrics_endpoint_merges_dream_promotions_counts(
     aiohttp_client: Any, collector: MetricsCollector, mock_embedding_svc: MagicMock
 ) -> None:
