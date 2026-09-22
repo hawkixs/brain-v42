@@ -2988,3 +2988,40 @@ def test_readme_versioning_contract_points_at_the_measured_health_fields() -> No
     for field in ("version", "alembic_head"):
         assert f"`{field}`" in section
         assert f'"{field}"' in SERVER
+
+
+#: The release runbook every subsequent-release script is built from (the receipts
+#: of 2026-09-20 to 2026-09-22 name it as their procedure).
+RELEASE_RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "2026-09-07-observable-delivery-workflows.md"
+
+#: Every form a head ASSERTION takes in that runbook: the build smoke, the private
+#: preflight configuration, the jq checks on a preflight receipt, and the shell
+#: comparison against a release's shipped head.
+_HEAD_ASSERTION_LITERALS = (
+    re.compile(r'shipped_alembic_head\(\) == "\d{3}"'),
+    re.compile(r'"required_schema_revision": "\d{3}"'),
+    re.compile(r'schema_revision == "\d{3}"'),
+    re.compile(r"print\(shipped_alembic_head\(\)\)'\)\"? = \d{3}\b"),
+)
+
+
+def test_release_runbook_asserts_heads_through_declared_inputs_not_literals() -> None:
+    """A head literal in the release runbook is stale at the next migration.
+
+    Ticket fae4310b: the runbook carried `053` at eight assertion sites while
+    production moved to 054, then 055, and no gate noticed across three releases;
+    each release script had its literals patched by hand. The forward and the
+    rollback sites also need DIFFERENT heads — the rollback release ships the
+    previous one — so a mechanical bump would have been wrong at three sites.
+    The heads are operator inputs, `SCHEMA_HEAD` and `ROLLBACK_SCHEMA_HEAD`.
+    """
+    runbook = RELEASE_RUNBOOK.read_text()
+
+    stale = [
+        match.group(0)
+        for pattern in _HEAD_ASSERTION_LITERALS
+        for match in pattern.finditer(runbook)
+    ]
+    assert stale == []
+    for name in ("SCHEMA_HEAD", "ROLLBACK_SCHEMA_HEAD"):
+        assert f"{name}='<" in runbook, f"{name} is not declared as an operator input"
