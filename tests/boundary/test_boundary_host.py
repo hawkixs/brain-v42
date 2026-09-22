@@ -1,7 +1,7 @@
 """Replay the tracked network boundary against THIS host, claim by claim.
 
 Ticket `0234938d`. The boundary paragraph lives identically in
-`docs/ARCHITECTURE.md`, `docs/OPERATIONS.md` and the private `CLAUDE.md`, and
+`docs/ARCHITECTURE.md`, `docs/OPERATIONS.md` and `CLAUDE.md`, and
 `test_documentation_contract.py` pins it -- but that pin compares STRINGS across
 four files and is indifferent to whether they are true. It stayed green on
 2026-09-03 while one clause had become false, which is the defect this module

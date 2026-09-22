@@ -30,12 +30,12 @@ from brain_v42.documentation.claude_md_claims import (
 REPO_ROOT = Path(__file__).parent.parent.parent
 README = (REPO_ROOT / "README.md").read_text()
 OPERATIONS = (REPO_ROOT / "docs" / "OPERATIONS.md").read_text()
-# CLAUDE.md is tracked only in the private archive -- absent from the
-# eventual public repository (decision 14856555). Every assertion that
-# needs its content guards on CLAUDE being non-empty (or the whole test is
-# skipped, for tests that are fundamentally about CLAUDE.md's own
-# consistency); assertions about the public docs (README, ARCHITECTURE,
-# MCP_TOOLS, SCHEMA) must keep passing either way.
+# CLAUDE.md is tracked since 2026-09-22 (ticket 5081f3ff), after a month in
+# which decision 14856555 kept it out of the public repository: every worktree
+# and every CI run skipped the assertions below. Its presence is now asserted by
+# tests/unit/test_instruction_files_are_tracked.py, so the guards on CLAUDE being
+# non-empty no longer hide an absence -- they only keep this module importable
+# from a checkout that lacks the file.
 _CLAUDE_PATH = REPO_ROOT / "CLAUDE.md"
 CLAUDE = _CLAUDE_PATH.read_text() if _CLAUDE_PATH.exists() else ""
 ARCHITECTURE = (REPO_ROOT / "docs" / "ARCHITECTURE.md").read_text()
@@ -60,19 +60,17 @@ DREAM_EXTRACT_RECOVERY_RUNBOOK = (
 SERVER = (REPO_ROOT / "src" / "brain_v42" / "mcp" / "server.py").read_text()
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
-requires_claude = pytest.mark.skipif(
-    not CLAUDE, reason="CLAUDE.md is a private file, absent from the public repository"
-)
+requires_claude = pytest.mark.skipif(not CLAUDE, reason="CLAUDE.md is absent from this checkout")
 
 
 def _docs_including_claude(*others: str) -> tuple[str, ...]:
     """Documents to check, adding CLAUDE.md only when it exists.
 
-    CLAUDE.md is private and won't ship in the public repository. A positive
-    "contract in document" assertion over a tuple that includes CLAUDE would
-    fail on an empty read; dropping it from the tuple when absent keeps every
-    OTHER document's check exactly as strict, instead of skipping the whole
-    assertion. Negative ("not in") assertions don't need this helper: an
+    A positive "contract in document" assertion over a tuple that includes
+    CLAUDE would fail on an empty read; dropping it from the tuple when absent
+    keeps every OTHER document's check exactly as strict, instead of skipping
+    the whole assertion. The absence itself is caught elsewhere
+    (test_instruction_files_are_tracked.py). Negative ("not in") assertions don't need this helper: an
     empty string trivially satisfies them.
     """
     return (*others, CLAUDE) if CLAUDE else others
