@@ -768,6 +768,23 @@ class Settings(BaseSettings):
         default="", validation_alias=_brain_alias("GITLAB_WEBHOOK_SECRET")
     )
 
+    # --- Plan index: periodic refresh ---
+    # Ships CLOSED. This loop WRITES: an indexed plan reaches ClusterGuard and
+    # `plan` is in CREATING_SIGNALS, so a sweep can create features. The
+    # roadmap tap is under observation -- the purge of pseudo-features waits
+    # for the dry-up to be judged established -- and arming a periodic creator
+    # by default would change the very thing being measured. Until an operator
+    # arms it, `brain_reindex_plans` remains the way to say "now".
+    plan_index_refresh_enabled: bool = Field(
+        default=False, validation_alias=_brain_alias("PLAN_INDEX_REFRESH_ENABLED")
+    )
+    plan_index_refresh_interval_seconds: int = Field(
+        default=900, validation_alias=_brain_alias("PLAN_INDEX_REFRESH_INTERVAL_SECONDS")
+    )
+    """Seconds between two sweeps. 900 s keeps a new plan findable within the
+    quarter hour while an unchanged corpus costs one read and one lookup per
+    file and no embedding at all."""
+
     # --- Plan-index repair (canonical multi-project maintenance) ---
     # No personal default: an unconfigured root must fail closed, not guess
     # a path. brain_v42.maintenance.plan_index_repair reads this lazily via

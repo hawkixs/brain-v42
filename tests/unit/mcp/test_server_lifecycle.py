@@ -83,7 +83,10 @@ async def test_graph_outbox_projector_follows_server_lifecycle(monkeypatch) -> N
         "neo4j_driver": None,
     }
     settings = SimpleNamespace(
-        metrics_enabled=False, decay_enabled=False, otel_tracing_enabled=False
+        metrics_enabled=False,
+        decay_enabled=False,
+        otel_tracing_enabled=False,
+        plan_index_refresh_enabled=False,
     )
     ensure_projection_schema = AsyncMock()
     monkeypatch.setattr(
@@ -126,7 +129,10 @@ async def test_startup_failure_unwinds_every_started_resource(monkeypatch) -> No
         "neo4j_driver": object(),
     }
     settings = SimpleNamespace(
-        metrics_enabled=True, decay_enabled=False, otel_tracing_enabled=False
+        metrics_enabled=True,
+        decay_enabled=False,
+        otel_tracing_enabled=False,
+        plan_index_refresh_enabled=False,
     )
     close_driver = AsyncMock()
     dispose_engine = AsyncMock()
