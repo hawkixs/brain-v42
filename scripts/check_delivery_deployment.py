@@ -34,6 +34,7 @@ from brain_v42.delivery_observer.auth import (
 )
 from brain_v42.delivery_observer.config import load_observer_settings
 from brain_v42.delivery_observer.transport import GitHubTransport, ProviderError
+from brain_v42.release import shipped_alembic_head
 
 _GUARD_SHA = "fcc9328ff6e7f061879af2540c69717fc3061434"
 _SHA256 = set("0123456789abcdef")
@@ -1083,7 +1084,11 @@ def check(
     if config.get("schema_version") != 1:
         _fail("config_schema_invalid")
     _validate_writers(config)
-    if config.get("required_schema_revision") != "055":
+    # The schema this release can play is the head its own wheel ships, read from
+    # the installed revision files. A literal here was left at 055 when 056
+    # merged, and would have refused the first 056 release in its window.
+    required_revision = shipped_alembic_head()
+    if config.get("required_schema_revision") != required_revision:
         _fail("schema_capability_unavailable")
     observer_env = Path(_text(config.get("observer_env_file"), "config_schema_invalid"))
     try:
@@ -1096,7 +1101,7 @@ def check(
         if dependencies.schema_revision is not None
         else _schema_revision(settings)
     )
-    if actual_revision != "055":
+    if actual_revision != required_revision:
         _fail("schema_capability_unavailable")
     manifest_path = Path(_text(config.get("release_manifest"), "config_schema_invalid"))
     _safe_regular(manifest_path)
@@ -1143,7 +1148,10 @@ def check(
         if dependencies.health is not None
         else _health(health_endpoint)
     )
-    if health.get("version") != manifest.get("version") or health.get("alembic_head") != "055":
+    if (
+        health.get("version") != manifest.get("version")
+        or health.get("alembic_head") != required_revision
+    ):
         _fail("service_health_unavailable")
     repository = _object(config.get("repository"), "config_schema_invalid")
     probe_pull_request = config.get("probe_pull_request")
@@ -1161,7 +1169,7 @@ def check(
         _fail("guarded_revision_unverified")
     if relation not in {"identical", "ahead"}:
         _fail("guarded_revision_unverified")
-    return {"source_sha": source_sha, "schema_revision": "055"}
+    return {"source_sha": source_sha, "schema_revision": required_revision}
 
 
 def _emit(status: str, **values: str) -> None:

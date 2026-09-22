@@ -39,6 +39,7 @@ set +x
 umask 077
 
 VERSION='<the version pyproject.toml carries at SOURCE_SHA, e.g. 0.6.0>'
+SCHEMA_HEAD='<the Alembic head the tree at SOURCE_SHA ships, e.g. 056: measure it, never copy it>'
 SOURCE_SHA='<full merged and CI-tested 40-hex SHA>'
 BUILD_PYTHON='<absolute path to the selected Python 3.12 interpreter>'
 WINDOW_ID='<unique UTC timestamp or change-record ID>'
@@ -59,6 +60,10 @@ case "$SOURCE_SHA" in
 esac
 case "$SOURCE_SHA" in
   (*[!0-9a-f]*) printf '%s\n' 'refusing: SOURCE_SHA must be lowercase hexadecimal' >&2; exit 2 ;;
+esac
+case "$SCHEMA_HEAD" in
+  ([0-9][0-9][0-9]) ;;
+  (*) printf '%s\n' 'refusing: SCHEMA_HEAD must be a three-digit Alembic revision' >&2; exit 2 ;;
 esac
 case "$BUILD_PYTHON" in (/*) ;; (*) exit 2 ;; esac
 case "$WINDOW_ID" in (''|*[!A-Za-z0-9._-]*) exit 2 ;; esac
@@ -408,7 +413,7 @@ SMOKE_DIR="$(mktemp -d)"
 (
   cd "$SMOKE_DIR"
   env RELEASE="$RELEASE" VERSION="$VERSION" MEMBER_VERSION="$MEMBER_VERSION" \
-    "$RELEASE/venv/bin/python" -I - <<'PY'
+    SCHEMA_HEAD="$SCHEMA_HEAD" "$RELEASE/venv/bin/python" -I - <<'PY'
 import importlib.metadata
 import os
 from pathlib import Path
@@ -421,7 +426,7 @@ module = Path(brain_v42.__file__).resolve()
 assert module.is_relative_to(release / "venv")
 assert importlib.metadata.version("brain_v42") == os.environ["VERSION"]
 assert importlib.metadata.version("headless_agents") == os.environ["MEMBER_VERSION"]
-assert shipped_alembic_head() == "053"
+assert shipped_alembic_head() == os.environ["SCHEMA_HEAD"]
 PY
   "$RELEASE/venv/bin/python" -m brain_v42.delivery_observer --help
   "$RELEASE/venv/bin/python" "$RELEASE/brain-v42/scripts/check_delivery_deployment.py" --help
@@ -774,7 +779,7 @@ units are inventory metadata; the checker does not start, stop, or attest them.
 
 ```bash
 PROBE_PR='<merged feature pull-request number>'
-export RELEASE PROBE_PR PREFLIGHT_CONFIG OBSERVER_ENV
+export RELEASE PROBE_PR PREFLIGHT_CONFIG OBSERVER_ENV SCHEMA_HEAD
 "$RELEASE/venv/bin/python" -I - <<'PY'
 import json
 import os
@@ -837,7 +842,7 @@ config = {
     "release_manifest": str(release / "delivery-release.json"),
     "observer_env_file": str(observer_env),
     "health_endpoint": "http://127.0.0.1:8765/health",
-    "required_schema_revision": "053",
+    "required_schema_revision": os.environ["SCHEMA_HEAD"],
     "repository": {"id": 1337360966, "slug": "hawkixs/brain-v42"},
     "probe_pull_request": probe,
     "mode": "dormant",
@@ -896,7 +901,7 @@ V10_ACL_SQL="$RECOVERY_ASSETS/brain-v42-v10-acl-pgrestore.sql"
 
 test -x "$RELEASE_PYTHON" && test ! -L "$RELEASE_PYTHON"
 test -f "$ALEMBIC_INI" && test -f "$MIGRATION_053"
-test "$($RELEASE_PYTHON -I -c 'from brain_v42.release import shipped_alembic_head; print(shipped_alembic_head())')" = 053
+test "$($RELEASE_PYTHON -I -c 'from brain_v42.release import shipped_alembic_head; print(shipped_alembic_head())')" = "$SCHEMA_HEAD"
 test "$(sha256sum -- "$MIGRATION_053" | awk '{print $1}')" = 7a6d9c79d431432db64651b94ef9dacc71d3539fa79089741a89cec5e475c586
 test "$(sha256sum -- "$V9_SQL" | awk '{print $1}')" = 7c67b8cd0a303d044a21158e7518d942719214ff8d7aa2eb5eef1e927e8b272b
 test "$(sha256sum -- "$V9_ACL_SQL" | awk '{print $1}')" = 8169f2572774414539815e48e0432eedeea7c7ab775bdb00ec79c4af89e461c3
@@ -1589,8 +1594,8 @@ not the rendered files alone:
 "$RELEASE/venv/bin/python" "$RELEASE/brain-v42/scripts/check_delivery_deployment.py" \
   --config "$PREFLIGHT_CONFIG" \
   | tee "$EVIDENCE_DIR/deployment-preflight-dormant.json"
-jq -e --arg sha "$SOURCE_SHA" \
-  '.status == "ok" and .source_sha == $sha and .schema_revision == "053"' \
+jq -e --arg sha "$SOURCE_SHA" --arg head "$SCHEMA_HEAD" \
+  '.status == "ok" and .source_sha == $sha and .schema_revision == $head' \
   "$EVIDENCE_DIR/deployment-preflight-dormant.json" >/dev/null
 
 while IFS= read -r unit; do
@@ -1666,8 +1671,8 @@ PY
 "$RELEASE/venv/bin/python" "$RELEASE/brain-v42/scripts/check_delivery_deployment.py" \
   --config "$CANARY_PREFLIGHT_CONFIG" \
   | tee "$EVIDENCE_DIR/deployment-preflight-canary.json"
-jq -e --arg sha "$SOURCE_SHA" \
-  '.status == "ok" and .source_sha == $sha and .schema_revision == "053"' \
+jq -e --arg sha "$SOURCE_SHA" --arg head "$SCHEMA_HEAD" \
+  '.status == "ok" and .source_sha == $sha and .schema_revision == $head' \
   "$EVIDENCE_DIR/deployment-preflight-canary.json" >/dev/null
 systemctl --user enable brain-v42-delivery-observer.service
 systemctl --user is-enabled --quiet brain-v42-delivery-observer.service
@@ -2041,12 +2046,16 @@ done
 ```
 
 Select a retained release whose source is at or ahead of the permanent guard,
-whose installed wheel supports schema 053, and whose own dormant preflight file
-was retained. The preflight performs the authoritative remote ancestry check.
+whose own dormant preflight file was retained, and whose installed wheel ships
+the head production runs. Its preflight refuses any other database revision, so
+after an additive migration applied in this window a release shipping the
+previous head fails closed here. That is not a forward rollback: settle the
+database side before choosing such a release. The preflight performs the authoritative remote ancestry check.
 Do not select an unguarded pre-053 release or restore its old drop-ins.
 
 ```bash
 ROLLBACK_SHA='<full 40-hex SHA of a retained compatible release>'
+ROLLBACK_SCHEMA_HEAD='<the Alembic head that release ships: measure it, never copy it>'
 ROLLBACK_RELEASE="$RELEASE_PARENT/$ROLLBACK_SHA"
 ROLLBACK_PREFLIGHT="$PRIVATE_CONFIG/delivery-preflight-$ROLLBACK_SHA.json"
 case "$ROLLBACK_SHA" in
@@ -2054,6 +2063,7 @@ case "$ROLLBACK_SHA" in
   (*) exit 2 ;;
 esac
 case "$ROLLBACK_SHA" in (*[!0-9a-f]*) exit 2 ;; esac
+case "$ROLLBACK_SCHEMA_HEAD" in ([0-9][0-9][0-9]) ;; (*) exit 2 ;; esac
 test -d "$ROLLBACK_RELEASE" && test ! -L "$ROLLBACK_RELEASE"
 test -x "$ROLLBACK_RELEASE/venv/bin/python" \
   && test ! -L "$ROLLBACK_RELEASE/venv/bin/python"
@@ -2065,13 +2075,13 @@ jq -e --arg sha "$ROLLBACK_SHA" \
   --arg guard fcc9328ff6e7f061879af2540c69717fc3061434 \
   '.source_sha == $sha and .minimum_guarded_sha == $guard' \
   "$ROLLBACK_RELEASE/delivery-release.json" >/dev/null
-jq -e --arg manifest "$ROLLBACK_RELEASE/delivery-release.json" \
-  '.mode == "dormant" and .required_schema_revision == "053"
+jq -e --arg manifest "$ROLLBACK_RELEASE/delivery-release.json" --arg head "$ROLLBACK_SCHEMA_HEAD" \
+  '.mode == "dormant" and .required_schema_revision == $head
    and .release_manifest == $manifest
    and .writers["brain-v42-delivery-observer.service"].must_be_active == false' \
   "$ROLLBACK_PREFLIGHT" >/dev/null
 test "$($ROLLBACK_RELEASE/venv/bin/python -I -c \
-  'from brain_v42.release import shipped_alembic_head; print(shipped_alembic_head())')" = 053
+  'from brain_v42.release import shipped_alembic_head; print(shipped_alembic_head())')" = "$ROLLBACK_SCHEMA_HEAD"
 "$ROLLBACK_RELEASE/venv/bin/python" -m brain_v42.delivery_observer --help >/dev/null
 "$ROLLBACK_RELEASE/venv/bin/python" \
   "$ROLLBACK_RELEASE/brain-v42/scripts/check_delivery_deployment.py" --help >/dev/null
@@ -2109,8 +2119,8 @@ wait_for_mcp_health "$EVIDENCE_DIR/mcp-health-forward-rollback.json"
   "$ROLLBACK_RELEASE/brain-v42/scripts/check_delivery_deployment.py" \
   --config "$ROLLBACK_PREFLIGHT" \
   | tee "$EVIDENCE_DIR/deployment-preflight-forward-rollback.json"
-jq -e --arg sha "$ROLLBACK_SHA" \
-  '.status == "ok" and .source_sha == $sha and .schema_revision == "053"' \
+jq -e --arg sha "$ROLLBACK_SHA" --arg head "$ROLLBACK_SCHEMA_HEAD" \
+  '.status == "ok" and .source_sha == $sha and .schema_revision == $head' \
   "$EVIDENCE_DIR/deployment-preflight-forward-rollback.json" >/dev/null
 
 while IFS=$'\t' read -r unit _enabled active; do

@@ -29,6 +29,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
+from brain_v42.release import shipped_alembic_head
+
 ROOT = Path(__file__).resolve().parents[2]
 CHECKER = Path(
     os.environ.get("DELIVERY_CHECKER", ROOT / "scripts" / "check_delivery_deployment.py")
@@ -36,6 +38,9 @@ CHECKER = Path(
 GUARDED_SHA = "fcc9328ff6e7f061879af2540c69717fc3061434"
 SOURCE_SHA = "a" * 40
 SECRET = "delivery-deployment-test-secret-never-print"
+#: Derived, never copied: the checker must follow the head this tree ships, so a
+#: migration that leaves the checker behind turns this suite red in its own PR.
+SCHEMA_HEAD = shipped_alembic_head()
 SOURCE_FILES = {
     "brain-v42/.mcp.json": b'{"mcpServers":{}}\n',
     "brain-v42/src/brain_v42/__init__.py": b'__version__ = "9.0.0"\n',
@@ -109,6 +114,7 @@ class DeploymentCase:
             f"""
             import importlib.util
             import sys
+            from brain_v42.release import shipped_alembic_head
             import json
 
             spec = importlib.util.spec_from_file_location("delivery_checker", sys.argv[1])
@@ -127,8 +133,8 @@ class DeploymentCase:
                 )
 
             dependencies = module.PreflightDependencies(
-                schema_revision=lambda _: "055",
-                health=lambda _: {{"version": "9.0.0", "alembic_head": "055"}},
+                schema_revision=lambda _: shipped_alembic_head(),
+                health=lambda _: {{"version": "9.0.0", "alembic_head": shipped_alembic_head()}},
                 systemd_properties=lambda unit: runtime["units"][unit],
                 process_identity=process_identity,
                 manager_environment=lambda: runtime["manager_environment"],
@@ -164,6 +170,7 @@ class DeploymentCase:
             """
             import importlib.util
             import sys
+            from brain_v42.release import shipped_alembic_head
             import json
 
             spec = importlib.util.spec_from_file_location("delivery_checker", sys.argv[1])
@@ -182,7 +189,7 @@ class DeploymentCase:
                 )
             dependencies = module.PreflightDependencies(
                 schema_revision=lambda _: sys.argv[3],
-                health=lambda _: {"version": "9.0.0", "alembic_head": "055"},
+                health=lambda _: {"version": "9.0.0", "alembic_head": shipped_alembic_head()},
                 systemd_properties=lambda unit: runtime["units"][unit],
                 process_identity=process_identity,
                 manager_environment=lambda: runtime["manager_environment"],
@@ -252,6 +259,7 @@ class DeploymentCase:
             import json
             import os
             import sys
+            from brain_v42.release import shipped_alembic_head
 
             spec = importlib.util.spec_from_file_location("delivery_checker", sys.argv[1])
             module = importlib.util.module_from_spec(spec)
@@ -269,8 +277,8 @@ class DeploymentCase:
                 )
 
             dependencies = module.PreflightDependencies(
-                schema_revision=lambda _: "055",
-                health=lambda _: {"version": "9.0.0", "alembic_head": "055"},
+                schema_revision=lambda _: shipped_alembic_head(),
+                health=lambda _: {"version": "9.0.0", "alembic_head": shipped_alembic_head()},
                 systemd_properties=lambda unit: fixture["units"][unit],
                 process_identity=process_identity,
                 manager_environment=lambda: fixture["manager_environment"],
@@ -499,7 +507,7 @@ def deployment_case(tmp_path: Path) -> DeploymentCase:
         "release_manifest": str(manifest),
         "observer_env_file": str(observer_env),
         "health_endpoint": "http://127.0.0.1:18742/health",
-        "required_schema_revision": "055",
+        "required_schema_revision": SCHEMA_HEAD,
         "repository": {"id": 1337360966, "slug": "hawkixs/brain-v42"},
         "probe_pull_request": 42,
         "mode": "dormant",
@@ -625,7 +633,7 @@ def test_preflight_accepts_a_complete_guarded_release_configuration(
     receipt = _receipt(result)
     assert receipt["status"] == "ok"
     assert receipt["source_sha"] == SOURCE_SHA
-    assert receipt["schema_revision"] == "055"
+    assert receipt["schema_revision"] == SCHEMA_HEAD
     assert SECRET not in result.stdout + result.stderr
 
 
@@ -757,6 +765,7 @@ def test_preflight_refuses_a_health_response_for_a_different_release(
         import importlib.util
         import json
         import sys
+        from brain_v42.release import shipped_alembic_head
 
         spec = importlib.util.spec_from_file_location("delivery_checker", sys.argv[1])
         module = importlib.util.module_from_spec(spec)
@@ -774,8 +783,8 @@ def test_preflight_refuses_a_health_response_for_a_different_release(
             )
 
         dependencies = module.PreflightDependencies(
-            schema_revision=lambda _: "055",
-            health=lambda _: {"version": "wrong", "alembic_head": "055"},
+            schema_revision=lambda _: shipped_alembic_head(),
+            health=lambda _: {"version": "wrong", "alembic_head": shipped_alembic_head()},
             systemd_properties=lambda unit: runtime["units"][unit],
             process_identity=process_identity,
             manager_environment=lambda: {},
