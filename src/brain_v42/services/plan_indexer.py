@@ -478,6 +478,7 @@ class PlanIndexer:
         scan_paths = await self._get_scan_paths(project_key)
         if not scan_paths:
             return None
+        scan_paths = self._collapse_scan_paths(scan_paths, project_key)
 
         totals: dict[str, Any] = {
             "indexed": 0,
@@ -507,6 +508,43 @@ class PlanIndexer:
                 totals[key] += stats.get(key, 0)
 
         return totals
+
+    def _collapse_scan_paths(self, scan_paths: list[str], project_key: str) -> list[str]:
+        """Drop the declarations that name a directory another one already names.
+
+        brain-v42 declares its `docs` twice, once through a symlink to itself.
+        The traversal canonicalises, so both produce the same file paths and
+        the second scan is pure waste -- 55 plans walked twice, every sweep.
+
+        This is the enforcement side of "the configuration stops declaring two
+        names for one directory". The other option -- keeping the configured
+        name in `file_path` -- cannot work: that column is UNIQUE table-wide,
+        so two names for one file means two rows for one plan, which is the
+        duplication being repaired.
+
+        A path with no canonical form -- relative, missing, unreadable -- is
+        passed through untouched: it cannot be compared to anything, and its
+        own error handler is where it must be counted.
+        """
+        kept: list[str] = []
+        seen: set[str] = set()
+        for path in scan_paths:
+            try:
+                canonical = self._canonical_scan_path(path)
+            except PlanScanPathError:
+                kept.append(path)
+                continue
+            if canonical in seen:
+                logger.info(
+                    "plan_indexer.duplicate_scan_path",
+                    project_key=project_key,
+                    file_path=path,
+                    canonical_path=canonical,
+                )
+                continue
+            seen.add(canonical)
+            kept.append(path)
+        return kept
 
     async def index_all_projects(self) -> dict[str, dict[str, int]]:
         """Scan all project_contexts with plan_scan_paths configured.

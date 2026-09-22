@@ -1208,3 +1208,96 @@ async def test_a_plan_whose_content_changed_still_resolves(mock_deps, tmp_path):
 
     assert stats["indexed"] >= 1
     mock_deps["cluster_guard"].resolve.assert_awaited()
+
+
+# ── two names for one directory ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_two_scan_paths_for_one_directory_are_scanned_once(mock_deps, tmp_path):
+    """brain-v42 declares its docs twice, once through a symlink to itself.
+
+    The traversal canonicalises, so both declarations produce the same file
+    paths and the second scan is pure waste — 55 plans walked twice, every
+    sweep. Collapsing after resolution is the enforcement of "the
+    configuration stops declaring two names for one directory": the stored
+    path stays canonical, because `file_path` is UNIQUE and two names for one
+    file would mean two rows for one plan.
+    """
+    real = tmp_path / "git_repo" / "brain_v42" / "docs"
+    real.mkdir(parents=True)
+    alias_parent = tmp_path / "ReD_v1" / "projects"
+    alias_parent.mkdir(parents=True)
+    (alias_parent / "brain-v42").symlink_to(tmp_path / "git_repo" / "brain_v42")
+
+    ctx_row = MagicMock()
+    ctx_row.plan_scan_paths = [str(real), str(alias_parent / "brain-v42" / "docs")]
+    result_set = MagicMock()
+    result_set.fetchone.return_value = ctx_row
+    mock_deps["session"].execute = AsyncMock(return_value=result_set)
+    indexer = _build_indexer(mock_deps)
+
+    with patch.object(indexer, "index_path", new_callable=AsyncMock) as index_path:
+        index_path.return_value = {
+            "indexed": 0,
+            "skipped": 0,
+            "linked": 0,
+            "errors": 0,
+            "chunks_created": 0,
+            "failures": [],
+        }
+        await indexer.index_project("brain-v42")
+
+    assert index_path.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_two_distinct_directories_are_both_scanned(mock_deps, tmp_path):
+    """The collapse must key on the resolved directory, not on "more than one"."""
+    first = tmp_path / "specs"
+    second = tmp_path / "plans"
+    first.mkdir()
+    second.mkdir()
+
+    ctx_row = MagicMock()
+    ctx_row.plan_scan_paths = [str(first), str(second)]
+    result_set = MagicMock()
+    result_set.fetchone.return_value = ctx_row
+    mock_deps["session"].execute = AsyncMock(return_value=result_set)
+    indexer = _build_indexer(mock_deps)
+
+    with patch.object(indexer, "index_path", new_callable=AsyncMock) as index_path:
+        index_path.return_value = {
+            "indexed": 0,
+            "skipped": 0,
+            "linked": 0,
+            "errors": 0,
+            "chunks_created": 0,
+            "failures": [],
+        }
+        await indexer.index_project("red-viewer")
+
+    assert index_path.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_an_unresolvable_path_still_reaches_its_own_error_handler(mock_deps):
+    """The collapse must not swallow the failure it cannot resolve.
+
+    A relative or missing path has no canonical form, so it cannot be compared
+    to anything. It must pass through untouched and be counted where it always
+    was — otherwise the seven projects still carrying one would go quiet.
+    """
+    ctx_row = MagicMock()
+    ctx_row.plan_scan_paths = ["docs/plans"]
+    result_set = MagicMock()
+    result_set.fetchone.return_value = ctx_row
+    mock_deps["session"].execute = AsyncMock(return_value=result_set)
+    indexer = _build_indexer(mock_deps)
+
+    result = await indexer.index_project("red-quant")
+
+    assert result["errors"] == 1
+    assert result["failures"] == [
+        {"file_path": "docs/plans", "error_type": "PlanScanPathError:relative"}
+    ]
