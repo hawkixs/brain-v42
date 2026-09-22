@@ -10,14 +10,14 @@
 
 ## Global Constraints
 
-- Preserve unrelated work; the Claude session owns plan indexing. Work only in this isolated worktree.
+- Preserve unrelated work. Work only in an isolated worktree.
 - Keep `embed() -> list[float]`, `embed_query() -> list[float]`, and `embed_texts() -> list[list[float]]` unchanged, including retry, empty-batch and degraded-service behavior.
 - Count only provider-reported nonnegative integer `usage.total_tokens`; reject bool, floats, strings, negative integers, nulls and malformed containers silently. Missing usage is normal for both wires; ShimWire always reports none.
 - Classify `embed_query` as `read`; `embed` and `embed_texts` as `write`. Count a batch's usage once, not once per vector.
 - Never store/log request text, response bodies, URLs, API keys or provider-supplied labels in the new metrics. Labels are the fixed `read` and `write` vocabulary.
 - Do not add a migration, pricing assumptions, new retention policy, invoice computation, a global last-response value, or a production rollout. These are counters over the existing process-metrics lifecycle, not a durable billing ledger.
 - TDD: observe a meaningful failing assertion before implementation. Full unit tests, ruff check, ruff format --check and mypy must pass before commit. Use a dummy BRAIN_POSTGRES_URL for unit tests; do not copy the production .env or access a shared test database.
-- GitNexus canonical index was refreshed at 2026-09-22T10:37:50.397Z and matches the worktree base. Invoke upstream impact before changing existing symbols and detect_changes before commit with the explicit worktree path, then inspect the actual git diff.
+- Invoke GitNexus upstream impact before changing existing symbols and detect_changes before commit with the explicit worktree path, then inspect the actual git diff. Check the index freshness first; a stale index is measured by hand.
 - Commit locally with an English conventional message; do not push, merge, change tickets/sessions, or restart any service.
 
 ### Task 1: Carry optional usage from HTTP to the sidecar
@@ -44,7 +44,7 @@
 
 - `get_metrics`, `get_flush_data`, `collect_process_metrics` and the sidecar override carry that shape. Aggregate only `_process` rows, never per-agent duplicates. Legacy JSONB rows without `usage` contribute zero reported requests. A valid total of zero increments reported_requests. Return independent snapshots, not a mutable reference to collector state.
 
-- [ ] **Step 1: Add failing behavior tests.** A minimal parser case is:
+- [x] **Step 1: Add failing behavior tests.** A minimal parser case is:
 
 ```python
 def test_openai_usage_preserves_provider_total() -> None:
@@ -54,11 +54,11 @@ def test_openai_usage_preserves_provider_total() -> None:
 
 Add real httpx MockTransport tests through GPUEmbeddingService + InstrumentedEmbeddingService + MetricsCollector: query total 3, single document total 5, two-document batch total 7 yield read `(3,1)` and write `(12,2)`; returned vectors remain unchanged. Cover absent/invalid usage, zero, empty batch, concurrent read/write responses completing out of order, a successful report followed by absent usage, and valid usage accompanying malformed vectors. Verify snapshots and the cross-process sidecar response using the existing fake database boundary; no network or provider calls.
 
-- [ ] **Step 2: Run the new tests and retain the RED command/output in the task report.** Initial missing-method failures establish the new wire interface; the end-to-end assertions must demonstrate the actual lost-counter behavior before its implementation.
+- [x] **Step 2: Run the new tests and retain the RED command/output in the task report.** Initial missing-method failures establish the new wire interface; the end-to-end assertions must demonstrate the actual lost-counter behavior before its implementation.
 
-- [ ] **Step 3: Implement the small capture, parsing and metrics propagation described above.** Keep request fields, credentials, prefixes, retry policy, reranker and vector shapes unchanged. If an existing fake needs the new usage parser, use an explicit implementation in the test fixture rather than runtime mock detection.
+- [x] **Step 3: Implement the small capture, parsing and metrics propagation described above.** Keep request fields, credentials, prefixes, retry policy, reranker and vector shapes unchanged. If an existing fake needs the new usage parser, use an explicit implementation in the test fixture rather than runtime mock detection.
 
-- [ ] **Step 4: Run focused tests, then required repository gates.** Run from this worktree:
+- [x] **Step 4: Run focused tests, then required repository gates.** Run from this worktree:
 
 ```bash
 BRAIN_POSTGRES_URL=postgresql+asyncpg://unit:unit@127.0.0.1:1/brain_unit .venv/bin/pytest -q tests/unit
@@ -67,20 +67,25 @@ BRAIN_POSTGRES_URL=postgresql+asyncpg://unit:unit@127.0.0.1:1/brain_unit .venv/b
 .venv/bin/mypy src/
 ```
 
-Document exact commands, exit codes and summaries. Investigate any failure; do not weaken tests or repair unrelated code silently. The initial focused baseline had 167 passing tests and one missing-settings failure because the isolated worktree lacks `.env`; rerun with the dummy variable above to settle that environment issue.
+Document exact commands, exit codes and summaries. Investigate any failure; do not weaken tests or repair unrelated code silently. An isolated worktree has no `.env`: a missing-settings failure there is the environment, settled by the dummy variable above, not a result.
 
-- [ ] **Step 5: Self-review, detect_changes, and commit.** Inspect all changed files and exports for accidental payload/secret retention and double counting. Commit as `fix(metrics): preserve embedding token usage by intent`. Report the commit, test evidence, remaining concerns and retention limits in the designated task report.
+- [x] **Step 5: Self-review, detect_changes, and commit.** Inspect all changed files and exports for accidental payload/secret retention and double counting. Commit as `fix(metrics): preserve embedding token usage by intent`. Report the commit, test evidence, remaining concerns and retention limits in the designated task report.
 
 ### Validation update (2026-09-22)
 
-- RED is retained in `.superpowers/sdd/2026-09-22-embedding-usage/red.txt`:
-  missing wire parsing and collector usage produced 10 expected failures.
-- The focused embedding/metrics suite is green, including empty-batch HTTP avoidance
-  and same-task cancellation capture reset.
-- For the complete unit gate, use an ignored worktree `.env` containing only a fake
-  `POSTGRES_URL`, with inherited `BRAIN_POSTGRES_URL`, `POSTGRES_URL`, and
-  `BRAIN_V42_TEST_DB_URL` unset. This prevents a required dummy environment variable
-  from defeating tests that intentionally control their own DSN. Run under `umask 022`;
-  deployment preflight fixtures reject release paths created under `umask 002`.
-- The parent owns the final full gate and commit; no production rollout is part of this
-  task.
+- RED was observed by the implementing agent — missing wire parsing and collector usage
+  produced 10 expected failures — but its transcript was kept outside the repository and
+  is not reviewable here. The pull request says so rather than asserting it.
+- The focused embedding/metrics suite is green, including empty-batch HTTP avoidance and
+  same-task cancellation capture reset.
+- For the complete unit gate in an isolated worktree, use an ignored `.env` containing
+  only a fake `POSTGRES_URL`, with inherited `BRAIN_POSTGRES_URL`, `POSTGRES_URL` and
+  `BRAIN_V42_TEST_DB_URL` unset, so that a required dummy variable does not defeat tests
+  that control their own DSN. Run under `umask 022`: deployment preflight fixtures reject
+  release paths created under `umask 002`.
+- Review follow-ups, test first: a malformed `usage` value in one `_process` row no longer
+  blanks the whole cross-process aggregate; a wire whose `parse_usage` raises no longer
+  lets a raw exception escape a successful embedding; a legacy row without `usage` is
+  exercised. The default `shim` backend reports no usage, which the architecture page now
+  states.
+- No production rollout is part of this task.
