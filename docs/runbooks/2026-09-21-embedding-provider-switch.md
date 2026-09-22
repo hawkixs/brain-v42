@@ -204,11 +204,27 @@ stops the window.** After step 5, `feature` must join the others.
 
 The verdict itself still reads the global median. Gating on per-type medians
 would fail this preflight today, on that known and expected condition, which is
-how a check becomes one nobody runs. Making the instrument tell
-"unverifiable-by-construction" apart from "written by another model" is real
-work and is not done.
+how a check becomes one nobody runs.
 
-Note the reported `NOT CHECKED` line: it names the rows this check cannot see.
+Telling "unverifiable-by-construction" apart from "written by another model" is
+done, in one direction: a row whose own columns cannot reproduce its embedding
+input is refused rather than scored, and counted on the `UNVERIFIABLE` line
+with the reason. Today that is `gitlab_events` alone — the ingestor embeds
+`text[:2000]` and stores `text[:500]`, so 127 of its 239 rows can never be
+verified whatever the checker does. Closing that needs a wider column, not a
+better check, and the table is dead by decision `218028c7`.
+
+The `NOT CHECKED` line is gone with the blind spot it named. All nine vector
+tables are sampled: `indexed_plans`, `indexed_plan_chunks` and `gitlab_events`
+joined on 2026-09-22 when their write paths and this checker started calling
+the same composers in `brain_v42.services.embedding_text`. **Read the per-type
+breakdown for them especially.** They are NOT rewritten by
+`regen_embeddings.py`: plans come back only through a plan reindex after being
+marked stale, so a switch can leave 2239 rows on the old model while the six
+rewritten tables all read fresh. Measured on 2026-09-22, mid-trial, that is
+exactly what the corpus looked like — the six reindexed types scored ~0.00
+against qodo while `plan` sat at 0.9998 and `plan_chunk` at 0.9979, still
+carrying the old model's vectors.
 
 ### 2. Dump
 

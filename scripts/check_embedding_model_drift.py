@@ -45,43 +45,60 @@ from brain_v42.services.embedding_factory import (
     build_embedding_service,
     settings_for_standalone_script,
 )
-from brain_v42.services.embedding_text import EmbeddingEntityType, embedding_text_from_row
+from brain_v42.services.embedding_text import (
+    GITLAB_EVENT_TITLE_MAX_CHARS,
+    ReproducibleEntityType,
+    reproducible_embedding_text,
+)
 from brain_v42.services.gpu_embedding_service import EmbeddingUnavailable, GPUEmbeddingService
 
-#: The six vector tables `embedding_text_from_row` can recompose from the row
-#: alone. `features` joined them on 2026-09-21: its bulk reindex redefined the
-#: column as embed(description), which is what made it reproducible -- and a
-#: reproducible column is exactly what this check needs to sample.
-SAMPLED_TABLES: dict[EmbeddingEntityType, tuple[str, tuple[str, ...]]] = {
+#: Every vector table, and the columns its text is recomposed from.
+#:
+#: It used to be six. The other three -- `indexed_plans`, `indexed_plan_chunks`
+#: and `gitlab_events` -- held 2239 of 8811 embedded rows and no composer could
+#: reach them, so a provider switch could leave a quarter of the corpus on the
+#: old model while this check reported MATCH. `indexed_plan_chunks` alone is
+#: 1792 rows and is served by `brain_search`.
+#:
+#: They are covered now because the write paths and this checker call the SAME
+#: composers, in `brain_v42.services.embedding_text`. Composing the text here a
+#: second way would report drift on columns nobody had touched.
+SAMPLED_TABLES: dict[ReproducibleEntityType, tuple[str, tuple[str, ...]]] = {
     "decision": ("decisions", ("title", "description", "reasoning")),
     "learning": ("learnings", ("topic", "insight")),
     "snippet": ("snippets", ("intention",)),
     "runbook": ("runbooks", ("title", "description", "trigger")),
     "adr": ("adrs", ("title", "context", "decision")),
     "feature": ("features", ("description",)),
+    "plan": ("indexed_plans", ("title", "summary", "content")),
+    "plan_chunk": ("indexed_plan_chunks", ("content",)),
+    "gitlab_event": ("gitlab_events", ("title",)),
 }
 
-#: The three remaining vector tables. They compose their text elsewhere, so the
-#: sample cannot reach them -- and that is not a detail: measured 2026-09-21
-#: they hold 2239 of 8811 embedded rows (indexed_plan_chunks 1792, indexed_plans
-#: 208, gitlab_events 239) and `indexed_plan_chunks` is served by brain_search.
-#: Plans are rewritten by re-running plan indexing after marking them stale, not
-#: by `regen_embeddings.py`, so a switch can leave them behind while this check
-#: reports MATCH. `gitlab_events` is dead by decision `218028c7` and stale
-#: vectors there cost nothing. Every run says the blind spot out loud.
-UNSAMPLED_VECTOR_TABLES = ("indexed_plans", "indexed_plan_chunks", "gitlab_events")
+#: Rows whose own columns cannot reproduce what was embedded from them, counted
+#: over the WHOLE table rather than the sample. `gitlab_events` embeds
+#: `text[:2000]` and stores `text[:500]`: measured 2026-09-22, 127 of its 239
+#: rows sit at the storage ceiling, so more than half the table is unverifiable
+#: by construction and no amount of sampling changes that. Closing it needs a
+#: wider column, not a better checker -- and the table is dead by decision
+#: `218028c7`, so the honest move is to name the hole, not to hide it.
+UNVERIFIABLE_ROWS: dict[str, tuple[str, str]] = {
+    "gitlab_events": (
+        "SELECT count(*) FROM gitlab_events "
+        f"WHERE embedding IS NOT NULL AND length(title) >= {GITLAB_EVENT_TITLE_MAX_CHARS}",
+        "the stored title is a shorter truncation than the embedded text",
+    ),
+}
 
 
-async def count_unchecked(conn: asyncpg.Connection | None) -> list[dict[str, object]]:
-    """Embedded-row counts for the tables the sample cannot reach."""
+async def count_unverifiable(conn: asyncpg.Connection | None) -> list[dict[str, object]]:
+    """Rows the checker refuses to judge, with the reason it refuses."""
     entries: list[dict[str, object]] = []
-    for table in UNSAMPLED_VECTOR_TABLES:
-        embedded: int | None = None
+    for table, (query, reason) in UNVERIFIABLE_ROWS.items():
+        rows: int | None = None
         if conn is not None:
-            embedded = await conn.fetchval(
-                f"SELECT count(*) FROM {table} WHERE embedding IS NOT NULL"  # noqa: S608
-            )
-        entries.append({"table": table, "embedded_rows": embedded})
+            rows = await conn.fetchval(query)
+        entries.append({"table": table, "rows": rows, "reason": reason})
     return entries
 
 
@@ -115,7 +132,7 @@ def cosine(left: list[float], right: list[float]) -> float:
 
 async def fetch_sample(
     conn: asyncpg.Connection,
-    entity_type: EmbeddingEntityType,
+    entity_type: ReproducibleEntityType,
     per_type: int,
 ) -> list[dict[str, object]]:
     """Random already-embedded rows of one type, with their stored vector."""
@@ -145,12 +162,24 @@ async def compare(
 
         texts: list[str] = []
         kept: list[dict[str, object]] = []
+        refused = 0
         for row in rows:
-            text = embedding_text_from_row(entity_type, row)
+            text = reproducible_embedding_text(entity_type, row)
+            if text is None:
+                # The row does not contain what was embedded from it. Never a
+                # match, never drift: a guess here would accuse a vector nobody
+                # touched.
+                refused += 1
+                continue
             if not text.strip():
                 continue
             kept.append(row)
             texts.append(text)
+        if refused:
+            problems.append(
+                f"{entity_type}: {refused} of {len(rows)} sampled rows cannot reproduce "
+                f"their own embedding input"
+            )
         if not kept:
             continue
 
@@ -182,7 +211,7 @@ def render(
     problems: list[str],
     backend: str,
     model: str,
-    unchecked: list[dict[str, object]],
+    unverifiable: list[dict[str, object]],
 ) -> str:
     lines = [
         "brain_v42 — embedding model drift check",
@@ -217,17 +246,15 @@ def render(
     if report.verdict.value == "unmeasurable":
         lines.append("  → nothing was measured; this is not a pass.")
     lines += [f"  ! {problem}" for problem in problems]
-    total_unchecked = sum(
-        int(entry["embedded_rows"] or 0) for entry in unchecked if entry["embedded_rows"]
-    )
-    lines.append(
-        f"  NOT CHECKED        : {total_unchecked} embedded rows in "
-        + ", ".join(str(entry["table"]) for entry in unchecked)
-    )
-    lines.append(
-        "                       (these compose their text elsewhere and "
-        "regen_embeddings.py does not reindex them)"
-    )
+    total = sum(int(entry["rows"] or 0) for entry in unverifiable if entry["rows"])
+    if total:
+        lines.append(f"  UNVERIFIABLE       : {total} embedded rows")
+        for entry in unverifiable:
+            if entry["rows"]:
+                lines.append(f"    {entry['table']}: {entry['rows']} — {entry['reason']}")
+        lines.append("                       (a wider column would close this, not a better check)")
+    else:
+        lines.append("  UNVERIFIABLE       : none — every embedded row can reproduce its input")
     return "\n".join(lines)
 
 
@@ -245,7 +272,7 @@ async def run(args: argparse.Namespace) -> int:
 
     comparisons: list[SampleComparison] = []
     problems: list[str] = []
-    unchecked = await count_unchecked(None)
+    unverifiable = await count_unverifiable(None)
 
     # An unreachable database is reported THROUGH the report, not instead of it:
     # a runbook branching on `--json` must still receive a document saying
@@ -257,7 +284,7 @@ async def run(args: argparse.Namespace) -> int:
     else:
         try:
             comparisons, problems = await compare(conn, embedding_svc, args.per_type)
-            unchecked = await count_unchecked(conn)
+            unverifiable = await count_unverifiable(conn)
         finally:
             await conn.close()
 
@@ -286,7 +313,7 @@ async def run(args: argparse.Namespace) -> int:
                         for b in report.by_type
                     ],
                     "problems": problems,
-                    "unchecked": unchecked,
+                    "unverifiable": unverifiable,
                 },
                 indent=2,
             )
@@ -294,7 +321,11 @@ async def run(args: argparse.Namespace) -> int:
     else:
         print(
             render(
-                report, problems, settings.embedding_backend, settings.embedding_model, unchecked
+                report,
+                problems,
+                settings.embedding_backend,
+                settings.embedding_model,
+                unverifiable,
             )
         )
 

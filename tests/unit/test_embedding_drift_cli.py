@@ -20,6 +20,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "check_embedding_model_drift.py"
 
+
+def _load_script_module():
+    """Import the CLI as a module so its table map can be asserted on."""
+    import importlib.util
+    import sys as _sys
+
+    spec = importlib.util.spec_from_file_location("scripts_under_test", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    _sys.modules["scripts_under_test"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_load_script_module()
+
 #: A port nothing listens on: the connection is refused immediately, so the
 #: test measures the failure path without waiting on a timeout. It goes through
 #: POSTGRES_URL and not `--postgres-url`, because the flag is deliberately a
@@ -63,24 +79,49 @@ def test_stdout_carries_nothing_but_the_document() -> None:
     assert "[info" not in result.stdout
 
 
-def test_the_report_names_the_vector_tables_it_did_not_check() -> None:
-    """A MATCH must never read as "the whole corpus is fine".
+def test_every_vector_table_is_sampled_now() -> None:
+    """The three-table blind spot is closed, and this pins that it stays closed.
 
-    Nine tables carry a vector; the sample covers the six whose text
-    `embedding_text_from_row` can recompose. The other three hold 2239 of 8811
-    embedded rows (measured 2026-09-21) — so after a switch the sampled six can
-    be freshly written while a quarter of the corpus is still the old model's.
-    The blind spot is stated on every run rather than left for the operator to
-    infer.
+    It used to be honest to name `indexed_plans`, `indexed_plan_chunks` and
+    `gitlab_events` as unchecked: nothing could recompose their text, so the
+    check could only announce them. They held 2239 of 8811 embedded rows, so a
+    provider switch could leave a quarter of the corpus on the old model and
+    still report MATCH — and `indexed_plan_chunks`, 1792 of those rows, is
+    served by `brain_search`.
+
+    They are sampled now because the write paths and the checker call the same
+    composers. A table dropped from this map would go silent again, which is
+    exactly how the hole opened.
     """
-    result = _run("--json")
-    payload = json.loads(result.stdout)
+    from scripts_under_test import SAMPLED_TABLES  # noqa: PLC0415
 
-    assert {entry["table"] for entry in payload["unchecked"]} == {
+    assert {table for table, _ in SAMPLED_TABLES.values()} == {
+        "decisions",
+        "learnings",
+        "snippets",
+        "runbooks",
+        "adrs",
+        "features",
         "indexed_plans",
         "indexed_plan_chunks",
         "gitlab_events",
     }
+
+
+def test_the_report_names_what_it_refuses_to_judge() -> None:
+    """A MATCH must never read as "the whole corpus is fine".
+
+    Some rows cannot reproduce their own embedding input whatever the checker
+    does: `gitlab_ingestor` embeds `text[:2000]` and stores `text[:500]`, and
+    127 of that table's 239 rows sit at the storage ceiling. Guessing from a
+    truncation would accuse a vector nobody touched, so those rows are refused
+    — and refusing silently would be the old blind spot under a new name.
+    """
+    result = _run("--json")
+    payload = json.loads(result.stdout)
+
+    assert [entry["table"] for entry in payload["unverifiable"]] == ["gitlab_events"]
+    assert payload["unverifiable"][0]["reason"]
 
 
 def test_features_is_checked_now_that_it_has_a_reindex_path() -> None:
@@ -93,10 +134,9 @@ def test_features_is_checked_now_that_it_has_a_reindex_path() -> None:
     post-switch verification returns a false green on the 920 rows that drive
     `cluster_guard`'s semantic dedup at COSINE_LINK = 0.70.
     """
-    result = _run("--json")
-    payload = json.loads(result.stdout)
+    from scripts_under_test import SAMPLED_TABLES  # noqa: PLC0415
 
-    assert "features" not in {entry["table"] for entry in payload["unchecked"]}
+    assert "features" in {table for table, _ in SAMPLED_TABLES.values()}
 
 
 def test_the_report_breaks_the_sample_down_by_type() -> None:
