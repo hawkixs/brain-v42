@@ -1105,6 +1105,16 @@ def build_server() -> BuiltServer:
 
     register_fact_tools(mcp, registry=services["fact_registry"])
 
+    # Claim verification (spec 2026-09-19, lot B3): a caller names a claim, the
+    # server measures it through the same registry and appends the verdict. No
+    # Dream phase reaches it before lot C binds a verified run id.
+    from brain_v42.facts.verification import ClaimVerificationService  # noqa: PLC0415
+    from brain_v42.mcp.tools.claim_tools import register_claim_tools  # noqa: PLC0415
+
+    register_claim_tools(
+        mcp, ClaimVerificationService(services["fact_registry"], get_session_factory())
+    )
+
     if settings.brain_code_mode:
         server = maybe_apply_code_mode(mcp, settings)
     else:

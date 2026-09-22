@@ -229,6 +229,10 @@ class FactRegistry:
         except KeyError as exc:
             raise UnknownFactError(name) from exc
 
+    def expected_identity(self, target: FactTarget) -> Identity | None:
+        """Return independently configured target identity without opening its source."""
+        return self._expected.get(target)
+
     def cached(self, name: str) -> Measurement | None:
         """Return the stored observation without changing cache age or starting a probe."""
         self.describe(name)

@@ -170,6 +170,18 @@ def test_catalogue_metadata_preserves_order_and_filters_briefing() -> None:
         fact_registry.describe("absent")
 
 
+def test_expected_identity_returns_the_declared_target_without_opening_a_source() -> None:
+    """Verification reads the independently configured identity without probing a source."""
+    declared = identity()
+    fact_registry = FactRegistry(
+        sources={FactTarget.PRODUCTION: lambda: pytest.fail("source must stay unopened")},
+        expected={FactTarget.PRODUCTION: declared},
+    )
+
+    assert fact_registry.expected_identity(FactTarget.PRODUCTION) is declared
+    assert fact_registry.expected_identity(FactTarget.HOST) is None
+
+
 async def test_cache_uses_monotonic_ttl_and_preserves_observation_identity() -> None:
     """A backwards wall clock cannot make a measured value appear fresher than its TTL."""
     clock = Clock()

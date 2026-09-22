@@ -1,7 +1,7 @@
 # MCP Tools — brain_v42
 
-**Updated:** 2026-09-18
-**Repository registry:** 69 always-on + 2 graph-gated = 71 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
+**Updated:** 2026-09-22
+**Repository registry:** 70 always-on + 2 graph-gated = 72 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
 **Default catalog:** Admin clients use `compact` while capability enforcement is disabled: the seven session lifecycle tools plus `brain_find_tool` and `brain_call_tool`; other registered tools remain discoverable through those gateways. `native` exposes every registered tool. An authenticated Dream phase always receives its exact native allowlist, independent of presentation headers, and cannot access either gateway. Experimental `brain_code_mode` takes precedence only while Dream capability enforcement is disabled.
 **Transport:** HTTP loopback `http://127.0.0.1:8765/mcp` (production fleet). Tools are defined as closures capturing injected services — see `src/brain_v42/mcp/server.py` (`build_services()`) and the `register_*_tools()` functions in each module under `src/brain_v42/mcp/tools/`.
 
@@ -75,6 +75,7 @@ rollout, and rollback are documented in
 | End a session and conditionally advance focus | `brain_session_end` |
 | Discard a session without changing focus | `brain_session_abandon` |
 | Refresh bounded workflow guidance | `brain_workflow_guide` |
+| Check now whether a declared claim still holds | `brain_claim_verify` |
 
 `brain_learn` is the last-resort tool, never the default.
 
@@ -129,6 +130,77 @@ start, named in the journal and in the briefing, and absent from
 | `alembic_head_shipped` | live_release | process lifetime / 1 s | yes | `revision` from a strict read of the shipped migrations |
 | `dream_killswitches_declared` | host | 60 s / 1 s | yes | the nine raw drop-in strings and `file_mtime_epoch` |
 | `dream_last_night` | production | 60 s / 3 s | no | the latest `dream_runs` night by status and dry flag |
+
+## Claim verification
+
+`brain_claim_verify` (version 1.0, `claim_tools.py`) asks the server to measure one
+claim's fact now and append the verdict to the claims ledger. It is the only way a
+verdict is written: no tool accepts a measurement, an outcome or a timestamp
+(spec 2026-09-19, section 6.3).
+
+| Operation | Arguments | Result |
+| --- | --- | --- |
+| `brain_claim_verify` | `claim_id`, `idempotency_key` | The complete stored verdict row |
+
+### brain_claim_verify (`claim_tools.py`)
+
+```
+brain_claim_verify(claim_id, idempotency_key)
+```
+
+- **Who asked** is the server's to say: the issuer is `mcp:<X-Brain-Agent>` and the
+  kind is `robot`. A request whose actor the server did not resolve is refused with
+  `unknown_actor` -- an issuer nobody can be held to would be worse than none.
+- **What was measured** is the registry's: the fact is read with the claim's
+  `validity_seconds` as maximum age, so a fresh cached observation is acceptable
+  evidence and a stale one is re-read. Its name, definition version, target and
+  source identity are checked first; a mismatch is `unreadable` with its reason,
+  never `falsified`.
+- **Replay** returns the stored row: the same `idempotency_key` gives back the same
+  verdict and measures nothing, unreadable verdicts included. A **new key** never
+  reuses an observation another verdict of the claim already consumed: the server
+  forces exactly one fresh reading, and refuses with `observation_already_verified`
+  if even that one is taken.
+- A retired claim takes no verdict (`claim_retired`), before any replay. A claim
+  whose definition left the catalogue, or changed version, is
+  `unreadable / definition_changed`, measured by nobody (`where: "catalogue"`).
+- Verification changes no entry, archives nothing and alters no ranking.
+
+Refusals keep a closed code and a constant text through the masked MCP boundary:
+`invalid_argument` (a `claim_id` must be a UUID in canonical lowercase form, a key
+1 to 200 characters), `unknown_actor`, `claim_not_found`, `claim_retired`,
+`idempotency_conflict` (the key was used with other inputs),
+`observation_already_verified` and `invalid_emitted_at`. No Dream phase may call it
+yet: lot C adds a `verify` phase once a run id verified by the server can name the
+issuer.
+
+Declared, verified, replayed:
+
+```
+brain_learn(
+    topic="The graph projection keeps up",
+    insight="The outbox drains within minutes under nightly load.",
+    project_key="brain-v42",
+    claims=[{
+        "statement": "The graph projection lags less than five minutes.",
+        "fact_name": "graph_projection_lag",
+        "expected": {"path": "/lag_seconds", "op": "lte", "value": 300},
+    }],
+)
+# ok Learning saved (id:…, claims:1 recorded as declared
+#   [7d0b1f53-4c55-4c2e-9e57-a5b1b8d0c001]; brain_claim_verify measures one)
+
+brain_claim_verify(
+    claim_id="7d0b1f53-4c55-4c2e-9e57-a5b1b8d0c001", idempotency_key="check-2026-09-22"
+)
+# {"verdict": "holds", "reason": null, "seq": 41, "observation_id": "…",
+#  "issuer_identity": "mcp:<your agent>", "measurement": {"status": "measured", …}, …}
+
+brain_claim_verify(
+    claim_id="7d0b1f53-4c55-4c2e-9e57-a5b1b8d0c001", idempotency_key="check-2026-09-22"
+)
+# the same row, byte for byte: nothing was measured again
+```
 
 ## Observable delivery workflows
 
@@ -1027,4 +1099,5 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `workflow_guide_tools.py` | bounded workflow guidance | 1 |
 | `delivery_tools.py` | observable delivery | 11 |
 | `fact_tools.py` | measured facts (registered by later server composition) | 2 |
-| **Total** | | **69 always-on + 2 graph-gated = 71** |
+| `claim_tools.py` | claim verification (registered by later server composition) | 1 |
+| **Total** | | **70 always-on + 2 graph-gated = 72** |

@@ -161,6 +161,7 @@ parameters; use the plain form above with host, port, username and password all 
 | Roadmap & decay | `brain_get_roadmap`, `brain_feature_create`, `brain_feature_update`, `brain_decay_status` |
 | Workflow guidance | `brain_workflow_guide` |
 | Measured facts | `brain_fact_list`, `brain_fact_get` |
+| Claims | `brain_claim_verify` |
 
 Full catalog with signatures: `docs/MCP_TOOLS.md`.
 
