@@ -227,3 +227,108 @@ async def test_upsert_declares_its_provenance_on_both_branches(db_session):
     # disposable bench: the guard bit its own bench.
     await db_session.execute(sa.text("DELETE FROM indexed_plans WHERE id = :i"), {"i": plan_id})
     await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_an_upsert_does_not_hand_a_plan_to_another_project(db_session):
+    """The conflict guard must hold against PostgreSQL, not only against a string.
+
+    ``file_path`` is UNIQUE table-wide. Before the guard, a second project
+    writing the same path won the row: ``project_key`` was reassigned from
+    EXCLUDED, no error was raised, and nothing anywhere recorded the change of
+    owner. A SQL-text assertion cannot tell whether the predicate actually
+    binds — only running it can.
+    """
+    import uuid as _uuid
+
+    from brain_v42.repositories.pg_indexed_plan_repo import PlanOwnershipConflict
+
+    repo = PgIndexedPlanRepo(db_session)
+    embedding = [0.02] * 1536
+    file_path = f"/tmp/integ-ownership-{_uuid.uuid4()}/2026-09-22-auth-design.md"
+
+    owner = IndexedPlanCreate(
+        file_path=file_path,
+        title="Owned By The First Project",
+        plan_type="spec",
+        project_key="integ-plan-owner",
+        content_hash="a" * 64,
+        content="# Owned\n\nBody.",
+        status="active",
+        tags=[],
+        word_count=3,
+        chunk_count=0,
+    )
+    await repo.upsert_plan_with_chunks(owner, embedding, [], [])
+
+    thief = owner.model_copy(
+        update={
+            "project_key": "integ-plan-thief",
+            "title": "Claimed By The Second Project",
+            "content_hash": "b" * 64,
+        }
+    )
+    with pytest.raises(PlanOwnershipConflict) as exc:
+        await repo.upsert_plan_with_chunks(thief, embedding, [], [])
+
+    assert exc.value.file_path == file_path
+    assert exc.value.project_key == "integ-plan-thief"
+
+    row = (
+        await db_session.execute(
+            sa.text(
+                "SELECT project_key, title, content_hash FROM indexed_plans "
+                "WHERE file_path = :file_path"
+            ),
+            {"file_path": file_path},
+        )
+    ).one()
+    assert row.project_key == "integ-plan-owner"
+    assert row.title == "Owned By The First Project"
+    assert row.content_hash == "a" * 64
+
+
+@pytest.mark.asyncio
+async def test_the_owning_project_still_updates_its_own_plan(db_session):
+    """The guard must not freeze the corpus: the owner's own reindex still lands."""
+    import uuid as _uuid
+
+    repo = PgIndexedPlanRepo(db_session)
+    embedding = [0.03] * 1536
+    file_path = f"/tmp/integ-ownership-{_uuid.uuid4()}/2026-09-22-deploy-plan.md"
+
+    first = IndexedPlanCreate(
+        file_path=file_path,
+        title="Deploy Plan",
+        plan_type="plan",
+        project_key="integ-plan-owner",
+        content_hash="c" * 64,
+        content="# Deploy\n\nFirst.",
+        status="active",
+        tags=[],
+        word_count=3,
+        chunk_count=0,
+    )
+    plan_id = await repo.upsert_plan_with_chunks(first, embedding, [], [])
+
+    edited = first.model_copy(
+        update={
+            "title": "Deploy Plan v2",
+            "content_hash": "d" * 64,
+            "content": "# Deploy\n\nSecond.",
+        }
+    )
+    assert await repo.upsert_plan_with_chunks(edited, embedding, [], []) == plan_id
+
+    row = (
+        await db_session.execute(
+            sa.text(
+                "SELECT project_key, title, content_hash FROM indexed_plans "
+                "WHERE file_path = :file_path"
+            ),
+            {"file_path": file_path},
+        )
+    ).one()
+    assert row.project_key == "integ-plan-owner"
+    assert row.title == "Deploy Plan v2"
+    assert row.content_hash == "d" * 64

@@ -290,7 +290,22 @@ async def app_lifecycle(
             cleanup.push_async_callback(decay_flusher.stop)
             await decay_flusher.start()
 
+        if settings.plan_index_refresh_enabled:
+            from brain_v42.services.plan_index_refresher import (  # noqa: PLC0415
+                PlanIndexRefresher,
+            )
+
+            plan_index_refresher = PlanIndexRefresher(
+                plan_indexer=services["plan_indexer"],
+                interval_seconds=settings.plan_index_refresh_interval_seconds,
+            )
+            cleanup.push_async_callback(plan_index_refresher.stop)
+            await plan_index_refresher.start()
+
         # Keep a strong reference so the GC cannot collect the task mid-flight.
+        # This one-shot covers t=0; the refresher above, when armed, sleeps its
+        # interval before its first sweep so the two never walk the same files
+        # at the same time.
         plan_index_task = asyncio.create_task(_background_plan_index())
         cleanup.push_async_callback(_cancel_task, plan_index_task)
         yield

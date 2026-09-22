@@ -1383,13 +1383,27 @@ def _collision_from_dict(payload: object) -> PlanCollisionRecord:
     )
 
 
-def write_private_json(path: Path, payload: Mapping[str, object]) -> str:
-    """Exclusively create, fsync, and return the digest of a private JSON file."""
+def write_private_json(
+    path: Path, payload: Mapping[str, object], *, no_follow_parents: bool = False
+) -> str:
+    """Exclusively create, fsync, and return the digest of a private JSON file.
+
+    With ``no_follow_parents``, pin the absolute parent through no-follow
+    descriptors before creating the file. A prior path check alone would let
+    a replaced directory redirect the recovery data between check and open.
+    """
     data = canonical_json(payload)
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_CLOEXEC
     descriptor: int | None = None
+    parent_descriptor: int | None = None
     try:
-        descriptor = os.open(path, flags, 0o600)
+        if no_follow_parents:
+            parent_descriptor = _open_absolute_directory(
+                path.parent, reason_code="private_file_parent_invalid"
+            )
+            descriptor = os.open(path.name, flags, 0o600, dir_fd=parent_descriptor)
+        else:
+            descriptor = os.open(path, flags, 0o600)
         os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "wb") as stream:
             descriptor = None
@@ -1397,11 +1411,9 @@ def write_private_json(path: Path, payload: Mapping[str, object]) -> str:
             stream.flush()
             os.fsync(stream.fileno())
 
-        parent_descriptor = os.open(path.parent, _DIRECTORY_OPEN_FLAGS)
-        try:
-            os.fsync(parent_descriptor)
-        finally:
-            os.close(parent_descriptor)
+        if parent_descriptor is None:
+            parent_descriptor = os.open(path.parent, _DIRECTORY_OPEN_FLAGS)
+        os.fsync(parent_descriptor)
     except FileExistsError as exc:
         raise RepairSafetyError("private_file_exists") from exc
     except OSError as exc:
@@ -1409,6 +1421,8 @@ def write_private_json(path: Path, payload: Mapping[str, object]) -> str:
     finally:
         if descriptor is not None:
             os.close(descriptor)
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
     return hashlib.sha256(data).hexdigest()
 
 

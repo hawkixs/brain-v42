@@ -17,8 +17,28 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from brain_v42.services.embedding_drift import classify_drift
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "check_embedding_model_drift.py"
+
+
+def _load_script_module():
+    """Import the CLI as a module so its table map can be asserted on."""
+    import importlib.util
+    import sys as _sys
+
+    spec = importlib.util.spec_from_file_location("scripts_under_test", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    _sys.modules["scripts_under_test"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_load_script_module()
 
 #: A port nothing listens on: the connection is refused immediately, so the
 #: test measures the failure path without waiting on a timeout. It goes through
@@ -63,24 +83,49 @@ def test_stdout_carries_nothing_but_the_document() -> None:
     assert "[info" not in result.stdout
 
 
-def test_the_report_names_the_vector_tables_it_did_not_check() -> None:
-    """A MATCH must never read as "the whole corpus is fine".
+def test_every_vector_table_is_sampled_now() -> None:
+    """The three-table blind spot is closed, and this pins that it stays closed.
 
-    Nine tables carry a vector; the sample covers the six whose text
-    `embedding_text_from_row` can recompose. The other three hold 2239 of 8811
-    embedded rows (measured 2026-09-21) — so after a switch the sampled six can
-    be freshly written while a quarter of the corpus is still the old model's.
-    The blind spot is stated on every run rather than left for the operator to
-    infer.
+    It used to be honest to name `indexed_plans`, `indexed_plan_chunks` and
+    `gitlab_events` as unchecked: nothing could recompose their text, so the
+    check could only announce them. They held 2239 of 8811 embedded rows, so a
+    provider switch could leave a quarter of the corpus on the old model and
+    still report MATCH — and `indexed_plan_chunks`, 1792 of those rows, is
+    served by `brain_search`.
+
+    They are sampled now because the write paths and the checker call the same
+    composers. A table dropped from this map would go silent again, which is
+    exactly how the hole opened.
     """
-    result = _run("--json")
-    payload = json.loads(result.stdout)
+    from scripts_under_test import SAMPLED_TABLES  # noqa: PLC0415
 
-    assert {entry["table"] for entry in payload["unchecked"]} == {
+    assert {table for table, _ in SAMPLED_TABLES.values()} == {
+        "decisions",
+        "learnings",
+        "snippets",
+        "runbooks",
+        "adrs",
+        "features",
         "indexed_plans",
         "indexed_plan_chunks",
         "gitlab_events",
     }
+
+
+def test_the_report_names_what_it_refuses_to_judge() -> None:
+    """A MATCH must never read as "the whole corpus is fine".
+
+    Some rows cannot reproduce their own embedding input whatever the checker
+    does: `gitlab_ingestor` embeds `text[:2000]` and stores `text[:500]`, and
+    127 of that table's 239 rows sit at the storage ceiling. Guessing from a
+    truncation would accuse a vector nobody touched, so those rows are refused
+    — and refusing silently would be the old blind spot under a new name.
+    """
+    result = _run("--json")
+    payload = json.loads(result.stdout)
+
+    assert [entry["table"] for entry in payload["unverifiable"]] == ["gitlab_events"]
+    assert payload["unverifiable"][0]["reason"]
 
 
 def test_features_is_checked_now_that_it_has_a_reindex_path() -> None:
@@ -93,10 +138,9 @@ def test_features_is_checked_now_that_it_has_a_reindex_path() -> None:
     post-switch verification returns a false green on the 920 rows that drive
     `cluster_guard`'s semantic dedup at COSINE_LINK = 0.70.
     """
-    result = _run("--json")
-    payload = json.loads(result.stdout)
+    from scripts_under_test import SAMPLED_TABLES  # noqa: PLC0415
 
-    assert "features" not in {entry["table"] for entry in payload["unchecked"]}
+    assert "features" in {table for table, _ in SAMPLED_TABLES.values()}
 
 
 def test_the_report_breaks_the_sample_down_by_type() -> None:
@@ -114,3 +158,62 @@ def test_the_report_breaks_the_sample_down_by_type() -> None:
 
     assert "by_type" in payload, "the verdict must not be the only per-type signal"
     assert payload["by_type"] == [], "an unmeasurable run has no type to break down"
+
+
+def test_json_report_names_the_explicit_gitlab_exclusion() -> None:
+    result = _run("--json", "--exclude-gitlab-events")
+
+    payload = json.loads(result.stdout)
+    assert payload["excluded_tables"] == ["gitlab_events"]
+
+
+@pytest.mark.asyncio
+async def test_gitlab_events_are_only_excluded_by_the_explicit_switch() -> None:
+    """The retired table is fail-closed by default, but may be named out.
+
+    A 500-character title is a known truncation, so it cannot reproduce the
+    vector input.  The default run reports that gap; the opt-in exclusion does
+    not fetch the retired table and returns no collection problem for it.
+    """
+    from scripts_under_test import SAMPLED_TABLES, compare, render  # noqa: PLC0415
+
+    class Connection:
+        def __init__(self) -> None:
+            self.tables: list[str] = []
+
+        async def fetch(self, query: str, _per_type: int) -> list[dict[str, str]]:
+            table = next(table for table, _columns in SAMPLED_TABLES.values() if table in query)
+            self.tables.append(table)
+            if table == "gitlab_events":
+                return [{"id": "retired", "title": "x" * 500, "stored": "[1.0]"}]
+            return []
+
+    class EmbeddingService:
+        async def embed_texts(self, _texts: list[str]) -> list[list[float]]:
+            raise AssertionError("the truncated row must not be embedded")
+
+    default_conn = Connection()
+    _comparisons, default_problems = await compare(default_conn, EmbeddingService(), per_type=1)
+    assert default_problems == [
+        "gitlab_event: 1 of 1 sampled rows cannot reproduce their own embedding input"
+    ]
+    assert "gitlab_events" in default_conn.tables
+
+    excluded_conn = Connection()
+    comparisons, problems = await compare(
+        excluded_conn, EmbeddingService(), per_type=1, exclude_gitlab_events=True
+    )
+    assert comparisons == []
+    assert problems == []
+    assert "gitlab_events" not in excluded_conn.tables
+
+    human_report = render(
+        classify_drift([], threshold=0.95),
+        [],
+        "openai",
+        "codestral-embed-2505",
+        [],
+        excluded_tables=["gitlab_events"],
+    )
+    assert "EXCLUDED" in human_report
+    assert "gitlab_events" in human_report

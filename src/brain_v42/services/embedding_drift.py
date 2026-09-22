@@ -157,11 +157,27 @@ def classify_drift(
 
     similarities = [s.similarity for s in samples]
     median = statistics.median(similarities)
-    verdict = DriftVerdict.MATCH if median >= threshold else DriftVerdict.DRIFT
 
     per_type: dict[str, list[float]] = {}
     for sample in samples:
         per_type.setdefault(sample.entity_type, []).append(sample.similarity)
+
+    by_type = tuple(
+        TypeBreakdown(
+            entity_type=entity_type,
+            sampled=len(values),
+            median=statistics.median(values),
+            outliers=sum(1 for v in values if v < threshold),
+        )
+        for entity_type, values in sorted(per_type.items())
+    )
+    verdict = (
+        DriftVerdict.MATCH
+        if all(
+            breakdown.median is not None and breakdown.median >= threshold for breakdown in by_type
+        )
+        else DriftVerdict.DRIFT
+    )
 
     return DriftReport(
         verdict=verdict,
@@ -171,13 +187,5 @@ def classify_drift(
         median=median,
         minimum=min(similarities),
         maximum=max(similarities),
-        by_type=tuple(
-            TypeBreakdown(
-                entity_type=entity_type,
-                sampled=len(values),
-                median=statistics.median(values),
-                outliers=sum(1 for v in values if v < threshold),
-            )
-            for entity_type, values in sorted(per_type.items())
-        ),
+        by_type=by_type,
     )

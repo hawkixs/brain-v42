@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import text
+from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.models.indexed_plan import IndexedPlan, IndexedPlanCreate
@@ -22,6 +23,20 @@ from brain_v42.models.indexed_plan_chunk import (
 # past the 1 MB ``tsvector`` limit and long inputs cause CPU spikes during
 # indexing. 50 000 chars ~= 8000 words, more than any reasonable spec.
 _FTS_INPUT_MAX_CHARS = 50_000
+
+
+class PlanOwnershipConflict(RuntimeError):
+    """A plan row at this ``file_path`` already belongs to another project.
+
+    Raised instead of silently reassigning it. Carries the path and the
+    project that tried to write, never the file's content -- the same
+    non-disclosure contract the indexer's failure list holds.
+    """
+
+    def __init__(self, *, file_path: str, project_key: str) -> None:
+        super().__init__(f"{file_path} is owned by another project than {project_key!r}")
+        self.file_path = file_path
+        self.project_key = project_key
 
 
 def _truncate_for_fts(value: str | None) -> str:
@@ -48,6 +63,13 @@ class PgIndexedPlanRepo:
         All three operations (plan upsert, chunk delete, chunk insert) run in a
         single logical transaction.  Any exception triggers ``session.rollback()``
         so the caller always receives a clean session state.
+
+        The conflict update is scoped to the owning project. ``file_path`` is
+        UNIQUE across the whole table, so without that predicate two projects
+        whose scan paths overlap take turns owning the same row and nothing
+        anywhere says so.  A refused conflict updates no row, RETURNING yields
+        nothing, and that is reported as ``PlanOwnershipConflict`` rather than a
+        bare ``NoResultFound`` that names neither file nor reason.
 
         Chunk inserts use a single ``executemany`` call (one round-trip regardless
         of chunk count) by passing a list of param-dicts to ``session.execute()``.
@@ -91,6 +113,7 @@ class PgIndexedPlanRepo:
                 indexed_at = NOW(),
                 search_vector = EXCLUDED.search_vector,
                 updated_at = NOW()
+            WHERE indexed_plans.project_key = EXCLUDED.project_key
             RETURNING id
         """)
 
@@ -130,7 +153,13 @@ class PgIndexedPlanRepo:
                     "content_fts": _truncate_for_fts(plan.content),
                 },
             )
-            plan_id: UUID = result.scalar_one()
+            try:
+                plan_id: UUID = result.scalar_one()
+            except NoResultFound as exc:
+                # The row exists (we conflicted) but belongs to someone else.
+                raise PlanOwnershipConflict(
+                    file_path=plan.file_path, project_key=plan.project_key
+                ) from exc
 
             # Replace chunks: delete existing ones first, then batch-insert new ones.
             await self._session.execute(

@@ -104,7 +104,7 @@ falls as it does.
 
 ## Coverage gap — read before anything else
 
-`scripts/regen_embeddings.py` reindexes **six** of the nine vector tables.
+`scripts/regen_embeddings.py` reindexes six of the nine vector tables.
 Measured 2026-09-21:
 
 | Table | Embedded rows | Reindex tool |
@@ -168,47 +168,66 @@ tractable:
   column records. `description` is the only text reproducible from the row
   alone — which is what makes the column verifiable by
   `check_embedding_model_drift.py` instead of unverifiable forever.
-- **`gitlab_events` (239 rows) — dead, leave it.** Last row processed
+- **`gitlab_events` (239 rows) — retired, exclude it explicitly.** Last row processed
   2026-06-24 and the GitLab rail was retired 2026-08-18 (decision
   `218028c7`). No search path reads it. Stale vectors there cost nothing;
   say so rather than build a tool for it.
 
-Nothing blocks a switch any more. What remains is one step to schedule
-(plans, through the staleness flag) and one non-issue to declare
-(`gitlab_events`).
+The switch remains gated on the eight reproducible tables: the six bulk
+tables plus `indexed_plans` and `indexed_plan_chunks`. `gitlab_events` is a
+declared exception, never an unreported gap.
 
 ## Sequence
 
 ### 1. Preflight — prove the corpus matches the model you are leaving
 
 ```bash
-python scripts/check_embedding_model_drift.py --per-type 8
+python scripts/check_embedding_model_drift.py --per-type 8 --exclude-gitlab-events
 ```
 
-Requires exit 0. Exit 2 means the run was incomplete — a saturated endpoint
-answers 503 and the check refuses to call four fifths of an answer a pass.
-Retry when the endpoint is idle rather than lowering `--per-type`.
+Requires exit 0. By default the command attempts all nine tables; a truncated
+`gitlab_events` row makes it exit 2, because unreproducible data is never a
+silent pass. The explicit flag above is the only exception for that retired
+table, and both JSON and human reports name it. Exit 2 for any included table
+means the run was incomplete — a saturated endpoint that answers 503 is not a
+pass. Retry when the endpoint is idle rather than lowering `--per-type`.
 
-**Read the per-type lines, not only the verdict.** The sample is spread across
-the six covered types, so a type written entirely by another model is a
-minority of the rows: the global median does not move and the check says
-MATCH. Since 2026-09-21 the report breaks the sample down per type and flags
-any whose median is below the threshold.
+**Read the per-type lines and the verdict.** The sample is spread across the
+eight included types. A MATCH requires every sampled type's median to meet the
+threshold, so stale plans or chunks cannot be averaged away by fresh bulk
+tables. A minority of edited rows within one type remains tolerated by that
+type's median.
 
-One of them is expected to be flagged today, and only one: `feature`. Measured
-2026-09-21, median 0.7937 with 8 of 8 below threshold, while every other type
-sat at 1.0000. That is not model drift — the column was never
-`embed(description)`, so the check cannot reproduce what is stored until the
-reindex redefines it. **Any other type below threshold is a real finding and
-stops the window.** After step 5, `feature` must join the others.
+The 2026-09-21 `feature` median of 0.7937 was historical normalization work:
+the old column did not consistently contain `embed(description)`. A later
+Codestral audit measured all six historical types, including `feature`, as
+MATCH. Do not normalize all feature rows as a routine switch step. If `feature`
+is below threshold in a future preflight, measure the current composition and
+reindex provenance in a separate remediation procedure, then repeat this gate
+before cutover. Every included type must MATCH; none is a standing exception.
 
-The verdict itself still reads the global median. Gating on per-type medians
-would fail this preflight today, on that known and expected condition, which is
-how a check becomes one nobody runs. Making the instrument tell
-"unverifiable-by-construction" apart from "written by another model" is real
-work and is not done.
+The global median remains diagnostic only. It must not overrule a sampled
+type below threshold.
 
-Note the reported `NOT CHECKED` line: it names the rows this check cannot see.
+Telling "unverifiable-by-construction" apart from "written by another model" is
+done, in one direction: a row whose own columns cannot reproduce its embedding
+input is refused rather than scored, and counted on the `UNVERIFIABLE` line
+with the reason. Today that is `gitlab_events` alone — the ingestor embeds
+`text[:2000]` and stores `text[:500]`, so 127 of its 239 rows can never be
+verified whatever the checker does. Closing that needs a wider column, not a
+better check, and the table is dead by decision `218028c7`.
+
+The `NOT CHECKED` line is gone with the blind spot it named. The default check
+attempts all nine vector tables. `indexed_plans` and `indexed_plan_chunks`
+joined on 2026-09-22 when their write paths and this checker started calling
+the same composers in `brain_v42.services.embedding_text`; they are required
+for the switch gate. `gitlab_events` is also attempted by default, but known
+truncation makes some rows unmeasurable and returns exit 2. Only the explicit
+`--exclude-gitlab-events` flag removes that retired table from the gate and
+names the exclusion in the report. Plans are not rewritten by
+`regen_embeddings.py`: they come back only through a plan reindex after being
+marked stale, so a switch can leave their rows on the old model while the six
+bulk tables read fresh.
 
 ### 2. Dump
 
@@ -303,15 +322,15 @@ a median.
 ### 6. Verify
 
 ```bash
-python scripts/check_embedding_model_drift.py --per-type 8   # must exit 0
+python scripts/check_embedding_model_drift.py --per-type 8 --exclude-gitlab-events  # must exit 0
 python bench/embedding_v2/run_retrieval_bench.py --candidate openai \
   --base-url https://api.mistral.ai --model codestral-embed-2505
 ```
 
-Exit 0 on the drift check proves the sampled six tables were rewritten by the
-configured model — `features` among them since 2026-09-21. It proves nothing
-about the other three: plans and their chunks are covered by the re-run of plan
-indexing, and `gitlab_events` is declared dead rather than checked.
+Exit 0 on the drift check proves the eight included tables were rewritten by
+the configured model: the six bulk tables, including `features`, plus plans
+and plan chunks. The report must explicitly list `gitlab_events` as excluded;
+without that flag, an unreproducible GitLab row exits 2 and stops the window.
 
 The bench proves quality did not collapse. Compare against the qodo row of the
 same report, on the same pool: a number from a different pool size is not a

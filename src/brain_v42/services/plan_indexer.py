@@ -29,6 +29,11 @@ from brain_v42.db.tables import feature_artifacts, indexed_plans, project_contex
 from brain_v42.models.indexed_plan import IndexedPlanCreate
 from brain_v42.models.indexed_plan_chunk import IndexedPlanChunkCreate
 from brain_v42.repositories.pg_indexed_plan_repo import PgIndexedPlanRepo
+from brain_v42.services.embedding_text import (
+    indexed_plan_chunk_embedding_text,
+    indexed_plan_embedding_text,
+    truncate_plan_embed_input,
+)
 from brain_v42.services.plan_chunker import chunk_markdown
 
 if TYPE_CHECKING:
@@ -47,10 +52,32 @@ class ReindexVerdict(NamedTuple):
     from a new signal. Without it the two are indistinguishable at the call
     site, and a provider switch -- which marks every plan stale precisely to
     force a re-embed -- looks exactly like 208 edited files.
+
+    ``owned_by`` names the project that already holds this ``file_path`` when
+    it is not the one scanning. It is a refusal, not a skip: a skip means "the
+    corpus is already right", this means "writing would take a row away from
+    someone else".
     """
 
     skip: bool
     content_identical: bool
+    owned_by: str | None = None
+
+
+class FileOutcome(NamedTuple):
+    """What processing one plan file produced, including WHY it failed.
+
+    ``error_type`` exists because the caller has to name the rejected file in
+    the tool output, and a bare counter cannot: every internal failure used to
+    surface under one generic label.
+    """
+
+    indexed: int = 0
+    skipped: int = 0
+    linked: int = 0
+    errors: int = 0
+    chunks_created: int = 0
+    error_type: str | None = None
 
 
 # Glob patterns to match plan/spec files
@@ -68,16 +95,15 @@ _H1_RE = re.compile(r"^#\s+(.+)$", re.MULTILINE)
 # Regex for date prefix in filenames (e.g., 2026-03-14-)
 _DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-")
 
-# Max character count for any single embedding input. The GPU embedding
-# service accepts inputs up to roughly 6000 words before returning 500;
-# 15000 chars ~= 2500 words provides comfortable headroom.
-_EMBED_INPUT_MAX_CHARS = 15000
-
 # Max batch size per embed_texts call. The Qodo-Embed-1-1.5B model on a
 # 6 GiB GPU runs out of memory on large batches when inputs are large.
 # A batch size of 2 keeps peak memory bounded while still benefiting from
 # batching on small inputs.
 _EMBED_BATCH_SIZE = 2
+# Cap on the set of already-warned scan-path failures. One entry per
+# (project, path, reason) and there are a few dozen configured paths, so the
+# cap is a bound against a pathological configuration, never a working limit.
+_MAX_REMEMBERED_SCAN_FAILURES = 512
 _SCAN_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _SCAN_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
 
@@ -89,13 +115,6 @@ class PlanScanPathError(ValueError):
         super().__init__(reason_code)
         self.path = path
         self.reason_code = reason_code
-
-
-def _truncate_for_embed(text: str) -> str:
-    """Truncate embedding input to stay within the service's token budget."""
-    if len(text) <= _EMBED_INPUT_MAX_CHARS:
-        return text
-    return text[:_EMBED_INPUT_MAX_CHARS]
 
 
 async def _embed_in_batches(embedding_svc: Any, inputs: list[str]) -> list[list[float]]:
@@ -151,11 +170,21 @@ class PlanIndexer:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         embedding_svc: GPUEmbeddingService,
-        cluster_guard: ClusterGuard,
+        cluster_guard: ClusterGuard | None,
+        *,
+        link_features: bool = True,
     ) -> None:
+        if link_features and cluster_guard is None:
+            raise ValueError("cluster_guard is required when link_features is enabled")
         self._sf = session_factory
         self._embedding_svc = embedding_svc
         self._cluster_guard = cluster_guard
+        self._link_features = link_features
+        # (project_key, path, reason_code) already warned about in this process.
+        # A broken scan path is a standing configuration error: it fails again
+        # on every sweep, and on a period that turns one warning per restart
+        # into a permanent flood. The repeat still happens, at debug.
+        self._warned_scan_failures: set[tuple[str, str, str]] = set()
 
     @staticmethod
     def _canonical_scan_path(scan_path: str) -> str:
@@ -297,19 +326,27 @@ class PlanIndexer:
 
         sem = asyncio.Semaphore(5)
 
-        async def _process_file(file_path: Path) -> tuple[int, int, int, int, int]:
-            """Process one file. Returns (indexed, skipped, linked, errors, chunks_created)."""
+        async def _process_file(file_path: Path) -> FileOutcome:
+            """Process one file, naming the failure when there is one."""
             async with sem:
                 try:
                     content = _read_scan_file(scan_path, file_path)
                 except UnicodeDecodeError:
                     logger.warning("plan_indexer.decode_failed", file=str(file_path))
-                    return (0, 0, 0, 1, 0)
+                    return FileOutcome(errors=1)
                 content_hash = self._content_hash(content)
 
                 verdict = await self._reindex_verdict(str(file_path), content_hash, project_key)
+                if verdict.owned_by is not None:
+                    logger.warning(
+                        "plan_indexer.ownership_conflict",
+                        file_path=str(file_path),
+                        project_key=project_key,
+                        owner_project_key=verdict.owned_by,
+                    )
+                    return FileOutcome(errors=1, error_type="PlanOwnedByAnotherProject")
                 if verdict.skip:
-                    return (0, 1, 0, 0, 0)
+                    return FileOutcome(skipped=1)
 
                 # Chunk the markdown content
                 parent, chunks = chunk_markdown(content)
@@ -321,27 +358,26 @@ class PlanIndexer:
 
                 plan_type = self._detect_plan_type(str(file_path))
 
-                # Build embed inputs: parent first, then each chunk
-                parent_embed_input = title
-                if parent.summary:
-                    parent_embed_input = f"{title}\n\n{parent.summary}"
-                elif parent.preamble:
-                    parent_embed_input = f"{title}\n\n{parent.preamble}"
-
-                # Truncate embedding inputs to stay under the GPU service's
-                # token budget. The full content is still stored in the DB;
-                # only the embedding uses the truncated version. ~15000 chars
-                # is ~2500 words — well below the observed ~6000-word failure
-                # threshold of the embedding service.
-                embed_inputs = [_truncate_for_embed(parent_embed_input)] + [
-                    _truncate_for_embed(c.content) for c in chunks
+                # Build embed inputs: parent first, then each chunk. Both go
+                # through the shared composers in `embedding_text`, so the
+                # drift checker recomposes them with the SAME code -- a checker
+                # composing its own way reports drift on a column nothing
+                # touched. Only the embedding is truncated; the DB keeps the
+                # full content.
+                embed_inputs = [
+                    truncate_plan_embed_input(
+                        indexed_plan_embedding_text(title, parent.summary, parent.preamble)
+                    )
+                ] + [
+                    truncate_plan_embed_input(indexed_plan_chunk_embedding_text(c.content))
+                    for c in chunks
                 ]
 
                 try:
                     all_embeddings = await _embed_in_batches(self._embedding_svc, embed_inputs)
                 except Exception:
                     logger.warning("plan_indexer.embed_failed", file=str(file_path), exc_info=True)
-                    return (0, 0, 0, 1, 0)
+                    return FileOutcome(errors=1)
 
                 parent_embedding = all_embeddings[0]
                 chunk_embeddings = all_embeddings[1:]
@@ -404,8 +440,11 @@ class PlanIndexer:
                         file_path=str(file_path),
                         reason="content_identical",
                     )
-                    return (1, 0, 0, 0, len(chunks))
+                    return FileOutcome(indexed=1, chunks_created=len(chunks))
+                if not self._link_features:
+                    return FileOutcome(indexed=1, chunks_created=len(chunks))
                 try:
+                    assert self._cluster_guard is not None
                     feature, action = await self._cluster_guard.resolve(
                         text=title,
                         embedding=parent_embedding,
@@ -429,7 +468,7 @@ class PlanIndexer:
                         exc_info=True,
                     )
 
-                return (1, 0, linked, 0, len(chunks))
+                return FileOutcome(indexed=1, linked=linked, chunks_created=len(chunks))
 
         results = await asyncio.gather(
             *[_process_file(f) for f in files],
@@ -448,17 +487,20 @@ class PlanIndexer:
                     {"file_path": str(file_path), "error_type": type(result).__name__}
                 )
                 continue
-            indexed, skipped, linked, errors, chunks_created = result
-            stats["indexed"] += indexed
-            stats["skipped"] += skipped
-            stats["linked"] += linked
-            stats["chunks_created"] += chunks_created
-            if errors:
-                # A failure INTERNAL to processing the file (decoding,
-                # chunking): the path is known, it must be named like the rest.
-                stats["errors"] += errors
+            stats["indexed"] += result.indexed
+            stats["skipped"] += result.skipped
+            stats["linked"] += result.linked
+            stats["chunks_created"] += result.chunks_created
+            if result.errors:
+                # A failure INTERNAL to processing the file (decoding, chunking,
+                # a path another project owns): the path is known, it must be
+                # named like the rest.
+                stats["errors"] += result.errors
                 stats["failures"].append(
-                    {"file_path": str(file_path), "error_type": "PlanFileRejected"}
+                    {
+                        "file_path": str(file_path),
+                        "error_type": result.error_type or "PlanFileRejected",
+                    }
                 )
 
         logger.info(
@@ -478,6 +520,7 @@ class PlanIndexer:
         scan_paths = await self._get_scan_paths(project_key)
         if not scan_paths:
             return None
+        scan_paths = self._collapse_scan_paths(scan_paths, project_key)
 
         totals: dict[str, Any] = {
             "indexed": 0,
@@ -491,7 +534,12 @@ class PlanIndexer:
             try:
                 stats = await self.index_path(path, project_key)
             except PlanScanPathError as exc:
-                logger.warning(
+                signature = (project_key, exc.path, exc.reason_code)
+                first_time = signature not in self._warned_scan_failures
+                if first_time and len(self._warned_scan_failures) < _MAX_REMEMBERED_SCAN_FAILURES:
+                    self._warned_scan_failures.add(signature)
+                emit = logger.warning if first_time else logger.debug
+                emit(
                     "plan_indexer.invalid_scan_path",
                     project_key=project_key,
                     file_path=exc.path,
@@ -507,6 +555,43 @@ class PlanIndexer:
                 totals[key] += stats.get(key, 0)
 
         return totals
+
+    def _collapse_scan_paths(self, scan_paths: list[str], project_key: str) -> list[str]:
+        """Drop the declarations that name a directory another one already names.
+
+        brain-v42 declares its `docs` twice, once through a symlink to itself.
+        The traversal canonicalises, so both produce the same file paths and
+        the second scan is pure waste -- 55 plans walked twice, every sweep.
+
+        This is the enforcement side of "the configuration stops declaring two
+        names for one directory". The other option -- keeping the configured
+        name in `file_path` -- cannot work: that column is UNIQUE table-wide,
+        so two names for one file means two rows for one plan, which is the
+        duplication being repaired.
+
+        A path with no canonical form -- relative, missing, unreadable -- is
+        passed through untouched: it cannot be compared to anything, and its
+        own error handler is where it must be counted.
+        """
+        kept: list[str] = []
+        seen: set[str] = set()
+        for path in scan_paths:
+            try:
+                canonical = self._canonical_scan_path(path)
+            except PlanScanPathError:
+                kept.append(path)
+                continue
+            if canonical in seen:
+                logger.info(
+                    "plan_indexer.duplicate_scan_path",
+                    project_key=project_key,
+                    file_path=path,
+                    canonical_path=canonical,
+                )
+                continue
+            seen.add(canonical)
+            kept.append(path)
+        return kept
 
     async def index_all_projects(self) -> dict[str, dict[str, int]]:
         """Scan all project_contexts with plan_scan_paths configured.
@@ -627,6 +712,11 @@ class PlanIndexer:
         ``content_identical=True`` only for the exact-path row whose stored hash
         equals this file's. It is deliberately false for every other branch: a
         new path, an edited file and a replaced duplicate are all new signals.
+
+        ``owned_by`` is set, and overrides everything above, when a row exists
+        at this ``file_path`` under a DIFFERENT project. The caller must refuse
+        the file: writing it would silently move the row to the scanning
+        project, because the unique key is the path alone.
         """
         async with self._sf() as session:
             # 1. Exact-path lookup (existing behaviour).
@@ -648,7 +738,23 @@ class PlanIndexer:
                     return ReindexVerdict(skip=False, content_identical=True)
                 return ReindexVerdict(skip=True, content_identical=True)
 
-            # 2. Mirror-path duplicate check: another file in the same project
+            # 2. Ownership check. `indexed_plans.file_path` is UNIQUE across
+            # the WHOLE table and the upsert reassigns `project_key` from
+            # EXCLUDED on conflict, so indexing here would take the row away
+            # from whoever holds it -- silently, with no error anywhere. "No row
+            # under THIS project" (step 1) does not mean "no row".
+            owner_result = await session.execute(
+                sa.select(indexed_plans.c.project_key).where(indexed_plans.c.file_path == file_path)
+            )
+            owner_row = owner_result.fetchone()
+            if owner_row is not None and owner_row.project_key != project_key:
+                return ReindexVerdict(
+                    skip=False,
+                    content_identical=False,
+                    owned_by=owner_row.project_key,
+                )
+
+            # 3. Mirror-path duplicate check: another file in the same project
             # already carries this exact content. Skip iff that file still
             # exists on disk; otherwise treat the new path as a replacement.
             dup_result = await session.execute(

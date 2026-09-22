@@ -330,6 +330,38 @@ genuinely examined zero candidates. Each gets its own sentence. The second and
 third are rails succeeding without producing, which is the reading this block
 exists to prevent.
 
+## Plan index refresh
+
+Two ways exist to index a plan file written after the server started, and only one
+of them is armed.
+
+`brain_reindex_plans(project_key=None)` is the explicit one. It is registered
+unconditionally and answers under the production `compact` profile, so an agent can
+always say "now" without waiting for anything. It also consolidates mirror-path
+duplicates before scanning, which the periodic sweep deliberately does not do.
+
+`PLAN_INDEX_REFRESH_ENABLED` arms the passive one: a loop that re-scans every project
+with `plan_scan_paths` configured, every `PLAN_INDEX_REFRESH_INTERVAL_SECONDS`
+(default 900). It ships **closed**, and that is not caution for its own sake. The
+sweep writes: an indexed plan reaches `ClusterGuard.resolve()`, `plan` is in
+`CREATING_SIGNALS`, so link-only mode does not stop it and a sweep can create
+features. The roadmap tap is under observation and the purge of pseudo-features is
+waiting for the dry-up to be judged established — arming a periodic creator by
+default would change the very thing being measured. Arm it when that measurement is
+closed, not before.
+
+An unchanged corpus costs one read and one lookup per plan file and no embedding at
+all: the content hash decides before anything reaches the GPU. The loop sleeps its
+interval before its first sweep, so it never walks the same files as the one-shot
+pass the lifecycle already runs at startup.
+
+A scan path that fails — missing, unreadable, not a directory, or relative — is
+warned once per `(project, path, reason)` per process and drops to debug on every
+identical repeat. On a period the alternative is 96 identical lines a day, per path,
+forever. The suppression is a LOG volume decision only: `brain_reindex_plans` still
+names every rejected path in its `Fichiers non indexés` list on every single run, and
+so does each sweep's `plan_index_refresher.sweep_done` error count.
+
 ## Automation service
 
 The `brain-v42-automation.service` unit is generated and verified, but stays dormant.
