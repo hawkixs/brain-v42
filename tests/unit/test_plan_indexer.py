@@ -201,11 +201,13 @@ def _mock_execute_for_new_file(mock_deps):
     """Set up mock session.execute to handle the full index flow for new files.
 
     The new flow:
-      1. _is_unchanged: SELECT by file_path → fetchone() returns None (new file)
-      2. _is_unchanged: SELECT by content_hash → fetchone() returns None
+      1. _reindex_verdict: SELECT by file_path + project_key → None (new file)
+      2. _reindex_verdict: SELECT project_key by file_path → None
+         (no other project owns this path)
+      3. _reindex_verdict: SELECT by content_hash → fetchone() returns None
          (no mirror-path duplicate)
-      3. PgIndexedPlanRepo.upsert_plan_with_chunks (patched separately)
-      4. _link_plan_to_feature: INSERT on_conflict_do_nothing
+      4. PgIndexedPlanRepo.upsert_plan_with_chunks (patched separately)
+      5. _link_plan_to_feature: INSERT on_conflict_do_nothing
 
     Returns the plan_id used by the upsert mock.
     """
@@ -215,7 +217,11 @@ def _mock_execute_for_new_file(mock_deps):
     unchanged_result = MagicMock()
     unchanged_result.fetchone.return_value = None
 
-    # Result for _is_unchanged step 2 (no duplicate-by-hash row)
+    # Result for step 2 (nobody else owns this file_path)
+    no_owner_result = MagicMock()
+    no_owner_result.fetchone.return_value = None
+
+    # Result for step 3 (no duplicate-by-hash row)
     no_dup_result = MagicMock()
     no_dup_result.fetchone.return_value = None
 
@@ -223,7 +229,7 @@ def _mock_execute_for_new_file(mock_deps):
     link_result = MagicMock()
 
     mock_deps["session"].execute = AsyncMock(
-        side_effect=[unchanged_result, no_dup_result, link_result]
+        side_effect=[unchanged_result, no_owner_result, no_dup_result, link_result]
     )
     mock_deps["_plan_id"] = plan_id
     return plan_id
@@ -422,7 +428,11 @@ async def test_index_path_skips_duplicate_content_at_different_path(mock_deps, t
     no_row = MagicMock()
     no_row.fetchone.return_value = None
 
-    # Second SELECT (by content_hash + project_key) → existing primary row
+    # Second SELECT (project_key by file_path) → nobody else owns the mirror path
+    no_owner = MagicMock()
+    no_owner.fetchone.return_value = None
+
+    # Third SELECT (by content_hash + project_key) → existing primary row
     existing = MagicMock()
     existing.id = uuid.uuid4()
     existing.file_path = str(primary_file)
@@ -431,7 +441,7 @@ async def test_index_path_skips_duplicate_content_at_different_path(mock_deps, t
     by_hash = MagicMock()
     by_hash.fetchone.return_value = existing
 
-    mock_deps["session"].execute = AsyncMock(side_effect=[no_row, by_hash])
+    mock_deps["session"].execute = AsyncMock(side_effect=[no_row, no_owner, by_hash])
 
     indexer = _build_indexer(mock_deps)
     stats = await indexer.index_path(str(mirror_dir), "brain_v42")
@@ -460,7 +470,11 @@ async def test_index_path_indexes_when_existing_duplicate_file_gone(mock_deps, t
     no_row = MagicMock()
     no_row.fetchone.return_value = None
 
-    # Second SELECT (by content_hash) → row pointing to vanished path
+    # Second SELECT (project_key by file_path) → nobody else owns the new path
+    no_owner = MagicMock()
+    no_owner.fetchone.return_value = None
+
+    # Third SELECT (by content_hash) → row pointing to vanished path
     stale = MagicMock()
     stale.id = uuid.uuid4()
     stale.file_path = "/no/such/file/anywhere.md"
@@ -471,7 +485,7 @@ async def test_index_path_indexes_when_existing_duplicate_file_gone(mock_deps, t
 
     # _link_plan_to_feature
     link_result = MagicMock()
-    mock_deps["session"].execute = AsyncMock(side_effect=[no_row, by_hash, link_result])
+    mock_deps["session"].execute = AsyncMock(side_effect=[no_row, no_owner, by_hash, link_result])
 
     indexer = _build_indexer(mock_deps)
     with _patch_repo_upsert(mock_deps):
@@ -487,9 +501,13 @@ async def test_reindex_verdict_exact_path_lookup_is_project_scoped(mock_deps, tm
     """Removing project ownership from the exact lookup must make this test fail."""
     exact_result = MagicMock()
     exact_result.fetchone.return_value = None
+    owner_result = MagicMock()
+    owner_result.fetchone.return_value = None
     duplicate_result = MagicMock()
     duplicate_result.fetchone.return_value = None
-    mock_deps["session"].execute = AsyncMock(side_effect=[exact_result, duplicate_result])
+    mock_deps["session"].execute = AsyncMock(
+        side_effect=[exact_result, owner_result, duplicate_result]
+    )
     indexer = _build_indexer(mock_deps)
 
     verdict = await indexer._reindex_verdict(
@@ -522,11 +540,15 @@ async def test_reindex_verdict_ignores_live_relative_duplicate(mock_deps, tmp_pa
 
     exact_result = MagicMock()
     exact_result.fetchone.return_value = None
+    owner_result = MagicMock()
+    owner_result.fetchone.return_value = None
     duplicate_row = MagicMock()
     duplicate_row.file_path = str(relative_file)
     duplicate_result = MagicMock()
     duplicate_result.fetchone.return_value = duplicate_row
-    mock_deps["session"].execute = AsyncMock(side_effect=[exact_result, duplicate_result])
+    mock_deps["session"].execute = AsyncMock(
+        side_effect=[exact_result, owner_result, duplicate_result]
+    )
     indexer = _build_indexer(mock_deps)
 
     verdict = await indexer._reindex_verdict(
@@ -592,13 +614,18 @@ async def test_index_path_matches_design_glob(mock_deps, tmp_path):
     (tmp_path / "readme.md").write_text("# README\nNot a plan")
     (tmp_path / "notes.txt").write_text("notes")
 
-    # 2 files, each needs: _is_unchanged (None → new) + _link_plan_to_feature
+    # 2 files, each needs the three _reindex_verdict lookups (all None → new)
+    # plus _link_plan_to_feature.
     side_effects = []
     for _ in range(2):
         unchanged = MagicMock()
         unchanged.fetchone.return_value = None
+        no_owner = MagicMock()
+        no_owner.fetchone.return_value = None
+        no_dup = MagicMock()
+        no_dup.fetchone.return_value = None
         link = MagicMock()
-        side_effects.extend([unchanged, link])
+        side_effects.extend([unchanged, no_owner, no_dup, link])
 
     mock_deps["session"].execute = AsyncMock(side_effect=side_effects)
     # embed_texts must return N embeddings (parent + chunks) per call
@@ -1208,3 +1235,101 @@ async def test_a_plan_whose_content_changed_still_resolves(mock_deps, tmp_path):
 
     assert stats["indexed"] >= 1
     mock_deps["cluster_guard"].resolve.assert_awaited()
+
+
+# ── project ownership ───────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_plan_owned_by_another_project_is_not_stolen(mock_deps, tmp_path):
+    """Scanning a file that already belongs to another project must refuse it.
+
+    ``indexed_plans.file_path`` is UNIQUE across the whole table and the upsert
+    reassigns ``project_key`` from EXCLUDED on conflict. Two projects whose scan
+    paths overlap therefore take turns owning the same row, in silence and with
+    no error anywhere. That is the mechanism behind brain-v42 plans carrying
+    another project's key; refusing relative scan paths closed one way in, not
+    the door.
+    """
+    spec_file = tmp_path / "2026-03-14-auth-design.md"
+    spec_file.write_text("# Auth Design\n\nBody.")
+
+    exact_result = MagicMock()
+    exact_result.fetchone.return_value = None
+    owner_result = MagicMock()
+    owner_result.fetchone.return_value = MagicMock(project_key="brain-v42")
+    mock_deps["session"].execute = AsyncMock(side_effect=[exact_result, owner_result])
+    indexer = _build_indexer(mock_deps)
+
+    with capture_logs() as logs:
+        with _patch_repo_upsert(mock_deps) as upsert:
+            stats = await indexer.index_path(str(tmp_path), "red-games")
+
+    assert stats["indexed"] == 0
+    assert stats["errors"] == 1
+    assert stats["failures"] == [
+        {"file_path": str(spec_file), "error_type": "PlanOwnedByAnotherProject"}
+    ]
+    upsert.assert_not_awaited()
+    # Refused BEFORE the embedding call: a rejected file must not spend a vector.
+    mock_deps["embedding_svc"].embed_texts.assert_not_awaited()
+    conflicts = [log for log in logs if log["event"] == "plan_indexer.ownership_conflict"]
+    assert conflicts == [
+        {
+            "event": "plan_indexer.ownership_conflict",
+            "log_level": "warning",
+            "file_path": str(spec_file),
+            "project_key": "red-games",
+            "owner_project_key": "brain-v42",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_owning_project_still_reindexes_its_own_plan(mock_deps, tmp_path):
+    """The ownership guard must not refuse the owner — that would freeze the corpus."""
+    spec_file = tmp_path / "2026-03-14-auth-design.md"
+    spec_file.write_text("# Auth Design\n\nBody.")
+
+    exact_result = MagicMock()
+    exact_result.fetchone.return_value = None
+    owner_result = MagicMock()
+    owner_result.fetchone.return_value = MagicMock(project_key="brain_v42")
+    duplicate_result = MagicMock()
+    duplicate_result.fetchone.return_value = None
+    link = MagicMock()
+    mock_deps["session"].execute = AsyncMock(
+        side_effect=[exact_result, owner_result, duplicate_result, link]
+    )
+    indexer = _build_indexer(mock_deps)
+
+    with _patch_repo_upsert(mock_deps):
+        stats = await indexer.index_path(str(tmp_path), "brain_v42")
+
+    assert stats["indexed"] == 1
+    assert stats["errors"] == 0
+
+
+@pytest.mark.asyncio
+async def test_an_unowned_plan_is_indexed_normally(mock_deps, tmp_path):
+    """No row at this path anywhere: the guard must stay out of the way."""
+    spec_file = tmp_path / "2026-03-14-auth-design.md"
+    spec_file.write_text("# Auth Design\n\nBody.")
+
+    exact_result = MagicMock()
+    exact_result.fetchone.return_value = None
+    owner_result = MagicMock()
+    owner_result.fetchone.return_value = None
+    duplicate_result = MagicMock()
+    duplicate_result.fetchone.return_value = None
+    link = MagicMock()
+    mock_deps["session"].execute = AsyncMock(
+        side_effect=[exact_result, owner_result, duplicate_result, link]
+    )
+    indexer = _build_indexer(mock_deps)
+
+    with _patch_repo_upsert(mock_deps):
+        stats = await indexer.index_path(str(tmp_path), "red-games")
+
+    assert stats["indexed"] == 1
+    assert stats["errors"] == 0
