@@ -11,8 +11,8 @@
 ## Global constraints
 
 - Approved source contract: `docs/superpowers/specs/2026-09-19-measured-facts-and-claims-design.md`, sections 6.2–6.4. B1/B2 are already shipped. This plan delivers explicit verification; measured write provenance and B4 readers follow in the same authorized program.
-- Isolated worktree: `.worktrees/codex-claims-verification`, branch `codex/claims-verification`, base `f57f7a84c2cf0ed9cffa61261725b3af6a04ff09`. Preserve the independent embedding-usage work and Claude's plan-indexing work.
-- Canonical GitNexus was fully rebuilt at 2026-09-22T10:37:50.397Z, indexed commit equals this base. Use query/context, upstream impact before editing each existing symbol, and `detect_changes` with this explicit worktree before each commit. Do not index a worktree. Report high/critical risks before editing.
+- Isolated worktree, branch `codex/claims-verification`. Preserve unrelated work in progress.
+- Check GitNexus index freshness first. Use query/context, upstream impact before editing each existing symbol, and `detect_changes` with the explicit worktree before each commit. Do not index a worktree. Report high/critical risks before editing.
 - English code, documentation and commits; French user communication. Strict TDD: record meaningful failing assertions before implementation.
 - The module-layering graph is acyclic. `facts` already imports `services` (the Alembic probe); do not import `facts` from `services`, `repositories`, or `models`. The verification service therefore lives in `facts/verification.py`, composed by MCP. Repositories expose persistence records and accept primitive payloads, never a `Measurement`.
 - A caller cannot supply a measurement, an outcome, an issuer identity, or an emitted timestamp to the public tool. The server produces measurements; the request actor is declared provenance, not proof of the measured target.
@@ -47,7 +47,7 @@
 - [x] Write table-driven comparison tests, including holds/falsified cases for every operator, unreadable, escaped pointers, arrays, missing versus null, nullable equality, bool/int, malformed operators, and immutable inputs.
 - [x] Add fingerprint tests for stable mapping order, request independence from measurements/time, changed immutable inputs, full-size valid values in an envelope, and malformed/oversized envelopes.
 - [x] Implement the pure functions and identity accessor after its GitNexus check. Original RED evidence was retained only for the registry accessor, not the comparator/fingerprint modules; this is an explicit process evidence gap. Review found non-ASCII array indexes and unbounded integer conversion; both have new verbatim RED and GREEN evidence.
-- [x] Run focused tests and module-layering check; run required repository gates before a local task commit. Parent suite: 11,080 passed, 118 skipped; after the localized pointer correction, 84 focused tests passed. Ruff, formatting, mypy and layering passed on the final files; independent review SHIP.
+- [x] Run focused tests and module-layering check; run required repository gates before a local task commit. Ruff, formatting, mypy and layering passed on the final files; independent review SHIP.
 
 ### Task 2: Append-only repository and server verification coordinator
 
