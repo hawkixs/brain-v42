@@ -402,3 +402,60 @@ class TestBehavioralEquivalence:
         result = await repo.upsert_plan_with_chunks(plan, plan_emb, [], [])
 
         assert result == expected_id
+
+
+# ===========================================================================
+# Project ownership: the unique key is the path alone
+# ===========================================================================
+
+
+class TestProjectOwnership:
+    """``file_path`` is UNIQUE table-wide, so an unguarded upsert changes owners.
+
+    ``ON CONFLICT (file_path) DO UPDATE SET project_key = EXCLUDED.project_key``
+    hands the row to whoever wrote last. The indexer refuses foreign-owned paths
+    before it gets here, but that guard lives in one caller; this one lives at
+    the write itself and holds for every caller, present and future.
+    """
+
+    def test_the_conflict_update_is_scoped_to_the_owning_project(self):
+        """Losing the ownership predicate must make this test fail."""
+        import inspect
+
+        from brain_v42.repositories import pg_indexed_plan_repo
+
+        source = inspect.getsource(pg_indexed_plan_repo.PgIndexedPlanRepo.upsert_plan_with_chunks)
+        conflict_clause = source.split("ON CONFLICT (file_path) DO UPDATE SET", 1)[1]
+        conflict_clause = conflict_clause.split("RETURNING id", 1)[0]
+        assert "WHERE indexed_plans.project_key = EXCLUDED.project_key" in conflict_clause, (
+            "the DO UPDATE must refuse a row owned by another project"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_refused_conflict_raises_instead_of_returning_nothing(self):
+        """A guarded DO UPDATE that matches nothing returns no row at all.
+
+        Without an explicit mapping the caller sees SQLAlchemy's NoResultFound,
+        which names neither the file nor the reason — and a 500 with no subject
+        is exactly what sent the last investigation to the server journal.
+        """
+        from sqlalchemy.exc import NoResultFound
+
+        from brain_v42.repositories.pg_indexed_plan_repo import PlanOwnershipConflict
+
+        session = _make_session()
+        refused = MagicMock()
+        refused.scalar_one.side_effect = NoResultFound()
+        session.execute = AsyncMock(return_value=refused)
+        repo = PgIndexedPlanRepo(session)
+
+        plan = _make_plan()
+        with pytest.raises(PlanOwnershipConflict) as exc:
+            await repo.upsert_plan_with_chunks(plan, _make_embeddings(1)[0], [], [])
+
+        assert exc.value.file_path == plan.file_path
+        assert exc.value.project_key == plan.project_key
+        # The content never travels with the error.
+        assert plan.content not in str(exc.value)
+        session.rollback.assert_awaited_once()
+        session.commit.assert_not_awaited()

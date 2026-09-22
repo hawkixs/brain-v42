@@ -191,7 +191,11 @@ async def test_the_lifecycle_closes_the_registry_before_disposing_the_engine() -
         expected={FactTarget.PRODUCTION: SourceIdentity.from_mapping(_DECLARED)},
     )
     registry.freeze()
-    settings = MagicMock(otel_tracing_enabled=False, decay_enabled=False)
+    settings = MagicMock(
+        otel_tracing_enabled=False,
+        decay_enabled=False,
+        plan_index_refresh_enabled=False,
+    )
     services = {
         "access_logger": MagicMock(),
         "plan_indexer": MagicMock(index_all=AsyncMock(return_value={})),
