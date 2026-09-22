@@ -11,7 +11,7 @@ from brain_v42.facts.compare import Comparison, compare
 from brain_v42.facts.model import FactTarget, Measured, Measurement, Unreadable, measurement_to_json
 from brain_v42.facts.registry import FactRegistry, UnknownFactError
 from brain_v42.facts.verdict_fingerprints import outcome_fingerprint, request_fingerprint
-from brain_v42.models.claim_verdict import ClaimVerificationError
+from brain_v42.models.claim_verdict import ClaimVerificationError, validate_caller_string
 from brain_v42.repositories.pg_claim_verdicts import (
     ScopedClaim,
     VerdictRow,
@@ -24,7 +24,6 @@ from brain_v42.repositories.pg_claim_verdicts import (
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-_MAX_CALLER_STRING_LENGTH = 200
 _FUTURE_TOLERANCE = timedelta(seconds=60)
 
 
@@ -36,21 +35,13 @@ def _invalid_argument() -> ClaimVerificationError:
     return ClaimVerificationError("invalid_argument")
 
 
-def _validate_string(value: object) -> str:
-    if not isinstance(value, str) or not value.strip() or len(value) > _MAX_CALLER_STRING_LENGTH:
-        raise _invalid_argument()
-    if "\x00" in value or any(0xD800 <= ord(character) <= 0xDFFF for character in value):
-        raise _invalid_argument()
-    return value
-
-
 def _validate_arguments(
     claim_id: object, issuer_identity: object, issuer_kind: object, idempotency_key: object
 ) -> tuple[UUID, str, Literal["robot", "human"], str]:
     if not isinstance(claim_id, UUID):
         raise _invalid_argument()
-    issuer = _validate_string(issuer_identity)
-    key = _validate_string(idempotency_key)
+    issuer = validate_caller_string(issuer_identity)
+    key = validate_caller_string(idempotency_key)
     if not isinstance(issuer_kind, str) or issuer_kind not in {"robot", "human"}:
         raise _invalid_argument()
     return claim_id, issuer, cast(Literal["robot", "human"], issuer_kind), key
@@ -124,7 +115,7 @@ class ClaimVerificationService:
             claim_id, issuer_identity, issuer_kind, idempotency_key
         )
         if project_key is not None:
-            _validate_string(project_key)
+            validate_caller_string(project_key)
         if session is not None:
             return await self._verify(
                 session, checked_id, issuer, kind, key, project_key=project_key

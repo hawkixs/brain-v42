@@ -91,10 +91,17 @@ read through its comparable candidates, and a catalogue refusal names its origin
 
 **Required C prerequisite:** the current Dream scope carries project, principal and phase, but no trustworthy run ID. Before exposing this tool to the new phase, C must bind a run ID verified against the server/orchestrator to that scope and derive `dream:verify:<run_id>` from it. Never infer a run ID from `X-Brain-Agent` or accept an unverified MCP argument as issuer provenance. The existing capability middleware must continue refusing every Dream phase in B3.
 
-- [ ] RED tests through real FastMCP clients in full and compact profiles. A successful request reaches the coordinator with server-owned issuer/scope; unknown actor is refused; malformed UUID/key is rejected; extra measurement/outcome/timestamp arguments cannot influence the call; safe verification errors survive masking, arbitrary exceptions remain masked.
-- [ ] Wire one coordinator from the existing session factory and registry; register the versioned write tool with facts tagging. Mark it idempotent/non-destructive accurately under existing annotation conventions; do not mark it read-only.
-- [ ] Update documentation with a concrete declaration/verification/replay example and the fresh-observation behavior. Document that verification does not archive entries or alter ranking.
-- [ ] Run focused transport/composition tests, required gates and final real-PG verification tests, then `detect_changes` against main and inspect the entire branch diff before commit.
+- [x] RED tests through real FastMCP clients in full (`native`) and compact profiles. A successful request reaches the coordinator with server-owned issuer/scope; unknown actor is refused; malformed UUID/key is rejected; extra measurement/outcome/timestamp arguments cannot influence the call; safe verification errors survive masking, arbitrary exceptions remain masked.
+- [x] Wire one coordinator from the existing session factory and registry; register the versioned write tool with facts tagging. Mark it idempotent/non-destructive accurately under existing annotation conventions; do not mark it read-only.
+- [x] Update documentation with a concrete declaration/verification/replay example and the fresh-observation behavior. Document that verification does not archive entries or alter ranking.
+- [x] Run focused transport/composition tests, required gates and final real-PG verification tests, then `detect_changes` against main and inspect the entire branch diff before commit.
+
+Delivered beyond the letter of this task, because the tool is unusable without it: the
+five claim writers named how many claims they recorded but not which, so a caller had no
+id to verify. Their confirmation now lists every occurrence id in full and points at
+`brain_claim_verify`. Refusals carry one constant text per closed code (they used to
+share one text for all six), plus `unknown_actor` for a request the server could not
+attribute.
 
 ## Required commit gates and completion evidence
 
