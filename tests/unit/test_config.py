@@ -7,8 +7,16 @@ from pydantic import SecretStr, ValidationError
 def test_settings_default_values(monkeypatch):
     """Settings has sensible defaults for all optional fields.
 
-    Uses monkeypatch.delenv so the test doesn't depend on a developer's
-    local .env (env vars override defaults in pydantic-settings).
+    `monkeypatch.delenv` clears environment VARIABLES; it does not stop
+    pydantic-settings from reading the repository `.env`, which is a separate
+    source. This test claimed independence from a developer's local `.env` and
+    did not have it: it passed only while that file happened to carry the same
+    values as the defaults. The 2026-09-22 embedding-provider switch changed
+    one of them and the assertion broke, on a branch that had not touched
+    configuration at all.
+
+    `_env_file=None` is the isolation the docstring always described, and the
+    convention this suite already uses in 58 other places.
     """
     monkeypatch.delenv("EMBEDDING_SERVICE_URL", raising=False)
     monkeypatch.delenv("RERANKER_URL", raising=False)
@@ -24,7 +32,10 @@ def test_settings_default_values(monkeypatch):
     monkeypatch.delenv("BRAIN_LOG_LEVEL", raising=False)
     from brain_v42.config import Settings
 
-    s = Settings(postgres_url="postgresql+asyncpg://brain:brain@localhost:5433/brain")
+    s = Settings(
+        postgres_url="postgresql+asyncpg://brain:brain@localhost:5433/brain",
+        _env_file=None,  # type: ignore[call-arg]
+    )
     assert s.log_level == "INFO"
     assert s.embedding_service_url == "http://localhost:8003"
     assert s.reranker_url == "http://localhost:8003"

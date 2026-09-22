@@ -45,7 +45,12 @@ class TestConfiguredPrefixReachesTheRegeneratedVectors:
         from brain_v42.config import Settings
         from brain_v42.services.embedding_factory import build_embedding_service
 
-        settings = Settings()  # type: ignore[call-arg]
+        # Without `_env_file=None` this reads the repository `.env`, so the
+        # wire is whichever backend production happens to be armed with
+        # rather than the one this test configures. The fake response below
+        # is shim-shaped, so an armed openai backend fails it for a reason
+        # that has nothing to do with prefixes.
+        settings = Settings(_env_file=None)  # type: ignore[call-arg]
         service = build_embedding_service(settings)
 
         seen: list[httpx.Request] = []
