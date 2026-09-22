@@ -430,24 +430,22 @@ GitHub Actions is the **sole CI/CD authority** since the GitLab rail was retired
 **Three separate rails:**
 
 - `.github/workflows/continuous-integration.yml` — on `pull_request` **only**: lint, tests
-  and security on hosted `ubuntu-24.04`. These gates must stay runnable **with the runner
-  off**: that is the whole reason for the split.
+  and security on hosted `ubuntu-24.04`.
 - `.github/workflows/continuous-delivery.yml` — on `push` to `main` only: `build-docker`
-  alone, on `self-hosted, Linux, X64, red-ci`. **No deployment step**: rolling out a
-  pushed digest remains a manual operator gesture, out of band. Secrets required by this
-  rail, and by it alone: `REGISTRY_USER` and `REGISTRY_PASSWORD`, created out of band by
-  the operator.
+  alone, on hosted `ubuntu-24.04`, publishing `ghcr.io/hawkixs/brain-v42` with the
+  workflow's own token (`packages: write`, this job only). **No repository secret.**
+  **No deployment step**: rolling out a pushed digest remains a manual operator gesture,
+  out of band.
 - `.github/workflows/release.yml` — on push of a `v*` tag only: builds the wheel and the
   sdist, reuses `tests/unit/test_wheel_ships_migrations.py` to prove that the wheel ships
   the migrations, and refuses a tag that does not name the built version. Runs on hosted
-  `ubuntu-24.04`, **so with the runner off** — that is its reason to exist: a release
-  placed on the on-demand runner would never have run. **No image**: the registry is
-  private with internal DNS, and an image would bake in the reranker's ONNX model, whose
+  `ubuntu-24.04`. **No image**: an image would bake in the reranker's ONNX model, whose
   upstream licence NOTICE declares undetermined.
 
-The `red-github-runner-brain-v42` runner is repo-scoped and started on demand
-(`runnerctl start brain-v42`, then `runnerctl stop brain-v42`). Its `offline` state is
-**normal**, not an outage: a run on `main` simply waits for it to start.
+**No rail runs on a self-hosted runner** (ticket `03846021`, 2026-09-23). The former
+brain-v42 runner was deleted by GitHub after fourteen days offline, and a public
+repository must not run Docker as root on a VM it shares with private repositories: a
+compromised job there would reach the other runners and their secrets.
 
 The pinning gate `scripts/check_container_image_pins.py` covers `.github/workflows/`: a CI
 image not pinned by digest is refused there.

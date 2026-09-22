@@ -2420,9 +2420,13 @@ def test_documented_ci_rails_match_the_workflow_files() -> None:
         assert glob in normalized
     # The runner boundary of decision c62a98c1, quoted from the wiring itself.
     assert str(ci_workflow["jobs"]["lint-ruff"]["runs-on"]) in normalized
-    assert ", ".join(cd_workflow["jobs"]["build-docker"]["runs-on"]) in normalized
-    for secret in ("REGISTRY_USER", "REGISTRY_PASSWORD"):
-        assert secret in normalized
+    assert str(cd_workflow["jobs"]["build-docker"]["runs-on"]) in normalized
+    # Ticket 03846021: delivery left the self-hosted runner and the internal
+    # registry. A section still naming either would send an operator to start a
+    # runner that no longer exists, or to rotate secrets nothing reads.
+    assert "ghcr.io/hawkixs/brain-v42" in normalized
+    for gone in ("red-ci", "REGISTRY_USER", "REGISTRY_PASSWORD", "runnerctl"):
+        assert gone not in normalized
 
 
 def _documented_integration_commands(document: str) -> list[str]:

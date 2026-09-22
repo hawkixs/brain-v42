@@ -1,13 +1,11 @@
 # brain_v42 - GitHub Actions, integration rail (ADR #4).
 #
-# Pull requests gate here, on GitHub-hosted runners only, so they stay verifiable
-# while the on-demand red-github-runner-brain-v42 is stopped. Nothing in this file
-# may target [self-hosted, Linux, X64, red-ci]: that runner receives the registry
-# credentials on main and must never execute pull-request code.
+# Pull requests gate here, on GitHub-hosted runners only. No rail of this public
+# repository runs on a self-hosted runner (ticket 03846021): pull-request code must
+# never execute on a machine shared with private repositories.
 #
-# This rail mirrors .gitlab-ci.yml job for job, minus build:docker which belongs to
-# continuous-delivery.yml. Both CI systems run in parallel during the migration;
-# tests/unit/test_github_workflows.py holds the parity.
+# The image build belongs to continuous-delivery.yml;
+# tests/unit/test_github_workflows.py holds the runner boundary and the job roster.
 
 name: Continuous integration
 
