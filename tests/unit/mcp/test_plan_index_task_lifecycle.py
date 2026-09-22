@@ -69,6 +69,7 @@ async def test_plan_index_task_receives_cancel_on_lifecycle_exit() -> None:
     settings.metrics_enabled = False
     settings.decay_enabled = False
     settings.otel_tracing_enabled = False
+    settings.plan_index_refresh_enabled = False
 
     # Slow plan indexer that never completes during the test
     slow_indexer = MagicMock()

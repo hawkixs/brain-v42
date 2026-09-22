@@ -1,5 +1,7 @@
 """Canonical embedding text shared by request and backfill paths."""
 
+import pytest
+
 from brain_v42.services.embedding_text import (
     adr_embedding_text,
     decision_embedding_text,
@@ -58,3 +60,248 @@ def test_every_entity_type_dispatches_to_its_own_composer() -> None:
         embedding_text_from_row("adr", {"title": "t", "context": "c", "decision": "d"}) == "t c d"
     )
     assert embedding_text_from_row("feature", {"description": "d"}) == "d"
+
+
+# ── the three vector tables the sample could not reach ──────────────────
+#
+# `indexed_plans`, `indexed_plan_chunks` and `gitlab_events` carry 2239 of the
+# corpus's embedded rows and no composer could recompose their text, so the
+# drift check announced them as a blind spot on every run. A provider switch
+# could therefore leave a quarter of the corpus on the old model and still
+# report MATCH.
+#
+# These composers close it, and they are shared with the write path on purpose:
+# a checker that recomposes text its own way reports drift on a column nothing
+# touched.
+
+
+class TestIndexedPlanEmbeddingText:
+    def test_the_summary_wins_when_there_is_one(self) -> None:
+        from brain_v42.services.embedding_text import indexed_plan_embedding_text
+
+        assert (
+            indexed_plan_embedding_text("Title", "A summary", "Some preamble")
+            == "Title\n\nA summary"
+        )
+
+    def test_the_preamble_is_used_when_there_is_no_summary(self) -> None:
+        from brain_v42.services.embedding_text import indexed_plan_embedding_text
+
+        assert (
+            indexed_plan_embedding_text("Title", None, "Some preamble") == "Title\n\nSome preamble"
+        )
+
+    def test_the_title_stands_alone_when_there_is_neither(self) -> None:
+        """188 of 208 rows have no summary, so this is the common case, not the edge."""
+        from brain_v42.services.embedding_text import indexed_plan_embedding_text
+
+        assert indexed_plan_embedding_text("Title", None, "") == "Title"
+
+    def test_an_empty_summary_falls_through_to_the_preamble(self) -> None:
+        """`if summary:` and `if summary is not None:` differ here, and the write
+        path uses the first. Pinning it is what keeps the two identical."""
+        from brain_v42.services.embedding_text import indexed_plan_embedding_text
+
+        assert indexed_plan_embedding_text("Title", "", "Preamble") == "Title\n\nPreamble"
+
+
+class TestIndexedPlanChunkEmbeddingText:
+    def test_a_chunk_embeds_its_content_verbatim(self) -> None:
+        """1792 rows, every one reproducible: the column IS the embedded text."""
+        from brain_v42.services.embedding_text import indexed_plan_chunk_embedding_text
+
+        assert indexed_plan_chunk_embedding_text("## Section\n\nBody.") == "## Section\n\nBody."
+
+
+class TestGitlabEventEmbeddingText:
+    def test_a_short_event_reproduces_its_text(self) -> None:
+        from brain_v42.services.embedding_text import gitlab_event_embedding_text
+
+        assert gitlab_event_embedding_text("merge request: add a thing") == (
+            "merge request: add a thing"
+        )
+
+    def test_an_event_at_the_storage_ceiling_cannot_reproduce_anything(self) -> None:
+        """The ingestor embeds `text[:2000]` and stores `text[:500]`.
+
+        127 of 239 rows sit at 500 characters, so for more than half the table
+        the stored column is not what was embedded. Returning None is the only
+        honest answer: composing from a truncation would report drift on a
+        vector nobody touched.
+        """
+        from brain_v42.services.embedding_text import (
+            GITLAB_EVENT_TITLE_MAX_CHARS,
+            gitlab_event_embedding_text,
+        )
+
+        assert gitlab_event_embedding_text("x" * GITLAB_EVENT_TITLE_MAX_CHARS) is None
+
+    def test_one_character_below_the_ceiling_is_still_trusted(self) -> None:
+        from brain_v42.services.embedding_text import (
+            GITLAB_EVENT_TITLE_MAX_CHARS,
+            gitlab_event_embedding_text,
+        )
+
+        text = "x" * (GITLAB_EVENT_TITLE_MAX_CHARS - 1)
+        assert gitlab_event_embedding_text(text) == text
+
+
+class TestReproducibleEmbeddingText:
+    def test_it_answers_for_all_nine_vector_tables(self) -> None:
+        """One entry point, so a table cannot be forgotten by being absent."""
+        from brain_v42.services.embedding_text import REPRODUCIBLE_ENTITY_TYPES
+
+        assert set(REPRODUCIBLE_ENTITY_TYPES) == {
+            "decision",
+            "learning",
+            "snippet",
+            "runbook",
+            "adr",
+            "feature",
+            "plan",
+            "plan_chunk",
+            "gitlab_event",
+        }
+
+    def test_the_six_original_types_still_route_to_the_same_composer(self) -> None:
+        from brain_v42.services.embedding_text import (
+            embedding_text_from_row,
+            reproducible_embedding_text,
+        )
+
+        row = {"topic": "A topic", "insight": "An insight"}
+
+        assert reproducible_embedding_text("learning", row) == embedding_text_from_row(
+            "learning", row
+        )
+
+    def test_a_truncated_gitlab_row_answers_none_rather_than_a_guess(self) -> None:
+        from brain_v42.services.embedding_text import (
+            GITLAB_EVENT_TITLE_MAX_CHARS,
+            reproducible_embedding_text,
+        )
+
+        assert (
+            reproducible_embedding_text(
+                "gitlab_event", {"title": "x" * GITLAB_EVENT_TITLE_MAX_CHARS}
+            )
+            is None
+        )
+
+    def test_a_plan_row_composes_from_its_stored_columns(self) -> None:
+        from brain_v42.services.embedding_text import reproducible_embedding_text
+
+        row = {"title": "Auth Design", "summary": None, "content": "Intro line.\n\n## A\n\nBody."}
+
+        assert reproducible_embedding_text("plan", row) == "Auth Design\n\nIntro line."
+
+
+class TestPlanEmbedTruncation:
+    def test_the_write_path_ceiling_is_shared_not_re_declared(self) -> None:
+        """The indexer truncated with a private constant. The checker must cut
+        at the same place or every long plan reads as drift."""
+        import brain_v42.services.plan_indexer as indexer_module
+        from brain_v42.services.embedding_text import PLAN_EMBED_INPUT_MAX_CHARS
+
+        source = indexer_module.__doc__ or ""
+        assert PLAN_EMBED_INPUT_MAX_CHARS == 15000
+        assert not hasattr(indexer_module, "_EMBED_INPUT_MAX_CHARS"), (
+            "the private ceiling must be gone, not shadowed"
+        )
+        assert source is not None
+
+    def test_truncation_is_a_prefix_and_nothing_else(self) -> None:
+        from brain_v42.services.embedding_text import (
+            PLAN_EMBED_INPUT_MAX_CHARS,
+            truncate_plan_embed_input,
+        )
+
+        long_text = "y" * (PLAN_EMBED_INPUT_MAX_CHARS + 10)
+
+        assert truncate_plan_embed_input(long_text) == "y" * PLAN_EMBED_INPUT_MAX_CHARS
+        assert truncate_plan_embed_input("short") == "short"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_parent", "expected_chunks"),
+    [
+        (
+            "---\ntitle: Frontmatter title\n---\n\n# Ignored H1\n\nIntro.\n\n## Section\n\nBody.",
+            "Frontmatter title\n\nIntro.",
+            ["## Section\n\nBody."],
+        ),
+        (
+            "# H1 title\n\nBody without a section heading.",
+            "H1 title\n\n# H1 title\n\nBody without a section heading.",
+            [],
+        ),
+        (
+            "# Title\n\n```markdown\n## This is code, not a section\n```\n\nPreamble.",
+            "Title\n\n# Title\n\n```markdown\n## This is code, not a section\n```\n\nPreamble.",
+            [],
+        ),
+    ],
+)
+def test_persisted_plan_columns_reproduce_the_real_chunker_inputs(
+    source: str,
+    expected_parent: str,
+    expected_chunks: list[str],
+) -> None:
+    """Derive expectations from markdown, then use the persisted row shape.
+
+    Frontmatter/H1 precedence, no-H2 files and headings inside fenced code each
+    take a distinct `chunk_markdown` path.  The parent and chunk columns are
+    precisely what the drift checker sees after persistence.
+    """
+    from brain_v42.services.embedding_text import reproducible_embedding_text
+    from brain_v42.services.plan_chunker import chunk_markdown
+
+    parent, chunks = chunk_markdown(source)
+    persisted_parent = {"title": parent.title, "summary": parent.summary, "content": parent.content}
+
+    assert reproducible_embedding_text("plan", persisted_parent) == expected_parent
+    assert [
+        reproducible_embedding_text("plan_chunk", {"content": chunk.content}) for chunk in chunks
+    ] == expected_chunks
+
+
+def test_a_long_preamble_is_reproduced_with_the_write_path_truncation() -> None:
+    """The row stores a long body; its plan vector stores only the shared prefix."""
+    from brain_v42.services.embedding_text import (
+        PLAN_EMBED_INPUT_MAX_CHARS,
+        reproducible_embedding_text,
+    )
+    from brain_v42.services.plan_chunker import chunk_markdown
+
+    body = "# Long preamble\n\n" + "x" * PLAN_EMBED_INPUT_MAX_CHARS
+    parent, chunks = chunk_markdown(body)
+    persisted_parent = {"title": parent.title, "summary": parent.summary, "content": parent.content}
+
+    assert chunks == []
+    assert (
+        reproducible_embedding_text("plan", persisted_parent)
+        == ("Long preamble\n\n# Long preamble\n\n" + "x" * PLAN_EMBED_INPUT_MAX_CHARS)[
+            :PLAN_EMBED_INPUT_MAX_CHARS
+        ]
+    )
+
+
+def test_a_long_nested_h2_chunk_reproduces_its_literal_truncated_prefix() -> None:
+    """The persisted chunk is direct input, including nested H3 markdown."""
+    from brain_v42.services.embedding_text import (
+        PLAN_EMBED_INPUT_MAX_CHARS,
+        reproducible_embedding_text,
+    )
+    from brain_v42.services.plan_chunker import chunk_markdown
+
+    section = "## Delivery\n\n### Rollout\n\n" + "word " * PLAN_EMBED_INPUT_MAX_CHARS
+    parent, chunks = chunk_markdown("# Provider Switch\n\n" + section)
+
+    assert parent.title == "Provider Switch"
+    assert len(chunks) == 1
+    assert chunks[0].section_path == "Delivery > Rollout"
+    assert chunks[0].content == section.rstrip("\n")
+    assert (
+        reproducible_embedding_text("plan_chunk", {"content": chunks[0].content})
+        == section[:PLAN_EMBED_INPUT_MAX_CHARS]
+    )
