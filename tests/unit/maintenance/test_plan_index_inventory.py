@@ -216,6 +216,42 @@ def test_identical_content_on_several_files_picks_one_target_deterministically()
     assert forward.target_project == "proj-a"
 
 
+def test_same_canonical_file_claimed_by_two_projects_is_rejected() -> None:
+    """A repair must not select an owner arbitrarily from conflicting roots."""
+    rows = [_row("1", "red-games", "docs/a-plan.md", content_hash="a" * 64)]
+    disk = [
+        _disk("/canonical/a-plan.md", "red-games", "a" * 64),
+        _disk("/canonical/a-plan.md", "red-writer", "a" * 64),
+    ]
+
+    with pytest.raises(ValueError, match="cross_project_path_claim"):
+        classify(rows, disk)
+
+
+def test_cross_project_direct_path_with_different_content_is_refused() -> None:
+    rows = [_row("1", "red-games", "/repo/a-plan.md", content_hash="a" * 64)]
+    disk = [_disk("/repo/a-plan.md", "red-writer", "b" * 64)]
+
+    with pytest.raises(ValueError, match="cross_project_content_mismatch"):
+        classify(rows, disk)
+
+
+def test_cross_project_alias_with_different_content_is_refused() -> None:
+    rows = [
+        _row(
+            "1",
+            "red-games",
+            "/alias/a-plan.md",
+            content_hash="a" * 64,
+            resolved_path="/canonical/a-plan.md",
+        )
+    ]
+    disk = [_disk("/canonical/a-plan.md", "red-writer", "b" * 64)]
+
+    with pytest.raises(ValueError, match="cross_project_content_mismatch"):
+        classify(rows, disk)
+
+
 def test_an_already_archived_row_is_not_reported_as_work() -> None:
     """Re-running the repair must converge, not archive the same rows forever."""
     rows = [
@@ -298,12 +334,39 @@ def test_a_rewrite_carries_the_previous_state_for_recovery() -> None:
         "file_path": "docs/a-design.md",
         "project_key": "red-games",
         "freshness_status": "fresh",
+        "content_hash": "a" * 64,
+        "indexed_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": None,
+        "freshness_source": None,
     }
     assert mutation.after == {
         "file_path": "/repo/red_writer/docs/a-design.md",
         "project_key": "red-writer",
         "freshness_status": "fresh",
     }
+
+
+def test_a_mutation_carries_content_and_clock_concurrency_evidence() -> None:
+    from brain_v42.maintenance.plan_index_inventory import plan_mutations
+
+    row = PlanRow(
+        row_id="1",
+        project_key="red-games",
+        file_path="docs/a-plan.md",
+        content_hash="a" * 64,
+        freshness_status="fresh",
+        indexed_at="2026-01-01T00:00:00+00:00",
+        freshness_source="plan_reindex",
+        updated_at="2026-01-02T00:00:00+00:00",
+    )
+    disk = [_disk("/repo/red_writer/docs/a-plan.md", "red-writer", "a" * 64)]
+
+    mutation = plan_mutations(classify([row], disk))[0]
+
+    assert mutation.before["content_hash"] == "a" * 64
+    assert mutation.before["indexed_at"] == "2026-01-01T00:00:00+00:00"
+    assert mutation.before["updated_at"] == "2026-01-02T00:00:00+00:00"
+    assert mutation.before["freshness_source"] == "plan_reindex"
 
 
 def test_an_archive_changes_the_status_and_nothing_else() -> None:
@@ -372,6 +435,19 @@ def test_verification_counts_rows_against_real_files_per_project() -> None:
     assert report["red-writer"].matches is True
     assert report["red-games"].matches is False
     assert (report["red-games"].indexed_rows, report["red-games"].disk_files) == (1, 2)
+
+
+def test_verification_rejects_equal_counts_with_the_wrong_paths() -> None:
+    """Equal totals do not prove that a project owns the files it claims."""
+    from brain_v42.maintenance.plan_index_inventory import verify_projects
+
+    rows = [_row("1", "red-writer", "/w/wrong-plan.md", content_hash="a" * 64)]
+    disk = [_disk("/w/right-plan.md", "red-writer", "a" * 64)]
+
+    report = {v.project_key: v for v in verify_projects(rows, disk)}
+
+    assert report["red-writer"].indexed_rows == report["red-writer"].disk_files == 1
+    assert report["red-writer"].matches is False
 
 
 def test_verification_ignores_archived_rows() -> None:

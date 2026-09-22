@@ -68,6 +68,8 @@ class PlanRow:
     freshness_status: str
     indexed_at: str
     resolved_path: str | None = None
+    freshness_source: str | None = None
+    updated_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +105,9 @@ def _index_disk(
     by_path: dict[str, DiskPlanFile] = {}
     by_hash: dict[str, DiskPlanFile] = {}
     for candidate in sorted(disk_files, key=lambda f: f.path):
+        existing = by_path.get(candidate.path)
+        if existing is not None and existing.project_key != candidate.project_key:
+            raise ValueError("cross_project_path_claim")
         by_path.setdefault(candidate.path, candidate)
         by_hash.setdefault(candidate.content_hash, candidate)
     return by_path, by_hash
@@ -135,6 +140,8 @@ def _first_pass(
                     )
                 )
             else:
+                if on_disk.content_hash != row.content_hash:
+                    raise ValueError("cross_project_content_mismatch")
                 decisions.append(
                     RowDecision(
                         row=row,
@@ -158,6 +165,11 @@ def _first_pass(
                     )
                 )
             else:
+                if (
+                    alias_target.project_key != row.project_key
+                    and alias_target.content_hash != row.content_hash
+                ):
+                    raise ValueError("cross_project_content_mismatch")
                 decisions.append(
                     RowDecision(
                         row=row,
@@ -251,8 +263,8 @@ class RowMutation:
 
     row_id: str
     kind: Literal["rewrite", "archive"]
-    before: dict[str, str]
-    after: dict[str, str]
+    before: dict[str, str | None]
+    after: dict[str, str | None]
 
 
 def plan_mutations(decisions: Sequence[RowDecision]) -> tuple[RowMutation, ...]:
@@ -268,6 +280,10 @@ def plan_mutations(decisions: Sequence[RowDecision]) -> tuple[RowMutation, ...]:
             "file_path": row.file_path,
             "project_key": row.project_key,
             "freshness_status": row.freshness_status,
+            "content_hash": row.content_hash,
+            "indexed_at": row.indexed_at,
+            "updated_at": row.updated_at,
+            "freshness_source": row.freshness_source,
         }
         if decision.verdict is PlanRowVerdict.REWRITE:
             mutations.append(
@@ -294,7 +310,11 @@ def plan_mutations(decisions: Sequence[RowDecision]) -> tuple[RowMutation, ...]:
                     # The path is deliberately untouched: it is what identifies
                     # the row, and a recovered row has to come back to exactly
                     # what it was.
-                    after={**before, "freshness_status": "archived"},
+                    after={
+                        "file_path": row.file_path,
+                        "project_key": row.project_key,
+                        "freshness_status": "archived",
+                    },
                 )
             )
     return tuple(sorted(mutations, key=lambda m: m.row_id))
@@ -307,10 +327,12 @@ class ProjectVerification:
     project_key: str
     indexed_rows: int
     disk_files: int
+    indexed_coverage: frozenset[tuple[str, str]]
+    disk_coverage: frozenset[tuple[str, str]]
 
     @property
     def matches(self) -> bool:
-        return self.indexed_rows == self.disk_files
+        return self.indexed_coverage == self.disk_coverage
 
 
 def verify_projects(
@@ -327,15 +349,30 @@ def verify_projects(
     the report on rows is exactly how "nothing was ever indexed here" reads as
     "no problem".
     """
-    live: Counter[str] = Counter(
-        row.project_key for row in rows if row.freshness_status != "archived"
-    )
+    live_rows = [row for row in rows if row.freshness_status != "archived"]
+    live: Counter[str] = Counter(row.project_key for row in live_rows)
     on_disk: Counter[str] = Counter(entry.project_key for entry in disk_files)
+    indexed_coverage = {
+        project_key: frozenset(
+            (row.file_path, row.content_hash) for row in live_rows if row.project_key == project_key
+        )
+        for project_key in live
+    }
+    disk_coverage = {
+        project_key: frozenset(
+            (entry.path, entry.content_hash)
+            for entry in disk_files
+            if entry.project_key == project_key
+        )
+        for project_key in on_disk
+    }
     return tuple(
         ProjectVerification(
             project_key=project_key,
             indexed_rows=live.get(project_key, 0),
             disk_files=on_disk.get(project_key, 0),
+            indexed_coverage=indexed_coverage.get(project_key, frozenset()),
+            disk_coverage=disk_coverage.get(project_key, frozenset()),
         )
         for project_key in sorted(set(live) | set(on_disk))
     )

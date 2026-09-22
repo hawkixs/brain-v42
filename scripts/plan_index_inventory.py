@@ -13,10 +13,10 @@ rewritten. A row with nothing to point at is the last remaining copy of that
 plan. The ticket called both "orphelines", which is exactly what made the
 repair sound like a delete.
 
-NOTHING HERE DELETES, in any mode. `--apply` issues two kinds of statement,
-`rewrite` and `archive`. Archiving sets `freshness_status='archived'`, which
-`indexed_plan_search_service` already filters out of every default view, and
-leaves every byte where it is.
+No mode deletes a plan, chunk or feature. `--apply` rewrites ownership/path
+or archives a plan, preserving its stored text and vectors. The explicit
+`--detach-cross-project-links` option can remove foreign feature-artifact
+links for touched plans after saving those complete links in recovery.
 
 Read-only unless `--apply` is passed, and `--apply` refuses to start without a
 recovery file it wrote itself.
@@ -33,6 +33,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -59,9 +60,13 @@ MAX_PLAN_FILE_BYTES = 8 * 1024 * 1024
 #: script was reviewed for. Fail closed and make the operator say so.
 DEFAULT_MAX_MUTATIONS = 500
 
-_PLAN_GLOBS = ("**/*-design.md", "**/*-plan.md")
+_PLAN_SUFFIXES = ("-design.md", "-plan.md")
 
 logger = structlog.get_logger(__name__)
+
+
+class InventoryApplyError(RuntimeError):
+    """Fail-closed operational error whose text contains no connection data."""
 
 
 def _hash_file(path: Path) -> str | None:
@@ -117,21 +122,49 @@ def collapse_scan_roots(
     return roots, duplicates, unresolvable
 
 
-def walk_disk(roots: dict[str, list[Path]]) -> list[DiskPlanFile]:
+def walk_disk(roots: dict[str, list[Path]], issues: list[str] | None = None) -> list[DiskPlanFile]:
     """Every real plan file under a canonical scan root, with its content hash."""
     found: dict[str, DiskPlanFile] = {}
     for project_key, project_roots in roots.items():
         for root in project_roots:
-            for pattern in _PLAN_GLOBS:
-                for candidate in root.glob(pattern):
+
+            def onerror(error: OSError, scan_root: Path = root) -> None:
+                path = str(error.filename or scan_root)
+                if issues is None:
+                    raise InventoryApplyError("scan_walk_error")
+                issues.append(path)
+
+            for directory, _dirs, filenames in os.walk(
+                root, topdown=True, onerror=onerror, followlinks=False
+            ):
+                for filename in filenames:
+                    if not filename.endswith(_PLAN_SUFFIXES):
+                        continue
+                    candidate = Path(directory, filename)
+                    # A runtime scan never follows a symlinked plan file. Its
+                    # target can be outside the configured root, and accepting
+                    # it would turn an ownership inventory into a path escape.
+                    if candidate.is_symlink():
+                        continue
                     try:
                         canonical = candidate.resolve(strict=True)
                     except (OSError, RuntimeError):
                         continue
-                    if not canonical.is_file() or str(canonical) in found:
+                    try:
+                        canonical.relative_to(root)
+                    except ValueError:
+                        continue
+                    if not canonical.is_file():
+                        continue
+                    previous = found.get(str(canonical))
+                    if previous is not None:
+                        if previous.project_key != project_key:
+                            raise InventoryApplyError("cross_project_path_claim")
                         continue
                     digest = _hash_file(canonical)
                     if digest is None:
+                        if issues is not None:
+                            issues.append(str(canonical))
                         continue
                     found[str(canonical)] = DiskPlanFile(
                         path=str(canonical),
@@ -155,7 +188,7 @@ def _resolved(file_path: str) -> str | None:
 async def read_rows(conn: asyncpg.Connection) -> list[PlanRow]:
     records = await conn.fetch(
         "SELECT id::text AS id, project_key, file_path, content_hash, "
-        "freshness_status, indexed_at FROM indexed_plans ORDER BY id"
+        "freshness_status, freshness_source, indexed_at, updated_at FROM indexed_plans ORDER BY id"
     )
     return [
         PlanRow(
@@ -166,6 +199,8 @@ async def read_rows(conn: asyncpg.Connection) -> list[PlanRow]:
             freshness_status=record["freshness_status"],
             indexed_at=record["indexed_at"].isoformat(),
             resolved_path=_resolved(record["file_path"]),
+            freshness_source=record["freshness_source"],
+            updated_at=record["updated_at"].isoformat(),
         )
         for record in records
     ]
@@ -179,38 +214,168 @@ async def read_scan_paths(conn: asyncpg.Connection) -> dict[str, list[str]]:
     return {record["project_key"]: list(record["plan_scan_paths"]) for record in records}
 
 
-async def apply_mutations(conn: asyncpg.Connection, mutations: tuple) -> int:
+async def _write_mutations(conn: asyncpg.Connection, mutations: tuple) -> int:
     """Write every mutation in ONE transaction, or none of them.
 
     A partial repair is worse than no repair: half the rows rewritten and half
     still wrong is a state nobody measured and no report describes.
     """
-    async with conn.transaction():
-        for mutation in mutations:
-            if mutation.kind == "rewrite":
-                await conn.execute(
-                    "UPDATE indexed_plans SET file_path = $2, project_key = $3, "
-                    "updated_at = NOW() WHERE id = $1::uuid",
-                    mutation.row_id,
-                    mutation.after["file_path"],
-                    mutation.after["project_key"],
-                )
-                # Chunks carry their own project_key and are searched on it.
-                # Leaving them behind would file a plan under one project and
-                # its sections under another.
-                await conn.execute(
-                    "UPDATE indexed_plan_chunks SET project_key = $2 WHERE plan_id = $1::uuid",
-                    mutation.row_id,
-                    mutation.after["project_key"],
-                )
-            else:
-                await conn.execute(
-                    "UPDATE indexed_plans SET freshness_status = 'archived', "
-                    "freshness_source = 'manual_update', updated_at = NOW() "
-                    "WHERE id = $1::uuid",
-                    mutation.row_id,
-                )
+    for mutation in mutations:
+        if mutation.kind == "rewrite":
+            await conn.execute(
+                "UPDATE indexed_plans SET file_path = $2, project_key = $3, "
+                "updated_at = NOW() WHERE id = $1::uuid",
+                mutation.row_id,
+                mutation.after["file_path"],
+                mutation.after["project_key"],
+            )
+            await conn.execute(
+                "UPDATE indexed_plan_chunks SET project_key = $2 WHERE plan_id = $1::uuid",
+                mutation.row_id,
+                mutation.after["project_key"],
+            )
+        else:
+            await conn.execute(
+                "UPDATE indexed_plans SET freshness_status = 'archived', "
+                "freshness_source = 'manual_update', updated_at = NOW() "
+                "WHERE id = $1::uuid",
+                mutation.row_id,
+            )
     return len(mutations)
+
+
+async def apply_mutations(conn: asyncpg.Connection, mutations: tuple) -> int:
+    """Compatibility wrapper for direct callers that only need atomic writes."""
+    async with conn.transaction():
+        return await _write_mutations(conn, mutations)
+
+
+def _locked_row_matches(row: dict[str, object], mutation: object) -> bool:
+    before = mutation.before
+    return all(key in row and _serial_value(row[key]) == value for key, value in before.items())
+
+
+def _serial_value(value: object) -> object:
+    isoformat = getattr(value, "isoformat", None)
+    return isoformat() if callable(isoformat) else value
+
+
+def _record_dict(record: object) -> dict[str, object]:
+    return {key: _serial_value(value) for key, value in dict(record).items()}
+
+
+async def apply_with_recovery(
+    conn: asyncpg.Connection,
+    mutations: tuple,
+    recovery_path: Path,
+    *,
+    expected_dependents: dict[str, list[dict[str, object]]],
+    detach_cross_project_links: bool,
+) -> tuple[int, str]:
+    """Lock, revalidate, snapshot and mutate exactly one approved plan set."""
+    plan_ids = [mutation.row_id for mutation in mutations]
+    async with conn.transaction():
+        await conn.execute("SET LOCAL lock_timeout = '5s'")
+        # Row locks do not prevent a concurrent feature linker from inserting a
+        # new edge after its predicate scan. These bounded relation locks cover
+        # the touched dependent tables until this transaction commits; writers
+        # still have to be quiescent for the linker's later transaction.
+        await conn.execute(
+            "LOCK TABLE indexed_plan_chunks, feature_artifacts IN SHARE ROW EXCLUSIVE MODE"
+        )
+        plans = [
+            _record_dict(row)
+            for row in await conn.fetch(
+                "SELECT id::text AS id, file_path, project_key, content_hash, "
+                "freshness_status, freshness_source, indexed_at, updated_at FROM indexed_plans "
+                "WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE",
+                plan_ids,
+            )
+        ]
+        by_id = {row["id"]: row for row in plans}
+        if len(by_id) != len(mutations) or any(
+            not _locked_row_matches(by_id.get(mutation.row_id, {}), mutation)
+            for mutation in mutations
+        ):
+            raise InventoryApplyError("plan_state_changed")
+        chunks = [
+            _record_dict(row)
+            for row in await conn.fetch(
+                "SELECT id::text AS id, plan_id::text AS plan_id, project_key "
+                "FROM indexed_plan_chunks WHERE plan_id = ANY($1::uuid[]) "
+                "ORDER BY plan_id, id FOR UPDATE",
+                plan_ids,
+            )
+        ]
+        edges = [
+            _record_dict(row)
+            for row in await conn.fetch(
+                "SELECT fa.feature_id::text AS feature_id, fa.artifact_type, "
+                "fa.artifact_id::text AS artifact_id, fa.similarity_score, "
+                "fa.created_at, f.project_key AS feature_project_key "
+                "FROM feature_artifacts AS fa JOIN features AS f ON f.id = fa.feature_id "
+                "WHERE fa.artifact_type = 'plan' AND fa.artifact_id = ANY($1::uuid[]) "
+                "ORDER BY fa.artifact_id, fa.feature_id FOR UPDATE OF fa, f",
+                plan_ids,
+            )
+        ]
+        if {"chunks": chunks, "feature_edges": edges} != expected_dependents:
+            raise InventoryApplyError("dependent_state_changed")
+        final_projects = {mutation.row_id: mutation.after["project_key"] for mutation in mutations}
+        foreign_edges = [
+            edge
+            for edge in edges
+            if edge["feature_project_key"] != final_projects[edge["artifact_id"]]
+        ]
+        if foreign_edges and not detach_cross_project_links:
+            raise InventoryApplyError("cross_project_feature_link")
+        digest = write_private_json(
+            recovery_path,
+            {
+                "version": 2,
+                "mutations": [
+                    {"row_id": m.row_id, "kind": m.kind, "before": m.before, "after": m.after}
+                    for m in mutations
+                ],
+                "plans": plans,
+                "chunks": chunks,
+                "feature_edges": edges,
+            },
+        )
+        for edge in foreign_edges:
+            await conn.execute(
+                "DELETE FROM feature_artifacts WHERE feature_id = $1::uuid "
+                "AND artifact_type = 'plan' AND artifact_id = $2::uuid",
+                edge["feature_id"],
+                edge["artifact_id"],
+            )
+        return await _write_mutations(conn, mutations), digest
+
+
+async def read_dependent_state(
+    conn: asyncpg.Connection, plan_ids: list[str]
+) -> dict[str, list[dict[str, object]]]:
+    """Approved dependent baseline; never refreshed after the dry inventory."""
+    chunks = [
+        _record_dict(row)
+        for row in await conn.fetch(
+            "SELECT id::text AS id, plan_id::text AS plan_id, project_key "
+            "FROM indexed_plan_chunks WHERE plan_id = ANY($1::uuid[]) ORDER BY plan_id, id",
+            plan_ids,
+        )
+    ]
+    edges = [
+        _record_dict(row)
+        for row in await conn.fetch(
+            "SELECT fa.feature_id::text AS feature_id, fa.artifact_type, "
+            "fa.artifact_id::text AS artifact_id, fa.similarity_score, fa.created_at, "
+            "f.project_key AS feature_project_key FROM feature_artifacts AS fa "
+            "JOIN features AS f ON f.id = fa.feature_id WHERE fa.artifact_type = 'plan' "
+            "AND fa.artifact_id = ANY($1::uuid[]) ORDER BY fa.artifact_id, fa.feature_id",
+            plan_ids,
+        )
+    ]
+    return {"chunks": chunks, "feature_edges": edges}
 
 
 def render(
@@ -272,8 +437,8 @@ async def run(args: argparse.Namespace) -> int:
     dsn = args.postgres_url.replace("postgresql+asyncpg://", "postgresql://", 1)
     try:
         conn = await asyncpg.connect(dsn)
-    except (OSError, asyncpg.PostgresError) as exc:
-        print(f"cannot reach PostgreSQL: {exc}", file=sys.stderr)
+    except (OSError, asyncpg.PostgresError):
+        print("cannot reach PostgreSQL", file=sys.stderr)
         return 2
 
     try:
@@ -282,12 +447,20 @@ async def run(args: argparse.Namespace) -> int:
         if not any(roots.values()):
             print("no scan path resolves to a directory; nothing measurable", file=sys.stderr)
             return 2
-        disk_files = walk_disk(roots)
-        rows = await read_rows(conn)
-        decisions = classify(rows, disk_files)
+        scan_issues: list[str] = []
+        try:
+            disk_files = walk_disk(roots, scan_issues)
+            rows = await read_rows(conn)
+            decisions = classify(rows, disk_files)
+        except (InventoryApplyError, ValueError):
+            print("cannot build a consistent plan inventory", file=sys.stderr)
+            return 2
         mutations = plan_mutations(decisions)
 
         if args.verify:
+            if unresolvable or scan_issues:
+                print("refusing: scan inventory is incomplete", file=sys.stderr)
+                return 2
             verifications = verify_projects(rows, disk_files)
             if args.json:
                 print(
@@ -344,6 +517,13 @@ async def run(args: argparse.Namespace) -> int:
         if not args.apply:
             return 0 if not mutations else 1
 
+        if unresolvable or scan_issues:
+            print(
+                "refusing: scan inventory is incomplete",
+                file=sys.stderr,
+            )
+            return 2
+
         if len(mutations) > args.max_mutations:
             print(
                 f"refusing: {len(mutations)} mutations exceeds --max-mutations "
@@ -356,24 +536,21 @@ async def run(args: argparse.Namespace) -> int:
         if recovery_path.exists():
             print(f"refusing: {recovery_path} already exists", file=sys.stderr)
             return 2
-        digest = write_private_json(
-            recovery_path,
-            {
-                "version": 1,
-                "mutations": [
-                    {
-                        "row_id": m.row_id,
-                        "kind": m.kind,
-                        "before": m.before,
-                        "after": m.after,
-                    }
-                    for m in mutations
-                ],
-            },
-        )
+        try:
+            expected_dependents = await read_dependent_state(
+                conn, [mutation.row_id for mutation in mutations]
+            )
+            written, digest = await apply_with_recovery(
+                conn,
+                mutations,
+                recovery_path,
+                expected_dependents=expected_dependents,
+                detach_cross_project_links=args.detach_cross_project_links,
+            )
+        except (InventoryApplyError, asyncpg.PostgresError):
+            print("refusing: locked state changed or could not be locked", file=sys.stderr)
+            return 2
         print(f"recovery written to {recovery_path} (sha256 {digest})", file=sys.stderr)
-
-        written = await apply_mutations(conn, mutations)
         print(f"applied {written} mutation(s) in one transaction", file=sys.stderr)
         return 0
     finally:
@@ -404,6 +581,11 @@ def main() -> int:
         help="Where the pre-mutation state is written before --apply.",
     )
     parser.add_argument("--max-mutations", type=int, default=DEFAULT_MAX_MUTATIONS)
+    parser.add_argument(
+        "--detach-cross-project-links",
+        action="store_true",
+        help="Detach only foreign feature links for the selected plan mutations.",
+    )
     return asyncio.run(run(parser.parse_args()))
 
 

@@ -1,4 +1,4 @@
-"""The inventory CLI: read-only by default, and never a delete in any mode.
+"""The inventory CLI: read-only by default, preserving all knowledge rows.
 
 The pure classifier is tested next to the module. What is tested here is
 everything the classifier deliberately does not touch: resolving scan roots
@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -123,6 +125,40 @@ def test_the_same_file_reached_from_two_roots_is_collected_once(tmp_path: Path) 
     assert len(found) == 1
 
 
+def test_a_symlinked_plan_file_is_not_an_eligible_plan(tmp_path: Path) -> None:
+    """The runtime never indexes a file reached through a symlink."""
+    scan_root = tmp_path / "plans"
+    scan_root.mkdir()
+    outside = tmp_path / "outside-plan.md"
+    outside.write_text("# Outside")
+    (scan_root / "inside-plan.md").symlink_to(outside)
+
+    assert cli.walk_disk({"p": [scan_root]}) == []
+
+
+def test_walk_disk_records_a_directory_walk_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def _walk(_root, *, topdown, onerror, followlinks):
+        onerror(PermissionError(13, "denied", str(tmp_path / "hidden")))
+        return iter(())
+
+    monkeypatch.setattr(cli.os, "walk", _walk)
+    issues: list[str] = []
+
+    assert cli.walk_disk({"p": [tmp_path]}, issues) == []
+    assert issues == [str(tmp_path / "hidden")]
+
+
+def test_walk_disk_rejects_one_file_claimed_by_two_projects(tmp_path: Path) -> None:
+    """Collection must not discard the second owner before classification."""
+    plan = tmp_path / "a-plan.md"
+    plan.write_text("# A")
+
+    with pytest.raises(cli.InventoryApplyError, match="cross_project_path_claim"):
+        cli.walk_disk({"red-games": [tmp_path], "red-writer": [tmp_path]})
+
+
 # ── what --apply actually writes ────────────────────────────────────────
 
 
@@ -148,6 +184,44 @@ class _RecordingConnection:
         self.statements.append((" ".join(sql.split()), args))
 
 
+class _LockedRecordingConnection(_RecordingConnection):
+    async def fetch(self, sql: str, *args):
+        self.statements.append((" ".join(sql.split()), args))
+        if "FROM indexed_plans" in sql:
+            return [
+                {
+                    "id": "11111111-1111-1111-1111-111111111111",
+                    "file_path": "docs/a-plan.md",
+                    "project_key": "red-games",
+                    "content_hash": "a" * 64,
+                    "freshness_status": "fresh",
+                    "freshness_source": None,
+                    "indexed_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                }
+            ]
+        if "FROM indexed_plan_chunks" in sql:
+            return [
+                {
+                    "id": "chunk-1",
+                    "plan_id": "11111111-1111-1111-1111-111111111111",
+                    "project_key": "red-games",
+                }
+            ]
+        if "FROM feature_artifacts" in sql:
+            return [
+                {
+                    "feature_id": "feature-1",
+                    "artifact_type": "plan",
+                    "artifact_id": "11111111-1111-1111-1111-111111111111",
+                    "similarity_score": 0.9,
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "feature_project_key": "red-other",
+                }
+            ]
+        raise AssertionError(sql)
+
+
 def _mutation(kind: str, row_id: str = "11111111-1111-1111-1111-111111111111"):
     from brain_v42.maintenance.plan_index_inventory import RowMutation
 
@@ -162,6 +236,28 @@ def _mutation(kind: str, row_id: str = "11111111-1111-1111-1111-111111111111"):
         else {**before, "freshness_status": "archived"}
     )
     return RowMutation(row_id=row_id, kind=kind, before=before, after=after)  # type: ignore[arg-type]
+
+
+def _dependents() -> dict[str, list[dict[str, object]]]:
+    return {
+        "chunks": [
+            {
+                "id": "chunk-1",
+                "plan_id": "11111111-1111-1111-1111-111111111111",
+                "project_key": "red-games",
+            }
+        ],
+        "feature_edges": [
+            {
+                "feature_id": "feature-1",
+                "artifact_type": "plan",
+                "artifact_id": "11111111-1111-1111-1111-111111111111",
+                "similarity_score": 0.9,
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "feature_project_key": "red-other",
+            }
+        ],
+    }
 
 
 @pytest.mark.asyncio
@@ -219,6 +315,81 @@ async def test_an_archive_writes_the_status_and_leaves_the_path(tmp_path: Path) 
     assert "file_path" not in updates[0]
 
 
+@pytest.mark.asyncio
+async def test_locked_apply_snapshots_dependents_and_detaches_only_foreign_links(
+    tmp_path: Path,
+) -> None:
+    """Recovery is derived after locks, before the first mutation."""
+    conn = _LockedRecordingConnection()
+    recovery = tmp_path / "recovery.json"
+
+    written, digest = await cli.apply_with_recovery(
+        conn,
+        (_mutation("rewrite"),),
+        recovery,
+        expected_dependents=_dependents(),
+        detach_cross_project_links=True,
+    )
+
+    assert written == 1
+    assert len(digest) == 64
+    payload = json.loads(recovery.read_text())
+    assert payload["plans"][0]["content_hash"] == "a" * 64
+    assert payload["chunks"] == [
+        {
+            "id": "chunk-1",
+            "plan_id": "11111111-1111-1111-1111-111111111111",
+            "project_key": "red-games",
+        }
+    ]
+    assert payload["feature_edges"][0]["feature_project_key"] == "red-other"
+    statements = " ".join(sql for sql, _ in conn.statements)
+    assert "SET LOCAL lock_timeout" in statements
+    assert "LOCK TABLE indexed_plan_chunks, feature_artifacts" in statements
+    assert statements.count("FOR UPDATE") == 3
+    assert "DELETE FROM feature_artifacts" in statements
+
+
+@pytest.mark.asyncio
+async def test_locked_apply_refuses_a_foreign_link_without_explicit_detach(tmp_path: Path) -> None:
+    conn = _LockedRecordingConnection()
+
+    with pytest.raises(cli.InventoryApplyError, match="cross_project_feature_link"):
+        await cli.apply_with_recovery(
+            conn,
+            (_mutation("rewrite"),),
+            tmp_path / "recovery.json",
+            expected_dependents=_dependents(),
+            detach_cross_project_links=False,
+        )
+
+    assert not (tmp_path / "recovery.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_locked_apply_refuses_a_changed_dependent_baseline(tmp_path: Path) -> None:
+    conn = _LockedRecordingConnection()
+    expected = {"chunks": [], "feature_edges": []}
+
+    with pytest.raises(cli.InventoryApplyError, match="dependent_state_changed"):
+        await cli.apply_with_recovery(
+            conn,
+            (_mutation("rewrite"),),
+            tmp_path / "recovery.json",
+            expected_dependents=expected,
+            detach_cross_project_links=True,
+        )
+
+    assert not (tmp_path / "recovery.json").exists()
+
+
+def test_locked_row_comparison_refuses_a_missing_observed_field() -> None:
+    mutation = _mutation("rewrite")
+    mutation.before["content_hash"] = "a" * 64
+
+    assert cli._locked_row_matches({"file_path": "docs/a-plan.md"}, mutation) is False
+
+
 # ── the process contract ────────────────────────────────────────────────
 
 
@@ -242,11 +413,167 @@ def test_the_script_is_read_only_unless_apply_is_passed() -> None:
     source = SCRIPT.read_text()
     body = source.split("async def run(", 1)[1]
     assert "if not args.apply:" in body
-    assert body.index("if not args.apply:") < body.index("await apply_mutations(")
+    assert body.index("if not args.apply:") < body.index("await apply_with_recovery(")
 
 
 def test_apply_refuses_when_the_recovery_file_already_exists() -> None:
     """Overwriting the previous run's recovery would delete the only way back."""
     source = SCRIPT.read_text()
     assert "if recovery_path.exists():" in source
-    assert source.index("if recovery_path.exists():") < source.index("await apply_mutations(")
+    assert source.index("if recovery_path.exists():") < source.index("await apply_with_recovery(")
+
+
+@pytest.mark.asyncio
+async def test_apply_refuses_an_incomplete_scan_inventory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Missing roots are missing evidence, never proof that a row is orphaned."""
+
+    class _Connection:
+        async def close(self) -> None:
+            pass
+
+    async def _connect(_dsn: str) -> _Connection:
+        return _Connection()
+
+    async def _paths(_conn: _Connection) -> dict[str, list[str]]:
+        return {"red-writer": [str(tmp_path), "relative/path"]}
+
+    async def _rows(_conn: _Connection):
+        from brain_v42.maintenance.plan_index_inventory import PlanRow
+
+        return [
+            PlanRow(
+                row_id="1",
+                project_key="red-writer",
+                file_path="missing-plan.md",
+                content_hash="a" * 64,
+                freshness_status="fresh",
+                indexed_at="2026-01-01T00:00:00+00:00",
+            )
+        ]
+
+    async def _apply(_conn: _Connection, _mutations: tuple) -> int:
+        return 1
+
+    monkeypatch.setattr(cli.asyncpg, "connect", _connect)
+    monkeypatch.setattr(cli, "read_scan_paths", _paths)
+    monkeypatch.setattr(cli, "read_rows", _rows)
+    monkeypatch.setattr(cli, "apply_mutations", _apply)
+    args = SimpleNamespace(
+        postgres_url="postgresql://safe@localhost/test",
+        json=False,
+        verify=False,
+        apply=True,
+        max_mutations=10,
+        recovery_file=str(tmp_path / "unused.json"),
+    )
+
+    assert await cli.run(args) == 2
+
+
+@pytest.mark.asyncio
+async def test_verify_refuses_an_incomplete_scan_inventory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class _Connection:
+        async def close(self) -> None:
+            pass
+
+    async def _connect(_dsn: str) -> _Connection:
+        return _Connection()
+
+    async def _paths(_conn: _Connection) -> dict[str, list[str]]:
+        return {"red-writer": [str(tmp_path), "relative/path"]}
+
+    async def _rows(_conn: _Connection):
+        return []
+
+    monkeypatch.setattr(cli.asyncpg, "connect", _connect)
+    monkeypatch.setattr(cli, "read_scan_paths", _paths)
+    monkeypatch.setattr(cli, "read_rows", _rows)
+    args = SimpleNamespace(
+        postgres_url="postgresql://safe@localhost/test",
+        json=False,
+        verify=True,
+        apply=False,
+        max_mutations=10,
+        recovery_file=str(tmp_path / "unused.json"),
+    )
+
+    assert await cli.run(args) == 2
+
+
+@pytest.mark.asyncio
+async def test_run_returns_two_for_cross_project_disk_claim(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "a-plan.md").write_text("# A")
+
+    class _Connection:
+        async def close(self) -> None:
+            pass
+
+    async def _connect(_dsn: str) -> _Connection:
+        return _Connection()
+
+    async def _paths(_conn: _Connection) -> dict[str, list[str]]:
+        return {"red-games": [str(tmp_path)], "red-writer": [str(tmp_path)]}
+
+    async def _rows(_conn: _Connection):
+        return []
+
+    monkeypatch.setattr(cli.asyncpg, "connect", _connect)
+    monkeypatch.setattr(cli, "read_scan_paths", _paths)
+    monkeypatch.setattr(cli, "read_rows", _rows)
+    args = SimpleNamespace(
+        postgres_url="postgresql://safe/test", json=False, verify=False, apply=False
+    )
+
+    assert await cli.run(args) == 2
+
+
+@pytest.mark.asyncio
+async def test_apply_refuses_when_an_eligible_file_cannot_be_hashed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An oversized plan is missing evidence, not an orphaning signal."""
+    oversized = tmp_path / "too-large-plan.md"
+    oversized.write_bytes(b"x" * (cli.MAX_PLAN_FILE_BYTES + 1))
+
+    class _Connection:
+        async def close(self) -> None:
+            pass
+
+    async def _connect(_dsn: str) -> _Connection:
+        return _Connection()
+
+    async def _paths(_conn: _Connection) -> dict[str, list[str]]:
+        return {"red-writer": [str(tmp_path)]}
+
+    async def _rows(_conn: _Connection):
+        from brain_v42.maintenance.plan_index_inventory import PlanRow
+
+        return [
+            PlanRow(
+                "1", "red-writer", "missing-plan.md", "a" * 64, "fresh", "2026-01-01T00:00:00+00:00"
+            )
+        ]
+
+    async def _apply(_conn: _Connection, _mutations: tuple) -> int:
+        return 1
+
+    monkeypatch.setattr(cli.asyncpg, "connect", _connect)
+    monkeypatch.setattr(cli, "read_scan_paths", _paths)
+    monkeypatch.setattr(cli, "read_rows", _rows)
+    monkeypatch.setattr(cli, "apply_mutations", _apply)
+    args = SimpleNamespace(
+        postgres_url="postgresql://safe@localhost/test",
+        json=False,
+        verify=False,
+        apply=True,
+        max_mutations=10,
+        recovery_file=str(tmp_path / "unused.json"),
+    )
+
+    assert await cli.run(args) == 2
