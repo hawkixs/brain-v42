@@ -125,10 +125,14 @@ def compare(expected_resolved: Mapping[str, object], measurement: Measurement) -
 
     if op == "in":
         assert isinstance(operand, list)
-        if any(not _same_scalar_type(actual, candidate) for candidate in operand):
+        # A mixed array is valid at write time: read it through its candidates of the
+        # measured kind, and call it a type mismatch only when it has none at all.
+        comparable = [item for item in operand if _same_scalar_type(actual, item)]
+        if operand and not comparable:
             return _unreadable("type_mismatch")
         return Comparison(
-            "holds" if any(_scalar_equal(actual, item) for item in operand) else "falsified", None
+            "holds" if any(_scalar_equal(actual, item) for item in comparable) else "falsified",
+            None,
         )
 
     if op in {"lt", "lte", "gt", "gte"}:

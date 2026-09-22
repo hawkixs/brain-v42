@@ -161,3 +161,29 @@ def test_compare_does_not_mutate_immutable_expected_input() -> None:
 
     assert compare(expected, _measured({"number": 7})) == Comparison(verdict="holds", reason=None)
     assert expected["value"] == [6, 7]
+
+
+@pytest.mark.parametrize(
+    ("candidates", "value", "wanted"),
+    [
+        ([7, "seven"], 7, Comparison(verdict="holds", reason=None)),
+        ([6, "seven"], 7, Comparison(verdict="falsified", reason=None)),
+        (["seven", True], 7, Comparison(verdict="unreadable", reason="type_mismatch")),
+        ([None, 7], None, Comparison(verdict="holds", reason=None)),
+        ([], 7, Comparison(verdict="falsified", reason=None)),
+    ],
+)
+def test_compare_in_reads_a_mixed_array_through_its_comparable_candidates(
+    candidates: list[object], value: object, wanted: Comparison
+) -> None:
+    """A mixed `in` array is valid at write time (spec 6.5: an array of scalars).
+
+    If any candidate of another kind made the whole claim `type_mismatch`, a claim
+    the write path accepted could never be read -- every verification would be
+    unreadable, forever. Only the candidates of the measured kind can hold; an
+    array with none of that kind is still a type mismatch, and an empty array
+    still holds nothing.
+    """
+    expected = {"path": "/number", "op": "in", "value": candidates}
+
+    assert compare(expected, _measured({"number": value})) == wanted
