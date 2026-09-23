@@ -28,6 +28,7 @@ from ..capability import (
 )
 from ..profile import McpServer
 from ..result import RunResult
+from ..run_record import answer_text, record, run_id_of
 from ..spec import RunSpec
 
 # ``max`` and ``ultra`` are declared by Codex 0.153 for gpt-6-astra and the
@@ -486,6 +487,7 @@ class CodexProvider:
         return tool_call_completed(spec.events_log, server=spec.profile.mcp.name)
 
     def run(self, spec: RunSpec) -> RunResult:
+        spec = spec.with_run_dir_defaults()
         assert spec.report_log is not None
         assert spec.events_log is not None
         assert spec.stderr_log is not None
@@ -506,18 +508,25 @@ class CodexProvider:
         )
         duration = time.monotonic() - start
         server = spec.profile.mcp.name if spec.profile.mcp is not None else None
-        return RunResult(
-            exit_code=exit_code,
-            provider=self.name,
-            model=spec.model,
-            report_path=spec.report_log,
-            events_log=spec.events_log,
-            # Not measured here: the envelope module reads turn.completed usage
-            # for a caller that wants it. ``None`` means "not measured", never
-            # a fabricated zero -- see ``result``'s docstring.
-            tokens=None,
-            duration_seconds=duration,
-            tool_call_completed=(
-                server is not None and tool_call_completed(spec.events_log, server=server)
+        return record(
+            spec,
+            RunResult(
+                exit_code=exit_code,
+                provider=self.name,
+                model=spec.model,
+                report_path=spec.report_log,
+                events_log=spec.events_log,
+                # Not measured here: the envelope module reads turn.completed usage
+                # for a caller that wants it. ``None`` means "not measured", never
+                # a fabricated zero -- see ``result``'s docstring.
+                tokens=None,
+                duration_seconds=duration,
+                tool_call_completed=(
+                    server is not None and tool_call_completed(spec.events_log, server=server)
+                ),
+                # --output-last-message: the report holds the final agent message.
+                text=answer_text(spec.report_log, exit_code=exit_code),
+                run_id=run_id_of(spec),
+                stderr_log=spec.stderr_log,
             ),
         )

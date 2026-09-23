@@ -69,6 +69,7 @@ from ..capability import (
 )
 from ..profile import CapabilityProfile, McpServer
 from ..result import RunResult, TokenUsage
+from ..run_record import answer_text, record, run_id_of
 from ..sandbox import ephemeral_root as default_ephemeral_root
 from ..sandbox import materialize_credentials
 from ..spec import RunSpec
@@ -750,6 +751,7 @@ class OpenCodeProvider:
         return tool_call_completed(spec.events_log, server=spec.profile.mcp.name)
 
     def run(self, spec: RunSpec) -> RunResult:
+        spec = spec.with_run_dir_defaults()
         assert spec.events_log is not None
         assert spec.report_log is not None
         assert spec.stderr_log is not None
@@ -773,14 +775,21 @@ class OpenCodeProvider:
         )
         duration = time.monotonic() - start
         tokens, cost = telemetry(spec.events_log)
-        return RunResult(
-            exit_code=exit_code,
-            provider=self.name,
-            model=spec.model,
-            report_path=spec.report_log,
-            events_log=spec.events_log,
-            tokens=tokens,
-            duration_seconds=duration,
-            tool_call_completed=self.tool_call_completed(spec),
-            cost_usd=cost,
+        return record(
+            spec,
+            RunResult(
+                exit_code=exit_code,
+                provider=self.name,
+                model=spec.model,
+                report_path=spec.report_log,
+                events_log=spec.events_log,
+                tokens=tokens,
+                duration_seconds=duration,
+                tool_call_completed=self.tool_call_completed(spec),
+                cost_usd=cost,
+                # extract_report joined the stream's text parts there.
+                text=answer_text(spec.report_log, exit_code=exit_code),
+                run_id=run_id_of(spec),
+                stderr_log=spec.stderr_log,
+            ),
         )

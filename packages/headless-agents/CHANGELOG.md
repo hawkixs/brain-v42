@@ -3,11 +3,13 @@
 The versioned contract a consumer pins (red-rail ADR-0003, Brain ticket 04bc1f4a).
 The surface under contract: the `AgentProvider` protocol (`build_command`,
 `child_environment`, `prepare_home`, `tool_call_completed`, `run`), `RunSpec`,
-`RunResult` / `TokenUsage`, `CapabilityProfile` / `McpServer` / `ToolGuard` /
-`Credentials`, `chain.run_chain`, `envelope.unwrap`, and the exit codes
-`PROVIDER_FALLBACK_EXIT_CODE = 3`, `TIMEOUT_EXIT_CODE = 124` and
-`TIMEOUT_REPLAYABLE_EXIT_CODE = 4`. A change to any of these is a **breaking** entry
-below and a major-or-minor bump while the package is 0.x; a new provider is additive.
+`RunResult` / `TokenUsage`, `RunResult.to_dict()` (schema 1, the shape of `result.json`),
+the `registry` facade (`get_provider`, `PROVIDER_NAMES`, `probe`, `max_prompt_bytes`),
+`CapabilityProfile` / `McpServer` / `ToolGuard` / `Credentials`, `chain.run_chain`,
+`envelope.unwrap`, and the exit codes `PROVIDER_FALLBACK_EXIT_CODE = 3`,
+`TIMEOUT_EXIT_CODE = 124` and `TIMEOUT_REPLAYABLE_EXIT_CODE = 4`. A change to any of
+these is a **breaking** entry below and a major-or-minor bump while the package is 0.x;
+a new provider is additive.
 
 ## Tags
 
@@ -21,6 +23,36 @@ uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-
 
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last
 time the member rode a brain-v42 tag.
+
+## Unreleased — 0.4.0, lot 1 of 4: the facade
+
+Nothing here is tagged yet: 0.4.0 ships after lot 4 (the `ha` CLI), per
+`docs/specs/2026-09-23-headless-agents-0.4.0-design.md`.
+
+### Added
+- `registry`: `get_provider(name)`, `PROVIDER_NAMES`, `UnknownProvider` (a `ValueError`
+  whose message lists the valid names), `probe(name) -> Probe(available, detail,
+  version)` — zero quota: the executable on `PATH` and its `--version`, never a model
+  call, bounded by a timeout — and `max_prompt_bytes(name)`: `None` for the stdin rails
+  (claude, codex), the argv limit for agy and opencode. Read it instead of hard-coding a
+  limit.
+- `RunResult.text`: the final answer, read by the provider from the file its rail writes
+  the answer to: `report_log` for codex, agy and opencode. For claude it is also
+  `report_log` when one is set, named or given by `run_dir`: claude's stdout alone lands
+  there. Without one, it is the bytes this run appended to `raw_log`, stderr included.
+  Verbatim — an answer that is itself JSON is never re-read as an envelope — and `None`
+  when the run failed or answered nothing.
+- `providers.claude.run_claude(answer_log=...)`: stdout alone goes to that file, while
+  stderr — the OTEL console stream, any CLI warning — stays in `raw_log`, where
+  `tool_call_completed` reads it. Unset, nothing changes, so the Dream's runs are
+  byte-identical.
+- `RunResult.run_id`, `RunResult.stderr_log`, `RunResult.raw_log`, and
+  `RunResult.to_dict()`: the JSON-safe schema-1 form (`result.RESULT_SCHEMA_VERSION = 1`).
+  `context`, `workspace` and `branch` belong to the key set from schema 1 and stay `null`
+  until lots 2 and 4 fill them.
+- `RunSpec.run_dir`: the logs a caller leaves unset default to `report.log`,
+  `events.jsonl`, `stderr.log` and `raw.log` inside it (explicit paths still win), its
+  name is the `run_id`, and the run writes `result.json` there.
 
 ## 0.3.0 — 2026-09-20 (`headless-agents-v0.3.0`)
 

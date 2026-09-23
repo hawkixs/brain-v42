@@ -534,3 +534,45 @@ class TestCodexProvider:
         assert result.tool_call_completed is False
         assert calls[0]["mcp"] == _server()
         assert calls[0]["environment"] == {"EXAMPLE_TOKEN": "t"}
+
+    def test_run_reads_its_report_as_text_and_records_the_run(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        def fake_run_codex(**kwargs: object) -> int:
+            report = kwargs["report_log"]
+            assert isinstance(report, Path)
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text("the answer\n", encoding="utf-8")
+            return 0
+
+        monkeypatch.setattr(codex, "run_codex", fake_run_codex)
+        run_dir = tmp_path / "runs" / "r1"
+        result = codex.CodexProvider().run(RunSpec(prompt="P", model="m", run_dir=run_dir))
+        assert result.text == "the answer\n"
+        assert result.run_id == "r1"
+        assert result.report_path == run_dir / "report.log"
+        assert result.events_log == run_dir / "events.jsonl"
+        assert result.stderr_log == run_dir / "stderr.log"
+        written = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+        assert written == result.to_dict()
+
+    def test_an_explicit_log_path_wins_and_result_json_still_lands_in_run_dir(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        def fake_run_codex(**kwargs: object) -> int:
+            report = kwargs["report_log"]
+            assert isinstance(report, Path)
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text("answer", encoding="utf-8")
+            return 0
+
+        monkeypatch.setattr(codex, "run_codex", fake_run_codex)
+        explicit = tmp_path / "elsewhere" / "final.txt"
+        run_dir = tmp_path / "runs" / "r2"
+        result = codex.CodexProvider().run(
+            RunSpec(prompt="P", model="m", run_dir=run_dir, report_log=explicit)
+        )
+        assert result.report_path == explicit
+        assert result.text == "answer"
+        assert result.events_log == run_dir / "events.jsonl"
+        assert (run_dir / "result.json").is_file()

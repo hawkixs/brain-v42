@@ -20,6 +20,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Mapping
+from contextlib import nullcontext
 from pathlib import Path
 
 from ..capability import (
@@ -30,6 +31,7 @@ from ..capability import (
 )
 from ..profile import McpServer
 from ..result import RunResult
+from ..run_record import answer_text, record, run_id_of
 from ..spec import RunSpec
 
 # Ambient variables this rail needs on top of the base allowlist.
@@ -140,8 +142,8 @@ def tool_call_completed(raw_log: Path) -> bool:
     content = raw_log.read_text(encoding="utf-8", errors="replace")
     # The console stream is multi-line pseudo-JSON, not JSON: we split on the
     # record rather than parsing it.
-    for record in content.split('body: "claude_code.tool_result"')[1:]:
-        window = record[:2000]
+    for otel_record in content.split('body: "claude_code.tool_result"')[1:]:
+        window = otel_record[:2000]
         if 'tool_name: "mcp_tool"' in window and 'success: "true"' in window:
             return True
     return False
@@ -165,12 +167,19 @@ def run_claude(
     executable: str = "claude",
     deadline: float | None = None,
     temp_prefix: str = "headless-agents-claude-",
+    answer_log: Path | None = None,
 ) -> int:
     """Run one Claude invocation and return its exit code (``124`` on timeout).
 
     stdout and stderr land MIXED in ``raw_log``: the OTEL console stream a
     telemetry splitter consumes travels on stderr alongside the answer, and
     separating them here would silently deprive that consumer of it.
+
+    ``answer_log`` is the one exception, for a caller that wants the answer
+    ALONE: stdout goes there (truncated first), while stderr -- the OTEL
+    console stream, any CLI warning -- stays in ``raw_log``, where the
+    telemetry consumer and :func:`tool_call_completed` still find it.
+    Without it, nothing changes.
     """
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
@@ -185,6 +194,9 @@ def run_claude(
 
     raw_log = raw_log.resolve()
     raw_log.parent.mkdir(parents=True, exist_ok=True)
+    if answer_log is not None:
+        answer_log = answer_log.resolve()
+        answer_log.parent.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix=temp_prefix) as temp_dir:
         runtime_dir = Path(temp_dir)
@@ -198,13 +210,16 @@ def run_claude(
             executable=executable,
         )
 
-        with raw_log.open("a", encoding="utf-8") as raw_stream:
+        answer_context = (
+            answer_log.open("w", encoding="utf-8") if answer_log is not None else nullcontext()
+        )
+        with raw_log.open("a", encoding="utf-8") as raw_stream, answer_context as answer_stream:
             try:
                 process = subprocess.Popen(
                     command,
                     stdin=subprocess.PIPE,
-                    stdout=raw_stream,
-                    stderr=subprocess.STDOUT,
+                    stdout=raw_stream if answer_stream is None else answer_stream,
+                    stderr=subprocess.STDOUT if answer_stream is None else raw_stream,
                     cwd=runtime_dir,
                     env=child_environment,
                     text=True,
@@ -277,8 +292,16 @@ class ClaudeProvider:
         return tool_call_completed(spec.raw_log)
 
     def run(self, spec: RunSpec) -> RunResult:
-        assert spec.raw_log is not None, "RunSpec.raw_log is required for Claude"
+        spec = spec.with_run_dir_defaults()
+        assert spec.raw_log is not None, "RunSpec.raw_log (or run_dir) is required for Claude"
         raw_log = spec.raw_log
+        # With a report_log -- named, or given by run_dir -- stdout ALONE is the
+        # answer and lands there; stderr (the OTEL console stream, any CLI
+        # warning) stays in raw_log. Without one, run_claude APPENDS both to
+        # raw_log: remember where this run starts, so the answer never includes
+        # what an earlier run left in a reused log.
+        answer_log = spec.report_log
+        offset = raw_log.stat().st_size if raw_log.is_file() else 0
         start = time.monotonic()
         exit_code = run_claude(
             prompt=spec.prompt,
@@ -290,15 +313,27 @@ class ClaudeProvider:
             environment=spec.environment,
             executable=spec.executable or "claude",
             deadline=spec.deadline,
+            answer_log=answer_log,
         )
         duration = time.monotonic() - start
-        return RunResult(
-            exit_code=exit_code,
-            provider=self.name,
-            model=spec.model,
-            report_path=raw_log,
-            events_log=raw_log,
-            tokens=None,
-            duration_seconds=duration,
-            tool_call_completed=spec.profile.mcp is not None and tool_call_completed(raw_log),
+        # This rail requests no JSON envelope: the text is read as written.
+        if answer_log is not None:
+            text = answer_text(answer_log, exit_code=exit_code)
+        else:
+            text = answer_text(raw_log, exit_code=exit_code, offset=offset)
+        return record(
+            spec,
+            RunResult(
+                exit_code=exit_code,
+                provider=self.name,
+                model=spec.model,
+                report_path=answer_log if answer_log is not None else raw_log,
+                events_log=raw_log,
+                tokens=None,
+                duration_seconds=duration,
+                tool_call_completed=spec.profile.mcp is not None and tool_call_completed(raw_log),
+                text=text,
+                run_id=run_id_of(spec),
+                raw_log=raw_log,
+            ),
         )

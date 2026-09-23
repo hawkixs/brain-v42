@@ -240,6 +240,34 @@ class TestRunClaude:
         with pytest.raises(ValueError, match="timeout"):
             _run(tmp_path, timeout_seconds=-1)
 
+    def test_an_answer_log_takes_stdout_alone_and_raw_log_keeps_stderr(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The OTEL console stream and CLI warnings travel on stderr: with an
+        answer_log they stay in raw_log, where tool_call_completed reads them."""
+
+        class TwoStreams(_FakeProcess):
+            def communicate(
+                self, input: str | None = None, timeout: float | None = None
+            ) -> tuple[None, None]:
+                self.streams["stdout"].write("the answer\n")
+                self.streams["stderr"].write('body: "claude_code.api_request"\n')
+                self.returncode = 0
+                return None, None
+
+        fake = TwoStreams(returncode=0)
+
+        def popen(command: list[str], **kwargs: object) -> _FakeProcess:
+            fake.streams = {"stdout": kwargs["stdout"], "stderr": kwargs["stderr"]}
+            return fake
+
+        monkeypatch.setattr(claude.subprocess, "Popen", popen)
+        answer_log = tmp_path / "out" / "report.log"
+        assert _run(tmp_path, answer_log=answer_log) == 0
+        assert answer_log.read_text(encoding="utf-8") == "the answer\n"
+        raw = (tmp_path / "out" / "raw.log").read_text(encoding="utf-8")
+        assert raw == 'body: "claude_code.api_request"\n'
+
 
 class TestCallerWording:
     def test_the_temp_prefix_is_the_callers_when_given(
@@ -272,3 +300,68 @@ class TestClaudeProvider:
         assert result.exit_code == 0 and result.provider == "claude"
         assert result.report_path == tmp_path / "raw.log"
         assert calls[0]["max_turns"] == 4 and calls[0]["mcp"] == _server()
+
+    def test_text_is_only_what_this_run_appended_to_a_reused_log(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        raw_log = tmp_path / "raw.log"
+        raw_log.write_text("PREVIOUS RUN\n", encoding="utf-8")
+
+        def fake_run_claude(**kwargs: object) -> int:
+            raw = kwargs["raw_log"]
+            assert isinstance(raw, Path)
+            with raw.open("a", encoding="utf-8") as stream:
+                stream.write("THIS RUN\n")
+            return 0
+
+        monkeypatch.setattr(claude, "run_claude", fake_run_claude)
+        result = claude.ClaudeProvider().run(RunSpec(prompt="P", model="m", raw_log=raw_log))
+        assert result.text == "THIS RUN\n"
+
+    def test_an_answer_that_is_json_comes_back_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A judge's verdict is JSON. A ``result`` key in it must not be read as
+        claude's --output-format envelope, which this rail never requests."""
+        verdict = '{"result": "pass", "score": 3}\n'
+
+        def fake_run_claude(**kwargs: object) -> int:
+            raw = kwargs["raw_log"]
+            assert isinstance(raw, Path)
+            raw.parent.mkdir(parents=True, exist_ok=True)
+            with raw.open("a", encoding="utf-8") as stream:
+                stream.write(verdict)
+            return 0
+
+        monkeypatch.setattr(claude, "run_claude", fake_run_claude)
+        result = claude.ClaudeProvider().run(
+            RunSpec(prompt="P", model="m", raw_log=tmp_path / "raw.log")
+        )
+        assert result.text == verdict
+
+    def test_run_dir_keeps_the_answer_apart_from_the_raw_log(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """With a report_log -- here the one run_dir gives -- stdout alone is the
+        answer: the OTEL console stream and CLI warnings stay in raw.log."""
+
+        def fake_run_claude(**kwargs: object) -> int:
+            answer, raw = kwargs["answer_log"], kwargs["raw_log"]
+            assert isinstance(answer, Path) and isinstance(raw, Path)
+            answer.parent.mkdir(parents=True, exist_ok=True)
+            answer.write_text("ok\n", encoding="utf-8")
+            raw.write_text('body: "claude_code.api_request"\n', encoding="utf-8")
+            return 0
+
+        monkeypatch.setattr(claude, "run_claude", fake_run_claude)
+        run_dir = tmp_path / "runs" / "r1"
+        result = claude.ClaudeProvider().run(RunSpec(prompt="P", model="m", run_dir=run_dir))
+        assert result.text == "ok\n"
+        assert result.report_path == run_dir / "report.log"
+        assert result.raw_log == run_dir / "raw.log"
+        assert result.stderr_log is None
+        assert result.run_id == "r1"
+        written = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+        assert written == result.to_dict()
+        assert written["logs"]["report"] == str(run_dir / "report.log")
+        assert written["logs"]["stderr"] is None
