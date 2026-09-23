@@ -12,6 +12,7 @@ import json
 import socket
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,7 +30,9 @@ from headless_agents.providers import openai_compat
 from headless_agents.providers.openai_compat import PRESETS, OpenAICompatProvider
 from headless_agents.spec import RunSpec
 
-SECRET = "sk-test-SECRET-0123456789abcdef"
+# A fresh marker per test session: a fake key must not look like a committed
+# secret to the scanner, and a random one proves nothing reused it by chance.
+SECRET = f"fake-{uuid.uuid4().hex}"
 KEY_ENV = "HA_TEST_OPENAI_KEY"
 
 
