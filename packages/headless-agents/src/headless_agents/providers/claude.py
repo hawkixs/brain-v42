@@ -365,10 +365,8 @@ class ClaudeProvider:
         # With a report_log -- named, or given by run_dir -- stdout ALONE is the
         # answer and lands there; stderr (the OTEL console stream, any CLI
         # warning) stays in raw_log. Without one, run_claude APPENDS both to
-        # raw_log: remember where this run starts, so the answer never includes
-        # what an earlier run left in a reused log.
+        # raw_log.
         answer_log = spec.report_log
-        offset = raw_log.stat().st_size if raw_log.is_file() else 0
         workspace = workspace_of(spec)
         preamble = _preamble_for(spec, workspace)
         refusal = argv_prompt_or_refusal(preamble, MAX_APPEND_SYSTEM_PROMPT_BYTES)
@@ -400,6 +398,9 @@ class ClaudeProvider:
                     context=None if spec.context is None else tuple(spec.context.to_list()),
                 ),
             )
+        # Remember where this run starts, so an answer read from raw_log
+        # never includes what an earlier run left in a reused log.
+        offset = raw_log.stat().st_size if raw_log.is_file() else 0
         start = time.monotonic()
         exit_code = run_claude(
             prompt=spec.prompt,
