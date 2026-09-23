@@ -31,6 +31,17 @@ thing this guard confines on ``run_command`` is a *present* ``Cwd``: if the
 caller states a working directory outside the workspace root, the call is
 denied; an absent ``Cwd`` is allowed through, because agy's own process
 ``cwd`` (set by the sandbox, not by this guard) governs it instead.
+
+TIME-OF-CHECK / TIME-OF-USE. This guard hands back a decision before agy
+opens anything, never a file descriptor -- there is nothing here for a later
+swap to race against. With ``write`` off, none of the confined tools can
+create the symlink or do the rename a TOCTOU race would need; with ``write``
+or ``shell`` on, ``run_command``'s shell is already unconfined (see above),
+so a race through it adds no new capability beyond what that already grants.
+A pre-existing hardlink inside the workspace root is invisible to
+``os.path.realpath`` (it does not resolve hardlinks the way it resolves
+symlinks) -- this is an accepted residual: the operator who chooses the
+workspace root is the one in a position to create, or avoid, one.
 """
 
 from __future__ import annotations
@@ -101,7 +112,14 @@ def _root_realpath(config: object) -> str | None:
 
 
 def _flag(config: object, key: str) -> bool:
-    return bool(_as_dict(config).get(key, False))
+    """True iff ``config[key]`` is the literal JSON boolean ``true``.
+
+    Truthiness is the wrong test here (measured: ``{"write": "false"}`` is a
+    truthy Python string) -- only ``is True`` tells an armed flag from any
+    other JSON value, string, int or otherwise, that a hand-edited config
+    could hold.
+    """
+    return _as_dict(config).get(key) is True
 
 
 def _confined(value: object, root_realpath: str) -> bool:
@@ -113,6 +131,21 @@ def _confined(value: object, root_realpath: str) -> bool:
     except (OSError, ValueError):
         return False
     return resolved == root_realpath or resolved.startswith(root_realpath + os.sep)
+
+
+def _case_variant(args: dict[object, object], exact_key: str) -> str | None:
+    """Return an offending key if ``args`` holds a case-insensitive duplicate of ``exact_key``.
+
+    A key differing from the one this guard reads only by case is either an
+    adversarial probe for a parser differential (this guard reads one
+    casing, agy or a future parser might read another) or a silent rename
+    under our feet -- this guard cannot tell the two apart, so both deny.
+    """
+    lowered = exact_key.lower()
+    for key in args:
+        if isinstance(key, str) and key != exact_key and key.lower() == lowered:
+            return key
+    return None
 
 
 def _tool_call(payload: str) -> tuple[str, dict[object, object]] | None:
@@ -130,14 +163,15 @@ def _tool_call(payload: str) -> tuple[str, dict[object, object]] | None:
     return name, _as_dict(call.get("args"))
 
 
-def decide(payload: str, config: Mapping[str, object]) -> dict[str, str]:
-    """Decide allow/deny for one agy ``PreToolUse`` hook call. Never raises.
+def _decide(payload: str, config: Mapping[str, object]) -> dict[str, str]:
+    """The actual decision logic -- see `decide` for the fail-closed wrapper.
 
-    ``config`` is declared as a mapping, but nothing enforces that at
-    runtime -- a hand-edited config file can hold a list, a string, or
-    anything JSON allows. This is the fail-closed boundary: it must survive
-    a config, or a payload field, of any shape without an exception
-    escaping to the caller.
+    Most malformed shapes already fall through to a deny by construction
+    (``_as_dict``, ``_root_realpath``, ``_confined`` all degrade instead of
+    raising), but this body can still raise on an input `decide` has to
+    catch regardless -- e.g. `json.loads` itself hits `RecursionError` on a
+    sufficiently deeply nested payload, long before any of the helpers above
+    run.
     """
     call = _tool_call(payload)
     if call is None:
@@ -153,6 +187,9 @@ def decide(payload: str, config: Mapping[str, object]) -> dict[str, str]:
 
     if name in _READ_CONFINED:
         arg_name = _READ_CONFINED[name]
+        variant = _case_variant(args, arg_name)
+        if variant is not None:
+            return _deny(f"{name} args carry both {arg_name!r} and case-variant {variant!r}")
         if _confined(args.get(arg_name), root_realpath):
             return _allow()
         return _deny(f"{name}.{arg_name} is outside the workspace")
@@ -161,6 +198,9 @@ def decide(payload: str, config: Mapping[str, object]) -> dict[str, str]:
         if not _flag(config, "write"):
             return _deny(f"{name} is denied: writes are not armed for this run")
         arg_name = _WRITE_CONFINED[name]
+        variant = _case_variant(args, arg_name)
+        if variant is not None:
+            return _deny(f"{name} args carry both {arg_name!r} and case-variant {variant!r}")
         if _confined(args.get(arg_name), root_realpath):
             return _allow()
         return _deny(f"{name}.{arg_name} is outside the workspace")
@@ -168,12 +208,32 @@ def decide(payload: str, config: Mapping[str, object]) -> dict[str, str]:
     if name == "run_command":
         if not _flag(config, "shell"):
             return _deny("run_command is denied: shell is not armed for this run")
+        variant = _case_variant(args, "Cwd")
+        if variant is not None:
+            return _deny(f"run_command args carry both 'Cwd' and case-variant {variant!r}")
         cwd = args.get("Cwd")
         if cwd is not None and not _confined(cwd, root_realpath):
             return _deny("run_command.Cwd is outside the workspace")
         return _allow()
 
     return _deny(f"{name} is outside the workspace guard's allowlist")
+
+
+def decide(payload: str, config: Mapping[str, object]) -> dict[str, str]:
+    """Decide allow/deny for one agy ``PreToolUse`` hook call. Never raises.
+
+    ``config`` is declared as a mapping, but nothing enforces that at
+    runtime -- a hand-edited config file can hold a list, a string, or
+    anything JSON allows. This is the fail-closed boundary: it must survive
+    a config, or a payload field, of any shape -- including one that makes
+    ``_decide`` itself raise (a deeply nested payload blows the parser's
+    recursion limit before any of the shape checks run) -- without an
+    exception escaping to the caller.
+    """
+    try:
+        return _decide(payload, config)
+    except Exception:
+        return _deny("workspace guard internal error")
 
 
 def main() -> int:
@@ -184,18 +244,36 @@ def main() -> int:
     ``$HOME/.gemini/config/workspace-guard.json`` -- because agy's ephemeral
     HOME (built by :mod:`headless_agents.sandbox`) is the only place this
     guard, itself copied there, can read a run-specific configuration from.
+
+    EVERYTHING here -- including the stdin read itself, which can raise
+    ``UnicodeDecodeError`` on non-UTF-8 bytes before ``decide`` is ever
+    reached -- is wrapped fail-closed. An uncaught exception here would print
+    a traceback instead of a decision: empty stdout plus a non-JSON stderr
+    dump is exactly what an agy release that reads "no decision" as an allow
+    would do the wrong thing with (the Dream guard,
+    ``scripts/dream/agy_tool_guard.sh``, documents the same risk and prints a
+    deny even when its own Python helper crashes). ``BaseException``, not
+    ``Exception``: this is the outermost boundary of a CLI script, not a
+    library call a caller might want to interrupt.
     """
-    payload = sys.stdin.read()
-    config: object = {}
     try:
-        config_path = Path(os.environ.get("HOME", "")) / ".gemini" / "config" / GUARD_CONFIG_NAME
-        config = json.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError):
-        config = {}
-    # `json.loads` returns `Any`: the file on disk could just as well hold a
-    # JSON list or scalar. The cast satisfies the declared interface; `decide`
-    # itself re-validates the actual runtime shape rather than trusting it.
-    sys.stdout.write(json.dumps(decide(payload, cast("Mapping[str, object]", config))))
+        payload = sys.stdin.read()
+        config: object = {}
+        try:
+            config_path = (
+                Path(os.environ.get("HOME", "")) / ".gemini" / "config" / GUARD_CONFIG_NAME
+            )
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            config = {}
+        # `json.loads` returns `Any`: the file on disk could just as well
+        # hold a JSON list or scalar. The cast satisfies the declared
+        # interface; `decide` itself re-validates the actual runtime shape
+        # rather than trusting it.
+        result = decide(payload, cast("Mapping[str, object]", config))
+    except BaseException:
+        result = _deny("workspace guard internal error")
+    sys.stdout.write(json.dumps(result))
     return 0
 
 

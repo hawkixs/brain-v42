@@ -52,6 +52,27 @@ def test_writes_need_write(ws):
         decide(_p("replace_file_content", TargetFile=f"{ws}/../o"), cfg(ws, write=True))["decision"]
         == "deny"
     )
+    # A symlink pointing out of the workspace is a write target too.
+    assert (
+        decide(_p("write_to_file", TargetFile=f"{ws}/link.txt"), cfg(ws, write=True))["decision"]
+        == "deny"
+    )
+
+
+@pytest.mark.parametrize(
+    "path, decision",
+    [
+        ("{ws}/n.txt", "allow"),
+        ("{ws}/../o", "deny"),
+    ],
+)
+def test_multi_replace_file_content_confinement(ws, path, decision):
+    assert (
+        decide(
+            _p("multi_replace_file_content", TargetFile=path.format(ws=ws)), cfg(ws, write=True)
+        )["decision"]
+        == decision
+    )
 
 
 def test_run_command_needs_shell(ws):
@@ -67,12 +88,31 @@ def test_run_command_needs_shell(ws):
     )
 
 
+@pytest.mark.parametrize(
+    "cwd, decision",
+    [
+        (None, "allow"),
+        ("{ws}", "allow"),
+        ("{ws}/../out.txt", "deny"),
+    ],
+)
+def test_run_command_cwd_confinement(ws, cwd, decision):
+    kwargs = {"CommandLine": "ls"}
+    if cwd is not None:
+        kwargs["Cwd"] = cwd.format(ws=ws)
+    assert (
+        decide(_p("run_command", **kwargs), cfg(ws, write=True, shell=True))["decision"] == decision
+    )
+
+
 @pytest.mark.parametrize("name", ["search_web", "schedule", "brand_new_tool"])
 def test_everything_else_is_denied(ws, name):
     assert decide(_p(name), cfg(ws, write=True, shell=True))["decision"] == "deny"
 
 
-@pytest.mark.parametrize("name", ["finish", "send_message", "call_mcp_tool"])
+@pytest.mark.parametrize(
+    "name", ["finish", "send_message", "call_mcp_tool", "list_resources", "read_resource"]
+)
 def test_answer_and_mcp_allowed(ws, name):
     assert decide(_p(name), cfg(ws))["decision"] == "allow"
 
@@ -124,3 +164,77 @@ def test_decide_never_raises_on_root_as_int(ws):
 def test_decide_never_raises_on_config_as_list(ws):
     assert decide(_p("finish"), [1, 2, 3])["decision"] == "deny"
     assert decide(_p("view_file", AbsolutePath=f"{ws}/in.txt"), [1, 2, 3])["decision"] == "deny"
+
+
+# Round-1 review findings (CRITICAL/IMPORTANT/MINOR), fixed below.
+
+
+def test_decide_denies_on_deeply_recursive_payload(ws):
+    # Measured: 9999 levels of nested array as an argument value fits inside
+    # Go's encoding/json 10000-level limit, so agy itself can forward a
+    # payload that blows CPython's default recursion limit while parsing.
+    # `json.loads` raises RecursionError here, not a JSON error -- `decide`
+    # must catch that too, not just JSONDecodeError.
+    nested = "[" * 9999 + "]" * 9999
+    payload = f'{{"toolCall": {{"name": "view_file", "args": {{"AbsolutePath": {nested}}}}}}}'
+    assert decide(payload, cfg(ws))["decision"] == "deny"
+
+
+def test_main_denies_and_returns_0_on_non_utf8_stdin(ws, tmp_path, monkeypatch, capsys):
+    import io
+
+    from headless_agents.guards import agy_workspace
+
+    home = tmp_path / "home"
+    (home / ".gemini" / "config").mkdir(parents=True)
+    (home / ".gemini" / "config" / "workspace-guard.json").write_text(json.dumps(cfg(ws)))
+    monkeypatch.setenv("HOME", str(home))
+    # 0xFF is not a valid UTF-8 start byte: reading this raises
+    # UnicodeDecodeError from inside sys.stdin.read() itself, before `decide`
+    # is ever reached.
+    bad_stdin = io.TextIOWrapper(io.BytesIO(b"\xff\xfe\x00bad"), encoding="utf-8")
+    monkeypatch.setattr("sys.stdin", bad_stdin)
+    assert agy_workspace.main() == 0
+    assert json.loads(capsys.readouterr().out)["decision"] == "deny"
+
+
+@pytest.mark.parametrize(
+    "config, tool_name, kwargs",
+    [
+        ({"write": "false", "shell": "false"}, "write_to_file", {"TargetFile": "{ws}/n.txt"}),
+        ({"write": True, "shell": 1}, "run_command", {"CommandLine": "ls"}),
+    ],
+)
+def test_flag_requires_the_literal_boolean_true(ws, config, tool_name, kwargs):
+    # A truthy non-bool ("false" the string, or 1) must NOT arm write/shell:
+    # only the JSON boolean `true` (Python `True`) does.
+    full_config = {"root": str(ws), **config}
+    formatted = {key: value.format(ws=ws) for key, value in kwargs.items()}
+    assert decide(_p(tool_name, **formatted), full_config)["decision"] == "deny"
+
+
+def test_case_variant_argument_key_is_denied(ws):
+    # A key that differs from the one this guard reads only by case is either
+    # an adversarial probe for a parser differential or a silent rename this
+    # guard cannot tell apart from an attack: both must deny.
+    payload = json.dumps(
+        {
+            "toolCall": {
+                "name": "view_file",
+                "args": {"AbsolutePath": f"{ws}/in.txt", "absolutePath": "ignored"},
+            }
+        }
+    )
+    assert decide(payload, cfg(ws))["decision"] == "deny"
+
+
+def test_case_variant_cwd_key_is_denied(ws):
+    payload = json.dumps(
+        {
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": "ls", "cwd": str(ws)},
+            }
+        }
+    )
+    assert decide(payload, cfg(ws, shell=True))["decision"] == "deny"
