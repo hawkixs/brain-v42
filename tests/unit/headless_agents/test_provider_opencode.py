@@ -464,10 +464,52 @@ class TestWriteToolStarted:
 
     def test_an_mcp_tool_on_the_declared_server_is_not_a_write(self, tmp_path: Path) -> None:
         log = tmp_path / "e.jsonl"
+        mcp = McpServer(name="example", url=URL, tools=("x",))
         log.write_text(_events(_tool_use(tool="example_x")), encoding="utf-8")
-        assert opencode.write_tool_started(log, server="example") is False
-        # Without a server name, nothing is excluded as an MCP tool: an
-        # unrecognised prefix reads as an ordinary (unknown) built-in.
+        assert opencode.write_tool_started(log, mcp=mcp) is False
+        # Without an mcp, nothing is excluded as an MCP tool: an unrecognised
+        # prefix reads as an ordinary (unknown) built-in.
+        assert opencode.write_tool_started(log) is True
+
+    def test_the_mcp_exemption_is_the_exact_name_the_config_allowed_not_a_bare_prefix(
+        self, tmp_path: Path
+    ) -> None:
+        # A server literally named "apply" must not exempt "apply_patch" just
+        # because the tool name happens to start with the server's own name.
+        log = tmp_path / "e.jsonl"
+        mcp = McpServer(name="apply", url=URL, tools=("x",))
+        log.write_text(_events(_tool_use(tool="apply_patch")), encoding="utf-8")
+        assert opencode.write_tool_started(log, mcp=mcp) is True
+        log.write_text(_events(_tool_use(tool="apply_x")), encoding="utf-8")
+        assert opencode.write_tool_started(log, mcp=mcp) is False
+
+    def test_a_wildcard_mcp_config_never_exempts_a_known_builtin(self, tmp_path: Path) -> None:
+        # mcp.tools=() means opencode_config fell back to the "<server>_*"
+        # wildcard: the prefix exemption applies, but still never to a name
+        # that is also a known built-in tool.
+        log = tmp_path / "e.jsonl"
+        mcp = McpServer(name="apply", url=URL)
+        log.write_text(_events(_tool_use(tool="apply_patch")), encoding="utf-8")
+        assert opencode.write_tool_started(log, mcp=mcp) is True
+        log.write_text(_events(_tool_use(tool="apply_x")), encoding="utf-8")
+        assert opencode.write_tool_started(log, mcp=mcp) is False
+
+    @pytest.mark.parametrize(
+        "tool_use_event",
+        [
+            {"type": "tool_use"},
+            {"type": "tool_use", "part": "not-a-dict"},
+            {"type": "tool_use", "part": {"tool": None}},
+            {"type": "tool_use", "part": {"tool": 42}},
+        ],
+    )
+    def test_a_tool_use_with_no_string_tool_name_counts_as_a_write(
+        self, tmp_path: Path, tool_use_event: dict[str, object]
+    ) -> None:
+        # A missing/non-string tool name proves nothing about what ran: it
+        # must read as "may have written", not silently as "not a write".
+        log = tmp_path / "e.jsonl"
+        log.write_text(json.dumps(tool_use_event) + "\n", encoding="utf-8")
         assert opencode.write_tool_started(log) is True
 
     def test_an_absent_or_unreadable_stream_fails_closed(self, tmp_path: Path) -> None:
@@ -475,6 +517,12 @@ class TestWriteToolStarted:
         log = tmp_path / "e.jsonl"
         log.write_text("{not json\n", encoding="utf-8")
         assert opencode.write_tool_started(log) is True
+
+    def test_a_valid_json_line_that_is_not_an_object_fails_closed(self, tmp_path: Path) -> None:
+        log = tmp_path / "e.jsonl"
+        log.write_text('"just a string"\n', encoding="utf-8")
+        assert opencode.write_tool_started(log) is True
+        assert opencode.tool_call_started(log, server="example") is True
 
 
 class _FakeProcess:
@@ -944,16 +992,27 @@ class TestWorkspace:
             == PROVIDER_FALLBACK_EXIT_CODE
         )
 
+    def test_a_failure_in_write_mode_with_only_a_step_start_never_advances_a_chain(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """RULING: a process that dies mid-call (OOM, SIGKILL) exits non-zero
+        and leaves only its step_start too -- the failure path shares the
+        deadline path's predicate (any step_start OR a write tool_use) in a
+        writable workspace, not write_tool_started alone."""
+        step = _events({"type": "step_start", "part": {}})
+        _install(monkeypatch, _FakeProcess(returncode=3, events=step))
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        assert (
+            _run(tmp_path, workspace=Workspace(path=ws, write=True), profile=_profile(mcp=None))
+            == 1
+        )
+
     def test_an_ephemeral_root_inside_the_workspace_is_refused(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """A HOME built under a root inside the workspace could read
-        ``OPENCODE_CONFIG_CONTENT`` off... no, it is simpler than agy: nothing
-        is WRITTEN to the ephemeral HOME here, but the guard this rail relies
-        on is the config wall, not a filesystem boundary -- an ephemeral
-        directory the agent's own ``list``/``glob`` can already reach defeats
-        the whole point of scoping ``--dir`` to the workspace. Refused before
-        any file exists, same convention as agy's own ``run_agy``."""
+        """An ephemeral root inside the workspace is refused before any file
+        exists, same convention as agy's own ``run_agy``."""
         captured = _install(monkeypatch, _FakeProcess(returncode=0, events=GOOD_EVENTS))
         ws = tmp_path / "ws"
         root = ws / "tmp"

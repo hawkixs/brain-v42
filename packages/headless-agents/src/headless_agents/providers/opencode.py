@@ -151,6 +151,13 @@ ISOLATION_ENVIRONMENT: Mapping[str, str] = {
 _WORKSPACE_READ_TOOLS = frozenset({"read", "glob", "grep", "list"})
 _WORKSPACE_WRITE_TOOLS = frozenset({"edit", "write"})
 
+#: Every built-in name that must never be exempted as an MCP tool merely
+#: because it starts with a wildcard-configured server's name (a server
+#: literally named ``apply`` must not exempt ``apply_patch``). ``apply_patch``
+#: is not itself a key of :data:`MACHINE_TOOLS` (that permission schema names
+#: it ``patch``), so it is listed explicitly.
+_KNOWN_BUILTIN_TOOLS = frozenset(MACHINE_TOOLS) | _WORKSPACE_READ_TOOLS | frozenset({"apply_patch"})
+
 
 def _workspace_enabled_tools(workspace: Workspace) -> frozenset[str]:
     enabled = _WORKSPACE_READ_TOOLS
@@ -350,7 +357,13 @@ def _any_event_fail_closed(
             event = json.loads(raw_line)
         except json.JSONDecodeError:
             return True
-        if isinstance(event, dict) and predicate(event):
+        if not isinstance(event, dict):
+            # Valid JSON that is not an object (a bare string, a number, an
+            # array) proves nothing about what happened either: the docstring
+            # promises fail-closed on "anything that cannot prove otherwise",
+            # and silently treating it as a non-match would break that promise.
+            return True
+        if predicate(event):
             return True
     return False
 
@@ -400,28 +413,48 @@ def tool_call_completed(events_log: Path, *, server: str) -> bool:
     return any(_is_completed_call(event, server) for event in _events(events_log))
 
 
-def _is_write_tool_use(event: object, *, server: str | None) -> bool:
+def _is_exempt_mcp_tool(tool: str, mcp: McpServer | None) -> bool:
+    """Is ``tool`` exactly one of the MCP tools :func:`opencode_config` itself
+    admitted for ``mcp``? Mirrors that function's own two branches: an EXACT
+    name when the profile names its tools (``mcp.tools`` non-empty), the bare
+    ``"<server>_"`` prefix only when the config truly fell back to the
+    wildcard (``mcp.tools`` empty) -- and even then never a name that is also
+    a KNOWN BUILT-IN, so a server literally named e.g. ``apply`` cannot exempt
+    ``apply_patch`` just because the tool name happens to start with it.
+    """
+    if mcp is None:
+        return False
+    if mcp.tools:
+        return tool in {f"{mcp.name}_{name}" for name in mcp.tools}
+    if not tool.startswith(f"{mcp.name}_"):
+        return False
+    return tool not in _KNOWN_BUILTIN_TOOLS
+
+
+def _is_write_tool_use(event: object, *, mcp: McpServer | None) -> bool:
     """A ``tool_use`` naming a built-in tool that is NEITHER a workspace read
-    tool NOR an MCP tool on ``server``. INVERTED on purpose: opencode's
-    built-in catalogue is neither closed (``apply_patch`` is a real tool a
-    fixed write-list once missed) nor stable under aliasing (the binary
-    reports ``shell`` for the same capability ``bash`` names in ``tools``/
-    ``permission``) -- a fixed allowlist of "write tools" fails OPEN on
-    whatever it forgot. The four read tools are the only ones this rail
-    itself ever admits in a workspace; everything else that is not the
-    declared MCP server counts as a write, known or not.
+    tool NOR an MCP tool ``opencode_config`` admitted for ``mcp``. INVERTED on
+    purpose: opencode's built-in catalogue is neither closed (``apply_patch``
+    is a real tool a fixed write-list once missed) nor stable under aliasing
+    (the binary reports ``shell`` for the same capability ``bash`` names in
+    ``tools``/``permission``) -- a fixed allowlist of "write tools" fails OPEN
+    on whatever it forgot. The four read tools are the only ones this rail
+    itself ever admits in a workspace; everything else that is not exactly an
+    admitted MCP tool counts as a write, known or not -- INCLUDING a
+    ``tool_use`` whose tool is missing or not a string: that proves nothing
+    about what ran, so it counts as a write rather than silently as "not one".
     """
     if not isinstance(event, dict) or event.get("type") != "tool_use":
         return False
     tool = _part(event).get("tool")
     if not isinstance(tool, str):
-        return False
+        return True
     if tool in _WORKSPACE_READ_TOOLS:
         return False
-    return not (server is not None and tool.startswith(f"{server}_"))
+    return not _is_exempt_mcp_tool(tool, mcp)
 
 
-def write_tool_started(events_log: Path, *, server: str | None = None) -> bool:
+def write_tool_started(events_log: Path, *, mcp: McpServer | None = None) -> bool:
     """Could a workspace-changing built-in tool have STARTED in this stream?
 
     The write-mode twin of :func:`tool_call_started`, keyed on
@@ -430,9 +463,7 @@ def write_tool_started(events_log: Path, *, server: str | None = None) -> bool:
     still leaves a terminal event, which only errs on the safe side.
     Fail-closed the same way: an absent or unreadable stream answers ``True``.
     """
-    return _any_event_fail_closed(
-        events_log, lambda event: _is_write_tool_use(event, server=server)
-    )
+    return _any_event_fail_closed(events_log, lambda event: _is_write_tool_use(event, mcp=mcp))
 
 
 def _unwrap_fence(report: str) -> str:
@@ -588,13 +619,40 @@ def telemetry(events_log: Path) -> tuple[TokenUsage | None, float | None]:
     )
 
 
+def _writable_workspace_may_have_written(events_log: Path, mcp: McpServer | None) -> bool:
+    """Any ``step_start`` OR a write ``tool_use``: the taint a writable
+    workspace shares between the deadline AND the failure path.
+
+    A ``tool_use`` line is written in its TERMINAL state only (measured, see
+    :func:`tool_call_started`'s docstring), so a call still IN FLIGHT when the
+    process stops leaves only its ``step_start`` -- with no tool name at all,
+    unlike a completed process's stream. This is not only a deadline concern:
+    a process that dies mid-call (OOM, a SIGKILL from outside this runner)
+    exits non-zero and leaves the exact same bare ``step_start``. There is no
+    way to tell, from it alone, whether the step in flight was about to run a
+    read or a write tool, so ANY step counts, not only a named write tool.
+    """
+    return _any_event_fail_closed(
+        events_log, lambda event: _is_step_start(event) or _is_write_tool_use(event, mcp=mcp)
+    )
+
+
 def _failure_exit_code(
-    events_log: Path, default: int, server: str | None, *, workspace: Workspace | None = None
+    events_log: Path,
+    default: int,
+    server: str | None,
+    *,
+    workspace: Workspace | None = None,
+    mcp: McpServer | None = None,
 ) -> int:
     """Translate a failure into "replayable elsewhere" or not, never success."""
     if server is not None and tool_call_completed(events_log, server=server):
         return failure_code_after_a_write(default)
-    if workspace is not None and workspace.write and write_tool_started(events_log, server=server):
+    if (
+        workspace is not None
+        and workspace.write
+        and _writable_workspace_may_have_written(events_log, mcp)
+    ):
         return failure_code_after_a_write(default)
     return PROVIDER_FALLBACK_EXIT_CODE
 
@@ -606,6 +664,7 @@ def _deadline_exit_code(
     timeout_seconds: float,
     *,
     workspace: Workspace | None = None,
+    mcp: McpServer | None = None,
 ) -> int:
     """The code of the runner's OWN deadline: 124, or 4 when the stream proves
     nothing could have started. Without a server and without a writable
@@ -613,23 +672,18 @@ def _deadline_exit_code(
     replayable whatever the stream says. The reading is written to stderr:
     the deadline itself is not the news, the reason it was read as empty is.
 
-    In a WRITABLE workspace this is stricter than :func:`_failure_exit_code`:
-    a ``tool_use`` line is written in its TERMINAL state only (measured, see
-    :func:`tool_call_started`'s docstring), so a call still in flight when the
-    deadline fires leaves only its ``step_start`` -- with no tool name at all,
-    unlike a completed process's stream. There is no way to tell, from a bare
-    ``step_start``, whether the step in flight was about to run a read or a
-    write tool: ANY step counts, not only a named write tool.
+    In a WRITABLE workspace this uses :func:`_writable_workspace_may_have_written`,
+    the same taint :func:`_failure_exit_code` uses for a process that died
+    instead of hanging.
     """
     if server is not None and tool_call_started(events_log, server=server):
         return TIMEOUT_EXIT_CODE
-    if workspace is not None and workspace.write:
-        writable_deadline = _any_event_fail_closed(
-            events_log,
-            lambda event: _is_step_start(event) or _is_write_tool_use(event, server=server),
-        )
-        if writable_deadline:
-            return TIMEOUT_EXIT_CODE
+    if (
+        workspace is not None
+        and workspace.write
+        and _writable_workspace_may_have_written(events_log, mcp)
+    ):
+        return TIMEOUT_EXIT_CODE
     with stderr_log.open("a", encoding="utf-8") as stderr_stream:
         stderr_stream.write(
             f"opencode reached its deadline ({int(timeout_seconds)} s) with no step started"
@@ -821,7 +875,12 @@ def run_opencode(
 
         if timed_out:
             return _deadline_exit_code(
-                events_log, stderr_log, server, timeout_seconds, workspace=workspace
+                events_log,
+                stderr_log,
+                server,
+                timeout_seconds,
+                workspace=workspace,
+                mcp=profile.mcp,
             )
 
         extract_report(events_log, report_log)
@@ -829,18 +888,20 @@ def run_opencode(
         if exit_code == TIMEOUT_EXIT_CODE:
             return TIMEOUT_EXIT_CODE
         if exit_code != 0:
-            return _failure_exit_code(events_log, exit_code, server, workspace=workspace)
+            return _failure_exit_code(
+                events_log, exit_code, server, workspace=workspace, mcp=profile.mcp
+            )
         if not report_log.read_text(encoding="utf-8", errors="replace").strip():
             with stderr_log.open("a", encoding="utf-8") as stderr_stream:
                 stderr_stream.write("opencode exited 0 without a final report\n")
-            return _failure_exit_code(events_log, 1, server, workspace=workspace)
+            return _failure_exit_code(events_log, 1, server, workspace=workspace, mcp=profile.mcp)
         event_error = event_stream_error(
             events_log, server=server, missing_call_message=missing_call_message
         )
         if event_error is not None:
             with stderr_log.open("a", encoding="utf-8") as stderr_stream:
                 stderr_stream.write(f"{event_error}\n")
-            return _failure_exit_code(events_log, 1, server, workspace=workspace)
+            return _failure_exit_code(events_log, 1, server, workspace=workspace, mcp=profile.mcp)
         return 0
 
     if root is not None:
