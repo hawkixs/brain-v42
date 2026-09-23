@@ -16,7 +16,7 @@ from headless_agents.capability import (
     TIMEOUT_EXIT_CODE,
     TIMEOUT_REPLAYABLE_EXIT_CODE,
 )
-from headless_agents.profile import CapabilityProfile, McpServer
+from headless_agents.profile import CapabilityProfile, McpServer, Workspace
 from headless_agents.providers import codex
 from headless_agents.spec import RunSpec
 
@@ -106,6 +106,112 @@ class TestBuildCodexCommand:
             executable="/opt/codex",
         )
         assert command[0] == "/opt/codex"
+
+
+class TestBuildCodexCommandWorkspace:
+    def test_no_workspace_is_unchanged(self, tmp_path: Path) -> None:
+        base = codex.build_codex_command(
+            model="m",
+            reasoning_effort="low",
+            report_log=tmp_path / "r",
+            workspace=tmp_path,
+            mcp=None,
+        )
+        assert (
+            codex.build_codex_command(
+                model="m",
+                reasoning_effort="low",
+                report_log=tmp_path / "r",
+                workspace=tmp_path,
+                mcp=None,
+                workspace_mode=None,
+            )
+            == base
+        )
+
+    def test_read_only_enables_shell_inside_read_only_sandbox(self, tmp_path: Path) -> None:
+        command = codex.build_codex_command(
+            model="m",
+            reasoning_effort="low",
+            report_log=tmp_path / "r",
+            workspace=tmp_path,
+            mcp=None,
+            workspace_mode=Workspace(path=tmp_path),
+        )
+        assert command[command.index("--sandbox") + 1] == "read-only"
+        assert "features.shell_tool=true" in _overrides(command)
+        assert "features.shell_tool=false" not in _overrides(command)
+
+    def test_write_without_shell(self, tmp_path: Path) -> None:
+        command = codex.build_codex_command(
+            model="m",
+            reasoning_effort="low",
+            report_log=tmp_path / "r",
+            workspace=tmp_path,
+            mcp=None,
+            workspace_mode=Workspace(path=tmp_path, write=True),
+        )
+        assert command[command.index("--sandbox") + 1] == "workspace-write"
+        assert "features.shell_tool=false" in _overrides(command)
+        assert "project_doc_max_bytes=65536" in _overrides(command)
+
+    def test_write_with_shell(self, tmp_path: Path) -> None:
+        command = codex.build_codex_command(
+            model="m",
+            reasoning_effort="low",
+            report_log=tmp_path / "r",
+            workspace=tmp_path,
+            mcp=None,
+            workspace_mode=Workspace(path=tmp_path, write=True, shell=True),
+        )
+        assert "features.shell_tool=true" in _overrides(command)
+
+    def test_shell_tool_appears_exactly_once_in_every_mode(self, tmp_path: Path) -> None:
+        """``-c`` is last-wins for codex (unmeasured): the disabled-feature loop
+        and the read/write branch must never both emit ``features.shell_tool``."""
+        modes: list[Workspace | None] = [
+            None,
+            Workspace(path=tmp_path),
+            Workspace(path=tmp_path, write=True),
+            Workspace(path=tmp_path, write=True, shell=True),
+        ]
+        for mode in modes:
+            command = codex.build_codex_command(
+                model="m",
+                reasoning_effort="low",
+                report_log=tmp_path / "r",
+                workspace=tmp_path,
+                mcp=None,
+                workspace_mode=mode,
+            )
+            shell_flags = [
+                item for item in _overrides(command) if item.startswith("features.shell_tool=")
+            ]
+            assert len(shell_flags) == 1, mode
+
+
+class TestBuildCodexHome:
+    def test_links_auth_only(self, tmp_path: Path) -> None:
+        real = tmp_path / "real"
+        real.mkdir()
+        (real / "auth.json").write_text("{}", encoding="utf-8")
+        (real / "AGENTS.md").write_text("personal", encoding="utf-8")
+        home = codex.build_codex_home(root=tmp_path / "eph", real_codex_home=real)
+        assert sorted(p.name for p in home.iterdir()) == ["auth.json"]
+        assert (home / "auth.json").resolve() == real / "auth.json"
+        assert home.stat().st_mode & 0o777 == 0o700
+
+
+class TestWriteToolStarted:
+    def test_write_tool_started(self, tmp_path: Path) -> None:
+        log = tmp_path / "e.jsonl"
+        log.write_text(
+            '{"type":"item.started","item":{"type":"command_execution","status":"in_progress"}}\n'
+        )
+        assert codex.write_tool_started(log) is True
+        log.write_text('{"type":"item.completed","item":{"type":"agent_message"}}\n')
+        assert codex.write_tool_started(log) is False
+        assert codex.write_tool_started(tmp_path / "absent") is True
 
 
 def _events(*lines: dict[str, object]) -> str:
@@ -478,6 +584,161 @@ class TestRunCodex:
         assert seen == [2.5]
 
 
+class TestRunCodexWorkspace:
+    """``workspace_capability`` end to end: ephemeral ``CODEX_HOME``, the
+    missing-auth refusal before spawn, and the write-taint rules that reuse
+    ``write_tool_started`` where the MCP-server predicates have no server to
+    read."""
+
+    def _real_codex_home(self, tmp_path: Path, *, with_auth: bool) -> Path:
+        real_home = tmp_path / "real-codex-home"
+        real_home.mkdir()
+        if with_auth:
+            (real_home / "auth.json").write_text("{}", encoding="utf-8")
+        return real_home
+
+    def test_read_only_workspace_gets_an_ephemeral_codex_home(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        """The ephemeral ``CODEX_HOME`` is torn down as soon as the run ends
+        (see the sibling removal test below), so what it looked like WHILE
+        the child ran has to be captured synchronously, inside the fake
+        ``Popen`` call itself -- not re-read from disk afterwards."""
+        real_home = self._real_codex_home(tmp_path, with_auth=True)
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+        captured: dict[str, object] = {}
+
+        def popen(command: list[str], **kwargs: object) -> _FakeProcess:
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            env = kwargs["env"]
+            assert isinstance(env, dict)
+            home = Path(env["CODEX_HOME"])
+            captured["codex_home"] = str(home)
+            captured["codex_home_mode"] = home.stat().st_mode & 0o777
+            captured["codex_home_auth_target"] = (home / "auth.json").resolve()
+            fake.bind(events_stream=kwargs["stdout"], report_log=logs["report_log"])
+            return fake
+
+        monkeypatch.setattr(codex.subprocess, "Popen", popen)
+        monkeypatch.setattr(codex, "terminate_process_group", lambda process: process.kill())
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+        )
+
+        assert code == 0
+        kwargs = captured["kwargs"]
+        assert isinstance(kwargs, dict)
+        assert captured["codex_home"] != str(real_home)
+        assert captured["codex_home_mode"] == 0o700
+        assert captured["codex_home_auth_target"] == real_home / "auth.json"
+        assert kwargs["cwd"] == ws
+
+    def test_missing_real_auth_json_refuses_before_spawn(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        real_home = self._real_codex_home(tmp_path, with_auth=False)
+        captured = _install(monkeypatch, _FakeProcess(returncode=0), logs["report_log"])
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+        )
+
+        assert code == PROVIDER_FALLBACK_EXIT_CODE
+        assert "command" not in captured
+        stderr = logs["stderr_log"].read_text(encoding="utf-8")
+        assert "auth.json not found" in stderr and str(real_home) in stderr
+
+    def test_write_mode_taint_after_a_started_write_keeps_the_childs_code(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        real_home = self._real_codex_home(tmp_path, with_auth=True)
+        started_write = _events(
+            {
+                "type": "item.started",
+                "item": {"type": "command_execution", "status": "in_progress"},
+            }
+        )
+        fake = _FakeProcess(returncode=3, events=started_write)
+        _install(monkeypatch, fake, logs["report_log"])
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws, write=True),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+        )
+
+        assert code == 1
+
+    def test_write_mode_timeout_after_a_started_write_is_never_replayable(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        real_home = self._real_codex_home(tmp_path, with_auth=True)
+        started_write = _events(
+            {
+                "type": "item.started",
+                "item": {"type": "command_execution", "status": "in_progress"},
+            }
+        )
+        fake = _FakeProcess(returncode=0, events=started_write, hang=True)
+        _install(monkeypatch, fake, logs["report_log"])
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws, write=True),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+        )
+
+        assert code == TIMEOUT_EXIT_CODE
+
+    def test_ephemeral_codex_home_is_removed_after_the_run(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        """The ephemeral ``CODEX_HOME`` lives inside a context manager: it must
+        be gone once ``run_codex`` returns, success or not."""
+        real_home = self._real_codex_home(tmp_path, with_auth=True)
+        fake = _FakeProcess(returncode=7, events="")
+        captured = _install(monkeypatch, fake, logs["report_log"])
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+        )
+
+        assert code == PROVIDER_FALLBACK_EXIT_CODE
+        kwargs = captured["kwargs"]
+        assert isinstance(kwargs, dict)
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        assert not Path(env["CODEX_HOME"]).exists()
+
+
 class TestCallerWording:
     def test_the_missing_call_message_is_the_callers_when_given(
         self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path]
@@ -576,3 +837,70 @@ class TestCodexProvider:
         assert result.text == "answer"
         assert result.events_log == run_dir / "events.jsonl"
         assert (run_dir / "result.json").is_file()
+
+
+class TestCodexProviderWorkspace:
+    def test_no_workspace_and_no_context_prompt_is_byte_identical(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path]
+    ) -> None:
+        calls: list[dict[str, object]] = []
+        monkeypatch.setattr(codex, "run_codex", lambda **kwargs: calls.append(kwargs) or 0)
+        spec = RunSpec(prompt="do the thing", model="m", **logs)
+        codex.CodexProvider().run(spec)
+        assert calls[0]["prompt"] == "do the thing"
+        assert calls[0]["workspace_capability"] is None
+
+    def test_workspace_prepends_the_workspace_block(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        calls: list[dict[str, object]] = []
+        monkeypatch.setattr(codex, "run_codex", lambda **kwargs: calls.append(kwargs) or 0)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        workspace = Workspace(path=ws)
+        spec = RunSpec(
+            prompt="do the thing",
+            model="m",
+            profile=CapabilityProfile(workspace=workspace),
+            **logs,
+        )
+        codex.CodexProvider().run(spec)
+        prompt = calls[0]["prompt"]
+        assert isinstance(prompt, str)
+        assert prompt.startswith(f'<workspace path="{ws}"')
+        assert "do the thing" in prompt
+        assert calls[0]["workspace_capability"] == workspace
+        assert calls[0]["workspace"] is None
+
+    def test_build_command_previews_the_workspace_sandbox(self, tmp_path: Path) -> None:
+        """``build_command`` is the dry-run preview: it must show the same
+        ``--sandbox``/``-C`` ``run`` actually launches with."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        workspace = Workspace(path=ws, write=True)
+        spec = RunSpec(
+            prompt="p",
+            model="m",
+            profile=CapabilityProfile(workspace=workspace),
+            report_log=tmp_path / "r",
+        )
+        command = codex.CodexProvider().build_command(spec)
+        assert command[command.index("--sandbox") + 1] == "workspace-write"
+        assert command[command.index("-C") + 1] == str(ws)
+
+    def test_run_result_carries_workspace_and_context(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(codex, "run_codex", lambda **kwargs: 0)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        workspace = Workspace(path=ws)
+        spec = RunSpec(
+            prompt="p",
+            model="m",
+            profile=CapabilityProfile(workspace=workspace),
+            **logs,
+        )
+        result = codex.CodexProvider().run(spec)
+        assert result.workspace == {"path": str(ws), "write": False, "shell": False}
+        assert result.context is None

@@ -26,10 +26,12 @@ from ..capability import (
     failure_code_after_a_write,
     terminate_process_group,
 )
-from ..profile import McpServer
+from ..profile import McpServer, Workspace
 from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
+from ..sandbox import ephemeral_root
 from ..spec import RunSpec
+from ..workspace import prepend, rail_preamble, workspace_of, workspace_summary
 
 # ``max`` and ``ultra`` are declared by Codex 0.153 for gpt-6-astra and the
 # gpt-5.6 family. A value refused here fails the run BEFORE launch, with no
@@ -91,6 +93,24 @@ def _server_overrides(mcp: McpServer) -> tuple[tuple[str, object], ...]:
     )
 
 
+def _sandbox_mode(workspace_mode: Workspace | None) -> tuple[str, bool, int]:
+    """(``--sandbox`` value, whether the shell tool is on, ``project_doc_max_bytes``).
+
+    Measured 2026-09-23, see the table in the 0.4.0 lot-2 spec (3.3):
+    ``read-only`` turns the shell tool ON even though ``workspace_mode.write``
+    is ``False`` -- it is codex's only way to READ a file, and the
+    ``read-only`` sandbox refuses every write it attempts, so enabling it costs
+    no isolation. ``workspace-write`` leaves the shell tool OFF unless
+    ``workspace_mode.shell`` asks for it: codex edits through ``apply_patch``,
+    not the shell, so ``shell=False`` must mean no shell.
+    """
+    if workspace_mode is None:
+        return "read-only", False, 0
+    if not workspace_mode.write:
+        return "read-only", True, 0
+    return "workspace-write", workspace_mode.shell, 65536
+
+
 def build_codex_command(
     *,
     model: str,
@@ -99,12 +119,22 @@ def build_codex_command(
     workspace: Path,
     mcp: McpServer | None,
     executable: str = "codex",
+    workspace_mode: Workspace | None = None,
 ) -> list[str]:
-    """Build the hardened non-interactive Codex command for one run."""
+    """Build the hardened non-interactive Codex command for one run.
+
+    ``workspace`` is the ``-C`` directory codex runs in -- unchanged from
+    before 0.4.0. ``workspace_mode`` is the read/write/shell capability that
+    decides the sandbox, the shell tool and the project-doc budget (see
+    :func:`_sandbox_mode`); with ``workspace_mode=None`` every value is
+    exactly what it was before this parameter existed.
+    """
     if not model.strip():
         raise ValueError("Codex model must not be empty")
     if reasoning_effort not in REASONING_EFFORTS:
         raise ValueError(f"unsupported Codex reasoning effort: {reasoning_effort}")
+
+    sandbox, shell_enabled, doc_max_bytes = _sandbox_mode(workspace_mode)
 
     overrides: tuple[tuple[str, object], ...] = (
         ("forced_login_method", "chatgpt"),
@@ -112,7 +142,7 @@ def build_codex_command(
         ("check_for_update_on_startup", False),
         ("history.persistence", "none"),
         ("model_reasoning_effort", reasoning_effort),
-        ("project_doc_max_bytes", 0),
+        ("project_doc_max_bytes", doc_max_bytes),
         ("web_search", "disabled"),
         ("apps._default.enabled", False),
         ("memories.use_memories", False),
@@ -124,7 +154,17 @@ def build_codex_command(
     )
     if mcp is not None:
         overrides += _server_overrides(mcp)
-    overrides += tuple((f"features.{feature}", False) for feature in _DISABLED_FEATURES)
+    # ``features.shell_tool`` must be emitted exactly once: codex's ``-c``
+    # last-wins behaviour is unmeasured, so the disabled-feature loop and the
+    # enabling branch below are mutually exclusive, never both.
+    disabled_features = (
+        tuple(feature for feature in _DISABLED_FEATURES if feature != "shell_tool")
+        if shell_enabled
+        else _DISABLED_FEATURES
+    )
+    overrides += tuple((f"features.{feature}", False) for feature in disabled_features)
+    if shell_enabled:
+        overrides += (("features.shell_tool", True),)
 
     command = [
         executable,
@@ -140,7 +180,7 @@ def build_codex_command(
         "--model",
         model,
         "--sandbox",
-        "read-only",
+        sandbox,
     ]
     for key, value in overrides:
         command.extend(("-c", f"{key}={_toml(value)}"))
@@ -294,14 +334,78 @@ def event_stream_error(
     return None
 
 
+def build_codex_home(*, root: Path, real_codex_home: Path) -> Path:
+    """The ephemeral ``CODEX_HOME`` a workspace-capability run gets instead of
+    the caller's real one: a private ``0700`` directory holding nothing but a
+    symlink to the real ``auth.json``.
+
+    Codex resolves its login, its config and its session state from
+    ``CODEX_HOME``; handing a sandboxed run the real directory would expose
+    the operator's own ``AGENTS.md``, sessions and config to it. Measured
+    2026-09-23: ``codex exec`` needs nothing else under ``CODEX_HOME`` to
+    authenticate a non-interactive run.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    root.chmod(0o700)
+    (root / "auth.json").symlink_to(real_codex_home / "auth.json")
+    return root
+
+
+def write_tool_started(events_log: Path) -> bool:
+    """Could a write-capable tool (a shell command, an ``apply_patch`` edit)
+    have STARTED in this run?
+
+    The write-mode twin of :func:`tool_call_started`, for a run that carries
+    no MCP server to read a taint from: codex has its own event types for a
+    workspace edit. Measured 2026-09-23: ``codex exec`` writes an
+    ``item.started``/``item.completed`` event with ``item.type`` in
+    ``{"command_execution", "file_change"}`` for a shell command and for an
+    ``apply_patch`` edit respectively, one JSON line per event.
+
+    Fail-closed the same way as :func:`tool_call_started`: an absent or
+    unreadable stream, or a line that fails to parse, answers ``True`` -- a
+    write in flight when the process is killed may still land after the kill.
+    """
+    if not events_log.is_file():
+        return True
+    try:
+        raw_lines = events_log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return True
+    for raw_line in raw_lines:
+        if not raw_line.strip():
+            continue
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            return True
+        if not isinstance(event, dict) or event.get("type") not in (
+            "item.started",
+            "item.completed",
+        ):
+            continue
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") in {"command_execution", "file_change"}:
+            return True
+    return False
+
+
 def _deadline_exit_code(
-    events_log: Path, stderr_log: Path, server: str | None, timeout_seconds: float
+    events_log: Path,
+    stderr_log: Path,
+    server: str | None,
+    timeout_seconds: float,
+    *,
+    workspace_write: bool = False,
 ) -> int:
     """The code of the runner's OWN deadline: 124, or 4 when the stream proves
-    no call on ``server`` ever started (see :func:`tool_call_started`). Without
-    a server there is nothing a run could have written through, so a hang is
-    replayable whatever the stream says."""
+    no call on ``server`` (nor, in a writable workspace, a write) ever
+    started. Without a server or a writable workspace there is nothing a run
+    could have written through, so a hang is replayable whatever the stream
+    says."""
     if server is not None and tool_call_started(events_log, server=server):
+        return TIMEOUT_EXIT_CODE
+    if workspace_write and write_tool_started(events_log):
         return TIMEOUT_EXIT_CODE
     with stderr_log.open("a", encoding="utf-8") as stderr_stream:
         stderr_stream.write(
@@ -312,9 +416,13 @@ def _deadline_exit_code(
     return TIMEOUT_REPLAYABLE_EXIT_CODE
 
 
-def _failure_exit_code(events_log: Path, default: int, server: str | None) -> int:
+def _failure_exit_code(
+    events_log: Path, default: int, server: str | None, *, workspace_write: bool = False
+) -> int:
     """Translate a failure into "replayable elsewhere" or not, never success."""
     if server is not None and tool_call_completed(events_log, server=server):
+        return failure_code_after_a_write(default)
+    if workspace_write and write_tool_started(events_log):
         return failure_code_after_a_write(default)
     return PROVIDER_FALLBACK_EXIT_CODE
 
@@ -338,6 +446,7 @@ def run_codex(
     environment: Mapping[str, str] | None = None,
     executable: str = "codex",
     workspace: Path | None = None,
+    workspace_capability: Workspace | None = None,
     deadline: float | None = None,
     temp_prefix: str = "headless-agents-codex-",
     missing_call_message: str | None = None,
@@ -349,6 +458,15 @@ def run_codex(
     run refuses to start otherwise, so a scoped bearer can never be silently
     replaced by an ambient one. ``temp_prefix`` names the throwaway workspace
     when the caller gives none (it is visible in argv, after ``-C``).
+
+    ``workspace_capability`` is the read/write/shell capability (``workspace``
+    stays the legacy ``-C`` directory, untouched): when set, its ``path``
+    becomes the ``-C`` directory and the run gets an EPHEMERAL ``CODEX_HOME``
+    (see :func:`build_codex_home`), torn down whether the run succeeds, fails
+    or times out. The real ``CODEX_HOME`` (``environment["CODEX_HOME"]`` or
+    ``~/.codex``) must carry an ``auth.json``, or the run is refused before
+    any spawn with exit code 3 -- provider unavailable, replayable elsewhere,
+    never a switchover that could double a write.
     """
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
@@ -363,6 +481,7 @@ def run_codex(
         )
         return 1
     server = mcp.name if mcp is not None else None
+    workspace_write = workspace_capability is not None and workspace_capability.write
 
     report_log = report_log.resolve()
     events_log = events_log.resolve()
@@ -373,7 +492,16 @@ def run_codex(
     # an interrupted Codex turn can never be mistaken for a successful retry.
     report_log.write_text("", encoding="utf-8")
 
-    def _run(runtime_dir: Path) -> int:
+    real_codex_home: Path | None = None
+    if workspace_capability is not None:
+        real_codex_home = Path(visible.get("CODEX_HOME") or str(Path.home() / ".codex"))
+        if not (real_codex_home / "auth.json").is_file():
+            stderr_log.write_text(
+                f"codex auth.json not found under {real_codex_home}\n", encoding="utf-8"
+            )
+            return PROVIDER_FALLBACK_EXIT_CODE
+
+    def _run(runtime_dir: Path, run_environment: dict[str, str] | None) -> int:
         runtime_dir.mkdir(parents=True, exist_ok=True)
         command = build_codex_command(
             model=model,
@@ -382,6 +510,7 @@ def run_codex(
             workspace=runtime_dir,
             mcp=mcp,
             executable=executable,
+            workspace_mode=workspace_capability,
         )
         # A caller's deadline that has already passed is a TIMEOUT, not a dead
         # link: launching would kill the child at once on an empty stream and
@@ -400,8 +529,8 @@ def run_codex(
             stderr_log.open("w", encoding="utf-8") as stderr_stream,
         ):
             popen_kwargs: dict[str, Any] = {}
-            if child_environment is not None:
-                popen_kwargs["env"] = child_environment
+            if run_environment is not None:
+                popen_kwargs["env"] = run_environment
             try:
                 process = subprocess.Popen(
                     command,
@@ -430,33 +559,77 @@ def run_codex(
                 timed_out = False
 
         if timed_out:
-            return _deadline_exit_code(events_log, stderr_log, server, timeout_seconds)
+            return _deadline_exit_code(
+                events_log, stderr_log, server, timeout_seconds, workspace_write=workspace_write
+            )
 
         if process.returncode != 0:
             child_code = int(process.returncode or 1)
             if child_code == TIMEOUT_EXIT_CODE:
                 return TIMEOUT_EXIT_CODE
-            return _failure_exit_code(events_log, child_code, server)
+            return _failure_exit_code(
+                events_log, child_code, server, workspace_write=workspace_write
+            )
         if (
             not report_log.is_file()
             or not report_log.read_text(encoding="utf-8", errors="replace").strip()
         ):
             with stderr_log.open("a", encoding="utf-8") as stderr_stream:
                 stderr_stream.write("Codex exited 0 without a final report\n")
-            return _failure_exit_code(events_log, 1, server)
+            return _failure_exit_code(events_log, 1, server, workspace_write=workspace_write)
         event_error = event_stream_error(
             events_log, server=server, missing_call_message=missing_call_message
         )
         if event_error is not None:
             with stderr_log.open("a", encoding="utf-8") as stderr_stream:
                 stderr_stream.write(f"{event_error}\n")
-            return _failure_exit_code(events_log, 1, server)
+            return _failure_exit_code(events_log, 1, server, workspace_write=workspace_write)
         return 0
 
+    if workspace_capability is not None:
+        assert real_codex_home is not None
+        with tempfile.TemporaryDirectory(
+            prefix=f"{temp_prefix}home-", dir=ephemeral_root(visible)
+        ) as codex_home_dir:
+            ephemeral_home = build_codex_home(
+                root=Path(codex_home_dir), real_codex_home=real_codex_home
+            )
+            run_environment = (
+                dict(child_environment) if child_environment is not None else dict(os.environ)
+            )
+            run_environment["CODEX_HOME"] = str(ephemeral_home)
+            return _run(workspace_capability.path, run_environment)
     if workspace is not None:
-        return _run(workspace.resolve())
+        return _run(workspace.resolve(), child_environment)
     with tempfile.TemporaryDirectory(prefix=temp_prefix) as temp_dir:
-        return _run(Path(temp_dir))
+        return _run(Path(temp_dir), child_environment)
+
+
+#: What a run's preamble tells codex about its tools, by mode -- keyed the
+#: same way :func:`_sandbox_mode` reads a workspace, since the wording differs
+#: by how codex may reach the filesystem, not just by read/write.
+_TOOLS_NOTE = {
+    "read": (
+        "Read files with your shell (cat, rg, ls): the sandbox allows reads"
+        " and refuses writes, so reading is expected and safe."
+    ),
+    "write": "Edit files with apply_patch.",
+    "write+shell": "Edit with apply_patch; your shell runs inside the same sandbox, network off.",
+}
+
+
+def _preamble_for(spec: RunSpec, workspace: Workspace | None) -> str:
+    """The preamble ``run`` launches with, and (implicitly, via its argv-free
+    stdin channel) what a caller reading ``build_command`` would expect."""
+    if workspace is None:
+        tools_note = ""
+    elif not workspace.write:
+        tools_note = _TOOLS_NOTE["read"]
+    elif workspace.shell:
+        tools_note = _TOOLS_NOTE["write+shell"]
+    else:
+        tools_note = _TOOLS_NOTE["write"]
+    return rail_preamble(spec, tools_note=tools_note)
 
 
 class CodexProvider:
@@ -466,13 +639,15 @@ class CodexProvider:
 
     def build_command(self, spec: RunSpec) -> list[str]:
         assert spec.report_log is not None, "RunSpec.report_log is required for Codex"
+        workspace = workspace_of(spec)
         return build_codex_command(
             model=spec.model,
             reasoning_effort=spec.reasoning_effort,
             report_log=spec.report_log,
-            workspace=spec.workspace or Path.cwd(),
+            workspace=workspace.path if workspace is not None else (spec.workspace or Path.cwd()),
             mcp=spec.profile.mcp,
             executable=spec.executable or "codex",
+            workspace_mode=workspace,
         )
 
     def child_environment(self, spec: RunSpec, environ: Mapping[str, str]) -> dict[str, str] | None:
@@ -492,8 +667,10 @@ class CodexProvider:
         assert spec.events_log is not None
         assert spec.stderr_log is not None
         start = time.monotonic()
+        workspace = workspace_of(spec)
+        prompt = prepend(_preamble_for(spec, workspace), spec.prompt)
         exit_code = run_codex(
-            prompt=spec.prompt,
+            prompt=prompt,
             model=spec.model,
             reasoning_effort=spec.reasoning_effort,
             timeout_seconds=spec.timeout_seconds,
@@ -504,6 +681,7 @@ class CodexProvider:
             environment=spec.environment,
             executable=spec.executable or "codex",
             workspace=spec.workspace,
+            workspace_capability=workspace,
             deadline=spec.deadline,
         )
         duration = time.monotonic() - start
@@ -528,5 +706,7 @@ class CodexProvider:
                 text=answer_text(spec.report_log, exit_code=exit_code),
                 run_id=run_id_of(spec),
                 stderr_log=spec.stderr_log,
+                workspace=workspace_summary(workspace),
+                context=None if spec.context is None else tuple(spec.context.to_list()),
             ),
         )
