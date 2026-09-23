@@ -1021,6 +1021,7 @@ class TestRunCodexWorkspace:
         stderr = logs["stderr_log"].read_text(encoding="utf-8")
         assert "no codex home root outside the sandbox's writable roots" in stderr
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 0o000 file anyway")
     def test_unreadable_real_auth_disables_rescue_but_the_run_proceeds(
         self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
     ) -> None:
