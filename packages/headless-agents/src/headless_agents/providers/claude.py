@@ -30,6 +30,7 @@ from ..capability import (
 )
 from ..profile import McpServer
 from ..result import RunResult
+from ..run_record import answer_text, record, run_id_of
 from ..spec import RunSpec
 
 # Ambient variables this rail needs on top of the base allowlist.
@@ -140,8 +141,8 @@ def tool_call_completed(raw_log: Path) -> bool:
     content = raw_log.read_text(encoding="utf-8", errors="replace")
     # The console stream is multi-line pseudo-JSON, not JSON: we split on the
     # record rather than parsing it.
-    for record in content.split('body: "claude_code.tool_result"')[1:]:
-        window = record[:2000]
+    for otel_record in content.split('body: "claude_code.tool_result"')[1:]:
+        window = otel_record[:2000]
         if 'tool_name: "mcp_tool"' in window and 'success: "true"' in window:
             return True
     return False
@@ -277,8 +278,12 @@ class ClaudeProvider:
         return tool_call_completed(spec.raw_log)
 
     def run(self, spec: RunSpec) -> RunResult:
-        assert spec.raw_log is not None, "RunSpec.raw_log is required for Claude"
+        spec = spec.with_run_dir_defaults()
+        assert spec.raw_log is not None, "RunSpec.raw_log (or run_dir) is required for Claude"
         raw_log = spec.raw_log
+        # run_claude APPENDS to raw_log: remember where this run starts, so the
+        # answer never includes what an earlier run left in a reused log.
+        offset = raw_log.stat().st_size if raw_log.is_file() else 0
         start = time.monotonic()
         exit_code = run_claude(
             prompt=spec.prompt,
@@ -292,13 +297,21 @@ class ClaudeProvider:
             deadline=spec.deadline,
         )
         duration = time.monotonic() - start
-        return RunResult(
-            exit_code=exit_code,
-            provider=self.name,
-            model=spec.model,
-            report_path=raw_log,
-            events_log=raw_log,
-            tokens=None,
-            duration_seconds=duration,
-            tool_call_completed=spec.profile.mcp is not None and tool_call_completed(raw_log),
+        return record(
+            spec,
+            RunResult(
+                exit_code=exit_code,
+                provider=self.name,
+                model=spec.model,
+                report_path=raw_log,
+                events_log=raw_log,
+                tokens=None,
+                duration_seconds=duration,
+                tool_call_completed=spec.profile.mcp is not None and tool_call_completed(raw_log),
+                # stdout and stderr share raw_log by design (see run_claude), and
+                # this rail requests no JSON envelope: the text is read as written.
+                text=answer_text(raw_log, exit_code=exit_code, offset=offset),
+                run_id=run_id_of(spec),
+                raw_log=raw_log,
+            ),
         )

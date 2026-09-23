@@ -272,3 +272,62 @@ class TestClaudeProvider:
         assert result.exit_code == 0 and result.provider == "claude"
         assert result.report_path == tmp_path / "raw.log"
         assert calls[0]["max_turns"] == 4 and calls[0]["mcp"] == _server()
+
+    def test_text_is_only_what_this_run_appended_to_a_reused_log(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        raw_log = tmp_path / "raw.log"
+        raw_log.write_text("PREVIOUS RUN\n", encoding="utf-8")
+
+        def fake_run_claude(**kwargs: object) -> int:
+            raw = kwargs["raw_log"]
+            assert isinstance(raw, Path)
+            with raw.open("a", encoding="utf-8") as stream:
+                stream.write("THIS RUN\n")
+            return 0
+
+        monkeypatch.setattr(claude, "run_claude", fake_run_claude)
+        result = claude.ClaudeProvider().run(RunSpec(prompt="P", model="m", raw_log=raw_log))
+        assert result.text == "THIS RUN\n"
+
+    def test_an_answer_that_is_json_comes_back_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A judge's verdict is JSON. A ``result`` key in it must not be read as
+        claude's --output-format envelope, which this rail never requests."""
+        verdict = '{"result": "pass", "score": 3}\n'
+
+        def fake_run_claude(**kwargs: object) -> int:
+            raw = kwargs["raw_log"]
+            assert isinstance(raw, Path)
+            raw.parent.mkdir(parents=True, exist_ok=True)
+            with raw.open("a", encoding="utf-8") as stream:
+                stream.write(verdict)
+            return 0
+
+        monkeypatch.setattr(claude, "run_claude", fake_run_claude)
+        result = claude.ClaudeProvider().run(
+            RunSpec(prompt="P", model="m", raw_log=tmp_path / "raw.log")
+        )
+        assert result.text == verdict
+
+    def test_run_dir_holds_the_raw_log_and_result_json(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        def fake_run_claude(**kwargs: object) -> int:
+            raw = kwargs["raw_log"]
+            assert isinstance(raw, Path)
+            raw.parent.mkdir(parents=True, exist_ok=True)
+            raw.write_text("ok\n", encoding="utf-8")
+            return 0
+
+        monkeypatch.setattr(claude, "run_claude", fake_run_claude)
+        run_dir = tmp_path / "runs" / "r1"
+        result = claude.ClaudeProvider().run(RunSpec(prompt="P", model="m", run_dir=run_dir))
+        assert result.raw_log == run_dir / "raw.log"
+        assert result.stderr_log is None
+        assert result.text == "ok\n"
+        assert result.run_id == "r1"
+        written = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+        assert written == result.to_dict()
+        assert written["logs"]["stderr"] is None
