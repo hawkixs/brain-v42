@@ -79,6 +79,23 @@ result = CodexProvider().run(spec)
 #   exported on an interval, so an empty log cannot prove an empty run.
 ```
 
+The same kind of run through the facade, by provider name, with one directory
+holding its logs and its `result.json`:
+
+```python
+from headless_agents.registry import get_provider, max_prompt_bytes, probe
+
+if probe("codex").available:  # zero quota: the executable and its --version
+    result = get_provider("codex").run(
+        RunSpec(prompt="Summarise the diff.", model="<model>", run_dir=Path("runs/r-001"))
+    )
+    print(result.text)  # the final answer, or None when the run produced none
+    # runs/r-001/ now holds report.log, events.jsonl, stderr.log and result.json,
+    # which is result.to_dict(): schema 1, the same keys for every provider.
+
+limit = max_prompt_bytes("agy")  # an int for the argv rails, None for claude and codex
+```
+
 An isolated seat -- no server, no user-level configuration, credentials
 copied `0600` into a throwaway HOME -- runs `claude -p` under a rebuilt
 environment:
