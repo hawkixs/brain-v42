@@ -26,8 +26,24 @@ class TestGetProvider:
         assert isinstance(provider, AgentProvider)
         assert provider.name == name
 
-    def test_the_names_are_the_four_cli_rails(self) -> None:
-        assert registry.PROVIDER_NAMES == ("claude", "codex", "agy", "opencode")
+    def test_the_names_are_the_specs_eight(self) -> None:
+        # Spec 3.1: the four CLI rails, the three HTTP presets, the generic one.
+        assert registry.PROVIDER_NAMES == (
+            "claude",
+            "codex",
+            "agy",
+            "opencode",
+            "openrouter",
+            "mistral",
+            "nvidia",
+            "openai-compat",
+        )
+
+    @pytest.mark.parametrize("name", ["openrouter", "mistral", "nvidia", "openai-compat"])
+    def test_every_http_provider_is_reached_by_its_name(self, name: str) -> None:
+        provider = registry.get_provider(name)
+        assert isinstance(provider, AgentProvider)
+        assert provider.name == name
 
     def test_each_call_returns_a_fresh_instance(self) -> None:
         assert registry.get_provider("codex") is not registry.get_provider("codex")
@@ -55,6 +71,37 @@ class TestMaxPromptBytes:
     def test_an_unknown_name_is_refused(self) -> None:
         with pytest.raises(registry.UnknownProvider):
             registry.max_prompt_bytes("gpt")
+
+    @pytest.mark.parametrize("name", ["openrouter", "mistral", "nvidia", "openai-compat"])
+    def test_the_http_providers_have_no_argv_limit(self, name: str) -> None:
+        assert registry.max_prompt_bytes(name) is None
+
+
+class TestProbeHttp:
+    """Spec 3.1: for an HTTP provider the probe is the key variable's presence."""
+
+    def test_a_preset_is_available_when_its_key_is_set(self) -> None:
+        found = registry.probe("mistral", environ={"MISTRAL_API_KEY": "sk-x"})
+        assert found.available is True
+        assert found.detail == "MISTRAL_API_KEY is set"
+        assert found.version is None
+
+    def test_a_preset_is_unavailable_without_its_key(self) -> None:
+        found = registry.probe("openrouter", environ={"MISTRAL_API_KEY": "sk-x"})
+        assert found.available is False
+        assert "OPENROUTER_API_KEY" in found.detail
+
+    def test_an_empty_key_is_unavailable(self) -> None:
+        assert registry.probe("nvidia", environ={"NVIDIA_API_KEY": ""}).available is False
+
+    def test_the_probe_never_reveals_the_key(self) -> None:
+        found = registry.probe("mistral", environ={"MISTRAL_API_KEY": "sk-SECRET"})
+        assert "sk-SECRET" not in found.detail
+
+    def test_the_generic_provider_is_configured_per_run(self) -> None:
+        found = registry.probe("openai-compat", environ={})
+        assert found.available is True
+        assert "base_url" in found.detail
 
 
 class TestProbe:
