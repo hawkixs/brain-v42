@@ -14,6 +14,7 @@ import errno
 import hashlib
 import json
 import os
+import pwd
 import stat
 import subprocess
 import tempfile
@@ -441,10 +442,13 @@ _MAX_ROTATED_AUTH_BYTES = 65536
 def _account_id(raw: bytes) -> str | None:
     """``tokens.account_id`` out of an ``auth.json`` payload, or ``None`` when
     the bytes do not parse to that shape. Never raises: a caller comparing
-    two of these treats ``None`` as "no account to match", not as an error."""
+    two of these treats ``None`` as "no account to match", not as an error.
+    Deliberately tolerant of non-UTF-8 bytes too (``UnicodeDecodeError``),
+    since the real file's own snapshot goes through this with no other
+    validation ahead of it -- see ``run_codex``'s snapshot step."""
     try:
         parsed = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(parsed, dict):
         return None
@@ -466,10 +470,17 @@ def _read_ephemeral_rotation(ephemeral_auth: Path) -> bytes | None:
     Opened with ``O_NOFOLLOW`` so a symlink is refused at the syscall itself,
     whether it was never replaced or was swapped back in between an earlier
     probe and this read (TOCTOU) -- there is no separate ``is_symlink()``
-    check for that race to slip past.
+    check for that race to slip past. Also ``O_NONBLOCK``, so a FIFO swapped
+    in for ``auth.json`` cannot block this open (and hence the ``finally``
+    that calls it) waiting for a writer that will never come -- the ``fstat``
+    below then refuses it on ``S_ISREG`` alone, never attempting a read.
+    ``O_CLOEXEC`` so the descriptor never leaks into a later child.
     """
     try:
-        descriptor = os.open(str(ephemeral_auth), os.O_RDONLY | os.O_NOFOLLOW)
+        descriptor = os.open(
+            str(ephemeral_auth),
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+        )
     except FileNotFoundError:
         return None
     except OSError as exc:
@@ -488,7 +499,9 @@ def _read_ephemeral_rotation(ephemeral_auth: Path) -> bytes | None:
         os.close(descriptor)
     try:
         parsed = json.loads(raw)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        # A decode failure's own message can carry the offending byte
+        # values: never let it past this generic, content-free wording.
         raise ValueError("is not valid JSON") from exc
     if not isinstance(parsed, dict):
         raise ValueError("is not a JSON object")
@@ -499,9 +512,14 @@ def _persist_rotated_auth_or_raise(
     *,
     ephemeral_home: Path,
     real_auth_target: Path,
-    real_auth_digest_at_build: str,
+    real_auth_digest_at_build: str | None,
     real_account_id_at_build: str | None,
 ) -> None:
+    # ``None``: the build-time snapshot itself could not be taken (an
+    # unreadable or non-UTF-8 real file -- see run_codex) -- no write-back is
+    # possible for this run, already logged there; nothing left to do here.
+    if real_auth_digest_at_build is None:
+        return
     raw = _read_ephemeral_rotation(ephemeral_home / "auth.json")
     if raw is None:
         return
@@ -523,14 +541,22 @@ def _persist_rotated_auth_or_raise(
     except BaseException:
         Path(temp_name).unlink(missing_ok=True)
         raise
+    # The rename is durable on the FILE; fsync the directory too, so the
+    # directory entry pointing at it survives a crash right after replace.
+    dir_descriptor = os.open(str(real_auth_target.parent), os.O_RDONLY)
+    try:
+        os.fsync(dir_descriptor)
+    finally:
+        os.close(dir_descriptor)
 
 
 def _persist_rotated_auth(
     *,
     ephemeral_home: Path,
     real_auth_target: Path,
-    real_auth_digest_at_build: str,
+    real_auth_digest_at_build: str | None,
     real_account_id_at_build: str | None,
+    snapshot_failure: str | None,
     stderr_log: Path,
 ) -> None:
     """Rescue a codex-rotated ``auth.json`` across the ephemeral ``CODEX_HOME``'s
@@ -554,17 +580,39 @@ def _persist_rotated_auth(
     if the real file moved on meanwhile (a fresh login, or another run's own
     rotation) rather than overwriting it.
 
-    Never raises past this boundary: any failure -- an ``OSError`` from the
-    filesystem, a ``ValueError`` from validation -- is caught here, and the
-    ONLY trace it leaves is one non-secret line appended to ``stderr_log``
-    (never the file's content). The run's own exit code, already decided by
-    the time this runs in a ``finally``, is never touched.
+    Never raises past this boundary -- catches ``Exception`` itself, not a
+    narrower set: this is a best-effort side effect running in a ``finally``,
+    and NOTHING it can do -- an ``OSError`` from the filesystem, a
+    ``ValueError`` from validation, sandbox-chosen bytes deep enough to blow
+    the JSON decoder's own recursion limit (``RecursionError``, a
+    ``RuntimeError``, not a ``ValueError``) -- may replace the exit code
+    ``_run`` already decided. The ONLY trace any of that leaves is one line
+    appended to ``stderr_log``, carrying the exception's CLASS NAME alone,
+    never its message: a decode error's own message can quote the offending
+    bytes, and a class name never can. Even that append is guarded: an
+    ``OSError`` writing the log itself is swallowed, not re-raised -- this
+    function must not be able to break the run over its own diagnostics.
 
     RESIDUAL, deliberately not defended here: the sandbox can still READ the
     real ``auth.json`` through the ephemeral symlink -- this function
     protects the real file's INTEGRITY, not its confidentiality. Spec 3.3
     already accepts that codex reads outside the workspace.
+
+    ``snapshot_failure`` -- the class name of whatever kept ``run_codex``
+    from taking the build-time snapshot at all (an unreadable or non-UTF-8
+    real file) -- is logged HERE, in this same ``finally``-time append,
+    rather than where it was discovered: ``_run`` opens ``stderr_log`` in
+    truncating (``"w"``) mode, so anything appended before ``_run`` runs
+    would simply be erased by it.
     """
+    if snapshot_failure is not None:
+        try:
+            with stderr_log.open("a", encoding="utf-8") as stderr_stream:
+                stderr_stream.write(
+                    f"codex auth.json rotation rescue disabled for this run: {snapshot_failure}\n"
+                )
+        except OSError:
+            pass
     try:
         _persist_rotated_auth_or_raise(
             ephemeral_home=ephemeral_home,
@@ -572,39 +620,83 @@ def _persist_rotated_auth(
             real_auth_digest_at_build=real_auth_digest_at_build,
             real_account_id_at_build=real_account_id_at_build,
         )
-    except (OSError, ValueError) as exc:
-        with stderr_log.open("a", encoding="utf-8") as stderr_stream:
-            stderr_stream.write(f"codex auth.json rotation not persisted: {exc}\n")
+    except Exception as exc:
+        try:
+            with stderr_log.open("a", encoding="utf-8") as stderr_stream:
+                stderr_stream.write(
+                    f"codex auth.json rotation not persisted: {type(exc).__name__}\n"
+                )
+        except OSError:
+            pass
 
 
-def _codex_home_root(environ: Mapping[str, str]) -> Path:
-    """Root directory the ephemeral ``CODEX_HOME`` is created under.
+# The POSIX-conventional world-writable scratch directory. A module-level
+# name, not an inline literal, so a test can monkeypatch it: pytest's own
+# ``tmp_path`` fixture lives under the REAL ``/tmp`` on this machine, which
+# would make every "here is a safe root" fixture built under ``tmp_path``
+# unsafe by this check alone, with no way to construct a counter-example
+# otherwise. Production code never overrides it.
+_CONVENTIONAL_TMP_ROOT = Path("/tmp")
 
-    Never under ``/tmp`` or ``$TMPDIR``: those are the ``workspace-write``
-    sandbox's own default writable roots, and a run in write mode must never
-    be ABLE to write into the same tree its own ephemeral ``CODEX_HOME``
-    lives in -- that tree briefly holds a regular file in place of the
-    ``auth.json`` symlink whenever codex rotates its token (see
-    :func:`_persist_rotated_auth`). :func:`~headless_agents.sandbox.ephemeral_root`
-    (``XDG_RUNTIME_DIR``, a tmpfs) is used when it is set AND is not itself
-    under one of those roots; otherwise a private ``0700`` directory under
-    ``~/.cache/headless-agents/codex-homes/``.
+
+def _unsafe_home_roots(*, environ: Mapping[str, str], workspace_path: Path) -> frozenset[Path]:
+    """Every filesystem root a ``workspace-write`` sandbox could plausibly
+    write into: a candidate ``CODEX_HOME`` root must not equal, or sit
+    under, any of these.
+
+    ``/tmp`` and ``tempfile.gettempdir()`` are the conventional writable
+    scratch roots; ``TMPDIR`` is checked in BOTH the parent process's own
+    environment and the CHILD environment the run was given, because
+    :func:`~headless_agents.sandbox.sandbox_environment` sets a sandboxed
+    run's ``HOME`` equal to its ``TMPDIR`` -- a candidate built from the
+    child's ``HOME`` alone would otherwise land right back inside the
+    sandbox it is meant to be kept out of. ``workspace_path`` -- the ``-C``
+    directory itself -- is unsafe too: a write-mode run confined to it can
+    write ANYWHERE inside it via ``apply_patch`` or its own shell, not only
+    under a conventional tmp root.
     """
+    roots = {
+        _CONVENTIONAL_TMP_ROOT.resolve(),
+        Path(tempfile.gettempdir()).resolve(),
+        workspace_path.resolve(),
+    }
+    for source in (os.environ, environ):
+        tmpdir_value = source.get("TMPDIR")
+        if tmpdir_value:
+            roots.add(Path(tmpdir_value).resolve())
+    return frozenset(roots)
+
+
+def _is_safe_home_root(candidate: Path, unsafe_roots: frozenset[Path]) -> bool:
+    resolved = candidate.resolve()
+    if resolved in unsafe_roots:
+        return False
+    return not any(root in resolved.parents for root in unsafe_roots)
+
+
+def _choose_codex_home_root(environ: Mapping[str, str], *, workspace_path: Path) -> Path | None:
+    """Root directory the ephemeral ``CODEX_HOME`` is created under, or
+    ``None`` when every candidate sits somewhere a ``workspace-write``
+    sandbox could itself write -- the caller fails the run closed on that,
+    rather than build a ``CODEX_HOME`` the very agent it isolates could
+    reach.
+
+    :func:`~headless_agents.sandbox.ephemeral_root` (``XDG_RUNTIME_DIR``, a
+    tmpfs) is used when it passes :func:`_is_safe_home_root`. Otherwise, a
+    private ``0700`` directory under the OPERATOR's own home --
+    ``pwd.getpwuid(os.getuid()).pw_dir``, read from the OS's user database,
+    NEVER from an environment variable (unlike ``Path.home()``, which reads
+    ``HOME`` -- exactly the value a sandboxed child's own environment can
+    set to its writable tmp root, see :func:`_unsafe_home_roots`).
+    """
+    unsafe_roots = _unsafe_home_roots(environ=environ, workspace_path=workspace_path)
     candidate = ephemeral_root(environ)
-    tmp_roots = {Path(tempfile.gettempdir()).resolve()}
-    tmpdir_value = environ.get("TMPDIR")
-    if tmpdir_value:
-        tmp_roots.add(Path(tmpdir_value).resolve())
-    if candidate is not None:
-        resolved_candidate = candidate.resolve()
-        under_tmp = resolved_candidate in tmp_roots or any(
-            root in resolved_candidate.parents for root in tmp_roots
-        )
-        if not under_tmp:
-            return candidate
-    fallback = (
-        Path(environ.get("HOME") or str(Path.home())) / ".cache" / "headless-agents" / "codex-homes"
-    )
+    if candidate is not None and _is_safe_home_root(candidate, unsafe_roots):
+        return candidate
+    operator_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    fallback = operator_home / ".cache" / "headless-agents" / "codex-homes"
+    if not _is_safe_home_root(fallback, unsafe_roots):
+        return None
     fallback.mkdir(parents=True, exist_ok=True)
     fallback.chmod(0o700)
     return fallback
@@ -786,11 +878,41 @@ def run_codex(
         # both need the file the symlink points AT (a dotfile manager may
         # symlink auth.json elsewhere), not the symlink path itself.
         real_auth_target = (real_codex_home / "auth.json").resolve()
-        real_auth_snapshot = real_auth_target.read_bytes()
-        real_auth_digest_at_build = hashlib.sha256(real_auth_snapshot).hexdigest()
-        real_account_id_at_build = _account_id(real_auth_snapshot)
+        # An unreadable or non-UTF-8 real file must not break this run: the
+        # snapshot (hence the write-back) is simply unavailable for it. The
+        # failure is logged from _persist_rotated_auth, in the finally,
+        # AFTER _run -- _run itself opens stderr_log in truncating mode, so
+        # anything appended here, before _run, would just be erased by it.
+        snapshot_failure: str | None = None
+        real_auth_snapshot: bytes | None
+        try:
+            read_snapshot = real_auth_target.read_bytes()
+            read_snapshot.decode("utf-8")
+        except OSError as exc:
+            real_auth_snapshot = None
+            snapshot_failure = type(exc).__name__
+        except UnicodeDecodeError:
+            real_auth_snapshot = None
+            snapshot_failure = "UnicodeDecodeError"
+        else:
+            real_auth_snapshot = read_snapshot
+        real_auth_digest_at_build = (
+            hashlib.sha256(real_auth_snapshot).hexdigest()
+            if real_auth_snapshot is not None
+            else None
+        )
+        real_account_id_at_build = (
+            _account_id(real_auth_snapshot) if real_auth_snapshot is not None else None
+        )
+
+        home_root = _choose_codex_home_root(visible, workspace_path=workspace_capability.path)
+        if home_root is None:
+            stderr_log.write_text(
+                "no codex home root outside the sandbox's writable roots\n", encoding="utf-8"
+            )
+            return PROVIDER_FALLBACK_EXIT_CODE
         with tempfile.TemporaryDirectory(
-            prefix=f"{temp_prefix}home-", dir=_codex_home_root(visible)
+            prefix=f"{temp_prefix}home-", dir=home_root
         ) as codex_home_dir:
             ephemeral_home = build_codex_home(
                 root=Path(codex_home_dir), real_codex_home=real_codex_home
@@ -809,6 +931,7 @@ def run_codex(
                     real_auth_target=real_auth_target,
                     real_auth_digest_at_build=real_auth_digest_at_build,
                     real_account_id_at_build=real_account_id_at_build,
+                    snapshot_failure=snapshot_failure,
                     stderr_log=stderr_log,
                 )
     if workspace is not None:
