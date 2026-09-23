@@ -34,7 +34,7 @@ def rail_preamble(spec: RunSpec, *, tools_note: str) -> str:
             "</workspace>"
         )
     if spec.context is not None:
-        block = spec.context.preamble(include_repository=True)
+        block = spec.context.preamble()
         if block:
             parts.append(block)
     return "\n\n".join(parts)

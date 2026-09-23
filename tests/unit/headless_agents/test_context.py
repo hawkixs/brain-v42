@@ -18,7 +18,7 @@ def test_full_reads_an_ignored_claude_md(tmp_path: Path) -> None:
     (repo / "CLAUDE.md").write_text("RULE-IGNORED-7\n", encoding="utf-8")
     bundle = resolve_context(level="full", repository_root=repo)
     assert [f.source.name for f in bundle.repository_files()] == ["CLAUDE.md"]
-    assert "RULE-IGNORED-7" in bundle.preamble(include_repository=True)
+    assert "RULE-IGNORED-7" in bundle.preamble()
 
 
 def test_levels(tmp_path: Path) -> None:
@@ -64,15 +64,15 @@ def test_trace_has_size_and_sha256(tmp_path: Path) -> None:
     }
 
 
-def test_preamble_without_repository_keeps_user_content(tmp_path: Path) -> None:
+def test_preamble_carries_user_then_repository_content(tmp_path: Path) -> None:
     repo = _git_repo(tmp_path / "repo")
     (repo / "CLAUDE.md").write_text("repo rule\n", encoding="utf-8")
     user = tmp_path / "u.md"
     user.write_text("user rule\n", encoding="utf-8")
     bundle = resolve_context(level="full", repository_root=repo, user_files=[user])
-    preamble = bundle.preamble(include_repository=False)
-    assert "user rule" in preamble and "repo rule" not in preamble
+    preamble = bundle.preamble()
+    assert 0 <= preamble.index("user rule") < preamble.index("repo rule")
 
 
 def test_empty_bundle_has_empty_preamble() -> None:
-    assert ContextBundle(level="none", files=()).preamble(include_repository=True) == ""
+    assert ContextBundle(level="none", files=()).preamble() == ""

@@ -67,10 +67,10 @@ class ContextBundle:
     def user_files(self) -> tuple[ContextFile, ...]:
         return tuple(f for f in self.files if f.scope == "user")
 
-    def preamble(self, *, include_repository: bool) -> str:
-        """User-level content always; repository content only when asked."""
-        chosen = self.user_files() + (self.repository_files() if include_repository else ())
-        return "\n\n".join(_block(f) for f in chosen)
+    def preamble(self) -> str:
+        """User-level content, then repository content: every file, in every
+        mode -- the preamble is the bundle's only channel (see above)."""
+        return "\n\n".join(_block(f) for f in self.user_files() + self.repository_files())
 
     def to_list(self) -> list[dict[str, object]]:
         return [
