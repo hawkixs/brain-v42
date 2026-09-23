@@ -65,6 +65,7 @@ from ..workspace import (
     argv_prompt_or_refusal,
     prepend,
     rail_preamble,
+    workspace_of,
     workspace_summary,
 )
 
@@ -456,7 +457,7 @@ def run_agy(
     package's own guard instead; ``prompt`` is then expected to carry the
     workspace preamble already (:class:`AgyProvider` builds it).
     """
-    workspace = _confined_workspace(profile)
+    workspace = _confined_workspace(profile, profile.workspace)
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
     ambient = dict(environment) if environment is not None else dict(os.environ)
@@ -601,10 +602,12 @@ def run_agy(
         return _run(Path(temporary))
 
 
-def _confined_workspace(profile: CapabilityProfile) -> Workspace | None:
-    """The profile's workspace, refused next to a caller's guard."""
-    refuse_caller_guard_with_workspace(profile.guard, profile.workspace)
-    return profile.workspace
+def _confined_workspace(
+    profile: CapabilityProfile, workspace: Workspace | None
+) -> Workspace | None:
+    """``workspace``, refused next to the profile's caller guard."""
+    refuse_caller_guard_with_workspace(profile.guard, workspace)
+    return workspace
 
 
 _READ_NOTE = (
@@ -670,7 +673,7 @@ class AgyProvider:
         return default_ephemeral_root(environ) or Path(tempfile.gettempdir())
 
     def build_command(self, spec: RunSpec) -> list[str]:
-        workspace = _confined_workspace(spec.profile)
+        workspace = _confined_workspace(spec.profile, workspace_of(spec))
         return build_agy_command(
             model=spec.model,
             prompt=prepend(_preamble_for(spec, workspace), spec.prompt),
@@ -690,7 +693,7 @@ class AgyProvider:
             name=spec.name,
             profile=spec.profile,
             real_home=self._source_home(environ),
-            workspace=_confined_workspace(spec.profile),
+            workspace=_confined_workspace(spec.profile, workspace_of(spec)),
         )
 
     def tool_call_completed(self, spec: RunSpec) -> bool:
@@ -699,7 +702,7 @@ class AgyProvider:
         return tool_call_completed(spec.events_log)
 
     def run(self, spec: RunSpec) -> RunResult:
-        workspace = _confined_workspace(spec.profile)
+        workspace = _confined_workspace(spec.profile, workspace_of(spec))
         spec = spec.with_run_dir_defaults()
         assert spec.events_log is not None
         assert spec.report_log is not None

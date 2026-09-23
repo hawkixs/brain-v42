@@ -630,6 +630,22 @@ class TestWorkspace:
         config.write_text(json.dumps({"root": str(tmp_path), "write": False, "shell": False}))
         assert agy.workspace_guard_holds(home, Workspace(path=tmp_path)) is False
 
+    def test_a_legacy_workspace_next_to_a_profile_one_is_refused_everywhere(
+        self, tmp_path: Path
+    ) -> None:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        spec = RunSpec(
+            prompt="p",
+            profile=CapabilityProfile(workspace=Workspace(path=ws)),
+            workspace=tmp_path,
+        )
+        provider = agy.AgyProvider(real_home=tmp_path, ephemeral_root=tmp_path / "r")
+        for method in (provider.build_command, provider.prepare_home, provider.run):
+            with pytest.raises(ValueError, match="pick one"):
+                method(spec)
+        assert not (tmp_path / "r").exists()
+
     def test_the_probe_refuses_a_guard_that_lets_a_write_reach_git(self, tmp_path: Path) -> None:
         """A guard from before the ``.git`` rule passes the other probes."""
         ws = tmp_path / "ws"
