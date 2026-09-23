@@ -12,15 +12,15 @@
 
 ## Scope
 
-This plan covers **lot 1 of 4**. Lots 2 (`openai-compat` and its presets), 3 (workspace capability and context bundle) and 4 (`ha` CLI, MCP profiles, `allowed_networks` and the Dream's migration to it) each get their own plan once the previous lot has merged: each lot builds on the interfaces the previous one ships, and lot 3 depends on two measurements the spec defers to implementation (the agy guard contract in write mode, the opencode 1.18.x permission keys). The version stays `0.3.0` and nothing is tagged until lot 4, per spec section 5.
+This plan covers **lot 1 of 4**. Lots 2 (workspace capability, read-only and writable, and context bundle), 3 (`openai-compat` and its presets) and 4 (`ha` CLI, MCP profiles, `allowed_networks` and the Dream's migration to it) each get their own plan once the previous lot has merged: each lot builds on the interfaces the previous one ships, and lot 2 depends on measurements the spec defers to implementation (the agy guard contract, the opencode 1.18.x permission keys, the claude permission mode of a read-only workspace). The version stays `0.3.0` and nothing is tagged until lot 4, per spec section 5.
 
 Where the spec is silent, this plan decides, and says so:
 
-- `PROVIDER_NAMES` holds the four CLI rails in lot 1. Lot 2 extends it to the spec's eight names when the HTTP providers exist.
+- `PROVIDER_NAMES` holds the four CLI rails in lot 1. Lot 3 extends it to the spec's eight names when the HTTP providers exist.
 - `RunResult.text` is `None` whenever `exit_code != 0`, even if the rail's answer file holds something: a partial or stale report is not an answer.
 - `text` is **verbatim**. The claude rail never requests `--output-format json`, so its output is never re-read as an envelope. Re-reading it that way would mangle any answer that is itself JSON with a `result` key, which is exactly what a judge's verdict can look like.
 - `run_id` is `run_dir.name` (the lot-4 CLI creates `~/.cache/ha/runs/<run_id>/`), and `None` without a `run_dir`.
-- `to_dict()` carries `context`, `workspace` and `branch` from schema 1, as `null`, so that a consumer can pin the key set now. Lots 3 and 4 fill them.
+- `to_dict()` carries `context`, `workspace` and `branch` from schema 1, as `null`, so that a consumer can pin the key set now. Lots 2 and 4 fill them.
 - `logs` in `to_dict()` is `{"report", "events", "stderr", "raw"}` → path string or `null`. To make that possible `RunResult` gains `stderr_log` and `raw_log`.
 
 ## Global Constraints
@@ -1125,7 +1125,7 @@ git commit -m "feat(headless-agents): claude returns only this run's answer as t
 
 **Interfaces:**
 - Consumes: the four provider classes and `agy.MAX_PROMPT_BYTES`, `opencode.MAX_PROMPT_BYTES` (existing).
-- Produces: `PROVIDER_NAMES: tuple[str, ...] = ("claude", "codex", "agy", "opencode")`; `class UnknownProvider(ValueError)` with attribute `name: str`; `get_provider(name: str) -> AgentProvider`; `@dataclass(frozen=True, kw_only=True) class Probe(available: bool, detail: str, version: str | None = None)`; `PROBE_TIMEOUT_SECONDS = 10.0`; `probe(name: str, *, executable: str | None = None, timeout_seconds: float = PROBE_TIMEOUT_SECONDS) -> Probe`; `max_prompt_bytes(name: str) -> int | None`. Lot 2 extends `PROVIDER_NAMES` and the three lookups with the HTTP providers.
+- Produces: `PROVIDER_NAMES: tuple[str, ...] = ("claude", "codex", "agy", "opencode")`; `class UnknownProvider(ValueError)` with attribute `name: str`; `get_provider(name: str) -> AgentProvider`; `@dataclass(frozen=True, kw_only=True) class Probe(available: bool, detail: str, version: str | None = None)`; `PROBE_TIMEOUT_SECONDS = 10.0`; `probe(name: str, *, executable: str | None = None, timeout_seconds: float = PROBE_TIMEOUT_SECONDS) -> Probe`; `max_prompt_bytes(name: str) -> int | None`. Lot 3 extends `PROVIDER_NAMES` and the three lookups with the HTTP providers.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1443,7 +1443,7 @@ Nothing here is tagged yet: 0.4.0 ships after lot 4 (the `ha` CLI), per
 - `RunResult.run_id`, `RunResult.stderr_log`, `RunResult.raw_log`, and
   `RunResult.to_dict()`: the JSON-safe schema-1 form (`result.RESULT_SCHEMA_VERSION = 1`).
   `context`, `workspace` and `branch` belong to the key set from schema 1 and stay `null`
-  until lots 3 and 4 fill them.
+  until lots 2 and 4 fill them.
 - `RunSpec.run_dir`: the logs a caller leaves unset default to `report.log`,
   `events.jsonl`, `stderr.log` and `raw.log` inside it (explicit paths still win), its
   name is the `run_id`, and the run writes `result.json` there.
@@ -1499,4 +1499,4 @@ git add packages/headless-agents/CHANGELOG.md packages/headless-agents/README.md
 git commit -m "docs(headless-agents): document the 0.4.0 facade"
 ```
 
-Then open the pull request for the branch. Lot 1 is done when its CI is complete and green and the PR is merged; the plan for lot 2 (`openai-compat`) is written next, against the merged interfaces.
+Then open the pull request for the branch. Lot 1 is done when its CI is complete and green and the PR is merged; the plan for lot 2 (the workspace and the context bundle) is written next, against the merged interfaces.

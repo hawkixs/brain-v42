@@ -1,7 +1,8 @@
 # headless-agents 0.4.0 — uniform facade, seven providers, workspace writes, `ha` CLI
 
 - **Date:** 2026-09-23
-- **Status:** design, amended after a first review (section 8), awaiting operator approval
+- **Status:** design, approved by the merge of PR #187; amended by operator decisions 7
+  and 8 (section 8)
 - **Package:** `packages/headless-agents` (workspace member of this repository)
 - **Current version:** 0.3.0 (`headless-agents-v0.3.0`)
 - **Brain references:** decision 3c5c56e1 (one shared agent runtime, public),
@@ -39,8 +40,8 @@ a per-run directory, and a workspace capability usable by a workflow step.
 | # | Item |
 |---|---|
 | 1 | Provider registry, uniform `RunResult.text`, `RunResult.to_dict()` (schema 1), `RunSpec.run_dir`, per-provider `max_prompt_bytes` |
-| 2 | `openai-compat` provider with three presets: `openrouter`, `mistral`, `nvidia` |
-| 3 | Workspace capability (`CapabilityProfile.workspace`) on the four CLI rails, plus the context bundle |
+| 2 | Workspace capability (`CapabilityProfile.workspace`, read-only or writable) on the four CLI rails, plus the context bundle |
+| 3 | `openai-compat` provider with three presets: `openrouter`, `mistral`, `nvidia` |
 | 4 | `ha` CLI: `providers`, `run` (read-only and `--write`), `runs`, `clean`; named MCP profiles; `allowed_networks` |
 
 The seven providers of 0.4.0: `claude`, `codex`, `agy`, `opencode` (subscription CLIs,
@@ -136,7 +137,8 @@ win, so existing callers are untouched.
 ```python
 class Workspace(BaseModel):
     path: Path          # absolute, must exist, must be a directory
-    shell: bool = False
+    write: bool = False # False: read tools only, confined to path
+    shell: bool = False # refused unless write=True
 
 class CapabilityProfile(BaseModel):
     ...
@@ -146,30 +148,47 @@ class CapabilityProfile(BaseModel):
 `workspace=None` keeps every rail **byte-for-byte** on today's behaviour: the Dream golden
 fixtures (3 rails x 6 phases) must stay identical.
 
+A workspace is **read-only by default**. `write=False` gives the agent read tools only --
+list, read, search -- confined to `path`: it is what `ha run` uses without `--write`, so an
+agent asked about a repository reads it instead of receiving it pasted into its prompt.
+`write=True` adds the edit and write tools. `shell=True` is refused with `ValueError`
+unless `write=True`: on three rails out of four a shell can write whatever the read tools
+cannot.
+
 **Per-rail mapping when `workspace` is set**
 
-| Rail | Read/edit | `shell=True` adds | Isolation of the shell |
-|---|---|---|---|
-| codex | `--sandbox workspace-write -C <path>` | commands inside the same sandbox | OS sandbox, network off |
-| claude | `--tools Read,Edit,Write,Glob,Grep`, `--permission-mode acceptEdits`, cwd `<path>` | `Bash` | none — operator's user rights |
-| opencode | allow `read`, `edit`, `write`, `glob`, `grep`; cwd `<path>` | allow `bash` | none — operator's user rights |
-| agy | package-supplied **workspace guard**: writes allowed under `<path>` only | `run_command` allowed | none — operator's user rights |
-| openai-compat | rejected | rejected | — |
+| Rail | Read-only (`write=False`) | Writable (`write=True`) | `shell=True` adds | Isolation of the shell |
+|---|---|---|---|---|
+| codex | `--sandbox read-only -C <path>`, its shell tool enabled inside that sandbox (codex reads through it) | `--sandbox workspace-write -C <path>` | commands inside the same sandbox | OS sandbox, network off |
+| claude | `--tools Read,Glob,Grep`, a permission mode that does not bypass checks, cwd `<path>` | `--tools Read,Edit,Write,Glob,Grep`, `--permission-mode acceptEdits`, cwd `<path>` | `Bash` | none — operator's user rights |
+| opencode | allow `read`, `glob`, `grep`, `list`; `external_directory` denied; cwd `<path>` | also allow `edit`, `write` | allow `bash` | none — operator's user rights |
+| agy | package-supplied **workspace guard**: reads allowed under `<path>`, every write and `run_command` denied | the same guard, writes allowed under `<path>` only | `run_command` allowed | none — operator's user rights |
+| openai-compat | rejected | rejected | rejected | — |
 
 **The agy workspace guard is a deliberate change of principle.** Until 0.3.0 the runtime
 ships no guard: `ToolGuard` is a script the caller versions, tests and passes by absolute
-path. In write mode the guard *is* the confinement, so the package owns it: a versioned
-script shipped as package data, pinned by its own unit tests, and the `ToolGuard`
-docstring is amended to say so. The two do not compose in 0.4.0: an agy profile carrying
-both `workspace` and a caller `tool_guard` is rejected with `ValueError` (a read-only run
-keeps the caller guard exactly as today).
+path. With a workspace, read-only or writable, the guard *is* the confinement, so the
+package owns it: a versioned script shipped as package data, pinned by its own unit
+tests, and the `ToolGuard` docstring is amended to say so. The two do not compose in
+0.4.0: an agy profile carrying both `workspace` and a caller `tool_guard` is rejected with
+`ValueError` (a run without a workspace keeps the caller guard exactly as today).
 
 `shell` is explicit and off by default because only codex confines it. The ephemeral HOME
 stays in every case: none of the operator's hooks, MCP servers or user-level instructions
 leak into the child by accident.
 
+**Read confinement is per rail.** claude's permission checks, opencode's
+`external_directory` permission and agy's guard are expected to keep reads inside `path`;
+each is proven by a `live` test before the tag. codex's OS sandbox stops writes and
+network, not reads: a codex agent can read outside `path` anything the operator can. That
+residual is accepted and documented, as the writable mode already accepts it; the
+ephemeral HOME keeps the operator's own configuration out of the paths an agent looks at
+by default.
+
 To measure during implementation (each gets a `live` test): the exact agy guard contract
-in write mode, and opencode 1.18.x permission keys for write mode.
+for a read-only and a writable workspace; the opencode 1.18.x permission keys for both;
+the claude permission mode that confines `Read` to `path` without an interactive prompt;
+codex's read-only sandbox with its shell tool enabled.
 
 **Context bundle**
 
@@ -236,13 +255,15 @@ ha clean RUN_ID
 - **`--base-url` / `--key-env`:** both required with `-p openai-compat`, rejected (exit
   `2`) with any other provider — the presets fix their own URL and key variable. `--key-env`
   takes the variable **name**; the key itself never appears on the command line.
-- **Read-only flow:** the current repository is the agent's working directory, without
-  any write tool. Output: `text`, or the schema-1 JSON with `--json`.
+- **Read-only flow:** a CLI rail runs with `Workspace(path=<repository root>,
+  write=False)`: the agent can list, read and search the current repository, and has no
+  write tool and no shell. An HTTP provider runs without a workspace: it has no tool to
+  read with. Output: `text`, or the schema-1 JSON with `--json`.
 - **`--write` flow:**
   1. `git worktree add ~/.cache/ha/runs/<run_id>/wt -b ha/<run_id> <base>` (base
      defaults to `HEAD`).
   2. Install the context bundle; register its files in the local exclude.
-  3. Run the provider with `Workspace(path=wt, shell=--shell)`.
+  3. Run the provider with `Workspace(path=wt, write=True, shell=--shell)`.
   4. Commit the result on `ha/<run_id>` as `chore(ha): <run_id> via
      <provider>/<model_reported>` — a review carrier, not a final commit. **The
      repository's commit hooks run**: the CLI never passes `--no-verify` nor overrides
@@ -254,7 +275,8 @@ ha clean RUN_ID
 - **`--chain`:** walks the list on exit codes `3` and `4`
   (`capability.FALLBACK_EXIT_CODES`), reusing `chain.run_chain`.
 - **Exit codes (contract):** `0` answer; `1` failure; `2` invalid usage (for example
-  `--write` with an HTTP provider); `3` provider unavailable, chain exhausted; `4`
+  `--write` with an HTTP provider, or `--shell` without `--write`); `3` provider
+  unavailable, chain exhausted; `4`
   timeout with no tool call started (replayable); `5` `--write` finished with no change;
   `124` timeout.
 - **Run records:** every run writes `~/.cache/ha/runs/<run_id>/` (logs + `result.json`).
@@ -302,7 +324,8 @@ replaces runbook eafde166.
 ## 4. Testing
 
 - **Unit (no network, no quota), in `tests/unit/headless_agents/`:** registry and probe;
-  `build_command` with and without `workspace` for each rail; the `openai-compat` worker
+  `build_command` for each rail without a workspace, with a read-only one and with a
+  writable one; `shell=True` without `write=True` rejected; the `openai-compat` worker
   against a local fake HTTP server (200, 401, 429, 5xx, timeout; the key never appears in
   logs or stderr); context bundle resolution, including an ignored `CLAUDE.md`; the
   `--write` worktree flow on a throwaway git repository; `result.json` against schema 1;
@@ -314,8 +337,9 @@ replaces runbook eafde166.
   `brain_v42`.
 - **Dream non-regression:** the existing golden fixtures pass unchanged.
 - **`live` (marked, excluded from CI, run by hand on an operator machine):** one run per
-  provider (7); for each CLI rail, a write accepted inside the workspace and refused
-  outside it; the acceptance case "an ignored `CLAUDE.md` is read by a codex sub-agent"
+  provider (7); for each CLI rail, a read and a write accepted inside the workspace and
+  refused outside it (codex reads outside it by design: measured and documented, 3.3);
+  the acceptance case "an ignored `CLAUDE.md` is read by a codex sub-agent"
   (the answer must quote an instruction from that file).
 
 ## 5. Versioning and delivery
@@ -328,9 +352,10 @@ replaces runbook eafde166.
   one that set `require_loopback=False` must migrate to `allowed_networks=None` — the
   Dream's `brain_mcp_server` does so in lot 4, section 3.4). Behaviour entry: an agy
   profile with `workspace` uses the package-owned guard (section 3.3).
-- **Implementation lots, in order:** (1) facade; (2) `openai-compat`; (3) workspace and
-  context bundle; (4) CLI and MCP profiles. Each lot ships with its tests; the tag
-  follows lot 4.
+- **Implementation lots, in order:** (1) facade; (2) workspace (read-only and writable)
+  and context bundle; (3) `openai-compat`; (4) CLI and MCP profiles. Each lot ships with
+  its tests; the tag follows lot 4. The workspace comes before `openai-compat` by operator
+  decision (section 8, decision 8).
 
 ## 6. Consumer migrations (after the tag, each from its own repository's session)
 
@@ -350,6 +375,7 @@ replaces runbook eafde166.
 | A consumer merges an unreviewed sub-agent diff | The CLI never merges; the skill states the rule |
 | Context bundle cost in wide fan-outs | Levels, `global` by default read-only, sizes recorded in `result.json` |
 | Workspace code paths perturb the Dream | `workspace=None` is byte-for-byte unchanged; golden fixtures gate it |
+| A read-only codex agent reads outside its workspace | Accepted and documented (3.3): codex's sandbox confines writes and network, not reads; the other three rails confine reads, proven per rail by a `live` test |
 | The `allowed_networks` migration perturbs the Dream | `brain_mcp_server` migrates to `None` in the same lot; golden fixtures gate it |
 
 ## 8. Review amendments (2026-09-23)
@@ -365,3 +391,10 @@ closes them.
 | 4 | `ha run -p openai-compat` had no way to name its URL or key | `--base-url` and `--key-env`, required with `openai-compat`, rejected otherwise (3.4) |
 | 5 | A package-supplied agy guard contradicted "the runtime ships no guard" without saying so | Stated as a deliberate change; guard shipped as package data; `workspace` + caller `tool_guard` on agy rejected (3.3) |
 | 6 | The `--write` carrier commit did not say what happens with the repository's hooks | Hooks run, never bypassed; a refusal leaves the diff uncommitted and exits `1` (3.4) |
+
+### Operator decisions (2026-09-23, after approval)
+
+| # | Question | Decision |
+|---|---|---|
+| 7 | The read-only flow named the repository as the agent's working directory, yet no rail can read in read-only mode: claude runs with `--tools ""`, codex without its shell tool, opencode with every tool off, and agy's guard is only proven to deny `run_command` and `write_to_file` | Read access: `Workspace.write` (default `False`) gives read tools confined to `path` per rail; `shell` requires `write`; `ha run` without `--write` uses it, HTTP providers run without a workspace (3.3, 3.4) |
+| 8 | Lot order: `openai-compat` before the workspace | The workspace becomes lot 2 and `openai-compat` lot 3: reading and editing a repository is what no caller can have an agent do today, while text-only HTTP calls already exist in red-arena (5) |
