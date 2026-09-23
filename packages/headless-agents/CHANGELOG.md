@@ -89,7 +89,7 @@ four rails' real CLIs changed three points the design left open — decisions 9-
   configuration denies everything), Unicode case-fold key checking against agy's own
   `bytes.EqualFold` field matching, `run_command`'s `Cwd` confined when present. Shipped as
   package data (`importlib.resources`), copied into the ephemeral HOME and PROVEN there
-  before spawn by four probes.
+  before spawn by its probes (two more, on `.git` writes, when writes are armed).
 
 ### Behaviour
 - An agy profile carrying `workspace` uses the package-owned guard
@@ -133,6 +133,15 @@ four rails' real CLIs changed three points the design left open — decisions 9-
 - `providers/codex.py` sets `project_doc_max_bytes=0` in every mode (not only write mode):
   with the preamble now carrying repository content on every rail, a tracked `AGENTS.md`
   codex would otherwise read natively could reach it twice.
+- agy's workspace guard denies a write whose raw or resolved target, relative to the
+  root, has a `.git` component (compared with `casefold()`), and its pre-spawn probe
+  proves it when writes are armed. Residual: claude, opencode and codex (unmeasured
+  whether codex's `workspace-write` keeps `.git` read-only) can write `<ws>/.git` in
+  write mode: hooks and config run later, outside any sandbox, when git runs in that
+  checkout; agy denies it in its guard. Lot 4 must not run git in a workspace whose
+  `.git` changed (tracked by a Brain ticket).
+- codex fails closed (exit `3`, no spawn) when the uid has no passwd entry to derive the
+  `CODEX_HOME` fallback root from.
 
 ## 0.3.0 — 2026-09-20 (`headless-agents-v0.3.0`)
 

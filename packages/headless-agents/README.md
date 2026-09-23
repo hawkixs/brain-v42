@@ -207,8 +207,11 @@ suite):
 | opencode | allow `read`/`glob`/`grep`/`list`; `external_directory` denied; `--dir <path>` | also allow `edit`/`write` | allow `bash`, unconfined -- operator's user rights |
 | agy | package-owned **workspace guard**, reads confined to `<path>`, every write and `run_command` denied | the same guard, writes confined to `<path>` | `run_command` allowed, unconfined -- operator's user rights |
 
-The ephemeral HOME stays in every case: none of the operator's hooks, MCP servers or
-user-level configuration leaks into a workspace run by accident.
+What a workspace run sees of the operator's HOME, rail by rail:
+- **agy and opencode**: an ephemeral HOME, in every case.
+- **codex**: an ephemeral `CODEX_HOME` (see below); the process `HOME` is the caller's.
+- **claude**: the caller's HOME; `--restricted` ignores the settings sources. Whether
+  `~/.claude/CLAUDE.md` still loads under `--restricted` is UNMEASURED.
 
 **Residuals, measured and accepted, not fixed:**
 - **codex reads outside the workspace by design.** Its sandbox stops writes and network,
@@ -219,13 +222,19 @@ user-level configuration leaks into a workspace run by accident.
 - **The shell is unconfined on claude, opencode and agy.** With `shell=True`, the shell
   itself runs with the operator's own rights on all three; only codex's shell runs inside
   its OS sandbox. Off by default, and the caller's to accept when arming it.
+- **A write run can change `<ws>/.git` on claude, opencode and codex.** Hooks and config
+  written there run later, outside any sandbox, when git runs in that checkout (whether
+  codex's `workspace-write` keeps `.git` read-only is unmeasured). agy denies it in its
+  guard. Lot 4 must not run git in a workspace whose `.git` changed (tracked by a Brain
+  ticket).
 
 **agy gets a package-owned guard, not the caller's.** Until 0.3.0 the runtime shipped no
 guard at all -- `ToolGuard` was a script the caller versioned and passed by path. With a
 `workspace`, the guard *is* the confinement, so the package owns it
 (`headless_agents.guards.agy_workspace`): shipped as package data, copied into the
-ephemeral HOME and PROVEN there before spawn by four probes (a read inside allowed, a read
-of `/` denied, `run_command` gated on `shell`, a read of the guard's own config denied). A
+ephemeral HOME and PROVEN there before spawn by its probes (a read inside allowed, a read
+of `/` denied, `run_command` gated on `shell`, a read of the guard's own config denied, and
+with writes armed a write to `<ws>/.git` or under it denied). A
 profile carrying both `workspace` and a caller `tool_guard` is rejected with `ValueError`
 -- the two do not compose. Because agy's only read tool, `view_file`, cannot list a
 directory, the prompt also carries the workspace's file list (`git ls-files`, tracked plus
