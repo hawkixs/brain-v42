@@ -160,7 +160,7 @@ cannot.
 | Rail | Read-only (`write=False`) | Writable (`write=True`) | `shell=True` adds | Isolation of the shell |
 |---|---|---|---|---|
 | codex | `--sandbox read-only -C <path>`, its shell tool enabled inside that sandbox (codex reads through it) | `--sandbox workspace-write -C <path>` | commands inside the same sandbox | OS sandbox, network off |
-| claude | `--tools Read,Glob,Grep`, a permission mode that does not bypass checks, cwd `<path>` | `--tools Read,Edit,Write,Glob,Grep`, `--permission-mode acceptEdits`, cwd `<path>` | `Bash` | none — operator's user rights |
+| claude | `--restricted --tools Read,Glob,Grep --permission-mode dontAsk`, cwd `<path>` (measured: `--restricted` ignores the repository's own `.claude/settings.json`, so a trusted checkout cannot widen what this run may do) | `--restricted --tools Read,Edit,Write,Glob,Grep --permission-mode acceptEdits`, cwd `<path>` | `Bash`, added to `--allowedTools` | none — operator's user rights, `--restricted` does not confine it |
 | opencode | allow `read`, `glob`, `grep`, `list`; `external_directory` denied; cwd `<path>` | also allow `edit`, `write` | allow `bash` | none — operator's user rights |
 | agy | package-supplied **workspace guard**: reads allowed under `<path>`, every write and `run_command` denied | the same guard, writes allowed under `<path>` only | `run_command` allowed | none — operator's user rights |
 | openai-compat | rejected | rejected | rejected | — |
@@ -173,9 +173,13 @@ tests, and the `ToolGuard` docstring is amended to say so. The two do not compos
 0.4.0: an agy profile carrying both `workspace` and a caller `tool_guard` is rejected with
 `ValueError` (a run without a workspace keeps the caller guard exactly as today).
 
-`shell` is explicit and off by default because only codex confines it. The ephemeral HOME
-stays in every case: none of the operator's hooks, MCP servers or user-level instructions
-leak into the child by accident.
+`shell` is explicit and off by default because only codex confines it.
+
+What a workspace run sees of the operator's HOME, rail by rail:
+- **agy and opencode**: an ephemeral HOME, in every case.
+- **codex**: an ephemeral `CODEX_HOME` (decision 11); the process `HOME` is the caller's.
+- **claude**: the caller's HOME; `--restricted` ignores the settings sources. Whether
+  `~/.claude/CLAUDE.md` still loads under `--restricted` is UNMEASURED.
 
 **Read confinement is per rail.** claude's permission checks, opencode's
 `external_directory` permission and agy's guard are expected to keep reads inside `path`;
@@ -184,6 +188,12 @@ network, not reads: a codex agent can read outside `path` anything the operator 
 residual is accepted and documented, as the writable mode already accepts it; the
 ephemeral HOME keeps the operator's own configuration out of the paths an agent looks at
 by default.
+
+**`.git` in write mode.** claude, opencode and codex (unmeasured whether codex's
+`workspace-write` keeps `.git` read-only) can write `<ws>/.git` in write mode: hooks and
+config run later, outside any sandbox, when git runs in that checkout; agy denies it in its
+guard. Lot 4 must not run git in a workspace whose `.git` changed (tracked by a Brain
+ticket).
 
 To measure during implementation (each gets a `live` test): the exact agy guard contract
 for a read-only and a writable workspace; the opencode 1.18.x permission keys for both;
@@ -203,27 +213,24 @@ instructions (for example "everything on GitHub in English").
   defaults to `~/.claude/CLAUDE.md`). Parent directories are included only on request
   (`--context-parents`).
 - **Levels:** `full` (repository + user-level), `global` (user-level only), `none`.
-- **Two channels, one rule each.** Every level delivers everything it names; nothing is
-  delivered twice.
-  - **Instruction file in the workspace** — repository-level content only, and only in
-    write mode, where the workspace is a fresh worktree the run owns. A tracked
-    instruction file the rail reads natively is left as it is; the bundle writes a file
-    only where the rail's file is missing (codex, opencode: an `AGENTS.md` composed from
-    the repository `CLAUDE.md`; agy: the same content in the file agy discovers, to
-    measure).
-  - **Preamble** — user-level content always, and repository-level content in read-only
-    mode, where the working directory is the caller's checkout and **the bundle never
-    writes a file there**. claude takes it through `--append-system-prompt`;
-    openai-compat as a system message; codex, opencode and agy as a delimited block
-    prepended to the prompt.
+- **One channel, not two.** The original design below described an instruction file
+  written into a write-mode workspace, plus the preamble for everything else; decision 12
+  (section 8) replaced it after a live measurement found the file channel broken on three
+  rails out of four. What ships: the **preamble** is the SINGLE channel, in every mode, on
+  every rail. Repository content (when `full`) and user-level content (`full`/`global`)
+  both travel there, always — never only in read-only mode. claude takes it through
+  `--append-system-prompt`; openai-compat as a system message; codex, opencode and agy as
+  a delimited block prepended to the prompt, ahead of the task. **Nothing is written into
+  the workspace**: there is no second, file-based channel.
 - **The preamble counts against `max_prompt_bytes`.** For agy and opencode, which take the
   prompt in argv, the bundle's size is added before the check; a bundle that pushes the
   prompt over the limit fails the run with exit code `2` before any spawn, never by
-  truncation.
-- **Never in the diff:** files the bundle writes are added to the worktree's local
-  exclude file, never to a tracked `.gitignore`.
+  truncation. claude carries the preamble as one `--append-system-prompt` argv element
+  instead, refused the same way past `131 071` bytes (the kernel's per-argument
+  `MAX_ARG_STRLEN` minus one) — codex's stdin channel carries no such ceiling.
 - **Traceability:** `result.json` lists every injected file with its size in bytes and
-  its sha256.
+  its sha256 (the context files READ to build the preamble — there is nothing written to
+  list separately).
 
 Measured sizes (2026-09-23, ~4 bytes per token): a user-level `CLAUDE.md` of 4.3 KB
 (~1.1k tokens); repository instruction files from 5.7 KB to 53.8 KB (~1.4k to ~13.4k
@@ -398,3 +405,18 @@ closes them.
 |---|---|---|
 | 7 | The read-only flow named the repository as the agent's working directory, yet no rail can read in read-only mode: claude runs with `--tools ""`, codex without its shell tool, opencode with every tool off, and agy's guard is only proven to deny `run_command` and `write_to_file` | Read access: `Workspace.write` (default `False`) gives read tools confined to `path` per rail; `shell` requires `write`; `ha run` without `--write` uses it, HTTP providers run without a workspace (3.3, 3.4) |
 | 8 | Lot order: `openai-compat` before the workspace | The workspace becomes lot 2 and `openai-compat` lot 3: reading and editing a repository is what no caller can have an agent do today, while text-only HTTP calls already exist in red-arena (5) |
+
+### Measurement amendments (2026-09-23, lot 2 plan)
+
+Lot 2 (the workspace capability, 3.3) implemented gap 3's two-channel plan above,
+measured it live against the four rails' real CLIs, and found it broken on three of them.
+This section is what the code on `feat/headless-agents-lot2-workspace` ships instead —
+read the source (`providers/*.py`, `guards/agy_workspace.py`, `context.py`) for the
+mechanism, this table for the decision.
+
+| # | Measured | Decision |
+|---|---|---|
+| 9 | agy's only read tool, `view_file`, cannot list a directory, and its bundled documentation discovers no project-level `.agents/hooks.json` (measured 2026-08-11, in a trusted workspace and a git repository) | A workspace run swaps the caller's `ToolGuard` for the package-owned guard (`headless_agents.guards.agy_workspace`): copied into the ephemeral HOME and PROVEN before spawn by its probes (a read inside allowed, a read of `/` denied, `run_command` gated on `shell`, a read of the guard's own config denied, and with writes armed a write to `<ws>/.git` or under it denied). The prompt carries the workspace's file list instead — tracked plus untracked-not-ignored, via `git ls-files --cached --others --exclude-standard`, pinned with `--work-tree` and `core.fsmonitor=false`. That pin covers `.git/config`, not a rewritten `.git` FILE (a linked worktree's gitdir pointer), which the pin alone did not stop; the guard now denies every write whose target has a `.git` component (raw or resolved, `casefold()`) |
+| 10 | opencode's `read` tool confines the STARTING path to the workspace, not where a symlink under it leads: a `ws/link.txt -> outside/secret.txt` read returns the outside content (measured live 2026-09-23, `test_opencode_symlink_residual`: exit `0`, answer `OUTSIDE-<uuid>`) | Accepted and documented as a residual (3.3, `providers/opencode.py`) — the same shape as the shell escape already accepted for the rails whose shell is unconfined. Not fixed in lot 2 |
+| 11 | codex resolves its login, its config and its session state from `CODEX_HOME`; handing a workspace run the operator's real one would expose its `AGENTS.md`, sessions and config to a sandboxed agent | A workspace run gets an EPHEMERAL `CODEX_HOME`: a private `0700` directory holding only a symlink to the real `auth.json`, built under a root outside every writable root the sandbox could itself reach (`_choose_codex_home_root`: rejects `/tmp`, `tempfile.gettempdir()`, `TMPDIR`, and the workspace path itself). Torn down after the run, with a hardened write-back of a rotated `auth.json` (opened `O_NOFOLLOW`, size-bounded, `account_id`-matched against the real file, compare-and-swap on its digest) so a legitimate OAuth refresh survives the teardown. Residual, deliberately not defended: the sandbox can still READ the real `auth.json` through the symlink — this rescue protects its integrity, not its confidentiality |
+| 12 | The write-mode instruction-file channel (gap 3 above) was measured live on 2026-09-23 and failed on three rails out of four: claude's `--restricted` does not auto-load the workspace `CLAUDE.md`; opencode's `OPENCODE_DISABLE_PROJECT_CONFIG=1` (kept for isolation) also disables `AGENTS.md`; agy reads `AGENTS.md`/`GEMINI.md` only inside a git repository checkout | The instruction-file channel is removed. The preamble becomes the SINGLE channel for repository AND user-level instructions, in every mode, on every rail (3.3). codex sets `project_doc_max_bytes=0` in every mode, so a tracked `AGENTS.md` it would otherwise read natively never reaches it twice. **Correction to gap 3's "never in the diff" clause**: since nothing is written into the workspace, there is no file to keep out of it — the plan to do so via "the worktree's local exclude file" was itself unsound, measured: `.git/info/exclude` is shared by every linked worktree of a repository, not local to one, so a write there would have leaked into every other worktree sharing the checkout. Known limit, not fixed in lot 2: on codex/opencode/agy the preamble travels inside the user message (claude alone gets a system prompt), and a weak model — measured: opencode `glm-5.3-flash` — sometimes obeys the task over the `<instructions>` block |

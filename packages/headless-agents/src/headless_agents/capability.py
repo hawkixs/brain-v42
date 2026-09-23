@@ -62,6 +62,11 @@ TIMEOUT_REPLAYABLE_EXIT_CODE = 4
 # by dream.sh alone, and the two never meet.)
 FALLBACK_EXIT_CODES = frozenset({PROVIDER_FALLBACK_EXIT_CODE, TIMEOUT_REPLAYABLE_EXIT_CODE})
 
+# The run was refused before any spawn because its own inputs cannot work:
+# a prompt that, with its context, no longer fits the argv of the rail that
+# must take it there. Never a switchover: the next link gets the same input.
+INVALID_USAGE_EXIT_CODE = 2
+
 
 def failure_code_after_a_write(child_code: int) -> int:
     """The code a runner reports for a child that failed AFTER a tool call

@@ -10,8 +10,12 @@ validation and the exit-code discipline are unchanged.
 
 from __future__ import annotations
 
+import errno
+import hashlib
 import json
 import os
+import pwd
+import stat
 import subprocess
 import tempfile
 import time
@@ -26,10 +30,12 @@ from ..capability import (
     failure_code_after_a_write,
     terminate_process_group,
 )
-from ..profile import McpServer
+from ..profile import McpServer, Workspace
 from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
+from ..sandbox import ephemeral_root
 from ..spec import RunSpec
+from ..workspace import prepend, rail_preamble, workspace_of, workspace_summary
 
 # ``max`` and ``ultra`` are declared by Codex 0.153 for gpt-6-astra and the
 # gpt-5.6 family. A value refused here fails the run BEFORE launch, with no
@@ -91,6 +97,24 @@ def _server_overrides(mcp: McpServer) -> tuple[tuple[str, object], ...]:
     )
 
 
+def _sandbox_mode(workspace_mode: Workspace | None) -> tuple[str, bool]:
+    """(``--sandbox`` value, whether the shell tool is on).
+
+    Measured 2026-09-23, see the table in the 0.4.0 lot-2 spec (3.3):
+    ``read-only`` turns the shell tool ON even though ``workspace_mode.write``
+    is ``False`` -- it is codex's only way to READ a file, and the
+    ``read-only`` sandbox refuses every write it attempts, so enabling it costs
+    no isolation. ``workspace-write`` leaves the shell tool OFF unless
+    ``workspace_mode.shell`` asks for it: codex edits through ``apply_patch``,
+    not the shell, so ``shell=False`` must mean no shell.
+    """
+    if workspace_mode is None:
+        return "read-only", False
+    if not workspace_mode.write:
+        return "read-only", True
+    return "workspace-write", workspace_mode.shell
+
+
 def build_codex_command(
     *,
     model: str,
@@ -99,12 +123,22 @@ def build_codex_command(
     workspace: Path,
     mcp: McpServer | None,
     executable: str = "codex",
+    workspace_mode: Workspace | None = None,
 ) -> list[str]:
-    """Build the hardened non-interactive Codex command for one run."""
+    """Build the hardened non-interactive Codex command for one run.
+
+    ``workspace`` is the ``-C`` directory codex runs in -- unchanged from
+    before 0.4.0. ``workspace_mode`` is the read/write/shell capability that
+    decides the sandbox and the shell tool (see
+    :func:`_sandbox_mode`); with ``workspace_mode=None`` every value is
+    exactly what it was before this parameter existed.
+    """
     if not model.strip():
         raise ValueError("Codex model must not be empty")
     if reasoning_effort not in REASONING_EFFORTS:
         raise ValueError(f"unsupported Codex reasoning effort: {reasoning_effort}")
+
+    sandbox, shell_enabled = _sandbox_mode(workspace_mode)
 
     overrides: tuple[tuple[str, object], ...] = (
         ("forced_login_method", "chatgpt"),
@@ -112,6 +146,8 @@ def build_codex_command(
         ("check_for_update_on_startup", False),
         ("history.persistence", "none"),
         ("model_reasoning_effort", reasoning_effort),
+        # 0 in EVERY mode: repository instructions travel in the preamble, so
+        # a tracked AGENTS.md read natively would reach codex twice.
         ("project_doc_max_bytes", 0),
         ("web_search", "disabled"),
         ("apps._default.enabled", False),
@@ -124,7 +160,17 @@ def build_codex_command(
     )
     if mcp is not None:
         overrides += _server_overrides(mcp)
-    overrides += tuple((f"features.{feature}", False) for feature in _DISABLED_FEATURES)
+    # ``features.shell_tool`` must be emitted exactly once: codex's ``-c``
+    # last-wins behaviour is unmeasured, so the disabled-feature loop and the
+    # enabling branch below are mutually exclusive, never both.
+    disabled_features = (
+        tuple(feature for feature in _DISABLED_FEATURES if feature != "shell_tool")
+        if shell_enabled
+        else _DISABLED_FEATURES
+    )
+    overrides += tuple((f"features.{feature}", False) for feature in disabled_features)
+    if shell_enabled:
+        overrides += (("features.shell_tool", True),)
 
     command = [
         executable,
@@ -140,7 +186,7 @@ def build_codex_command(
         "--model",
         model,
         "--sandbox",
-        "read-only",
+        sandbox,
     ]
     for key, value in overrides:
         command.extend(("-c", f"{key}={_toml(value)}"))
@@ -294,14 +340,79 @@ def event_stream_error(
     return None
 
 
+def build_codex_home(*, root: Path, real_codex_home: Path) -> Path:
+    """The ephemeral ``CODEX_HOME`` a workspace-capability run gets instead of
+    the caller's real one: a private ``0700`` directory holding nothing but a
+    symlink to the real ``auth.json``.
+
+    Codex resolves its login, its config and its session state from
+    ``CODEX_HOME``; handing a sandboxed run the real directory would expose
+    the operator's own ``AGENTS.md``, sessions and config to it. Expected:
+    ``codex exec`` needs nothing else under ``CODEX_HOME`` to authenticate a
+    non-interactive run -- confirmed by the Task 8 live test.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    root.chmod(0o700)
+    (root / "auth.json").symlink_to(real_codex_home / "auth.json")
+    return root
+
+
+def write_tool_started(events_log: Path) -> bool:
+    """Could a write-capable tool (a shell command, an ``apply_patch`` edit)
+    have STARTED in this run?
+
+    The write-mode twin of :func:`tool_call_started`, for a run that carries
+    no MCP server to read a taint from: codex has its own event types for a
+    workspace edit. Expected: ``codex exec`` writes an
+    ``item.started``/``item.completed`` event with ``item.type`` in
+    ``{"command_execution", "file_change"}`` for a shell command and for an
+    ``apply_patch`` edit respectively, one JSON line per event -- confirmed by
+    the Task 8 live test.
+
+    Fail-closed the same way as :func:`tool_call_started`: an absent or
+    unreadable stream, or a line that fails to parse, answers ``True`` -- a
+    write in flight when the process is killed may still land after the kill.
+    """
+    if not events_log.is_file():
+        return True
+    try:
+        raw_lines = events_log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return True
+    for raw_line in raw_lines:
+        if not raw_line.strip():
+            continue
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            return True
+        if not isinstance(event, dict) or event.get("type") not in (
+            "item.started",
+            "item.completed",
+        ):
+            continue
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") in {"command_execution", "file_change"}:
+            return True
+    return False
+
+
 def _deadline_exit_code(
-    events_log: Path, stderr_log: Path, server: str | None, timeout_seconds: float
+    events_log: Path,
+    stderr_log: Path,
+    server: str | None,
+    timeout_seconds: float,
+    *,
+    workspace_write: bool = False,
 ) -> int:
     """The code of the runner's OWN deadline: 124, or 4 when the stream proves
-    no call on ``server`` ever started (see :func:`tool_call_started`). Without
-    a server there is nothing a run could have written through, so a hang is
-    replayable whatever the stream says."""
+    no call on ``server`` (nor, in a writable workspace, a write) ever
+    started. Without a server or a writable workspace there is nothing a run
+    could have written through, so a hang is replayable whatever the stream
+    says."""
     if server is not None and tool_call_started(events_log, server=server):
+        return TIMEOUT_EXIT_CODE
+    if workspace_write and write_tool_started(events_log):
         return TIMEOUT_EXIT_CODE
     with stderr_log.open("a", encoding="utf-8") as stderr_stream:
         stderr_stream.write(
@@ -312,11 +423,291 @@ def _deadline_exit_code(
     return TIMEOUT_REPLAYABLE_EXIT_CODE
 
 
-def _failure_exit_code(events_log: Path, default: int, server: str | None) -> int:
+def _failure_exit_code(
+    events_log: Path, default: int, server: str | None, *, workspace_write: bool = False
+) -> int:
     """Translate a failure into "replayable elsewhere" or not, never success."""
     if server is not None and tool_call_completed(events_log, server=server):
         return failure_code_after_a_write(default)
+    if workspace_write and write_tool_started(events_log):
+        return failure_code_after_a_write(default)
     return PROVIDER_FALLBACK_EXIT_CODE
+
+
+# The ephemeral auth.json is codex's own OAuth state, refreshed by an atomic
+# replace (temp file + rename): a legitimate rotation is a small JSON object,
+# never anything close to this. A bound well past any real token payload,
+# not a precise one -- it exists to make an oversized forgery fail fast.
+_MAX_ROTATED_AUTH_BYTES = 65536
+
+
+def _account_id(raw: bytes) -> str | None:
+    """``tokens.account_id`` out of an ``auth.json`` payload, or ``None`` when
+    the bytes do not parse to that shape. Never raises: a caller comparing
+    two of these treats ``None`` as "no account to match", not as an error.
+    Deliberately tolerant of non-UTF-8 bytes too (``UnicodeDecodeError``),
+    since the real file's own snapshot goes through this with no other
+    validation ahead of it -- see ``run_codex``'s snapshot step."""
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    tokens = parsed.get("tokens")
+    if not isinstance(tokens, dict):
+        return None
+    account_id = tokens.get("account_id")
+    return account_id if isinstance(account_id, str) else None
+
+
+def _read_ephemeral_rotation(ephemeral_auth: Path) -> bytes | None:
+    """Read a candidate rotated ``auth.json`` out of the ephemeral home.
+
+    ``None`` means there is nothing to persist -- the symlink is still in
+    place, or the child deleted ``auth.json`` outright -- NEITHER is an
+    error. Anything else that fails validation raises ``ValueError``: a
+    caller must read that as "do not write this back", never as "crash".
+
+    Opened with ``O_NOFOLLOW`` so a symlink is refused at the syscall itself,
+    whether it was never replaced or was swapped back in between an earlier
+    probe and this read (TOCTOU) -- there is no separate ``is_symlink()``
+    check for that race to slip past. Also ``O_NONBLOCK``, so a FIFO swapped
+    in for ``auth.json`` cannot block this open (and hence the ``finally``
+    that calls it) waiting for a writer that will never come -- the ``fstat``
+    below then refuses it on ``S_ISREG`` alone, never attempting a read.
+    ``O_CLOEXEC`` so the descriptor never leaks into a later child.
+    """
+    try:
+        descriptor = os.open(
+            str(ephemeral_auth),
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+        )
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            # Still (or again) a symlink: nothing rotated, nothing to persist.
+            return None
+        raise
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size == 0:
+            return None
+        if info.st_size > _MAX_ROTATED_AUTH_BYTES:
+            raise ValueError(f"exceeds {_MAX_ROTATED_AUTH_BYTES} bytes")
+        raw = os.read(descriptor, info.st_size)
+    finally:
+        os.close(descriptor)
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        # A decode failure's own message can carry the offending byte
+        # values: never let it past this generic, content-free wording.
+        raise ValueError("is not valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("is not a JSON object")
+    return raw
+
+
+def _persist_rotated_auth_or_raise(
+    *,
+    ephemeral_home: Path,
+    real_auth_target: Path,
+    real_auth_digest_at_build: str | None,
+    real_account_id_at_build: str | None,
+) -> None:
+    # ``None``: the build-time snapshot itself could not be taken (an
+    # unreadable or non-UTF-8 real file -- see run_codex) -- no write-back is
+    # possible for this run, already logged there; nothing left to do here.
+    if real_auth_digest_at_build is None:
+        return
+    raw = _read_ephemeral_rotation(ephemeral_home / "auth.json")
+    if raw is None:
+        return
+    if real_account_id_at_build is None:
+        raise ValueError("real auth.json carries no account_id to match against")
+    if _account_id(raw) != real_account_id_at_build:
+        raise ValueError("rotated auth.json account_id does not match the real one")
+    current = real_auth_target.read_bytes() if real_auth_target.is_file() else None
+    if current is None or hashlib.sha256(current).hexdigest() != real_auth_digest_at_build:
+        raise ValueError("real auth.json changed since the ephemeral home was built")
+    descriptor, temp_name = tempfile.mkstemp(dir=real_auth_target.parent, prefix=".auth.json.")
+    try:
+        with os.fdopen(descriptor, "wb") as temp_file:
+            temp_file.write(raw)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.chmod(temp_name, 0o600)
+        os.replace(temp_name, real_auth_target)
+    except BaseException:
+        Path(temp_name).unlink(missing_ok=True)
+        raise
+    # The rename is durable on the FILE; fsync the directory too, so the
+    # directory entry pointing at it survives a crash right after replace.
+    dir_descriptor = os.open(str(real_auth_target.parent), os.O_RDONLY)
+    try:
+        os.fsync(dir_descriptor)
+    finally:
+        os.close(dir_descriptor)
+
+
+def _persist_rotated_auth(
+    *,
+    ephemeral_home: Path,
+    real_auth_target: Path,
+    real_auth_digest_at_build: str | None,
+    real_account_id_at_build: str | None,
+    snapshot_failure: str | None,
+    stderr_log: Path,
+) -> None:
+    """Rescue a codex-rotated ``auth.json`` across the ephemeral ``CODEX_HOME``'s
+    teardown -- and refuse to launder anything else through it.
+
+    THREAT this defends against: codex may refresh its OAuth token by an
+    atomic replace (write a temp file, then rename it over ``auth.json``);
+    that rename turns the ephemeral ``auth.json`` SYMLINK into a regular file
+    holding the new token. Left alone, tearing down the ephemeral home would
+    delete that token with it, leaving the operator's real ``auth.json``
+    holding a refresh token codex itself has already rotated past -- revoked
+    by the time codex's next real run tries it. But a ``workspace-write``
+    sandbox can ALSO replace that same path with bytes of its own choosing:
+    this crosses from an adversarial sandbox into the operator's real
+    credentials, so the candidate is read with ``O_NOFOLLOW`` (see
+    :func:`_read_ephemeral_rotation`), bounded in size, parsed as JSON, and
+    accepted only when it carries the SAME ``tokens.account_id`` the real
+    file already held (never a different one, and never when the real file
+    had none to compare against). A compare-and-swap against the real file's
+    digest, snapshotted when the ephemeral home was built, refuses the write
+    if the real file moved on meanwhile (a fresh login, or another run's own
+    rotation) rather than overwriting it.
+
+    Never raises past this boundary -- catches ``Exception`` itself, not a
+    narrower set: this is a best-effort side effect running in a ``finally``,
+    and NOTHING it can do -- an ``OSError`` from the filesystem, a
+    ``ValueError`` from validation, sandbox-chosen bytes deep enough to blow
+    the JSON decoder's own recursion limit (``RecursionError``, a
+    ``RuntimeError``, not a ``ValueError``) -- may replace the exit code
+    ``_run`` already decided. The ONLY trace any of that leaves is one line
+    appended to ``stderr_log``, carrying the exception's CLASS NAME alone,
+    never its message: a decode error's own message can quote the offending
+    bytes, and a class name never can. Even that append is guarded: an
+    ``OSError`` writing the log itself is swallowed, not re-raised -- this
+    function must not be able to break the run over its own diagnostics.
+
+    RESIDUAL, deliberately not defended here: the sandbox can still READ the
+    real ``auth.json`` through the ephemeral symlink -- this function
+    protects the real file's INTEGRITY, not its confidentiality. Spec 3.3
+    already accepts that codex reads outside the workspace.
+
+    ``snapshot_failure`` -- the class name of whatever kept ``run_codex``
+    from taking the build-time snapshot at all (an unreadable or non-UTF-8
+    real file) -- is logged HERE, in this same ``finally``-time append,
+    rather than where it was discovered: ``_run`` opens ``stderr_log`` in
+    truncating (``"w"``) mode, so anything appended before ``_run`` runs
+    would simply be erased by it.
+    """
+    if snapshot_failure is not None:
+        try:
+            with stderr_log.open("a", encoding="utf-8") as stderr_stream:
+                stderr_stream.write(
+                    f"codex auth.json rotation rescue disabled for this run: {snapshot_failure}\n"
+                )
+        except OSError:
+            pass
+    try:
+        _persist_rotated_auth_or_raise(
+            ephemeral_home=ephemeral_home,
+            real_auth_target=real_auth_target,
+            real_auth_digest_at_build=real_auth_digest_at_build,
+            real_account_id_at_build=real_account_id_at_build,
+        )
+    except Exception as exc:
+        try:
+            with stderr_log.open("a", encoding="utf-8") as stderr_stream:
+                stderr_stream.write(
+                    f"codex auth.json rotation not persisted: {type(exc).__name__}\n"
+                )
+        except OSError:
+            pass
+
+
+# The POSIX-conventional world-writable scratch directory. A module-level
+# name, not an inline literal, so a test can monkeypatch it: pytest's own
+# ``tmp_path`` fixture lives under the REAL ``/tmp`` on this machine, which
+# would make every "here is a safe root" fixture built under ``tmp_path``
+# unsafe by this check alone, with no way to construct a counter-example
+# otherwise. Production code never overrides it.
+_CONVENTIONAL_TMP_ROOT = Path("/tmp")  # nosec B108 - denylist entry, never written to: a CODEX_HOME root under it is REFUSED (see _unsafe_home_roots)
+
+
+def _unsafe_home_roots(*, environ: Mapping[str, str], workspace_path: Path) -> frozenset[Path]:
+    """Every filesystem root a ``workspace-write`` sandbox could plausibly
+    write into: a candidate ``CODEX_HOME`` root must not equal, or sit
+    under, any of these.
+
+    ``/tmp`` and ``tempfile.gettempdir()`` are the conventional writable
+    scratch roots; ``TMPDIR`` is checked in BOTH the parent process's own
+    environment and the CHILD environment the run was given, because
+    :func:`~headless_agents.sandbox.sandbox_environment` sets a sandboxed
+    run's ``HOME`` equal to its ``TMPDIR`` -- a candidate built from the
+    child's ``HOME`` alone would otherwise land right back inside the
+    sandbox it is meant to be kept out of. ``workspace_path`` -- the ``-C``
+    directory itself -- is unsafe too: a write-mode run confined to it can
+    write ANYWHERE inside it via ``apply_patch`` or its own shell, not only
+    under a conventional tmp root.
+    """
+    roots = {
+        _CONVENTIONAL_TMP_ROOT.resolve(),
+        Path(tempfile.gettempdir()).resolve(),
+        workspace_path.resolve(),
+    }
+    for source in (os.environ, environ):
+        tmpdir_value = source.get("TMPDIR")
+        if tmpdir_value:
+            roots.add(Path(tmpdir_value).resolve())
+    return frozenset(roots)
+
+
+def _is_safe_home_root(candidate: Path, unsafe_roots: frozenset[Path]) -> bool:
+    resolved = candidate.resolve()
+    if resolved in unsafe_roots:
+        return False
+    return not any(root in resolved.parents for root in unsafe_roots)
+
+
+def _choose_codex_home_root(environ: Mapping[str, str], *, workspace_path: Path) -> Path | None:
+    """Root directory the ephemeral ``CODEX_HOME`` is created under, or
+    ``None`` when every candidate sits somewhere a ``workspace-write``
+    sandbox could itself write, or when the uid has no passwd entry to
+    derive the fallback from -- the caller fails the run closed on that,
+    rather than build a ``CODEX_HOME`` the very agent it isolates could
+    reach.
+
+    :func:`~headless_agents.sandbox.ephemeral_root` (``XDG_RUNTIME_DIR``, a
+    tmpfs) is used when it passes :func:`_is_safe_home_root`. Otherwise, a
+    private ``0700`` directory under the OPERATOR's own home --
+    ``pwd.getpwuid(os.getuid()).pw_dir``, read from the OS's user database,
+    NEVER from an environment variable (unlike ``Path.home()``, which reads
+    ``HOME`` -- exactly the value a sandboxed child's own environment can
+    set to its writable tmp root, see :func:`_unsafe_home_roots`).
+    """
+    unsafe_roots = _unsafe_home_roots(environ=environ, workspace_path=workspace_path)
+    candidate = ephemeral_root(environ)
+    if candidate is not None and _is_safe_home_root(candidate, unsafe_roots):
+        return candidate
+    try:
+        operator_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except KeyError:
+        # No passwd entry (a container's arbitrary uid): no operator home to
+        # fall back on, and ``HOME`` is exactly what must not stand in for it.
+        return None
+    fallback = operator_home / ".cache" / "headless-agents" / "codex-homes"
+    if not _is_safe_home_root(fallback, unsafe_roots):
+        return None
+    fallback.mkdir(parents=True, exist_ok=True)
+    fallback.chmod(0o700)
+    return fallback
 
 
 def _effective_timeout(timeout_seconds: float, deadline: float | None) -> float:
@@ -338,6 +729,7 @@ def run_codex(
     environment: Mapping[str, str] | None = None,
     executable: str = "codex",
     workspace: Path | None = None,
+    workspace_capability: Workspace | None = None,
     deadline: float | None = None,
     temp_prefix: str = "headless-agents-codex-",
     missing_call_message: str | None = None,
@@ -349,6 +741,15 @@ def run_codex(
     run refuses to start otherwise, so a scoped bearer can never be silently
     replaced by an ambient one. ``temp_prefix`` names the throwaway workspace
     when the caller gives none (it is visible in argv, after ``-C``).
+
+    ``workspace_capability`` is the read/write/shell capability (``workspace``
+    stays the legacy ``-C`` directory, untouched): when set, its ``path``
+    becomes the ``-C`` directory and the run gets an EPHEMERAL ``CODEX_HOME``
+    (see :func:`build_codex_home`), torn down whether the run succeeds, fails
+    or times out. The real ``CODEX_HOME`` (``environment["CODEX_HOME"]`` or
+    ``~/.codex``) must carry an ``auth.json``, or the run is refused before
+    any spawn with exit code 3 -- provider unavailable, replayable elsewhere,
+    never a switchover that could double a write.
     """
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
@@ -363,6 +764,7 @@ def run_codex(
         )
         return 1
     server = mcp.name if mcp is not None else None
+    workspace_write = workspace_capability is not None and workspace_capability.write
 
     report_log = report_log.resolve()
     events_log = events_log.resolve()
@@ -373,7 +775,27 @@ def run_codex(
     # an interrupted Codex turn can never be mistaken for a successful retry.
     report_log.write_text("", encoding="utf-8")
 
-    def _run(runtime_dir: Path) -> int:
+    real_codex_home: Path | None = None
+    if workspace_capability is not None:
+        codex_home_value = visible.get("CODEX_HOME")
+        if codex_home_value and not Path(codex_home_value).is_absolute():
+            stderr_log.write_text(
+                f"codex CODEX_HOME must be an absolute path, got: {codex_home_value}\n",
+                encoding="utf-8",
+            )
+            return PROVIDER_FALLBACK_EXIT_CODE
+        real_codex_home = (
+            Path(codex_home_value).resolve()
+            if codex_home_value
+            else (Path.home() / ".codex").resolve()
+        )
+        if not (real_codex_home / "auth.json").is_file():
+            stderr_log.write_text(
+                f"codex auth.json not found under {real_codex_home}\n", encoding="utf-8"
+            )
+            return PROVIDER_FALLBACK_EXIT_CODE
+
+    def _run(runtime_dir: Path, run_environment: dict[str, str] | None) -> int:
         runtime_dir.mkdir(parents=True, exist_ok=True)
         command = build_codex_command(
             model=model,
@@ -382,6 +804,7 @@ def run_codex(
             workspace=runtime_dir,
             mcp=mcp,
             executable=executable,
+            workspace_mode=workspace_capability,
         )
         # A caller's deadline that has already passed is a TIMEOUT, not a dead
         # link: launching would kill the child at once on an empty stream and
@@ -400,8 +823,8 @@ def run_codex(
             stderr_log.open("w", encoding="utf-8") as stderr_stream,
         ):
             popen_kwargs: dict[str, Any] = {}
-            if child_environment is not None:
-                popen_kwargs["env"] = child_environment
+            if run_environment is not None:
+                popen_kwargs["env"] = run_environment
             try:
                 process = subprocess.Popen(
                     command,
@@ -430,33 +853,126 @@ def run_codex(
                 timed_out = False
 
         if timed_out:
-            return _deadline_exit_code(events_log, stderr_log, server, timeout_seconds)
+            return _deadline_exit_code(
+                events_log, stderr_log, server, timeout_seconds, workspace_write=workspace_write
+            )
 
         if process.returncode != 0:
             child_code = int(process.returncode or 1)
             if child_code == TIMEOUT_EXIT_CODE:
                 return TIMEOUT_EXIT_CODE
-            return _failure_exit_code(events_log, child_code, server)
+            return _failure_exit_code(
+                events_log, child_code, server, workspace_write=workspace_write
+            )
         if (
             not report_log.is_file()
             or not report_log.read_text(encoding="utf-8", errors="replace").strip()
         ):
             with stderr_log.open("a", encoding="utf-8") as stderr_stream:
                 stderr_stream.write("Codex exited 0 without a final report\n")
-            return _failure_exit_code(events_log, 1, server)
+            return _failure_exit_code(events_log, 1, server, workspace_write=workspace_write)
         event_error = event_stream_error(
             events_log, server=server, missing_call_message=missing_call_message
         )
         if event_error is not None:
             with stderr_log.open("a", encoding="utf-8") as stderr_stream:
                 stderr_stream.write(f"{event_error}\n")
-            return _failure_exit_code(events_log, 1, server)
+            return _failure_exit_code(events_log, 1, server, workspace_write=workspace_write)
         return 0
 
+    if workspace_capability is not None:
+        assert real_codex_home is not None
+        # Resolved once, here: the compare-and-swap and the eventual replace
+        # both need the file the symlink points AT (a dotfile manager may
+        # symlink auth.json elsewhere), not the symlink path itself.
+        real_auth_target = (real_codex_home / "auth.json").resolve()
+        # An unreadable or non-UTF-8 real file must not break this run: the
+        # snapshot (hence the write-back) is simply unavailable for it. The
+        # failure is logged from _persist_rotated_auth, in the finally,
+        # AFTER _run -- _run itself opens stderr_log in truncating mode, so
+        # anything appended here, before _run, would just be erased by it.
+        snapshot_failure: str | None = None
+        real_auth_snapshot: bytes | None
+        try:
+            read_snapshot = real_auth_target.read_bytes()
+            read_snapshot.decode("utf-8")
+        except OSError as exc:
+            real_auth_snapshot = None
+            snapshot_failure = type(exc).__name__
+        except UnicodeDecodeError:
+            real_auth_snapshot = None
+            snapshot_failure = "UnicodeDecodeError"
+        else:
+            real_auth_snapshot = read_snapshot
+        real_auth_digest_at_build = (
+            hashlib.sha256(real_auth_snapshot).hexdigest()
+            if real_auth_snapshot is not None
+            else None
+        )
+        real_account_id_at_build = (
+            _account_id(real_auth_snapshot) if real_auth_snapshot is not None else None
+        )
+
+        home_root = _choose_codex_home_root(visible, workspace_path=workspace_capability.path)
+        if home_root is None:
+            stderr_log.write_text(
+                "no codex home root outside the sandbox's writable roots\n", encoding="utf-8"
+            )
+            return PROVIDER_FALLBACK_EXIT_CODE
+        with tempfile.TemporaryDirectory(
+            prefix=f"{temp_prefix}home-", dir=home_root
+        ) as codex_home_dir:
+            ephemeral_home = build_codex_home(
+                root=Path(codex_home_dir), real_codex_home=real_codex_home
+            )
+            run_environment = (
+                dict(child_environment) if child_environment is not None else dict(os.environ)
+            )
+            run_environment["CODEX_HOME"] = str(ephemeral_home)
+            try:
+                return _run(workspace_capability.path.resolve(), run_environment)
+            finally:
+                # Every exit path -- success, failure, timeout -- must still
+                # rescue a rotated token before the ephemeral home is removed.
+                _persist_rotated_auth(
+                    ephemeral_home=ephemeral_home,
+                    real_auth_target=real_auth_target,
+                    real_auth_digest_at_build=real_auth_digest_at_build,
+                    real_account_id_at_build=real_account_id_at_build,
+                    snapshot_failure=snapshot_failure,
+                    stderr_log=stderr_log,
+                )
     if workspace is not None:
-        return _run(workspace.resolve())
+        return _run(workspace.resolve(), child_environment)
     with tempfile.TemporaryDirectory(prefix=temp_prefix) as temp_dir:
-        return _run(Path(temp_dir))
+        return _run(Path(temp_dir), child_environment)
+
+
+#: What a run's preamble tells codex about its tools, by mode -- keyed the
+#: same way :func:`_sandbox_mode` reads a workspace, since the wording differs
+#: by how codex may reach the filesystem, not just by read/write.
+_TOOLS_NOTE = {
+    "read": (
+        "Read files with your shell (cat, rg, ls): the sandbox allows reads"
+        " and refuses writes, so reading is expected and safe."
+    ),
+    "write": "Edit files with apply_patch.",
+    "write+shell": "Edit with apply_patch; your shell runs inside the same sandbox, network off.",
+}
+
+
+def _preamble_for(spec: RunSpec, workspace: Workspace | None) -> str:
+    """The preamble ``run`` launches with, and (implicitly, via its argv-free
+    stdin channel) what a caller reading ``build_command`` would expect."""
+    if workspace is None:
+        tools_note = ""
+    elif not workspace.write:
+        tools_note = _TOOLS_NOTE["read"]
+    elif workspace.shell:
+        tools_note = _TOOLS_NOTE["write+shell"]
+    else:
+        tools_note = _TOOLS_NOTE["write"]
+    return rail_preamble(spec, tools_note=tools_note)
 
 
 class CodexProvider:
@@ -466,13 +982,15 @@ class CodexProvider:
 
     def build_command(self, spec: RunSpec) -> list[str]:
         assert spec.report_log is not None, "RunSpec.report_log is required for Codex"
+        workspace = workspace_of(spec)
         return build_codex_command(
             model=spec.model,
             reasoning_effort=spec.reasoning_effort,
             report_log=spec.report_log,
-            workspace=spec.workspace or Path.cwd(),
+            workspace=workspace.path if workspace is not None else (spec.workspace or Path.cwd()),
             mcp=spec.profile.mcp,
             executable=spec.executable or "codex",
+            workspace_mode=workspace,
         )
 
     def child_environment(self, spec: RunSpec, environ: Mapping[str, str]) -> dict[str, str] | None:
@@ -492,8 +1010,10 @@ class CodexProvider:
         assert spec.events_log is not None
         assert spec.stderr_log is not None
         start = time.monotonic()
+        workspace = workspace_of(spec)
+        prompt = prepend(_preamble_for(spec, workspace), spec.prompt)
         exit_code = run_codex(
-            prompt=spec.prompt,
+            prompt=prompt,
             model=spec.model,
             reasoning_effort=spec.reasoning_effort,
             timeout_seconds=spec.timeout_seconds,
@@ -504,6 +1024,7 @@ class CodexProvider:
             environment=spec.environment,
             executable=spec.executable or "codex",
             workspace=spec.workspace,
+            workspace_capability=workspace,
             deadline=spec.deadline,
         )
         duration = time.monotonic() - start
@@ -528,5 +1049,7 @@ class CodexProvider:
                 text=answer_text(spec.report_log, exit_code=exit_code),
                 run_id=run_id_of(spec),
                 stderr_log=spec.stderr_log,
+                workspace=workspace_summary(workspace),
+                context=None if spec.context is None else tuple(spec.context.to_list()),
             ),
         )

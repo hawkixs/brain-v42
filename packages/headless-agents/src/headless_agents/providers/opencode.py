@@ -20,6 +20,22 @@ allowlist, deliberately: a deny-list would silently admit whatever tool the
 next opencode release adds. ``permission`` denies the known machine tools
 as a second layer; the wall is ``tools``.
 
+A WORKSPACE narrows the same two layers instead of stacking a third. Measured
+on opencode 1.18.30 (2026-09-23): the inline config's ``tools`` allowlist
+admits only ``read``, ``glob``, ``grep``, ``list`` (plus ``edit``/``write``
+when writable, ``bash`` when shell is armed), ``permission`` mirrors that as
+``allow``/``deny`` and denies every OTHER :data:`MACHINE_TOOLS` entry,
+``external_directory`` included -- it MUST be an explicit ``deny`` in every
+mode, since ``--auto`` approves whatever the config does not explicitly deny.
+``--dir <workspace>`` (not the ephemeral HOME) and the child's cwd both move
+to the workspace path; the HOME stays exactly where it was, still ephemeral,
+still destroyed with the run. Two residuals, measured and accepted rather
+than hidden: ``read`` follows a symlink INSIDE the workspace to a target
+OUTSIDE it -- the tool confines the starting path, not where it leads; and
+with ``bash`` allowed, the shell itself is unconfined (``echo > outside``
+succeeds) -- exactly the same shape as agy's and claude's own shell escape,
+and the caller's to accept when arming ``shell``.
+
 STILL AN EPHEMERAL HOME, for two reasons. opencode persists every session
 (prompt, tool outputs) into ``~/.local/share/opencode/opencode.db``, which
 must die with the run and never land on persistent disk. And it reads its
@@ -57,22 +73,30 @@ import os
 import subprocess
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from ..capability import (
+    INVALID_USAGE_EXIT_CODE,
     PROVIDER_FALLBACK_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
     TIMEOUT_REPLAYABLE_EXIT_CODE,
     failure_code_after_a_write,
     terminate_process_group,
 )
-from ..profile import CapabilityProfile, McpServer
+from ..profile import CapabilityProfile, McpServer, Workspace
 from ..result import RunResult, TokenUsage
 from ..run_record import answer_text, record, run_id_of
 from ..sandbox import ephemeral_root as default_ephemeral_root
-from ..sandbox import materialize_credentials
+from ..sandbox import materialize_credentials, refuse_home_under_workspace
 from ..spec import RunSpec
+from ..workspace import (
+    argv_prompt_or_refusal,
+    prepend,
+    rail_preamble,
+    workspace_of,
+    workspace_summary,
+)
 
 # Kernel limit on a SINGLE argument (MAX_ARG_STRLEN = 32 pages). Beyond it,
 # execve returns E2BIG. We keep a margin for the rest of the command line.
@@ -120,14 +144,58 @@ ISOLATION_ENVIRONMENT: Mapping[str, str] = {
 }
 
 
-def opencode_config(mcp: McpServer | None) -> dict[str, object]:
+#: The built-in tools a workspace turns on, before any MCP tool is added.
+#: ``read``/``glob``/``grep``/``list`` always; ``edit``/``write`` only when
+#: writable; ``bash`` only when shell is armed (which itself requires write --
+#: enforced by :class:`~headless_agents.profile.Workspace`).
+_WORKSPACE_READ_TOOLS = frozenset({"read", "glob", "grep", "list"})
+_WORKSPACE_WRITE_TOOLS = frozenset({"edit", "write"})
+
+#: Every built-in name that must never be exempted as an MCP tool merely
+#: because it starts with a wildcard-configured server's name (a server
+#: literally named ``apply`` must not exempt ``apply_patch``). ``apply_patch``
+#: and ``shell`` are not keys of :data:`MACHINE_TOOLS` (that permission schema
+#: names them ``patch`` and ``bash``), so they are listed explicitly.
+_KNOWN_BUILTIN_TOOLS = (
+    frozenset(MACHINE_TOOLS) | _WORKSPACE_READ_TOOLS | frozenset({"apply_patch", "shell"})
+)
+
+
+def _workspace_enabled_tools(workspace: Workspace) -> frozenset[str]:
+    enabled = _WORKSPACE_READ_TOOLS
+    if workspace.write:
+        enabled |= _WORKSPACE_WRITE_TOOLS
+    if workspace.shell:
+        enabled |= frozenset({"bash"})
+    return enabled
+
+
+def opencode_config(mcp: McpServer | None, workspace: Workspace | None = None) -> dict[str, object]:
     """The inline config of one run: one remote server, an allowlist, no sharing.
 
     The bearer is referenced as ``{env:<bearer_env_var>}`` whether the profile
     carries the value or not: the value, when given, is exported under that
     variable by :func:`_child_environment`, so the config never holds it.
+
+    ``workspace=None`` returns exactly what this returned before workspaces
+    existed -- every built-in tool removed by ``tools``, every one of
+    :data:`MACHINE_TOOLS` denied by ``permission``, ``external_directory``
+    included. A workspace ADMITS a fixed built-in set on top of that wall
+    (see :func:`_workspace_enabled_tools`); ``external_directory`` stays
+    denied in every mode -- ``--auto`` approves whatever is not explicitly
+    denied, so leaving it out would silently open it. Two residuals of the
+    permission schema itself, not of this function: ``permission["write"]``
+    has no effect on opencode 1.18.30 -- writes (``write``, ``apply_patch``)
+    are checked against ``permission["edit"]`` -- and ``read: allow`` also
+    exposes any MCP RESOURCE tool a declared server offers, hidden only by
+    the ``tools`` wall.
     """
     tools: dict[str, bool] = {"*": False}
+    permission: dict[str, str] = dict.fromkeys(MACHINE_TOOLS, "deny")
+    if workspace is not None:
+        for tool in _workspace_enabled_tools(workspace):
+            tools[tool] = True
+            permission[tool] = "allow"
     servers: dict[str, object] = {}
     if mcp is not None:
         servers[mcp.name] = {
@@ -150,7 +218,7 @@ def opencode_config(mcp: McpServer | None) -> dict[str, object]:
         "autoupdate": False,
         "mcp": servers,
         "tools": tools,
-        "permission": dict.fromkeys(MACHINE_TOOLS, "deny"),
+        "permission": permission,
     }
 
 
@@ -162,6 +230,7 @@ def build_opencode_command(
     executable: str = "opencode",
     variant: str | None = None,
     title: str | None = None,
+    directory: Path | None = None,
 ) -> list[str]:
     """The headless command line of one run. The prompt is the last argument.
 
@@ -169,6 +238,10 @@ def build_opencode_command(
     the authenticated providers, and on OpenCode Go that can be a
     ``muse-spark-*-contributor`` model, which Meta trains on: a caller that
     names no model does not get a run.
+
+    ``--dir`` is ``home`` unless a ``directory`` is given: a workspace's own
+    path, when there is one -- the HOME stays the ephemeral run directory,
+    only what opencode confines its read/write tools to moves.
     """
     if not model.strip():
         raise ValueError("opencode model must not be empty: opencode would pick its own")
@@ -177,7 +250,8 @@ def build_opencode_command(
         # Refuse BEFORE execve: an E2BIG deep inside a Popen is an opaque
         # OSError, where this names the cause and its size.
         raise ValueError(f"prompt too long for argv: {prompt_bytes} bytes > {MAX_PROMPT_BYTES}")
-    command = [executable, "run", "--dir", str(home), "--auto", "--pure", "--format", "json"]
+    dir_path = directory if directory is not None else home
+    command = [executable, "run", "--dir", str(dir_path), "--auto", "--pure", "--format", "json"]
     command.extend(("-m", model))
     if variant and variant.strip():
         command.extend(("--variant", variant))
@@ -263,6 +337,39 @@ def _is_call_on_server(event: object, server: str) -> bool:
     return isinstance(tool, str) and tool.startswith(f"{server}_")
 
 
+def _any_event_fail_closed(
+    events_log: Path, predicate: Callable[[dict[str, object]], bool]
+) -> bool:
+    """Walk ``events_log`` and answer ``True`` at the first event ``predicate``
+    matches. Fail-closed on anything that cannot prove otherwise: an absent
+    file, an unreadable one, or a line that fails to parse as JSON -- shared
+    by every "could X have started" predicate in this module, so the same
+    proof (and the same failure mode) backs all of them from one parse loop.
+    """
+    if not events_log.is_file():
+        return True
+    try:
+        raw_lines = events_log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return True
+    for raw_line in raw_lines:
+        if not raw_line.strip():
+            continue
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            return True
+        if not isinstance(event, dict):
+            # Valid JSON that is not an object (a bare string, a number, an
+            # array) proves nothing about what happened either: the docstring
+            # promises fail-closed on "anything that cannot prove otherwise",
+            # and silently treating it as a non-match would break that promise.
+            return True
+        if predicate(event):
+            return True
+    return False
+
+
 def tool_call_started(events_log: Path, *, server: str) -> bool:
     """Could a tool call on ``server`` have STARTED in this run?
 
@@ -292,22 +399,9 @@ def tool_call_started(events_log: Path, *, server: str) -> bool:
     absent or unreadable stream cannot prove the negative, so it answers
     ``True`` ("a call may have started") and refuses the switchover.
     """
-    if not events_log.is_file():
-        return True
-    try:
-        raw_lines = events_log.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return True
-    for raw_line in raw_lines:
-        if not raw_line.strip():
-            continue
-        try:
-            event = json.loads(raw_line)
-        except json.JSONDecodeError:
-            return True
-        if _is_step_start(event) or _is_call_on_server(event, server):
-            return True
-    return False
+    return _any_event_fail_closed(
+        events_log, lambda event: _is_step_start(event) or _is_call_on_server(event, server)
+    )
 
 
 def tool_call_completed(events_log: Path, *, server: str) -> bool:
@@ -319,6 +413,59 @@ def tool_call_completed(events_log: Path, *, server: str) -> bool:
     names an MCP tool ``<server>_<tool>``; only a ``completed`` state counts.
     """
     return any(_is_completed_call(event, server) for event in _events(events_log))
+
+
+def _is_exempt_mcp_tool(tool: str, mcp: McpServer | None) -> bool:
+    """Is ``tool`` exactly one of the MCP tools :func:`opencode_config` itself
+    admitted for ``mcp``? Mirrors that function's own two branches: an EXACT
+    name when the profile names its tools (``mcp.tools`` non-empty), the bare
+    ``"<server>_"`` prefix only when the config truly fell back to the
+    wildcard (``mcp.tools`` empty) -- and even then never a name that is also
+    a KNOWN BUILT-IN, so a server literally named e.g. ``apply`` cannot exempt
+    ``apply_patch`` just because the tool name happens to start with it.
+    """
+    if mcp is None:
+        return False
+    if mcp.tools:
+        return tool in {f"{mcp.name}_{name}" for name in mcp.tools}
+    if not tool.startswith(f"{mcp.name}_"):
+        return False
+    return tool not in _KNOWN_BUILTIN_TOOLS
+
+
+def _is_write_tool_use(event: object, *, mcp: McpServer | None) -> bool:
+    """A ``tool_use`` naming a built-in tool that is NEITHER a workspace read
+    tool NOR an MCP tool ``opencode_config`` admitted for ``mcp``. INVERTED on
+    purpose: opencode's built-in catalogue is neither closed (``apply_patch``
+    is a real tool a fixed write-list once missed) nor stable under aliasing
+    (the binary reports ``shell`` for the same capability ``bash`` names in
+    ``tools``/``permission``) -- a fixed allowlist of "write tools" fails OPEN
+    on whatever it forgot. The four read tools are the only ones this rail
+    itself ever admits in a workspace; everything else that is not exactly an
+    admitted MCP tool counts as a write, known or not -- INCLUDING a
+    ``tool_use`` whose tool is missing or not a string: that proves nothing
+    about what ran, so it counts as a write rather than silently as "not one".
+    """
+    if not isinstance(event, dict) or event.get("type") != "tool_use":
+        return False
+    tool = _part(event).get("tool")
+    if not isinstance(tool, str):
+        return True
+    if tool in _WORKSPACE_READ_TOOLS:
+        return False
+    return not _is_exempt_mcp_tool(tool, mcp)
+
+
+def write_tool_started(events_log: Path, *, mcp: McpServer | None = None) -> bool:
+    """Could a workspace-changing built-in tool have STARTED in this stream?
+
+    The write-mode twin of :func:`tool_call_started`, keyed on
+    :func:`_is_write_tool_use` instead of an MCP server prefix: a ``tool_use``
+    event naming a non-read, non-MCP tool, in ANY state -- a denied call
+    still leaves a terminal event, which only errs on the safe side.
+    Fail-closed the same way: an absent or unreadable stream answers ``True``.
+    """
+    return _any_event_fail_closed(events_log, lambda event: _is_write_tool_use(event, mcp=mcp))
 
 
 def _unwrap_fence(report: str) -> str:
@@ -474,22 +621,70 @@ def telemetry(events_log: Path) -> tuple[TokenUsage | None, float | None]:
     )
 
 
-def _failure_exit_code(events_log: Path, default: int, server: str | None) -> int:
+def _writable_workspace_may_have_written(events_log: Path, mcp: McpServer | None) -> bool:
+    """Any ``step_start`` OR a write ``tool_use``: the taint a writable
+    workspace shares between the deadline AND the failure path.
+
+    A ``tool_use`` line is written in its TERMINAL state only (measured, see
+    :func:`tool_call_started`'s docstring), so a call still IN FLIGHT when the
+    process stops leaves only its ``step_start`` -- with no tool name at all,
+    unlike a completed process's stream. This is not only a deadline concern:
+    a process that dies mid-call (OOM, a SIGKILL from outside this runner)
+    exits non-zero and leaves the exact same bare ``step_start``. There is no
+    way to tell, from it alone, whether the step in flight was about to run a
+    read or a write tool, so ANY step counts, not only a named write tool.
+    """
+    return _any_event_fail_closed(
+        events_log, lambda event: _is_step_start(event) or _is_write_tool_use(event, mcp=mcp)
+    )
+
+
+def _failure_exit_code(
+    events_log: Path,
+    default: int,
+    server: str | None,
+    *,
+    workspace: Workspace | None = None,
+    mcp: McpServer | None = None,
+) -> int:
     """Translate a failure into "replayable elsewhere" or not, never success."""
     if server is not None and tool_call_completed(events_log, server=server):
+        return failure_code_after_a_write(default)
+    if (
+        workspace is not None
+        and workspace.write
+        and _writable_workspace_may_have_written(events_log, mcp)
+    ):
         return failure_code_after_a_write(default)
     return PROVIDER_FALLBACK_EXIT_CODE
 
 
 def _deadline_exit_code(
-    events_log: Path, stderr_log: Path, server: str | None, timeout_seconds: float
+    events_log: Path,
+    stderr_log: Path,
+    server: str | None,
+    timeout_seconds: float,
+    *,
+    workspace: Workspace | None = None,
+    mcp: McpServer | None = None,
 ) -> int:
     """The code of the runner's OWN deadline: 124, or 4 when the stream proves
-    no call on ``server`` ever started (see :func:`tool_call_started`). Without
-    a server there is nothing a run could have written through, so a hang is
+    nothing could have started. Without a server and without a writable
+    workspace there is nothing a run could have written through, so a hang is
     replayable whatever the stream says. The reading is written to stderr:
-    the deadline itself is not the news, the reason it was read as empty is."""
+    the deadline itself is not the news, the reason it was read as empty is.
+
+    In a WRITABLE workspace this uses :func:`_writable_workspace_may_have_written`,
+    the same taint :func:`_failure_exit_code` uses for a process that died
+    instead of hanging.
+    """
     if server is not None and tool_call_started(events_log, server=server):
+        return TIMEOUT_EXIT_CODE
+    if (
+        workspace is not None
+        and workspace.write
+        and _writable_workspace_may_have_written(events_log, mcp)
+    ):
         return TIMEOUT_EXIT_CODE
     with stderr_log.open("a", encoding="utf-8") as stderr_stream:
         stderr_stream.write(
@@ -520,6 +715,7 @@ def _child_environment(
     profile: CapabilityProfile,
     *,
     bearer: str | None,
+    workspace: Workspace | None = None,
 ) -> dict[str, str]:
     child = {
         "HOME": str(home),
@@ -528,7 +724,7 @@ def _child_environment(
         "LANG": environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
         **ISOLATION_ENVIRONMENT,
-        "OPENCODE_CONFIG_CONTENT": json.dumps(opencode_config(profile.mcp)),
+        "OPENCODE_CONFIG_CONTENT": json.dumps(opencode_config(profile.mcp, workspace)),
     }
     if profile.mcp is not None and bearer is not None:
         child[profile.mcp.bearer_env_var] = bearer
@@ -557,6 +753,7 @@ def run_opencode(
     deadline: float | None = None,
     temp_prefix: str = "headless-agents-",
     missing_call_message: str | None = None,
+    workspace: Workspace | None = None,
 ) -> int:
     """Run one opencode invocation and return its code (``124`` on deadline,
     ``4`` on a deadline the stream proves empty, ``3`` if replayable).
@@ -567,10 +764,25 @@ def run_opencode(
     profile declares a server, the bearer must be visible -- as the profile's
     literal value or under the named variable -- or the run refuses to start,
     so a scoped bearer can never be silently replaced by an ambient one.
+
+    ``workspace`` moves ``--dir`` and the child's cwd to its path (the HOME
+    stays the ephemeral run directory) and widens the inline config's
+    allowlist; in a WRITABLE workspace it also taints the deadline and
+    failure codes the way an MCP write does, through :func:`write_tool_started`.
     """
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
     ambient = dict(environment) if environment is not None else dict(os.environ)
+    root = ephemeral_root if ephemeral_root is not None else default_ephemeral_root(ambient)
+    if workspace is not None:
+        # Before anything else exists: every ephemeral HOME of this run is
+        # created under this root, so a root inside the workspace would let
+        # the agent's own read tools -- scoped to the workspace by --dir --
+        # reach it, defeating the point of scoping --dir at all. Same
+        # convention as run_agy: ValueError, nothing created, nothing spawned.
+        refuse_home_under_workspace(
+            root if root is not None else Path(tempfile.gettempdir()), workspace
+        )
 
     for path in (events_log, report_log, stderr_log):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -604,8 +816,6 @@ def run_opencode(
         return 1
     server = profile.mcp.name if profile.mcp is not None else None
 
-    root = ephemeral_root if ephemeral_root is not None else default_ephemeral_root(ambient)
-
     def _run(base: Path) -> int:
         home = build_opencode_home(root=base, name=name, profile=profile, real_home=source_home)
         try:
@@ -616,6 +826,7 @@ def run_opencode(
                 executable=executable,
                 variant=variant,
                 title=title,
+                directory=workspace.path if workspace is not None else None,
             )
         except ValueError as exc:
             stderr_log.write_text(f"{exc}\n", encoding="utf-8")
@@ -643,8 +854,10 @@ def run_opencode(
                     stdin=subprocess.DEVNULL,
                     stdout=events_stream,
                     stderr=stderr_stream,
-                    cwd=home,
-                    env=_child_environment(home, ambient, profile, bearer=bearer),
+                    cwd=workspace.path if workspace is not None else home,
+                    env=_child_environment(
+                        home, ambient, profile, bearer=bearer, workspace=workspace
+                    ),
                     text=True,
                     start_new_session=True,
                 )
@@ -663,25 +876,34 @@ def run_opencode(
                 timed_out = False
 
         if timed_out:
-            return _deadline_exit_code(events_log, stderr_log, server, timeout_seconds)
+            return _deadline_exit_code(
+                events_log,
+                stderr_log,
+                server,
+                timeout_seconds,
+                workspace=workspace,
+                mcp=profile.mcp,
+            )
 
         extract_report(events_log, report_log)
         exit_code = int(process.returncode or 0)
         if exit_code == TIMEOUT_EXIT_CODE:
             return TIMEOUT_EXIT_CODE
         if exit_code != 0:
-            return _failure_exit_code(events_log, exit_code, server)
+            return _failure_exit_code(
+                events_log, exit_code, server, workspace=workspace, mcp=profile.mcp
+            )
         if not report_log.read_text(encoding="utf-8", errors="replace").strip():
             with stderr_log.open("a", encoding="utf-8") as stderr_stream:
                 stderr_stream.write("opencode exited 0 without a final report\n")
-            return _failure_exit_code(events_log, 1, server)
+            return _failure_exit_code(events_log, 1, server, workspace=workspace, mcp=profile.mcp)
         event_error = event_stream_error(
             events_log, server=server, missing_call_message=missing_call_message
         )
         if event_error is not None:
             with stderr_log.open("a", encoding="utf-8") as stderr_stream:
                 stderr_stream.write(f"{event_error}\n")
-            return _failure_exit_code(events_log, 1, server)
+            return _failure_exit_code(events_log, 1, server, workspace=workspace, mcp=profile.mcp)
         return 0
 
     if root is not None:
@@ -689,6 +911,26 @@ def run_opencode(
             return _run(Path(temporary))
     with tempfile.TemporaryDirectory(prefix=temp_prefix) as temporary:
         return _run(Path(temporary))
+
+
+_READ_NOTE = "Use read, glob, grep and list inside the workspace."
+
+#: What a run's preamble tells the agent about its tools, by mode. Keyed on
+#: whether the workspace is writable, same as :mod:`.claude` and :mod:`.agy`.
+_TOOLS_NOTE = {
+    "read": _READ_NOTE,
+    "write": f"{_READ_NOTE} Edit with edit and write.",
+}
+
+
+def _preamble_for(spec: RunSpec, workspace: Workspace | None) -> str:
+    """The preamble ``run`` launches with, and ``build_command`` previews.
+
+    Unlike agy, opencode's own ``list``/``glob`` tools already let the agent
+    explore the workspace: no ``<files>`` block is needed here.
+    """
+    mode = "write" if workspace is not None and workspace.write else "read"
+    return rail_preamble(spec, tools_note=_TOOLS_NOTE[mode])
 
 
 class OpenCodeProvider:
@@ -722,13 +964,16 @@ class OpenCodeProvider:
         return self._root(environ) / spec.name
 
     def build_command(self, spec: RunSpec) -> list[str]:
+        workspace = workspace_of(spec)
+        prompt = prepend(_preamble_for(spec, workspace), spec.prompt)
         return build_opencode_command(
             model=spec.model,
-            prompt=spec.prompt,
+            prompt=prompt,
             home=self._home(spec),
             executable=spec.executable or "opencode",
             variant=spec.reasoning_effort,
             title=spec.name,
+            directory=workspace.path if workspace is not None else None,
         )
 
     def child_environment(self, spec: RunSpec, environ: Mapping[str, str]) -> dict[str, str] | None:
@@ -755,9 +1000,43 @@ class OpenCodeProvider:
         assert spec.events_log is not None
         assert spec.report_log is not None
         assert spec.stderr_log is not None
+        workspace = workspace_of(spec)
+        context = None if spec.context is None else tuple(spec.context.to_list())
+        preamble = _preamble_for(spec, workspace)
+        prompt = prepend(preamble, spec.prompt)
+        # A prompt too long for argv is refused with 2 whenever a workspace or
+        # a context bundle added a preamble (this rail GREW the prompt); with
+        # neither, the preamble is empty and the caller's own oversized prompt
+        # keeps its historical answer (3, replayable) through
+        # build_opencode_command. Only the no-workspace-no-context case keeps
+        # 3 -- which is also what keeps it byte-identical to before workspaces
+        # existed.
+        refusal = argv_prompt_or_refusal(prompt, MAX_PROMPT_BYTES) if preamble else None
+        if refusal is not None:
+            spec.stderr_log.parent.mkdir(parents=True, exist_ok=True)
+            spec.stderr_log.write_text(f"{refusal}\n", encoding="utf-8")
+            return record(
+                spec,
+                RunResult(
+                    exit_code=INVALID_USAGE_EXIT_CODE,
+                    provider=self.name,
+                    model=spec.model,
+                    report_path=spec.report_log,
+                    events_log=spec.events_log,
+                    tokens=None,
+                    duration_seconds=0.0,
+                    tool_call_completed=False,
+                    cost_usd=None,
+                    text=None,
+                    run_id=run_id_of(spec),
+                    stderr_log=spec.stderr_log,
+                    workspace=workspace_summary(workspace),
+                    context=context,
+                ),
+            )
         start = time.monotonic()
         exit_code = run_opencode(
-            prompt=spec.prompt,
+            prompt=prompt,
             name=spec.name,
             model=spec.model,
             timeout_seconds=spec.timeout_seconds,
@@ -772,6 +1051,7 @@ class OpenCodeProvider:
             title=spec.name,
             ephemeral_root=self._ephemeral_root,
             deadline=spec.deadline,
+            workspace=workspace,
         )
         duration = time.monotonic() - start
         tokens, cost = telemetry(spec.events_log)
@@ -791,5 +1071,7 @@ class OpenCodeProvider:
                 text=answer_text(spec.report_log, exit_code=exit_code),
                 run_id=run_id_of(spec),
                 stderr_log=spec.stderr_log,
+                workspace=workspace_summary(workspace),
+                context=context,
             ),
         )

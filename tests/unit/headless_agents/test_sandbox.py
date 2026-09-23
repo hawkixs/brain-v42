@@ -10,16 +10,26 @@ guard means no ``hooks.json``, and the credential list -- symlinked or copied
 
 from __future__ import annotations
 
+import importlib.resources
 import json
 import os
 import stat
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from pydantic import SecretStr
 
 from headless_agents import sandbox
-from headless_agents.profile import CapabilityProfile, Credentials, McpServer, ToolGuard
+from headless_agents.profile import (
+    CapabilityProfile,
+    Credentials,
+    McpServer,
+    ToolGuard,
+    Workspace,
+)
+from headless_agents.sandbox import build_ephemeral_home
 
 
 def _real_home(tmp_path: Path) -> Path:
@@ -211,3 +221,129 @@ class TestSandboxEnvironment:
     def test_falls_back_to_a_system_path_when_the_parent_has_none(self, tmp_path: Path) -> None:
         env = sandbox.sandbox_environment(tmp_path, environ={})
         assert env["PATH"] == sandbox.FALLBACK_PATH
+
+
+class TestWorkspaceHome:
+    """A workspace run gets the package-owned guard, not the caller's."""
+
+    def test_home_without_workspace_is_unchanged(self, tmp_path: Path) -> None:
+        profile = CapabilityProfile(guard=ToolGuard(path=Path("/abs/guard.sh")))
+        a = build_ephemeral_home(root=tmp_path / "a", name="h", profile=profile, real_home=tmp_path)
+        b = build_ephemeral_home(
+            root=tmp_path / "b", name="h", profile=profile, real_home=tmp_path, workspace=None
+        )
+        for rel in (
+            ".gemini/config/hooks.json",
+            ".gemini/config/mcp_config.json",
+            ".gemini/antigravity-cli/settings.json",
+        ):
+            assert (a / rel).read_text().replace(str(tmp_path / "a"), "R") == (
+                b / rel
+            ).read_text().replace(str(tmp_path / "b"), "R")
+
+    def test_home_with_workspace_installs_the_package_guard(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        home = build_ephemeral_home(
+            root=tmp_path / "r",
+            name="h",
+            profile=CapabilityProfile(),
+            real_home=tmp_path,
+            workspace=Workspace(path=ws, write=True),
+        )
+        guard = home / ".gemini/config/workspace_guard.py"
+        assert guard.stat().st_mode & 0o777 == 0o700
+        assert guard.read_text().splitlines()[0] == f"#!{sys.executable}"
+        assert json.loads((home / ".gemini/config/workspace-guard.json").read_text()) == {
+            "root": str(ws),
+            "write": True,
+            "shell": False,
+        }
+        hooks = json.loads((home / ".gemini/config/hooks.json").read_text())
+        assert hooks["workspace-guard"]["PreToolUse"][0]["hooks"][0]["command"] == str(guard)
+        settings = json.loads((home / ".gemini/antigravity-cli/settings.json").read_text())
+        assert settings["trustedWorkspaces"] == [str(home), str(ws)]
+
+    def test_installed_guard_runs_under_the_ephemeral_home(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "a.txt").write_text("x")
+        home = build_ephemeral_home(
+            root=tmp_path / "r",
+            name="h",
+            profile=CapabilityProfile(),
+            real_home=tmp_path,
+            workspace=Workspace(path=ws),
+        )
+        guard = home / ".gemini/config/workspace_guard.py"
+        payload = json.dumps(
+            {"toolCall": {"name": "view_file", "args": {"AbsolutePath": str(ws / "a.txt")}}}
+        )
+        out = subprocess.run(
+            [str(guard)],
+            input=payload,
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=True,
+        )
+        assert json.loads(out.stdout) == {"decision": "allow"}
+
+    def test_a_workspace_home_declares_only_the_profiles_server(self, tmp_path: Path) -> None:
+        """The guard allows ``call_mcp_tool`` unconditionally: any server beyond
+        the profile's would be a door the workspace guard never looks at."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        home = build_ephemeral_home(
+            root=tmp_path / "r",
+            name="h",
+            profile=CapabilityProfile(mcp=_server()),
+            real_home=tmp_path,
+            workspace=Workspace(path=ws),
+        )
+        config = json.loads((home / ".gemini/config/mcp_config.json").read_text())
+        assert list(config) == ["mcpServers"]
+        assert list(config["mcpServers"]) == [_server().name]
+
+    def test_a_caller_guard_and_a_workspace_do_not_compose(self, tmp_path: Path) -> None:
+        profile = CapabilityProfile(guard=ToolGuard(path=Path("/abs/guard.sh")))
+        with pytest.raises(ValueError, match="tool_guard"):
+            build_ephemeral_home(
+                root=tmp_path / "r",
+                name="h",
+                profile=profile,
+                real_home=tmp_path,
+                workspace=Workspace(path=tmp_path),
+            )
+
+    def test_a_home_overlapping_the_workspace_is_refused(self, tmp_path: Path) -> None:
+        """A HOME under the workspace lets the guard allow reads and writes of
+        its own config and of the literal bearer; a workspace under the HOME
+        puts that config under the guard's root. Both are refused."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        with pytest.raises(ValueError, match="overlap"):
+            build_ephemeral_home(
+                root=ws / "tmp",
+                name="h",
+                profile=CapabilityProfile(),
+                real_home=tmp_path,
+                workspace=Workspace(path=ws),
+            )
+        assert not (ws / "tmp").exists()
+        inner = tmp_path / "r" / "h" / "ws"
+        inner.mkdir(parents=True)
+        with pytest.raises(ValueError, match="overlap"):
+            build_ephemeral_home(
+                root=tmp_path / "r",
+                name="h",
+                profile=CapabilityProfile(),
+                real_home=tmp_path,
+                workspace=Workspace(path=inner),
+            )
+
+    def test_the_guard_ships_as_a_package_resource(self) -> None:
+        """The wheel must carry ``guards/``: the sandbox reads the guard through
+        ``importlib.resources``, never through a source-tree path."""
+        resource = importlib.resources.files("headless_agents.guards") / "agy_workspace.py"
+        assert resource.is_file()

@@ -24,15 +24,25 @@ from contextlib import nullcontext
 from pathlib import Path
 
 from ..capability import (
+    INVALID_USAGE_EXIT_CODE,
     PROVIDER_FALLBACK_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
     failure_code_after_a_write,
     terminate_process_group,
 )
-from ..profile import McpServer
+from ..profile import McpServer, Workspace
 from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
 from ..spec import RunSpec
+from ..workspace import argv_prompt_or_refusal, rail_preamble, workspace_of, workspace_summary
+
+# The kernel refuses a single argv element at or above ``MAX_ARG_STRLEN``
+# (32 pages -- 131072 bytes on the common 4 KiB page size) with E2BIG.
+# Measured: ``/bin/true --append-system-prompt`` followed by a 131072-byte
+# argument raises ``OSError`` through ``Popen``; 131071 bytes does not. The
+# preamble travels as ONE argv element (``--append-system-prompt``), so this
+# is the hard ceiling on how much context this rail can carry that way.
+MAX_APPEND_SYSTEM_PROMPT_BYTES = 131_071
 
 # Ambient variables this rail needs on top of the base allowlist.
 #
@@ -89,6 +99,8 @@ def build_claude_command(
     mcp_config_path: Path,
     mcp: McpServer | None,
     executable: str = "claude",
+    workspace: Workspace | None = None,
+    append_system_prompt: str | None = None,
 ) -> list[str]:
     """Build the hardened non-interactive Claude command for one run.
 
@@ -96,28 +108,47 @@ def build_claude_command(
     wildcard is what a scoped bearer exists to make unnecessary, and leaving it
     would make the bearer the only line of defence. No server, no
     ``--allowedTools`` at all.
+
+    ``workspace=None`` keeps this run exactly as it ran before 0.4.0 --
+    ``bypassPermissions`` and every tool. A workspace narrows both the
+    permission mode and the tool list to what its ``write``/``shell`` flags
+    allow, and adds ``--restricted`` (file tools confined to the working
+    directory; user, project and local settings ignored -- a trusted
+    repository's own ``.claude/settings.json`` cannot widen what this run may
+    do, measured). ``shell`` adds ``Bash`` to both lists, but unlike the file
+    tools it is NOT confined by ``--restricted``: a shell runs with the
+    operator's own user rights, per spec 3.3 -- that confinement, if any, is
+    the caller's to provide.
     """
     if not model.strip():
         raise ValueError("Claude model must not be empty")
     if max_turns <= 0:
         raise ValueError("max_turns must be positive")
 
-    command = [
-        executable,
-        "-p",
-        "-",
-        "--model",
-        model,
-        "--max-turns",
-        str(max_turns),
-        "--permission-mode",
-        "bypassPermissions",
-        "--tools",
-        "",
-    ]
-    if mcp is not None:
-        allowed_tools = ",".join(f"mcp__{mcp.name}__{tool}" for tool in mcp.tools)
-        command.extend(("--allowedTools", allowed_tools))
+    if workspace is None:
+        permission_mode, tools = "bypassPermissions", ""
+    else:
+        tool_list = (
+            ["Read", "Edit", "Write", "Glob", "Grep"]
+            if workspace.write
+            else ["Read", "Glob", "Grep"]
+        )
+        if workspace.shell:
+            tool_list.append("Bash")
+        permission_mode = "acceptEdits" if workspace.write else "dontAsk"
+        tools = ",".join(tool_list)
+
+    command = [executable, "-p", "-", "--model", model, "--max-turns", str(max_turns)]
+    if workspace is not None:
+        command.append("--restricted")
+    command.extend(("--permission-mode", permission_mode, "--tools", tools))
+    allowed = [f"mcp__{mcp.name}__{tool}" for tool in mcp.tools] if mcp is not None else []
+    if workspace is not None and workspace.shell:
+        allowed.append("Bash")
+    if allowed:
+        command.extend(("--allowedTools", ",".join(allowed)))
+    if append_system_prompt:
+        command.extend(("--append-system-prompt", append_system_prompt))
     command.extend(("--mcp-config", str(mcp_config_path), "--strict-mcp-config"))
     return command
 
@@ -168,6 +199,8 @@ def run_claude(
     deadline: float | None = None,
     temp_prefix: str = "headless-agents-claude-",
     answer_log: Path | None = None,
+    workspace: Workspace | None = None,
+    append_system_prompt: str | None = None,
 ) -> int:
     """Run one Claude invocation and return its exit code (``124`` on timeout).
 
@@ -208,7 +241,13 @@ def run_claude(
             mcp_config_path=mcp_config_path,
             mcp=mcp,
             executable=executable,
+            workspace=workspace,
+            append_system_prompt=append_system_prompt,
         )
+        # The temp dir stays the cwd when there is no workspace (unchanged);
+        # a workspace becomes the cwd so relative paths in the agent's own
+        # tool calls resolve inside it.
+        cwd = workspace.path if workspace is not None else runtime_dir
 
         answer_context = (
             answer_log.open("w", encoding="utf-8") if answer_log is not None else nullcontext()
@@ -220,7 +259,7 @@ def run_claude(
                     stdin=subprocess.PIPE,
                     stdout=raw_stream if answer_stream is None else answer_stream,
                     stderr=subprocess.STDOUT if answer_stream is None else raw_stream,
-                    cwd=runtime_dir,
+                    cwd=cwd,
                     env=child_environment,
                     text=True,
                     start_new_session=True,
@@ -251,6 +290,10 @@ def run_claude(
         return 0
     if exit_code == TIMEOUT_EXIT_CODE:
         return TIMEOUT_EXIT_CODE
+    if workspace is not None and workspace.write:
+        # claude cannot prove that no edit happened (asynchronous OTEL): once
+        # the process ran in a writable workspace, nothing is replayable.
+        return failure_code_after_a_write(exit_code)
     # The claude rail cannot prove the absence of a write other than through
     # its telemetry: without the OTEL_* variables in the child environment,
     # raw_log holds no tool event at all and the predicate returns False. That
@@ -260,6 +303,26 @@ def run_claude(
     if tool_call_completed(raw_log):
         return failure_code_after_a_write(exit_code)
     return PROVIDER_FALLBACK_EXIT_CODE
+
+
+#: What a run's preamble tells the agent about its tools, by mode. Keyed on
+#: whether the workspace is writable -- the only distinction a preamble needs,
+#: since ``workspace_of`` already resolved read/write/shell into one object.
+_TOOLS_NOTE = {
+    "read": "Use Read, Glob and Grep to explore it; you cannot edit.",
+    "write": "Use Read, Glob, Grep, Edit and Write; edit only what the task needs.",
+}
+
+
+def _preamble_for(spec: RunSpec, workspace: Workspace | None) -> str:
+    """The preamble ``run`` launches with, and ``build_command`` previews.
+
+    Factored so the two never drift: a caller inspecting ``build_command``'s
+    output must see the tools-note ``run`` actually used, not a second
+    computation of the same read/write mode that could disagree with it.
+    """
+    mode = "write" if workspace is not None and workspace.write else "read"
+    return rail_preamble(spec, tools_note=_TOOLS_NOTE[mode])
 
 
 class ClaudeProvider:
@@ -272,12 +335,16 @@ class ClaudeProvider:
         assert isinstance(mcp_config_path, Path), (
             "RunSpec.extra['mcp_config_path'] is required to build a Claude command out of a run"
         )
+        workspace = workspace_of(spec)
+        preamble = _preamble_for(spec, workspace)
         return build_claude_command(
             model=spec.model,
             max_turns=spec.max_turns,
             mcp_config_path=mcp_config_path,
             mcp=spec.profile.mcp,
             executable=spec.executable or "claude",
+            workspace=workspace,
+            append_system_prompt=preamble or None,
         )
 
     def child_environment(self, spec: RunSpec, environ: Mapping[str, str]) -> dict[str, str] | None:
@@ -298,9 +365,41 @@ class ClaudeProvider:
         # With a report_log -- named, or given by run_dir -- stdout ALONE is the
         # answer and lands there; stderr (the OTEL console stream, any CLI
         # warning) stays in raw_log. Without one, run_claude APPENDS both to
-        # raw_log: remember where this run starts, so the answer never includes
-        # what an earlier run left in a reused log.
+        # raw_log.
         answer_log = spec.report_log
+        workspace = workspace_of(spec)
+        preamble = _preamble_for(spec, workspace)
+        refusal = argv_prompt_or_refusal(preamble, MAX_APPEND_SYSTEM_PROMPT_BYTES)
+        if refusal is not None:
+            # Refuse BEFORE execve: a preamble this big would blow past the
+            # kernel's per-argument ARG_MAX and Popen would raise OSError deep
+            # inside run_claude, read there as "Claude did not start" and
+            # answered with PROVIDER_FALLBACK_EXIT_CODE -- a SILENT switchover
+            # on a run that never had a chance to run. This is a usage error
+            # instead, named and never replayed.
+            raw_log.parent.mkdir(parents=True, exist_ok=True)
+            with raw_log.open("a", encoding="utf-8") as stream:
+                stream.write(f"{refusal}\n")
+            return record(
+                spec,
+                RunResult(
+                    exit_code=INVALID_USAGE_EXIT_CODE,
+                    provider=self.name,
+                    model=spec.model,
+                    report_path=answer_log if answer_log is not None else raw_log,
+                    events_log=raw_log,
+                    tokens=None,
+                    duration_seconds=0.0,
+                    tool_call_completed=False,
+                    text=None,
+                    run_id=run_id_of(spec),
+                    raw_log=raw_log,
+                    workspace=workspace_summary(workspace),
+                    context=None if spec.context is None else tuple(spec.context.to_list()),
+                ),
+            )
+        # Remember where this run starts, so an answer read from raw_log
+        # never includes what an earlier run left in a reused log.
         offset = raw_log.stat().st_size if raw_log.is_file() else 0
         start = time.monotonic()
         exit_code = run_claude(
@@ -314,6 +413,8 @@ class ClaudeProvider:
             executable=spec.executable or "claude",
             deadline=spec.deadline,
             answer_log=answer_log,
+            workspace=workspace,
+            append_system_prompt=preamble or None,
         )
         duration = time.monotonic() - start
         # This rail requests no JSON envelope: the text is read as written.
@@ -335,5 +436,7 @@ class ClaudeProvider:
                 text=text,
                 run_id=run_id_of(spec),
                 raw_log=raw_log,
+                workspace=workspace_summary(workspace),
+                context=None if spec.context is None else tuple(spec.context.to_list()),
             ),
         )

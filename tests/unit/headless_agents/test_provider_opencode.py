@@ -18,11 +18,12 @@ import pytest
 from pydantic import SecretStr
 
 from headless_agents.capability import (
+    INVALID_USAGE_EXIT_CODE,
     PROVIDER_FALLBACK_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
     TIMEOUT_REPLAYABLE_EXIT_CODE,
 )
-from headless_agents.profile import CapabilityProfile, Credentials, McpServer
+from headless_agents.profile import CapabilityProfile, Credentials, McpServer, Workspace
 from headless_agents.providers import opencode
 from headless_agents.spec import RunSpec
 
@@ -38,7 +39,7 @@ def _profile(**overrides: object) -> CapabilityProfile:
             url=URL,
             bearer_env_var="EXAMPLE_TOKEN",
             headers={"X-Agent": "example-run"},
-            tools=("example_search", "example_get"),
+            tools=("search", "get"),
         ),
         "credentials": Credentials(paths=(AUTH,)),
     }
@@ -87,6 +88,12 @@ class TestBuildOpenCodeCommand:
                 model="m", prompt="x" * (opencode.MAX_PROMPT_BYTES + 1), home=Path("/h")
             )
 
+    def test_dir_is_the_workspace(self, tmp_path: Path) -> None:
+        command = opencode.build_opencode_command(
+            model="m", prompt="p", home=tmp_path / "home", directory=tmp_path
+        )
+        assert command[command.index("--dir") + 1] == str(tmp_path)
+
 
 class TestOpenCodeConfig:
     def test_the_server_names_the_bearer_variable_and_never_its_value(self) -> None:
@@ -108,8 +115,8 @@ class TestOpenCodeConfig:
         config = opencode.opencode_config(_profile().mcp)
         assert config["tools"] == {
             "*": False,
-            "example_example_search": True,
-            "example_example_get": True,
+            "example_search": True,
+            "example_get": True,
         }
 
     def test_an_undeclared_tool_list_admits_the_whole_server(self) -> None:
@@ -130,11 +137,79 @@ class TestOpenCodeConfig:
         assert config["share"] == "disabled" and config["autoupdate"] is False
 
 
+# Literal JSON copied from ``opencode_config`` as it stood at the lot-branch
+# BASE (d4548d09), before workspaces existed -- key order included. Pinning a
+# self-comparison (``opencode_config(None, None) == opencode_config(None)``)
+# proves nothing about drift; only a literal outside the function under test
+# can.
+_BASE_CONFIG_NONE = (
+    '{"$schema": "https://opencode.ai/config.json", "share": "disabled", "autoupdate": false,'
+    ' "mcp": {}, "tools": {"*": false}, "permission": {"bash": "deny", "edit": "deny",'
+    ' "write": "deny", "read": "deny", "patch": "deny", "glob": "deny", "grep": "deny",'
+    ' "list": "deny", "webfetch": "deny", "websearch": "deny", "task": "deny", "skill": "deny",'
+    ' "external_directory": "deny"}}'
+)
+_BASE_CONFIG_MCP = (
+    '{"$schema": "https://opencode.ai/config.json", "share": "disabled", "autoupdate": false,'
+    ' "mcp": {"example": {"type": "remote", "url": "http://127.0.0.1:8765/mcp", "enabled": true,'
+    ' "headers": {"Authorization": "Bearer {env:EXAMPLE_TOKEN}", "X-Agent": "example-run"}}},'
+    ' "tools": {"*": false, "example_search": true, "example_get": true},'
+    ' "permission": {"bash": "deny", "edit": "deny", "write": "deny", "read": "deny",'
+    ' "patch": "deny", "glob": "deny", "grep": "deny", "list": "deny", "webfetch": "deny",'
+    ' "websearch": "deny", "task": "deny", "skill": "deny", "external_directory": "deny"}}'
+)
+
+
+class TestOpenCodeConfigWorkspace:
+    def test_config_without_workspace_is_unchanged(self) -> None:
+        assert json.dumps(opencode.opencode_config(None)) == _BASE_CONFIG_NONE
+        assert json.dumps(opencode.opencode_config(_profile().mcp)) == _BASE_CONFIG_MCP
+
+    def test_read_only_config(self, tmp_path: Path) -> None:
+        config = opencode.opencode_config(None, Workspace(path=tmp_path))
+        assert config["tools"] == {
+            "*": False,
+            "read": True,
+            "glob": True,
+            "grep": True,
+            "list": True,
+        }
+        assert {k for k, v in config["permission"].items() if v == "allow"} == {
+            "read",
+            "glob",
+            "grep",
+            "list",
+        }
+
+    def test_write_shell_config(self, tmp_path: Path) -> None:
+        config = opencode.opencode_config(None, Workspace(path=tmp_path, write=True, shell=True))
+        assert {k for k, v in config["permission"].items() if v == "allow"} == {
+            "read",
+            "glob",
+            "grep",
+            "list",
+            "edit",
+            "write",
+            "bash",
+        }
+        assert config["tools"]["edit"] is True and config["tools"]["bash"] is True
+
+    def test_external_directory_is_denied_in_every_workspace_mode(self, tmp_path: Path) -> None:
+        for workspace in (
+            None,
+            Workspace(path=tmp_path),
+            Workspace(path=tmp_path, write=True),
+            Workspace(path=tmp_path, write=True, shell=True),
+        ):
+            config = opencode.opencode_config(_profile().mcp, workspace)
+            assert config["permission"]["external_directory"] == "deny", workspace
+
+
 def _events(*lines: dict[str, object]) -> str:
     return "\n".join(json.dumps(line) for line in lines) + "\n"
 
 
-def _tool_use(tool: str = "example_example_search", status: str = "completed") -> dict[str, object]:
+def _tool_use(tool: str = "example_search", status: str = "completed") -> dict[str, object]:
     return {"type": "tool_use", "part": {"tool": tool, "state": {"status": status}}}
 
 
@@ -348,6 +423,106 @@ class TestTelemetry:
         tokens, cost = opencode.telemetry(log)
         assert tokens is not None and (tokens.fresh, tokens.output) == (12, 2)
         assert cost == pytest.approx(0.002)
+
+
+class TestWriteToolStarted:
+    """The write-mode twin of :class:`TestToolCallStarted`: INVERTED (a
+    ``tool_use`` counts as a write unless its tool is a workspace read tool
+    or an MCP tool on the declared server), not a fixed list -- opencode's
+    own built-in set is neither closed (``apply_patch`` exists) nor stable
+    under aliasing (``shell`` names the same capability as ``bash``), so a
+    fixed allowlist of write tools fails OPEN on anything it forgot."""
+
+    def test_opencode_write_tool_started(self, tmp_path: Path) -> None:
+        log = tmp_path / "e.jsonl"
+        log.write_text(_events(_tool_use(tool="edit")), encoding="utf-8")
+        assert opencode.write_tool_started(log) is True
+        log.write_text(_events(_tool_use(tool="read")), encoding="utf-8")
+        assert opencode.write_tool_started(log) is False
+
+    def test_every_known_write_tool_counts_in_any_state(self, tmp_path: Path) -> None:
+        log = tmp_path / "e.jsonl"
+        for tool in ("edit", "write", "patch", "bash"):
+            for status in ("pending", "running", "completed", "error"):
+                log.write_text(_events(_tool_use(tool=tool, status=status)), encoding="utf-8")
+                assert opencode.write_tool_started(log) is True, (tool, status)
+
+    def test_an_unknown_or_aliased_built_in_tool_still_counts(self, tmp_path: Path) -> None:
+        # apply_patch (missing from a fixed write-tool list) and shell (the
+        # binary's own alias for bash) must count too: the inverted rule
+        # never depends on opencode's tool catalogue staying stable.
+        log = tmp_path / "e.jsonl"
+        for tool in ("apply_patch", "shell", "todowrite"):
+            log.write_text(_events(_tool_use(tool=tool)), encoding="utf-8")
+            assert opencode.write_tool_started(log) is True, tool
+
+    def test_workspace_read_tools_are_not_writes(self, tmp_path: Path) -> None:
+        log = tmp_path / "e.jsonl"
+        for tool in ("read", "glob", "grep", "list"):
+            log.write_text(_events(_tool_use(tool=tool)), encoding="utf-8")
+            assert opencode.write_tool_started(log) is False, tool
+
+    def test_an_mcp_tool_on_the_declared_server_is_not_a_write(self, tmp_path: Path) -> None:
+        log = tmp_path / "e.jsonl"
+        mcp = McpServer(name="example", url=URL, tools=("x",))
+        log.write_text(_events(_tool_use(tool="example_x")), encoding="utf-8")
+        assert opencode.write_tool_started(log, mcp=mcp) is False
+        # Without an mcp, nothing is excluded as an MCP tool: an unrecognised
+        # prefix reads as an ordinary (unknown) built-in.
+        assert opencode.write_tool_started(log) is True
+
+    def test_the_mcp_exemption_is_the_exact_name_the_config_allowed_not_a_bare_prefix(
+        self, tmp_path: Path
+    ) -> None:
+        # A server literally named "apply" must not exempt "apply_patch" just
+        # because the tool name happens to start with the server's own name.
+        log = tmp_path / "e.jsonl"
+        mcp = McpServer(name="apply", url=URL, tools=("x",))
+        log.write_text(_events(_tool_use(tool="apply_patch")), encoding="utf-8")
+        assert opencode.write_tool_started(log, mcp=mcp) is True
+        log.write_text(_events(_tool_use(tool="apply_x")), encoding="utf-8")
+        assert opencode.write_tool_started(log, mcp=mcp) is False
+
+    def test_a_wildcard_mcp_config_never_exempts_a_known_builtin(self, tmp_path: Path) -> None:
+        # mcp.tools=() means opencode_config fell back to the "<server>_*"
+        # wildcard: the prefix exemption applies, but still never to a name
+        # that is also a known built-in tool.
+        log = tmp_path / "e.jsonl"
+        mcp = McpServer(name="apply", url=URL)
+        log.write_text(_events(_tool_use(tool="apply_patch")), encoding="utf-8")
+        assert opencode.write_tool_started(log, mcp=mcp) is True
+        log.write_text(_events(_tool_use(tool="apply_x")), encoding="utf-8")
+        assert opencode.write_tool_started(log, mcp=mcp) is False
+
+    @pytest.mark.parametrize(
+        "tool_use_event",
+        [
+            {"type": "tool_use"},
+            {"type": "tool_use", "part": "not-a-dict"},
+            {"type": "tool_use", "part": {"tool": None}},
+            {"type": "tool_use", "part": {"tool": 42}},
+        ],
+    )
+    def test_a_tool_use_with_no_string_tool_name_counts_as_a_write(
+        self, tmp_path: Path, tool_use_event: dict[str, object]
+    ) -> None:
+        # A missing/non-string tool name proves nothing about what ran: it
+        # must read as "may have written", not silently as "not a write".
+        log = tmp_path / "e.jsonl"
+        log.write_text(json.dumps(tool_use_event) + "\n", encoding="utf-8")
+        assert opencode.write_tool_started(log) is True
+
+    def test_an_absent_or_unreadable_stream_fails_closed(self, tmp_path: Path) -> None:
+        assert opencode.write_tool_started(tmp_path / "absent.jsonl") is True
+        log = tmp_path / "e.jsonl"
+        log.write_text("{not json\n", encoding="utf-8")
+        assert opencode.write_tool_started(log) is True
+
+    def test_a_valid_json_line_that_is_not_an_object_fails_closed(self, tmp_path: Path) -> None:
+        log = tmp_path / "e.jsonl"
+        log.write_text('"just a string"\n', encoding="utf-8")
+        assert opencode.write_tool_started(log) is True
+        assert opencode.tool_call_started(log, server="example") is True
 
 
 class _FakeProcess:
@@ -723,3 +898,184 @@ class TestOpenCodeProvider:
         assert result.tokens is None  # no event was written: nothing was measured
         written = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
         assert written == result.to_dict()
+
+
+class TestWorkspace:
+    """``--dir`` and cwd move to the workspace; the HOME stays ephemeral."""
+
+    def test_dir_and_cwd_move_to_the_workspace_home_stays_ephemeral(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        captured = _install(monkeypatch, _FakeProcess(returncode=0, events=GOOD_EVENTS))
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        assert _run(tmp_path, workspace=Workspace(path=ws)) == 0
+        kwargs = captured["kwargs"]
+        assert isinstance(kwargs, dict)
+        assert Path(str(kwargs["cwd"])) == ws
+        assert captured["command"][captured["command"].index("--dir") + 1] == str(ws)
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        # HOME/TMPDIR keep pointing at the ephemeral directory the run's cache
+        # and credentials were borrowed into -- only --dir and cwd moved.
+        assert env["HOME"] != str(ws)
+        assert env["HOME"].endswith("example-run")
+        config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+        assert config["tools"]["read"] is True and "edit" not in config["tools"]
+
+    def test_a_deadline_in_write_mode_after_a_write_step_is_a_plain_timeout(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        step = _events(_tool_use(tool="edit"))
+        _install(monkeypatch, _FakeProcess(returncode=0, events=step, hang=True))
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        assert (
+            _run(tmp_path, workspace=Workspace(path=ws, write=True), profile=_profile(mcp=None))
+            == TIMEOUT_EXIT_CODE
+        )
+
+    def test_a_deadline_in_write_mode_with_only_a_step_start_is_a_plain_timeout(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """CRITICAL: a ``tool_use`` line is written in its TERMINAL state only
+        (measured, see ``tool_call_started``'s docstring) -- a call still in
+        flight when the deadline fires leaves only its ``step_start``, with no
+        tool name at all. A writable workspace must read ANY step as "may have
+        written": there is no way to tell, from a step_start alone, whether it
+        was about to run a read or a write tool."""
+        step = _events({"type": "step_start", "part": {}})
+        _install(monkeypatch, _FakeProcess(returncode=0, events=step, hang=True))
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        assert (
+            _run(tmp_path, workspace=Workspace(path=ws, write=True), profile=_profile(mcp=None))
+            == TIMEOUT_EXIT_CODE
+        )
+
+    def test_a_deadline_in_read_only_mode_ignores_a_write_step(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The guard is the config's ``tools``/``permission`` walls, not this
+        predicate: a read-only workspace never lets a write step taint the run,
+        so a hang there stays replayable."""
+        step = _events(_tool_use(tool="edit"))
+        _install(monkeypatch, _FakeProcess(returncode=0, events=step, hang=True))
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        assert (
+            _run(tmp_path, workspace=Workspace(path=ws), profile=_profile(mcp=None))
+            == TIMEOUT_REPLAYABLE_EXIT_CODE
+        )
+
+    def test_a_failure_in_write_mode_after_a_write_step_never_advances_a_chain(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        events = _events(_tool_use(tool="edit"))
+        _install(monkeypatch, _FakeProcess(returncode=3, events=events))
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        assert (
+            _run(tmp_path, workspace=Workspace(path=ws, write=True), profile=_profile(mcp=None))
+            == 1
+        )
+
+    def test_a_read_only_failure_after_a_write_step_stays_replayable(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        events = _events(_tool_use(tool="edit"))
+        _install(monkeypatch, _FakeProcess(returncode=3, events=events))
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        assert (
+            _run(tmp_path, workspace=Workspace(path=ws), profile=_profile(mcp=None))
+            == PROVIDER_FALLBACK_EXIT_CODE
+        )
+
+    def test_a_failure_in_write_mode_with_only_a_step_start_never_advances_a_chain(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """RULING: a process that dies mid-call (OOM, SIGKILL) exits non-zero
+        and leaves only its step_start too -- the failure path shares the
+        deadline path's predicate (any step_start OR a write tool_use) in a
+        writable workspace, not write_tool_started alone."""
+        step = _events({"type": "step_start", "part": {}})
+        _install(monkeypatch, _FakeProcess(returncode=3, events=step))
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        assert (
+            _run(tmp_path, workspace=Workspace(path=ws, write=True), profile=_profile(mcp=None))
+            == 1
+        )
+
+    def test_an_ephemeral_root_inside_the_workspace_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An ephemeral root inside the workspace is refused before any file
+        exists, same convention as agy's own ``run_agy``."""
+        captured = _install(monkeypatch, _FakeProcess(returncode=0, events=GOOD_EVENTS))
+        ws = tmp_path / "ws"
+        root = ws / "tmp"
+        root.mkdir(parents=True)
+        with pytest.raises(ValueError, match="overlap"):
+            _run(tmp_path, workspace=Workspace(path=ws), ephemeral_root=root)
+        assert "command" not in captured
+        assert list(root.iterdir()) == []
+
+
+class TestWorkspaceProvider:
+    def test_preamble_over_argv_limit_exits_2_without_spawn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("headless_agents.providers.opencode.MAX_PROMPT_BYTES", 64)
+        marker = tmp_path / "spawned"
+        fake = tmp_path / "opencode"
+        fake.write_text(f"#!/usr/bin/env bash\ntouch {marker}\n")
+        fake.chmod(0o755)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        result = opencode.OpenCodeProvider().run(
+            RunSpec(
+                prompt="p" * 10,
+                executable=str(fake),
+                profile=CapabilityProfile(workspace=Workspace(path=ws)),
+                run_dir=tmp_path / "run",
+            )
+        )
+        assert result.exit_code == INVALID_USAGE_EXIT_CODE == 2 and not marker.exists()
+        assert result.text is None and result.duration_seconds == 0.0
+        assert "too long for argv" in (tmp_path / "run" / "stderr.log").read_text()
+
+    def test_runs_in_the_workspace_with_the_preamble(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        real_home = _real_home(tmp_path)
+        provider = opencode.OpenCodeProvider(real_home=real_home, ephemeral_root=tmp_path / "root")
+        (tmp_path / "root").mkdir()
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        spec = RunSpec(
+            prompt="TASK",
+            model="opencode-go/m",
+            profile=CapabilityProfile(workspace=Workspace(path=ws)),
+            run_dir=tmp_path / "run",
+        )
+        assert provider.build_command(spec)[:4] == ["opencode", "run", "--dir", str(ws)]
+        assert "Use read, glob, grep and list" in provider.build_command(spec)[-1]
+
+        calls: list[dict[str, object]] = []
+
+        def fake_run(**kwargs: object) -> int:
+            calls.append(kwargs)
+            events = kwargs["events_log"]
+            assert isinstance(events, Path)
+            events.parent.mkdir(parents=True, exist_ok=True)
+            events.write_text(GOOD_EVENTS, encoding="utf-8")
+            return 0
+
+        monkeypatch.setattr(opencode, "run_opencode", fake_run)
+        result = provider.run(spec)
+        assert result.exit_code == 0
+        assert result.workspace == {"path": str(ws), "write": False, "shell": False}
+        assert calls[0]["workspace"] == Workspace(path=ws)
+        assert calls[0]["prompt"].endswith("<task>\nTASK\n</task>")

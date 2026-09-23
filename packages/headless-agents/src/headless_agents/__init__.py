@@ -15,3 +15,7 @@ roster, and it must never import ``brain_v42``: the guard in
 """
 
 from __future__ import annotations
+
+from .profile import CapabilityProfile, Workspace
+
+__all__ = ["CapabilityProfile", "Workspace"]

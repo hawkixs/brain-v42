@@ -54,6 +54,95 @@ Nothing here is tagged yet: 0.4.0 ships after lot 4 (the `ha` CLI), per
   `events.jsonl`, `stderr.log` and `raw.log` inside it (explicit paths still win), its
   name is the `run_id`, and the run writes `result.json` there.
 
+## Unreleased — 0.4.0, lot 2 of 4: the workspace capability
+
+Per `docs/specs/2026-09-23-headless-agents-0.4.0-design.md` (3.3), with the amendments in
+its section 8 ("Measurement amendments (2026-09-23, lot 2)"): live measurement against the
+four rails' real CLIs changed three points the design left open — decisions 9-12.
+
+### Added
+- `profile.Workspace(path, write=False, shell=False)`: a directory an agent may read, or
+  read and edit, and nothing outside it — confined per rail by each rail's own mechanism
+  (codex: OS sandbox; claude: `--restricted`; opencode: the `tools`/`permission` walls;
+  agy: the new package-owned guard below). `shell=True` is refused with `ValueError`
+  unless `write=True`. `CapabilityProfile.workspace: Workspace | None = None`;
+  `workspace=None` keeps every rail byte-for-byte on its pre-0.4.0 behaviour — the Dream
+  golden fixtures (3 rails x 6 phases) gate it.
+- `context` module: `resolve_context(level, repository_root, user_files, ...)` builds a
+  `ContextBundle` from `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` at a repository root (tracked
+  or ignored) plus the caller's user-level files. `RunSpec.context: ContextBundle | None`;
+  each rail delivers it through ONE channel, the preamble — repository content included in
+  every mode, not only write mode (decision 12). `RunResult.context`: the injected files'
+  path, scope, size and sha256, filled from schema 1's key set for the first time.
+  `RunResult.workspace`: `{"path", "write", "shell"}` when the run carried one, else
+  `None`.
+- `capability.INVALID_USAGE_EXIT_CODE = 2`: the run was refused BEFORE any spawn because
+  its own inputs cannot work — a prompt that, with its context, no longer fits the argv of
+  the rail that must carry it. Never a switchover: the next chain link gets the same
+  input. claude also returns it when the preamble alone, carried as one
+  `--append-system-prompt` argv element, exceeds `131 071` bytes (measured: the kernel's
+  `MAX_ARG_STRLEN` is 131072 bytes, refused with `E2BIG`) — refused before `Popen` rather
+  than surfacing as an opaque `OSError` the "binary is missing" handler would have silently
+  read as `PROVIDER_FALLBACK_EXIT_CODE`.
+- `guards.agy_workspace`: the package-owned `PreToolUse` guard confining an agy workspace
+  run — standard-library only, fail-closed (a missing, unreadable or malformed
+  configuration denies everything), Unicode case-fold key checking against agy's own
+  `bytes.EqualFold` field matching, `run_command`'s `Cwd` confined when present. Shipped as
+  package data (`importlib.resources`), copied into the ephemeral HOME and PROVEN there
+  before spawn by its probes (two more, on `.git` writes, when writes are armed).
+
+### Behaviour
+- An agy profile carrying `workspace` uses the package-owned guard
+  (`guards.agy_workspace`) instead of the caller's `ToolGuard`; a profile carrying both is
+  rejected with `ValueError` before anything runs — the two do not compose. Because agy's
+  `view_file` cannot list a directory, the prompt also carries the workspace's tracked
+  plus untracked-not-ignored file list.
+- opencode narrows its `tools`/`permission` walls to a fixed built-in set instead of
+  stacking a third layer: `read`/`glob`/`grep`/`list` always, `edit`/`write` when
+  writable, `bash` when `shell` is armed; `external_directory` stays denied in every mode.
+  Residual, accepted and documented: `read` follows a symlink INSIDE the workspace to a
+  target outside it (measured live 2026-09-23).
+- codex's sandbox switches between `read-only` (shell tool ON — its only way to read a
+  file) and `workspace-write` (shell tool only when `shell=True`); a read-only codex agent
+  can still read outside the workspace by design — an accepted residual, unchanged from
+  the read-access decision (spec 3.3, decision 7).
+- claude's workspace run adds `--restricted` (file tools confined to the working
+  directory; user, project and local settings ignored — a trusted repository's own
+  `.claude/settings.json` cannot widen it, measured) on top of the narrowed
+  `--permission-mode`/`--tools`.
+- The write-mode instruction-file channel designed in 3.3 (an `AGENTS.md`/`CLAUDE.md`
+  written into the workspace) is NOT shipped: measured live on 2026-09-23, it failed on
+  three rails out of four (claude's `--restricted` does not auto-load it; opencode's
+  `OPENCODE_DISABLE_PROJECT_CONFIG=1` also disables `AGENTS.md`; agy reads it only inside
+  a git repository). The preamble is the single channel instead (decision 12). Nothing is
+  ever written into a workspace.
+
+### Security
+- A codex run with a `workspace` uses an EPHEMERAL `CODEX_HOME`: a private `0700`
+  directory holding only a symlink to the real `auth.json`, built under a root outside
+  every writable root the sandbox could itself reach, torn down after the run with a
+  hardened write-back of a rotated `auth.json` (`O_NOFOLLOW`, size-bounded,
+  `account_id`-matched, compare-and-swap on the real file's digest) so a legitimate OAuth
+  refresh survives the teardown. Residual, deliberately not defended: the sandbox can
+  still READ the real `auth.json` through the symlink — this rescue protects its
+  integrity, not its confidentiality (decision 11).
+- The ephemeral HOME and a workspace's `path` are refused if they would overlap, in both
+  directions: a HOME inside the workspace would let the agent read `mcp_config.json` (a
+  literal bearer, agy) or rewrite its own `workspace-guard.json`; a workspace inside the
+  ephemeral root would let a run reach another run's HOME.
+- `providers/codex.py` sets `project_doc_max_bytes=0` in every mode (not only write mode):
+  with the preamble now carrying repository content on every rail, a tracked `AGENTS.md`
+  codex would otherwise read natively could reach it twice.
+- agy's workspace guard denies a write whose raw or resolved target, relative to the
+  root, has a `.git` component (compared with `casefold()`), and its pre-spawn probe
+  proves it when writes are armed. Residual: claude, opencode and codex (unmeasured
+  whether codex's `workspace-write` keeps `.git` read-only) can write `<ws>/.git` in
+  write mode: hooks and config run later, outside any sandbox, when git runs in that
+  checkout; agy denies it in its guard. Lot 4 must not run git in a workspace whose
+  `.git` changed (tracked by a Brain ticket).
+- codex fails closed (exit `3`, no spawn) when the uid has no passwd entry to derive the
+  `CODEX_HOME` fallback root from.
+
 ## 0.3.0 — 2026-09-20 (`headless-agents-v0.3.0`)
 
 ### Changed (breaking: a new exit code, and the chain advances on it)

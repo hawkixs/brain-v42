@@ -85,8 +85,12 @@ class McpServer(BaseModel):
 class ToolGuard(BaseModel):
     """A ``PreToolUse`` hook script the CLI must consult before every tool call.
 
-    The runtime ships no guard of its own: the script is versioned and tested
-    by the caller, who passes its path. Pass it ABSOLUTE: the CLI resolves the
+    The runtime ships no guard for a run WITHOUT a workspace: the script is
+    versioned and tested by the caller, who passes its path. A run WITH a
+    workspace uses the package-owned guard
+    (:mod:`headless_agents.guards.agy_workspace`); the two do not compose, and
+    a profile carrying both is refused -- by the agy rail, which is the only
+    one that reads a guard. Pass it ABSOLUTE: the CLI resolves the
     hook command from its own working directory (the ephemeral HOME), where a
     relative path names nothing -- and the probe that proves the guard denies
     runs from the parent's, so it would not notice. The shape is not enforced
@@ -125,6 +129,41 @@ class Credentials(BaseModel):
         return value
 
 
+class Workspace(BaseModel):
+    """A directory the agent may read, or edit, and nothing outside it.
+
+    Read-only by default: ``write=False`` gives read tools only, confined to
+    ``path`` by each rail's own mechanism (see the rails' docstrings for what
+    was measured to hold, and the residuals: codex reads outside by design,
+    opencode follows an inside symlink). ``shell`` is refused without
+    ``write``: on three rails out of four a shell can write whatever the read
+    tools cannot, and only codex confines it.
+    """
+
+    model_config = _FROZEN
+
+    path: Path
+    write: bool = False
+    shell: bool = False
+
+    @field_validator("path")
+    @classmethod
+    def _existing_absolute_directory(cls, value: Path) -> Path:
+        if not value.is_absolute():
+            raise ValueError(f"workspace path must be absolute: {value}")
+        if not value.exists():
+            raise ValueError(f"workspace path does not exist: {value}")
+        if not value.is_dir():
+            raise ValueError(f"workspace path is not a directory: {value}")
+        return value
+
+    @model_validator(mode="after")
+    def _shell_requires_write(self) -> Workspace:
+        if self.shell and not self.write:
+            raise ValueError("shell requires write: a shell can write what read tools cannot")
+        return self
+
+
 class CapabilityProfile(BaseModel):
     """Everything the runtime lets one run reach. Empty means: nothing."""
 
@@ -136,3 +175,6 @@ class CapabilityProfile(BaseModel):
     # Ambient variables allowed into the child environment on top of the
     # base allowlist and the rail's own additions.
     environment_passthrough: tuple[str, ...] = ()
+    # A directory the agent may read (default) or edit. ``None``: the rail runs
+    # exactly as it did before 0.4.0, in its own throwaway directory.
+    workspace: Workspace | None = None
