@@ -20,6 +20,7 @@ Design decisions:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -39,6 +40,7 @@ from brain_v42.models.brain import (
 from brain_v42.services.dream_project_scope import get_dream_project_scope
 from brain_v42.services.gpu_embedding_service import EmbeddingUnavailable
 from brain_v42.services.indexed_plan_search_service import IndexedPlanSearchService
+from brain_v42.services.search.hybrid import rerank_round
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -214,6 +216,47 @@ class BrainService:
         tasks: list[asyncio.Task[Any]] = []
         task_types: list[KnowledgeType] = []
 
+        # One rerank call for the whole fan-out instead of one per shard: the
+        # embedding shim computes a single rerank at a time and rejects the
+        # others with 503, and a search used to collide with itself (see
+        # hybrid.rerank_round). The shards are the tasks created below, and
+        # they must be created INSIDE the round to inherit it.
+        uses_hybrid = self._hybrid_searcher is not None and not fts_only_fallback
+        shard_count = sum(1 for t in types if self._services.get(t) is not None)
+        round_scope = (
+            rerank_round(expected=shard_count) if uses_hybrid else contextlib.nullcontext()
+        )
+        with round_scope:
+            self._launch_shards(
+                types,
+                query,
+                project_key,
+                project_keys,
+                limit,
+                include_archived,
+                shared_embedding,
+                fts_only_fallback,
+                tasks,
+                task_types,
+            )
+
+        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+        return self._collect_shards(task_types, raw_results, fts_only_fallback)
+
+    def _launch_shards(
+        self,
+        types: list[KnowledgeType],
+        query: str,
+        project_key: str | None,
+        project_keys: list[str] | None,
+        limit: int,
+        include_archived: bool,
+        shared_embedding: list[float] | None,
+        fts_only_fallback: bool,
+        tasks: list[asyncio.Task[Any]],
+        task_types: list[KnowledgeType],
+    ) -> None:
+        """Create one search task per requested type (appends to tasks/task_types)."""
         for t in types:
             svc = self._services.get(t)
             if svc is None:
@@ -265,8 +308,18 @@ class BrainService:
             tasks.append(asyncio.create_task(coro))
             task_types.append(t)
 
-        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
-
+    def _collect_shards(
+        self,
+        task_types: list[KnowledgeType],
+        raw_results: list[Any],
+        fts_only_fallback: bool,
+    ) -> tuple[
+        dict[KnowledgeType, list[tuple[Any, float]]],
+        dict[str, Any] | None,
+        str | None,
+        dict[KnowledgeType, str],
+    ]:
+        """Turn the shards' raw outcomes into _fan_out's 4-tuple."""
         results: dict[KnowledgeType, list[tuple[Any, float]]] = {}
         # W33 "a rank is not a score": per-type provenance of the scores in
         # `results[t]`, consumed by _build_search_results/what_do_i_know_about

@@ -10,7 +10,9 @@ callers can surface degradation to the LLM.  Modes:
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Coroutine
+import contextlib
+import contextvars
+from collections.abc import Callable, Coroutine, Iterator
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -87,6 +89,166 @@ def rrf_fuse(
     return sorted(candidates.values(), key=lambda c: c.score, reverse=True)
 
 
+# ── Rerank round: one reranker call per multi-shard search ─────────────────
+#
+# brain_search runs one HybridSearcher.search() per knowledge type. Each used
+# to rerank on its own, and BatchingRerankerClient's 20 ms window was the only
+# thing merging them. Measured 2026-09-23: slower shards arrive 23-67 ms after
+# the first, form a second batch, and hit the embedding shim's SINGLE rerank
+# slot while the first batch is still computing -> 503 -> rrf_fallback for
+# those shards only. That was 36 of 70 fallbacks, and the partial degradation
+# put rank ordinals (1.0, (n-1)/n ...) beside cross-encoder sigmoids in one
+# merged list, where they outranked everything.
+#
+# A round replaces the time window by a count. The fan-out declares how many
+# shards it launched; each shard either submits its fused candidates or
+# withdraws (empty, failed, cancelled). When every shard has settled, ONE
+# rerank_with_mode() call scores the concatenation and every shard receives
+# the SAME mode. A straggler timeout bounds the wait if a shard never
+# settles; a shard arriving after the flush reranks alone.
+
+_CURRENT_ROUND: contextvars.ContextVar[_RerankRound | None] = contextvars.ContextVar(
+    "brain_v42_rerank_round", default=None
+)
+
+DEFAULT_STRAGGLER_TIMEOUT_SECONDS = 2.0
+
+
+class _RerankRound:
+    """Shared rerank state for the shards of one fan-out (asyncio-only)."""
+
+    def __init__(self, expected: int, straggler_timeout: float) -> None:
+        self._expected = expected
+        self._straggler_timeout = straggler_timeout
+        self._settled = 0
+        self._closed = False
+        self._query: str | None = None
+        self._reranker: Any = None
+        self._pending: list[
+            tuple[list[RankedCandidate], asyncio.Future[tuple[str, list[RankedCandidate]]]]
+        ] = []
+        self._timer: asyncio.TimerHandle | None = None
+        self._flush_task: asyncio.Task[None] | None = None
+
+    def ticket(self) -> _ShardTicket:
+        """One per shard; it settles the shard exactly once."""
+        return _ShardTicket(self)
+
+    def _withdraw(self) -> None:
+        if self._closed:
+            return
+        self._settled += 1
+        self._maybe_flush()
+
+    async def _submit(
+        self, reranker: Any, query: str, candidates: list[RankedCandidate]
+    ) -> tuple[str, list[RankedCandidate]]:
+        joinable = not self._closed and (
+            self._reranker is None or (reranker is self._reranker and query == self._query)
+        )
+        if not joinable:
+            mode, reranked = await reranker.rerank_with_mode(query, candidates)
+            return str(mode), reranked
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[tuple[str, list[RankedCandidate]]] = loop.create_future()
+        self._query = query
+        self._reranker = reranker
+        self._pending.append((candidates, future))
+        self._settled += 1
+        if self._timer is None:
+            self._timer = loop.call_later(self._straggler_timeout, self._start_flush)
+        self._maybe_flush()
+        return await future
+
+    def _maybe_flush(self) -> None:
+        if self._settled >= self._expected:
+            self._start_flush()
+
+    def _start_flush(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._timer is not None:
+            self._timer.cancel()
+        if self._settled < self._expected:
+            logger.warning(
+                "hybrid_searcher.rerank_round_straggler_timeout",
+                expected=self._expected,
+                settled=self._settled,
+            )
+        if self._pending:
+            self._flush_task = asyncio.get_running_loop().create_task(
+                self._flush(), name="hybrid_searcher.rerank_round"
+            )
+
+    async def _flush(self) -> None:
+        pending = self._pending
+        combined = [c for candidates, _ in pending for c in candidates]
+        try:
+            mode, _ = await self._reranker.rerank_with_mode(self._query, combined)
+        except BaseException as exc:
+            for _, future in pending:
+                if not future.done():
+                    future.set_exception(exc)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            return
+        for candidates, future in pending:
+            if mode == RERANK_MODE_RRF_FALLBACK:
+                # Rank-rescale PER SHARD, in its own RRF order: the reranker
+                # rescaled the concatenation, which would give the second
+                # shard's best candidate a score below the first shard's worst.
+                n = len(candidates)
+                for rank, candidate in enumerate(candidates):
+                    candidate.score = (n - rank) / n
+                result = list(candidates)
+            else:
+                result = sorted(candidates, key=lambda c: c.score, reverse=True)
+            if not future.done():
+                future.set_result((str(mode), result))
+
+
+class _ShardTicket:
+    """A shard's single settlement in a round: submit OR withdraw, once."""
+
+    def __init__(self, round_: _RerankRound) -> None:
+        self._round = round_
+        self._settled = False
+
+    async def submit(
+        self, reranker: Any, query: str, candidates: list[RankedCandidate]
+    ) -> tuple[str, list[RankedCandidate]]:
+        """Wait for the round and return this shard's (mode, reranked candidates)."""
+        if self._settled:
+            mode, reranked = await reranker.rerank_with_mode(query, candidates)
+            return str(mode), reranked
+        self._settled = True
+        return await self._round._submit(reranker, query, candidates)
+
+    def withdraw(self) -> None:
+        """Settle without candidates (empty, failed, cancelled); no-op once settled."""
+        if self._settled:
+            return
+        self._settled = True
+        self._round._withdraw()
+
+
+@contextlib.contextmanager
+def rerank_round(
+    expected: int, straggler_timeout: float = DEFAULT_STRAGGLER_TIMEOUT_SECONDS
+) -> Iterator[None]:
+    """Make the next ``expected`` HybridSearcher.search() calls share one rerank.
+
+    Tasks must be CREATED inside the block: asyncio copies the context at task
+    creation, which is how each shard finds the round.
+    """
+    token = _CURRENT_ROUND.set(_RerankRound(expected, straggler_timeout))
+    try:
+        yield
+    finally:
+        _CURRENT_ROUND.reset(token)
+
+
 class HybridSearcher:
     """Orchestrates FTS + vector + RRF + optional reranking.
 
@@ -133,6 +295,43 @@ class HybridSearcher:
             2-tuple (list[tuple[entity, score]], rerank_mode) sorted by score desc.
             rerank_mode is one of: "reranked", "rrf_fallback", "rrf_only".
         """
+        round_ = _CURRENT_ROUND.get()
+        ticket = round_.ticket() if round_ is not None else None
+        try:
+            return await self._search_shard(
+                query,
+                fts_search_fn,
+                vector_search_fn,
+                text_extractor,
+                limit,
+                project_key,
+                embedding,
+                project_keys,
+                entity_type,
+                ticket,
+            )
+        finally:
+            # Every exit that did not submit -- empty shard, no reranker, a
+            # raised search fn, a cancellation -- must settle the round, or
+            # the other shards would wait for the straggler timeout. A ticket
+            # settles once: withdrawing after a submit is a no-op.
+            if ticket is not None:
+                ticket.withdraw()
+
+    async def _search_shard(
+        self,
+        query: str,
+        fts_search_fn: Callable[..., Coroutine[Any, Any, Any]],
+        vector_search_fn: Callable[..., Coroutine[Any, Any, Any]],
+        text_extractor: Callable[[Any], str],
+        limit: int,
+        project_key: str | None,
+        embedding: list[float] | None,
+        project_keys: list[str] | None,
+        entity_type: str,
+        ticket: _ShardTicket | None,
+    ) -> tuple[list[tuple[Any, float]], str]:
+        """Body of search(); reranks through the round when a ticket is given."""
         common_kwargs: dict[str, Any] = {}
         if project_key is not None:
             common_kwargs["project_key"] = project_key
@@ -169,7 +368,9 @@ class HybridSearcher:
         fused = rrf_fuse(fts_candidates, vec_candidates, k=60)[:20]
 
         if self._reranker:
-            if fused:
+            if fused and ticket is not None:
+                rerank_mode, fused = await ticket.submit(self._reranker, query, fused)
+            elif fused:
                 rerank_mode, fused = await self._reranker.rerank_with_mode(query, fused)
             else:
                 # An empty shard must not report RRF_ONLY: that mode means "no
