@@ -16,6 +16,8 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import structlog
 
@@ -31,8 +33,15 @@ class RerankerClient:
     - Lazy client: httpx.AsyncClient is NOT created at __init__ to allow
       sync construction and avoid event loop issues.
     - Same pattern as GPUEmbeddingService for consistency.
-    - No retry logic: reranking is best-effort; callers fall back to
-      embedding-only ranking if the service is unavailable.
+    - Only one retry case: a busy shim. The shim computes ONE rerank at a
+      time and answers a concurrent request with 503 + ``Retry-After``
+      instead of queueing it; the slot frees within seconds (measured
+      2026-09-23: 11 % of brain_search reranks fell back to RRF on that 503
+      alone). Such a 503 is retried a bounded number of times, sleeping the
+      advertised delay capped at ``busy_retry_cap_seconds``. Every other
+      failure -- including a 503 WITHOUT ``Retry-After``, which is an outage
+      rather than a busy slot -- still raises at once: reranking stays
+      best-effort and callers fall back to RRF ordering.
     """
 
     def __init__(
@@ -42,6 +51,8 @@ class RerankerClient:
         *,
         wire: RerankWire | None = None,
         api_key: str = "",
+        busy_retries: int = 3,
+        busy_retry_cap_seconds: float = 2.0,
     ) -> None:
         """Initialize RerankerClient without creating the HTTP client.
 
@@ -50,11 +61,15 @@ class RerankerClient:
             timeout: HTTP request timeout in seconds.
             wire: Request/response shape. Defaults to the private shim contract.
             api_key: Sent as ``Authorization: Bearer`` when non-empty.
+            busy_retries: Extra attempts after a busy 503 (``Retry-After`` set).
+            busy_retry_cap_seconds: Upper bound on one advertised retry delay.
         """
         self._base_url = base_url
         self._timeout = timeout
         self._wire: RerankWire = wire if wire is not None else ShimRerankWire()
         self._api_key = api_key
+        self._busy_retries = busy_retries
+        self._busy_retry_cap_seconds = busy_retry_cap_seconds
         self._client: httpx.AsyncClient | None = None
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -96,9 +111,34 @@ class RerankerClient:
 
         client = self._get_client()
         path, body = self._wire.request(query, candidates)
-        response = await client.post(path, json=body)
+        for attempt in range(self._busy_retries + 1):
+            response = await client.post(path, json=body)
+            delay = self._busy_delay(response)
+            if delay is None or attempt == self._busy_retries:
+                break
+            logger.info(
+                "reranker_client.busy_retry",
+                attempt=attempt + 1,
+                max_retries=self._busy_retries,
+                delay_seconds=delay,
+                n_candidates=len(candidates),
+            )
+            await asyncio.sleep(delay)
         response.raise_for_status()
         return self._wire.parse(response.json(), expected=len(candidates))
+
+    def _busy_delay(self, response: httpx.Response) -> float | None:
+        """Seconds to wait before retrying, or None when the answer is not "busy"."""
+        if response.status_code != 503:
+            return None
+        retry_after = response.headers.get("Retry-After")
+        if retry_after is None:
+            return None
+        try:
+            advertised = float(retry_after)
+        except ValueError:
+            advertised = self._busy_retry_cap_seconds
+        return min(max(advertised, 0.0), self._busy_retry_cap_seconds)
 
     async def is_available(self) -> bool:
         """Check if the reranker service is healthy.

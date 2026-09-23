@@ -132,3 +132,105 @@ async def test_client_has_bounded_connection_limits(client):
     assert pool._max_connections == 20
     assert pool._max_keepalive_connections == 10
     await client.close()
+
+
+# ── Busy shim: bounded retry honouring Retry-After ─────────────────────────
+# The shim holds ONE rerank computation at a time and answers any concurrent
+# request with 503 + Retry-After instead of queueing it. Measured 2026-09-23:
+# 70 of 623 brain_search reranks (11 %) hit that 503 and fell back to RRF,
+# although the slot frees within seconds.
+
+
+def _busy_client() -> RerankerClient:
+    return RerankerClient(base_url="http://shim", busy_retries=2, busy_retry_cap_seconds=1.0)
+
+
+def _response(status: int, *, scores=None, retry_after: str | None = None):
+    import httpx
+
+    request = httpx.Request("POST", "http://shim/rerank")
+    headers = {"Retry-After": retry_after} if retry_after is not None else {}
+    return httpx.Response(status, json={"scores": scores or []}, headers=headers, request=request)
+
+
+@pytest.fixture
+def recorded_sleeps(monkeypatch):
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("brain_v42.services.reranker_client.asyncio.sleep", fake_sleep)
+    return sleeps
+
+
+def _client_answering(client: RerankerClient, *responses):
+    mock_http = AsyncMock()
+    mock_http.post.side_effect = list(responses)
+    return patch.object(client, "_get_client", return_value=mock_http), mock_http
+
+
+@pytest.mark.asyncio
+async def test_rerank_retries_a_busy_503_after_retry_after(recorded_sleeps):
+    client = _busy_client()
+    patcher, mock_http = _client_answering(
+        client, _response(503, retry_after="1"), _response(200, scores=[0.5, 0.1])
+    )
+    with patcher:
+        scores = await client.rerank("q", ["a", "b"])
+
+    assert scores == [0.5, 0.1]
+    assert mock_http.post.await_count == 2
+    assert recorded_sleeps == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_rerank_busy_retries_are_bounded(recorded_sleeps):
+    import httpx
+
+    client = _busy_client()
+    patcher, mock_http = _client_answering(
+        client, *[_response(503, retry_after="1") for _ in range(5)]
+    )
+    with patcher, pytest.raises(httpx.HTTPStatusError):
+        await client.rerank("q", ["a"])
+
+    # one attempt + busy_retries=2, never more
+    assert mock_http.post.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_rerank_retry_after_is_capped(recorded_sleeps):
+    client = _busy_client()
+    patcher, _ = _client_answering(
+        client, _response(503, retry_after="120"), _response(200, scores=[0.3])
+    )
+    with patcher:
+        await client.rerank("q", ["a"])
+
+    assert recorded_sleeps == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_rerank_does_not_retry_other_errors(recorded_sleeps):
+    import httpx
+
+    client = _busy_client()
+    patcher, mock_http = _client_answering(client, _response(500), _response(200, scores=[0.3]))
+    with patcher, pytest.raises(httpx.HTTPStatusError):
+        await client.rerank("q", ["a"])
+
+    assert mock_http.post.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_rerank_does_not_retry_a_503_without_retry_after(recorded_sleeps):
+    """A 503 without Retry-After is an outage, not a busy slot: fail fast."""
+    import httpx
+
+    client = _busy_client()
+    patcher, mock_http = _client_answering(client, _response(503), _response(200, scores=[0.3]))
+    with patcher, pytest.raises(httpx.HTTPStatusError):
+        await client.rerank("q", ["a"])
+
+    assert mock_http.post.await_count == 1
