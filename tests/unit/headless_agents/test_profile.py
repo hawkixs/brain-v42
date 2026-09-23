@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from headless_agents.profile import CapabilityProfile, Credentials, McpServer, ToolGuard
+from headless_agents.profile import CapabilityProfile, Credentials, McpServer, ToolGuard, Workspace
 
 
 def _server(**overrides: object) -> McpServer:
@@ -143,3 +143,38 @@ class TestCapabilityProfile:
         profile = CapabilityProfile()
         with pytest.raises(ValidationError):
             profile.mcp = _server()  # type: ignore[misc]
+
+
+def test_workspace_defaults_to_read_only(tmp_path: Path) -> None:
+    workspace = Workspace(path=tmp_path)
+    assert (workspace.write, workspace.shell) == (False, False)
+
+
+def test_workspace_path_must_be_absolute() -> None:
+    with pytest.raises(ValidationError, match="absolute"):
+        Workspace(path=Path("relative/dir"))
+
+
+def test_workspace_path_must_exist(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="does not exist"):
+        Workspace(path=tmp_path / "missing")
+
+
+def test_workspace_path_must_be_a_directory(tmp_path: Path) -> None:
+    file = tmp_path / "f"
+    file.write_text("x", encoding="utf-8")
+    with pytest.raises(ValidationError, match="not a directory"):
+        Workspace(path=file)
+
+
+def test_shell_requires_write(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="shell requires write"):
+        Workspace(path=tmp_path, shell=True)
+
+
+def test_shell_with_write_is_accepted(tmp_path: Path) -> None:
+    assert Workspace(path=tmp_path, write=True, shell=True).shell is True
+
+
+def test_profile_has_no_workspace_by_default() -> None:
+    assert CapabilityProfile().workspace is None

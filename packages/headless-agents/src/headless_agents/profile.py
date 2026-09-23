@@ -125,6 +125,41 @@ class Credentials(BaseModel):
         return value
 
 
+class Workspace(BaseModel):
+    """A directory the agent may read, or edit, and nothing outside it.
+
+    Read-only by default: ``write=False`` gives read tools only, confined to
+    ``path`` by each rail's own mechanism (see the rails' docstrings for what
+    was measured to hold, and the residuals: codex reads outside by design,
+    opencode follows an inside symlink). ``shell`` is refused without
+    ``write``: on three rails out of four a shell can write whatever the read
+    tools cannot, and only codex confines it.
+    """
+
+    model_config = _FROZEN
+
+    path: Path
+    write: bool = False
+    shell: bool = False
+
+    @field_validator("path")
+    @classmethod
+    def _existing_absolute_directory(cls, value: Path) -> Path:
+        if not value.is_absolute():
+            raise ValueError(f"workspace path must be absolute: {value}")
+        if not value.exists():
+            raise ValueError(f"workspace path does not exist: {value}")
+        if not value.is_dir():
+            raise ValueError(f"workspace path is not a directory: {value}")
+        return value
+
+    @model_validator(mode="after")
+    def _shell_requires_write(self) -> Workspace:
+        if self.shell and not self.write:
+            raise ValueError("shell requires write: a shell can write what read tools cannot")
+        return self
+
+
 class CapabilityProfile(BaseModel):
     """Everything the runtime lets one run reach. Empty means: nothing."""
 
@@ -136,3 +171,6 @@ class CapabilityProfile(BaseModel):
     # Ambient variables allowed into the child environment on top of the
     # base allowlist and the rail's own additions.
     environment_passthrough: tuple[str, ...] = ()
+    # A directory the agent may read (default) or edit. ``None``: the rail runs
+    # exactly as it did before 0.4.0, in its own throwaway directory.
+    workspace: Workspace | None = None
