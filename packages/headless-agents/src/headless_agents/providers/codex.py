@@ -10,8 +10,11 @@ validation and the exit-code discipline are unchanged.
 
 from __future__ import annotations
 
+import errno
+import hashlib
 import json
 import os
+import stat
 import subprocess
 import tempfile
 import time
@@ -428,40 +431,183 @@ def _failure_exit_code(
     return PROVIDER_FALLBACK_EXIT_CODE
 
 
-def _persist_rotated_auth(ephemeral_home: Path, real_codex_home: Path) -> None:
-    """Write a codex-rotated ``auth.json`` back to the real ``CODEX_HOME``
-    before the ephemeral one is removed.
+# The ephemeral auth.json is codex's own OAuth state, refreshed by an atomic
+# replace (temp file + rename): a legitimate rotation is a small JSON object,
+# never anything close to this. A bound well past any real token payload,
+# not a precise one -- it exists to make an oversized forgery fail fast.
+_MAX_ROTATED_AUTH_BYTES = 65536
 
-    Codex may refresh its OAuth token by an atomic replace (write a temp file,
-    then rename it over ``auth.json``); that rename replaces the ephemeral
-    ``auth.json`` SYMLINK with a regular file holding the new token. Removing
-    the ephemeral ``CODEX_HOME`` afterwards would then delete the rotated
-    token with it, leaving the operator's real ``auth.json`` holding a
-    refresh token codex itself has already rotated past -- which codex's next
-    real run would find already revoked.
 
-    Only a REGULAR file with content counts as a rotation: a symlink left
-    untouched, or an ``auth.json`` the child deleted, is never followed or
-    written back.
+def _account_id(raw: bytes) -> str | None:
+    """``tokens.account_id`` out of an ``auth.json`` payload, or ``None`` when
+    the bytes do not parse to that shape. Never raises: a caller comparing
+    two of these treats ``None`` as "no account to match", not as an error."""
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    tokens = parsed.get("tokens")
+    if not isinstance(tokens, dict):
+        return None
+    account_id = tokens.get("account_id")
+    return account_id if isinstance(account_id, str) else None
+
+
+def _read_ephemeral_rotation(ephemeral_auth: Path) -> bytes | None:
+    """Read a candidate rotated ``auth.json`` out of the ephemeral home.
+
+    ``None`` means there is nothing to persist -- the symlink is still in
+    place, or the child deleted ``auth.json`` outright -- NEITHER is an
+    error. Anything else that fails validation raises ``ValueError``: a
+    caller must read that as "do not write this back", never as "crash".
+
+    Opened with ``O_NOFOLLOW`` so a symlink is refused at the syscall itself,
+    whether it was never replaced or was swapped back in between an earlier
+    probe and this read (TOCTOU) -- there is no separate ``is_symlink()``
+    check for that race to slip past.
     """
-    ephemeral_auth = ephemeral_home / "auth.json"
-    if ephemeral_auth.is_symlink() or not ephemeral_auth.is_file():
+    try:
+        descriptor = os.open(str(ephemeral_auth), os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            # Still (or again) a symlink: nothing rotated, nothing to persist.
+            return None
+        raise
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size == 0:
+            return None
+        if info.st_size > _MAX_ROTATED_AUTH_BYTES:
+            raise ValueError(f"exceeds {_MAX_ROTATED_AUTH_BYTES} bytes")
+        raw = os.read(descriptor, info.st_size)
+    finally:
+        os.close(descriptor)
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("is not valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("is not a JSON object")
+    return raw
+
+
+def _persist_rotated_auth_or_raise(
+    *,
+    ephemeral_home: Path,
+    real_auth_target: Path,
+    real_auth_digest_at_build: str,
+    real_account_id_at_build: str | None,
+) -> None:
+    raw = _read_ephemeral_rotation(ephemeral_home / "auth.json")
+    if raw is None:
         return
-    rotated = ephemeral_auth.read_bytes()
-    if not rotated:
-        return
-    real_auth = real_codex_home / "auth.json"
-    if real_auth.is_file() and real_auth.read_bytes() == rotated:
-        return
-    descriptor, temp_name = tempfile.mkstemp(dir=real_codex_home, prefix=".auth.json.")
+    if real_account_id_at_build is None:
+        raise ValueError("real auth.json carries no account_id to match against")
+    if _account_id(raw) != real_account_id_at_build:
+        raise ValueError("rotated auth.json account_id does not match the real one")
+    current = real_auth_target.read_bytes() if real_auth_target.is_file() else None
+    if current is None or hashlib.sha256(current).hexdigest() != real_auth_digest_at_build:
+        raise ValueError("real auth.json changed since the ephemeral home was built")
+    descriptor, temp_name = tempfile.mkstemp(dir=real_auth_target.parent, prefix=".auth.json.")
     try:
         with os.fdopen(descriptor, "wb") as temp_file:
-            temp_file.write(rotated)
+            temp_file.write(raw)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
         os.chmod(temp_name, 0o600)
-        os.replace(temp_name, real_auth)
+        os.replace(temp_name, real_auth_target)
     except BaseException:
         Path(temp_name).unlink(missing_ok=True)
         raise
+
+
+def _persist_rotated_auth(
+    *,
+    ephemeral_home: Path,
+    real_auth_target: Path,
+    real_auth_digest_at_build: str,
+    real_account_id_at_build: str | None,
+    stderr_log: Path,
+) -> None:
+    """Rescue a codex-rotated ``auth.json`` across the ephemeral ``CODEX_HOME``'s
+    teardown -- and refuse to launder anything else through it.
+
+    THREAT this defends against: codex may refresh its OAuth token by an
+    atomic replace (write a temp file, then rename it over ``auth.json``);
+    that rename turns the ephemeral ``auth.json`` SYMLINK into a regular file
+    holding the new token. Left alone, tearing down the ephemeral home would
+    delete that token with it, leaving the operator's real ``auth.json``
+    holding a refresh token codex itself has already rotated past -- revoked
+    by the time codex's next real run tries it. But a ``workspace-write``
+    sandbox can ALSO replace that same path with bytes of its own choosing:
+    this crosses from an adversarial sandbox into the operator's real
+    credentials, so the candidate is read with ``O_NOFOLLOW`` (see
+    :func:`_read_ephemeral_rotation`), bounded in size, parsed as JSON, and
+    accepted only when it carries the SAME ``tokens.account_id`` the real
+    file already held (never a different one, and never when the real file
+    had none to compare against). A compare-and-swap against the real file's
+    digest, snapshotted when the ephemeral home was built, refuses the write
+    if the real file moved on meanwhile (a fresh login, or another run's own
+    rotation) rather than overwriting it.
+
+    Never raises past this boundary: any failure -- an ``OSError`` from the
+    filesystem, a ``ValueError`` from validation -- is caught here, and the
+    ONLY trace it leaves is one non-secret line appended to ``stderr_log``
+    (never the file's content). The run's own exit code, already decided by
+    the time this runs in a ``finally``, is never touched.
+
+    RESIDUAL, deliberately not defended here: the sandbox can still READ the
+    real ``auth.json`` through the ephemeral symlink -- this function
+    protects the real file's INTEGRITY, not its confidentiality. Spec 3.3
+    already accepts that codex reads outside the workspace.
+    """
+    try:
+        _persist_rotated_auth_or_raise(
+            ephemeral_home=ephemeral_home,
+            real_auth_target=real_auth_target,
+            real_auth_digest_at_build=real_auth_digest_at_build,
+            real_account_id_at_build=real_account_id_at_build,
+        )
+    except (OSError, ValueError) as exc:
+        with stderr_log.open("a", encoding="utf-8") as stderr_stream:
+            stderr_stream.write(f"codex auth.json rotation not persisted: {exc}\n")
+
+
+def _codex_home_root(environ: Mapping[str, str]) -> Path:
+    """Root directory the ephemeral ``CODEX_HOME`` is created under.
+
+    Never under ``/tmp`` or ``$TMPDIR``: those are the ``workspace-write``
+    sandbox's own default writable roots, and a run in write mode must never
+    be ABLE to write into the same tree its own ephemeral ``CODEX_HOME``
+    lives in -- that tree briefly holds a regular file in place of the
+    ``auth.json`` symlink whenever codex rotates its token (see
+    :func:`_persist_rotated_auth`). :func:`~headless_agents.sandbox.ephemeral_root`
+    (``XDG_RUNTIME_DIR``, a tmpfs) is used when it is set AND is not itself
+    under one of those roots; otherwise a private ``0700`` directory under
+    ``~/.cache/headless-agents/codex-homes/``.
+    """
+    candidate = ephemeral_root(environ)
+    tmp_roots = {Path(tempfile.gettempdir()).resolve()}
+    tmpdir_value = environ.get("TMPDIR")
+    if tmpdir_value:
+        tmp_roots.add(Path(tmpdir_value).resolve())
+    if candidate is not None:
+        resolved_candidate = candidate.resolve()
+        under_tmp = resolved_candidate in tmp_roots or any(
+            root in resolved_candidate.parents for root in tmp_roots
+        )
+        if not under_tmp:
+            return candidate
+    fallback = (
+        Path(environ.get("HOME") or str(Path.home())) / ".cache" / "headless-agents" / "codex-homes"
+    )
+    fallback.mkdir(parents=True, exist_ok=True)
+    fallback.chmod(0o700)
+    return fallback
 
 
 def _effective_timeout(timeout_seconds: float, deadline: float | None) -> float:
@@ -531,7 +677,18 @@ def run_codex(
 
     real_codex_home: Path | None = None
     if workspace_capability is not None:
-        real_codex_home = Path(visible.get("CODEX_HOME") or str(Path.home() / ".codex"))
+        codex_home_value = visible.get("CODEX_HOME")
+        if codex_home_value and not Path(codex_home_value).is_absolute():
+            stderr_log.write_text(
+                f"codex CODEX_HOME must be an absolute path, got: {codex_home_value}\n",
+                encoding="utf-8",
+            )
+            return PROVIDER_FALLBACK_EXIT_CODE
+        real_codex_home = (
+            Path(codex_home_value).resolve()
+            if codex_home_value
+            else (Path.home() / ".codex").resolve()
+        )
         if not (real_codex_home / "auth.json").is_file():
             stderr_log.write_text(
                 f"codex auth.json not found under {real_codex_home}\n", encoding="utf-8"
@@ -625,8 +782,15 @@ def run_codex(
 
     if workspace_capability is not None:
         assert real_codex_home is not None
+        # Resolved once, here: the compare-and-swap and the eventual replace
+        # both need the file the symlink points AT (a dotfile manager may
+        # symlink auth.json elsewhere), not the symlink path itself.
+        real_auth_target = (real_codex_home / "auth.json").resolve()
+        real_auth_snapshot = real_auth_target.read_bytes()
+        real_auth_digest_at_build = hashlib.sha256(real_auth_snapshot).hexdigest()
+        real_account_id_at_build = _account_id(real_auth_snapshot)
         with tempfile.TemporaryDirectory(
-            prefix=f"{temp_prefix}home-", dir=ephemeral_root(visible)
+            prefix=f"{temp_prefix}home-", dir=_codex_home_root(visible)
         ) as codex_home_dir:
             ephemeral_home = build_codex_home(
                 root=Path(codex_home_dir), real_codex_home=real_codex_home
@@ -640,7 +804,13 @@ def run_codex(
             finally:
                 # Every exit path -- success, failure, timeout -- must still
                 # rescue a rotated token before the ephemeral home is removed.
-                _persist_rotated_auth(ephemeral_home, real_codex_home)
+                _persist_rotated_auth(
+                    ephemeral_home=ephemeral_home,
+                    real_auth_target=real_auth_target,
+                    real_auth_digest_at_build=real_auth_digest_at_build,
+                    real_account_id_at_build=real_account_id_at_build,
+                    stderr_log=stderr_log,
+                )
     if workspace is not None:
         return _run(workspace.resolve(), child_environment)
     with tempfile.TemporaryDirectory(prefix=temp_prefix) as temp_dir:
