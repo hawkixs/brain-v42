@@ -104,7 +104,10 @@ def probe(
             [path, "--version"],
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            text=True,
+            # A broken CLI gives a reason, never an exception: bytes that are
+            # not UTF-8 are replaced instead of raising while decoding.
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout_seconds,
             check=False,
         )

@@ -83,6 +83,12 @@ class TestProbe:
         assert found.available is False
         assert "no answer" in found.detail
 
+    def test_output_that_is_not_utf8_never_raises(self, tmp_path: Path) -> None:
+        cli = _script(tmp_path, "printf 'v1 \\377\\n'; printf '\\377' >&2")
+        found = registry.probe("codex", executable=str(cli))
+        assert found.available is True
+        assert found.version == "v1 �"
+
     def test_the_default_executable_is_found_on_path_by_the_rails_name(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
