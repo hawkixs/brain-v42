@@ -37,9 +37,15 @@ Nothing here is tagged yet: 0.4.0 ships after lot 4 (the `ha` CLI), per
   (claude, codex), the argv limit for agy and opencode. Read it instead of hard-coding a
   limit.
 - `RunResult.text`: the final answer, read by the provider from the file its rail writes
-  the answer to (`report_log` for codex, agy and opencode; the bytes this run appended to
-  `raw_log` for claude). Verbatim — an answer that is itself JSON is never re-read as an
-  envelope — and `None` when the run failed or answered nothing.
+  the answer to: `report_log` for codex, agy and opencode. For claude it is also
+  `report_log` when one is set, named or given by `run_dir`: claude's stdout alone lands
+  there. Without one, it is the bytes this run appended to `raw_log`, stderr included.
+  Verbatim — an answer that is itself JSON is never re-read as an envelope — and `None`
+  when the run failed or answered nothing.
+- `providers.claude.run_claude(answer_log=...)`: stdout alone goes to that file, while
+  stderr — the OTEL console stream, any CLI warning — stays in `raw_log`, where
+  `tool_call_completed` reads it. Unset, nothing changes, so the Dream's runs are
+  byte-identical.
 - `RunResult.run_id`, `RunResult.stderr_log`, `RunResult.raw_log`, and
   `RunResult.to_dict()`: the JSON-safe schema-1 form (`result.RESULT_SCHEMA_VERSION = 1`).
   `context`, `workspace` and `branch` belong to the key set from schema 1 and stay `null`
