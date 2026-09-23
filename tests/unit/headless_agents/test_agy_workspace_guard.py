@@ -238,3 +238,64 @@ def test_case_variant_cwd_key_is_denied(ws):
         }
     )
     assert decide(payload, cfg(ws, shell=True))["decision"] == "deny"
+
+
+# Round-2 review findings (task-6-findings-r2.md), fixed below.
+
+
+def test_case_variant_unicode_fold_is_denied(ws):
+    # Go's encoding/json matches JSON object keys against struct fields via
+    # bytes.EqualFold, which folds U+017F (LATIN SMALL LETTER LONG S, "ſ") to
+    # "s" -- a plain str.lower() comparison does NOT fold it (measured), so a
+    # key differing only by this Unicode fold used to slip the check.
+    payload = json.dumps(
+        {
+            "toolCall": {
+                "name": "view_file",
+                "args": {"AbsolutePath": f"{ws}/in.txt", "AbſolutePath": "/etc/passwd"},
+            }
+        }
+    )
+    assert decide(payload, cfg(ws))["decision"] == "deny"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # top-level "toolCall" next to a case-variant "ToolCall"
+        json.dumps({"toolCall": {"name": "finish", "args": {}}, "ToolCall": {}}),
+        # "name" next to a case-variant "Name"
+        json.dumps({"toolCall": {"name": "finish", "args": {}, "Name": "x"}}),
+        # "args" next to a case-variant "aRgs"
+        json.dumps({"toolCall": {"name": "finish", "args": {}, "aRgs": {}}}),
+    ],
+)
+def test_envelope_case_variant_key_is_denied(ws, payload):
+    # The same parser-differential class applies one level up: the envelope
+    # keys `toolCall`, `name` and `args` are read exactly, just like a tool's
+    # argument keys are.
+    assert decide(payload, cfg(ws))["decision"] == "deny"
+
+
+def test_main_returns_0_even_if_stdout_write_fails(ws, tmp_path, monkeypatch):
+    import io
+
+    from headless_agents.guards import agy_workspace
+
+    home = tmp_path / "home"
+    (home / ".gemini" / "config").mkdir(parents=True)
+    (home / ".gemini" / "config" / "workspace-guard.json").write_text(json.dumps(cfg(ws)))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("sys.stdin", io.StringIO(_p("finish")))
+
+    class _BrokenStdout:
+        def write(self, data: str) -> int:
+            raise BrokenPipeError("no reader")
+
+        def flush(self) -> None:
+            raise BrokenPipeError("no reader")
+
+    monkeypatch.setattr("sys.stdout", _BrokenStdout())
+    # main() must ALWAYS return 0, per its own contract, even when writing
+    # the decision itself fails (e.g. the reader hung up early).
+    assert agy_workspace.main() == 0

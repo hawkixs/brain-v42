@@ -133,29 +133,51 @@ def _confined(value: object, root_realpath: str) -> bool:
     return resolved == root_realpath or resolved.startswith(root_realpath + os.sep)
 
 
-def _case_variant(args: dict[object, object], exact_key: str) -> str | None:
-    """Return an offending key if ``args`` holds a case-insensitive duplicate of ``exact_key``.
+def _case_variant(fields: dict[object, object], exact_key: str) -> str | None:
+    """Return an offending key if ``fields`` holds a case-fold duplicate of ``exact_key``.
 
     A key differing from the one this guard reads only by case is either an
     adversarial probe for a parser differential (this guard reads one
     casing, agy or a future parser might read another) or a silent rename
     under our feet -- this guard cannot tell the two apart, so both deny.
+
+    Compared with ``casefold()``, not ``lower()``: agy's Go implementation
+    matches JSON object keys against struct fields with ``bytes.EqualFold``,
+    which folds Unicode look-alikes plain ASCII lowercasing does not --
+    measured: U+017F ("ſ", LATIN SMALL LETTER LONG S) folds to "s" and
+    U+212A ("K", KELVIN SIGN) folds to "k", so a key differing only by one of
+    those would have compared as case-DIFFERENT under ``lower()`` while agy's
+    own parser would still, or also, read it as the ASCII key. ``casefold()``
+    can over-match relative to Go's fold in rarer cases (e.g. "ß" folds to
+    "ss" here); that only ever turns a would-be allow into a deny, which is
+    the safe direction for a boundary that fails closed.
     """
-    lowered = exact_key.lower()
-    for key in args:
-        if isinstance(key, str) and key != exact_key and key.lower() == lowered:
+    folded = exact_key.casefold()
+    for key in fields:
+        if isinstance(key, str) and key != exact_key and key.casefold() == folded:
             return key
     return None
 
 
 def _tool_call(payload: str) -> tuple[str, dict[object, object]] | None:
-    """Parse the hook payload into ``(tool name, args)``, or ``None`` if unreadable."""
+    """Parse the hook payload into ``(tool name, args)``, or ``None`` if unreadable.
+
+    The envelope keys -- ``toolCall`` at the top level, ``name`` and ``args``
+    inside it -- are read exactly, the same as a tool's own argument keys
+    are; a case-fold duplicate of any of them is the same parser-differential
+    risk `_case_variant` guards against below, so it is checked here too.
+    """
     try:
         parsed = json.loads(payload)
     except (json.JSONDecodeError, TypeError, ValueError):
         return None
-    call = _as_dict(parsed).get("toolCall")
+    envelope = _as_dict(parsed)
+    if _case_variant(envelope, "toolCall") is not None:
+        return None
+    call = envelope.get("toolCall")
     if not isinstance(call, dict):
+        return None
+    if _case_variant(call, "name") is not None or _case_variant(call, "args") is not None:
         return None
     name = call.get("name")
     if not isinstance(name, str):
@@ -273,7 +295,15 @@ def main() -> int:
         result = decide(payload, cast("Mapping[str, object]", config))
     except BaseException:
         result = _deny("workspace guard internal error")
-    sys.stdout.write(json.dumps(result))
+    try:
+        sys.stdout.write(json.dumps(result))
+        sys.stdout.flush()
+    except BaseException:
+        # The contract is unconditional: main() ALWAYS returns 0. A reader
+        # that hung up early (a broken pipe) must not turn into a non-zero
+        # exit or an uncaught exception -- there would be nowhere left for
+        # either to be reported to anyway.
+        pass
     return 0
 
 
