@@ -29,8 +29,14 @@ if every value were right.
 
 The v12 mint's inline blocks (views, trigger bindings) and its sequence blocks
 are not re-measured here: 056 creates no view, trigger, function or sequence.
-That is not taken on trust -- the fresh-head yardstick replays the WHOLE asset,
-and any of those blocks disagreeing with the chain turns it red.
+The fresh-head yardstick replays the WHOLE asset, but against the CHAIN, so it
+cannot see a twin row that is right for the chain and wrong for a restore. That
+is exactly what shipped: the twin inherited `knowledge_claim_current` (055) in
+its chain form from v12, and the first real restore of production failed
+`view_definition_mismatches` (2026-09-23, ticket 1ec33903). The view's
+`varchar IN (...)` filter does not deparse idempotently through
+`pg_dump`/`pg_restore`. `TWIN_VIEW_ROWS` carries the form measured on that real
+restore, and the mint writes it into the twin, so a re-mint cannot regress it.
 """
 
 from __future__ import annotations
@@ -75,6 +81,27 @@ REWRITABLE_ROWS = {
 TWIN_DIVERGENCE_BY_DESIGN = {
     ("expected_table_indexes", ("dream_promotions", "idx_dream_promotions_source_materialized")),
 }
+
+
+#: View rows the `-pgrestore` twin carries in the form a REAL restore renders,
+#: measured on 2026-09-23 on a restore of the production pre056 dump (ticket
+#: 1ec33903). The base asset keeps the chain form, which production renders.
+TWIN_VIEW_ROWS = {
+    "knowledge_claim_current": (
+        "30fdf69fd0413f03c00ae3ca2ca4e756",
+        "6565fd7e2fe5e52a9c5175651964f34e",
+    ),
+}
+
+
+def correct_twin_views(text: str) -> str:
+    """Swap each declared view row from its chain form to its restored form."""
+    for view, (chain_md5, restored_md5) in TWIN_VIEW_ROWS.items():
+        chain_row = f"('{view}', FALSE, '{chain_md5}')"
+        if text.count(chain_row) != 1:
+            raise SystemExit(f"la ligne de vue {view} n'est pas sous sa forme de chaîne attendue")
+        text = text.replace(chain_row, f"('{view}', FALSE, '{restored_md5}')")
+    return text
 
 
 def find_block(lines: list[str], name: str) -> tuple[int, int, str]:
@@ -284,6 +311,8 @@ async def main(dsn: str, src: Path, dst: Path) -> int:
         lines = append_rows(lines, expected_name, additions)
 
     text = patch_scalars("\n".join(lines))
+    if dst.name.endswith("-pgrestore.sql"):
+        text = correct_twin_views(text)
 
     # Self-check: the written contract must agree with the database it was
     # measured on, in BOTH directions, bar the declared twin divergence.

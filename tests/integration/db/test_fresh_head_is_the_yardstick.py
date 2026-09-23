@@ -132,6 +132,17 @@ PINNED_DISABLED_TRIGGER_DRIFT: dict[str, Any] = {
     "artifact_constraint_mismatches": 0,
 }
 
+#: The TWIN's runtime divergence from a fresh head: the same armed-trigger pin,
+#: plus `knowledge_claim_current` (055), which the twin attests in the form a real
+#: `pg_restore` renders. Its `varchar IN (...)` filter does not deparse
+#: idempotently, so a fresh chain-built database renders the other form. Measured
+#: on a real restore of the production pre056 dump, 2026-09-23 (ticket 1ec33903):
+#: before that the twin carried the chain form and failed every real restore.
+PINNED_TWIN_RUNTIME_DRIFT: dict[str, Any] = {
+    **PINNED_DISABLED_TRIGGER_DRIFT,
+    "view_definition_mismatches": 1,
+}
+
 PINNED_ASSET_DRIFT: dict[str, dict[str, Any]] = {
     "brain_runtime_032_036_037": PINNED_DISABLED_TRIGGER_DRIFT,
 }
@@ -409,11 +420,12 @@ async def test_the_pgrestore_twin_diverges_from_a_fresh_head_by_exactly_one_inde
     fingerprints still describe the head-056 schema, canonicalisation included.
 
     It does say so: the v13 twin's measured fingerprints land exactly.
-    What does not land exactly is ONE pre-existing index and one only,
-    `idx_dream_promotions_source_materialized`, which the twin pins in the form
-    `pg_restore` re-serialises and the alembic chain never produces. That is its
-    reason to exist, not a defect: this test pins it at its exact value so that a
-    SECOND divergent index cannot pass for it.
+    What does not land exactly is ONE pre-existing index,
+    `idx_dream_promotions_source_materialized`, and ONE view,
+    `knowledge_claim_current`: the twin pins both in the form `pg_restore`
+    re-serialises and the alembic chain never produces. That is its reason to
+    exist, not a defect: this test pins both at their exact value so that a
+    SECOND divergent index or view cannot pass for them.
 
     What this test still does not prove: the `pg_dump`/`pg_restore` round-trip
     itself. That needs a bench.
@@ -448,9 +460,9 @@ async def test_the_pgrestore_twin_diverges_from_a_fresh_head_by_exactly_one_inde
         "stopped shipping project_contexts_focus_history_required disabled, or the "
         "pin was minted wrong — re-measure before removing it"
     )
-    assert runtime["observed"] == PINNED_DISABLED_TRIGGER_DRIFT, (
-        "the twin's runtime-trigger divergence from a fresh head MOVED:\n"
-        f"pinned:   {json.dumps(PINNED_DISABLED_TRIGGER_DRIFT, sort_keys=True)}\n"
+    assert runtime["observed"] == PINNED_TWIN_RUNTIME_DRIFT, (
+        "the twin's runtime divergence from a fresh head MOVED:\n"
+        f"pinned:   {json.dumps(PINNED_TWIN_RUNTIME_DRIFT, sort_keys=True)}\n"
         f"observed: {json.dumps(runtime['observed'], sort_keys=True)}"
     )
 
