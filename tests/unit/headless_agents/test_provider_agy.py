@@ -591,6 +591,53 @@ class TestWorkspace:
         result, _ = _workspace_run(tmp_path, f"echo '{_WRITE_STEP}'\nexit 3", write=True)
         assert result.exit_code == 1
 
+    def test_a_read_only_failure_after_a_write_step_stays_replayable(self, tmp_path: Path) -> None:
+        """The guard denies writes in read mode: the step taints nothing."""
+        result, _ = _workspace_run(tmp_path, f"echo '{_WRITE_STEP}'\nexit 3")
+        assert result.exit_code == PROVIDER_FALLBACK_EXIT_CODE
+
+    def test_an_ephemeral_root_inside_the_workspace_is_refused(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        root = ws / "tmp"
+        root.mkdir(parents=True)
+        fake = tmp_path / "agy"
+        fake.write_text(f"#!/usr/bin/env bash\ntouch {tmp_path}/spawned\n", encoding="utf-8")
+        fake.chmod(0o755)
+        spec = RunSpec(
+            prompt="p",
+            executable=str(fake),
+            profile=CapabilityProfile(workspace=Workspace(path=ws)),
+            run_dir=tmp_path / "run",
+        )
+        with pytest.raises(ValueError, match="overlap"):
+            agy.AgyProvider(real_home=tmp_path, ephemeral_root=root).run(spec)
+        assert not (tmp_path / "spawned").exists() and not (tmp_path / "run").exists()
+        assert list(root.iterdir()) == []
+
+    def test_the_probe_refuses_a_guard_that_can_read_its_own_config(self, tmp_path: Path) -> None:
+        """Whatever put the HOME under the guard's root, the probe catches it."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        home = sandbox.build_ephemeral_home(
+            root=tmp_path / "r",
+            name="h",
+            profile=CapabilityProfile(),
+            real_home=tmp_path,
+            workspace=Workspace(path=ws),
+        )
+        assert agy.workspace_guard_holds(home, Workspace(path=ws)) is True
+        config = home / ".gemini" / "config" / "workspace-guard.json"
+        config.write_text(json.dumps({"root": str(tmp_path), "write": False, "shell": False}))
+        assert agy.workspace_guard_holds(home, Workspace(path=tmp_path)) is False
+
+    def test_the_files_root_attribute_is_escaped(self, tmp_path: Path) -> None:
+        ws = tmp_path / 'w"<&>'
+        ws.mkdir()
+        workspace = Workspace(path=ws)
+        spec = RunSpec(prompt="p", profile=CapabilityProfile(workspace=workspace))
+        preamble = agy._preamble_for(spec, workspace)
+        assert f'<files root="{tmp_path}/w&quot;&lt;&amp;&gt;">' in preamble
+
     def test_a_deadline_after_a_write_step_is_a_plain_timeout(self, tmp_path: Path) -> None:
         script = f"echo '{_WRITE_STEP}'\nexec sleep 30"
         result, _ = _workspace_run(tmp_path, script, write=True, timeout_seconds=1.0)
@@ -609,6 +656,46 @@ def test_listing_of_a_git_repo_and_its_cap(tmp_path: Path) -> None:
         "f1.txt",
         "… 3 more entries not listed",
     ]
+
+
+def test_listing_is_pinned_to_the_workspace(tmp_path: Path) -> None:
+    """A ``core.worktree`` a write run left in ``.git/config`` must not point
+    the listing at another directory."""
+    root = tmp_path / "root"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "core.worktree", str(outside)], check=True)
+    (root / "in.txt").write_text("x")
+    (outside / "out.txt").write_text("x")
+    assert agy.workspace_listing(root) == "in.txt"
+
+
+def test_listing_of_a_linked_worktree(tmp_path: Path) -> None:
+    main = tmp_path / "main"
+    subprocess.run(["git", "init", "-q", str(main)], check=True)
+    (main / "tracked.txt").write_text("x")
+    git = ["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "add", "tracked.txt"], check=True)
+    subprocess.run([*git, "commit", "-qm", "c"], check=True)
+    linked = tmp_path / "linked"
+    subprocess.run([*git, "worktree", "add", "-q", str(linked)], check=True)
+    (linked / "new.txt").write_text("x")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "out.txt").write_text("x")
+    # A per-worktree config is the one a linked worktree honours.
+    subprocess.run([*git, "config", "extensions.worktreeConfig", "true"], check=True)
+    per_worktree = ["git", "-C", str(linked), "config", "--worktree", "core.worktree"]
+    subprocess.run([*per_worktree, str(outside)], check=True)
+    assert agy.workspace_listing(linked).splitlines() == ["new.txt", "tracked.txt"]
+
+
+def test_listing_drops_entries_that_could_break_the_block(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    for name in ("ok.txt", "a<b", "c>d", "e\nf", "g\rh"):
+        (tmp_path / name).write_text("x")
+    assert agy.workspace_listing(tmp_path) == "ok.txt\n… 4 more entries not listed"
 
 
 def test_listing_outside_git(tmp_path: Path) -> None:

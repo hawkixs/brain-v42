@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import importlib.resources
 import json
+import os
 import shutil
 import sys
 from collections.abc import Mapping
@@ -123,12 +124,15 @@ def build_ephemeral_home(
     ``guard_python`` -- the interpreter this runtime lives in: the guard needs
     the standard library only, and agy's rebuilt environment names no other.
     """
-    if workspace is not None and profile.guard is not None:
-        raise ValueError(
-            "a workspace run is confined by the package's own tool_guard:"
-            " profile.guard must be None, the two do not compose"
-        )
+    refuse_caller_guard_with_workspace(profile.guard, workspace)
     home = root / name
+    if workspace is not None:
+        refuse_home_under_workspace(home, workspace)
+        if within(workspace.path, home):
+            raise ValueError(
+                f"the workspace {workspace.path} and the ephemeral HOME {home} overlap:"
+                " the guard's root would hold its own config"
+            )
     config_dir = home / ".gemini" / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
     (home / ".gemini" / "antigravity-cli").mkdir(parents=True, exist_ok=True)
@@ -174,6 +178,41 @@ def build_ephemeral_home(
 
     materialize_credentials(home=home, real_home=real_home, credentials=profile.credentials)
     return home
+
+
+def refuse_caller_guard_with_workspace(
+    guard: ToolGuard | None, workspace: Workspace | None
+) -> None:
+    """A workspace run is confined by the package guard alone: wiring the
+    caller's too would leave two hooks whose verdicts agy combines in a way
+    nobody measured, so the ambiguity is refused before anything runs."""
+    if workspace is not None and guard is not None:
+        raise ValueError(
+            "a workspace run is confined by the package's own tool_guard:"
+            " profile.guard must be None, the two do not compose"
+        )
+
+
+def within(path: Path, ancestor: Path) -> bool:
+    """``path`` is ``ancestor`` or under it, symlinks resolved on both sides."""
+    resolved = os.path.realpath(path)
+    base = os.path.realpath(ancestor)
+    return resolved == base or resolved.startswith(base.rstrip(os.sep) + os.sep)
+
+
+def refuse_home_under_workspace(home: Path, workspace: Workspace) -> None:
+    """Refuse a HOME (or the root it will be created under) inside the workspace.
+
+    The guard confines tools to the workspace: a HOME inside it would let the
+    agent read ``mcp_config.json`` (the literal bearer) and, in write mode,
+    rewrite ``workspace-guard.json`` to ``"root": "/"`` -- one write that
+    removes the run's only confinement.
+    """
+    if within(home, workspace.path):
+        raise ValueError(
+            f"the ephemeral HOME {home} and the workspace {workspace.path} overlap:"
+            " the agent could rewrite its own guard"
+        )
 
 
 def _install_workspace_guard(config_dir: Path, workspace: Workspace, guard_python: str) -> Path:

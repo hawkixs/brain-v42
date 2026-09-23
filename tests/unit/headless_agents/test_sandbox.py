@@ -316,6 +316,32 @@ class TestWorkspaceHome:
                 workspace=Workspace(path=tmp_path),
             )
 
+    def test_a_home_overlapping_the_workspace_is_refused(self, tmp_path: Path) -> None:
+        """A HOME under the workspace lets the guard allow reads and writes of
+        its own config and of the literal bearer; a workspace under the HOME
+        puts that config under the guard's root. Both are refused."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        with pytest.raises(ValueError, match="overlap"):
+            build_ephemeral_home(
+                root=ws / "tmp",
+                name="h",
+                profile=CapabilityProfile(),
+                real_home=tmp_path,
+                workspace=Workspace(path=ws),
+            )
+        assert not (ws / "tmp").exists()
+        inner = tmp_path / "r" / "h" / "ws"
+        inner.mkdir(parents=True)
+        with pytest.raises(ValueError, match="overlap"):
+            build_ephemeral_home(
+                root=tmp_path / "r",
+                name="h",
+                profile=CapabilityProfile(),
+                real_home=tmp_path,
+                workspace=Workspace(path=inner),
+            )
+
     def test_the_guard_ships_as_a_package_resource(self) -> None:
         """The wheel must carry ``guards/``: the sandbox reads the guard through
         ``importlib.resources``, never through a source-tree path."""

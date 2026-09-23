@@ -49,10 +49,16 @@ from ..capability import (
     failure_code_after_a_write,
     terminate_process_group,
 )
+from ..guards.agy_workspace import GUARD_CONFIG_NAME
 from ..profile import CapabilityProfile, Workspace
 from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
-from ..sandbox import WORKSPACE_GUARD_NAME, build_ephemeral_home
+from ..sandbox import (
+    WORKSPACE_GUARD_NAME,
+    build_ephemeral_home,
+    refuse_caller_guard_with_workspace,
+    refuse_home_under_workspace,
+)
 from ..sandbox import ephemeral_root as default_ephemeral_root
 from ..spec import RunSpec
 from ..workspace import (
@@ -207,18 +213,32 @@ def workspace_listing(root: Path, *, max_entries: int = 2000, max_bytes: int = 3
     agy's only read tool, ``view_file``, cannot list a directory: without this
     list the agent would have to guess paths. Tracked plus untracked-not-ignored
     files, capped so a large repository cannot eat the argv the prompt travels
-    in. ``core.fsmonitor`` is forced off: a write run can edit ``.git/config``,
-    and a configured fsmonitor is a command git would run HERE, outside the
-    guard, on the next run's listing.
+    in. A write run can edit ``.git/config``, so what it could set there is
+    overridden: ``core.fsmonitor`` is forced off (a command git would run
+    HERE, outside the guard), and the work tree is pinned to ``root`` (a
+    ``core.worktree`` pointing elsewhere would list, into the prompt, the
+    names of a directory the guard never lets the agent see).
+
+    An entry that could break out of the ``<files>`` block (a newline, a
+    carriage return, ``<`` or ``>`` in its name) is dropped and counted with
+    the entries the caps left out.
     """
+    if (root / ".git").is_dir():
+        pinned = ["--git-dir", str(root / ".git"), "--work-tree", str(root)]
+    else:
+        # A linked worktree's .git is a file naming its git dir elsewhere, so
+        # only the work tree is pinned. Measured: ``-c core.worktree=<root>``
+        # does NOT beat a per-worktree ``core.worktree``; ``--work-tree`` does.
+        pinned = ["--work-tree", str(root)]
     try:
         result = subprocess.run(
             [
                 "git",
-                "-c",
-                "core.fsmonitor=false",
                 "-C",
                 str(root),
+                *pinned,
+                "-c",
+                "core.fsmonitor=false",
                 "ls-files",
                 "--cached",
                 "--others",
@@ -236,6 +256,8 @@ def workspace_listing(root: Path, *, max_entries: int = 2000, max_bytes: int = 3
     listed: list[str] = []
     size = 0
     for entry in entries:
+        if any(character in entry for character in "\n\r<>"):
+            continue
         cost = len(entry.encode("utf-8")) + (1 if listed else 0)
         if len(listed) >= max_entries or size + cost > max_bytes:
             break
@@ -252,13 +274,17 @@ def workspace_guard_holds(home: Path, workspace: Workspace) -> bool:
     The same stance as :func:`guard_denies_machine_tools`, on the exact file
     in the HOME and under ``HOME=home``, so a broken shebang, a missing config
     or a permissive edit all refuse the run: a read inside is allowed, a read
-    of ``/`` is denied, and ``run_command`` follows ``workspace.shell``.
+    of ``/`` is denied, ``run_command`` follows ``workspace.shell``, and a
+    read of the guard's own config is denied -- whatever put the HOME under
+    the guard's root, the agent must not reach the file that draws it.
     """
-    guard = home / ".gemini" / "config" / WORKSPACE_GUARD_NAME
+    config_dir = home / ".gemini" / "config"
+    guard = config_dir / WORKSPACE_GUARD_NAME
     probes = (
         ("view_file", {"AbsolutePath": str(workspace.path)}, "allow"),
         ("view_file", {"AbsolutePath": "/"}, "deny"),
         ("run_command", {"CommandLine": "true"}, "allow" if workspace.shell else "deny"),
+        ("view_file", {"AbsolutePath": str(config_dir / GUARD_CONFIG_NAME)}, "deny"),
     )
     for tool_name, args, expected in probes:
         payload = json.dumps({"toolCall": {"name": tool_name, "args": args}, "stepIdx": 0})
@@ -427,6 +453,13 @@ def run_agy(
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
     ambient = dict(environment) if environment is not None else dict(os.environ)
+    root = ephemeral_root if ephemeral_root is not None else default_ephemeral_root(ambient)
+    if workspace is not None:
+        # Every HOME of this run is created under this root: refuse it here,
+        # as ValueError like the caller-guard refusal, before any file exists.
+        refuse_home_under_workspace(
+            root if root is not None else Path(tempfile.gettempdir()), workspace
+        )
 
     for path in (events_log, report_log, stderr_log):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -466,7 +499,6 @@ def run_agy(
     source_home = (
         real_home if real_home is not None else Path(ambient.get("HOME", str(Path.home())))
     )
-    root = ephemeral_root if ephemeral_root is not None else default_ephemeral_root(ambient)
 
     def _run(base: Path) -> int:
         home = build_ephemeral_home(
@@ -563,32 +595,32 @@ def run_agy(
 
 
 def _confined_workspace(profile: CapabilityProfile) -> Workspace | None:
-    """The profile's workspace, refused next to a caller's guard.
-
-    A workspace run is confined by the package guard alone: wiring the
-    caller's too would leave two hooks whose verdicts agy combines in a way
-    nobody measured, so the ambiguity is refused before anything runs.
-    """
-    if profile.workspace is not None and profile.guard is not None:
-        raise ValueError(
-            "a workspace run is confined by the package's own tool_guard:"
-            " profile.guard must be None, the two do not compose"
-        )
+    """The profile's workspace, refused next to a caller's guard."""
+    refuse_caller_guard_with_workspace(profile.guard, profile.workspace)
     return profile.workspace
 
 
+_READ_NOTE = (
+    "Your only read tool is view_file with an ABSOLUTE path under the workspace;"
+    " it cannot list directories: use the file list below."
+)
+
 #: What a run's preamble tells the agent about its tools, by mode.
 _TOOLS_NOTE = {
-    "read": (
-        "Your only read tool is view_file with an ABSOLUTE path under the workspace;"
-        " it cannot list directories: use the file list below."
-    ),
+    "read": _READ_NOTE,
     "write": (
-        "Your only read tool is view_file with an ABSOLUTE path under the workspace;"
-        " it cannot list directories: use the file list below."
-        " Edit with write_to_file and replace_file_content, absolute paths under the workspace."
+        f"{_READ_NOTE} Edit with write_to_file and replace_file_content,"
+        " absolute paths under the workspace."
     ),
 }
+
+
+def _xml_attribute(value: str) -> str:
+    """``value`` safe inside a double-quoted attribute: a workspace path is
+    the operator's, but nothing stops it holding a quote or a bracket."""
+    return (
+        value.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+    )
 
 
 def _preamble_for(spec: RunSpec, workspace: Workspace | None) -> str:
@@ -600,7 +632,8 @@ def _preamble_for(spec: RunSpec, workspace: Workspace | None) -> str:
     preamble = rail_preamble(spec, tools_note=_TOOLS_NOTE[mode])
     if workspace is None:
         return preamble
-    files = f'<files root="{workspace.path}">\n{workspace_listing(workspace.path)}\n</files>'
+    root = _xml_attribute(str(workspace.path))
+    files = f'<files root="{root}">\n{workspace_listing(workspace.path)}\n</files>'
     return f"{preamble}\n\n{files}"
 
 
