@@ -638,7 +638,7 @@ def _persist_rotated_auth(
 # would make every "here is a safe root" fixture built under ``tmp_path``
 # unsafe by this check alone, with no way to construct a counter-example
 # otherwise. Production code never overrides it.
-_CONVENTIONAL_TMP_ROOT = Path("/tmp")
+_CONVENTIONAL_TMP_ROOT = Path("/tmp")  # nosec B108 - denylist entry, never written to: a CODEX_HOME root under it is REFUSED (see _unsafe_home_roots)
 
 
 def _unsafe_home_roots(*, environ: Mapping[str, str], workspace_path: Path) -> frozenset[Path]:
