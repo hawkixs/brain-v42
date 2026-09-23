@@ -173,9 +173,13 @@ tests, and the `ToolGuard` docstring is amended to say so. The two do not compos
 0.4.0: an agy profile carrying both `workspace` and a caller `tool_guard` is rejected with
 `ValueError` (a run without a workspace keeps the caller guard exactly as today).
 
-`shell` is explicit and off by default because only codex confines it. The ephemeral HOME
-stays in every case: none of the operator's hooks, MCP servers or user-level instructions
-leak into the child by accident.
+`shell` is explicit and off by default because only codex confines it.
+
+What a workspace run sees of the operator's HOME, rail by rail:
+- **agy and opencode**: an ephemeral HOME, in every case.
+- **codex**: an ephemeral `CODEX_HOME` (decision 11); the process `HOME` is the caller's.
+- **claude**: the caller's HOME; `--restricted` ignores the settings sources. Whether
+  `~/.claude/CLAUDE.md` still loads under `--restricted` is UNMEASURED.
 
 **Read confinement is per rail.** claude's permission checks, opencode's
 `external_directory` permission and agy's guard are expected to keep reads inside `path`;
