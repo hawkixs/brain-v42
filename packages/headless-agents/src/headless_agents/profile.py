@@ -85,8 +85,12 @@ class McpServer(BaseModel):
 class ToolGuard(BaseModel):
     """A ``PreToolUse`` hook script the CLI must consult before every tool call.
 
-    The runtime ships no guard of its own: the script is versioned and tested
-    by the caller, who passes its path. Pass it ABSOLUTE: the CLI resolves the
+    The runtime ships no guard for a run WITHOUT a workspace: the script is
+    versioned and tested by the caller, who passes its path. A run WITH a
+    workspace uses the package-owned guard
+    (:mod:`headless_agents.guards.agy_workspace`); the two do not compose, and
+    a profile carrying both is refused -- by the agy rail, which is the only
+    one that reads a guard. Pass it ABSOLUTE: the CLI resolves the
     hook command from its own working directory (the ephemeral HOME), where a
     relative path names nothing -- and the probe that proves the guard denies
     runs from the parent's, so it would not notice. The shape is not enforced

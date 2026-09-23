@@ -18,20 +18,31 @@ What goes into the HOME is read off a :class:`~headless_agents.profile.Capabilit
 - ``profile.credentials`` -> symlinks (default) or ``0600`` copies of the
   caller-declared files under the real HOME.
 
-The guard is never bundled here: it is a versioned file that lives with its
-own tests in the caller's tree. Credentials are never copied unless the caller
-says ``mode="copy"``: duplicating a human's OAuth tokens makes copies to
-revoke one by one, so the default is a symlink.
+Without a workspace, the guard is never bundled here: it is a versioned file
+that lives with its own tests in the caller's tree. WITH a workspace, the
+package-owned guard (:mod:`headless_agents.guards.agy_workspace`) is copied
+into the HOME with its ``workspace-guard.json`` next to it; the two guards do
+not compose, and a profile carrying both is refused. Credentials are never
+copied unless the caller says ``mode="copy"``: duplicating a human's OAuth
+tokens makes copies to revoke one by one, so the default is a symlink.
 """
 
 from __future__ import annotations
 
+import importlib.resources
 import json
 import shutil
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
-from .profile import CapabilityProfile, Credentials, McpServer
+from .guards.agy_workspace import GUARD_CONFIG_NAME
+from .profile import CapabilityProfile, Credentials, McpServer, ToolGuard, Workspace
+
+# Where a workspace run's copy of the package guard lives, and the name its
+# hook is filed under in hooks.json.
+WORKSPACE_GUARD_NAME = "workspace_guard.py"
+WORKSPACE_HOOK_NAME = "workspace-guard"
 
 # Used when the parent process has no PATH at all. Deliberately poor: enough to
 # find a system-wide CLI, nothing more.
@@ -103,8 +114,20 @@ def build_ephemeral_home(
     name: str,
     profile: CapabilityProfile,
     real_home: Path,
+    workspace: Workspace | None = None,
+    guard_python: str = sys.executable,
 ) -> Path:
-    """Compose one run's HOME under ``root/name``: server, guard, settings, credentials."""
+    """Compose one run's HOME under ``root/name``: server, guard, settings, credentials.
+
+    ``workspace`` swaps the caller's guard for the package's own, run by
+    ``guard_python`` -- the interpreter this runtime lives in: the guard needs
+    the standard library only, and agy's rebuilt environment names no other.
+    """
+    if workspace is not None and profile.guard is not None:
+        raise ValueError(
+            "a workspace run is confined by the package's own tool_guard:"
+            " profile.guard must be None, the two do not compose"
+        )
     home = root / name
     config_dir = home / ".gemini" / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -115,17 +138,23 @@ def build_ephemeral_home(
     config_path.write_text(json.dumps(_mcp_config(profile.mcp)), encoding="utf-8")
     config_path.chmod(0o600)
 
-    if profile.guard is not None:
+    guard = profile.guard
+    if workspace is not None:
+        guard = ToolGuard(
+            path=_install_workspace_guard(config_dir, workspace, guard_python),
+            hook_name=WORKSPACE_HOOK_NAME,
+        )
+    if guard is not None:
         hooks = {
-            profile.guard.hook_name: {
+            guard.hook_name: {
                 "PreToolUse": [
                     {
                         "matcher": "*",
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": str(profile.guard.path),
-                                "timeout": profile.guard.timeout_seconds,
+                                "command": str(guard.path),
+                                "timeout": guard.timeout_seconds,
                             }
                         ],
                     }
@@ -135,14 +164,41 @@ def build_ephemeral_home(
         (config_dir / "hooks.json").write_text(json.dumps(hooks), encoding="utf-8")
 
     # The trusted workspace must be the ephemeral HOME itself: without it, agy
-    # refuses to load its customisations.
+    # refuses to load its customisations. A workspace run also trusts the
+    # directory it works in, which is its cwd.
+    trusted = [str(home)] if workspace is None else [str(home), str(workspace.path)]
     (home / ".gemini" / "antigravity-cli" / "settings.json").write_text(
-        json.dumps({"enableTelemetry": False, "trustedWorkspaces": [str(home)]}),
+        json.dumps({"enableTelemetry": False, "trustedWorkspaces": trusted}),
         encoding="utf-8",
     )
 
     materialize_credentials(home=home, real_home=real_home, credentials=profile.credentials)
     return home
+
+
+def _install_workspace_guard(config_dir: Path, workspace: Workspace, guard_python: str) -> Path:
+    """Copy the package guard into the HOME, on ``guard_python``, with its config.
+
+    Read through ``importlib.resources`` so it is the file the installed wheel
+    carries, not a source-tree path. The shebang is written, not inherited:
+    agy runs the hook as a bare command, and the module ships with none.
+    """
+    source = importlib.resources.files("headless_agents.guards").joinpath("agy_workspace.py")
+    lines = source.read_text(encoding="utf-8").splitlines(keepends=True)
+    if lines and lines[0].startswith("#!"):
+        lines = lines[1:]
+    path = config_dir / WORKSPACE_GUARD_NAME
+    path.write_text(f"#!{guard_python}\n" + "".join(lines), encoding="utf-8")
+    path.chmod(0o700)
+    guard_config = config_dir / GUARD_CONFIG_NAME
+    guard_config.write_text(
+        json.dumps(
+            {"root": str(workspace.path), "write": workspace.write, "shell": workspace.shell}
+        ),
+        encoding="utf-8",
+    )
+    guard_config.chmod(0o600)
+    return path
 
 
 def build_toolless_home(

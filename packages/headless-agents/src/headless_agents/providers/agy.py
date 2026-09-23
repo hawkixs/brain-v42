@@ -18,6 +18,12 @@ CORPUS, and the server is what enforces it. Because the guard is the only wall
 between a run and a shell, a profile WITHOUT a guard is refused: there is no
 "no tools" agy run other than one whose guard denies every machine tool.
 
+A WORKSPACE run swaps the caller's guard for the package's own
+(:mod:`headless_agents.guards.agy_workspace`), copied into the HOME and
+probed there before the spawn; a profile carrying both is refused, since the
+two do not compose. agy's ``view_file`` cannot list a directory, so the
+prompt carries the workspace's file list.
+
 THE RAIL'S ONLY DEVIATION. agy's ``Authorization`` is a literal: its
 documentation describes no ``${VAR}`` interpolation. The bearer is therefore
 WRITTEN to a file where the other two rails pass it through the environment.
@@ -36,22 +42,38 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from ..capability import (
+    INVALID_USAGE_EXIT_CODE,
     PROVIDER_FALLBACK_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
     TIMEOUT_REPLAYABLE_EXIT_CODE,
     failure_code_after_a_write,
     terminate_process_group,
 )
-from ..profile import CapabilityProfile
+from ..profile import CapabilityProfile, Workspace
 from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
-from ..sandbox import build_ephemeral_home
+from ..sandbox import WORKSPACE_GUARD_NAME, build_ephemeral_home
 from ..sandbox import ephemeral_root as default_ephemeral_root
 from ..spec import RunSpec
+from ..workspace import (
+    argv_prompt_or_refusal,
+    prepend,
+    rail_preamble,
+    workspace_summary,
+)
 
 # Kernel limit on a SINGLE argument (MAX_ARG_STRLEN = 32 pages). Beyond it,
 # execve returns E2BIG. We keep a margin for the rest of the command line.
 MAX_PROMPT_BYTES = 120_000
+
+# The built-in tools that can change the workspace. ``run_command`` counts:
+# with ``shell`` armed its shell is unconfined, and a denied call still shows
+# a step, which only errs towards "may have written".
+_WRITE_TOOLS = frozenset(
+    {"write_to_file", "replace_file_content", "multi_replace_file_content", "run_command"}
+)
+
+NO_FILE_LIST = "(not a git repository: no file list)"
 
 
 def build_agy_command(
@@ -145,6 +167,116 @@ def tool_call_started(events_log: Path) -> bool:
         if _is_mcp_tool_step(event):
             return True
     return False
+
+
+def write_tool_started(events_log: Path) -> bool:
+    """Could a workspace-changing tool have STARTED in this stream-json flow?
+
+    The write-mode twin of :func:`tool_call_started`: any ``step_type: tool``
+    step naming one of :data:`_WRITE_TOOLS`, in ANY state -- ``ACTIVE`` is
+    written before the tool runs, and a refused one (``ERROR``) counting too
+    only errs on the safe side. Fail-closed the same way: an absent or
+    unreadable stream answers ``True``.
+    """
+    if not events_log.is_file():
+        return True
+    try:
+        raw_lines = events_log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return True
+    for raw_line in raw_lines:
+        if not raw_line.strip():
+            continue
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            return True
+        step = event.get("step_update") if isinstance(event, dict) else None
+        if (
+            isinstance(step, dict)
+            and step.get("step_type") == "tool"
+            and step.get("tool_name") in _WRITE_TOOLS
+        ):
+            return True
+    return False
+
+
+def workspace_listing(root: Path, *, max_entries: int = 2000, max_bytes: int = 32768) -> str:
+    """The workspace's files, one per line, as git sees them.
+
+    agy's only read tool, ``view_file``, cannot list a directory: without this
+    list the agent would have to guess paths. Tracked plus untracked-not-ignored
+    files, capped so a large repository cannot eat the argv the prompt travels
+    in. ``core.fsmonitor`` is forced off: a write run can edit ``.git/config``,
+    and a configured fsmonitor is a command git would run HERE, outside the
+    guard, on the next run's listing.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.fsmonitor=false",
+                "-C",
+                str(root),
+                "ls-files",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "-z",
+            ],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return NO_FILE_LIST
+    if result.returncode != 0:
+        return NO_FILE_LIST
+    entries = [raw.decode("utf-8", errors="replace") for raw in result.stdout.split(b"\0") if raw]
+    listed: list[str] = []
+    size = 0
+    for entry in entries:
+        cost = len(entry.encode("utf-8")) + (1 if listed else 0)
+        if len(listed) >= max_entries or size + cost > max_bytes:
+            break
+        listed.append(entry)
+        size += cost
+    if len(entries) > len(listed):
+        listed.append(f"… {len(entries) - len(listed)} more entries not listed")
+    return "\n".join(listed)
+
+
+def workspace_guard_holds(home: Path, workspace: Workspace) -> bool:
+    """PROVE the copied workspace guard confines, the way agy will run it.
+
+    The same stance as :func:`guard_denies_machine_tools`, on the exact file
+    in the HOME and under ``HOME=home``, so a broken shebang, a missing config
+    or a permissive edit all refuse the run: a read inside is allowed, a read
+    of ``/`` is denied, and ``run_command`` follows ``workspace.shell``.
+    """
+    guard = home / ".gemini" / "config" / WORKSPACE_GUARD_NAME
+    probes = (
+        ("view_file", {"AbsolutePath": str(workspace.path)}, "allow"),
+        ("view_file", {"AbsolutePath": "/"}, "deny"),
+        ("run_command", {"CommandLine": "true"}, "allow" if workspace.shell else "deny"),
+    )
+    for tool_name, args, expected in probes:
+        payload = json.dumps({"toolCall": {"name": tool_name, "args": args}, "stepIdx": 0})
+        try:
+            result = subprocess.run(
+                [str(guard)],
+                input=payload,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env={"HOME": str(home)},
+            )
+            verdict = json.loads(result.stdout)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return False
+        if not isinstance(verdict, dict) or verdict.get("decision") != expected:
+            return False
+    return True
 
 
 def tool_call_completed(events_log: Path) -> bool:
@@ -286,7 +418,12 @@ def run_agy(
     else the system temporary directory. ``guard_proven=True`` skips the probe
     for a caller that has just run :func:`guard_denies_machine_tools` on the
     same path itself -- the path checks below still apply.
+
+    ``profile.workspace`` runs the agent in that directory under the
+    package's own guard instead; ``prompt`` is then expected to carry the
+    workspace preamble already (:class:`AgyProvider` builds it).
     """
+    workspace = _confined_workspace(profile)
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
     ambient = dict(environment) if environment is not None else dict(os.environ)
@@ -300,13 +437,19 @@ def run_agy(
     # and it is logged. The path must be ABSOLUTE: the probe runs the script
     # from this process's working directory while agy resolves the hook
     # command from the ephemeral HOME, so a relative path can pass the first
-    # and name nothing in the second.
-    if profile.guard is None or not profile.guard.path.is_absolute():
+    # and name nothing in the second. A workspace run's guard is the
+    # package's, probed once it sits in the HOME.
+    if workspace is None and (profile.guard is None or not profile.guard.path.is_absolute()):
         stderr_log.write_text(
             "agy tool guard absent or not an absolute path: run refused\n", encoding="utf-8"
         )
         return 1
-    if not guard_proven and not guard_denies_machine_tools(profile.guard.path):
+    if (
+        workspace is None
+        and profile.guard is not None
+        and not guard_proven
+        and not guard_denies_machine_tools(profile.guard.path)
+    ):
         stderr_log.write_text(
             "agy tool guard absent or permissive: run refused\n", encoding="utf-8"
         )
@@ -326,7 +469,14 @@ def run_agy(
     root = ephemeral_root if ephemeral_root is not None else default_ephemeral_root(ambient)
 
     def _run(base: Path) -> int:
-        home = build_ephemeral_home(root=base, name=name, profile=profile, real_home=source_home)
+        home = build_ephemeral_home(
+            root=base, name=name, profile=profile, real_home=source_home, workspace=workspace
+        )
+        if workspace is not None and not workspace_guard_holds(home, workspace):
+            stderr_log.write_text(
+                "agy workspace guard failed its probe: run refused\n", encoding="utf-8"
+            )
+            return 1
         try:
             command = build_agy_command(
                 model=model,
@@ -360,7 +510,7 @@ def run_agy(
                     stdin=subprocess.DEVNULL,
                     stdout=events_stream,
                     stderr=stderr_stream,
-                    cwd=home,
+                    cwd=home if workspace is None else workspace.path,
                     env=_child_environment(home, ambient, profile),
                     text=True,
                     start_new_session=True,
@@ -379,8 +529,11 @@ def run_agy(
             else:
                 timed_out = False
 
+        writable = workspace is not None and workspace.write
         if timed_out:
             if tool_call_started(events_log):
+                return TIMEOUT_EXIT_CODE
+            if writable and write_tool_started(events_log):
                 return TIMEOUT_EXIT_CODE
             with stderr_log.open("a", encoding="utf-8") as stderr_stream:
                 stderr_stream.write(
@@ -398,6 +551,8 @@ def run_agy(
             return TIMEOUT_EXIT_CODE
         if tool_call_completed(events_log):
             return failure_code_after_a_write(exit_code)
+        if writable and write_tool_started(events_log):
+            return failure_code_after_a_write(exit_code)
         return PROVIDER_FALLBACK_EXIT_CODE
 
     if root is not None:
@@ -407,10 +562,53 @@ def run_agy(
         return _run(Path(temporary))
 
 
+def _confined_workspace(profile: CapabilityProfile) -> Workspace | None:
+    """The profile's workspace, refused next to a caller's guard.
+
+    A workspace run is confined by the package guard alone: wiring the
+    caller's too would leave two hooks whose verdicts agy combines in a way
+    nobody measured, so the ambiguity is refused before anything runs.
+    """
+    if profile.workspace is not None and profile.guard is not None:
+        raise ValueError(
+            "a workspace run is confined by the package's own tool_guard:"
+            " profile.guard must be None, the two do not compose"
+        )
+    return profile.workspace
+
+
+#: What a run's preamble tells the agent about its tools, by mode.
+_TOOLS_NOTE = {
+    "read": (
+        "Your only read tool is view_file with an ABSOLUTE path under the workspace;"
+        " it cannot list directories: use the file list below."
+    ),
+    "write": (
+        "Your only read tool is view_file with an ABSOLUTE path under the workspace;"
+        " it cannot list directories: use the file list below."
+        " Edit with write_to_file and replace_file_content, absolute paths under the workspace."
+    ),
+}
+
+
+def _preamble_for(spec: RunSpec, workspace: Workspace | None) -> str:
+    """The preamble ``run`` launches with, and ``build_command`` previews.
+
+    A workspace adds the ``<files>`` block its tools note points at.
+    """
+    mode = "write" if workspace is not None and workspace.write else "read"
+    preamble = rail_preamble(spec, tools_note=_TOOLS_NOTE[mode])
+    if workspace is None:
+        return preamble
+    files = f'<files root="{workspace.path}">\n{workspace_listing(workspace.path)}\n</files>'
+    return f"{preamble}\n\n{files}"
+
+
 class AgyProvider:
     """:class:`~headless_agents.protocol.AgentProvider` adapter over agy.
 
-    The profile's guard is required: this package ships no guard of its own.
+    Without a workspace the profile's guard is required: this package ships no
+    guard for that case. With one, the package guard replaces it.
     """
 
     name = "agy"
@@ -432,9 +630,10 @@ class AgyProvider:
         return default_ephemeral_root(environ) or Path(tempfile.gettempdir())
 
     def build_command(self, spec: RunSpec) -> list[str]:
+        workspace = _confined_workspace(spec.profile)
         return build_agy_command(
             model=spec.model,
-            prompt=spec.prompt,
+            prompt=prepend(_preamble_for(spec, workspace), spec.prompt),
             executable=spec.executable or "agy",
             timeout_seconds=spec.timeout_seconds,
         )
@@ -451,6 +650,7 @@ class AgyProvider:
             name=spec.name,
             profile=spec.profile,
             real_home=self._source_home(environ),
+            workspace=_confined_workspace(spec.profile),
         )
 
     def tool_call_completed(self, spec: RunSpec) -> bool:
@@ -459,13 +659,42 @@ class AgyProvider:
         return tool_call_completed(spec.events_log)
 
     def run(self, spec: RunSpec) -> RunResult:
+        workspace = _confined_workspace(spec.profile)
         spec = spec.with_run_dir_defaults()
         assert spec.events_log is not None
         assert spec.report_log is not None
         assert spec.stderr_log is not None
+        context = None if spec.context is None else tuple(spec.context.to_list())
+        preamble = _preamble_for(spec, workspace)
+        prompt = prepend(preamble, spec.prompt)
+        # Only a prompt this rail GREW is a usage error: a caller's own prompt
+        # too long for argv keeps its historical answer (3, replayable on a
+        # stdin rail that can take it), through build_agy_command.
+        refusal = argv_prompt_or_refusal(prompt, MAX_PROMPT_BYTES) if preamble else None
+        if refusal is not None:
+            spec.stderr_log.parent.mkdir(parents=True, exist_ok=True)
+            spec.stderr_log.write_text(f"{refusal}\n", encoding="utf-8")
+            return record(
+                spec,
+                RunResult(
+                    exit_code=INVALID_USAGE_EXIT_CODE,
+                    provider=self.name,
+                    model=spec.model,
+                    report_path=spec.report_log,
+                    events_log=spec.events_log,
+                    tokens=None,
+                    duration_seconds=0.0,
+                    tool_call_completed=False,
+                    text=None,
+                    run_id=run_id_of(spec),
+                    stderr_log=spec.stderr_log,
+                    workspace=workspace_summary(workspace),
+                    context=context,
+                ),
+            )
         start = time.monotonic()
         exit_code = run_agy(
-            prompt=spec.prompt,
+            prompt=prompt,
             name=spec.name,
             model=spec.model,
             timeout_seconds=spec.timeout_seconds,
@@ -497,5 +726,7 @@ class AgyProvider:
                 text=answer_text(spec.report_log, exit_code=exit_code),
                 run_id=run_id_of(spec),
                 stderr_log=spec.stderr_log,
+                workspace=workspace_summary(workspace),
+                context=context,
             ),
         )

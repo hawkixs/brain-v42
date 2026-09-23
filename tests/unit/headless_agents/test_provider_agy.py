@@ -4,6 +4,7 @@ before launch, report extracted from the event stream.
 
 from __future__ import annotations
 
+import functools
 import json
 import subprocess
 from pathlib import Path
@@ -11,13 +12,22 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
+from headless_agents import sandbox
 from headless_agents.capability import (
+    INVALID_USAGE_EXIT_CODE,
     PROVIDER_FALLBACK_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
     TIMEOUT_REPLAYABLE_EXIT_CODE,
 )
-from headless_agents.profile import CapabilityProfile, Credentials, McpServer, ToolGuard
+from headless_agents.profile import (
+    CapabilityProfile,
+    Credentials,
+    McpServer,
+    ToolGuard,
+    Workspace,
+)
 from headless_agents.providers import agy
+from headless_agents.result import RunResult
 from headless_agents.spec import RunSpec
 
 URL = "http://127.0.0.1:8765/mcp"
@@ -489,3 +499,127 @@ class TestAgyProvider:
         )
         assert result.exit_code == 1
         assert result.text is None
+
+
+def _workspace_run(
+    tmp_path: Path,
+    script: str,
+    *,
+    write: bool = False,
+    timeout_seconds: float = 30.0,
+) -> tuple[RunResult, Path]:
+    """Run AgyProvider over a real fake ``agy`` and the real copied guard."""
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    (ws / "a.txt").write_text("x", encoding="utf-8")
+    fake = tmp_path / "agy"
+    fake.write_text(f"#!/usr/bin/env bash\n{script}\n", encoding="utf-8")
+    fake.chmod(0o755)
+    (tmp_path / "root").mkdir(exist_ok=True)
+    provider = agy.AgyProvider(real_home=tmp_path, ephemeral_root=tmp_path / "root")
+    spec = RunSpec(
+        prompt="TASK",
+        executable=str(fake),
+        timeout_seconds=timeout_seconds,
+        profile=CapabilityProfile(workspace=Workspace(path=ws, write=write)),
+        run_dir=tmp_path / "run",
+    )
+    return provider.run(spec), ws
+
+
+_WRITE_STEP = json.dumps(
+    {"step_update": {"step_type": "tool", "tool_name": "write_to_file", "state": "ACTIVE"}}
+)
+
+
+class TestWorkspace:
+    def test_workspace_and_caller_guard_are_refused(self, tmp_path: Path) -> None:
+        profile = CapabilityProfile(
+            guard=ToolGuard(path=tmp_path / "g.sh"), workspace=Workspace(path=tmp_path)
+        )
+        with pytest.raises(ValueError, match="tool_guard"):
+            agy.AgyProvider().run(RunSpec(prompt="p", profile=profile, run_dir=tmp_path / "run"))
+        with pytest.raises(ValueError, match="tool_guard"):
+            _run(tmp_path, profile=profile)
+        assert not (tmp_path / "run").exists() and not (tmp_path / "out").exists()
+
+    def test_preamble_over_argv_limit_exits_2_without_spawn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("headless_agents.providers.agy.MAX_PROMPT_BYTES", 64)
+        marker = tmp_path / "spawned"
+        fake = tmp_path / "agy"
+        fake.write_text(f"#!/usr/bin/env bash\ntouch {marker}\n")
+        fake.chmod(0o755)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        result = agy.AgyProvider().run(
+            RunSpec(
+                prompt="p" * 10,
+                executable=str(fake),
+                profile=CapabilityProfile(workspace=Workspace(path=ws)),
+                run_dir=tmp_path / "run",
+            )
+        )
+        assert result.exit_code == INVALID_USAGE_EXIT_CODE == 2 and not marker.exists()
+        assert result.text is None and result.duration_seconds == 0.0
+        assert "too long for argv" in (tmp_path / "run" / "stderr.log").read_text()
+
+    def test_runs_in_the_workspace_with_the_preamble_and_file_list(self, tmp_path: Path) -> None:
+        script = f'pwd > {tmp_path}/cwd\nprintf %s "$2" > {tmp_path}/prompt'
+        result, ws = _workspace_run(tmp_path, script)
+        assert result.exit_code == 0
+        assert result.workspace == {"path": str(ws), "write": False, "shell": False}
+        assert (tmp_path / "cwd").read_text().strip() == str(ws)
+        prompt = (tmp_path / "prompt").read_text()
+        assert "Your only read tool is view_file" in prompt
+        assert f'<files root="{ws}">\n(not a git repository: no file list)\n</files>' in prompt
+        assert prompt.endswith("<task>\nTASK\n</task>")
+
+    def test_a_guard_failing_its_probe_refuses_the_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        broken = functools.partial(sandbox.build_ephemeral_home, guard_python="/nonexistent")
+        monkeypatch.setattr(agy, "build_ephemeral_home", broken)
+        result, _ = _workspace_run(tmp_path, f"touch {tmp_path}/spawned")
+        assert result.exit_code == 1 and not (tmp_path / "spawned").exists()
+        assert (tmp_path / "run" / "stderr.log").read_text() == (
+            "agy workspace guard failed its probe: run refused\n"
+        )
+
+    def test_a_failure_after_a_write_step_never_advances_a_chain(self, tmp_path: Path) -> None:
+        result, _ = _workspace_run(tmp_path, f"echo '{_WRITE_STEP}'\nexit 3", write=True)
+        assert result.exit_code == 1
+
+    def test_a_deadline_after_a_write_step_is_a_plain_timeout(self, tmp_path: Path) -> None:
+        script = f"echo '{_WRITE_STEP}'\nexec sleep 30"
+        result, _ = _workspace_run(tmp_path, script, write=True, timeout_seconds=1.0)
+        assert result.exit_code == TIMEOUT_EXIT_CODE
+
+
+def test_listing_of_a_git_repo_and_its_cap(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    for i in range(5):
+        (tmp_path / f"f{i}.txt").write_text("x")
+    listing = agy.workspace_listing(tmp_path, max_entries=3)
+    assert listing.splitlines()[:3] == ["f0.txt", "f1.txt", "f2.txt"]
+    assert listing.splitlines()[-1] == "… 2 more entries not listed"
+    assert agy.workspace_listing(tmp_path, max_bytes=13).splitlines() == [
+        "f0.txt",
+        "f1.txt",
+        "… 3 more entries not listed",
+    ]
+
+
+def test_listing_outside_git(tmp_path: Path) -> None:
+    assert agy.workspace_listing(tmp_path) == "(not a git repository: no file list)"
+
+
+def test_agy_write_tool_started(tmp_path: Path) -> None:
+    log = tmp_path / "e.jsonl"
+    log.write_text(_WRITE_STEP + "\n")
+    assert agy.write_tool_started(log) is True
+    view = {"step_update": {"step_type": "tool", "tool_name": "view_file", "state": "DONE"}}
+    log.write_text(json.dumps(view) + "\n")
+    assert agy.write_tool_started(log) is False
+    assert agy.write_tool_started(tmp_path / "absent.jsonl") is True
