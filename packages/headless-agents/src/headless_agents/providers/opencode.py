@@ -73,7 +73,7 @@ import os
 import subprocess
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from ..capability import (
@@ -88,7 +88,7 @@ from ..profile import CapabilityProfile, McpServer, Workspace
 from ..result import RunResult, TokenUsage
 from ..run_record import answer_text, record, run_id_of
 from ..sandbox import ephemeral_root as default_ephemeral_root
-from ..sandbox import materialize_credentials
+from ..sandbox import materialize_credentials, refuse_home_under_workspace
 from ..spec import RunSpec
 from ..workspace import (
     argv_prompt_or_refusal,
@@ -174,7 +174,12 @@ def opencode_config(mcp: McpServer | None, workspace: Workspace | None = None) -
     included. A workspace ADMITS a fixed built-in set on top of that wall
     (see :func:`_workspace_enabled_tools`); ``external_directory`` stays
     denied in every mode -- ``--auto`` approves whatever is not explicitly
-    denied, so leaving it out would silently open it.
+    denied, so leaving it out would silently open it. Two residuals of the
+    permission schema itself, not of this function: ``permission["write"]``
+    has no effect on opencode 1.18.30 -- writes (``write``, ``apply_patch``)
+    are checked against ``permission["edit"]`` -- and ``read: allow`` also
+    exposes any MCP RESOURCE tool a declared server offers, hidden only by
+    the ``tools`` wall.
     """
     tools: dict[str, bool] = {"*": False}
     permission: dict[str, str] = dict.fromkeys(MACHINE_TOOLS, "deny")
@@ -323,6 +328,33 @@ def _is_call_on_server(event: object, server: str) -> bool:
     return isinstance(tool, str) and tool.startswith(f"{server}_")
 
 
+def _any_event_fail_closed(
+    events_log: Path, predicate: Callable[[dict[str, object]], bool]
+) -> bool:
+    """Walk ``events_log`` and answer ``True`` at the first event ``predicate``
+    matches. Fail-closed on anything that cannot prove otherwise: an absent
+    file, an unreadable one, or a line that fails to parse as JSON -- shared
+    by every "could X have started" predicate in this module, so the same
+    proof (and the same failure mode) backs all of them from one parse loop.
+    """
+    if not events_log.is_file():
+        return True
+    try:
+        raw_lines = events_log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return True
+    for raw_line in raw_lines:
+        if not raw_line.strip():
+            continue
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            return True
+        if isinstance(event, dict) and predicate(event):
+            return True
+    return False
+
+
 def tool_call_started(events_log: Path, *, server: str) -> bool:
     """Could a tool call on ``server`` have STARTED in this run?
 
@@ -352,22 +384,9 @@ def tool_call_started(events_log: Path, *, server: str) -> bool:
     absent or unreadable stream cannot prove the negative, so it answers
     ``True`` ("a call may have started") and refuses the switchover.
     """
-    if not events_log.is_file():
-        return True
-    try:
-        raw_lines = events_log.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return True
-    for raw_line in raw_lines:
-        if not raw_line.strip():
-            continue
-        try:
-            event = json.loads(raw_line)
-        except json.JSONDecodeError:
-            return True
-        if _is_step_start(event) or _is_call_on_server(event, server):
-            return True
-    return False
+    return _any_event_fail_closed(
+        events_log, lambda event: _is_step_start(event) or _is_call_on_server(event, server)
+    )
 
 
 def tool_call_completed(events_log: Path, *, server: str) -> bool:
@@ -381,39 +400,39 @@ def tool_call_completed(events_log: Path, *, server: str) -> bool:
     return any(_is_completed_call(event, server) for event in _events(events_log))
 
 
-#: The built-in tools that can change the workspace. ``bash`` counts: with
-#: ``shell`` armed its shell is unconfined, and a denied call still shows a
-#: terminal event, which only errs towards "may have written".
-_WRITE_TOOLS = frozenset({"edit", "write", "patch", "bash"})
+def _is_write_tool_use(event: object, *, server: str | None) -> bool:
+    """A ``tool_use`` naming a built-in tool that is NEITHER a workspace read
+    tool NOR an MCP tool on ``server``. INVERTED on purpose: opencode's
+    built-in catalogue is neither closed (``apply_patch`` is a real tool a
+    fixed write-list once missed) nor stable under aliasing (the binary
+    reports ``shell`` for the same capability ``bash`` names in ``tools``/
+    ``permission``) -- a fixed allowlist of "write tools" fails OPEN on
+    whatever it forgot. The four read tools are the only ones this rail
+    itself ever admits in a workspace; everything else that is not the
+    declared MCP server counts as a write, known or not.
+    """
+    if not isinstance(event, dict) or event.get("type") != "tool_use":
+        return False
+    tool = _part(event).get("tool")
+    if not isinstance(tool, str):
+        return False
+    if tool in _WORKSPACE_READ_TOOLS:
+        return False
+    return not (server is not None and tool.startswith(f"{server}_"))
 
 
-def write_tool_started(events_log: Path) -> bool:
+def write_tool_started(events_log: Path, *, server: str | None = None) -> bool:
     """Could a workspace-changing built-in tool have STARTED in this stream?
 
-    The write-mode twin of :func:`tool_call_started`, keyed on the built-in
-    tool name instead of an MCP server prefix: a ``tool_use`` event naming one
-    of :data:`_WRITE_TOOLS`, in ANY state -- a denied call still leaves a
-    terminal event, which only errs on the safe side. Fail-closed the same
-    way: an absent or unreadable stream answers ``True``.
+    The write-mode twin of :func:`tool_call_started`, keyed on
+    :func:`_is_write_tool_use` instead of an MCP server prefix: a ``tool_use``
+    event naming a non-read, non-MCP tool, in ANY state -- a denied call
+    still leaves a terminal event, which only errs on the safe side.
+    Fail-closed the same way: an absent or unreadable stream answers ``True``.
     """
-    if not events_log.is_file():
-        return True
-    try:
-        raw_lines = events_log.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return True
-    for raw_line in raw_lines:
-        if not raw_line.strip():
-            continue
-        try:
-            event = json.loads(raw_line)
-        except json.JSONDecodeError:
-            return True
-        if event.get("type") != "tool_use":
-            continue
-        if _part(event).get("tool") in _WRITE_TOOLS:
-            return True
-    return False
+    return _any_event_fail_closed(
+        events_log, lambda event: _is_write_tool_use(event, server=server)
+    )
 
 
 def _unwrap_fence(report: str) -> str:
@@ -575,7 +594,7 @@ def _failure_exit_code(
     """Translate a failure into "replayable elsewhere" or not, never success."""
     if server is not None and tool_call_completed(events_log, server=server):
         return failure_code_after_a_write(default)
-    if workspace is not None and workspace.write and write_tool_started(events_log):
+    if workspace is not None and workspace.write and write_tool_started(events_log, server=server):
         return failure_code_after_a_write(default)
     return PROVIDER_FALLBACK_EXIT_CODE
 
@@ -589,16 +608,28 @@ def _deadline_exit_code(
     workspace: Workspace | None = None,
 ) -> int:
     """The code of the runner's OWN deadline: 124, or 4 when the stream proves
-    no call on ``server`` -- and, in a writable workspace, no built-in write
-    tool -- ever started (see :func:`tool_call_started` and
-    :func:`write_tool_started`). Without a server and without a writable
+    nothing could have started. Without a server and without a writable
     workspace there is nothing a run could have written through, so a hang is
     replayable whatever the stream says. The reading is written to stderr:
-    the deadline itself is not the news, the reason it was read as empty is."""
+    the deadline itself is not the news, the reason it was read as empty is.
+
+    In a WRITABLE workspace this is stricter than :func:`_failure_exit_code`:
+    a ``tool_use`` line is written in its TERMINAL state only (measured, see
+    :func:`tool_call_started`'s docstring), so a call still in flight when the
+    deadline fires leaves only its ``step_start`` -- with no tool name at all,
+    unlike a completed process's stream. There is no way to tell, from a bare
+    ``step_start``, whether the step in flight was about to run a read or a
+    write tool: ANY step counts, not only a named write tool.
+    """
     if server is not None and tool_call_started(events_log, server=server):
         return TIMEOUT_EXIT_CODE
-    if workspace is not None and workspace.write and write_tool_started(events_log):
-        return TIMEOUT_EXIT_CODE
+    if workspace is not None and workspace.write:
+        writable_deadline = _any_event_fail_closed(
+            events_log,
+            lambda event: _is_step_start(event) or _is_write_tool_use(event, server=server),
+        )
+        if writable_deadline:
+            return TIMEOUT_EXIT_CODE
     with stderr_log.open("a", encoding="utf-8") as stderr_stream:
         stderr_stream.write(
             f"opencode reached its deadline ({int(timeout_seconds)} s) with no step started"
@@ -686,6 +717,16 @@ def run_opencode(
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
     ambient = dict(environment) if environment is not None else dict(os.environ)
+    root = ephemeral_root if ephemeral_root is not None else default_ephemeral_root(ambient)
+    if workspace is not None:
+        # Before anything else exists: every ephemeral HOME of this run is
+        # created under this root, so a root inside the workspace would let
+        # the agent's own read tools -- scoped to the workspace by --dir --
+        # reach it, defeating the point of scoping --dir at all. Same
+        # convention as run_agy: ValueError, nothing created, nothing spawned.
+        refuse_home_under_workspace(
+            root if root is not None else Path(tempfile.gettempdir()), workspace
+        )
 
     for path in (events_log, report_log, stderr_log):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -718,8 +759,6 @@ def run_opencode(
         )
         return 1
     server = profile.mcp.name if profile.mcp is not None else None
-
-    root = ephemeral_root if ephemeral_root is not None else default_ephemeral_root(ambient)
 
     def _run(base: Path) -> int:
         home = build_opencode_home(root=base, name=name, profile=profile, real_home=source_home)
@@ -902,10 +941,13 @@ class OpenCodeProvider:
         context = None if spec.context is None else tuple(spec.context.to_list())
         preamble = _preamble_for(spec, workspace)
         prompt = prepend(preamble, spec.prompt)
-        # Only a prompt this rail GREW is a usage error: a caller's own prompt
-        # too long for argv keeps its historical answer (3, replayable),
-        # through build_opencode_command. This keeps workspace=None (and no
-        # context) byte-identical: an empty preamble never refuses.
+        # A prompt too long for argv is refused with 2 whenever a workspace or
+        # a context bundle added a preamble (this rail GREW the prompt); with
+        # neither, the preamble is empty and the caller's own oversized prompt
+        # keeps its historical answer (3, replayable) through
+        # build_opencode_command. Only the no-workspace-no-context case keeps
+        # 3 -- which is also what keeps it byte-identical to before workspaces
+        # existed.
         refusal = argv_prompt_or_refusal(prompt, MAX_PROMPT_BYTES) if preamble else None
         if refusal is not None:
             spec.stderr_log.parent.mkdir(parents=True, exist_ok=True)
