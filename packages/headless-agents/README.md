@@ -144,6 +144,133 @@ real HOME has none. `spec.reasoning_effort` becomes `--variant`; `spec.name`
 becomes the session title. The subscription credential to declare is
 `.local/share/opencode/auth.json`.
 
+## Workspace and context
+
+A `Workspace` gives an agent a directory to read, or read and edit, and nothing outside
+it -- confined by each rail's own mechanism, per
+`docs/specs/2026-09-23-headless-agents-0.4.0-design.md` (3.3) and its measurement
+amendments in section 8:
+
+```python
+class Workspace(BaseModel):
+    path: Path          # absolute, must exist, must be a directory
+    write: bool = False # False: read tools only, confined to path
+    shell: bool = False # refused unless write=True
+```
+
+`workspace=None` (the default) leaves every rail exactly as it ran before 0.4.0 --
+`CapabilityProfile.workspace` is the only field that changes anything. Read-only:
+
+```python
+from pathlib import Path
+
+from headless_agents.profile import CapabilityProfile, Workspace
+from headless_agents.providers.claude import ClaudeProvider
+from headless_agents.spec import RunSpec
+
+spec = RunSpec(
+    prompt="Summarise what this repository does.",
+    model="<model>",
+    profile=CapabilityProfile(workspace=Workspace(path=Path("/home/op/some-repo"))),
+    run_dir=Path("runs/read-1"),
+)
+result = ClaudeProvider().run(spec)
+# claude runs --restricted --tools Read,Glob,Grep --permission-mode dontAsk, cwd
+# /home/op/some-repo -- no edit tool ever reaches the model.
+```
+
+Writable, with a shell:
+
+```python
+from headless_agents.providers.codex import CodexProvider
+
+spec = RunSpec(
+    prompt="Fix the failing test in tests/test_foo.py and re-run it.",
+    model="<model>",
+    profile=CapabilityProfile(
+        workspace=Workspace(path=Path("/home/op/some-repo"), write=True, shell=True),
+    ),
+    run_dir=Path("runs/write-1"),
+)
+result = CodexProvider().run(spec)
+# codex runs --sandbox workspace-write -C /home/op/some-repo with its shell tool
+# armed inside the SAME OS sandbox (network off); apply_patch and the shell can both edit.
+```
+
+**Per rail, when a workspace is set** (measured 2026-09-23, `d9a72644` and the lot-2 live
+suite):
+
+| Rail | Read-only | Writable | `shell=True` adds |
+|---|---|---|---|
+| codex | `--sandbox read-only -C <path>`, shell tool ON (codex's only way to read) | `--sandbox workspace-write -C <path>` | commands inside the same OS sandbox, network off |
+| claude | `--restricted --tools Read,Glob,Grep --permission-mode dontAsk`, cwd `<path>` | `--restricted --tools Read,Edit,Write,Glob,Grep --permission-mode acceptEdits` | `Bash`, unconfined by `--restricted` -- operator's user rights |
+| opencode | allow `read`/`glob`/`grep`/`list`; `external_directory` denied; `--dir <path>` | also allow `edit`/`write` | allow `bash`, unconfined -- operator's user rights |
+| agy | package-owned **workspace guard**, reads confined to `<path>`, every write and `run_command` denied | the same guard, writes confined to `<path>` | `run_command` allowed, unconfined -- operator's user rights |
+
+The ephemeral HOME stays in every case: none of the operator's hooks, MCP servers or
+user-level configuration leaks into a workspace run by accident.
+
+**Residuals, measured and accepted, not fixed:**
+- **codex reads outside the workspace by design.** Its sandbox stops writes and network,
+  not reads: a codex agent can read anything the operator can, in both modes.
+- **opencode's `read` follows an inside symlink to an outside target.** The tool confines
+  the starting path, not where it leads (`ws/link.txt -> outside/secret.txt` reads the
+  outside content) -- measured live, `test_opencode_symlink_residual`.
+- **The shell is unconfined on claude, opencode and agy.** With `shell=True`, the shell
+  itself runs with the operator's own rights on all three; only codex's shell runs inside
+  its OS sandbox. Off by default, and the caller's to accept when arming it.
+
+**agy gets a package-owned guard, not the caller's.** Until 0.3.0 the runtime shipped no
+guard at all -- `ToolGuard` was a script the caller versioned and passed by path. With a
+`workspace`, the guard *is* the confinement, so the package owns it
+(`headless_agents.guards.agy_workspace`): shipped as package data, copied into the
+ephemeral HOME and PROVEN there before spawn by four probes (a read inside allowed, a read
+of `/` denied, `run_command` gated on `shell`, a read of the guard's own config denied). A
+profile carrying both `workspace` and a caller `tool_guard` is rejected with `ValueError`
+-- the two do not compose. Because agy's only read tool, `view_file`, cannot list a
+directory, the prompt also carries the workspace's file list (`git ls-files`, tracked plus
+untracked-not-ignored).
+
+**codex gets an ephemeral `CODEX_HOME`.** A workspace run authenticates through a private
+`0700` directory holding only a symlink to the real `auth.json`, torn down after the run
+with a hardened write-back of a rotated token (so a legitimate OAuth refresh is not lost).
+Residual, deliberately not defended: the sandbox can still READ the real `auth.json`
+through the symlink -- this rescue protects its integrity, not its confidentiality.
+
+**Context**, `headless_agents.context.resolve_context(level, repository_root, user_files)`,
+resolves `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` at a repository root (tracked or ignored) plus
+the caller's user-level files into a `ContextBundle`, set on `RunSpec.context`. **The
+preamble is the single channel**, on every rail, in every mode -- claude through
+`--append-system-prompt`, codex/opencode/agy as a delimited block prepended to the prompt.
+An earlier design also wrote a native instruction file into a write-mode workspace; it was
+measured live on 2026-09-23 and removed, broken on three rails out of four (claude's
+`--restricted` does not auto-load a workspace `CLAUDE.md`, opencode's
+`OPENCODE_DISABLE_PROJECT_CONFIG=1` also disables `AGENTS.md`, agy reads `AGENTS.md` only
+inside a git repository). **Nothing is written into a workspace.** The preamble counts
+against each rail's `max_prompt_bytes` (agy, opencode) or against claude's own
+`131 071`-byte `--append-system-prompt` ceiling; a bundle that pushes a run over its limit
+refuses with `capability.INVALID_USAGE_EXIT_CODE` (`2`) before any spawn, never by
+truncation. Known limit: on codex, opencode and agy the preamble travels inside the user
+message (claude alone gets a system prompt), and a weak model -- measured: opencode
+`glm-5.3-flash` -- sometimes obeys the task over the `<instructions>` block.
+
+## Live tests
+
+`tests/live/headless_agents/` replays the workspace confinement above against the real
+CLIs of the machine it runs on -- not mocks. Every test spends real provider quota and
+needs the operator's logged-in CLIs, so it is opt-in: marked `live`, excluded from the
+default run, and skipped unless `HA_LIVE=1`. Run it deliberately, from a directory outside
+`~/.claude` (the claude rail's own configuration lives there):
+
+```sh
+HA_LIVE=1 .venv/bin/pytest -m live tests/live -v -rA
+```
+
+Last full run (2026-09-23, against claude 2.1.280, codex-cli 0.156.0, opencode 1.18.30,
+agy 1.2.9): `34 passed in 449.20s (0:07:29)`, 0 skipped, 0 failed. A failure here is a
+finding, not a flake: re-run once to rule out the network, then report it -- never loosen
+the assertion.
+
 ## Licence
 
 Apache-2.0, same as the repository that hosts it.
