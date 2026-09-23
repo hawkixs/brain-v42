@@ -14,9 +14,11 @@ from headless_agents.capability import (
     TIMEOUT_EXIT_CODE,
     TIMEOUT_REPLAYABLE_EXIT_CODE,
 )
-from headless_agents.profile import CapabilityProfile, McpServer
+from headless_agents.context import resolve_context
+from headless_agents.profile import CapabilityProfile, McpServer, Workspace
 from headless_agents.providers import claude
 from headless_agents.spec import RunSpec
+from headless_agents.workspace import workspace_summary
 
 URL = "http://127.0.0.1:8765/mcp"
 
@@ -95,6 +97,127 @@ class TestBuildClaudeCommand:
             claude.build_claude_command(
                 model="m", max_turns=0, mcp_config_path=tmp_path / "m", mcp=None
             )
+
+
+class TestBuildClaudeCommandWorkspace:
+    def test_no_workspace_command_is_unchanged(self, tmp_path: Path) -> None:
+        base = claude.build_claude_command(
+            model="m", max_turns=3, mcp_config_path=tmp_path / "m.json", mcp=None
+        )
+        assert (
+            claude.build_claude_command(
+                model="m",
+                max_turns=3,
+                mcp_config_path=tmp_path / "m.json",
+                mcp=None,
+                workspace=None,
+                append_system_prompt=None,
+            )
+            == base
+        )
+
+    def test_read_only_workspace_flags(self, tmp_path: Path) -> None:
+        command = claude.build_claude_command(
+            model="m",
+            max_turns=3,
+            mcp_config_path=tmp_path / "m.json",
+            mcp=None,
+            workspace=Workspace(path=tmp_path),
+        )
+        assert "bypassPermissions" not in command
+        assert command[command.index("--permission-mode") + 1] == "dontAsk"
+        assert command[command.index("--tools") + 1] == "Read,Glob,Grep"
+        assert "--restricted" in command
+
+    def test_write_workspace_flags(self, tmp_path: Path) -> None:
+        command = claude.build_claude_command(
+            model="m",
+            max_turns=3,
+            mcp_config_path=tmp_path / "m.json",
+            mcp=None,
+            workspace=Workspace(path=tmp_path, write=True),
+        )
+        assert command[command.index("--permission-mode") + 1] == "acceptEdits"
+        assert command[command.index("--tools") + 1] == "Read,Edit,Write,Glob,Grep"
+        assert "--allowedTools" not in command
+
+    def test_shell_adds_bash_to_tools_and_allowed(self, tmp_path: Path) -> None:
+        mcp = McpServer(name="brain", url=URL, tools=("brain_search",))
+        command = claude.build_claude_command(
+            model="m",
+            max_turns=3,
+            mcp_config_path=tmp_path / "m.json",
+            mcp=mcp,
+            workspace=Workspace(path=tmp_path, write=True, shell=True),
+        )
+        assert command[command.index("--tools") + 1].endswith(",Bash")
+        assert command[command.index("--allowedTools") + 1] == "mcp__brain__brain_search,Bash"
+
+    def test_append_system_prompt(self, tmp_path: Path) -> None:
+        command = claude.build_claude_command(
+            model="m",
+            max_turns=3,
+            mcp_config_path=tmp_path / "m.json",
+            mcp=None,
+            append_system_prompt="PRE",
+        )
+        assert command[command.index("--append-system-prompt") + 1] == "PRE"
+
+
+def _fake(tmp_path: Path, body: str) -> str:
+    script = tmp_path / "fake-claude"
+    script.write_text(f"#!/usr/bin/env bash\ncat >/dev/null\n{body}\n", encoding="utf-8")
+    script.chmod(0o755)
+    return str(script)
+
+
+class TestRunClaudeWorkspace:
+    def test_workspace_is_the_cwd(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        answer = tmp_path / "answer.log"
+        code = claude.run_claude(
+            prompt="p",
+            model="m",
+            max_turns=1,
+            timeout_seconds=30,
+            raw_log=tmp_path / "raw.log",
+            mcp=None,
+            answer_log=answer,
+            executable=_fake(tmp_path, "pwd"),
+            workspace=Workspace(path=ws),
+        )
+        assert code == 0 and answer.read_text().strip() == str(ws)
+
+    def test_write_mode_failure_is_never_replayable(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        code = claude.run_claude(
+            prompt="p",
+            model="m",
+            max_turns=1,
+            timeout_seconds=30,
+            raw_log=tmp_path / "raw.log",
+            mcp=None,
+            executable=_fake(tmp_path, "exit 3"),
+            workspace=Workspace(path=ws, write=True),
+        )
+        assert code == 1
+
+    def test_read_only_failure_stays_replayable(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        code = claude.run_claude(
+            prompt="p",
+            model="m",
+            max_turns=1,
+            timeout_seconds=30,
+            raw_log=tmp_path / "raw.log",
+            mcp=None,
+            executable=_fake(tmp_path, "exit 7"),
+            workspace=Workspace(path=ws),
+        )
+        assert code == 3
 
 
 class TestToolCallCompleted:
@@ -365,3 +488,35 @@ class TestClaudeProvider:
         assert written == result.to_dict()
         assert written["logs"]["report"] == str(run_dir / "report.log")
         assert written["logs"]["stderr"] is None
+
+    def test_run_delivers_workspace_and_context_through_append_system_prompt(
+        self, tmp_path: Path
+    ) -> None:
+        """The fake prints its argv (one per line) instead of answering, so the
+        answer text IS the command claude was launched with: the one place a
+        provider-level test can see what reached ``--append-system-prompt``."""
+        ws_dir = tmp_path / "ws"
+        ws_dir.mkdir()
+        (tmp_path / "CLAUDE.md").write_text("Repository rules.", encoding="utf-8")
+        workspace = Workspace(path=ws_dir, write=True)
+        bundle = resolve_context(level="full", repository_root=tmp_path)
+        answer_log = tmp_path / "answer.log"
+        spec = RunSpec(
+            prompt="do the thing",
+            model="m",
+            max_turns=1,
+            profile=CapabilityProfile(workspace=workspace),
+            executable=_fake(tmp_path, 'printf "%s\\n" "$@"'),
+            raw_log=tmp_path / "raw.log",
+            report_log=answer_log,
+            context=bundle,
+            environment={"PATH": "/usr/bin"},
+        )
+        result = claude.ClaudeProvider().run(spec)
+        assert result.exit_code == 0
+        argv_lines = answer_log.read_text(encoding="utf-8").splitlines()
+        assert "--append-system-prompt" in argv_lines
+        preamble = argv_lines[argv_lines.index("--append-system-prompt") + 1]
+        assert str(ws_dir) in preamble
+        assert result.workspace == workspace_summary(workspace)
+        assert result.context == tuple(bundle.to_list())
