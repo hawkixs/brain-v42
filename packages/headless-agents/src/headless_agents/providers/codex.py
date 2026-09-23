@@ -679,7 +679,8 @@ def _is_safe_home_root(candidate: Path, unsafe_roots: frozenset[Path]) -> bool:
 def _choose_codex_home_root(environ: Mapping[str, str], *, workspace_path: Path) -> Path | None:
     """Root directory the ephemeral ``CODEX_HOME`` is created under, or
     ``None`` when every candidate sits somewhere a ``workspace-write``
-    sandbox could itself write -- the caller fails the run closed on that,
+    sandbox could itself write, or when the uid has no passwd entry to
+    derive the fallback from -- the caller fails the run closed on that,
     rather than build a ``CODEX_HOME`` the very agent it isolates could
     reach.
 
@@ -695,7 +696,12 @@ def _choose_codex_home_root(environ: Mapping[str, str], *, workspace_path: Path)
     candidate = ephemeral_root(environ)
     if candidate is not None and _is_safe_home_root(candidate, unsafe_roots):
         return candidate
-    operator_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    try:
+        operator_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except KeyError:
+        # No passwd entry (a container's arbitrary uid): no operator home to
+        # fall back on, and ``HOME`` is exactly what must not stand in for it.
+        return None
     fallback = operator_home / ".cache" / "headless-agents" / "codex-homes"
     if not _is_safe_home_root(fallback, unsafe_roots):
         return None

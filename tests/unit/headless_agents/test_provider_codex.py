@@ -993,6 +993,34 @@ class TestRunCodexWorkspace:
         stderr = logs["stderr_log"].read_text(encoding="utf-8")
         assert "no codex home root outside the sandbox's writable roots" in stderr
 
+    def test_no_passwd_entry_refuses_before_spawn(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        """A uid with no passwd entry (a container's arbitrary uid) has no
+        operator home to fall back on: exit 3, no spawn, not a traceback."""
+        real_home = self._real_codex_home(tmp_path, with_auth=True)
+        captured = _install(monkeypatch, _FakeProcess(returncode=0), logs["report_log"])
+
+        def no_entry(uid: int) -> object:
+            raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+        monkeypatch.setattr(codex.pwd, "getpwuid", no_entry)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+        )
+
+        assert code == PROVIDER_FALLBACK_EXIT_CODE
+        assert "command" not in captured
+        stderr = logs["stderr_log"].read_text(encoding="utf-8")
+        assert "no codex home root outside the sandbox's writable roots" in stderr
+
     def test_unreadable_real_auth_disables_rescue_but_the_run_proceeds(
         self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
     ) -> None:
