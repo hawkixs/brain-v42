@@ -60,6 +60,33 @@ def test_writes_need_write(ws):
 
 
 @pytest.mark.parametrize(
+    "path",
+    [
+        "{ws}/.git",
+        "{ws}/.git/hooks/pre-commit",
+        "{ws}/.GIT/config",
+        "{ws}/sub/.git/config",
+        "{ws}/gitlink",
+    ],
+)
+def test_writes_under_git_are_denied(ws, path):
+    """A write run must not plant a hook or rewrite a ``.git`` FILE: git runs
+    them later, outside any sandbox. ``gitlink`` resolves into ``.git``."""
+    (ws / ".git").mkdir()
+    (ws / "gitlink").symlink_to(ws / ".git" / "config")
+    for tool in ("write_to_file", "replace_file_content", "multi_replace_file_content"):
+        verdict = decide(_p(tool, TargetFile=path.format(ws=ws)), cfg(ws, write=True))
+        assert verdict["decision"] == "deny", (tool, path)
+
+
+def test_a_git_lookalike_name_stays_writable(ws):
+    assert (
+        decide(_p("write_to_file", TargetFile=f"{ws}/.gitignore"), cfg(ws, write=True))["decision"]
+        == "allow"
+    )
+
+
+@pytest.mark.parametrize(
     "path, decision",
     [
         ("{ws}/n.txt", "allow"),

@@ -133,6 +133,25 @@ def _confined(value: object, root_realpath: str) -> bool:
     return resolved == root_realpath or resolved.startswith(root_realpath + os.sep)
 
 
+def _names_git(value: str, root_realpath: str) -> bool:
+    """True iff ``value`` -- raw OR resolved, relative to the root -- has a ``.git`` component.
+
+    A write under ``.git`` plants a hook or a config that git runs LATER,
+    outside any sandbox, when anyone runs git in that checkout; a linked
+    worktree's ``.git`` is a FILE naming the gitdir, so rewriting it
+    redirects git itself. Both spellings are checked: the raw path catches a
+    ``.git`` reached through a symlink that resolves elsewhere inside the
+    root, the resolved one a symlink whose own name says nothing. Compared
+    with ``casefold()``, as the argument keys are (see `_case_variant`): a
+    case-insensitive filesystem would open ``.GIT`` as ``.git``.
+    """
+    for path in (value, os.path.realpath(value)):
+        relative = os.path.relpath(path, root_realpath)
+        if any(part.casefold() == ".git" for part in relative.split(os.sep)):
+            return True
+    return False
+
+
 def _case_variant(fields: dict[object, object], exact_key: str) -> str | None:
     """Return an offending key if ``fields`` holds a case-fold duplicate of ``exact_key``.
 
@@ -223,9 +242,13 @@ def _decide(payload: str, config: Mapping[str, object]) -> dict[str, str]:
         variant = _case_variant(args, arg_name)
         if variant is not None:
             return _deny(f"{name} args carry both {arg_name!r} and case-variant {variant!r}")
-        if _confined(args.get(arg_name), root_realpath):
-            return _allow()
-        return _deny(f"{name}.{arg_name} is outside the workspace")
+        target = args.get(arg_name)
+        if not _confined(target, root_realpath):
+            return _deny(f"{name}.{arg_name} is outside the workspace")
+        # `_confined` proved `target` an absolute str `realpath` accepts.
+        if _names_git(cast("str", target), root_realpath):
+            return _deny(f"{name}.{arg_name} is under .git: git would run what it plants")
+        return _allow()
 
     if name == "run_command":
         if not _flag(config, "shell"):
