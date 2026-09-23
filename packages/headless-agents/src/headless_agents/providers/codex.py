@@ -97,8 +97,8 @@ def _server_overrides(mcp: McpServer) -> tuple[tuple[str, object], ...]:
     )
 
 
-def _sandbox_mode(workspace_mode: Workspace | None) -> tuple[str, bool, int]:
-    """(``--sandbox`` value, whether the shell tool is on, ``project_doc_max_bytes``).
+def _sandbox_mode(workspace_mode: Workspace | None) -> tuple[str, bool]:
+    """(``--sandbox`` value, whether the shell tool is on).
 
     Measured 2026-09-23, see the table in the 0.4.0 lot-2 spec (3.3):
     ``read-only`` turns the shell tool ON even though ``workspace_mode.write``
@@ -109,10 +109,10 @@ def _sandbox_mode(workspace_mode: Workspace | None) -> tuple[str, bool, int]:
     not the shell, so ``shell=False`` must mean no shell.
     """
     if workspace_mode is None:
-        return "read-only", False, 0
+        return "read-only", False
     if not workspace_mode.write:
-        return "read-only", True, 0
-    return "workspace-write", workspace_mode.shell, 65536
+        return "read-only", True
+    return "workspace-write", workspace_mode.shell
 
 
 def build_codex_command(
@@ -129,7 +129,7 @@ def build_codex_command(
 
     ``workspace`` is the ``-C`` directory codex runs in -- unchanged from
     before 0.4.0. ``workspace_mode`` is the read/write/shell capability that
-    decides the sandbox, the shell tool and the project-doc budget (see
+    decides the sandbox and the shell tool (see
     :func:`_sandbox_mode`); with ``workspace_mode=None`` every value is
     exactly what it was before this parameter existed.
     """
@@ -138,7 +138,7 @@ def build_codex_command(
     if reasoning_effort not in REASONING_EFFORTS:
         raise ValueError(f"unsupported Codex reasoning effort: {reasoning_effort}")
 
-    sandbox, shell_enabled, doc_max_bytes = _sandbox_mode(workspace_mode)
+    sandbox, shell_enabled = _sandbox_mode(workspace_mode)
 
     overrides: tuple[tuple[str, object], ...] = (
         ("forced_login_method", "chatgpt"),
@@ -146,7 +146,9 @@ def build_codex_command(
         ("check_for_update_on_startup", False),
         ("history.persistence", "none"),
         ("model_reasoning_effort", reasoning_effort),
-        ("project_doc_max_bytes", doc_max_bytes),
+        # 0 in EVERY mode: repository instructions travel in the preamble, so
+        # a tracked AGENTS.md read natively would reach codex twice.
+        ("project_doc_max_bytes", 0),
         ("web_search", "disabled"),
         ("apps._default.enabled", False),
         ("memories.use_memories", False),

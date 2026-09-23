@@ -5,24 +5,21 @@ out tracked files only (an ignored ``CLAUDE.md`` vanishes), each CLI reads a
 different file (codex and opencode read ``AGENTS.md``, claude ``CLAUDE.md``),
 and the ephemeral HOME drops the operator's user-level files. The bundle
 resolves them from the SOURCE repository and the caller's list, and delivers
-them through two channels with one rule each:
+them through ONE channel, the preamble, in every mode and on every rail.
 
-- the PREAMBLE carries user-level content always, and repository content in
-  read-only mode -- where the working directory is the caller's checkout and
-  nothing may be written there;
-- an INSTRUCTION FILE carries repository content in write mode, where the
-  workspace is a fresh worktree the run owns, and only where the rail's own
-  file is missing.
-
-No exclude file is written: in a linked worktree ``info/exclude`` is the
-COMMON one, shared by every checkout (measured 2026-09-23). The paths written
-are returned instead, for the caller's carrier commit to leave out.
+A second channel -- an instruction file written into a write-mode workspace
+for the rail to read natively -- was measured live on 2026-09-23 and failed
+on three rails out of four: claude's ``--restricted`` does not auto-load the
+workspace ``CLAUDE.md``, opencode's ``OPENCODE_DISABLE_PROJECT_CONFIG`` (kept
+for isolation) also disables ``AGENTS.md``, and agy reads ``AGENTS.md`` only
+inside a repository checkout. It was removed: nothing is written into a
+workspace.
 """
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
@@ -32,15 +29,6 @@ Scope = Literal["repository", "user"]
 
 REPOSITORY_FILE_NAMES: Final[tuple[str, ...]] = ("CLAUDE.md", "AGENTS.md", "GEMINI.md")
 
-#: The instruction file each rail reads natively from its working directory.
-#: ``None``: the rail reads ``CLAUDE.md``, nothing to install.
-INSTRUCTION_FILE_BY_RAIL: Final[Mapping[str, str | None]] = {
-    "claude": None,
-    "codex": "AGENTS.md",
-    "opencode": "AGENTS.md",
-    "agy": "AGENTS.md",
-}
-
 
 @dataclass(frozen=True)
 class ContextFile:
@@ -49,7 +37,6 @@ class ContextFile:
     content: str
     size_bytes: int
     sha256: str
-    installed_as: Path | None = None
 
 
 def _read(path: Path, scope: Scope) -> ContextFile | None:
@@ -92,7 +79,6 @@ class ContextBundle:
                 "scope": f.scope,
                 "size_bytes": f.size_bytes,
                 "sha256": f.sha256,
-                "installed_as": None if f.installed_as is None else str(f.installed_as),
             }
             for f in self.files
         ]
@@ -124,27 +110,3 @@ def resolve_context(
             if entry is not None:
                 files.append(entry)
     return ContextBundle(level=level, files=tuple(files))
-
-
-def install_instruction_files(
-    bundle: ContextBundle, *, worktree: Path, rail: str
-) -> tuple[Path, ...]:
-    """Write the rail's instruction file into ``worktree`` where it is missing.
-
-    Composed from the repository's ``CLAUDE.md`` (the file every repository of
-    this ecosystem carries). Never overwrites: a file already there -- tracked
-    or not -- is the repository's own and wins.
-    """
-    if rail not in INSTRUCTION_FILE_BY_RAIL:
-        raise ValueError(f"unknown rail: {rail!r}")
-    name = INSTRUCTION_FILE_BY_RAIL[rail]
-    if name is None:
-        return ()
-    target = worktree / name
-    if target.exists() or target.is_symlink():
-        return ()
-    sources = [f for f in bundle.repository_files() if f.source.name == "CLAUDE.md"]
-    if not sources:
-        return ()
-    target.write_text("\n\n".join(f.content.rstrip() for f in sources) + "\n", encoding="utf-8")
-    return (target,)

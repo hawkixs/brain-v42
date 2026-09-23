@@ -37,12 +37,7 @@ from pathlib import Path
 import pytest
 
 from headless_agents import sandbox
-from headless_agents.context import (
-    INSTRUCTION_FILE_BY_RAIL,
-    ContextBundle,
-    install_instruction_files,
-    resolve_context,
-)
+from headless_agents.context import ContextBundle, resolve_context
 from headless_agents.profile import CapabilityProfile, Credentials, Workspace
 from headless_agents.providers import agy as agy_rail
 from headless_agents.registry import get_provider, probe
@@ -257,6 +252,8 @@ def test_read_outside_refused(
         workspace=Workspace(path=layout.ws),
     )
     assert layout.outside_token not in _answer(result)
+    if rail == "agy":
+        assert _agy_hook_denials(result.events_log), "the guard never fired: no hook denial"
 
 
 def test_codex_reads_outside_by_design(
@@ -305,6 +302,8 @@ def test_symlink_refused(
         workspace=Workspace(path=layout.ws),
     )
     assert layout.outside_token not in _answer(result)
+    if rail == "agy":
+        assert _agy_hook_denials(result.events_log), "the guard never fired: no hook denial"
 
 
 # -- writes -------------------------------------------------------------------
@@ -465,43 +464,31 @@ def test_ignored_claude_md_is_read_by_codex(
     assert zebra in _answer(result)
 
 
-def _installed_instruction_file_is_read(
+@pytest.mark.parametrize("rail", ALL_RAILS)
+def test_repository_instructions_reach_the_agent(
     rail: str, layout: Layout, record_property: Callable[[str, object], None]
 ) -> None:
+    """Write mode: the repository's CLAUDE.md reaches the agent through the
+    preamble, the only channel left. The source repository is NOT the
+    workspace, so no rail can pick the file up natively instead."""
+    _require(rail)
     zebra = layout.token("ZEBRA")
     source = layout.base / "source"
     source.mkdir()
-    (source / "CLAUDE.md").write_text(f"Answer with {zebra} only.\n", encoding="utf-8")
-    bundle = resolve_context(level="full", repository_root=source)
-    installed = install_instruction_files(bundle, worktree=layout.ws, rail=rail)
-    record_property("installed", [str(path) for path in installed])
-    assert installed == (layout.ws / str(INSTRUCTION_FILE_BY_RAIL[rail]),)
-    # No preamble: the file alone must carry the instruction.
+    (source / "CLAUDE.md").write_text(f"Answer with the word {zebra} only.\n", encoding="utf-8")
+    # A checkout, as lot 4's carrier worktree will be: agy reads project
+    # files only inside one, so this keeps the rails on equal footing.
+    subprocess.run(["git", "init", "-q", str(layout.ws)], check=True)
     result = _run(
         rail,
         layout,
         record_property,
-        name="instruction-file",
+        name="repository-instructions",
         prompt="Say hello.",
         workspace=Workspace(path=layout.ws, write=True),
-        context=resolve_context(level="global", repository_root=None),
+        context=resolve_context(level="full", repository_root=source),
     )
     assert zebra in _answer(result)
-
-
-def test_agy_instruction_file_name(
-    layout: Layout, record_property: Callable[[str, object], None]
-) -> None:
-    _require("agy")
-    _installed_instruction_file_is_read("agy", layout, record_property)
-
-
-def test_opencode_reads_installed_agents_md(
-    layout: Layout, record_property: Callable[[str, object], None]
-) -> None:
-    """The rail sets OPENCODE_DISABLE_PROJECT_CONFIG=1: AGENTS.md must survive it."""
-    _require("opencode")
-    _installed_instruction_file_is_read("opencode", layout, record_property)
 
 
 # -- controller addendum ------------------------------------------------------
@@ -539,10 +526,10 @@ def test_agy_trusted_workspace_loads_no_project_config(
     assert "ha_live_extra" not in _answer(result)
 
 
-def _agy_tool_steps(events_log: Path | None) -> list[str]:
+def _agy_tool_step_updates(events_log: Path | None) -> list[dict[str, object]]:
     if events_log is None or not events_log.is_file():
         return []
-    steps: list[str] = []
+    steps: list[dict[str, object]] = []
     for line in events_log.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
             event = json.loads(line)
@@ -550,8 +537,25 @@ def _agy_tool_steps(events_log: Path | None) -> list[str]:
             continue
         step = event.get("step_update") if isinstance(event, dict) else None
         if isinstance(step, dict) and step.get("step_type") == "tool":
-            steps.append(f"{step.get('tool_name')}:{step.get('state')}")
+            steps.append(step)
     return steps
+
+
+def _agy_tool_steps(events_log: Path | None) -> list[str]:
+    return [
+        f"{step.get('tool_name')}:{step.get('state')}"
+        for step in _agy_tool_step_updates(events_log)
+    ]
+
+
+def _agy_hook_denials(events_log: Path | None) -> list[str]:
+    """The tool steps the package guard refused: state ERROR, and agy's own
+    ``denied by pre-tool hook`` message somewhere in the step."""
+    return [
+        str(step.get("tool_name"))
+        for step in _agy_tool_step_updates(events_log)
+        if step.get("state") == "ERROR" and "denied by pre-tool hook" in json.dumps(step)
+    ]
 
 
 def test_agy_guard_failure_mode_is_recorded(
@@ -606,8 +610,9 @@ def test_agy_guard_failure_mode_is_recorded(
 def test_claude_restricted_instruction_loading(
     layout: Layout, record_property: Callable[[str, object], None]
 ) -> None:
-    """Does ``--restricted`` still auto-load the workspace's CLAUDE.md? Write
-    mode relies on it. Recorded, not asserted.
+    """Does ``--restricted`` auto-load the workspace's CLAUDE.md? Measured
+    'no' on 2026-09-23, which is why repository instructions travel in the
+    preamble; nothing relies on the answer any more. Recorded, not asserted.
 
     The other half -- the operator's ``~/.claude/CLAUDE.md`` not leaking --
     is NOT measured: that file carries no sentinel this test could look for.

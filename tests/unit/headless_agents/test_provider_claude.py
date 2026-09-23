@@ -598,9 +598,9 @@ class TestClaudeProvider:
         per argument, embedded newlines intact -- the one place a
         provider-level test can see what reached ``--append-system-prompt``.
 
-        Write mode: the preamble carries the user-scope file but leaves the
-        repository-scope one to the (unused in this rail) instruction file, per
-        ``rail_preamble``'s channel rule."""
+        Write mode: the preamble carries the user-scope AND the
+        repository-scope file -- it is the only channel for both, per
+        ``rail_preamble``."""
         ws_dir = tmp_path / "ws"
         ws_dir.mkdir()
         (tmp_path / "CLAUDE.md").write_text("Repository rules.", encoding="utf-8")
@@ -626,7 +626,7 @@ class TestClaudeProvider:
         preamble = argv[argv.index("--append-system-prompt") + 1]
         assert str(ws_dir) in preamble
         assert "User rules." in preamble
-        assert "Repository rules." not in preamble
+        assert "Repository rules." in preamble
         assert result.workspace == workspace_summary(workspace)
         assert result.context == tuple(bundle.to_list())
 

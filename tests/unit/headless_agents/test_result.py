@@ -114,7 +114,6 @@ def test_to_dict_carries_context_and_workspace() -> None:
                 "scope": "user",
                 "size_bytes": 1,
                 "sha256": "a" * 64,
-                "installed_as": None,
             },
         ),
         workspace={"path": "/ws", "write": False, "shell": False},
@@ -126,7 +125,6 @@ def test_to_dict_carries_context_and_workspace() -> None:
             "scope": "user",
             "size_bytes": 1,
             "sha256": "a" * 64,
-            "installed_as": None,
         }
     ]
     assert data["workspace"] == {"path": "/ws", "write": False, "shell": False}

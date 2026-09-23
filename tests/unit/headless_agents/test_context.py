@@ -4,13 +4,7 @@ import hashlib
 import subprocess
 from pathlib import Path
 
-import pytest
-
-from headless_agents.context import (
-    ContextBundle,
-    install_instruction_files,
-    resolve_context,
-)
+from headless_agents.context import ContextBundle, resolve_context
 
 
 def _git_repo(root: Path) -> Path:
@@ -67,7 +61,6 @@ def test_trace_has_size_and_sha256(tmp_path: Path) -> None:
         "scope": "user",
         "size_bytes": 3,
         "sha256": hashlib.sha256("é\n".encode()).hexdigest(),
-        "installed_as": None,
     }
 
 
@@ -83,52 +76,3 @@ def test_preamble_without_repository_keeps_user_content(tmp_path: Path) -> None:
 
 def test_empty_bundle_has_empty_preamble() -> None:
     assert ContextBundle(level="none", files=()).preamble(include_repository=True) == ""
-
-
-def test_install_writes_agents_md_from_claude_md_when_missing(tmp_path: Path) -> None:
-    repo = _git_repo(tmp_path / "repo")
-    (repo / "CLAUDE.md").write_text("repo rule\n", encoding="utf-8")
-    worktree = tmp_path / "wt"
-    worktree.mkdir()
-    bundle = resolve_context(level="full", repository_root=repo)
-    written = install_instruction_files(bundle, worktree=worktree, rail="codex")
-    assert written == (worktree / "AGENTS.md",)
-    assert "repo rule" in (worktree / "AGENTS.md").read_text(encoding="utf-8")
-
-
-def test_install_never_overwrites_an_existing_file(tmp_path: Path) -> None:
-    repo = _git_repo(tmp_path / "repo")
-    (repo / "CLAUDE.md").write_text("repo rule\n", encoding="utf-8")
-    worktree = tmp_path / "wt"
-    worktree.mkdir()
-    (worktree / "AGENTS.md").write_text("tracked\n", encoding="utf-8")
-    bundle = resolve_context(level="full", repository_root=repo)
-    assert install_instruction_files(bundle, worktree=worktree, rail="codex") == ()
-    assert (worktree / "AGENTS.md").read_text(encoding="utf-8") == "tracked\n"
-
-
-def test_install_is_a_no_op_for_claude(tmp_path: Path) -> None:
-    repo = _git_repo(tmp_path / "repo")
-    (repo / "CLAUDE.md").write_text("repo rule\n", encoding="utf-8")
-    worktree = tmp_path / "wt"
-    worktree.mkdir()
-    bundle = resolve_context(level="full", repository_root=repo)
-    assert install_instruction_files(bundle, worktree=worktree, rail="claude") == ()
-
-
-def test_install_touches_no_exclude_file(tmp_path: Path) -> None:
-    repo = _git_repo(tmp_path / "repo")
-    (repo / "CLAUDE.md").write_text("repo rule\n", encoding="utf-8")
-    exclude = repo / ".git" / "info" / "exclude"
-    before = exclude.read_bytes() if exclude.exists() else None
-    install_instruction_files(
-        resolve_context(level="full", repository_root=repo), worktree=repo, rail="opencode"
-    )
-    assert (exclude.read_bytes() if exclude.exists() else None) == before
-
-
-def test_unknown_rail_is_refused(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="unknown rail"):
-        install_instruction_files(
-            ContextBundle(level="none", files=()), worktree=tmp_path, rail="nope"
-        )

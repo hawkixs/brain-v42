@@ -157,7 +157,7 @@ class TestBuildCodexCommandWorkspace:
         )
         assert command[command.index("--sandbox") + 1] == "workspace-write"
         assert "features.shell_tool=false" in _overrides(command)
-        assert "project_doc_max_bytes=65536" in _overrides(command)
+        assert "project_doc_max_bytes=0" in _overrides(command)
 
     def test_write_with_shell(self, tmp_path: Path) -> None:
         command = codex.build_codex_command(
@@ -169,6 +169,7 @@ class TestBuildCodexCommandWorkspace:
             workspace_mode=Workspace(path=tmp_path, write=True, shell=True),
         )
         assert "features.shell_tool=true" in _overrides(command)
+        assert "project_doc_max_bytes=0" in _overrides(command)
 
     def test_shell_tool_appears_exactly_once_in_every_mode(self, tmp_path: Path) -> None:
         """``-c`` is last-wins for codex (unmeasured): the disabled-feature loop

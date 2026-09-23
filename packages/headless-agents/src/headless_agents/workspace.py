@@ -21,7 +21,9 @@ def workspace_summary(workspace: Workspace | None) -> dict[str, object] | None:
 
 
 def rail_preamble(spec: RunSpec, *, tools_note: str) -> str:
-    """The workspace note, then the bundle's preamble for this mode."""
+    """The workspace note, then the bundle's preamble -- repository content
+    included in EVERY mode: the preamble is the only channel that reaches all
+    four rails (see :mod:`headless_agents.context`)."""
     workspace = workspace_of(spec)
     parts: list[str] = []
     if workspace is not None:
@@ -32,8 +34,7 @@ def rail_preamble(spec: RunSpec, *, tools_note: str) -> str:
             "</workspace>"
         )
     if spec.context is not None:
-        include_repository = workspace is None or not workspace.write
-        block = spec.context.preamble(include_repository=include_repository)
+        block = spec.context.preamble(include_repository=True)
         if block:
             parts.append(block)
     return "\n\n".join(parts)

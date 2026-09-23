@@ -51,7 +51,7 @@ def test_read_only_preamble_names_path_and_carries_repository(tmp_path: Path) ->
     assert "REPO" in preamble and "USER" in preamble
 
 
-def test_write_preamble_leaves_repository_to_the_file(tmp_path: Path) -> None:
+def test_write_preamble_carries_repository_too(tmp_path: Path) -> None:
     bundle = ContextBundle(
         level="full", files=(_file(tmp_path, "repository", "REPO"), _file(tmp_path, "user", "USER"))
     )
@@ -61,7 +61,7 @@ def test_write_preamble_leaves_repository_to_the_file(tmp_path: Path) -> None:
         profile=CapabilityProfile(workspace=Workspace(path=tmp_path, write=True)),
     )
     preamble = rail_preamble(spec, tools_note="edit tools")
-    assert "USER" in preamble and "REPO" not in preamble
+    assert "USER" in preamble and "REPO" in preamble
 
 
 def test_prepend_is_identity_without_preamble() -> None:
