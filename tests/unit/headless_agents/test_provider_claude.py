@@ -10,6 +10,7 @@ import pytest
 from pydantic import SecretStr
 
 from headless_agents.capability import (
+    INVALID_USAGE_EXIT_CODE,
     PROVIDER_FALLBACK_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
     TIMEOUT_REPLAYABLE_EXIT_CODE,
@@ -163,10 +164,39 @@ class TestBuildClaudeCommandWorkspace:
         )
         assert command[command.index("--append-system-prompt") + 1] == "PRE"
 
+    def test_shell_without_a_server_allows_bash_alone(self, tmp_path: Path) -> None:
+        """No MCP server means no ``mcp__*`` entries: ``Bash`` alone must still
+        reach ``--allowedTools``, or a shell-capable workspace with no server
+        would get a shell it can never actually invoke."""
+        command = claude.build_claude_command(
+            model="m",
+            max_turns=3,
+            mcp_config_path=tmp_path / "m.json",
+            mcp=None,
+            workspace=Workspace(path=tmp_path, write=True, shell=True),
+        )
+        assert command[command.index("--allowedTools") + 1] == "Bash"
+
 
 def _fake(tmp_path: Path, body: str) -> str:
     script = tmp_path / "fake-claude"
     script.write_text(f"#!/usr/bin/env bash\ncat >/dev/null\n{body}\n", encoding="utf-8")
+    script.chmod(0o755)
+    return str(script)
+
+
+def _fake_argv_json(tmp_path: Path) -> str:
+    """A fake that answers with ``json.dumps(argv[1:])`` instead of a real
+    answer: one array element per argument, so a multi-line
+    ``--append-system-prompt`` value survives as ONE JSON string (embedded
+    newlines escaped) rather than being torn across several printed lines."""
+    script = tmp_path / "fake-claude-argv"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        "cat >/dev/null\n"
+        "python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' \"$@\"\n",
+        encoding="utf-8",
+    )
     script.chmod(0o755)
     return str(script)
 
@@ -218,6 +248,77 @@ class TestRunClaudeWorkspace:
             workspace=Workspace(path=ws),
         )
         assert code == 3
+
+    def test_write_mode_timeout_stays_the_timeout_code(self, tmp_path: Path) -> None:
+        """The 0/124 early returns come BEFORE the write-taint check: a child
+        that itself exits 124 in a writable workspace is still a timeout, not
+        an ordinary failure -- 124 already means "prove nothing" on this rail."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        code = claude.run_claude(
+            prompt="p",
+            model="m",
+            max_turns=1,
+            timeout_seconds=30,
+            raw_log=tmp_path / "raw.log",
+            mcp=None,
+            executable=_fake(tmp_path, "exit 124"),
+            workspace=Workspace(path=ws, write=True),
+        )
+        assert code == TIMEOUT_EXIT_CODE
+
+    def test_write_mode_failure_keeps_a_non_fallback_code(self, tmp_path: Path) -> None:
+        """``failure_code_after_a_write`` only rewrites the two codes a chain
+        would read as "provably no write" (3, 4); an ordinary code like 7 is
+        already an ordinary failure and travels through unchanged."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        code = claude.run_claude(
+            prompt="p",
+            model="m",
+            max_turns=1,
+            timeout_seconds=30,
+            raw_log=tmp_path / "raw.log",
+            mcp=None,
+            executable=_fake(tmp_path, "exit 7"),
+            workspace=Workspace(path=ws, write=True),
+        )
+        assert code == 7
+
+
+def test_max_append_system_prompt_bytes_is_the_kernel_arg_limit() -> None:
+    """One page below ``MAX_ARG_STRLEN`` (32 pages of 4 KiB): measured against
+    ``/bin/true --append-system-prompt`` -- 131072 bytes raises E2BIG via
+    Popen, 131071 does not."""
+    assert claude.MAX_APPEND_SYSTEM_PROMPT_BYTES == 131_071
+
+
+class TestAppendSystemPromptLimit:
+    def test_a_preamble_over_the_limit_refuses_before_any_spawn(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A preamble too big for one argv element is a usage error, never a
+        switchover: the fake would ``touch`` a marker file if it ever ran, and
+        it must not run at all."""
+        monkeypatch.setattr(claude, "MAX_APPEND_SYSTEM_PROMPT_BYTES", 20)
+        ws_dir = tmp_path / "ws"
+        ws_dir.mkdir()
+        marker = tmp_path / "spawned.marker"
+        raw_log = tmp_path / "raw.log"
+        spec = RunSpec(
+            prompt="do the thing",
+            model="m",
+            max_turns=1,
+            profile=CapabilityProfile(workspace=Workspace(path=ws_dir)),
+            executable=_fake(tmp_path, f"touch {marker}"),
+            raw_log=raw_log,
+            environment={"PATH": "/usr/bin"},
+        )
+        result = claude.ClaudeProvider().run(spec)
+        assert result.exit_code == INVALID_USAGE_EXIT_CODE
+        assert not marker.exists()
+        assert result.text is None
+        assert "too long for argv" in raw_log.read_text(encoding="utf-8")
 
 
 class TestToolCallCompleted:
@@ -492,21 +593,28 @@ class TestClaudeProvider:
     def test_run_delivers_workspace_and_context_through_append_system_prompt(
         self, tmp_path: Path
     ) -> None:
-        """The fake prints its argv (one per line) instead of answering, so the
-        answer text IS the command claude was launched with: the one place a
-        provider-level test can see what reached ``--append-system-prompt``."""
+        """The fake prints its argv as a JSON array instead of answering, so the
+        answer text IS the command claude was launched with -- one array element
+        per argument, embedded newlines intact -- the one place a
+        provider-level test can see what reached ``--append-system-prompt``.
+
+        Write mode: the preamble carries the user-scope file but leaves the
+        repository-scope one to the (unused in this rail) instruction file, per
+        ``rail_preamble``'s channel rule."""
         ws_dir = tmp_path / "ws"
         ws_dir.mkdir()
         (tmp_path / "CLAUDE.md").write_text("Repository rules.", encoding="utf-8")
+        user_file = tmp_path / "user.md"
+        user_file.write_text("User rules.", encoding="utf-8")
         workspace = Workspace(path=ws_dir, write=True)
-        bundle = resolve_context(level="full", repository_root=tmp_path)
+        bundle = resolve_context(level="full", repository_root=tmp_path, user_files=(user_file,))
         answer_log = tmp_path / "answer.log"
         spec = RunSpec(
             prompt="do the thing",
             model="m",
             max_turns=1,
             profile=CapabilityProfile(workspace=workspace),
-            executable=_fake(tmp_path, 'printf "%s\\n" "$@"'),
+            executable=_fake_argv_json(tmp_path),
             raw_log=tmp_path / "raw.log",
             report_log=answer_log,
             context=bundle,
@@ -514,9 +622,38 @@ class TestClaudeProvider:
         )
         result = claude.ClaudeProvider().run(spec)
         assert result.exit_code == 0
-        argv_lines = answer_log.read_text(encoding="utf-8").splitlines()
-        assert "--append-system-prompt" in argv_lines
-        preamble = argv_lines[argv_lines.index("--append-system-prompt") + 1]
+        argv = json.loads(answer_log.read_text(encoding="utf-8"))
+        preamble = argv[argv.index("--append-system-prompt") + 1]
         assert str(ws_dir) in preamble
+        assert "User rules." in preamble
+        assert "Repository rules." not in preamble
         assert result.workspace == workspace_summary(workspace)
         assert result.context == tuple(bundle.to_list())
+
+
+class TestBuildCommandPreviewsTheRun:
+    def test_build_command_previews_the_workspace_and_preamble_run_uses(
+        self, tmp_path: Path
+    ) -> None:
+        """``build_command`` is the dry-run preview: a caller that inspects it
+        before launching must see the SAME ``--restricted``/permission-mode and
+        the same ``--append-system-prompt`` value ``run`` actually launches
+        with, not the pre-workspace ``bypassPermissions``."""
+        ws_dir = tmp_path / "ws"
+        ws_dir.mkdir()
+        (tmp_path / "CLAUDE.md").write_text("Repository rules.", encoding="utf-8")
+        workspace = Workspace(path=ws_dir, write=True)
+        bundle = resolve_context(level="full", repository_root=tmp_path)
+        spec = RunSpec(
+            prompt="p",
+            model="m",
+            max_turns=2,
+            profile=CapabilityProfile(workspace=workspace),
+            context=bundle,
+            extra={"mcp_config_path": tmp_path / "m.json"},
+        )
+        command = claude.ClaudeProvider().build_command(spec)
+        assert command[command.index("--permission-mode") + 1] == "acceptEdits"
+        assert "--restricted" in command
+        preamble = command[command.index("--append-system-prompt") + 1]
+        assert str(ws_dir) in preamble

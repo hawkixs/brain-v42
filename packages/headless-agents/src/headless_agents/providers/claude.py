@@ -24,6 +24,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 from ..capability import (
+    INVALID_USAGE_EXIT_CODE,
     PROVIDER_FALLBACK_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
     failure_code_after_a_write,
@@ -33,7 +34,15 @@ from ..profile import McpServer, Workspace
 from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
 from ..spec import RunSpec
-from ..workspace import rail_preamble, workspace_of, workspace_summary
+from ..workspace import argv_prompt_or_refusal, rail_preamble, workspace_of, workspace_summary
+
+# The kernel refuses a single argv element at or above ``MAX_ARG_STRLEN``
+# (32 pages -- 131072 bytes on the common 4 KiB page size) with E2BIG.
+# Measured: ``/bin/true --append-system-prompt`` followed by a 131072-byte
+# argument raises ``OSError`` through ``Popen``; 131071 bytes does not. The
+# preamble travels as ONE argv element (``--append-system-prompt``), so this
+# is the hard ceiling on how much context this rail can carry that way.
+MAX_APPEND_SYSTEM_PROMPT_BYTES = 131_071
 
 # Ambient variables this rail needs on top of the base allowlist.
 #
@@ -106,7 +115,10 @@ def build_claude_command(
     allow, and adds ``--restricted`` (file tools confined to the working
     directory; user, project and local settings ignored -- a trusted
     repository's own ``.claude/settings.json`` cannot widen what this run may
-    do, measured).
+    do, measured). ``shell`` adds ``Bash`` to both lists, but unlike the file
+    tools it is NOT confined by ``--restricted``: a shell runs with the
+    operator's own user rights, per spec 3.3 -- that confinement, if any, is
+    the caller's to provide.
     """
     if not model.strip():
         raise ValueError("Claude model must not be empty")
@@ -302,6 +314,17 @@ _TOOLS_NOTE = {
 }
 
 
+def _preamble_for(spec: RunSpec, workspace: Workspace | None) -> str:
+    """The preamble ``run`` launches with, and ``build_command`` previews.
+
+    Factored so the two never drift: a caller inspecting ``build_command``'s
+    output must see the tools-note ``run`` actually used, not a second
+    computation of the same read/write mode that could disagree with it.
+    """
+    mode = "write" if workspace is not None and workspace.write else "read"
+    return rail_preamble(spec, tools_note=_TOOLS_NOTE[mode])
+
+
 class ClaudeProvider:
     """:class:`~headless_agents.protocol.AgentProvider` adapter over Claude."""
 
@@ -312,12 +335,16 @@ class ClaudeProvider:
         assert isinstance(mcp_config_path, Path), (
             "RunSpec.extra['mcp_config_path'] is required to build a Claude command out of a run"
         )
+        workspace = workspace_of(spec)
+        preamble = _preamble_for(spec, workspace)
         return build_claude_command(
             model=spec.model,
             max_turns=spec.max_turns,
             mcp_config_path=mcp_config_path,
             mcp=spec.profile.mcp,
             executable=spec.executable or "claude",
+            workspace=workspace,
+            append_system_prompt=preamble or None,
         )
 
     def child_environment(self, spec: RunSpec, environ: Mapping[str, str]) -> dict[str, str] | None:
@@ -343,8 +370,36 @@ class ClaudeProvider:
         answer_log = spec.report_log
         offset = raw_log.stat().st_size if raw_log.is_file() else 0
         workspace = workspace_of(spec)
-        mode = "write" if workspace is not None and workspace.write else "read"
-        preamble = rail_preamble(spec, tools_note=_TOOLS_NOTE[mode])
+        preamble = _preamble_for(spec, workspace)
+        refusal = argv_prompt_or_refusal(preamble, MAX_APPEND_SYSTEM_PROMPT_BYTES)
+        if refusal is not None:
+            # Refuse BEFORE execve: a preamble this big would blow past the
+            # kernel's per-argument ARG_MAX and Popen would raise OSError deep
+            # inside run_claude, read there as "Claude did not start" and
+            # answered with PROVIDER_FALLBACK_EXIT_CODE -- a SILENT switchover
+            # on a run that never had a chance to run. This is a usage error
+            # instead, named and never replayed.
+            raw_log.parent.mkdir(parents=True, exist_ok=True)
+            with raw_log.open("a", encoding="utf-8") as stream:
+                stream.write(f"{refusal}\n")
+            return record(
+                spec,
+                RunResult(
+                    exit_code=INVALID_USAGE_EXIT_CODE,
+                    provider=self.name,
+                    model=spec.model,
+                    report_path=answer_log if answer_log is not None else raw_log,
+                    events_log=raw_log,
+                    tokens=None,
+                    duration_seconds=0.0,
+                    tool_call_completed=False,
+                    text=None,
+                    run_id=run_id_of(spec),
+                    raw_log=raw_log,
+                    workspace=workspace_summary(workspace),
+                    context=None if spec.context is None else tuple(spec.context.to_list()),
+                ),
+            )
         start = time.monotonic()
         exit_code = run_claude(
             prompt=spec.prompt,
