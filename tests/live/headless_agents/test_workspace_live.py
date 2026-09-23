@@ -254,6 +254,9 @@ def test_read_outside_refused(
     assert layout.outside_token not in _answer(result)
     if rail == "agy":
         assert _agy_hook_denials(result.events_log), "the guard never fired: no hook denial"
+    else:
+        # A crashed or silent run would pass the token check vacuously.
+        assert result.exit_code == 0 and _answer(result).strip()
 
 
 def test_codex_reads_outside_by_design(
@@ -304,6 +307,9 @@ def test_symlink_refused(
     assert layout.outside_token not in _answer(result)
     if rail == "agy":
         assert _agy_hook_denials(result.events_log), "the guard never fired: no hook denial"
+    else:
+        # A crashed or silent run would pass the token check vacuously.
+        assert result.exit_code == 0 and _answer(result).strip()
 
 
 # -- writes -------------------------------------------------------------------
