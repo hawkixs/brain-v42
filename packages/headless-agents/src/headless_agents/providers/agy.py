@@ -274,18 +274,25 @@ def workspace_guard_holds(home: Path, workspace: Workspace) -> bool:
     The same stance as :func:`guard_denies_machine_tools`, on the exact file
     in the HOME and under ``HOME=home``, so a broken shebang, a missing config
     or a permissive edit all refuse the run: a read inside is allowed, a read
-    of ``/`` is denied, ``run_command`` follows ``workspace.shell``, and a
-    read of the guard's own config is denied -- whatever put the HOME under
-    the guard's root, the agent must not reach the file that draws it.
+    of ``/`` is denied, ``run_command`` follows ``workspace.shell``, a read of
+    the guard's own config is denied -- whatever put the HOME under the
+    guard's root, the agent must not reach the file that draws it -- and, when
+    writes are armed, a write to ``.git`` or under it is denied: git runs what
+    lands there later, outside any sandbox.
     """
     config_dir = home / ".gemini" / "config"
     guard = config_dir / WORKSPACE_GUARD_NAME
-    probes = (
+    probes: tuple[tuple[str, dict[str, str], str], ...] = (
         ("view_file", {"AbsolutePath": str(workspace.path)}, "allow"),
         ("view_file", {"AbsolutePath": "/"}, "deny"),
         ("run_command", {"CommandLine": "true"}, "allow" if workspace.shell else "deny"),
         ("view_file", {"AbsolutePath": str(config_dir / GUARD_CONFIG_NAME)}, "deny"),
     )
+    if workspace.write:
+        probes += tuple(
+            ("write_to_file", {"TargetFile": str(workspace.path / target)}, "deny")
+            for target in (".git", ".git/hooks/x")
+        )
     for tool_name, args, expected in probes:
         payload = json.dumps({"toolCall": {"name": tool_name, "args": args}, "stepIdx": 0})
         try:

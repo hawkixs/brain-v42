@@ -630,6 +630,27 @@ class TestWorkspace:
         config.write_text(json.dumps({"root": str(tmp_path), "write": False, "shell": False}))
         assert agy.workspace_guard_holds(home, Workspace(path=tmp_path)) is False
 
+    def test_the_probe_refuses_a_guard_that_lets_a_write_reach_git(self, tmp_path: Path) -> None:
+        """A guard from before the ``.git`` rule passes the other probes."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        workspace = Workspace(path=ws, write=True)
+        home = sandbox.build_ephemeral_home(
+            root=tmp_path / "r",
+            name="h",
+            profile=CapabilityProfile(),
+            real_home=tmp_path,
+            workspace=workspace,
+        )
+        assert agy.workspace_guard_holds(home, workspace) is True
+        guard = home / ".gemini" / "config" / sandbox.WORKSPACE_GUARD_NAME
+        lax = guard.read_text(encoding="utf-8").replace(
+            "if _names_git(cast", "if False and _names_git(cast"
+        )
+        assert lax != guard.read_text(encoding="utf-8")
+        guard.write_text(lax, encoding="utf-8")
+        assert agy.workspace_guard_holds(home, workspace) is False
+
     def test_the_files_root_attribute_is_escaped(self, tmp_path: Path) -> None:
         ws = tmp_path / 'w"<&>'
         ws.mkdir()
