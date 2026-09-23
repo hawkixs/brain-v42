@@ -1357,3 +1357,46 @@ Prompts must say "you MUST actually call your tools even if you expect a failure
 ## Follow-up tickets (open them when this plan merges, not before)
 
 - brain-v42 → brain-v42: "The Dream's codex rail reads the operator's `$CODEX_HOME/AGENTS.md` despite `--ignore-user-config`" — decision 11 fixes it for workspace runs only; the Dream needs its own decision (it changes every Dream codex phase's instructions).
+
+---
+
+## Execution notes (added by Task 9, 2026-09-23)
+
+This plan is not rewritten: the tasks above are what was dispatched. What follows is
+where the shipped code, and the rulings that produced it, diverged from the plan as
+written. Read `docs/specs/2026-09-23-headless-agents-0.4.0-design.md` section 8
+("Measurement amendments") for the resolved decisions; this list is the pointer from
+each plan task to the ruling that superseded it.
+
+- **Single preamble channel (Task 8 → all of Task 1-4's write-mode design).** The plan's
+  two-channel design (an instruction file written into a write-mode workspace, plus the
+  preamble everywhere else) was measured live and found broken on three rails out of
+  four: claude's `--restricted` does not auto-load the workspace `CLAUDE.md`, opencode's
+  `OPENCODE_DISABLE_PROJECT_CONFIG=1` also disables `AGENTS.md`, and agy reads
+  `AGENTS.md`/`GEMINI.md` only inside a git repository. Ruling: the preamble becomes the
+  single channel for repository instructions, in every mode, on every rail;
+  `install_instruction_files`/`INSTRUCTION_FILE_BY_RAIL` (named in Tasks 6-8's briefs)
+  were never shipped. Spec 3.3, decision 12.
+- **codex `project_doc_max_bytes` = 0 in every mode (Task 5).** A consequence of the
+  single-channel ruling above: with the preamble carrying repository content on every
+  rail, codex's own native `AGENTS.md` read would otherwise deliver it twice. Set to `0`
+  unconditionally, not only in write mode as an earlier reading of 3.3 might imply.
+- **opencode write-taint predicate (Task 7 part B, two supersessions).** The brief's "any
+  `tool_use`" was replaced first by "any `step_start`" for the deadline path (measured:
+  `tool_use` lines are written in their terminal state only, so a call still in flight
+  leaves no `tool_use` line, only the `step_start` of the step that issued it), then the
+  failure-path predicate itself was inverted: not a fixed set of write-tool names
+  (`{edit, write, patch, bash}`, which missed `apply_patch`, and does not track opencode's
+  own alias of `bash` as `shell` in some contexts) but "any built-in tool that is neither
+  a workspace read tool nor an MCP tool the config itself admitted" — see
+  `_is_write_tool_use` in `providers/opencode.py`.
+- **claude's 131 071-byte preamble ceiling (Task 4).** Not in the original plan: measured
+  that `--append-system-prompt` carries the preamble as one argv element, and the kernel
+  refuses a single argument at or above `MAX_ARG_STRLEN` (131072 bytes) with `E2BIG`. A
+  preamble past `131071` bytes now refuses with `INVALID_USAGE_EXIT_CODE` before any
+  spawn, rather than surfacing as an opaque `OSError` inside `Popen` that the existing
+  "binary is missing" handler silently read as a switchover.
+- **Task 7 split into 7a and 7b.** Dispatched as one task in the plan; run as two
+  (`agy` + `sandbox.py`, then `opencode`) after Task 5 hit its dispatch's turn budget —
+  two rails' worth of security-sensitive wiring needed separate review surfaces. Neither
+  half changed the other rail's files.
