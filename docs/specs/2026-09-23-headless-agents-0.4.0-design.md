@@ -1,7 +1,7 @@
 # headless-agents 0.4.0 — uniform facade, seven providers, workspace writes, `ha` CLI
 
 - **Date:** 2026-09-23
-- **Status:** design, awaiting operator review
+- **Status:** design, amended after a first review (section 8), awaiting operator approval
 - **Package:** `packages/headless-agents` (workspace member of this repository)
 - **Current version:** 0.3.0 (`headless-agents-v0.3.0`)
 - **Brain references:** decision 3c5c56e1 (one shared agent runtime, public),
@@ -156,6 +156,14 @@ fixtures (3 rails x 6 phases) must stay identical.
 | agy | package-supplied **workspace guard**: writes allowed under `<path>` only | `run_command` allowed | none — operator's user rights |
 | openai-compat | rejected | rejected | — |
 
+**The agy workspace guard is a deliberate change of principle.** Until 0.3.0 the runtime
+ships no guard: `ToolGuard` is a script the caller versions, tests and passes by absolute
+path. In write mode the guard *is* the confinement, so the package owns it: a versioned
+script shipped as package data, pinned by its own unit tests, and the `ToolGuard`
+docstring is amended to say so. The two do not compose in 0.4.0: an agy profile carrying
+both `workspace` and a caller `tool_guard` is rejected with `ValueError` (a read-only run
+keeps the caller guard exactly as today).
+
 `shell` is explicit and off by default because only codex confines it. The ephemeral HOME
 stays in every case: none of the operator's hooks, MCP servers or user-level instructions
 leak into the child by accident.
@@ -176,13 +184,23 @@ instructions (for example "everything on GitHub in English").
   defaults to `~/.claude/CLAUDE.md`). Parent directories are included only on request
   (`--context-parents`).
 - **Levels:** `full` (repository + user-level), `global` (user-level only), `none`.
-- **Delivery, in each rail's native form, never duplicated:**
-  - claude: repository `CLAUDE.md` present in the workspace; user-level through
-    `--append-system-prompt`.
-  - codex, opencode: the repository `AGENTS.md` if it exists; otherwise one composed
-    `AGENTS.md` (repository `CLAUDE.md` + user-level) written into the workspace.
-  - agy: same rule, in the file agy discovers (to measure).
-  - openai-compat: system-message preamble.
+- **Two channels, one rule each.** Every level delivers everything it names; nothing is
+  delivered twice.
+  - **Instruction file in the workspace** — repository-level content only, and only in
+    write mode, where the workspace is a fresh worktree the run owns. A tracked
+    instruction file the rail reads natively is left as it is; the bundle writes a file
+    only where the rail's file is missing (codex, opencode: an `AGENTS.md` composed from
+    the repository `CLAUDE.md`; agy: the same content in the file agy discovers, to
+    measure).
+  - **Preamble** — user-level content always, and repository-level content in read-only
+    mode, where the working directory is the caller's checkout and **the bundle never
+    writes a file there**. claude takes it through `--append-system-prompt`;
+    openai-compat as a system message; codex, opencode and agy as a delimited block
+    prepended to the prompt.
+- **The preamble counts against `max_prompt_bytes`.** For agy and opencode, which take the
+  prompt in argv, the bundle's size is added before the check; a bundle that pushes the
+  prompt over the limit fails the run with exit code `2` before any spawn, never by
+  truncation.
 - **Never in the diff:** files the bundle writes are added to the worktree's local
   exclude file, never to a tracked `.gitignore`.
 - **Traceability:** `result.json` lists every injected file with its size in bytes and
@@ -205,6 +223,7 @@ ha run -p PROVIDER [-m MODEL] [--effort E] [--timeout SECONDS]
        [--chain P1,P2,...]
        [--context full|global|none] [--context-parents]
        [--mcp PROFILE]
+       [--base-url URL --key-env VAR]
        [--write [--shell] [--repo PATH] [--base REF]]
        [--json] [--run-dir DIR]
        [PROMPT | -]
@@ -214,6 +233,9 @@ ha clean RUN_ID
 
 - **Defaults:** `--context global` read-only, `--context full` with `--write`; no MCP;
   prompt from the argument, or stdin when it is `-` or absent.
+- **`--base-url` / `--key-env`:** both required with `-p openai-compat`, rejected (exit
+  `2`) with any other provider — the presets fix their own URL and key variable. `--key-env`
+  takes the variable **name**; the key itself never appears on the command line.
 - **Read-only flow:** the current repository is the agent's working directory, without
   any write tool. Output: `text`, or the schema-1 JSON with `--json`.
 - **`--write` flow:**
@@ -222,7 +244,11 @@ ha clean RUN_ID
   2. Install the context bundle; register its files in the local exclude.
   3. Run the provider with `Workspace(path=wt, shell=--shell)`.
   4. Commit the result on `ha/<run_id>` as `chore(ha): <run_id> via
-     <provider>/<model_reported>` — a review carrier, not a final commit.
+     <provider>/<model_reported>` — a review carrier, not a final commit. **The
+     repository's commit hooks run**: the CLI never passes `--no-verify` nor overrides
+     `core.hooksPath`. If a hook refuses, the changes stay uncommitted in the worktree,
+     the hook output is kept in the run directory, and the run exits `1` — the diff is
+     still there to read.
   5. Print branch, diffstat, patch path and the agent's text.
   6. **Never merge.** The caller reads the diff and integrates, or runs `ha clean`.
 - **`--chain`:** walks the list on exit codes `3` and `4`
@@ -247,10 +273,27 @@ tools = ["brain_search", "brain_get", "brain_recall", "brain_ticket_get"]
 knows no server by name: `brain` exists only in the operator's configuration.
 
 **`allowed_networks`** replaces the boolean `require_loopback` on `McpServer`:
-`allowed_networks: tuple[str, ...] = ("127.0.0.0/8", "::1/128")`. Callers that never set
-the field see no change. An MCP server reached over a private network (for example a
-VPN subnet) is allowed by listing that subnet explicitly, for the Dream as much as for
-the CLI.
+`allowed_networks: tuple[str, ...] | None = ("127.0.0.0/8", "::1/128")`.
+
+- **Default:** loopback only — a caller that never set `require_loopback` sees no change.
+- **`None`:** no network restriction, the exact equivalent of `require_loopback=False`.
+  It is spelled out, never implied by an empty tuple (an empty tuple is rejected).
+- **A private network** (for example a VPN subnet) is allowed by listing that subnet
+  explicitly, for the Dream as much as for the CLI.
+- **Host names are never resolved.** A DNS answer at validation time proves nothing about
+  the address connected to later. A literal IP is matched against the networks;
+  `localhost` is accepted if and only if `127.0.0.0/8` is listed (today's rule); any
+  other host name is rejected with a message asking for an IP literal. With
+  `allowed_networks=None` no host check runs, as today with `require_loopback=False`.
+- **Proxy bypass:** `merged_no_proxy` appends the URL's literal host when it is not a
+  loopback entry, so a listed private address is not sent through `HTTP(S)_PROXY`. A
+  host, never a CIDR: CIDR support in `NO_PROXY` differs between the CLIs' HTTP clients.
+
+**In-repository caller:** `brain_v42.agents.capability.brain_mcp_server` passes
+`require_loopback=False` **by default**, for every Dream rail — its URL is validated
+by `build_child_environment` under enforcement instead. It migrates in the same lot as the
+field, to `allowed_networks=None`, and the Dream golden fixtures gate that the argv, the
+written configuration files and the child environment stay byte-for-byte identical.
 
 **Session skill `ha-delegate`** (in `~/.claude/skills`, outside this repository): when to
 delegate, to which provider, and the rule that the diff is read before integration. It
@@ -263,7 +306,10 @@ replaces runbook eafde166.
   against a local fake HTTP server (200, 401, 429, 5xx, timeout; the key never appears in
   logs or stderr); context bundle resolution, including an ignored `CLAUDE.md`; the
   `--write` worktree flow on a throwaway git repository; `result.json` against schema 1;
-  CLI argument validation and exit codes.
+  CLI argument validation and exit codes; `allowed_networks` (default, `None`, empty
+  tuple rejected, IP literal in/out of a listed subnet, `localhost`, other host names
+  rejected, `NO_PROXY` entry); the preamble counted against `max_prompt_bytes`; the
+  carrier commit with a refusing hook; agy `workspace` + `tool_guard` rejected.
 - **Boundary guard (existing):** runtime dependencies stay `pydantic` alone; no import of
   `brain_v42`.
 - **Dream non-regression:** the existing golden fixtures pass unchanged.
@@ -279,7 +325,9 @@ replaces runbook eafde166.
   `max_prompt_bytes`, `workspace`, the context bundle, `openai-compat` and its presets,
   and the CLI. Breaking entry: `McpServer.require_loopback` replaced by `allowed_networks`
   (the default keeps loopback-only, so a caller that never set the field is unaffected;
-  one that set `require_loopback=False` must migrate).
+  one that set `require_loopback=False` must migrate to `allowed_networks=None` — the
+  Dream's `brain_mcp_server` does so in lot 4, section 3.4). Behaviour entry: an agy
+  profile with `workspace` uses the package-owned guard (section 3.3).
 - **Implementation lots, in order:** (1) facade; (2) `openai-compat`; (3) workspace and
   context bundle; (4) CLI and MCP profiles. Each lot ships with its tests; the tag
   follows lot 4.
@@ -302,3 +350,18 @@ replaces runbook eafde166.
 | A consumer merges an unreviewed sub-agent diff | The CLI never merges; the skill states the rule |
 | Context bundle cost in wide fan-outs | Levels, `global` by default read-only, sizes recorded in `result.json` |
 | Workspace code paths perturb the Dream | `workspace=None` is byte-for-byte unchanged; golden fixtures gate it |
+| The `allowed_networks` migration perturbs the Dream | `brain_mcp_server` migrates to `None` in the same lot; golden fixtures gate it |
+
+## 8. Review amendments (2026-09-23)
+
+A first review, checked against the code at `d9a72644`, found six gaps; this revision
+closes them.
+
+| # | Gap | Resolution |
+|---|---|---|
+| 1 | `require_loopback` replacement claimed only external callers must migrate, but the Dream's `brain_mcp_server` sets it to `False` by default | `allowed_networks=None` spelled out as "no restriction"; in-repository migration in lot 4, gated by the golden fixtures (3.4) |
+| 2 | CIDR matching said nothing about host names | Never resolved; `localhost` iff `127.0.0.0/8` is listed; other names rejected; literal host added to `NO_PROXY` (3.4) |
+| 3 | `full` dropped user-level instructions for codex/opencode when the repository has an `AGENTS.md`, and read-only mode would have written into the caller's checkout | Two channels: workspace file for repository content in write mode only; preamble for user-level content always and for everything in read-only mode; preamble counted against `max_prompt_bytes` (3.3) |
+| 4 | `ha run -p openai-compat` had no way to name its URL or key | `--base-url` and `--key-env`, required with `openai-compat`, rejected otherwise (3.4) |
+| 5 | A package-supplied agy guard contradicted "the runtime ships no guard" without saying so | Stated as a deliberate change; guard shipped as package data; `workspace` + caller `tool_guard` on agy rejected (3.3) |
+| 6 | The `--write` carrier commit did not say what happens with the repository's hooks | Hooks run, never bypassed; a refusal leaves the diff uncommitted and exits `1` (3.4) |
