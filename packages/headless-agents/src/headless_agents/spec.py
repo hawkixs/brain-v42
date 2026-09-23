@@ -23,6 +23,9 @@ takes its fixed name inside it (:data:`RUN_DIR_LOG_NAMES`), its name is the
 run's id, and the provider writes ``result.json`` there (see
 :mod:`headless_agents.run_record`). Explicit log paths still win, so a caller
 that names its logs runs exactly as before.
+
+``context`` is the resolved context bundle (:mod:`headless_agents.context`);
+each rail delivers it through its preamble channel.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Final
 
+from .context import ContextBundle
 from .profile import CapabilityProfile
 
 #: The name each log takes inside ``RunSpec.run_dir`` when the caller names
@@ -71,6 +75,7 @@ class RunSpec:
     workspace: Path | None = None
     executable: str | None = None
     environment: Mapping[str, str] | None = None
+    context: ContextBundle | None = None
     extra: dict[str, object] = field(default_factory=dict)
 
     def effective_timeout_seconds(self, *, now: float | None = None) -> float:

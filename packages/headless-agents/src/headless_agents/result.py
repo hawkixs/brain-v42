@@ -62,14 +62,16 @@ class RunResult:
     run_id: str | None = None
     stderr_log: Path | None = None
     raw_log: Path | None = None
+    context: tuple[dict[str, object], ...] | None = None
+    workspace: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
         """The JSON-safe schema-1 form of this result.
 
         ``context``, ``workspace`` and ``branch`` belong to schema 1 from the
-        start, so a consumer can pin the key set; they stay ``None`` until the
-        runtime can fill them (the context bundle, the workspace capability,
-        the ``ha run --write`` carrier branch).
+        start, so a consumer can pin the key set. ``context`` and ``workspace``
+        stay ``None`` until the caller fills them; ``branch`` stays ``None``
+        until lot 4 (the ``ha run --write`` carrier branch).
         """
         return {
             "schema": RESULT_SCHEMA_VERSION,
@@ -83,8 +85,8 @@ class RunResult:
             "cost_usd": self.cost_usd,
             "duration_seconds": self.duration_seconds,
             "tool_call_completed": self.tool_call_completed,
-            "context": None,
-            "workspace": None,
+            "context": None if self.context is None else [dict(entry) for entry in self.context],
+            "workspace": None if self.workspace is None else dict(self.workspace),
             "branch": None,
             "logs": {
                 "report": _path(self.report_path),

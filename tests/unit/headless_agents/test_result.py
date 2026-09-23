@@ -96,3 +96,51 @@ class TestToDict:
         assert data["context"] is None
         assert data["workspace"] is None
         assert data["branch"] is None
+
+
+def test_to_dict_carries_context_and_workspace() -> None:
+    result = RunResult(
+        exit_code=0,
+        provider="codex",
+        model="m",
+        report_path=None,
+        events_log=None,
+        tokens=None,
+        duration_seconds=1.0,
+        tool_call_completed=False,
+        context=(
+            {
+                "path": "/u.md",
+                "scope": "user",
+                "size_bytes": 1,
+                "sha256": "a" * 64,
+                "installed_as": None,
+            },
+        ),
+        workspace={"path": "/ws", "write": False, "shell": False},
+    )
+    data = result.to_dict()
+    assert data["context"] == [
+        {
+            "path": "/u.md",
+            "scope": "user",
+            "size_bytes": 1,
+            "sha256": "a" * 64,
+            "installed_as": None,
+        }
+    ]
+    assert data["workspace"] == {"path": "/ws", "write": False, "shell": False}
+
+
+def test_to_dict_keeps_null_without_context() -> None:
+    result = RunResult(
+        exit_code=0,
+        provider="codex",
+        model="m",
+        report_path=None,
+        events_log=None,
+        tokens=None,
+        duration_seconds=1.0,
+        tool_call_completed=False,
+    )
+    assert (result.to_dict()["context"], result.to_dict()["workspace"]) == (None, None)
