@@ -341,9 +341,9 @@ def build_codex_home(*, root: Path, real_codex_home: Path) -> Path:
 
     Codex resolves its login, its config and its session state from
     ``CODEX_HOME``; handing a sandboxed run the real directory would expose
-    the operator's own ``AGENTS.md``, sessions and config to it. Measured
-    2026-09-23: ``codex exec`` needs nothing else under ``CODEX_HOME`` to
-    authenticate a non-interactive run.
+    the operator's own ``AGENTS.md``, sessions and config to it. Expected:
+    ``codex exec`` needs nothing else under ``CODEX_HOME`` to authenticate a
+    non-interactive run -- confirmed by the Task 8 live test.
     """
     root.mkdir(parents=True, exist_ok=True)
     root.chmod(0o700)
@@ -357,10 +357,11 @@ def write_tool_started(events_log: Path) -> bool:
 
     The write-mode twin of :func:`tool_call_started`, for a run that carries
     no MCP server to read a taint from: codex has its own event types for a
-    workspace edit. Measured 2026-09-23: ``codex exec`` writes an
+    workspace edit. Expected: ``codex exec`` writes an
     ``item.started``/``item.completed`` event with ``item.type`` in
     ``{"command_execution", "file_change"}`` for a shell command and for an
-    ``apply_patch`` edit respectively, one JSON line per event.
+    ``apply_patch`` edit respectively, one JSON line per event -- confirmed by
+    the Task 8 live test.
 
     Fail-closed the same way as :func:`tool_call_started`: an absent or
     unreadable stream, or a line that fails to parse, answers ``True`` -- a
@@ -425,6 +426,42 @@ def _failure_exit_code(
     if workspace_write and write_tool_started(events_log):
         return failure_code_after_a_write(default)
     return PROVIDER_FALLBACK_EXIT_CODE
+
+
+def _persist_rotated_auth(ephemeral_home: Path, real_codex_home: Path) -> None:
+    """Write a codex-rotated ``auth.json`` back to the real ``CODEX_HOME``
+    before the ephemeral one is removed.
+
+    Codex may refresh its OAuth token by an atomic replace (write a temp file,
+    then rename it over ``auth.json``); that rename replaces the ephemeral
+    ``auth.json`` SYMLINK with a regular file holding the new token. Removing
+    the ephemeral ``CODEX_HOME`` afterwards would then delete the rotated
+    token with it, leaving the operator's real ``auth.json`` holding a
+    refresh token codex itself has already rotated past -- which codex's next
+    real run would find already revoked.
+
+    Only a REGULAR file with content counts as a rotation: a symlink left
+    untouched, or an ``auth.json`` the child deleted, is never followed or
+    written back.
+    """
+    ephemeral_auth = ephemeral_home / "auth.json"
+    if ephemeral_auth.is_symlink() or not ephemeral_auth.is_file():
+        return
+    rotated = ephemeral_auth.read_bytes()
+    if not rotated:
+        return
+    real_auth = real_codex_home / "auth.json"
+    if real_auth.is_file() and real_auth.read_bytes() == rotated:
+        return
+    descriptor, temp_name = tempfile.mkstemp(dir=real_codex_home, prefix=".auth.json.")
+    try:
+        with os.fdopen(descriptor, "wb") as temp_file:
+            temp_file.write(rotated)
+        os.chmod(temp_name, 0o600)
+        os.replace(temp_name, real_auth)
+    except BaseException:
+        Path(temp_name).unlink(missing_ok=True)
+        raise
 
 
 def _effective_timeout(timeout_seconds: float, deadline: float | None) -> float:
@@ -598,7 +635,12 @@ def run_codex(
                 dict(child_environment) if child_environment is not None else dict(os.environ)
             )
             run_environment["CODEX_HOME"] = str(ephemeral_home)
-            return _run(workspace_capability.path, run_environment)
+            try:
+                return _run(workspace_capability.path.resolve(), run_environment)
+            finally:
+                # Every exit path -- success, failure, timeout -- must still
+                # rescue a rotated token before the ephemeral home is removed.
+                _persist_rotated_auth(ephemeral_home, real_codex_home)
     if workspace is not None:
         return _run(workspace.resolve(), child_environment)
     with tempfile.TemporaryDirectory(prefix=temp_prefix) as temp_dir:

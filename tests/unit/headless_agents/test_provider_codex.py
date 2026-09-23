@@ -639,7 +639,10 @@ class TestRunCodexWorkspace:
         assert captured["codex_home"] != str(real_home)
         assert captured["codex_home_mode"] == 0o700
         assert captured["codex_home_auth_target"] == real_home / "auth.json"
-        assert kwargs["cwd"] == ws
+        assert kwargs["cwd"] == ws.resolve()
+        command = captured["command"]
+        assert isinstance(command, list)
+        assert command[command.index("-C") + 1] == str(ws.resolve())
 
     def test_missing_real_auth_json_refuses_before_spawn(
         self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
@@ -737,6 +740,154 @@ class TestRunCodexWorkspace:
         env = kwargs["env"]
         assert isinstance(env, dict)
         assert not Path(env["CODEX_HOME"]).exists()
+
+    def test_write_mode_failure_without_a_write_event_stays_replayable(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        """A write-mode workspace does not by itself taint a run: without a
+        ``command_execution``/``file_change`` event, a failure is still
+        provably a no-write and stays replayable elsewhere."""
+        real_home = self._real_codex_home(tmp_path, with_auth=True)
+        fake = _FakeProcess(returncode=3, events="")
+        _install(monkeypatch, fake, logs["report_log"])
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws, write=True),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+        )
+
+        assert code == PROVIDER_FALLBACK_EXIT_CODE
+
+    def test_read_only_workspace_timeout_without_a_write_event_stays_replayable(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        """``workspace_write`` is ``False`` for a read-only workspace: the new
+        write-taint branch of ``_deadline_exit_code`` must never fire for it,
+        so a hang with no event at all stays the ordinary replayable 4."""
+        real_home = self._real_codex_home(tmp_path, with_auth=True)
+        fake = _FakeProcess(returncode=0, hang=True)
+        _install(monkeypatch, fake, logs["report_log"])
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+        )
+
+        assert code == TIMEOUT_REPLAYABLE_EXIT_CODE
+
+
+class TestPersistRotatedAuth:
+    """Codex may refresh its OAuth token by an atomic replace (write temp +
+    rename), which turns the ephemeral ``auth.json`` SYMLINK into a regular
+    file holding the new token. That file must be rescued back to the real
+    ``CODEX_HOME`` before the ephemeral home is removed, on every exit path."""
+
+    def _real_codex_home(self, tmp_path: Path, *, content: str = "{}") -> Path:
+        real_home = tmp_path / "real-codex-home"
+        real_home.mkdir()
+        (real_home / "auth.json").write_text(content, encoding="utf-8")
+        return real_home
+
+    def test_a_rotated_regular_file_is_written_back_atomically(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        real_home = self._real_codex_home(tmp_path)
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+
+        def popen(command: list[str], **kwargs: object) -> _FakeProcess:
+            env = kwargs["env"]
+            assert isinstance(env, dict)
+            auth = Path(env["CODEX_HOME"]) / "auth.json"
+            # Simulate codex's own atomic replace: unlink the symlink, write a
+            # fresh regular file in its place -- exactly what a real refresh
+            # (temp file + os.replace) leaves behind.
+            auth.unlink()
+            auth.write_text('{"rotated": true}', encoding="utf-8")
+            fake.bind(events_stream=kwargs["stdout"], report_log=logs["report_log"])
+            return fake
+
+        monkeypatch.setattr(codex.subprocess, "Popen", popen)
+        monkeypatch.setattr(codex, "terminate_process_group", lambda process: process.kill())
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+        )
+
+        assert code == 0
+        real_auth = real_home / "auth.json"
+        assert real_auth.read_text(encoding="utf-8") == '{"rotated": true}'
+        assert real_auth.stat().st_mode & 0o777 == 0o600
+
+    def test_an_untouched_symlink_leaves_the_real_file_alone(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        real_home = self._real_codex_home(tmp_path)
+        real_auth = real_home / "auth.json"
+        before_bytes = real_auth.read_bytes()
+        before_mtime = real_auth.stat().st_mtime_ns
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+        _install(monkeypatch, fake, logs["report_log"])
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+        )
+
+        assert code == 0
+        assert real_auth.read_bytes() == before_bytes
+        assert real_auth.stat().st_mtime_ns == before_mtime
+
+    def test_a_deleted_ephemeral_auth_leaves_the_real_file_alone(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        real_home = self._real_codex_home(tmp_path)
+        real_auth = real_home / "auth.json"
+        before_bytes = real_auth.read_bytes()
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+
+        def popen(command: list[str], **kwargs: object) -> _FakeProcess:
+            env = kwargs["env"]
+            assert isinstance(env, dict)
+            (Path(env["CODEX_HOME"]) / "auth.json").unlink()
+            fake.bind(events_stream=kwargs["stdout"], report_log=logs["report_log"])
+            return fake
+
+        monkeypatch.setattr(codex.subprocess, "Popen", popen)
+        monkeypatch.setattr(codex, "terminate_process_group", lambda process: process.kill())
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+        )
+
+        assert code == 0
+        assert real_auth.read_bytes() == before_bytes
 
 
 class TestCallerWording:
