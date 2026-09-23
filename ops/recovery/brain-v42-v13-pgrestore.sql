@@ -2839,7 +2839,7 @@ expected_contract_views(view_name, security_barrier, definition_md5) AS (
      ),
      ('codex_ticket_message_v1', TRUE, 'd91b467ff450e3b91e7ff14c9ad67e1d'),
      ('codex_ticket_v1', TRUE, '9b248acd2480ea9ac252e3cbef09b47a'),
-     ('knowledge_claim_current', FALSE, '30fdf69fd0413f03c00ae3ca2ca4e756')
+     ('knowledge_claim_current', FALSE, '6565fd7e2fe5e52a9c5175651964f34e')
 ),
 expected_runtime_triggers(
  table_name,
