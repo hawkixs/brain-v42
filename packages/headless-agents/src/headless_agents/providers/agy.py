@@ -44,6 +44,7 @@ from ..capability import (
 )
 from ..profile import CapabilityProfile
 from ..result import RunResult
+from ..run_record import answer_text, record, run_id_of
 from ..sandbox import build_ephemeral_home
 from ..sandbox import ephemeral_root as default_ephemeral_root
 from ..spec import RunSpec
@@ -458,6 +459,7 @@ class AgyProvider:
         return tool_call_completed(spec.events_log)
 
     def run(self, spec: RunSpec) -> RunResult:
+        spec = spec.with_run_dir_defaults()
         assert spec.events_log is not None
         assert spec.report_log is not None
         assert spec.stderr_log is not None
@@ -478,15 +480,22 @@ class AgyProvider:
             deadline=spec.deadline,
         )
         duration = time.monotonic() - start
-        return RunResult(
-            exit_code=exit_code,
-            provider=self.name,
-            model=spec.model,
-            report_path=spec.report_log,
-            events_log=spec.events_log,
-            tokens=None,
-            duration_seconds=duration,
-            tool_call_completed=(
-                spec.profile.mcp is not None and tool_call_completed(spec.events_log)
+        return record(
+            spec,
+            RunResult(
+                exit_code=exit_code,
+                provider=self.name,
+                model=spec.model,
+                report_path=spec.report_log,
+                events_log=spec.events_log,
+                tokens=None,
+                duration_seconds=duration,
+                tool_call_completed=(
+                    spec.profile.mcp is not None and tool_call_completed(spec.events_log)
+                ),
+                # extract_report wrote the stream's final ``response`` there.
+                text=answer_text(spec.report_log, exit_code=exit_code),
+                run_id=run_id_of(spec),
+                stderr_log=spec.stderr_log,
             ),
         )

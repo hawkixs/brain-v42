@@ -448,3 +448,44 @@ class TestAgyProvider:
         result = provider.run(spec)
         assert result.provider == "agy" and result.exit_code == 0
         assert calls[0]["name"] == "seat-1" and calls[0]["real_home"] == real_home
+
+    def test_run_reads_its_report_as_text_and_records_the_run(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        def fake_run_agy(**kwargs: object) -> int:
+            report = kwargs["report_log"]
+            assert isinstance(report, Path)
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text("agy answer", encoding="utf-8")
+            return 0
+
+        monkeypatch.setattr(agy, "run_agy", fake_run_agy)
+        run_dir = tmp_path / "runs" / "r1"
+        result = agy.AgyProvider().run(
+            RunSpec(prompt="P", model="m", profile=_profile(tmp_path), run_dir=run_dir)
+        )
+        assert result.text == "agy answer"
+        assert result.run_id == "r1"
+        assert result.stderr_log == run_dir / "stderr.log"
+        written = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+        assert written == result.to_dict()
+
+    def test_a_failed_run_has_no_text_even_when_the_stream_left_a_report(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """extract_report runs before the exit code is judged, so a failed run can
+        leave a report behind; that is not an answer."""
+
+        def fake_run_agy(**kwargs: object) -> int:
+            report = kwargs["report_log"]
+            assert isinstance(report, Path)
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text("half an answer", encoding="utf-8")
+            return 1
+
+        monkeypatch.setattr(agy, "run_agy", fake_run_agy)
+        result = agy.AgyProvider().run(
+            RunSpec(prompt="P", model="m", profile=_profile(tmp_path), **_logs(tmp_path))
+        )
+        assert result.exit_code == 1
+        assert result.text is None

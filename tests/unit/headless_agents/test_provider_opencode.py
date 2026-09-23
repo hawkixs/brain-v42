@@ -702,3 +702,24 @@ class TestOpenCodeProvider:
         provider = opencode.OpenCodeProvider()
         spec = RunSpec(prompt="P", profile=_profile(), **_logs(tmp_path))
         assert provider.child_environment(spec, {"PATH": "/x"}) is None
+
+    def test_run_reads_its_report_as_text_and_records_the_run(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        def fake_run(**kwargs: object) -> int:
+            report = kwargs["report_log"]
+            assert isinstance(report, Path)
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text("opencode answer", encoding="utf-8")
+            return 0
+
+        monkeypatch.setattr(opencode, "run_opencode", fake_run)
+        run_dir = tmp_path / "runs" / "r1"
+        result = opencode.OpenCodeProvider().run(
+            RunSpec(prompt="P", model="opencode-go/m", profile=_profile(), run_dir=run_dir)
+        )
+        assert result.text == "opencode answer"
+        assert result.run_id == "r1"
+        assert result.tokens is None  # no event was written: nothing was measured
+        written = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+        assert written == result.to_dict()
