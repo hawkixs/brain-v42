@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .context import xml_attribute
 from .profile import Workspace
 from .spec import RunSpec
 
@@ -29,7 +30,7 @@ def rail_preamble(spec: RunSpec, *, tools_note: str) -> str:
     if workspace is not None:
         mode = "read and edit" if workspace.write else "read (no edits)"
         parts.append(
-            f'<workspace path="{workspace.path}" mode="{mode}">\n'
+            f'<workspace path="{xml_attribute(str(workspace.path))}" mode="{mode}">\n'
             f"Work inside {workspace.path} only; use absolute paths under it. {tools_note}\n"
             "</workspace>"
         )

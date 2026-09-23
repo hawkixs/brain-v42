@@ -52,8 +52,21 @@ def _read(path: Path, scope: Scope) -> ContextFile | None:
     )
 
 
+def xml_attribute(value: str) -> str:
+    """``value`` safe inside a double-quoted attribute: a path is the
+    operator's, but nothing stops it holding a quote or a bracket. It lives
+    here, the stdlib-only module, so every rail's blocks share one escaper."""
+    return (
+        value.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+    )
+
+
 def _block(file: ContextFile) -> str:
-    return f'<instructions source="{file.source}" scope="{file.scope}">\n{file.content.rstrip()}\n</instructions>'
+    source = xml_attribute(str(file.source))
+    return (
+        f'<instructions source="{source}" scope="{file.scope}">\n'
+        f"{file.content.rstrip()}\n</instructions>"
+    )
 
 
 @dataclass(frozen=True)

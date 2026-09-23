@@ -49,6 +49,7 @@ from ..capability import (
     failure_code_after_a_write,
     terminate_process_group,
 )
+from ..context import xml_attribute
 from ..guards.agy_workspace import GUARD_CONFIG_NAME
 from ..profile import CapabilityProfile, Workspace
 from ..result import RunResult
@@ -625,14 +626,6 @@ _TOOLS_NOTE = {
 }
 
 
-def _xml_attribute(value: str) -> str:
-    """``value`` safe inside a double-quoted attribute: a workspace path is
-    the operator's, but nothing stops it holding a quote or a bracket."""
-    return (
-        value.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
-    )
-
-
 def _preamble_for(spec: RunSpec, workspace: Workspace | None) -> str:
     """The preamble ``run`` launches with, and ``build_command`` previews.
 
@@ -642,7 +635,7 @@ def _preamble_for(spec: RunSpec, workspace: Workspace | None) -> str:
     preamble = rail_preamble(spec, tools_note=_TOOLS_NOTE[mode])
     if workspace is None:
         return preamble
-    root = _xml_attribute(str(workspace.path))
+    root = xml_attribute(str(workspace.path))
     files = f'<files root="{root}">\n{workspace_listing(workspace.path)}\n</files>'
     return f"{preamble}\n\n{files}"
 

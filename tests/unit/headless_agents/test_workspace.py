@@ -90,3 +90,16 @@ def test_summary(tmp_path: Path) -> None:
         "write": True,
         "shell": False,
     }
+
+
+def test_the_workspace_and_instructions_attributes_are_escaped(tmp_path: Path) -> None:
+    ws = tmp_path / 'w"<&>'
+    ws.mkdir()
+    bundle = ContextBundle(level="full", files=(_file(ws, "user", "USER"),))
+    spec = RunSpec(
+        prompt="p", context=bundle, profile=CapabilityProfile(workspace=Workspace(path=ws))
+    )
+    preamble = rail_preamble(spec, tools_note="x")
+    escaped = f"{tmp_path}/w&quot;&lt;&amp;&gt;"
+    assert f'<workspace path="{escaped}" ' in preamble
+    assert f'<instructions source="{escaped}/user.md" scope="user">' in preamble
