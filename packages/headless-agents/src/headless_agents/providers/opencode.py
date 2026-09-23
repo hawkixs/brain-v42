@@ -154,9 +154,11 @@ _WORKSPACE_WRITE_TOOLS = frozenset({"edit", "write"})
 #: Every built-in name that must never be exempted as an MCP tool merely
 #: because it starts with a wildcard-configured server's name (a server
 #: literally named ``apply`` must not exempt ``apply_patch``). ``apply_patch``
-#: is not itself a key of :data:`MACHINE_TOOLS` (that permission schema names
-#: it ``patch``), so it is listed explicitly.
-_KNOWN_BUILTIN_TOOLS = frozenset(MACHINE_TOOLS) | _WORKSPACE_READ_TOOLS | frozenset({"apply_patch"})
+#: and ``shell`` are not keys of :data:`MACHINE_TOOLS` (that permission schema
+#: names them ``patch`` and ``bash``), so they are listed explicitly.
+_KNOWN_BUILTIN_TOOLS = (
+    frozenset(MACHINE_TOOLS) | _WORKSPACE_READ_TOOLS | frozenset({"apply_patch", "shell"})
+)
 
 
 def _workspace_enabled_tools(workspace: Workspace) -> frozenset[str]:

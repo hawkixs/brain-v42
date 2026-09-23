@@ -39,7 +39,7 @@ def _profile(**overrides: object) -> CapabilityProfile:
             url=URL,
             bearer_env_var="EXAMPLE_TOKEN",
             headers={"X-Agent": "example-run"},
-            tools=("example_search", "example_get"),
+            tools=("search", "get"),
         ),
         "credentials": Credentials(paths=(AUTH,)),
     }
@@ -115,8 +115,8 @@ class TestOpenCodeConfig:
         config = opencode.opencode_config(_profile().mcp)
         assert config["tools"] == {
             "*": False,
-            "example_example_search": True,
-            "example_example_get": True,
+            "example_search": True,
+            "example_get": True,
         }
 
     def test_an_undeclared_tool_list_admits_the_whole_server(self) -> None:
@@ -153,7 +153,7 @@ _BASE_CONFIG_MCP = (
     '{"$schema": "https://opencode.ai/config.json", "share": "disabled", "autoupdate": false,'
     ' "mcp": {"example": {"type": "remote", "url": "http://127.0.0.1:8765/mcp", "enabled": true,'
     ' "headers": {"Authorization": "Bearer {env:EXAMPLE_TOKEN}", "X-Agent": "example-run"}}},'
-    ' "tools": {"*": false, "example_example_search": true, "example_example_get": true},'
+    ' "tools": {"*": false, "example_search": true, "example_get": true},'
     ' "permission": {"bash": "deny", "edit": "deny", "write": "deny", "read": "deny",'
     ' "patch": "deny", "glob": "deny", "grep": "deny", "list": "deny", "webfetch": "deny",'
     ' "websearch": "deny", "task": "deny", "skill": "deny", "external_directory": "deny"}}'
@@ -209,7 +209,7 @@ def _events(*lines: dict[str, object]) -> str:
     return "\n".join(json.dumps(line) for line in lines) + "\n"
 
 
-def _tool_use(tool: str = "example_example_search", status: str = "completed") -> dict[str, object]:
+def _tool_use(tool: str = "example_search", status: str = "completed") -> dict[str, object]:
     return {"type": "tool_use", "part": {"tool": tool, "state": {"status": status}}}
 
 
