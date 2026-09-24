@@ -359,6 +359,11 @@ class ModelGoneError(RuntimeError):
     before.
     """
 
+    #: Set by ticket extraction when the retired model had ALREADY answered
+    #: this ticket unparseably (Q56/Q61, PR #204): the content error must
+    #: survive the switch to the next model.
+    content_error_seen: bool = False
+
     def __init__(self, model: str, status_code: int, detail: str = "") -> None:
         self.model = model
         self.status_code = status_code

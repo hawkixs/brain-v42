@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from scripts.domain_backfill import ModelGoneError
 from scripts.ticket_extract import (
     TRANSPORT_DEFERRAL_PREFIX,
     CorpusDedupUnavailable,
@@ -575,6 +576,31 @@ class TestExtractThreadErrorCapture:
         assert calls == 2
         assert outcome.failed
         assert not outcome.transport_failure
+
+    @pytest.mark.asyncio
+    async def test_a_model_retired_during_the_reprompt_carries_the_content_error(
+        self,
+    ) -> None:
+        """Final review of #204: the content error must survive the model switch."""
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return httpx.Response(
+                    200, json={"choices": [{"message": {"content": "not json"}}], "usage": {}}
+                )
+            return httpx.Response(410, json={"error": "gone"})
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="https://mock.nvidia.local/v1",
+        ) as client:
+            with pytest.raises(ModelGoneError) as caught:
+                await extract_thread(client, "test-model", _thread())
+
+        assert caught.value.content_error_seen
 
 
 class TestBoundedExtraction:
@@ -3613,6 +3639,74 @@ class TestAContentFailureIsNeverDeferred:
         assert exit_code == 3
         assert [call.args[2] for call in attempts.await_args_list] == ["timeout"]
         assert record.await_args.kwargs["status"] == "timeout"
+
+    @pytest.mark.asyncio
+    async def test_a_content_error_survives_the_switch_to_the_fallback_model(self) -> None:
+        thread = _thread()
+        calls = 0
+
+        async def extract(client, model, thread, **kw):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                gone = ModelGoneError("primary", 410)
+                gone.content_error_seen = True
+                raise gone
+            return ThreadOutcome(
+                thread=thread,
+                drafts=[],
+                failed=True,
+                error="HTTP 503 x3",
+                transport_failure=True,
+            )
+
+        async def extract_via_agy(agy_model, agy_executable, thread, **kw):
+            return ThreadOutcome(
+                thread=thread,
+                drafts=[],
+                failed=True,
+                error="AgyLinkError: agy envelope carries no usable response",
+                transport_failure=True,
+            )
+
+        args = SimpleNamespace(
+            apply_ids=None,
+            limit=20,
+            wet=False,
+            run_budget_seconds=600.0,
+            ticket_budget_seconds=180.0,
+        )
+        attempts = AsyncMock(return_value=True)
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[thread]),
+            ),
+            patch("scripts.ticket_extract._extract_thread_with_budget", extract),
+            patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", extract_via_agy),
+            patch(
+                "scripts.ticket_extract._previous_attempt_was_a_transport_deferral",
+                AsyncMock(return_value=False),
+            ),
+            patch("scripts.ticket_extract.record_ticket_attempt", attempts),
+            patch("scripts.ticket_extract.record_dream_run", AsyncMock()),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            exit_code = await _run(
+                args,
+                "secret",
+                "primary",
+                "https://llm.test",
+                fallback_model="fallback",
+                agy_model="gemini-3.8-flash-high",
+                agy_executable="agy",
+            )
+
+        assert calls == 2
+        assert exit_code == 1
+        assert [call.args[2] for call in attempts.await_args_list] == ["failed"]
 
 
 class TestRecordTicketAttemptReportsTheWrite:

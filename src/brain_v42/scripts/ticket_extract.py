@@ -631,11 +631,12 @@ async def _extract_via(
                     error=f"unparseable after corrective re-prompt: {exc}",
                     thinking_tokens=thinking_tokens,
                 )
-    except ModelGoneError:
+    except ModelGoneError as exc:
         # DO NOT bury this in a `failed` outcome: a retired model is not a
         # faulty ticket. Conflated, they produce twenty identical failures
         # nobody can trace back to their single cause — and the loop loses the
         # one piece of information that would let it switch to the fallback.
+        exc.content_error_seen = exc.content_error_seen or content_error_seen
         raise
     except (httpx.HTTPError, RuntimeError, KeyError, ValueError) as exc:
         # `thinking_tokens` may already hold the first call's measurement (a
@@ -1490,6 +1491,9 @@ async def _run(
             ticket_slice_seconds = min(ticket_budget_seconds, usable_slice)
             ticket_started = time.monotonic()
             ticket_deadline = ticket_started + ticket_slice_seconds
+            # A content error seen by a model retired mid-ticket (its re-prompt
+            # hit the 410) must survive the switch to the next model.
+            ticket_content_error = False
             while True:
                 if switched_to_agy:
                     # Both NVIDIA links are gone for the rest of the run: no
@@ -1511,6 +1515,7 @@ async def _run(
                     )
                     break
                 except ModelGoneError as exc:
+                    ticket_content_error = ticket_content_error or exc.content_error_seen
                     # The switch is a RUN decision, not a ticket one: without
                     # this state, the next 19 tickets would each pay the same
                     # 410 again to learn the same thing.
@@ -1558,8 +1563,8 @@ async def _run(
             # A deadline is remembered the same way (operator Q57=a): a timeout
             # anywhere in the chain keeps the ticket a timeout (rc=3).
             chain_timeout = outcome.failed and "timeout" in (outcome.error or "").lower()
-            chain_content_error = (
-                outcome.failed and not outcome.transport_failure and not chain_timeout
+            chain_content_error = outcome.failed and (
+                ticket_content_error or (not outcome.transport_failure and not chain_timeout)
             )
             if outcome.failed and agy_model and not switched_to_agy:
                 # Ticket-level rescue: this ticket failed on whichever NVIDIA
