@@ -72,7 +72,7 @@ and the 0.4.0 write flow this lot moves.
 | P2 | The repository (`--repo`, or the work tree holding the cwd) is resolved in `execute()`, not in `plan()`. `plan()` records the raw `--repo` path and the cwd. | Spec §3.8.2: `plan()` never runs git, and `git rev-parse --show-toplevel` is git. |
 | P3 | Proof records live in `<state>/proofs/<rail>.json` = `{"rail", "version", "isolation": {"passed", "date"}, "confinement": {"passed", "date"} \| null}`. They are written by `proofs.record_proof()`, which the `live` tests call on success; the engine reads them and compares `version` with `registry.probe(rail).version`. | Spec §3.8.0/§4 require a per-rail proof "with the rail version and date" that classifies write roles and gates executors, but name no storage. The state directory is the one durable, operator-owned place (§3.8). |
 | P4 | HTTP providers need no isolation proof: they run no local executor and load no operator configuration. | Spec §3.8.0 lists instruction files, skills, plugins, hooks, settings and MCP servers — all local-CLI concepts. |
-| P5 | The isolation gate (refuse an un-proven rail) and the confinement classification land in PR C, together with the proofs; PR B runs every rail as 0.4.0 did. | Gating in PR B would make `ha run` unusable until PR C ships the proofs; lot 1 is released as a whole (no tag before lot 5). |
+| P5 | Every merged state of `main` keeps the spec's guarantees. PR B ships the **isolation** proofs and their gate (Task 15b) together with the engine, and **refuses every write run** (a `write` role or `--write`: `UsageError`, exit 2, "write runs are not available in this build: the write protocol of spec §3.8.3 is not merged yet"). PR C ships the write protocol, the confinement proofs and classification, and lifts that refusal. | Codex review of this plan (round 1, blocker): an engine that runs a rail with no isolation proof, or a write without intent, provenance and locks, contradicts §3.8.0 and §5 even on an intermediate `main`. The installed `ha` is pinned to the `headless-agents-v0.4.0` tag (uv tool receipt), so no merge reaches the operator before a tag either way. |
 | P6 | `PR_SET_PDEATHSIG` is applied with `preexec_fn` in each rail's `Popen`, and every provider is started from the thread that waits on it. | The signal fires when the *thread* that forked dies (Linux semantics): a provider must be spawned by the thread that outlives it. |
 | P7 | Lot 1's `ha runs` reads `run.json` (new runs) and `result.json` (legacy) minimally; the full listing (cost, duration, quarantines at the top) is lot 2. | `run.json` moves the root `result.json` into `steps/`, which would otherwise hide every new run from 0.4.0's `ha runs`. |
 | P8 | The README's CLI synopsis is updated in PR B for the new grammar only; the full README pass stays in lot 5. | A README that documents a removed `-p` is wrong the day PR B merges. |
@@ -94,9 +94,12 @@ the task that owns the code.
 4. **Two `ha` processes minting a run id in the same second:** the second must get a fresh
    id (retry on `O_EXCL` collision), never share or overwrite the first's registry entry.
    Test in Task 11.
-5. **Ctrl-C (SIGINT) during `execute()`:** every lock released, the provider's process group
-   killed, the registry entry left non-final so the run reads `incomplete`, exit `130` — and
-   the next run proceeds without waiting 10 s on a stale lock. Test in Task 14.
+5. **Ctrl-C (SIGINT) during `execute()`:** the provider runs in its own session, so the
+   terminal's SIGINT reaches `ha` only; `ha` must kill and reap the provider's process group
+   (each rail, Task 7), release every lock, leave the registry entry non-final so the run
+   reads `incomplete`, and exit `130` — and the next run proceeds without waiting 10 s on a
+   stale lock. Unit test of the rails in Task 7; end-to-end test through a real `ha`
+   subprocess and a real provider subprocess in Task 14.
 
 ---
 
@@ -143,8 +146,8 @@ tests/live/headless_agents/test_proofs_live.py   NEW  isolation + confinement pe
 | PR | Tasks | Content | Leaves `main` |
 |---|---|---|---|
 | A | 1–8 | configuration and roles, role instructions, rail hardening (`--safe-mode`, codex tmp roots, PDEATHSIG), `--version` | 0.4.0 CLI unchanged, library hardened |
-| B | 9–15 | state, locks, registry, `run.json`, engine for one-step runs (read-only and write via the moved 0.4.0 write flow), new CLI grammar, `ha roles`, `ha clean` via the registry | new grammar live; write runs still 0.4.0-equivalent |
-| C | 16–22 | the full §3.8.3 write protocol, quarantines, provenance, the unconfined path, `ha clean` rules, proofs and the isolation gate, `ha roles` classification | lot 1 complete |
+| B | 9–15, 15b | state, locks, registry, `run.json`, engine for one-step **read-only** runs, the isolation proofs and their gate, new CLI grammar, `ha roles`, `ha clean` via the registry | new grammar live; every executor isolation-proven; write runs refused (P5) |
+| C | 16–22 | the full §3.8.3 write protocol, quarantines, provenance, the unconfined path, `ha clean` rules, the confinement proofs and classification in `ha roles`; write runs enabled | lot 1 complete |
 
 ---
 
@@ -616,17 +619,23 @@ def test_a_read_only_run_is_unchanged(tmp_path: Path) -> None:
 - [ ] **Step 4:** run `test_provider_codex.py` and `tests/unit/agents/test_golden_commands.py` (the Dream's codex fixtures are read-only runs: unchanged). PASS.
 - [ ] **Step 5: Commit** — `fix(headless-agents): close /tmp and TMPDIR to codex write runs (spec 3.8.0)`
 
-### Task 7: Providers die with `ha` — `PR_SET_PDEATHSIG`
+### Task 7: Providers die with `ha` — `PR_SET_PDEATHSIG`, and on interruption
 
 **Files:**
 - Create: `packages/headless-agents/src/headless_agents/procgroup.py`
-- Modify: the `Popen` calls in `providers/{claude,codex,agy,opencode,openai_compat}.py`
-- Test: `tests/unit/headless_agents/test_procgroup.py`
+- Modify: the `Popen` calls and their waits in `providers/{claude,codex,agy,opencode,openai_compat}.py`
+- Test: `tests/unit/headless_agents/test_procgroup.py`, each rail's test file
 
 **Interfaces:**
 - Produces: `preexec() -> None` — on Linux calls `prctl(PR_SET_PDEATHSIG, SIGKILL)` through
   `ctypes.CDLL(None, use_errno=True)`; a no-op elsewhere. Every provider `Popen` passes
   `preexec_fn=procgroup.preexec` in addition to `start_new_session=True`.
+- Produces: every rail's wait on its child (`communicate`, the read loop) is wrapped so that
+  **any** `BaseException` (`KeyboardInterrupt`, `SystemExit`) calls
+  `capability.terminate_process_group(process)` before re-raising — as `codex.py` already does
+  at its line 550 and `registry.probe` does. Measured on the plan's review: the claude rail's
+  `process.communicate(...)` handles only `TimeoutExpired`, so a Ctrl-C leaves `claude` running
+  in its own session. PDEATHSIG covers `ha` *dying*; this covers `ha` *being interrupted*.
 
 - [ ] **Step 1: Failing tests** (Linux-only, `pytest.mark.skipif(sys.platform != "linux")`)
 
@@ -669,7 +678,12 @@ def test_a_child_survives_while_its_spawning_thread_waits(tmp_path: Path) -> Non
   (`_wait_for`, `_alive`, `_gone_within` are small polling helpers in the test module using
   `os.kill(pid, 0)`.) Add one assertion per rail that its `Popen` receives
   `preexec_fn=procgroup.preexec` (monkeypatch `subprocess.Popen` in the rail module and
-  capture kwargs), in the rail's existing test file.
+  capture kwargs), in the rail's existing test file. And, per CLI rail, an interruption test:
+  a fake executable on `PATH` (a shell script that writes its pid, then `sleep 30`) run
+  through `get_provider(rail).run(spec)` in a thread; the main thread raises
+  `KeyboardInterrupt` into the wait by patching `subprocess.Popen.communicate` (or the rail's
+  read loop) to raise it once the pid file exists; assert the exception propagates **and**
+  the sleeper's process group is gone within 6 s (`TERMINATION_GRACE_SECONDS` + 1).
 
 - [ ] **Step 2:** run; FAIL (`ModuleNotFoundError`).
 - [ ] **Step 3:** implement `procgroup.py` (`PR_SET_PDEATHSIG = 1`; raise nothing from the
@@ -1001,8 +1015,8 @@ def test_plan_runs_no_git(env: Env, fake_git_that_fails: None) -> None:
 
 **Files:**
 - Modify: `packages/headless-agents/src/headless_agents/engine.py` (execute half)
-- Create: `packages/headless-agents/src/headless_agents/write_flow.py` (0.4.0 `cli_write.run_write` moved, behaviour unchanged in this PR)
-- Delete: `packages/headless-agents/src/headless_agents/cli_write.py`
+- Delete: `packages/headless-agents/src/headless_agents/cli_write.py` (write runs are refused in PR B, P5; the write flow returns in Task 19)
+- Modify: `tests/unit/headless_agents/test_cli_write.py` → skipped module-wide with `pytest.skip("write runs return with the spec 3.8.3 protocol, Task 19", allow_module_level=True)`; Task 19 moves every case into `test_write_flow.py`
 - Test: `tests/unit/headless_agents/test_engine_execute.py`
 
 **Interfaces:**
@@ -1026,9 +1040,11 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome
   (Task 4) and re-check the prompt size → write `prompt.md` and the initial `run.json`
   (`running`) → run the chain in `steps/01-run-<role>/` exactly as 0.4.0 `run_links` did →
   write the final `run.json` and set the registry status (`answered` or `failed`). A write
-  step (`role.write`) calls `write_flow.run_write_step(...)` with the same arguments
-  `cli_write.run_write` took, rebound to the step directory (`wt/` stays at the run root,
-  §3.10); the full §3.8.3 protocol replaces it in PR C.
+  step (`role.write`, after overrides) is **refused in PR B** — `plan()` raises
+  `UsageError("write runs are not available in this build: the write protocol of spec
+  §3.8.3 is not merged yet")` (P5). `cli_write.py` is deleted in this PR and its 0.4.0 tests
+  are kept, skipped with a reason pointing at Task 19, which re-expresses them against the
+  §3.8.3 write flow; `write_flow.py` is created in PR C, not here.
 
 - [ ] **Step 1: Failing tests** — with the recording `_Fake` provider of `test_cli.py` moved
   into `tests/unit/headless_agents/conftest.py`:
@@ -1037,17 +1053,22 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome
   - an exhausted chain returns its last link's code (`3` then `4` → `4`), recorded as the
     step's `exit_code` and the run's;
   - the registry status is `answered` / `failed`;
-  - **Review Focus 5 (SIGINT):** a fake provider that raises `KeyboardInterrupt` mid-run →
-    `execute` re-raises after releasing both locks; the registry entry stays `running`;
-    `effective_status` then reads `incomplete`; a second `execute` starts at once (measured
-    under 1 s);
+  - **Review Focus 5 (SIGINT), end to end:** a real `ha` process (`sys.executable -m
+    headless_agents.cli run claude "task" -m m`, `HOME`/`XDG_*` pointed at the test's tree)
+    runs against a fake `claude` on `PATH` that writes its pid then `sleep 30`; once the pid
+    file exists the test sends `SIGINT` to the `ha` process; assert `ha` exits `130`, the
+    fake claude's process group is gone within 6 s, the run's lifecycle and unconfined locks
+    are free (`locks.is_free`), the registry entry's status is still `running` and
+    `effective_status` reads `incomplete`, and a second `ha run` starts at once (its
+    lifecycle acquisition measured under 1 s). `cli.main` maps `KeyboardInterrupt` to exit
+    `130` after the engine's `finally` blocks have run; the fake isolation proof for
+    `claude` is recorded in the test's state directory first (Task 15b);
+  - a write role and `--write` are both refused with exit 2 and the P5 message;
   - an unconfined-lock holder (a child process holding it exclusive) makes a read-only run
     wait, then fail with `UsageError("an unconfined write is running")` after the bound
     (`LOCK_WAIT_SECONDS` monkeypatched to 0.3).
-- [ ] **Step 2–4:** fail, implement, pass; `test_cli_write.py`'s cases are moved to
-  `test_write_flow.py` against `write_flow` with only their entry point changed, and must pass
-  unchanged in their assertions.
-- [ ] **Step 5: Commit** — `feat(headless-agents): engine.execute runs one-step roles and writes run.json`
+- [ ] **Step 2–4:** fail, implement, pass.
+- [ ] **Step 5: Commit** — `feat(headless-agents): engine.execute runs one-step read-only roles and writes run.json`
 
 ### Task 15: The CLI becomes a thin adapter — `ha run TARGET`, `ha roles`, `ha clean`
 
@@ -1096,8 +1117,63 @@ ha --version
   `tests/unit/agents` (the Dream must be untouched).
 - [ ] **Step 5: Commit** — `feat(headless-agents)!: ha run TARGET over the engine; -p and --chain removed`
 
-**PR B gate:** full project gates; PR "headless-agents 0.5.0 lot 1 (B): state, registry,
-run.json, engine, new CLI"; independent codex review; merge under 39f7ea9f.
+### Task 15b: Isolation proofs and the executor gate
+
+**Files:**
+- Create: `packages/headless-agents/src/headless_agents/proofs.py` (isolation half)
+- Create: `tests/live/headless_agents/test_proofs_live.py` (isolation half)
+- Modify: `engine.py` (gate in `execute()`), `cli.py` (`ha roles` column)
+- Test: `tests/unit/headless_agents/test_proofs.py`
+
+**Interfaces:**
+- Produces:
+
+```python
+CLI_RAILS: Final = ("claude", "codex", "agy", "opencode")
+@dataclass(frozen=True)
+class ProofRecord:
+    rail: str; version: str | None
+    isolation: tuple[bool, str] | None          # (passed, ISO date)
+    confinement: tuple[bool, str] | None        # filled by Task 22
+def record_proof(state: Path, rail: str, *, version: str | None,
+                 isolation: bool | None = None, confinement: bool | None = None) -> None
+    # merges into <state>/proofs/<rail>.json (state.publish); a new version replaces the record
+def read_proof(state: Path, rail: str) -> ProofRecord | None
+def isolation_ok(state: Path, rail: str, version: str | None) -> bool
+    # an HTTP provider: True (P4); a CLI rail: a record for exactly this version, isolation passed
+def plant_isolation_markers(home: Path, rail: str) -> dict[str, Path]
+    # the marker text and the sentinel paths the live test plants and later checks
+```
+
+  In `execute()`, after the locks and before the step, every link of the role is checked:
+  a CLI rail without a passing isolation proof for its probed version is refused
+  (`UsageError`, exit 2) naming the rail, the installed version and the command that records
+  a proof (`pytest -m live tests/live/headless_agents/test_proofs_live.py -k "isolation and
+  <rail>"`). A chain is refused if **any** link is unproven: fault tolerance must not route a
+  run onto an unproven executor. `ha roles` shows `isolated (<date>)` or `not proven` per CLI
+  rail.
+
+- [ ] **Step 1: Failing unit tests** — a missing record refuses; a record for another version
+  refuses; a failed record refuses; an HTTP provider passes without a record; a chain with one
+  unproven link is refused before any link runs (the fake providers record no call); `ha
+  roles` shows the column.
+- [ ] **Step 2: Live tests** (`@pytest.mark.live`, excluded from CI, run by hand on the
+  operator machine): per CLI rail, markers planted in that rail's own configuration
+  locations — the operator instruction file, a skill, a plugin, a user hook (a script that
+  touches a sentinel file when run), a user setting and a user MCP server; a run with and
+  without a workspace at context `none` must not echo the marker nor create a sentinel; at
+  `global` and `full` the bundle's instruction files arrive exactly once (through the
+  preamble). On success the test calls `record_proof(state, rail, version=probe(rail).version,
+  isolation=True)`; on failure it records `isolation=False` — never nothing, so `ha roles`
+  says why a rail is refused.
+- [ ] **Step 3–4:** implement, run the unit tests; run the live isolation suite by hand for
+  the four rails and paste its summary in the PR body. A rail whose proof fails stays
+  refused: this plan never weakens the gate to make a rail pass.
+- [ ] **Step 5: Commit** — `feat(headless-agents): per-rail isolation proofs gate every executor`
+
+**PR B gate:** full project gates; the live isolation run summary in the PR body; PR
+"headless-agents 0.5.0 lot 1 (B): state, registry, run.json, engine, isolation gate, new
+CLI"; independent codex review; merge under 39f7ea9f.
 
 ---
 
@@ -1199,9 +1275,12 @@ def check(state: Path, common_dir: Path | None) -> str | None
 ### Task 19: The write step — §3.8.3 steps 1 to 9 (confined)
 
 **Files:**
-- Modify: `packages/headless-agents/src/headless_agents/write_flow.py` (rewritten)
+- Create: `packages/headless-agents/src/headless_agents/write_flow.py` (the 0.4.0 `cli_write` behaviour where §3.8.3 keeps it)
 - Modify: `packages/headless-agents/src/headless_agents/engine.py` (write path)
-- Test: `tests/unit/headless_agents/test_write_flow.py`
+- Test: `tests/unit/headless_agents/test_write_flow.py` — every case of the skipped
+  `test_cli_write.py` re-expressed against the engine (assertions kept where §3.8.3 keeps the
+  behaviour, changed only where it changes it — e.g. the commit subject gains `implement`),
+  then `test_cli_write.py` deleted
 
 **Interfaces:**
 - Produces: `run_write_step(plan, *, run_id, run_dir, state, say) -> WriteOutcome` with
@@ -1302,58 +1381,42 @@ def check(state: Path, common_dir: Path | None) -> str | None
   in its lineage and `cleaned_at` in its registry entry; a never-started run is removed.
 - [ ] **Step 2–4.** **Step 5: Commit** — `feat(headless-agents): ha clean never runs git where a write is uncertain`
 
-### Task 22: Proofs — isolation gate, confinement classification, `ha roles`
+### Task 22: Confinement proofs, classification, and write runs enabled
 
 **Files:**
-- Create: `packages/headless-agents/src/headless_agents/proofs.py`
-- Create: `tests/live/headless_agents/test_proofs_live.py`
-- Modify: `engine.py` (gate), `cli.py` (`ha roles` columns)
-- Test: `tests/unit/headless_agents/test_proofs.py`
+- Modify: `packages/headless-agents/src/headless_agents/proofs.py` (confinement half)
+- Modify: `tests/live/headless_agents/test_proofs_live.py` (confinement half)
+- Modify: `engine.py` (classification; the P5 write refusal removed), `cli.py` (`ha roles`)
+- Test: `tests/unit/headless_agents/test_proofs.py`, `test_engine_plan.py`
 
 **Interfaces:**
 - Produces:
 
 ```python
-CLI_RAILS: Final = ("claude", "codex", "agy", "opencode")
-@dataclass(frozen=True)
-class ProofRecord:
-    rail: str; version: str | None
-    isolation: tuple[bool, str] | None          # (passed, ISO date)
-    confinement: tuple[bool, str] | None
-def record_proof(state: Path, rail: str, *, version: str | None,
-                 isolation: bool | None = None, confinement: bool | None = None) -> None
-def read_proof(state: Path, rail: str) -> ProofRecord | None
-def isolation_ok(state: Path, rail: str, version: str | None) -> bool
-    # an HTTP provider: True (P4); a CLI rail: a record for exactly this version, passed
 def confinement(state: Path, rail: str, version: str | None) -> tuple[str, str | None]
-    # ("confined", date) or ("unconfined", date-or-None)
-def plant_isolation_markers(home: Path, rail: str) -> list[Path]   # used by the live test
-def plant_confinement_targets(...) -> ...                          # used by the live test
+    # ("confined", date) only for a passing record of exactly this version; else
+    # ("unconfined", date-or-None). A `shell` role on claude/opencode/agy is always unconfined.
+def plant_confinement_targets(root: Path, rail: str) -> dict[str, Path]
+    # the common git dir file, the ref, the operator git config copy, and one repository
+    # under each root the rail treats as writable (codex: /tmp and $TMPDIR)
 ```
 
-  The engine, in `execute()` before the step, refuses (`UsageError`, exit 2) a CLI rail
-  without a passing isolation proof for its probed version, naming the rail, the installed
-  version and the command that records a proof (`pytest -m live tests/live/headless_agents/test_proofs_live.py -k <rail>`).
-  A write role on a rail without a passing confinement proof takes the unconfined path of
-  Task 20. `ha roles` shows `confined`/`unconfined` with the proof date for write roles and
-  `isolated`/`not proven` for every CLI rail.
+  A write role whose every link is `confined` takes the confined path of Task 19; any
+  unconfined link sends the whole write down the unconfined path of Task 20. The P5 refusal
+  of write runs in `plan()` is removed in this task, and its test becomes the proof that a
+  write run now reaches `write_flow`. `ha roles` shows `confined (<date>)` / `unconfined`
+  for write roles.
 
-- [ ] **Step 1: Failing unit tests** — a missing record refuses; a record for another version
-  refuses; an HTTP provider passes without a record; a confined write role runs the confined
-  path, an unproven one the unconfined path; `ha roles` shows both columns.
-- [ ] **Step 2: Live tests** (`@pytest.mark.live`, excluded from CI, run by hand): per rail,
-  **isolation** — markers planted in the operator instruction file, a skill, a plugin, a user
-  hook (a script that touches a sentinel file when run), a user setting and a user MCP
-  server, in that rail's own configuration locations; a run with and without a workspace at
-  context `none` must not echo the marker nor create the sentinel; at `global` and `full`
-  the bundle's files arrive exactly once. **Confinement** — a write role asked to write the
-  common git dir, a ref, the operator's git configuration, and a second repository under each
-  root the rail treats as writable (codex: `/tmp` and `$TMPDIR`); each refused. On success
-  each calls `record_proof(state, rail, version=probe(rail).version, ...)`.
-- [ ] **Step 3–4:** implement, run unit tests; then run the live suite by hand on the operator
-  machine for the four rails and paste its summary in the PR body. A rail whose proof fails is
-  reported in the PR and stays refused: this plan never weakens the gate to make a rail pass.
-- [ ] **Step 5: Commit** — `feat(headless-agents): per-rail isolation and confinement proofs gate the executors`
+- [ ] **Step 1: Failing unit tests** — a confined write role takes the confined path, an
+  unproven one the unconfined path (observable through the unconfined lock taken exclusive);
+  a record for another version is unconfined; `ha roles` shows the column; a write role is
+  no longer refused.
+- [ ] **Step 2: Live tests** — per rail, a write role asked to write each target of
+  `plant_confinement_targets`; each write refused; on success `record_proof(state, rail,
+  version=..., confinement=True)`, on failure `confinement=False`.
+- [ ] **Step 3–4:** implement, run the unit tests; run the live confinement suite by hand for
+  the four rails and paste its summary in the PR body.
+- [ ] **Step 5: Commit** — `feat(headless-agents): confinement proofs classify write roles; write runs enabled`
 
 **PR C gate:** full project gates, the live proof run summary in the PR body; PR "headless-
 agents 0.5.0 lot 1 (C): write protocol, quarantines, provenance, proofs"; independent codex
@@ -1383,8 +1446,9 @@ with the PR links, and fyi b0bfacf1 is acknowledged.
 | claude `--safe-mode`, golden fixtures for that flag alone | 5 |
 | codex `/tmp` and `$TMPDIR` closed for write roles | 6 |
 | providers die with `ha` (PDEATHSIG, own process group) | 7 |
-| isolation proof per rail (refuse unproven) | 22 |
+| isolation proof per rail (refuse unproven) | 15b |
 | confinement proof per rail (classify) | 22 |
+| providers killed on interruption (SIGINT → exit 130) | 7, 14 |
 | docstring 2901d5ba | 5 |
 
 Out of lot 1, deliberately: `ha show`, full `ha runs` and tool counters (lot 2);
