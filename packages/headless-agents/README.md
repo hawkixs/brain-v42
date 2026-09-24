@@ -1,14 +1,15 @@
 # headless-agents
 
 Run headless CLI agents (`claude -p`, `codex exec`, `agy --print`,
-`opencode run`) under a capability profile the caller supplies.
+`opencode run`) and OpenAI-compatible HTTP providers under a capability profile the
+caller supplies -- from Python, or from a terminal with the `ha` CLI.
 
 This package is the shared agent runtime of the ReD ecosystem, hosted as a uv
 workspace member of the [brain-v42](https://github.com/hawkixs/brain-v42)
 repository and installable on its own:
 
 ```sh
-uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.3.0#subdirectory=packages/headless-agents"
+uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.4.0#subdirectory=packages/headless-agents"
 ```
 
 Versions are tagged `headless-agents-vX.Y.Z` on this repository; `CHANGELOG.md` lists the
@@ -336,6 +337,61 @@ through `git_tripwire.git_command(root, tampered=...)` with
 tree, disables the fsmonitor and implicit bare repositories, bounds discovery, and
 refuses a tree that tripped. Never run git from a subdirectory of such a tree: a
 repository planted there is discovered from inside it.
+
+## The `ha` CLI
+
+Hand a task to any provider from a terminal or a session. Install it as a tool:
+
+```sh
+uv tool install "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.4.0#subdirectory=packages/headless-agents"
+```
+
+```text
+ha providers [--json]
+ha run -p PROVIDER [-m MODEL] [--effort E] [--timeout SECONDS]
+       [--chain P1,P2,...]
+       [--context full|global|none] [--context-parents]
+       [--mcp PROFILE]
+       [--base-url URL --key-env VAR]
+       [--write [--shell] [--repo PATH] [--base REF]]
+       [--json] [--run-dir DIR]
+       [PROMPT | -]
+ha runs [--limit N] [--json]
+ha clean RUN_ID
+```
+
+- **Read-only** (default): a CLI rail reads the current repository through a read-only
+  workspace (no write tool, no shell); an HTTP provider runs without one. Context defaults
+  to `global` (the user-level `~/.claude/CLAUDE.md`); `--context full` adds the
+  repository's `CLAUDE.md`/`AGENTS.md`/`GEMINI.md`, even ignored ones.
+- **`--write`**: `git worktree add ~/.cache/ha/runs/<run_id>/wt -b ha/<run_id> <base>`, the
+  agent edits there (context `full` by default), then the change is committed on
+  `ha/<run_id>` as `chore(ha): <run_id> via <provider>/<model>` with the repository's hooks
+  running. Branch, diffstat, patch path and the agent's text are printed. **It never
+  merges**: read the diff, integrate, or `ha clean`. If the `.git` tripwire fired, no git
+  command runs at all and the worktree is kept for inspection. codex needs `--shell` here:
+  it reads files only through its shell, which stays inside its OS sandbox.
+- **`--chain codex,claude`** walks the list on exit codes `3` and `4` (proof that nothing
+  was written); each link gets its own directory under `links/`.
+- **`--mcp NAME`** maps a profile from `~/.config/ha/mcp.toml` (or
+  `$XDG_CONFIG_HOME/ha/mcp.toml`) to the run; no MCP unless asked:
+
+  ```toml
+  [brain-read]
+  url = "http://127.0.0.1:8765/mcp"
+  bearer_env = "BRAIN_TOKEN"   # the variable NAME; the value never sits in this file
+  tools = ["brain_search", "brain_get", "brain_recall", "brain_ticket_get"]
+  # allowed_networks = ["10.8.0.0/24"]   # default loopback only; "any" = no restriction
+  ```
+
+- **`--base-url` / `--key-env`**: required with `-p openai-compat`, refused otherwise;
+  `--key-env` takes the variable name, never the key.
+- **Runs**: every run writes `~/.cache/ha/runs/<run_id>/` (logs, `result.json` schema 1,
+  and for `--write` the worktree, `change.patch`, `commit.log`). `ha runs` lists them
+  newest first; `ha clean RUN_ID` removes one (its worktree through git, its branch kept).
+- **Exit codes**: `0` answer; `1` failure; `2` invalid usage (nothing ran); `3` provider
+  unavailable, chain exhausted; `4` timeout with no tool call started; `5` `--write`
+  finished with no change; `124` timeout.
 
 ## Live tests
 
