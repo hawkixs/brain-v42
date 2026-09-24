@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from headless_agents.cli_models import ModelsError, models_for
+from headless_agents.cli_models import ModelsError, models_for, resolve_models
 
 
 def _models_file(home: Path, text: str) -> Path:
@@ -33,3 +33,32 @@ def test_a_models_file_linking_into_a_repository_is_refused(tmp_path: Path) -> N
     (home / ".config" / "ha" / "models.toml").symlink_to(planted)
     with pytest.raises(ModelsError, match="outside the configuration directory"):
         models_for((("codex", ""),), default="", environ={}, home=home)
+
+
+def test_the_role_model_sits_between_m_and_models_toml(tmp_path: Path) -> None:
+    declared = {"codex": "from-file"}
+    path = tmp_path / "models.toml"
+    links = (("codex", ""),)
+    assert resolve_models(
+        links, default="", role_model="from-role", declared=declared, declared_path=path
+    ) == {"codex": "from-role"}
+    assert resolve_models(
+        links, default="from-m", role_model="from-role", declared=declared, declared_path=path
+    ) == {"codex": "from-m"}
+    assert resolve_models(
+        (("codex", "own"),),
+        default="from-m",
+        role_model="from-role",
+        declared=declared,
+        declared_path=path,
+    ) == {"codex": "own"}
+    assert resolve_models(
+        links, default="", role_model="", declared=declared, declared_path=path
+    ) == {"codex": "from-file"}
+
+
+def test_a_role_model_spares_the_models_file(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _models_file(home, "this is not toml")
+    got = models_for((("codex", ""),), default="", role_model="m", environ={}, home=home)
+    assert got == {"codex": "m"}

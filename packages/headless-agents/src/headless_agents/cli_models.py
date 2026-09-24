@@ -12,10 +12,11 @@ A link's model, first match wins:
 1. its own, in the chain: ``--chain codex:gpt-6-luna,claude:sonnet`` (the
    model is everything after the FIRST colon: ``openrouter:meta/llama:free``);
 2. ``-m MODEL``;
-3. the operator's declared default, ``$XDG_CONFIG_HOME/ha/models.toml``
+3. the role's ``model`` (``roles.toml``, spec 0.5.0 §3.1);
+4. the operator's declared default, ``$XDG_CONFIG_HOME/ha/models.toml``
    (default ``~/.config/ha/models.toml``): one ``provider = "model"`` line
    per provider, no model name ever hard-coded in this package;
-4. none: refused before anything runs (exit ``2``), except for agy.
+5. none: refused before anything runs (exit ``2``), except for agy.
 """
 
 from __future__ import annotations
@@ -92,11 +93,12 @@ def resolve_models(
     default: str,
     declared: Mapping[str, str],
     declared_path: Path,
+    role_model: str = "",
 ) -> dict[str, str]:
     """Each link's model by the precedence above; refuses a link left without one."""
     models: dict[str, str] = {}
     for name, own in links:
-        model = own or default.strip() or declared.get(name, "")
+        model = own or default.strip() or role_model.strip() or declared.get(name, "")
         if not model and name not in MODEL_OPTIONAL:
             raise ModelsError(
                 f"{name} needs a model: pass -m MODEL, name it in the chain as "
@@ -112,12 +114,13 @@ def models_for(
     default: str,
     environ: Mapping[str, str],
     home: Path,
+    role_model: str = "",
 ) -> dict[str, str]:
     """The model each link gets; the caller validated the links first."""
     path = default_models_path(environ, home=home)
     # Read only when some link is left without a model: a broken file must not
     # fail a run that never needed it.
-    needs_file = not default.strip() and any(not own for _, own in links)
+    needs_file = not default.strip() and not role_model.strip() and any(not own for _, own in links)
     declared: dict[str, str] = {}
     if needs_file:
         try:
@@ -125,7 +128,9 @@ def models_for(
         except ConfigPathError as exc:
             raise ModelsError(str(exc)) from None
         declared = load_models(found) if found is not None else {}
-    return resolve_models(links, default=default, declared=declared, declared_path=path)
+    return resolve_models(
+        links, default=default, role_model=role_model, declared=declared, declared_path=path
+    )
 
 
 __all__ = [
