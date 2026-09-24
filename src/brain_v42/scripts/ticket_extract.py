@@ -1107,6 +1107,52 @@ async def record_ticket_attempt(
         print(f"! warning: could not record ticket attempt {thread.id}: {type(exc).__name__}")
 
 
+# Marks a deferral caused by the WHOLE provider chain failing, so the next
+# night can tell it from a budget deferral (which never started the ticket).
+TRANSPORT_DEFERRAL_PREFIX = "provider chain failed"
+_BUDGET_DEFERRAL_PREFIX = "run budget exhausted"
+
+
+def _is_transport_deferral(status: str, error_message: str | None) -> bool:
+    return status == "deferred" and (error_message or "").startswith(TRANSPORT_DEFERRAL_PREFIX)
+
+
+async def _previous_attempt_was_a_transport_deferral(
+    session_factory: Any, thread: TicketThread
+) -> bool:
+    """Did this ticket's last attempted night also lose it on the provider chain?
+
+    Operator decision Q52=c (2026-09-24): one whole-chain failure is deferred,
+    two in a row are a hard failure. "In a row" means the ticket's most recent
+    attempt before today that actually RAN — a budget deferral never started it
+    and is skipped. A legacy `failed` row carries no marker and does not count:
+    at worst one extra lenient night right after rollout.
+    """
+    from brain_v42.db.tables import ticket_extraction_attempts as attempts  # noqa: PLC0415
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                sa.select(attempts.c.status, attempts.c.error_message)
+                .where(attempts.c.ticket_id == thread.id)
+                .where(attempts.c.run_date < date.today())
+                .where(
+                    sa.not_(
+                        sa.and_(
+                            attempts.c.status == "deferred",
+                            sa.func.coalesce(attempts.c.error_message, "").like(
+                                f"{_BUDGET_DEFERRAL_PREFIX}%"
+                            ),
+                        )
+                    )
+                )
+                .order_by(attempts.c.created_at.desc())
+                .limit(1)
+            )
+        ).first()
+    return row is not None and _is_transport_deferral(row[0], row[1])
+
+
 async def _within_deadline(awaitable: Any, deadline: float) -> Any:
     """Await one ticket operation without spending the reserved finalization time."""
     remaining = deadline - time.monotonic()
@@ -1417,7 +1463,7 @@ async def _run(
                         pending,
                         "deferred",
                         0.0,
-                        f"run budget exhausted: {max(0.0, usable_slice):.1f}s usable "
+                        f"{_BUDGET_DEFERRAL_PREFIX}: {max(0.0, usable_slice):.1f}s usable "
                         f"< {_MIN_TICKET_SLICE_SECONDS}s minimum slice",
                     )
                     print(f"progress: ticket {pending.id} deferred (run budget)")
@@ -1523,9 +1569,31 @@ async def _run(
 
             if outcome.failed:
                 is_timeout = "timeout" in (outcome.error or "").lower()
-                attempt_status = "timeout" if is_timeout else "failed"
+                # Q52=c: the whole provider chain failed but nothing is lost —
+                # the ticket stays pending and is replayed. Defer it, unless its
+                # previous attempted night failed the same way. An unreadable
+                # history fails closed onto the loud path.
+                transport_deferral = False
+                if not is_timeout:
+                    try:
+                        transport_deferral = not await _previous_attempt_was_a_transport_deferral(
+                            sf, thread
+                        )
+                    except Exception as exc:
+                        print(
+                            f"! warning: could not read attempt history of {thread.id}: "
+                            f"{type(exc).__name__}"
+                        )
+                attempt_status = (
+                    "timeout" if is_timeout else "deferred" if transport_deferral else "failed"
+                )
+                attempt_error = (
+                    f"{TRANSPORT_DEFERRAL_PREFIX}: {outcome.error}"
+                    if transport_deferral
+                    else outcome.error
+                )
                 await record_ticket_attempt(
-                    sf, thread, attempt_status, ticket_duration, outcome.error
+                    sf, thread, attempt_status, ticket_duration, attempt_error
                 )
                 print(
                     f"progress: ticket {thread.id} {attempt_status}: {_safe_error(outcome.error)}"
@@ -1541,6 +1609,9 @@ async def _run(
                     ticket_slice_s=ticket_slice_seconds,
                     ticket_budget_s=ticket_budget_seconds,
                 )
+                if transport_deferral:
+                    deferred_count += 1
+                    continue
                 failed += 1
                 timed_out += int(is_timeout)
                 hard_failed += int(not is_timeout)
