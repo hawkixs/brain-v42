@@ -416,6 +416,10 @@ def build_metrics_runtime(
             graph_projection_svc=graph_projection_svc,
             nonloopback_posture=effective_settings.metrics_nonloopback_posture,
             allow_non_loopback=effective_settings.metrics_allow_non_loopback,
+            slow_block_cache_ttl_seconds=effective_settings.metrics_slow_block_cache_ttl_seconds,
+            slow_block_cache_error_ttl_seconds=(
+                effective_settings.metrics_slow_block_cache_error_ttl_seconds
+            ),
         )
 
     lease = (
