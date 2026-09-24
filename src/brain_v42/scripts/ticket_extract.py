@@ -593,12 +593,16 @@ async def _extract_via(
     """
     messages = build_messages(thread)
     thinking_tokens: int | None = None
+    # Q61: once an answer failed to parse, this link has erred on content --
+    # a corrective re-prompt that then dies on transport does not undo that.
+    content_error_seen = False
     try:
         content, usage = await call(messages)
         thinking_tokens = thinking_tokens_from_usage(usage)
         try:
             drafts = parse_and_validate(content, thread)
         except ResponseParseError as first_error:
+            content_error_seen = True
             # One corrective re-prompt — one that NAMES the error, as
             # `roadmap_curate._curate_llm_attempt` has always done. Without it, a
             # model that returned the wrong project key re-reads "return valid
@@ -644,7 +648,7 @@ async def _extract_via(
             drafts=[],
             failed=True,
             error=_exc_str(exc),
-            transport_failure=True,
+            transport_failure=not content_error_seen,
             thinking_tokens=thinking_tokens,
         )
     return ThreadOutcome(thread=thread, drafts=drafts, thinking_tokens=thinking_tokens)

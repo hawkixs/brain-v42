@@ -549,6 +549,33 @@ class TestExtractThreadErrorCapture:
         assert "unparseable" in (outcome.error or "")
         assert not outcome.transport_failure
 
+    @pytest.mark.asyncio
+    async def test_a_reprompt_lost_on_transport_after_a_content_error_is_not_transport(
+        self,
+    ) -> None:
+        """Q61: the first answer was unparseable, so the link erred on content even
+        though the corrective re-prompt then died on transport."""
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return httpx.Response(
+                    200, json={"choices": [{"message": {"content": "not json"}}], "usage": {}}
+                )
+            raise httpx.ConnectError("gone", request=request)
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="https://mock.nvidia.local/v1",
+        ) as client:
+            outcome = await extract_thread(client, "test-model", _thread())
+
+        assert calls == 2
+        assert outcome.failed
+        assert not outcome.transport_failure
+
 
 class TestBoundedExtraction:
     @pytest.mark.asyncio
