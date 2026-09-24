@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from brain_v42.metrics.collector import MetricsCollector
+from brain_v42.metrics.slow_block_cache import CollectorDegraded
 
 
 def _make_collector_with_dream_data(
@@ -409,8 +410,11 @@ class TestCollectDreamMetrics:
         assert "promote_outcome" not in result["last_run"]
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self) -> None:
-        """DB error returns empty dict (graceful degradation)."""
+    async def test_exception_raises_collector_degraded_with_empty_payload(self) -> None:
+        """A SQL failure signals CollectorDegraded({}), not a plain {} return --
+        SlowBlockCache (slow_block_cache.py) needs the raise to memoize it under
+        the short error_ttl_seconds instead of the full TTL (MAJOR review finding,
+        PR #201): a returned {} is indistinguishable from "no dream runs yet"."""
         collector = MetricsCollector.__new__(MetricsCollector)
         collector._session_factory = MagicMock()
         mock_session = AsyncMock()
@@ -419,8 +423,9 @@ class TestCollectDreamMetrics:
         mock_session.__aexit__ = AsyncMock(return_value=False)
         collector._session_factory.return_value = mock_session
 
-        result = await collector.collect_dream_metrics()
-        assert result == {}
+        with pytest.raises(CollectorDegraded) as excinfo:
+            await collector.collect_dream_metrics()
+        assert excinfo.value.payload == {}
 
 
 class TestDreamMetricsRoadmapSpec7:

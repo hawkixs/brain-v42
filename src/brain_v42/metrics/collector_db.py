@@ -10,6 +10,13 @@ These methods depend only on ``self._session_factory`` and never crash the
 sidecar — every query degrades to an empty/zero result on error. (Pool / row
 counts that also need ``self._engine`` + ``get_settings`` stay in
 ``collector.py`` as ``collect_db_stats``.)
+
+``collect_graph_inventory`` -- the block ``SlowBlockCache`` memoizes as
+"graph_inventory" -- is the one exception to "degrades and returns": when the
+Neo4j counts or the PG orphan scan fail, it still assembles the same degraded
+dict it always has, but raises it via ``CollectorDegraded`` instead of
+returning it plainly, so the cache retries under the short
+``error_ttl_seconds`` rather than the full TTL (slow_block_cache.py).
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ from brain_v42.metrics.retention import (
     PROCESS_METRICS_FRESH_SQL,
     PROCESS_METRICS_IS_LIVE_SQL,
 )
+from brain_v42.metrics.slow_block_cache import CollectorDegraded
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -460,6 +468,7 @@ class _DbCollectorsMixin:
             logger.warning("metrics.graph_inventory.edges_failed", exc_info=edges_result)
 
         orphans: dict[str, int] = {}
+        orphans_failed = False
         try:
             async with self._session_factory() as session:
                 for table, label in _PG_LABEL_MAP.items():
@@ -475,10 +484,19 @@ class _DbCollectorsMixin:
         except Exception:
             logger.warning("metrics.graph_inventory.pg_orphans_failed", exc_info=True)
             orphans = {}
+            orphans_failed = True
 
-        return {
+        result = {
             "status": graph_status,
             "nodes_total": nodes,
             "edges_total": edges,
             "orphans_total": orphans,
         }
+        # Two independent failure axes (Neo4j counts, PG orphan scan) share one
+        # signal to the cache: either degrades the block below "fully fresh",
+        # so both get the short error_ttl_seconds instead of the full TTL
+        # (slow_block_cache.py) -- even when graph_status stays "ok" because
+        # only the PG side failed.
+        if graph_status == "error" or orphans_failed:
+            raise CollectorDegraded(result)
+        return result

@@ -22,8 +22,11 @@ unfixed dream_runs writer — ticket 7336a2d5) — so a reader is never left
 guessing, or worse, assuming a failure belongs to brain-v42 when it does not.
 
 collector_dream pattern: NEVER crashes the sidecar — each block (killswitch
-file, DB) degrades independently; if everything fails the method returns {} and
-the server omits the section.
+file, DB) degrades independently. A DB failure raises `CollectorDegraded`
+carrying the already-assembled degraded value (`{}`, or `{"killswitches":
+...}` when the file read succeeded first) so `SlowBlockCache` can retry it
+under the short `error_ttl_seconds` instead of the full TTL, while the server
+still sees the same shape it always did and omits the section on `{}`.
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ import structlog
 from sqlalchemy import text
 
 from brain_v42.dream_killswitches import KILLSWITCHES_PATH, parse_killswitches
+from brain_v42.metrics.slow_block_cache import CollectorDegraded
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -113,9 +117,8 @@ class _NightlyCollectorsMixin:
                 }
             else:
                 result["last_failure"] = None
-        except Exception:
+        except Exception as exc:
             logger.warning("metrics.collect_nightly_ops.db_failed", exc_info=True)
-            if killswitches is None:
-                return {}
-            return {"killswitches": killswitches}
+            payload = {} if killswitches is None else {"killswitches": killswitches}
+            raise CollectorDegraded(payload) from exc
         return result

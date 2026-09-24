@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from brain_v42.metrics.collector import MetricsCollector
+from brain_v42.metrics.slow_block_cache import CollectorDegraded
 
 
 class TestToolRecording:
@@ -722,6 +723,12 @@ class TestCollectGraphInventory:
 
     @pytest.mark.asyncio
     async def test_returns_node_and_edge_counts(self) -> None:
+        """Neo4j succeeds but the PG orphan scan fails (session_factory raises):
+        the block is still degraded as a whole -- SlowBlockCache must retry it
+        under the short error_ttl_seconds (MAJOR review finding, PR #201) rather
+        than memoize a partial "ok" result for the full TTL -- but the payload
+        it carries is exactly what a plain return used to be, node/edge data
+        included."""
         graph = self._make_graph_svc(
             nodes={"Decision": 12, "Learning": 47, "ADR": 5},
             edges={"RELATED_TO": 89, "SUPERSEDES": 3},
@@ -730,8 +737,10 @@ class TestCollectGraphInventory:
             engine=MagicMock(),
             session_factory=MagicMock(side_effect=RuntimeError("db unavailable")),
         )
-        result = await collector.collect_graph_inventory(graph_svc=graph)
+        with pytest.raises(CollectorDegraded) as excinfo:
+            await collector.collect_graph_inventory(graph_svc=graph)
 
+        result = excinfo.value.payload
         assert result["nodes_total"] == {"Decision": 12, "Learning": 47, "ADR": 5}
         assert result["edges_total"] == {"RELATED_TO": 89, "SUPERSEDES": 3}
 
@@ -742,8 +751,9 @@ class TestCollectGraphInventory:
             engine=MagicMock(),
             session_factory=MagicMock(side_effect=RuntimeError("db unavailable")),
         )
-        result = await collector.collect_graph_inventory(graph_svc=graph)
-        assert result["orphans_total"] == {}
+        with pytest.raises(CollectorDegraded) as excinfo:
+            await collector.collect_graph_inventory(graph_svc=graph)
+        assert excinfo.value.payload["orphans_total"] == {}
 
     @pytest.mark.asyncio
     async def test_handles_graph_svc_error(self) -> None:
@@ -754,8 +764,10 @@ class TestCollectGraphInventory:
             engine=MagicMock(),
             session_factory=MagicMock(side_effect=RuntimeError("db unavailable")),
         )
-        result = await collector.collect_graph_inventory(graph_svc=graph)
+        with pytest.raises(CollectorDegraded) as excinfo:
+            await collector.collect_graph_inventory(graph_svc=graph)
 
+        result = excinfo.value.payload
         assert result["nodes_total"] == {}
         assert result["edges_total"] == {}
         assert result["status"] == "error"

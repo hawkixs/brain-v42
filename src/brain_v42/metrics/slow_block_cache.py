@@ -6,22 +6,37 @@ run on the order of fifteen PostgreSQL queries plus a Neo4j round trip on EVERY
 poll, uncached. `database` and the embedding healthcheck are deliberately kept
 out of this cache -- they stay live on every poll (operator decision).
 
-Two rules the memo enforces so a new block (the upcoming `tickets` block) can
-opt in with one line and inherit both for free:
+Two rules the memo enforces so a new block (the `tickets` block) can opt in
+with one line and inherit both for free:
 
 - **Single-flight**: concurrent callers who arrive while a key is being
   recomputed await the SAME in-flight computation rather than each starting
   their own query set. A `/metrics` stampede (N red-monitor pollers landing at
   once right after a TTL expiry) must cost one recomputation, not N.
-- **A raised exception is never cached as a success for the full TTL.** The
-  collectors this cache wraps already degrade internally (a SQL failure
-  returns `{}`, never raises -- see `collector_dream.py`, `collector_nightly.py`).
-  This cache is written for the collector that does NOT, defensively: a
-  ``compute`` that raises degrades to ``None`` ("not measured", same contract
-  as everywhere else in this payload) and that ``None`` is memoized only for
-  the short ``error_ttl_seconds``, never the normal ``ttl_seconds`` -- so a
-  transient failure is retried on roughly the next poll instead of blacking
-  out the panel for a full refresh window.
+- **A raised exception is never cached as a success for the full TTL.** Two
+  shapes exist among the collectors this cache wraps:
+  - ``collector_tickets.py`` does not catch its own exceptions at all: a SQL
+    failure reaches this cache as a plain exception, degrades to ``None``
+    ("not measured", same contract as everywhere else in this payload), and
+    is memoized only for the short ``error_ttl_seconds``.
+  - ``collector_dream.py``, ``collector_nightly.py`` and
+    ``collector_db.py::collect_graph_inventory`` catch their own SQL/Neo4j
+    failures internally and already had a degraded value ready to return
+    (``{}``, or a partial dict) -- returning it plainly used to be
+    indistinguishable from a legitimate success and was memoized for the
+    FULL ``ttl_seconds`` (the bug this module now closes). Those collectors
+    instead **raise** :class:`CollectorDegraded`, carrying that exact
+    already-computed value as ``.payload``. This cache recognises it
+    specially: the payload is published UNCHANGED (red-monitor sees the same
+    shape as before -- ``{}``, or the partial dict, still gains
+    ``generated_at`` when truthy, exactly like a success) but memoized only
+    for ``error_ttl_seconds``, so a transient failure is retried on roughly
+    the next poll instead of blacking out the panel for a full refresh
+    window.
+
+  A plain (non-:class:`CollectorDegraded`) exception still degrades to
+  ``None`` under the short TTL, unchanged from before -- `CollectorDegraded`
+  is additive, not a replacement for that fallback.
 """
 
 from __future__ import annotations
@@ -53,6 +68,22 @@ class _Missing:
 
 
 _MISSING = _Missing()
+
+
+class CollectorDegraded(Exception):
+    """Raised by a cached collector to signal a failed or partial result explicitly.
+
+    A collector that already builds its own degraded value (``{}``, or a
+    partial dict) instead of letting an exception escape raises this with
+    that exact value as ``payload`` -- see the module docstring. SlowBlockCache
+    stores and returns ``payload`` unchanged (so the published shape is
+    whatever the collector always returned here), but under the short
+    ``error_ttl_seconds`` instead of the normal ``ttl_seconds``.
+    """
+
+    def __init__(self, payload: dict[str, Any] | None) -> None:
+        super().__init__("collector result is degraded; see .payload")
+        self.payload = payload
 
 
 class SlowBlockCache:
@@ -115,15 +146,30 @@ class SlowBlockCache:
 
             try:
                 value = await compute()
+            except CollectorDegraded as degraded:
+                logger.warning("metrics.slow_block_cache.compute_degraded", key=key, exc_info=True)
+                return self._store(key, degraded.payload, ttl=self._error_ttl_seconds)
             except Exception:
                 logger.warning("metrics.slow_block_cache.compute_failed", key=key, exc_info=True)
                 self._entries[key] = (self._clock() + self._error_ttl_seconds, None)
                 return None
 
-            if value:
-                value = {**value, "generated_at": self._wall_clock().isoformat()}
-            self._entries[key] = (self._clock() + self._ttl_seconds, value)
-            return value
+            return self._store(key, value, ttl=self._ttl_seconds)
+
+    def _store(
+        self, key: str, value: dict[str, Any] | None, *, ttl: float
+    ) -> dict[str, Any] | None:
+        """Stamp a truthy value with `generated_at` and memoize it for `ttl`.
+
+        Shared by the success path and the `CollectorDegraded` path so a
+        degraded-but-truthy payload (e.g. nightly's killswitches-only partial
+        dict) is stamped exactly like a success would be -- only the TTL
+        differs, never the shape.
+        """
+        if value:
+            value = {**value, "generated_at": self._wall_clock().isoformat()}
+        self._entries[key] = (self._clock() + ttl, value)
+        return value
 
     def _fresh_entry(self, key: str) -> dict[str, Any] | None | _Missing:
         entry = self._entries.get(key)

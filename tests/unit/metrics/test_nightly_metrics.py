@@ -23,6 +23,7 @@ import pytest
 
 from brain_v42.metrics.collector import MetricsCollector
 from brain_v42.metrics.collector_nightly import parse_killswitches
+from brain_v42.metrics.slow_block_cache import CollectorDegraded
 
 _DROPIN = """\
 [Service]
@@ -215,23 +216,33 @@ class TestCollectNightlyOps:
     @pytest.mark.asyncio
     async def test_db_error_degrades_to_killswitches_only(self, tmp_path) -> None:
         """The sidecar NEVER crashes (the collector_dream pattern): DB failing →
-        only the killswitches remain."""
+        only the killswitches remain, signalled via CollectorDegraded so
+        SlowBlockCache retries under the short error_ttl_seconds (MAJOR review
+        finding, PR #201) instead of the full TTL, while the payload it publishes
+        is unchanged."""
         ks_file = tmp_path / "killswitches.conf"
         ks_file.write_text(_DROPIN)
         collector = _make_collector([RuntimeError("db down")])
 
-        result = await collector.collect_nightly_ops(killswitches_path=ks_file)
+        with pytest.raises(CollectorDegraded) as excinfo:
+            await collector.collect_nightly_ops(killswitches_path=ks_file)
 
+        result = excinfo.value.payload
         assert result["killswitches"]["promote"] is True
         assert "roadmap" not in result
         assert "extract" not in result
         assert "last_failure" not in result
 
     @pytest.mark.asyncio
-    async def test_everything_down_returns_empty(self, tmp_path) -> None:
-        """Neither file nor DB → {}: the server omits the nightly section."""
+    async def test_everything_down_raises_collector_degraded_with_empty_payload(
+        self, tmp_path
+    ) -> None:
+        """Neither file nor DB → CollectorDegraded({}): the server still omits
+        the nightly section, but the cache now retries it soon instead of for
+        the full TTL."""
         collector = _make_collector([RuntimeError("db down")])
 
-        result = await collector.collect_nightly_ops(killswitches_path=tmp_path / "absent.conf")
+        with pytest.raises(CollectorDegraded) as excinfo:
+            await collector.collect_nightly_ops(killswitches_path=tmp_path / "absent.conf")
 
-        assert result == {}
+        assert excinfo.value.payload == {}
