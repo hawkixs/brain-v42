@@ -106,6 +106,13 @@ _CONTRACT_ROWS: list[dict[str, Any]] = [
 _MOCK_SETTINGS = MagicMock(
     embedding_service_url="http://localhost:8003",
     embedding_dimension=1024,
+    # Explicit, not left to MagicMock's auto-attribute default: get_metrics()
+    # reads these two (ticket 3a4ed612, identity block) and stores them
+    # directly in the JSON payload -- an unconfigured MagicMock child would
+    # reach `web.json_response` and 500 the whole endpoint on serialization,
+    # rather than fail this test's own assertions.
+    embedding_backend="shim",
+    embedding_model="qodo",
 )
 
 

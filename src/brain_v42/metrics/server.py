@@ -601,7 +601,15 @@ class MetricsServer:
 
         # Nightly-ops (killswitches, roadmap/extract review, last failure) —
         # consumed by red-monitor's nightly-ops panel (ticket de1ad785).
-        nightly = await self._slow_block_cache.get("nightly", self._collector.collect_nightly_ops)
+        # Resolved through a lambda, not a bare `self._collector.collect_nightly_ops`
+        # reference: the ATTRIBUTE LOOKUP itself must happen inside the cache's
+        # protected `compute()` call, not while building this call's arguments --
+        # a collector double that lacks the method must degrade this block to
+        # absent, never 500 the whole endpoint (a real incident: a `MinimalCollector`
+        # test double raised AttributeError here, outside any try/except).
+        nightly = await self._slow_block_cache.get(
+            "nightly", lambda: self._collector.collect_nightly_ops()
+        )
         if nightly:
             metrics["nightly"] = nightly
 
@@ -611,9 +619,11 @@ class MetricsServer:
         # predicates, red-monitor renders whatever it receives with no status logic
         # of its own. `projects: []` (truthy dict) still publishes the key — only a
         # raised exception (caught by the cache, see slow_block_cache.py) leaves
-        # "tickets" absent from the payload.
+        # "tickets" absent from the payload. Same lambda-deferral reasoning as
+        # "nightly" just above: a collector lacking the method must degrade this
+        # block to absent, not 500 the whole endpoint.
         tickets_block = await self._slow_block_cache.get(
-            "tickets", self._collector.collect_ticket_counts
+            "tickets", lambda: self._collector.collect_ticket_counts()
         )
         if tickets_block:
             metrics["tickets"] = tickets_block
