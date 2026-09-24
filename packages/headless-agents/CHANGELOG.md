@@ -54,6 +54,39 @@ Nothing here is tagged yet: 0.4.0 ships after lot 4 (the `ha` CLI), per
   `events.jsonl`, `stderr.log` and `raw.log` inside it (explicit paths still win), its
   name is the `run_id`, and the run writes `result.json` there.
 
+## Unreleased — 0.4.0, lot 3 of 4: `openai-compat` and its presets
+
+Per `docs/specs/2026-09-23-headless-agents-0.4.0-design.md` (3.2).
+
+### Added
+- `providers.openai_compat.OpenAICompatProvider`: text-only chat completions over HTTP,
+  standard library only (`urllib`), each call in a killable child process
+  (`providers._openai_worker`) so the deadline and the process-group kill behave as on the
+  CLI rails. The prompt and the key travel on the child's stdin: never in argv, the child
+  environment (the key variable is removed even if `environment_passthrough` names it) or
+  any log.
+- Four registry names: the presets `openrouter`, `mistral`, `nvidia` (fixed endpoint and
+  key variable NAME) and the generic `openai-compat` (`RunSpec.extra["base_url"]` and
+  `RunSpec.extra["key_env"]`). `PROVIDER_NAMES` now holds the spec's eight names;
+  `registry.HTTP_PROVIDER_NAMES` names the four HTTP ones.
+- `registry.probe(name, environ=None)`: for an HTTP provider, zero quota means the key
+  variable's presence -- the detail names the variable, never its value. The generic
+  provider is reported available ("configured per run").
+- `registry.max_prompt_bytes` is `None` for the four HTTP providers.
+- Request options through `RunSpec.extra`: `response_format`, `temperature`,
+  `max_tokens`. The context bundle's preamble becomes a `system` message. The
+  `openrouter` preset asks for `usage.include`, the only source of `cost_usd`.
+
+### Behaviour
+- Exit codes: `0` answer; `124` own deadline; `3` HTTP 429/5xx or host unreachable (the
+  chain advances: an HTTP run has no tool, so nothing could have been written); `1` HTTP
+  401/403, a malformed reply or any other failure; `2` a spec that cannot work (no model,
+  missing or invalid `base_url` -- not http(s), carrying credentials, a query or a
+  fragment -- an unsupported option, or `base_url`/`key_env` given to a preset), refused
+  before anything is sent. A missing key is `1`, named by its variable.
+- A profile with `mcp` or `workspace` raises `ValueError`.
+- A failure is logged as a category and an HTTP status, never as the response body.
+
 ## Unreleased — 0.4.0, lot 2 of 4: the workspace capability
 
 Per `docs/specs/2026-09-23-headless-agents-0.4.0-design.md` (3.3), with the amendments in
