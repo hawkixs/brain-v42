@@ -407,6 +407,11 @@ class TestMetricsSidecar:
                     "recent_errors": 0,
                     "avg_latency_ms": 25.0,
                 },
+                # 04c09575: collect_process_metrics() always returns a "decay" key
+                # (structural zeros when no _decay row exists) — server.py reads
+                # process_agg["decay"] unconditionally, so a mock predating that
+                # contract must carry it too.
+                "decay": {"stale_count": 0, "archived_count": 0, "access_log_size": 0},
             }
         )
         collector.collect_dream_metrics = AsyncMock(return_value={})
@@ -476,6 +481,11 @@ class TestMetricsSidecar:
                     "recent_errors": 0,
                     "avg_latency_ms": 20.0,
                 },
+                # 04c09575: collect_process_metrics() always returns a "decay" key
+                # (structural zeros when no _decay row exists) — server.py reads
+                # process_agg["decay"] unconditionally, so a mock predating that
+                # contract must carry it too.
+                "decay": {"stale_count": 0, "archived_count": 0, "access_log_size": 0},
             }
         )
         collector.collect_dream_metrics = AsyncMock(return_value={})
@@ -554,6 +564,11 @@ class TestMetricsSidecar:
                     "recent_errors": 0,
                     "avg_latency_ms": 5.0,
                 },
+                # 04c09575: collect_process_metrics() always returns a "decay" key
+                # (structural zeros when no _decay row exists) — server.py reads
+                # process_agg["decay"] unconditionally, so a mock predating that
+                # contract must carry it too.
+                "decay": {"stale_count": 0, "archived_count": 0, "access_log_size": 0},
             }
         )
         collector.collect_dream_metrics = AsyncMock(return_value={})
