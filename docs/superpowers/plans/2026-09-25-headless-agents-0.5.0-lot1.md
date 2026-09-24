@@ -115,7 +115,7 @@ packages/headless-agents/src/headless_agents/
   providers/claude.py  MOD  --safe-mode on every command; docstring (2901d5ba)
   providers/codex.py   MOD  write roles: /tmp and $TMPDIR excluded, per-run TMPDIR (§3.8.0)
   procgroup.py      NEW  preexec: PR_SET_PDEATHSIG(SIGKILL) for provider children (§3.8.2)
-  providers/*.py    MOD  pass procgroup.preexec to Popen (5 call sites)
+  providers/*.py    MOD  pass procgroup.preexec_for(os.getpid()) to Popen (5 call sites)
   state.py          NEW  atomic publish, write-once create, read-or-unknown (§3.8.1)
   locks.py          NEW  flock locks, fixed order, bounded waits (§3.8.2)
   runs.py           NEW  run registry: mint, register, resolve, status, incomplete (§3.8.1)
@@ -650,9 +650,13 @@ def test_a_read_only_run_is_unchanged(tmp_path: Path) -> None:
 - Test: `tests/unit/headless_agents/test_procgroup.py`, each rail's test file
 
 **Interfaces:**
-- Produces: `preexec() -> None` — on Linux calls `prctl(PR_SET_PDEATHSIG, SIGKILL)` through
-  `ctypes.CDLL(None, use_errno=True)`; a no-op elsewhere. Every provider `Popen` passes
-  `preexec_fn=procgroup.preexec` in addition to `start_new_session=True`.
+- Produces: `preexec_for(parent_pid: int) -> Callable[[], None]` — the returned function,
+  run in the child between fork and exec, calls `prctl(PR_SET_PDEATHSIG, SIGKILL)` through
+  `ctypes.CDLL(None, use_errno=True)` and **then** compares `os.getppid()` with
+  `parent_pid` (captured before the fork): if they differ, `ha` died in the window before
+  the death signal was armed, and the child `os._exit(1)`s before exec. A no-op elsewhere
+  than Linux. Every provider `Popen` passes `preexec_fn=procgroup.preexec_for(os.getpid())`
+  in addition to `start_new_session=True`. (Codex review of this plan, final round.)
 - Produces: every rail's wait on its child (`communicate`, the read loop) is wrapped so that
   **any** `BaseException` (`KeyboardInterrupt`, `SystemExit`) calls
   `capability.terminate_process_group(process)` before re-raising — as `codex.py` already does
@@ -664,7 +668,9 @@ def test_a_read_only_run_is_unchanged(tmp_path: Path) -> None:
 
 ```python
 def _spawn_sleeper_from(target_pid_file: Path) -> None:
-    child = subprocess.Popen(["sleep", "30"], preexec_fn=preexec, start_new_session=True)
+    child = subprocess.Popen(
+        ["sleep", "30"], preexec_fn=preexec_for(os.getpid()), start_new_session=True
+    )
     target_pid_file.write_text(str(child.pid))
     child.wait()
 
@@ -673,8 +679,8 @@ def test_a_child_dies_when_ha_dies(tmp_path: Path) -> None:
     pid_file = tmp_path / "pid"
     script = (
         "import sys, subprocess, pathlib\n"
-        "from headless_agents.procgroup import preexec\n"
-        "c = subprocess.Popen(['sleep','30'], preexec_fn=preexec, start_new_session=True)\n"
+        "import os\nfrom headless_agents.procgroup import preexec_for\n"
+        "c = subprocess.Popen(['sleep','30'], preexec_fn=preexec_for(os.getpid()), start_new_session=True)\n"
         f"pathlib.Path({str(pid_file)!r}).write_text(str(c.pid))\n"
         "import time; time.sleep(30)\n"
     )
@@ -700,13 +706,16 @@ def test_a_child_survives_while_its_spawning_thread_waits(tmp_path: Path) -> Non
 
   (`_wait_for`, `_alive`, `_gone_within` are small polling helpers in the test module using
   `os.kill(pid, 0)`.) Add one assertion per rail that its `Popen` receives
-  `preexec_fn=procgroup.preexec` (monkeypatch `subprocess.Popen` in the rail module and
+  a `preexec_fn` built by `procgroup.preexec_for` (monkeypatch `subprocess.Popen` in the rail module and
   capture kwargs), in the rail's existing test file. And, per CLI rail, an interruption test:
   a fake executable on `PATH` (a shell script that writes its pid, then `sleep 30`) run
   through `get_provider(rail).run(spec)` in a thread; the main thread raises
   `KeyboardInterrupt` into the wait by patching `subprocess.Popen.communicate` (or the rail's
   read loop) to raise it once the pid file exists; assert the exception propagates **and**
   the sleeper's process group is gone within 6 s (`TERMINATION_GRACE_SECONDS` + 1).
+  And the fork race: call `preexec_for(pid_of_a_process_that_already_exited)()` in a forked
+  child (`os.fork`) and assert the child exits with status 1 before any exec — the check
+  that runs after `prctl` catches a parent that died before the signal was armed.
 
 - [ ] **Step 2:** run; FAIL (`ModuleNotFoundError`).
 - [ ] **Step 3:** implement `procgroup.py` (`PR_SET_PDEATHSIG = 1`; raise nothing from the
@@ -1416,8 +1425,11 @@ def check(state: Path, common_dir: Path | None) -> str | None
 - Test: `tests/unit/headless_agents/test_write_flow.py`
 
 **Interfaces:**
-- Produces: for `role.shell and provider in {"claude", "opencode", "agy"}` (codex keeps its
-  sandbox, decision 13): the unconfined lock exclusive (waits ≤ 10 s for running reviews and
+- Produces: for every **unconfined** write — any write role with a link on a rail whose
+  confinement proof is missing, failed, or recorded for another version (Task 22), whatever
+  the rail, codex included; and, as an additional classification rule, every `shell` role on
+  claude, opencode or agy (codex keeps its sandboxed shell, decision 13) — the unconfined
+  lock exclusive (waits ≤ 10 s for running reviews and
   writes, then `UsageError`); `unconfined-intent.json` published and
   `unconfined-writers.json` appended in step 2; the worktree `HEAD` reflog position in the
   start point; step 7 also lists every commit the reflog gained; publication removes the
@@ -1440,9 +1452,14 @@ def check(state: Path, common_dir: Path | None) -> str | None
 - Test: `tests/unit/headless_agents/test_engine_execute.py`, `test_cli.py`
 
 **Interfaces:**
-- Produces: `engine.clean(run_id, *, environ, home, say) -> int`: lifecycle lock without
-  waiting (active → `UsageError`); unconfined lock shared; for a lineage member its lineage
-  lock; admission checks of §3.8.3 step 1; **no git command** when a quarantine covers the
+- Produces: `engine.clean(run_id, *, environ, home, say) -> int`, in the §3.8.2 order:
+  lifecycle lock without waiting (active → `UsageError`); unconfined lock shared; the
+  lineage **registry** lock **shared**, held until the admission checks below are done so the
+  set of the repository's lineages stays fixed while they are read; for a lineage member its
+  lineage lock exclusive (ascending key); then, under all of them, the admission checks of
+  §3.8.3 step 1 (quarantines, stale unconfined intent, stale pending writes of every lineage
+  of the repository); the registry lock is released before the first git command, the
+  lineage lock kept until the end; **no git command** when a quarantine covers the
   repository or the operator, or the lineage is unknown, compromised or holds a pending write
   (exit 1, naming the reason); otherwise the worktree removed through `gitops.git`, the run
   dir deleted, the branch kept, `cleaned_at` set; lineage state and provenance untouched.
@@ -1451,6 +1468,10 @@ def check(state: Path, common_dir: Path | None) -> str | None
   lot 1 simulated by holding A's lineage lock in a child) waits then is refused; a
   compromised lineage → exit 1, fake `git` records no call; a cleaned write keeps `committed`
   in its lineage and `cleaned_at` in its registry entry; a never-started run is removed.
+  Lock order: an instrumented `locks.held` shows lifecycle, unconfined (shared), lineage
+  registry (shared), lineage (exclusive), and the registry lock released before the first
+  `git` event; a lineage created concurrently in the repository waits on the registry lock
+  until `clean`'s admission checks are done.
 - [ ] **Step 2–4.** **Step 5: Commit** — `feat(headless-agents): ha clean never runs git where a write is uncertain`
 
 ### Task 22: Confinement proofs, classification, and write runs enabled
@@ -1481,7 +1502,9 @@ def plant_confinement_targets(root: Path, rail: str) -> dict[str, Path]
 
 - [ ] **Step 1: Failing unit tests** — a confined write role takes the confined path, an
   unproven one the unconfined path (observable through the unconfined lock taken exclusive);
-  a record for another version is unconfined; `ha roles` shows the column; a write role is
+  a record for another version is unconfined; a **codex** write role with a missing or
+  failed confinement proof takes the unconfined path (exclusive lock, intent, reflog
+  attribution) although it has no `shell`; `ha roles` shows the column; a write role is
   no longer refused.
 - [ ] **Step 2: Live tests** — per rail, a write role asked to write each target of
   `plant_confinement_targets`; each write refused; on success `record_proof(state, rail,
