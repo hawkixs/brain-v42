@@ -78,6 +78,19 @@ class RunSpec:
     context: ContextBundle | None = None
     extra: dict[str, object] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """A run is named by its (resolved) directory: refuse one that resolves to none.
+
+        ``run_dir=Path('.')`` is common and valid -- it resolves to the caller's
+        current directory, whose name becomes the run's id (see
+        :func:`headless_agents.run_record.run_id_of`). Only a directory that
+        resolves to the filesystem root has no name to give: refused here,
+        at construction, rather than left to surface as an empty run id or an
+        empty ``result.json`` directory name downstream.
+        """
+        if self.run_dir is not None and not self.run_dir.resolve().name:
+            raise ValueError(f"run_dir resolves to no name, cannot name a run: {self.run_dir!r}")
+
     def effective_timeout_seconds(self, *, now: float | None = None) -> float:
         """``timeout_seconds`` capped by the time left until ``deadline``."""
         if self.deadline is None:

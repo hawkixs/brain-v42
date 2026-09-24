@@ -68,6 +68,12 @@ class TestRunIdOf:
     def test_is_none_without_a_run_directory(self) -> None:
         assert run_id_of(RunSpec(prompt="P")) is None
 
+    def test_dot_is_named_by_the_current_directorys_resolved_name(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        assert run_id_of(RunSpec(prompt="P", run_dir=Path("."))) == tmp_path.name
+
 
 class TestRecord:
     def test_without_run_dir_nothing_is_written(

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from headless_agents.spec import RUN_DIR_LOG_NAMES, RunSpec
 
 
@@ -40,3 +42,23 @@ class TestWithRunDirDefaults:
             "stderr_log": "stderr.log",
             "raw_log": "raw.log",
         }
+
+
+class TestRunDirValidation:
+    def test_a_run_dir_resolving_to_the_filesystem_root_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="run_dir"):
+            RunSpec(prompt="P", run_dir=Path("/"))
+
+    def test_dot_resolves_to_a_non_empty_name_and_is_accepted(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        spec = RunSpec(prompt="P", run_dir=Path("."))
+        assert spec.run_dir == Path(".")
+
+    def test_a_named_run_dir_is_accepted(self, tmp_path: Path) -> None:
+        spec = RunSpec(prompt="P", run_dir=tmp_path / "runs" / "r1")
+        assert spec.run_dir == tmp_path / "runs" / "r1"
+
+    def test_without_run_dir_nothing_is_validated(self) -> None:
+        RunSpec(prompt="P")

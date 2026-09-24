@@ -33,8 +33,15 @@ def answer_text(path: Path | None, *, exit_code: int, offset: int = 0) -> str | 
 
 
 def run_id_of(spec: RunSpec) -> str | None:
-    """A run is named by its directory: ``run_dir.name``, or ``None`` without one."""
-    return spec.run_dir.name if spec.run_dir is not None else None
+    """A run is named by its directory: the RESOLVED ``run_dir``'s name, or ``None`` without one.
+
+    Resolved, not raw: ``run_dir=Path('.')`` has an empty raw ``.name``, but it
+    names one real directory -- the caller's current one -- whose name is what
+    a reader of run directories actually sees. ``RunSpec.__post_init__``
+    already refused a ``run_dir`` whose resolved name is empty, so this never
+    returns ``""`` for a constructed spec.
+    """
+    return spec.run_dir.resolve().name if spec.run_dir is not None else None
 
 
 def record(spec: RunSpec, result: RunResult) -> RunResult:
