@@ -940,7 +940,10 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
   entry.
 - **Boundary guard (existing):** runtime dependencies stay within `pydantic` and
   `structlog` — TOML, not YAML, for that reason; no import of `brain_v42`.
-- **Dream non-regression (existing):** the golden fixtures pass unchanged.
+- **Dream non-regression (existing):** the golden fixtures pass unchanged, with **one
+  intentional exception**: the executor isolation of 3.8.0 adds `--safe-mode` to every
+  claude command line, so the fixtures that compare claude's exact argument list are
+  updated for that flag alone, in the lot that adds it, every other assertion kept.
 - **`live`** (marked, excluded from CI, run by hand on an operator machine): one real
   `review` with two providers and a judge on a small diff; one real `implement`, `review
   --run`, `implement --continue --findings` sequence on a toy repository; two rails
@@ -955,8 +958,11 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
   marker planted in the operator's instruction file, a skill, a plugin, a user hook (a
   script that would leave a trace if run), a user setting and a user MCP server, for
   that rail's own configuration locations — none may reach the model's context or run,
-  in a run with and without a workspace. A rail without this proof is refused as an
-  executor; it also ships with lot 1.
+  in a run with and without a workspace, at context level `none` (so nothing is loaded
+  on purpose). A second check, at context levels `global` and `full`, proves that the
+  instruction files the context bundle selects on purpose (0.4.0 §3.3) arrive exactly
+  once, through the preamble, and never through the rail's own loading. A rail without
+  this proof is refused as an executor; it also ships with lot 1.
 
 ## 5. Versioning and delivery
 
@@ -970,7 +976,8 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
   residue commits after a failed write, `run.json`, `ha show` (and `--dir`),
   `ha roles`, `ha workflows`, `--version`, tool counts, the `role` context scope.
   Unchanged: `result.json` schema 1, the `AgentProvider` protocol, the providers'
-  behaviour when no role instructions are given.
+  behaviour when no role instructions are given — except the executor isolation of
+  3.8.0 (claude runs with `--safe-mode`), listed under Breaking as a security fix.
 - **Lots, in order**, each with its tests, its own branch and pull request, reviewed by
   an independent reviewer from another provider, merged on green CI:
   1. roles (loader, validation, implicit roles, instructions in the bundle); the engine
@@ -1002,8 +1009,9 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
   the `AgentProvider` protocol are unchanged, and their pending migrations to 0.4.0
   (spec 0.4.0 §6) are unaffected. A consumer that reads `context[].scope` sees `role`
   only on a run it gave role instructions to.
-- **The Dream** calls the providers directly: unaffected, and gated by its golden
-  fixtures.
+- **The Dream** calls the providers directly: unaffected except that its claude runs gain
+  `--safe-mode` (3.8.0) and stop loading the operator's customisations — the intended
+  fix — and gated by its golden fixtures, updated for that flag alone.
 - **The operator:** `models.toml` and `mcp.toml` keep working as they are. `roles.toml`
   and `workflows.toml` are new; the README shows a starting set. Writing them is where the
   provisional configuration of decision c4f1ea03 gets reviewed.
