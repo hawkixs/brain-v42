@@ -384,6 +384,22 @@ What an agent can write decides what `ha` must guard, and 0.4.0 measured it per 
   afterwards (the tripwire over every scope, `HEAD` and the reflog, 3.8.3), and, because
   detection cannot be complete, **attributes conservatively** (3.8.4): once an unconfined
   write has run, a commit without provenance is no longer presumed hand-written.
+- **No executor inherits the operator's agent configuration.** Every run of every rail —
+  read-only or write, with or without a workspace — starts without the operator's own
+  agent customisations: instruction files (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`,
+  …), skills, plugins, user hooks, user settings and user MCP servers. They are shell
+  scripts and instructions a steered prompt (a diff under review, another player's text)
+  would otherwise run or obey, on the operator's account and tokens. The only
+  instructions an executor receives are the preamble's (0.4.0 decision 12, role
+  instructions included). Measured 2026-09-24 (arena-42): 0.4.0's claude rail runs
+  `claude -p` with the operator's real `HOME` and, without a workspace, without
+  `--restricted` — it loads all of them; 0.5.0 runs claude with `--safe-mode` (all
+  customisations off, OAuth kept; `--bare` breaks OAuth) on every run. codex (ephemeral
+  `CODEX_HOME`, `--ignore-user-config`) and agy (ephemeral `HOME`) already isolate;
+  opencode is checked by the same proof. Like confinement, this is **proven per rail**
+  by a `live` test (4) — a marker planted in each of those places must neither reach the
+  model nor run — and a rail without the proof is refused as an executor, not merely
+  classified.
 - **The vendor rule is a quality guarantee, held to the same standard:** no commit a
   write may have made is ever read as hand-written. It is not a defence against an
   operator who re-types an agent's diff by hand.
@@ -935,7 +951,12 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
   `$TMPDIR`), each refused. Its result, with the rail version and date, is what
   classifies the rail's write roles `confined`; it is re-run on every rail upgrade, and a
   rail whose proof fails or was never run is `unconfined`. The proof ships with lot 1,
-  before any write role is classified.
+  before any write role is classified. And per rail, the **isolation proof** of 3.8.0: a
+  marker planted in the operator's instruction file, a skill, a plugin, a user hook (a
+  script that would leave a trace if run), a user setting and a user MCP server, for
+  that rail's own configuration locations — none may reach the model's context or run,
+  in a run with and without a workspace. A rail without this proof is refused as an
+  executor; it also ships with lot 1.
 
 ## 5. Versioning and delivery
 
@@ -1004,7 +1025,8 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
 | Two runs write one worktree, or git runs in a compromised one | One lock per lineage, taken by every continuation and by `ha clean`, shared by reviews; an intent published before every write and cleared only at publication; compromise recorded on the lineage, and quarantines on the repository or the operator when the tampered path is shared (3.8.5), all read before any git command |
 | A review certifies a commit whose provenance is not yet written | The review pins its head, finds the involved lineages without trusting a branch (pending, compromised or unknown lineages of the repository always count), takes their locks shared, and refuses any with a pending write or a compromise (3.8.4) |
 | An unconfined agent tampers a configuration other runs share while they run git | While an unconfined write step runs, no other `ha` process runs git anywhere (the unconfined lock); a stale unconfined write quarantines the operator scope (3.8.0, 3.8.5) |
-| The confinement 3.8.0 relies on regresses in a rail upgrade | A `live` test per rail asks a confined write role to write the common git dir and a ref, re-run on every rail upgrade |
+| The confinement 3.8.0 relies on regresses in a rail upgrade | The per-rail confinement proof (4) classifies write roles and is re-run on every rail upgrade; without a passing proof a rail's write roles are unconfined |
+| An executor inherits the operator's agent configuration (instructions, skills, plugins, hooks, settings, MCP servers) and runs or obeys it on steered content | Every rail runs without them (claude with `--safe-mode`; codex and agy on ephemeral homes); a per-rail isolation proof (4) is required before a rail can execute at all. The 0.4.0 claude defect (arena-42, 2026-09-24) may warrant a 0.4.x fix before 0.5.0 |
 | The state directory is lost | Reports survive in the cache and in each review's `vendor_check`; reviews of branches whose provenance is gone are refused, not waved through |
 | A shape is too rigid for the next workflow | A new shape is a reviewed change to the package; a general language stays out until a third shape is needed |
 
