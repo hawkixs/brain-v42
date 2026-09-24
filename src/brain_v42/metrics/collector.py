@@ -18,6 +18,7 @@ from brain_v42.config import get_settings
 from brain_v42.metrics.collector_db import _DbCollectorsMixin
 from brain_v42.metrics.collector_dream import _DreamCollectorsMixin
 from brain_v42.metrics.collector_nightly import _NightlyCollectorsMixin
+from brain_v42.metrics.collector_tickets import _TicketCollectorsMixin
 from brain_v42.repositories.pg_graph_ledger import projection_health, read_projection_state
 
 logger = structlog.get_logger(__name__)
@@ -40,7 +41,9 @@ def _endpoint_host(url: str) -> str:
     return urlparse(url).hostname or url
 
 
-class MetricsCollector(_DbCollectorsMixin, _DreamCollectorsMixin, _NightlyCollectorsMixin):
+class MetricsCollector(
+    _DbCollectorsMixin, _DreamCollectorsMixin, _NightlyCollectorsMixin, _TicketCollectorsMixin
+):
     """Accumulates metrics counters in memory (asyncio-safe, single-threaded).
 
     Initialized with engine and session_factory references to query the DB
