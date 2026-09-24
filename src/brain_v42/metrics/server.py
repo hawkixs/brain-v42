@@ -605,6 +605,19 @@ class MetricsServer:
         if nightly:
             metrics["nightly"] = nightly
 
+        # Per-project ticket counters (ticket 0fb857ef) — replaces red-monitor's
+        # abandoned roadmap tab. Categorisation is brain's alone: collect_ticket_counts
+        # (collector_tickets.py) reuses list_grouped's own _ACTIONABLE/_CONFIRMABLE
+        # predicates, red-monitor renders whatever it receives with no status logic
+        # of its own. `projects: []` (truthy dict) still publishes the key — only a
+        # raised exception (caught by the cache, see slow_block_cache.py) leaves
+        # "tickets" absent from the payload.
+        tickets_block = await self._slow_block_cache.get(
+            "tickets", self._collector.collect_ticket_counts
+        )
+        if tickets_block:
+            metrics["tickets"] = tickets_block
+
         # Deprecated top-level alias (ticket 3a4ed612): re-synced here, after any
         # cross-process override above, so it never drifts from the field it
         # mirrors -- get_metrics() only had the sidecar's own pre-override value.

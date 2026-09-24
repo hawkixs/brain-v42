@@ -96,6 +96,11 @@ def collector() -> MetricsCollector:
     c.collect_nightly_ops = AsyncMock(  # type: ignore[method-assign]
         return_value={}
     )
+    # Tickets section (ticket 0fb857ef): an empty stub by default — otherwise
+    # the handler would open a real DB session through the MagicMock factory.
+    c.collect_ticket_counts = AsyncMock(  # type: ignore[method-assign]
+        return_value={}
+    )
     return c
 
 
@@ -430,6 +435,60 @@ class TestSlowBlockCacheWiring:
         third = json.loads((await server._handle_metrics(MagicMock())).body)
         assert third["nightly"]["killswitches"] == {}
         assert collector.collect_nightly_ops.call_count == 2
+
+    async def test_tickets_block_carries_generated_at_and_agreed_shape(
+        self, collector: MetricsCollector, mock_embedding_svc: MagicMock
+    ) -> None:
+        """ticket 0fb857ef: `tickets` goes through the same cache under its own key."""
+        collector.collect_ticket_counts = AsyncMock(  # type: ignore[method-assign]
+            return_value={
+                "categories": [
+                    {"key": "todo", "label": "à traiter"},
+                    {"key": "to_confirm", "label": "à confirmer"},
+                    {"key": "waiting", "label": "en attente"},
+                ],
+                "projects": [
+                    {"project": "brain-v42", "counts": {"todo": 53, "to_confirm": 2, "waiting": 9}}
+                ],
+            }
+        )
+        server = self._server(collector, mock_embedding_svc, time_box=[0.0])
+
+        response = await server._handle_metrics(MagicMock())
+        data = json.loads(response.body)
+
+        assert data["tickets"]["generated_at"] == "2026-01-01T00:00:00+00:00"
+        assert data["tickets"]["projects"] == [
+            {"project": "brain-v42", "counts": {"todo": 53, "to_confirm": 2, "waiting": 9}}
+        ]
+
+    async def test_tickets_block_nothing_pending_is_an_empty_list_not_absent(
+        self, collector: MetricsCollector, mock_embedding_svc: MagicMock
+    ) -> None:
+        """`projects: []` (nothing pending anywhere) must still publish the key."""
+        collector.collect_ticket_counts = AsyncMock(  # type: ignore[method-assign]
+            return_value={"categories": [], "projects": []}
+        )
+        server = self._server(collector, mock_embedding_svc, time_box=[0.0])
+
+        response = await server._handle_metrics(MagicMock())
+        data = json.loads(response.body)
+
+        assert "tickets" in data
+        assert data["tickets"]["projects"] == []
+
+    async def test_a_tickets_block_computation_failure_degrades_without_crashing(
+        self, collector: MetricsCollector, mock_embedding_svc: MagicMock
+    ) -> None:
+        """A raised exception must not crash /metrics: the key is absent, never null."""
+        collector.collect_ticket_counts = AsyncMock(side_effect=RuntimeError("db down"))  # type: ignore[method-assign]
+        server = self._server(collector, mock_embedding_svc, time_box=[0.0])
+
+        response = await server._handle_metrics(MagicMock())
+        data = json.loads(response.body)
+
+        assert response.status == 200
+        assert "tickets" not in data
 
 
 async def test_start_disables_aiohttp_request_decompression(
