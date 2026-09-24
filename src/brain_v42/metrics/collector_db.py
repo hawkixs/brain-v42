@@ -74,8 +74,11 @@ class _DbCollectorsMixin:
         Only the model NAME is read — never ``embedding_api_key``, the
         ``SecretStr`` sitting right next to it in ``Settings``.
 
-        ``fts_fallback`` is set by the caller when the search it is logging ran
-        in ``search_mode == "fts_fallback"`` (the embedding service was down
+        ``fts_fallback`` is set by the caller when NO embedding model served
+        the search it is logging (``brain_tools._no_embedding_model_served``):
+        an unresolved ``project_group``, answered before any embedding call,
+        or a search that ran in ``search_mode == "fts_fallback"`` (the
+        embedding service was down
         and ``brain_service.py`` served the search from FTS alone, per
         ``SearchResponse.degraded`` / ``WhatDoIKnowResponse.degraded``). NO
         embedding model produced those results, so the row must say ``NULL``

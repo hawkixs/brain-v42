@@ -11,12 +11,12 @@ itself is Tier 2 and stays out of this migration.
 
 TEXT, NULLABLE, NO DEFAULT, NO BACKFILL. The column stores the configured
 embedding_model NAME ONLY (`config.py`'s `embedding_model`) — never its
-`embedding_backend`, and never a caller-supplied value. `NULL` covers two
-distinct cases, both meaning "no embedding model attributed to this row": a
-row "written before 057", the same doctrine as 040/041/042/046/048/049, and a
-row logged for a search that ran `search_mode == "fts_fallback"`
-(`brain_service.py`, embedding service down, served by FTS alone) — no
-embedding model served that search, so none is stored for it. A
+`embedding_backend`, and never a caller-supplied value. `NULL` means "no
+embedding model attributed to this row": a row "written before 057", the same
+doctrine as 040/041/042/046/048/049, or a row logged for a search no embedding
+model served — one that ran `search_mode == "fts_fallback"` (`brain_service.py`,
+embedding service down, served by FTS alone), or one whose `project_group`
+resolved to no project and was answered empty before any embedding call. A
 `server_default` would retroactively label every pre-057 row with whatever
 model happens to be configured the day this migration runs, inventing an
 attribution none of those searches ever had.

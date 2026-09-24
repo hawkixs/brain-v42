@@ -82,7 +82,13 @@ class TestTheColumnLandsOnTheTable:
 
     @pytest.mark.asyncio
     async def test_a_row_written_without_the_column_stays_null(self, engine: AsyncEngine) -> None:
-        """No backfill: NULL means "written before 057", and nothing else."""
+        """No default: an INSERT that does not name the column stores NULL.
+
+        (NULL also covers searches no embedding model served — FTS fallback and
+        an unresolved project_group — which the writer passes explicitly. The
+        no-BACKFILL property, a row that existed before 057, is proved in
+        TestTheDowngradeDropsExactlyThatColumn, where a row can exist at 056.)
+        """
         async with engine.begin() as connection:
             row_id = (
                 await connection.execute(
@@ -156,7 +162,7 @@ class TestTheDowngradeDropsExactlyThatColumn:
             )
             assert result.scalar_one() == 0
 
-        restored = _run_alembic("upgrade", "057")
+        restored = _run_alembic("upgrade", "head")
         assert restored.returncode == 0, restored.stderr
 
         async with engine.connect() as connection:
@@ -167,3 +173,44 @@ class TestTheDowngradeDropsExactlyThatColumn:
                 )
             )
             assert result.scalar_one() == 1
+
+    @pytest.mark.asyncio
+    async def test_a_row_that_existed_before_057_is_not_backfilled(
+        self,
+        engine: AsyncEngine,
+        migration_downgrade_fence: Callable[..., None],
+    ) -> None:
+        """PR #199 review (codex, minor 2): a backfill slipped into upgrade() would
+        pass every test that inserts AFTER 057. Only a row written at 056 and
+        carried through the upgrade can prove that NULL means "written before 057".
+        """
+        migration_downgrade_fence(downgraded_to="056")
+        downgraded = _run_alembic("downgrade", "056")
+        assert downgraded.returncode == 0, downgraded.stderr
+
+        async with engine.begin() as connection:
+            row_id = (
+                await connection.execute(
+                    sa.text(
+                        "INSERT INTO search_log (tool_name, result_count, latency_ms) "
+                        "VALUES ('brain_search', 1, 3.0) RETURNING id"
+                    )
+                )
+            ).scalar_one()
+        try:
+            restored = _run_alembic("upgrade", "head")
+            assert restored.returncode == 0, restored.stderr
+
+            async with engine.connect() as connection:
+                value = (
+                    await connection.execute(
+                        sa.text("SELECT embedding_model FROM search_log WHERE id = :id"),
+                        {"id": row_id},
+                    )
+                ).scalar_one()
+            assert value is None
+        finally:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    sa.text("DELETE FROM search_log WHERE id = :id"), {"id": row_id}
+                )
