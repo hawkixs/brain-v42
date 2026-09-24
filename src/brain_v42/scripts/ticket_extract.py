@@ -1084,8 +1084,12 @@ async def record_ticket_attempt(
     status: str,
     duration_s: float,
     error: str | None,
-) -> None:
-    """Persist one terminal ticket attempt; failures must remain resumable."""
+) -> bool:
+    """Persist one terminal ticket attempt; failures must remain resumable.
+
+    Returns whether the row was written. Most callers only log, but a
+    transport deferral is only a deferral if the next night can read it back.
+    """
     try:
         async with session_factory() as session:
             async with session.begin():
@@ -1105,6 +1109,8 @@ async def record_ticket_attempt(
                 )
     except Exception as exc:
         print(f"! warning: could not record ticket attempt {thread.id}: {type(exc).__name__}")
+        return False
+    return True
 
 
 # Marks a deferral caused by the WHOLE provider chain failing, so the next
@@ -1592,9 +1598,14 @@ async def _run(
                     if transport_deferral
                     else outcome.error
                 )
-                await record_ticket_attempt(
+                persisted = await record_ticket_attempt(
                     sf, thread, attempt_status, ticket_duration, attempt_error
                 )
+                if transport_deferral and not persisted:
+                    # Unsaved, the next night cannot see this failure and would
+                    # never escalate: fall back onto the loud path.
+                    transport_deferral = False
+                    attempt_status = "failed"
                 print(
                     f"progress: ticket {thread.id} {attempt_status}: {_safe_error(outcome.error)}"
                 )

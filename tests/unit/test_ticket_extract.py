@@ -30,6 +30,7 @@ from scripts.ticket_extract import (
     extract_thread,
     parse_and_validate,
     persist_proposals,
+    record_ticket_attempt,
     render_thread,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -3420,7 +3421,9 @@ class TestAWholeChainTransportFailureIsDeferred:
     """
 
     @staticmethod
-    async def _scenario(*, repeats: bool | Exception) -> tuple[int, AsyncMock, AsyncMock]:
+    async def _scenario(
+        *, repeats: bool | Exception, persisted: bool = True
+    ) -> tuple[int, AsyncMock, AsyncMock]:
         thread = _thread()
 
         async def extract(client, model, thread, **kw):
@@ -3445,7 +3448,7 @@ class TestAWholeChainTransportFailureIsDeferred:
             run_budget_seconds=600.0,
             ticket_budget_seconds=180.0,
         )
-        attempts = AsyncMock()
+        attempts = AsyncMock(return_value=persisted)
         record = AsyncMock()
         with (
             patch("brain_v42.config.Settings") as settings_cls,
@@ -3497,6 +3500,44 @@ class TestAWholeChainTransportFailureIsDeferred:
 
         assert exit_code == 1
         assert [call.args[2] for call in attempts.await_args_list] == ["failed"]
+
+    @pytest.mark.asyncio
+    async def test_an_unsaved_deferral_is_a_hard_failure(self) -> None:
+        """Without its row, the next night cannot see the first failure and
+        would never escalate: a deferral that did not persist is not a deferral.
+        """
+        exit_code, _, record = await self._scenario(repeats=False, persisted=False)
+
+        assert exit_code == 1
+        assert record.await_args.kwargs["status"] == "fail"
+
+
+class TestRecordTicketAttemptReportsTheWrite:
+    @pytest.mark.asyncio
+    async def test_a_written_row_is_true(self) -> None:
+        session = MagicMock()
+        session.execute = AsyncMock()
+
+        @asynccontextmanager
+        async def begin():
+            yield
+
+        session.begin = begin
+
+        @asynccontextmanager
+        async def factory():
+            yield session
+
+        assert await record_ticket_attempt(factory, _thread(), "done", 1.0, None) is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_write_is_false(self) -> None:
+        @asynccontextmanager
+        async def factory():
+            raise RuntimeError("db down")
+            yield
+
+        assert await record_ticket_attempt(factory, _thread(), "done", 1.0, None) is False
 
 
 class TestPreviousAttemptWasATransportDeferral:
