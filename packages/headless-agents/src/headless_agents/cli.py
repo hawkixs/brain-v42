@@ -320,7 +320,7 @@ def _plan(args: argparse.Namespace, io: Io) -> RunPlan:
     mcp: McpServer | None = None
     if args.mcp:
         try:
-            mcp = mcp_server(args.mcp, environ=io.environ)
+            mcp = mcp_server(args.mcp, environ=io.environ, home=io.home)
         except McpProfileError as exc:
             raise UsageError(str(exc)) from None
     environment = operator_environment(io.environ)

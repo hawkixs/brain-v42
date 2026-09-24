@@ -25,10 +25,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
 
+from .config_paths import ConfigPathError, config_dir, config_file
 from .registry import PROVIDER_NAMES
 
 #: The rails that choose a safe model of their own when given none.
 MODEL_OPTIONAL: Final = frozenset({"agy"})
+MODELS_FILE_NAME: Final = "models.toml"
 
 
 class ModelsError(ValueError):
@@ -36,8 +38,8 @@ class ModelsError(ValueError):
 
 
 def default_models_path(environ: Mapping[str, str], *, home: Path) -> Path:
-    base = environ.get("XDG_CONFIG_HOME") or str(home / ".config")
-    return Path(base) / "ha" / "models.toml"
+    """Where the models file is expected (spec 0.5.0 §3.3: absolute XDG only)."""
+    return config_dir(environ, home=home) / MODELS_FILE_NAME
 
 
 def load_models(path: Path) -> dict[str, str]:
@@ -116,7 +118,13 @@ def models_for(
     # Read only when some link is left without a model: a broken file must not
     # fail a run that never needed it.
     needs_file = not default.strip() and any(not own for _, own in links)
-    declared = load_models(path) if needs_file else {}
+    declared: dict[str, str] = {}
+    if needs_file:
+        try:
+            found = config_file(MODELS_FILE_NAME, environ, home=home)
+        except ConfigPathError as exc:
+            raise ModelsError(str(exc)) from None
+        declared = load_models(found) if found is not None else {}
     return resolve_models(links, default=default, declared=declared, declared_path=path)
 
 

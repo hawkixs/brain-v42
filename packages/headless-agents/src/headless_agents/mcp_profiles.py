@@ -32,6 +32,7 @@ from typing import Any, Final
 
 from pydantic import SecretStr, ValidationError
 
+from .config_paths import ConfigPathError, config_dir, config_file
 from .profile import McpServer
 
 ALLOWED_KEYS: Final = frozenset(
@@ -40,6 +41,7 @@ ALLOWED_KEYS: Final = frozenset(
 SECRET_LOOKING_KEYS: Final = frozenset({"bearer", "token", "api_key", "password", "secret"})
 #: ``allowed_networks = "any"``: TOML has no null, so "no restriction" is spelled out.
 UNRESTRICTED: Final = "any"
+PROFILES_FILE_NAME: Final = "mcp.toml"
 
 
 class McpProfileError(ValueError):
@@ -49,9 +51,9 @@ class McpProfileError(ValueError):
 def default_profiles_path(
     environ: Mapping[str, str] | None = None, *, home: Path | None = None
 ) -> Path:
+    """Where the profile file is expected (spec 0.5.0 §3.3: absolute XDG only)."""
     environ = os.environ if environ is None else environ
-    base = environ.get("XDG_CONFIG_HOME") or str((home or Path.home()) / ".config")
-    return Path(base) / "ha" / "mcp.toml"
+    return config_dir(environ, home=home or Path.home()) / PROFILES_FILE_NAME
 
 
 def _validated(name: str, table: object) -> dict[str, Any]:
@@ -120,10 +122,17 @@ def mcp_server(
     *,
     path: Path | None = None,
     environ: Mapping[str, str] | None = None,
+    home: Path | None = None,
 ) -> McpServer:
     """The :class:`McpServer` for profile ``name``, its bearer read from ``environ``."""
     environ = os.environ if environ is None else environ
-    path = path if path is not None else default_profiles_path(environ)
+    if path is None:
+        home = home or Path.home()
+        try:
+            found = config_file(PROFILES_FILE_NAME, environ, home=home)
+        except ConfigPathError as exc:
+            raise McpProfileError(str(exc)) from None
+        path = found if found is not None else default_profiles_path(environ, home=home)
     profiles = load_profiles(path)
     if name not in profiles:
         known = ", ".join(sorted(profiles)) or "none"
