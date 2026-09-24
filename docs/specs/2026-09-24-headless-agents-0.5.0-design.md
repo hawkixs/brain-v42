@@ -402,8 +402,11 @@ What an agent can write decides what `ha` must guard, and 0.4.0 measured it per 
 
 - **One authority per fact.** A write run's status lives in its lineage state only; any
   other run's status in its registry entry only; a review's head, verdict and text in its
-  review result only. `run.json` in the run directory is a **report** rebuilt from these,
-  never read back to decide anything.
+  review result only. Whether a run was **cleaned** is a separate fact, not a status: its
+  one authority is the `cleaned_at` field of the registry entry, for every run, and it
+  never changes the run's status (a cleaned write keeps `committed` in its lineage).
+  `run.json` in the run directory is a **report** rebuilt from these, never read back to
+  decide anything.
 - **Publication.** Every state file is written whole to a temporary file in the same
   directory, `fsync`ed, renamed over its target, and the directory `fsync`ed: a reader
   sees the old or the new document, never a partial one. Files marked "written once" are
@@ -445,12 +448,14 @@ on every exit path. The order is fixed, which excludes a deadlock:
   is `incomplete` — no PID is consulted. `ha clean` takes the lifecycle lock of the run it
   cleans without waiting, and refuses an active run (exit `2`).
 - **Unconfined lock.** An unconfined write holds it **exclusively** from its intent to its
-  publication. Every other entry point that runs git — a new write, a continuation, a
-  review, `ha clean` — holds it **shared** around every git command it runs, waiting at
-  most 10 seconds (then exit `2`, "an unconfined write is running"). A run that releases
-  it between two git phases (a review, while its reviewers read) re-acquires it and
-  repeats the quarantine checks of 3.8.3 step 1 before its next git command. Confined
-  writes do not wait on one another through it.
+  publication. Every other entry point that can run git — a new write, a continuation, a
+  review, `ha clean` — holds it **shared** from its admission to its end, providers,
+  chains, reviewers and judge included: adapters run git themselves (agy's preamble lists
+  the workspace with `git ls-files`), so no narrower window is safe. It waits at most 10
+  seconds to take it (then exit `2`, "an unconfined write is running", nothing ran); an
+  unconfined write, conversely, waits at most 10 seconds for running reviews and writes to
+  finish, then is refused. Confined writes and reviews never wait on one another through
+  it.
 - **Lineage registry lock.** Creating a lineage — writing its state file and taking its
   lock — happens under `<state>/lineages.lock` held **exclusively**, briefly; enumerating
   lineages to decide anything holds it **shared** for as long as that decision needs the
@@ -564,13 +569,15 @@ A `review` run, in `execute()`:
    review is refused (exit `2`, naming the reviewer, provider and commit). The judge is
    not constrained.
 6. **Records and releases.** The check is written once to
-   `<state>/reviews/<run_id>.check.json`; the lineage, registry and unconfined locks are
-   released; the reviewers then read the pinned commit, which no later write can change.
-   The final cleanup runs git (removing the detached worktree): before it, the review
-   re-acquires the unconfined lock shared and repeats the quarantine checks (3.8.2).
-   When the run ends, its result — pinned head, verdict, deciding text, and a copy of the
-   check — is written once to `<state>/reviews/<run_id>.json`. `--findings` reads only
-   that final result.
+   `<state>/reviews/<run_id>.check.json`; the lineage and registry locks are released —
+   the unconfined lock is kept to the end (3.8.2); the reviewers then read the pinned
+   commit, which no later write can change. When the verdict is read, the result —
+   pinned head, verdict, deciding text, and a copy of the check — is written once to
+   `<state>/reviews/<run_id>.json`, **before** the cleanup, so a failed cleanup never
+   loses a verdict. The cleanup then removes the detached worktree; if it cannot (a git
+   error), the worktree is kept, the report records `cleanup: failed` with the reason,
+   and the exit code is still the verdict's (`0` or `6`) — `ha clean` retries later.
+   `--findings` reads only the final result.
 
 The same check runs whatever names the head — `--run`, `--head`, or any ref. A session
 that still wants a review the rule refuses runs a reviewer role directly (`ha run
@@ -660,9 +667,10 @@ ha --version
   at all when a quarantine covers the repository or the operator, or when the
   **lineage** is unknown, compromised or holds a pending write, whichever member is named
   (exit `1`, naming the reason): such a worktree is recovered by hand. A `review`'s
-  detached worktree is removed the same way. Cleaning a run never touches the state
-  directory: its registry entry is marked `cleaned`, and the provenance of its commits and
-  the lineage state stay, so a later review can still prove independence.
+  detached worktree is removed the same way. Cleaning a run touches the state directory
+  only to set `cleaned_at` in its registry entry (3.8.1) — its status, the provenance of
+  its commits and the lineage state stay, so a later review can still prove
+  independence.
 
 **Exit codes.** A one-step run (a role or provider target) keeps the 0.4.0 CLI contract:
 `0` answer; `1` failure; `2` invalid usage; `3` provider unavailable; `4` timeout with no
@@ -892,9 +900,13 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
   `unconfined-intent.json` after taking the lock exclusively (stale: operator quarantine,
   refused); a new write with `--repo` inside another lineage's worktree (that lineage
   locked shared and admitted first); a lineage created while a review holds the registry
-  lock (it waits, and the review's decision covers a fixed set); a review's final cleanup
-  after an unconfined write started meanwhile (it waits for the lock and re-checks the
-  quarantines before `git worktree remove`).
+  lock (it waits, and the review's decision covers a fixed set); an unconfined write
+  requested while a review runs (it waits at most 10 s, then is refused: the review holds
+  the unconfined lock shared to its end, reviewers included); agy's `git ls-files`
+  preamble during a review running under that lock; a review whose cleanup fails (result
+  published before it, worktree kept, `cleanup: failed` reported, exit per verdict); a
+  cleaned write keeping `committed` in its lineage and `cleaned_at` in its registry
+  entry.
 - **Boundary guard (existing):** runtime dependencies stay within `pydantic` and
   `structlog` — TOML, not YAML, for that reason; no import of `brain_v42`.
 - **Dream non-regression (existing):** the golden fixtures pass unchanged.
