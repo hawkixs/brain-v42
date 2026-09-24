@@ -263,6 +263,57 @@ truncation. Known limit: on codex, opencode and agy the preamble travels inside 
 message (claude alone gets a system prompt), and a weak model -- measured: opencode
 `glm-5.3-flash` -- sometimes obeys the task over the `<instructions>` block.
 
+## HTTP providers: `openai-compat` and its presets
+
+Four registry names speak the OpenAI chat-completions API instead of running a CLI:
+`openrouter`, `mistral` and `nvidia` fix their endpoint and the **name** of their key
+variable (`OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, `NVIDIA_API_KEY`); `openai-compat` takes
+both from the caller. The package never reads a key from a file: put it in the
+environment.
+
+```python
+from headless_agents.registry import get_provider, probe
+from headless_agents.spec import RunSpec
+
+probe("mistral")  # Probe(available=True, detail="MISTRAL_API_KEY is set") -- zero quota
+result = get_provider("mistral").run(
+    RunSpec(
+        prompt="Summarise this diff in one sentence: ...",
+        model="mistral-small-latest",
+        run_dir=Path("runs/2026-09-24-001"),
+        extra={"temperature": 0, "max_tokens": 200},  # also: response_format
+    )
+)
+
+# Any other OpenAI-compatible endpoint:
+get_provider("openai-compat").run(
+    RunSpec(
+        prompt="...",
+        model="my-model",
+        extra={"base_url": "http://10.0.0.5:8000/v1", "key_env": "MY_LLM_KEY"},
+    )
+)
+```
+
+Each call runs in a killable child process, so the deadline and the process-group kill
+behave as on the CLI rails; the prompt **and the key** travel on the child's stdin, never
+in argv, the environment or a log. Text only: no tools, no MCP, no workspace, no
+streaming -- a profile declaring `mcp` or `workspace` raises `ValueError`. The context
+bundle's preamble becomes a `system` message. `tokens` comes from `usage` (cached and
+reasoning tokens when the API reports them, `None` otherwise); `cost_usd` is filled only
+when the API reports a cost (OpenRouter, which the preset asks for it).
+
+| Outcome | Exit code | Chain |
+|---|---|---|
+| answer | `0` | |
+| own deadline | `124` | stops |
+| HTTP 429 or 5xx, host unreachable | `3` | advances -- no tool could have written |
+| HTTP 401/403, a malformed reply, anything else | `1` | stops |
+| no model, no/invalid `base_url`, an unsupported option, `base_url`/`key_env` given to a preset | `2` | stops, nothing sent |
+
+A failure is recorded as a category and a status (`request failed: http (HTTP 401)`),
+never as the provider's error body: that body may quote the key.
+
 ## The `.git` tripwire
 
 A writable workspace can let an agent plant what the **next** git command executes
