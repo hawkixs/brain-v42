@@ -132,6 +132,44 @@ class TestRecord:
         finally:
             run_dir.chmod(0o700)
 
+    def test_a_partial_file_it_did_not_create_is_never_deleted(self, tmp_path: Path) -> None:
+        # Independent review of PR #197, finding 2: a fixed partial name meant a
+        # failed write deleted a ``.result.json.partial`` this invocation never
+        # created -- a read-only leftover, or a concurrent writer's.
+        if os.geteuid() == 0:
+            pytest.skip("root bypasses file permissions")
+        run_dir = tmp_path / "run1"
+        run_dir.mkdir()
+        foreign = run_dir / ".result.json.partial"
+        foreign.write_text("someone else's", encoding="utf-8")
+        foreign.chmod(0o400)
+        result = _result()
+        assert record(RunSpec(prompt="P", run_dir=run_dir), result) is result
+        assert foreign.read_text(encoding="utf-8") == "someone else's"
+        assert json.loads((run_dir / "result.json").read_text(encoding="utf-8")) == (
+            result.to_dict()
+        )
+
+    def test_a_failed_rename_removes_only_its_own_temporary_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run_dir = tmp_path / "run1"
+        run_dir.mkdir()
+        foreign = run_dir / ".result.json.partial"
+        foreign.write_text("someone else's", encoding="utf-8")
+        stderr_log = tmp_path / "stderr.log"
+
+        def _refuse(source: object, destination: object) -> None:
+            raise PermissionError(13, "refused")
+
+        monkeypatch.setattr(os, "replace", _refuse)
+        result = _result()
+        spec = RunSpec(prompt="P", run_dir=run_dir, stderr_log=stderr_log)
+        assert record(spec, result) is result
+        assert sorted(path.name for path in run_dir.iterdir()) == [".result.json.partial"]
+        assert foreign.read_text(encoding="utf-8") == "someone else's"
+        assert "PermissionError" in stderr_log.read_text(encoding="utf-8")
+
     def test_run_dir_being_a_file_does_not_raise(self, tmp_path: Path) -> None:
         run_dir = tmp_path / "run1"
         run_dir.write_text("i am a file, not a run directory", encoding="utf-8")

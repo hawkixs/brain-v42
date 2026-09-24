@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import errno
 import json
+import os
+import tempfile
 from contextlib import suppress
 from pathlib import Path
 
@@ -70,23 +72,34 @@ def record(spec: RunSpec, result: RunResult) -> RunResult:
     the caller the ``RunResult`` of a run that already happened. On failure
     ``result`` is returned unchanged; one line naming the failure is appended
     to ``spec.stderr_log`` when that path is set and writable, and stays
-    silent otherwise; the half-written partial file is removed best-effort.
+    silent otherwise.
+
+    The temporary file is created EXCLUSIVELY under a unique name
+    (``tempfile.mkstemp``, so ``0600``), and only that file is ever cleaned
+    up: a fixed partial name meant a failed write could delete a partial this
+    invocation never created -- a read-only leftover, or a concurrent
+    writer's (independent review of PR #197, finding 2).
     """
     if spec.run_dir is None:
         return result
     target = spec.run_dir / RESULT_FILE_NAME
-    partial = spec.run_dir / f".{RESULT_FILE_NAME}.partial"
+    owned: Path | None = None
     try:
         spec.run_dir.mkdir(parents=True, exist_ok=True)
-        partial.write_text(
-            json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        descriptor, name = tempfile.mkstemp(
+            dir=spec.run_dir, prefix=f".{RESULT_FILE_NAME}.", suffix=".partial"
         )
-        partial.replace(target)
+        owned = Path(name)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n")
+        os.replace(owned, target)
+        owned = None
     except OSError as error:
         if spec.stderr_log is not None:
             with suppress(OSError):
                 with spec.stderr_log.open("a", encoding="utf-8") as stream:
                     stream.write(_failure_note(error))
-        with suppress(OSError):
-            partial.unlink()
+        if owned is not None:
+            with suppress(OSError):
+                owned.unlink()
     return result
