@@ -8,7 +8,7 @@ this shape. The nightly Dream builds its profile from its own phase policy;
 an arena seat builds one with ``mcp=None``; both run the same providers.
 
 Validation happens here, once, so no provider has to repeat it: an MCP URL
-must be loopback unless the caller opts out by name, a credential path must
+must sit inside the allowed networks (loopback by default), a credential path must
 stay relative and inside the caller's HOME, a guard must be an absolute
 path. Secrets are ``SecretStr`` and never appear in a ``repr``.
 """
@@ -21,7 +21,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
-from .capability import validate_loopback_url
+from .capability import (
+    DEFAULT_ALLOWED_NETWORKS,
+    no_proxy_host,
+    parse_networks,
+    validate_url_in_networks,
+)
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
@@ -46,7 +51,28 @@ class McpServer(BaseModel):
     bearer_env_var: str = Field(default="MCP_HTTP_TOKEN", min_length=1)
     headers: Mapping[str, str] = Field(default_factory=dict)
     tools: tuple[str, ...] = ()
-    require_loopback: bool = True
+    # 0.4.0 (spec 3.4): replaces ``require_loopback``. The default keeps
+    # loopback only; ``None`` is "no restriction" (the old ``False``), spelled
+    # out, never implied by an empty tuple; a private network is admitted by
+    # listing it. Host names are never resolved.
+    allowed_networks: tuple[str, ...] | None = DEFAULT_ALLOWED_NETWORKS
+
+    @model_validator(mode="before")
+    @classmethod
+    def _require_loopback_was_removed(cls, data: object) -> object:
+        if isinstance(data, Mapping) and "require_loopback" in data:
+            raise ValueError(
+                "require_loopback was removed in 0.4.0: use allowed_networks "
+                "(None for no restriction, the default for loopback only)"
+            )
+        return data
+
+    @field_validator("allowed_networks")
+    @classmethod
+    def _networks_parse(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        if value is not None:
+            parse_networks(tuple(value))
+        return value
 
     @field_validator("name", "bearer_env_var")
     @classmethod
@@ -76,10 +102,24 @@ class McpServer(BaseModel):
         return headers
 
     @model_validator(mode="after")
-    def _loopback_unless_opted_out(self) -> McpServer:
-        if self.require_loopback:
-            validate_loopback_url(self.url)
+    def _url_inside_the_allowed_networks(self) -> McpServer:
+        if self.allowed_networks is not None:
+            validate_url_in_networks(self.url, self.allowed_networks)
         return self
+
+
+def mcp_no_proxy_hosts(server: McpServer | None) -> tuple[str, ...]:
+    """The host to append to ``NO_PROXY`` for ``server``: a listed private IP literal.
+
+    Pass it to :func:`headless_agents.capability.scoped_environment` as
+    ``no_proxy_hosts`` so a listed private address is not sent through
+    ``HTTP(S)_PROXY``. Loopback is already there; an unrestricted server
+    (``allowed_networks=None``) adds nothing.
+    """
+    if server is None:
+        return ()
+    host = no_proxy_host(server.url, server.allowed_networks)
+    return () if host is None else (host,)
 
 
 class ToolGuard(BaseModel):

@@ -16,12 +16,13 @@ for.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import signal
 import subprocess
 import time
 from collections.abc import Iterable, Mapping
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 LOOPBACK_NO_PROXY_ENTRIES = ("127.0.0.1", "localhost", "::1")
@@ -135,15 +136,103 @@ def validate_loopback_url(url: str) -> None:
         raise ValueError(f"not a loopback URL: {url!r}")
 
 
-def merged_no_proxy(environ: Mapping[str, str]) -> str:
-    """``NO_PROXY``/``no_proxy`` merged, with the loopback entries appended once."""
+#: ``McpServer.allowed_networks``' default: loopback only.
+DEFAULT_ALLOWED_NETWORKS: tuple[str, ...] = ("127.0.0.0/8", "::1/128")
+
+_LOCALHOST_PROBE = ipaddress.ip_address("127.0.0.1")
+
+
+def _url_shape(url: str) -> SplitResult:
+    """``url`` split, or ``ValueError`` unless it is a plain http(s) URL with a host."""
+    try:
+        parsed = urlsplit(url)
+        _ = parsed.port
+    except (TypeError, ValueError):
+        raise ValueError(f"malformed URL: {url!r}") from None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or bool(parsed.fragment)
+    ):
+        raise ValueError(f"malformed URL: {url!r}")
+    return parsed
+
+
+def parse_networks(
+    networks: tuple[str, ...],
+) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    """The listed networks, or ``ValueError`` on an empty tuple or a malformed entry."""
+    if not networks:
+        raise ValueError(
+            "allowed_networks must not be empty: use None for no restriction, "
+            "or list the networks explicitly"
+        )
+    return tuple(ipaddress.ip_network(network, strict=False) for network in networks)
+
+
+def validate_url_in_networks(url: str, networks: tuple[str, ...]) -> None:
+    """Raise ``ValueError`` unless ``url``'s host is an IP literal inside ``networks``.
+
+    Host names are NEVER resolved: a DNS answer at validation time proves
+    nothing about the address connected to later. ``localhost`` is the one
+    name accepted, and only when a listed network holds ``127.0.0.1``.
+    """
+    loopback_only = tuple(networks) == DEFAULT_ALLOWED_NETWORKS
+    try:
+        parsed = _url_shape(url)
+    except ValueError:
+        if loopback_only:
+            raise ValueError(f"not a loopback URL: {url!r}") from None
+        raise
+    listed = parse_networks(networks)
+    host = parsed.hostname or ""
+    if host == "localhost":
+        if any(_LOCALHOST_PROBE in network for network in listed):
+            return
+        raise ValueError(f"localhost is outside the allowed networks: {url!r}")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        if loopback_only:
+            raise ValueError(f"not a loopback URL: {url!r}") from None
+        raise ValueError(
+            f"host names are never resolved; use an IP literal inside the allowed networks: {url!r}"
+        ) from None
+    if not any(address.version == network.version and address in network for network in listed):
+        if loopback_only:
+            raise ValueError(f"not a loopback URL: {url!r}")
+        raise ValueError(f"{url!r} is outside the allowed networks ({', '.join(networks)})")
+
+
+def no_proxy_host(url: str, networks: tuple[str, ...] | None) -> str | None:
+    """The literal host to keep off the proxy: a listed, non-loopback IP literal, else ``None``."""
+    if networks is None:
+        return None
+    try:
+        host = _url_shape(url).hostname or ""
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    if address.is_loopback:
+        return None
+    return host
+
+
+def merged_no_proxy(environ: Mapping[str, str], extra_hosts: Iterable[str] = ()) -> str:
+    """``NO_PROXY``/``no_proxy`` merged, the loopback entries then ``extra_hosts`` appended once.
+
+    ``extra_hosts`` are literal hosts, never a CIDR: CIDR support in
+    ``NO_PROXY`` differs between the CLIs' HTTP clients.
+    """
     entries: list[str] = []
     for variable_name in ("NO_PROXY", "no_proxy"):
         for raw_entry in environ.get(variable_name, "").split(","):
             entry = raw_entry.strip()
             if entry and entry not in entries:
                 entries.append(entry)
-    for entry in LOOPBACK_NO_PROXY_ENTRIES:
+    for entry in (*LOOPBACK_NO_PROXY_ENTRIES, *extra_hosts):
         if entry not in entries:
             entries.append(entry)
     return ",".join(entries)
@@ -154,6 +243,7 @@ def scoped_environment(
     *,
     passthrough: Iterable[str] = (),
     overrides: Mapping[str, str] | None = None,
+    no_proxy_hosts: Iterable[str] = (),
 ) -> dict[str, str]:
     """The child environment: the allowlisted subset of ``environ``, loopback
     added to ``NO_PROXY``, then ``overrides`` applied last.
@@ -164,7 +254,7 @@ def scoped_environment(
     """
     allowlist = BASE_CHILD_ENV_ALLOWLIST | frozenset(passthrough)
     child = {name: value for name, value in environ.items() if name in allowlist}
-    no_proxy = merged_no_proxy(environ)
+    no_proxy = merged_no_proxy(environ, no_proxy_hosts)
     child["NO_PROXY"] = no_proxy
     child["no_proxy"] = no_proxy
     if overrides:

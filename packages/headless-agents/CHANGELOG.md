@@ -18,11 +18,56 @@ commit that shipped it — deliberately outside the `v*` pattern, which names br
 version and drives its release workflow. Pin it:
 
 ```sh
-uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.3.0#subdirectory=packages/headless-agents"
+uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.4.0#subdirectory=packages/headless-agents"
 ```
 
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last
 time the member rode a brain-v42 tag.
+
+## 0.4.0 — lot 4 of 4: the `ha` CLI (tag `headless-agents-v0.4.0` after merge)
+
+Lot 4 completes 0.4.0; the package version is `0.4.0`. The four lot sections below
+(facade, workspace, `.git` tripwire, `openai-compat`) are part of the same release.
+
+### Changed (breaking)
+- `McpServer.require_loopback` is **removed**, replaced by
+  `allowed_networks: tuple[str, ...] | None = ("127.0.0.0/8", "::1/128")`. A caller that
+  never set it is unaffected (loopback only, same error message). `require_loopback=False`
+  becomes `allowed_networks=None` ("no restriction", spelled out; an empty tuple is
+  rejected). Passing `require_loopback` fails with a migration message instead of being
+  ignored. A private network is admitted by listing it; host names are never resolved (a
+  literal IP is matched, `localhost` only when a listed network holds `127.0.0.1`).
+  In this repository the Dream's `brain_mcp_server` migrated to `allowed_networks=None`;
+  its golden fixtures pass unchanged.
+
+### Added
+- `profile.mcp_no_proxy_hosts(server)` and `capability.scoped_environment(no_proxy_hosts=)`
+  / `merged_no_proxy(environ, extra_hosts)`: a listed private literal host is appended to
+  `NO_PROXY` (a host, never a CIDR).
+- `mcp_profiles`: named MCP profiles in `$XDG_CONFIG_HOME/ha/mcp.toml` (default
+  `~/.config/ha/mcp.toml`) — `url`, `bearer_env` (the variable NAME), `tools`, optional
+  `name`, `headers`, `allowed_networks` (`"any"` = no restriction). A key that looks like a
+  secret value is refused.
+- `ha` (`[project.scripts]`): `ha providers`, `ha run`, `ha runs`, `ha clean`. See the
+  README. Exit codes: `0` answer, `1` failure, `2` invalid usage, `3` provider unavailable
+  / chain exhausted, `4` replayable timeout, `5` `--write` with no change, `124` timeout.
+- `ha run --write`: worktree on `ha/<run_id>`, the `.git` tripwire read by the rail AND by
+  the CLI around the whole run (no git command at all if either fired), a carrier commit
+  through `git_tripwire.git_command` with the repository's hooks running, the patch and
+  diffstat printed, never a merge. `ha clean` removes the worktree and keeps the branch.
+
+### Behaviour
+- `ha run --write` with codex requires `--shell` (exit `2` otherwise). Measured
+  2026-09-24: codex reads files only through its shell tool, which a writable workspace
+  without `shell` turns off — the run changed nothing. Its shell stays inside codex's OS
+  sandbox (writes confined to the worktree, network off).
+
+### Measured (2026-09-24, real CLIs, throwaway repository)
+- `ha providers`: the four CLI rails found, the three presets unavailable without their key.
+- `ha run -p codex` read-only: read the repository and answered.
+- `ha run --write`, codex `--shell` and claude: each fixed the bug, committed it on its own
+  `ha/<run_id>` branch, printed the diffstat and the patch path; `main` untouched.
+  `ha clean` removed each worktree and kept the branch.
 
 ## Unreleased — 0.4.0, lot 1 of 4: the facade
 
