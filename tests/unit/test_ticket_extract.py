@@ -11,7 +11,9 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from scripts.domain_backfill import ModelGoneError
 from scripts.ticket_extract import (
+    TRANSPORT_DEFERRAL_PREFIX,
     CorpusDedupUnavailable,
     CorpusDuplicate,
     DedupResult,
@@ -20,6 +22,7 @@ from scripts.ticket_extract import (
     ThreadOutcome,
     TicketThread,
     _extract_thread_with_budget,
+    _previous_attempt_was_a_transport_deferral,
     _run,
     _safe_error,
     apply_proposals,
@@ -28,6 +31,7 @@ from scripts.ticket_extract import (
     extract_thread,
     parse_and_validate,
     persist_proposals,
+    record_ticket_attempt,
     render_thread,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -525,6 +529,78 @@ class TestExtractThreadErrorCapture:
         assert outcome.failed
         assert outcome.error  # never empty
         assert "ConnectError" in outcome.error
+        assert outcome.transport_failure
+
+    @pytest.mark.asyncio
+    async def test_an_unparseable_answer_is_not_a_transport_failure(self) -> None:
+        """Q52: content errors stay rc=1 — only the transport path may defer."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"choices": [{"message": {"content": "not json"}}], "usage": {}}
+            )
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="https://mock.nvidia.local/v1",
+        ) as client:
+            outcome = await extract_thread(client, "test-model", _thread())
+
+        assert outcome.failed
+        assert "unparseable" in (outcome.error or "")
+        assert not outcome.transport_failure
+
+    @pytest.mark.asyncio
+    async def test_a_reprompt_lost_on_transport_after_a_content_error_is_not_transport(
+        self,
+    ) -> None:
+        """Q61: the first answer was unparseable, so the link erred on content even
+        though the corrective re-prompt then died on transport."""
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return httpx.Response(
+                    200, json={"choices": [{"message": {"content": "not json"}}], "usage": {}}
+                )
+            raise httpx.ConnectError("gone", request=request)
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="https://mock.nvidia.local/v1",
+        ) as client:
+            outcome = await extract_thread(client, "test-model", _thread())
+
+        assert calls == 2
+        assert outcome.failed
+        assert not outcome.transport_failure
+
+    @pytest.mark.asyncio
+    async def test_a_model_retired_during_the_reprompt_carries_the_content_error(
+        self,
+    ) -> None:
+        """Final review of #204: the content error must survive the model switch."""
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return httpx.Response(
+                    200, json={"choices": [{"message": {"content": "not json"}}], "usage": {}}
+                )
+            return httpx.Response(410, json={"error": "gone"})
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="https://mock.nvidia.local/v1",
+        ) as client:
+            with pytest.raises(ModelGoneError) as caught:
+                await extract_thread(client, "test-model", _thread())
+
+        assert caught.value.content_error_seen
 
 
 class TestBoundedExtraction:
@@ -3094,7 +3170,9 @@ class TestTheTicketLevelAgyRescue:
                 agy_executable="agy",
             )
 
-        assert exit_code == 1
+        # The NVIDIA link timed out: operator decision Q57=a (2026-09-24) keeps a
+        # deadline anywhere in the chain a timeout (rc=3); it was rc=1 before.
+        assert exit_code == 3
         recorded_error = attempt.await_args.kwargs.get("error") or attempt.await_args.args[-1]
         assert "also dead" in str(recorded_error)
 
@@ -3400,3 +3478,312 @@ class TestTheAgyCliAndEnvResolution:
 
         assert te.main() == 0
         assert captured["agy_model"] is None
+
+
+class TestAWholeChainTransportFailureIsDeferred:
+    """Operator decision Q52=c (2026-09-24).
+
+    The night of 23→24 September failed the unit on ONE ticket: nemotron
+    answered 503 three times, then agy returned an empty envelope. Nothing was
+    lost — the ticket stayed `pending` and is replayed the next night — yet
+    rc=1 turned brain-v42-dream.service red. An alarm that fires on every
+    provider hiccup stops being read.
+
+    So a ticket whose whole provider chain failed is a DEFERRAL (rc=4, unit
+    green, row kept in ticket_extraction_attempts) — unless the same ticket
+    already failed that way on its previous attempted night, in which case the
+    outage is persistent and it is a hard failure again (rc=1).
+    """
+
+    @staticmethod
+    async def _scenario(
+        *,
+        repeats: bool | Exception,
+        persisted: bool = True,
+        last_link_error: str | None = None,
+        first_link_error: str | None = None,
+    ) -> tuple[int, AsyncMock, AsyncMock]:
+        thread = _thread()
+
+        async def extract(client, model, thread, **kw):
+            if first_link_error is not None:
+                return ThreadOutcome(thread=thread, drafts=[], failed=True, error=first_link_error)
+            return ThreadOutcome(
+                thread=thread,
+                drafts=[],
+                failed=True,
+                error="HTTP 503 x3",
+                transport_failure=True,
+            )
+
+        async def extract_via_agy(agy_model, agy_executable, thread, **kw):
+            if last_link_error is not None:
+                return ThreadOutcome(thread=thread, drafts=[], failed=True, error=last_link_error)
+            return ThreadOutcome(
+                thread=thread,
+                drafts=[],
+                failed=True,
+                error="AgyLinkError: agy envelope carries no usable response",
+                transport_failure=True,
+            )
+
+        if isinstance(repeats, Exception):
+            previous = AsyncMock(side_effect=repeats)
+        else:
+            previous = AsyncMock(return_value=repeats)
+        args = SimpleNamespace(
+            apply_ids=None,
+            limit=20,
+            wet=False,
+            run_budget_seconds=600.0,
+            ticket_budget_seconds=180.0,
+        )
+        attempts = AsyncMock(return_value=persisted)
+        record = AsyncMock()
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[thread]),
+            ),
+            patch("scripts.ticket_extract._extract_thread_with_budget", extract),
+            patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", extract_via_agy),
+            patch("scripts.ticket_extract._previous_attempt_was_a_transport_deferral", previous),
+            patch("scripts.ticket_extract.record_ticket_attempt", attempts),
+            patch("scripts.ticket_extract.record_dream_run", record),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            exit_code = await _run(
+                args,
+                "secret",
+                "primaire-vivant",
+                "https://llm.test",
+                fallback_model=None,
+                agy_model="gemini-3.8-flash-high",
+                agy_executable="agy",
+            )
+        return exit_code, attempts, record
+
+    @pytest.mark.asyncio
+    async def test_a_first_whole_chain_failure_defers_the_ticket(self) -> None:
+        exit_code, attempts, record = await self._scenario(repeats=False)
+
+        assert exit_code == 4
+        assert [call.args[2] for call in attempts.await_args_list] == ["deferred"]
+        assert attempts.await_args.args[4].startswith(TRANSPORT_DEFERRAL_PREFIX)
+        assert "agy envelope" in attempts.await_args.args[4]
+        assert record.await_args.kwargs["status"] == "done"
+
+    @pytest.mark.asyncio
+    async def test_a_second_night_in_a_row_is_a_hard_failure(self) -> None:
+        exit_code, attempts, record = await self._scenario(repeats=True)
+
+        assert exit_code == 1
+        assert [call.args[2] for call in attempts.await_args_list] == ["failed"]
+        assert record.await_args.kwargs["status"] == "fail"
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_history_fails_closed(self) -> None:
+        """No proof the outage is new → keep the old, loud behaviour."""
+        exit_code, attempts, _ = await self._scenario(repeats=RuntimeError("db down"))
+
+        assert exit_code == 1
+        assert [call.args[2] for call in attempts.await_args_list] == ["failed"]
+
+    @pytest.mark.asyncio
+    async def test_an_unsaved_deferral_is_a_hard_failure(self) -> None:
+        """Without its row, the next night cannot see the first failure and
+        would never escalate: a deferral that did not persist is not a deferral.
+        """
+        exit_code, _, record = await self._scenario(repeats=False, persisted=False)
+
+        assert exit_code == 1
+        assert record.await_args.kwargs["status"] == "fail"
+
+
+class TestAContentFailureIsNeverDeferred:
+    @pytest.mark.asyncio
+    async def test_an_unparseable_last_link_fails_on_the_first_night(self) -> None:
+        exit_code, attempts, _ = await TestAWholeChainTransportFailureIsDeferred._scenario(
+            repeats=False,
+            last_link_error="unparseable after corrective re-prompt: bad key",
+        )
+
+        assert exit_code == 1
+        assert [call.args[2] for call in attempts.await_args_list] == ["failed"]
+
+    @pytest.mark.asyncio
+    async def test_a_content_error_before_a_transport_rescue_failure_is_not_deferred(
+        self,
+    ) -> None:
+        """The chain is not transport-only if ANY link tried erred on content."""
+        exit_code, attempts, _ = await TestAWholeChainTransportFailureIsDeferred._scenario(
+            repeats=False,
+            first_link_error="unparseable after corrective re-prompt: bad key",
+        )
+
+        assert exit_code == 1
+        assert [call.args[2] for call in attempts.await_args_list] == ["failed"]
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_before_a_transport_rescue_failure_stays_a_timeout(
+        self,
+    ) -> None:
+        """Operator Q57=a: a deadline anywhere in the chain keeps rc=3."""
+        exit_code, attempts, record = await TestAWholeChainTransportFailureIsDeferred._scenario(
+            repeats=False,
+            first_link_error="ticket timeout after 180s",
+        )
+
+        assert exit_code == 3
+        assert [call.args[2] for call in attempts.await_args_list] == ["timeout"]
+        assert record.await_args.kwargs["status"] == "timeout"
+
+    @pytest.mark.asyncio
+    async def test_a_content_error_survives_the_switch_to_the_fallback_model(self) -> None:
+        thread = _thread()
+        calls = 0
+
+        async def extract(client, model, thread, **kw):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                gone = ModelGoneError("primary", 410)
+                gone.content_error_seen = True
+                raise gone
+            return ThreadOutcome(
+                thread=thread,
+                drafts=[],
+                failed=True,
+                error="HTTP 503 x3",
+                transport_failure=True,
+            )
+
+        async def extract_via_agy(agy_model, agy_executable, thread, **kw):
+            return ThreadOutcome(
+                thread=thread,
+                drafts=[],
+                failed=True,
+                error="AgyLinkError: agy envelope carries no usable response",
+                transport_failure=True,
+            )
+
+        args = SimpleNamespace(
+            apply_ids=None,
+            limit=20,
+            wet=False,
+            run_budget_seconds=600.0,
+            ticket_budget_seconds=180.0,
+        )
+        attempts = AsyncMock(return_value=True)
+        with (
+            patch("brain_v42.config.Settings") as settings_cls,
+            patch("brain_v42.db.engine.get_session_factory", return_value=MagicMock()),
+            patch(
+                "scripts.ticket_extract.fetch_pending_threads",
+                new=AsyncMock(return_value=[thread]),
+            ),
+            patch("scripts.ticket_extract._extract_thread_with_budget", extract),
+            patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", extract_via_agy),
+            patch(
+                "scripts.ticket_extract._previous_attempt_was_a_transport_deferral",
+                AsyncMock(return_value=False),
+            ),
+            patch("scripts.ticket_extract.record_ticket_attempt", attempts),
+            patch("scripts.ticket_extract.record_dream_run", AsyncMock()),
+        ):
+            settings_cls.return_value.embedding_service_url = "http://embedding.test"
+            exit_code = await _run(
+                args,
+                "secret",
+                "primary",
+                "https://llm.test",
+                fallback_model="fallback",
+                agy_model="gemini-3.8-flash-high",
+                agy_executable="agy",
+            )
+
+        assert calls == 2
+        assert exit_code == 1
+        assert [call.args[2] for call in attempts.await_args_list] == ["failed"]
+
+
+class TestRecordTicketAttemptReportsTheWrite:
+    @pytest.mark.asyncio
+    async def test_a_written_row_is_true(self) -> None:
+        session = MagicMock()
+        session.execute = AsyncMock()
+
+        @asynccontextmanager
+        async def begin():
+            yield
+
+        session.begin = begin
+
+        @asynccontextmanager
+        async def factory():
+            yield session
+
+        assert await record_ticket_attempt(factory, _thread(), "done", 1.0, None) is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_write_is_false(self) -> None:
+        @asynccontextmanager
+        async def factory():
+            raise RuntimeError("db down")
+            yield
+
+        assert await record_ticket_attempt(factory, _thread(), "done", 1.0, None) is False
+
+
+class TestPreviousAttemptWasATransportDeferral:
+    """The escalation reads ONE row: the ticket's last attempt before today
+    that actually ran. A budget deferral never started the ticket, so it is
+    skipped; a legacy `failed` row carries no marker and does not count.
+    """
+
+    @staticmethod
+    def _factory(row: tuple[str, str | None] | None) -> Any:
+        result = MagicMock()
+        result.first.return_value = row
+        session = MagicMock()
+        session.execute = AsyncMock(return_value=result)
+
+        @asynccontextmanager
+        async def factory():
+            yield session
+
+        return factory, session
+
+    @pytest.mark.asyncio
+    async def test_a_marked_deferral_counts(self) -> None:
+        factory, _ = self._factory(("deferred", f"{TRANSPORT_DEFERRAL_PREFIX}: HTTP 503"))
+
+        assert await _previous_attempt_was_a_transport_deferral(factory, _thread()) is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "row",
+        [
+            None,
+            ("done", None),
+            ("failed", "AgyLinkError: agy envelope carries no usable response"),
+            ("timeout", "ticket timeout after 180s"),
+        ],
+    )
+    async def test_anything_else_does_not(self, row: tuple[str, str | None] | None) -> None:
+        factory, _ = self._factory(row)
+
+        assert await _previous_attempt_was_a_transport_deferral(factory, _thread()) is False
+
+    @pytest.mark.asyncio
+    async def test_the_query_skips_budget_deferrals_and_today(self) -> None:
+        factory, session = self._factory(None)
+
+        await _previous_attempt_was_a_transport_deferral(factory, _thread())
+
+        sql = str(session.execute.await_args.args[0].compile()).lower()
+        assert "run_date <" in sql
+        assert "not (" in sql and "like" in sql
+        assert "order by" in sql and "desc" in sql
