@@ -303,5 +303,5 @@ class TestTheDowngradeIsFailClosed:
             )
             assert result.scalar_one() == 0
 
-        restored = _run_alembic("upgrade", "056")
+        restored = _run_alembic("upgrade", "head")
         assert restored.returncode == 0, restored.stderr
