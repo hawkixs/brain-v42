@@ -638,7 +638,9 @@ class TestBrainSessionStartTool:
         )
         mock_ctx_svc.get_by_key.assert_called_once_with("p")
         mock_dream_svc.killswitch_state.assert_called_once()
-        mock_dream_svc.last_failure.assert_called_once()
+        # Scoped to the briefing's own project (ticket 69949ffc): an unscoped
+        # call let another pool project's failure render as this project's own.
+        mock_dream_svc.last_failure.assert_called_once_with(within_days=7, project_key="p")
         mock_feature_svc.roadmap_alive.assert_called_once()
         mock_feature_svc.stale_pinned.assert_called_once()
         assert "### Killswitches" in result.briefing
