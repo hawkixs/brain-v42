@@ -783,10 +783,11 @@ class Rank(IntEnum):
 
 @contextmanager
 def held(path: Path, *, rank: Rank, exclusive: bool, wait: float | None = LOCK_WAIT_SECONDS,
-         what: str) -> Iterator[None]
+         what: str, key: str = "") -> Iterator[None]
     # os.open(path, O_RDWR|O_CREAT|O_CLOEXEC, 0o600); flock with LOCK_NB polled every 50 ms
     # until `wait` (None = no wait: one try); raises LockTimeout(what); released in finally.
-    # Enforces the order per thread: taking a rank lower than one already held raises
+    # Enforces the order per thread on (rank, key): taking a lower rank, or within
+    # Rank.LINEAGE a key (owner id) not greater than the last one held, raises
     # RuntimeError("lock order violated: ...") -- a programming error, never a user error.
 
 def is_free(path: Path) -> bool      # a non-blocking SHARED acquisition succeeds (stale tests)
@@ -1298,26 +1299,32 @@ def check(state: Path, common_dir: Path | None) -> str | None
 - Produces: `run_write_step(plan, *, run_id, run_dir, state, say) -> WriteOutcome` with
   `WriteOutcome(exit_code, status, failure_reason, commits: tuple[tuple[str, MadeBy], ...],
   branch, base, head, final: RunResult | None)`, implementing, in this order:
-  1. admission without git, in exactly this order (spec §3.8.2 lock order; P2 identity):
+  1. admission without git — **every lock first, in the §3.8.2 order, then every state
+     check under them** (spec §3.8.3 step 1; codex review of this plan, round 3):
      a. `identity = repo.discover(start)` — filesystem only; `identity.common_dir` keys the
-        repository;
+        repository (P2);
      b. lifecycle lock (held by `execute` since registration);
      c. unconfined lock — shared, or exclusive for an unconfined write (Task 20);
-     d. `quarantine.check(state, identity.common_dir)` — operator, then repository;
-     e. stale `unconfined-intent.json` check (Task 20);
-     f. lineage **registry** lock, exclusive: create this run's lineage state (`create_once`)
-        and take its lineage lock exclusive; enumerate
-        `lineage.of_repository(state, identity.common_dir)` for the stale-write check;
-        release the registry lock;
-     g. for every **other** lineage of the repository, read its state (`Unknown` → refuse)
-        and test staleness with `locks.is_free(lineage_lock)` — never holding those locks: a
-        write only takes another lineage's lock when `--repo` lies inside that lineage's
-        worktree (then shared, ascending, still before any git; §3.8.2); a stale pending
-        write → compromise that lineage `unfinalized_write`, publish the repository
-        quarantine (and the operator's when that write was unconfined), refuse
-        (`UsageError`, exit 2);
+     d. lineage **registry** lock, exclusive, **held until the intent of step 2 is
+        published**: no lineage can appear while this admission decides, and a review that
+        enumerates lineages after it sees this write's pending intent;
+     e. under it, compute the owners this write must lock: its own new lineage (owner = its
+        run id; its state created with `create_once`) and every **source** lineage whose
+        recorded worktree contains `--repo` (§3.8.2); acquire all of their lineage locks
+        **in ascending owner order** — own exclusive, sources shared — whatever order they
+        were discovered in (`locks.held` enforces ascending keys within `Rank.LINEAGE`);
+     f. only now, reading state under all those locks: `quarantine.check(state,
+        identity.common_dir)` (operator, then repository); a stale `unconfined-intent.json`
+        (Task 20); every lineage of the repository, enumerated with
+        `lineage.of_repository` under the held registry lock, read (`Unknown` → refuse) and
+        tested for a stale pending write with `locks.is_free(lineage_lock)` (a lock this
+        write does not hold); every source lineage known, not compromised, with no pending
+        write. A stale pending write → compromise that lineage `unfinalized_write`, publish
+        the repository quarantine (and the operator's when that write was unconfined),
+        refuse (`UsageError`, exit 2), releasing everything in reverse order;
      No git command has run when step 1 ends; the first one is in step 3.
   2. intent: `pending = PendingWrite(run_id, providers, unconfined, None, None)` saved;
+     then the lineage registry lock is released (step 1d);
   3. preparation with `gitops.git` (hooks off): resolve base, `worktree add -b ha/<run_id>`,
      tip must equal base else `preparation_moved_head` (compromise, exit 1);
   4. start point saved (`start_tip`);
@@ -1359,11 +1366,21 @@ def check(state: Path, common_dir: Path | None) -> str | None
   - the worktree's creation is not attributed to the agent (`start_tip` taken after
     preparation);
   - **admission order**, in a repository holding two other lineages (one sound, one with a
-    stale pending write): a `git` wrapper on `PATH` and an instrumented `locks.held` append
-    to one shared event log; assert the log reads lifecycle, unconfined, (quarantine check),
-    lineage registry, own lineage, then the refusal — with **no** `git` event before it; and
-    in a repository with one sound other lineage, that the first `git` event comes after
-    the own-lineage lock and the intent publication;
+    stale pending write): a `git` wrapper on `PATH`, an instrumented `locks.held` and an
+    instrumented `quarantine.check` append to one shared event log; assert the log reads
+    lifecycle, unconfined, lineage registry, own lineage, **then** the quarantine check,
+    then the refusal — with **no** `git` event anywhere; and in a repository with one sound
+    other lineage, that the first `git` event comes after the intent publication and after
+    the registry lock's release;
+  - **a lineage created during admission**: a second process tries to create a lineage in
+    the same repository while the first write holds the registry lock between steps 1d and
+    2; it waits, and the first write's staleness decision covered a fixed set (the second
+    lineage is absent from the first's enumeration and present after);
+  - **ascending order with a source lineage**: `--repo` inside the worktree of a lineage
+    whose owner id sorts **after** this run's id, and one that sorts **before**: in both
+    cases the lineage locks are acquired in ascending owner order (event log), and a
+    deliberate descending acquisition in a unit test of `locks.held` raises the
+    order-violation `RuntimeError`;
   - a lock-death test: kill the `ha` process (child `multiprocessing` running
     `execute`) during the step → the lineage lock is free at once.
 - [ ] **Step 2–4.** **Step 5: Commit** — `feat(headless-agents): the write protocol of spec 3.8.3 for confined roles`
