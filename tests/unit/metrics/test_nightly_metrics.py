@@ -1,9 +1,17 @@
 """Unit tests for nightly-ops metrics collection (the sidecar's `nightly` section).
 
 Consumed by red-monitor (ticket de1ad785): the dashboard's nightly-ops panel must
-replicate the morning check — killswitches, roadmap proposals awaiting review
-(including the merges the judge has held back since 39fc6a9), pending extract,
-last dream failure.
+replicate the morning check — killswitches, pending extract (scoped to this
+sidecar's own project, ticket 69949ffc), last dream failure (pool-wide, but
+with a `project_key` attribution so a reader never mistakes another pool
+project's failure for this one's).
+
+The unscoped `roadmap` block (`proposed_pending`/`applied_24h`/`applied_total`/
+`rejected_total`) is REMOVED here (ticket 69949ffc thread, 2026-09-23): red-monitor
+no longer reads it, and `roadmap_curation_proposals` has no project column to
+scope it by anyway. This does not touch the Dream `roadmap` phase, its curation
+tables, or the graph `roadmap` group (decision 11dbb4a1 governs those
+separately).
 """
 
 from __future__ import annotations
@@ -104,17 +112,11 @@ def _first_result(row) -> MagicMock:
 
 
 def _db_side_effects(
-    status_rows: list | None = None,
-    applied_24h: int = 24,
     extract_pending: int = 9,
     failure_row=None,
 ) -> list:
-    """Execution order: roadmap statuses → applied 24h → extract → last failure."""
+    """Execution order: extract pending → last failure."""
     return [
-        _all_result(
-            status_rows if status_rows is not None else [("proposed", 26), ("applied", 80)]
-        ),
-        _scalar_result(applied_24h),
         _scalar_result(extract_pending),
         _first_result(failure_row),
     ]
@@ -125,10 +127,15 @@ class TestCollectNightlyOps:
     async def test_full_payload(self, tmp_path) -> None:
         ks_file = tmp_path / "killswitches.conf"
         ks_file.write_text(_DROPIN)
+        # Attributed to ANOTHER pool project on purpose: the payload is
+        # pool-wide, and the point of the `project_key` field is precisely to
+        # let a reader tell this apart from a brain-v42 failure (ticket
+        # 69949ffc).
         failure = (
+            "watchk-claude",
             date(2026, 7, 5),
-            "roadmap",
-            "unparseable after corrective re-prompt: …",
+            "reorg",
+            "Authentication required (accounts.google.com oauth)",
             datetime(2026, 7, 4, 22, 13, 30, tzinfo=UTC),
         )
         collector = _make_collector(_db_side_effects(failure_row=failure))
@@ -137,17 +144,13 @@ class TestCollectNightlyOps:
 
         assert result["killswitches"]["roadmap"] is True
         assert result["killswitches"]["roadmap_dry"] is False
-        assert result["roadmap"] == {
-            "proposed_pending": 26,
-            "applied_total": 80,
-            "applied_24h": 24,
-            "rejected_total": 0,
-        }
+        assert "roadmap" not in result
         assert result["extract"] == {"proposed_pending": 9}
         assert result["last_failure"] == {
+            "project_key": "watchk-claude",
             "run_date": "2026-07-05",
-            "phase": "roadmap",
-            "error": "unparseable after corrective re-prompt: …",
+            "phase": "reorg",
+            "error": "Authentication required (accounts.google.com oauth)",
             "created_at": "2026-07-04T22:13:30+00:00",
         }
 
@@ -162,6 +165,44 @@ class TestCollectNightlyOps:
         assert result["last_failure"] is None
 
     @pytest.mark.asyncio
+    async def test_last_failure_query_excludes_done_and_blank_project(self, tmp_path) -> None:
+        """Pins the pool-wide rule (ticket 69949ffc, decision 1669d429 item 4):
+        fail/timeout only, 7-day window, NULL/blank project_key excluded — the
+        second writer's contamination (ticket 7336a2d5) must never surface."""
+        ks_file = tmp_path / "killswitches.conf"
+        ks_file.write_text(_DROPIN)
+        collector = _make_collector(_db_side_effects(failure_row=None))
+
+        await collector.collect_nightly_ops(killswitches_path=ks_file)
+
+        failure_call = collector._session_factory.return_value.execute.call_args_list[1]
+        query = str(failure_call.args[0])
+        assert "'fail'" in query
+        assert "'timeout'" in query
+        assert "'done'" not in query
+        assert "project_key IS NOT NULL" in query
+        assert "project_key <> ''" in query
+
+    @pytest.mark.asyncio
+    async def test_extract_pending_scoped_to_the_sidecars_own_project(self, tmp_path) -> None:
+        """`ticket_extraction_proposals` carries `target_project` (unlike
+        `roadmap_curation_proposals`, which has no project column at all — the
+        reason its counters are removed rather than scoped): this panel is
+        brain-v42's own page, so the count is scoped to it (ticket 69949ffc)."""
+        ks_file = tmp_path / "killswitches.conf"
+        ks_file.write_text(_DROPIN)
+        collector = _make_collector(_db_side_effects(extract_pending=3, failure_row=None))
+
+        result = await collector.collect_nightly_ops(killswitches_path=ks_file)
+
+        assert result["extract"] == {"proposed_pending": 3}
+        extract_call = collector._session_factory.return_value.execute.call_args_list[0]
+        query = str(extract_call.args[0])
+        params = extract_call.args[1]
+        assert "target_project" in query
+        assert params == {"project_key": "brain-v42"}
+
+    @pytest.mark.asyncio
     async def test_missing_killswitch_file_degrades_to_none(self, tmp_path) -> None:
         """File absent/unreadable → killswitches=None, the rest carries on."""
         collector = _make_collector(_db_side_effects())
@@ -169,7 +210,7 @@ class TestCollectNightlyOps:
         result = await collector.collect_nightly_ops(killswitches_path=tmp_path / "absent.conf")
 
         assert result["killswitches"] is None
-        assert result["roadmap"]["proposed_pending"] == 26
+        assert result["extract"] == {"proposed_pending": 9}
 
     @pytest.mark.asyncio
     async def test_db_error_degrades_to_killswitches_only(self, tmp_path) -> None:
