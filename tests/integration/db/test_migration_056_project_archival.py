@@ -74,13 +74,24 @@ def _run_alembic(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_056_is_the_head_and_follows_055() -> None:
-    """Bumping the head without noticing this file is what the fence prevents."""
-    script = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
-    head = script.get_current_head()
+def test_056_follows_055_and_is_an_ancestor_of_the_head() -> None:
+    """056 is no longer necessarily the repository head — 057 legitimately
+    followed it (ticket 4fac067a) — but this file's fixtures and downgrade
+    fence still need 056 to sit, unbroken, between 055 and whatever the head
+    now is. Assert exactly that, not the literal head this file's premise
+    used to be able to assume.
 
-    assert head == "056"
+    Bumping the head without noticing this file is what the fence prevents:
+    this test now proves the chain, so a future revision bump (058, ...)
+    keeps passing without another edit here.
+    """
+    script = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
+
     assert script.get_revision("056").down_revision == "055"
+
+    head = script.get_current_head()
+    ancestors = {revision.revision for revision in script.walk_revisions(base="base", head=head)}
+    assert "056" in ancestors, f"056 must be an ancestor of the head ({head})"
 
 
 @pytest_asyncio.fixture
