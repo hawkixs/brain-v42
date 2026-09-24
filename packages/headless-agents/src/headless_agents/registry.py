@@ -18,6 +18,7 @@ import shutil
 import signal
 import subprocess
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from functools import partial
 from typing import Final
@@ -114,21 +115,30 @@ def _kill_process_group(process: subprocess.Popen[str]) -> None:
     and that grandchild keeps running -- and the pipe open -- past the direct
     child's death. ``start_new_session=True`` makes the direct child the leader
     of its own process group, so ``killpg`` reaches it and everything it forked
-    in one signal. The drain afterwards is bounded: a descendant that escaped the
-    group (a second ``setsid``) must not revive the hang we just killed.
+    in one signal.
+
+    The group id is ``process.pid`` itself, never ``getpgid(process.pid)``: a
+    group outlives its leader while any member lives, but ``getpgid`` fails
+    once the leader is reaped -- and CPython's ``communicate()`` reaps an
+    exited launcher when a ``KeyboardInterrupt`` lands, which would spare the
+    surviving descendants (independent review of PR #197, reproduced with a
+    real SIGINT). Then the direct child is reaped on its own, bounded, and the
+    pipes are closed rather than drained: a descendant that escaped the group
+    (a second ``setsid``) must not revive the hang we just killed -- that one
+    is out of this guarantee's reach.
     """
+    with suppress(ProcessLookupError, PermissionError):
+        os.killpg(process.pid, signal.SIGKILL)
     try:
-        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    try:
-        process.communicate(timeout=1.0)
+        process.wait(timeout=1.0)
     except subprocess.TimeoutExpired:
         process.kill()
-        try:
-            process.communicate(timeout=1.0)
-        except subprocess.TimeoutExpired:
-            pass
+        with suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=1.0)
+    for pipe in (process.stdout, process.stderr):
+        if pipe is not None:
+            with suppress(OSError):
+                pipe.close()
 
 
 def probe(
@@ -182,8 +192,10 @@ def probe(
         )
     except BaseException:
         # Its own session keeps the probed CLI out of the terminal's foreground
-        # group: a Ctrl-C reaches only us, so the group is ours to kill.
-        _kill_process_group(process)
+        # group: a Ctrl-C reaches only us, so the group is ours to kill. A
+        # cleanup that fails must never mask the interrupt the caller caused.
+        with suppress(Exception):
+            _kill_process_group(process)
         raise
     if process.returncode != 0:
         return Probe(available=False, detail=f"{path} --version exited {process.returncode}")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import stat
 import subprocess
 import threading
@@ -23,14 +24,30 @@ def _script(directory: Path, body: str, name: str = "fake-cli") -> Path:
     return path
 
 
-def _is_alive(pid: int) -> bool:
+def _is_running(pid: int) -> bool:
+    """Is ``pid`` still RUNNING -- a zombie is terminated, only not reaped yet.
+
+    ``kill(pid, 0)`` succeeds on a zombie, so a descendant the probe killed
+    would look alive until whoever adopted it reaps it: read the state from
+    ``/proc`` instead (``Z``/``X`` = terminated).
+    """
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        stat_line = Path(f"/proc/{pid}/stat").read_text()
+    except (FileNotFoundError, ProcessLookupError):
         return False
-    except PermissionError:
-        return True
-    return True
+    return stat_line.rpartition(")")[2].split()[0] not in {"Z", "X"}
+
+
+def _wait_for(path: Path, seconds: float = 10.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return path.exists()
+
+
+def _reap_by_force(pid: int) -> None:
+    if _is_running(pid):
+        os.kill(pid, signal.SIGKILL)
 
 
 class TestGetProvider:
@@ -180,38 +197,76 @@ class TestProbe:
         # unkilled, keeps running forever. The probe must return promptly AND the
         # grandchild must not outlive it.
         pidfile = tmp_path / "grandchild.pid"
-        cli = _script(
-            tmp_path,
-            f'sleep 30 &\necho $! > "{pidfile}"\nsleep 30',
-        )
-        outcome: dict[str, registry.Probe] = {}
-
-        def _run() -> None:
-            # 1 s, not less: the pidfile is written only once the shell has
-            # started and forked, and a group kill landing earlier on a loaded
-            # host would fail this test with a misleading FileNotFoundError.
-            outcome["probe"] = registry.probe("agy", executable=str(cli), timeout_seconds=1.0)
-
-        thread = threading.Thread(target=_run, daemon=True)
-        thread.start()
-        thread.join(timeout=5.0)
-        assert not thread.is_alive(), "probe() did not return within the guard: it hung"
-
-        found = outcome["probe"]
-        assert found.available is False
-        assert "no answer" in found.detail
-
-        grandchild_pid = int(pidfile.read_text().strip())
+        cli = _script(tmp_path, f'sleep 30 &\necho $! > "{pidfile}"\nsleep 30')
+        grandchild_pid: int | None = None
         try:
-            deadline = time.monotonic() + 1.0
-            while _is_alive(grandchild_pid) and time.monotonic() < deadline:
+            # Readiness is established, not assumed: on a loaded host the group
+            # kill can land before the shell forked -- then no grandchild ever
+            # existed and the scenario is replayed with a longer deadline.
+            for timeout_seconds in (1.0, 3.0, 6.0):
+                outcome: dict[str, registry.Probe] = {}
+
+                def _run(deadline: float, sink: dict[str, registry.Probe]) -> None:
+                    sink["probe"] = registry.probe(
+                        "agy", executable=str(cli), timeout_seconds=deadline
+                    )
+
+                thread = threading.Thread(target=_run, args=(timeout_seconds, outcome), daemon=True)
+                thread.start()
+                thread.join(timeout=timeout_seconds + 5.0)
+                assert not thread.is_alive(), "probe() did not return within the guard: it hung"
+                found = outcome["probe"]
+                assert found.available is False
+                assert "no answer" in found.detail
+                if pidfile.exists():
+                    grandchild_pid = int(pidfile.read_text().strip())
+                    break
+            assert grandchild_pid is not None, "the fake CLI never forked its grandchild"
+            deadline = time.monotonic() + 2.0
+            while _is_running(grandchild_pid) and time.monotonic() < deadline:
                 time.sleep(0.05)
-            assert not _is_alive(grandchild_pid), (
+            assert not _is_running(grandchild_pid), (
                 "the grandchild outlived the probe: its process group was not killed"
             )
         finally:
-            if _is_alive(grandchild_pid):
-                os.kill(grandchild_pid, 9)
+            if grandchild_pid is not None:
+                _reap_by_force(grandchild_pid)
+
+    def test_a_real_sigint_after_the_launcher_exited_leaves_no_descendant(
+        self, tmp_path: Path
+    ) -> None:
+        # The launcher forks a descendant that keeps its pipes, then EXITS. A
+        # real SIGINT lands while the probe waits for EOF: CPython's own
+        # ``communicate()`` handles KeyboardInterrupt by waiting on -- and so
+        # reaping -- the exited launcher, after which ``getpgid(pid)`` fails and
+        # a cleanup keyed on it would spare the whole surviving group
+        # (independent review of PR #197, reproduced there with a real fork).
+        pidfile = tmp_path / "descendant.pid"
+        cli = _script(tmp_path, f'sleep 30 &\necho $! > "{pidfile}"\nexit 0')
+
+        def _interrupt_once_ready() -> None:
+            if _wait_for(pidfile):
+                time.sleep(0.2)  # the launcher has exited; the probe waits on EOF
+            os.kill(os.getpid(), signal.SIGINT)
+
+        interrupter = threading.Thread(target=_interrupt_once_ready, daemon=True)
+        descendant_pid: int | None = None
+        try:
+            interrupter.start()
+            with pytest.raises(KeyboardInterrupt):
+                registry.probe("agy", executable=str(cli), timeout_seconds=20.0)
+            interrupter.join(timeout=5.0)
+            assert pidfile.exists(), "the fake CLI never forked its descendant"
+            descendant_pid = int(pidfile.read_text().strip())
+            deadline = time.monotonic() + 2.0
+            while _is_running(descendant_pid) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert not _is_running(descendant_pid), (
+                "a descendant outlived an interrupted probe: its group was not killed"
+            )
+        finally:
+            if descendant_pid is not None:
+                _reap_by_force(descendant_pid)
 
     def test_an_interrupted_probe_leaves_no_process_behind(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -231,18 +286,39 @@ class TestProbe:
             ) -> tuple[str, str]:
                 if not _InterruptedOnce.interrupted:
                     _InterruptedOnce.interrupted = True
-                    deadline = time.monotonic() + 5.0
-                    while not pidfile.exists() and time.monotonic() < deadline:
-                        time.sleep(0.02)
+                    _wait_for(pidfile, 5.0)
                     raise KeyboardInterrupt
                 return super().communicate(input, timeout)
 
         monkeypatch.setattr(registry.subprocess, "Popen", _InterruptedOnce)
+        child_pid: int | None = None
+        try:
+            with pytest.raises(KeyboardInterrupt):
+                registry.probe("agy", executable=str(cli), timeout_seconds=10.0)
+            child_pid = int(pidfile.read_text().strip())
+            assert not _is_running(child_pid), "the probed CLI outlived an interrupted probe"
+        finally:
+            if child_pid is not None:
+                _reap_by_force(child_pid)
+
+    def test_a_failing_cleanup_never_masks_the_interrupt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The caller must see the KeyboardInterrupt it caused, not an error
+        # raised while cleaning up after it.
+        cli = _script(tmp_path, "exec sleep 30")
+
+        class _Interrupted(subprocess.Popen[str]):
+            def communicate(
+                self, input: str | None = None, timeout: float | None = None
+            ) -> tuple[str, str]:
+                raise KeyboardInterrupt
+
+        def _broken_killpg(pgid: int, sig: int) -> None:
+            os.kill(pgid, signal.SIGKILL)
+            raise OSError("cleanup exploded")
+
+        monkeypatch.setattr(registry.subprocess, "Popen", _Interrupted)
+        monkeypatch.setattr(registry.os, "killpg", _broken_killpg)
         with pytest.raises(KeyboardInterrupt):
             registry.probe("agy", executable=str(cli), timeout_seconds=10.0)
-        child_pid = int(pidfile.read_text().strip())
-        try:
-            assert not _is_alive(child_pid), "the probed CLI outlived an interrupted probe"
-        finally:
-            if _is_alive(child_pid):
-                os.kill(child_pid, 9)
