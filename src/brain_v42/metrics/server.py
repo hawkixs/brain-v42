@@ -29,6 +29,7 @@ from brain_v42.metrics.codex_telemetry import (
     CodexTelemetryMalformedError,
 )
 from brain_v42.metrics.collector import MetricsCollector
+from brain_v42.metrics.slow_block_cache import SlowBlockCache
 
 logger = structlog.get_logger(__name__)
 
@@ -237,6 +238,9 @@ class MetricsServer:
         codex_registry: ClientActivityRegistry | None = None,
         nonloopback_posture: str = "silent",
         allow_non_loopback: bool = False,
+        slow_block_cache_ttl_seconds: float = 30.0,
+        slow_block_cache_error_ttl_seconds: float = 5.0,
+        slow_block_cache: SlowBlockCache | None = None,
     ) -> None:
         self._collector = collector
         self._embedding_svc = embedding_svc
@@ -255,6 +259,15 @@ class MetricsServer:
         self._rejection_counters = ReceiverRejectionCounters()
         self._nonloopback_posture = nonloopback_posture
         self._allow_non_loopback = allow_non_loopback
+        # Decision 1669d429 item 2: dream/nightly/graph-inventory are memoized behind
+        # a TTL + single-flight cache (`database` and the embedding healthcheck stay
+        # live, uncached, below). `slow_block_cache` is an injection point for tests
+        # that need a controllable clock; production wiring passes the TTLs instead
+        # (`runtime.py`), which come from `Settings`.
+        self._slow_block_cache = slow_block_cache or SlowBlockCache(
+            ttl_seconds=slow_block_cache_ttl_seconds,
+            error_ttl_seconds=slow_block_cache_error_ttl_seconds,
+        )
 
     def _build_app(self) -> web.Application:
         app = web.Application()
@@ -422,6 +435,28 @@ class MetricsServer:
         payload = await self._cockpit.snapshot()
         return web.json_response(payload)
 
+    async def _compute_dream_block(self) -> dict[str, Any]:
+        """Assemble the `dream` block from its three collector calls.
+
+        Passed whole to `SlowBlockCache.get`: the cache memoizes the COMBINED
+        result (and its single `generated_at`), not each call separately —
+        otherwise a partial refresh could mix a fresh `last_run` with a stale
+        `promotions` sub-block.
+        """
+        dream_metrics = await self._collector.collect_dream_metrics()
+        if not dream_metrics:
+            return {}
+        promo_counts = await self._collector.collect_dream_promotions()
+        if promo_counts:
+            dream_metrics["promotions"] = {
+                "total": sum(promo_counts.values()),
+                "by_type": promo_counts,
+            }
+        promoted_health = await self._collector.collect_dream_promoted_health()
+        if promoted_health:
+            dream_metrics["promoted_health"] = promoted_health
+        return dream_metrics
+
     async def _handle_metrics(self, request: web.Request) -> web.Response:
         """Handle GET /metrics — assemble full metrics JSON.
 
@@ -531,14 +566,19 @@ class MetricsServer:
         except Exception:
             metrics["embedding_service"]["status"] = "down"
 
-        # Graph service health (optional — only if graph_svc provided)
+        # Graph service health (optional — only if graph_svc provided). The
+        # healthcheck stays LIVE on every poll; only the inventory (Neo4j counts +
+        # a PG orphan scan) goes through the slow-block cache (1669d429 item 2).
         if self._graph_svc is not None:
             try:
                 graph_healthy = await self._graph_svc.healthcheck()
             except Exception:
                 graph_healthy = False
             graph_stats = metrics.get("graph", {})
-            inventory = await self._collector.collect_graph_inventory(self._graph_svc)
+            inventory = await self._slow_block_cache.get(
+                "graph_inventory", lambda: self._collector.collect_graph_inventory(self._graph_svc)
+            )
+            inventory = inventory or {}
             metrics["graph"] = {
                 "status": "up" if graph_healthy else "down",
                 "total_queries": graph_stats.get("total_queries", 0),
@@ -548,26 +588,20 @@ class MetricsServer:
                 "nodes_total": inventory.get("nodes_total", {}),
                 "edges_total": inventory.get("edges_total", {}),
                 "orphans_total": inventory.get("orphans_total", {}),
+                "generated_at": inventory.get("generated_at"),
             }
 
         # Dream run metrics — merge run-level data + cumulative promotions counts
-        # + per-target post-promotion health (ADR #4 v2 telemetry).
-        dream_metrics = await self._collector.collect_dream_metrics()
+        # + per-target post-promotion health (ADR #4 v2 telemetry). Assembled
+        # inside one `compute` so the cache memoizes the three collector calls
+        # (and their generated_at) as a single block (1669d429 item 2).
+        dream_metrics = await self._slow_block_cache.get("dream", self._compute_dream_block)
         if dream_metrics:
-            promo_counts = await self._collector.collect_dream_promotions()
-            if promo_counts:
-                dream_metrics["promotions"] = {
-                    "total": sum(promo_counts.values()),
-                    "by_type": promo_counts,
-                }
-            promoted_health = await self._collector.collect_dream_promoted_health()
-            if promoted_health:
-                dream_metrics["promoted_health"] = promoted_health
             metrics["dream"] = dream_metrics
 
         # Nightly-ops (killswitches, roadmap/extract review, last failure) —
         # consumed by red-monitor's nightly-ops panel (ticket de1ad785).
-        nightly = await self._collector.collect_nightly_ops()
+        nightly = await self._slow_block_cache.get("nightly", self._collector.collect_nightly_ops)
         if nightly:
             metrics["nightly"] = nightly
 

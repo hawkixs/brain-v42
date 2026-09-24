@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -265,6 +267,169 @@ def test_otlp_receiver_preserves_existing_routes_and_global_body_limit(
     assert ("POST", "/gitlab/webhook") in routes
     assert ("POST", "/v1/logs") in routes
     assert app._client_max_size == 1024**2
+
+
+class TestSlowBlockCacheWiring:
+    """dream/nightly/graph_inventory go through SlowBlockCache (decision 1669d429 item 2).
+
+    `database` and the embedding healthcheck are deliberately excluded — they
+    must stay live (recomputed) on every poll.
+    """
+
+    def _clock_from(self, box: list[float]) -> Any:
+        def _clock() -> float:
+            return box[0]
+
+        return _clock
+
+    def _server(
+        self,
+        collector: MetricsCollector,
+        embedding_svc: MagicMock,
+        *,
+        time_box: list[float],
+        graph_svc: Any = None,
+    ) -> MetricsServer:
+        from brain_v42.metrics.slow_block_cache import SlowBlockCache
+
+        cache = SlowBlockCache(
+            ttl_seconds=30.0,
+            error_ttl_seconds=5.0,
+            clock=self._clock_from(time_box),
+            wall_clock=lambda: datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        return MetricsServer(
+            collector,
+            embedding_svc,
+            port=0,
+            host="127.0.0.1",
+            graph_svc=graph_svc,
+            slow_block_cache=cache,
+        )
+
+    async def test_dream_and_nightly_blocks_carry_generated_at(
+        self, collector: MetricsCollector, mock_embedding_svc: MagicMock
+    ) -> None:
+        collector.collect_dream_metrics = AsyncMock(  # type: ignore[method-assign]
+            return_value={"last_run": {"date": "2026-04-20", "status": "success"}, "history": []}
+        )
+        collector.collect_nightly_ops = AsyncMock(  # type: ignore[method-assign]
+            return_value={"killswitches": {}, "extract": {"proposed_pending": 0}}
+        )
+        server = self._server(collector, mock_embedding_svc, time_box=[0.0])
+
+        response = await server._handle_metrics(MagicMock())
+        data = json.loads(response.body)
+
+        assert data["dream"]["generated_at"] == "2026-01-01T00:00:00+00:00"
+        assert data["nightly"]["generated_at"] == "2026-01-01T00:00:00+00:00"
+
+    async def test_graph_block_carries_generated_at(
+        self, collector: MetricsCollector, mock_embedding_svc: MagicMock
+    ) -> None:
+        collector.collect_graph_inventory = AsyncMock(  # type: ignore[method-assign]
+            return_value={"nodes_total": {"Decision": 3}, "edges_total": {}, "orphans_total": {}}
+        )
+        graph_svc = AsyncMock()
+        graph_svc.healthcheck = AsyncMock(return_value=True)
+        server = self._server(collector, mock_embedding_svc, time_box=[0.0], graph_svc=graph_svc)
+
+        response = await server._handle_metrics(MagicMock())
+        data = json.loads(response.body)
+
+        assert data["graph"]["generated_at"] == "2026-01-01T00:00:00+00:00"
+        assert data["graph"]["nodes_total"] == {"Decision": 3}
+
+    async def test_repeated_polls_within_ttl_compute_the_slow_collectors_once(
+        self, collector: MetricsCollector, mock_embedding_svc: MagicMock
+    ) -> None:
+        collector.collect_dream_metrics = AsyncMock(  # type: ignore[method-assign]
+            return_value={"last_run": {"date": "2026-04-20", "status": "success"}, "history": []}
+        )
+        collector.collect_nightly_ops = AsyncMock(return_value={"killswitches": {}})  # type: ignore[method-assign]
+        graph_svc = AsyncMock()
+        graph_svc.healthcheck = AsyncMock(return_value=True)
+        collector.collect_graph_inventory = AsyncMock(  # type: ignore[method-assign]
+            return_value={"nodes_total": {}, "edges_total": {}, "orphans_total": {}}
+        )
+        time_box = [0.0]
+        server = self._server(collector, mock_embedding_svc, time_box=time_box, graph_svc=graph_svc)
+
+        await server._handle_metrics(MagicMock())
+        time_box[0] = 1.0  # well within the 30s TTL
+        await server._handle_metrics(MagicMock())
+
+        collector.collect_dream_metrics.assert_called_once()
+        collector.collect_nightly_ops.assert_called_once()
+        collector.collect_graph_inventory.assert_called_once()
+
+    async def test_ttl_expiry_recomputes_the_slow_collectors(
+        self, collector: MetricsCollector, mock_embedding_svc: MagicMock
+    ) -> None:
+        collector.collect_nightly_ops = AsyncMock(return_value={"killswitches": {}})  # type: ignore[method-assign]
+        time_box = [0.0]
+        server = self._server(collector, mock_embedding_svc, time_box=time_box)
+
+        await server._handle_metrics(MagicMock())
+        time_box[0] = 30.1  # past the 30s TTL
+        await server._handle_metrics(MagicMock())
+
+        assert collector.collect_nightly_ops.call_count == 2
+
+    async def test_live_blocks_are_recomputed_on_every_poll_regardless_of_ttl(
+        self, collector: MetricsCollector, mock_embedding_svc: MagicMock
+    ) -> None:
+        """database and the embedding healthcheck are NOT behind the cache."""
+        time_box = [0.0]
+        server = self._server(collector, mock_embedding_svc, time_box=time_box)
+
+        await server._handle_metrics(MagicMock())
+        await server._handle_metrics(MagicMock())  # still t=0, well within any TTL
+
+        assert collector.collect_db_stats.call_count == 2
+        assert mock_embedding_svc.healthcheck.call_count == 2
+
+    async def test_a_dream_block_computation_failure_degrades_without_crashing(
+        self, collector: MetricsCollector, mock_embedding_svc: MagicMock
+    ) -> None:
+        """A raised exception assembling the dream block must not crash /metrics.
+
+        Degrades like every other collector failure: the section is simply
+        absent, never a 500.
+        """
+        collector.collect_dream_metrics = AsyncMock(  # type: ignore[method-assign]
+            return_value={"last_run": {"date": "2026-04-20", "status": "success"}, "history": []}
+        )
+        collector.collect_dream_promotions = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+        server = self._server(collector, mock_embedding_svc, time_box=[0.0])
+
+        response = await server._handle_metrics(MagicMock())
+        data = json.loads(response.body)
+
+        assert response.status == 200
+        assert "dream" not in data
+
+    async def test_a_failed_slow_block_is_retried_after_the_short_error_ttl(
+        self, collector: MetricsCollector, mock_embedding_svc: MagicMock
+    ) -> None:
+        collector.collect_nightly_ops = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[RuntimeError("boom"), {"killswitches": {}}]
+        )
+        time_box = [0.0]
+        server = self._server(collector, mock_embedding_svc, time_box=time_box)
+
+        first = json.loads((await server._handle_metrics(MagicMock())).body)
+        assert "nightly" not in first
+
+        time_box[0] = 1.0  # still inside the 5s error TTL: no retry yet
+        second = json.loads((await server._handle_metrics(MagicMock())).body)
+        assert "nightly" not in second
+        assert collector.collect_nightly_ops.call_count == 1
+
+        time_box[0] = 5.1  # past the error TTL: retried
+        third = json.loads((await server._handle_metrics(MagicMock())).body)
+        assert third["nightly"]["killswitches"] == {}
+        assert collector.collect_nightly_ops.call_count == 2
 
 
 async def test_start_disables_aiohttp_request_decompression(
