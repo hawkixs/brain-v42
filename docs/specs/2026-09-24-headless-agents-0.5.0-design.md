@@ -178,6 +178,13 @@ role; a capability that does not match its slot (3.3).
   from the operator's configuration directory — never from a repository, never from the
   working directory. A `roles.toml` shipped in a cloned repository could arm `write` and
   `shell`.
+- **How that directory is resolved.** `XDG_CONFIG_HOME` (and `XDG_STATE_HOME`, 3.8) is
+  used only when it is an absolute path, as the XDG specification requires; a relative
+  value is ignored for the default under `HOME`, never resolved against the working
+  directory. The directory is resolved once with its symbolic links followed, and every
+  configuration file is then resolved the same way and must lie inside it: a file that is,
+  or links to, anything outside the resolved directory is refused (exit `2`, naming the
+  file and where it points).
 - **Who grants a capability.** `write`, `shell` and `mcp` are properties of a role,
   declared by the operator. A shape checks them and never grants them: the `implement`
   slot requires `write = true`; the `review` and `judge` slots require `write = false`
@@ -224,10 +231,12 @@ Inputs: an optional prompt (the angle to review; default "Review this change."),
 `--head REF` (default `HEAD`), `--base REF` (default the remote's default branch,
 `origin/HEAD`; exit `2` when it does not resolve), `--repo PATH` (default the git work
 tree holding the current directory). `--run RUN_ID` is the shortcut for reviewing what an
-`implement` run produced: it names an `implement` run and stands for `--head` = the
-current tip of that run's branch and `--base` = that run's recorded base; it excludes
-`--head` and `--base` (exit `2`), and a run that is not an `implement` run, or whose
-branch no longer exists, is refused (exit `2`).
+`implement` run produced: resolved through the registry (3.8), it names any member of an
+`implement` lineage and stands for `--head` = the **current tip** of the lineage's
+branch — later continuations included, which is what a session wants reviewed — and
+`--base` = the lineage's base. It excludes `--head` and `--base` (exit `2`); a run that is
+not an `implement` run, or whose branch no longer exists, is refused (exit `2`). The
+review records the exact commit it read as its `head`.
 
 1. **The change.** The engine resolves `head` and the merge base of `base` and `head`,
    adds a detached worktree on `head` in the run directory, and takes the diff from the
@@ -247,7 +256,8 @@ branch no longer exists, is refused (exit `2`).
    `VERDICT: APPROVE` or `VERDICT: CHANGES` (case-insensitive). Anything else is an
    unreadable verdict — a failure, never an approval. Each reviewer's own verdict line is
    recorded for the report and decides nothing when a judge runs.
-6. **Vendor rule.** Before step 1, `plan()` applies the vendor rule across runs (3.8).
+6. **Vendor rule.** Before step 1, `plan()` applies the vendor rule across runs (3.8)
+   and the run records the check it made (`vendor_check`).
 7. **Cleanup.** The detached worktree is removed at the end of the run; `change.patch`
    stays. The run records the `head` it reviewed and its deciding text, which an
    `implement` run can take as findings (3.6).
@@ -261,42 +271,46 @@ Inputs: the task (required, unless `--findings` is given, when it is optional ex
 guidance), `--base REF` (default `HEAD`), `--repo PATH`, `--continue RUN_ID`,
 `--findings RUN_ID`.
 
-1. **Worktree.** A new run: `git worktree add -b ha/<run_id> <run_dir>/wt <base>`, as
-   0.4.0 `--write`. With `--continue RUN_ID`: no new branch — the run works in the
-   worktree and on the branch of the `implement` run it names, and inherits that run's
-   `base`, so a fix lands on the branch under review instead of stacking a new one.
+1. **Worktree.** A new run starts a lineage (3.8):
+   `git worktree add -b ha/<run_id> <run_dir>/wt <base>`, as 0.4.0 `--write`. With
+   `--continue RUN_ID`: no new branch — the run joins the lineage of the run it names and
+   works in the lineage's worktree, on its branch, from its `base`, so a fix lands on the
+   branch under review instead of stacking a new one.
 2. **Implement.** The `implement` role runs with a writable workspace on that worktree
    (context `full` unless the role says otherwise). Its prompt is the implement template,
    or the fix template when `--findings` is given (3.7), and adds: do not run git, the
-   engine commits. After the step, exactly as 0.4.0 `--write`: a fired `.git` tripwire
-   stops the run with no git command at all (exit `1`, worktree kept); a failed step stops
-   the run (exit `1`, worktree kept); no change stops it (exit `5`); otherwise the engine
+   engine commits. After the step, in this order: a fired `.git` tripwire stops the run
+   with no git command at all (exit `1`, lineage compromised, worktree kept); a moved
+   `HEAD` or branch tip stops it (exit `1`, `agent_moved_head`, 3.8); a failed step stops
+   it (exit `1`, worktree kept); no change stops it (exit `5`); otherwise the engine
    commits `chore(ha): <run_id> implement via <provider>/<model>` (`fix` instead of
-   `implement` when `--findings` is given) with the repository's hooks running — a
-   refusing hook stops the run (exit `1`, the diff left uncommitted, the hook output in
-   the step's `commit.log`).
+   `implement` when `--findings` is given) with the repository's hooks running, and
+   records the commit's provenance — a refusing hook stops the run (exit `1`, the diff
+   left uncommitted, the hook output in the step's `commit.log`).
 3. **End.** Never a merge, never a push, never a review. The run ends on its branch, with
-   its diffstat, `change.patch` (the cumulative `<base>..HEAD`, a continued run's base
-   being the first run's) and the implementer's final text; the worktree stays until
-   `ha clean`.
+   its diffstat, `change.patch` (the cumulative `<base>..HEAD` of the lineage) and the
+   implementer's final text; the worktree stays until `ha clean`.
 
-**`--continue RUN_ID`** is refused (exit `2`, nothing ran) when the named run is not an
-`implement` run of the same repository; when its worktree is gone (`ha clean`) or its
-tripwire fired; when that worktree has uncommitted changes; when another run holds the
-worktree (a lock file in the named run's directory, taken for the whole run — two
-continuations of one branch never run at once). Commits made by hand on the branch in
-between are kept: the diff the next review reads is always `<base>..HEAD`.
+**`--continue RUN_ID`** takes the lineage lock (3.8) and, under it, before any git
+command, refuses (exit `2`, nothing ran) when the named run is not a member of an
+`implement` lineage of the same repository; when the lineage is compromised, or one of
+its members is running or not `committed`/`no_change`; when the worktree is gone
+(`ha clean`); when it has uncommitted changes. The lock is held until the run's records
+are published, so two continuations — naming the same run or two members of one
+lineage — never run at once: the second waits for the lock for at most 10 seconds, then
+is refused (exit `2`). Commits made by hand on the branch in between are kept: the diff
+the next review reads is always `<base>..HEAD`.
 
 **`--findings RUN_ID`** names a `review` run whose verdict was read (`approved` or
-`changes`). Its deciding text travels in the fix template's `<findings>` block. It is
-refused (exit `2`) when the reviewed `head` recorded by that run is not the commit this
-run starts from — the continued branch's tip, or `--base` for a new run: findings about
-another revision would steer the implementer against code it cannot see. A session that
-wants to act on such findings anyway passes them in the task instead, where they are
-plainly the operator's words.
+`changes`), resolved through the registry. Its deciding text travels in the fix
+template's `<findings>` block. It is refused (exit `2`) when the reviewed `head` recorded
+by that run is not the commit this run starts from — the lineage's tip read under the
+lock, or `--base` for a new run: findings about another revision would steer the
+implementer against code it cannot see. A session that wants to act on such findings
+anyway passes them in the task instead, where they are plainly the operator's words.
 
 Exit: `0` committed; `5` the implementation changed nothing; `1` a step failed, the
-tripwire fired or a hook refused; `2` invalid usage, nothing ran.
+tripwire fired, `HEAD` moved or a hook refused; `2` invalid usage, nothing ran.
 
 ### 3.7 Prompts the engine composes
 
@@ -314,32 +328,71 @@ The review and judge templates end with the output contract, verbatim:
 The fix template is the implement template plus the `<findings>` block of 3.6, and the
 instruction to address each finding or say why not.
 
-### 3.8 Combining runs: lineage and the vendor rule
+### 3.8 Combining runs: registry, lineage, provenance and the vendor rule
 
-A session combines the two shapes; the engine keeps the one guarantee a session cannot
-check by itself — that no reviewer shares a vendor with the code's author (runbook
-eafde166, campaign W8).
+A session combines the two shapes; the engine keeps what a session cannot check by
+itself: that two runs never write one worktree at once, that a compromised worktree is
+never touched by git again, and that no reviewer shares a vendor with the code's author
+(runbook eafde166, campaign W8). All three live in a **state directory**,
+`$XDG_STATE_HOME/ha/` (default `~/.local/state/ha/`, resolved by the rules of 3.3), which
+is state, not cache: deleting `~/.cache/ha` loses reports, never identity, locks or
+provenance.
 
-- **Lineage.** Every commit an `implement` run makes has the subject `chore(ha): <run_id>
-  implement|fix via <provider>/<model>`; a write run of a role keeps the 0.4.0 subject
-  `chore(ha): <run_id> via <provider>/<model>`. Both record in `run.json` the providers of
-  their role — every link of its chain, not only the one that answered
-  (`implement_providers`). A 0.4.0 write run has no `run.json`: its providers are read
-  from its `result.json` and, for a chain, its `links/`.
+- **Run identity and the registry.** The engine always mints the run id
+  (`<UTC timestamp>-<8 hex>`), whatever `--run-dir` says: `--run-dir` only chooses where
+  the run's records live, and two custom directories with the same name are two different
+  runs. Every run is registered as `<state>/runs/<run_id>.json`, created exclusively
+  (`O_EXCL`: an id is never registered twice), holding its run directory, repository,
+  target, lineage and status. `--run`, `--continue`, `--findings`, `ha show` and `ha clean`
+  resolve an id through the registry, never by joining it to a cache path. 0.4.0 runs are
+  not registered: `ha runs` lists them as `legacy`, and none of those options accepts them.
+- **Lineage.** A new `implement` run (or a write run of a role) starts a lineage and owns
+  its worktree and branch. A `--continue` run joins the lineage of the run it names,
+  whichever member it names: the registry resolves every member to the owner. One lock,
+  `<state>/lineages/<owner_run_id>.lock` (an exclusive `flock`), serialises everything that
+  touches that worktree: a continuation holds it from before its first git command until
+  its records are published, and `ha clean` of any member takes it too. The lineage state,
+  `<state>/lineages/<owner_run_id>.json`, lists the members with their statuses and says
+  whether the worktree is `compromised`; it is read under the lock before any git command.
+- **Compromise belongs to the worktree, not to a run.** A fired `.git` tripwire, a step
+  that moved `HEAD` (below), or a member found `incomplete` (crashed: the integrity of the
+  worktree is unknown) marks the lineage `compromised`, with the member and the reason,
+  written by the run that saw it before it exits. A compromised lineage refuses every
+  `--continue` (exit `2`), and `ha clean` runs no git command on it — whichever member is
+  named, not only the one whose tripwire fired. A continuation is admitted only when every
+  member is `committed` or `no_change` and none is running. Recovering a compromised
+  worktree is a manual operation, outside `ha`.
+- **Provenance, per commit.** Every commit that lands during a write step is recorded as
+  `<state>/provenance/<commit sha>.json`: run id, lineage, how it was made, and the
+  providers of the role — every link of its chain, not only the one that answered. The
+  engine's own commit (`chore(ha): <run_id> implement|fix via <provider>/<model>`, or a
+  role write run's `chore(ha): <run_id> via <provider>/<model>`) is `made_by: engine`.
+- **An agent that commits by itself** is caught, not trusted: "do not run git" is an
+  instruction, and the tripwire watches `.git` configuration, not objects or refs. The
+  engine records `HEAD` and the branch tip before the step and compares them after it.
+  Any movement fails the run (exit `1`, status `failed`, reason `agent_moved_head`),
+  records every commit of `<before>..<after>` with `made_by: agent` and the role's
+  providers, marks the lineage compromised, and commits nothing.
 - **Vendor rule.** Before a `review` run starts, `plan()` walks the commits of
-  `<merge-base>..<head>`, collects the run ids of those carrying an `ha` subject, reads
-  each run's `run.json` and takes the union of their `implement_providers`. Every provider
-  of every reviewer role — every link of its chain — must be absent from that union;
-  otherwise the run is refused (exit `2`, naming the reviewer, the provider and the
-  commit). The judge is not constrained. Commits without an `ha` subject constrain
-  nothing: a hand-written change is reviewed by whoever the operator chose.
-- **A lineage that cannot be read is refused, not assumed.** An `ha` commit whose run
-  record is missing (a deleted cache) fails the check (exit `2`, naming the commit): the
-  engine cannot prove independence, so it does not claim it. A session that still wants
-  that review runs a reviewer role directly (`ha run reviewer-x`), a one-step run that
-  claims nothing about vendors.
+  `<merge-base>..<head>` and looks each one up in the provenance. It takes the union of
+  the providers of every commit found. Every provider of every reviewer role — every link
+  of its chain — must be absent from that union; otherwise the run is refused (exit `2`,
+  naming the reviewer, the provider and the commit). The judge is not constrained. A
+  commit with no provenance entry and no `chore(ha)` subject constrains nothing: a
+  hand-written change is reviewed by whoever the operator chose.
+- **A lineage that cannot be read is refused, not assumed.** A commit whose subject says
+  `chore(ha): …` but which has no provenance entry — a 0.4.0 write run, a deleted state
+  directory, a subject typed by hand — fails the check (exit `2`, naming the commit). No
+  legacy fallback is attempted: a 0.4.0 chain that succeeded on its first link leaves no
+  trace of the links it declared, so its records cannot prove what the rule requires. A
+  session that still wants that review runs a reviewer role directly (`ha run
+  reviewer-x`), a one-step run that claims nothing about vendors.
+- **The proof travels with the review.** A `review` run records the check it made in its
+  own `run.json` (`vendor_check`, 3.10): every commit examined with its run id, `made_by`
+  and providers, their union, and each reviewer's providers. `ha show` renders it from
+  that record, so it survives `ha clean` of the implementation runs.
 - **Where the rule applies.** The same check runs whatever names the head — `--run`,
-  `--head ha/<run_id>`, or any ref whose history holds `ha` commits.
+  `--head ha/<run_id>`, or any ref whose history holds recorded commits.
 
 ### 3.9 CLI
 
@@ -355,8 +408,13 @@ ha --version
 ```
 
 - **Target.** Workflow, role and provider names are disjoint (validation refuses a
-  collision), so `TARGET` is never ambiguous. The prompt is the argument, or stdin when it
-  is `-` or absent, as in 0.4.0.
+  collision), so `TARGET` is never ambiguous.
+- **Prompt.** The argument, or stdin when it is `-`. When it is absent: a target that
+  needs one — a role or a provider, or `implement` without `--findings` — reads stdin as
+  in 0.4.0, but only when stdin is not a terminal; on a terminal it is refused (exit `2`,
+  "no prompt") instead of waiting. A target whose prompt is optional — `review`, or
+  `implement` with `--findings` — never reads stdin unless given `-`, and uses its
+  default.
 - **Options of a role or provider target:** `-m`, `--effort`, `--timeout`, `--context`,
   `--context-parents`, `--mcp`, `--write`, `--shell`, `--base`, `--repo`, `--base-url`,
   `--key-env`, `--json`, `--run-dir`. They override the role for this run; `--base` and
@@ -379,21 +437,28 @@ ha --version
 - **`ha runs`** lists runs newest first: run id, target, exit code, duration, cost, first
   line of the task. A 0.4.0 run directory (no `run.json`) is listed as `legacy`, from its
   `result.json`.
-- **`ha clean RUN_ID`** keeps its 0.4.0 behaviour: the worktree is removed through git
-  unless the tripwire fired, and the branch is kept.
+- **`ha clean RUN_ID`** resolves the run through the registry. For a run that owns a
+  worktree it takes the lineage lock, then keeps the 0.4.0 behaviour — the worktree is
+  removed through git and the run directory deleted, the branch kept — except that it
+  runs no git command at all when the **lineage** is compromised, whichever member is
+  named (exit `1`, naming the member and the reason). Cleaning a run never touches the
+  state directory: its registry entry is marked `cleaned`, and the provenance of its
+  commits and the lineage state stay, so a later review can still prove independence.
 
-**Exit codes.** A one-step run (a role or provider target) keeps the 0.4.0 contract: `0`
-answer; `1` failure; `2` invalid usage; `3` provider unavailable, chain exhausted; `4`
-timeout with no tool call started; `5` write run with no change; `124` timeout. A
-workflow:
+**Exit codes.** A one-step run (a role or provider target) keeps the 0.4.0 CLI contract:
+`0` answer; `1` failure; `2` invalid usage; `3` provider unavailable; `4` timeout with no
+tool call started; `5` write run with no change; `124` timeout. A chain that runs out of
+links returns its **last link's** code, `3` or `4`, exactly as 0.4.0 `cli.run_links`
+does (pinned by `test_an_exhausted_chain_returns_the_last_links_code`); the library's
+`run_chain` keeps its own 0.4.0 result, unchanged. A workflow:
 
 | Code | Meaning |
 |---|---|
 | `0` | approved (`review`), or committed (`implement`) |
 | `6` | changes requested (`review`) |
 | `5` | the implementation changed nothing (`implement`) |
-| `1` | a step failed, the tripwire fired, a hook refused, or the verdict is unreadable; the step's own code is in the report |
-| `2` | invalid usage or configuration, including a refused `--run`, `--continue`, `--findings` or vendor rule; nothing ran |
+| `1` | a step failed, the tripwire fired, an agent moved `HEAD`, a hook refused, or the verdict is unreadable; the step's own code is in the report |
+| `2` | invalid usage or configuration, including a refused `--run`, `--continue`, `--findings`, a lineage lock not obtained, or the vendor rule; nothing ran |
 
 Codes `3`, `4` and `124` stay a step's: a workflow that already wrote cannot promise that
 nothing was written.
@@ -403,15 +468,21 @@ nothing was written.
 Every run is a workflow run — a role run has one step:
 
 ```text
-~/.cache/ha/runs/<run_id>/
+~/.cache/ha/runs/<run_id>/       (or the directory --run-dir names)
   run.json            the run record (a new document, schema 1)
   prompt.md           the task, as given
-  wt/                 the worktree of a write run or of an implement run (a continued
-                      run works in the worktree of the run it continues)
+  wt/                 the worktree of a lineage's first run (continuations work in it)
   change.patch        base..HEAD of a write run or of a workflow
   steps/<nn>-<slot>-<role>/
                       one ordinary 0.4.0 run directory per step: result.json
                       (schema 1), logs, links/ for a chain, commit.log for a write step
+
+~/.local/state/ha/                (3.8 — never removed by ha clean)
+  runs/<run_id>.json          registry entry: run directory, repository, target,
+                              lineage, status (cleaned when ha clean ran)
+  lineages/<owner>.json       members, statuses, compromised (with member and reason)
+  lineages/<owner>.lock       the lineage lock
+  provenance/<sha>.json       run id, lineage, made_by (engine | agent), providers
 ```
 
 `<nn>` is the launch order on two digits; `<slot>` is `run`, `implement`, `review` or
@@ -433,9 +504,13 @@ Every run is a workflow run — a role run has one step:
   "base": "<sha>",
   "head": "<sha>",
   "branch": "ha/20260924T101500-ab12cd34",
+  "lineage": "20260924T101500-ab12cd34",
   "continues": "20260924T101500-ab12cd34",
   "findings_from": "20260924T104000-9f8e7d6c",
   "implement_providers": ["opencode", "codex"],
+  "commits": [{"sha": "<sha>", "made_by": "engine"}],
+  "failure_reason": null,
+  "vendor_check": null,
   "pid": 12345,
   "started_at": "2026-09-24T11:15:00Z",
   "duration_seconds": 1210.4,
@@ -454,10 +529,22 @@ Every run is a workflow run — a role run has one step:
 }
 ```
 
-`continues`, `findings_from` and `implement_providers` belong to an `implement` run (and
-`implement_providers` to a write run of a role, which also commits under an `ha`
-subject); a `review` run sets them to `null` and records the reviewed `head`, its
-`verdict` and the deciding text.
+`lineage`, `continues`, `findings_from`, `implement_providers` and `commits` belong to a
+write run — an `implement` run, or a write run of a role (`continues` and `findings_from`
+stay `null` there) — and copy what the state directory records (3.8), for the report.
+`failure_reason` names why a run failed when the engine knows (`tripwire`,
+`agent_moved_head`, `hook_refused`, `unreadable_verdict`, `step_failed`). A `review` run
+sets the write fields to `null`, records the exact `head` it read, its `verdict`, the
+deciding text, and `vendor_check`:
+
+```json
+"vendor_check": {
+  "commits": [{"sha": "<sha>", "run_id": "20260924T101500-ab12cd34", "made_by": "engine",
+               "providers": ["opencode", "codex"]}],
+  "authors": ["codex", "opencode"],
+  "reviewers": {"reviewer-agy": ["agy"], "reviewer-claude": ["claude"]}
+}
+```
 
 - **Status:** `running`, `answered` (a one-step run that exited `0`), `failed`,
   `committed` (an `implement` run or a write run that committed), `no_change`,
@@ -474,7 +561,7 @@ subject); a `review` run sets them to `null` and records the reviewed `head`, it
 20260924T104000-9f8e7d6c  multi-review  exit 6  changes requested
 task    Review this change.
 head    ha/20260924T101500-ab12cd34 @ 1a2b3c4  2 commits  +120 -14  5 files
-vendors implemented by opencode, codex — reviewers checked against them
+vendors authors opencode, codex (2 recorded commits) — reviewers agy, claude: independent
   review     reviewer-agy     agy       (auto)  0   2m40s  -               -      view_file 9  CHANGES
   review     reviewer-claude  claude    sonnet  0   2m05s  in 150k out 3k  $0.12  Read 14      APPROVE
   judge      judge            claude    opus    0   1m10s  in 90k out 3k   $0.40  -            CHANGES
@@ -511,17 +598,30 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
   text; the tool counters against recorded event logs, one per rail; CLI parsing (targets,
   overrides, options refused on a workflow target); the engine API refusing every
   combination the CLI refuses (3.4); every refusal of `--run`, `--continue` and
-  `--findings` (3.5, 3.6).
+  `--findings` (3.5, 3.6); the configuration path rules (a relative `XDG_CONFIG_HOME`
+  ignored; a configuration file linking into the repository or anywhere outside the
+  resolved directory refused); the prompt rules (absent on a terminal refused, absent on
+  an optional-prompt target never reading stdin); the chain exit code (an exhausted chain
+  returns its last link's `3` or `4`, a workflow step's code recorded apart from the
+  workflow's).
 - **Engine, with fake providers and a throwaway git repository:** `review` with one and
   with three reviewers; the combination a session drives — `implement`, then `review
   --run` returning `CHANGES`, then `implement --continue --findings` committing a fix on
-  the same branch, then `review --run` returning `APPROVE`; the vendor rule across runs
-  (a reviewer sharing a provider with any link of an earlier implementer on the branch
-  is refused; a hand-written commit constrains nothing; an `ha` commit with no run record
-  is refused; a 0.4.0 write run's providers are read from its `result.json`); stale
-  findings refused; two concurrent `--continue` of one run (the second refused); a
-  failing reviewer (no judge runs); an unreadable verdict; a fired tripwire (no git
-  command runs); a refusing hook; exit `5` (the implementation changed nothing);
+  the same branch, then `review --run` returning `APPROVE`; `--run` after the branch
+  advanced past the named run (the current tip is reviewed and recorded); the vendor rule
+  (a reviewer sharing a provider with any link of an earlier implementer on the branch is
+  refused; a hand-written commit constrains nothing; a `chore(ha)` commit with no
+  provenance — a 0.4.0 write run, a deleted state directory — is refused); the report of
+  a review after `ha clean` of the implementation runs and deletion of `~/.cache/ha`
+  (rendered from its own `vendor_check`); stale findings refused; a fake provider that
+  commits by itself (`agent_moved_head`, commits recorded `made_by: agent`, lineage
+  compromised, a later review still constrained by them); lineage locking — `--continue A`
+  and `--continue B` where B continues A (one waits, then is refused), `ha clean A` while
+  B runs (waits); compromise shared by the lineage — a tripwire fired in B, then
+  `--continue A` refused and `ha clean A` running no git command; a crashed member
+  refusing continuation; `--run-dir` with two custom directories of the same name (two
+  runs, each resolved through the registry); a failing reviewer (no judge runs); an
+  unreadable verdict; a refusing hook; exit `5` (the implementation changed nothing);
   reviewers really running concurrently; a crashed run read as `incomplete`.
 - **Boundary guard (existing):** runtime dependencies stay within `pydantic` and
   `structlog` — TOML, not YAML, for that reason; no import of `brain_v42`.
@@ -538,7 +638,8 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
 - **CHANGELOG.** Breaking: the CLI grammar (`ha run TARGET`; `-p` and `--chain`
   removed), `ha run --json` prints `run.json`, run directories gain `steps/`. Additive:
   the engine API, roles, workflows and their two shapes (`implement`, `review`) with
-  `--run`, `--continue`, `--findings` and the vendor rule across runs, `run.json`, `ha show`,
+  `--run`, `--continue`, `--findings` and the vendor rule across runs, the state directory
+  (`~/.local/state/ha`: registry, lineages, provenance), `run.json`, `ha show`,
   `ha roles`, `ha workflows`, `--version`, tool counts, the `role` context scope.
   Unchanged: `result.json` schema 1, the `AgentProvider` protocol, the providers'
   behaviour when no role instructions are given.
@@ -546,13 +647,17 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
   an independent reviewer from another provider, merged on green CI:
   1. roles (loader, validation, implicit roles, instructions in the bundle); the engine
      for one-step runs (the gates moved out of `cli.py`, the write flow moved into the
-     engine); `run.json` (with `implement_providers` from the first write run) and the
-     `steps/` layout; the new `ha run` grammar, `ha roles`, `--version`, documented help —
+     engine); `run.json` and the `steps/` layout; the state directory — registry, lineage
+     lock and compromise, per-commit provenance and `agent_moved_head` — for every write
+     run from this first lot, so no commit `ha` makes is ever unrecorded; the new `ha run`
+     grammar, `ha roles`, `--version`, documented help, `ha clean` through the registry —
      daily delegation works after this lot;
   2. `ha show`, `ha runs` (legacy runs included) and the tool counters;
-  3. `workflows.toml`, `ha workflows` and the shape `review`, with `--run`;
-  4. the shape `implement` with `--continue` and `--findings`, and the vendor rule across
-     runs (3.8), which from then on guards every `review`;
+  3. `workflows.toml`, `ha workflows` and the shape `implement` with `--continue` (a
+     continued lineage under its lock);
+  4. the shape `review`, shipped with the vendor rule and `vendor_check` from its first
+     commit, with `--run`, and `implement --findings` (which needs a review run to name) —
+     no lot ever exposes a review that does not enforce the rule;
   5. the `live` suite, README and CHANGELOG (including the `brain-read` example, which
      still lists a `brain_recall` tool brain does not have), then the tag.
 - **Outside this repository, after the tag:** the session skill `ha-delegate` in
@@ -583,8 +688,10 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
 | claude's tool counts undercount | `null` until a `live` test proves the telemetry complete at exit |
 | Breaking the CLI | No caller exists (§1); CHANGELOG entry; the skill is written against 0.5.0 |
 | A crashed workflow leaves a worktree | The run reads as `incomplete`; `ha clean` removes it |
-| A session combines the workflows badly (reviews the wrong head, fixes against stale findings) | `--run` resolves the head from the run record; `--findings` is refused unless the reviewed head is the fix's starting commit; `ha show` names the head each review read |
-| Separate runs lose the vendor independence the combined shape guaranteed | The vendor rule reads the branch's `ha` commits and their run records (3.8); a lineage it cannot read is refused, never assumed |
+| A session combines the workflows badly (reviews the wrong head, fixes against stale findings) | `--run` reviews the lineage's current tip and records the exact commit read; `--findings` is refused unless the reviewed head is the fix's starting commit; `ha show` names the head each review read |
+| Separate runs lose the vendor independence the combined shape guaranteed | Per-commit provenance in the state directory, commits an agent made itself included; the vendor rule reads it (3.8); a `chore(ha)` commit without provenance is refused, never assumed |
+| Two runs write one worktree, or git runs in a compromised one | One lock per lineage, taken by every continuation and by `ha clean`; compromise recorded on the lineage and read under the lock before any git command |
+| The state directory is lost | Reports survive in the cache and in each review's `vendor_check`; reviews of branches whose provenance is gone are refused, not waved through |
 | A shape is too rigid for the next workflow | A new shape is a reviewed change to the package; a general language stays out until a third shape is needed |
 
 ## 8. Brainstorm decisions (2026-09-24)
