@@ -68,8 +68,8 @@ and the 0.4.0 write flow this lot moves.
 
 | # | Decision | Why |
 |---|---|---|
-| P1 | Module names: `config_paths`, `roles`, `state`, `locks`, `runs`, `report`, `engine`, `gitops`, `lineage`, `provenance`, `quarantine`, `write_flow`, `proofs`, `procgroup`. `cli_write.py` is removed; its behaviour moves into `write_flow.py` unchanged where §3.8.3 does not change it. | Spec §3.4: "final module names are the plan's call". One responsibility per file. |
-| P2 | The repository (`--repo`, or the work tree holding the cwd) is resolved in `execute()`, not in `plan()`. `plan()` records the raw `--repo` path and the cwd. | Spec §3.8.2: `plan()` never runs git, and `git rev-parse --show-toplevel` is git. |
+| P1 | Module names: `config_paths`, `roles`, `state`, `locks`, `runs`, `report`, `repo`, `engine`, `gitops`, `lineage`, `provenance`, `quarantine`, `write_flow`, `proofs`, `procgroup`. `cli_write.py` is removed; its behaviour moves into `write_flow.py` unchanged where §3.8.3 does not change it. | Spec §3.4: "final module names are the plan's call". One responsibility per file. |
+| P2 | The repository's identity is discovered **from the filesystem, without git**, by a new `repo.discover(start) -> RepoIdentity(work_tree, git_dir, common_dir)`: walk up from `--repo` (or the cwd) to the first `.git`, resolve a `.git` file's `gitdir:` and the git dir's `commondir` with `git_tripwire.resolve_git_dir` / `_common_dir` (made public as `common_dir`), and resolve every path. It replaces 0.4.0's `git rev-parse --show-toplevel`. `plan()` records the raw `--repo` and the cwd; `execute()` calls `discover()` first, before any lock that depends on the repository. The repository quarantine and the lineage index are keyed by the resolved `common_dir`. | Spec §3.8.2: `plan()` never runs git; §3.8.3 step 1 and §3.8.5: quarantines and the repository's lineages are checked before the first git command, so the identity those checks need cannot come from git. (Codex review of this plan, round 2.) |
 | P3 | Proof records live in `<state>/proofs/<rail>.json` = `{"rail", "version", "isolation": {"passed", "date"}, "confinement": {"passed", "date"} \| null}`. They are written by `proofs.record_proof()`, which the `live` tests call on success; the engine reads them and compares `version` with `registry.probe(rail).version`. | Spec §3.8.0/§4 require a per-rail proof "with the rail version and date" that classifies write roles and gates executors, but name no storage. The state directory is the one durable, operator-owned place (§3.8). |
 | P4 | HTTP providers need no isolation proof: they run no local executor and load no operator configuration. | Spec §3.8.0 lists instruction files, skills, plugins, hooks, settings and MCP servers — all local-CLI concepts. |
 | P5 | Every merged state of `main` keeps the spec's guarantees. PR B ships the **isolation** proofs and their gate (Task 15b) together with the engine, and **refuses every write run** (a `write` role or `--write`: `UsageError`, exit 2, "write runs are not available in this build: the write protocol of spec §3.8.3 is not merged yet"). PR C ships the write protocol, the confinement proofs and classification, and lifts that refusal. | Codex review of this plan (round 1, blocker): an engine that runs a rail with no isolation proof, or a write without intent, provenance and locks, contradicts §3.8.0 and §5 even on an intermediate `main`. The installed `ha` is pinned to the `headless-agents-v0.4.0` tag (uv tool receipt), so no merge reaches the operator before a tag either way. |
@@ -120,6 +120,7 @@ packages/headless-agents/src/headless_agents/
   locks.py          NEW  flock locks, fixed order, bounded waits (§3.8.2)
   runs.py           NEW  run registry: mint, register, resolve, status, incomplete (§3.8.1)
   report.py         NEW  run.json: key set, steps, cost, atomic rewrite (§3.10)
+  repo.py           NEW  repository identity from the filesystem, no git (P2)
   engine.py         NEW  Request, Target, Plan, plan(), execute(), UsageError (§3.4)
   gitops.py         NEW  hardened git with hooks disabled; the engine-commit variant
   lineage.py        NEW  lineage state documents and transitions (§3.8.1, §3.8.3)
@@ -820,11 +821,14 @@ class Entry:
     lineage: str | None; status: str | None; cleaned_at: str | None
 
 class Registry:
-    def __init__(self, state: Path) -> None
+    def __init__(self, state: Path, *, runs_root: Path) -> None
     def mint(self) -> str                                   # UTC id; never registered yet
-    def register(self, *, run_dir: Path, target: Mapping[str, str],
+    def register(self, *, run_dir: Path | None, target: Mapping[str, str],
                  repository: Path | None, lineage: str | None) -> Entry
-        # mints, create_once(runs/<id>.json); on FileExistsError mints again (Review Focus 4)
+        # loop: run_id = self.mint(); path = run_dir or runs_root / run_id;
+        # create_once(runs/<run_id>.json, {..., "run_dir": str(path)}); on FileExistsError
+        # mint again (Review Focus 4). The default run directory is therefore always built
+        # from the id that was actually registered.
     def lifecycle_lock(self, run_id: str) -> Path           # runs/<id>.lock
     def resolve(self, run_id: str) -> Entry                 # RUN_ID_PATTERN else UsageError-like
                                                             # RegistryError; Unknown propagates
@@ -863,7 +867,9 @@ def test_a_run_dir_inside_a_forbidden_tree_is_refused(tmp_path: Path, inside: st
         make_run_dir(roots[inside] / "mine", forbidden=list(roots.values()))
 ```
 
-  plus: an existing `--run-dir` refused; two custom run dirs of the same name under two
+  plus: with `run_dir=None` the registered `run_dir` is `runs_root / entry.run_id` (the id
+  that was registered, including after a collision retry); an existing `--run-dir` refused;
+  two custom run dirs of the same name under two
   parents register two ids (spec §4); a registry entry whose file is corrupt resolves to
   `Unknown`; `effective_status` gives `incomplete` for a `running` entry whose lifecycle lock
   is free and `running` while a child process holds it.
@@ -1034,9 +1040,11 @@ class Outcome:
 def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome
 ```
 
-  Order inside `execute()` for a read-only step: register (Task 11) → create the run dir →
+  Order inside `execute()` for a read-only step: `repo.discover()` (P2, filesystem only) →
+  register (Task 11, `repository = identity.work_tree`) → create the run dir →
   hold the lifecycle lock (exclusive, no wait) → hold the unconfined lock **shared** (10 s) →
-  resolve the repository (P2) → build the context bundle with the role's instructions
+  the quarantine checks (added in Task 18) → the isolation gate (Task 15b) → the first git
+  command, if any → build the context bundle with the role's instructions
   (Task 4) and re-check the prompt size → write `prompt.md` and the initial `run.json`
   (`running`) → run the chain in `steps/01-run-<role>/` exactly as 0.4.0 `run_links` did →
   write the final `run.json` and set the registry status (`answered` or `failed`). A write
@@ -1046,8 +1054,12 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome
   are kept, skipped with a reason pointing at Task 19, which re-expresses them against the
   §3.8.3 write flow; `write_flow.py` is created in PR C, not here.
 
-- [ ] **Step 1: Failing tests** — with the recording `_Fake` provider of `test_cli.py` moved
-  into `tests/unit/headless_agents/conftest.py`:
+- [ ] **Step 1: Failing tests** — first `repo.discover` (new module
+  `packages/headless-agents/src/headless_agents/repo.py`, `tests/unit/headless_agents/test_repo.py`):
+  a plain checkout, a linked worktree (its `.git` file → git dir → `commondir`), a start
+  directory below the work tree, a symlinked `.git` refused, no repository → `None`; and a
+  fake `git` on `PATH` proving `discover` never runs it. Then, with the recording `_Fake`
+  provider of `test_cli.py` moved into `tests/unit/headless_agents/conftest.py`:
   - a one-step run writes `run.json` with `status == "answered"`, `steps[0]["dir"] ==
     "steps/01-run-codex"`, and the step directory holds the fake's `result.json`;
   - an exhausted chain returns its last link's code (`3` then `4` → `4`), recorded as the
@@ -1286,12 +1298,25 @@ def check(state: Path, common_dir: Path | None) -> str | None
 - Produces: `run_write_step(plan, *, run_id, run_dir, state, say) -> WriteOutcome` with
   `WriteOutcome(exit_code, status, failure_reason, commits: tuple[tuple[str, MadeBy], ...],
   branch, base, head, final: RunResult | None)`, implementing, in this order:
-  1. admission without git — lifecycle lock (held by `execute`), unconfined lock shared
-     (exclusive for `shell` roles: Task 20), lineage registry lock exclusive while the new
-     lineage's state is created and its lock taken; then `quarantine.check`, stale
-     `unconfined-intent.json` (Task 20), stale pending writes of every lineage of the
-     repository (`locks.is_free` on its lock) → compromise it `unfinalized_write`, publish the
-     repository quarantine, refuse (`UsageError`, exit 2);
+  1. admission without git, in exactly this order (spec §3.8.2 lock order; P2 identity):
+     a. `identity = repo.discover(start)` — filesystem only; `identity.common_dir` keys the
+        repository;
+     b. lifecycle lock (held by `execute` since registration);
+     c. unconfined lock — shared, or exclusive for an unconfined write (Task 20);
+     d. `quarantine.check(state, identity.common_dir)` — operator, then repository;
+     e. stale `unconfined-intent.json` check (Task 20);
+     f. lineage **registry** lock, exclusive: create this run's lineage state (`create_once`)
+        and take its lineage lock exclusive; enumerate
+        `lineage.of_repository(state, identity.common_dir)` for the stale-write check;
+        release the registry lock;
+     g. for every **other** lineage of the repository, read its state (`Unknown` → refuse)
+        and test staleness with `locks.is_free(lineage_lock)` — never holding those locks: a
+        write only takes another lineage's lock when `--repo` lies inside that lineage's
+        worktree (then shared, ascending, still before any git; §3.8.2); a stale pending
+        write → compromise that lineage `unfinalized_write`, publish the repository
+        quarantine (and the operator's when that write was unconfined), refuse
+        (`UsageError`, exit 2);
+     No git command has run when step 1 ends; the first one is in step 3.
   2. intent: `pending = PendingWrite(run_id, providers, unconfined, None, None)` saved;
   3. preparation with `gitops.git` (hooks off): resolve base, `worktree add -b ha/<run_id>`,
      tip must equal base else `preparation_moved_head` (compromise, exit 1);
@@ -1333,6 +1358,12 @@ def check(state: Path, common_dir: Path | None) -> str | None
     `unfinalized_write`, publishes the repository quarantine, and is refused;
   - the worktree's creation is not attributed to the agent (`start_tip` taken after
     preparation);
+  - **admission order**, in a repository holding two other lineages (one sound, one with a
+    stale pending write): a `git` wrapper on `PATH` and an instrumented `locks.held` append
+    to one shared event log; assert the log reads lifecycle, unconfined, (quarantine check),
+    lineage registry, own lineage, then the refusal — with **no** `git` event before it; and
+    in a repository with one sound other lineage, that the first `git` event comes after
+    the own-lineage lock and the intent publication;
   - a lock-death test: kill the `ha` process (child `multiprocessing` running
     `execute`) during the step → the lineage lock is free at once.
 - [ ] **Step 2–4.** **Step 5: Commit** — `feat(headless-agents): the write protocol of spec 3.8.3 for confined roles`
