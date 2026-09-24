@@ -207,10 +207,13 @@ engine that every entry point shares.
 
 - **API** (final module names are the plan's call): `load_config()` reads and validates
   the four configuration files; `plan(target, request) -> Plan` resolves the target and
-  applies every gate — configuration, slots and capabilities, the vendor rule, models, MCP
-  profile, `openai-compat` endpoint, prompt presence and size, run directory naming — and
-  raises a typed usage error before anything runs; `execute(plan) -> RunRecord` runs the
-  steps and writes the run records (3.10).
+  applies every gate that needs neither git nor the mutable state — configuration, slots
+  and capabilities, models, MCP profile, `openai-compat` endpoint, prompt presence and
+  size, run directory naming, run ids through the registry — and raises a typed usage
+  error before anything runs; `execute(plan) -> RunRecord` takes the locks of 3.8.2,
+  applies every gate that needs git or the state — admission, the vendor rule, stale
+  findings — then runs the steps and writes the run records (3.10). `plan()` never runs
+  git (3.8.2).
 - **Reuse, not rewrite.** A step is a 0.4.0 run: `run_chain` walks a role's links on `3`
   and `4`; the worktree, `.git` tripwire and carrier-commit logic of `cli_write.py` moves
   into the engine with its behaviour unchanged.
@@ -298,11 +301,12 @@ guidance), `--base REF` (default `HEAD`), `--repo PATH`, `--continue RUN_ID`,
    its diffstat, `change.patch` (the cumulative `<base>..HEAD` of the lineage) and the
    implementer's final text; the worktree stays until `ha clean`.
 
-**`--continue RUN_ID`** takes the lineage lock (3.8.2) and, under it, before any git
-command, refuses (exit `2`, nothing ran) when a quarantine covers the repository or the
-operator; when the named run is not a member of an `implement` lineage of the same
-repository; when the lineage state is unknown, compromised, or holds a pending write
-(3.8.3 step 1); when the worktree is gone (`ha clean`); when it has uncommitted changes.
+**`--continue RUN_ID`** takes the lineage lock (3.8.2) and, under it, refuses (exit `2`,
+nothing ran) — from the state, before any git command — when a quarantine covers the
+repository or the operator; when the named run is not a member of an `implement` lineage
+of the same repository; when the lineage state is unknown, compromised, or holds a
+pending write (3.8.3 step 1); when the worktree is gone (`ha clean`); then — with git, in
+the preparation of 3.8.3 step 3 — when the worktree has uncommitted changes.
 The lock is held until the run's records are published, so two continuations — naming
 the same run or two members of one lineage — never run at once: the second waits for
 the lock for at most 10 seconds, then is refused (exit `2`). Commits made by hand on the
@@ -433,7 +437,8 @@ on every exit path. The order is fixed, which excludes a deadlock:
 
 1. the run's own **lifecycle lock**;
 2. the global **unconfined lock**;
-3. **lineage locks**, in ascending owner-id order.
+3. the **lineage registry lock**, `<state>/lineages.lock`;
+4. **lineage locks**, in ascending owner-id order.
 
 - **Lifecycle lock.** Held exclusively by every run for its whole life, reviews included.
   It is what liveness means: a status that is not final while the lifecycle lock is free
@@ -441,18 +446,28 @@ on every exit path. The order is fixed, which excludes a deadlock:
   cleans without waiting, and refuses an active run (exit `2`).
 - **Unconfined lock.** An unconfined write holds it **exclusively** from its intent to its
   publication. Every other entry point that runs git — a new write, a continuation, a
-  review, `ha clean` — holds it **shared** from before its first git command to its last,
-  waiting at most 10 seconds (then exit `2`, "an unconfined write is running"). Confined
+  review, `ha clean` — holds it **shared** around every git command it runs, waiting at
+  most 10 seconds (then exit `2`, "an unconfined write is running"). A run that releases
+  it between two git phases (a review, while its reviewers read) re-acquires it and
+  repeats the quarantine checks of 3.8.3 step 1 before its next git command. Confined
   writes do not wait on one another through it.
+- **Lineage registry lock.** Creating a lineage — writing its state file and taking its
+  lock — happens under `<state>/lineages.lock` held **exclusively**, briefly; enumerating
+  lineages to decide anything holds it **shared** for as long as that decision needs the
+  set to stay fixed (3.8.4). A lineage therefore cannot appear between an enumeration and
+  the decision taken on it.
 - **Lineage locks.** A write holds its own lineage's lock exclusively from before its
   first git command until its publication; a `--continue` takes it exclusively, waiting
-  at most 10 seconds; `ha clean` of any member takes it exclusively. A `review` takes the
-  lock of **every lineage of its repository**, shared, in ascending order, before its
-  first git command — the set is known from the state without git, so no lineage it may
-  need is discovered too late to lock in order.
+  at most 10 seconds; `ha clean` of any member takes it exclusively. A new write or a
+  continuation whose `--repo` resolves inside **another** lineage's recorded worktree also
+  takes that lineage's lock, shared, in the global order, and applies to it the admission
+  checks of 3.8.3 step 1. A `review` takes the lock of **every lineage of its
+  repository**, shared, in ascending order, before its first git command.
 - **Stale.** A pending write whose lineage lock is free (tested by a non-blocking shared
-  acquisition) has lost its writer. An `unconfined-intent.json` present while the holder
-  of the unconfined lock is shared (so no exclusive holder exists) has lost its writer.
+  acquisition) has lost its writer. An `unconfined-intent.json` found by any process that
+  holds the unconfined lock — shared, or exclusively as a new unconfined write about to
+  publish its own — has lost its writer: an intent is only ever present while its writer
+  holds the lock exclusively.
 
 #### 3.8.3 A write, from admission to publication
 
@@ -460,14 +475,17 @@ A write — an `implement` run, a continuation, a write run of a role — runs t
 `execute()`:
 
 1. **Admission, without git.** Take the lifecycle lock; the unconfined lock (exclusive
-   for an unconfined role, shared otherwise); the lineage lock (a new lineage creates its
-   state file first, holding its lock). Then, reading state only: no operator or
+   for an unconfined role, shared otherwise); for a new lineage, the lineage registry
+   lock exclusively while its state file is created and its lock taken; the lineage
+   lock, and any source lineage lock of 3.8.2. Then, reading state only: no operator or
    repository quarantine (3.8.5); no **stale** `unconfined-intent.json` — found, it
    publishes the operator quarantine and refuses: a dead unconfined writer may have
    changed anything, in any repository; no stale pending write in any lineage of the
    repository — found, it compromises that lineage (`unfinalized_write`), publishes the
    repository quarantine (and the operator's if that write was unconfined), and refuses;
-   for a continuation, its own lineage known, not compromised, with no pending write.
+   for a continuation, its own lineage known, not compromised, with no pending write;
+   any source lineage (3.8.2) known, not compromised, with no pending write. Whether a
+   continuation's worktree is clean is a git question, answered in step 3.
 2. **Intent, before any mutation.** The lineage state records the pending write — run
    id, the role's providers (every link of its chain), `unconfined` or not — with no
    start point yet; an unconfined write also publishes `unconfined-intent.json` and
@@ -517,9 +535,12 @@ A write — an `implement` run, a continuation, a write run of a role — runs t
 
 A `review` run, in `execute()`:
 
-1. **Locks, without git.** It takes its lifecycle lock, the unconfined lock shared, then
-   every lineage lock of its repository shared, in ascending order (3.8.2), and checks —
-   still without git — the quarantines and stale unconfined intent of 3.8.3 step 1.
+1. **Locks, without git.** It takes its lifecycle lock, the unconfined lock shared, the
+   lineage registry lock shared, then every lineage lock of its repository shared, in
+   ascending order (3.8.2), and checks — still without git — the quarantines and stale
+   unconfined intent of 3.8.3 step 1. It keeps the registry lock until step 6, so no
+   lineage — and no commit a new lineage's write could make before publishing its
+   provenance — appears while it decides.
 2. **Refuses uncertainty.** Under those locks, the review is refused (exit `2`, naming
    the lineage and reason) when any lineage of the repository is unknown, compromised or
    holds a pending write — whether or not its branch still contains the commits it may
@@ -543,8 +564,10 @@ A `review` run, in `execute()`:
    review is refused (exit `2`, naming the reviewer, provider and commit). The judge is
    not constrained.
 6. **Records and releases.** The check is written once to
-   `<state>/reviews/<run_id>.check.json`, and the lineage and unconfined locks are
+   `<state>/reviews/<run_id>.check.json`; the lineage, registry and unconfined locks are
    released; the reviewers then read the pinned commit, which no later write can change.
+   The final cleanup runs git (removing the detached worktree): before it, the review
+   re-acquires the unconfined lock shared and repeats the quarantine checks (3.8.2).
    When the run ends, its result — pinned head, verdict, deciding text, and a copy of the
    check — is written once to `<state>/reviews/<run_id>.json`. `--findings` reads only
    that final result.
@@ -846,8 +869,10 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
   a `post-checkout` hook planted in the repository (not run by `git worktree add`, whose
   hooks are disabled); a stale pending write of another lineage found at admission
   (lineage compromised, repository quarantined — and the operator too when the write was
-  unconfined); a crash between each publication of 3.8.3 step 8 (before the lineage
-  rename: stale pending write; after it: only the report rebuilt); a run that never
+  unconfined); a crash between each publication of 3.8.3 step 9 (before the lineage
+  rename: stale pending write; between the lineage rename and the removal of an
+  unconfined intent: operator quarantine; after both: only the report rebuilt); a run
+  that never
   started, cleaned; a `core.hooksPath` from the operator's configuration changed
   (operator quarantine); `--repo` inside a compromised lineage's worktree (the review
   refused before any git command); `--findings` after `ha clean` of the review (read from
@@ -863,7 +888,13 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
   branch attributing it to the unconfined writer's providers (`made_by: unknown`); a
   review lock order test (every lineage of the repository locked shared, ascending,
   before the first git); the review check and result each written once (a second write
-  refused by `O_EXCL`).
+  refused by `O_EXCL`). Fifth-pass additions: a new unconfined write finding a leftover
+  `unconfined-intent.json` after taking the lock exclusively (stale: operator quarantine,
+  refused); a new write with `--repo` inside another lineage's worktree (that lineage
+  locked shared and admitted first); a lineage created while a review holds the registry
+  lock (it waits, and the review's decision covers a fixed set); a review's final cleanup
+  after an unconfined write started meanwhile (it waits for the lock and re-checks the
+  quarantines before `git worktree remove`).
 - **Boundary guard (existing):** runtime dependencies stay within `pydantic` and
   `structlog` — TOML, not YAML, for that reason; no import of `brain_v42`.
 - **Dream non-regression (existing):** the golden fixtures pass unchanged.
