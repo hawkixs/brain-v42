@@ -108,7 +108,7 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _World:
     (repo / "app.py").write_text("print('v1')\n")
     _git(repo, "add", "app.py")
     _git(repo, "commit", "-q", "-m", "init")
-    agent = _Agent("codex")
+    agent = _Agent("claude")
     monkeypatch.setattr(cli, "get_provider", lambda name: agent)
     monkeypatch.setenv("HOME", str(home))
     environ = {"PATH": os.environ["PATH"], "HOME": str(home)}
@@ -122,12 +122,12 @@ def _edit_app(root: Path) -> None:
 
 def test_write_commits_the_change_on_a_carrier_branch(world: _World) -> None:
     world.agent.edit = _edit_app
-    code, out, _ = world.run("run", "-p", "codex", "--write", "improve app")
+    code, out, _ = world.run("run", "-p", "claude", "--write", "improve app")
     assert code == 0
     run_dir = world.only_run_dir()
     branch = f"ha/{run_dir.name}"
     log = _git(world.repo, "log", "--format=%s", "-1", branch)
-    assert log.strip() == f"chore(ha): {run_dir.name} via codex/served-model"
+    assert log.strip() == f"chore(ha): {run_dir.name} via claude/served-model"
     assert _git(world.repo, "show", f"{branch}:app.py") == "print('v2')\n"
     # never merged: main is untouched
     assert (world.repo / "app.py").read_text() == "print('v1')\n"
@@ -140,7 +140,7 @@ def test_write_commits_the_change_on_a_carrier_branch(world: _World) -> None:
 
 def test_the_agent_works_in_a_worktree_of_the_repository(world: _World) -> None:
     world.agent.edit = _edit_app
-    world.run("run", "-p", "codex", "--write", "go")
+    world.run("run", "-p", "claude", "--write", "go")
     workspace = world.agent.specs[0].profile.workspace
     assert workspace is not None
     assert workspace.path == world.only_run_dir() / "wt"
@@ -149,7 +149,7 @@ def test_the_agent_works_in_a_worktree_of_the_repository(world: _World) -> None:
 
 def test_shell_is_passed_through(world: _World) -> None:
     world.agent.edit = _edit_app
-    world.run("run", "-p", "codex", "--write", "--shell", "go")
+    world.run("run", "-p", "claude", "--write", "--shell", "go")
     workspace = world.agent.specs[0].profile.workspace
     assert workspace is not None and workspace.shell is True
 
@@ -157,13 +157,13 @@ def test_shell_is_passed_through(world: _World) -> None:
 def test_write_defaults_to_the_full_context(world: _World) -> None:
     (world.repo / "CLAUDE.md").write_text("ignored rules\n")
     world.agent.edit = _edit_app
-    world.run("run", "-p", "codex", "--write", "go")
+    world.run("run", "-p", "claude", "--write", "go")
     context = world.agent.specs[0].context
     assert context is not None and context.level == "full"
 
 
 def test_no_change_exits_5_and_commits_nothing(world: _World) -> None:
-    code, out, err = world.run("run", "-p", "codex", "--write", "go")
+    code, out, err = world.run("run", "-p", "claude", "--write", "go")
     assert code == 5
     run_dir = world.only_run_dir()
     assert _git(world.repo, "rev-parse", f"ha/{run_dir.name}") == _git(
@@ -177,7 +177,7 @@ def test_a_refusing_hook_keeps_the_diff_uncommitted_and_exits_1(world: _World) -
     hook.write_text("#!/bin/sh\necho 'lint says no' >&2\nexit 1\n")
     hook.chmod(0o755)
     world.agent.edit = _edit_app
-    code, _, err = world.run("run", "-p", "codex", "--write", "go")
+    code, _, err = world.run("run", "-p", "claude", "--write", "go")
     assert code == 1
     run_dir = world.only_run_dir()
     assert "lint says no" in (run_dir / "commit.log").read_text()
@@ -194,7 +194,7 @@ def test_a_passing_hook_runs(world: _World) -> None:
     hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
     hook.chmod(0o755)
     world.agent.edit = _edit_app
-    code, *_ = world.run("run", "-p", "codex", "--write", "go")
+    code, *_ = world.run("run", "-p", "claude", "--write", "go")
     assert code == 0 and marker.exists()
 
 
@@ -202,7 +202,7 @@ def test_a_tampered_run_never_runs_git(world: _World) -> None:
     """The rail's tripwire fired: no commit, no diff, the worktree kept for inspection."""
     world.agent.edit = _edit_app
     world.agent.tampered = ("/somewhere/.git/hooks/pre-commit",)
-    code, _, err = world.run("run", "-p", "codex", "--write", "go")
+    code, _, err = world.run("run", "-p", "claude", "--write", "go")
     assert code == 1
     assert "tripwire" in err
     run_dir = world.only_run_dir()
@@ -222,7 +222,7 @@ def test_the_cli_arms_its_own_tripwire_whatever_the_provider_reports(world: _Wor
         (common / "hooks" / "post-commit").write_text("#!/bin/sh\ntouch /tmp/pwned\n")
 
     world.agent.edit = plant
-    code, _, err = world.run("run", "-p", "codex", "--write", "go")
+    code, _, err = world.run("run", "-p", "claude", "--write", "go")
     assert code == 1
     assert "post-commit" in err
     run_dir = world.only_run_dir()
@@ -232,7 +232,7 @@ def test_the_cli_arms_its_own_tripwire_whatever_the_provider_reports(world: _Wor
 def test_a_failed_agent_run_commits_nothing(world: _World) -> None:
     world.agent.edit = _edit_app
     world.agent.code = 1
-    code, *_ = world.run("run", "-p", "codex", "--write", "go")
+    code, *_ = world.run("run", "-p", "claude", "--write", "go")
     assert code == 1
     run_dir = world.only_run_dir()
     assert _git(world.repo, "rev-parse", f"ha/{run_dir.name}") == _git(
@@ -243,7 +243,7 @@ def test_a_failed_agent_run_commits_nothing(world: _World) -> None:
 def test_write_outside_a_git_repository_is_a_usage_error(world: _World, tmp_path: Path) -> None:
     plain = tmp_path / "plain"
     plain.mkdir()
-    code, _, err = world.run("run", "-p", "codex", "--write", "--repo", str(plain), "go")
+    code, _, err = world.run("run", "-p", "claude", "--write", "--repo", str(plain), "go")
     assert code == 2 and "git" in err
 
 
@@ -253,14 +253,14 @@ def test_a_named_base_is_used(world: _World) -> None:
     _git(world.repo, "add", "later.txt")
     _git(world.repo, "commit", "-q", "-m", "later")
     world.agent.edit = _edit_app
-    world.run("run", "-p", "codex", "--write", "--base", first, "go")
+    world.run("run", "-p", "claude", "--write", "--base", first, "go")
     run_dir = world.only_run_dir()
     assert _git(world.repo, "rev-parse", f"ha/{run_dir.name}~1").strip() == first
 
 
 def test_json_carries_the_branch(world: _World) -> None:
     world.agent.edit = _edit_app
-    code, out, _ = world.run("run", "-p", "codex", "--write", "--json", "go")
+    code, out, _ = world.run("run", "-p", "claude", "--write", "--json", "go")
     assert code == 0
     payload = json.loads(out)
     assert payload["branch"] == f"ha/{world.only_run_dir().name}"
@@ -271,7 +271,7 @@ def test_json_carries_the_branch(world: _World) -> None:
 
 def test_clean_removes_the_worktree_and_keeps_the_branch(world: _World) -> None:
     world.agent.edit = _edit_app
-    world.run("run", "-p", "codex", "--write", "go")
+    world.run("run", "-p", "claude", "--write", "go")
     run_dir = world.only_run_dir()
     code, _, err = world.run("clean", run_dir.name)
     assert code == 0
@@ -283,7 +283,7 @@ def test_clean_removes_the_worktree_and_keeps_the_branch(world: _World) -> None:
 def test_clean_of_a_tampered_run_never_runs_git(world: _World) -> None:
     world.agent.edit = _edit_app
     world.agent.tampered = ("/x/.git/config",)
-    world.run("run", "-p", "codex", "--write", "go")
+    world.run("run", "-p", "claude", "--write", "go")
     run_dir = world.only_run_dir()
     code, _, err = world.run("clean", run_dir.name)
     assert code == 0
