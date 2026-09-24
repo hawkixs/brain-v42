@@ -56,6 +56,21 @@ Lot 4 completes 0.4.0; the package version is `0.4.0`. The four lot sections bel
   through `git_tripwire.git_command` with the repository's hooks running, the patch and
   diffstat printed, never a merge. `ha clean` removes the worktree and keeps the branch.
 
+### Changed (before the tag, from the end-to-end run of 2026-09-24)
+- `ha run` gives each link its own model: `--chain P1:MODEL,P2:MODEL` (the model is
+  everything after the first colon), then `-m`, then the operator's declared defaults in
+  `$XDG_CONFIG_HOME/ha/models.toml` (default `~/.config/ha/models.toml`, one
+  `provider = "model"` line each; an unknown provider or a non-string is refused). A link
+  left without a model is refused before anything runs (exit `2`), except agy. Found
+  end-to-end: without `-m` the rails refused an empty model — and opencode's refusal
+  exited `3`, which a chain reads as "unavailable": a configuration error fell through to
+  the next link. And one `-m` shared by every link made `--chain codex,claude` unusable.
+  A provider named twice in a chain is refused.
+- README: the `brain-read` MCP profile example carries `X-Brain-Tool-Profile = "native"`.
+  Without it brain's compact catalogue publishes, besides its session lifecycle tools,
+  only its two gateway tools, and a
+  read-only allowlist found no tool at all (measured end-to-end, all four rails).
+
 ### Behaviour
 - **codex keeps its shell tool in every workspace mode** (spec decision 13). Measured
   2026-09-24: codex reads files only through its shell, and a writable workspace with

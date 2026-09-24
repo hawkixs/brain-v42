@@ -9,9 +9,9 @@ One TOML file, ``$XDG_CONFIG_HOME/ha/mcp.toml`` (default
     url = "http://127.0.0.1:8765/mcp"
     bearer_env = "BRAIN_TOKEN"   # the variable NAME; the value never sits in this file
     tools = ["brain_search", "brain_get", "brain_recall", "brain_ticket_get"]
+    headers = { "X-Brain-Tool-Profile" = "native", "X-Brain-Agent" = "ha" }  # native: see README
     # optional:
     # name = "brain"                         # the server name the CLI declares (default: the table's)
-    # headers = { "X-Brain-Agent" = "ha" }
     # allowed_networks = ["10.8.0.0/24"]     # default: loopback only; "any" = no restriction
 
 The file holds names, never secrets: a key that looks like a secret value

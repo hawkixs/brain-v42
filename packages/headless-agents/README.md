@@ -355,7 +355,7 @@ uv tool install "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@
 ```text
 ha providers [--json]
 ha run -p PROVIDER [-m MODEL] [--effort E] [--timeout SECONDS]
-       [--chain P1,P2,...]
+       [--chain P1[:MODEL],P2[:MODEL],...]
        [--context full|global|none] [--context-parents]
        [--mcp PROFILE]
        [--base-url URL --key-env VAR]
@@ -379,8 +379,23 @@ ha clean RUN_ID
   command runs at all and the worktree is kept for inspection. codex needs no `--shell`
   here: it reads files only through its shell, which is always on and stays inside its OS
   sandbox; `--shell` arms the unconfined shell of the other rails.
-- **`--chain codex,claude`** walks the list on exit codes `3` and `4` (proof that nothing
-  was written); each link gets its own directory under `links/`.
+- **`--chain codex:gpt-6-luna,claude:sonnet`** walks the list on exit codes `3` and `4`
+  (proof that nothing was written); each link gets its own directory under `links/` and
+  may name its own model after the FIRST colon (`openrouter:meta/llama:free`). A provider
+  appears at most once in a chain.
+- **Models**: the rails never pick one for you (opencode's own default can be a
+  contributor model its vendor trains on), so each link's model is, first match wins: its
+  own in `--chain`, then `-m`, then your declared default in `~/.config/ha/models.toml`
+  (or `$XDG_CONFIG_HOME/ha/models.toml`); with none, the run is refused before anything
+  starts (exit `2`). Only agy chooses safely on its own. The package hard-codes no model
+  name:
+
+  ```toml
+  codex = "gpt-6-luna"
+  claude = "sonnet"
+  opencode = "opencode-go/glm-5.3-flash"
+  mistral = "mistral-small-latest"
+  ```
 - **`--mcp NAME`** maps a profile from `~/.config/ha/mcp.toml` (or
   `$XDG_CONFIG_HOME/ha/mcp.toml`) to the run; no MCP unless asked:
 
@@ -389,8 +404,17 @@ ha clean RUN_ID
   url = "http://127.0.0.1:8765/mcp"
   bearer_env = "BRAIN_TOKEN"   # the variable NAME; the value never sits in this file
   tools = ["brain_search", "brain_get", "brain_recall", "brain_ticket_get"]
+  headers = { "X-Brain-Tool-Profile" = "native", "X-Brain-Agent" = "ha" }
   # allowed_networks = ["10.8.0.0/24"]   # default loopback only; "any" = no restriction
   ```
+
+  For brain the `X-Brain-Tool-Profile = "native"` header is required: brain's default
+  `compact` catalogue publishes its session lifecycle tools and, for everything else,
+  only the two gateways `brain_find_tool` and `brain_call_tool` -- and
+  `brain_call_tool` reaches every tool, writes included -- so a read-only `tools` list
+  names tools that catalogue does not publish, and the agent finds none (measured
+  end-to-end 2026-09-24: claude refused, codex exited `3` with no tool call; with the
+  header all four rails answered through `brain_search`).
 
 - **`--base-url` / `--key-env`**: required with `-p openai-compat`, refused otherwise;
   `--key-env` takes the variable name, never the key.

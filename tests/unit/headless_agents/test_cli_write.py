@@ -112,6 +112,10 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _World:
     monkeypatch.setattr(cli, "get_provider", lambda name: agent)
     monkeypatch.setenv("HOME", str(home))
     environ = {"PATH": os.environ["PATH"], "HOME": str(home)}
+    # The operator's declared default models (the CLI requires one per rail).
+    models = home / ".config" / "ha" / "models.toml"
+    models.parent.mkdir(parents=True)
+    models.write_text('claude = "claude-default"\ncodex = "codex-default"\n')
     return _World(home=home, repo=repo, environ=environ, agent=agent)
 
 
