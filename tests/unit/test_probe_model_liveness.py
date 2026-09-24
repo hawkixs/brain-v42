@@ -86,6 +86,21 @@ class TestConfiguredModels:
         assert sites, "le secours d'extract n'a pas d'entrée propre dans l'inventaire"
         assert [e.model for e in sites] == [DEFAULT_EXTRACT_FALLBACK_MODEL]
 
+    def test_the_retired_wet_roadmap_fallback_is_not_probed(self) -> None:
+        """A site that never runs must not hold the alarm red.
+
+        `openai/gpt-oss-120b` went GONE 410 for good, so the weekly unit failed on
+        14/09, 21/09 and 24/09 — while ROADMAP is disabled and being retired
+        (ticket 0f008a1c). An alarm that is red every week for a known dead link
+        hides a real primary dying. Operator decision Q51=b (2026-09-24): drop the
+        site from the inventory now; the constant goes with the roadmap retirement.
+        """
+        sites = [
+            e for e in configured_models() if "DEFAULT_WET_ROADMAP_FALLBACK_MODEL" in e.used_by
+        ]
+
+        assert sites == []
+
 
 class TestEnvPrecedence:
     """The probe must resolve the way the SITES resolve: env included.
