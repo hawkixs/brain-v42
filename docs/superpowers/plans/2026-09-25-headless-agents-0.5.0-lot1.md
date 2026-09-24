@@ -399,6 +399,26 @@ def test_a_chain_role_keeps_its_links_in_order(tmp_path: Path) -> None:
         ('[a]\nprovider = "codex"\nbase_url = "http://x"\n', "base_url and key_env apply to openai-compat only"),
         ('["Bad_Name"]\nprovider = "codex"\n', "invalid role name"),
         ('[codex]\nprovider = "claude"\n', "collides with a provider name"),
+        # wrong types and invalid values, one per field (spec §4: every refusal)
+        ('[a]\nchain = "codex"\n', "chain must be a list of strings"),
+        ('[a]\nchain = ["codex", 3]\n', "chain must be a list of strings"),
+        ('[a]\nchain = []\n', "chain must name at least one provider"),
+        ('[a]\nprovider = "codex"\nmodel = 3\n', "model must be a non-empty string"),
+        ('[a]\nprovider = "codex"\nmodel = ""\n', "model must be a non-empty string"),
+        ('[a]\nprovider = "codex"\neffort = 1\n', "effort must be a string"),
+        ('[a]\nprovider = "codex"\neffort = "loud"\n', "effort 'loud' is not a codex effort"),
+        ('[a]\nprovider = "codex"\ntimeout = true\n', "timeout must be a positive number"),
+        ('[a]\nprovider = "codex"\ntimeout = "60"\n', "timeout must be a positive number"),
+        ('[a]\nprovider = "codex"\ntimeout = 0\n', "timeout must be a positive number"),
+        ('[a]\nprovider = "codex"\ncontext = "all"\n', "context must be one of full, global, none"),
+        ('[a]\nprovider = "codex"\ncontext_parents = "yes"\n', "context_parents must be a boolean"),
+        ('[a]\nprovider = "codex"\nmcp = 1\n', "mcp must be a profile name"),
+        ('[a]\nprovider = "codex"\nwrite = 1\n', "write must be a boolean"),
+        ('[a]\nprovider = "codex"\nwrite = true\nshell = "no"\n', "shell must be a boolean"),
+        ('[a]\nprovider = "openai-compat"\nbase_url = 1\nkey_env = "K"\n', "base_url must be a string"),
+        ('[a]\nprovider = "openai-compat"\nbase_url = "http://x"\nkey_env = 2\n', "key_env must be a string"),
+        ('[a]\nprovider = "codex"\ninstructions = 5\n', "instructions must be a string"),
+        ('a = 1\n', "a role must be a table"),
     ],
 )
 def test_every_refusal_names_file_entry_and_rule(tmp_path: Path, text: str, rule: str) -> None:
@@ -436,7 +456,9 @@ def test_a_deeply_nested_file_is_a_roles_error(tmp_path: Path) -> None:
 - [ ] **Step 3: Implement `roles.py`** — `tomllib.load`, catching `TOMLDecodeError`,
   `OSError` and `RecursionError` (as `cli_models.load_models` does); a table per role; a
   `_FIELDS: Final[Mapping[str, type | tuple[type, ...]]]` map of §3.1's fields and types
-  (`timeout` accepts `int` or `float`, refuses `bool`); the checks in the order of the
+  (`timeout` accepts a positive `int` or `float`, refuses `bool`; `effort` any non-empty
+  string, and one of `providers.codex.REASONING_EFFORTS` whenever a link is codex — the
+  other rails translate or ignore it); the checks in the order of the
   parametrized test above, each raising `RolesError(f"{path}: [{name}] {rule}")`;
   `context` defaults to `"full" if write else "global"`; a chain entry parsed with
   `cli_models.parse_chain` semantics (model after the first colon) but reporting "appears
