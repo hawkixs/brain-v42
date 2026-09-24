@@ -539,8 +539,10 @@ src/brain_v42/agents/                # the Dream's POLICY over the runtime
 The runtime executes; it never decides. Everything the Dream used to resolve for itself from
 `brain_v42.mcp.dream_capabilities` -- which MCP server, with which bearer and which exact tool
 allowlist, which `PreToolUse` guard, which credential files -- arrives as one
-`CapabilityProfile` value. `McpServer` carries the server name the CLI declares, its loopback-
-validated URL (a remote URL needs `require_loopback=False` by name), the bearer as a value (for
+`CapabilityProfile` value. `McpServer` carries the server name the CLI declares, its URL
+validated against `allowed_networks` (loopback by default; a private network is admitted by
+listing it, `None` lifts the restriction by name -- the Dream's `brain_mcp_server` uses `None`,
+its URL being validated under enforcement instead), the bearer as a value (for
 the rail that writes it literally, agy) and/or the variable name it travels under (codex and
 claude read it from their environment), the extra headers and the tools. `mcp=None` is a run that
 may reach no server at all: codex declares no `mcp_servers`, claude gets `{"mcpServers": {}}`

@@ -168,7 +168,6 @@ def brain_mcp_server(
     phase: str,
     url: str,
     bearer: str | None = None,
-    require_loopback: bool = False,
 ) -> McpServer:
     """The Brain server as one Dream ``(rail, phase)`` declares it to its CLI.
 
@@ -178,10 +177,12 @@ def brain_mcp_server(
     every emitted header off the source; the bearer travels under
     ``MCP_HTTP_TOKEN`` for the rails that read it from their environment
     (codex, claude). ``bearer`` carries the ``(project, phase)`` token VALUE
-    for the one rail that must write it literally (agy). ``require_loopback``
-    is off by default because the argv builders are pure and the URL is
-    validated by :func:`build_child_environment` under enforcement; the
-    historical rollback path never validated it.
+    for the one rail that must write it literally (agy). The server carries
+    ``allowed_networks=None`` (no restriction) -- the exact equivalent of the
+    ``require_loopback=False`` it passed before headless-agents 0.4.0 --
+    because the argv builders are pure and the URL is validated by
+    :func:`build_child_environment` under enforcement; the historical
+    rollback path never validated it.
     """
     return McpServer(
         name=BRAIN_MCP_SERVER_NAME,
@@ -193,7 +194,7 @@ def brain_mcp_server(
             "X-Brain-Tool-Profile": "native",
         },
         tools=dream_phase_tool_allowlist(phase),
-        require_loopback=require_loopback,
+        allowed_networks=None,
     )
 
 

@@ -66,8 +66,82 @@ class TestMcpServer:
             _server(url=url)
 
     def test_a_remote_url_needs_an_explicit_opt_out(self) -> None:
-        server = _server(url="https://mcp.example.test/mcp", require_loopback=False)
+        # 0.4.0: ``allowed_networks=None`` replaces ``require_loopback=False``.
+        server = _server(url="https://mcp.example.test/mcp", allowed_networks=None)
         assert server.url == "https://mcp.example.test/mcp"
+
+
+class TestAllowedNetworks:
+    """Spec 3.4: ``allowed_networks`` replaces the boolean ``require_loopback``."""
+
+    def test_the_default_is_loopback_only(self) -> None:
+        assert _server().allowed_networks == ("127.0.0.0/8", "::1/128")
+
+    def test_a_listed_private_subnet_admits_an_ip_literal_inside_it(self) -> None:
+        server = _server(url="http://10.8.0.5:8765/mcp", allowed_networks=("10.8.0.0/24",))
+        assert server.url == "http://10.8.0.5:8765/mcp"
+
+    def test_an_ip_literal_outside_the_listed_networks_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="outside"):
+            _server(url="http://10.9.0.5:8765/mcp", allowed_networks=("10.8.0.0/24",))
+
+    def test_an_ipv6_literal_is_matched(self) -> None:
+        server = _server(url="http://[fd00::5]:8765/mcp", allowed_networks=("fd00::/8",))
+        assert server.url == "http://[fd00::5]:8765/mcp"
+
+    def test_a_host_name_is_never_resolved(self) -> None:
+        with pytest.raises(ValidationError, match="IP literal"):
+            _server(url="http://brain.lan:8765/mcp", allowed_networks=("10.8.0.0/24",))
+
+    def test_localhost_is_accepted_iff_loopback_is_listed(self) -> None:
+        assert _server(url="http://localhost:1/mcp", allowed_networks=("127.0.0.0/8",)).url
+        with pytest.raises(ValidationError):
+            _server(url="http://localhost:1/mcp", allowed_networks=("10.8.0.0/24",))
+
+    def test_none_means_no_restriction(self) -> None:
+        server = _server(url="https://mcp.example.test/mcp", allowed_networks=None)
+        assert server.allowed_networks is None
+
+    def test_an_empty_tuple_is_rejected_rather_than_read_as_no_restriction(self) -> None:
+        with pytest.raises(ValidationError, match="None"):
+            _server(allowed_networks=())
+
+    def test_a_malformed_network_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            _server(allowed_networks=("not-a-network",))
+
+    def test_the_url_shape_is_still_checked_inside_an_allowed_network(self) -> None:
+        for url in ("ftp://10.8.0.5/mcp", "http://u:p@10.8.0.5/mcp", "http://10.8.0.5/mcp#f"):
+            with pytest.raises(ValidationError):
+                _server(url=url, allowed_networks=("10.8.0.0/24",))
+
+    def test_the_removed_require_loopback_fails_loudly(self) -> None:
+        with pytest.raises(ValidationError, match="allowed_networks"):
+            _server(require_loopback=False)
+
+    def test_a_listed_non_loopback_literal_goes_to_no_proxy(self) -> None:
+        from headless_agents.capability import scoped_environment
+        from headless_agents.profile import mcp_no_proxy_hosts
+
+        server = _server(url="http://10.8.0.5:8765/mcp", allowed_networks=("10.8.0.0/24",))
+        assert mcp_no_proxy_hosts(server) == ("10.8.0.5",)
+        env = scoped_environment(
+            {"NO_PROXY": "corp.example"}, no_proxy_hosts=mcp_no_proxy_hosts(server)
+        )
+        assert env["NO_PROXY"].split(",") == [
+            "corp.example",
+            "127.0.0.1",
+            "localhost",
+            "::1",
+            "10.8.0.5",
+        ]
+
+    def test_loopback_and_unrestricted_servers_add_nothing_to_no_proxy(self) -> None:
+        from headless_agents.profile import mcp_no_proxy_hosts
+
+        assert mcp_no_proxy_hosts(_server()) == ()
+        assert mcp_no_proxy_hosts(_server(url="http://10.8.0.5/mcp", allowed_networks=None)) == ()
+        assert mcp_no_proxy_hosts(None) == ()
 
     def test_bearer_never_shows_in_repr(self) -> None:
         text = repr(_server(bearer=SecretStr("very-secret-value")))
