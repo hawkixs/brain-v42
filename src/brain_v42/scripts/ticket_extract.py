@@ -568,6 +568,10 @@ class ThreadOutcome:
     drafts: list[ProposalDraft]
     failed: bool = False
     error: str | None = None
+    #: The link itself failed (HTTP, provider, agy envelope) — never a content
+    #: error. Only such a failure may be deferred (Q52); an unparseable answer
+    #: stays a hard failure.
+    transport_failure: bool = False
     #: 049 — `None` means "this call's usage never carried a reasoning-token
     #: count" (no key, wrong type, negative), never "it reported zero". See
     #: `thinking_tokens_from_usage`.
@@ -589,12 +593,16 @@ async def _extract_via(
     """
     messages = build_messages(thread)
     thinking_tokens: int | None = None
+    # Q61: once an answer failed to parse, this link has erred on content --
+    # a corrective re-prompt that then dies on transport does not undo that.
+    content_error_seen = False
     try:
         content, usage = await call(messages)
         thinking_tokens = thinking_tokens_from_usage(usage)
         try:
             drafts = parse_and_validate(content, thread)
         except ResponseParseError as first_error:
+            content_error_seen = True
             # One corrective re-prompt — one that NAMES the error, as
             # `roadmap_curate._curate_llm_attempt` has always done. Without it, a
             # model that returned the wrong project key re-reads "return valid
@@ -623,11 +631,12 @@ async def _extract_via(
                     error=f"unparseable after corrective re-prompt: {exc}",
                     thinking_tokens=thinking_tokens,
                 )
-    except ModelGoneError:
+    except ModelGoneError as exc:
         # DO NOT bury this in a `failed` outcome: a retired model is not a
         # faulty ticket. Conflated, they produce twenty identical failures
         # nobody can trace back to their single cause — and the loop loses the
         # one piece of information that would let it switch to the fallback.
+        exc.content_error_seen = exc.content_error_seen or content_error_seen
         raise
     except (httpx.HTTPError, RuntimeError, KeyError, ValueError) as exc:
         # `thinking_tokens` may already hold the first call's measurement (a
@@ -640,6 +649,7 @@ async def _extract_via(
             drafts=[],
             failed=True,
             error=_exc_str(exc),
+            transport_failure=not content_error_seen,
             thinking_tokens=thinking_tokens,
         )
     return ThreadOutcome(thread=thread, drafts=drafts, thinking_tokens=thinking_tokens)
@@ -1084,8 +1094,12 @@ async def record_ticket_attempt(
     status: str,
     duration_s: float,
     error: str | None,
-) -> None:
-    """Persist one terminal ticket attempt; failures must remain resumable."""
+) -> bool:
+    """Persist one terminal ticket attempt; failures must remain resumable.
+
+    Returns whether the row was written. Most callers only log, but a
+    transport deferral is only a deferral if the next night can read it back.
+    """
     try:
         async with session_factory() as session:
             async with session.begin():
@@ -1105,6 +1119,54 @@ async def record_ticket_attempt(
                 )
     except Exception as exc:
         print(f"! warning: could not record ticket attempt {thread.id}: {type(exc).__name__}")
+        return False
+    return True
+
+
+# Marks a deferral caused by the WHOLE provider chain failing, so the next
+# night can tell it from a budget deferral (which never started the ticket).
+TRANSPORT_DEFERRAL_PREFIX = "provider chain failed"
+_BUDGET_DEFERRAL_PREFIX = "run budget exhausted"
+
+
+def _is_transport_deferral(status: str, error_message: str | None) -> bool:
+    return status == "deferred" and (error_message or "").startswith(TRANSPORT_DEFERRAL_PREFIX)
+
+
+async def _previous_attempt_was_a_transport_deferral(
+    session_factory: Any, thread: TicketThread
+) -> bool:
+    """Did this ticket's last attempted night also lose it on the provider chain?
+
+    Operator decision Q52=c (2026-09-24): one whole-chain failure is deferred,
+    two in a row are a hard failure. "In a row" means the ticket's most recent
+    attempt before today that actually RAN — a budget deferral never started it
+    and is skipped. A legacy `failed` row carries no marker and does not count:
+    at worst one extra lenient night right after rollout.
+    """
+    from brain_v42.db.tables import ticket_extraction_attempts as attempts  # noqa: PLC0415
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                sa.select(attempts.c.status, attempts.c.error_message)
+                .where(attempts.c.ticket_id == thread.id)
+                .where(attempts.c.run_date < date.today())
+                .where(
+                    sa.not_(
+                        sa.and_(
+                            attempts.c.status == "deferred",
+                            sa.func.coalesce(attempts.c.error_message, "").like(
+                                f"{_BUDGET_DEFERRAL_PREFIX}%"
+                            ),
+                        )
+                    )
+                )
+                .order_by(attempts.c.created_at.desc())
+                .limit(1)
+            )
+        ).first()
+    return row is not None and _is_transport_deferral(row[0], row[1])
 
 
 async def _within_deadline(awaitable: Any, deadline: float) -> Any:
@@ -1417,7 +1479,7 @@ async def _run(
                         pending,
                         "deferred",
                         0.0,
-                        f"run budget exhausted: {max(0.0, usable_slice):.1f}s usable "
+                        f"{_BUDGET_DEFERRAL_PREFIX}: {max(0.0, usable_slice):.1f}s usable "
                         f"< {_MIN_TICKET_SLICE_SECONDS}s minimum slice",
                     )
                     print(f"progress: ticket {pending.id} deferred (run budget)")
@@ -1429,6 +1491,9 @@ async def _run(
             ticket_slice_seconds = min(ticket_budget_seconds, usable_slice)
             ticket_started = time.monotonic()
             ticket_deadline = ticket_started + ticket_slice_seconds
+            # A content error seen by a model retired mid-ticket (its re-prompt
+            # hit the 410) must survive the switch to the next model.
+            ticket_content_error = False
             while True:
                 if switched_to_agy:
                     # Both NVIDIA links are gone for the rest of the run: no
@@ -1450,6 +1515,7 @@ async def _run(
                     )
                     break
                 except ModelGoneError as exc:
+                    ticket_content_error = ticket_content_error or exc.content_error_seen
                     # The switch is a RUN decision, not a ticket one: without
                     # this state, the next 19 tickets would each pay the same
                     # 410 again to learn the same thing.
@@ -1491,6 +1557,15 @@ async def _run(
             if switched_to_agy and not outcome.failed:
                 agy_served += 1
 
+            # Q52: a deferral needs EVERY link tried to have failed on
+            # transport. The rescue below replaces `outcome`, so a content
+            # error on the NVIDIA link must be remembered across it.
+            # A deadline is remembered the same way (operator Q57=a): a timeout
+            # anywhere in the chain keeps the ticket a timeout (rc=3).
+            chain_timeout = outcome.failed and "timeout" in (outcome.error or "").lower()
+            chain_content_error = outcome.failed and (
+                ticket_content_error or (not outcome.transport_failure and not chain_timeout)
+            )
             if outcome.failed and agy_model and not switched_to_agy:
                 # Ticket-level rescue: this ticket failed on whichever NVIDIA
                 # link was active, for a TRANSPORT reason (httpx error, ticket
@@ -1522,11 +1597,38 @@ async def _run(
                     ticket_duration = time.monotonic() - ticket_started
 
             if outcome.failed:
-                is_timeout = "timeout" in (outcome.error or "").lower()
-                attempt_status = "timeout" if is_timeout else "failed"
-                await record_ticket_attempt(
-                    sf, thread, attempt_status, ticket_duration, outcome.error
+                is_timeout = chain_timeout or "timeout" in (outcome.error or "").lower()
+                # Q52=c: the whole provider chain failed but nothing is lost —
+                # the ticket stays pending and is replayed. Defer it, unless its
+                # previous attempted night failed the same way. An unreadable
+                # history fails closed onto the loud path.
+                transport_deferral = False
+                if outcome.transport_failure and not chain_content_error and not is_timeout:
+                    try:
+                        transport_deferral = not await _previous_attempt_was_a_transport_deferral(
+                            sf, thread
+                        )
+                    except Exception as exc:
+                        print(
+                            f"! warning: could not read attempt history of {thread.id}: "
+                            f"{type(exc).__name__}"
+                        )
+                attempt_status = (
+                    "timeout" if is_timeout else "deferred" if transport_deferral else "failed"
                 )
+                attempt_error = (
+                    f"{TRANSPORT_DEFERRAL_PREFIX}: {outcome.error}"
+                    if transport_deferral
+                    else outcome.error
+                )
+                persisted = await record_ticket_attempt(
+                    sf, thread, attempt_status, ticket_duration, attempt_error
+                )
+                if transport_deferral and not persisted:
+                    # Unsaved, the next night cannot see this failure and would
+                    # never escalate: fall back onto the loud path.
+                    transport_deferral = False
+                    attempt_status = "failed"
                 print(
                     f"progress: ticket {thread.id} {attempt_status}: {_safe_error(outcome.error)}"
                 )
@@ -1541,6 +1643,9 @@ async def _run(
                     ticket_slice_s=ticket_slice_seconds,
                     ticket_budget_s=ticket_budget_seconds,
                 )
+                if transport_deferral:
+                    deferred_count += 1
+                    continue
                 failed += 1
                 timed_out += int(is_timeout)
                 hard_failed += int(not is_timeout)
