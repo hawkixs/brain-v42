@@ -716,6 +716,11 @@ def test_a_child_survives_while_its_spawning_thread_waits(tmp_path: Path) -> Non
   And the fork race: call `preexec_for(pid_of_a_process_that_already_exited)()` in a forked
   child (`os.fork`) and assert the child exits with status 1 before any exec — the check
   that runs after `prctl` catches a parent that died before the signal was armed.
+  **Test to write (carry-forward, plan closure round `20260925T013931-3deacc93`):** simulate
+  a failing `prctl(PR_SET_PDEATHSIG)` (patch the `ctypes` call to return `-1`) and pin the
+  documented behaviour — the child still execs (a preexec exception would abort the spawn),
+  the failure is observable (the rail's stderr log gains one line naming it), and the
+  interruption path of this task still kills the group.
 
 - [ ] **Step 2:** run; FAIL (`ModuleNotFoundError`).
 - [ ] **Step 3:** implement `procgroup.py` (`PR_SET_PDEATHSIG = 1`; raise nothing from the
