@@ -87,11 +87,14 @@ def _make_collector() -> MetricsCollector:
                     "< 100ms": 4,
                     "100-300ms": 1,
                 },
-                "_decay": {
-                    "stale_count": 7,
-                    "archived_count": 3,
-                    "access_log_size": 42,
-                },
+            },
+            # _decay is a DB-wide gauge (04c09575): collect_process_metrics splits
+            # it out of "tools" itself (latest-row-wins, never summed) and returns
+            # it here, already reduced — server.py has nothing left to pop.
+            "decay": {
+                "stale_count": 7,
+                "archived_count": 3,
+                "access_log_size": 42,
             },
             "embedding": {
                 "total_requests": 0,

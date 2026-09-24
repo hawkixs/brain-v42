@@ -41,6 +41,21 @@ _PG_LABEL_MAP: dict[str, str] = {
     "adrs": "ADR",
 }
 
+# Pseudo-tools that are DB-WIDE GAUGES, not per-process counters: summing them
+# across live processes would multiply a single count by the process count.
+# Ticket 04c09575 — `_decay` (stale_count/archived_count/access_log_size) was
+# folded through the generic calls/errors/total_latency SUM reducer below,
+# so every field read back at its `.get(..., 0)` default and the payload's
+# `decay` block was always zero in production. These names are pulled out of
+# `tool_stats` BEFORE that generic loop runs, and reduced by "latest row
+# wins" (by `updated_at`) instead of by summing.
+_GAUGE_PSEUDO_TOOLS: frozenset[str] = frozenset({"_decay"})
+
+# Structural zeros: a missing _decay row (fresh deploy, or the collect_process_metrics
+# except-branch) still returns a shaped decay block, per the "zero on a source that
+# counts nothing says nothing" convention used elsewhere in this module.
+_DECAY_ZERO: dict[str, int] = {"stale_count": 0, "archived_count": 0, "access_log_size": 0}
+
 
 class _DbCollectorsMixin:
     """search_log / process_metrics / graph inventory collectors."""
@@ -157,11 +172,16 @@ class _DbCollectorsMixin:
             active_agents: distinct real agent_name count (excludes _process).
             total_memory_rss_bytes: RSS from _process row(s) only.
             tools: tool_stats aggregated across ALL rows (real tools + pseudo-tools from
-                _process are disjoint, so no ×N).
+                _process are disjoint, so no ×N). Gauge pseudo-tools (``_GAUGE_PSEUDO_TOOLS``,
+                e.g. ``_decay``) never appear here — they are reduced separately, below.
             embedding: embedding_stats from _process row(s) only (never from real-agent
                 rows which carry empty dicts per Task 3.2).
             by_agent: per real-agent breakdown {calls, errors, recent_errors, avg_latency_ms}
                 aggregated from that agent's tool_stats; excludes _process.
+            decay: the LATEST flushed ``_decay`` row's ``{stale_count, archived_count,
+                access_log_size}`` (by ``updated_at``), never a sum — these are DB-wide
+                gauges, and summing across live processes would multiply them by the
+                process count (04c09575). Structural zeros when no row carries one.
         """
         try:
             async with self._session_factory() as session:
@@ -195,14 +215,33 @@ class _DbCollectorsMixin:
             # Per-agent accumulators: {agent_name: {calls, errors, recent_errors, total_latency}}
             agent_agg: dict[str, dict[str, Any]] = {}
 
+            # Gauge pseudo-tools: latest-row-wins, tracked independently of agg_tools
+            # so the generic SUM loop below never sees them (04c09575).
+            gauge_latest: dict[str, dict[str, Any]] = {}
+            gauge_latest_updated_at: dict[str, Any] = {}
+
             for row in rows:
                 agent_name = row[0]
+                updated_at = row[3]
                 tool_stats = row[4]  # JSONB → dict
                 emb_stats = row[5]
                 rss = row[6]
 
                 # Aggregate tools across ALL rows (real tools + pseudo-tools are disjoint)
                 for name, stats in tool_stats.items():
+                    if name in _GAUGE_PSEUDO_TOOLS:
+                        # Latest-row-wins (by updated_at), split out BEFORE the
+                        # generic sum below: _decay's fields (stale_count/
+                        # archived_count/access_log_size) have no calls/errors/
+                        # total_latency keys, so folding it through the sum
+                        # reducer silently zeroed it out (04c09575).
+                        last_seen = gauge_latest_updated_at.get(name)
+                        if last_seen is None or (
+                            updated_at is not None and updated_at >= last_seen
+                        ):
+                            gauge_latest[name] = stats
+                            gauge_latest_updated_at[name] = updated_at
+                        continue
                     if name not in agg_tools:
                         agg_tools[name] = {
                             "calls": 0,
@@ -310,6 +349,7 @@ class _DbCollectorsMixin:
                     "usage": agg_emb["usage"],
                 },
                 "by_agent": by_agent,
+                "decay": gauge_latest.get("_decay", _DECAY_ZERO),
             }
         except Exception:
             logger.warning("metrics.collect_process_metrics.failed", exc_info=True)
@@ -318,6 +358,7 @@ class _DbCollectorsMixin:
                 "active_agents": 0,
                 "total_memory_rss_bytes": 0,
                 "tools": {},
+                "decay": dict(_DECAY_ZERO),
                 "embedding": {
                     "total_requests": 0,
                     "total_errors": 0,

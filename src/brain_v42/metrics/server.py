@@ -480,12 +480,12 @@ class MetricsServer:
             # assembled from in-memory state; merging them would double-count.
             agg_tools.pop("_cost", None)
             agg_tools.pop("_buckets", None)
-            # Extract _decay into the top-level decay section: the sidecar's
-            # in-memory collector never sees MCP-process decay stats, so the
-            # cross-process values persisted by MetricsFlusher are authoritative.
-            decay_agg = agg_tools.pop("_decay", None)
-            if decay_agg is not None:
-                metrics["decay"] = decay_agg
+            # decay: the sidecar's in-memory collector never sees MCP-process decay
+            # stats, so the cross-process value is authoritative. It is a DB-wide
+            # GAUGE (latest-row-wins, never summed — 04c09575) and collect_process_metrics
+            # already reduces it that way and returns it split out of "tools", so there
+            # is nothing left to pop here.
+            metrics["decay"] = process_agg["decay"]
             metrics["tools"] = agg_tools
             emb_agg = process_agg["embedding"]
             metrics["embedding_service"]["total_requests"] = emb_agg["total_requests"]

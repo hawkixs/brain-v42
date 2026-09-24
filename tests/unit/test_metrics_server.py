@@ -140,6 +140,9 @@ async def test_metrics_endpoint_uses_cross_process_embedding_usage(
             "active_agents": 0,
             "total_memory_rss_bytes": 0,
             "tools": {},
+            # collect_process_metrics always carries a "decay" block since 04c09575
+            # (a DB-wide gauge, reduced latest-row-wins, split out of "tools").
+            "decay": {"stale_count": 0, "archived_count": 0, "access_log_size": 0},
             "embedding": {
                 "total_requests": 2,
                 "total_errors": 0,
