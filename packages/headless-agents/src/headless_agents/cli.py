@@ -310,7 +310,14 @@ def _plan(args: argparse.Namespace, io: Io) -> RunPlan:
                 if key in ("NO_PROXY", "no_proxy")
             },
         }
-    run_dir = args.run_dir if args.run_dir is not None else runs_root(io.home) / new_run_id()
+    # Anchored at the CLI's cwd and made absolute: ``--run-dir .`` has an empty
+    # raw name, and the run id, the ``ha-<id>`` prefix and the ``ha/<id>``
+    # branch all read it.
+    run_dir = (
+        Path(os.path.abspath(io.cwd / args.run_dir))
+        if args.run_dir is not None
+        else runs_root(io.home) / new_run_id()
+    )
     return RunPlan(
         providers=providers,
         prompt=prompt,

@@ -234,6 +234,15 @@ def test_run_dir_can_be_named(world: _World, tmp_path: Path) -> None:
     assert world.spec("codex").run_dir == target
 
 
+def test_a_relative_run_dir_is_anchored_at_the_cwd_and_named(world: _World) -> None:
+    # ``--run-dir .`` has an empty raw ``.name``: the run id, the ``ha-<id>``
+    # prefix and the ``ha/<id>`` branch of a write run all read it.
+    world.run("run", "-p", "codex", "--run-dir", ".", "go")
+    run_dir = world.spec("codex").run_dir
+    assert run_dir == world.repo
+    assert run_dir is not None and run_dir.name == world.repo.name
+
+
 def test_timeout_model_and_effort_are_passed(world: _World) -> None:
     world.run("run", "-p", "codex", "--timeout", "42", "--effort", "high", "go")
     spec = world.spec("codex")

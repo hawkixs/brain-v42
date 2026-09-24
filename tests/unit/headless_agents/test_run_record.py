@@ -75,6 +75,14 @@ class TestRunIdOf:
         monkeypatch.chdir(tmp_path)
         assert run_id_of(RunSpec(prompt="P", run_dir=Path("."))) == tmp_path.name
 
+    def test_a_symlinked_run_directory_keeps_the_name_of_the_link(self, tmp_path: Path) -> None:
+        # ``runs/latest -> runs/2026-09-24T01``: a reader listing run
+        # directories sees ``latest``; naming the run after the link target
+        # would give one run two ids depending on how it was reached.
+        (tmp_path / "2026-09-24T01").mkdir()
+        (tmp_path / "latest").symlink_to(tmp_path / "2026-09-24T01")
+        assert run_id_of(RunSpec(prompt="P", run_dir=tmp_path / "latest")) == "latest"
+
 
 class TestRecord:
     def test_without_run_dir_nothing_is_written(

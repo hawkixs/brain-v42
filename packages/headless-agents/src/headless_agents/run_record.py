@@ -12,7 +12,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from .result import RunResult
-from .spec import RunSpec
+from .spec import RunSpec, run_dir_name
 
 RESULT_FILE_NAME = "result.json"
 
@@ -47,15 +47,15 @@ def answer_text(path: Path | None, *, exit_code: int, offset: int = 0) -> str | 
 
 
 def run_id_of(spec: RunSpec) -> str | None:
-    """A run is named by its directory: the RESOLVED ``run_dir``'s name, or ``None`` without one.
+    """A run is named by its directory (:func:`~headless_agents.spec.run_dir_name`),
+    or ``None`` without one.
 
-    Resolved, not raw: ``run_dir=Path('.')`` has an empty raw ``.name``, but it
-    names one real directory -- the caller's current one -- whose name is what
-    a reader of run directories actually sees. ``RunSpec.__post_init__``
-    already refused a ``run_dir`` whose resolved name is empty, so this never
-    returns ``""`` for a constructed spec.
+    Not the raw ``.name``: ``run_dir=Path('.')`` has an empty one, yet names
+    the caller's current directory. ``RunSpec.__post_init__`` already refused
+    a ``run_dir`` with no name, so this never returns ``""`` for a constructed
+    spec.
     """
-    return spec.run_dir.resolve().name if spec.run_dir is not None else None
+    return run_dir_name(spec.run_dir) if spec.run_dir is not None else None
 
 
 def record(spec: RunSpec, result: RunResult) -> RunResult:

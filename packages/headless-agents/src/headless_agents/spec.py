@@ -30,6 +30,7 @@ each rail delivers it through its preamble channel.
 
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -48,6 +49,18 @@ RUN_DIR_LOG_NAMES: Final[Mapping[str, str]] = {
     "stderr_log": "stderr.log",
     "raw_log": "raw.log",
 }
+
+
+def run_dir_name(run_dir: Path) -> str:
+    """The name ``run_dir`` gives a run: its last component once made absolute.
+
+    Lexical, never :meth:`Path.resolve`: ``Path('.')`` has an empty raw name
+    yet names the current directory, while a ``runs/latest`` symlink must keep
+    the name a reader listing run directories sees -- following it would give
+    one run two ids depending on how it was reached. Empty only for the
+    filesystem root, which :class:`RunSpec` refuses.
+    """
+    return Path(os.path.abspath(run_dir)).name
 
 
 def _in_run_dir(current: Path | None, run_dir: Path, field_name: str) -> Path:
@@ -79,17 +92,17 @@ class RunSpec:
     extra: dict[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """A run is named by its (resolved) directory: refuse one that resolves to none.
+        """A run is named by its directory (:func:`run_dir_name`): refuse one with none.
 
-        ``run_dir=Path('.')`` is common and valid -- it resolves to the caller's
+        ``run_dir=Path('.')`` is common and valid -- it names the caller's
         current directory, whose name becomes the run's id (see
-        :func:`headless_agents.run_record.run_id_of`). Only a directory that
-        resolves to the filesystem root has no name to give: refused here,
-        at construction, rather than left to surface as an empty run id or an
-        empty ``result.json`` directory name downstream.
+        :func:`headless_agents.run_record.run_id_of`). Only the filesystem
+        root has no name to give: refused here, at construction, rather than
+        left to surface as an empty run id or an empty ``result.json``
+        directory name downstream.
         """
-        if self.run_dir is not None and not self.run_dir.resolve().name:
-            raise ValueError(f"run_dir resolves to no name, cannot name a run: {self.run_dir!r}")
+        if self.run_dir is not None and not run_dir_name(self.run_dir):
+            raise ValueError(f"run_dir has no name, cannot name a run: {self.run_dir!r}")
 
     def effective_timeout_seconds(self, *, now: float | None = None) -> float:
         """``timeout_seconds`` capped by the time left until ``deadline``."""

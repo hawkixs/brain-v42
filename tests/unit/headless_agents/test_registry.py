@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -186,7 +187,10 @@ class TestProbe:
         outcome: dict[str, registry.Probe] = {}
 
         def _run() -> None:
-            outcome["probe"] = registry.probe("agy", executable=str(cli), timeout_seconds=0.3)
+            # 1 s, not less: the pidfile is written only once the shell has
+            # started and forked, and a group kill landing earlier on a loaded
+            # host would fail this test with a misleading FileNotFoundError.
+            outcome["probe"] = registry.probe("agy", executable=str(cli), timeout_seconds=1.0)
 
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
@@ -208,3 +212,37 @@ class TestProbe:
         finally:
             if _is_alive(grandchild_pid):
                 os.kill(grandchild_pid, 9)
+
+    def test_an_interrupted_probe_leaves_no_process_behind(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``start_new_session=True`` takes the probed CLI out of the terminal's
+        # foreground group, so a Ctrl-C no longer reaches it: an interrupt
+        # raised while the probe waits must kill the group itself, then
+        # propagate -- ``subprocess.run`` used to do both.
+        pidfile = tmp_path / "child.pid"
+        cli = _script(tmp_path, f'echo $$ > "{pidfile}"\nexec sleep 30')
+
+        class _InterruptedOnce(subprocess.Popen[str]):
+            interrupted = False
+
+            def communicate(
+                self, input: str | None = None, timeout: float | None = None
+            ) -> tuple[str, str]:
+                if not _InterruptedOnce.interrupted:
+                    _InterruptedOnce.interrupted = True
+                    deadline = time.monotonic() + 5.0
+                    while not pidfile.exists() and time.monotonic() < deadline:
+                        time.sleep(0.02)
+                    raise KeyboardInterrupt
+                return super().communicate(input, timeout)
+
+        monkeypatch.setattr(registry.subprocess, "Popen", _InterruptedOnce)
+        with pytest.raises(KeyboardInterrupt):
+            registry.probe("agy", executable=str(cli), timeout_seconds=10.0)
+        child_pid = int(pidfile.read_text().strip())
+        try:
+            assert not _is_alive(child_pid), "the probed CLI outlived an interrupted probe"
+        finally:
+            if _is_alive(child_pid):
+                os.kill(child_pid, 9)

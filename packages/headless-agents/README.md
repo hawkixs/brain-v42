@@ -273,6 +273,8 @@ both from the caller. The package never reads a key from a file: put it in the
 environment.
 
 ```python
+from pathlib import Path
+
 from headless_agents.registry import get_provider, probe
 from headless_agents.spec import RunSpec
 

@@ -180,6 +180,11 @@ def probe(
         return Probe(
             available=False, detail=f"{path} --version: no answer within {timeout_seconds:g} s"
         )
+    except BaseException:
+        # Its own session keeps the probed CLI out of the terminal's foreground
+        # group: a Ctrl-C reaches only us, so the group is ours to kill.
+        _kill_process_group(process)
+        raise
     if process.returncode != 0:
         return Probe(available=False, detail=f"{path} --version exited {process.returncode}")
     version = _first_nonempty_line(stdout) or _first_nonempty_line(stderr)
