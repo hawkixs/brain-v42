@@ -44,7 +44,7 @@ from typing import IO, Final
 
 from .capability import INVALID_USAGE_EXIT_CODE, scoped_environment
 from .chain import run_chain
-from .cli_models import ModelsError, link_models
+from .cli_models import ModelsError, models_for, parse_chain
 from .context import ContextBundle, ContextLevel, resolve_context
 from .mcp_profiles import McpProfileError, mcp_server
 from .profile import CapabilityProfile, Credentials, McpServer, Workspace, mcp_no_proxy_hosts
@@ -256,24 +256,35 @@ def _prompt(args: argparse.Namespace, io: Io) -> str:
     return text
 
 
-def _providers_of(args: argparse.Namespace, io: Io) -> tuple[tuple[str, ...], dict[str, str]]:
-    """The run's providers in order, and each one's model (see :mod:`.cli_models`)."""
-    if not args.chain and not args.provider:
-        raise UsageError("name a provider with -p, or a chain with --chain")
+def _links_of(args: argparse.Namespace) -> tuple[tuple[str, str], ...]:
+    """The run's ``(provider, own model)`` links, in order, provider names checked."""
     try:
-        names, models = link_models(
-            chain=args.chain,
-            provider=args.provider,
-            model=args.model,
-            environ=io.environ,
-            home=io.home,
-        )
+        if args.chain:
+            links = parse_chain(args.chain)
+        elif args.provider:
+            links = ((args.provider, ""),)
+        else:
+            links = ()
     except ModelsError as exc:
         raise UsageError(str(exc)) from None
-    for name in names:
+    if not links:
+        raise UsageError("name a provider with -p, or a chain with --chain")
+    for name, _ in links:
         if name not in PROVIDER_NAMES:
             raise UsageError(f"unknown provider {name!r}; valid names: {', '.join(PROVIDER_NAMES)}")
-    return names, models
+    return links
+
+
+def _models_of(
+    args: argparse.Namespace, links: tuple[tuple[str, str], ...], io: Io
+) -> dict[str, str]:
+    """Each link's model (see :mod:`.cli_models`), asked only once the links and
+    the flags are known good: a model question must never mask a structural
+    usage error (independent review of PR #198, P3)."""
+    try:
+        return models_for(links, default=args.model, environ=io.environ, home=io.home)
+    except ModelsError as exc:
+        raise UsageError(str(exc)) from None
 
 
 def _check_flags(args: argparse.Namespace, providers: tuple[str, ...]) -> None:
@@ -293,8 +304,10 @@ def _check_flags(args: argparse.Namespace, providers: tuple[str, ...]) -> None:
 
 
 def _plan(args: argparse.Namespace, io: Io) -> RunPlan:
-    providers, models = _providers_of(args, io)
+    links = _links_of(args)
+    providers = tuple(name for name, _ in links)
     _check_flags(args, providers)
+    models = _models_of(args, links, io)
     prompt = _prompt(args, io)
     repository = args.repo.resolve() if args.repo else repository_root(io.cwd)
     level: ContextLevel = args.context or ("full" if args.write else "global")

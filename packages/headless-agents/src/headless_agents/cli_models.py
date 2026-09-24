@@ -49,6 +49,10 @@ def load_models(path: Path) -> dict[str, str]:
         return {}
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ModelsError(f"{path}: {exc}") from None
+    except RecursionError:
+        # tomllib recurses per nesting level: a value nested hundreds deep is
+        # a broken file, not a crash (independent review of PR #198, P2).
+        raise ModelsError(f"{path}: nested too deeply to be a models file") from None
     models: dict[str, str] = {}
     for name, model in table.items():
         if name not in PROVIDER_NAMES:
@@ -100,32 +104,28 @@ def resolve_models(
     return models
 
 
-def link_models(
+def models_for(
+    links: tuple[tuple[str, str], ...],
     *,
-    chain: str | None,
-    provider: str | None,
-    model: str,
+    default: str,
     environ: Mapping[str, str],
     home: Path,
-) -> tuple[tuple[str, ...], dict[str, str]]:
-    """The providers of a run, in order, and the model each one gets."""
-    links = parse_chain(chain) if chain else ((provider, ""),) if provider else ()
+) -> dict[str, str]:
+    """The model each link gets; the caller validated the links first."""
     path = default_models_path(environ, home=home)
     # Read only when some link is left without a model: a broken file must not
     # fail a run that never needed it.
-    needs_file = not model.strip() and any(not own for _, own in links)
+    needs_file = not default.strip() and any(not own for _, own in links)
     declared = load_models(path) if needs_file else {}
-    return tuple(name for name, _ in links), resolve_models(
-        links, default=model, declared=declared, declared_path=path
-    )
+    return resolve_models(links, default=default, declared=declared, declared_path=path)
 
 
 __all__ = [
     "MODEL_OPTIONAL",
     "ModelsError",
     "default_models_path",
-    "link_models",
     "load_models",
+    "models_for",
     "parse_chain",
     "resolve_models",
 ]

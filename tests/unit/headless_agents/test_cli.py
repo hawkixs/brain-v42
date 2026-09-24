@@ -448,6 +448,64 @@ def test_a_broken_models_toml_is_a_usage_error(world: _World, content: str, need
     assert code == 2 and needle in err
 
 
+def test_a_deeply_nested_models_toml_is_a_usage_error_not_a_crash(world: _World) -> None:
+    # Independent review of PR #198, P2: 600 nested arrays raised RecursionError
+    # out of tomllib, past load_models and cli.main.
+    path = world.home / ".config" / "ha" / "models.toml"
+    path.write_text("codex = " + "[" * 600 + "]" * 600 + "\n")
+    code, _, err = world.run("run", "-p", "codex", "go")
+    assert code == 2 and "models.toml" in err
+    assert not any(fake.specs for fake in world.fakes.values())
+
+
+def test_a_broken_models_toml_is_ignored_when_every_link_has_a_model(world: _World) -> None:
+    (world.home / ".config" / "ha" / "models.toml").write_text("codex = [\n")
+    code, *_ = world.run("run", "-p", "codex", "-m", "m", "go")
+    assert code == 0 and world.spec("codex").model == "m"
+
+
+@pytest.mark.parametrize(
+    ("argv", "needle"),
+    [
+        (("-p", "codex:gpt-x"), "unknown provider 'codex:gpt-x'"),
+        (("-p", "mistral", "--write"), "--write needs a CLI rail"),
+        (("-p", "claude", "--mcp", "x", "--base-url", "http://h/v1"), "--base-url and --key-env"),
+        (("-p", "openai-compat"), "openai-compat needs both --base-url and --key-env"),
+    ],
+)
+def test_a_structural_usage_error_is_reported_before_any_model_question(
+    world: _World, argv: tuple[str, ...], needle: str
+) -> None:
+    # Independent review of PR #198, P3: resolving models first masked these
+    # with a "needs a model" (or a broken-file) message.
+    (world.home / ".config" / "ha" / "models.toml").write_text("codex = [\n")
+    code, _, err = world.run("run", *argv, "go")
+    assert code == 2 and needle in err
+    assert not any(fake.specs for fake in world.fakes.values())
+
+
+@pytest.mark.parametrize("extra", [(), ("--write",)])
+def test_an_empty_chain_is_refused_before_anything_is_planned(
+    world: _World, extra: tuple[str, ...]
+) -> None:
+    code, _, err = world.run("run", "--chain", " , ", *extra, "go")
+    assert code == 2 and "name a provider" in err
+    assert not any(fake.specs for fake in world.fakes.values())
+    assert not (world.home / ".cache" / "ha" / "runs").exists()
+
+
+def test_each_links_result_records_its_own_model(world: _World) -> None:
+    _prime(world, "codex", code=3)
+    _prime(world, "claude")
+    world.run("run", "--chain", "codex:gpt-x,claude:sonnet-y", "--json", "go")
+    first, second = world.spec("codex").run_dir, world.spec("claude").run_dir
+    assert first is not None and second is not None
+    assert json.loads((first / "result.json").read_text())["model"] == "gpt-x"
+    assert json.loads((second / "result.json").read_text())["model"] == "sonnet-y"
+    top = second.parent.parent
+    assert json.loads((top / "result.json").read_text())["model"] == "sonnet-y"
+
+
 # ── --mcp ──────────────────────────────────────────────────────────────────
 
 
