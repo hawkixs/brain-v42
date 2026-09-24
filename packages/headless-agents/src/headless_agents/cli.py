@@ -318,6 +318,11 @@ def _plan(args: argparse.Namespace, io: Io) -> RunPlan:
         if args.run_dir is not None
         else runs_root(io.home) / new_run_id()
     )
+    # Refused HERE, where it is planned: a chain derives ``<run_dir>/links/...``
+    # and a write run ``<run_dir>/wt`` and ``ha/<name>`` before any RunSpec
+    # would check the name (independent review of PR #197, finding 3).
+    if not run_dir.name:
+        raise UsageError(f"--run-dir {args.run_dir} has no name: a run is named by its directory")
     return RunPlan(
         providers=providers,
         prompt=prompt,

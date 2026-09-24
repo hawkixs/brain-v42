@@ -243,6 +243,26 @@ def test_a_relative_run_dir_is_anchored_at_the_cwd_and_named(world: _World) -> N
     assert run_dir is not None and run_dir.name == world.repo.name
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("-p", "codex"),
+        ("--chain", "codex,claude"),
+        ("-p", "claude", "--write"),
+    ],
+)
+def test_a_run_dir_with_no_name_is_refused_before_anything_runs(
+    world: _World, argv: tuple[str, ...]
+) -> None:
+    # Independent review of PR #197, finding 3: a chain derives
+    # ``/links/0-codex`` and a write run ``/wt`` and ``ha/`` BEFORE any RunSpec
+    # checks the name, so the root must be refused where it is planned.
+    code, _, err = world.run("run", *argv, "--run-dir", "/", "go")
+    assert code == 2
+    assert "run-dir" in err
+    assert not any(fake.specs for fake in world.fakes.values())
+
+
 def test_timeout_model_and_effort_are_passed(world: _World) -> None:
     world.run("run", "-p", "codex", "--timeout", "42", "--effort", "high", "go")
     spec = world.spec("codex")
