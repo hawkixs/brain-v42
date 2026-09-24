@@ -1551,10 +1551,11 @@ async def _run(
             # Q52: a deferral needs EVERY link tried to have failed on
             # transport. The rescue below replaces `outcome`, so a content
             # error on the NVIDIA link must be remembered across it.
+            # A deadline is remembered the same way (operator Q57=a): a timeout
+            # anywhere in the chain keeps the ticket a timeout (rc=3).
+            chain_timeout = outcome.failed and "timeout" in (outcome.error or "").lower()
             chain_content_error = (
-                outcome.failed
-                and not outcome.transport_failure
-                and "timeout" not in (outcome.error or "").lower()
+                outcome.failed and not outcome.transport_failure and not chain_timeout
             )
             if outcome.failed and agy_model and not switched_to_agy:
                 # Ticket-level rescue: this ticket failed on whichever NVIDIA
@@ -1587,7 +1588,7 @@ async def _run(
                     ticket_duration = time.monotonic() - ticket_started
 
             if outcome.failed:
-                is_timeout = "timeout" in (outcome.error or "").lower()
+                is_timeout = chain_timeout or "timeout" in (outcome.error or "").lower()
                 # Q52=c: the whole provider chain failed but nothing is lost —
                 # the ticket stays pending and is replayed. Defer it, unless its
                 # previous attempted night failed the same way. An unreadable

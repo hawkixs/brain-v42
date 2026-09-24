@@ -3117,7 +3117,9 @@ class TestTheTicketLevelAgyRescue:
                 agy_executable="agy",
             )
 
-        assert exit_code == 1
+        # The NVIDIA link timed out: operator decision Q57=a (2026-09-24) keeps a
+        # deadline anywhere in the chain a timeout (rc=3); it was rc=1 before.
+        assert exit_code == 3
         recorded_error = attempt.await_args.kwargs.get("error") or attempt.await_args.args[-1]
         assert "also dead" in str(recorded_error)
 
@@ -3570,6 +3572,20 @@ class TestAContentFailureIsNeverDeferred:
 
         assert exit_code == 1
         assert [call.args[2] for call in attempts.await_args_list] == ["failed"]
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_before_a_transport_rescue_failure_stays_a_timeout(
+        self,
+    ) -> None:
+        """Operator Q57=a: a deadline anywhere in the chain keeps rc=3."""
+        exit_code, attempts, record = await TestAWholeChainTransportFailureIsDeferred._scenario(
+            repeats=False,
+            first_link_error="ticket timeout after 180s",
+        )
+
+        assert exit_code == 3
+        assert [call.args[2] for call in attempts.await_args_list] == ["timeout"]
+        assert record.await_args.kwargs["status"] == "timeout"
 
 
 class TestRecordTicketAttemptReportsTheWrite:
