@@ -11,6 +11,18 @@ The migration round trip itself (column shape, no-backfill on pre-057 rows) is
 proved against PostgreSQL in
 `tests/integration/db/test_migration_057_search_log_embedding_model.py`; this
 file covers only the Python insert path, which needs no database.
+
+Two follow-up review findings, both closed here:
+
+- A search that fell back to FTS-only (embedding service down, `search_mode
+  == "fts_fallback"` in `brain_service.py`'s degraded marker) was served by NO
+  embedding model — `fts_fallback=True` must therefore store `NULL`, not
+  whatever model happens to be configured, since that model played no part in
+  producing those results.
+- `record_search_log` is documented fail-soft (a DB failure never raises), but
+  the original insert read `get_settings()` BEFORE the `try:` — a settings
+  failure would have propagated past the very function that promises never to
+  raise. It must read the model INSIDE the try, same as the DB write.
 """
 
 from __future__ import annotations
@@ -76,7 +88,9 @@ def collector() -> MetricsCollector:
     return MetricsCollector(engine=MagicMock(), session_factory=MagicMock())
 
 
-async def _record(collector: MetricsCollector, session: _FakeSession) -> None:
+async def _record(
+    collector: MetricsCollector, session: _FakeSession, *, fts_fallback: bool = False
+) -> None:
     with patch.object(collector, "_session_factory", return_value=session):
         await collector.record_search_log(
             tool_name="brain_search",
@@ -85,6 +99,7 @@ async def _record(collector: MetricsCollector, session: _FakeSession) -> None:
             top_score=0.9,
             avg_score=0.8,
             latency_ms=42.0,
+            fts_fallback=fts_fallback,
         )
 
 
@@ -131,3 +146,61 @@ class TestTheSecretNeverReachesTheInsert:
         assert "sk-super-secret" not in session.sql
         assert "sk-super-secret" not in session.params.values()
         assert not any("api_key" in key.lower() for key in session.params)
+
+
+class TestFtsFallbackStoresNoModel:
+    """No embedding model served an FTS-only fallback search — the row must say so."""
+
+    async def test_fts_fallback_stores_null_even_though_a_model_is_configured(
+        self, collector: MetricsCollector
+    ) -> None:
+        """A configured model must be IGNORED once the caller says fts_fallback=True:
+        the model never ran for this search, so attributing it would misreport
+        which component actually served the row."""
+        session = _FakeSession()
+        with patch(
+            "brain_v42.metrics.collector_db.get_settings",
+            return_value=_FakeSettings("codestral-trial"),
+        ):
+            await _record(collector, session, fts_fallback=True)
+
+        assert "embedding_model" in session.sql
+        assert session.params["model"] is None
+
+    async def test_a_non_degraded_search_still_stores_the_configured_model(
+        self, collector: MetricsCollector
+    ) -> None:
+        """Regression guard for the flag's default: omitting fts_fallback must
+        not silently start nulling every row."""
+        session = _FakeSession()
+        with patch(
+            "brain_v42.metrics.collector_db.get_settings",
+            return_value=_FakeSettings("codestral-trial"),
+        ):
+            await _record(collector, session, fts_fallback=False)
+
+        assert session.params["model"] == "codestral-trial"
+
+
+class TestReadingTheModelStaysFailSoft:
+    """`record_search_log` promises never to raise (metrics must never break a
+    search). The original insert read `get_settings()` BEFORE the `try:`, so a
+    settings failure would have broken that promise — this pins it reading the
+    model INSIDE the try, exactly like the DB write it sits next to."""
+
+    async def test_a_settings_failure_is_swallowed_like_a_db_failure(
+        self, collector: MetricsCollector
+    ) -> None:
+        session = _FakeSession()
+        with patch(
+            "brain_v42.metrics.collector_db.get_settings",
+            side_effect=RuntimeError("settings unavailable"),
+        ):
+            # Must not raise: a broken settings read is exactly the kind of
+            # failure record_search_log is documented to swallow.
+            await _record(collector, session)
+
+        # And the in-memory latency histogram — recorded before either the
+        # settings read or the DB write — must still be populated.
+        pct = collector.retrieval_percentiles(window_s=86400.0)
+        assert pct["p50"] > 0.0

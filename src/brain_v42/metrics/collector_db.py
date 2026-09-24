@@ -57,6 +57,8 @@ class _DbCollectorsMixin:
         top_score: float | None,
         avg_score: float | None,
         latency_ms: float,
+        *,
+        fts_fallback: bool = False,
     ) -> None:
         """INSERT a row into search_log and update the in-memory latency histogram.
 
@@ -71,12 +73,25 @@ class _DbCollectorsMixin:
         drift from the live identity (ticket 4fac067a, decision 1669d429).
         Only the model NAME is read — never ``embedding_api_key``, the
         ``SecretStr`` sitting right next to it in ``Settings``.
+
+        ``fts_fallback`` is set by the caller when the search it is logging ran
+        in ``search_mode == "fts_fallback"`` (the embedding service was down
+        and ``brain_service.py`` served the search from FTS alone, per
+        ``SearchResponse.degraded`` / ``WhatDoIKnowResponse.degraded``). NO
+        embedding model produced those results, so the row must say ``NULL``
+        rather than whatever model happens to be configured that day — that
+        model played no part in serving this particular search.
+
+        The settings read sits INSIDE the ``try`` below, next to the DB write:
+        this method is documented to never raise (a metrics failure must never
+        break a search), and a broken settings read is exactly the kind of
+        failure it must swallow, the same as a DB failure.
         """
-        # Update in-memory histogram first — independent of DB availability.
+        # Update in-memory histogram first — independent of DB/settings availability.
         self.record_search_latency(latency_ms)  # type: ignore[attr-defined]
-        embedding_model = get_settings().embedding_model
 
         try:
+            embedding_model = None if fts_fallback else get_settings().embedding_model
             async with self._session_factory() as session:
                 await session.execute(
                     text(

@@ -845,6 +845,11 @@ def register_tools(
                     top_score=max(all_scores) if all_scores else None,
                     avg_score=sum(all_scores) / len(all_scores) if all_scores else None,
                     latency_ms=latency_ms,
+                    # No embedding model served an FTS-only fallback search
+                    # (embedding service down) — record_search_log must store
+                    # NULL rather than the configured model for that row.
+                    fts_fallback=(wdik_response.degraded or {}).get("search_mode")
+                    == "fts_fallback",
                 )
 
             diag = wdik_response.diagnostics
@@ -915,6 +920,10 @@ def register_tools(
                 top_score=max(scores) if scores else None,
                 avg_score=sum(scores) / len(scores) if scores else None,
                 latency_ms=latency_ms,
+                # No embedding model served an FTS-only fallback search
+                # (embedding service down) — record_search_log must store
+                # NULL rather than the configured model for that row.
+                fts_fallback=(search_response.degraded or {}).get("search_mode") == "fts_fallback",
             )
 
         diag = search_response.diagnostics
