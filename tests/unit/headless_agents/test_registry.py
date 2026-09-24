@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import stat
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -17,6 +20,16 @@ def _script(directory: Path, body: str, name: str = "fake-cli") -> Path:
     path.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
     return path
+
+
+def _is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 class TestGetProvider:
@@ -150,3 +163,48 @@ class TestProbe:
             registry.probe("gpt")
         with pytest.raises(registry.UnknownProvider):
             registry.probe("gpt", executable="/bin/true")
+
+    def test_a_version_printed_only_on_stderr_is_still_read(self, tmp_path: Path) -> None:
+        cli = _script(tmp_path, 'echo "v9.9.9" >&2')
+        found = registry.probe("claude", executable=str(cli))
+        assert found.available is True
+        assert found.version == "v9.9.9"
+
+    def test_a_grandchild_holding_the_pipe_does_not_survive_the_timeout(
+        self, tmp_path: Path
+    ) -> None:
+        # A wrapper that forks (a shim, a node launcher) leaves a grandchild
+        # sharing its stdout/stderr pipe. ``process.kill()`` on a timeout only
+        # reaches the direct child: the grandchild keeps the pipe open and, left
+        # unkilled, keeps running forever. The probe must return promptly AND the
+        # grandchild must not outlive it.
+        pidfile = tmp_path / "grandchild.pid"
+        cli = _script(
+            tmp_path,
+            f'sleep 30 &\necho $! > "{pidfile}"\nsleep 30',
+        )
+        outcome: dict[str, registry.Probe] = {}
+
+        def _run() -> None:
+            outcome["probe"] = registry.probe("agy", executable=str(cli), timeout_seconds=0.3)
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+        thread.join(timeout=5.0)
+        assert not thread.is_alive(), "probe() did not return within the guard: it hung"
+
+        found = outcome["probe"]
+        assert found.available is False
+        assert "no answer" in found.detail
+
+        grandchild_pid = int(pidfile.read_text().strip())
+        try:
+            deadline = time.monotonic() + 1.0
+            while _is_alive(grandchild_pid) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert not _is_alive(grandchild_pid), (
+                "the grandchild outlived the probe: its process group was not killed"
+            )
+        finally:
+            if _is_alive(grandchild_pid):
+                os.kill(grandchild_pid, 9)

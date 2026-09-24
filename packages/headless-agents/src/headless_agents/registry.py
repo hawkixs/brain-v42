@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -101,6 +102,35 @@ def _probe_http(name: str, environ: Mapping[str, str]) -> Probe:
     return Probe(available=False, detail=f"{preset.key_env} is not set")
 
 
+def _first_nonempty_line(text: str) -> str | None:
+    return next((line.strip() for line in text.splitlines() if line.strip()), None)
+
+
+def _kill_process_group(process: subprocess.Popen[str]) -> None:
+    """Reap a timed-out probe without leaving a descendant running.
+
+    ``process.kill()`` alone reaches only the direct child: a wrapper that forks
+    (a shim, a node launcher) leaves a grandchild sharing its stdout/stderr pipe,
+    and that grandchild keeps running -- and the pipe open -- past the direct
+    child's death. ``start_new_session=True`` makes the direct child the leader
+    of its own process group, so ``killpg`` reaches it and everything it forked
+    in one signal. The drain afterwards is bounded: a descendant that escaped the
+    group (a second ``setsid``) must not revive the hang we just killed.
+    """
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        process.communicate(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            process.communicate(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            pass
+
+
 def probe(
     name: str,
     *,
@@ -113,7 +143,10 @@ def probe(
     A CLI rail: is its executable on ``PATH``, and does it answer ``--version``?
     ``executable`` overrides the rail's default command, as ``RunSpec.executable``
     does for a run. A ``--version`` that does not answer within
-    ``timeout_seconds`` makes the rail unavailable: a probe never hangs.
+    ``timeout_seconds`` makes the rail unavailable: a probe never hangs, and it
+    leaves no descendant of the probed executable running behind it (see
+    :func:`_kill_process_group`). The version is the first non-empty line of
+    stdout, or of stderr when a CLI prints it there instead.
 
     An HTTP provider: is its key variable set in ``environ`` (default: this
     process's environment)? The detail names the variable, never its value.
@@ -127,24 +160,27 @@ def probe(
     if path is None:
         return Probe(available=False, detail=f"{command}: not found or not executable")
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             [path, "--version"],
             stdin=subprocess.DEVNULL,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             # A broken CLI gives a reason, never an exception: bytes that are
             # not UTF-8 are replaced instead of raising while decoding.
             encoding="utf-8",
             errors="replace",
-            timeout=timeout_seconds,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return Probe(
-            available=False, detail=f"{path} --version: no answer within {timeout_seconds:g} s"
+            start_new_session=True,
         )
     except OSError as exc:
         return Probe(available=False, detail=f"{path} --version: {exc}")
-    if completed.returncode != 0:
-        return Probe(available=False, detail=f"{path} --version exited {completed.returncode}")
-    version = next((line.strip() for line in completed.stdout.splitlines() if line.strip()), None)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        _kill_process_group(process)
+        return Probe(
+            available=False, detail=f"{path} --version: no answer within {timeout_seconds:g} s"
+        )
+    if process.returncode != 0:
+        return Probe(available=False, detail=f"{path} --version exited {process.returncode}")
+    version = _first_nonempty_line(stdout) or _first_nonempty_line(stderr)
     return Probe(available=True, detail=path, version=version)
