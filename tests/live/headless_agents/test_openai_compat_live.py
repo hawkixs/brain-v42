@@ -31,10 +31,14 @@ pytestmark = [
     ),
 ]
 
+#: nvidia: ``openai/gpt-oss-20b`` is a reasoning model -- measured 2026-09-24 it took
+#: 38 s to 60 s+ for a one-word reply and tripped the 60 s deadline below, while
+#: ``z-ai/glm-5.3-flash`` answered the same prompt in 29-38 s (several listed
+#: catalogue models returned 404 or 410 for this key).
 DEFAULT_MODELS = {
     "openrouter": "openai/gpt-4o-mini",
     "mistral": "mistral-small-latest",
-    "nvidia": "openai/gpt-oss-20b",
+    "nvidia": "z-ai/glm-5.3-flash",
 }
 KEY_ENV = {
     "openrouter": "OPENROUTER_API_KEY",
