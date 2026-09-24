@@ -818,6 +818,44 @@ class TestCollectGraphInventory:
         assert result["status"] == "error"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("failing", ["nodes", "edges"])
+    async def test_one_failing_neo4j_query_degrades_the_block_with_pg_healthy(
+        self, failing: str
+    ) -> None:
+        """PR #201 follow-up review (MAJOR): with PostgreSQL healthy, ONE failing
+        Neo4j query left graph_status "ok" and the partial result was memoized for
+        the full TTL. Either query failing must raise CollectorDegraded, with the
+        payload unchanged (status stays "ok", the failed side empty)."""
+        graph = MagicMock()
+        graph.count_nodes_by_label = (
+            AsyncMock(side_effect=Exception("neo4j nodes query failed"))
+            if failing == "nodes"
+            else AsyncMock(return_value={"Decision": 3})
+        )
+        graph.count_edges_by_type = (
+            AsyncMock(side_effect=Exception("neo4j edges query failed"))
+            if failing == "edges"
+            else AsyncMock(return_value={"RELATED_TO": 2})
+        )
+        ok_result = MagicMock()
+        ok_result.scalar.return_value = 0
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=ok_result)
+        session_cm = AsyncMock()
+        session_cm.__aenter__.return_value = session
+        session_cm.__aexit__.return_value = None
+        collector = MetricsCollector(
+            engine=MagicMock(), session_factory=MagicMock(return_value=session_cm)
+        )
+
+        with pytest.raises(CollectorDegraded) as excinfo:
+            await collector.collect_graph_inventory(graph_svc=graph)
+
+        payload = excinfo.value.payload
+        assert payload["status"] == "ok"
+        assert payload[f"{failing}_total"] == {}
+
+    @pytest.mark.asyncio
     async def test_transient_pg_orphan_scan_failure_recovers_after_the_short_error_ttl(
         self,
     ) -> None:

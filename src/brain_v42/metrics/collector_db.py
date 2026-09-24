@@ -457,11 +457,11 @@ class _DbCollectorsMixin:
         )
         nodes = nodes_result if isinstance(nodes_result, dict) else {}
         edges = edges_result if isinstance(edges_result, dict) else {}
-        graph_status = (
-            "error"
-            if isinstance(nodes_result, Exception) and isinstance(edges_result, Exception)
-            else "ok"
-        )
+        nodes_failed = isinstance(nodes_result, Exception)
+        edges_failed = isinstance(edges_result, Exception)
+        # The published status keeps its meaning (both queries down); the cache
+        # signal below reacts to either one failing.
+        graph_status = "error" if nodes_failed and edges_failed else "ok"
         if isinstance(nodes_result, Exception):
             logger.warning("metrics.graph_inventory.nodes_failed", exc_info=nodes_result)
         if isinstance(edges_result, Exception):
@@ -492,11 +492,11 @@ class _DbCollectorsMixin:
             "edges_total": edges,
             "orphans_total": orphans,
         }
-        # Two independent failure axes (Neo4j counts, PG orphan scan) share one
-        # signal to the cache: either degrades the block below "fully fresh",
-        # so both get the short error_ttl_seconds instead of the full TTL
-        # (slow_block_cache.py) -- even when graph_status stays "ok" because
-        # only the PG side failed.
-        if graph_status == "error" or orphans_failed:
+        # Three independent failure points (the Neo4j node count, the Neo4j edge
+        # count, the PG orphan scan) share one signal to the cache: any of them
+        # degrades the block below "fully fresh", so it gets the short
+        # error_ttl_seconds instead of the full TTL (slow_block_cache.py) --
+        # even when graph_status stays "ok" because only one side failed.
+        if nodes_failed or edges_failed or orphans_failed:
             raise CollectorDegraded(result)
         return result
