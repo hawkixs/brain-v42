@@ -69,14 +69,21 @@ Lot 4 completes 0.4.0; the package version is `0.4.0`. The four lot sections bel
 
 ### Fixed (pre-tag hardening, lot-1 review minors)
 - `registry.probe`: `--version` runs in its own session and a timeout — or an interrupt —
-  kills its whole process group, so a forking wrapper leaves no descendant behind; the
-  version is read from stderr when stdout is empty.
+  kills its whole process group by its id (never `getpgid`, which fails once CPython has
+  reaped an exited launcher), so a forking wrapper leaves no descendant behind; a cleanup
+  failure never masks the interrupt; the version is read from stderr when stdout is
+  empty. A descendant that escapes through its own `setsid` is out of reach.
 - `RunSpec.run_dir=Path('.')` names the run after the current directory instead of an
   empty id (`spec.run_dir_name`: lexical, so a `latest` symlink keeps its own name); a
-  `run_dir` with no name at all (the filesystem root) is refused at construction.
-  `ha run --run-dir` is anchored at the CLI's cwd.
+  `run_dir` with no name at all (the filesystem root) is refused at construction, and by
+  `ha run` before it plans chain links or a worktree. `ha run --run-dir` is anchored at
+  the CLI's cwd.
 - `run_record.record` never raises `OSError`: a `result.json` that cannot be written costs
-  a line in `stderr_log`, never the `RunResult` of a run that already happened.
+  a line in `stderr_log`, never the `RunResult` of a run that already happened. It writes
+  through an exclusively created, uniquely named temporary file (`0600`) and cleans up
+  only that one.
+- The three findings above marked "by its id", "before it plans" and "exclusively" come
+  from the independent codex/gpt-6-astra review of PR #197 (verdict PATCH_THEN_SHIP).
 - README: every python example's imports are checked by a unit test.
 
 ### Measured (2026-09-24, real CLIs, throwaway repository)
@@ -255,7 +262,9 @@ four rails' real CLIs changed three points the design left open — decisions 9-
   Residual, accepted and documented: `read` follows a symlink INSIDE the workspace to a
   target outside it (measured live 2026-09-23).
 - codex's sandbox switches between `read-only` (shell tool ON — its only way to read a
-  file) and `workspace-write` (shell tool only when `shell=True`); a read-only codex agent
+  file) and `workspace-write` (shell tool only when `shell=True` — SUPERSEDED before the
+  tag by spec decision 13: the shell is ON in both modes, see the lot-4 Behaviour entry
+  above); a read-only codex agent
   can still read outside the workspace by design — an accepted residual, unchanged from
   the read-access decision (spec 3.3, decision 7).
 - claude's workspace run adds `--restricted` (file tools confined to the working

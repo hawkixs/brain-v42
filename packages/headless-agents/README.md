@@ -153,7 +153,11 @@ it -- confined by each rail's own mechanism, per
 amendments in section 8:
 
 ```python
-class Workspace(BaseModel):
+from pathlib import Path
+
+from pydantic import BaseModel
+
+class Workspace(BaseModel):  # headless_agents.profile.Workspace
     path: Path          # absolute, must exist, must be a directory
     write: bool = False # False: read tools only, confined to path
     shell: bool = False # refused unless write=True
@@ -199,7 +203,7 @@ result = CodexProvider().run(spec)
 ```
 
 **Per rail, when a workspace is set** (measured 2026-09-23, `d9a72644` and the lot-2 live
-suite):
+suite; codex's writable row per spec decision 13, measured live 2026-09-24):
 
 | Rail | Read-only | Writable | `shell=True` adds |
 |---|---|---|---|
@@ -363,7 +367,8 @@ ha clean RUN_ID
 ```
 
 - **Read-only** (default): a CLI rail reads the current repository through a read-only
-  workspace (no write tool, no shell); an HTTP provider runs without one. Context defaults
+  workspace (no write tool; no shell, except codex, whose shell is its only read tool and
+  runs inside its read-only OS sandbox); an HTTP provider runs without one. Context defaults
   to `global` (the user-level `~/.claude/CLAUDE.md`); `--context full` adds the
   repository's `CLAUDE.md`/`AGENTS.md`/`GEMINI.md`, even ignored ones.
 - **`--write`**: `git worktree add ~/.cache/ha/runs/<run_id>/wt -b ha/<run_id> <base>`, the
@@ -408,10 +413,12 @@ default run, and skipped unless `HA_LIVE=1`. Run it deliberately, from a directo
 HA_LIVE=1 .venv/bin/pytest -m live tests/live -v -rA
 ```
 
-Last full run (2026-09-23, against claude 2.1.280, codex-cli 0.156.0, opencode 1.18.30,
-agy 1.2.9): `34 passed in 449.20s (0:07:29)`, 0 skipped, 0 failed. A failure here is a
-finding, not a flake: re-run once to rule out the network, then report it -- never loosen
-the assertion.
+Historical full run (2026-09-23, lot 2, against claude 2.1.280, codex-cli 0.156.0,
+opencode 1.18.30, agy 1.2.9): `34 passed in 449.20s (0:07:29)`, 0 skipped, 0 failed. The
+2026-09-24 runs (the suite on `44a13a7e`, the HTTP presets with their keys, the codex
+suites after the pre-tag hardening) and their two documented failures are recorded in the
+CHANGELOG's 0.4.0 "Measured" section. A failure here is a finding, not a flake: re-run
+once to rule out the network, then report it -- never loosen the assertion.
 
 ## Licence
 

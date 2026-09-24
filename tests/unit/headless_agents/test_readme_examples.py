@@ -16,6 +16,7 @@ Deliberately not executed: several blocks spawn real CLI agents (``claude``,
 from __future__ import annotations
 
 import ast
+import builtins
 import importlib
 import re
 from pathlib import Path
@@ -65,6 +66,45 @@ def _check_block(source: str, index: int) -> list[str]:
     return failures
 
 
+def _bound_names(tree: ast.AST) -> set[str]:
+    """Every name a block binds, scope-blind on purpose (over-permissive, never
+    a false alarm): imports, assignments, loop/with/except targets, walrus,
+    function and class names and their parameters."""
+    bound: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import | ast.ImportFrom):
+            for alias in node.names:
+                bound.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            bound.add(node.name)
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store | ast.Del):
+            bound.add(node.id)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+    return bound
+
+
+def _unbound_names(blocks: list[str], index: int) -> list[str]:
+    """Names block ``index`` (the last of ``blocks``) loads that no block up to
+    it binds -- the blocks are progressive prose, so an earlier block's names
+    count. Builtins count as bound."""
+    bound = set(dir(builtins))
+    for source in blocks:
+        bound |= _bound_names(ast.parse(source))
+    loaded = {
+        node.id
+        for node in ast.walk(ast.parse(blocks[-1]))
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    }
+    return [
+        f"block {index}: {name!r} is used but never imported or defined "
+        "(in this block or an earlier one)"
+        for name in sorted(loaded - bound)
+    ]
+
+
 def test_readme_has_python_examples() -> None:
     blocks = _python_blocks(README_PATH.read_text(encoding="utf-8"))
     assert blocks, f"expected at least one ```python block in {README_PATH}"
@@ -75,4 +115,23 @@ def test_readme_python_examples_import_cleanly() -> None:
     failures: list[str] = []
     for index, block in enumerate(blocks, start=1):
         failures.extend(_check_block(block, index))
+    assert not failures, "\n".join(failures)
+
+
+def test_the_unbound_name_check_catches_a_missing_import() -> None:
+    # Independent review of PR #197 (residual risk): the import check alone
+    # passed with the API example's ``from pathlib import Path`` removed.
+    assert _unbound_names(['result = run(RunSpec(run_dir=Path("r")))'], 1) == [
+        "block 1: 'Path' is used but never imported or defined (in this block or an earlier one)",
+        "block 1: 'RunSpec' is used but never imported or defined (in this block or an earlier one)",
+        "block 1: 'run' is used but never imported or defined (in this block or an earlier one)",
+    ]
+    assert _unbound_names(["from pathlib import Path", "x = Path('r')"], 2) == []
+
+
+def test_readme_python_examples_use_only_bound_names() -> None:
+    blocks = _python_blocks(README_PATH.read_text(encoding="utf-8"))
+    failures: list[str] = []
+    for index in range(1, len(blocks) + 1):
+        failures.extend(_unbound_names(blocks[:index], index))
     assert not failures, "\n".join(failures)
