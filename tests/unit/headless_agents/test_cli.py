@@ -101,7 +101,17 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _World:
         "CLAUDECODE": "1",
         "KEEP_ME": "yes",
     }
+    # The operator's declared defaults: every rail that needs a model has one,
+    # as on a configured machine; the tests about models override or empty it.
+    _write_models(home, {name: f"{name}-default" for name in cli.PROVIDER_NAMES if name != "agy"})
     return _World(home=home, repo=repo, environ=environ, fakes=fakes)
+
+
+def _write_models(home: Path, models: dict[str, str]) -> Path:
+    path = home / ".config" / "ha" / "models.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(f'"{name}" = "{model}"\n' for name, model in models.items()))
+    return path
 
 
 def _prime(world: _World, name: str, **kwargs: object) -> _Fake:
@@ -356,6 +366,88 @@ def test_each_link_gets_its_own_directory_and_the_run_keeps_the_final_result(wor
     assert json.loads((top / "result.json").read_text())["provider"] == "claude"
 
 
+# ── models: per link, -m, models.toml ─────────────────────────────────────
+
+
+def test_a_chain_link_names_its_own_model(world: _World) -> None:
+    # e2e 2026-09-24: one -m shared by every link made `--chain codex,claude`
+    # unusable -- no model name is valid on both rails.
+    _prime(world, "codex", code=3)
+    _prime(world, "claude")
+    code, *_ = world.run("run", "--chain", "codex:gpt-x,claude:sonnet-y", "go")
+    assert code == 0
+    assert world.spec("codex").model == "gpt-x"
+    assert world.spec("claude").model == "sonnet-y"
+
+
+def test_a_model_keeps_everything_after_the_first_colon(world: _World) -> None:
+    world.run("run", "--chain", "openrouter:meta/llama:free", "go")
+    assert world.spec("openrouter").model == "meta/llama:free"
+
+
+def test_minus_m_serves_the_links_without_their_own_model(world: _World) -> None:
+    _prime(world, "codex", code=3)
+    _prime(world, "claude")
+    world.run("run", "--chain", "codex:gpt-x,claude", "-m", "m1", "go")
+    assert world.spec("codex").model == "gpt-x"
+    assert world.spec("claude").model == "m1"
+
+
+def test_models_toml_is_the_last_default(world: _World) -> None:
+    _write_models(world.home, {"codex": "declared-model"})
+    world.run("run", "-p", "codex", "go")
+    assert world.spec("codex").model == "declared-model"
+
+
+def test_xdg_config_home_locates_models_toml(world: _World, tmp_path: Path) -> None:
+    xdg = tmp_path / "xdg"
+    (xdg / "ha").mkdir(parents=True)
+    (xdg / "ha" / "models.toml").write_text('codex = "from-xdg"\n')
+    world.environ["XDG_CONFIG_HOME"] = str(xdg)
+    world.run("run", "-p", "codex", "go")
+    assert world.spec("codex").model == "from-xdg"
+
+
+@pytest.mark.parametrize(
+    "argv", [("-p", "codex"), ("--chain", "codex:gpt-x,claude"), ("-p", "opencode", "--write")]
+)
+def test_a_link_with_no_model_anywhere_is_refused_before_anything_runs(
+    world: _World, argv: tuple[str, ...]
+) -> None:
+    # e2e 2026-09-24: without -m the rails refused ("model must not be
+    # empty") -- and opencode's refusal exited 3, which a chain reads as
+    # "unavailable, try the next link": a configuration error fell through.
+    _write_models(world.home, {})
+    code, _, err = world.run("run", *argv, "go")
+    assert code == 2
+    assert "-m" in err and "models.toml" in err
+    assert not any(fake.specs for fake in world.fakes.values())
+
+
+def test_agy_needs_no_model(world: _World) -> None:
+    _write_models(world.home, {})
+    code, *_ = world.run("run", "-p", "agy", "go")
+    assert code == 0
+    assert world.spec("agy").model == ""
+
+
+def test_a_provider_twice_in_a_chain_is_refused(world: _World) -> None:
+    code, _, err = world.run("run", "--chain", "codex:a,codex:b", "go")
+    assert code == 2 and "codex" in err and "more than once" in err
+    assert not any(fake.specs for fake in world.fakes.values())
+
+
+@pytest.mark.parametrize(
+    ("content", "needle"),
+    [('nope = "m"\n', "nope"), ("codex = 3\n", "codex"), ("codex = [\n", "models.toml")],
+)
+def test_a_broken_models_toml_is_a_usage_error(world: _World, content: str, needle: str) -> None:
+    path = world.home / ".config" / "ha" / "models.toml"
+    path.write_text(content)
+    code, _, err = world.run("run", "-p", "codex", "go")
+    assert code == 2 and needle in err
+
+
 # ── --mcp ──────────────────────────────────────────────────────────────────
 
 
@@ -367,7 +459,7 @@ def test_mcp_profile_is_loaded_from_the_xdg_config(world: _World, tmp_path: Path
     )
     world.environ["XDG_CONFIG_HOME"] = str(config)
     world.environ["BT"] = "tok"
-    code, *_ = world.run("run", "-p", "codex", "--mcp", "brain-read", "go")
+    code, *_ = world.run("run", "-p", "codex", "-m", "m", "--mcp", "brain-read", "go")
     assert code == 0
     mcp = world.spec("codex").profile.mcp
     assert mcp is not None and mcp.tools == ("brain_search",)
@@ -377,7 +469,7 @@ def test_mcp_profile_is_loaded_from_the_xdg_config(world: _World, tmp_path: Path
 
 def test_an_unknown_mcp_profile_is_a_usage_error(world: _World, tmp_path: Path) -> None:
     world.environ["XDG_CONFIG_HOME"] = str(tmp_path / "nothing")
-    code, _, err = world.run("run", "-p", "codex", "--mcp", "nope", "go")
+    code, _, err = world.run("run", "-p", "codex", "-m", "m", "--mcp", "nope", "go")
     assert code == 2 and "MCP profile" in err
 
 

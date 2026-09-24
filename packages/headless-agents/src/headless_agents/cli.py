@@ -44,6 +44,7 @@ from typing import IO, Final
 
 from .capability import INVALID_USAGE_EXIT_CODE, scoped_environment
 from .chain import run_chain
+from .cli_models import ModelsError, link_models
 from .context import ContextBundle, ContextLevel, resolve_context
 from .mcp_profiles import McpProfileError, mcp_server
 from .profile import CapabilityProfile, Credentials, McpServer, Workspace, mcp_no_proxy_hosts
@@ -122,7 +123,10 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("-m", "--model", default="")
     run.add_argument("--effort", default="medium")
     run.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
-    run.add_argument("--chain", help="comma-separated providers, tried in order on 3 and 4")
+    run.add_argument(
+        "--chain",
+        help="comma-separated providers, each optionally provider:model, tried in order on 3 and 4",
+    )
     run.add_argument("--context", choices=("full", "global", "none"))
     run.add_argument("--context-parents", action="store_true")
     run.add_argument("--mcp", metavar="PROFILE")
@@ -236,6 +240,7 @@ class RunPlan:
     """Everything ``ha run`` resolved before any provider starts."""
 
     providers: tuple[str, ...]
+    models: Mapping[str, str]
     prompt: str
     context: ContextBundle | None
     mcp: McpServer | None
@@ -251,17 +256,24 @@ def _prompt(args: argparse.Namespace, io: Io) -> str:
     return text
 
 
-def _providers_of(args: argparse.Namespace) -> tuple[str, ...]:
-    if args.chain:
-        names = tuple(name.strip() for name in args.chain.split(",") if name.strip())
-    elif args.provider:
-        names = (args.provider,)
-    else:
+def _providers_of(args: argparse.Namespace, io: Io) -> tuple[tuple[str, ...], dict[str, str]]:
+    """The run's providers in order, and each one's model (see :mod:`.cli_models`)."""
+    if not args.chain and not args.provider:
         raise UsageError("name a provider with -p, or a chain with --chain")
+    try:
+        names, models = link_models(
+            chain=args.chain,
+            provider=args.provider,
+            model=args.model,
+            environ=io.environ,
+            home=io.home,
+        )
+    except ModelsError as exc:
+        raise UsageError(str(exc)) from None
     for name in names:
         if name not in PROVIDER_NAMES:
             raise UsageError(f"unknown provider {name!r}; valid names: {', '.join(PROVIDER_NAMES)}")
-    return names
+    return names, models
 
 
 def _check_flags(args: argparse.Namespace, providers: tuple[str, ...]) -> None:
@@ -281,7 +293,7 @@ def _check_flags(args: argparse.Namespace, providers: tuple[str, ...]) -> None:
 
 
 def _plan(args: argparse.Namespace, io: Io) -> RunPlan:
-    providers = _providers_of(args)
+    providers, models = _providers_of(args, io)
     _check_flags(args, providers)
     prompt = _prompt(args, io)
     repository = args.repo.resolve() if args.repo else repository_root(io.cwd)
@@ -325,6 +337,7 @@ def _plan(args: argparse.Namespace, io: Io) -> RunPlan:
         raise UsageError(f"--run-dir {args.run_dir} has no name: a run is named by its directory")
     return RunPlan(
         providers=providers,
+        models=models,
         prompt=prompt,
         context=context,
         mcp=mcp,
@@ -351,7 +364,7 @@ def spec_for(
     return RunSpec(
         prompt=plan.prompt,
         name=f"ha-{run_dir.name}",
-        model=args.model,
+        model=plan.models[provider],
         profile=CapabilityProfile(
             mcp=None if http else plan.mcp,
             workspace=None if http else workspace,
