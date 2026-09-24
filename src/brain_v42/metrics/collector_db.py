@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from sqlalchemy import text
 
+from brain_v42.config import get_settings
 from brain_v42.metrics.retention import (
     PROCESS_METRICS_FRESH_SQL,
     PROCESS_METRICS_IS_LIVE_SQL,
@@ -56,6 +57,8 @@ class _DbCollectorsMixin:
         top_score: float | None,
         avg_score: float | None,
         latency_ms: float,
+        *,
+        fts_fallback: bool = False,
     ) -> None:
         """INSERT a row into search_log and update the in-memory latency histogram.
 
@@ -63,17 +66,42 @@ class _DbCollectorsMixin:
         write so the percentile ring-buffer is populated even when the DB write
         fails.  ``retrieval_percentiles`` then returns real values instead of
         the structural zeros that result from having zero callers.
+
+        ``embedding_model`` is read from ``get_settings()`` rather than taken
+        as a parameter: the caller has no reason to know which model is
+        configured, and threading it through every call site would let it
+        drift from the live identity (ticket 4fac067a, decision 1669d429).
+        Only the model NAME is read — never ``embedding_api_key``, the
+        ``SecretStr`` sitting right next to it in ``Settings``.
+
+        ``fts_fallback`` is set by the caller when NO embedding model served
+        the search it is logging (``brain_tools._no_embedding_model_served``):
+        an unresolved ``project_group``, answered before any embedding call,
+        or a search that ran in ``search_mode == "fts_fallback"`` (the
+        embedding service was down
+        and ``brain_service.py`` served the search from FTS alone, per
+        ``SearchResponse.degraded`` / ``WhatDoIKnowResponse.degraded``). NO
+        embedding model produced those results, so the row must say ``NULL``
+        rather than whatever model happens to be configured that day — that
+        model played no part in serving this particular search.
+
+        The settings read sits INSIDE the ``try`` below, next to the DB write:
+        this method is documented to never raise (a metrics failure must never
+        break a search), and a broken settings read is exactly the kind of
+        failure it must swallow, the same as a DB failure.
         """
-        # Update in-memory histogram first — independent of DB availability.
+        # Update in-memory histogram first — independent of DB/settings availability.
         self.record_search_latency(latency_ms)  # type: ignore[attr-defined]
 
         try:
+            embedding_model = None if fts_fallback else get_settings().embedding_model
             async with self._session_factory() as session:
                 await session.execute(
                     text(
                         "INSERT INTO search_log "
-                        "(tool_name, project_key, result_count, top_score, avg_score, latency_ms) "
-                        "VALUES (:tool, :pk, :cnt, :top, :avg, :lat)"
+                        "(tool_name, project_key, result_count, top_score, avg_score, "
+                        "latency_ms, embedding_model) "
+                        "VALUES (:tool, :pk, :cnt, :top, :avg, :lat, :model)"
                     ),
                     {
                         "tool": tool_name,
@@ -82,6 +110,7 @@ class _DbCollectorsMixin:
                         "top": top_score,
                         "avg": avg_score,
                         "lat": latency_ms,
+                        "model": embedding_model,
                     },
                 )
                 await session.commit()

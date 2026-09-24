@@ -271,7 +271,7 @@ MCP over HTTP loopback in production, stdio in dev/fallback → PostgreSQL 16 + 
 - **GPU embedding** — Qodo-Embed-1-1.5B GGUF Q8_0 via llama.cpp + a Starlette shim on
   `localhost:8003`, 1536 dims; PyTorch rollback: `docker compose --profile legacy up -d embedding`
 - **Reranker** — unified embedding endpoint `:8003/rerank` (ONNX cross-encoder on CPU)
-- **Schema** managed by Alembic; the **repository** carries migration 056. The **live**
+- **Schema** managed by Alembic; the **repository** carries migration 057. The **live**
   head is measured, it is not read here.
 - **Ledger/outbox** PostgreSQL → Neo4j, active in production
 - **Network model**: personal agents on a trusted LAN; MCP, PostgreSQL, Neo4j and the
