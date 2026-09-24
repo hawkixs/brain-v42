@@ -1788,7 +1788,7 @@ def test_environment_assignment_parser_preserves_duplicates_and_indentation() ->
     assert assignments == ["GRAPH_PROJECTOR_ENABLED", "GRAPH_PROJECTOR_ENABLED"]
 
 
-def test_repository_head_056_is_documented_without_claiming_a_deployed_head() -> None:
+def test_repository_head_057_is_documented_without_claiming_a_deployed_head() -> None:
     """The repository head is a fact this repository owns. The deployed head is not.
 
     Until 2026-08-04 these docs asserted a production head of `037` while the
@@ -1798,7 +1798,17 @@ def test_repository_head_056_is_documented_without_claiming_a_deployed_head() ->
 
     The head in this test's NAME is deliberate: bumping the repository head cannot
     be done without renaming the guard, which is what stops it from drifting
-    silently. Bumped to 056 on 2026-09-22 — `project_contexts.archived_at` and
+    silently. Bumped to 057 on 2026-09-24 — `search_log.embedding_model`, text,
+    nullable, no default, no backfill: a prerequisite for judging the codestral
+    embedding trial (ticket 4fac067a, operator decision 1669d429), attributed at
+    insert time from the same live identity as the settings, never a caller-
+    supplied value and never the `SecretStr` API key beside it. NOT APPLIED
+    ANYWHERE at the time of writing: production was measured at 056 the same day,
+    and the shared `brain_test` likewise. Applying it is an operator gesture
+    inside the merge window. Its downgrade carries no named opt-in, unlike 056 or
+    049: `search_log` already expires every row after 30 days (`MetricsFlusher`),
+    so nothing this column attributes outlives a migration window regardless.
+    Previously bumped to 056 on 2026-09-22 — `project_contexts.archived_at` and
     `archived_reason`, the first lifecycle this table has ever had (ticket 39dd2bdc).
     NOT APPLIED ANYWHERE at the time of writing: production was measured at 055 the
     same day, and the shared `brain_test` likewise. Applying it is an operator gesture
@@ -1846,7 +1856,7 @@ def test_repository_head_056_is_documented_without_claiming_a_deployed_head() ->
     in the same breath.
     """
     head = _repository_head()
-    assert head == "056"
+    assert head == "057"
 
     # Everything below is DERIVED from that measured head. It used to be COPIED,
     # and that is precisely how `SCHEMA.md` came to announce 049 while the chain
