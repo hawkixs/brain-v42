@@ -820,8 +820,10 @@ def is_free(path: Path) -> bool      # a non-blocking SHARED acquisition succeed
   shared+shared coexist; a lock dies with its process (child takes exclusive then
   `os._exit(0)`; parent acquires immediately); a subprocess spawned while a lock is held does
   not inherit the descriptor (`/proc/<pid>/fd` of a `sleep` child contains no link to the lock
-  file); order violation raises `RuntimeError`; `is_free` is `False` while another process
-  holds it shared.
+  file); order violation raises `RuntimeError`; `is_free` is `True` while another process
+  holds it **shared** (shared locks coexist: a writer holds its lineage lock exclusive,
+  readers hold it shared, and only a live writer makes the probe fail), `False` while another
+  process holds it **exclusive**, and `True` again once that process has exited.
 - [ ] **Step 2–4:** fail, implement, pass. **Step 5: Commit** — `feat(headless-agents): ordered flock locks with bounded waits`
 
 ### Task 11: Run registry — mint, register, resolve, status, incomplete
