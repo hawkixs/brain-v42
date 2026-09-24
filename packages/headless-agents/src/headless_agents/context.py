@@ -20,19 +20,20 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Literal
 
 ContextLevel = Literal["full", "global", "none"]
-Scope = Literal["repository", "user"]
+Scope = Literal["repository", "user", "role"]
 
 REPOSITORY_FILE_NAMES: Final[tuple[str, ...]] = ("CLAUDE.md", "AGENTS.md", "GEMINI.md")
 
 
 @dataclass(frozen=True)
 class ContextFile:
-    source: Path
+    #: The file it was read from; for a role's instructions, ``"role:<name>"``.
+    source: Path | str
     scope: Scope
     content: str
     size_bytes: int
@@ -47,6 +48,23 @@ def _read(path: Path, scope: Scope) -> ContextFile | None:
         source=path,
         scope=scope,
         content=raw.decode("utf-8", errors="replace"),
+        size_bytes=len(raw),
+        sha256=hashlib.sha256(raw).hexdigest(),
+    )
+
+
+def role_instructions(name: str, text: str) -> ContextFile:
+    """A role's instructions as a bundle entry (spec 0.5.0 §3.1): scope ``role``.
+
+    They belong to the role, not to the ambient context, so they are delivered
+    at every level, ``none`` included, and count against the preamble's limits
+    like any other byte of it.
+    """
+    raw = text.encode("utf-8")
+    return ContextFile(
+        source=f"role:{name}",
+        scope="role",
+        content=text,
         size_bytes=len(raw),
         sha256=hashlib.sha256(raw).hexdigest(),
     )
@@ -80,10 +98,25 @@ class ContextBundle:
     def user_files(self) -> tuple[ContextFile, ...]:
         return tuple(f for f in self.files if f.scope == "user")
 
+    def role_files(self) -> tuple[ContextFile, ...]:
+        return tuple(f for f in self.files if f.scope == "role")
+
+    def with_role(self, file: ContextFile | None) -> ContextBundle:
+        """This bundle plus a role's instructions; itself, unchanged, without them.
+
+        Unchanged means byte for byte: a run whose role carries no instructions
+        sends exactly the 0.4.0 preamble (the Dream's golden fixtures).
+        """
+        if file is None:
+            return self
+        return replace(self, files=(*self.files, file))
+
     def preamble(self) -> str:
-        """User-level content, then repository content: every file, in every
-        mode -- the preamble is the bundle's only channel (see above)."""
-        return "\n\n".join(_block(f) for f in self.user_files() + self.repository_files())
+        """User-level content, then repository content, then the role's: the most
+        specific reads last. Every file, in every mode -- the preamble is the
+        bundle's only channel (see above)."""
+        ordered = self.user_files() + self.repository_files() + self.role_files()
+        return "\n\n".join(_block(f) for f in ordered)
 
     def to_list(self) -> list[dict[str, object]]:
         return [
