@@ -31,6 +31,9 @@ dependencies = [
     "pydantic>=2.0",
 ]
 
+[project.scripts]
+ha = "headless_agents.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/hawkixs/brain-v42"
 Repository = "https://github.com/hawkixs/brain-v42"
