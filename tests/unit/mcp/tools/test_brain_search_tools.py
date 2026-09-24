@@ -800,6 +800,56 @@ class TestSearchLogKnowsAboutFtsFallback:
         call_kwargs = metrics_collector.record_search_log.await_args.kwargs
         assert call_kwargs["fts_fallback"] is False
 
+    # PR #199 review (codex, minor 1): an unresolved project_group returns from
+    # brain_service BEFORE any embedding call, with degraded=None — no model
+    # served that search either, so it must not be attributed to one.
+
+    @pytest.mark.asyncio
+    async def test_flat_search_attributes_no_model_to_an_unresolved_project_group(
+        self,
+    ) -> None:
+        metrics_collector = MagicMock()
+        metrics_collector.record_search_log = AsyncMock()
+        mcp, mock_svc = _make_mcp_with_brain_svc(metrics_collector=metrics_collector)
+        mock_svc.search = AsyncMock(
+            return_value=SearchResponse(
+                query="q",
+                results=[],
+                total=0,
+                types_searched=["learning"],
+                diagnostics=_make_diagnostics(
+                    project_group_requested="nowhere", project_group_unresolved=True
+                ),
+            )
+        )
+
+        fn = await _get_tool_fn(mcp, "brain_search")
+        await fn(query="q", project_group="nowhere")
+
+        call_kwargs = metrics_collector.record_search_log.await_args.kwargs
+        assert call_kwargs["fts_fallback"] is True
+
+    @pytest.mark.asyncio
+    async def test_grouped_search_attributes_no_model_to_an_unresolved_project_group(
+        self,
+    ) -> None:
+        metrics_collector = MagicMock()
+        metrics_collector.record_search_log = AsyncMock()
+        mcp, mock_svc = _make_mcp_with_brain_svc(metrics_collector=metrics_collector)
+        response = _make_what_do_i_know_response(
+            total=0,
+            diagnostics=_make_diagnostics(
+                project_group_requested="nowhere", project_group_unresolved=True
+            ),
+        )
+        mock_svc.what_do_i_know_about = AsyncMock(return_value=response)
+
+        fn = await _get_tool_fn(mcp, "brain_search")
+        await fn(query="q", project_group="nowhere", group_by_type=True)
+
+        call_kwargs = metrics_collector.record_search_log.await_args.kwargs
+        assert call_kwargs["fts_fallback"] is True
+
 
 # ── brain_search received-parameters telemetry (lot G3) ────────────────────────
 
