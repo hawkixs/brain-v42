@@ -5,12 +5,13 @@ from __future__ import annotations
 import time
 from collections import deque
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from brain_v42.metrics.collector import MetricsCollector
-from brain_v42.metrics.slow_block_cache import CollectorDegraded
+from brain_v42.metrics.slow_block_cache import CollectorDegraded, SlowBlockCache
 
 
 class TestToolRecording:
@@ -771,3 +772,63 @@ class TestCollectGraphInventory:
         assert result["nodes_total"] == {}
         assert result["edges_total"] == {}
         assert result["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_transient_pg_orphan_scan_failure_recovers_after_the_short_error_ttl(
+        self,
+    ) -> None:
+        """Reviewer's reproduction (PR #201, MAJOR): a failure injected at
+        `session.execute` (not a mocked collector that raises) must be retried
+        by SlowBlockCache after `error_ttl_seconds`, never held for the full
+        `ttl_seconds`. Wires the REAL collect_graph_inventory through a REAL
+        SlowBlockCache with an injectable clock."""
+        graph = self._make_graph_svc(nodes={"Decision": 12}, edges={"RELATED_TO": 1})
+
+        ok_result = MagicMock()
+        ok_result.scalar.return_value = 0
+        session = AsyncMock()
+        # 1 failing call (attempt 1) + 5 successful calls, one per _PG_LABEL_MAP
+        # table (attempt 2, past the error TTL).
+        session.execute = AsyncMock(side_effect=[Exception("boom"), *([ok_result] * 5)])
+
+        @asynccontextmanager
+        async def session_context():
+            yield session
+
+        collector = MetricsCollector(engine=MagicMock(), session_factory=session_context)
+
+        time_box = [0.0]
+        cache = SlowBlockCache(
+            ttl_seconds=30.0,
+            error_ttl_seconds=5.0,
+            clock=lambda: time_box[0],
+            wall_clock=lambda: datetime(2026, 1, 1, tzinfo=UTC),
+        )
+
+        def compute():
+            return collector.collect_graph_inventory(graph_svc=graph)
+
+        first = await cache.get("graph_inventory", compute)
+        assert first is not None
+        assert first["status"] == "ok"
+        assert first["orphans_total"] == {}
+        assert session.execute.call_count == 1
+
+        # Still inside the error TTL: no retry yet.
+        time_box[0] = 4.9
+        still_degraded = await cache.get("graph_inventory", compute)
+        assert still_degraded == first
+        assert session.execute.call_count == 1
+
+        # Past the error TTL (5s, not the 30s success TTL): recomputes and recovers.
+        time_box[0] = 5.1
+        recovered = await cache.get("graph_inventory", compute)
+        assert recovered is not None
+        assert recovered["orphans_total"] == {
+            "decisions": 0,
+            "learnings": 0,
+            "snippets": 0,
+            "runbooks": 0,
+            "adrs": 0,
+        }
+        assert session.execute.call_count == 6

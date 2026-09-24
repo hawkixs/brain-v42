@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from brain_v42.metrics.collector import MetricsCollector
-from brain_v42.metrics.slow_block_cache import CollectorDegraded
+from brain_v42.metrics.slow_block_cache import CollectorDegraded, SlowBlockCache
 
 
 def _make_collector_with_dream_data(
@@ -426,6 +426,73 @@ class TestCollectDreamMetrics:
         with pytest.raises(CollectorDegraded) as excinfo:
             await collector.collect_dream_metrics()
         assert excinfo.value.payload == {}
+
+    @pytest.mark.asyncio
+    async def test_transient_sql_failure_recovers_after_the_short_error_ttl(self) -> None:
+        """Reviewer's reproduction (PR #201, MAJOR): a failure injected at
+        `session.execute` (not a mocked collector that raises) must be retried
+        by SlowBlockCache after `error_ttl_seconds`, never held for the full
+        `ttl_seconds`. Wires the REAL collect_dream_metrics through a REAL
+        SlowBlockCache with an injectable clock."""
+        rows = [
+            (
+                "scan",
+                "sonnet",
+                "done",
+                42.0,
+                3500,
+                250,
+                0,
+                0,
+                0.03,
+                6,
+                5,
+                date(2026, 4, 5),
+                None,
+                False,
+            ),
+        ]
+        phases_result = MagicMock()
+        phases_result.all.return_value = rows
+        history_result = MagicMock()
+        history_result.all.return_value = []
+        promote_result = MagicMock()
+        promote_result.first.return_value = None
+
+        collector = MetricsCollector.__new__(MetricsCollector)
+        collector._session_factory = MagicMock()
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(
+            side_effect=[Exception("boom"), phases_result, history_result, promote_result]
+        )
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        collector._session_factory.return_value = mock_session
+
+        time_box = [0.0]
+        cache = SlowBlockCache(
+            ttl_seconds=30.0,
+            error_ttl_seconds=5.0,
+            clock=lambda: time_box[0],
+            wall_clock=lambda: datetime(2026, 1, 1, tzinfo=UTC),
+        )
+
+        first = await cache.get("dream", collector.collect_dream_metrics)
+        assert first == {}
+        assert mock_session.execute.call_count == 1
+
+        # Still inside the error TTL: no retry yet.
+        time_box[0] = 4.9
+        still_degraded = await cache.get("dream", collector.collect_dream_metrics)
+        assert still_degraded == {}
+        assert mock_session.execute.call_count == 1
+
+        # Past the error TTL (5s, not the 30s success TTL): recomputes and recovers.
+        time_box[0] = 5.1
+        recovered = await cache.get("dream", collector.collect_dream_metrics)
+        assert recovered is not None
+        assert recovered["last_run"]["phases"]["scan"]["status"] == "done"
+        assert mock_session.execute.call_count == 4
 
 
 class TestDreamMetricsRoadmapSpec7:

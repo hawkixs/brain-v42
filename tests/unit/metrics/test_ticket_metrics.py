@@ -12,11 +12,13 @@ slow_block_cache.py.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from brain_v42.metrics.collector import MetricsCollector
+from brain_v42.metrics.slow_block_cache import SlowBlockCache
 
 
 def _make_collector(rows: list[dict]) -> MetricsCollector:
@@ -86,3 +88,52 @@ class TestCollectTicketCounts:
 
         with pytest.raises(RuntimeError, match="db down"):
             await collector.collect_ticket_counts()
+
+    @pytest.mark.asyncio
+    async def test_transient_sql_failure_recovers_after_the_short_error_ttl(self) -> None:
+        """Reviewer's reproduction (PR #201, MAJOR): a failure injected at
+        `session.execute` (not a mocked collector that raises) must be retried
+        by SlowBlockCache after `error_ttl_seconds`, never held for the full
+        `ttl_seconds`. collect_ticket_counts already propagates its own
+        exceptions (the established pattern the other three cached blocks now
+        follow via CollectorDegraded), so a plain exception is enough here --
+        this pins the cache-side half of the contract with the REAL collector
+        wired through a REAL SlowBlockCache with an injectable clock."""
+        rows = [{"project": "brain-v42", "todo": 1, "to_confirm": 0, "waiting": 0}]
+        ok_result = MagicMock()
+        ok_result.mappings.return_value.all.return_value = rows
+
+        collector = MetricsCollector.__new__(MetricsCollector)
+        collector._session_factory = MagicMock()
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(side_effect=[Exception("boom"), ok_result])
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        collector._session_factory.return_value = mock_session
+
+        time_box = [0.0]
+        cache = SlowBlockCache(
+            ttl_seconds=30.0,
+            error_ttl_seconds=5.0,
+            clock=lambda: time_box[0],
+            wall_clock=lambda: datetime(2026, 1, 1, tzinfo=UTC),
+        )
+
+        first = await cache.get("tickets", collector.collect_ticket_counts)
+        assert first is None
+        assert mock_session.execute.call_count == 1
+
+        # Still inside the error TTL: no retry yet.
+        time_box[0] = 4.9
+        still_degraded = await cache.get("tickets", collector.collect_ticket_counts)
+        assert still_degraded is None
+        assert mock_session.execute.call_count == 1
+
+        # Past the error TTL (5s, not the 30s success TTL): recomputes and recovers.
+        time_box[0] = 5.1
+        recovered = await cache.get("tickets", collector.collect_ticket_counts)
+        assert recovered is not None
+        assert recovered["projects"] == [
+            {"project": "brain-v42", "counts": {"todo": 1, "to_confirm": 0, "waiting": 0}}
+        ]
+        assert mock_session.execute.call_count == 2

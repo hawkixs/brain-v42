@@ -23,7 +23,7 @@ import pytest
 
 from brain_v42.metrics.collector import MetricsCollector
 from brain_v42.metrics.collector_nightly import parse_killswitches
-from brain_v42.metrics.slow_block_cache import CollectorDegraded
+from brain_v42.metrics.slow_block_cache import CollectorDegraded, SlowBlockCache
 
 _DROPIN = """\
 [Service]
@@ -246,3 +246,45 @@ class TestCollectNightlyOps:
             await collector.collect_nightly_ops(killswitches_path=tmp_path / "absent.conf")
 
         assert excinfo.value.payload == {}
+
+    @pytest.mark.asyncio
+    async def test_transient_sql_failure_recovers_after_the_short_error_ttl(self, tmp_path) -> None:
+        """Reviewer's reproduction (PR #201, MAJOR): a failure injected at
+        `session.execute` (not a mocked collector that raises) must be retried
+        by SlowBlockCache after `error_ttl_seconds`, never held for the full
+        `ttl_seconds`. Wires the REAL collect_nightly_ops through a REAL
+        SlowBlockCache with an injectable clock."""
+        ks_file = tmp_path / "killswitches.conf"
+        ks_file.write_text(_DROPIN)
+        collector = _make_collector(
+            [RuntimeError("db down"), *_db_side_effects(extract_pending=3, failure_row=None)]
+        )
+
+        time_box = [0.0]
+        cache = SlowBlockCache(
+            ttl_seconds=30.0,
+            error_ttl_seconds=5.0,
+            clock=lambda: time_box[0],
+            wall_clock=lambda: datetime(2026, 1, 1, tzinfo=UTC),
+        )
+
+        def compute():
+            return collector.collect_nightly_ops(killswitches_path=ks_file)
+
+        first = await cache.get("nightly", compute)
+        assert first is not None and first["killswitches"]["promote"] is True
+        assert "extract" not in first
+        assert collector._session_factory.return_value.execute.call_count == 1
+
+        # Still inside the error TTL: no retry yet.
+        time_box[0] = 4.9
+        still_degraded = await cache.get("nightly", compute)
+        assert still_degraded == first
+        assert collector._session_factory.return_value.execute.call_count == 1
+
+        # Past the error TTL (5s, not the 30s success TTL): recomputes and recovers.
+        time_box[0] = 5.1
+        recovered = await cache.get("nightly", compute)
+        assert recovered is not None
+        assert recovered["extract"] == {"proposed_pending": 3}
+        assert collector._session_factory.return_value.execute.call_count == 3
