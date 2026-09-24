@@ -67,7 +67,8 @@ Lot 4 completes 0.4.0; the package version is `0.4.0`. The four lot sections bel
   the next link. And one `-m` shared by every link made `--chain codex,claude` unusable.
   A provider named twice in a chain is refused.
 - README: the `brain-read` MCP profile example carries `X-Brain-Tool-Profile = "native"`.
-  Without it brain's compact catalogue publishes only its two gateway tools, and a
+  Without it brain's compact catalogue publishes, besides its session lifecycle tools,
+  only its two gateway tools, and a
   read-only allowlist found no tool at all (measured end-to-end, all four rails).
 
 ### Behaviour

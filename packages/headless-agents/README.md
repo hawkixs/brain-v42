@@ -409,7 +409,8 @@ ha clean RUN_ID
   ```
 
   For brain the `X-Brain-Tool-Profile = "native"` header is required: brain's default
-  `compact` catalogue publishes only `brain_find_tool` and `brain_call_tool` -- and
+  `compact` catalogue publishes its session lifecycle tools and, for everything else,
+  only the two gateways `brain_find_tool` and `brain_call_tool` -- and
   `brain_call_tool` reaches every tool, writes included -- so a read-only `tools` list
   names tools that catalogue does not publish, and the agent finds none (measured
   end-to-end 2026-09-24: claude refused, codex exited `3` with no tool call; with the
