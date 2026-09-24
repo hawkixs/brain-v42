@@ -150,8 +150,8 @@ class TestEnvPrecedence:
 class TestExitCode:
     """OTHER is not a green: "I do not know" must be visible.
 
-    Measured on 2026-08-29: gpt-oss-120b — the dormant WET link, the very one the
-    weekly probe exists to watch — answers in 75 s from a cold queue, beyond the
+    Measured on 2026-08-29: gpt-oss-120b — then the dormant WET link, the kind of
+    site the weekly probe exists to watch — answers in 75 s from a cold queue, beyond the
     probe timeout. An OTHER exiting 0 would make the unit green every Monday on the
     one site it structurally cannot measure. GONE keeps its code (1) and dominates
     it: a DEAD model is more urgent than an unreadable one.

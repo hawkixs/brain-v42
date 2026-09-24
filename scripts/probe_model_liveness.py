@@ -36,10 +36,11 @@ import httpx
 BASE_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 API_KEY_VAR = "BRAIN_NVIDIA_API_KEY"
 PROBE_MAX_TOKENS = 8
-# 90 s, not 30: gpt-oss-120b — a DORMANT link, exactly what this probe watches
-# — answers in 75 s from a cold queue (measured 2026-08-29, then 2.6 s warm). At
-# 30 s it returned OTHER every Monday, and OTHER exited 0: the unit stayed green
-# on the one site it was not measuring.
+# 90 s, not 30: a DORMANT link — what this probe exists to watch — can answer
+# from a cold queue. Measured 2026-08-29 on gpt-oss-120b (then the WET roadmap
+# fallback, no longer probed since Q51): 75 s cold, 2.6 s warm. At 30 s it
+# returned OTHER every Monday, and OTHER exited 0: the unit stayed green on the
+# one site it was not measuring. The extract fallback is dormant the same way.
 PROBE_TIMEOUT_SECONDS = 90.0
 
 # 529 is present deliberately: it was missing from RETRYABLE_STATUS and a single
