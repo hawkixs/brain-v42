@@ -220,13 +220,23 @@ if TYPE_CHECKING:
 # time: production measured at 053 on 2026-09-16, so the repair refuses to run
 # against it until 054 is applied. That is the pin working.
 #
+# Bumped to 057 after reviewing the complete migration, and this one is inert
+# by TABLE: 057 adds `search_log.embedding_model` (nullable, no default, no
+# backfill), and `search_log` is not one of the three tables this repair reads
+# or writes (`indexed_plans`, `indexed_plan_chunks`, `project_contexts`).
+#
+# Measured the same way as the entries above: 057 contains zero references to
+# `indexed_plans`, `indexed_plan_chunks` or `project_contexts` (`grep -c` → 0).
+# It adds no trigger, no CHECK and no NOT NULL column on any table this repair
+# touches — there is nothing for this repair to interact with.
+#
 # The review is written down even when it is short: that is the rule, and a
 # missing review reads exactly like a review that was done. Since ticket
 # 6cc34303 that rule is enforced rather than trusted:
 # `tests/unit/test_plan_index_repair_review_block.py` derives the reviewed set
 # from this block and fails if the constant below outruns it, or if a revision
 # is skipped between the first entry and the head.
-_REQUIRED_ALEMBIC_HEAD = "056"
+_REQUIRED_ALEMBIC_HEAD = "057"
 
 
 class RepairStore:

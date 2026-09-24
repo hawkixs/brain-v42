@@ -308,7 +308,12 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
     # ONLY that new pair, and one partial index on the same table. The contract
     # describes neither that table's column set nor its indexes at 031, and the
     # rest of this test passing is the measurement that says so.
-    assert script.get_heads() == ["056"]
+    # Re-read at 057: it adds NO table either — `search_log.embedding_model`,
+    # nullable text, no default, no backfill. `search_log` predates 031 (it was
+    # added by 004), but this v1 contract tracks no per-column fingerprint for
+    # it — only its membership in `table_set` — so a new column on it moves
+    # nothing this contract checks.
+    assert script.get_heads() == ["057"]
     post_contract_tables = {
         # 050's table. `table_set` is DERIVED from live METADATA, so any new
         # table moves it, and a contract describing revision 031 must not claim

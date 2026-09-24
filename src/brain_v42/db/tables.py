@@ -1050,6 +1050,10 @@ search_log = Table(
     Column("top_score", sa.Float, nullable=True),
     Column("avg_score", sa.Float, nullable=True),
     Column("latency_ms", sa.Float, nullable=False),
+    # 057: which embedding model served this search. Nullable, no default, no
+    # backfill — NULL means "written before 057" — because a search's model
+    # cannot be reconstructed after the fact from anything else this row holds.
+    Column("embedding_model", sa.Text, nullable=True),
     Index("idx_search_log_created", sa.text("created_at DESC")),
     Index("idx_search_log_tool", "tool_name"),
 )

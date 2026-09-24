@@ -61,6 +61,10 @@ DOWNGRADING_TEST_FILES: tuple[str, ...] = (
     # table, and the opt-in path drops them. It takes the fence like the others.
     "tests/integration/db/test_migration_055_claims.py",
     "tests/integration/db/test_migration_056_project_archival.py",
+    # 057's downgrade carries no named opt-in (see its own docstring), but it
+    # still moves the shared head down to 056 and back, so it takes the fence
+    # like every other file in this list.
+    "tests/integration/db/test_migration_057_search_log_embedding_model.py",
 )
 
 # Tables probed for leftover rows, in the order the message lists them.

@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from brain_v42.facts.registry import FactRegistry
+    from brain_v42.models.brain import SearchResponse, WhatDoIKnowResponse
     from brain_v42.services.access_logger import AccessLogger
     from brain_v42.services.adr_service import ADRService
     from brain_v42.services.brain_service import BrainService
@@ -90,6 +91,20 @@ from brain_v42.mcp.tools.workflow_guide_tools import register_workflow_guide_too
 logger = structlog.get_logger(__name__)
 
 _CLAIM_VERIFICATION_REASON = "verification_unavailable"
+
+
+def _no_embedding_model_served(response: SearchResponse | WhatDoIKnowResponse) -> bool:
+    """True when no embedding model took part in serving this search.
+
+    Two paths run none: an FTS-only fallback (embedding service down,
+    ``degraded.search_mode == "fts_fallback"``), and an unresolved
+    ``project_group``, which ``brain_service`` answers empty before any
+    embedding call. search_log must attribute neither to the configured model
+    (ticket 4fac067a); a rerank-only degradation still ran one.
+    """
+    if (response.degraded or {}).get("search_mode") == "fts_fallback":
+        return True
+    return response.diagnostics.project_group_unresolved
 
 
 def register_tools(
@@ -845,6 +860,10 @@ def register_tools(
                     top_score=max(all_scores) if all_scores else None,
                     avg_score=sum(all_scores) / len(all_scores) if all_scores else None,
                     latency_ms=latency_ms,
+                    # No embedding model served this search (FTS-only fallback
+                    # or unresolved project_group) — record_search_log must
+                    # store NULL rather than the configured model for that row.
+                    fts_fallback=_no_embedding_model_served(wdik_response),
                 )
 
             diag = wdik_response.diagnostics
@@ -915,6 +934,10 @@ def register_tools(
                 top_score=max(scores) if scores else None,
                 avg_score=sum(scores) / len(scores) if scores else None,
                 latency_ms=latency_ms,
+                # No embedding model served this search (FTS-only fallback or
+                # unresolved project_group) — record_search_log must store
+                # NULL rather than the configured model for that row.
+                fts_fallback=_no_embedding_model_served(search_response),
             )
 
         diag = search_response.diagnostics

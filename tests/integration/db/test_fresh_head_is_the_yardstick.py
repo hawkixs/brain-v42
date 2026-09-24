@@ -20,20 +20,21 @@ value and their ticket — never tolerated as a band: a drift that grows (049 ad
 an index) breaks the pin, a drift that heals (the asset brought up to date) breaks
 it too, and the exception is removed instead of surviving.
 
-**The module now points at the v13 candidate for head 056.** The candidate is
-v12 plus 056's footprint on `project_contexts` — one CHECK and one partial index
-appended, and the table's column fingerprint REWRITTEN, because that fingerprint
-is one md5 over the whole column list and 056 adds two columns. Measured by
-`scripts/mint_recovery_contract_v13.py` on a disposable chain-built database,
+**The module now points at the v14 candidate for head 057.** The candidate is
+v13 plus 057's footprint on `search_log` — one nullable column, no index, no
+CHECK, no trigger — so the table's column fingerprint is REWRITTEN, because
+that fingerprint is one md5 over the whole column list. Measured by
+`scripts/mint_recovery_contract_v14.py` on a disposable chain-built database,
 rather than from a production attestation. `PINNED_ASSET_DRIFT` gains nothing
-across the move: the yardstick therefore rejects every structural gap instead
-of accepting 056's objects as an exception.
+across the move: 057 adds no structural object, so the yardstick rejects every
+gap exactly as it did for v13.
 
 The `-pgrestore` twin was measured on a real custom-format restore of that same
 chain-built database. Its replay here is deliberately a fresh-head check: it
-confirms that the restored-target fingerprints describe head 056,
+confirms that the restored-target fingerprints describe head 057,
 canonicalisation included. Against that fresh head it diverges only by the
-pinned pre-existing index.
+same pinned pre-existing index and view v13 already carried — 057 introduces
+no new divergence between the chain form and the restored form.
 
 The disposable databases live in the SAME server as `BRAIN_V42_TEST_DB_URL`, like
 `brain_test` itself; they are created and destroyed by the module. They never
@@ -81,9 +82,9 @@ from tests.integration.disposable_db import (
 pytestmark = pytest.mark.integration
 
 PROJECT_ROOT = Path(__file__).parents[3]
-V13_SQL = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v13.sql"
-V13_JSON = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v13.json"
-V13_PGRESTORE = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v13-pgrestore.sql"
+V14_SQL = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v14.sql"
+V14_JSON = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v14.json"
+V14_PGRESTORE = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v14-pgrestore.sql"
 
 #: The contract checks that attest the DATA carried by a restoration. A fresh
 #: database is empty by construction: they cannot pass here and that is not a
@@ -340,7 +341,7 @@ async def test_a_create_all_bench_accepts_what_production_accepts(
 async def test_the_recovery_asset_passes_against_a_fresh_head_database(
     fresh_head_db_url: str,
 ) -> None:
-    """Replays `brain-v42-v13.sql` against the head-056 yardstick.
+    """Replays `brain-v42-v14.sql` against the head-057 yardstick.
 
     Every check of the receipt must pass, except:
     * the DATA checks (`DATA_CHECK_KINDS`) — a fresh database is empty;
@@ -348,27 +349,23 @@ async def test_the_recovery_asset_passes_against_a_fresh_head_database(
     * `extension_versions`, whose observed value is the build of the server hosting
       the disposable database, not a property of the alembic chain.
 
-    The v13 candidate at head 056 has **22 checks pass out of 30**, exactly as
-    v11's did at head 054 and v10's at head 053 (measured 2026-09-22). The eight
-    failures are SIX data checks, the extension and the disabled trigger of 050
-    pinned just above. Zero structural gap — this test does not
-    declare it, it requires it. The count is one below v8's 23 because the extension
-    check is a property of the SERVER: the cluster hosting this disposable database ships
-    vector 0.8.4 against the 0.8.2 production declares, which is exactly why
-    `RESTORE_BUILD_VECTOR_VERSIONS` exists and why the number is not a contract.
+    The v14 candidate at head 057 carries the same pass/fail split v13's did at
+    head 056 (measured 2026-09-24): 057 adds no table, index, CHECK or trigger,
+    so nothing the yardstick counts here moves. Zero structural gap — this test
+    does not declare it, it requires it.
 
     A migration that adds an index without bringing the asset up to date makes an
     unknown failure appear; bringing the asset up to date makes a pinned check pass,
     and the pin MUST then be removed. Both directions redden, and that is what made
-    v5's three pins fall away in this batch. The ticket's hole — "the gap only
+    v5's three pins fall away in an earlier batch. The ticket's hole — "the gap only
     appears on a live replay, a manual gesture" — is closed by this automatic
     replay.
     """
-    failures = await _replay(fresh_head_db_url, V13_SQL)
+    failures = await _replay(fresh_head_db_url, V14_SQL)
 
     # The receipt does not carry `kind`; each check's nature lives in the JSON
     # contract, the same source as red-backup's DSL engine.
-    contract = json.loads(V13_JSON.read_text(encoding="utf-8"))
+    contract = json.loads(V14_JSON.read_text(encoding="utf-8"))
     kinds = {check["id"]: check.get("kind") for check in contract["checks"]}
     unexplained = {
         check_id: failure
@@ -378,7 +375,7 @@ async def test_the_recovery_asset_passes_against_a_fresh_head_database(
         and check_id != "extension_versions"
     }
     assert not unexplained, (
-        "the v13 candidate and the alembic chain disagree beyond the pinned drift:\n"
+        "the v14 candidate and the alembic chain disagree beyond the pinned drift:\n"
         + json.dumps(unexplained, indent=2, default=str)
     )
 
@@ -414,25 +411,27 @@ async def test_the_pgrestore_twin_diverges_from_a_fresh_head_by_exactly_one_inde
 ) -> None:
     """The `-pgrestore` twin measured where it CAN be measured without a restore.
 
-    The v13 twin's rows for 056 were measured on a real custom-format restore of
-    a fresh head-056 database, like v11's and v10's before it. This fresh-head
-    replay remains a distinct check: it proves that the restored-target
-    fingerprints still describe the head-056 schema, canonicalisation included.
+    The v14 twin's row for 057 was measured on a real custom-format restore of
+    a fresh head-057 database, like v13's before it. This fresh-head replay
+    remains a distinct check: it proves that the restored-target fingerprints
+    still describe the head-057 schema, canonicalisation included.
 
-    It does say so: the v13 twin's measured fingerprints land exactly.
-    What does not land exactly is ONE pre-existing index,
-    `idx_dream_promotions_source_materialized`, and ONE view,
-    `knowledge_claim_current`: the twin pins both in the form `pg_restore`
-    re-serialises and the alembic chain never produces. That is its reason to
-    exist, not a defect: this test pins both at their exact value so that a
-    SECOND divergent index or view cannot pass for them.
+    It does say so: the v14 twin's measured fingerprints land exactly,
+    `search_log` included — a plain nullable TEXT column carries no cast
+    `pg_restore` re-serialises. What does not land exactly is ONE pre-existing
+    index, `idx_dream_promotions_source_materialized`, and ONE view,
+    `knowledge_claim_current`, both inherited unchanged from v13: the twin
+    pins both in the form `pg_restore` re-serialises and the alembic chain
+    never produces. That is its reason to exist, not a defect: this test pins
+    both at their exact value so that a SECOND divergent index or view cannot
+    pass for them.
 
     What this test still does not prove: the `pg_dump`/`pg_restore` round-trip
     itself. That needs a bench.
     """
-    failures = await _replay(fresh_head_db_url, V13_PGRESTORE)
+    failures = await _replay(fresh_head_db_url, V14_PGRESTORE)
 
-    contract = json.loads(V13_JSON.read_text(encoding="utf-8"))
+    contract = json.loads(V14_JSON.read_text(encoding="utf-8"))
     kinds = {check["id"]: check.get("kind") for check in contract["checks"]}
     unexplained = {
         check_id: failure
@@ -441,13 +440,13 @@ async def test_the_pgrestore_twin_diverges_from_a_fresh_head_by_exactly_one_inde
         and check_id not in {"table_shape", "brain_runtime_032_036_037"}
     }
     assert not unexplained, (
-        "the v13 -pgrestore twin disagrees with the alembic chain somewhere other "
+        "the v14 -pgrestore twin disagrees with the alembic chain somewhere other "
         "than its one re-serialized index:\n" + json.dumps(unexplained, indent=2, default=str)
     )
 
     # The twin only requires the extension NAMES: unlike the base asset, it MUST
     # pass this check on a fresh database. If it fails, the v6 mint's names-only
-    # rule has been lost by the v13 candidate.
+    # rule has been lost by the v14 candidate.
     assert "extension_versions" not in failures, (
         "the twin now judges extension VERSIONS — the names-only rule was lost"
     )

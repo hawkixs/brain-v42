@@ -116,6 +116,12 @@ _RECOVERY_ASSETS_WITH_PREDICATE = frozenset(
         # was: one occurrence each, byte-identical to v12's. Ninth reddening.
         "brain-v42-v13.sql",
         "brain-v42-v13-pgrestore.sql",
+        # Added on 2026-09-24 by the v14 mint (057): measured from v13 by a delta
+        # that touches only `search_log`'s column fingerprint -- no index, CHECK
+        # or trigger. The predicate line is untouched, verified before this set
+        # was: one occurrence each, byte-identical to v13's. Tenth reddening.
+        "brain-v42-v14.sql",
+        "brain-v42-v14-pgrestore.sql",
     }
 )
 
@@ -203,10 +209,10 @@ def test_every_recovery_attestation_asset_checks_the_python_source_of_truth(
 def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     """Non-vacuity guard: count the surfaces, so none escapes in silence.
 
-    TWENTY-SIX guardians besides `_KEBAB` (1 metadata + 2 migrations + 23 assets) since
-    the v13 mint of 2026-09-22 — it was eight when this anchor was written, fourteen at
+    TWENTY-EIGHT guardians besides `_KEBAB` (1 metadata + 2 migrations + 25 assets) since
+    the v14 mint of 2026-09-24 — it was eight when this anchor was written, fourteen at
     the v7 mint, eighteen at the v9 mint, twenty at the v10 mint, twenty-two at the v11
-    mint and twenty-four at the v12 mint. This count
+    mint, twenty-four at the v12 mint and twenty-six at the v13 mint. This count
     deliberately includes NO document:
     `docs/design/` is not tracked, and a test counting prose would fail depending on the
     working tree.
@@ -226,9 +232,9 @@ def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     )
     recovery_sites = sum(len(patterns) for patterns in _recovery_assets().values())
 
-    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 23), (
+    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 25), (
         "la ventilation des surfaces d'application a changé "
         f"(métadonnées={metadata_sites}, migrations={migration_sites}, "
-        f"attestation={recovery_sites} ; attendu 1/2/23). Recenser avant de corriger le "
+        f"attestation={recovery_sites} ; attendu 1/2/25). Recenser avant de corriger le "
         "compte : c'est ce recensement qui a été faux trois fois."
     )
