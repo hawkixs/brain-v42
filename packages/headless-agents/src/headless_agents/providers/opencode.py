@@ -92,8 +92,10 @@ from ..sandbox import materialize_credentials, refuse_home_under_workspace
 from ..spec import RunSpec
 from ..workspace import (
     argv_prompt_or_refusal,
+    armed_run,
     prepend,
     rail_preamble,
+    settle_run,
     workspace_of,
     workspace_summary,
 )
@@ -1035,6 +1037,7 @@ class OpenCodeProvider:
                 ),
             )
         start = time.monotonic()
+        tripwire = armed_run(workspace)
         exit_code = run_opencode(
             prompt=prompt,
             name=spec.name,
@@ -1054,6 +1057,7 @@ class OpenCodeProvider:
             workspace=workspace,
         )
         duration = time.monotonic() - start
+        exit_code, git_tampered = settle_run(tripwire, exit_code, spec.stderr_log)
         tokens, cost = telemetry(spec.events_log)
         return record(
             spec,
@@ -1071,7 +1075,7 @@ class OpenCodeProvider:
                 text=answer_text(spec.report_log, exit_code=exit_code),
                 run_id=run_id_of(spec),
                 stderr_log=spec.stderr_log,
-                workspace=workspace_summary(workspace),
+                workspace=workspace_summary(workspace, git_tampered),
                 context=context,
             ),
         )

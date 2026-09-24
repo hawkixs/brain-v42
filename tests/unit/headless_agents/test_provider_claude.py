@@ -627,7 +627,8 @@ class TestClaudeProvider:
         assert str(ws_dir) in preamble
         assert "User rules." in preamble
         assert "Repository rules." in preamble
-        assert result.workspace == workspace_summary(workspace)
+        # A writable workspace arms the .git tripwire: a clean run reports [].
+        assert result.workspace == workspace_summary(workspace, ())
         assert result.context == tuple(bundle.to_list())
 
 
