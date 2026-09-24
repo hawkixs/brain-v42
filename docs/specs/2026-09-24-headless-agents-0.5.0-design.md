@@ -261,8 +261,8 @@ review records the exact commit it read as its `head`.
    applies it for good on the pinned head, under the involved lineages' shared locks
    (3.8.4), and the run records the check it made (`vendor_check`).
 7. **Cleanup.** The detached worktree is removed at the end of the run; `change.patch`
-   stays. The run records the `head` it reviewed and its deciding text, which an
-   `implement` run can take as findings (3.6).
+   stays. The review result in the state directory (3.8.1) holds the pinned `head`, the
+   verdict and the deciding text, which an `implement` run can take as findings (3.6).
 
 Exit: `0` APPROVE; `6` CHANGES; `1` a step failed or the verdict is unreadable; `2`
 invalid usage, nothing ran.
@@ -281,16 +281,19 @@ guidance), `--base REF` (default `HEAD`), `--repo PATH`, `--continue RUN_ID`,
 2. **Implement.** The `implement` role runs with a writable workspace on that worktree
    (context `full` unless the role says otherwise). Its prompt is the implement template,
    or the fix template when `--findings` is given (3.7), and adds: do not run git, the
-   engine commits. The whole write follows 3.8.3 — intent recorded before the provider
-   starts, publication last. After the step, in this order: a fired `.git` tripwire stops
-   the run with no git command at all (exit `1`, quarantine of 3.8.5, worktree kept); a
-   moved `HEAD` or branch tip stops it (exit `1`, `agent_moved_head`); a failed step stops
-   it (exit `1`, worktree kept); no change stops it (exit `5`); otherwise the engine
-   commits `chore(ha): <run_id> implement via <provider>/<model>` (`fix` instead of
-   `implement` when `--findings` is given) with the repository's hooks running, and
-   records the provenance of every commit that appeared, whatever `git commit` returned —
-   a hook that refuses or commits by itself stops the run (exit `1`, `hook_refused` or
-   `hook_committed`, lineage compromised, the hook output in the step's `commit.log`).
+   engine commits. The whole write follows 3.8.3 — intent recorded before the first git
+   command, `git worktree add` included, publication last. After the step, in this order:
+   a fired `.git` tripwire stops the run with no git command at all (exit `1`, quarantine
+   of 3.8.5, worktree kept); a moved `HEAD` or branch tip, or an agent commit found in the
+   reflog, stops it (exit `1`, `agent_moved_head`); a failed step that left changes has
+   them committed as `chore(ha): <run_id> residue via <provider>/<model>` and stops the
+   run (exit `1`, worktree kept) — a failed step that left nothing just stops it; no
+   change stops it (exit `5`); otherwise the engine commits `chore(ha): <run_id> implement
+   via <provider>/<model>` (`fix` instead of `implement` when `--findings` is given). The
+   repository's hooks run for the engine's commits only, and the provenance of every
+   commit that appeared is recorded whatever `git commit` returned — a hook that refuses
+   or commits by itself stops the run (exit `1`, `hook_refused` or `hook_committed`,
+   lineage compromised, the hook output in the step's `commit.log`).
 3. **End.** Never a merge, never a push, never a review. The run ends on its branch, with
    its diffstat, `change.patch` (the cumulative `<base>..HEAD` of the lineage) and the
    implementer's final text; the worktree stays until `ha clean`.
@@ -306,15 +309,18 @@ the lock for at most 10 seconds, then is refused (exit `2`). Commits made by han
 branch in between are kept: the diff the next review reads is always `<base>..HEAD`.
 
 **`--findings RUN_ID`** names a `review` run whose verdict was read (`approved` or
-`changes`), resolved through the registry. Its deciding text travels in the fix
-template's `<findings>` block. It is refused (exit `2`) when the reviewed `head` recorded
-by that run is not the commit this run starts from — the lineage's tip read under the
+`changes`), resolved through the registry and read from its review result in the state
+directory (3.8.1) — never from its report, so it still works after `ha clean` of that
+review. Its deciding text travels in the fix template's `<findings>` block. It is
+refused (exit `2`) when the review result is missing or unknown, or when its pinned
+`head` is not the commit this run starts from — the lineage's tip read under the
 lock, or `--base` for a new run: findings about another revision would steer the
 implementer against code it cannot see. A session that wants to act on such findings
 anyway passes them in the task instead, where they are plainly the operator's words.
 
-Exit: `0` committed; `5` the implementation changed nothing; `1` a step failed, the
-tripwire fired, `HEAD` moved or a hook refused; `2` invalid usage, nothing ran.
+Exit: `0` committed; `5` the implementation changed nothing; `1` a step failed (its
+residue committed), the tripwire fired, `HEAD` moved or a hook refused; `2` invalid
+usage, nothing ran.
 
 ### 3.7 Prompts the engine composes
 
@@ -340,128 +346,173 @@ tampered configuration could execute, and that no reviewer shares a vendor with 
 code's author (runbook eafde166, campaign W8). All of it lives in a **state directory**,
 `$XDG_STATE_HOME/ha/` (default `~/.local/state/ha/`, resolved by the rules of 3.3), which
 is state, not cache: deleting `~/.cache/ha` loses reports, never identity, locks,
-quarantines or provenance.
+quarantines, review results or provenance.
 
-#### 3.8.1 What the state directory holds, and which record is authoritative
+#### 3.8.0 Threat model
+
+What an agent can write decides what `ha` must guard, and 0.4.0 measured it per rail
+(spec 0.4.0 §3.3, Brain learning 1ffcde71):
+
+- **A confined write role** — `write = true` without `shell`, on any rail; codex keeps its
+  sandboxed shell (0.4.0 decision 13), whose writes stay inside the workspace — writes
+  **only inside its worktree**. A linked worktree's git dir, the repository's common dir
+  (config, hooks, objects, refs) and the operator's git configuration all lie outside it:
+  such an agent can neither commit, nor move a ref, nor tamper a configuration another
+  worktree or repository shares. What it can reach is its worktree's `.git` file and any
+  hooks path inside its tree — the tripwire's lineage scope.
+- **An unconfined role** — `shell = true` on claude, opencode or agy — can do anything
+  the operator's account can. `ha` cannot prevent that and does not pretend to: the
+  operator grants it by declaring the role (3.3). `ha` **serialises** it — while an
+  unconfined write step runs, no other `ha` process runs git anywhere (3.8.2) — and
+  **detects** it afterwards: the tripwire over every scope, and the reflog (3.8.3).
+- **The vendor rule is a quality guarantee, held to the same standard:** no commit a
+  write may have made is ever read as hand-written. It is not a defence against an
+  operator who re-types an agent's diff by hand.
+
+#### 3.8.1 Records, and the one authority for each fact
 
 ```text
-<state>/runs/<run_id>.json        registry entry — AUTHORITATIVE for a run's identity
-                                  and status: run directory, repository, target,
-                                  lineage, status
+<state>/runs/<run_id>.json        registry entry: identity (run directory, repository,
+                                  target, lineage) — and, for a run outside any
+                                  lineage (a review, a read-only role run), its status
 <state>/runs/<run_id>.lock        the run's lifecycle lock
-<state>/lineages/<owner>.json     lineage state — AUTHORITATIVE for a lineage: members,
-                                  the pending write (below), compromised + reason
+<state>/lineages/<owner>.json     lineage state: members and THEIR statuses, the pending
+                                  write, compromised + reason, the worktree path
 <state>/lineages/<owner>.lock     the lineage lock
+<state>/reviews/<run_id>.json     a review's result: repository, pinned head, verdict,
+                                  vendor_check, and the deciding text — written once
 <state>/provenance/<sha>.json     one per recorded commit: run id, lineage, made_by
                                   (engine | agent | hook), providers
-<state>/quarantine/<scope>.json   a quarantine (3.8.5): scope, paths, run, time
+<state>/quarantine/<scope>.json   a quarantine (3.8.5)
+<state>/unconfined.lock           the global lock of unconfined write steps (3.8.2)
 ```
 
-`run.json` in the run directory is a **report** derived from these records, never read
-back to decide anything.
-
+- **One authority per fact.** A write run's status lives in its lineage state only; any
+  other run's status in its registry entry only; a review's head, verdict and text in its
+  review result only. `run.json` in the run directory is a **report** rebuilt from these,
+  never read back to decide anything — `--findings`, `--run`, `ha clean` and the vendor
+  rule read the state directory.
 - **Publication.** Every state file is written whole to a temporary file in the same
-  directory, `fsync`ed, renamed over its target, and the directory `fsync`ed. A reader
-  therefore sees the old or the new document, never a partial one. A state file that is
-  missing when it should exist, or that does not parse, or whose `run_id`/`owner` does
-  not match its name, is **unknown**, and unknown is treated as compromised — never as
-  empty.
+  directory, `fsync`ed, renamed over its target, and the directory `fsync`ed: a reader
+  sees the old or the new document, never a partial one. A file that is missing when it
+  should exist, does not parse, or whose id does not match its name is **unknown**, and
+  unknown is treated as compromised — never as empty. One exception keeps a crashed
+  start from locking a run forever: a registry entry whose lineage state was never
+  written, and whose run directory holds no worktree, is a run that never started, and
+  `ha clean` removes it as such.
 - **Identity.** The engine always mints the run id (`<UTC timestamp>-<8 hex>`), whatever
   `--run-dir` says. The registry entry is created with `O_EXCL` (an id is never
-  registered twice). The run directory — the default one or the one `--run-dir` names —
-  is created with an exclusive `mkdir`: an existing directory is refused (exit `2`), so
-  two runs never share one. Every reader that loads a `run.json` checks that its `run_id`
-  is the one it resolved. `--run`, `--continue`, `--findings`, `ha show` and `ha clean`
-  resolve ids through the registry, never by joining them to a cache path. 0.4.0 runs are
-  not registered: `ha runs` lists them as `legacy`, and none of those options accepts
-  them.
+  registered twice); the run directory — the default one or the one `--run-dir` names —
+  with an exclusive `mkdir` (an existing directory is refused, exit `2`). Every reader of
+  a `run.json` checks that its `run_id` is the one it resolved. Ids are resolved through
+  the registry, never by joining them to a cache path. 0.4.0 runs are not registered:
+  `ha runs` lists them as `legacy`, and no option accepts them.
 
 #### 3.8.2 Locks
 
-All locks are `flock` on a file opened with `O_CLOEXEC`, so no provider, hook or git
-subprocess inherits one: a lock dies with the `ha` process that took it, and only with
-it. They are taken in `execute()`, never in `plan()` — `plan()` checks what it can
-without them and `execute()` re-checks everything under them — and released by a context
-manager on every exit path, exceptions included. The order is fixed, which excludes a
-deadlock: **a run's own lifecycle lock first, then lineage locks in ascending owner-id
-order.**
+All locks are `flock` on files opened with `O_CLOEXEC`, so no provider, hook or git
+subprocess inherits one: a lock dies with the `ha` process that took it. A provider is
+started in its own process group with a parent-death signal (Linux `PR_SET_PDEATHSIG`,
+`SIGKILL`), so it does not outlive a killed `ha`. Locks are taken in `execute()`, never
+in `plan()` — `plan()` checks what it can without them and every git read that decides
+anything is redone in `execute()` under them — and released by a context manager on
+every exit path. The order is fixed, which excludes a deadlock:
 
-- **Lifecycle lock.** Every run holds `<state>/runs/<run_id>.lock` exclusively for its
-  whole life, a `review` included. It is what liveness means: a registry status that is
-  not final, with its lifecycle lock free, is `incomplete` (crashed) — no PID is
-  consulted. `ha clean` takes the lifecycle lock of the run it cleans without waiting,
-  and refuses an active run (exit `2`).
-- **Lineage lock.** A new `implement` run (or a write run of a role) starts a lineage and
-  holds its lock exclusively from before its first git command until its records are
-  published; a `--continue` run takes the same lock, exclusively, waiting at most 10
-  seconds (then exit `2`); `ha clean` of any member takes it exclusively. A `review` takes
-  the lineage locks it needs **shared** (3.8.4), waiting at most 10 seconds (then exit
-  `2`, "a write is in progress on <lineage>").
+1. the run's own **lifecycle lock**;
+2. the global **unconfined lock**;
+3. **lineage locks**, in ascending owner-id order.
+
+- **Lifecycle lock.** Held exclusively by every run for its whole life, reviews included.
+  It is what liveness means: a status that is not final while the lifecycle lock is free
+  is `incomplete` — no PID is consulted. `ha clean` takes the lifecycle lock of the run it
+  cleans without waiting, and refuses an active run (exit `2`).
+- **Unconfined lock.** An unconfined write step (3.8.0) holds it **exclusively** from its
+  intent to its publication. Every other entry point that runs git — a new write, a
+  continuation, a review, `ha clean` — holds it **shared** for as long as it runs git,
+  waiting at most 10 seconds (then exit `2`, "an unconfined write is running"). Confined
+  writes never wait on one another through it.
+- **Lineage lock.** A new write (an `implement` run, a write run of a role) creates its
+  lineage and holds its lock exclusively from before its first git command until its
+  publication; a `--continue` takes it exclusively, waiting at most 10 seconds; `ha clean`
+  of any member takes it exclusively. A `review` takes the locks of the lineages it
+  involves (3.8.4) **shared**, waiting at most 10 seconds (then exit `2`).
 
 #### 3.8.3 A write, from intent to publication
 
-A write step — an `implement` run, a continuation, a write run of a role — runs this
-sequence under its lineage lock:
+A write — an `implement` run, a continuation, a write run of a role — runs this sequence,
+holding its lineage lock (and the unconfined lock, exclusively, if the role is
+unconfined):
 
 1. **Admission.** Before any git command: no quarantine covers the repository or the
-   operator (3.8.5); the lineage state is readable, not compromised, and has **no pending
-   write**. A pending write found here was left by a holder that died with the lock —
-   the lock is exclusive, so no one else can hold it — and it compromises the lineage
-   (reason `unfinalized_write`) before the run is refused.
-2. **Intent.** The lineage state records the pending write: run id, the role's providers
-   (every link of its chain), the branch tip before the step. Published before the
-   provider starts.
-3. **The step.** The provider runs.
-4. **Tripwire.** A fired tripwire stops everything: no git command runs, the quarantine
-   of 3.8.5 is published, the pending write is left in place — so the lineage stays
-   compromised and every commit the step may have made stays uncertain (3.8.4).
-5. **Agent commits.** `HEAD` and the branch tip are compared with the recorded tip. Any
-   movement fails the run (`agent_moved_head`): every commit of `<before>..<after>` is
-   recorded `made_by: agent` with the role's providers, the lineage is marked
-   compromised, and the engine commits nothing.
-6. **Engine commit, hooks included.** The tip is recorded again, `git commit` runs with
-   the repository's hooks, and the tip is compared again **whatever `git commit`
-   returned**: a hook can create or amend commits and still fail. The engine's own commit
-   is recorded `made_by: engine`; any other new commit `made_by: hook`, with the role's
-   providers (its content came from this run). A hook that refused, or that produced
-   commits of its own, fails the run (`hook_refused`, `hook_committed`) and compromises
-   the lineage.
-7. **Publication.** Provenance files first, then the lineage state (member status, the
-   pending write cleared) — the single point where the write becomes final — then the
-   registry entry, then `run.json`.
-
-A crash at any point leaves either a pending write (steps 2 to 6: the lineage reads as
-compromised to its next holder and uncertain to every review) or only a stale report
-(after step 7).
+   operator (3.8.5); no lineage of the repository holds a **stale** pending write (one
+   whose lineage lock is free: its writer died) — finding one compromises that lineage
+   (`unfinalized_write`), publishes the quarantine its scope calls for (the repository's;
+   the operator's if the write was unconfined), and refuses; for a continuation, its own
+   lineage is readable, not compromised, with no pending write, and its worktree clean.
+2. **Intent.** The lineage state records the pending write — run id, the role's
+   providers (every link of its chain), `unconfined` or not, the base (new lineage) or
+   branch tip (continuation), and for an unconfined write the worktree `HEAD` reflog
+   position — **before any git command of the write**, `git worktree add` included.
+3. **Preparation.** A new lineage's worktree is added. Every git command `ha` runs,
+   except the engine's commit of step 7, runs with hooks disabled
+   (`-c core.hooksPath=<an empty directory>`) on top of the 0.4.0 hardening; the branch
+   tip is then compared with the recorded base, and a difference fails the run
+   (`preparation_moved_head`) and compromises the lineage.
+4. **The step.** The provider runs.
+5. **Tripwire.** A fired tripwire stops everything: no git command runs, the quarantine
+   of the widest scope a changed path belongs to is published (3.8.5), and the pending
+   write stays — the lineage is compromised and every commit the step may have made stays
+   uncertain (3.8.4).
+6. **Agent commits.** `HEAD` and the branch tip are compared with the recorded tip; for an
+   unconfined write, every commit the worktree's `HEAD` reflog gained since the recorded
+   position is listed too, so a commit made and then reset away is still found. Any
+   movement, or any such commit, fails the run (`agent_moved_head`): each commit is
+   recorded `made_by: agent` with the role's providers, the lineage is compromised, and
+   the engine commits nothing.
+7. **Engine commit.** Whenever the worktree holds changes — the step succeeded, **or it
+   failed and left changes behind** — the engine commits them: `chore(ha): <run_id>
+   implement|fix via <provider>/<model>`, or `chore(ha): <run_id> residue via …` after a
+   failed step, so a residue a session later builds on is attributed rather than
+   anonymous. The repository's hooks run for this commit only; the tip is compared again
+   **whatever `git commit` returned**: the engine's commit is `made_by: engine`, any other
+   new commit `made_by: hook` with the role's providers. A hook that refused (the changes
+   stay uncommitted), or produced commits of its own, fails the run (`hook_refused`,
+   `hook_committed`) and compromises the lineage.
+8. **Publication.** Provenance files first; then the lineage state — the member's final
+   status and the pending write cleared, in one rename: **the single point where the
+   write becomes final**; then the report. A crash before that rename leaves a stale
+   pending write, which the next admission or review finds (step 1, 3.8.4); after it,
+   only a stale report, rebuilt from the state by `ha show`.
 
 #### 3.8.4 The vendor rule
 
-Before its reviewers start, a `review` run, holding its lifecycle lock:
+A `review` run, holding its lifecycle lock and the unconfined lock shared:
 
 1. **Pins the head.** `head` is resolved to one commit, once; the detached worktree, the
-   diff and the check below all use that commit, and the run records it.
-2. **Finds the lineages involved.** Every registered lineage of the same repository
-   whose branch contains a commit of `<merge-base>..<head>` beyond the lineage's base.
-   It takes their locks **shared**, in ascending owner-id order: no write of those
-   lineages can be between steps 2 and 7 of 3.8.3 while it reads.
+   diff and the check all use that commit, and the run records it.
+2. **Finds the lineages involved, without trusting a branch.** Every registered lineage
+   of the repository that holds a pending write, is compromised or is unknown; every
+   lineage whose recorded provenance names a commit of `<merge-base>..<head>`; every
+   lineage whose branch contains a commit of that range; and, when `--repo` resolves
+   inside a lineage's recorded worktree path (matched on resolved paths, before any git
+   command), that lineage. It takes their locks **shared**, in ascending owner-id order.
 3. **Refuses uncertainty.** Under those locks, the review is refused (exit `2`, naming
-   the lineage, commit and reason) when a lineage involved is unknown, compromised, or
-   has a pending write — a crashed write, a fired tripwire and an agent or hook commit
-   all leave one of these marks, so a commit they may have produced is never read as
-   hand-written; and when a commit's subject says `chore(ha):` but it has no provenance
-   (a 0.4.0 write run, a lost state directory, a subject typed by hand). No legacy
-   fallback is attempted: a 0.4.0 chain that succeeded on its first link leaves no trace
-   of the links it declared. With every involved lineage final and uncompromised, 3.8.3
-   has recorded every commit its writes made: a commit on such a branch without
-   provenance was made by hand between runs.
+   the lineage, commit and reason) when any lineage found in step 2 is unknown,
+   compromised, or holds a pending write — whether or not its branch still contains the
+   commits it may have made; and when a commit's subject says `chore(ha):` but it has no
+   provenance (a 0.4.0 write run, a lost state directory, a subject typed by hand). No
+   legacy fallback is attempted: a 0.4.0 chain that succeeded on its first link leaves no
+   trace of the links it declared. Under 3.8.0, with every lineage of the repository
+   final and uncompromised, 3.8.3 has recorded every commit a write made: a commit without
+   provenance was made by hand.
 4. **Checks independence.** The union of the providers of every recorded commit of the
    range must not contain any provider of any reviewer role — every link of its chain;
    otherwise the review is refused (exit `2`, naming the reviewer, provider and commit).
-   The judge is not constrained. A commit with no provenance that is on no lineage and
-   has no `chore(ha)` subject is hand-written and constrains nothing.
-5. **Records the proof and releases.** The check is written to the review's `run.json`
-   (`vendor_check`, 3.10) and the shared locks are released; the reviewers then read the
-   pinned commit, which no later write can change.
+   The judge is not constrained. A hand-written commit constrains nothing.
+5. **Records and releases.** The check is written to the review result (`vendor_check`)
+   and the lineage locks are released; the reviewers then read the pinned commit, which no
+   later write can change. The verdict and deciding text are added to the review result
+   when the run ends — written once, never rewritten.
 
 The same check runs whatever names the head — `--run`, `--head`, or any ref. A session
 that still wants a review the rule refuses runs a reviewer role directly (`ha run
@@ -469,37 +520,38 @@ reviewer-x`): a one-step run that claims nothing about vendors.
 
 #### 3.8.5 Quarantine: a compromise can outgrow its lineage
 
-The 0.4.0 tripwire watches three scopes, and a fired tripwire names its paths: the
-worktree's own git dir; the repository's **common** git dir (`config`, `hooks/`,
-`info/`, and every `core.hooksPath` directory) — shared by every worktree of the
-repository; the operator's own git configuration (`~/.gitconfig`,
-`$XDG_CONFIG_HOME/git/config`) — shared by every repository. The engine publishes the
-quarantine of the **widest** scope a changed path belongs to:
+The 0.4.0 tripwire watches three scopes and names the paths that changed. The engine
+publishes the quarantine of the **widest** scope a changed path belongs to:
 
-| Scope | Recorded as | Refuses |
-|---|---|---|
-| the worktree's git dir | the lineage, compromised | every git command of `ha` on that lineage |
-| the common git dir or a hooks path | `<state>/quarantine/repo-<id>.json`, keyed by the resolved common dir | every git command of `ha` in that repository: new runs, continuations, reviews, `ha clean` |
-| the operator's git configuration | `<state>/quarantine/operator.json` | every git command of `ha`, everywhere |
+| A changed path in | Scope | Recorded as | Refuses |
+|---|---|---|---|
+| the worktree's `.git` file or git dir, or a `core.hooksPath` directory inside the worktree | lineage | the lineage, compromised | every git command of `ha` on that lineage |
+| the repository's common dir (`config`, `hooks/`, `info/`), or a `core.hooksPath` set by the repository's configuration and resolving inside its common dir | repository | `<state>/quarantine/repo-<id>.json`, keyed by the resolved common dir | every git command of `ha` in that repository |
+| the operator's git configuration, a `core.hooksPath` set by it, or any hooks path that resolves anywhere else — shared, as far as `ha` can prove, by other repositories | operator | `<state>/quarantine/operator.json` | every git command of `ha`, everywhere |
 
-Every entry point checks the operator quarantine, then the repository's, before its first
-git command; neither needs a lock, because each is written once and only ever removed.
-`ha runs` lists active quarantines at the top. Lifting one is a manual decision after
-inspecting the named paths — deleting its file — and `ha` never lifts one itself.
+A stale pending write (3.8.3 step 1) publishes the repository's quarantine, and the
+operator's too when the write was unconfined: `ha` cannot tell what a dead unconfined
+writer changed. Every entry point checks the operator quarantine, then the repository's,
+before its first git command. `ha runs` lists active quarantines at the top. Lifting one
+is a manual decision — after checking that no agent process of the named run remains and
+inspecting the named paths — made by deleting its file; `ha` never lifts one itself.
 
 #### 3.8.6 The proof travels with the review
 
-A `review` run records the check it made in its own `run.json` (`vendor_check`, 3.10):
-every commit examined with its run id, `made_by` and providers, their union, and each
-reviewer's providers. `ha show` renders it from that record, so it survives `ha clean`
-of the implementation runs and the loss of the state directory. It does not survive the
-deletion of the review's own run directory: a proof kept elsewhere is `--run-dir`'s job.
+A review's `vendor_check` — every commit examined with its run id, `made_by` and
+providers, their union, and each reviewer's providers — lives in its review result in the
+state directory, and is copied into its `run.json`. `ha show RUN_ID` renders it from the
+state, so it survives `ha clean` of the implementation runs; `ha show --dir PATH` renders
+a run directory's `run.json` for display only, so a review kept with `--run-dir` stays
+readable even after the state directory is lost. Nothing reads a report found by path to
+decide anything.
 
 ### 3.9 CLI
 
 ```text
 ha run TARGET [PROMPT | -] [options]     TARGET: a workflow, a role or a provider
 ha show RUN_ID [--json]
+ha show --dir PATH [--json]              display only (3.8.6)
 ha runs [--limit N] [--json]
 ha roles [--json]
 ha workflows [--json]
@@ -540,8 +592,11 @@ ha --version
   `result.json`.
 - **`ha clean RUN_ID`** resolves the run through the registry and takes its lifecycle
   lock without waiting: an active run — a `review` whose reviewers are reading its
-  worktree included — is refused (exit `2`). For a lineage member it then takes the
-  lineage lock (3.8.2). It keeps the 0.4.0 behaviour — the worktree is removed through
+  worktree included — is refused (exit `2`). It then takes the unconfined lock shared
+  and, for a lineage member, the lineage lock (3.8.2), and applies the admission checks
+  of 3.8.3 step 1 (a stale pending write found anywhere in the repository is handled
+  there). A run that never started — a registry entry with no lineage state and no
+  worktree — is simply removed. Otherwise it keeps the 0.4.0 behaviour — the worktree is removed through
   git and the run directory deleted, the branch kept — except that it runs no git command
   at all when a quarantine covers the repository or the operator, or when the
   **lineage** is unknown, compromised or holds a pending write, whichever member is named
@@ -583,7 +638,9 @@ Every run is a workflow run — a role run has one step:
                       (schema 1), logs, links/ for a chain, commit.log for a write step
 
 ~/.local/state/ha/                (3.8.1 — never removed by ha clean)
-  runs/<run_id>.json, .lock   registry entry (authoritative) and lifecycle lock
+  runs/<run_id>.json, .lock   registry entry and lifecycle lock
+  reviews/<run_id>.json       a review's result: head, verdict, vendor_check, text
+  unconfined.lock             the global lock of unconfined write steps
   lineages/<owner>.json, .lock
                               lineage state (authoritative) and lineage lock
   provenance/<sha>.json       run id, lineage, made_by (engine | agent | hook), providers
@@ -638,7 +695,8 @@ Every run is a workflow run — a role run has one step:
 write run — an `implement` run, or a write run of a role (`continues` and `findings_from`
 stay `null` there) — and copy what the state directory records (3.8), for the report.
 `failure_reason` names why a run failed when the engine knows (`tripwire`,
-`agent_moved_head`, `hook_refused`, `hook_committed`, `unfinalized_write`,
+`preparation_moved_head`, `agent_moved_head`, `hook_refused`, `hook_committed`,
+`unfinalized_write`,
 `unreadable_verdict`, `step_failed`). A `review` run
 sets the write fields to `null`, records the exact `head` it read, its `verdict`, the
 deciding text, and `vendor_check`:
@@ -654,11 +712,11 @@ deciding text, and `vendor_check`:
 
 - **Status:** `running`, `answered` (a one-step run that exited `0`), `failed`,
   `committed` (an `implement` run or a write run that committed), `no_change`,
-  `approved`, `changes`. The registry entry is authoritative (3.8.1); `run.json`, its
-  report, is written at the start (`running`, with the `pid` for display) and replaced
-  atomically after every step. A run whose registry status is not final while its
-  lifecycle lock is free reads as `incomplete` — derived from the lock, never from the
-  `pid`, and never written.
+  `approved`, `changes`. The status's one authority is the lineage state for a write run
+  and the registry entry for any other (3.8.1); `run.json`, the report, is written at the
+  start (`running`, with the `pid` for display) and replaced atomically after every step.
+  A run whose authoritative status is not final while its lifecycle lock is free reads as
+  `incomplete` — derived from the lock, never from the `pid`, and never written.
 - **Cost:** the sum of the steps' measured costs; `cost_complete` is `false` when a
   step's cost was not measured.
 - **`ha run --json`** prints `run.json`: its top-level `text` is what a script reads.
@@ -741,14 +799,31 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
   the registry; `ha clean` of an active review refused; a failing reviewer (no judge
   runs); an unreadable verdict; a refusing hook; exit `5` (the implementation changed
   nothing); reviewers really running concurrently; a crashed run read as `incomplete`
-  from its free lifecycle lock.
+  from its free lifecycle lock. And for the threat model of 3.8.0: an unconfined write
+  step serialising every other git-running entry point (a review and a confined write
+  wait on the unconfined lock, then are refused after 10 s); a fake unconfined provider
+  that commits then resets its branch (the commit found in the reflog, recorded
+  `made_by: agent`); a failed step leaving changes (committed as `residue`, attributed);
+  a `post-checkout` hook planted in the repository (not run by `git worktree add`, whose
+  hooks are disabled); a stale pending write of another lineage found at admission
+  (lineage compromised, repository quarantined — and the operator too when the write was
+  unconfined); a crash between each publication of 3.8.3 step 8 (before the lineage
+  rename: stale pending write; after it: only the report rebuilt); a run that never
+  started, cleaned; a `core.hooksPath` from the operator's configuration changed
+  (operator quarantine); `--repo` inside a compromised lineage's worktree (the review
+  refused before any git command); `--findings` after `ha clean` of the review (read from
+  the state) and with a missing review result (refused); `ha show --dir` after deletion of
+  the state directory.
 - **Boundary guard (existing):** runtime dependencies stay within `pydantic` and
   `structlog` — TOML, not YAML, for that reason; no import of `brain_v42`.
 - **Dream non-regression (existing):** the golden fixtures pass unchanged.
 - **`live`** (marked, excluded from CI, run by hand on an operator machine): one real
   `review` with two providers and a judge on a small diff; one real `implement`, `review
-  --run`, `implement --continue --findings` sequence on a toy repository; two rails running concurrently; the claude telemetry measurement that
-  decides whether its tool counts are published.
+  --run`, `implement --continue --findings` sequence on a toy repository; two rails
+  running concurrently; the claude telemetry measurement that decides whether its tool
+  counts are published; per rail, a confined write role asked to write the common git
+  dir and a ref (refused by the rail, as 3.8.0 assumes — the assumption is re-measured
+  on every rail upgrade).
 
 ## 5. Versioning and delivery
 
@@ -758,7 +833,8 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
   removed), `ha run --json` prints `run.json`, run directories gain `steps/`. Additive:
   the engine API, roles, workflows and their two shapes (`implement`, `review`) with
   `--run`, `--continue`, `--findings` and the vendor rule across runs, the state directory
-  (`~/.local/state/ha`: registry, lineages, provenance), `run.json`, `ha show`,
+  (`~/.local/state/ha`: registry, lineages, review results, provenance, quarantines),
+  residue commits after a failed write, `run.json`, `ha show` (and `--dir`),
   `ha roles`, `ha workflows`, `--version`, tool counts, the `role` context scope.
   Unchanged: `result.json` schema 1, the `AgentProvider` protocol, the providers'
   behaviour when no role instructions are given.
@@ -766,16 +842,19 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
   an independent reviewer from another provider, merged on green CI:
   1. roles (loader, validation, implicit roles, instructions in the bundle); the engine
      for one-step runs (the gates moved out of `cli.py`, the write flow moved into the
-     engine); `run.json` and the `steps/` layout; the state directory — registry, lineage
-     lock and compromise, per-commit provenance and `agent_moved_head` — for every write
-     run from this first lot, so no commit `ha` makes is ever unrecorded; the new `ha run`
+     engine); `run.json` and the `steps/` layout; the whole write protocol of 3.8 —
+     registry, lifecycle, unconfined and lineage locks, intent and publication, residue
+     commits, per-commit provenance, `agent_moved_head` with the reflog, quarantines — for
+     every write run from this first lot, so no commit `ha` makes is ever unrecorded; the
+     new `ha run`
      grammar, `ha roles`, `--version`, documented help, `ha clean` through the registry —
      daily delegation works after this lot;
   2. `ha show`, `ha runs` (legacy runs included) and the tool counters;
   3. `workflows.toml`, `ha workflows` and the shape `implement` with `--continue` (a
      continued lineage under its lock);
-  4. the shape `review`, shipped with the vendor rule and `vendor_check` from its first
-     commit, with `--run`, and `implement --findings` (which needs a review run to name) —
+  4. the shape `review`, shipped with the vendor rule, its review result and
+     `vendor_check` from its first commit, with `--run`, `ha show --dir`, and
+     `implement --findings` (which needs a review run to name) —
      no lot ever exposes a review that does not enforce the rule;
   5. the `live` suite, README and CHANGELOG (including the `brain-read` example, which
      still lists a `brain_recall` tool brain does not have), then the tag.
@@ -810,7 +889,9 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
 | A session combines the workflows badly (reviews the wrong head, fixes against stale findings) | `--run` reviews the lineage's current tip and records the exact commit read; `--findings` is refused unless the reviewed head is the fix's starting commit; `ha show` names the head each review read |
 | Separate runs lose the vendor independence the combined shape guaranteed | Per-commit provenance in the state directory, commits an agent made itself included; the vendor rule reads it (3.8); a `chore(ha)` commit without provenance is refused, never assumed |
 | Two runs write one worktree, or git runs in a compromised one | One lock per lineage, taken by every continuation and by `ha clean`, shared by reviews; an intent published before every write and cleared only at publication; compromise recorded on the lineage, and quarantines on the repository or the operator when the tampered path is shared (3.8.5), all read before any git command |
-| A review certifies a commit whose provenance is not yet written | The review pins its head, takes the involved lineages' locks shared, and refuses any lineage with a pending write or a compromise (3.8.4) |
+| A review certifies a commit whose provenance is not yet written | The review pins its head, finds the involved lineages without trusting a branch (pending, compromised or unknown lineages of the repository always count), takes their locks shared, and refuses any with a pending write or a compromise (3.8.4) |
+| An unconfined agent tampers a configuration other runs share while they run git | While an unconfined write step runs, no other `ha` process runs git anywhere (the unconfined lock); a stale unconfined write quarantines the operator scope (3.8.0, 3.8.5) |
+| The confinement 3.8.0 relies on regresses in a rail upgrade | A `live` test per rail asks a confined write role to write the common git dir and a ref, re-run on every rail upgrade |
 | The state directory is lost | Reports survive in the cache and in each review's `vendor_check`; reviews of branches whose provenance is gone are refused, not waved through |
 | A shape is too rigid for the next workflow | A new shape is a reviewed change to the package; a general language stays out until a third shape is needed |
 
