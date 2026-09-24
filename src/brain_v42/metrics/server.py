@@ -500,11 +500,28 @@ class MetricsServer:
                     "write": {"total_tokens": 0, "reported_requests": 0},
                 },
             )
+            # embedding identity (ticket 3a4ed612): a LIVE MCP process's own
+            # {model, backend, endpoint_host, models_seen} outranks the sidecar's
+            # own settings that collector.get_metrics() already put here as the
+            # labelled fallback. No live identity (fresh deploy, or every live
+            # row still pre-dates this feature) -> leave those defaults alone,
+            # model_source stays "sidecar_settings".
+            identity = process_agg.get("embedding_identity")
+            if identity is not None:
+                metrics["embedding_service"]["model"] = identity["model"]
+                metrics["embedding_service"]["backend"] = identity["backend"]
+                metrics["embedding_service"]["endpoint_host"] = identity["endpoint_host"]
+                metrics["embedding_service"]["models_seen"] = identity["models_seen"]
+                metrics["embedding_service"]["model_source"] = "live_processes"
 
-        # decay is published only at the top level (set above when active): strip it
-        # from the raw cross_process block unconditionally, so an inactive process_agg
-        # (structural zeros, active_processes == 0) doesn't leak a duplicate copy either.
+        # decay/embedding_identity are published only via the top-level
+        # embedding_service (set above when active): strip them from the raw
+        # cross_process block unconditionally, so an inactive process_agg
+        # (structural zeros, active_processes == 0) doesn't leak a duplicate
+        # copy either, and cross_process never grows a payload key the operator
+        # decision for this lot didn't agree to.
         process_agg.pop("decay", None)
+        process_agg.pop("embedding_identity", None)
         metrics["cross_process"] = process_agg
 
         # Embedding service health
@@ -553,6 +570,15 @@ class MetricsServer:
         nightly = await self._collector.collect_nightly_ops()
         if nightly:
             metrics["nightly"] = nightly
+
+        # Deprecated top-level alias (ticket 3a4ed612): re-synced here, after any
+        # cross-process override above, so it never drifts from the field it
+        # mirrors -- get_metrics() only had the sidecar's own pre-override value.
+        # Guarded: a test double stubbing get_metrics() with a bare
+        # {"embedding_service": {}} must not crash a handler it isn't exercising.
+        embedding_service_block = metrics.get("embedding_service", {})
+        if "model" in embedding_service_block:
+            metrics["model"] = embedding_service_block["model"]
 
         return web.json_response(metrics)
 

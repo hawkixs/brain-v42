@@ -182,6 +182,13 @@ class _DbCollectorsMixin:
                 access_log_size}`` (by ``updated_at``), never a sum — these are DB-wide
                 gauges, and summing across live processes would multiply them by the
                 process count (04c09575). Structural zeros when no row carries one.
+            embedding_identity: ``{model, backend, endpoint_host, models_seen}``
+                distilled from every LIVE (``is_live``, the 60s window) ``_process``
+                row's ``embedding_stats.identity`` (ticket 3a4ed612). One distinct
+                live model reports it plainly; more than one reports ``"mixed"``
+                (independently per field) plus the full ``models_seen`` list.
+                ``None`` when no live row carries an identity at all — server.py's
+                cue to fall back to the sidecar's own settings instead.
         """
         try:
             async with self._session_factory() as session:
@@ -220,12 +227,22 @@ class _DbCollectorsMixin:
             gauge_latest: dict[str, dict[str, Any]] = {}
             gauge_latest_updated_at: dict[str, Any] = {}
 
+            # Embedding identity (ticket 3a4ed612): distinct {model, backend, host}
+            # seen among LIVE _process rows only -- same 60s window active_processes
+            # already gates on (row[7]), not the wider 1h retention window every row
+            # above is read from. A silent process from 10 minutes ago must not keep
+            # reporting a model nobody is serving with any more.
+            live_models: set[str] = set()
+            live_backends: set[str] = set()
+            live_hosts: set[str] = set()
+
             for row in rows:
                 agent_name = row[0]
                 updated_at = row[3]
                 tool_stats = row[4]  # JSONB → dict
                 emb_stats = row[5]
                 rss = row[6]
+                is_live = row[7]
 
                 # Aggregate tools across ALL rows (real tools + pseudo-tools are disjoint)
                 for name, stats in tool_stats.items():
@@ -278,6 +295,20 @@ class _DbCollectorsMixin:
                             "reported_requests", 0
                         )
                     total_rss += rss
+                    # A malformed identity value costs its own row, same doctrine
+                    # as usage above -- never the whole aggregate.
+                    if is_live:
+                        identity = emb_stats.get("identity")
+                        if isinstance(identity, dict):
+                            model = identity.get("model")
+                            backend = identity.get("backend")
+                            host = identity.get("host")
+                            if isinstance(model, str) and model:
+                                live_models.add(model)
+                            if isinstance(backend, str) and backend:
+                                live_backends.add(backend)
+                            if isinstance(host, str) and host:
+                                live_hosts.add(host)
                 else:
                     # Real agent: accumulate per-agent breakdown from its tool_stats
                     if agent_name not in agent_agg:
@@ -331,6 +362,18 @@ class _DbCollectorsMixin:
                     "avg_latency_ms": round(agg["total_latency"] / calls, 2) if calls else 0.0,
                 }
 
+            # None means "no live process reported an identity" — a fresh deploy,
+            # or every live row still pre-dates this feature. server.py reads that
+            # as its cue to fall back to the sidecar's OWN settings instead.
+            embedding_identity: dict[str, Any] | None = None
+            if live_models:
+                embedding_identity = {
+                    "model": next(iter(live_models)) if len(live_models) == 1 else "mixed",
+                    "backend": next(iter(live_backends)) if len(live_backends) == 1 else "mixed",
+                    "endpoint_host": next(iter(live_hosts)) if len(live_hosts) == 1 else "mixed",
+                    "models_seen": sorted(live_models),
+                }
+
             emb_total = agg_emb["total_requests"]
             return {
                 "active_processes": active_processes,
@@ -354,6 +397,7 @@ class _DbCollectorsMixin:
                 # mutating it (server.py builds the response dict on top of this) would
                 # corrupt the structural-zero default for every later scrape.
                 "decay": dict(gauge_latest.get("_decay", _DECAY_ZERO)),
+                "embedding_identity": embedding_identity,
             }
         except Exception:
             logger.warning("metrics.collect_process_metrics.failed", exc_info=True)
@@ -363,6 +407,7 @@ class _DbCollectorsMixin:
                 "total_memory_rss_bytes": 0,
                 "tools": {},
                 "decay": dict(_DECAY_ZERO),
+                "embedding_identity": None,
                 "embedding": {
                     "total_requests": 0,
                     "total_errors": 0,

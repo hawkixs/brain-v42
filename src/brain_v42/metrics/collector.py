@@ -8,6 +8,7 @@ from collections import deque
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 import structlog
 from sqlalchemy import text
@@ -22,6 +23,21 @@ from brain_v42.repositories.pg_graph_ledger import projection_health, read_proje
 logger = structlog.get_logger(__name__)
 
 ERROR_WINDOW = 3600.0
+
+
+def _endpoint_host(url: str) -> str:
+    """Hostname-only view of an embedding endpoint URL (ticket 3a4ed612).
+
+    Used for ``embedding_service.endpoint_host`` and the per-process
+    ``identity.host`` flushed to ``process_metrics``: red-monitor's need is
+    spotting WHICH host serves embeddings (``localhost`` vs a ``deploy/dev-pc``
+    rollback target), never the scheme, port or path -- those belong to
+    ``embedding_service.url`` already. Falls back to the raw string when
+    ``urlparse`` finds no hostname (a bare ``"localhost:8003"`` with no
+    scheme), so a malformed URL still surfaces something instead of an
+    empty field.
+    """
+    return urlparse(url).hostname or url
 
 
 class MetricsCollector(_DbCollectorsMixin, _DreamCollectorsMixin, _NightlyCollectorsMixin):
@@ -409,7 +425,14 @@ class MetricsCollector(_DbCollectorsMixin, _DreamCollectorsMixin, _NightlyCollec
         per-(agent,tool)), so the per-tool recent_errors count is computed once
         and attached to EVERY agent row that contains that tool. No
         per-(agent,tool) error tracking is introduced in this task.
+
+        ``_process.embedding.identity`` (ticket 3a4ed612): THIS process's own
+        ``{backend, model, host}``, read from settings at flush time next to PR
+        #181's ``usage``. It travels through the flusher unchanged (whatever this
+        dict holds is exactly what lands in the ``embedding_stats`` JSONB column)
+        so ``collect_process_metrics`` can read it back cross-process.
         """
+        settings = get_settings()
         # Per-tool recent_errors, computed once (error times are per-tool).
         recent_by_tool: dict[str, int] = {
             name: self._count_recent(times) for name, times in self._tool_error_times.items()
@@ -440,6 +463,11 @@ class MetricsCollector(_DbCollectorsMixin, _DreamCollectorsMixin, _NightlyCollec
                 "recent_errors": self._count_recent(self._embedding_error_times),
                 "total_latency": self._embedding_stats["total_latency"],
                 "usage": self._embedding_usage_snapshot(),
+                "identity": {
+                    "backend": settings.embedding_backend,
+                    "model": settings.embedding_model,
+                    "host": _endpoint_host(settings.embedding_service_url),
+                },
             },
             "reranker": {
                 "total_calls": self._reranker_stats["total_calls"],
@@ -506,6 +534,11 @@ class MetricsCollector(_DbCollectorsMixin, _DreamCollectorsMixin, _NightlyCollec
 
         # Embedding stats with avg latency
         emb_total = self._embedding_stats["total_requests"]
+        # Identity (ticket 3a4ed612): THIS process's own configured backend/model,
+        # never a literal. It is the labelled fallback -- server.py overrides these
+        # five fields with the cross-process aggregate whenever a LIVE MCP process
+        # reports its own identity (model_source="live_processes"); absent that,
+        # the sidecar's own settings are what is shown, honestly labelled as such.
         embedding_service = {
             "status": "unknown",
             "url": settings.embedding_service_url,
@@ -518,6 +551,11 @@ class MetricsCollector(_DbCollectorsMixin, _DreamCollectorsMixin, _NightlyCollec
             "unreachable_errors": self._embedding_stats["unreachable_errors"],
             "recent_errors": self._count_recent(self._embedding_error_times),
             "usage": self._embedding_usage_snapshot(),
+            "model": settings.embedding_model,
+            "backend": settings.embedding_backend,
+            "endpoint_host": _endpoint_host(settings.embedding_service_url),
+            "models_seen": [settings.embedding_model],
+            "model_source": "sidecar_settings",
         }
 
         # Search quality
@@ -557,7 +595,12 @@ class MetricsCollector(_DbCollectorsMixin, _DreamCollectorsMixin, _NightlyCollec
             "collected_at": datetime.now(UTC).isoformat(),
             "started_at": datetime.fromtimestamp(self._started_at, tz=UTC).isoformat(),
             "version": version,
-            "model": "Qodo-Embed-1-1.5B",
+            # Deprecated alias of embedding_service.model (ticket 3a4ed612 --
+            # was the literal "Qodo-Embed-1-1.5B", frozen since PR #181 and
+            # false for every non-default backend/model since then). Kept for
+            # one release as a read compatibility shim; never a second source
+            # of truth -- server.py re-syncs it after any cross-process override.
+            "model": embedding_service["model"],
             "embedding_dim": settings.embedding_dimension,
             "uptime_seconds": int(now - self._started_at),
             "memory_rss_bytes": _get_rss_bytes(),
