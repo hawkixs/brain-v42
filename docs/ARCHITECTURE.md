@@ -385,6 +385,8 @@ All are optional via settings (`metrics_enabled`, `decay_enabled`, `graph_enable
 - `GET /metrics` — Prometheus format, read from `MetricsCollector` in-memory counters and PG aggregates.
 - `GET /api/cockpit` — single JSON snapshot (`CockpitCollector`) consumed by `red-monitor` with ~2s poll. The `transport` field reads `settings.brain_mcp_transport` (so it correctly shows `"http"` post-cutover). `cache_hit_ratio` is `null` — the GPU embedding service does not expose a cache-hit counter.
 
+`GET /metrics` itself is polled by `red-monitor` roughly every 5s. The `dream`, `nightly` and graph-inventory (`nodes_total`/`edges_total`/`orphans_total`) sections it assembles together run on the order of fifteen PostgreSQL queries plus a Neo4j round trip on every call. `SlowBlockCache` (`src/brain_v42/metrics/slow_block_cache.py`) memoizes those three blocks behind a TTL with single-flight coalescing: concurrent pollers landing during a refresh await the SAME in-flight computation rather than each starting their own query set. Each cached block carries its own `generated_at` (ISO-8601 UTC), additive — no existing key is renamed or removed. `database` and the embedding/graph healthchecks are deliberately excluded and stay live, uncached, on every poll. TTLs are `METRICS_SLOW_BLOCK_CACHE_TTL_SECONDS` (default 30s) and, for a block whose computation raises instead of degrading to `{}`/`None` itself, the shorter `METRICS_SLOW_BLOCK_CACHE_ERROR_TTL_SECONDS` (default 5s) — a raised exception is never cached as a success for the full TTL (decision 1669d429 item 2).
+
 Instrumentation is opt-in: `InstrumentedEmbeddingService`, `InstrumentedGraphService`, `InstrumentedReranker`, and `instrument_tool()` wrap the real services when `metrics_enabled=true`.
 
 The `embedding_service.usage` block carries only provider-reported totals, split into
@@ -795,6 +797,8 @@ GRAPH_PROJECTOR_NEO4J_USER=neo4j
 GRAPH_PROJECTOR_NEO4J_PASSWORD=...                                    # SecretStr
 METRICS_ENABLED=false                                                 # opt-in
 METRICS_PORT=9200
+METRICS_SLOW_BLOCK_CACHE_TTL_SECONDS=30                               # dream/nightly/graph-inventory memo
+METRICS_SLOW_BLOCK_CACHE_ERROR_TTL_SECONDS=5                          # short TTL for a raised exception
 AUTOMATION_HOST=127.0.0.1                                            # loopback only
 AUTOMATION_PORT=9201
 AUTOMATION_DEDUP_INTERVAL_SECONDS=21600
