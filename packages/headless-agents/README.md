@@ -203,7 +203,7 @@ suite):
 
 | Rail | Read-only | Writable | `shell=True` adds |
 |---|---|---|---|
-| codex | `--sandbox read-only -C <path>`, shell tool ON (codex's only way to read) | `--sandbox workspace-write -C <path>` | commands inside the same OS sandbox, network off |
+| codex | `--sandbox read-only -C <path>`, shell tool ON (codex's only way to read) | `--sandbox workspace-write -C <path>`, shell tool ON inside that sandbox too | nothing: codex's shell is on in both modes, inside its OS sandbox, network off |
 | claude | `--restricted --tools Read,Glob,Grep --permission-mode dontAsk`, cwd `<path>` | `--restricted --tools Read,Edit,Write,Glob,Grep --permission-mode acceptEdits` | `Bash`, unconfined by `--restricted` -- operator's user rights |
 | opencode | allow `read`/`glob`/`grep`/`list`; `external_directory` denied; `--dir <path>` | also allow `edit`/`write` | allow `bash`, unconfined -- operator's user rights |
 | agy | package-owned **workspace guard**, reads confined to `<path>`, every write and `run_command` denied | the same guard, writes confined to `<path>` | `run_command` allowed, unconfined -- operator's user rights |
@@ -369,8 +369,9 @@ ha clean RUN_ID
   `ha/<run_id>` as `chore(ha): <run_id> via <provider>/<model>` with the repository's hooks
   running. Branch, diffstat, patch path and the agent's text are printed. **It never
   merges**: read the diff, integrate, or `ha clean`. If the `.git` tripwire fired, no git
-  command runs at all and the worktree is kept for inspection. codex needs `--shell` here:
-  it reads files only through its shell, which stays inside its OS sandbox.
+  command runs at all and the worktree is kept for inspection. codex needs no `--shell`
+  here: it reads files only through its shell, which is always on and stays inside its OS
+  sandbox; `--shell` arms the unconfined shell of the other rails.
 - **`--chain codex,claude`** walks the list on exit codes `3` and `4` (proof that nothing
   was written); each link gets its own directory under `links/`.
 - **`--mcp NAME`** maps a profile from `~/.config/ha/mcp.toml` (or

@@ -279,9 +279,6 @@ def test_openai_compat_takes_base_url_and_key_env(world: _World) -> None:
         ("run", "go"),
         ("run", "-p", "codex", "--chain", "codex,gpt", "go"),
         ("run", "-p", "mistral", "-m", "m", "--mcp", "brain-read", "go"),
-        # measured 2026-09-24: writable codex without its shell has no read tool
-        ("run", "-p", "codex", "--write", "go"),
-        ("run", "--chain", "claude,codex", "--write", "go"),
     ],
 )
 def test_invalid_usage_exits_2_without_running(world: _World, argv: tuple[str, ...]) -> None:
@@ -393,19 +390,6 @@ def test_clean_removes_one_run(world: _World) -> None:
 def test_clean_refuses_what_is_not_a_run(world: _World, run_id: str, expected: int) -> None:
     code, _, err = world.run("clean", run_id)
     assert code == expected and err
-
-
-@pytest.mark.parametrize("argv", [("-p", "codex"), ("--chain", "claude,codex")])
-def test_writable_codex_needs_its_shell_to_read(world: _World, argv: tuple[str, ...]) -> None:
-    """Measured 2026-09-24: without its shell tool, a writable codex has no read tool.
-
-    It answered "no shell or file-reading tool available" and changed nothing:
-    the run is refused before any worktree is created, naming the fix.
-    """
-    code, _, err = world.run("run", *argv, "--write", "go")
-    assert code == 2
-    assert "--shell" in err and "codex" in err
-    assert not (world.home / ".cache" / "ha" / "runs").exists()
 
 
 def test_no_subcommand_is_a_usage_error(world: _World) -> None:

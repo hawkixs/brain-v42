@@ -146,7 +146,12 @@ class TestBuildCodexCommandWorkspace:
         assert "features.shell_tool=true" in _overrides(command)
         assert "features.shell_tool=false" not in _overrides(command)
 
-    def test_write_without_shell(self, tmp_path: Path) -> None:
+    def test_write_without_shell_flag_still_enables_the_shell_tool(self, tmp_path: Path) -> None:
+        """Operator decision 2026-09-24: codex's shell runs inside its OWN OS
+        sandbox (writes confined to the writable roots, network off), so
+        ``Workspace.shell`` no longer changes codex's command -- unlike before
+        0.4.0 hardening, where ``shell=False`` in a writable workspace turned
+        the shell tool off and left codex with no way to read at all."""
         command = codex.build_codex_command(
             model="m",
             reasoning_effort="low",
@@ -156,11 +161,22 @@ class TestBuildCodexCommandWorkspace:
             workspace_mode=Workspace(path=tmp_path, write=True),
         )
         assert command[command.index("--sandbox") + 1] == "workspace-write"
-        assert "features.shell_tool=false" in _overrides(command)
+        assert "features.shell_tool=true" in _overrides(command)
+        assert "features.shell_tool=false" not in _overrides(command)
         assert "project_doc_max_bytes=0" in _overrides(command)
 
-    def test_write_with_shell(self, tmp_path: Path) -> None:
-        command = codex.build_codex_command(
+    def test_write_with_shell_is_byte_identical_to_write_without_it(self, tmp_path: Path) -> None:
+        """``Workspace.shell`` is a no-op for codex now: both values of the
+        flag produce the exact same command."""
+        without = codex.build_codex_command(
+            model="m",
+            reasoning_effort="low",
+            report_log=tmp_path / "r",
+            workspace=tmp_path,
+            mcp=None,
+            workspace_mode=Workspace(path=tmp_path, write=True),
+        )
+        with_shell = codex.build_codex_command(
             model="m",
             reasoning_effort="low",
             report_log=tmp_path / "r",
@@ -168,8 +184,7 @@ class TestBuildCodexCommandWorkspace:
             mcp=None,
             workspace_mode=Workspace(path=tmp_path, write=True, shell=True),
         )
-        assert "features.shell_tool=true" in _overrides(command)
-        assert "project_doc_max_bytes=0" in _overrides(command)
+        assert with_shell == without
 
     def test_shell_tool_appears_exactly_once_in_every_mode(self, tmp_path: Path) -> None:
         """``-c`` is last-wins for codex (unmeasured): the disabled-feature loop
@@ -1679,6 +1694,29 @@ class TestCodexProviderWorkspace:
         codex.CodexProvider().run(spec)
         assert calls[0]["prompt"] == "do the thing"
         assert calls[0]["workspace_capability"] is None
+
+    def test_writable_preamble_mentions_the_shell_even_without_the_shell_flag(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        """Operator decision 2026-09-24: codex's shell tool is on in every
+        writable workspace, ``Workspace.shell`` or not -- the preamble must
+        say so instead of describing a read tool the model does not have."""
+        calls: list[dict[str, object]] = []
+        monkeypatch.setattr(codex, "run_codex", lambda **kwargs: calls.append(kwargs) or 0)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        workspace = Workspace(path=ws, write=True)
+        spec = RunSpec(
+            prompt="do the thing",
+            model="m",
+            profile=CapabilityProfile(workspace=workspace),
+            **logs,
+        )
+        codex.CodexProvider().run(spec)
+        prompt = calls[0]["prompt"]
+        assert isinstance(prompt, str)
+        assert "apply_patch" in prompt
+        assert "shell" in prompt
 
     def test_workspace_prepends_the_workspace_block(
         self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path

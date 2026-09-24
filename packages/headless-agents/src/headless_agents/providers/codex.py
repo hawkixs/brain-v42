@@ -107,19 +107,19 @@ def _server_overrides(mcp: McpServer) -> tuple[tuple[str, object], ...]:
 def _sandbox_mode(workspace_mode: Workspace | None) -> tuple[str, bool]:
     """(``--sandbox`` value, whether the shell tool is on).
 
-    Measured 2026-09-23, see the table in the 0.4.0 lot-2 spec (3.3):
-    ``read-only`` turns the shell tool ON even though ``workspace_mode.write``
-    is ``False`` -- it is codex's only way to READ a file, and the
-    ``read-only`` sandbox refuses every write it attempts, so enabling it costs
-    no isolation. ``workspace-write`` leaves the shell tool OFF unless
-    ``workspace_mode.shell`` asks for it: codex edits through ``apply_patch``,
-    not the shell, so ``shell=False`` must mean no shell.
+    Measured 2026-09-23, see the table in the 0.4.0 lot-2 spec (3.3): the
+    shell tool is codex's only way to READ a file, so every workspace run has
+    it. ``read-only`` refuses every write the shell attempts; under
+    ``workspace-write`` the shell runs inside the same OS sandbox as
+    ``apply_patch`` (writes confined to the writable roots, network off), so
+    it widens nothing that sandbox did not already allow. Until the pre-tag
+    hardening a writable run honoured ``workspace_mode.shell=False`` and was
+    left blind -- measured 2026-09-24, it changed nothing -- hence spec
+    decision 13: ``Workspace.shell`` does not change codex's command.
     """
     if workspace_mode is None:
         return "read-only", False
-    if not workspace_mode.write:
-        return "read-only", True
-    return "workspace-write", workspace_mode.shell
+    return ("workspace-write" if workspace_mode.write else "read-only"), True
 
 
 def build_codex_command(
@@ -956,15 +956,17 @@ def run_codex(
 
 
 #: What a run's preamble tells codex about its tools, by mode -- keyed the
-#: same way :func:`_sandbox_mode` reads a workspace, since the wording differs
-#: by how codex may reach the filesystem, not just by read/write.
+#: same way :func:`_sandbox_mode` reads a workspace: the shell is on in both
+#: modes (spec decision 13), only what the sandbox lets it write differs.
 _TOOLS_NOTE = {
     "read": (
         "Read files with your shell (cat, rg, ls): the sandbox allows reads"
         " and refuses writes, so reading is expected and safe."
     ),
-    "write": "Edit files with apply_patch.",
-    "write+shell": "Edit with apply_patch; your shell runs inside the same sandbox, network off.",
+    "write": (
+        "Read files with your shell (cat, rg, ls) and edit them with apply_patch;"
+        " both run inside the same sandbox, network off."
+    ),
 }
 
 
@@ -973,12 +975,8 @@ def _preamble_for(spec: RunSpec, workspace: Workspace | None) -> str:
     stdin channel) what a caller reading ``build_command`` would expect."""
     if workspace is None:
         tools_note = ""
-    elif not workspace.write:
-        tools_note = _TOOLS_NOTE["read"]
-    elif workspace.shell:
-        tools_note = _TOOLS_NOTE["write+shell"]
     else:
-        tools_note = _TOOLS_NOTE["write"]
+        tools_note = _TOOLS_NOTE["write" if workspace.write else "read"]
     return rail_preamble(spec, tools_note=tools_note)
 
 
