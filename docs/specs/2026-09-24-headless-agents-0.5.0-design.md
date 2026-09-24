@@ -365,6 +365,17 @@ What an agent can write decides what `ha` must guard, and 0.4.0 measured it per 
   worktree or repository shares. What it can reach is its worktree's `.git` file and any
   hooks path inside its tree — the tripwire's lineage scope. For confined writes, the
   attribution of 3.8.3 is **exact**.
+- **Confinement is proven per rail, never assumed.** A rail's write role counts as
+  confined only while a `live` test (4) proves, on the installed rail version, that it
+  cannot write the common git dir, a ref, the operator's git configuration, or a second
+  repository placed under any root the rail treats as writable. A rail without that proof
+  is classified **unconfined** — its write roles take the unconfined path of 3.8.2–3.8.4.
+  Measured in the code: codex's `workspace-write` sandbox treats `/tmp` and `$TMPDIR` as
+  writable roots besides the workspace; 0.5.0 closes them for write roles
+  (`sandbox_workspace_write.exclude_slash_tmp` and `exclude_tmpdir_env_var` set, and the
+  run's `TMPDIR` pointed at a per-run scratch directory that holds no repository), and
+  the proof includes a repository under `/tmp` and under `$TMPDIR`. The classification is
+  shown by `ha roles` (`confined` or `unconfined`, with the proof's date).
 - **An unconfined role** — `shell = true` on claude, opencode or agy — can do anything
   the operator's account can, in any repository: create objects, move any ref, rewrite a
   configuration. `ha` cannot prevent that and does not pretend to: the operator grants it
@@ -402,11 +413,8 @@ What an agent can write decides what `ha` must guard, and 0.4.0 measured it per 
 
 - **One authority per fact.** A write run's status lives in its lineage state only; any
   other run's status in its registry entry only; a review's head, verdict and text in its
-  review result only. Whether a run was **cleaned** is a separate fact, not a status: its
-  one authority is the `cleaned_at` field of the registry entry, for every run, and it
-  never changes the run's status (a cleaned write keeps `committed` in its lineage).
-  `run.json` in the run directory is a **report** rebuilt from these, never read back to
-  decide anything.
+  review result only. `run.json` in the run directory is a **report** rebuilt from these,
+  never read back to decide anything.
 - **Publication.** Every state file is written whole to a temporary file in the same
   directory, `fsync`ed, renamed over its target, and the directory `fsync`ed: a reader
   sees the old or the new document, never a partial one. Files marked "written once" are
@@ -743,6 +751,7 @@ Every run is a workflow run — a role run has one step:
   "commits": [{"sha": "<sha>", "made_by": "engine"}],
   "failure_reason": null,
   "vendor_check": null,
+  "cleanup": null,
   "pid": 12345,
   "started_at": "2026-09-24T11:15:00Z",
   "duration_seconds": 1210.4,
@@ -779,6 +788,12 @@ deciding text, and `vendor_check`:
   "reviewers": {"reviewer-agy": ["agy"], "reviewer-claude": ["claude"]}
 }
 ```
+
+`cleanup` belongs to a `review` run and says what became of its detached worktree:
+`{"status": "done"}`, or `{"status": "failed", "reason": "<git error>"}` (the worktree
+kept, the exit code still the verdict's, 3.8.4) — `null` on every other run, whose
+worktree is `ha clean`'s business. It is part of the pinned key set, and `ha show`
+renders a failed cleanup on the review's header line.
 
 - **Status:** `running`, `answered` (a one-step run that exited `0`), `failed`,
   `committed` (an `implement` run or a write run that committed), `no_change`,
@@ -914,9 +929,13 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
   `review` with two providers and a judge on a small diff; one real `implement`, `review
   --run`, `implement --continue --findings` sequence on a toy repository; two rails
   running concurrently; the claude telemetry measurement that decides whether its tool
-  counts are published; per rail, a confined write role asked to write the common git
-  dir and a ref (refused by the rail, as 3.8.0 assumes — the assumption is re-measured
-  on every rail upgrade).
+  counts are published; per rail, the **confinement proof** of 3.8.0 — a write role asked
+  to write the common git dir, a ref, the operator's git configuration, and a second
+  repository placed under every root the rail treats as writable (for codex, `/tmp` and
+  `$TMPDIR`), each refused. Its result, with the rail version and date, is what
+  classifies the rail's write roles `confined`; it is re-run on every rail upgrade, and a
+  rail whose proof fails or was never run is `unconfined`. The proof ships with lot 1,
+  before any write role is classified.
 
 ## 5. Versioning and delivery
 
