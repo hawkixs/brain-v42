@@ -568,6 +568,10 @@ class ThreadOutcome:
     drafts: list[ProposalDraft]
     failed: bool = False
     error: str | None = None
+    #: The link itself failed (HTTP, provider, agy envelope) — never a content
+    #: error. Only such a failure may be deferred (Q52); an unparseable answer
+    #: stays a hard failure.
+    transport_failure: bool = False
     #: 049 — `None` means "this call's usage never carried a reasoning-token
     #: count" (no key, wrong type, negative), never "it reported zero". See
     #: `thinking_tokens_from_usage`.
@@ -640,6 +644,7 @@ async def _extract_via(
             drafts=[],
             failed=True,
             error=_exc_str(exc),
+            transport_failure=True,
             thinking_tokens=thinking_tokens,
         )
     return ThreadOutcome(thread=thread, drafts=drafts, thinking_tokens=thinking_tokens)
@@ -1580,7 +1585,7 @@ async def _run(
                 # previous attempted night failed the same way. An unreadable
                 # history fails closed onto the loud path.
                 transport_deferral = False
-                if not is_timeout:
+                if outcome.transport_failure and not is_timeout:
                     try:
                         transport_deferral = not await _previous_attempt_was_a_transport_deferral(
                             sf, thread

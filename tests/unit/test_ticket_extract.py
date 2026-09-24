@@ -528,6 +528,26 @@ class TestExtractThreadErrorCapture:
         assert outcome.failed
         assert outcome.error  # never empty
         assert "ConnectError" in outcome.error
+        assert outcome.transport_failure
+
+    @pytest.mark.asyncio
+    async def test_an_unparseable_answer_is_not_a_transport_failure(self) -> None:
+        """Q52: content errors stay rc=1 — only the transport path may defer."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"choices": [{"message": {"content": "not json"}}], "usage": {}}
+            )
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            base_url="https://mock.nvidia.local/v1",
+        ) as client:
+            outcome = await extract_thread(client, "test-model", _thread())
+
+        assert outcome.failed
+        assert "unparseable" in (outcome.error or "")
+        assert not outcome.transport_failure
 
 
 class TestBoundedExtraction:
@@ -3422,19 +3442,31 @@ class TestAWholeChainTransportFailureIsDeferred:
 
     @staticmethod
     async def _scenario(
-        *, repeats: bool | Exception, persisted: bool = True
+        *,
+        repeats: bool | Exception,
+        persisted: bool = True,
+        last_link_error: str | None = None,
     ) -> tuple[int, AsyncMock, AsyncMock]:
         thread = _thread()
 
         async def extract(client, model, thread, **kw):
-            return ThreadOutcome(thread=thread, drafts=[], failed=True, error="HTTP 503 x3")
+            return ThreadOutcome(
+                thread=thread,
+                drafts=[],
+                failed=True,
+                error="HTTP 503 x3",
+                transport_failure=True,
+            )
 
         async def extract_via_agy(agy_model, agy_executable, thread, **kw):
+            if last_link_error is not None:
+                return ThreadOutcome(thread=thread, drafts=[], failed=True, error=last_link_error)
             return ThreadOutcome(
                 thread=thread,
                 drafts=[],
                 failed=True,
                 error="AgyLinkError: agy envelope carries no usable response",
+                transport_failure=True,
             )
 
         if isinstance(repeats, Exception):
@@ -3510,6 +3542,18 @@ class TestAWholeChainTransportFailureIsDeferred:
 
         assert exit_code == 1
         assert record.await_args.kwargs["status"] == "fail"
+
+
+class TestAContentFailureIsNeverDeferred:
+    @pytest.mark.asyncio
+    async def test_an_unparseable_last_link_fails_on_the_first_night(self) -> None:
+        exit_code, attempts, _ = await TestAWholeChainTransportFailureIsDeferred._scenario(
+            repeats=False,
+            last_link_error="unparseable after corrective re-prompt: bad key",
+        )
+
+        assert exit_code == 1
+        assert [call.args[2] for call in attempts.await_args_list] == ["failed"]
 
 
 class TestRecordTicketAttemptReportsTheWrite:
