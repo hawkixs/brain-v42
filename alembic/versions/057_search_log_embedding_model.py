@@ -9,10 +9,17 @@ which embedding model produced them, and the table has no such column
 This is the prerequisite alone — the `tallies.search_by_model` aggregation
 itself is Tier 2 and stays out of this migration.
 
-TEXT, NULLABLE, NO DEFAULT, NO BACKFILL: `NULL` means "written before 057", the
-same doctrine as 040/041/042/046/048/049. A `server_default` would retroactively
-label every pre-057 row with whatever model happens to be configured the day
-this migration runs, inventing an attribution none of those searches ever had.
+TEXT, NULLABLE, NO DEFAULT, NO BACKFILL. The column stores the configured
+embedding_model NAME ONLY (`config.py`'s `embedding_model`) — never its
+`embedding_backend`, and never a caller-supplied value. `NULL` covers two
+distinct cases, both meaning "no embedding model attributed to this row": a
+row "written before 057", the same doctrine as 040/041/042/046/048/049, and a
+row logged for a search that ran `search_mode == "fts_fallback"`
+(`brain_service.py`, embedding service down, served by FTS alone) — no
+embedding model served that search, so none is stored for it. A
+`server_default` would retroactively label every pre-057 row with whatever
+model happens to be configured the day this migration runs, inventing an
+attribution none of those searches ever had.
 `TEXT` rather than a bounded `VARCHAR`: 045 already had to widen `dream_runs.model`
 from 30 to 120 characters because a real configured model name did not fit, and
 an embedding model name is the same kind of operator-chosen, unbounded string.
