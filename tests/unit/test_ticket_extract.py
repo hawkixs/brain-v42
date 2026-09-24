@@ -3446,10 +3446,13 @@ class TestAWholeChainTransportFailureIsDeferred:
         repeats: bool | Exception,
         persisted: bool = True,
         last_link_error: str | None = None,
+        first_link_error: str | None = None,
     ) -> tuple[int, AsyncMock, AsyncMock]:
         thread = _thread()
 
         async def extract(client, model, thread, **kw):
+            if first_link_error is not None:
+                return ThreadOutcome(thread=thread, drafts=[], failed=True, error=first_link_error)
             return ThreadOutcome(
                 thread=thread,
                 drafts=[],
@@ -3550,6 +3553,19 @@ class TestAContentFailureIsNeverDeferred:
         exit_code, attempts, _ = await TestAWholeChainTransportFailureIsDeferred._scenario(
             repeats=False,
             last_link_error="unparseable after corrective re-prompt: bad key",
+        )
+
+        assert exit_code == 1
+        assert [call.args[2] for call in attempts.await_args_list] == ["failed"]
+
+    @pytest.mark.asyncio
+    async def test_a_content_error_before_a_transport_rescue_failure_is_not_deferred(
+        self,
+    ) -> None:
+        """The chain is not transport-only if ANY link tried erred on content."""
+        exit_code, attempts, _ = await TestAWholeChainTransportFailureIsDeferred._scenario(
+            repeats=False,
+            first_link_error="unparseable after corrective re-prompt: bad key",
         )
 
         assert exit_code == 1

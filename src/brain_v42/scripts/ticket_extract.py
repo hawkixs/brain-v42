@@ -1548,6 +1548,14 @@ async def _run(
             if switched_to_agy and not outcome.failed:
                 agy_served += 1
 
+            # Q52: a deferral needs EVERY link tried to have failed on
+            # transport. The rescue below replaces `outcome`, so a content
+            # error on the NVIDIA link must be remembered across it.
+            chain_content_error = (
+                outcome.failed
+                and not outcome.transport_failure
+                and "timeout" not in (outcome.error or "").lower()
+            )
             if outcome.failed and agy_model and not switched_to_agy:
                 # Ticket-level rescue: this ticket failed on whichever NVIDIA
                 # link was active, for a TRANSPORT reason (httpx error, ticket
@@ -1585,7 +1593,7 @@ async def _run(
                 # previous attempted night failed the same way. An unreadable
                 # history fails closed onto the loud path.
                 transport_deferral = False
-                if outcome.transport_failure and not is_timeout:
+                if outcome.transport_failure and not chain_content_error and not is_timeout:
                     try:
                         transport_deferral = not await _previous_attempt_was_a_transport_deferral(
                             sf, thread
