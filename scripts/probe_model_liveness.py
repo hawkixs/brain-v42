@@ -36,10 +36,11 @@ import httpx
 BASE_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 API_KEY_VAR = "BRAIN_NVIDIA_API_KEY"
 PROBE_MAX_TOKENS = 8
-# 90 s, not 30: gpt-oss-120b — a DORMANT link, exactly what this probe watches
-# — answers in 75 s from a cold queue (measured 2026-08-29, then 2.6 s warm). At
-# 30 s it returned OTHER every Monday, and OTHER exited 0: the unit stayed green
-# on the one site it was not measuring.
+# 90 s, not 30: a DORMANT link — what this probe exists to watch — can answer
+# from a cold queue. Measured 2026-08-29 on gpt-oss-120b (then the WET roadmap
+# fallback, no longer probed since Q51): 75 s cold, 2.6 s warm. At 30 s it
+# returned OTHER every Monday, and OTHER exited 0: the unit stayed green on the
+# one site it was not measuring. The extract fallback is dormant the same way.
 PROBE_TIMEOUT_SECONDS = 90.0
 
 # 529 is present deliberately: it was missing from RETRYABLE_STATUS and a single
@@ -89,7 +90,6 @@ def configured_models() -> list[ModelEntry]:
     from scripts.roadmap_curate import (
         DEFAULT_ROADMAP_FALLBACK_MODEL,
         DEFAULT_ROADMAP_MODEL,
-        DEFAULT_WET_ROADMAP_FALLBACK_MODEL,
         DEFAULT_WET_ROADMAP_MODEL,
     )
     from scripts.ticket_extract import DEFAULT_EXTRACT_FALLBACK_MODEL
@@ -122,11 +122,10 @@ def configured_models() -> list[ModelEntry]:
             DEFAULT_WET_ROADMAP_MODEL,
             "roadmap_curate.DEFAULT_WET_ROADMAP_MODEL (WET primaire)",
         ),
-        resolved(
-            "BRAIN_NVIDIA_ROADMAP_FALLBACK_MODEL",
-            DEFAULT_WET_ROADMAP_FALLBACK_MODEL,
-            "roadmap_curate.DEFAULT_WET_ROADMAP_FALLBACK_MODEL (WET secours)",
-        ),
+        # No WET fallback entry: gpt-oss-120b is GONE 410 for good and ROADMAP is
+        # off and being retired (0f008a1c). Probing a site that never runs held
+        # the weekly unit red on a known dead link, hiding a real primary dying
+        # (operator decision Q51=b, 2026-09-24). The constant leaves with 0f008a1c.
         resolved(
             "BRAIN_NVIDIA_MODEL",
             DEFAULT_EXTRACT_MODEL,
