@@ -6,13 +6,27 @@ on each of them, and so that ``result.json`` is written in one place.
 
 from __future__ import annotations
 
+import errno
 import json
+from contextlib import suppress
 from pathlib import Path
 
 from .result import RunResult
 from .spec import RunSpec
 
 RESULT_FILE_NAME = "result.json"
+
+
+def _failure_note(error: OSError) -> str:
+    """One line naming ``error``: exception class + errno name, never its message.
+
+    The errno name (``ENOTDIR``, ``EACCES``, ...) is enough to diagnose a
+    write failure from the log; the OS-supplied message can echo path
+    fragments or, on some platforms, more than that -- never worth the risk
+    for a bookkeeping note.
+    """
+    code = errno.errorcode.get(error.errno, "UNKNOWN") if error.errno is not None else "UNKNOWN"
+    return f"record: could not write {RESULT_FILE_NAME}: {type(error).__name__} ({code})\n"
 
 
 def answer_text(path: Path | None, *, exit_code: int, offset: int = 0) -> str | None:
@@ -49,14 +63,30 @@ def record(spec: RunSpec, result: RunResult) -> RunResult:
 
     Written under a temporary name, then renamed: a reader listing run
     directories never parses half a file.
+
+    Never raises ``OSError``. By the time this runs the agent already ran --
+    quota spent, maybe files written -- so a write failure here (read-only
+    ``run_dir``, a full disk, ``run_dir`` being a plain file) must not cost
+    the caller the ``RunResult`` of a run that already happened. On failure
+    ``result`` is returned unchanged; one line naming the failure is appended
+    to ``spec.stderr_log`` when that path is set and writable, and stays
+    silent otherwise; the half-written partial file is removed best-effort.
     """
     if spec.run_dir is None:
         return result
-    spec.run_dir.mkdir(parents=True, exist_ok=True)
     target = spec.run_dir / RESULT_FILE_NAME
     partial = spec.run_dir / f".{RESULT_FILE_NAME}.partial"
-    partial.write_text(
-        json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    partial.replace(target)
+    try:
+        spec.run_dir.mkdir(parents=True, exist_ok=True)
+        partial.write_text(
+            json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        partial.replace(target)
+    except OSError as error:
+        if spec.stderr_log is not None:
+            with suppress(OSError):
+                with spec.stderr_log.open("a", encoding="utf-8") as stream:
+                    stream.write(_failure_note(error))
+        with suppress(OSError):
+            partial.unlink()
     return result
