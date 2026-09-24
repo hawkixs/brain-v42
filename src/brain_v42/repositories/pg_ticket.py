@@ -32,6 +32,67 @@ _ACTIONABLE = ("open", "in_progress")
 _CONFIRMABLE = ("resolved", "wontfix")
 
 
+async def count_grouped_by_project(session: AsyncSession) -> list[dict[str, Any]]:
+    """Per-project pending-ticket counters for the sidecar's `tickets` block (0fb857ef).
+
+    Single place for the categorisation semantics: reuses the SAME
+    ``_ACTIONABLE``/``_CONFIRMABLE`` tuples as ``list_grouped``'s
+    ``a_traiter``/``a_confirmer``/``en_attente`` groups, so the sidecar's
+    per-project counters can never drift from ``brain_ticket_list``'s own
+    rules.
+
+    - ``todo``: ``to_project == X AND status IN _ACTIONABLE``
+      (mirrors ``a_traiter`` — no self-ticket exclusion).
+    - ``to_confirm``: ``from_project == X AND status IN _CONFIRMABLE``
+      (mirrors ``a_confirmer`` — grouped by the REQUESTER, so "a resolved
+      ticket counts at the requester"; no self-ticket exclusion, same as
+      ``a_confirmer``).
+    - ``waiting``: ``from_project == X AND status IN _ACTIONABLE AND
+      from_project != to_project`` (mirrors ``en_attente`` — a note-to-self
+      never counts as "waiting on someone").
+
+    Unlike ``list_grouped`` (one project, full ``Ticket`` rows, 4 queries),
+    this is one aggregate query across every project, ``GROUP BY`` project,
+    for the sidecar's slow-cadence collector. Rows are pre-sorted
+    most-urgent-first (``todo`` desc, then ``to_confirm`` desc, then
+    ``waiting`` desc, then project name for a stable tie-break) — callers
+    must not re-sort.
+    """
+    todo = sa.select(
+        tickets.c.to_project.label("project"),
+        sa.literal("todo").label("category"),
+    ).where(tickets.c.status.in_(_ACTIONABLE))
+    to_confirm = sa.select(
+        tickets.c.from_project.label("project"),
+        sa.literal("to_confirm").label("category"),
+    ).where(tickets.c.status.in_(_CONFIRMABLE))
+    waiting = sa.select(
+        tickets.c.from_project.label("project"),
+        sa.literal("waiting").label("category"),
+    ).where(
+        tickets.c.status.in_(_ACTIONABLE),
+        tickets.c.from_project != tickets.c.to_project,
+    )
+    unioned = sa.union_all(todo, to_confirm, waiting).subquery()
+    query = (
+        sa.select(
+            unioned.c.project,
+            sa.func.count().filter(unioned.c.category == "todo").label("todo"),
+            sa.func.count().filter(unioned.c.category == "to_confirm").label("to_confirm"),
+            sa.func.count().filter(unioned.c.category == "waiting").label("waiting"),
+        )
+        .group_by(unioned.c.project)
+        .order_by(
+            sa.desc("todo"),
+            sa.desc("to_confirm"),
+            sa.desc("waiting"),
+            unioned.c.project.asc(),
+        )
+    )
+    rows = (await session.execute(query)).mappings().all()
+    return [dict(row) for row in rows]
+
+
 class PgTicketRepo(BasePgRepository):
     table = tickets
     fts_columns: list[str] = []  # hors recherche — famille coordination (spec §1)

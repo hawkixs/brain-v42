@@ -13,7 +13,7 @@ import pytest
 import sqlalchemy as sa
 
 from brain_v42.models.ticket import ExtractionStatus, TicketCreate, TicketKind, TicketStatus
-from brain_v42.repositories.pg_ticket import PgTicketRepo
+from brain_v42.repositories.pg_ticket import PgTicketRepo, count_grouped_by_project
 
 
 def _ticket_row(
@@ -467,3 +467,68 @@ class TestListGrouped:
 
         assert [t.id for t in groups.a_confirmer] == [ticket_id]
         assert groups.awaiting_requester_confirmation == []
+
+
+class TestCountGroupedByProject:
+    """Per-project ticket counters for the sidecar's `tickets` block (0fb857ef).
+
+    One aggregate UNION ALL query built from the SAME _ACTIONABLE/_CONFIRMABLE
+    predicates as list_grouped's a_traiter/a_confirmer/en_attente (single place
+    for the categorisation semantics — the ONLY thing worth pinning here is that
+    those predicates, and the requester-side / self-ticket rules baked into
+    them, made it into the new query unchanged).
+    """
+
+    async def test_todo_bucket_mirrors_a_traiter_no_self_exclusion(self) -> None:
+        session = _session(_all_result([]))
+
+        await count_grouped_by_project(session)
+
+        statement = session.execute.await_args.args[0]
+        sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
+        assert "tickets.to_project AS project" in sql
+        assert "'open'" in sql and "'in_progress'" in sql
+        # todo has no self-ticket exclusion, same as a_traiter.
+        todo_branch = sql.split("UNION ALL")[0]
+        assert "from_project != " not in todo_branch and "from_project !=" not in todo_branch
+
+    async def test_to_confirm_bucket_mirrors_a_confirmer_resolved_at_requester(self) -> None:
+        session = _session(_all_result([]))
+
+        await count_grouped_by_project(session)
+
+        statement = session.execute.await_args.args[0]
+        sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
+        # to_confirm groups by from_project (the REQUESTER), not to_project —
+        # "a resolved ticket counts at the requester" (ticket 0fb857ef thread).
+        assert "tickets.from_project AS project" in sql
+        assert "'resolved'" in sql and "'wontfix'" in sql
+
+    async def test_waiting_bucket_excludes_self_tickets(self) -> None:
+        session = _session(_all_result([]))
+
+        await count_grouped_by_project(session)
+
+        statement = session.execute.await_args.args[0]
+        sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
+        # waiting mirrors en_attente: from_project == X, ACTIONABLE, and a
+        # self-ticket (notes-to-self) never counts as "waiting on someone".
+        assert "tickets.from_project != tickets.to_project" in sql
+
+    async def test_shapes_aggregate_rows_into_project_counts(self) -> None:
+        rows = [
+            {"project": "brain-v42", "todo": 53, "to_confirm": 2, "waiting": 9},
+            {"project": "auto-discord", "todo": 21, "to_confirm": 1, "waiting": 16},
+        ]
+        session = _session(_all_result(rows))
+
+        result = await count_grouped_by_project(session)
+
+        assert result == rows
+
+    async def test_returns_empty_list_when_nothing_pending_anywhere(self) -> None:
+        session = _session(_all_result([]))
+
+        result = await count_grouped_by_project(session)
+
+        assert result == []
