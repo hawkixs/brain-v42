@@ -137,7 +137,11 @@ def test_057_adds_no_constraint_no_index_and_no_trigger() -> None:
     index and trigger-function blocks to v13's — measured on the 057
     database before writing, not assumed from the migration source alone.
     """
-    for block in ("expected_table_constraints", "expected_table_indexes", "expected_trigger_functions"):
+    for block in (
+        "expected_table_constraints",
+        "expected_table_indexes",
+        "expected_trigger_functions",
+    ):
         for before, after in ((V13_SQL, V14_SQL), (V13_PGRESTORE, V14_PGRESTORE)):
             assert _block(before, block) == _block(after, block), block
 
