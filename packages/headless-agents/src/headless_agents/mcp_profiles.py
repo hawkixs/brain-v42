@@ -11,7 +11,7 @@ One TOML file, ``$XDG_CONFIG_HOME/ha/mcp.toml`` (default
     tools = ["brain_search", "brain_get", "brain_recall", "brain_ticket_get"]
     # optional:
     # name = "brain"                         # the server name the CLI declares (default: the table's)
-    # headers = { "X-Brain-Agent" = "ha" }
+    # headers = { "X-Brain-Agent" = "ha" }  # brain also needs "X-Brain-Tool-Profile" = "native"
     # allowed_networks = ["10.8.0.0/24"]     # default: loopback only; "any" = no restriction
 
 The file holds names, never secrets: a key that looks like a secret value

@@ -404,8 +404,16 @@ ha clean RUN_ID
   url = "http://127.0.0.1:8765/mcp"
   bearer_env = "BRAIN_TOKEN"   # the variable NAME; the value never sits in this file
   tools = ["brain_search", "brain_get", "brain_recall", "brain_ticket_get"]
+  headers = { "X-Brain-Tool-Profile" = "native", "X-Brain-Agent" = "ha" }
   # allowed_networks = ["10.8.0.0/24"]   # default loopback only; "any" = no restriction
   ```
+
+  For brain the `X-Brain-Tool-Profile = "native"` header is required: brain's default
+  `compact` catalogue publishes only `brain_find_tool` and `brain_call_tool` -- and
+  `brain_call_tool` reaches every tool, writes included -- so a read-only `tools` list
+  names tools that catalogue does not publish, and the agent finds none (measured
+  end-to-end 2026-09-24: claude refused, codex exited `3` with no tool call; with the
+  header all four rails answered through `brain_search`).
 
 - **`--base-url` / `--key-env`**: required with `-p openai-compat`, refused otherwise;
   `--key-env` takes the variable name, never the key.

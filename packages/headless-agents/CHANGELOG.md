@@ -66,6 +66,9 @@ Lot 4 completes 0.4.0; the package version is `0.4.0`. The four lot sections bel
   exited `3`, which a chain reads as "unavailable": a configuration error fell through to
   the next link. And one `-m` shared by every link made `--chain codex,claude` unusable.
   A provider named twice in a chain is refused.
+- README: the `brain-read` MCP profile example carries `X-Brain-Tool-Profile = "native"`.
+  Without it brain's compact catalogue publishes only its two gateway tools, and a
+  read-only allowlist found no tool at all (measured end-to-end, all four rails).
 
 ### Behaviour
 - **codex keeps its shell tool in every workspace mode** (spec decision 13). Measured
