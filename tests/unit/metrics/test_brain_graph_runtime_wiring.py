@@ -28,6 +28,24 @@ def test_metrics_runtime_wires_postgres_graph_projection_when_neo4j_is_disabled(
     assert "/api/brain-graph/v1" in routes
 
 
+def test_metrics_runtime_wires_the_slow_block_cache_ttls_from_settings() -> None:
+    """Decision 1669d429 item 2: the runtime forwards Settings' TTLs, not the defaults."""
+    settings = Settings(
+        postgres_url="postgresql+asyncpg://u:p@localhost:5433/brain_test",
+        metrics_legacy_automation_enabled=False,
+        graph_enabled=False,
+        metrics_slow_block_cache_ttl_seconds=45.0,
+        metrics_slow_block_cache_error_ttl_seconds=3.0,
+        _env_file=None,  # type: ignore[call-arg]
+    )
+
+    runtime = build_metrics_runtime(settings=settings, engine=MagicMock())
+    server = runtime._resources.server_factory(None, None)  # type: ignore[misc]
+
+    assert server._slow_block_cache._ttl_seconds == 45.0
+    assert server._slow_block_cache._error_ttl_seconds == 3.0
+
+
 def test_metrics_runtime_refuses_the_service_private_projector_role() -> None:
     settings = Settings(
         postgres_url="postgresql+asyncpg://u:p@localhost:5433/brain_test",

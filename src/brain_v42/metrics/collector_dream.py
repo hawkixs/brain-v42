@@ -6,7 +6,14 @@ focused on in-memory instrumentation; mixed into ``MetricsCollector`` so
 the public API (``collector.collect_dream_*``) is unchanged.
 
 These methods depend only on ``self._session_factory`` and never crash the
-sidecar — every query is wrapped to degrade to an empty result on error.
+sidecar. ``collect_dream_metrics`` -- the block ``SlowBlockCache`` memoizes as
+"dream" -- signals a SQL failure by raising ``CollectorDegraded({})`` instead
+of returning ``{}`` plainly, so the cache can tell that shape apart from the
+identical ``{}`` a legitimate "no dream runs yet" produces and give it the
+short ``error_ttl_seconds`` instead of the full TTL (slow_block_cache.py).
+The other two collectors here (promotions, promoted-health) still degrade to
+an empty result silently -- they are optional sub-blocks folded into "dream"
+only when non-empty, not the block's own success/failure signal.
 """
 
 from __future__ import annotations
@@ -17,6 +24,8 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 from sqlalchemy import text
+
+from brain_v42.metrics.slow_block_cache import CollectorDegraded
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -272,9 +281,9 @@ class _DreamCollectorsMixin:
                     }
 
                 return {"last_run": last_run, "history": history}
-        except Exception:
+        except Exception as exc:
             logger.warning("metrics.collect_dream_metrics.failed", exc_info=True)
-            return {}
+            raise CollectorDegraded({}) from exc
 
     async def collect_dream_promoted_health(self) -> list[dict[str, Any]]:
         """Per-target post-promotion health for auto-promoted ADRs and runbooks.

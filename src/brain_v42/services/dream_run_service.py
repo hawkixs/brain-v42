@@ -18,6 +18,16 @@ from brain_v42.dream_killswitches import (
     non_canonical_killswitches,
     parse_killswitches,
 )
+from brain_v42.dream_run_project_key import GLOBAL_PHASE_PROJECT_KEY
+
+#: `dream_runs.status` values that count as a failure for `last_failure`
+#: (ticket 69949ffc, decision 1669d429 item 4). Narrower than the historical
+#: `!= 'done'` predicate: `partial` is excluded on purpose, both because the
+#: pool-wide sidecar rule (`collector_nightly.py`) only ever asked for
+#: fail/timeout and because `partial` is also the status the second,
+#: unfixed dream_runs writer emits with a blank project_key (ticket 7336a2d5)
+#: — excluding it here removes that contamination as a side effect.
+_FAILURE_STATUSES = ("fail", "timeout")
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -255,14 +265,28 @@ class DreamRunService:
                 return cast(date, run_date)
         return None
 
-    async def last_failure(self, within_days: int = 7) -> LastFailureRow | None:
-        # dream.sh emits done|timeout|fail; anything != 'done' = failure.
+    async def last_failure(
+        self, *, project_key: str, within_days: int = 7
+    ) -> LastFailureRow | None:
+        """Most recent fail/timeout row for `project_key`, within the window.
+
+        Scoped since ticket 69949ffc: an unscoped query let another pool
+        project's failure render as this project's own "Last failure" on the
+        session briefing. A global-phase row (`GLOBAL_PHASE_PROJECT_KEY`, '*')
+        still matches every project — it is a whole-night verdict
+        (extract/roadmap/sweep/coverage), not another project's business.
+        NULL and blank project_key rows are excluded: NULL predates migration
+        042, blank is the second writer's contamination (ticket 7336a2d5).
+        """
         t = self._t
         cutoff = datetime.now(tz=UTC) - timedelta(days=within_days)
         stmt = (
             sa.select(t)
-            .where(t.c.status != "done")
+            .where(t.c.status.in_(_FAILURE_STATUSES))
             .where(t.c.created_at >= cutoff)
+            .where(t.c.project_key.is_not(None))
+            .where(t.c.project_key != "")
+            .where(t.c.project_key.in_((project_key, GLOBAL_PHASE_PROJECT_KEY)))
             .order_by(t.c.created_at.desc())
             .limit(1)
         )

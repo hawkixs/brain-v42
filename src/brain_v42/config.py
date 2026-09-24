@@ -345,6 +345,28 @@ class Settings(BaseSettings):
         default="silent", validation_alias=_brain_alias("METRICS_NONLOOPBACK_POSTURE")
     )
 
+    # TTL memo for the /metrics slow collectors (decision 1669d429 item 2). Red-monitor
+    # polls GET /metrics roughly every 5s, and the dream, nightly-ops and
+    # graph-inventory collectors it assembles together run on the order of fifteen
+    # PostgreSQL queries plus a Neo4j round trip on EVERY poll, uncached. 30s (six
+    # polls) trades a small staleness window for a 6x cut in that load; `database`
+    # and the embedding healthcheck are deliberately excluded and stay live on every
+    # poll -- they are cheap and their freshness matters more than the others'.
+    metrics_slow_block_cache_ttl_seconds: float = Field(
+        default=30.0, validation_alias=_brain_alias("METRICS_SLOW_BLOCK_CACHE_TTL_SECONDS")
+    )
+    # Applied only when a cached collector RAISES instead of degrading to `{}`/`None`
+    # itself (every collector this cache wraps already does the latter -- this is
+    # defense in depth for the one that doesn't, present or future). Deliberately
+    # short and independent of the TTL above: caching a raised exception for the full
+    # 30s window would turn one bad poll into six silent misses on the panel. One
+    # error-TTL cycle, sized to roughly one poll interval, is enough for
+    # single-flight to still protect a concurrent stampede on that failure without
+    # freezing recovery any longer than an uncached miss would.
+    metrics_slow_block_cache_error_ttl_seconds: float = Field(
+        default=5.0, validation_alias=_brain_alias("METRICS_SLOW_BLOCK_CACHE_ERROR_TTL_SECONDS")
+    )
+
     # --- Transport identity (Mcp-Session-Id, minted by the server) ---
     # Unlike the rest of this repository, this setting ships OPEN (hence
     # stateful), because its alternative is not "nothing" but "a wrong panel":

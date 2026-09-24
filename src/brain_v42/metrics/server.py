@@ -29,6 +29,7 @@ from brain_v42.metrics.codex_telemetry import (
     CodexTelemetryMalformedError,
 )
 from brain_v42.metrics.collector import MetricsCollector
+from brain_v42.metrics.slow_block_cache import SlowBlockCache
 
 logger = structlog.get_logger(__name__)
 
@@ -237,6 +238,9 @@ class MetricsServer:
         codex_registry: ClientActivityRegistry | None = None,
         nonloopback_posture: str = "silent",
         allow_non_loopback: bool = False,
+        slow_block_cache_ttl_seconds: float = 30.0,
+        slow_block_cache_error_ttl_seconds: float = 5.0,
+        slow_block_cache: SlowBlockCache | None = None,
     ) -> None:
         self._collector = collector
         self._embedding_svc = embedding_svc
@@ -255,6 +259,15 @@ class MetricsServer:
         self._rejection_counters = ReceiverRejectionCounters()
         self._nonloopback_posture = nonloopback_posture
         self._allow_non_loopback = allow_non_loopback
+        # Decision 1669d429 item 2: dream/nightly/graph-inventory are memoized behind
+        # a TTL + single-flight cache (`database` and the embedding healthcheck stay
+        # live, uncached, below). `slow_block_cache` is an injection point for tests
+        # that need a controllable clock; production wiring passes the TTLs instead
+        # (`runtime.py`), which come from `Settings`.
+        self._slow_block_cache = slow_block_cache or SlowBlockCache(
+            ttl_seconds=slow_block_cache_ttl_seconds,
+            error_ttl_seconds=slow_block_cache_error_ttl_seconds,
+        )
 
     def _build_app(self) -> web.Application:
         app = web.Application()
@@ -422,6 +435,28 @@ class MetricsServer:
         payload = await self._cockpit.snapshot()
         return web.json_response(payload)
 
+    async def _compute_dream_block(self) -> dict[str, Any]:
+        """Assemble the `dream` block from its three collector calls.
+
+        Passed whole to `SlowBlockCache.get`: the cache memoizes the COMBINED
+        result (and its single `generated_at`), not each call separately —
+        otherwise a partial refresh could mix a fresh `last_run` with a stale
+        `promotions` sub-block.
+        """
+        dream_metrics = await self._collector.collect_dream_metrics()
+        if not dream_metrics:
+            return {}
+        promo_counts = await self._collector.collect_dream_promotions()
+        if promo_counts:
+            dream_metrics["promotions"] = {
+                "total": sum(promo_counts.values()),
+                "by_type": promo_counts,
+            }
+        promoted_health = await self._collector.collect_dream_promoted_health()
+        if promoted_health:
+            dream_metrics["promoted_health"] = promoted_health
+        return dream_metrics
+
     async def _handle_metrics(self, request: web.Request) -> web.Response:
         """Handle GET /metrics — assemble full metrics JSON.
 
@@ -480,12 +515,13 @@ class MetricsServer:
             # assembled from in-memory state; merging them would double-count.
             agg_tools.pop("_cost", None)
             agg_tools.pop("_buckets", None)
-            # Extract _decay into the top-level decay section: the sidecar's
-            # in-memory collector never sees MCP-process decay stats, so the
-            # cross-process values persisted by MetricsFlusher are authoritative.
-            decay_agg = agg_tools.pop("_decay", None)
-            if decay_agg is not None:
-                metrics["decay"] = decay_agg
+            # decay: the sidecar's in-memory collector never sees MCP-process decay
+            # stats, so the cross-process value is authoritative. It is a DB-wide
+            # GAUGE (latest-row-wins, never summed — 04c09575) and collect_process_metrics
+            # already reduces it that way and returns it split out of "tools", so there
+            # is nothing left to pop here. (Removed from process_agg entirely, below,
+            # right before cross_process is published — decay stays top-level only.)
+            metrics["decay"] = process_agg["decay"]
             metrics["tools"] = agg_tools
             emb_agg = process_agg["embedding"]
             metrics["embedding_service"]["total_requests"] = emb_agg["total_requests"]
@@ -499,7 +535,28 @@ class MetricsServer:
                     "write": {"total_tokens": 0, "reported_requests": 0},
                 },
             )
+            # embedding identity (ticket 3a4ed612): a LIVE MCP process's own
+            # {model, backend, endpoint_host, models_seen} outranks the sidecar's
+            # own settings that collector.get_metrics() already put here as the
+            # labelled fallback. No live identity (fresh deploy, or every live
+            # row still pre-dates this feature) -> leave those defaults alone,
+            # model_source stays "sidecar_settings".
+            identity = process_agg.get("embedding_identity")
+            if identity is not None:
+                metrics["embedding_service"]["model"] = identity["model"]
+                metrics["embedding_service"]["backend"] = identity["backend"]
+                metrics["embedding_service"]["endpoint_host"] = identity["endpoint_host"]
+                metrics["embedding_service"]["models_seen"] = identity["models_seen"]
+                metrics["embedding_service"]["model_source"] = "live_processes"
 
+        # decay/embedding_identity are published only via the top-level
+        # embedding_service (set above when active): strip them from the raw
+        # cross_process block unconditionally, so an inactive process_agg
+        # (structural zeros, active_processes == 0) doesn't leak a duplicate
+        # copy either, and cross_process never grows a payload key the operator
+        # decision for this lot didn't agree to.
+        process_agg.pop("decay", None)
+        process_agg.pop("embedding_identity", None)
         metrics["cross_process"] = process_agg
 
         # Embedding service health
@@ -509,14 +566,19 @@ class MetricsServer:
         except Exception:
             metrics["embedding_service"]["status"] = "down"
 
-        # Graph service health (optional — only if graph_svc provided)
+        # Graph service health (optional — only if graph_svc provided). The
+        # healthcheck stays LIVE on every poll; only the inventory (Neo4j counts +
+        # a PG orphan scan) goes through the slow-block cache (1669d429 item 2).
         if self._graph_svc is not None:
             try:
                 graph_healthy = await self._graph_svc.healthcheck()
             except Exception:
                 graph_healthy = False
             graph_stats = metrics.get("graph", {})
-            inventory = await self._collector.collect_graph_inventory(self._graph_svc)
+            inventory = await self._slow_block_cache.get(
+                "graph_inventory", lambda: self._collector.collect_graph_inventory(self._graph_svc)
+            )
+            inventory = inventory or {}
             metrics["graph"] = {
                 "status": "up" if graph_healthy else "down",
                 "total_queries": graph_stats.get("total_queries", 0),
@@ -526,28 +588,54 @@ class MetricsServer:
                 "nodes_total": inventory.get("nodes_total", {}),
                 "edges_total": inventory.get("edges_total", {}),
                 "orphans_total": inventory.get("orphans_total", {}),
+                "generated_at": inventory.get("generated_at"),
             }
 
         # Dream run metrics — merge run-level data + cumulative promotions counts
-        # + per-target post-promotion health (ADR #4 v2 telemetry).
-        dream_metrics = await self._collector.collect_dream_metrics()
+        # + per-target post-promotion health (ADR #4 v2 telemetry). Assembled
+        # inside one `compute` so the cache memoizes the three collector calls
+        # (and their generated_at) as a single block (1669d429 item 2).
+        dream_metrics = await self._slow_block_cache.get("dream", self._compute_dream_block)
         if dream_metrics:
-            promo_counts = await self._collector.collect_dream_promotions()
-            if promo_counts:
-                dream_metrics["promotions"] = {
-                    "total": sum(promo_counts.values()),
-                    "by_type": promo_counts,
-                }
-            promoted_health = await self._collector.collect_dream_promoted_health()
-            if promoted_health:
-                dream_metrics["promoted_health"] = promoted_health
             metrics["dream"] = dream_metrics
 
         # Nightly-ops (killswitches, roadmap/extract review, last failure) —
         # consumed by red-monitor's nightly-ops panel (ticket de1ad785).
-        nightly = await self._collector.collect_nightly_ops()
+        # Resolved through a lambda, not a bare `self._collector.collect_nightly_ops`
+        # reference: the ATTRIBUTE LOOKUP itself must happen inside the cache's
+        # protected `compute()` call, not while building this call's arguments --
+        # a collector double that lacks the method must degrade this block to
+        # absent, never 500 the whole endpoint (a real incident: a `MinimalCollector`
+        # test double raised AttributeError here, outside any try/except).
+        nightly = await self._slow_block_cache.get(
+            "nightly", lambda: self._collector.collect_nightly_ops()
+        )
         if nightly:
             metrics["nightly"] = nightly
+
+        # Per-project ticket counters (ticket 0fb857ef) — replaces red-monitor's
+        # abandoned roadmap tab. Categorisation is brain's alone: collect_ticket_counts
+        # (collector_tickets.py) reuses list_grouped's own _ACTIONABLE/_CONFIRMABLE
+        # predicates, red-monitor renders whatever it receives with no status logic
+        # of its own. `projects: []` (truthy dict) still publishes the key — only a
+        # raised exception (caught by the cache, see slow_block_cache.py) leaves
+        # "tickets" absent from the payload. Same lambda-deferral reasoning as
+        # "nightly" just above: a collector lacking the method must degrade this
+        # block to absent, not 500 the whole endpoint.
+        tickets_block = await self._slow_block_cache.get(
+            "tickets", lambda: self._collector.collect_ticket_counts()
+        )
+        if tickets_block:
+            metrics["tickets"] = tickets_block
+
+        # Deprecated top-level alias (ticket 3a4ed612): re-synced here, after any
+        # cross-process override above, so it never drifts from the field it
+        # mirrors -- get_metrics() only had the sidecar's own pre-override value.
+        # Guarded: a test double stubbing get_metrics() with a bare
+        # {"embedding_service": {}} must not crash a handler it isn't exercising.
+        embedding_service_block = metrics.get("embedding_service", {})
+        if "model" in embedding_service_block:
+            metrics["model"] = embedding_service_block["model"]
 
         return web.json_response(metrics)
 

@@ -52,6 +52,11 @@ _dream_runs = Table(
     Column("error_message", Text, nullable=True),
     Column("phase_dry_run", Boolean, nullable=False, server_default=sa.text("0")),
     Column("created_at", DateTime, server_default=sa.func.now()),
+    # Revision 042 mirror — see brain_v42.db.tables.dream_runs. NULL = written
+    # before 042; '*' (GLOBAL_PHASE_PROJECT_KEY) = a global phase; a blank
+    # string is the second writer's contamination (ticket 7336a2d5), never a
+    # legitimate value.
+    Column("project_key", String(64), nullable=True),
 )
 
 
@@ -75,6 +80,7 @@ async def _insert_run(
     created_at=None,
     error_message=None,
     model="sonnet",
+    project_key=None,
 ):
     cat = created_at or datetime.now(tz=UTC)
     async with factory() as session:
@@ -88,6 +94,7 @@ async def _insert_run(
                 phase_dry_run=phase_dry_run,
                 error_message=error_message,
                 created_at=cat,
+                project_key=project_key,
             )
         )
         await session.commit()
@@ -447,6 +454,14 @@ class TestKillswitchState:
 
 
 class TestLastFailure:
+    """Scoped to one project since ticket 69949ffc: the briefing must never show
+    another pool project's failure as its own. `project_key` is therefore a
+    mandatory keyword — no silent unscoped default. Global-phase rows
+    (`GLOBAL_PHASE_PROJECT_KEY`, '*') still surface for every project: they are
+    a whole-night verdict (extract/roadmap/sweep/coverage), not another
+    project's business (decision 1669d429 item 4).
+    """
+
     @pytest.mark.asyncio
     async def test_returns_most_recent_failure(self, session_factory):
         old_failure = datetime.now(tz=UTC) - timedelta(days=2)
@@ -457,6 +472,7 @@ class TestLastFailure:
             phase="promote",
             status="fail",
             created_at=old_failure,
+            project_key="brain-v42",
         )
         await _insert_run(
             session_factory,
@@ -464,17 +480,114 @@ class TestLastFailure:
             phase="reorg",
             status="fail",
             created_at=new_failure,
+            project_key="brain-v42",
         )
         svc = DreamRunService(session_factory, table=_dream_runs)
-        result = await svc.last_failure()
+        result = await svc.last_failure(project_key="brain-v42")
         assert result is not None
         assert result.phase == "reorg"
 
     @pytest.mark.asyncio
     async def test_returns_none_when_no_failures(self, session_factory):
-        await _insert_run(session_factory, run_date=date.today(), phase="promote", status="done")
+        await _insert_run(
+            session_factory,
+            run_date=date.today(),
+            phase="promote",
+            status="done",
+            project_key="brain-v42",
+        )
         svc = DreamRunService(session_factory, table=_dream_runs)
-        assert await svc.last_failure() is None
+        assert await svc.last_failure(project_key="brain-v42") is None
+
+    @pytest.mark.asyncio
+    async def test_timeout_counts_as_failure(self, session_factory):
+        await _insert_run(
+            session_factory,
+            run_date=date.today(),
+            phase="promote",
+            status="timeout",
+            project_key="brain-v42",
+        )
+        svc = DreamRunService(session_factory, table=_dream_runs)
+        result = await svc.last_failure(project_key="brain-v42")
+        assert result is not None
+        assert result.phase == "promote"
+
+    @pytest.mark.asyncio
+    async def test_partial_status_is_not_a_failure(self, session_factory):
+        """Narrower than the historical `!= 'done'` predicate (ticket 69949ffc,
+        decision 1669d429 item 4): only fail/timeout count. `partial` is also
+        the status the second writer emits with a blank project (ticket
+        7336a2d5) — excluding it here is a deliberate side effect of aligning
+        on the pool-wide rule, not an accident.
+        """
+        await _insert_run(
+            session_factory,
+            run_date=date.today(),
+            phase="promote",
+            status="partial",
+            project_key="brain-v42",
+        )
+        svc = DreamRunService(session_factory, table=_dream_runs)
+        assert await svc.last_failure(project_key="brain-v42") is None
+
+    @pytest.mark.asyncio
+    async def test_scopes_to_the_given_project_key(self, session_factory):
+        """A failure that belongs to another pool project must never surface on
+        this one's briefing (ticket 69949ffc's reported symptom)."""
+        await _insert_run(
+            session_factory,
+            run_date=date.today(),
+            phase="reorg",
+            status="fail",
+            project_key="watchk-claude",
+        )
+        svc = DreamRunService(session_factory, table=_dream_runs)
+        assert await svc.last_failure(project_key="brain-v42") is None
+
+    @pytest.mark.asyncio
+    async def test_excludes_null_project_key(self, session_factory):
+        """NULL = written before migration 042 — no project to attribute it to."""
+        await _insert_run(
+            session_factory,
+            run_date=date.today(),
+            phase="reorg",
+            status="fail",
+            project_key=None,
+        )
+        svc = DreamRunService(session_factory, table=_dream_runs)
+        assert await svc.last_failure(project_key="brain-v42") is None
+
+    @pytest.mark.asyncio
+    async def test_excludes_blank_project_key(self, session_factory):
+        """The second writer's contamination (ticket 7336a2d5) — a stopgap
+        exclusion pending the fix at its source."""
+        await _insert_run(
+            session_factory,
+            run_date=date.today(),
+            phase="reorg",
+            status="fail",
+            project_key="",
+        )
+        svc = DreamRunService(session_factory, table=_dream_runs)
+        assert await svc.last_failure(project_key="brain-v42") is None
+
+    @pytest.mark.asyncio
+    async def test_global_phase_sentinel_surfaces_for_every_project(self, session_factory):
+        """A global phase (extract/roadmap/sweep/coverage) judges the whole
+        night, not one project (see scripts/dream/record_coverage_gap.py) — it
+        must keep reaching every project's briefing."""
+        await _insert_run(
+            session_factory,
+            run_date=date.today(),
+            phase="coverage",
+            status="fail",
+            project_key="*",
+        )
+        svc = DreamRunService(session_factory, table=_dream_runs)
+        result = await svc.last_failure(project_key="brain-v42")
+        assert result is not None
+        assert result.phase == "coverage"
 
     @pytest.mark.asyncio
     async def test_filters_outside_window(self, session_factory):
@@ -485,7 +598,8 @@ class TestLastFailure:
             phase="reorg",
             status="fail",
             created_at=old,
+            project_key="brain-v42",
         )
         svc = DreamRunService(session_factory, table=_dream_runs)
-        result = await svc.last_failure(within_days=7)
+        result = await svc.last_failure(within_days=7, project_key="brain-v42")
         assert result is None

@@ -13,6 +13,8 @@ from brain_v42.metrics.server import MetricsServer
 _MOCK_SETTINGS = MagicMock(
     embedding_service_url="http://localhost:8003",
     embedding_dimension=1536,
+    embedding_backend="shim",
+    embedding_model="qodo",
 )
 
 

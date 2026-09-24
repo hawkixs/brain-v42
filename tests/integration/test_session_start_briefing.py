@@ -61,6 +61,7 @@ _dream_runs = Table(
     Column("error_message", Text, nullable=True),
     Column("phase_dry_run", Boolean, nullable=False, server_default=sa.text("0")),
     Column("created_at", DateTime, server_default=sa.func.now()),
+    Column("project_key", String(64), nullable=True),
 )
 
 _features = Table(
@@ -290,7 +291,7 @@ async def _compose_full(session_factory, graph_enabled: bool = False):
     killswitches = await dream_svc.killswitch_state(
         killswitches_path=Path("/nonexistent/killswitches.conf")
     )
-    last_failure = await dream_svc.last_failure()
+    last_failure = await dream_svc.last_failure(project_key="brain-v42")
     # roadmap_alive runs on the SQLite mirror too (NULLS LAST supported since
     # SQLite 3.30): the seeded features return with artifact_count=0
     # (feature_artifacts table is empty in this harness). The golden snapshot
@@ -333,7 +334,7 @@ async def test_empty_seed_matches_golden(session_factory):
     killswitches = await dream_svc.killswitch_state(
         killswitches_path=Path("/nonexistent/killswitches.conf")
     )
-    last_failure = await dream_svc.last_failure()
+    last_failure = await dream_svc.last_failure(project_key="missing")
     roadmap_items = await feature_svc.roadmap_alive(project_key="missing")
     stale_pinned = _with_aware_updated_at(await feature_svc.stale_pinned(project_key="missing"))
 

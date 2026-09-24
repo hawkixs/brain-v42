@@ -1,9 +1,17 @@
 """Unit tests for nightly-ops metrics collection (the sidecar's `nightly` section).
 
 Consumed by red-monitor (ticket de1ad785): the dashboard's nightly-ops panel must
-replicate the morning check — killswitches, roadmap proposals awaiting review
-(including the merges the judge has held back since 39fc6a9), pending extract,
-last dream failure.
+replicate the morning check — killswitches, pending extract (scoped to this
+sidecar's own project, ticket 69949ffc), last dream failure (pool-wide, but
+with a `project_key` attribution so a reader never mistakes another pool
+project's failure for this one's).
+
+The unscoped `roadmap` block (`proposed_pending`/`applied_24h`/`applied_total`/
+`rejected_total`) is REMOVED here (ticket 69949ffc thread, 2026-09-23): red-monitor
+no longer reads it, and `roadmap_curation_proposals` has no project column to
+scope it by anyway. This does not touch the Dream `roadmap` phase, its curation
+tables, or the graph `roadmap` group (decision 11dbb4a1 governs those
+separately).
 """
 
 from __future__ import annotations
@@ -15,6 +23,7 @@ import pytest
 
 from brain_v42.metrics.collector import MetricsCollector
 from brain_v42.metrics.collector_nightly import parse_killswitches
+from brain_v42.metrics.slow_block_cache import CollectorDegraded, SlowBlockCache
 
 _DROPIN = """\
 [Service]
@@ -104,17 +113,11 @@ def _first_result(row) -> MagicMock:
 
 
 def _db_side_effects(
-    status_rows: list | None = None,
-    applied_24h: int = 24,
     extract_pending: int = 9,
     failure_row=None,
 ) -> list:
-    """Execution order: roadmap statuses → applied 24h → extract → last failure."""
+    """Execution order: extract pending → last failure."""
     return [
-        _all_result(
-            status_rows if status_rows is not None else [("proposed", 26), ("applied", 80)]
-        ),
-        _scalar_result(applied_24h),
         _scalar_result(extract_pending),
         _first_result(failure_row),
     ]
@@ -125,10 +128,15 @@ class TestCollectNightlyOps:
     async def test_full_payload(self, tmp_path) -> None:
         ks_file = tmp_path / "killswitches.conf"
         ks_file.write_text(_DROPIN)
+        # Attributed to ANOTHER pool project on purpose: the payload is
+        # pool-wide, and the point of the `project_key` field is precisely to
+        # let a reader tell this apart from a brain-v42 failure (ticket
+        # 69949ffc).
         failure = (
+            "watchk-claude",
             date(2026, 7, 5),
-            "roadmap",
-            "unparseable after corrective re-prompt: …",
+            "reorg",
+            "Authentication required (accounts.google.com oauth)",
             datetime(2026, 7, 4, 22, 13, 30, tzinfo=UTC),
         )
         collector = _make_collector(_db_side_effects(failure_row=failure))
@@ -137,17 +145,13 @@ class TestCollectNightlyOps:
 
         assert result["killswitches"]["roadmap"] is True
         assert result["killswitches"]["roadmap_dry"] is False
-        assert result["roadmap"] == {
-            "proposed_pending": 26,
-            "applied_total": 80,
-            "applied_24h": 24,
-            "rejected_total": 0,
-        }
+        assert "roadmap" not in result
         assert result["extract"] == {"proposed_pending": 9}
         assert result["last_failure"] == {
+            "project_key": "watchk-claude",
             "run_date": "2026-07-05",
-            "phase": "roadmap",
-            "error": "unparseable after corrective re-prompt: …",
+            "phase": "reorg",
+            "error": "Authentication required (accounts.google.com oauth)",
             "created_at": "2026-07-04T22:13:30+00:00",
         }
 
@@ -162,6 +166,44 @@ class TestCollectNightlyOps:
         assert result["last_failure"] is None
 
     @pytest.mark.asyncio
+    async def test_last_failure_query_excludes_done_and_blank_project(self, tmp_path) -> None:
+        """Pins the pool-wide rule (ticket 69949ffc, decision 1669d429 item 4):
+        fail/timeout only, 7-day window, NULL/blank project_key excluded — the
+        second writer's contamination (ticket 7336a2d5) must never surface."""
+        ks_file = tmp_path / "killswitches.conf"
+        ks_file.write_text(_DROPIN)
+        collector = _make_collector(_db_side_effects(failure_row=None))
+
+        await collector.collect_nightly_ops(killswitches_path=ks_file)
+
+        failure_call = collector._session_factory.return_value.execute.call_args_list[1]
+        query = str(failure_call.args[0])
+        assert "'fail'" in query
+        assert "'timeout'" in query
+        assert "'done'" not in query
+        assert "project_key IS NOT NULL" in query
+        assert "project_key <> ''" in query
+
+    @pytest.mark.asyncio
+    async def test_extract_pending_scoped_to_the_sidecars_own_project(self, tmp_path) -> None:
+        """`ticket_extraction_proposals` carries `target_project` (unlike
+        `roadmap_curation_proposals`, which has no project column at all — the
+        reason its counters are removed rather than scoped): this panel is
+        brain-v42's own page, so the count is scoped to it (ticket 69949ffc)."""
+        ks_file = tmp_path / "killswitches.conf"
+        ks_file.write_text(_DROPIN)
+        collector = _make_collector(_db_side_effects(extract_pending=3, failure_row=None))
+
+        result = await collector.collect_nightly_ops(killswitches_path=ks_file)
+
+        assert result["extract"] == {"proposed_pending": 3}
+        extract_call = collector._session_factory.return_value.execute.call_args_list[0]
+        query = str(extract_call.args[0])
+        params = extract_call.args[1]
+        assert "target_project" in query
+        assert params == {"project_key": "brain-v42"}
+
+    @pytest.mark.asyncio
     async def test_missing_killswitch_file_degrades_to_none(self, tmp_path) -> None:
         """File absent/unreadable → killswitches=None, the rest carries on."""
         collector = _make_collector(_db_side_effects())
@@ -169,28 +211,80 @@ class TestCollectNightlyOps:
         result = await collector.collect_nightly_ops(killswitches_path=tmp_path / "absent.conf")
 
         assert result["killswitches"] is None
-        assert result["roadmap"]["proposed_pending"] == 26
+        assert result["extract"] == {"proposed_pending": 9}
 
     @pytest.mark.asyncio
     async def test_db_error_degrades_to_killswitches_only(self, tmp_path) -> None:
         """The sidecar NEVER crashes (the collector_dream pattern): DB failing →
-        only the killswitches remain."""
+        only the killswitches remain, signalled via CollectorDegraded so
+        SlowBlockCache retries under the short error_ttl_seconds (MAJOR review
+        finding, PR #201) instead of the full TTL, while the payload it publishes
+        is unchanged."""
         ks_file = tmp_path / "killswitches.conf"
         ks_file.write_text(_DROPIN)
         collector = _make_collector([RuntimeError("db down")])
 
-        result = await collector.collect_nightly_ops(killswitches_path=ks_file)
+        with pytest.raises(CollectorDegraded) as excinfo:
+            await collector.collect_nightly_ops(killswitches_path=ks_file)
 
+        result = excinfo.value.payload
         assert result["killswitches"]["promote"] is True
         assert "roadmap" not in result
         assert "extract" not in result
         assert "last_failure" not in result
 
     @pytest.mark.asyncio
-    async def test_everything_down_returns_empty(self, tmp_path) -> None:
-        """Neither file nor DB → {}: the server omits the nightly section."""
+    async def test_everything_down_raises_collector_degraded_with_empty_payload(
+        self, tmp_path
+    ) -> None:
+        """Neither file nor DB → CollectorDegraded({}): the server still omits
+        the nightly section, but the cache now retries it soon instead of for
+        the full TTL."""
         collector = _make_collector([RuntimeError("db down")])
 
-        result = await collector.collect_nightly_ops(killswitches_path=tmp_path / "absent.conf")
+        with pytest.raises(CollectorDegraded) as excinfo:
+            await collector.collect_nightly_ops(killswitches_path=tmp_path / "absent.conf")
 
-        assert result == {}
+        assert excinfo.value.payload == {}
+
+    @pytest.mark.asyncio
+    async def test_transient_sql_failure_recovers_after_the_short_error_ttl(self, tmp_path) -> None:
+        """Reviewer's reproduction (PR #201, MAJOR): a failure injected at
+        `session.execute` (not a mocked collector that raises) must be retried
+        by SlowBlockCache after `error_ttl_seconds`, never held for the full
+        `ttl_seconds`. Wires the REAL collect_nightly_ops through a REAL
+        SlowBlockCache with an injectable clock."""
+        ks_file = tmp_path / "killswitches.conf"
+        ks_file.write_text(_DROPIN)
+        collector = _make_collector(
+            [RuntimeError("db down"), *_db_side_effects(extract_pending=3, failure_row=None)]
+        )
+
+        time_box = [0.0]
+        cache = SlowBlockCache(
+            ttl_seconds=30.0,
+            error_ttl_seconds=5.0,
+            clock=lambda: time_box[0],
+            wall_clock=lambda: datetime(2026, 1, 1, tzinfo=UTC),
+        )
+
+        def compute():
+            return collector.collect_nightly_ops(killswitches_path=ks_file)
+
+        first = await cache.get("nightly", compute)
+        assert first is not None and first["killswitches"]["promote"] is True
+        assert "extract" not in first
+        assert collector._session_factory.return_value.execute.call_count == 1
+
+        # Still inside the error TTL: no retry yet.
+        time_box[0] = 4.9
+        still_degraded = await cache.get("nightly", compute)
+        assert still_degraded == first
+        assert collector._session_factory.return_value.execute.call_count == 1
+
+        # Past the error TTL (5s, not the 30s success TTL): recomputes and recovers.
+        time_box[0] = 5.1
+        recovered = await cache.get("nightly", compute)
+        assert recovered is not None
+        assert recovered["extract"] == {"proposed_pending": 3}
+        assert collector._session_factory.return_value.execute.call_count == 3

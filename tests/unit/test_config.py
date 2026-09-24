@@ -835,6 +835,8 @@ _ALIASED_FIELDS: list[tuple[str, str]] = [
     ("automation_port", "AUTOMATION_PORT"),
     ("automation_dedup_interval_seconds", "AUTOMATION_DEDUP_INTERVAL_SECONDS"),
     ("metrics_legacy_automation_enabled", "METRICS_LEGACY_AUTOMATION_ENABLED"),
+    ("metrics_slow_block_cache_ttl_seconds", "METRICS_SLOW_BLOCK_CACHE_TTL_SECONDS"),
+    ("metrics_slow_block_cache_error_ttl_seconds", "METRICS_SLOW_BLOCK_CACHE_ERROR_TTL_SECONDS"),
     ("decay_enabled", "DECAY_ENABLED"),
     ("decay_floor", "DECAY_FLOOR"),
     ("decay_flush_interval_seconds", "DECAY_FLUSH_INTERVAL_SECONDS"),
@@ -966,3 +968,42 @@ class TestDerivedCaptureFlag:
             _env_file=None,  # type: ignore[call-arg]
         )
         assert settings.brain_session_derived_capture_enabled is True
+
+
+class TestMetricsSlowBlockCacheSettings:
+    """TTLs for the /metrics slow-collector memo (decision 1669d429 item 2)."""
+
+    def test_defaults(self) -> None:
+        from brain_v42.config import Settings
+
+        settings = Settings(
+            postgres_url="postgresql+asyncpg://brain:brain@localhost:5433/brain",
+            _env_file=None,  # type: ignore[call-arg]
+        )
+        assert settings.metrics_slow_block_cache_ttl_seconds == 30.0
+        assert settings.metrics_slow_block_cache_error_ttl_seconds == 5.0
+
+    def test_the_error_ttl_stays_shorter_than_the_success_ttl_by_default(self) -> None:
+        """The whole point of a separate error TTL: it must not equal or exceed the success one."""
+        from brain_v42.config import Settings
+
+        settings = Settings(
+            postgres_url="postgresql+asyncpg://brain:brain@localhost:5433/brain",
+            _env_file=None,  # type: ignore[call-arg]
+        )
+        assert (
+            settings.metrics_slow_block_cache_error_ttl_seconds
+            < settings.metrics_slow_block_cache_ttl_seconds
+        )
+
+    def test_both_ttls_are_overridable_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from brain_v42.config import Settings
+
+        monkeypatch.setenv("METRICS_SLOW_BLOCK_CACHE_TTL_SECONDS", "60")
+        monkeypatch.setenv("METRICS_SLOW_BLOCK_CACHE_ERROR_TTL_SECONDS", "2")
+        settings = Settings(
+            postgres_url="postgresql+asyncpg://brain:brain@localhost:5433/brain",
+            _env_file=None,  # type: ignore[call-arg]
+        )
+        assert settings.metrics_slow_block_cache_ttl_seconds == 60.0
+        assert settings.metrics_slow_block_cache_error_ttl_seconds == 2.0

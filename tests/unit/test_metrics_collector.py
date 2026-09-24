@@ -5,11 +5,13 @@ from __future__ import annotations
 import time
 from collections import deque
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from brain_v42.metrics.collector import MetricsCollector
+from brain_v42.metrics.slow_block_cache import CollectorDegraded, SlowBlockCache
 
 
 class TestToolRecording:
@@ -147,6 +149,50 @@ def _mock_settings() -> MagicMock:
     s.embedding_service_url = "http://localhost:8003"
     s.embedding_dimension = 1024
     return s
+
+
+def _mock_settings_with_malformed_embedding_url() -> MagicMock:
+    """A settings double whose `embedding_service_url` is malformed enough to
+    make `urlparse()` itself raise `ValueError` (an unbalanced IPv6-literal
+    bracket), not just return no hostname."""
+    s = MagicMock()
+    s.embedding_service_url = "http://[::1:8003"
+    s.embedding_dimension = 1024
+    s.embedding_backend = "shim"
+    s.embedding_model = "qodo"
+    return s
+
+
+class TestEndpointHostMalformedUrl:
+    """MINOR review finding, PR #201: `_endpoint_host()` let `urlparse()`'s
+    `ValueError` on a malformed authority escape and break the caller. Both
+    call sites -- the polled `/metrics` endpoint (`get_metrics`) and the
+    periodic flush (`get_flush_data`) -- must degrade to the raw URL string
+    instead of raising."""
+
+    @patch(
+        "brain_v42.metrics.collector.get_settings",
+        return_value=_mock_settings_with_malformed_embedding_url(),
+    )
+    def test_get_metrics_survives_a_malformed_embedding_service_url(self, _mock: MagicMock) -> None:
+        collector = MetricsCollector(engine=MagicMock(), session_factory=MagicMock())
+
+        metrics = collector.get_metrics()
+
+        assert metrics["embedding_service"]["endpoint_host"] == "http://[::1:8003"
+
+    @patch(
+        "brain_v42.metrics.collector.get_settings",
+        return_value=_mock_settings_with_malformed_embedding_url(),
+    )
+    def test_get_flush_data_survives_a_malformed_embedding_service_url(
+        self, _mock: MagicMock
+    ) -> None:
+        collector = MetricsCollector(engine=MagicMock(), session_factory=MagicMock())
+
+        flushed = collector.get_flush_data()
+
+        assert flushed["_process"]["embedding"]["identity"]["host"] == "http://[::1:8003"
 
 
 @patch("brain_v42.metrics.collector.get_settings", return_value=_mock_settings())
@@ -722,6 +768,12 @@ class TestCollectGraphInventory:
 
     @pytest.mark.asyncio
     async def test_returns_node_and_edge_counts(self) -> None:
+        """Neo4j succeeds but the PG orphan scan fails (session_factory raises):
+        the block is still degraded as a whole -- SlowBlockCache must retry it
+        under the short error_ttl_seconds (MAJOR review finding, PR #201) rather
+        than memoize a partial "ok" result for the full TTL -- but the payload
+        it carries is exactly what a plain return used to be, node/edge data
+        included."""
         graph = self._make_graph_svc(
             nodes={"Decision": 12, "Learning": 47, "ADR": 5},
             edges={"RELATED_TO": 89, "SUPERSEDES": 3},
@@ -730,8 +782,10 @@ class TestCollectGraphInventory:
             engine=MagicMock(),
             session_factory=MagicMock(side_effect=RuntimeError("db unavailable")),
         )
-        result = await collector.collect_graph_inventory(graph_svc=graph)
+        with pytest.raises(CollectorDegraded) as excinfo:
+            await collector.collect_graph_inventory(graph_svc=graph)
 
+        result = excinfo.value.payload
         assert result["nodes_total"] == {"Decision": 12, "Learning": 47, "ADR": 5}
         assert result["edges_total"] == {"RELATED_TO": 89, "SUPERSEDES": 3}
 
@@ -742,8 +796,9 @@ class TestCollectGraphInventory:
             engine=MagicMock(),
             session_factory=MagicMock(side_effect=RuntimeError("db unavailable")),
         )
-        result = await collector.collect_graph_inventory(graph_svc=graph)
-        assert result["orphans_total"] == {}
+        with pytest.raises(CollectorDegraded) as excinfo:
+            await collector.collect_graph_inventory(graph_svc=graph)
+        assert excinfo.value.payload["orphans_total"] == {}
 
     @pytest.mark.asyncio
     async def test_handles_graph_svc_error(self) -> None:
@@ -754,8 +809,108 @@ class TestCollectGraphInventory:
             engine=MagicMock(),
             session_factory=MagicMock(side_effect=RuntimeError("db unavailable")),
         )
-        result = await collector.collect_graph_inventory(graph_svc=graph)
+        with pytest.raises(CollectorDegraded) as excinfo:
+            await collector.collect_graph_inventory(graph_svc=graph)
 
+        result = excinfo.value.payload
         assert result["nodes_total"] == {}
         assert result["edges_total"] == {}
         assert result["status"] == "error"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failing", ["nodes", "edges"])
+    async def test_one_failing_neo4j_query_degrades_the_block_with_pg_healthy(
+        self, failing: str
+    ) -> None:
+        """PR #201 follow-up review (MAJOR): with PostgreSQL healthy, ONE failing
+        Neo4j query left graph_status "ok" and the partial result was memoized for
+        the full TTL. Either query failing must raise CollectorDegraded, with the
+        payload unchanged (status stays "ok", the failed side empty)."""
+        graph = MagicMock()
+        graph.count_nodes_by_label = (
+            AsyncMock(side_effect=Exception("neo4j nodes query failed"))
+            if failing == "nodes"
+            else AsyncMock(return_value={"Decision": 3})
+        )
+        graph.count_edges_by_type = (
+            AsyncMock(side_effect=Exception("neo4j edges query failed"))
+            if failing == "edges"
+            else AsyncMock(return_value={"RELATED_TO": 2})
+        )
+        ok_result = MagicMock()
+        ok_result.scalar.return_value = 0
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=ok_result)
+        session_cm = AsyncMock()
+        session_cm.__aenter__.return_value = session
+        session_cm.__aexit__.return_value = None
+        collector = MetricsCollector(
+            engine=MagicMock(), session_factory=MagicMock(return_value=session_cm)
+        )
+
+        with pytest.raises(CollectorDegraded) as excinfo:
+            await collector.collect_graph_inventory(graph_svc=graph)
+
+        payload = excinfo.value.payload
+        assert payload["status"] == "ok"
+        assert payload[f"{failing}_total"] == {}
+
+    @pytest.mark.asyncio
+    async def test_transient_pg_orphan_scan_failure_recovers_after_the_short_error_ttl(
+        self,
+    ) -> None:
+        """Reviewer's reproduction (PR #201, MAJOR): a failure injected at
+        `session.execute` (not a mocked collector that raises) must be retried
+        by SlowBlockCache after `error_ttl_seconds`, never held for the full
+        `ttl_seconds`. Wires the REAL collect_graph_inventory through a REAL
+        SlowBlockCache with an injectable clock."""
+        graph = self._make_graph_svc(nodes={"Decision": 12}, edges={"RELATED_TO": 1})
+
+        ok_result = MagicMock()
+        ok_result.scalar.return_value = 0
+        session = AsyncMock()
+        # 1 failing call (attempt 1) + 5 successful calls, one per _PG_LABEL_MAP
+        # table (attempt 2, past the error TTL).
+        session.execute = AsyncMock(side_effect=[Exception("boom"), *([ok_result] * 5)])
+
+        @asynccontextmanager
+        async def session_context():
+            yield session
+
+        collector = MetricsCollector(engine=MagicMock(), session_factory=session_context)
+
+        time_box = [0.0]
+        cache = SlowBlockCache(
+            ttl_seconds=30.0,
+            error_ttl_seconds=5.0,
+            clock=lambda: time_box[0],
+            wall_clock=lambda: datetime(2026, 1, 1, tzinfo=UTC),
+        )
+
+        def compute():
+            return collector.collect_graph_inventory(graph_svc=graph)
+
+        first = await cache.get("graph_inventory", compute)
+        assert first is not None
+        assert first["status"] == "ok"
+        assert first["orphans_total"] == {}
+        assert session.execute.call_count == 1
+
+        # Still inside the error TTL: no retry yet.
+        time_box[0] = 4.9
+        still_degraded = await cache.get("graph_inventory", compute)
+        assert still_degraded == first
+        assert session.execute.call_count == 1
+
+        # Past the error TTL (5s, not the 30s success TTL): recomputes and recovers.
+        time_box[0] = 5.1
+        recovered = await cache.get("graph_inventory", compute)
+        assert recovered is not None
+        assert recovered["orphans_total"] == {
+            "decisions": 0,
+            "learnings": 0,
+            "snippets": 0,
+            "runbooks": 0,
+            "adrs": 0,
+        }
+        assert session.execute.call_count == 6

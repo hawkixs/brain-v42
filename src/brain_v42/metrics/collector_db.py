@@ -10,6 +10,13 @@ These methods depend only on ``self._session_factory`` and never crash the
 sidecar — every query degrades to an empty/zero result on error. (Pool / row
 counts that also need ``self._engine`` + ``get_settings`` stay in
 ``collector.py`` as ``collect_db_stats``.)
+
+``collect_graph_inventory`` -- the block ``SlowBlockCache`` memoizes as
+"graph_inventory" -- is the one exception to "degrades and returns": when the
+Neo4j counts or the PG orphan scan fail, it still assembles the same degraded
+dict it always has, but raises it via ``CollectorDegraded`` instead of
+returning it plainly, so the cache retries under the short
+``error_ttl_seconds`` rather than the full TTL (slow_block_cache.py).
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ from brain_v42.metrics.retention import (
     PROCESS_METRICS_FRESH_SQL,
     PROCESS_METRICS_IS_LIVE_SQL,
 )
+from brain_v42.metrics.slow_block_cache import CollectorDegraded
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -40,6 +48,21 @@ _PG_LABEL_MAP: dict[str, str] = {
     "runbooks": "Runbook",
     "adrs": "ADR",
 }
+
+# Pseudo-tools that are DB-WIDE GAUGES, not per-process counters: summing them
+# across live processes would multiply a single count by the process count.
+# Ticket 04c09575 — `_decay` (stale_count/archived_count/access_log_size) was
+# folded through the generic calls/errors/total_latency SUM reducer below,
+# so every field read back at its `.get(..., 0)` default and the payload's
+# `decay` block was always zero in production. These names are pulled out of
+# `tool_stats` BEFORE that generic loop runs, and reduced by "latest row
+# wins" (by `updated_at`) instead of by summing.
+_GAUGE_PSEUDO_TOOLS: frozenset[str] = frozenset({"_decay"})
+
+# Structural zeros: a missing _decay row (fresh deploy, or the collect_process_metrics
+# except-branch) still returns a shaped decay block, per the "zero on a source that
+# counts nothing says nothing" convention used elsewhere in this module.
+_DECAY_ZERO: dict[str, int] = {"stale_count": 0, "archived_count": 0, "access_log_size": 0}
 
 
 class _DbCollectorsMixin:
@@ -157,11 +180,23 @@ class _DbCollectorsMixin:
             active_agents: distinct real agent_name count (excludes _process).
             total_memory_rss_bytes: RSS from _process row(s) only.
             tools: tool_stats aggregated across ALL rows (real tools + pseudo-tools from
-                _process are disjoint, so no ×N).
+                _process are disjoint, so no ×N). Gauge pseudo-tools (``_GAUGE_PSEUDO_TOOLS``,
+                e.g. ``_decay``) never appear here — they are reduced separately, below.
             embedding: embedding_stats from _process row(s) only (never from real-agent
                 rows which carry empty dicts per Task 3.2).
             by_agent: per real-agent breakdown {calls, errors, recent_errors, avg_latency_ms}
                 aggregated from that agent's tool_stats; excludes _process.
+            decay: the LATEST flushed ``_decay`` row's ``{stale_count, archived_count,
+                access_log_size}`` (by ``updated_at``), never a sum — these are DB-wide
+                gauges, and summing across live processes would multiply them by the
+                process count (04c09575). Structural zeros when no row carries one.
+            embedding_identity: ``{model, backend, endpoint_host, models_seen}``
+                distilled from every LIVE (``is_live``, the 60s window) ``_process``
+                row's ``embedding_stats.identity`` (ticket 3a4ed612). One distinct
+                live model reports it plainly; more than one reports ``"mixed"``
+                (independently per field) plus the full ``models_seen`` list.
+                ``None`` when no live row carries an identity at all — server.py's
+                cue to fall back to the sidecar's own settings instead.
         """
         try:
             async with self._session_factory() as session:
@@ -195,14 +230,43 @@ class _DbCollectorsMixin:
             # Per-agent accumulators: {agent_name: {calls, errors, recent_errors, total_latency}}
             agent_agg: dict[str, dict[str, Any]] = {}
 
+            # Gauge pseudo-tools: latest-row-wins, tracked independently of agg_tools
+            # so the generic SUM loop below never sees them (04c09575).
+            gauge_latest: dict[str, dict[str, Any]] = {}
+            gauge_latest_updated_at: dict[str, Any] = {}
+
+            # Embedding identity (ticket 3a4ed612): distinct {model, backend, host}
+            # seen among LIVE _process rows only -- same 60s window active_processes
+            # already gates on (row[7]), not the wider 1h retention window every row
+            # above is read from. A silent process from 10 minutes ago must not keep
+            # reporting a model nobody is serving with any more.
+            live_models: set[str] = set()
+            live_backends: set[str] = set()
+            live_hosts: set[str] = set()
+
             for row in rows:
                 agent_name = row[0]
+                updated_at = row[3]
                 tool_stats = row[4]  # JSONB → dict
                 emb_stats = row[5]
                 rss = row[6]
+                is_live = row[7]
 
                 # Aggregate tools across ALL rows (real tools + pseudo-tools are disjoint)
                 for name, stats in tool_stats.items():
+                    if name in _GAUGE_PSEUDO_TOOLS:
+                        # Latest-row-wins (by updated_at), split out BEFORE the
+                        # generic sum below: _decay's fields (stale_count/
+                        # archived_count/access_log_size) have no calls/errors/
+                        # total_latency keys, so folding it through the sum
+                        # reducer silently zeroed it out (04c09575).
+                        last_seen = gauge_latest_updated_at.get(name)
+                        if last_seen is None or (
+                            updated_at is not None and updated_at >= last_seen
+                        ):
+                            gauge_latest[name] = stats
+                            gauge_latest_updated_at[name] = updated_at
+                        continue
                     if name not in agg_tools:
                         agg_tools[name] = {
                             "calls": 0,
@@ -239,6 +303,20 @@ class _DbCollectorsMixin:
                             "reported_requests", 0
                         )
                     total_rss += rss
+                    # A malformed identity value costs its own row, same doctrine
+                    # as usage above -- never the whole aggregate.
+                    if is_live:
+                        identity = emb_stats.get("identity")
+                        if isinstance(identity, dict):
+                            model = identity.get("model")
+                            backend = identity.get("backend")
+                            host = identity.get("host")
+                            if isinstance(model, str) and model:
+                                live_models.add(model)
+                            if isinstance(backend, str) and backend:
+                                live_backends.add(backend)
+                            if isinstance(host, str) and host:
+                                live_hosts.add(host)
                 else:
                     # Real agent: accumulate per-agent breakdown from its tool_stats
                     if agent_name not in agent_agg:
@@ -292,6 +370,18 @@ class _DbCollectorsMixin:
                     "avg_latency_ms": round(agg["total_latency"] / calls, 2) if calls else 0.0,
                 }
 
+            # None means "no live process reported an identity" — a fresh deploy,
+            # or every live row still pre-dates this feature. server.py reads that
+            # as its cue to fall back to the sidecar's OWN settings instead.
+            embedding_identity: dict[str, Any] | None = None
+            if live_models:
+                embedding_identity = {
+                    "model": next(iter(live_models)) if len(live_models) == 1 else "mixed",
+                    "backend": next(iter(live_backends)) if len(live_backends) == 1 else "mixed",
+                    "endpoint_host": next(iter(live_hosts)) if len(live_hosts) == 1 else "mixed",
+                    "models_seen": sorted(live_models),
+                }
+
             emb_total = agg_emb["total_requests"]
             return {
                 "active_processes": active_processes,
@@ -310,6 +400,12 @@ class _DbCollectorsMixin:
                     "usage": agg_emb["usage"],
                 },
                 "by_agent": by_agent,
+                # dict(...) always: gauge_latest.get(name, _DECAY_ZERO) would otherwise
+                # hand back the shared module-level singleton on a miss, and a caller
+                # mutating it (server.py builds the response dict on top of this) would
+                # corrupt the structural-zero default for every later scrape.
+                "decay": dict(gauge_latest.get("_decay", _DECAY_ZERO)),
+                "embedding_identity": embedding_identity,
             }
         except Exception:
             logger.warning("metrics.collect_process_metrics.failed", exc_info=True)
@@ -318,6 +414,8 @@ class _DbCollectorsMixin:
                 "active_agents": 0,
                 "total_memory_rss_bytes": 0,
                 "tools": {},
+                "decay": dict(_DECAY_ZERO),
+                "embedding_identity": None,
                 "embedding": {
                     "total_requests": 0,
                     "total_errors": 0,
@@ -359,17 +457,18 @@ class _DbCollectorsMixin:
         )
         nodes = nodes_result if isinstance(nodes_result, dict) else {}
         edges = edges_result if isinstance(edges_result, dict) else {}
-        graph_status = (
-            "error"
-            if isinstance(nodes_result, Exception) and isinstance(edges_result, Exception)
-            else "ok"
-        )
+        nodes_failed = isinstance(nodes_result, Exception)
+        edges_failed = isinstance(edges_result, Exception)
+        # The published status keeps its meaning (both queries down); the cache
+        # signal below reacts to either one failing.
+        graph_status = "error" if nodes_failed and edges_failed else "ok"
         if isinstance(nodes_result, Exception):
             logger.warning("metrics.graph_inventory.nodes_failed", exc_info=nodes_result)
         if isinstance(edges_result, Exception):
             logger.warning("metrics.graph_inventory.edges_failed", exc_info=edges_result)
 
         orphans: dict[str, int] = {}
+        orphans_failed = False
         try:
             async with self._session_factory() as session:
                 for table, label in _PG_LABEL_MAP.items():
@@ -385,10 +484,19 @@ class _DbCollectorsMixin:
         except Exception:
             logger.warning("metrics.graph_inventory.pg_orphans_failed", exc_info=True)
             orphans = {}
+            orphans_failed = True
 
-        return {
+        result = {
             "status": graph_status,
             "nodes_total": nodes,
             "edges_total": edges,
             "orphans_total": orphans,
         }
+        # Three independent failure points (the Neo4j node count, the Neo4j edge
+        # count, the PG orphan scan) share one signal to the cache: any of them
+        # degrades the block below "fully fresh", so it gets the short
+        # error_ttl_seconds instead of the full TTL (slow_block_cache.py) --
+        # even when graph_status stays "ok" because only one side failed.
+        if nodes_failed or edges_failed or orphans_failed:
+            raise CollectorDegraded(result)
+        return result

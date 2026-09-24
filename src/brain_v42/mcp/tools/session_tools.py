@@ -630,7 +630,10 @@ def make_session_briefing_loader(
             decision_svc.list_all(project_key=project_key, limit=3),
             learning_svc.list_all(project_key=project_key, limit=3),
             dream_run_svc.killswitch_state(),
-            dream_run_svc.last_failure(within_days=7),
+            # Scoped to this briefing's own project (ticket 69949ffc): an
+            # unscoped call let another pool project's dream_runs failure
+            # render as this project's own "Last failure".
+            dream_run_svc.last_failure(within_days=7, project_key=project_key),
             feature_svc.roadmap_alive(project_key=project_key, limit=5),
             feature_svc.stale_pinned(project_key=project_key, stale_days=30, limit=5),
             return_exceptions=True,
