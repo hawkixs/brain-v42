@@ -36,9 +36,16 @@ def _endpoint_host(url: str) -> str:
     ``embedding_service.url`` already. Falls back to the raw string when
     ``urlparse`` finds no hostname (a bare ``"localhost:8003"`` with no
     scheme), so a malformed URL still surfaces something instead of an
-    empty field.
+    empty field. ``urlparse`` itself can raise ``ValueError`` on a malformed
+    authority (e.g. an unbalanced IPv6-literal bracket like
+    ``"http://[::1:8003"``) -- caught here too, for the same reason: this
+    field must never be the thing that takes down `/metrics` or the periodic
+    flush over a bad but non-fatal config value.
     """
-    return urlparse(url).hostname or url
+    try:
+        return urlparse(url).hostname or url
+    except ValueError:
+        return url
 
 
 class MetricsCollector(

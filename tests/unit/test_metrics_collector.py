@@ -151,6 +151,50 @@ def _mock_settings() -> MagicMock:
     return s
 
 
+def _mock_settings_with_malformed_embedding_url() -> MagicMock:
+    """A settings double whose `embedding_service_url` is malformed enough to
+    make `urlparse()` itself raise `ValueError` (an unbalanced IPv6-literal
+    bracket), not just return no hostname."""
+    s = MagicMock()
+    s.embedding_service_url = "http://[::1:8003"
+    s.embedding_dimension = 1024
+    s.embedding_backend = "shim"
+    s.embedding_model = "qodo"
+    return s
+
+
+class TestEndpointHostMalformedUrl:
+    """MINOR review finding, PR #201: `_endpoint_host()` let `urlparse()`'s
+    `ValueError` on a malformed authority escape and break the caller. Both
+    call sites -- the polled `/metrics` endpoint (`get_metrics`) and the
+    periodic flush (`get_flush_data`) -- must degrade to the raw URL string
+    instead of raising."""
+
+    @patch(
+        "brain_v42.metrics.collector.get_settings",
+        return_value=_mock_settings_with_malformed_embedding_url(),
+    )
+    def test_get_metrics_survives_a_malformed_embedding_service_url(self, _mock: MagicMock) -> None:
+        collector = MetricsCollector(engine=MagicMock(), session_factory=MagicMock())
+
+        metrics = collector.get_metrics()
+
+        assert metrics["embedding_service"]["endpoint_host"] == "http://[::1:8003"
+
+    @patch(
+        "brain_v42.metrics.collector.get_settings",
+        return_value=_mock_settings_with_malformed_embedding_url(),
+    )
+    def test_get_flush_data_survives_a_malformed_embedding_service_url(
+        self, _mock: MagicMock
+    ) -> None:
+        collector = MetricsCollector(engine=MagicMock(), session_factory=MagicMock())
+
+        flushed = collector.get_flush_data()
+
+        assert flushed["_process"]["embedding"]["identity"]["host"] == "http://[::1:8003"
+
+
 @patch("brain_v42.metrics.collector.get_settings", return_value=_mock_settings())
 class TestGetMetrics:
     def test_get_metrics_returns_complete_structure(self, _mock: MagicMock) -> None:
