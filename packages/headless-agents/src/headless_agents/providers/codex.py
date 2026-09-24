@@ -35,7 +35,14 @@ from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
 from ..sandbox import ephemeral_root
 from ..spec import RunSpec
-from ..workspace import prepend, rail_preamble, workspace_of, workspace_summary
+from ..workspace import (
+    armed_run,
+    prepend,
+    rail_preamble,
+    settle_run,
+    workspace_of,
+    workspace_summary,
+)
 
 # ``max`` and ``ultra`` are declared by Codex 0.153 for gpt-6-astra and the
 # gpt-5.6 family. A value refused here fails the run BEFORE launch, with no
@@ -1012,6 +1019,7 @@ class CodexProvider:
         start = time.monotonic()
         workspace = workspace_of(spec)
         prompt = prepend(_preamble_for(spec, workspace), spec.prompt)
+        tripwire = armed_run(workspace)
         exit_code = run_codex(
             prompt=prompt,
             model=spec.model,
@@ -1028,6 +1036,7 @@ class CodexProvider:
             deadline=spec.deadline,
         )
         duration = time.monotonic() - start
+        exit_code, git_tampered = settle_run(tripwire, exit_code, spec.stderr_log)
         server = spec.profile.mcp.name if spec.profile.mcp is not None else None
         return record(
             spec,
@@ -1049,7 +1058,7 @@ class CodexProvider:
                 text=answer_text(spec.report_log, exit_code=exit_code),
                 run_id=run_id_of(spec),
                 stderr_log=spec.stderr_log,
-                workspace=workspace_summary(workspace),
+                workspace=workspace_summary(workspace, git_tampered),
                 context=None if spec.context is None else tuple(spec.context.to_list()),
             ),
         )

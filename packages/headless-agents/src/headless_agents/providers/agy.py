@@ -64,8 +64,10 @@ from ..sandbox import ephemeral_root as default_ephemeral_root
 from ..spec import RunSpec
 from ..workspace import (
     argv_prompt_or_refusal,
+    armed_run,
     prepend,
     rail_preamble,
+    settle_run,
     workspace_of,
     workspace_summary,
 )
@@ -729,6 +731,7 @@ class AgyProvider:
                 ),
             )
         start = time.monotonic()
+        tripwire = armed_run(workspace)
         exit_code = run_agy(
             prompt=prompt,
             name=spec.name,
@@ -745,6 +748,8 @@ class AgyProvider:
             deadline=spec.deadline,
         )
         duration = time.monotonic() - start
+        # Belt and braces: agy's own guard already denies writes under .git.
+        exit_code, git_tampered = settle_run(tripwire, exit_code, spec.stderr_log)
         return record(
             spec,
             RunResult(
@@ -762,7 +767,7 @@ class AgyProvider:
                 text=answer_text(spec.report_log, exit_code=exit_code),
                 run_id=run_id_of(spec),
                 stderr_log=spec.stderr_log,
-                workspace=workspace_summary(workspace),
+                workspace=workspace_summary(workspace, git_tampered),
                 context=context,
             ),
         )

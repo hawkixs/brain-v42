@@ -314,6 +314,29 @@ when the API reports a cost (OpenRouter, which the preset asks for it).
 A failure is recorded as a category and a status (`request failed: http (HTTP 401)`),
 never as the provider's error body: that body may quote the key.
 
+## The `.git` tripwire
+
+A writable workspace can let an agent plant what the **next** git command executes
+outside every sandbox: a hook, a `core.fsmonitor`, a filter driver, a rewritten `.git`
+file of a linked worktree, a hook in a `core.hooksPath` directory. None of it shows in
+`git status` or `git diff`, so reading the diff does not reveal it.
+
+Every CLI rail arms `git_tripwire.Tripwire` on a writable workspace: the executable git
+state is fingerprinted before the run and compared after it. A change makes the run a
+non-replayable failure (`1`), names the paths on stderr, and lists them in `result.json`:
+
+```python
+result = get_provider("claude").run(spec)          # spec with Workspace(..., write=True)
+result.workspace["git_tampered"]                    # [] when clean, else the changed paths
+```
+
+Before running **any** git command in an agent-written tree, check that list, and go
+through `git_tripwire.git_command(root, tampered=...)` with
+`git_tripwire.git_environment(os.environ, root)`: it pins the repository and the work
+tree, disables the fsmonitor and implicit bare repositories, bounds discovery, and
+refuses a tree that tripped. Never run git from a subdirectory of such a tree: a
+repository planted there is discovered from inside it.
+
 ## Live tests
 
 `tests/live/headless_agents/` replays the workspace confinement above against the real

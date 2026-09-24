@@ -34,7 +34,14 @@ from ..profile import McpServer, Workspace
 from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
 from ..spec import RunSpec
-from ..workspace import argv_prompt_or_refusal, rail_preamble, workspace_of, workspace_summary
+from ..workspace import (
+    argv_prompt_or_refusal,
+    armed_run,
+    rail_preamble,
+    settle_run,
+    workspace_of,
+    workspace_summary,
+)
 
 # The kernel refuses a single argv element at or above ``MAX_ARG_STRLEN``
 # (32 pages -- 131072 bytes on the common 4 KiB page size) with E2BIG.
@@ -402,6 +409,7 @@ class ClaudeProvider:
         # never includes what an earlier run left in a reused log.
         offset = raw_log.stat().st_size if raw_log.is_file() else 0
         start = time.monotonic()
+        tripwire = armed_run(workspace)
         exit_code = run_claude(
             prompt=spec.prompt,
             model=spec.model,
@@ -417,6 +425,8 @@ class ClaudeProvider:
             append_system_prompt=preamble or None,
         )
         duration = time.monotonic() - start
+        # claude has no separate stderr log: its stderr lands in raw_log.
+        exit_code, git_tampered = settle_run(tripwire, exit_code, raw_log)
         # This rail requests no JSON envelope: the text is read as written.
         if answer_log is not None:
             text = answer_text(answer_log, exit_code=exit_code)
@@ -436,7 +446,7 @@ class ClaudeProvider:
                 text=text,
                 run_id=run_id_of(spec),
                 raw_log=raw_log,
-                workspace=workspace_summary(workspace),
+                workspace=workspace_summary(workspace, git_tampered),
                 context=None if spec.context is None else tuple(spec.context.to_list()),
             ),
         )
