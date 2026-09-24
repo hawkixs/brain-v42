@@ -24,6 +24,13 @@ def _script(directory: Path, body: str, name: str = "fake-cli") -> Path:
     return path
 
 
+#: The process-state checks below read ``/proc``: without it a live
+#: descendant would silently look dead, so those tests skip instead.
+_needs_procfs = pytest.mark.skipif(
+    not Path("/proc/self/stat").exists(), reason="reads process state from /proc"
+)
+
+
 def _is_running(pid: int) -> bool:
     """Is ``pid`` still RUNNING -- a zombie is terminated, only not reaped yet.
 
@@ -188,6 +195,7 @@ class TestProbe:
         assert found.available is True
         assert found.version == "v9.9.9"
 
+    @_needs_procfs
     def test_a_grandchild_holding_the_pipe_does_not_survive_the_timeout(
         self, tmp_path: Path
     ) -> None:
@@ -232,6 +240,7 @@ class TestProbe:
             if grandchild_pid is not None:
                 _reap_by_force(grandchild_pid)
 
+    @_needs_procfs
     def test_a_real_sigint_after_the_launcher_exited_leaves_no_descendant(
         self, tmp_path: Path
     ) -> None:
@@ -242,11 +251,21 @@ class TestProbe:
         # a cleanup keyed on it would spare the whole surviving group
         # (independent review of PR #197, reproduced there with a real fork).
         pidfile = tmp_path / "descendant.pid"
-        cli = _script(tmp_path, f'sleep 30 &\necho $! > "{pidfile}"\nexit 0')
+        launcher_pidfile = tmp_path / "launcher.pid"
+        cli = _script(
+            tmp_path,
+            f'echo $$ > "{launcher_pidfile}"\nsleep 30 &\necho $! > "{pidfile}"\nexit 0',
+        )
 
         def _interrupt_once_ready() -> None:
-            if _wait_for(pidfile):
-                time.sleep(0.2)  # the launcher has exited; the probe waits on EOF
+            # Synchronised, not timed: the SIGINT lands only once the descendant
+            # exists AND the launcher has exited (zombie or reaped), so the probe
+            # is provably waiting on a pipe only the descendant still holds.
+            if _wait_for(pidfile) and _wait_for(launcher_pidfile):
+                launcher_pid = int(launcher_pidfile.read_text().strip())
+                deadline = time.monotonic() + 10.0
+                while _is_running(launcher_pid) and time.monotonic() < deadline:
+                    time.sleep(0.02)
             os.kill(os.getpid(), signal.SIGINT)
 
         interrupter = threading.Thread(target=_interrupt_once_ready, daemon=True)
@@ -268,6 +287,7 @@ class TestProbe:
             if descendant_pid is not None:
                 _reap_by_force(descendant_pid)
 
+    @_needs_procfs
     def test_an_interrupted_probe_leaves_no_process_behind(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

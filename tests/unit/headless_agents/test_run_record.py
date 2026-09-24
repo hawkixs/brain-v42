@@ -132,6 +132,15 @@ class TestRecord:
         finally:
             run_dir.chmod(0o700)
 
+    def test_result_json_is_owner_only(self, tmp_path: Path) -> None:
+        # Pinned on purpose (follow-up review of PR #197): mkstemp creates the
+        # temporary file 0600 and the rename keeps it, so result.json -- the
+        # run's text, model and paths -- is readable by its owner only. Every
+        # reader (``ha runs``, the caller) is that same user.
+        run_dir = tmp_path / "run1"
+        record(RunSpec(prompt="P", run_dir=run_dir), _result())
+        assert (run_dir / "result.json").stat().st_mode & 0o777 == 0o600
+
     def test_a_partial_file_it_did_not_create_is_never_deleted(self, tmp_path: Path) -> None:
         # Independent review of PR #197, finding 2: a fixed partial name meant a
         # failed write deleted a ``.result.json.partial`` this invocation never

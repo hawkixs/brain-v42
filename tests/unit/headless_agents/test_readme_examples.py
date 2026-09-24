@@ -83,6 +83,10 @@ def _bound_names(tree: ast.AST) -> set[str]:
             bound.add(node.id)
         elif isinstance(node, ast.ExceptHandler) and node.name:
             bound.add(node.name)
+        elif isinstance(node, ast.MatchAs | ast.MatchStar) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            bound.add(node.rest)
     return bound
 
 
@@ -135,3 +139,16 @@ def test_readme_python_examples_use_only_bound_names() -> None:
     for index in range(1, len(blocks) + 1):
         failures.extend(_unbound_names(blocks[:index], index))
     assert not failures, "\n".join(failures)
+
+
+def test_match_captures_count_as_bound() -> None:
+    # Follow-up review of PR #197: a ``match`` example using its captured
+    # variable must not raise a false alarm.
+    block = (
+        "match {'a': 1, 'b': 2}:\n"
+        "    case {'a': first, **others}:\n"
+        "        print(first, others)\n"
+        "    case [head, *tail] as whole:\n"
+        "        print(head, tail, whole)\n"
+    )
+    assert _unbound_names([block], 1) == []
