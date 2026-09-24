@@ -6,13 +6,29 @@ on each of them, and so that ``result.json`` is written in one place.
 
 from __future__ import annotations
 
+import errno
 import json
+import os
+import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 from .result import RunResult
-from .spec import RunSpec
+from .spec import RunSpec, run_dir_name
 
 RESULT_FILE_NAME = "result.json"
+
+
+def _failure_note(error: OSError) -> str:
+    """One line naming ``error``: exception class + errno name, never its message.
+
+    The errno name (``ENOTDIR``, ``EACCES``, ...) is enough to diagnose a
+    write failure from the log; the OS-supplied message can echo path
+    fragments or, on some platforms, more than that -- never worth the risk
+    for a bookkeeping note.
+    """
+    code = errno.errorcode.get(error.errno, "UNKNOWN") if error.errno is not None else "UNKNOWN"
+    return f"record: could not write {RESULT_FILE_NAME}: {type(error).__name__} ({code})\n"
 
 
 def answer_text(path: Path | None, *, exit_code: int, offset: int = 0) -> str | None:
@@ -33,8 +49,15 @@ def answer_text(path: Path | None, *, exit_code: int, offset: int = 0) -> str | 
 
 
 def run_id_of(spec: RunSpec) -> str | None:
-    """A run is named by its directory: ``run_dir.name``, or ``None`` without one."""
-    return spec.run_dir.name if spec.run_dir is not None else None
+    """A run is named by its directory (:func:`~headless_agents.spec.run_dir_name`),
+    or ``None`` without one.
+
+    Not the raw ``.name``: ``run_dir=Path('.')`` has an empty one, yet names
+    the caller's current directory. ``RunSpec.__post_init__`` already refused
+    a ``run_dir`` with no name, so this never returns ``""`` for a constructed
+    spec.
+    """
+    return run_dir_name(spec.run_dir) if spec.run_dir is not None else None
 
 
 def record(spec: RunSpec, result: RunResult) -> RunResult:
@@ -42,14 +65,41 @@ def record(spec: RunSpec, result: RunResult) -> RunResult:
 
     Written under a temporary name, then renamed: a reader listing run
     directories never parses half a file.
+
+    Never raises ``OSError``. By the time this runs the agent already ran --
+    quota spent, maybe files written -- so a write failure here (read-only
+    ``run_dir``, a full disk, ``run_dir`` being a plain file) must not cost
+    the caller the ``RunResult`` of a run that already happened. On failure
+    ``result`` is returned unchanged; one line naming the failure is appended
+    to ``spec.stderr_log`` when that path is set and writable, and stays
+    silent otherwise.
+
+    The temporary file is created EXCLUSIVELY under a unique name
+    (``tempfile.mkstemp``, so ``0600``), and only that file is ever cleaned
+    up: a fixed partial name meant a failed write could delete a partial this
+    invocation never created -- a read-only leftover, or a concurrent
+    writer's (independent review of PR #197, finding 2).
     """
     if spec.run_dir is None:
         return result
-    spec.run_dir.mkdir(parents=True, exist_ok=True)
     target = spec.run_dir / RESULT_FILE_NAME
-    partial = spec.run_dir / f".{RESULT_FILE_NAME}.partial"
-    partial.write_text(
-        json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    partial.replace(target)
+    owned: Path | None = None
+    try:
+        spec.run_dir.mkdir(parents=True, exist_ok=True)
+        descriptor, name = tempfile.mkstemp(
+            dir=spec.run_dir, prefix=f".{RESULT_FILE_NAME}.", suffix=".partial"
+        )
+        owned = Path(name)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n")
+        os.replace(owned, target)
+        owned = None
+    except OSError as error:
+        if spec.stderr_log is not None:
+            with suppress(OSError):
+                with spec.stderr_log.open("a", encoding="utf-8") as stream:
+                    stream.write(_failure_note(error))
+        if owned is not None:
+            with suppress(OSError):
+                owned.unlink()
     return result

@@ -154,6 +154,19 @@ def test_shell_is_passed_through(world: _World) -> None:
     assert workspace is not None and workspace.shell is True
 
 
+def test_write_with_codex_needs_no_shell_flag(world: _World) -> None:
+    """Operator decision 2026-09-24: codex's shell tool runs inside codex's
+    OWN OS sandbox in every workspace mode, so ``--write`` no longer requires
+    ``--shell`` for it -- unlike before 0.4.0 hardening, where a writable
+    codex without ``--shell`` had no read tool at all and the CLI refused the
+    usage before touching git."""
+    world.agent.edit = _edit_app
+    code, out, err = world.run("run", "-p", "codex", "--write", "go")
+    assert code == 0, err
+    workspace = world.agent.specs[0].profile.workspace
+    assert workspace is not None and workspace.write is True and workspace.shell is False
+
+
 def test_write_defaults_to_the_full_context(world: _World) -> None:
     (world.repo / "CLAUDE.md").write_text("ignored rules\n")
     world.agent.edit = _edit_app

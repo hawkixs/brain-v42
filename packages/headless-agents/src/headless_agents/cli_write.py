@@ -2,7 +2,8 @@
 
 1. ``git worktree add <run_dir>/wt -b ha/<run_id> <base>`` (base: ``HEAD``).
 2. The provider runs with ``Workspace(path=wt, write=True, shell=--shell)``,
-   the context bundle (``full`` by default) delivered through its preamble.
+   the context bundle (``full`` by default) delivered through its preamble
+   (codex has its sandboxed shell whatever ``--shell`` says: spec decision 13).
 3. The ``.git`` tripwire (ticket 0b622f47) is read twice: the rail's own, and
    one this module arms around the whole run -- a provider that planted
    something and reported nothing is still caught. If either fired, **no git

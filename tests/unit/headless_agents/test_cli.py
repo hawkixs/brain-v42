@@ -234,6 +234,35 @@ def test_run_dir_can_be_named(world: _World, tmp_path: Path) -> None:
     assert world.spec("codex").run_dir == target
 
 
+def test_a_relative_run_dir_is_anchored_at_the_cwd_and_named(world: _World) -> None:
+    # ``--run-dir .`` has an empty raw ``.name``: the run id, the ``ha-<id>``
+    # prefix and the ``ha/<id>`` branch of a write run all read it.
+    world.run("run", "-p", "codex", "--run-dir", ".", "go")
+    run_dir = world.spec("codex").run_dir
+    assert run_dir == world.repo
+    assert run_dir is not None and run_dir.name == world.repo.name
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("-p", "codex"),
+        ("--chain", "codex,claude"),
+        ("-p", "claude", "--write"),
+    ],
+)
+def test_a_run_dir_with_no_name_is_refused_before_anything_runs(
+    world: _World, argv: tuple[str, ...]
+) -> None:
+    # Independent review of PR #197, finding 3: a chain derives
+    # ``/links/0-codex`` and a write run ``/wt`` and ``ha/`` BEFORE any RunSpec
+    # checks the name, so the root must be refused where it is planned.
+    code, _, err = world.run("run", *argv, "--run-dir", "/", "go")
+    assert code == 2
+    assert "run-dir" in err
+    assert not any(fake.specs for fake in world.fakes.values())
+
+
 def test_timeout_model_and_effort_are_passed(world: _World) -> None:
     world.run("run", "-p", "codex", "--timeout", "42", "--effort", "high", "go")
     spec = world.spec("codex")
@@ -279,9 +308,6 @@ def test_openai_compat_takes_base_url_and_key_env(world: _World) -> None:
         ("run", "go"),
         ("run", "-p", "codex", "--chain", "codex,gpt", "go"),
         ("run", "-p", "mistral", "-m", "m", "--mcp", "brain-read", "go"),
-        # measured 2026-09-24: writable codex without its shell has no read tool
-        ("run", "-p", "codex", "--write", "go"),
-        ("run", "--chain", "claude,codex", "--write", "go"),
     ],
 )
 def test_invalid_usage_exits_2_without_running(world: _World, argv: tuple[str, ...]) -> None:
@@ -393,19 +419,6 @@ def test_clean_removes_one_run(world: _World) -> None:
 def test_clean_refuses_what_is_not_a_run(world: _World, run_id: str, expected: int) -> None:
     code, _, err = world.run("clean", run_id)
     assert code == expected and err
-
-
-@pytest.mark.parametrize("argv", [("-p", "codex"), ("--chain", "claude,codex")])
-def test_writable_codex_needs_its_shell_to_read(world: _World, argv: tuple[str, ...]) -> None:
-    """Measured 2026-09-24: without its shell tool, a writable codex has no read tool.
-
-    It answered "no shell or file-reading tool available" and changed nothing:
-    the run is refused before any worktree is created, naming the fix.
-    """
-    code, _, err = world.run("run", *argv, "--write", "go")
-    assert code == 2
-    assert "--shell" in err and "codex" in err
-    assert not (world.home / ".cache" / "ha" / "runs").exists()
 
 
 def test_no_subcommand_is_a_usage_error(world: _World) -> None:
