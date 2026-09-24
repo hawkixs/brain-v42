@@ -484,7 +484,8 @@ class MetricsServer:
             # stats, so the cross-process value is authoritative. It is a DB-wide
             # GAUGE (latest-row-wins, never summed — 04c09575) and collect_process_metrics
             # already reduces it that way and returns it split out of "tools", so there
-            # is nothing left to pop here.
+            # is nothing left to pop here. (Removed from process_agg entirely, below,
+            # right before cross_process is published — decay stays top-level only.)
             metrics["decay"] = process_agg["decay"]
             metrics["tools"] = agg_tools
             emb_agg = process_agg["embedding"]
@@ -500,6 +501,10 @@ class MetricsServer:
                 },
             )
 
+        # decay is published only at the top level (set above when active): strip it
+        # from the raw cross_process block unconditionally, so an inactive process_agg
+        # (structural zeros, active_processes == 0) doesn't leak a duplicate copy either.
+        process_agg.pop("decay", None)
         metrics["cross_process"] = process_agg
 
         # Embedding service health

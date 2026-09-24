@@ -349,7 +349,11 @@ class _DbCollectorsMixin:
                     "usage": agg_emb["usage"],
                 },
                 "by_agent": by_agent,
-                "decay": gauge_latest.get("_decay", _DECAY_ZERO),
+                # dict(...) always: gauge_latest.get(name, _DECAY_ZERO) would otherwise
+                # hand back the shared module-level singleton on a miss, and a caller
+                # mutating it (server.py builds the response dict on top of this) would
+                # corrupt the structural-zero default for every later scrape.
+                "decay": dict(gauge_latest.get("_decay", _DECAY_ZERO)),
             }
         except Exception:
             logger.warning("metrics.collect_process_metrics.failed", exc_info=True)

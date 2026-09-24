@@ -199,6 +199,34 @@ async def test_decay_pseudo_tool_absent_from_metrics_tools(aiohttp_client: Any) 
         )
 
 
+async def test_decay_absent_from_cross_process_block(aiohttp_client: Any) -> None:
+    """``decay`` must live ONLY at the top level, not duplicated under cross_process.
+
+    ``collect_process_metrics()`` returns a "decay" key alongside "tools" (04c09575),
+    and ``server.py`` publishes the whole ``process_agg`` dict verbatim as
+    ``metrics["cross_process"]``. Without stripping it first, ``cross_process.decay``
+    ends up as the SAME object as the top-level ``decay`` block — an unannounced
+    key duplicating already-published data (operator decision: keep decay only at
+    the top level).
+    """
+    with patch("brain_v42.metrics.collector.get_settings", return_value=_MOCK_SETTINGS):
+        c = _make_collector()
+        embedding_svc = MagicMock()
+        embedding_svc.healthcheck = AsyncMock(return_value=True)
+        server = MetricsServer(c, embedding_svc, port=0, host="127.0.0.1")
+        client = await aiohttp_client(server._build_app())
+
+        resp = await client.get("/metrics")
+        data = await resp.json()
+
+        assert "decay" not in data["cross_process"], (
+            "cross_process must not carry its own 'decay' key — decay is published "
+            "only at the top level"
+        )
+        # The top-level block must still carry the real, non-zero values.
+        assert data["decay"]["stale_count"] == 7
+
+
 async def test_decay_pseudo_tool_promoted_to_top_level_decay(aiohttp_client: Any) -> None:
     """_decay values must be promoted to metrics["decay"] (authoritative cross-process).
 

@@ -163,3 +163,73 @@ async def test_reranker_and_graph_keep_their_own_summed_shape_after_the_split() 
     # _decay never leaks into the generic tools bag (that's server.py's job to
     # rely on — it now reads result["decay"] directly instead of popping it).
     assert "_decay" not in result["tools"]
+
+
+@pytest.mark.asyncio
+async def test_decay_reflects_the_latest_row_when_rows_arrive_newest_first() -> None:
+    """Same fixture as above, rows reversed — the SELECT carries no ORDER BY.
+
+    Every existing decay test feeds rows oldest-first, so the newest row always
+    happens to be the LAST one processed: a mutant that replaces the ``>=``
+    latest-wins guard with an unconditional overwrite (``if True: ...``) still
+    passes them, because "last processed" and "newest" coincide by construction.
+    Feeding the same rows NEWEST-FIRST breaks that coincidence: only a real
+    comparison against ``updated_at`` picks the newer row when it is processed
+    FIRST and a strictly-older row comes after it.
+    """
+    older = datetime(2026, 9, 24, 3, 0, 0, tzinfo=UTC)
+    newer = datetime(2026, 9, 24, 4, 0, 0, tzinfo=UTC)
+
+    result = await _collect(
+        [
+            _row(
+                "_process",
+                newer,
+                {"_decay": {"stale_count": 9, "archived_count": 4, "access_log_size": 250}},
+            ),
+            _row(
+                "_process",
+                older,
+                {"_decay": {"stale_count": 5, "archived_count": 2, "access_log_size": 100}},
+            ),
+        ]
+    )
+
+    # The newer row must still win even though it was processed FIRST — an
+    # unconditional "last one processed wins" mutant would return the older
+    # row's values here instead.
+    assert result["decay"] == {
+        "stale_count": 9,
+        "archived_count": 4,
+        "access_log_size": 250,
+    }
+
+
+@pytest.mark.asyncio
+async def test_decay_default_is_a_copy_not_the_shared_module_singleton() -> None:
+    """No ``_decay`` row at all: the structural-zero default must not be the
+    module-level ``_DECAY_ZERO`` dict itself.
+
+    ``gauge_latest.get("_decay", _DECAY_ZERO)`` hands back the shared singleton
+    on a miss. A caller mutating the returned ``decay`` block (server.py builds
+    on this dict) would then corrupt the zero default for every later scrape
+    and every other process that hits the same fallback in the same run.
+    """
+    from brain_v42.metrics.collector_db import _DECAY_ZERO
+
+    only = datetime(2026, 9, 24, 3, 0, 0, tzinfo=UTC)
+    result = await _collect(
+        [
+            _row("_process", only, {}),  # no _decay pseudo-tool on this row
+        ]
+    )
+
+    assert result["decay"] == _DECAY_ZERO
+    assert result["decay"] is not _DECAY_ZERO, (
+        "the structural-zero decay default must be a fresh copy, not the shared "
+        "module-level _DECAY_ZERO dict"
+    )
+
+    # Mutating the returned block must never leak into the module-level default.
+    result["decay"]["stale_count"] = 999
+    assert _DECAY_ZERO["stale_count"] == 0
