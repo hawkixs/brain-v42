@@ -762,3 +762,31 @@ def test_runs_lists_a_run_with_a_custom_run_dir(world: _World, tmp_path: Path) -
     code, out, _ = world.run("runs", "--json")
     (row,) = json.loads(out)
     assert row["run_id"] == run_id and row["text"] == "the answer"
+
+
+def test_runs_reads_a_write_run_status_from_its_lineage(world: _World) -> None:
+    """A write run's status lives in its lineage state only (§3.8.1)."""
+    from headless_agents import lineage as lineages
+
+    run_id = "20260925T000000-eeeeeeee"
+    registry = world.registry()
+    registry.create(
+        run_id, run_dir=None, target={"kind": "role", "name": "w"}, repository=None, lineage=run_id
+    )
+    lineages.create(
+        world.state,
+        lineages.LineageState(
+            owner=run_id,
+            repository=world.home,
+            common_dir=world.home / ".git",
+            worktree=world.home / "wt",
+            branch=f"ha/{run_id}",
+            base=None,
+            members={run_id: "committed"},
+            pending=None,
+            compromised=None,
+        ),
+    )
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert row["status"] == "committed"

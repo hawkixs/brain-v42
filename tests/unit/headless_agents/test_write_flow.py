@@ -1,0 +1,629 @@
+"""A write run through the engine: spec 0.5.0 §3.8.3 on real throwaway repositories.
+
+The provider is a fake that edits its workspace like an agent would; the
+worktree, the engine commit, the repository's hooks, the tripwire, the
+lineage state, provenance and quarantines are the real code and a real git.
+The P5 refusal of write runs in ``plan()`` stays until plan Task 22, so a
+write plan is built here from a read-only one with ``write=True``.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+
+import pytest
+
+from headless_agents import engine, lineage, locks, provenance, quarantine, write_flow
+from headless_agents.engine import Overrides, Request, UsageError, execute, plan
+from headless_agents.proofs import CLI_RAILS, record_proof
+from headless_agents.registry import Probe
+from headless_agents.result import RunResult
+from headless_agents.run_record import record, run_id_of
+from headless_agents.runs import Registry
+from headless_agents.spec import RunSpec
+from headless_agents.state import Unknown
+
+GIT_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True, env=GIT_ENV
+    ).stdout
+
+
+Edit = Callable[[Path], None]
+
+
+@dataclass
+class _Agent:
+    """A provider that applies ``edit`` to its writable workspace and answers."""
+
+    name: str
+    edit: Edit | None = None
+    code: int = 0
+    specs: list[RunSpec] = field(default_factory=list)
+    after: Callable[[], None] | None = None
+
+    def run(self, spec: RunSpec) -> RunResult:
+        self.specs.append(spec)
+        workspace = spec.profile.workspace
+        assert workspace is not None and workspace.write
+        if self.edit is not None:
+            self.edit(workspace.path)
+        if self.after is not None:
+            self.after()
+        spec = spec.with_run_dir_defaults()
+        return record(
+            spec,
+            RunResult(
+                exit_code=self.code,
+                provider=self.name,
+                model=spec.model,
+                model_reported="served-model",
+                report_path=spec.report_log,
+                events_log=spec.events_log,
+                tokens=None,
+                duration_seconds=0.1,
+                tool_call_completed=False,
+                text="I changed things" if self.code == 0 else None,
+                run_id=run_id_of(spec),
+            ),
+        )
+
+
+@dataclass
+class World:
+    home: Path
+    repo: Path
+    agent: _Agent
+    said: list[str] = field(default_factory=list)
+    git_calls: list[list[str]] = field(default_factory=list)
+
+    @property
+    def state(self) -> Path:
+        return (self.home / ".local" / "state" / "ha").resolve()
+
+    def registry(self) -> Registry:
+        return Registry(self.state, runs_root=self.home / ".cache" / "ha" / "runs")
+
+    def write_plan(self, *, repo: Path | None = None, base: str | None = None) -> engine.Plan:
+        request = Request(
+            target="codex",
+            prompt="improve app",
+            stdin_is_tty=False,
+            overrides=Overrides(),
+            base=None,
+            repo=repo,
+            run_dir=None,
+            cwd=self.repo,
+            environ={"PATH": os.environ["PATH"], "HOME": str(self.home)},
+            home=self.home,
+        )
+        planned = plan(request)
+        return replace(
+            planned, role=replace(planned.role, write=True), request=replace(request, base=base)
+        )
+
+    def write(self, **kwargs: object) -> engine.Outcome:
+        return execute(self.write_plan(**kwargs), say=self.said.append)  # type: ignore[arg-type]
+
+    def common_dir(self) -> Path:
+        return (self.repo / ".git").resolve()
+
+
+@pytest.fixture
+def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> World:
+    home = tmp_path / "home"
+    (home / ".config" / "ha").mkdir(parents=True)
+    (home / ".config" / "ha" / "models.toml").write_text('codex = "codex-default"\n')
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.name", "Op")
+    _git(repo, "config", "user.email", "op@example.test")
+    (repo / "app.py").write_text("print('v1')\n")
+    _git(repo, "add", "app.py")
+    _git(repo, "commit", "-q", "-m", "init")
+    agent = _Agent("codex")
+    monkeypatch.setattr(engine, "get_provider", lambda name: agent)
+    monkeypatch.setattr(
+        engine,
+        "probe",
+        lambda name, **_: Probe(available=True, detail="fake", version=f"{name} 1.0"),
+    )
+    state = (home / ".local" / "state" / "ha").resolve()
+    for rail in CLI_RAILS:
+        record_proof(state, rail, version=f"{rail} 1.0", isolation=True, today="2026-09-25")
+    world = World(home=home, repo=repo, agent=agent)
+    real_git = write_flow.git
+
+    def recording_git(root: Path, args: list[str], environ: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        world.git_calls.append(list(args))
+        return real_git(root, args, environ, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(write_flow, "git", recording_git)
+    return world
+
+
+def _edit_app(root: Path) -> None:
+    (root / "app.py").write_text("print('v2')\n")
+    (root / "new.py").write_text("x = 1\n")
+
+
+def _hook(world: World, name: str, body: str) -> None:
+    hook = world.repo / ".git" / "hooks" / name
+    hook.write_text("#!/bin/sh\n" + body)
+    hook.chmod(0o755)
+
+
+def _subjects(world: World, branch: str) -> list[str]:
+    return _git(world.repo, "log", "--format=%s", f"main..{branch}").splitlines()
+
+
+# ── the committed path ─────────────────────────────────────────────────────
+
+
+def test_a_committed_write(world: World) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    assert outcome.exit_code == 0, world.said
+    run_id = outcome.run_id
+    branch = f"ha/{run_id}"
+    assert _subjects(world, branch) == [f"chore(ha): {run_id} implement via codex/served-model"]
+    assert (world.repo / "app.py").read_text() == "print('v1')\n"
+    state = lineage.load(world.state, run_id)
+    assert state.members == {run_id: "committed"}
+    assert state.pending is None and state.compromised is None
+    assert state.base == _git(world.repo, "rev-parse", "main").strip()
+    tip = _git(world.repo, "rev-parse", branch).strip()
+    assert provenance.lookup(world.state, tip) == {
+        "sha": tip,
+        "run_id": run_id,
+        "lineage": run_id,
+        "made_by": "engine",
+        "providers": [],
+    }
+    assert world.registry().resolve(run_id).lineage == run_id
+    patch = (outcome.run_dir / write_flow.PATCH_FILE).read_text()
+    assert "print('v2')" in patch
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert report["status"] == "committed" and report["branch"] == branch
+    assert report["head"] == tip and report["lineage"] == run_id
+    assert report["commits"] == [{"sha": tip, "made_by": "engine"}]
+
+
+def test_the_agent_works_in_the_worktree_with_the_role_shell(world: World) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    workspace = world.agent.specs[0].profile.workspace
+    assert workspace is not None
+    assert workspace.path == outcome.run_dir / "wt" and workspace.write
+    assert workspace.shell is False
+
+
+def test_a_named_base_is_used(world: World) -> None:
+    first = _git(world.repo, "rev-parse", "HEAD").strip()
+    (world.repo / "later.txt").write_text("later\n")
+    _git(world.repo, "add", "later.txt")
+    _git(world.repo, "commit", "-q", "-m", "later")
+    world.agent.edit = _edit_app
+    outcome = world.write(base=first)
+    assert _git(world.repo, "rev-parse", f"ha/{outcome.run_id}~1").strip() == first
+
+
+def test_no_change_exits_5_and_commits_nothing(world: World) -> None:
+    outcome = world.write()
+    assert outcome.exit_code == 5
+    branch = f"ha/{outcome.run_id}"
+    assert _subjects(world, branch) == []
+    assert lineage.load(world.state, outcome.run_id).members[outcome.run_id] == "no_change"
+
+
+def test_a_failed_step_with_changes_commits_a_residue(world: World) -> None:
+    world.agent.edit = _edit_app
+    world.agent.code = 1
+    outcome = world.write()
+    assert outcome.exit_code == 1
+    (subject,) = _subjects(world, f"ha/{outcome.run_id}")
+    assert subject == f"chore(ha): {outcome.run_id} residue via codex/served-model"
+    tip = _git(world.repo, "rev-parse", f"ha/{outcome.run_id}").strip()
+    record_ = provenance.lookup(world.state, tip)
+    assert record_ is not None and record_["made_by"] == "engine"
+    assert lineage.load(world.state, outcome.run_id).members[outcome.run_id] == "failed"
+
+
+def test_a_failed_step_without_changes_commits_nothing(world: World) -> None:
+    world.agent.code = 1
+    outcome = world.write()
+    assert outcome.exit_code == 1
+    assert _subjects(world, f"ha/{outcome.run_id}") == []
+
+
+def test_the_worktree_creation_is_not_attributed_to_the_agent(world: World) -> None:
+    """The start point is taken after preparation (§3.8.3 step 4)."""
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    commits = json.loads((outcome.run_dir / "run.json").read_text())["commits"]
+    assert [c["made_by"] for c in commits] == ["engine"]
+
+
+# ── what an agent or a hook did ────────────────────────────────────────────
+
+
+def test_an_agent_commit_fails_the_run_and_is_recorded(world: World) -> None:
+    def commit_itself(root: Path) -> None:
+        _edit_app(root)
+        _git(root, "add", "-A")
+        _git(root, "commit", "-q", "--no-verify", "-m", "agent did it")
+
+    world.agent.edit = commit_itself
+    outcome = world.write()
+    assert outcome.exit_code == 1
+    state = lineage.load(world.state, outcome.run_id)
+    assert state.compromised == "agent_moved_head"
+    tip = _git(world.repo, "rev-parse", f"ha/{outcome.run_id}").strip()
+    record_ = provenance.lookup(world.state, tip)
+    assert record_ is not None and record_["made_by"] == "agent"
+    assert record_["providers"] == ["codex"]
+    assert _subjects(world, f"ha/{outcome.run_id}") == ["agent did it"]
+
+
+def test_a_refusing_hook_keeps_the_change_uncommitted(world: World) -> None:
+    _hook(world, "pre-commit", "echo 'lint says no' >&2\nexit 1\n")
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    assert outcome.exit_code == 1
+    step = outcome.run_dir / "steps" / "01-run-codex"
+    assert "lint says no" in (step / write_flow.COMMIT_LOG).read_text()
+    assert (outcome.run_dir / "wt" / "app.py").read_text() == "print('v2')\n"
+    assert _subjects(world, f"ha/{outcome.run_id}") == []
+    assert lineage.load(world.state, outcome.run_id).compromised == "hook_refused"
+
+
+def test_a_passing_hook_runs_for_the_engine_commit(world: World) -> None:
+    marker = world.home / "hook-ran"
+    _hook(world, "pre-commit", f"touch {marker}\n")
+    world.agent.edit = _edit_app
+    assert world.write().exit_code == 0
+    assert marker.exists()
+
+
+def test_a_hook_that_commits_then_fails_is_attributed(world: World) -> None:
+    _hook(
+        world,
+        "pre-commit",
+        "echo hooked > hooked.txt\ngit add hooked.txt\n"
+        "git commit -q --no-verify -m 'hook commit'\nexit 1\n",
+    )
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    assert outcome.exit_code == 1
+    assert lineage.load(world.state, outcome.run_id).compromised == "hook_committed"
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert {c["made_by"] for c in report["commits"]} == {"hook"}
+    for commit in report["commits"]:
+        found = provenance.lookup(world.state, commit["sha"])
+        assert found is not None and found["made_by"] == "hook"
+
+
+def test_a_hook_that_amends_is_attributed(world: World) -> None:
+    # post-commit runs again for the amend itself: the guard stops the recursion.
+    _hook(
+        world,
+        "post-commit",
+        '[ -n "$HA_TEST_AMENDED" ] && exit 0\n'
+        "HA_TEST_AMENDED=1 git commit -q --amend --no-verify -m 'amended by hook'\n",
+    )
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    assert outcome.exit_code == 1
+    assert lineage.load(world.state, outcome.run_id).compromised == "hook_committed"
+    made_by = {
+        c["made_by"] for c in json.loads((outcome.run_dir / "run.json").read_text())["commits"]
+    }
+    assert made_by == {"engine", "hook"}
+
+
+# ── the tripwire ───────────────────────────────────────────────────────────
+
+
+def _mark_step_end(world: World) -> None:
+    world.git_calls.append(["<step ended>"])
+
+
+def _git_after_step(world: World) -> list[list[str]]:
+    index = world.git_calls.index(["<step ended>"])
+    return world.git_calls[index + 1 :]
+
+
+def test_a_tampered_worktree_git_file_compromises_the_lineage_without_git(world: World) -> None:
+    def tamper(root: Path) -> None:
+        _edit_app(root)
+        (root / ".git").write_text("gitdir: /somewhere/else\n")
+
+    world.agent.edit = tamper
+    world.agent.after = lambda: _mark_step_end(world)
+    outcome = world.write()
+    assert outcome.exit_code == 1
+    assert _git_after_step(world) == []
+    state = lineage.load(world.state, outcome.run_id)
+    assert state.compromised == "tripwire" and state.pending is not None
+    assert quarantine.check(world.state, world.common_dir()) is None
+    assert any("tripwire" in line for line in world.said)
+
+
+def test_a_tampered_common_dir_quarantines_the_repository(world: World) -> None:
+    def tamper(root: Path) -> None:
+        _edit_app(root)
+        with (world.repo / ".git" / "config").open("a") as config:
+            config.write("[core]\n\tfsmonitor = /bin/true\n")
+
+    world.agent.edit = tamper
+    world.agent.after = lambda: _mark_step_end(world)
+    outcome = world.write()
+    assert outcome.exit_code == 1
+    assert _git_after_step(world) == []
+    refusal = quarantine.check(world.state, world.common_dir())
+    assert refusal is not None and "repository" in refusal
+
+    world.agent.edit, world.agent.after = _edit_app, None
+    world.git_calls.clear()
+    with pytest.raises(UsageError, match="repository quarantine"):
+        world.write()
+    assert world.git_calls == []
+
+
+# ── crashes and admission ──────────────────────────────────────────────────
+
+
+def test_a_crash_after_the_intent_compromises_the_lineage_at_the_next_write(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def crash(step: str) -> None:
+        if step == "intent":
+            raise SystemExit("crashed")
+
+    monkeypatch.setattr(write_flow, "_crash_after", crash)
+    with pytest.raises(SystemExit):
+        world.write()
+    (crashed,) = lineage.owners(world.state)
+    assert lineage.load(world.state, crashed).pending is not None
+
+    monkeypatch.setattr(write_flow, "_crash_after", lambda step: None)
+    world.git_calls.clear()
+    with pytest.raises(UsageError, match="unfinished write"):
+        world.write()
+    assert world.git_calls == []
+    assert lineage.load(world.state, crashed).compromised == "unfinalized_write"
+    assert quarantine.check(world.state, world.common_dir()) is not None
+
+
+def test_a_refused_write_leaves_no_entry_and_no_lineage(world: World) -> None:
+    quarantine.publish(world.state, "operator", reason="x", run_id="r", paths=[], common_dir=None)
+    with pytest.raises(UsageError, match="operator quarantine"):
+        world.write()
+    assert world.registry().run_ids() == []
+    assert lineage.owners(world.state) == []
+
+
+def test_an_unknown_lineage_of_the_repository_refuses(world: World) -> None:
+    world.agent.edit = _edit_app
+    first = world.write()
+    path = lineage.lineage_path(world.state, first.run_id)
+    path.write_text("{broken")
+    with pytest.raises(UsageError, match="unknown"):
+        world.write()
+
+
+def test_a_stale_unconfined_intent_quarantines_the_operator(world: World) -> None:
+    (world.state / write_flow.UNCONFINED_INTENT).write_text(json.dumps({"run_id": "dead"}))
+    with pytest.raises(UsageError, match="stale unconfined intent"):
+        world.write()
+    refusal = quarantine.check(world.state, None)
+    assert refusal is not None and refusal.startswith("operator quarantine")
+
+
+def _instrument(world: World, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    events: list[str] = []
+    real_held = locks.held
+
+    def held(path: Path, *, rank: locks.Rank, **kwargs: object):  # type: ignore[no-untyped-def]
+        events.append(f"lock {rank.name} {kwargs.get('key', '')}".rstrip())
+        manager = real_held(path, rank=rank, **kwargs)  # type: ignore[arg-type]
+
+        class _Traced:
+            def __enter__(self) -> None:
+                manager.__enter__()
+
+            def __exit__(self, *exc: object) -> None:
+                manager.__exit__(*exc)  # type: ignore[arg-type]
+                events.append(f"release {rank.name}")
+
+        return _Traced()
+
+    real_check = quarantine.check
+
+    def check(state: Path, common_dir: Path | None) -> str | None:
+        events.append("quarantine check")
+        return real_check(state, common_dir)
+
+    real_create = lineage.create
+
+    def create(state: Path, lineage_state: lineage.LineageState) -> None:
+        real_create(state, lineage_state)
+        events.append("intent")
+
+    real_git = write_flow.git
+
+    def git(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        events.append("git")
+        return real_git(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(engine, "held", held)
+    monkeypatch.setattr(write_flow, "held", held)
+    monkeypatch.setattr(quarantine, "check", check)
+    monkeypatch.setattr(lineage, "create", create)
+    monkeypatch.setattr(write_flow, "git", git)
+    return events
+
+
+def _other_lineage(world: World, owner: str, *, pending: bool) -> None:
+    lineage.create(
+        world.state,
+        lineage.LineageState(
+            owner=owner,
+            repository=world.repo,
+            common_dir=world.common_dir(),
+            worktree=world.home / "elsewhere" / owner,
+            branch=f"ha/{owner}",
+            base="0" * 40,
+            members={owner: "running" if pending else "committed"},
+            pending=lineage.PendingWrite(owner, ("claude",), False, "0" * 40, None)
+            if pending
+            else None,
+            compromised=None,
+        ),
+    )
+
+
+def test_admission_takes_every_lock_before_reading_state_and_runs_no_git(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _other_lineage(world, "20200101T000000-00000001", pending=False)
+    _other_lineage(world, "20200101T000000-00000002", pending=True)
+    events = _instrument(world, monkeypatch)
+    with pytest.raises(UsageError, match="unfinished write"):
+        world.write()
+    assert "git" not in events
+    locks_taken = [e for e in events if e.startswith("lock")]
+    assert [e.split()[1] for e in locks_taken] == [
+        "LIFECYCLE",
+        "UNCONFINED",
+        "LINEAGE_REGISTRY",
+        "LINEAGE",
+    ]
+    assert events.index("quarantine check") > events.index(locks_taken[-1])
+
+
+def test_the_first_git_comes_after_the_intent_and_the_registry_release(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _other_lineage(world, "20200101T000000-00000001", pending=False)
+    world.agent.edit = _edit_app
+    events = _instrument(world, monkeypatch)
+    assert world.write().exit_code == 0
+    first_git = events.index("git")
+    assert events.index("intent") < first_git
+    assert events.index("release LINEAGE_REGISTRY") < first_git
+
+
+def test_the_registry_lock_is_held_until_the_intent(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No lineage can appear while an admission decides: another process finds
+    the registry lock busy at the intent, and free once the intent is published."""
+    probe = (
+        "import fcntl, os, sys\n"
+        "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n"
+        "try:\n    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n    print('free')\n"
+        "except BlockingIOError:\n    print('busy')\n"
+    )
+    seen: dict[str, str] = {}
+
+    def at(step: str) -> None:
+        if step in ("intent", "preparation"):
+            seen[step] = subprocess.run(
+                [sys.executable, "-c", probe, str(lineage.registry_lock(world.state))],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+
+    monkeypatch.setattr(write_flow, "_crash_after", at)
+    world.agent.edit = _edit_app
+    assert world.write().exit_code == 0
+    assert seen == {"intent": "busy", "preparation": "free"}
+
+
+@pytest.mark.parametrize("source_sorts", ["after", "before"])
+def test_a_source_lineage_is_locked_in_ascending_order(
+    world: World, monkeypatch: pytest.MonkeyPatch, source_sorts: str
+) -> None:
+    own, source = (
+        "20260925T120000-bbbbbbbb",
+        ("20260925T120000-cccccccc" if source_sorts == "after" else "20260925T120000-aaaaaaaa"),
+    )
+    worktree = world.home / "source-wt"
+    _git(world.repo, "worktree", "add", "-q", "-b", f"ha/{source}", str(worktree), "main")
+    lineage.create(
+        world.state,
+        lineage.LineageState(
+            owner=source,
+            repository=world.repo,
+            common_dir=world.common_dir(),
+            worktree=worktree,
+            branch=f"ha/{source}",
+            base=_git(world.repo, "rev-parse", "main").strip(),
+            members={source: "committed"},
+            pending=None,
+            compromised=None,
+        ),
+    )
+    monkeypatch.setattr(Registry, "mint", lambda self: own)
+    events = _instrument(world, monkeypatch)
+    world.agent.edit = _edit_app
+    assert world.write(repo=worktree).exit_code == 0
+    lineage_locks = [e.split()[2] for e in events if e.startswith("lock LINEAGE ")]
+    assert lineage_locks == sorted([own, source])
+
+
+def test_a_compromised_source_lineage_refuses(world: World) -> None:
+    source = "20200101T000000-00000003"
+    worktree = world.home / "source-wt"
+    _git(world.repo, "worktree", "add", "-q", "-b", f"ha/{source}", str(worktree), "main")
+    lineage.create(
+        world.state,
+        lineage.LineageState(
+            owner=source,
+            repository=world.repo,
+            common_dir=world.common_dir(),
+            worktree=worktree,
+            branch=f"ha/{source}",
+            base="0" * 40,
+            members={source: "failed"},
+            pending=None,
+            compromised="tripwire",
+        ),
+    )
+    with pytest.raises(UsageError, match="compromised"):
+        world.write(repo=worktree)
+
+
+def test_a_lineage_file_is_never_trusted_when_malformed(world: World) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    path = lineage.lineage_path(world.state, outcome.run_id)
+    path.write_text(json.dumps({"owner": outcome.run_id}))
+    with pytest.raises(Unknown):
+        lineage.load(world.state, outcome.run_id)
+
+
+def test_a_write_outside_a_git_repository_is_refused_before_anything(
+    world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    # Bounded at tmp_path: a stray .git above the temporary directory (seen on a
+    # development machine as an empty /tmp/.git) must not make ``plain`` a repository.
+    real_discover = engine.discover
+    monkeypatch.setattr(engine, "discover", lambda start: real_discover(start, ceiling=tmp_path))
+    with pytest.raises(UsageError, match="git repository"):
+        world.write(repo=plain)
+    assert world.registry().run_ids() == [] and world.git_calls == []

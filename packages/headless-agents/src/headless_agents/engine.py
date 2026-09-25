@@ -24,7 +24,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
-from . import locks
+from . import locks, write_flow
 from .capability import scoped_environment
 from .chain import run_chain
 from .cli_models import ModelsError, models_for
@@ -37,7 +37,7 @@ from .proofs import CLI_RAILS, isolation_label, isolation_ok
 from .providers.claude import MAX_APPEND_SYSTEM_PROMPT_BYTES
 from .providers.openai_compat import GENERIC_NAME
 from .registry import HTTP_PROVIDER_NAMES, get_provider, max_prompt_bytes, probe
-from .repo import RepoError, discover
+from .repo import RepoError, RepoIdentity, discover
 from .report import RUN_JSON, new_report, step_dir_name, step_entry, with_step, write_report
 from .result import RunResult
 from .roles import Role, RolesError, capability_rule, load_roles, resolve_role
@@ -479,8 +479,12 @@ def _admit(
     run_dir: Path | None,
     target: Mapping[str, str],
     repository: Path,
+    write: bool = False,
 ) -> Entry:
     """Mint an id, take its lifecycle lock, then publish its entry (§3.8.3 step 1).
+
+    A write run's entry names its lineage -- the one it starts, owned by its
+    own id -- so its status lives in the lineage state only (§3.8.1).
 
     The lock comes first: an entry is never visible with a free lock before
     its run starts, so ``ha clean`` cannot forget a run that is being admitted
@@ -507,7 +511,11 @@ def _admit(
                 continue
             try:
                 entry = registry.create(
-                    run_id, run_dir=run_dir, target=target, repository=repository, lineage=None
+                    run_id,
+                    run_dir=run_dir,
+                    target=target,
+                    repository=repository,
+                    lineage=run_id if write else None,
                 )
             except FileExistsError:
                 continue
@@ -516,6 +524,89 @@ def _admit(
     if last is not None:
         raise last
     raise RegistryError(f"could not mint a fresh run id in {MINT_ATTEMPTS} attempts")
+
+
+def _refused(registry: Registry, entry: Entry) -> None:
+    """A gate refused the run before its step: a read-only run is ``failed``; a
+    write run never started, so its entry and directory go (§3.8.1)."""
+    if entry.lineage is None:
+        registry.set_status(entry.run_id, "failed")
+        return
+    shutil.rmtree(entry.run_dir, ignore_errors=True)
+    registry.forget(entry.run_id)
+
+
+def _execute_write(
+    plan: Plan,
+    bundle: ContextBundle,
+    *,
+    registry: Registry,
+    entry: Entry,
+    identity: RepoIdentity,
+    start: Path,
+    report: dict[str, object],
+    step_name: str,
+    started: float,
+    say: Callable[[str], None],
+) -> Outcome:
+    """A role write run: the §3.8.3 protocol, then its report."""
+    role, run_dir = plan.role, entry.run_dir
+    step_dir = run_dir / "steps" / step_name
+
+    def run_links(workspace: Workspace, directory: Path) -> RunResult:
+        say(f"step 1 run {role.name}: started")
+        final = _run_links(
+            plan, bundle, run_id=entry.run_id, step_dir=directory, workspace=workspace, say=say
+        )
+        say(f"step 1 run {role.name}: exit {final.exit_code}")
+        return final
+
+    try:
+        outcome = write_flow.run_write_step(
+            plan,
+            run_id=entry.run_id,
+            run_dir=run_dir,
+            state=plan.state,
+            identity=identity,
+            start=start,
+            step_dir=step_dir,
+            run_links=run_links,
+            say=say,
+        )
+    except write_flow.WriteRefused as exc:
+        _refused(registry, entry)
+        raise UsageError(str(exc)) from None
+    if outcome.final is not None:
+        report = with_step(
+            report,
+            step_entry(
+                index=1,
+                slot="run",
+                role=role.name,
+                step_dir=f"steps/{step_name}",
+                result=outcome.final,
+            ),
+        )
+    report.update(
+        status=outcome.status,
+        exit_code=outcome.exit_code,
+        text=outcome.final.text if outcome.final is not None else None,
+        branch=outcome.branch,
+        base=outcome.base,
+        head=outcome.head,
+        lineage=entry.run_id,
+        commits=[{"sha": sha, "made_by": made_by} for sha, made_by in outcome.commits],
+        failure_reason=outcome.failure_reason,
+        duration_seconds=round(time.monotonic() - started, 3),
+    )
+    write_report(run_dir, report)
+    return Outcome(
+        exit_code=outcome.exit_code,
+        run_id=entry.run_id,
+        run_dir=run_dir,
+        report=report,
+        final=outcome.final,
+    )
 
 
 def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
@@ -536,6 +627,8 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
     except RepoError as exc:
         raise UsageError(str(exc)) from None
     repository = identity.work_tree if identity is not None else start
+    if role.write and identity is None:
+        raise UsageError(f"a write run needs a git repository; {start} is not in one")
 
     runs = runs_root(request.home)
     registry = Registry(plan.state, runs_root=runs)
@@ -557,6 +650,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 run_dir=plan.run_dir,
                 target=target,
                 repository=repository,
+                write=role.write,
             )
         except (LockTimeout, RegistryError) as exc:
             # A run that never started leaves nothing behind (codex review of #207).
@@ -576,7 +670,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 )
             )
         except LockTimeout:
-            registry.set_status(entry.run_id, "failed")
+            _refused(registry, entry)
             raise UsageError(
                 "an unconfined write is running: nothing ran; retry once it has ended"
             ) from None
@@ -584,14 +678,14 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
         try:
             _check_isolation(plan)
         except UsageError:
-            registry.set_status(entry.run_id, "failed")
+            _refused(registry, entry)
             raise
 
         bundle = _bundle(role, request, identity.work_tree if identity is not None else None)
         try:
             _check_prompt_size(role, plan.prompt, bundle)
         except UsageError:
-            registry.set_status(entry.run_id, "failed")
+            _refused(registry, entry)
             raise
 
         started = time.monotonic()
@@ -607,6 +701,20 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
         write_report(run_dir, report)
         step_name = step_dir_name(1, "run", role.name)
         step_dir = run_dir / "steps" / step_name
+        if role.write:
+            assert identity is not None
+            return _execute_write(
+                plan,
+                bundle,
+                registry=registry,
+                entry=entry,
+                identity=identity,
+                start=start,
+                report=report,
+                step_name=step_name,
+                started=started,
+                say=say,
+            )
         say(f"step 1 run {role.name}: started")
         final = _run_links(
             plan,

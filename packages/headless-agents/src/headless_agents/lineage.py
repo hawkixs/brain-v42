@@ -35,7 +35,8 @@ class LineageState:
     common_dir: Path
     worktree: Path
     branch: str
-    base: str
+    #: The resolved base commit; ``None`` until preparation resolves it (§3.8.3 step 3).
+    base: str | None
     members: Mapping[str, str]
     pending: PendingWrite | None
     compromised: str | None
@@ -133,7 +134,7 @@ def load(state: Path, owner: str) -> LineageState:
         common_dir=Path(_str(document, "common_dir", path)),
         worktree=Path(_str(document, "worktree", path)),
         branch=_str(document, "branch", path),
-        base=_str(document, "base", path),
+        base=_optional_str(document.get("base"), "base", path),
         members=dict(members),
         pending=_pending(document.get("pending"), path),
         compromised=compromised,

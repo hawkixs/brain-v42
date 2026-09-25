@@ -26,6 +26,7 @@ from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import IO, Final
 
+from . import lineage as lineages
 from .capability import INVALID_USAGE_EXIT_CODE
 from .config_paths import state_dir
 from .engine import (
@@ -309,9 +310,18 @@ def _registered_row(registry: Registry, run_id: str) -> dict[str, object]:
         entry = registry.resolve(run_id)
     except (RegistryError, Unknown):
         return row
+    lineage_status: str | None = None
+    if entry.lineage is not None:
+        # A write run's status lives in its lineage state only (§3.8.1).
+        try:
+            lineage_status = lineages.load(registry.state, entry.lineage).members.get(run_id)
+        except Unknown:
+            lineage_status = "unknown"
     row.update(
         target=entry.target.get("name"),
-        status=registry.effective_status(entry, None),
+        status=lineage_status
+        if lineage_status == "unknown"
+        else registry.effective_status(entry, lineage_status),
         cleaned=entry.cleaned_at is not None,
     )
     report = _read_json(entry.run_dir / RUN_JSON)
