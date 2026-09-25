@@ -131,6 +131,10 @@ class Registry:
     def set_cleaned(self, run_id: str, when: str) -> None:
         self._update(run_id, cleaned_at=when)
 
+    def forget(self, run_id: str) -> None:
+        """Remove the entry of a run that never started (§3.8.1): nothing to keep."""
+        self._path(run_id).unlink(missing_ok=True)
+
     def effective_status(self, entry: Entry, lineage_status: str | None) -> str:
         """The status to show: final as recorded, else ``running`` or ``incomplete``.
 

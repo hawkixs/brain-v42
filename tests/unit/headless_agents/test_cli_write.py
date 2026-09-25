@@ -1,11 +1,24 @@
+# ruff: noqa: E402 -- the module-level skip below must run before the imports it guards.
 """``ha run --write`` (spec 3.4) on real throwaway repositories.
 
 The provider is a fake that edits its workspace like an agent would; the
 worktree, the carrier commit, the repository's hooks, the tripwire and
 ``ha clean`` are the real code and a real ``git``.
+
+Skipped in this build: 0.5.0 lot 1 refuses every write run until the write
+protocol of spec §3.8.3 is merged (plan decision P5), and ``cli_write`` is
+gone. Plan Task 19 re-expresses every case below against the engine's write
+flow, then deletes this module.
 """
 
 from __future__ import annotations
+
+import pytest
+
+pytest.skip(
+    "write runs return with the spec §3.8.3 write protocol (plan Task 19)",
+    allow_module_level=True,
+)
 
 import io
 import json

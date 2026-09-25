@@ -1,30 +1,17 @@
-"""``ha`` -- hand a task to any provider from a terminal or a session (spec 3.4).
+"""``ha`` -- hand a task to any provider or role from a terminal or a session (spec 0.5.0 §3.9).
 
 .. code-block:: text
 
+    ha run TARGET [PROMPT | -] [options]     TARGET: a role or a provider
+    ha roles [--json]
     ha providers [--json]
-    ha run -p PROVIDER [-m MODEL] [--effort E] [--timeout SECONDS]
-           [--chain P1,P2,...]
-           [--context full|global|none] [--context-parents]
-           [--mcp PROFILE]
-           [--base-url URL --key-env VAR]
-           [--write [--shell] [--repo PATH] [--base REF]]
-           [--json] [--run-dir DIR]
-           [PROMPT | -]
     ha runs [--limit N] [--json]
     ha clean RUN_ID
+    ha --version
 
-Exit codes (contract): ``0`` answer; ``1`` failure; ``2`` invalid usage;
-``3`` provider unavailable, chain exhausted; ``4`` timeout with no tool call
-started (replayable); ``5`` ``--write`` finished with no change; ``124``
-timeout.
-
-Read-only, a CLI rail runs with ``Workspace(<repository root>, write=False)``:
-it can list, read and search the current repository, with no write tool and
-no shell. An HTTP provider runs without a workspace. Every run writes
-``~/.cache/ha/runs/<run_id>/`` (logs and ``result.json``); a chain gives each
-link its own directory under ``links/`` and copies the final link's
-``result.json`` to the run's root. ``--write`` is in :mod:`.cli_write`.
+A thin adapter: it parses arguments and prints. Every rule lives in
+:mod:`headless_agents.engine`, which every entry point shares (§3.4) -- a gate
+the CLI alone enforced would leak through a library caller.
 """
 
 from __future__ import annotations
@@ -32,68 +19,51 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
-import subprocess
 import sys
-import time
-import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import IO, Final
 
-from .capability import INVALID_USAGE_EXIT_CODE, scoped_environment
-from .chain import run_chain
-from .cli_models import ModelsError, models_for, parse_chain
-from .context import ContextBundle, ContextLevel, resolve_context
-from .mcp_profiles import McpProfileError, mcp_server
-from .profile import CapabilityProfile, Credentials, McpServer, Workspace, mcp_no_proxy_hosts
-from .providers.openai_compat import GENERIC_NAME
-from .registry import (
-    HTTP_PROVIDER_NAMES,
-    PROVIDER_NAMES,
-    Probe,
-    UnknownProvider,
-    get_provider,
-    max_prompt_bytes,
-    probe,
+from .capability import INVALID_USAGE_EXIT_CODE
+from .config_paths import state_dir
+from .engine import (
+    Overrides,
+    Request,
+    UsageError,
+    clean,
+    describe_roles,
+    executable_for,
+    execute,
+    plan,
+    runs_root,
 )
-from .result import RunResult
+from .registry import PROVIDER_NAMES, Probe, UnknownProvider, max_prompt_bytes, probe
+from .report import RUN_JSON
 from .run_record import RESULT_FILE_NAME
-from .spec import RunSpec
+from .runs import Registry, RegistryError
 
 __all__ = ["PROVIDER_NAMES", "Probe", "UnknownProvider", "main"]
 
-NO_CHANGE_EXIT_CODE: Final = 5
-DEFAULT_TIMEOUT_SECONDS: Final = 300.0
+INTERRUPTED_EXIT_CODE: Final = 130
 
-#: The files each HOME-isolated rail needs from the operator's HOME (relative
-#: to it), as the Dream and the live suite expose them. codex copies its own
-#: auth into an ephemeral CODEX_HOME; claude keeps the caller's HOME.
-DEFAULT_CREDENTIALS: Final[Mapping[str, tuple[str, ...]]] = {
-    "agy": (
-        ".gemini/oauth_creds.json",
-        ".gemini/google_accounts.json",
-        ".gemini/gemini-credentials.json",
-        ".gemini/antigravity-cli/antigravity-oauth-token",
-    ),
-    "opencode": (".local/share/opencode/auth.json",),
-}
+_RUN_EPILOG: Final = """\
+exit codes of a run (a role or a provider):
+  0 the answer
+  1 failure
+  2 invalid usage or configuration; nothing ran
+  3 provider unavailable (a chain that runs out of links returns its last link's 3 or 4)
+  4 timeout with no tool call started
+  5 write run with no change
+  124 timeout
+  130 interrupted (Ctrl-C); the run reads incomplete
 
-#: opencode is not on PATH by default; its installer puts it here.
-DEFAULT_EXECUTABLES: Final[Mapping[str, str]] = {"opencode": ".opencode/bin/opencode"}
-
-# A Claude Code session that launches ``ha`` must not leak into a nested
-# ``claude -p``: the child would no longer be the run the rail ships.
-_PARENT_SESSION_PREFIXES: Final = ("CLAUDE_CODE_",)
-_PARENT_SESSION_NAMES: Final = frozenset(
-    {"CLAUDECODE", "CLAUDE_PID", "CLAUDE_JOB_DIR", "CLAUDE_EFFORT"}
-)
-
-
-class UsageError(ValueError):
-    """Invalid usage: reported on stderr, exit 2, nothing run."""
+examples:
+  ha run codex -m gpt-6-luna "Explain what this repository does."
+  ha run reviewer-codex - < task.md
+  ha run claude --context full --json "Summarise the open TODOs." > run.json
+"""
 
 
 @dataclass(frozen=True)
@@ -112,44 +82,62 @@ class Io:
 # ── parsing ─────────────────────────────────────────────────────────────────
 
 
+def _store_true_or_none(parser: argparse.ArgumentParser, *flags: str, help: str) -> None:
+    """A flag that is ``True`` when given and ``None`` when absent: an override."""
+    parser.add_argument(*flags, action="store_const", const=True, default=None, help=help)
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="ha", description="Run a task on any agent provider.")
+    parser = argparse.ArgumentParser(
+        prog="ha", description="Run a task on any agent provider or declared role."
+    )
     parser.add_argument(
         "--version", action="store_true", help="print the installed version of ha and exit"
     )
     commands = parser.add_subparsers(dest="command")
 
     providers = commands.add_parser("providers", help="list the providers and their availability")
-    providers.add_argument("--json", action="store_true")
+    providers.add_argument("--json", action="store_true", help="print the list as JSON")
 
-    run = commands.add_parser("run", help="run one task")
-    run.add_argument("-p", "--provider")
-    run.add_argument("-m", "--model", default="")
-    run.add_argument("--effort", default="medium")
-    run.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
-    run.add_argument(
-        "--chain",
-        help="comma-separated providers, each optionally provider:model, tried in order on 3 and 4",
+    run = commands.add_parser(
+        "run",
+        help="run one task on a role or a provider",
+        epilog=_RUN_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    run.add_argument("--context", choices=("full", "global", "none"))
-    run.add_argument("--context-parents", action="store_true")
-    run.add_argument("--mcp", metavar="PROFILE")
-    run.add_argument("--base-url")
-    run.add_argument("--key-env", metavar="VAR")
-    run.add_argument("--write", action="store_true")
-    run.add_argument("--shell", action="store_true")
-    run.add_argument("--repo", type=Path)
-    run.add_argument("--base", default="HEAD")
-    run.add_argument("--json", action="store_true")
-    run.add_argument("--run-dir", type=Path)
-    run.add_argument("prompt", nargs="?")
+    run.add_argument("target", help="a role declared in roles.toml, or a provider name")
+    run.add_argument(
+        "prompt", nargs="?", help="the task; '-' reads stdin; absent reads a piped stdin"
+    )
+    run.add_argument("-m", "--model", help="the model of every link that names none")
+    run.add_argument("--effort", help="reasoning effort, where the rail takes one")
+    run.add_argument("--timeout", type=float, help="seconds for this run")
+    run.add_argument("--context", choices=("full", "global", "none"), help="context bundle level")
+    _store_true_or_none(
+        run, "--context-parents", help="add the parent directories' instruction files"
+    )
+    run.add_argument("--mcp", metavar="PROFILE", help="an MCP profile of mcp.toml")
+    _store_true_or_none(run, "--write", help="a writable run (not available in this build)")
+    _store_true_or_none(run, "--shell", help="the unconfined shell of a write run")
+    run.add_argument("--base", metavar="REF", help="the base of a write run")
+    run.add_argument("--repo", type=Path, help="the repository (default: the one holding cwd)")
+    run.add_argument("--base-url", help="the endpoint of openai-compat")
+    run.add_argument("--key-env", metavar="VAR", help="the key variable of openai-compat")
+    run.add_argument("--json", action="store_true", help="print run.json")
+    run.add_argument("--run-dir", type=Path, help="the run's directory (must not exist)")
+    # Removed in 0.5.0: kept hidden so their use gets a message, not argparse's guess.
+    run.add_argument("-p", "--provider", help=argparse.SUPPRESS)
+    run.add_argument("--chain", help=argparse.SUPPRESS)
+
+    roles = commands.add_parser("roles", help="list the roles declared in roles.toml")
+    roles.add_argument("--json", action="store_true", help="print the list as JSON")
 
     runs = commands.add_parser("runs", help="list recent runs")
-    runs.add_argument("--limit", type=int, default=20)
-    runs.add_argument("--json", action="store_true")
+    runs.add_argument("--limit", type=int, default=20, help="how many runs to list")
+    runs.add_argument("--json", action="store_true", help="print the list as JSON")
 
-    clean = commands.add_parser("clean", help="remove one run (and its worktree)")
-    clean.add_argument("run_id")
+    clean_parser = commands.add_parser("clean", help="remove one run's directory")
+    clean_parser.add_argument("run_id", help="the run id, as ha run printed it")
     return parser
 
 
@@ -166,58 +154,13 @@ def _parse(argv: Sequence[str]) -> argparse.Namespace:
     return parser.parse_args(list(argv))
 
 
-# ── shared helpers ──────────────────────────────────────────────────────────
-
-
-def runs_root(home: Path) -> Path:
-    return home / ".cache" / "ha" / "runs"
-
-
-def new_run_id() -> str:
-    return f"{time.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
-
-
-def operator_environment(environ: Mapping[str, str]) -> dict[str, str]:
-    return {
-        key: value
-        for key, value in environ.items()
-        if key not in _PARENT_SESSION_NAMES and not key.startswith(_PARENT_SESSION_PREFIXES)
-    }
-
-
-def repository_root(cwd: Path) -> Path:
-    """The git work tree holding ``cwd`` (the operator's own checkout), else ``cwd``."""
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    try:
-        completed = subprocess.run(
-            ["git", "-C", str(cwd), "-c", "core.fsmonitor=false", "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            env=env,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return cwd
-    top = completed.stdout.strip()
-    return Path(top) if completed.returncode == 0 and top else cwd
-
-
-def _executable(provider: str, home: Path) -> str | None:
-    relative = DEFAULT_EXECUTABLES.get(provider)
-    if relative is None:
-        return None
-    candidate = home / relative
-    return str(candidate) if candidate.is_file() and shutil.which(provider) is None else None
-
-
 # ── ha providers ────────────────────────────────────────────────────────────
 
 
 def _providers(args: argparse.Namespace, io: Io) -> int:
     rows = []
     for name in PROVIDER_NAMES:
-        found = probe(name, executable=_executable(name, io.home), environ=io.environ)
+        found = probe(name, executable=executable_for(name, io.home), environ=io.environ)
         rows.append(
             {
                 "name": name,
@@ -239,289 +182,166 @@ def _providers(args: argparse.Namespace, io: Io) -> int:
 # ── ha run ──────────────────────────────────────────────────────────────────
 
 
-@dataclass(frozen=True)
-class RunPlan:
-    """Everything ``ha run`` resolved before any provider starts."""
-
-    providers: tuple[str, ...]
-    models: Mapping[str, str]
-    prompt: str
-    context: ContextBundle | None
-    mcp: McpServer | None
-    environment: dict[str, str]
-    run_dir: Path
-    repository: Path
-
-
-def _prompt(args: argparse.Namespace, io: Io) -> str:
-    text = io.stdin.read() if args.prompt in (None, "-") else args.prompt
-    if not text.strip():
-        raise UsageError("no prompt: pass it as an argument, or on stdin with '-'")
-    return text
-
-
-def _links_of(args: argparse.Namespace) -> tuple[tuple[str, str], ...]:
-    """The run's ``(provider, own model)`` links, in order, provider names checked."""
-    try:
-        if args.chain:
-            links = parse_chain(args.chain)
-        elif args.provider:
-            links = ((args.provider, ""),)
-        else:
-            links = ()
-    except ModelsError as exc:
-        raise UsageError(str(exc)) from None
-    if not links:
-        raise UsageError("name a provider with -p, or a chain with --chain")
-    for name, _ in links:
-        if name not in PROVIDER_NAMES:
-            raise UsageError(f"unknown provider {name!r}; valid names: {', '.join(PROVIDER_NAMES)}")
-    return links
-
-
-def _models_of(
-    args: argparse.Namespace, links: tuple[tuple[str, str], ...], io: Io
-) -> dict[str, str]:
-    """Each link's model (see :mod:`.cli_models`), asked only once the links and
-    the flags are known good: a model question must never mask a structural
-    usage error (independent review of PR #198, P3)."""
-    try:
-        return models_for(links, default=args.model, environ=io.environ, home=io.home)
-    except ModelsError as exc:
-        raise UsageError(str(exc)) from None
-
-
-def _check_flags(args: argparse.Namespace, providers: tuple[str, ...]) -> None:
-    has_generic = GENERIC_NAME in providers
-    endpoint_flags = args.base_url is not None or args.key_env is not None
-    if has_generic and (args.base_url is None or args.key_env is None):
-        raise UsageError("openai-compat needs both --base-url and --key-env")
-    if endpoint_flags and not has_generic:
-        raise UsageError("--base-url and --key-env apply to openai-compat only")
-    if args.shell and not args.write:
-        raise UsageError("--shell requires --write: a shell can write what read tools cannot")
-    http = [name for name in providers if name in HTTP_PROVIDER_NAMES]
-    if args.write and http:
-        raise UsageError(f"--write needs a CLI rail; {', '.join(http)} has no tool to edit with")
-    if args.mcp and http:
-        raise UsageError(f"--mcp needs a CLI rail; {', '.join(http)} has no tools")
-
-
-def _plan(args: argparse.Namespace, io: Io) -> RunPlan:
-    links = _links_of(args)
-    providers = tuple(name for name, _ in links)
-    _check_flags(args, providers)
-    models = _models_of(args, links, io)
-    prompt = _prompt(args, io)
-    repository = args.repo.resolve() if args.repo else repository_root(io.cwd)
-    level: ContextLevel = args.context or ("full" if args.write else "global")
-    context = resolve_context(
-        level=level,
-        repository_root=repository,
-        user_files=(io.home / ".claude" / "CLAUDE.md",),
-        include_parents=args.context_parents,
-    )
-    mcp: McpServer | None = None
-    if args.mcp:
-        try:
-            mcp = mcp_server(args.mcp, environ=io.environ, home=io.home)
-        except McpProfileError as exc:
-            raise UsageError(str(exc)) from None
-    environment = operator_environment(io.environ)
-    if mcp is not None and mcp_no_proxy_hosts(mcp):
-        environment = {
-            **environment,
-            **{
-                key: value
-                for key, value in scoped_environment(
-                    environment, no_proxy_hosts=mcp_no_proxy_hosts(mcp)
-                ).items()
-                if key in ("NO_PROXY", "no_proxy")
-            },
-        }
-    # Anchored at the CLI's cwd and made absolute: ``--run-dir .`` has an empty
-    # raw name, and the run id, the ``ha-<id>`` prefix and the ``ha/<id>``
-    # branch all read it.
-    run_dir = (
-        Path(os.path.abspath(io.cwd / args.run_dir))
-        if args.run_dir is not None
-        else runs_root(io.home) / new_run_id()
-    )
-    # Refused HERE, where it is planned: a chain derives ``<run_dir>/links/...``
-    # and a write run ``<run_dir>/wt`` and ``ha/<name>`` before any RunSpec
-    # would check the name (independent review of PR #197, finding 3).
-    if not run_dir.name:
-        raise UsageError(f"--run-dir {args.run_dir} has no name: a run is named by its directory")
-    return RunPlan(
-        providers=providers,
-        models=models,
-        prompt=prompt,
-        context=context,
-        mcp=mcp,
-        environment=environment,
-        run_dir=run_dir,
-        repository=repository,
-    )
-
-
-def spec_for(
-    provider: str,
-    plan: RunPlan,
-    args: argparse.Namespace,
-    io: Io,
-    *,
-    run_dir: Path,
-    workspace: Workspace | None,
-) -> RunSpec:
-    """One link's :class:`RunSpec`."""
-    http = provider in HTTP_PROVIDER_NAMES
-    extra: dict[str, object] = {}
-    if provider == GENERIC_NAME:
-        extra = {"base_url": args.base_url, "key_env": args.key_env}
-    return RunSpec(
-        prompt=plan.prompt,
-        name=f"ha-{run_dir.name}",
-        model=plan.models[provider],
-        profile=CapabilityProfile(
-            mcp=None if http else plan.mcp,
-            workspace=None if http else workspace,
-            credentials=Credentials(paths=DEFAULT_CREDENTIALS.get(provider, ())),
-        ),
-        reasoning_effort=args.effort,
-        max_turns=50,
-        timeout_seconds=args.timeout,
-        run_dir=run_dir,
-        executable=_executable(provider, io.home),
-        environment=plan.environment,
-        context=plan.context,
-        extra=extra,
-    )
-
-
-def run_links(
-    plan: RunPlan,
-    args: argparse.Namespace,
-    io: Io,
-    *,
-    workspace: Workspace | None,
-) -> RunResult:
-    """Run the chain (or the single provider) and return the final link's result."""
-    results: dict[str, RunResult] = {}
-    chained = len(plan.providers) > 1
-
-    def run_one(provider: str) -> int:
-        index = plan.providers.index(provider)
-        run_dir = plan.run_dir / "links" / f"{index}-{provider}" if chained else plan.run_dir
-        result = get_provider(provider).run(
-            spec_for(provider, plan, args, io, run_dir=run_dir, workspace=workspace)
-        )
-        results[provider] = result
-        return result.exit_code
-
-    def on_fallback(provider: str, next_provider: str) -> None:
-        code = results[provider].exit_code
-        io.say(f"{provider} exited {code} (nothing written); falling back to {next_provider}")
-
-    outcome = run_chain(plan.providers, run_one=run_one, on_fallback=on_fallback)
-    final = results[outcome.provider]
-    if chained:
-        source = (
-            plan.run_dir / "links" / f"{plan.providers.index(outcome.provider)}-{outcome.provider}"
-        )
-        if (source / RESULT_FILE_NAME).is_file():
-            shutil.copyfile(source / RESULT_FILE_NAME, plan.run_dir / RESULT_FILE_NAME)
-    if outcome.dead_links:
-        io.say(f"no answer within the deadline from: {', '.join(outcome.dead_links)}")
-    return final
-
-
-def report(result: RunResult, run_dir: Path, args: argparse.Namespace, io: Io) -> None:
-    if args.json:
-        io.stdout.write(json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n")
-    elif result.exit_code == 0 and result.text is not None:
-        io.stdout.write(result.text if result.text.endswith("\n") else result.text + "\n")
-    if result.exit_code != 0:
-        io.say(f"{result.provider} exited {result.exit_code}; logs in {run_dir}")
+def _prompt(args: argparse.Namespace, io: Io) -> tuple[str | None, bool]:
+    """The task text and whether stdin is a terminal (§3.9: never wait on one)."""
+    is_tty = bool(getattr(io.stdin, "isatty", lambda: False)())
+    if args.prompt == "-":
+        return io.stdin.read(), is_tty
+    if args.prompt is not None:
+        return args.prompt, is_tty
+    return (None if is_tty else io.stdin.read()), is_tty
 
 
 def _run(args: argparse.Namespace, io: Io) -> int:
-    plan = _plan(args, io)
-    if args.write:
-        from .cli_write import run_write  # noqa: PLC0415 - the write flow is its own module
+    if args.provider is not None:
+        raise UsageError(
+            '-p was removed in 0.5.0: the provider is the TARGET (ha run codex "..."); '
+            "a chain is declared in roles.toml"
+        )
+    if args.chain is not None:
+        raise UsageError(
+            "--chain was removed in 0.5.0: declare the chain in a role of roles.toml "
+            '(chain = ["codex:MODEL", "claude:MODEL"]) and run the role as the TARGET'
+        )
+    prompt, is_tty = _prompt(args, io)
+    request = Request(
+        target=args.target,
+        prompt=prompt,
+        stdin_is_tty=is_tty,
+        overrides=Overrides(
+            model=args.model,
+            effort=args.effort,
+            timeout=args.timeout,
+            context=args.context,
+            context_parents=args.context_parents,
+            mcp=args.mcp,
+            write=args.write,
+            # nosec B604: ``shell`` is a role capability override, not a subprocess argument.
+            shell=args.shell,  # nosec B604
+            base_url=args.base_url,
+            key_env=args.key_env,
+        ),
+        base=args.base,
+        repo=args.repo,
+        run_dir=args.run_dir,
+        cwd=io.cwd,
+        environ=io.environ,
+        home=io.home,
+    )
+    outcome = execute(plan(request), say=io.say)
+    if args.json:
+        io.stdout.write(json.dumps(outcome.report, ensure_ascii=False, indent=2) + "\n")
+    elif outcome.exit_code == 0 and outcome.final is not None and outcome.final.text:
+        text = outcome.final.text
+        io.stdout.write(text if text.endswith("\n") else text + "\n")
+    if outcome.exit_code != 0:
+        provider = outcome.final.provider if outcome.final is not None else args.target
+        io.say(
+            f"{provider} exited {outcome.exit_code}; run {outcome.run_id}, "
+            f"logs in {outcome.run_dir}"
+        )
+    return outcome.exit_code
 
-        return run_write(plan, args, io)
-    workspace = Workspace(path=plan.repository)
-    result = run_links(plan, args, io, workspace=workspace)
-    report(result, plan.run_dir, args, io)
-    return result.exit_code
+
+# ── ha roles ────────────────────────────────────────────────────────────────
+
+
+def _roles(args: argparse.Namespace, io: Io) -> int:
+    rows = describe_roles(io.environ, io.home)
+    if args.json:
+        io.stdout.write(json.dumps(rows, indent=2) + "\n")
+        return 0
+    for row in rows:
+        links = row["links"]
+        assert isinstance(links, list)
+        chain = ", ".join(f"{link['provider']}:{link['model'] or '(no model)'}" for link in links)
+        flags = [name for name in ("write", "shell") if row[name]]
+        io.stdout.write(
+            f"{row['name']:<20} {chain}  effort {row['effort']}  timeout {row['timeout']:g}s  "
+            f"context {row['context']}"
+            + (f"  mcp {row['mcp']}" if row["mcp"] else "")
+            + (f"  {'+'.join(flags)}" if flags else "")
+            + (f"  instructions {row['instructions_bytes']} B" if row["instructions_bytes"] else "")
+            + "\n"
+        )
+    return 0
 
 
 # ── ha runs / ha clean ──────────────────────────────────────────────────────
 
 
-def _read_result(run_dir: Path) -> dict[str, object] | None:
+def _read_json(path: Path) -> dict[str, object] | None:
     try:
-        payload = json.loads((run_dir / RESULT_FILE_NAME).read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return payload if isinstance(payload, dict) else None
 
 
+def _first_line(text: object) -> str | None:
+    return text.strip().splitlines()[0] if isinstance(text, str) and text.strip() else None
+
+
 def _runs(args: argparse.Namespace, io: Io) -> int:
+    """Plan decision P7: a minimal listing; the full one (cost, quarantines) is lot 2."""
     root = runs_root(io.home)
+    registry = Registry(state_dir(io.environ, home=io.home), runs_root=root)
     entries: list[tuple[int, dict[str, object]]] = []
     if root.is_dir():
         for run_dir in root.iterdir():
-            payload = _read_result(run_dir)
-            if payload is None:
-                continue
-            stamp = (run_dir / RESULT_FILE_NAME).stat().st_mtime_ns
-            text = payload.get("text")
-            first_line = (
-                text.strip().splitlines()[0] if isinstance(text, str) and text.strip() else None
-            )
-            entries.append(
-                (
-                    stamp,
-                    {
-                        "run_id": run_dir.name,
-                        "provider": payload.get("provider"),
-                        "model": payload.get("model"),
-                        "exit_code": payload.get("exit_code"),
-                        "duration_seconds": payload.get("duration_seconds"),
-                        "branch": payload.get("branch"),
-                        "text": first_line,
-                    },
+            report = _read_json(run_dir / RUN_JSON)
+            if report is not None:
+                target = report.get("target")
+                status = report.get("status")
+                try:
+                    entry = registry.resolve(run_dir.name)
+                    status = registry.effective_status(entry, None)
+                except (RegistryError, ValueError):
+                    pass
+                entries.append(
+                    (
+                        (run_dir / RUN_JSON).stat().st_mtime_ns,
+                        {
+                            "run_id": run_dir.name,
+                            "target": target.get("name") if isinstance(target, dict) else None,
+                            "status": status,
+                            "exit_code": report.get("exit_code"),
+                            "duration_seconds": report.get("duration_seconds"),
+                            "text": _first_line(report.get("text")),
+                        },
+                    )
                 )
-            )
-    entries.sort(key=lambda entry: entry[0], reverse=True)
+                continue
+            legacy = _read_json(run_dir / RESULT_FILE_NAME)
+            if legacy is not None:
+                entries.append(
+                    (
+                        (run_dir / RESULT_FILE_NAME).stat().st_mtime_ns,
+                        {
+                            "run_id": run_dir.name,
+                            "target": legacy.get("provider"),
+                            "status": "legacy",
+                            "exit_code": legacy.get("exit_code"),
+                            "duration_seconds": legacy.get("duration_seconds"),
+                            "text": _first_line(legacy.get("text")),
+                        },
+                    )
+                )
+    entries.sort(key=lambda item: item[0], reverse=True)
     rows = [row for _, row in entries[: max(0, args.limit)]]
     if args.json:
         io.stdout.write(json.dumps(rows, indent=2) + "\n")
         return 0
     for row in rows:
         io.stdout.write(
-            f"{row['run_id']}  {row['provider']:<14} exit {row['exit_code']}  {row['text'] or ''}\n"
+            f"{row['run_id']}  {row['target']!s:<16} {row['status']!s:<10} "
+            f"exit {row['exit_code']}  {row['text'] or ''}\n"
         )
     return 0
 
 
 def _clean(args: argparse.Namespace, io: Io) -> int:
-    run_id = args.run_id
-    if not run_id or run_id in (".", "..") or "/" in run_id or os.sep in run_id:
-        raise UsageError(f"not a run id: {run_id!r}")
-    run_dir = runs_root(io.home) / run_id
-    if not run_dir.is_dir():
-        io.say(f"no run {run_id!r} under {runs_root(io.home)}")
-        return 1
-    from .cli_write import remove_worktree  # noqa: PLC0415
-
-    problem = remove_worktree(run_dir, io)
-    if problem is not None:
-        io.say(problem)
-        return 1
-    shutil.rmtree(run_dir)
-    return 0
+    return clean(args.run_id, environ=io.environ, home=io.home, say=io.say)
 
 
 # ── entry point ─────────────────────────────────────────────────────────────
@@ -555,11 +375,13 @@ def main(
             return _providers(args, io)
         if args.command == "run":
             return _run(args, io)
+        if args.command == "roles":
+            return _roles(args, io)
         if args.command == "runs":
             return _runs(args, io)
         if args.command == "clean":
             return _clean(args, io)
-        raise UsageError("a command is required: providers, run, runs or clean")
+        raise UsageError("a command is required: run, roles, providers, runs or clean")
     except UsageError as exc:
         io.say(str(exc))
         return INVALID_USAGE_EXIT_CODE
@@ -567,6 +389,11 @@ def main(
         # A provider refusing its spec (an HTTP provider with a workspace, say).
         io.say(str(exc))
         return INVALID_USAGE_EXIT_CODE
+    except KeyboardInterrupt:
+        # The engine released its locks and the rail killed its provider on the
+        # way out; the run reads incomplete (spec §3.10).
+        io.say("interrupted: the run reads incomplete")
+        return INTERRUPTED_EXIT_CODE
 
 
 if __name__ == "__main__":  # pragma: no cover

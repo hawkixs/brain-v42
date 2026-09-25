@@ -353,18 +353,21 @@ uv tool install "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@
 ```
 
 ```text
+ha run TARGET [PROMPT | -] [-m MODEL] [--effort E] [--timeout SECONDS]
+       [--context full|global|none] [--context-parents] [--mcp PROFILE]
+       [--base-url URL --key-env VAR] [--repo PATH] [--json] [--run-dir DIR]
+ha roles [--json]
 ha providers [--json]
-ha run -p PROVIDER [-m MODEL] [--effort E] [--timeout SECONDS]
-       [--chain P1[:MODEL],P2[:MODEL],...]
-       [--context full|global|none] [--context-parents]
-       [--mcp PROFILE]
-       [--base-url URL --key-env VAR]
-       [--write [--shell] [--repo PATH] [--base REF]]
-       [--json] [--run-dir DIR]
-       [PROMPT | -]
 ha runs [--limit N] [--json]
 ha clean RUN_ID
+ha --version
 ```
+
+`TARGET` is a provider (`ha run codex "..."`) or a role declared in
+`~/.config/ha/roles.toml`: an executor -- one provider, or a `chain` of them -- with optional
+instructions. `-p` and `--chain` were removed in 0.5.0: the provider is the target, and a
+chain is declared in a role. This section is being rewritten with the 0.5.0 lots; write
+runs (`--write`, `--shell`, `--base`) are not available in this build.
 
 - **Read-only** (default): a CLI rail reads the current repository through a read-only
   workspace (no write tool; no shell, except codex, whose shell is its only read tool and
@@ -379,13 +382,13 @@ ha clean RUN_ID
   command runs at all and the worktree is kept for inspection. codex needs no `--shell`
   here: it reads files only through its shell, which is always on and stays inside its OS
   sandbox; `--shell` arms the unconfined shell of the other rails.
-- **`--chain codex:gpt-6-luna,claude:sonnet`** walks the list on exit codes `3` and `4`
+- **A role's `chain = ["codex:gpt-6-luna", "claude:sonnet"]`** walks the list on exit codes `3` and `4`
   (proof that nothing was written); each link gets its own directory under `links/` and
   may name its own model after the FIRST colon (`openrouter:meta/llama:free`). A provider
   appears at most once in a chain.
 - **Models**: the rails never pick one for you (opencode's own default can be a
   contributor model its vendor trains on), so each link's model is, first match wins: its
-  own in `--chain`, then `-m`, then your declared default in `~/.config/ha/models.toml`
+  own in the chain, then `-m`, then the role's `model`, then your declared default in `~/.config/ha/models.toml`
   (or `$XDG_CONFIG_HOME/ha/models.toml`); with none, the run is refused before anything
   starts (exit `2`). Only agy chooses safely on its own. The package hard-codes no model
   name:
@@ -416,7 +419,7 @@ ha clean RUN_ID
   end-to-end 2026-09-24: claude refused, codex exited `3` with no tool call; with the
   header all four rails answered through `brain_search`).
 
-- **`--base-url` / `--key-env`**: required with `-p openai-compat`, refused otherwise;
+- **`--base-url` / `--key-env`**: required with the `openai-compat` target, refused otherwise;
   `--key-env` takes the variable name, never the key.
 - **Runs**: every run writes `~/.cache/ha/runs/<run_id>/` (logs, `result.json` schema 1,
   and for `--write` the worktree, `change.patch`, `commit.log`). `ha runs` lists them

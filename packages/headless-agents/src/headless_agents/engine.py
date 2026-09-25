@@ -37,12 +37,13 @@ from .providers.claude import MAX_APPEND_SYSTEM_PROMPT_BYTES
 from .providers.openai_compat import GENERIC_NAME
 from .registry import HTTP_PROVIDER_NAMES, get_provider, max_prompt_bytes
 from .repo import RepoError, discover
-from .report import new_report, step_dir_name, step_entry, with_step, write_report
+from .report import RUN_JSON, new_report, step_dir_name, step_entry, with_step, write_report
 from .result import RunResult
 from .roles import Role, RolesError, capability_rule, load_roles, resolve_role
 from .run_record import RESULT_FILE_NAME
 from .runs import Registry, RegistryError, make_run_dir
 from .spec import RunSpec
+from .state import Unknown
 from .workspace import prepend
 
 ROLES_FILE_NAME: Final = "roles.toml"
@@ -119,16 +120,56 @@ def operator_environment(environ: Mapping[str, str]) -> dict[str, str]:
     }
 
 
-def _declared_roles(request: Request) -> tuple[dict[str, Role], Mapping[str, object]]:
+def declared_roles(
+    environ: Mapping[str, str], home: Path
+) -> tuple[dict[str, Role], Mapping[str, object]]:
+    """The roles of ``roles.toml`` and the profiles of ``mcp.toml``, validated."""
     try:
-        profiles_path = config_file(PROFILES_FILE_NAME, request.environ, home=request.home)
+        profiles_path = config_file(PROFILES_FILE_NAME, environ, home=home)
         profiles: Mapping[str, object] = (
             load_profiles(profiles_path) if profiles_path is not None else {}
         )
-        roles_path = config_file(ROLES_FILE_NAME, request.environ, home=request.home)
+        roles_path = config_file(ROLES_FILE_NAME, environ, home=home)
         return load_roles(roles_path, mcp_profiles=profiles), profiles
     except (ConfigPathError, McpProfileError, RolesError) as exc:
         raise UsageError(str(exc)) from None
+
+
+def describe_roles(environ: Mapping[str, str], home: Path) -> list[dict[str, object]]:
+    """``ha roles``: every declared role, resolved (spec §3.9)."""
+    declared, _ = declared_roles(environ, home)
+    rows: list[dict[str, object]] = []
+    for role in declared.values():
+        links: list[dict[str, object]] = []
+        for link in role.links:
+            try:
+                model: str | None = models_for(
+                    ((link.provider, link.model),),
+                    default="",
+                    role_model=role.model,
+                    environ=environ,
+                    home=home,
+                )[link.provider]
+            except ModelsError:
+                model = None
+            links.append({"provider": link.provider, "model": model})
+        rows.append(
+            {
+                "name": role.name,
+                "links": links,
+                "effort": role.effort,
+                "timeout": role.timeout,
+                "context": role.context,
+                "context_parents": role.context_parents,
+                "mcp": role.mcp,
+                "write": role.write,
+                "shell": role.shell,
+                "instructions_bytes": len(role.instructions.encode("utf-8"))
+                if role.instructions
+                else 0,
+            }
+        )
+    return rows
 
 
 def _with_overrides(role: Role, overrides: Overrides) -> Role:
@@ -216,7 +257,7 @@ def _environment(environ: Mapping[str, str], mcp: McpServer | None) -> dict[str,
 
 def plan(request: Request) -> Plan:
     """Resolve ``request`` and apply every gate that needs no git; raise :class:`UsageError`."""
-    declared, profiles = _declared_roles(request)
+    declared, profiles = declared_roles(request.environ, request.home)
     try:
         role = _with_overrides(resolve_role(request.target, declared), request.overrides)
     except RolesError as exc:
@@ -508,8 +549,71 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
         )
 
 
+def clean(
+    run_id: str, *, environ: Mapping[str, str], home: Path, say: Callable[[str], None]
+) -> int:
+    """``ha clean RUN_ID`` for a run outside any lineage (spec §3.9).
+
+    Resolved through the registry; the run's lifecycle lock taken without
+    waiting (an active run is refused), then the unconfined lock shared. A run
+    that never started is forgotten; any other has its directory removed and
+    ``cleaned_at`` set -- its entry stays. Write runs, whose worktree and lineage
+    rules arrive with the write protocol, are not in this build.
+    """
+    state = state_dir(environ, home=home)
+    registry = Registry(state, runs_root=runs_root(home))
+    try:
+        entry = registry.resolve(run_id)
+    except RegistryError as exc:
+        raise UsageError(str(exc)) from None
+    except Unknown as exc:
+        say(f"{exc}: recover it by hand; nothing cleaned")
+        return 1
+    if entry.lineage is not None:
+        say(f"{run_id} is a write run: cleaning one is not available in this build")
+        return 1
+    with ExitStack() as held_locks:
+        try:
+            held_locks.enter_context(
+                held(
+                    registry.lifecycle_lock(run_id),
+                    rank=Rank.LIFECYCLE,
+                    exclusive=True,
+                    wait=None,
+                    what=f"the lifecycle lock of {run_id}",
+                )
+            )
+        except LockTimeout:
+            raise UsageError(f"{run_id} is active: nothing cleaned") from None
+        try:
+            held_locks.enter_context(
+                held(
+                    state / "unconfined.lock",
+                    rank=Rank.UNCONFINED,
+                    exclusive=False,
+                    wait=locks.LOCK_WAIT_SECONDS,
+                    what="the unconfined lock",
+                )
+            )
+        except LockTimeout:
+            raise UsageError("an unconfined write is running: nothing cleaned") from None
+        started = (entry.run_dir / RUN_JSON).is_file()
+        if entry.run_dir.is_dir():
+            shutil.rmtree(entry.run_dir)
+        if not started:
+            registry.forget(run_id)
+            say(f"{run_id} never started: forgotten")
+            return 0
+        registry.set_cleaned(run_id, _utc_now())
+        say(f"{run_id} cleaned: {entry.run_dir} removed")
+        return 0
+
+
 __all__ = [
     "DEFAULT_CREDENTIALS",
+    "clean",
+    "declared_roles",
+    "describe_roles",
     "DEFAULT_EXECUTABLES",
     "Outcome",
     "execute",
