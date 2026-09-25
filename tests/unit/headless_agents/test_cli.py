@@ -716,3 +716,49 @@ def test_roles_shows_each_links_isolation(world: _World) -> None:
         "isolated (2026-09-25)",
         "not needed",
     ]
+
+
+def test_runs_takes_identity_from_the_registry_not_the_report(world: _World) -> None:
+    """Codex review of #207 (round 3): run.json is a report, never an authority (§3.8.1)."""
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id = json.loads(out)["run_id"]
+    run_json = world.registry().resolve(run_id).run_dir / "run.json"
+    report = json.loads(run_json.read_text())
+    report["target"] = {"kind": "role", "name": "forged"}
+    run_json.write_text(json.dumps(report))
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert row["run_id"] == run_id and row["target"] == "codex"
+
+
+def test_runs_ignores_a_report_whose_run_id_is_not_the_entry(world: _World) -> None:
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id = json.loads(out)["run_id"]
+    run_json = world.registry().resolve(run_id).run_dir / "run.json"
+    report = json.loads(run_json.read_text())
+    report.update(run_id="20200101T000000-ffffffff", text="forged text", exit_code=7)
+    run_json.write_text(json.dumps(report))
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert row["run_id"] == run_id
+    assert row["text"] is None and row["exit_code"] is None
+
+
+def test_runs_lists_a_cleaned_run_from_its_entry(world: _World) -> None:
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id = json.loads(out)["run_id"]
+    world.run("clean", run_id)
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert row["run_id"] == run_id and row["target"] == "codex"
+    assert row["status"] == "answered" and row["cleaned"] is True
+
+
+def test_runs_lists_a_run_with_a_custom_run_dir(world: _World, tmp_path: Path) -> None:
+    custom = tmp_path / "elsewhere" / "my-run"
+    code, out, _ = world.run("run", "codex", "--json", "--run-dir", str(custom), "go")
+    assert code == 0
+    run_id = json.loads(out)["run_id"]
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert row["run_id"] == run_id and row["text"] == "the answer"

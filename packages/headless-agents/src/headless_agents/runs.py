@@ -130,6 +130,16 @@ class Registry:
             cleaned_at=_optional_str(document.get("cleaned_at")),
         )
 
+    def run_ids(self) -> list[str]:
+        """Every registered run id, from the entries' names (unordered)."""
+        if not self._entries.is_dir():
+            return []
+        return [
+            path.stem
+            for path in self._entries.glob("*.json")
+            if RUN_ID_PATTERN.fullmatch(path.stem)
+        ]
+
     def resolve(self, run_id: str) -> Entry:
         """The entry of ``run_id``; :class:`~headless_agents.state.Unknown` when it is corrupt."""
         if not RUN_ID_PATTERN.fullmatch(run_id):

@@ -43,6 +43,7 @@ from .registry import PROVIDER_NAMES, Probe, UnknownProvider, max_prompt_bytes, 
 from .report import RUN_JSON
 from .run_record import RESULT_FILE_NAME
 from .runs import Registry, RegistryError
+from .state import Unknown
 
 __all__ = ["PROVIDER_NAMES", "Probe", "UnknownProvider", "main"]
 
@@ -282,35 +283,63 @@ def _first_line(text: object) -> str | None:
     return text.strip().splitlines()[0] if isinstance(text, str) and text.strip() else None
 
 
+def _admitted_at(registry: Registry, run_id: str) -> int:
+    """When the run was admitted: its lifecycle lock file is created then and never rewritten."""
+    try:
+        return registry.lifecycle_lock(run_id).stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
+def _registered_row(registry: Registry, run_id: str) -> dict[str, object]:
+    """One listing row: identity and status from the registry entry, the one
+    authority (§3.8.1); exit code, duration and answer only from a ``run.json``
+    whose ``run_id`` is this entry's -- a report is display data, never trusted
+    to name a run (codex review of #207, round 3)."""
+    row: dict[str, object] = {
+        "run_id": run_id,
+        "target": None,
+        "status": "unknown",
+        "exit_code": None,
+        "duration_seconds": None,
+        "text": None,
+        "cleaned": False,
+    }
+    try:
+        entry = registry.resolve(run_id)
+    except (RegistryError, Unknown):
+        return row
+    row.update(
+        target=entry.target.get("name"),
+        status=registry.effective_status(entry, None),
+        cleaned=entry.cleaned_at is not None,
+    )
+    report = _read_json(entry.run_dir / RUN_JSON)
+    if report is not None and report.get("run_id") == run_id:
+        row.update(
+            exit_code=report.get("exit_code"),
+            duration_seconds=report.get("duration_seconds"),
+            text=_first_line(report.get("text")),
+        )
+    return row
+
+
 def _runs(args: argparse.Namespace, io: Io) -> int:
-    """Plan decision P7: a minimal listing; the full one (cost, quarantines) is lot 2."""
+    """Plan decision P7: a minimal listing; the full one (cost, quarantines) is lot 2.
+
+    Registered runs come from the registry -- a custom ``--run-dir`` and a
+    cleaned run included; a 0.4.0 directory of the runs cache that no entry
+    names is listed as ``legacy``, from its ``result.json``.
+    """
     root = runs_root(io.home)
     registry = Registry(state_dir(io.environ, home=io.home), runs_root=root)
-    entries: list[tuple[int, dict[str, object]]] = []
+    registered = registry.run_ids()
+    entries: list[tuple[int, dict[str, object]]] = [
+        (_admitted_at(registry, run_id), _registered_row(registry, run_id)) for run_id in registered
+    ]
     if root.is_dir():
         for run_dir in root.iterdir():
-            report = _read_json(run_dir / RUN_JSON)
-            if report is not None:
-                target = report.get("target")
-                status = report.get("status")
-                try:
-                    entry = registry.resolve(run_dir.name)
-                    status = registry.effective_status(entry, None)
-                except (RegistryError, ValueError):
-                    pass
-                entries.append(
-                    (
-                        (run_dir / RUN_JSON).stat().st_mtime_ns,
-                        {
-                            "run_id": run_dir.name,
-                            "target": target.get("name") if isinstance(target, dict) else None,
-                            "status": status,
-                            "exit_code": report.get("exit_code"),
-                            "duration_seconds": report.get("duration_seconds"),
-                            "text": _first_line(report.get("text")),
-                        },
-                    )
-                )
+            if run_dir.name in registered or (run_dir / RUN_JSON).exists():
                 continue
             legacy = _read_json(run_dir / RESULT_FILE_NAME)
             if legacy is not None:
@@ -324,6 +353,7 @@ def _runs(args: argparse.Namespace, io: Io) -> int:
                             "exit_code": legacy.get("exit_code"),
                             "duration_seconds": legacy.get("duration_seconds"),
                             "text": _first_line(legacy.get("text")),
+                            "cleaned": False,
                         },
                     )
                 )
