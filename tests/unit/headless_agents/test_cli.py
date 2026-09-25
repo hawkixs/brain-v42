@@ -937,6 +937,31 @@ def test_runs_survives_an_unreadable_quarantine_and_entry(world: _World) -> None
     assert lines[1].startswith(run_id) and "unknown" in lines[1]
 
 
+def _strict(name: str) -> object:
+    raise AssertionError(f"{name} is not JSON")
+
+
+def test_runs_survives_a_number_that_is_not_finite(world: _World) -> None:
+    """Final review of PR B: json.loads accepts NaN and Infinity -- one such number broke
+    the whole listing (round() raised) and made ``--json`` unreadable to a strict parser."""
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id = json.loads(out)["run_id"]
+    run_json = world.registry().resolve(run_id).run_dir / "run.json"
+    report = json.loads(run_json.read_text())
+    report["duration_seconds"] = float("nan")
+    run_json.write_text(json.dumps(report))
+    legacy = world.home / ".cache" / "ha" / "runs" / "20260920T000000-aaaaaaaa"
+    legacy.mkdir(parents=True)
+    (legacy / "result.json").write_text(
+        '{"provider": "codex", "exit_code": 0, "duration_seconds": Infinity, "cost_usd": 1e999}'
+    )
+    code, out, _ = world.run("runs")
+    assert code == 0 and len(out.splitlines()) == 2
+    code, out, _ = world.run("runs", "--json")
+    rows = json.loads(out, parse_constant=_strict)
+    assert code == 0 and [row["duration_seconds"] for row in rows] == [None, None]
+
+
 # ── ha show ─────────────────────────────────────────────────────────────────
 
 

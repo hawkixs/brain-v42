@@ -46,7 +46,7 @@ from .registry import PROVIDER_NAMES, Probe, UnknownProvider, max_prompt_bytes, 
 from .report import RUN_JSON
 from .run_record import RESULT_FILE_NAME
 from .runs import Registry, RegistryError
-from .show import format_cost, format_duration, read_task
+from .show import format_cost, format_duration, load_json, read_task
 from .state import Unknown
 from .write_flow import PATCH_FILE
 
@@ -289,7 +289,7 @@ def _roles(args: argparse.Namespace, io: Io) -> int:
 
 def _read_json(path: Path) -> dict[str, object] | None:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = load_json(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return payload if isinstance(payload, dict) else None

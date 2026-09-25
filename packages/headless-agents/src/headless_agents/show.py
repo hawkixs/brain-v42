@@ -13,6 +13,7 @@ the only lock touched is the non-blocking liveness probe of the lifecycle lock.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,6 +61,25 @@ class Shown:
     notes: tuple[str, ...]
     warnings: tuple[str, ...]
     unknown: bool
+
+
+def _finite(text: str) -> float | None:
+    number = float(text)
+    return number if math.isfinite(number) else None
+
+
+def _not_finite(_: str) -> None:
+    return None
+
+
+def load_json(text: str) -> object:
+    """``json.loads``, but a number that is not finite reads as ``null``: not measured.
+
+    ``json.loads`` accepts ``NaN`` and ``Infinity`` and reads ``1e999`` as infinity,
+    and ``json.dumps`` writes them back out as JSON no strict parser reads: one such
+    number in a report broke every listing (final review of lot 2 PR B).
+    """
+    return json.loads(text, parse_constant=_not_finite, parse_float=_finite)
 
 
 def read_task(run_dir: Path) -> str | None:
@@ -113,7 +133,7 @@ def _usable_report(entry: Entry, notes: list[str]) -> dict[str, object] | None:
             notes.append(f"{path} is missing: shown from the state")
         return None
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = load_json(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError):
         notes.append(f"{path} cannot be read: shown from the state")
         return None
@@ -235,11 +255,24 @@ _STATUS_WORDS: Final[Mapping[str, str]] = {
 }
 
 
+def _measure(value: object) -> float | None:
+    """``value`` as a finite float; ``None`` when it is not one -- NaN, an infinity, or an
+    int too large for a float, which ``round`` and ``:.2f`` raise on."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
 def format_duration(seconds: object) -> str:
     """``45s``, ``2m40s``, ``1h02m``; ``-`` when not measured."""
-    if isinstance(seconds, bool) or not isinstance(seconds, int | float):
+    measured = _measure(seconds)
+    if measured is None:
         return "-"
-    whole = round(seconds)
+    whole = round(measured)
     if whole < 60:
         return f"{whole}s"
     if whole < 3600:
@@ -249,9 +282,8 @@ def format_duration(seconds: object) -> str:
 
 def format_cost(cost: object) -> str:
     """``$0.12``; ``-`` when not measured."""
-    if isinstance(cost, bool) or not isinstance(cost, int | float):
-        return "-"
-    return f"${cost:.2f}"
+    measured = _measure(cost)
+    return "-" if measured is None else f"${measured:.2f}"
 
 
 def _thousands(count: object) -> str:
@@ -372,6 +404,7 @@ __all__ = [
     "format_duration",
     "format_tokens",
     "format_tools",
+    "load_json",
     "read_diffstat",
     "read_task",
     "rebuild",

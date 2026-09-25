@@ -487,6 +487,30 @@ def test_format_duration(seconds: object, text: str) -> None:
     assert show.format_duration(seconds) == text
 
 
+@pytest.mark.parametrize(
+    "value",
+    [float("nan"), float("inf"), float("-inf"), 10**400],
+    ids=["nan", "inf", "-inf", "int-too-large-for-a-float"],
+)
+def test_a_measure_that_is_not_a_finite_number_renders_as_a_dash(value: object) -> None:
+    """Final review of PR B: ``round`` raises on NaN and infinity, ``:.2f`` on an int too
+    large for a float -- one such number in a report broke the whole ``ha runs`` listing."""
+    assert show.format_duration(value) == "-" and show.format_cost(value) == "-"
+
+
+def test_a_number_that_is_not_finite_in_a_report_is_not_measured(home: Home) -> None:
+    """Final review of PR B: ``json.loads`` reads NaN and Infinity, and ``1e999`` as
+    infinity; ``--json`` wrote them back out as ``NaN``, which a strict parser refuses."""
+    run_dir = home.read_only()
+    path = run_dir / "run.json"
+    text = path.read_text().replace('"duration_seconds": 65.4', '"duration_seconds": NaN')
+    path.write_text(text.replace('"cost_usd": 0.031', '"cost_usd": 1e999'))
+    report = home.rebuild().report
+    (step,) = report["steps"] if isinstance(report["steps"], list) else [{}]
+    assert report["duration_seconds"] is None and report["cost_usd"] is None
+    assert step["duration_seconds"] is None and step["cost_usd"] is None
+
+
 def test_format_tools_and_tokens() -> None:
     assert show.format_tools(None) == "-" and show.format_tools({}) == "none"
     assert show.format_tools({"edit": 11, "read": 25, "bash": 11}) == "read 25, bash 11, edit 11"
