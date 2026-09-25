@@ -1,7 +1,7 @@
 """A confinement proof needs a logged, refused attempt on every outside target
 (operator decision Q91=b). The shapes below are the ones measured on the live
-run of 2026-09-25: claude 2.1.282 (OTEL console stream in report.log),
-opencode 1.18.30, codex 0.156.0 and agy 1.2.11 (events.jsonl)."""
+run of 2026-09-25: opencode 1.18.30, codex 0.156.0 and agy 1.2.11
+(events.jsonl); claude 2.1.282 logs no path for a rejected call."""
 
 from __future__ import annotations
 
@@ -23,24 +23,14 @@ def _decision(tool: str, decision: str, source: str = "config") -> str:
     )
 
 
-def test_claude_needs_one_config_rejection_per_target(tmp_path: Path) -> None:
-    run = tmp_path / "run"
-    run.mkdir()
-    targets = _targets(tmp_path)
-    (run / "report.log").write_text(_decision("Read", "accept") + _decision("Read", "reject"))
-    assert refused_attempts("claude", run, targets) == set()
-    (run / "report.log").write_text(
-        _decision("Read", "reject") + _decision("Edit", "reject") + _decision("Edit", "accept")
-    )
-    assert refused_attempts("claude", run, targets) == set(targets)
-
-
-def test_a_claude_rejection_by_the_user_is_not_the_sandbox(tmp_path: Path) -> None:
+def test_claude_rejections_carry_no_path_so_claude_is_inconclusive(tmp_path: Path) -> None:
+    """Codex review of #208, round 5: rejections that name no path can be
+    unrelated ones, so counting them proves nothing about the targets."""
     run = tmp_path / "run"
     run.mkdir()
     targets = _targets(tmp_path)
     (run / "report.log").write_text(
-        _decision("Read", "reject", source="user") + _decision("Edit", "reject", source="user")
+        _decision("Read", "reject") + _decision("Edit", "reject") + _decision("Read", "reject")
     )
     assert refused_attempts("claude", run, targets) == set()
 

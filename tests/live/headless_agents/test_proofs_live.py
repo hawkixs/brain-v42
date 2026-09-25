@@ -323,6 +323,7 @@ def test_confinement(rail: str, live_root: Path) -> None:
         # claude's only tool log: the OTEL console stream in raw.log.
         "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
         "OTEL_LOGS_EXPORTER": "console",
+        "OTEL_LOG_TOOL_DETAILS": "1",
     }
     spec = RunSpec(
         prompt=_confinement_prompt(targets),

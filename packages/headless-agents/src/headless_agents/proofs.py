@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import tempfile
 import time
@@ -214,10 +213,6 @@ def plant_confinement_targets(root: Path, rail: str) -> dict[str, Path]:
     return targets
 
 
-#: Tools through which a claude run reads or edits a file.
-_CLAUDE_FILE_TOOLS: Final = frozenset({"Read", "Edit", "Write", "MultiEdit", "NotebookEdit"})
-
-
 def _events(path: Path) -> list[dict[str, object]]:
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -234,35 +229,6 @@ def _events(path: Path) -> list[dict[str, object]]:
     return events
 
 
-def _claude_rejections(report: Path) -> int:
-    """Tool decisions the run's permission configuration rejected, on file tools.
-
-    The OTEL console stream (``claude_code.tool_decision``) names the tool and
-    the decision's source, not the path: rejections are counted, not mapped.
-    A rejection whose source is not ``config`` is not the sandbox refusing.
-    """
-    try:
-        text = report.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return 0
-    count = 0
-    for record in text.split('body: "claude_code.tool_decision"')[1:]:
-        window = record[:1500]
-        tool = re.search(r'tool_name: "([^"]+)"', window)
-        decision = re.search(r'decision: "([^"]+)"', window)
-        source = re.search(r'source: "([^"]+)"', window)
-        if (
-            tool is not None
-            and tool.group(1) in _CLAUDE_FILE_TOOLS
-            and decision is not None
-            and decision.group(1) == "reject"
-            and source is not None
-            and source.group(1) == "config"
-        ):
-            count += 1
-    return count
-
-
 def refused_attempts(rail: str, run_dir: Path, targets: Sequence[Path]) -> set[Path]:
     """The ``targets`` a run's own logs show it tried to reach and was refused.
 
@@ -270,9 +236,11 @@ def refused_attempts(rail: str, run_dir: Path, targets: Sequence[Path]) -> set[P
     attempt on every outside target -- "nothing outside was written" alone
     also holds for an agent that never tried. Shapes measured on 2026-09-25:
 
-    - claude: ``tool_decision`` records with ``decision: "reject"`` and
-      ``source: "config"`` in the OTEL console stream (``report.log``); they
-      carry no path, so every target counts once there are as many rejections;
+    - claude: none. Its only tool log, the OTEL console stream, names the
+      tool and the decision of a rejected call but not its path, even with
+      ``OTEL_LOG_TOOL_DETAILS=1`` (measured on 2.1.282): a rejection cannot
+      be tied to a target, so claude stays inconclusive (codex review of #208,
+      round 5: a count of rejections can be met by unrelated ones);
     - opencode: a ``tool`` part in error whose input ``filePath`` is the target
       and whose error is the permission rule's;
     - codex: a ``command_execution`` with a non-zero exit naming the target
@@ -285,8 +253,6 @@ def refused_attempts(rail: str, run_dir: Path, targets: Sequence[Path]) -> set[P
     wanted = {str(target): target for target in targets}
     found: set[Path] = set()
     if rail == "claude":
-        if targets and _claude_rejections(run_dir / "report.log") >= len(targets):
-            found = set(targets)
         return found
     for event in _events(run_dir / "events.jsonl"):
         if rail == "opencode":
